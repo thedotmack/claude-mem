@@ -1,37 +1,16 @@
-/**
- * IDE Auto-Detection
- *
- * Detects which AI coding IDEs / tools are installed on the system by
- * probing known config directories and checking for binaries in PATH.
- *
- * Pure Node.js — no Bun APIs used.
- */
 import { execSync } from 'child_process';
 import { existsSync, readdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { IS_WINDOWS } from '../utils/paths.js';
 
-// ---------------------------------------------------------------------------
-// IDE type and metadata
-// ---------------------------------------------------------------------------
-
 export interface IDEInfo {
-  /** Machine-readable identifier. */
   id: string;
-  /** Human-readable label for display in prompts. */
   label: string;
-  /** Whether the IDE was detected on this system. */
   detected: boolean;
-  /** Whether claude-mem has implemented setup for this IDE. */
   supported: boolean;
-  /** Short hint text shown in the multi-select. */
   hint?: string;
 }
-
-// ---------------------------------------------------------------------------
-// PATH helper
-// ---------------------------------------------------------------------------
 
 function isCommandInPath(command: string): boolean {
   try {
@@ -39,17 +18,12 @@ function isCommandInPath(command: string): boolean {
     execSync(`${whichCommand} ${command}`, { stdio: 'pipe' });
     return true;
   } catch (error: unknown) {
-    // Command not found in PATH — expected for non-installed IDEs
     if (process.env.DEBUG) {
       console.error(`[ide-detection] ${command} not in PATH:`, error instanceof Error ? error.message : String(error));
     }
     return false;
   }
 }
-
-// ---------------------------------------------------------------------------
-// VS Code extension directory scanner
-// ---------------------------------------------------------------------------
 
 function hasVscodeExtension(extensionNameFragment: string): boolean {
   const extensionsDirectory = join(homedir(), '.vscode', 'extensions');
@@ -63,15 +37,6 @@ function hasVscodeExtension(extensionNameFragment: string): boolean {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Detection map
-// ---------------------------------------------------------------------------
-
-/**
- * Detect all known IDEs and return an array of `IDEInfo` objects.
- * Each entry indicates whether the IDE was found and whether claude-mem
- * currently supports setting it up.
- */
 export function detectInstalledIDEs(): IDEInfo[] {
   const home = homedir();
 
@@ -170,9 +135,6 @@ export function detectInstalledIDEs(): IDEInfo[] {
   ];
 }
 
-/**
- * Return only the IDEs that were detected on this system.
- */
 export function getDetectedIDEs(): IDEInfo[] {
   return detectInstalledIDEs().filter((ide) => ide.detected);
 }

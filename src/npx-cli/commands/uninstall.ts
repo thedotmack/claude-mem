@@ -1,12 +1,3 @@
-/**
- * Uninstall command for `npx claude-mem uninstall`.
- *
- * Removes the plugin from the marketplace directory, cache, plugin
- * registrations, and Claude settings. Optionally cleans up IDE-specific
- * configurations.
- *
- * Pure Node.js — no Bun APIs used.
- */
 import * as p from '@clack/prompts';
 import pc from 'picocolors';
 import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
@@ -24,10 +15,6 @@ import {
 import { readJsonSafe } from '../../utils/json-utils.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { shutdownWorkerAndWait } from '../../services/install/shutdown-helper.js';
-
-// ---------------------------------------------------------------------------
-// Cleanup helpers
-// ---------------------------------------------------------------------------
 
 function removeMarketplaceDirectory(): boolean {
   const marketplaceDir = marketplaceDirectory();
@@ -63,14 +50,6 @@ function removeFromInstalledPlugins(): void {
   }
 }
 
-/**
- * Strip the legacy `claude-mem` shell alias/function from common shell rc files
- * (#2054). The alias used to be added by `installCLI()` in smart-install.js;
- * that function was deleted, but existing users still have the line. This is
- * a one-time best-effort cleanup — idempotent (no-op if the line is absent),
- * and safely matches only lines that BEGIN with `alias claude-mem=` or
- * `function claude-mem` to avoid mangling unrelated code.
- */
 function stripLegacyClaudeMemAlias(): void {
   const home = homedir();
   const candidateFiles = [
@@ -79,9 +58,6 @@ function stripLegacyClaudeMemAlias(): void {
     join(home, 'Documents', 'PowerShell', 'Microsoft.PowerShell_profile.ps1'),
   ];
 
-  // Only strip simple aliases. A function declaration would span multiple
-  // lines and can't be safely removed by a line filter — leave it for the
-  // user to remove manually.
   const aliasLineRegex = /^\s*alias\s+claude-mem\s*=/;
 
   for (const filePath of candidateFiles) {
@@ -95,7 +71,7 @@ function stripLegacyClaudeMemAlias(): void {
     }
     const lines = content.split('\n');
     const filtered = lines.filter((line) => !aliasLineRegex.test(line));
-    if (filtered.length === lines.length) continue; // no match — leave file untouched
+    if (filtered.length === lines.length) continue; 
     try {
       writeFileSync(filePath, filtered.join('\n'));
       console.error(`Removed legacy claude-mem alias from ${filePath}`);
@@ -113,25 +89,10 @@ function removeFromClaudeSettings(): void {
   }
 }
 
-/**
- * Best-effort cleanup of stray claude-mem residue (#2106 item 4) that
- * accumulates outside of `~/.claude/plugins/marketplaces/thedotmack/`:
- *
- *   - `~/.npm/_npx/<hash>/node_modules/claude-mem` (npx install caches)
- *   - `~/.cache/claude-cli-nodejs/<project>/mcp-logs-plugin-claude-mem-*`
- *   - `~/.claude/plugins/data/claude-mem-thedotmack/`
- *
- * Each step is wrapped in its own try/catch — a failure on one path
- * (e.g. permissions denied on a single npx hash dir) must not abort
- * the rest. We log the failure and continue.
- *
- * Returns the count of paths actually removed (purely for reporting).
- */
 function removeStrayClaudeMemPaths(): number {
   const home = homedir();
   let removedCount = 0;
 
-  // 1. ~/.npm/_npx/*/node_modules/claude-mem
   const npxRoot = join(home, '.npm', '_npx');
   if (existsSync(npxRoot)) {
     let hashDirs: string[] = [];
@@ -152,7 +113,6 @@ function removeStrayClaudeMemPaths(): number {
     }
   }
 
-  // 2. ~/.cache/claude-cli-nodejs/*/mcp-logs-plugin-claude-mem-*
   const cacheRoot = join(home, '.cache', 'claude-cli-nodejs');
   if (existsSync(cacheRoot)) {
     let projectDirs: string[] = [];
@@ -183,7 +143,6 @@ function removeStrayClaudeMemPaths(): number {
     }
   }
 
-  // 3. ~/.claude/plugins/data/claude-mem-thedotmack/
   const pluginDataDir = join(home, '.claude', 'plugins', 'data', 'claude-mem-thedotmack');
   if (existsSync(pluginDataDir)) {
     try {
@@ -197,17 +156,12 @@ function removeStrayClaudeMemPaths(): number {
   return removedCount;
 }
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
 export async function runUninstallCommand(): Promise<void> {
   p.intro(pc.bgRed(pc.white(' claude-mem uninstall ')));
 
   if (!isPluginInstalled()) {
     p.log.warn('claude-mem does not appear to be installed.');
 
-    // Still offer to clean up partial state
     if (process.stdin.isTTY) {
       const shouldCleanup = await p.confirm({
         message: 'Clean up any remaining registration data anyway?',
@@ -234,14 +188,6 @@ export async function runUninstallCommand(): Promise<void> {
     }
   }
 
-  // Stop the worker and wait for it to exit before deleting files.
-  // Resolve port via SettingsDefaultsManager so CLAUDE_MEM_WORKER_PORT env
-  // takes priority and the per-UID default (37700 + uid % 100) is used
-  // otherwise. Required for multi-account isolation (#2101).
-  //
-  // The worker's graceful shutdown also stops chroma-mcp via
-  // GracefulShutdown -> ChromaMcpManager.stop(), so this single call
-  // cascades to the chroma-mcp subprocess as well.
   const workerPort = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT');
   try {
     const result = await shutdownWorkerAndWait(workerPort, 10000);
@@ -249,7 +195,6 @@ export async function runUninstallCommand(): Promise<void> {
       p.log.info('Worker service stopped.');
     }
   } catch (error: unknown) {
-    // shutdownWorkerAndWait swallows its own errors, but guard anyway.
     console.warn('[uninstall] Worker shutdown attempt failed:', error instanceof Error ? error.message : String(error));
   }
 
@@ -311,7 +256,6 @@ export async function runUninstallCommand(): Promise<void> {
     },
   ]);
 
-  // Remove IDE-specific hooks and config (best-effort, each is independent)
   const ideCleanups: Array<{ label: string; fn: () => Promise<number> | number }> = [
     { label: 'Gemini CLI hooks', fn: async () => {
       const { uninstallGeminiCliHooks } = await import('../../services/integrations/GeminiCliHooksInstaller.js');
@@ -342,7 +286,6 @@ export async function runUninstallCommand(): Promise<void> {
         p.log.info(`${label}: removed.`);
       }
     } catch (error: unknown) {
-      // IDE not configured or uninstaller errored — log and continue
       console.warn(`[uninstall] ${label} cleanup failed:`, error instanceof Error ? error.message : String(error));
     }
   }

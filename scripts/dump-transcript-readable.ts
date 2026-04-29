@@ -1,8 +1,4 @@
 #!/usr/bin/env tsx
-/**
- * Simple 1:1 transcript dump in readable markdown format
- * Shows exactly what's in the transcript, chronologically
- */
 
 import { TranscriptParser } from '../src/utils/transcript-parser.js';
 import { writeFileSync } from 'fs';
@@ -26,7 +22,6 @@ let entryNum = 0;
 for (const entry of entries) {
   entryNum++;
 
-  // Skip file-history-snapshot and summary entries for now
   if (entry.type === 'file-history-snapshot' || entry.type === 'summary') continue;
 
   output += `## Entry ${entryNum}: ${entry.type.toUpperCase()}\n`;
@@ -72,7 +67,6 @@ for (const entry of entries) {
       }
     }
 
-    // Show token usage if available
     const usage = entry.message.usage;
     if (usage) {
       output += `**Usage:**\n`;
@@ -85,7 +79,6 @@ for (const entry of entries) {
 
   output += '---\n\n';
 
-  // Limit to first 20 entries to keep file manageable
   if (entryNum >= 20) {
     output += `\n_Remaining ${entries.length - 20} entries omitted for brevity_\n`;
     break;

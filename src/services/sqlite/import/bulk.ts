@@ -1,6 +1,3 @@
-/**
- * Bulk import functions for importing data with duplicate checking
- */
 
 import { Database } from 'bun:sqlite';
 import { logger } from '../../../utils/logger.js';
@@ -10,10 +7,6 @@ export interface ImportResult {
   id: number;
 }
 
-/**
- * Import SDK session with duplicate checking
- * Duplicates are identified by content_session_id
- */
 export function importSdkSession(
   db: Database,
   session: {
@@ -28,7 +21,6 @@ export function importSdkSession(
     status: string;
   }
 ): ImportResult {
-  // Check if session already exists
   const existing = db
     .prepare('SELECT id FROM sdk_sessions WHERE content_session_id = ?')
     .get(session.content_session_id) as { id: number } | undefined;
@@ -59,10 +51,6 @@ export function importSdkSession(
   return { imported: true, id: result.lastInsertRowid as number };
 }
 
-/**
- * Import session summary with duplicate checking
- * Duplicates are identified by memory_session_id
- */
 export function importSessionSummary(
   db: Database,
   summary: {
@@ -82,7 +70,6 @@ export function importSessionSummary(
     created_at_epoch: number;
   }
 ): ImportResult {
-  // Check if summary already exists for this session
   const existing = db
     .prepare('SELECT id FROM session_summaries WHERE memory_session_id = ?')
     .get(summary.memory_session_id) as { id: number } | undefined;
@@ -119,10 +106,6 @@ export function importSessionSummary(
   return { imported: true, id: result.lastInsertRowid as number };
 }
 
-/**
- * Import observation with duplicate checking
- * Duplicates are identified by memory_session_id + title + created_at_epoch
- */
 export function importObservation(
   db: Database,
   obs: {
@@ -145,7 +128,6 @@ export function importObservation(
     agent_id?: string | null;
   }
 ): ImportResult {
-  // Check if observation already exists
   const existing = db
     .prepare(
       `
@@ -193,10 +175,6 @@ export function importObservation(
   return { imported: true, id: result.lastInsertRowid as number };
 }
 
-/**
- * Import user prompt with duplicate checking
- * Duplicates are identified by content_session_id + prompt_number
- */
 export function importUserPrompt(
   db: Database,
   prompt: {
@@ -207,7 +185,6 @@ export function importUserPrompt(
     created_at_epoch: number;
   }
 ): ImportResult {
-  // Check if prompt already exists
   const existing = db
     .prepare(
       `

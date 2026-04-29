@@ -3,26 +3,9 @@ import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
-/**
- * Tests for the MCP integration factory utilities.
- *
- * Because McpIntegrations.ts uses `findMcpServerPath()` which checks specific
- * filesystem paths, and the factory functions are not individually exported,
- * we test the underlying helpers indirectly by exercising writeMcpJsonConfig
- * and buildMcpServerEntry behavior through the readJsonSafe + JSON file writing
- * patterns they use.
- *
- * We also verify the key behavioral contract: MCP entries use process.execPath.
- */
-
 import { readJsonSafe } from '../src/utils/json-utils';
 import { injectContextIntoMarkdownFile, CONTEXT_TAG_OPEN, CONTEXT_TAG_CLOSE } from '../src/utils/context-injection';
 
-/**
- * Reimplements the core logic of buildMcpServerEntry and writeMcpJsonConfig
- * from McpIntegrations.ts for testability, since those functions are not exported.
- * The tests verify the contract these functions must uphold.
- */
 function buildMcpServerEntry(mcpServerPath: string): { command: string; args: string[] } {
   return {
     command: process.execPath,
@@ -200,7 +183,6 @@ describe('MCP Integrations', () => {
         /Corrupt JSON file, refusing to overwrite/
       );
 
-      // Original file should be untouched
       expect(readFileSync(configPath, 'utf-8')).toBe('not valid json {{{{');
     });
 

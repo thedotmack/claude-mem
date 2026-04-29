@@ -13,7 +13,6 @@ async function buildViewer() {
   console.log('Building React viewer...');
 
   try {
-    // Build React app
     await esbuild.build({
       entryPoints: [path.join(rootDir, 'src/ui/viewer/index.tsx')],
       bundle: true,
@@ -32,7 +31,6 @@ async function buildViewer() {
       }
     });
 
-    // Copy HTML template to build output
     const htmlTemplate = fs.readFileSync(
       path.join(rootDir, 'src/ui/viewer-template.html'),
       'utf-8'
@@ -42,7 +40,6 @@ async function buildViewer() {
       htmlTemplate
     );
 
-    // Copy font assets
     const fontsDir = path.join(rootDir, 'src/ui/viewer/assets/fonts');
     const outputFontsDir = path.join(rootDir, 'plugin/ui/assets/fonts');
 
@@ -57,7 +54,6 @@ async function buildViewer() {
       }
     }
 
-    // Copy icon SVG files
     const srcUiDir = path.join(rootDir, 'src/ui');
     const outputUiDir = path.join(rootDir, 'plugin/ui');
     const iconFiles = fs.readdirSync(srcUiDir).filter(file => file.startsWith('icon-thick-') && file.endsWith('.svg'));

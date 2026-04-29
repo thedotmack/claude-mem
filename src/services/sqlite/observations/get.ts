@@ -1,16 +1,9 @@
-/**
- * Observation retrieval functions
- * Extracted from SessionStore.ts for modular organization
- */
 
 import { Database } from 'bun:sqlite';
 import { logger } from '../../../utils/logger.js';
 import type { ObservationRecord } from '../../../types/database.js';
 import type { GetObservationsByIdsOptions, ObservationSessionRow } from './types.js';
 
-/**
- * Get a single observation by ID
- */
 export function getObservationById(db: Database, id: number): ObservationRecord | null {
   const stmt = db.prepare(`
     SELECT *
@@ -21,9 +14,6 @@ export function getObservationById(db: Database, id: number): ObservationRecord 
   return stmt.get(id) as ObservationRecord | undefined || null;
 }
 
-/**
- * Get observations by array of IDs with ordering and limit
- */
 export function getObservationsByIds(
   db: Database,
   ids: number[],
@@ -35,18 +25,15 @@ export function getObservationsByIds(
   const orderClause = orderBy === 'date_asc' ? 'ASC' : 'DESC';
   const limitClause = limit ? `LIMIT ${limit}` : '';
 
-  // Build placeholders for IN clause
   const placeholders = ids.map(() => '?').join(',');
   const params: any[] = [...ids];
   const additionalConditions: string[] = [];
 
-  // Apply project filter
   if (project) {
     additionalConditions.push('project = ?');
     params.push(project);
   }
 
-  // Apply type filter
   if (type) {
     if (Array.isArray(type)) {
       const typePlaceholders = type.map(() => '?').join(',');
@@ -58,7 +45,6 @@ export function getObservationsByIds(
     }
   }
 
-  // Apply concepts filter
   if (concepts) {
     const conceptsList = Array.isArray(concepts) ? concepts : [concepts];
     const conceptConditions = conceptsList.map(() =>
@@ -68,7 +54,6 @@ export function getObservationsByIds(
     additionalConditions.push(`(${conceptConditions.join(' OR ')})`);
   }
 
-  // Apply files filter
   if (files) {
     const filesList = Array.isArray(files) ? files : [files];
     const fileConditions = filesList.map(() => {
@@ -95,9 +80,6 @@ export function getObservationsByIds(
   return stmt.all(...params) as ObservationRecord[];
 }
 
-/**
- * Get observations for a specific session
- */
 export function getObservationsForSession(
   db: Database,
   memorySessionId: string
@@ -112,10 +94,6 @@ export function getObservationsForSession(
   return stmt.all(memorySessionId) as ObservationSessionRow[];
 }
 
-/**
- * Get observations associated with a given file path, scoped to specific projects.
- * Matches on the full file path (not just basename) to avoid cross-project collisions.
- */
 export function getObservationsByFilePath(
   db: Database,
   filePath: string,

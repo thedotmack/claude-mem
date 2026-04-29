@@ -2,7 +2,6 @@ import { describe, it, expect, mock, beforeEach } from 'bun:test';
 import { SQLiteSearchStrategy } from '../../../../src/services/worker/search/strategies/SQLiteSearchStrategy.js';
 import type { StrategySearchOptions, ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../../../../src/services/worker/search/types.js';
 
-// Mock observation data
 const mockObservation: ObservationSearchResult = {
   id: 1,
   memory_session_id: 'session-123',
@@ -264,7 +263,7 @@ describe('SQLiteSearchStrategy', () => {
       strategy.findByConcept('test-concept', options);
 
       const callArgs = mockSessionSearch.findByConcept.mock.calls[0];
-      expect(callArgs[1].limit).toBe(20); // SEARCH_CONSTANTS.DEFAULT_LIMIT
+      expect(callArgs[1].limit).toBe(20); 
     });
   });
 

@@ -1,9 +1,3 @@
-/**
- * File Context Handler - PreToolUse
- *
- * Injects relevant observation history when Claude reads/edits a file,
- * so it can avoid duplicating past work.
- */
 
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker-utils.js';
@@ -14,13 +8,10 @@ import path from 'path';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { getProjectContext } from '../../utils/project-name.js';
 
-/** Skip the gate for files smaller than this — timeline overhead exceeds file read cost. */
 const FILE_READ_GATE_MIN_BYTES = 1_500;
 
-/** Fetch more candidates than the display limit so dedup still fills 15 slots. */
 const FETCH_LOOKAHEAD_LIMIT = 40;
 
-/** Maximum observations to show in the timeline. */
 const DISPLAY_LIMIT = 15;
 
 const TYPE_ICONS: Record<string, string> = {
@@ -56,21 +47,11 @@ interface ObservationRow {
   files_modified: string | null;
 }
 
-/**
- * Deduplicate and rank observations for the timeline display.
- *
- * 1. Same-session dedup: keep only the most recent observation per session
- *    (input is already sorted newest-first by SQL).
- * 2. Specificity scoring: rank by how specifically the observation is about
- *    the target file (modified > read-only, fewer total files > many).
- * 3. Truncate to displayLimit.
- */
 function deduplicateObservations(
   observations: ObservationRow[],
   targetPath: string,
   displayLimit: number
 ): ObservationRow[] {
-  // Phase 1: Keep only the most recent observation per session
   const seenSessions = new Set<string>();
   const dedupedBySession: ObservationRow[] = [];
   for (const obs of observations) {
@@ -81,7 +62,6 @@ function deduplicateObservations(
     }
   }
 
-  // Phase 2: Score by specificity to the target file
   const scored = dedupedBySession.map(obs => {
     const filesRead = parseJsonArray(obs.files_read);
     const filesModified = parseJsonArray(obs.files_modified);
@@ -93,12 +73,10 @@ function deduplicateObservations(
     if (inModified) specificityScore += 2;
     if (totalFiles <= 3) specificityScore += 2;
     else if (totalFiles <= 8) specificityScore += 1;
-    // totalFiles > 8: no bonus (survey-like observation)
 
     return { obs, specificityScore };
   });
 
-  // Stable sort: higher specificity first, preserve chronological order within same score
   scored.sort((a, b) => b.specificityScore - a.specificityScore);
 
   return scored.slice(0, displayLimit).map(s => s.obs);
@@ -108,9 +86,7 @@ function formatFileTimeline(
   observations: ObservationRow[],
   filePath: string
 ): string {
-  // Escape filePath for safe interpolation into recovery hints (quotes, backslashes, newlines)
   const safePath = filePath.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-  // Group observations by day
   const byDay = new Map<string, ObservationRow[]>();
   for (const obs of observations) {
     const day = formatDate(obs.created_at_epoch);
@@ -120,16 +96,14 @@ function formatFileTimeline(
     byDay.get(day)!.push(obs);
   }
 
-  // Sort days chronologically (use earliest observation in each group, not first — which is specificity-sorted)
   const sortedDays = Array.from(byDay.entries()).sort((a, b) => {
     const aEpoch = Math.min(...a[1].map(o => o.created_at_epoch));
     const bEpoch = Math.min(...b[1].map(o => o.created_at_epoch));
     return aEpoch - bEpoch;
   });
 
-  // Include current date/time so the model can judge recency of observations
   const now = new Date();
-  const currentDate = now.toLocaleDateString('en-CA'); // YYYY-MM-DD
+  const currentDate = now.toLocaleDateString('en-CA'); 
   const currentTime = now.toLocaleTimeString('en-US', {
     hour: 'numeric',
     minute: '2-digit',
@@ -137,9 +111,6 @@ function formatFileTimeline(
   }).toLowerCase().replace(' ', '');
   const currentTimezone = now.toLocaleTimeString('en-US', { timeZoneName: 'short' }).split(' ').pop();
 
-  // The hook never modifies the Read call (#2094) — Claude always sees the
-  // full requested section. The timeline below is supplementary priming, not
-  // a replacement for the file contents.
   const lines: string[] = [
     `Current: ${currentDate} ${currentTime} ${currentTimezone}`,
     `This file has prior observations — supplementary context follows. The Read result below is the full requested section.`,
@@ -148,7 +119,6 @@ function formatFileTimeline(
   ];
 
   for (const [day, dayObservations] of sortedDays) {
-    // Sort within each day chronologically (deduplicateObservations reorders by specificity)
     const chronological = [...dayObservations].sort((a, b) => a.created_at_epoch - b.created_at_epoch);
     lines.push(`### ${day}`);
     for (const obs of chronological) {
@@ -164,7 +134,6 @@ function formatFileTimeline(
 
 export const fileContextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
-    // Extract file_path from toolInput
     const toolInput = input.toolInput as Record<string, unknown> | undefined;
     const filePath = toolInput?.file_path as string | undefined;
 
@@ -172,16 +141,12 @@ export const fileContextHandler: EventHandler = {
       return { continue: true, suppressOutput: true };
     }
 
-    // Stat the file once: size (gate) + mtime (cache invalidation).
-    // 0 = stat failed non-fatally (e.g. EPERM) — skip mtime check, fall through to context injection.
     let fileMtimeMs = 0;
     try {
       const statPath = path.isAbsolute(filePath)
         ? filePath
         : path.resolve(input.cwd || process.cwd(), filePath);
       const stat = statSync(statPath);
-      // Skip gate for files below the token-economics threshold — timeline (~370 tokens)
-      // costs more than reading small files directly.
       if (stat.size < FILE_READ_GATE_MIN_BYTES) {
         return { continue: true, suppressOutput: true };
       }
@@ -190,29 +155,24 @@ export const fileContextHandler: EventHandler = {
       if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
         return { continue: true, suppressOutput: true };
       }
-      // Other errors (symlink, permission denied) — fall through and let gate proceed
       logger.debug('HOOK', 'File stat failed, proceeding with gate', { error: err instanceof Error ? err.message : String(err) });
     }
 
-    // Plan 05 Phase 5: project exclusion via single helper.
     if (input.cwd && !shouldTrackProject(input.cwd)) {
       logger.debug('HOOK', 'Project excluded from tracking, skipping file context', { cwd: input.cwd });
       return { continue: true, suppressOutput: true };
     }
 
-    // Query worker for observations related to this file
     const context = getProjectContext(input.cwd);
     const cwd = input.cwd || process.cwd();
     const absolutePath = path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath);
     const relativePath = path.relative(cwd, absolutePath).split(path.sep).join("/");
     const queryParams = new URLSearchParams({ path: relativePath });
-    // Pass all project names (parent + worktree) for unified lookup
     if (context.allProjects.length > 0) {
       queryParams.set('projects', context.allProjects.join(','));
     }
     queryParams.set('limit', String(FETCH_LOOKAHEAD_LIMIT));
 
-    // Plan 05 Phase 2: single helper for ensure-worker-alive → request → fallback.
     const result = await executeWithWorkerFallback<{ observations: ObservationRow[]; count: number }>(
       `/api/observations/by-file?${queryParams.toString()}`,
       'GET',
@@ -230,8 +190,6 @@ export const fileContextHandler: EventHandler = {
       return { continue: true, suppressOutput: true };
     }
 
-    // mtime invalidation: skip the timeline injection when the file is newer than the latest
-    // observation — past observations are stale and adding them risks misleading the model.
     if (fileMtimeMs > 0) {
       const newestObservationMs = Math.max(...data.observations.map(o => o.created_at_epoch));
       if (fileMtimeMs >= newestObservationMs) {
@@ -244,17 +202,11 @@ export const fileContextHandler: EventHandler = {
       }
     }
 
-    // Deduplicate: one per session, ranked by specificity to this file
     const dedupedObservations = deduplicateObservations(data.observations, relativePath, DISPLAY_LIMIT);
     if (dedupedObservations.length === 0) {
       return { continue: true, suppressOutput: true };
     }
 
-    // #2094: never modify the Read call. Returning `updatedInput` with `limit: 1` previously
-    // truncated unconstrained reads, leaving Claude with a stale 1-line snapshot in context
-    // while the timeline told it not to re-read. Subsequent Edit calls then deadlocked because
-    // Claude Code's read-state tracker reported the file as "read" but the actual content was
-    // missing. The hook now only injects supplementary context — the Read proceeds unmodified.
     const timeline = formatFileTimeline(dedupedObservations, filePath);
 
     return {

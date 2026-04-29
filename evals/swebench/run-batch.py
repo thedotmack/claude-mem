@@ -37,9 +37,6 @@ from typing import Any, Iterable
 
 from datasets import load_dataset
 
-
-# Hidden-from-agent fields per the plan. We MUST NOT pass these to the agent
-# container — they are evaluator-only ground truth.
 HIDDEN_AGENT_FIELDS = (
     "patch",
     "test_patch",
@@ -48,7 +45,6 @@ HIDDEN_AGENT_FIELDS = (
     "environment_setup_commit",
     "version",
 )
-
 
 def extract_oauth_credentials() -> Path | None:
     """
@@ -76,12 +72,8 @@ def extract_oauth_credentials() -> Path | None:
     )
     temp_path = Path(temp.name)
     temp.close()
-    # Clean up on process exit, even on crash.
     atexit.register(lambda: temp_path.unlink(missing_ok=True))
 
-    # macOS: try Keychain first (primary storage on Darwin). On miss, fall
-    # through to the on-disk credentials file — some macOS setups (older CLI,
-    # migrated machines) only have the file form.
     if platform.system() == "Darwin":
         try:
             completed = subprocess.run(
@@ -100,15 +92,12 @@ def extract_oauth_credentials() -> Path | None:
                 temp_path.write_text(completed.stdout.strip(), encoding="utf-8")
                 temp_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
                 return temp_path
-            # else fall through to the on-disk credentials check below
         except FileNotFoundError:
             print(
                 "WARN: `security` command not available; trying on-disk creds.",
                 file=sys.stderr,
             )
-            # fall through to the on-disk credentials check below
 
-    # Both platforms (and macOS fallback): read the on-disk credentials file.
     creds_file = Path.home() / ".claude" / ".credentials.json"
     if creds_file.exists():
         temp_path.write_text(creds_file.read_text(encoding="utf-8"), encoding="utf-8")
@@ -123,7 +112,6 @@ def extract_oauth_credentials() -> Path | None:
             file=sys.stderr,
         )
     return None
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -199,7 +187,6 @@ def parse_args() -> argparse.Namespace:
     )
     return parser.parse_args()
 
-
 def select_instances(
     dataset: Iterable[dict[str, Any]],
     instance_ids: list[str] | None,
@@ -221,7 +208,6 @@ def select_instances(
         rows = rows[:limit]
     return rows
 
-
 def append_prediction_row(
     predictions_path: Path,
     instance_id: str,
@@ -240,13 +226,11 @@ def append_prediction_row(
         with predictions_path.open("a", encoding="utf-8") as fp:
             fp.write(line)
 
-
 def copy_log_if_exists(src: Path, dst: Path) -> None:
     """Copy a log file from the shared scratch volume into the run-log directory, if present."""
     if src.exists() and src.is_file():
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
-
 
 def run_one_instance(
     instance: dict[str, Any],
@@ -278,7 +262,6 @@ def run_one_instance(
     instance_log_dir.mkdir(parents=True, exist_ok=True)
     stderr_log_path = instance_log_dir / "stderr.log"
 
-    # Per-instance scratch dir — MUST NOT be shared across containers.
     scratch_dir = Path(tempfile.mkdtemp(prefix=f"swebench-{instance_id}-"))
     problem_file = scratch_dir / "problem.txt"
     problem_file.write_text(problem_statement, encoding="utf-8")
@@ -286,18 +269,9 @@ def run_one_instance(
     status: str = "failed"
     model_patch: str = ""
 
-    # Uniquely named so the TimeoutExpired handler can kill it without racing
-    # other instances on the host.
     container_name = f"swebench-agent-{instance_id}-{os.getpid()}-{threading.get_ident()}"
 
     try:
-        # The orchestrator owns JSONL writes under `predictions_lock` to avoid
-        # racy concurrent appends across containers — so we DO NOT mount the
-        # predictions directory into the container. Instead, the agent writes
-        # its authoritative diff to /scratch/model_patch.diff (via
-        # CLAUDE_MEM_OUTPUT_DIR), plus ingest/fix logs to the same dir. The
-        # 5th CLI arg to run-instance.sh is only used in standalone smoke-test
-        # mode; here we point it at a throwaway path inside the container.
         cmd: list[str] = [
             "docker",
             "run",
@@ -317,7 +291,6 @@ def run_one_instance(
                 f"{oauth_creds_path}:/auth/.credentials.json:ro",
             ]
         else:
-            # Pay-per-call path.
             cmd += ["-e", "ANTHROPIC_API_KEY"]
         cmd += [
             image,
@@ -336,18 +309,12 @@ def run_one_instance(
                 text=True,
                 check=False,
             )
-            # Persist stderr so post-mortem is possible even on success.
             stderr_log_path.write_text(
                 f"=== STDOUT ===\n{completed.stdout}\n=== STDERR ===\n{completed.stderr}\n",
                 encoding="utf-8",
             )
 
             if completed.returncode == 0:
-                # Read the diff the agent wrote to the shared predictions volume.
-                # The container writes its own prediction line; we prefer to
-                # write our own authoritative row here from the diff file the
-                # agent left in /scratch. If the agent wrote a diff file, use
-                # it; otherwise fall back to empty patch.
                 diff_file = scratch_dir / "model_patch.diff"
                 if diff_file.exists():
                     diff_text = diff_file.read_text(encoding="utf-8")
@@ -355,19 +322,14 @@ def run_one_instance(
                         model_patch = diff_text
                         status = "succeeded"
                     else:
-                        status = "failed"  # empty diff
+                        status = "failed"
                 else:
-                    # Container did not leave a diff file — treat as failure
-                    # but still emit an empty-patch row below.
                     status = "failed"
             else:
                 status = "failed"
 
         except subprocess.TimeoutExpired as exc:
             status = "timed_out"
-            # subprocess.run killed the docker CLI, but the container may
-            # still be running. Force-remove it by name so we don't leak
-            # containers across the batch.
             subprocess.run(
                 ["docker", "rm", "-f", container_name],
                 capture_output=True,
@@ -381,11 +343,9 @@ def run_one_instance(
                 encoding="utf-8",
             )
 
-        # Copy per-turn logs left by the agent in the shared scratch volume.
         copy_log_if_exists(scratch_dir / "ingest.jsonl", instance_log_dir / "ingest.jsonl")
         copy_log_if_exists(scratch_dir / "fix.jsonl", instance_log_dir / "fix.jsonl")
 
-        # Always write a row — never silently drop an instance.
         append_prediction_row(
             predictions_path=predictions_path,
             instance_id=instance_id,
@@ -394,7 +354,7 @@ def run_one_instance(
             lock=predictions_lock,
         )
 
-    except Exception as exc:  # pragma: no cover — defensive
+    except Exception as exc:
         status = "failed"
         try:
             stderr_log_path.write_text(
@@ -411,11 +371,9 @@ def run_one_instance(
             lock=predictions_lock,
         )
     finally:
-        # Per-instance scratch must not leak across containers.
         shutil.rmtree(scratch_dir, ignore_errors=True)
 
     return status, instance_id
-
 
 def main() -> int:
     args = parse_args()
@@ -434,9 +392,8 @@ def main() -> int:
         )
 
     predictions_dir = predictions_path.parent
-    run_dir = predictions_dir  # logs land in evals/swebench/runs/<run_id>/<instance_id>/
+    run_dir = predictions_dir
     predictions_dir.mkdir(parents=True, exist_ok=True)
-    # Don't silently discard partial results from a prior run.
     if predictions_path.exists() and predictions_path.stat().st_size > 0:
         if not args.overwrite:
             print(
@@ -451,7 +408,6 @@ def main() -> int:
         )
     predictions_path.write_text("", encoding="utf-8")
 
-    # Resolve auth: OAuth (Max/Pro subscription) or API key.
     oauth_creds_path: Path | None = None
     if args.auth in ("oauth", "auto"):
         oauth_creds_path = extract_oauth_credentials()
@@ -488,10 +444,6 @@ def main() -> int:
         print("No instances selected; nothing to do.", file=sys.stderr)
         return 0
 
-    # Scrub hidden-from-agent fields defensively. The agent container only
-    # receives instance_id/repo/base_commit/problem_statement via CLI args +
-    # the per-instance problem file — the hidden fields never leave this
-    # process. This loop makes that invariant explicit.
     for row in instances:
         for key in HIDDEN_AGENT_FIELDS:
             row.pop(key, None)
@@ -530,7 +482,7 @@ def main() -> int:
             instance_id = future_to_id[future]
             try:
                 status, _ = future.result()
-            except Exception as exc:  # pragma: no cover — defensive
+            except Exception as exc:
                 status = "failed"
                 print(
                     f"[{instance_id}] orchestrator future raised: {exc!r}",
@@ -553,9 +505,7 @@ def main() -> int:
     print(
         f"{total} total, {succeeded} succeeded, {failed} failed, {timed_out} timed out",
     )
-    # Per plan: exit 0 even if some instances failed.
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())

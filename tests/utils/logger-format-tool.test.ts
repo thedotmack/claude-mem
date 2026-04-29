@@ -1,10 +1,5 @@
 import { describe, it, expect } from 'bun:test';
 
-/**
- * Direct implementation of formatTool for testing
- * This avoids Bun's mock.module() pollution from parallel tests
- * The logic is identical to Logger.formatTool in src/utils/logger.ts
- */
 function formatTool(toolName: string, toolInput?: any): string {
   if (!toolInput) return toolName;
 
@@ -13,37 +8,30 @@ function formatTool(toolName: string, toolInput?: any): string {
     try {
       input = JSON.parse(toolInput);
     } catch {
-      // Input is a raw string (e.g., Bash command), use as-is
       input = toolInput;
     }
   }
 
-  // Bash: show full command
   if (toolName === 'Bash' && input.command) {
     return `${toolName}(${input.command})`;
   }
 
-  // File operations: show full path
   if (input.file_path) {
     return `${toolName}(${input.file_path})`;
   }
 
-  // NotebookEdit: show full notebook path
   if (input.notebook_path) {
     return `${toolName}(${input.notebook_path})`;
   }
 
-  // Glob: show full pattern
   if (toolName === 'Glob' && input.pattern) {
     return `${toolName}(${input.pattern})`;
   }
 
-  // Grep: show full pattern
   if (toolName === 'Grep' && input.pattern) {
     return `${toolName}(${input.pattern})`;
   }
 
-  // WebFetch/WebSearch: show full URL or query
   if (input.url) {
     return `${toolName}(${input.url})`;
   }
@@ -52,7 +40,6 @@ function formatTool(toolName: string, toolInput?: any): string {
     return `${toolName}(${input.query})`;
   }
 
-  // Task: show subagent_type or full description
   if (toolName === 'Task') {
     if (input.subagent_type) {
       return `${toolName}(${input.subagent_type})`;
@@ -62,17 +49,14 @@ function formatTool(toolName: string, toolInput?: any): string {
     }
   }
 
-  // Skill: show skill name
   if (toolName === 'Skill' && input.skill) {
     return `${toolName}(${input.skill})`;
   }
 
-  // LSP: show operation type
   if (toolName === 'LSP' && input.operation) {
     return `${toolName}(${input.operation})`;
   }
 
-  // Default: just show tool name
   return toolName;
 }
 
@@ -101,9 +85,7 @@ describe('logger.formatTool()', () => {
 
   describe('Raw non-JSON string input (Issue #545 bug fix)', () => {
     it('should handle raw command string without crashing', () => {
-      // This was the bug: raw strings caused JSON.parse to throw
       const result = formatTool('Bash', 'raw command string');
-      // Since it's not JSON, it should just return the tool name
       expect(result).toBe('Bash');
     });
 
@@ -119,7 +101,6 @@ describe('logger.formatTool()', () => {
 
     it('should handle empty string input', () => {
       const result = formatTool('Bash', '');
-      // Empty string is falsy, so returns just the tool name early
       expect(result).toBe('Bash');
     });
 
@@ -193,13 +174,11 @@ describe('logger.formatTool()', () => {
     });
 
     it('should return just tool name when toolInput is 0', () => {
-      // 0 is falsy
       const result = formatTool('Task', 0);
       expect(result).toBe('Task');
     });
 
     it('should return just tool name when toolInput is false', () => {
-      // false is falsy
       const result = formatTool('Task', false);
       expect(result).toBe('Task');
     });
@@ -337,19 +316,16 @@ describe('logger.formatTool()', () => {
       });
 
       it('should extract url from unknown tools if present', () => {
-        // url is a generic extractor
         const result = formatTool('CustomFetch', { url: 'https://api.custom.com' });
         expect(result).toBe('CustomFetch(https://api.custom.com)');
       });
 
       it('should extract query from unknown tools if present', () => {
-        // query is a generic extractor
         const result = formatTool('CustomSearch', { query: 'find something' });
         expect(result).toBe('CustomSearch(find something)');
       });
 
       it('should extract file_path from unknown tools if present', () => {
-        // file_path is a generic extractor
         const result = formatTool('CustomFileTool', { file_path: '/some/path.txt' });
         expect(result).toBe('CustomFileTool(/some/path.txt)');
       });
@@ -390,21 +366,17 @@ describe('logger.formatTool()', () => {
     });
 
     it('should handle number values in fields correctly', () => {
-      // If command is a number, it gets stringified
       const result = formatTool('Bash', { command: 123 });
       expect(result).toBe('Bash(123)');
     });
 
     it('should handle JSON array as input', () => {
-      // Arrays don't have command/file_path/etc fields
       const result = formatTool('Unknown', ['item1', 'item2']);
       expect(result).toBe('Unknown');
     });
 
     it('should handle JSON string that parses to a primitive', () => {
-      // JSON.parse("123") = 123 (number)
       const result = formatTool('Task', '"a plain string"');
-      // After parsing, input becomes "a plain string" which has no recognized fields
       expect(result).toBe('Task');
     });
   });

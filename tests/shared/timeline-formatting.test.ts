@@ -1,6 +1,5 @@
 import { describe, it, expect, mock, afterEach } from 'bun:test';
 
-// Mock logger BEFORE imports (required pattern)
 mock.module('../../src/utils/logger.js', () => ({
   logger: {
     info: () => {},
@@ -11,7 +10,6 @@ mock.module('../../src/utils/logger.js', () => ({
   },
 }));
 
-// Import after mocks
 import { extractFirstFile, groupByDate } from '../../src/shared/timeline-formatting.js';
 
 afterEach(() => {
@@ -120,7 +118,6 @@ describe('groupByDate', () => {
 
     const dates = Array.from(result.keys());
     expect(dates).toHaveLength(3);
-    // Dates should be in chronological order (oldest first)
     expect(dates[0]).toContain('Jan 4');
     expect(dates[1]).toContain('Jan 5');
     expect(dates[2]).toContain('Jan 6');
@@ -167,7 +164,6 @@ describe('groupByDate', () => {
   });
 
   it('should handle numeric timestamps as date input', () => {
-    // Use clearly different dates (24+ hours apart to avoid timezone issues)
     const items = [
       { id: 1, date: '2025-01-04T00:00:00Z' },
       { id: 2, date: '2025-01-06T00:00:00Z' }, // 2 days later
@@ -192,7 +188,6 @@ describe('groupByDate', () => {
     const result = groupByDate(items, (item) => item.date);
 
     const dayItems = Array.from(result.values())[0];
-    // Items should maintain their insertion order
     expect(dayItems.map(i => i.id)).toEqual([3, 1, 2]);
   });
 });

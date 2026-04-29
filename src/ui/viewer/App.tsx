@@ -48,7 +48,6 @@ export function App() {
     }
   }, [availableProjects, currentFilter]);
 
-  // Merge SSE live data with paginated data, filtering by project when active
   const allObservations = useMemo(() => {
     const live = observations.filter(matchesSelection);
     const paginated = paginatedObservations.filter(matchesSelection);
@@ -67,17 +66,14 @@ export function App() {
     return mergeAndDeduplicateByProject(live, paginated);
   }, [prompts, paginatedPrompts, matchesSelection]);
 
-  // Toggle context preview modal
   const toggleContextPreview = useCallback(() => {
     setContextPreviewOpen(prev => !prev);
   }, []);
 
-  // Toggle logs modal
   const toggleLogsModal = useCallback(() => {
     setLogsModalOpen(prev => !prev);
   }, []);
 
-  // Handle loading more data
   const handleLoadMore = useCallback(async () => {
     try {
       const [newObservations, newSummaries, newPrompts] = await Promise.all([
@@ -100,7 +96,6 @@ export function App() {
     }
   }, [pagination.observations, pagination.summaries, pagination.prompts]);
 
-  // Reset paginated data and load first page when project/source changes
   useEffect(() => {
     setPaginatedObservations([]);
     setPaginatedSummaries([]);

@@ -1,17 +1,3 @@
-/**
- * Log Level Audit Test
- *
- * This test scans all TypeScript files in src/ to find logger calls,
- * extracts the message text, and groups them by log level for review.
- *
- * Purpose: Help identify misclassified log messages that should be at a different level.
- *
- * Log Level Guidelines:
- * - ERROR/failure: Critical failures that require investigation (data loss, service down)
- * - WARN: Non-critical issues with fallback behavior (degraded, but functional)
- * - INFO: Normal operational events (session started, request processed)
- * - DEBUG: Detailed diagnostic information (variable values, flow tracing)
- */
 
 import { describe, it, expect } from 'bun:test';
 import { readdir, readFile } from 'fs/promises';
@@ -30,9 +16,6 @@ interface LoggerCall {
   fullMatch: string;
 }
 
-/**
- * Recursively find all TypeScript files in a directory
- */
 async function findTypeScriptFiles(dir: string): Promise<string[]> {
   const files: string[] = [];
   const entries = await readdir(dir, { withFileTypes: true });
@@ -50,16 +33,11 @@ async function findTypeScriptFiles(dir: string): Promise<string[]> {
   return files;
 }
 
-/**
- * Extract logger calls from file content
- * Handles multiline calls and captures error parameter (4th arg)
- */
 function extractLoggerCalls(content: string, filePath: string): LoggerCall[] {
   const calls: LoggerCall[] = [];
   const lines = content.split('\n');
   const seenCalls = new Set<string>();
 
-  // Build line number index for position-to-line lookup
   const lineStarts: number[] = [0];
   for (let i = 0; i < content.length; i++) {
     if (content[i] === '\n') {
@@ -74,9 +52,6 @@ function extractLoggerCalls(content: string, filePath: string): LoggerCall[] {
     return 1;
   }
 
-  // Pattern that matches logger calls across multiple lines
-  // Captures: method, component, message, and everything up to closing paren
-  // Uses [\s\S] instead of . to match newlines
   const loggerPattern = /logger\.(error|warn|info|debug|failure|success|timing|dataIn|dataOut|happyPathError)\s*\(\s*['"]([^'"]+)['"][\s\S]*?\)/g;
 
   let match: RegExpExecArray | null;
@@ -86,11 +61,9 @@ function extractLoggerCalls(content: string, filePath: string): LoggerCall[] {
     const component = match[2];
     const lineNum = getLineNumber(match.index);
 
-    // Extract message (2nd string arg) - could be single, double, or template
     const messageMatch = fullMatch.match(/['"][^'"]+['"]\s*,\s*(['"`])([\s\S]*?)\1/);
     const message = messageMatch ? messageMatch[2] : '(message not captured)';
 
-    // Extract error parameter (4th arg) - look for "error as Error" or similar patterns
     let errorParam: string | null = null;
     const errorMatch = fullMatch.match(/,\s*(error|err|e)\s+as\s+Error\s*\)/i) ||
                        fullMatch.match(/,\s*(error|err|e)\s*\)/i) ||
@@ -109,7 +82,7 @@ function extractLoggerCalls(content: string, filePath: string): LoggerCall[] {
         component,
         message,
         errorParam,
-        fullMatch: fullMatch.replace(/\s+/g, ' ').trim()  // Normalize whitespace for display
+        fullMatch: fullMatch.replace(/\s+/g, ' ').trim()  
       });
     }
   }
@@ -117,9 +90,6 @@ function extractLoggerCalls(content: string, filePath: string): LoggerCall[] {
   return calls;
 }
 
-/**
- * Normalize log level names to standard categories
- */
 function normalizeLevel(method: string): string {
   switch (method) {
     case 'error':
@@ -141,9 +111,6 @@ function normalizeLevel(method: string): string {
   }
 }
 
-/**
- * Generate formatted audit report
- */
 function generateReport(calls: LoggerCall[]): string {
   const byLevel: Record<string, LoggerCall[]> = {
     'ERROR': [],
@@ -162,7 +129,6 @@ function generateReport(calls: LoggerCall[]): string {
   lines.push('\n=== LOG LEVEL AUDIT REPORT ===\n');
   lines.push(`Total logger calls found: ${calls.length}\n`);
 
-  // ERROR level
   lines.push('');
   lines.push('ERROR (should be critical failures only):');
   lines.push('─'.repeat(60));
@@ -181,7 +147,6 @@ function generateReport(calls: LoggerCall[]): string {
   }
   lines.push(`  Count: ${byLevel['ERROR'].length}`);
 
-  // WARN level
   lines.push('');
   lines.push('WARN (should be non-critical, has fallback):');
   lines.push('─'.repeat(60));
@@ -200,7 +165,6 @@ function generateReport(calls: LoggerCall[]): string {
   }
   lines.push(`  Count: ${byLevel['WARN'].length}`);
 
-  // INFO level
   lines.push('');
   lines.push('INFO (informational):');
   lines.push('─'.repeat(60));
@@ -219,7 +183,6 @@ function generateReport(calls: LoggerCall[]): string {
   }
   lines.push(`  Count: ${byLevel['INFO'].length}`);
 
-  // DEBUG level
   lines.push('');
   lines.push('DEBUG (detailed diagnostics):');
   lines.push('─'.repeat(60));
@@ -238,7 +201,6 @@ function generateReport(calls: LoggerCall[]): string {
   }
   lines.push(`  Count: ${byLevel['DEBUG'].length}`);
 
-  // Summary
   lines.push('');
   lines.push('=== SUMMARY ===');
   lines.push(`  ERROR: ${byLevel['ERROR'].length}`);
@@ -251,9 +213,6 @@ function generateReport(calls: LoggerCall[]): string {
   return lines.join('\n');
 }
 
-/**
- * Format message for display - NO TRUNCATION
- */
 function formatMessage(message: string): string {
   return message;
 }
@@ -278,7 +237,6 @@ describe('Log Level Audit', () => {
     const report = generateReport(allCalls);
     console.log(report);
 
-    // This test always passes - it's for generating a review report
     expect(true).toBe(true);
   });
 
@@ -302,8 +260,6 @@ describe('Log Level Audit', () => {
     console.log(`  INFO:  ${byLevel['INFO']} (${((byLevel['INFO'] / allCalls.length) * 100).toFixed(1)}%)`);
     console.log(`  DEBUG: ${byLevel['DEBUG']} (${((byLevel['DEBUG'] / allCalls.length) * 100).toFixed(1)}%)`);
 
-    // Log distribution health check - not a hard failure, just informational
-    // A healthy codebase typically has: DEBUG > INFO > WARN > ERROR
     expect(allCalls.length).toBeGreaterThan(0);
   });
 });

@@ -1,14 +1,3 @@
-/**
- * ChromaSearchStrategy - Vector-based semantic search via Chroma
- *
- * This strategy handles semantic search queries using ChromaDB:
- * 1. Query Chroma for semantically similar documents
- * 2. Filter by recency (90-day window)
- * 3. Categorize by document type
- * 4. Hydrate from SQLite
- *
- * Used when: Query text is provided and Chroma is available
- */
 
 import { BaseSearchStrategy, SearchStrategy } from './SearchStrategy.js';
 import {
@@ -35,7 +24,6 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
   }
 
   canHandle(options: StrategySearchOptions): boolean {
-    // Can handle when query text is provided and Chroma is available
     return !!options.query && !!this.chromaSync;
   }
 
@@ -59,12 +47,10 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
     const searchSessions = searchType === 'all' || searchType === 'sessions';
     const searchPrompts = searchType === 'all' || searchType === 'prompts';
 
-    // Build Chroma where filter for doc_type and project
     const whereFilter = this.buildWhereFilter(searchType, project);
 
     logger.debug('SEARCH', 'ChromaSearchStrategy: Querying Chroma', { query, searchType });
 
-    // Fail-fast: errors propagate to orchestrator, which translates to HTTP 503.
     return await this.executeChromaSearch(query, whereFilter, {
       searchObservations, searchSessions, searchPrompts,
       obsType, concepts, files, orderBy, limit, project
@@ -107,8 +93,6 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
     let sessions: SessionSummarySearchResult[] = [];
     let prompts: UserPromptSearchResult[] = [];
 
-    // Chroma already ranks by vector similarity; 'relevance' has no SQL
-    // equivalent, so drop it before hydrating rows from SessionStore.
     const sqlOrderBy: 'date_desc' | 'date_asc' | undefined =
       options.orderBy === 'relevance' ? undefined : options.orderBy;
 
@@ -136,14 +120,6 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
     };
   }
 
-  /**
-   * Build Chroma where filter for document type and project
-   *
-   * When a project is specified, includes it in the ChromaDB where clause
-   * so that vector search is scoped to the target project. Without this,
-   * larger projects dominate the top-N results and smaller projects get
-   * crowded out before the post-hoc SQLite project filter can take effect.
-   */
   private buildWhereFilter(searchType: string, project?: string): Record<string, any> | undefined {
     let docTypeFilter: Record<string, any> | undefined;
     switch (searchType) {
@@ -171,23 +147,12 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
     return docTypeFilter;
   }
 
-  /**
-   * Filter results by recency (90-day window)
-   *
-   * IMPORTANT: ChromaSync.queryChroma() returns deduplicated `ids` (unique sqlite_ids)
-   * but the `metadatas` array may contain multiple entries per sqlite_id (e.g., one
-   * observation can have narrative + multiple facts as separate Chroma documents).
-   *
-   * This method iterates over the deduplicated `ids` and finds the first matching
-   * metadata for each ID to avoid array misalignment issues.
-   */
   private filterByRecency(chromaResults: {
     ids: number[];
     metadatas: ChromaMetadata[];
   }): Array<{ id: number; meta: ChromaMetadata }> {
     const cutoff = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
 
-    // Build a map from sqlite_id to first metadata for efficient lookup
     const metadataByIdMap = new Map<number, ChromaMetadata>();
     for (const meta of chromaResults.metadatas) {
       if (meta?.sqlite_id !== undefined && !metadataByIdMap.has(meta.sqlite_id)) {
@@ -195,7 +160,6 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
       }
     }
 
-    // Iterate over deduplicated ids and get corresponding metadata
     return chromaResults.ids
       .map(id => ({
         id,
@@ -204,9 +168,6 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
       .filter(item => item.meta && item.meta.created_at_epoch > cutoff);
   }
 
-  /**
-   * Categorize IDs by document type
-   */
   private categorizeByDocType(
     items: Array<{ id: number; meta: ChromaMetadata }>,
     options: {

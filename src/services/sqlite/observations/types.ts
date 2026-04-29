@@ -1,12 +1,5 @@
-/**
- * Type definitions for observation operations
- * Extracted from SessionStore.ts for modular organization
- */
 import { logger } from '../../../utils/logger.js';
 
-/**
- * Input type for storeObservation function
- */
 export interface ObservationInput {
   type: string;
   title: string | null;
@@ -16,22 +9,15 @@ export interface ObservationInput {
   concepts: string[];
   files_read: string[];
   files_modified: string[];
-  // Claude Code subagent identity — NULL for main-session rows.
   agent_type?: string | null;
   agent_id?: string | null;
 }
 
-/**
- * Result from storing an observation
- */
 export interface StoreObservationResult {
   id: number;
   createdAtEpoch: number;
 }
 
-/**
- * Options for getObservationsByIds
- */
 export interface GetObservationsByIdsOptions {
   orderBy?: 'date_desc' | 'date_asc';
   limit?: number;
@@ -41,17 +27,11 @@ export interface GetObservationsByIdsOptions {
   files?: string | string[];
 }
 
-/**
- * Result type for getFilesForSession
- */
 export interface SessionFilesResult {
   filesRead: string[];
   filesModified: string[];
 }
 
-/**
- * Simple observation row for getObservationsForSession
- */
 export interface ObservationSessionRow {
   title: string;
   subtitle: string;
@@ -59,9 +39,6 @@ export interface ObservationSessionRow {
   prompt_number: number | null;
 }
 
-/**
- * Recent observation row type
- */
 export interface RecentObservationRow {
   type: string;
   text: string;
@@ -69,9 +46,6 @@ export interface RecentObservationRow {
   created_at: string;
 }
 
-/**
- * Full recent observation row (for web UI)
- */
 export interface AllRecentObservationRow {
   id: number;
   type: string;

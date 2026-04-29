@@ -4,18 +4,6 @@ import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, rmSync 
 import { homedir } from 'os';
 import path from 'path';
 
-/**
- * Worker Self-Spawn Integration Tests
- *
- * Tests actual integration points:
- * - Health check utilities (real network behavior)
- * - PID file management (real filesystem)
- * - Status command output format
- * - Windows-specific behavior detection
- *
- * Removed: JSON.parse tests, CLI command parsing (tests language built-ins)
- */
-
 const TEST_PORT = 37877;
 const TEST_DATA_DIR = path.join(homedir(), '.claude-mem-test');
 const TEST_PID_FILE = path.join(TEST_DATA_DIR, 'worker.pid');
@@ -27,9 +15,6 @@ interface PidInfo {
   startedAt: string;
 }
 
-/**
- * Helper to check if port is in use by attempting a health check
- */
 async function isPortInUse(port: number): Promise<boolean> {
   try {
     const response = await fetch(`http://127.0.0.1:${port}/api/health`, {
@@ -41,9 +26,6 @@ async function isPortInUse(port: number): Promise<boolean> {
   }
 }
 
-/**
- * Helper to wait for port to be healthy
- */
 async function waitForHealth(port: number, timeoutMs: number = 30000): Promise<boolean> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -53,9 +35,6 @@ async function waitForHealth(port: number, timeoutMs: number = 30000): Promise<b
   return false;
 }
 
-/**
- * Run worker CLI command and return stdout
- */
 function runWorkerCommand(command: string, env: Record<string, string> = {}): string {
   const result = execSync(`bun "${WORKER_SCRIPT}" ${command}`, {
     env: { ...process.env, ...env },
@@ -81,7 +60,6 @@ describe('Worker Self-Spawn CLI', () => {
   describe('status command', () => {
     it('should report worker status in expected format', async () => {
       const output = runWorkerCommand('status');
-      // Should contain either "running" or "not running"
       expect(output.includes('running')).toBe(true);
     });
 
@@ -112,7 +90,6 @@ describe('Worker Self-Spawn CLI', () => {
       expect(readInfo.port).toBe(TEST_PORT);
       expect(readInfo.startedAt).toBe(testPidInfo.startedAt);
 
-      // Cleanup
       unlinkSync(TEST_PID_FILE);
       expect(existsSync(TEST_PID_FILE)).toBe(false);
     });
@@ -131,7 +108,6 @@ describe('Worker Self-Spawn CLI', () => {
       const elapsed = Date.now() - start;
 
       expect(result).toBe(false);
-      // Should not wait longer than the timeout (2s) + small buffer
       expect(elapsed).toBeLessThan(3000);
     });
   });
@@ -141,7 +117,6 @@ describe('Worker Health Endpoints', () => {
   let workerProcess: ChildProcess | null = null;
 
   beforeAll(async () => {
-    // Skip if worker script doesn't exist (not built)
     if (!existsSync(WORKER_SCRIPT)) {
       console.log('Skipping worker health tests - worker script not built');
       return;
@@ -157,7 +132,6 @@ describe('Worker Health Endpoints', () => {
 
   describe('health endpoint contract', () => {
     it('should expect /api/health to return status ok with expected fields', async () => {
-      // Contract validation: verify expected response structure
       const mockResponse = {
         status: 'ok',
         build: 'TEST-008-wrapper-ipc',
@@ -212,9 +186,8 @@ describe('Windows-specific behavior', () => {
     expect(isWindows).toBe(true);
     expect(isManaged).toBe(true);
 
-    // In non-managed mode (without process.send), IPC messages won't work
     const hasProcessSend = typeof process.send === 'function';
     const isWindowsManaged = isWindows && isManaged && hasProcessSend;
-    expect(isWindowsManaged).toBe(false); // No process.send in test context
+    expect(isWindowsManaged).toBe(false); 
   });
 });

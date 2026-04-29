@@ -1,12 +1,5 @@
 #!/usr/bin/env bun
 
-/**
- * Investigate Timestamp Situation
- *
- * This script investigates the actual state of observations and pending messages
- * to understand what happened with the timestamp corruption.
- */
-
 import Database from 'bun:sqlite';
 import { resolve } from 'path';
 
@@ -30,10 +23,9 @@ function main() {
   const db = new Database(DB_PATH);
 
   try {
-    // Check 1: Recent observations on Dec 24
     console.log('Check 1: All observations created on Dec 24, 2025...');
-    const dec24Start = 1735027200000; // Dec 24 00:00 PST
-    const dec24End = 1735113600000;   // Dec 25 00:00 PST
+    const dec24Start = 1735027200000; 
+    const dec24End = 1735113600000;   
 
     const dec24Obs = db.query(`
       SELECT id, memory_session_id, created_at_epoch, title
@@ -53,10 +45,9 @@ function main() {
     }
     console.log();
 
-    // Check 2: Observations from Dec 17-20
     console.log('Check 2: Observations from Dec 17-20, 2025...');
-    const dec17Start = 1734422400000; // Dec 17 00:00 PST
-    const dec21Start = 1734768000000; // Dec 21 00:00 PST
+    const dec17Start = 1734422400000; 
+    const dec21Start = 1734768000000; 
 
     const oldObs = db.query(`
       SELECT id, memory_session_id, created_at_epoch, title
@@ -76,7 +67,6 @@ function main() {
     }
     console.log();
 
-    // Check 3: Pending messages status
     console.log('Check 3: Pending messages status...');
     const statusCounts = db.query(`
       SELECT status, COUNT(*) as count
@@ -90,7 +80,6 @@ function main() {
     }
     console.log();
 
-    // Check 4: Old pending messages from Dec 17-20
     console.log('Check 4: Pending messages from Dec 17-20...');
     const oldMessages = db.query(`
       SELECT id, session_db_id, tool_name, status, created_at_epoch, completed_at_epoch
@@ -112,7 +101,6 @@ function main() {
       console.log(`  ... and ${oldMessages.length - 20} more`);
     }
 
-    // Check 5: Recently completed pending messages
     console.log('Check 5: Recently completed pending messages...');
     const recentCompleted = db.query(`
       SELECT id, session_db_id, tool_name, status, created_at_epoch, completed_at_epoch

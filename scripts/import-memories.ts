@@ -1,11 +1,4 @@
 #!/usr/bin/env node
-/**
- * Import memories from a JSON export file with duplicate prevention
- * Usage: npx tsx scripts/import-memories.ts <input-file>
- * Example: npx tsx scripts/import-memories.ts windows-memories.json
- *
- * This script uses the worker API instead of direct database access.
- */
 
 import { existsSync, readFileSync } from 'fs';
 
@@ -18,7 +11,6 @@ async function importMemories(inputFile: string) {
     process.exit(1);
   }
 
-  // Read and parse export file
   const exportData = JSON.parse(readFileSync(inputFile, 'utf-8'));
 
   console.log(`📦 Import file: ${inputFile}`);
@@ -31,7 +23,6 @@ async function importMemories(inputFile: string) {
   console.log(`   • ${exportData.totalPrompts} prompts`);
   console.log('');
 
-  // Check if worker is running
   try {
     const healthCheck = await fetch(`${WORKER_URL}/api/stats`);
     if (!healthCheck.ok) {
@@ -45,7 +36,6 @@ async function importMemories(inputFile: string) {
 
   console.log('🔄 Importing via worker API...');
 
-  // Send import request to worker
   const response = await fetch(`${WORKER_URL}/api/import`, {
     method: 'POST',
     headers: {
@@ -77,7 +67,6 @@ async function importMemories(inputFile: string) {
   console.log(`   Prompts:      ${stats.promptsImported} imported, ${stats.promptsSkipped} skipped`);
 }
 
-// CLI interface
 const args = process.argv.slice(2);
 if (args.length < 1) {
   console.error('Usage: npx tsx scripts/import-memories.ts <input-file>');

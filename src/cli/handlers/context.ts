@@ -1,9 +1,3 @@
-/**
- * Context Handler - SessionStart
- *
- * Extracted from context-hook.ts - calls worker to generate context.
- * Returns context as hookSpecificOutput for Claude Code to inject.
- */
 
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import {
@@ -22,11 +16,9 @@ export const contextHandler: EventHandler = {
     const context = getProjectContext(cwd);
     const port = getWorkerPort();
 
-    // Plan 05 Phase 4: settings via process-scope cache.
     const settings = loadFromFileOnce();
     const showTerminalOutput = settings.CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT === 'true';
 
-    // Pass all projects (parent + worktree if applicable) for unified timeline
     const projectsParam = context.allProjects.join(',');
     const apiPath = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}`;
     const colorApiPath = input.platform === 'claude-code' ? `${apiPath}&colors=true` : apiPath;
@@ -36,7 +28,6 @@ export const contextHandler: EventHandler = {
       exitCode: HOOK_EXIT_CODES.SUCCESS,
     };
 
-    // Plan 05 Phase 2: single helper for ensure-worker-alive → request → fallback.
     const contextResult = await executeWithWorkerFallback<string>(apiPath, 'GET');
     if (isWorkerFallback(contextResult)) {
       return emptyResult;
@@ -48,7 +39,6 @@ export const contextHandler: EventHandler = {
     } else if (contextResult === undefined) {
       additionalContext = '';
     } else {
-      // Unexpected non-string body — log and fall back to empty.
       logger.warn('HOOK', 'Context response was not a string', { type: typeof contextResult });
       return emptyResult;
     }
@@ -63,9 +53,6 @@ export const contextHandler: EventHandler = {
 
     const platform = input.platform;
 
-    // Use colored timeline for display if available, otherwise fall back to
-    // plain markdown context (especially useful for platforms like Gemini
-    // where we want to ensure visibility even if colors aren't fetched).
     const displayContent = coloredTimeline || (platform === 'gemini-cli' || platform === 'gemini' ? additionalContext : '');
 
     const systemMessage = showTerminalOutput && displayContent

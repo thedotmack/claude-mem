@@ -19,9 +19,6 @@ interface SessionState {
   project?: string;
   lastUserMessage?: string;
   lastAssistantMessage?: string;
-  // In-memory pairing for transcript schemas (e.g. Codex) where tool_use
-  // carries toolName + toolInput and tool_result only carries tool_use_id +
-  // output. Keyed by toolId; consumed and deleted on the matching tool_result.
   pendingTools?: Map<string, { toolName: string; toolInput: unknown }>;
 }
 
@@ -200,18 +197,6 @@ export class TranscriptEventProcessor {
       }
     }
 
-    // Two schema shapes to support:
-    //   1. Self-contained events (e.g. Claude JSONL): tool_use and tool_result
-    //      both carry toolName; tool_use may already include toolResponse.
-    //   2. Split events (e.g. Codex): tool_use carries toolName + toolInput,
-    //      tool_result carries only toolUseId + output. Neither side alone
-    //      has both toolName and toolResponse.
-    //
-    // For (1) we emit eagerly when toolResponse is present. For (2) we stash
-    // toolName/toolInput on the session keyed by toolId so handleToolResult
-    // can join them at tool_result time. The DB's
-    // UNIQUE(content_session_id, tool_use_id) index collapses any duplicate
-    // emissions that arise when both events carry a complete record.
     if (toolName && toolResponse !== undefined) {
       await this.sendObservation(session, {
         toolName,
@@ -231,10 +216,6 @@ export class TranscriptEventProcessor {
     const toolResponse = this.maybeParseJson(fields.toolResponse);
     let toolInput = this.maybeParseJson(fields.toolInput);
 
-    // Consume any pending-tool entry for this toolId regardless of whether the
-    // tool_result already carries toolName: in the split-schema path the
-    // result always resolves the pending entry, so leaving it behind would
-    // grow the map until session end.
     if (toolId && session.pendingTools) {
       const pending = session.pendingTools.get(toolId);
       if (pending) {
@@ -263,10 +244,6 @@ export class TranscriptEventProcessor {
     const toolName = typeof fields.toolName === 'string' ? fields.toolName : undefined;
     if (!toolName) return;
 
-    // PATHFINDER plan 03 phase 7: replace HTTP loopback (worker → its own
-    // /api/sessions/observations endpoint) with a direct in-process call to
-    // ingestObservation. Same implementation backs the cross-process HTTP
-    // route handler (one helper, N callers).
     const result = ingestObservation({
       contentSessionId: session.sessionId,
       cwd: session.cwd ?? process.cwd(),
@@ -300,11 +277,6 @@ export class TranscriptEventProcessor {
     const trimmed = value.trim();
     if (!trimmed) return value;
     if (!(trimmed.startsWith('{') || trimmed.startsWith('['))) return value;
-    // Pass through the raw string on parse failure rather than throwing.
-    // Throwing from this helper propagates to `handleLine`'s outer catch,
-    // which then silently drops the entire transcript line — including any
-    // valid sibling fields. A single malformed JSON-shaped field should
-    // degrade to opaque-string handling, not lose the whole observation.
     try {
       return JSON.parse(trimmed);
     } catch (error) {
@@ -384,7 +356,6 @@ export class TranscriptEventProcessor {
     const contextUrl = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}`;
     const agentsPath = expandHomePath(watch.context.path ?? `${cwd}/AGENTS.md`);
 
-    // Validate resolved path stays within allowed directories (#1934)
     const resolvedAgentsPath = path.resolve(agentsPath);
     const allowedRoots = [path.resolve(cwd), path.resolve(DATA_DIR)];
     const isPathSafe = allowedRoots.some(root => resolvedAgentsPath.startsWith(root + path.sep) || resolvedAgentsPath === root);

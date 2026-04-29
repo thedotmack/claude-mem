@@ -1,15 +1,8 @@
-/**
- * TimelineService - Handles timeline building, filtering, and formatting
- * Extracted from mcp-server.ts to follow worker service organization pattern
- */
 
 import type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../sqlite/types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import { logger } from '../../utils/logger.js';
 
-/**
- * Timeline item for unified chronological display
- */
 export interface TimelineItem {
   type: 'observation' | 'session' | 'prompt';
   data: ObservationSearchResult | SessionSummarySearchResult | UserPromptSearchResult;
@@ -23,9 +16,6 @@ export interface TimelineData {
 }
 
 export class TimelineService {
-  /**
-   * Build timeline items from observations, sessions, and prompts
-   */
   buildTimeline(data: TimelineData): TimelineItem[] {
     const items: TimelineItem[] = [
       ...data.observations.map(obs => ({ type: 'observation' as const, data: obs, epoch: obs.created_at_epoch })),
@@ -36,9 +26,6 @@ export class TimelineService {
     return items;
   }
 
-  /**
-   * Filter timeline items to respect depth_before/depth_after window around anchor
-   */
   filterByDepth(
     items: TimelineItem[],
     anchorId: number | string,
@@ -55,7 +42,6 @@ export class TimelineService {
       const sessionNum = parseInt(anchorId.slice(1), 10);
       anchorIndex = items.findIndex(item => item.type === 'session' && (item.data as SessionSummarySearchResult).id === sessionNum);
     } else {
-      // Timestamp anchor - find closest item
       anchorIndex = items.findIndex(item => item.epoch >= anchorEpoch);
       if (anchorIndex === -1) anchorIndex = items.length - 1;
     }
@@ -67,9 +53,6 @@ export class TimelineService {
     return items.slice(startIndex, endIndex);
   }
 
-  /**
-   * Format timeline items as markdown with grouped days and tables
-   */
   formatTimeline(
     items: TimelineItem[],
     anchorId: number | string | null,
@@ -85,7 +68,6 @@ export class TimelineService {
 
     const lines: string[] = [];
 
-    // Header
     if (query && anchorId) {
       const anchorObs = items.find(item => item.type === 'observation' && (item.data as ObservationSearchResult).id === anchorId);
       const anchorTitle = anchorObs ? ((anchorObs.data as ObservationSearchResult).title || 'Untitled') : 'Unknown';
@@ -104,11 +86,9 @@ export class TimelineService {
     }
     lines.push('');
 
-    // Legend
     lines.push(`**Legend:** 🎯 session-request | 🔴 bugfix | 🟣 feature | 🔄 refactor | ✅ change | 🔵 discovery | 🧠 decision`);
     lines.push('');
 
-    // Group by day
     const dayMap = new Map<string, TimelineItem[]>();
     for (const item of items) {
       const day = this.formatDate(item.epoch);
@@ -118,14 +98,12 @@ export class TimelineService {
       dayMap.get(day)!.push(item);
     }
 
-    // Sort days chronologically
     const sortedDays = Array.from(dayMap.entries()).sort((a, b) => {
       const aDate = new Date(a[0]).getTime();
       const bDate = new Date(b[0]).getTime();
       return aDate - bDate;
     });
 
-    // Render each day
     for (const [day, dayItems] of sortedDays) {
       lines.push(`### ${day}`);
       lines.push('');
@@ -208,16 +186,10 @@ export class TimelineService {
     return lines.join('\n');
   }
 
-  /**
-   * Get icon for observation type
-   */
   private getTypeIcon(type: string): string {
     return ModeManager.getInstance().getTypeIcon(type);
   }
 
-  /**
-   * Format date for grouping (e.g., "Dec 7, 2025")
-   */
   private formatDate(epochMs: number): string {
     const date = new Date(epochMs);
     return date.toLocaleString('en-US', {
@@ -227,9 +199,6 @@ export class TimelineService {
     });
   }
 
-  /**
-   * Format time (e.g., "6:30 PM")
-   */
   private formatTime(epochMs: number): string {
     const date = new Date(epochMs);
     return date.toLocaleString('en-US', {
@@ -239,9 +208,6 @@ export class TimelineService {
     });
   }
 
-  /**
-   * Format date and time (e.g., "Dec 7, 6:30 PM")
-   */
   private formatDateTime(epochMs: number): string {
     const date = new Date(epochMs);
     return date.toLocaleString('en-US', {
@@ -253,9 +219,6 @@ export class TimelineService {
     });
   }
 
-  /**
-   * Estimate tokens from text length (~4 chars per token)
-   */
   private estimateTokens(text: string | null): number {
     if (!text) return 0;
     return Math.ceil(text.length / 4);

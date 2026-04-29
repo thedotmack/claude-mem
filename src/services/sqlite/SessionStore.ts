@@ -28,10 +28,6 @@ function resolveCreateSessionArgs(
   };
 }
 
-/**
- * Session data store for SDK sessions, observations, and summaries
- * Provides simple, synchronous CRUD operations for session-based memory
- */
 export class SessionStore {
   public db: Database;
 
@@ -44,17 +40,14 @@ export class SessionStore {
       }
       this.db = new Database(dbPathOrDb);
 
-      // Ensure optimized settings only for new connections
       this.db.run('PRAGMA journal_mode = WAL');
       this.db.run('PRAGMA synchronous = NORMAL');
       this.db.run('PRAGMA foreign_keys = ON');
-      this.db.run('PRAGMA journal_size_limit = 4194304'); // 4MB WAL cap (#1956)
+      this.db.run('PRAGMA journal_size_limit = 4194304'); 
     }
 
-    // Initialize schema if needed (fresh database)
     this.initializeSchema();
 
-    // Run migrations
     this.ensureWorkerPortColumn();
     this.ensurePromptTrackingColumns();
     this.removeSessionSummariesUniqueConstraint();
@@ -78,16 +71,7 @@ export class SessionStore {
     this.addObservationsMetadataColumn();
   }
 
-  /**
-   * Initialize database schema (migration004)
-   *
-   * ALWAYS creates core tables using CREATE TABLE IF NOT EXISTS — safe to run
-   * regardless of schema_versions state.  This fixes issue #979 where the old
-   * DatabaseManager migration system (versions 1-7) shared the schema_versions
-   * table, causing maxApplied > 0 and skipping core table creation entirely.
-   */
   private initializeSchema(): void {
-    // Create schema_versions table if it doesn't exist
     this.db.run(`
       CREATE TABLE IF NOT EXISTS schema_versions (
         id INTEGER PRIMARY KEY,
@@ -96,7 +80,6 @@ export class SessionStore {
       )
     `);
 
-    // Always create core tables — IF NOT EXISTS makes this idempotent
     this.db.run(`
       CREATE TABLE IF NOT EXISTS sdk_sessions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -156,18 +139,10 @@ export class SessionStore {
       CREATE INDEX IF NOT EXISTS idx_session_summaries_created ON session_summaries(created_at_epoch DESC);
     `);
 
-    // Record migration004 as applied (OR IGNORE handles re-runs safely)
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(4, new Date().toISOString());
   }
 
-  /**
-   * Ensure worker_port column exists (migration 5)
-   *
-   * NOTE: Version 5 conflicts with old DatabaseManager migration005 (which drops orphaned tables).
-   * We check actual column state rather than relying solely on version tracking.
-   */
   private ensureWorkerPortColumn(): void {
-    // Check actual column existence — don't rely on version tracking alone (issue #979)
     const tableInfo = this.db.query('PRAGMA table_info(sdk_sessions)').all() as TableColumnInfo[];
     const hasWorkerPort = tableInfo.some(col => col.name === 'worker_port');
 
@@ -176,19 +151,10 @@ export class SessionStore {
       logger.debug('DB', 'Added worker_port column to sdk_sessions table');
     }
 
-    // Record migration
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(5, new Date().toISOString());
   }
 
-  /**
-   * Ensure prompt tracking columns exist (migration 6)
-   *
-   * NOTE: Version 6 conflicts with old DatabaseManager migration006 (which creates FTS5 tables).
-   * We check actual column state rather than relying solely on version tracking.
-   */
   private ensurePromptTrackingColumns(): void {
-    // Check actual column existence — don't rely on version tracking alone (issue #979)
-    // Check sdk_sessions for prompt_counter
     const sessionsInfo = this.db.query('PRAGMA table_info(sdk_sessions)').all() as TableColumnInfo[];
     const hasPromptCounter = sessionsInfo.some(col => col.name === 'prompt_counter');
 
@@ -197,7 +163,6 @@ export class SessionStore {
       logger.debug('DB', 'Added prompt_counter column to sdk_sessions table');
     }
 
-    // Check observations for prompt_number
     const observationsInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
     const obsHasPromptNumber = observationsInfo.some(col => col.name === 'prompt_number');
 
@@ -206,7 +171,6 @@ export class SessionStore {
       logger.debug('DB', 'Added prompt_number column to observations table');
     }
 
-    // Check session_summaries for prompt_number
     const summariesInfo = this.db.query('PRAGMA table_info(session_summaries)').all() as TableColumnInfo[];
     const sumHasPromptNumber = summariesInfo.some(col => col.name === 'prompt_number');
 
@@ -215,36 +179,24 @@ export class SessionStore {
       logger.debug('DB', 'Added prompt_number column to session_summaries table');
     }
 
-    // Record migration
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(6, new Date().toISOString());
   }
 
-  /**
-   * Remove UNIQUE constraint from session_summaries.memory_session_id (migration 7)
-   *
-   * NOTE: Version 7 conflicts with old DatabaseManager migration007 (which adds discovery_tokens).
-   * We check actual constraint state rather than relying solely on version tracking.
-   */
   private removeSessionSummariesUniqueConstraint(): void {
-    // Check actual constraint state — don't rely on version tracking alone (issue #979)
     const summariesIndexes = this.db.query('PRAGMA index_list(session_summaries)').all() as IndexInfo[];
     const hasUniqueConstraint = summariesIndexes.some(idx => idx.unique === 1 && idx.origin !== 'pk');
 
     if (!hasUniqueConstraint) {
-      // Already migrated (no constraint exists)
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(7, new Date().toISOString());
       return;
     }
 
     logger.debug('DB', 'Removing UNIQUE constraint from session_summaries.memory_session_id');
 
-    // Begin transaction
     this.db.run('BEGIN TRANSACTION');
 
-    // Clean up leftover temp table from a previously-crashed run
     this.db.run('DROP TABLE IF EXISTS session_summaries_new');
 
-    // Create new table without UNIQUE constraint
     this.db.run(`
       CREATE TABLE session_summaries_new (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -265,7 +217,6 @@ export class SessionStore {
       )
     `);
 
-    // Copy data from old table
     this.db.run(`
       INSERT INTO session_summaries_new
       SELECT id, memory_session_id, project, request, investigated, learned,
@@ -274,49 +225,37 @@ export class SessionStore {
       FROM session_summaries
     `);
 
-    // Drop old table
     this.db.run('DROP TABLE session_summaries');
 
-    // Rename new table
     this.db.run('ALTER TABLE session_summaries_new RENAME TO session_summaries');
 
-    // Recreate indexes
     this.db.run(`
       CREATE INDEX idx_session_summaries_sdk_session ON session_summaries(memory_session_id);
       CREATE INDEX idx_session_summaries_project ON session_summaries(project);
       CREATE INDEX idx_session_summaries_created ON session_summaries(created_at_epoch DESC);
     `);
 
-    // Commit transaction
     this.db.run('COMMIT');
 
-    // Record migration
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(7, new Date().toISOString());
 
     logger.debug('DB', 'Successfully removed UNIQUE constraint from session_summaries.memory_session_id');
   }
 
-  /**
-   * Add hierarchical fields to observations table (migration 8)
-   */
   private addObservationHierarchicalFields(): void {
-    // Check if migration already applied
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(8) as SchemaVersion | undefined;
     if (applied) return;
 
-    // Check if new fields already exist
     const tableInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
     const hasTitle = tableInfo.some(col => col.name === 'title');
 
     if (hasTitle) {
-      // Already migrated
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(8, new Date().toISOString());
       return;
     }
 
     logger.debug('DB', 'Adding hierarchical fields to observations table');
 
-    // Add new columns
     this.db.run(`
       ALTER TABLE observations ADD COLUMN title TEXT;
       ALTER TABLE observations ADD COLUMN subtitle TEXT;
@@ -327,40 +266,29 @@ export class SessionStore {
       ALTER TABLE observations ADD COLUMN files_modified TEXT;
     `);
 
-    // Record migration
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(8, new Date().toISOString());
 
     logger.debug('DB', 'Successfully added hierarchical fields to observations table');
   }
 
-  /**
-   * Make observations.text nullable (migration 9)
-   * The text field is deprecated in favor of structured fields (title, subtitle, narrative, etc.)
-   */
   private makeObservationsTextNullable(): void {
-    // Check if migration already applied
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(9) as SchemaVersion | undefined;
     if (applied) return;
 
-    // Check if text column is already nullable
     const tableInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
     const textColumn = tableInfo.find(col => col.name === 'text');
 
     if (!textColumn || textColumn.notnull === 0) {
-      // Already migrated or text column doesn't exist
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(9, new Date().toISOString());
       return;
     }
 
     logger.debug('DB', 'Making observations.text nullable');
 
-    // Begin transaction
     this.db.run('BEGIN TRANSACTION');
 
-    // Clean up leftover temp table from a previously-crashed run
     this.db.run('DROP TABLE IF EXISTS observations_new');
 
-    // Create new table with text as nullable
     this.db.run(`
       CREATE TABLE observations_new (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -382,7 +310,6 @@ export class SessionStore {
       )
     `);
 
-    // Copy data from old table (all existing columns)
     this.db.run(`
       INSERT INTO observations_new
       SELECT id, memory_session_id, project, text, type, title, subtitle, facts,
@@ -391,13 +318,10 @@ export class SessionStore {
       FROM observations
     `);
 
-    // Drop old table
     this.db.run('DROP TABLE observations');
 
-    // Rename new table
     this.db.run('ALTER TABLE observations_new RENAME TO observations');
 
-    // Recreate indexes
     this.db.run(`
       CREATE INDEX idx_observations_sdk_session ON observations(memory_session_id);
       CREATE INDEX idx_observations_project ON observations(project);
@@ -405,37 +329,27 @@ export class SessionStore {
       CREATE INDEX idx_observations_created ON observations(created_at_epoch DESC);
     `);
 
-    // Commit transaction
     this.db.run('COMMIT');
 
-    // Record migration
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(9, new Date().toISOString());
 
     logger.debug('DB', 'Successfully made observations.text nullable');
   }
 
-  /**
-   * Create user_prompts table with FTS5 support (migration 10)
-   */
   private createUserPromptsTable(): void {
-    // Check if migration already applied
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(10) as SchemaVersion | undefined;
     if (applied) return;
 
-    // Check if table already exists
     const tableInfo = this.db.query('PRAGMA table_info(user_prompts)').all() as TableColumnInfo[];
     if (tableInfo.length > 0) {
-      // Already migrated
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(10, new Date().toISOString());
       return;
     }
 
     logger.debug('DB', 'Creating user_prompts table with FTS5 support');
 
-    // Begin transaction
     this.db.run('BEGIN TRANSACTION');
 
-    // Create main table (using content_session_id since memory_session_id is set asynchronously by worker)
     this.db.run(`
       CREATE TABLE user_prompts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -453,8 +367,6 @@ export class SessionStore {
       CREATE INDEX idx_user_prompts_lookup ON user_prompts(content_session_id, prompt_number);
     `);
 
-    // Create FTS5 virtual table — skip if FTS5 is unavailable (e.g., Bun on Windows #791).
-    // The user_prompts table itself is still created; only FTS indexing is skipped.
     const ftsCreateSQL = `
       CREATE VIRTUAL TABLE user_prompts_fts USING fts5(
         prompt_text,
@@ -490,33 +402,23 @@ export class SessionStore {
       } else {
         logger.warn('DB', 'FTS5 not available — user_prompts_fts skipped (search uses ChromaDB)', {}, new Error(String(ftsError)));
       }
-      // FTS is optional — commit the main table and indexes, then return
       this.db.run('COMMIT');
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(10, new Date().toISOString());
       logger.debug('DB', 'Created user_prompts table (without FTS5)');
       return;
     }
 
-    // Commit transaction
     this.db.run('COMMIT');
 
-    // Record migration
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(10, new Date().toISOString());
 
     logger.debug('DB', 'Successfully created user_prompts table');
   }
 
-  /**
-   * Ensure discovery_tokens column exists (migration 11)
-   * CRITICAL: This migration was incorrectly using version 7 (which was already taken by removeSessionSummariesUniqueConstraint)
-   * The duplicate version number may have caused migration tracking issues in some databases
-   */
   private ensureDiscoveryTokensColumn(): void {
-    // Check if migration already applied to avoid unnecessary re-runs
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(11) as SchemaVersion | undefined;
     if (applied) return;
 
-    // Check if discovery_tokens column exists in observations table
     const observationsInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
     const obsHasDiscoveryTokens = observationsInfo.some(col => col.name === 'discovery_tokens');
 
@@ -525,7 +427,6 @@ export class SessionStore {
       logger.debug('DB', 'Added discovery_tokens column to observations table');
     }
 
-    // Check if discovery_tokens column exists in session_summaries table
     const summariesInfo = this.db.query('PRAGMA table_info(session_summaries)').all() as TableColumnInfo[];
     const sumHasDiscoveryTokens = summariesInfo.some(col => col.name === 'discovery_tokens');
 
@@ -534,21 +435,13 @@ export class SessionStore {
       logger.debug('DB', 'Added discovery_tokens column to session_summaries table');
     }
 
-    // Record migration only after successful column verification/addition
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(11, new Date().toISOString());
   }
 
-  /**
-   * Create pending_messages table for persistent work queue (migration 16)
-   * Messages are persisted before processing and deleted after success.
-   * Enables recovery from SDK hangs and worker crashes.
-   */
   private createPendingMessagesTable(): void {
-    // Check if migration already applied
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(16) as SchemaVersion | undefined;
     if (applied) return;
 
-    // Check if table already exists
     const tables = this.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='pending_messages'").all() as TableNameRow[];
     if (tables.length > 0) {
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(16, new Date().toISOString());
@@ -587,14 +480,6 @@ export class SessionStore {
     logger.debug('DB', 'pending_messages table created successfully');
   }
 
-  /**
-   * Rename session ID columns for semantic clarity (migration 17)
-   * - claude_session_id → content_session_id (user's observed session)
-   * - sdk_session_id → memory_session_id (memory agent's session for resume)
-   *
-   * IDEMPOTENT: Checks each table individually before renaming.
-   * This handles databases in any intermediate state (partial migration, fresh install, etc.)
-   */
   private renameSessionIdColumns(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(17) as SchemaVersion | undefined;
     if (applied) return;
@@ -603,46 +488,36 @@ export class SessionStore {
 
     let renamesPerformed = 0;
 
-    // Helper to safely rename a column if it exists
     const safeRenameColumn = (table: string, oldCol: string, newCol: string): boolean => {
       const tableInfo = this.db.query(`PRAGMA table_info(${table})`).all() as TableColumnInfo[];
       const hasOldCol = tableInfo.some(col => col.name === oldCol);
       const hasNewCol = tableInfo.some(col => col.name === newCol);
 
       if (hasNewCol) {
-        // Already renamed, nothing to do
         return false;
       }
 
       if (hasOldCol) {
-        // SQLite 3.25+ supports ALTER TABLE RENAME COLUMN
         this.db.run(`ALTER TABLE ${table} RENAME COLUMN ${oldCol} TO ${newCol}`);
         logger.debug('DB', `Renamed ${table}.${oldCol} to ${newCol}`);
         return true;
       }
 
-      // Neither column exists - table might not exist or has different schema
       logger.warn('DB', `Column ${oldCol} not found in ${table}, skipping rename`);
       return false;
     };
 
-    // Rename in sdk_sessions table
     if (safeRenameColumn('sdk_sessions', 'claude_session_id', 'content_session_id')) renamesPerformed++;
     if (safeRenameColumn('sdk_sessions', 'sdk_session_id', 'memory_session_id')) renamesPerformed++;
 
-    // Rename in pending_messages table
     if (safeRenameColumn('pending_messages', 'claude_session_id', 'content_session_id')) renamesPerformed++;
 
-    // Rename in observations table
     if (safeRenameColumn('observations', 'sdk_session_id', 'memory_session_id')) renamesPerformed++;
 
-    // Rename in session_summaries table
     if (safeRenameColumn('session_summaries', 'sdk_session_id', 'memory_session_id')) renamesPerformed++;
 
-    // Rename in user_prompts table
     if (safeRenameColumn('user_prompts', 'claude_session_id', 'content_session_id')) renamesPerformed++;
 
-    // Record migration
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(17, new Date().toISOString());
 
     if (renamesPerformed > 0) {
@@ -652,24 +527,13 @@ export class SessionStore {
     }
   }
 
-  /**
-   * Repair session ID column renames (migration 19)
-   * DEPRECATED: Migration 17 is now fully idempotent and handles all cases.
-   * This migration is kept for backwards compatibility but does nothing.
-   */
   private repairSessionIdColumnRename(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(19) as SchemaVersion | undefined;
     if (applied) return;
 
-    // Migration 17 now handles all column rename cases idempotently.
-    // Just record this migration as applied.
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(19, new Date().toISOString());
   }
 
-  /**
-   * Add failed_at_epoch column to pending_messages (migration 20)
-   * Used by transitionMessagesTo() for error recovery tracking
-   */
   private addFailedAtEpochColumn(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(20) as SchemaVersion | undefined;
     if (applied) return;
@@ -685,40 +549,21 @@ export class SessionStore {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(20, new Date().toISOString());
   }
 
-  /**
-   * Add ON UPDATE CASCADE to FK constraints on observations and session_summaries (migration 21)
-   *
-   * Both tables have FK(memory_session_id) -> sdk_sessions(memory_session_id) with ON DELETE CASCADE
-   * but missing ON UPDATE CASCADE. This causes FK constraint violations when code updates
-   * sdk_sessions.memory_session_id while child rows still reference the old value.
-   *
-   * SQLite doesn't support ALTER TABLE for FK changes, so we recreate both tables.
-   */
   private addOnUpdateCascadeToForeignKeys(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(21) as SchemaVersion | undefined;
     if (applied) return;
 
     logger.debug('DB', 'Adding ON UPDATE CASCADE to FK constraints on observations and session_summaries');
 
-    // PRAGMA foreign_keys must be set outside a transaction
     this.db.run('PRAGMA foreign_keys = OFF');
     this.db.run('BEGIN TRANSACTION');
 
-    // ==========================================
-    // 1. Recreate observations table
-    // ==========================================
-
-    // Drop FTS triggers first (they reference the observations table)
     this.db.run('DROP TRIGGER IF EXISTS observations_ai');
     this.db.run('DROP TRIGGER IF EXISTS observations_ad');
     this.db.run('DROP TRIGGER IF EXISTS observations_au');
 
-    // Clean up leftover temp table from a previously-crashed run
     this.db.run('DROP TABLE IF EXISTS observations_new');
 
-    // If the live observations table already has metadata (added in v30 or
-    // by an older bundled artifact that ran v30 before v21 was recorded),
-    // preserve it so this rebuild doesn't silently drop the column's data.
     const observationsCols = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
     const observationsHasMetadata = observationsCols.some(c => c.name === 'metadata');
     const metadataColumnSQL = observationsHasMetadata ? ',\n        metadata TEXT' : '';
@@ -777,16 +622,10 @@ export class SessionStore {
       END;
     `;
 
-    // ==========================================
-    // 2. Recreate session_summaries table
-    // ==========================================
-
-    // Drop session_summaries FTS triggers before dropping the table
     this.db.run('DROP TRIGGER IF EXISTS session_summaries_ai');
     this.db.run('DROP TRIGGER IF EXISTS session_summaries_ad');
     this.db.run('DROP TRIGGER IF EXISTS session_summaries_au');
 
-    // Clean up leftover temp table from a previously-crashed run
     this.db.run('DROP TABLE IF EXISTS session_summaries_new');
 
     const summariesNewSQL = `
@@ -858,7 +697,6 @@ export class SessionStore {
     }
   }
 
-  /** Recreate observations table with ON UPDATE CASCADE FK (used by migration 21) */
   private recreateObservationsWithCascade(createSQL: string, copySQL: string, indexesSQL: string, ftsTriggersSQL: string): void {
     this.db.run(createSQL);
     this.db.run(copySQL);
@@ -872,7 +710,6 @@ export class SessionStore {
     }
   }
 
-  /** Recreate session_summaries table with ON UPDATE CASCADE FK (used by migration 21) */
   private recreateSessionSummariesWithCascade(createSQL: string, copySQL: string, indexesSQL: string, ftsTriggersSQL: string): void {
     this.db.run(createSQL);
     this.db.run(copySQL);
@@ -886,12 +723,7 @@ export class SessionStore {
     }
   }
 
-  /**
-   * Add content_hash column to observations for deduplication (migration 22)
-   */
   private addObservationContentHashColumn(): void {
-    // Check actual schema first — cross-machine DB sync can leave schema_versions
-    // claiming this migration ran while the column is actually missing.
     const tableInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
     const hasColumn = tableInfo.some(col => col.name === 'content_hash');
 
@@ -908,9 +740,6 @@ export class SessionStore {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(22, new Date().toISOString());
   }
 
-  /**
-   * Add custom_title column to sdk_sessions for agent attribution (migration 23)
-   */
   private addSessionCustomTitleColumn(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(23) as SchemaVersion | undefined;
     if (applied) return;
@@ -926,9 +755,6 @@ export class SessionStore {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(23, new Date().toISOString());
   }
 
-  /**
-   * Add platform_source column to sdk_sessions for Claude/Codex isolation (migration 24)
-   */
   private addSessionPlatformSourceColumn(): void {
     const tableInfo = this.db.query('PRAGMA table_info(sdk_sessions)').all() as TableColumnInfo[];
     const hasColumn = tableInfo.some(col => col.name === 'platform_source');
@@ -956,13 +782,6 @@ export class SessionStore {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(24, new Date().toISOString());
   }
 
-  /**
-   * Add generated_by_model and relevance_count columns to observations (migration 26)
-   *
-   * Note: Cannot trust schema_versions alone — the old MigrationRunner may have
-   * recorded version 26 without the ALTER TABLE actually succeeding. Always
-   * check column existence directly.
-   */
   private addObservationModelColumns(): void {
     const columns = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
     const hasGeneratedByModel = columns.some(col => col.name === 'generated_by_model');
@@ -980,14 +799,6 @@ export class SessionStore {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(26, new Date().toISOString());
   }
 
-  /**
-   * Ensure merged_into_project columns + indices exist on observations and session_summaries.
-   *
-   * Self-idempotent via PRAGMA table_info guard — does NOT bump schema_versions.
-   * Mirrors MigrationRunner.ensureMergedIntoProjectColumns so bundled artifacts
-   * that embed SessionStore (e.g. context-generator.cjs) stay schema-consistent
-   * with the standalone migration path.
-   */
   private ensureMergedIntoProjectColumns(): void {
     const obsCols = this.db
       .query('PRAGMA table_info(observations)')
@@ -1010,11 +821,6 @@ export class SessionStore {
     );
   }
 
-  /**
-   * Add agent_type and agent_id columns to observations and pending_messages (migration 27).
-   * Mirrors MigrationRunner.addObservationSubagentColumns so bundled artifacts that embed
-   * SessionStore (e.g. context-generator.cjs) stay schema-consistent.
-   */
   private addObservationSubagentColumns(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(27) as SchemaVersion | undefined;
 
@@ -1048,27 +854,7 @@ export class SessionStore {
     }
   }
 
-  /**
-   * Add tool_use_id and worker_pid columns + indexes to pending_messages (migration 28).
-   *
-   * Mirrors MigrationRunner.rebuildPendingMessagesForSelfHealingClaim so bundled
-   * artifacts that embed SessionStore (e.g. worker-service.cjs, context-generator.cjs)
-   * stay schema-consistent. Without this, every queue-claim cycle fails with
-   * "no such column: worker_pid" and every observation insert fails with
-   * "table pending_messages has no column named tool_use_id" (issue #2139).
-   *
-   * Uses ALTER TABLE rather than the full table rebuild from MigrationRunner because:
-   *   - It's safe on populated DBs that already reached v29 without ever applying v28.
-   *   - The legacy stale-reset epoch column the rebuild dropped never existed in
-   *     pending_messages tables created by the SessionStore migration path.
-   *
-   * Column existence is checked directly — schema_versions cannot be trusted because
-   * affected DBs may already have v29 recorded with neither column present (#2139).
-   */
   private addPendingMessagesToolUseIdAndWorkerPidColumns(): void {
-    // pending_messages may not exist yet on freshly-created DBs at this point in
-    // the migration order — createPendingMessagesTable (v16) has already run by
-    // the time we get here, so this guard is defensive only.
     const tables = this.db.query(
       "SELECT name FROM sqlite_master WHERE type='table' AND name='pending_messages'"
     ).all() as TableNameRow[];
@@ -1088,19 +874,10 @@ export class SessionStore {
       this.db.run('ALTER TABLE pending_messages ADD COLUMN worker_pid INTEGER');
     }
 
-    // Wrap dedup DELETE + UNIQUE index creation + version-record in a transaction
-    // so a crash mid-flight cannot leave duplicates removed without v28 recorded.
-    // Matches addObservationsUniqueContentHashIndex (v29) at line 1127 and
-    // runner.ts rebuildPendingMessagesForSelfHealingClaim (v28).
     this.db.run('BEGIN TRANSACTION');
     try {
-      // Indexes are idempotent — match runner.ts:1117-1120 + 1134-1138.
       this.db.run('CREATE INDEX IF NOT EXISTS idx_pending_messages_worker_pid ON pending_messages(worker_pid)');
 
-      // The UNIQUE partial index requires no duplicate (content_session_id, tool_use_id)
-      // pairs. Dedup before creating it (matches runner.ts:1124-1132). Safe to run
-      // unconditionally — if tool_use_id was just added, every row has it as NULL
-      // and the WHERE filter excludes them.
       this.db.run(`
         DELETE FROM pending_messages
          WHERE tool_use_id IS NOT NULL
@@ -1124,14 +901,6 @@ export class SessionStore {
     }
   }
 
-  /**
-   * Add UNIQUE(memory_session_id, content_hash) on observations (migration 29).
-   * Mirrors MigrationRunner.addObservationsUniqueContentHashIndex so bundled
-   * artifacts that embed SessionStore (e.g. worker-service.cjs, context-generator.cjs)
-   * stay schema-consistent. Without this, INSERT … ON CONFLICT(memory_session_id,
-   * content_hash) DO NOTHING throws "ON CONFLICT clause does not match any
-   * PRIMARY KEY or UNIQUE constraint" and every observation insert fails.
-   */
   private addObservationsUniqueContentHashIndex(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(29) as SchemaVersion | undefined;
     if (applied) return;
@@ -1165,17 +934,6 @@ export class SessionStore {
     }
   }
 
-  /**
-   * Add metadata TEXT column to observations (migration 30).
-   *
-   * Mirrors MigrationRunner.addObservationsMetadataColumn so bundled artifacts
-   * that embed SessionStore (e.g. worker-service.cjs, context-generator.cjs)
-   * stay schema-consistent. Without this, INSERT … (..., metadata, ...) raises
-   * "table observations has no column named metadata" and POST /api/memory/save
-   * starts failing on every call once it begins persisting metadata (#2116).
-   *
-   * Idempotent via PRAGMA table_info guard.
-   */
   private addObservationsMetadataColumn(): void {
     const cols = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
     const hasColumn = cols.some(c => c.name === 'metadata');
@@ -1188,11 +946,6 @@ export class SessionStore {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(30, new Date().toISOString());
   }
 
-  /**
-   * Update the memory session ID for a session
-   * Called by ClaudeProvider when it captures the session ID from the first SDK message
-   * Also used to RESET to null on stale resume failures (worker-service.ts)
-   */
   updateMemorySessionId(sessionDbId: number, memorySessionId: string | null): void {
     this.db.prepare(`
       UPDATE sdk_sessions
@@ -1211,15 +964,6 @@ export class SessionStore {
     `).run(nowIso, nowEpoch, sessionDbId);
   }
 
-  /**
-   * Ensures memory_session_id is registered in sdk_sessions before FK-constrained INSERT.
-   * This fixes Issue #846 where observations fail after worker restart because the
-   * SDK generates a new memory_session_id but it's not registered in the parent table
-   * before child records try to reference it.
-   *
-   * @param sessionDbId - The database ID of the session
-   * @param memorySessionId - The memory session ID to ensure is registered
-   */
   ensureMemorySessionIdRegistered(sessionDbId: number, memorySessionId: string): void {
     const session = this.db.prepare(`
       SELECT id, memory_session_id FROM sdk_sessions WHERE id = ?
@@ -1242,9 +986,6 @@ export class SessionStore {
     }
   }
 
-  /**
-   * Get recent session summaries for a project
-   */
   getRecentSummaries(project: string, limit: number = 10): Array<{
     request: string | null;
     investigated: string | null;
@@ -1281,9 +1022,6 @@ export class SessionStore {
     }>;
   }
 
-  /**
-   * Get recent summaries with session info for context display
-   */
   getRecentSummariesWithSessionInfo(project: string, limit: number = 3): Array<{
     memory_session_id: string;
     request: string | null;
@@ -1314,9 +1052,6 @@ export class SessionStore {
     }>;
   }
 
-  /**
-   * Get recent observations for a project
-   */
   getRecentObservations(project: string, limit: number = 20): Array<{
     type: string;
     text: string;
@@ -1339,9 +1074,6 @@ export class SessionStore {
     }>;
   }
 
-  /**
-   * Get recent observations across all projects (for web UI)
-   */
   getAllRecentObservations(limit: number = 100): Array<{
     id: number;
     type: string;
@@ -1386,9 +1118,6 @@ export class SessionStore {
     }>;
   }
 
-  /**
-   * Get recent summaries across all projects (for web UI)
-   */
   getAllRecentSummaries(limit: number = 50): Array<{
     id: number;
     request: string | null;
@@ -1445,9 +1174,6 @@ export class SessionStore {
     }>;
   }
 
-  /**
-   * Get recent user prompts across all sessions (for web UI)
-   */
   getAllRecentUserPrompts(limit: number = 100): Array<{
     id: number;
     content_session_id: string;
@@ -1486,9 +1212,6 @@ export class SessionStore {
     }>;
   }
 
-  /**
-   * Get all unique projects from the database (for web UI project filter)
-   */
   getAllProjects(platformSource?: string): string[] {
     const normalizedPlatformSource = platformSource ? normalizePlatformSource(platformSource) : undefined;
     let query = `
@@ -1559,10 +1282,6 @@ export class SessionStore {
     };
   }
 
-  /**
-   * Get latest user prompt with session info for a Claude session
-   * Used for syncing prompts to Chroma during session initialization
-   */
   getLatestUserPrompt(contentSessionId: string): {
     id: number;
     content_session_id: string;
@@ -1589,9 +1308,6 @@ export class SessionStore {
     return stmt.get(contentSessionId) as LatestPromptResult | undefined;
   }
 
-  /**
-   * Get recent sessions with their status and summary info
-   */
   getRecentSessionsWithStatus(project: string, limit: number = 3): Array<{
     memory_session_id: string | null;
     status: string;
@@ -1627,9 +1343,6 @@ export class SessionStore {
     }>;
   }
 
-  /**
-   * Get observations for a specific session
-   */
   getObservationsForSession(memorySessionId: string): Array<{
     title: string;
     subtitle: string;
@@ -1651,9 +1364,6 @@ export class SessionStore {
     }>;
   }
 
-  /**
-   * Get a single observation by ID
-   */
   getObservationById(id: number): ObservationRecord | null {
     const stmt = this.db.prepare(`
       SELECT *
@@ -1664,9 +1374,6 @@ export class SessionStore {
     return stmt.get(id) as ObservationRecord | undefined || null;
   }
 
-  /**
-   * Get observations by array of IDs with ordering and limit
-   */
   getObservationsByIds(
     ids: number[],
     options: { orderBy?: 'date_desc' | 'date_asc'; limit?: number; project?: string; type?: string | string[]; concepts?: string | string[]; files?: string | string[] } = {}
@@ -1677,18 +1384,15 @@ export class SessionStore {
     const orderClause = orderBy === 'date_asc' ? 'ASC' : 'DESC';
     const limitClause = limit ? `LIMIT ${limit}` : '';
 
-    // Build placeholders for IN clause
     const placeholders = ids.map(() => '?').join(',');
     const params: any[] = [...ids];
     const additionalConditions: string[] = [];
 
-    // Apply project filter
     if (project) {
       additionalConditions.push('project = ?');
       params.push(project);
     }
 
-    // Apply type filter
     if (type) {
       if (Array.isArray(type)) {
         const typePlaceholders = type.map(() => '?').join(',');
@@ -1700,7 +1404,6 @@ export class SessionStore {
       }
     }
 
-    // Apply concepts filter
     if (concepts) {
       const conceptsList = Array.isArray(concepts) ? concepts : [concepts];
       const conceptConditions = conceptsList.map(() =>
@@ -1710,7 +1413,6 @@ export class SessionStore {
       additionalConditions.push(`(${conceptConditions.join(' OR ')})`);
     }
 
-    // Apply files filter
     if (files) {
       const filesList = Array.isArray(files) ? files : [files];
       const fileConditions = filesList.map(() => {
@@ -1737,9 +1439,6 @@ export class SessionStore {
     return stmt.all(...params) as ObservationSearchResult[];
   }
 
-  /**
-   * Get summary for a specific session
-   */
   getSummaryForSession(memorySessionId: string): {
     request: string | null;
     investigated: string | null;
@@ -1779,9 +1478,6 @@ export class SessionStore {
     } | null) || null;
   }
 
-  /**
-   * Get aggregated files from all observations for a session
-   */
   getFilesForSession(memorySessionId: string): {
     filesRead: string[];
     filesModified: string[];
@@ -1801,10 +1497,8 @@ export class SessionStore {
     const filesModifiedSet = new Set<string>();
 
     for (const row of rows) {
-      // Parse files_read
       parseFileList(row.files_read).forEach(f => filesReadSet.add(f));
 
-      // Parse files_modified
       parseFileList(row.files_modified).forEach(f => filesModifiedSet.add(f));
     }
 
@@ -1814,9 +1508,6 @@ export class SessionStore {
     };
   }
 
-  /**
-   * Get session by ID
-   */
   getSessionById(id: number): {
     id: number;
     content_session_id: string;
@@ -1848,10 +1539,6 @@ export class SessionStore {
     } | null) || null;
   }
 
-  /**
-   * Get SDK sessions by SDK session IDs
-   * Used for exporting session metadata
-   */
   getSdkSessionsBySessionIds(memorySessionIds: string[]): {
     id: number;
     content_session_id: string;
@@ -1882,15 +1569,6 @@ export class SessionStore {
     return stmt.all(...memorySessionIds) as any[];
   }
 
-
-
-
-
-
-  /**
-   * Get current prompt number by counting user_prompts for this session
-   * Replaces the prompt_counter column which is no longer maintained
-   */
   getPromptNumberFromUserPrompts(contentSessionId: string): number {
     const result = this.db.prepare(`
       SELECT COUNT(*) as count FROM user_prompts WHERE content_session_id = ?
@@ -1898,25 +1576,6 @@ export class SessionStore {
     return result.count;
   }
 
-  /**
-   * Create a new SDK session (idempotent - returns existing session ID if already exists)
-   *
-   * CRITICAL ARCHITECTURE: Session ID Threading
-   * ============================================
-   * This function is the KEY to how claude-mem stays unified across hooks:
-   *
-   * - NEW hook calls: createSDKSession(session_id, project, prompt)
-   * - SAVE hook calls: createSDKSession(session_id, '', '')
-   * - Both use the SAME session_id from Claude Code's hook context
-   *
-   * IDEMPOTENT BEHAVIOR (INSERT OR IGNORE):
-   * - Prompt #1: session_id not in database → INSERT creates new row
-   * - Prompt #2+: session_id exists → INSERT ignored, fetch existing ID
-   * - Result: Same database ID returned for all prompts in conversation
-   *
-   * Pure get-or-create: never modifies memory_session_id.
-   * Multi-terminal isolation is handled by ON UPDATE CASCADE at the schema level.
-   */
   createSDKSession(
     contentSessionId: string,
     project: string,
@@ -1929,20 +1588,17 @@ export class SessionStore {
     const resolved = resolveCreateSessionArgs(customTitle, platformSource);
     const normalizedPlatformSource = resolved.platformSource ?? DEFAULT_PLATFORM_SOURCE;
 
-    // Session reuse: Return existing session ID if already created for this contentSessionId.
     const existing = this.db.prepare(`
       SELECT id, platform_source FROM sdk_sessions WHERE content_session_id = ?
     `).get(contentSessionId) as { id: number; platform_source: string | null } | undefined;
 
     if (existing) {
-      // Backfill project if session was created by another hook with empty project
       if (project) {
         this.db.prepare(`
           UPDATE sdk_sessions SET project = ?
           WHERE content_session_id = ? AND (project IS NULL OR project = '')
         `).run(project, contentSessionId);
       }
-      // Backfill custom_title if provided and not yet set
       if (resolved.customTitle) {
         this.db.prepare(`
           UPDATE sdk_sessions SET custom_title = ?
@@ -1970,28 +1626,17 @@ export class SessionStore {
       return existing.id;
     }
 
-    // New session - insert fresh row
-    // NOTE: memory_session_id starts as NULL. It is captured by ClaudeProvider from the first SDK
-    // response and stored via ensureMemorySessionIdRegistered(). CRITICAL: memory_session_id
-    // must NEVER equal contentSessionId - that would inject memory messages into the user's transcript!
     this.db.prepare(`
       INSERT INTO sdk_sessions
       (content_session_id, memory_session_id, project, platform_source, user_prompt, custom_title, started_at, started_at_epoch, status)
       VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'active')
     `).run(contentSessionId, project, normalizedPlatformSource, userPrompt, resolved.customTitle || null, now.toISOString(), nowEpoch);
 
-    // Return new ID
     const row = this.db.prepare('SELECT id FROM sdk_sessions WHERE content_session_id = ?')
       .get(contentSessionId) as { id: number };
     return row.id;
   }
 
-
-
-
-  /**
-   * Save a user prompt
-   */
   saveUserPrompt(contentSessionId: string, promptNumber: number, promptText: string): number {
     const now = new Date();
     const nowEpoch = now.getTime();
@@ -2006,10 +1651,6 @@ export class SessionStore {
     return result.lastInsertRowid as number;
   }
 
-  /**
-   * Get user prompt by session ID and prompt number
-   * Returns the prompt text, or null if not found
-   */
   getUserPrompt(contentSessionId: string, promptNumber: number): string | null {
     const stmt = this.db.prepare(`
       SELECT prompt_text
@@ -2022,11 +1663,6 @@ export class SessionStore {
     return result?.prompt_text ?? null;
   }
 
-  /**
-   * Store an observation (from SDK parsing)
-   * Assumes session already exists (created by hook)
-   * Performs content-hash deduplication: skips INSERT if an identical observation exists within 30s
-   */
   storeObservation(
     memorySessionId: string,
     project: string,
@@ -2041,8 +1677,6 @@ export class SessionStore {
       files_modified: string[];
       agent_type?: string | null;
       agent_id?: string | null;
-      // Caller-supplied JSON metadata, stored verbatim in the metadata column (#2116).
-      // Pre-stringified by the caller so we don't double-encode an already-JSON value.
       metadata?: string | null;
     },
     promptNumber?: number,
@@ -2050,12 +1684,9 @@ export class SessionStore {
     overrideTimestampEpoch?: number,
     generatedByModel?: string
   ): { id: number; createdAtEpoch: number } {
-    // Use override timestamp if provided (for processing backlog messages with original timestamps)
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
 
-    // DB-enforced dedup: UNIQUE(memory_session_id, content_hash) +
-    // ON CONFLICT DO NOTHING (Plan 01 Phase 4).
     const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
 
     const stmt = this.db.prepare(`
@@ -2106,10 +1737,6 @@ export class SessionStore {
     return { id: existing.id, createdAtEpoch: existing.created_at_epoch };
   }
 
-  /**
-   * Store a session summary (from SDK parsing)
-   * Assumes session already exists - will fail with FK error if not
-   */
   storeSummary(
     memorySessionId: string,
     project: string,
@@ -2125,7 +1752,6 @@ export class SessionStore {
     discoveryTokens: number = 0,
     overrideTimestampEpoch?: number
   ): { id: number; createdAtEpoch: number } {
-    // Use override timestamp if provided (for processing backlog messages with original timestamps)
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
 
@@ -2157,22 +1783,6 @@ export class SessionStore {
     };
   }
 
-  /**
-   * ATOMIC: Store observations + summary (no message tracking)
-   *
-   * Simplified version for use with claim-and-delete queue pattern.
-   * Messages are deleted from queue immediately on claim, so there's no
-   * message completion to track. This just stores observations and summary.
-   *
-   * @param memorySessionId - SDK memory session ID
-   * @param project - Project name
-   * @param observations - Array of observations to store (can be empty)
-   * @param summary - Optional summary to store
-   * @param promptNumber - Optional prompt number
-   * @param discoveryTokens - Discovery tokens count
-   * @param overrideTimestampEpoch - Optional override timestamp
-   * @returns Object with observation IDs, optional summary ID, and timestamp
-   */
   storeObservations(
     memorySessionId: string,
     project: string,
@@ -2201,17 +1811,12 @@ export class SessionStore {
     overrideTimestampEpoch?: number,
     generatedByModel?: string
   ): { observationIds: number[]; summaryId: number | null; createdAtEpoch: number } {
-    // Use override timestamp if provided
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
 
-    // Create transaction that wraps all operations
     const storeTx = this.db.transaction(() => {
       const observationIds: number[] = [];
 
-      // 1. Store all observations.
-      // DB-enforced dedup via UNIQUE(memory_session_id, content_hash) +
-      // ON CONFLICT DO NOTHING (Plan 01 Phase 4).
       const obsStmt = this.db.prepare(`
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
@@ -2262,7 +1867,6 @@ export class SessionStore {
         observationIds.push(existing.id);
       }
 
-      // 2. Store summary if provided
       let summaryId: number | null = null;
       if (summary) {
         const summaryStmt = this.db.prepare(`
@@ -2292,33 +1896,9 @@ export class SessionStore {
       return { observationIds, summaryId, createdAtEpoch: timestampEpoch };
     });
 
-    // Execute the transaction and return results
     return storeTx();
   }
 
-  /**
-   * @deprecated Use storeObservations instead. This method is kept for backwards compatibility.
-   *
-   * ATOMIC: Store observations + summary + mark pending message as processed
-   *
-   * This method wraps observation storage, summary storage, and message completion
-   * in a single database transaction to prevent race conditions. If the worker crashes
-   * during processing, either all operations succeed together or all fail together.
-   *
-   * This fixes the observation duplication bug where observations were stored but
-   * the message wasn't marked complete, causing reprocessing on crash recovery.
-   *
-   * @param memorySessionId - SDK memory session ID
-   * @param project - Project name
-   * @param observations - Array of observations to store (can be empty)
-   * @param summary - Optional summary to store
-   * @param messageId - Pending message ID to mark as processed
-   * @param pendingStore - PendingMessageStore instance for marking complete
-   * @param promptNumber - Optional prompt number
-   * @param discoveryTokens - Discovery tokens count
-   * @param overrideTimestampEpoch - Optional override timestamp
-   * @returns Object with observation IDs, optional summary ID, and timestamp
-   */
   storeObservationsAndMarkComplete(
     memorySessionId: string,
     project: string,
@@ -2349,17 +1929,12 @@ export class SessionStore {
     overrideTimestampEpoch?: number,
     generatedByModel?: string
   ): { observationIds: number[]; summaryId?: number; createdAtEpoch: number } {
-    // Use override timestamp if provided
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
 
-    // Create transaction that wraps all operations
     const storeAndMarkTx = this.db.transaction(() => {
       const observationIds: number[] = [];
 
-      // 1. Store all observations.
-      // DB-enforced dedup via UNIQUE(memory_session_id, content_hash) +
-      // ON CONFLICT DO NOTHING (Plan 01 Phase 4).
       const obsStmt = this.db.prepare(`
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
@@ -2410,7 +1985,6 @@ export class SessionStore {
         observationIds.push(existing.id);
       }
 
-      // 2. Store summary if provided
       let summaryId: number | undefined;
       if (summary) {
         const summaryStmt = this.db.prepare(`
@@ -2437,9 +2011,6 @@ export class SessionStore {
         summaryId = Number(result.lastInsertRowid);
       }
 
-      // 3. Mark pending message as processed
-      // This UPDATE is part of the same transaction, so if it fails,
-      // observations and summary will be rolled back
       const updateStmt = this.db.prepare(`
         UPDATE pending_messages
         SET
@@ -2454,16 +2025,9 @@ export class SessionStore {
       return { observationIds, summaryId, createdAtEpoch: timestampEpoch };
     });
 
-    // Execute the transaction and return results
     return storeAndMarkTx();
   }
 
-
-
-  /**
-   * Get session summaries by IDs (for hybrid Chroma search)
-   * Returns summaries in specified temporal order
-   */
   getSessionSummariesByIds(
     ids: number[],
     options: { orderBy?: 'date_desc' | 'date_asc'; limit?: number; project?: string } = {}
@@ -2476,7 +2040,6 @@ export class SessionStore {
     const placeholders = ids.map(() => '?').join(',');
     const params: any[] = [...ids];
 
-    // Apply project filter
     const whereClause = project
       ? `WHERE id IN (${placeholders}) AND project = ?`
       : `WHERE id IN (${placeholders})`;
@@ -2492,10 +2055,6 @@ export class SessionStore {
     return stmt.all(...params) as SessionSummarySearchResult[];
   }
 
-  /**
-   * Get user prompts by IDs (for hybrid Chroma search)
-   * Returns prompts in specified temporal order
-   */
   getUserPromptsByIds(
     ids: number[],
     options: { orderBy?: 'date_desc' | 'date_asc'; limit?: number; project?: string } = {}
@@ -2508,7 +2067,6 @@ export class SessionStore {
     const placeholders = ids.map(() => '?').join(',');
     const params: any[] = [...ids];
 
-    // Apply project filter
     const projectFilter = project ? 'AND s.project = ?' : '';
     if (project) params.push(project);
 
@@ -2527,14 +2085,6 @@ export class SessionStore {
     return stmt.all(...params) as UserPromptRecord[];
   }
 
-  /**
-   * Get a unified timeline of all records (observations, sessions, prompts) around an anchor point
-   * @param anchorEpoch The anchor timestamp (epoch milliseconds)
-   * @param depthBefore Number of records to retrieve before anchor (any type)
-   * @param depthAfter Number of records to retrieve after anchor (any type)
-   * @param project Optional project filter
-   * @returns Object containing observations, sessions, and prompts for the specified window
-   */
   getTimelineAroundTimestamp(
     anchorEpoch: number,
     depthBefore: number = 10,
@@ -2548,10 +2098,6 @@ export class SessionStore {
     return this.getTimelineAroundObservation(null, anchorEpoch, depthBefore, depthAfter, project);
   }
 
-  /**
-   * Get timeline around a specific observation ID
-   * Uses observation ID offsets to determine time boundaries, then fetches all record types in that window
-   */
   getTimelineAroundObservation(
     anchorObservationId: number | null,
     anchorEpoch: number,
@@ -2570,7 +2116,6 @@ export class SessionStore {
     let endEpoch: number;
 
     if (anchorObservationId !== null) {
-      // Get boundary observations by ID offset
       const beforeQuery = `
         SELECT id, created_at_epoch
         FROM observations
@@ -2590,7 +2135,6 @@ export class SessionStore {
         const beforeRecords = this.db.prepare(beforeQuery).all(anchorObservationId, ...projectParams, depthBefore + 1) as Array<{id: number; created_at_epoch: number}>;
         const afterRecords = this.db.prepare(afterQuery).all(anchorObservationId, ...projectParams, depthAfter + 1) as Array<{id: number; created_at_epoch: number}>;
 
-        // Get the earliest and latest timestamps from boundary observations
         if (beforeRecords.length === 0 && afterRecords.length === 0) {
           return { observations: [], sessions: [], prompts: [] };
         }
@@ -2606,8 +2150,6 @@ export class SessionStore {
         return { observations: [], sessions: [], prompts: [] };
       }
     } else {
-      // For timestamp-based anchors, use time-based boundaries
-      // Get observations to find the time window
       const beforeQuery = `
         SELECT created_at_epoch
         FROM observations
@@ -2643,7 +2185,6 @@ export class SessionStore {
       }
     }
 
-    // Now query ALL record types within the time window
     const obsQuery = `
       SELECT *
       FROM observations
@@ -2694,9 +2235,6 @@ export class SessionStore {
     };
   }
 
-  /**
-   * Get a single user prompt by ID
-   */
   getPromptById(id: number): {
     id: number;
     content_session_id: string;
@@ -2732,9 +2270,6 @@ export class SessionStore {
     } | null) || null;
   }
 
-  /**
-   * Get multiple user prompts by IDs
-   */
   getPromptsByIds(ids: number[]): Array<{
     id: number;
     content_session_id: string;
@@ -2773,9 +2308,6 @@ export class SessionStore {
     }>;
   }
 
-  /**
-   * Get full session summary by ID (includes request_summary and learned_summary)
-   */
   getSessionSummaryById(id: number): {
     id: number;
     memory_session_id: string | null;
@@ -2819,10 +2351,6 @@ export class SessionStore {
     } | null) || null;
   }
 
-  /**
-   * Get or create a manual session for storing user-created observations
-   * Manual sessions use a predictable ID format: "manual-{project}"
-   */
   getOrCreateManualSession(project: string): string {
     const memorySessionId = `manual-${project}`;
     const contentSessionId = `manual-content-${project}`;
@@ -2835,7 +2363,6 @@ export class SessionStore {
       return memorySessionId;
     }
 
-    // Create new manual session
     const now = new Date();
     this.db.prepare(`
       INSERT INTO sdk_sessions (memory_session_id, content_session_id, project, platform_source, started_at, started_at_epoch, status)
@@ -2847,21 +2374,10 @@ export class SessionStore {
     return memorySessionId;
   }
 
-  /**
-   * Close the database connection
-   */
   close(): void {
     this.db.close();
   }
 
-  // ===========================================
-  // Import Methods (for import-memories script)
-  // ===========================================
-
-  /**
-   * Import SDK session with duplicate checking
-   * Returns: { imported: boolean, id: number }
-   */
   importSdkSession(session: {
     content_session_id: string;
     memory_session_id: string;
@@ -2874,7 +2390,6 @@ export class SessionStore {
     completed_at_epoch: number | null;
     status: string;
   }): { imported: boolean; id: number } {
-    // Check if session already exists
     const existing = this.db.prepare(
       'SELECT id FROM sdk_sessions WHERE content_session_id = ?'
     ).get(session.content_session_id) as { id: number } | undefined;
@@ -2906,10 +2421,6 @@ export class SessionStore {
     return { imported: true, id: result.lastInsertRowid as number };
   }
 
-  /**
-   * Import session summary with duplicate checking
-   * Returns: { imported: boolean, id: number }
-   */
   importSessionSummary(summary: {
     memory_session_id: string;
     project: string;
@@ -2926,7 +2437,6 @@ export class SessionStore {
     created_at: string;
     created_at_epoch: number;
   }): { imported: boolean; id: number } {
-    // Check if summary already exists for this session
     const existing = this.db.prepare(
       'SELECT id FROM session_summaries WHERE memory_session_id = ?'
     ).get(summary.memory_session_id) as { id: number } | undefined;
@@ -2963,11 +2473,6 @@ export class SessionStore {
     return { imported: true, id: result.lastInsertRowid as number };
   }
 
-  /**
-   * Import observation with duplicate checking
-   * Duplicates are identified by memory_session_id + title + created_at_epoch
-   * Returns: { imported: boolean, id: number }
-   */
   importObservation(obs: {
     memory_session_id: string;
     project: string;
@@ -2987,7 +2492,6 @@ export class SessionStore {
     agent_type?: string | null;
     agent_id?: string | null;
   }): { imported: boolean; id: number } {
-    // Check if observation already exists
     const existing = this.db.prepare(`
       SELECT id FROM observations
       WHERE memory_session_id = ? AND title = ? AND created_at_epoch = ?
@@ -3029,11 +2533,6 @@ export class SessionStore {
     return { imported: true, id: result.lastInsertRowid as number };
   }
 
-  /**
-   * Rebuild the FTS5 index for observations.
-   * Should be called after bulk imports to ensure imported rows are searchable.
-   * No-op if observations_fts table does not exist.
-   */
   rebuildObservationsFTSIndex(): void {
     const hasFTS = (this.db.prepare(
       "SELECT name FROM sqlite_master WHERE type='table' AND name='observations_fts'"
@@ -3046,11 +2545,6 @@ export class SessionStore {
     this.db.run("INSERT INTO observations_fts(observations_fts) VALUES('rebuild')");
   }
 
-  /**
-   * Import user prompt with duplicate checking
-   * Duplicates are identified by content_session_id + prompt_number
-   * Returns: { imported: boolean, id: number }
-   */
   importUserPrompt(prompt: {
     content_session_id: string;
     prompt_number: number;
@@ -3058,7 +2552,6 @@ export class SessionStore {
     created_at: string;
     created_at_epoch: number;
   }): { imported: boolean; id: number } {
-    // Check if prompt already exists
     const existing = this.db.prepare(`
       SELECT id FROM user_prompts
       WHERE content_session_id = ? AND prompt_number = ?

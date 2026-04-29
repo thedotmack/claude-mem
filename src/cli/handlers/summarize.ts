@@ -1,11 +1,3 @@
-/**
- * Summarize Handler - Stop
- *
- * Fire-and-forget: queue the summarize request and exit. The worker handles
- * summary generation, storage, and session cleanup asynchronously. The Stop
- * hook does not wait for any of it — Claude Code must exit immediately.
- * Session-complete cleanup is performed by the SessionEnd handler.
- */
 
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker-utils.js';
@@ -17,18 +9,10 @@ import { shouldTrackProject } from '../../shared/should-track-project.js';
 
 export const summarizeHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
-    // Skip Stop hook entirely when firing from an excluded project (notably
-    // OBSERVER_SESSIONS_DIR). Without this, the SDK observer's own Stop hook
-    // queues summaries against its meta-session and triggers a recovery loop.
     if (input.cwd && !shouldTrackProject(input.cwd)) {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
-    // Skip summaries in subagent context — subagents do not own the session summary.
-    // Gate on agentId only: that field is present exclusively for Task-spawned subagents.
-    // agentType alone (no agentId) indicates `--agent`-started main sessions, which still
-    // own their summary. Do this BEFORE the worker call so a subagent Stop hook
-    // does not bootstrap the worker.
     if (input.agentId) {
       logger.debug('HOOK', 'Skipping summary: subagent context detected', {
         sessionId: input.sessionId,
@@ -40,20 +24,15 @@ export const summarizeHandler: EventHandler = {
 
     const { sessionId, transcriptPath } = input;
 
-    // Validate required fields before processing
     if (!sessionId) {
       logger.warn('HOOK', 'summarize: No sessionId provided, skipping');
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
     if (!transcriptPath) {
-      // No transcript available - skip summary gracefully (not an error)
       logger.debug('HOOK', `No transcriptPath in Stop hook input for session ${sessionId} - skipping summary`);
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
-    // Extract last assistant message from transcript (the work Claude did)
-    // Note: "user" messages in transcripts are mostly tool_results, not actual user input.
-    // The user's original request is already stored in user_prompts table.
     let lastAssistantMessage = '';
     try {
       lastAssistantMessage = extractLastMessage(transcriptPath, 'assistant', true);
@@ -62,8 +41,6 @@ export const summarizeHandler: EventHandler = {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
-    // Skip summary if transcript has no assistant message (prevents repeated
-    // empty summarize requests that pollute logs — upstream bug)
     if (!lastAssistantMessage || !lastAssistantMessage.trim()) {
       logger.debug('HOOK', 'No assistant message in transcript - skipping summary', {
         sessionId,
@@ -78,7 +55,6 @@ export const summarizeHandler: EventHandler = {
 
     const platformSource = normalizePlatformSource(input.platform);
 
-    // 1. Queue summarize request — worker returns immediately with { status: 'queued' }
     const queueResult = await executeWithWorkerFallback<{ status?: string }>(
       '/api/sessions/summarize',
       'POST',

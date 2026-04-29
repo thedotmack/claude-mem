@@ -1,8 +1,4 @@
 #!/usr/bin/env node
-/**
- * Build Windows executable for claude-mem worker service
- * Uses Bun's compile feature to create a standalone exe
- */
 
 import { execSync } from 'child_process';
 import fs from 'fs';

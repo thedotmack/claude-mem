@@ -1,20 +1,4 @@
 #!/usr/bin/env bun
-/**
- * Regenerate CLAUDE.md files for folders in the current project
- *
- * Usage:
- *   bun scripts/regenerate-claude-md.ts [--dry-run] [--clean]
- *
- * Options:
- *   --dry-run  Show what would be done without writing files
- *   --clean    Remove auto-generated CLAUDE.md files instead of regenerating
- *
- * Behavior:
- *   - Scopes to current working directory (not entire database history)
- *   - Uses git ls-files to respect .gitignore (skips node_modules, .git, etc.)
- *   - Only processes folders that exist within the current project
- *   - Filters database to current project observations only
- */
 
 import { Database } from 'bun:sqlite';
 import path from 'path';
@@ -43,12 +27,10 @@ interface ObservationRow {
   discovery_tokens: number | null;
 }
 
-// Import shared utilities
 import { formatTime, groupByDate } from '../src/shared/timeline-formatting.js';
 import { isDirectChild } from '../src/shared/path-utils.js';
 import { replaceTaggedContent } from '../src/utils/claude-md-utils.js';
 
-// Type icon map (matches ModeManager)
 const TYPE_ICONS: Record<string, string> = {
   'bugfix': '🔴',
   'feature': '🟣',
@@ -72,31 +54,22 @@ function estimateTokens(obs: ObservationRow): number {
   return Math.ceil(size / 4);
 }
 
-/**
- * Get tracked folders using git ls-files
- * This respects .gitignore and only returns folders within the project
- */
 function getTrackedFolders(workingDir: string): Set<string> {
   const folders = new Set<string>();
 
   try {
-    // Get all tracked files using git ls-files
     const output = execSync('git ls-files', {
       cwd: workingDir,
       encoding: 'utf-8',
-      maxBuffer: 50 * 1024 * 1024 // 50MB buffer for large repos
+      maxBuffer: 50 * 1024 * 1024 
     });
 
     const files = output.trim().split('\n').filter(f => f);
 
     for (const file of files) {
-      // Get the absolute path, then extract directory
       const absPath = path.join(workingDir, file);
       let dir = path.dirname(absPath);
 
-      // Add all parent directories up to and including the working dir itself.
-      // The working dir is included so that root-level files (stored in the DB
-      // as bare filenames with no directory component) can be matched. Fixes #1514.
       while (dir.length >= workingDir.length && dir.startsWith(workingDir)) {
         folders.add(dir);
         if (dir === workingDir) break;
@@ -105,18 +78,14 @@ function getTrackedFolders(workingDir: string): Set<string> {
     }
   } catch (error) {
     console.error('Warning: git ls-files failed, falling back to directory walk');
-    // Fallback: walk directories but skip common ignored patterns
     walkDirectoriesWithIgnore(workingDir, folders);
   }
 
   return folders;
 }
 
-/**
- * Fallback directory walker that skips common ignored patterns
- */
 function walkDirectoriesWithIgnore(dir: string, folders: Set<string>, depth: number = 0): void {
-  if (depth > 10) return; // Prevent infinite recursion
+  if (depth > 10) return; 
 
   const ignorePatterns = [
     'node_modules', '.git', '.next', 'dist', 'build', '.cache',
@@ -140,9 +109,6 @@ function walkDirectoriesWithIgnore(dir: string, folders: Set<string>, depth: num
   }
 }
 
-/**
- * Check if an observation has any files that are direct children of the folder
- */
 function hasDirectChildFile(obs: ObservationRow, folderPath: string): boolean {
   const checkFiles = (filesJson: string | null): boolean => {
     if (!filesJson) return false;
@@ -158,20 +124,9 @@ function hasDirectChildFile(obs: ObservationRow, folderPath: string): boolean {
   return checkFiles(obs.files_modified) || checkFiles(obs.files_read);
 }
 
-/**
- * Query observations for a specific folder
- * folderPath is a relative path from the project root (e.g., "src/services")
- * Only returns observations with files directly in the folder (not in subfolders)
- */
 function findObservationsByFolder(db: Database, relativeFolderPath: string, project: string, limit: number): ObservationRow[] {
-  // Query more results than needed since we'll filter some out
   const queryLimit = limit * 3;
 
-  // For the root folder (empty relativeFolderPath), observations may have bare
-  // filenames stored without any directory component (e.g. ["dashboard.html"]).
-  // In that case the LIKE pattern below would never match, so we fetch all
-  // observations for the project and let isDirectChild filter to root-level files.
-  // Fixes #1514.
   let allMatches: ObservationRow[];
 
   if (relativeFolderPath === '' || relativeFolderPath === '.') {
@@ -193,31 +148,20 @@ function findObservationsByFolder(db: Database, relativeFolderPath: string, proj
       ORDER BY o.created_at_epoch DESC
       LIMIT ?
     `;
-    // Files in DB are stored as relative paths like "src/services/foo.ts"
-    // Match any file that starts with this folder path (we'll filter to direct children below)
     const likePattern = `%"${relativeFolderPath}/%`;
     allMatches = db.prepare(sql).all(project, likePattern, likePattern, queryLimit) as ObservationRow[];
   }
 
-  // Filter to only observations with direct child files (not in subfolders)
   return allMatches.filter(obs => hasDirectChildFile(obs, relativeFolderPath)).slice(0, limit);
 }
 
-/**
- * Extract relevant file from an observation for display
- * Only returns files that are direct children of the folder (not in subfolders)
- * @param obs - The observation row
- * @param relativeFolder - Relative folder path (e.g., "src/services")
- */
 function extractRelevantFile(obs: ObservationRow, relativeFolder: string): string {
-  // Try files_modified first - only direct children
   if (obs.files_modified) {
     try {
       const modified = JSON.parse(obs.files_modified);
       if (Array.isArray(modified) && modified.length > 0) {
         for (const file of modified) {
           if (isDirectChild(file, relativeFolder)) {
-            // Get just the filename (no path since it's a direct child)
             return path.basename(file);
           }
         }
@@ -225,7 +169,6 @@ function extractRelevantFile(obs: ObservationRow, relativeFolder: string): strin
     } catch {}
   }
 
-  // Fall back to files_read - only direct children
   if (obs.files_read) {
     try {
       const read = JSON.parse(obs.files_read);
@@ -242,9 +185,6 @@ function extractRelevantFile(obs: ObservationRow, relativeFolder: string): strin
   return 'General';
 }
 
-/**
- * Format observations for CLAUDE.md content
- */
 function formatObservationsForClaudeMd(observations: ObservationRow[], folderPath: string): string {
   const lines: string[] = [];
   lines.push('# Recent Activity');
@@ -292,54 +232,33 @@ function formatObservationsForClaudeMd(observations: ObservationRow[], folderPat
   return lines.join('\n').trim();
 }
 
-
-/**
- * Write CLAUDE.md file with tagged content preservation
- * Note: For the CLI regenerate tool, we DO create directories since the user
- * explicitly requested regeneration. This differs from the runtime behavior
- * which only writes to existing folders.
- */
 function writeClaudeMdToFolderForRegenerate(folderPath: string, newContent: string): void {
   const resolvedPath = path.resolve(folderPath);
 
-  // Never write inside .git directories — corrupts refs (#1165)
   if (resolvedPath.includes('/.git/') || resolvedPath.includes('\\.git\\') || resolvedPath.endsWith('/.git') || resolvedPath.endsWith('\\.git')) return;
 
   const claudeMdPath = path.join(folderPath, 'CLAUDE.md');
   const tempFile = `${claudeMdPath}.tmp`;
 
-  // For regenerate CLI, we create the folder if needed
   mkdirSync(folderPath, { recursive: true });
 
-  // Read existing content if file exists
   let existingContent = '';
   if (existsSync(claudeMdPath)) {
     existingContent = readFileSync(claudeMdPath, 'utf-8');
   }
 
-  // Use shared utility to preserve user content outside tags
   const finalContent = replaceTaggedContent(existingContent, newContent);
 
-  // Atomic write: temp file + rename
   writeFileSync(tempFile, finalContent);
   renameSync(tempFile, claudeMdPath);
 }
 
-/**
- * Clean up auto-generated CLAUDE.md files
- *
- * For each file with <claude-mem-context> tags:
- * - Strip the tagged section
- * - If empty after stripping → delete the file
- * - If has remaining content → save the stripped version
- */
 function cleanupAutoGeneratedFiles(workingDir: string, dryRun: boolean): void {
   console.log('=== CLAUDE.md Cleanup Mode ===\n');
   console.log(`Scanning ${workingDir} for CLAUDE.md files with auto-generated content...\n`);
 
   const filesToProcess: string[] = [];
 
-  // Walk directories to find CLAUDE.md files
   function walkForClaudeMd(dir: string): void {
     const ignorePatterns = ['node_modules', '.git', '.next', 'dist', 'build'];
 
@@ -353,7 +272,6 @@ function cleanupAutoGeneratedFiles(workingDir: string, dryRun: boolean): void {
             walkForClaudeMd(fullPath);
           }
         } else if (entry.name === 'CLAUDE.md') {
-          // Check if file contains auto-generated content
           try {
             const content = readFileSync(fullPath, 'utf-8');
             if (content.includes('<claude-mem-context>')) {
@@ -388,11 +306,9 @@ function cleanupAutoGeneratedFiles(workingDir: string, dryRun: boolean): void {
     try {
       const content = readFileSync(file, 'utf-8');
 
-      // Strip the claude-mem-context tagged section
       const stripped = content.replace(/<claude-mem-context>[\s\S]*?<\/claude-mem-context>/g, '').trim();
 
       if (stripped === '') {
-        // Empty after stripping → delete
         if (dryRun) {
           console.log(`  [DRY-RUN] Would delete (empty): ${relativePath}`);
         } else {
@@ -401,7 +317,6 @@ function cleanupAutoGeneratedFiles(workingDir: string, dryRun: boolean): void {
         }
         deletedCount++;
       } else {
-        // Has content → write stripped version
         if (dryRun) {
           console.log(`  [DRY-RUN] Would clean: ${relativePath}`);
         } else {
@@ -426,11 +341,6 @@ function cleanupAutoGeneratedFiles(workingDir: string, dryRun: boolean): void {
   }
 }
 
-/**
- * Regenerate CLAUDE.md for a single folder
- * @param absoluteFolder - Absolute path for writing files
- * @param relativeFolder - Relative path for DB queries (matches storage format)
- */
 function regenerateFolder(
   db: Database,
   absoluteFolder: string,
@@ -439,7 +349,6 @@ function regenerateFolder(
   dryRun: boolean
 ): { success: boolean; observationCount: number; error?: string } {
   try {
-    // Query using relative path (matches DB storage format)
     const observations = findObservationsByFolder(db, relativeFolder, project, OBSERVATION_LIMIT);
 
     if (observations.length === 0) {
@@ -450,7 +359,6 @@ function regenerateFolder(
       return { success: true, observationCount: observations.length };
     }
 
-    // Format using relative path for display, write to absolute path
     const formatted = formatObservationsForClaudeMd(observations, relativeFolder);
     writeClaudeMdToFolderForRegenerate(absoluteFolder, formatted);
 
@@ -460,9 +368,6 @@ function regenerateFolder(
   }
 }
 
-/**
- * Main function
- */
 async function main() {
   const args = process.argv.slice(2);
   const dryRun = args.includes('--dry-run');
@@ -470,7 +375,6 @@ async function main() {
 
   const workingDir = process.cwd();
 
-  // Handle cleanup mode
   if (cleanMode) {
     cleanupAutoGeneratedFiles(workingDir, dryRun);
     return;
@@ -479,11 +383,9 @@ async function main() {
   console.log('=== CLAUDE.md Regeneration Script ===\n');
   console.log(`Working directory: ${workingDir}`);
 
-  // Determine project identifier (matches how hooks determine project - uses folder name)
   const project = path.basename(workingDir);
   console.log(`Project: ${project}\n`);
 
-  // Get tracked folders using git ls-files
   console.log('Discovering folders (using git ls-files to respect .gitignore)...');
   const trackedFolders = getTrackedFolders(workingDir);
 
@@ -494,7 +396,6 @@ async function main() {
 
   console.log(`Found ${trackedFolders.size} folders in project.\n`);
 
-  // Open database
   if (!existsSync(DB_PATH)) {
     console.log('Database not found. No observations to process.');
     process.exit(0);
@@ -507,7 +408,6 @@ async function main() {
     console.log('[DRY RUN] Would regenerate the following folders:\n');
   }
 
-  // Process each folder
   let successCount = 0;
   let skipCount = 0;
   let errorCount = 0;
@@ -520,7 +420,6 @@ async function main() {
     const relativeFolder = path.relative(workingDir, absoluteFolder);
 
     if (dryRun) {
-      // Query using relative path (matches DB storage format)
       const observations = findObservationsByFolder(db, relativeFolder, project, OBSERVATION_LIMIT);
       if (observations.length > 0) {
         console.log(`${progress} ${relativeFolder} (${observations.length} obs)`);
@@ -546,7 +445,6 @@ async function main() {
 
   db.close();
 
-  // Summary
   console.log('\n=== Summary ===');
   console.log(`Total folders scanned: ${foldersArray.length}`);
   console.log(`With observations:     ${successCount}`);

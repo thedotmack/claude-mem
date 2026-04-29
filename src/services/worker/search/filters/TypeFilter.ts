@@ -1,15 +1,7 @@
-/**
- * TypeFilter - Observation type filtering for search results
- *
- * Provides utilities for filtering observations by type.
- */
 import { logger } from '../../../../utils/logger.js';
 
 type ObservationType = 'decision' | 'bugfix' | 'feature' | 'refactor' | 'discovery' | 'change' | 'security_alert' | 'security_note';
 
-/**
- * Valid observation types
- */
 export const OBSERVATION_TYPES: ObservationType[] = [
   'decision',
   'bugfix',
@@ -21,9 +13,6 @@ export const OBSERVATION_TYPES: ObservationType[] = [
   'security_note'
 ];
 
-/**
- * Normalize type filter value(s)
- */
 export function normalizeType(
   type?: string | string[]
 ): ObservationType[] | undefined {
@@ -39,9 +28,6 @@ export function normalizeType(
   return normalized.length > 0 ? normalized : undefined;
 }
 
-/**
- * Check if a result matches the type filter
- */
 export function matchesType(
   resultType: string,
   filterTypes?: ObservationType[]
@@ -53,9 +39,6 @@ export function matchesType(
   return filterTypes.includes(resultType as ObservationType);
 }
 
-/**
- * Filter observations by type
- */
 export function filterObservationsByType<T extends { type: string }>(
   observations: T[],
   types?: ObservationType[]
@@ -67,9 +50,6 @@ export function filterObservationsByType<T extends { type: string }>(
   return observations.filter(obs => matchesType(obs.type, types));
 }
 
-/**
- * Parse comma-separated type string
- */
 export function parseTypeString(typeString: string): ObservationType[] {
   return typeString
     .split(',')

@@ -1,21 +1,10 @@
 #!/usr/bin/env node
-/**
- * Smart Install Script for claude-mem
- *
- * Ensures Bun runtime and uv (Python package manager) are installed
- * (auto-installs if missing) and handles dependency installation when needed.
- *
- * Resolves the install directory from CLAUDE_PLUGIN_ROOT (set by Claude Code
- * for both cache and marketplace installs), falling back to script location
- * and legacy paths.
- */
 import { existsSync, readFileSync, writeFileSync, openSync, readSync, closeSync } from 'fs';
 import { execSync, spawnSync } from 'child_process';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 
-// Early exit if plugin is disabled in Claude Code settings (#781)
 function isPluginDisabledInClaudeSettings() {
   try {
     const configDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
@@ -33,24 +22,12 @@ if (isPluginDisabledInClaudeSettings()) {
 }
 const IS_WINDOWS = process.platform === 'win32';
 
-/**
- * Resolve the plugin root directory where dependencies should be installed.
- *
- * Priority:
- * 1. CLAUDE_PLUGIN_ROOT env var (set by Claude Code for hooks — works for
- *    both cache-based and marketplace installs)
- * 2. Script location (dirname of this file, up one level from scripts/)
- * 3. XDG path (~/.config/claude/plugins/marketplaces/thedotmack)
- * 4. Legacy path (~/.claude/plugins/marketplaces/thedotmack)
- */
 function resolveRoot() {
-  // CLAUDE_PLUGIN_ROOT is the authoritative location set by Claude Code
   if (process.env.CLAUDE_PLUGIN_ROOT) {
     const root = process.env.CLAUDE_PLUGIN_ROOT;
     if (existsSync(join(root, 'package.json'))) return root;
   }
 
-  // Derive from script location (this file is in <root>/scripts/)
   try {
     const scriptDir = dirname(fileURLToPath(import.meta.url));
     const candidate = dirname(scriptDir);
@@ -59,7 +36,6 @@ function resolveRoot() {
     // import.meta.url not available
   }
 
-  // Probe XDG path, then legacy
   const marketplaceRel = join('plugins', 'marketplaces', 'thedotmack');
   const xdg = join(homedir(), '.config', 'claude', marketplaceRel);
   if (existsSync(join(xdg, 'package.json'))) return xdg;
@@ -70,9 +46,6 @@ function resolveRoot() {
 const ROOT = resolveRoot();
 const MARKER = join(ROOT, '.install-version');
 
-/**
- * Check if Bun is installed and accessible
- */
 function isBunInstalled() {
   try {
     const result = spawnSync('bun', ['--version'], {
@@ -85,7 +58,6 @@ function isBunInstalled() {
     // PATH check failed, try common installation paths
   }
 
-  // Check common installation paths (handles fresh installs before PATH reload)
   const bunPaths = IS_WINDOWS
     ? [join(homedir(), '.bun', 'bin', 'bun.exe')]
     : [join(homedir(), '.bun', 'bin', 'bun'), '/usr/local/bin/bun', '/opt/homebrew/bin/bun'];
@@ -93,11 +65,7 @@ function isBunInstalled() {
   return bunPaths.some(existsSync);
 }
 
-/**
- * Get the Bun executable path (from PATH or common install locations)
- */
 function getBunPath() {
-  // Try PATH first
   try {
     const result = spawnSync('bun', ['--version'], {
       encoding: 'utf-8',
@@ -109,7 +77,6 @@ function getBunPath() {
     // Not in PATH
   }
 
-  // Check common installation paths
   const bunPaths = IS_WINDOWS
     ? [join(homedir(), '.bun', 'bin', 'bun.exe')]
     : [join(homedir(), '.bun', 'bin', 'bun'), '/usr/local/bin/bun', '/opt/homebrew/bin/bun'];
@@ -121,15 +88,8 @@ function getBunPath() {
   return null;
 }
 
-/**
- * Minimum required bun version
- * v1.1.14+ required for .changes property and multi-statement SQL support
- */
 const MIN_BUN_VERSION = '1.1.14';
 
-/**
- * Compare semver versions
- */
 function compareVersions(v1, v2) {
   const parts1 = v1.split('.').map(Number);
   const parts2 = v2.split('.').map(Number);
@@ -142,18 +102,12 @@ function compareVersions(v1, v2) {
   return 0;
 }
 
-/**
- * Check if bun version meets minimum requirements
- */
 function isBunVersionSufficient() {
   const version = getBunVersion();
   if (!version) return false;
   return compareVersions(version, MIN_BUN_VERSION) >= 0;
 }
 
-/**
- * Get Bun version if installed
- */
 function getBunVersion() {
   const bunPath = getBunPath();
   if (!bunPath) return null;
@@ -170,9 +124,6 @@ function getBunVersion() {
   }
 }
 
-/**
- * Check if uv is installed and accessible
- */
 function isUvInstalled() {
   try {
     const result = spawnSync('uv', ['--version'], {
@@ -185,7 +136,6 @@ function isUvInstalled() {
     // PATH check failed, try common installation paths
   }
 
-  // Check common installation paths (handles fresh installs before PATH reload)
   const uvPaths = IS_WINDOWS
     ? [join(homedir(), '.local', 'bin', 'uv.exe'), join(homedir(), '.cargo', 'bin', 'uv.exe')]
     : [join(homedir(), '.local', 'bin', 'uv'), join(homedir(), '.cargo', 'bin', 'uv'), '/usr/local/bin/uv', '/opt/homebrew/bin/uv'];
@@ -193,9 +143,6 @@ function isUvInstalled() {
   return uvPaths.some(existsSync);
 }
 
-/**
- * Get uv version if installed
- */
 function getUvVersion() {
   try {
     const result = spawnSync('uv', ['--version'], {
@@ -209,22 +156,17 @@ function getUvVersion() {
   }
 }
 
-/**
- * Install Bun automatically based on platform
- */
 function installBun() {
   console.error('🔧 Bun not found. Installing Bun runtime...');
 
   try {
     if (IS_WINDOWS) {
-      // Windows: Use PowerShell installer
       console.error('   Installing via PowerShell...');
       execSync('powershell -c "irm bun.sh/install.ps1 | iex"', {
         stdio: ['pipe', 'pipe', 'inherit'],
         shell: true
       });
     } else {
-      // Unix/macOS: Use curl installer
       console.error('   Installing via curl...');
       execSync('curl -fsSL https://bun.sh/install | bash', {
         stdio: ['pipe', 'pipe', 'inherit'],
@@ -232,14 +174,11 @@ function installBun() {
       });
     }
 
-    // Verify installation
     if (isBunInstalled()) {
       const version = getBunVersion();
       console.error(`✅ Bun ${version} installed successfully`);
       return true;
     } else {
-      // Bun may be installed but not in PATH yet for this session
-      // Try common installation paths
       const bunPaths = IS_WINDOWS
         ? [join(homedir(), '.bun', 'bin', 'bun.exe')]
         : [join(homedir(), '.bun', 'bin', 'bun'), '/usr/local/bin/bun', '/opt/homebrew/bin/bun'];
@@ -274,22 +213,17 @@ function installBun() {
   }
 }
 
-/**
- * Install uv automatically based on platform
- */
 function installUv() {
   console.error('🐍 Installing uv for Python/Chroma support...');
 
   try {
     if (IS_WINDOWS) {
-      // Windows: Use PowerShell installer
       console.error('   Installing via PowerShell...');
       execSync('powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"', {
         stdio: ['pipe', 'pipe', 'inherit'],
         shell: true
       });
     } else {
-      // Unix/macOS: Use curl installer
       console.error('   Installing via curl...');
       execSync('curl -LsSf https://astral.sh/uv/install.sh | sh', {
         stdio: ['pipe', 'pipe', 'inherit'],
@@ -297,14 +231,11 @@ function installUv() {
       });
     }
 
-    // Verify installation
     if (isUvInstalled()) {
       const version = getUvVersion();
       console.error(`✅ uv ${version} installed successfully`);
       return true;
     } else {
-      // uv may be installed but not in PATH yet for this session
-      // Try common installation paths
       const uvPaths = IS_WINDOWS
         ? [join(homedir(), '.local', 'bin', 'uv.exe'), join(homedir(), '.cargo', 'bin', 'uv.exe')]
         : [join(homedir(), '.local', 'bin', 'uv'), join(homedir(), '.cargo', 'bin', 'uv'), '/usr/local/bin/uv', '/opt/homebrew/bin/uv'];
@@ -339,9 +270,6 @@ function installUv() {
   }
 }
 
-/**
- * Check if dependencies need to be installed
- */
 function needsInstall() {
   if (!existsSync(join(ROOT, 'node_modules'))) return true;
   try {
@@ -353,13 +281,6 @@ function needsInstall() {
   }
 }
 
-/**
- * Install dependencies using Bun with npm fallback
- *
- * Bun has issues with npm alias packages (e.g., string-width-cjs, strip-ansi-cjs)
- * that are defined in package-lock.json. When bun fails with 404 errors for these
- * packages, we fall back to npm which handles aliases correctly.
- */
 function installDeps() {
   const bunPath = getBunPath();
   if (!bunPath) {
@@ -368,11 +289,8 @@ function installDeps() {
 
   console.error('📦 Installing dependencies with Bun...');
 
-  // Quote path for Windows paths with spaces
   const bunCmd = IS_WINDOWS && bunPath.includes(' ') ? `"${bunPath}"` : bunPath;
 
-  // Use pipe for stdout to prevent non-JSON output leaking to Claude Code hooks.
-  // stderr is inherited so progress/errors are still visible to the user.
   const installStdio = ['pipe', 'pipe', 'inherit'];
 
   let bunSucceeded = false;
@@ -380,7 +298,6 @@ function installDeps() {
     execSync(`${bunCmd} install`, { cwd: ROOT, stdio: installStdio, shell: IS_WINDOWS });
     bunSucceeded = true;
   } catch {
-    // First attempt failed, try with force flag
     try {
       execSync(`${bunCmd} install --force`, { cwd: ROOT, stdio: installStdio, shell: IS_WINDOWS });
       bunSucceeded = true;
@@ -389,7 +306,6 @@ function installDeps() {
     }
   }
 
-  // Fallback to npm if bun failed (handles npm alias packages correctly)
   if (!bunSucceeded) {
     console.error('⚠️  Bun install failed, falling back to npm...');
     console.error('   (This can happen with npm alias packages like *-cjs)');
@@ -400,7 +316,6 @@ function installDeps() {
     }
   }
 
-  // Write version marker
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
   writeFileSync(MARKER, JSON.stringify({
     version: pkg.version,
@@ -410,17 +325,12 @@ function installDeps() {
   }));
 }
 
-/**
- * Verify that critical runtime modules are resolvable from the install directory.
- * Returns true if all critical modules exist, false otherwise.
- */
 function verifyCriticalModules() {
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
   const dependencies = Object.keys(pkg.dependencies || {});
 
   const missing = [];
   for (const dep of dependencies) {
-    // Check that the module directory exists in node_modules
     const modulePath = join(ROOT, 'node_modules', ...dep.split('/'));
     if (!existsSync(modulePath)) {
       missing.push(dep);
@@ -435,35 +345,19 @@ function verifyCriticalModules() {
   return true;
 }
 
-// Mach-O 64-bit magic values as seen when reading the first 4 file bytes with readUInt32LE.
-// Native arm64/x86_64 Mach-O files start with bytes [CF FA ED FE]; readUInt32LE gives 0xFEEDFACF.
-// Byte-swapped (big-endian) Mach-O files start with bytes [FE ED FA CF]; readUInt32LE gives 0xCFFAEDFE.
-const MACHO_MAGIC_NATIVE  = 0xFEEDFACF; // native 64-bit (arm64/x86_64) — file bytes CF FA ED FE
-const MACHO_MAGIC_SWAPPED = 0xCFFAEDFE; // byte-swapped 64-bit             — file bytes FE ED FA CF
+const MACHO_MAGIC_NATIVE  = 0xFEEDFACF; 
+const MACHO_MAGIC_SWAPPED = 0xCFFAEDFE; 
 
-/**
- * Warn when the bundled claude-mem binary cannot run on the current platform.
- *
- * The committed binary (plugin/scripts/claude-mem) is compiled for macOS arm64.
- * On Linux or Windows it produces "Exec format error" and silently fails.
- * This check surfaces the incompatibility at install time so users know why
- * the binary path doesn't work, and confirms the JS fallback (bun-runner.js →
- * worker-service.cjs) is active and covers all functionality.
- *
- * Fixes #1547 — Plugin silently fails on Linux ARM64.
- */
 export function checkBinaryPlatformCompatibility(binaryPath = join(ROOT, 'scripts', 'claude-mem')) {
 
   if (!existsSync(binaryPath)) {
-    return; // Binary absent — nothing to check (e.g. after npm install which excludes it)
+    return; 
   }
 
-  // The binary only matters on non-macOS platforms; on macOS it works correctly.
   if (process.platform === 'darwin') {
     return;
   }
 
-  // Read the first 4 bytes to identify the binary format.
   let fd;
   try {
     const buf = Buffer.alloc(4);
@@ -485,13 +379,10 @@ export function checkBinaryPlatformCompatibility(binaryPath = join(ROOT, 'script
   }
 }
 
-// Main execution
 try {
-  // Step 1: Ensure Bun is installed and meets minimum version (REQUIRED)
   if (!isBunInstalled()) {
     installBun();
 
-    // Re-check after installation
     if (!isBunInstalled()) {
       console.error('❌ Bun is required but not available in PATH');
       console.error('   Please restart your terminal after installation');
@@ -499,7 +390,6 @@ try {
     }
   }
 
-  // Step 1.5: Ensure Bun version is sufficient
   if (!isBunVersionSufficient()) {
     const currentVersion = getBunVersion();
     console.error(`⚠️  Bun ${currentVersion} is outdated. Minimum required: ${MIN_BUN_VERSION}`);
@@ -518,11 +408,9 @@ try {
     }
   }
 
-  // Step 2: Ensure uv is installed (REQUIRED for vector search)
   if (!isUvInstalled()) {
     installUv();
 
-    // Re-check after installation
     if (!isUvInstalled()) {
       console.error('❌ uv is required but not available in PATH');
       console.error('   Please restart your terminal after installation');
@@ -530,14 +418,12 @@ try {
     }
   }
 
-  // Step 3: Install dependencies if needed
   if (needsInstall()) {
     const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
     const newVersion = pkg.version;
 
     installDeps();
 
-    // Verify critical modules are resolvable
     if (!verifyCriticalModules()) {
       console.error('⚠️  Retrying install with npm...');
       try {
@@ -553,17 +439,14 @@ try {
 
     console.error('✅ Dependencies installed');
 
-    // Auto-restart worker to pick up new code
     const port = process.env.CLAUDE_MEM_WORKER_PORT || 37777;
     console.error(`[claude-mem] Plugin updated to v${newVersion} - restarting worker...`);
     try {
-      // Graceful shutdown via HTTP (curl is cross-platform enough)
       execSync(`curl -s -X POST http://127.0.0.1:${port}/api/admin/shutdown`, {
         stdio: 'ignore',
         shell: IS_WINDOWS,
         timeout: 5000
       });
-      // Brief wait for port to free
       execSync(IS_WINDOWS ? 'timeout /t 1 /nobreak >nul' : 'sleep 0.5', {
         stdio: 'ignore',
         shell: true
@@ -574,17 +457,11 @@ try {
     // Worker will be started fresh by next hook in chain (worker-service.cjs start)
   }
 
-  // Step 4 (removed in #2054): legacy `claude-mem` shell alias was deleted.
-  // Users invoke the CLI via `npx claude-mem <cmd>` or `bunx claude-mem <cmd>`.
-
-  // Step 5: Warn if the bundled native binary is incompatible with this platform
   checkBinaryPlatformCompatibility();
 
-  // Output valid JSON for Claude Code hook contract
   console.log(JSON.stringify({ continue: true, suppressOutput: true }));
 } catch (e) {
   console.error('❌ Installation failed:', e.message);
-  // Still output valid JSON so Claude Code doesn't show a confusing error
   console.log(JSON.stringify({ continue: true, suppressOutput: true }));
   process.exit(1);
 }

@@ -1,9 +1,3 @@
-/**
- * Smoke test for OpenClaw claude-mem plugin registration.
- * Validates the plugin structure works independently of the full OpenClaw runtime.
- *
- * Run: node test-sse-consumer.js
- */
 
 import claudeMemPlugin from "./dist/index.js";
 
@@ -49,10 +43,8 @@ const mockApi = {
   },
 };
 
-// Call the default export with mock API
 claudeMemPlugin(mockApi);
 
-// Verify registration
 let failures = 0;
 
 if (!registeredService) {

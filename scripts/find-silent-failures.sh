@@ -1,10 +1,4 @@
 #!/bin/bash
-# Find Silent Failure Patterns
-#
-# This script searches for defensive OR patterns (|| '' || null || undefined)
-# that should potentially use happy_path_error__with_fallback instead.
-#
-# Usage: ./scripts/find-silent-failures.sh
 
 echo "=================================================="
 echo "Searching for defensive OR patterns in src/"

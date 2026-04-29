@@ -1,7 +1,3 @@
-/**
- * TypeScript types for Claude Code transcript JSONL structure
- * Based on Python Pydantic models from docs/context/cc-transcript-model-example.py
- */
 
 export interface TodoItem {
   id: string;
@@ -155,7 +151,7 @@ export interface SummaryTranscriptEntry {
 export interface SystemTranscriptEntry extends BaseTranscriptEntry {
   type: 'system';
   content: string;
-  level?: string; // 'warning', 'info', 'error'
+  level?: string; 
 }
 
 export interface QueueOperationTranscriptEntry {
@@ -163,7 +159,7 @@ export interface QueueOperationTranscriptEntry {
   operation: 'enqueue' | 'dequeue';
   timestamp: string;
   sessionId: string;
-  content?: ContentItem[]; // Only present for enqueue operations
+  content?: ContentItem[]; 
 }
 
 export type TranscriptEntry =

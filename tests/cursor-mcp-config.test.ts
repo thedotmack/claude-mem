@@ -8,29 +8,18 @@ import {
   type CursorMcpConfig
 } from '../src/utils/cursor-utils';
 
-/**
- * Tests for Cursor MCP Configuration
- *
- * These tests validate the MCP server configuration that gets written
- * to .cursor/mcp.json (project-level) or ~/.cursor/mcp.json (user-level).
- *
- * The config must match Cursor's expected format for MCP servers.
- */
-
 describe('Cursor MCP Configuration', () => {
   let tempDir: string;
   let mcpJsonPath: string;
   const mcpServerPath = '/path/to/mcp-server.cjs';
 
   beforeEach(() => {
-    // Create unique temp directory for each test
     tempDir = join(tmpdir(), `cursor-mcp-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     mkdirSync(tempDir, { recursive: true });
     mcpJsonPath = join(tempDir, '.cursor', 'mcp.json');
   });
 
   afterEach(() => {
-    // Clean up temp directory
     try {
       rmSync(tempDir, { recursive: true, force: true });
     } catch {
@@ -63,7 +52,6 @@ describe('Cursor MCP Configuration', () => {
     });
 
     it('preserves existing MCP servers when adding claude-mem', () => {
-      // Pre-create config with another server
       mkdirSync(join(tempDir, '.cursor'), { recursive: true });
       const existingConfig = {
         mcpServers: {
@@ -79,17 +67,14 @@ describe('Cursor MCP Configuration', () => {
 
       const config: CursorMcpConfig = JSON.parse(readFileSync(mcpJsonPath, 'utf-8'));
 
-      // Both servers should exist
       expect(config.mcpServers['other-server']).toBeDefined();
       expect(config.mcpServers['other-server'].command).toBe('python');
       expect(config.mcpServers['claude-mem']).toBeDefined();
     });
 
     it('updates existing claude-mem server path', () => {
-      // First config
       configureCursorMcp(mcpJsonPath, '/old/path.cjs');
 
-      // Update with new path
       const newPath = '/new/path.cjs';
       configureCursorMcp(mcpJsonPath, newPath);
 
@@ -99,11 +84,9 @@ describe('Cursor MCP Configuration', () => {
     });
 
     it('recovers from corrupt mcp.json', () => {
-      // Create corrupt file
       mkdirSync(join(tempDir, '.cursor'), { recursive: true });
       writeFileSync(mcpJsonPath, 'not valid json {{{{');
 
-      // Should not throw, should overwrite
       configureCursorMcp(mcpJsonPath, mcpServerPath);
 
       const config: CursorMcpConfig = JSON.parse(readFileSync(mcpJsonPath, 'utf-8'));
@@ -111,7 +94,6 @@ describe('Cursor MCP Configuration', () => {
     });
 
     it('handles mcp.json with missing mcpServers key', () => {
-      // Create file with empty object
       mkdirSync(join(tempDir, '.cursor'), { recursive: true });
       writeFileSync(mcpJsonPath, '{}');
 
@@ -128,7 +110,6 @@ describe('Cursor MCP Configuration', () => {
 
       const content = readFileSync(mcpJsonPath, 'utf-8');
 
-      // Should not throw
       expect(() => JSON.parse(content)).not.toThrow();
     });
 
@@ -137,7 +118,6 @@ describe('Cursor MCP Configuration', () => {
 
       const content = readFileSync(mcpJsonPath, 'utf-8');
 
-      // Should contain newlines and indentation
       expect(content).toContain('\n');
       expect(content).toContain('  "mcpServers"');
     });
@@ -147,11 +127,9 @@ describe('Cursor MCP Configuration', () => {
 
       const config = JSON.parse(readFileSync(mcpJsonPath, 'utf-8'));
 
-      // Top-level must have mcpServers
       expect(config).toHaveProperty('mcpServers');
       expect(typeof config.mcpServers).toBe('object');
 
-      // Each server must have command (string) and optionally args (array)
       for (const [name, server] of Object.entries(config.mcpServers)) {
         expect(typeof name).toBe('string');
         expect((server as { command: string }).command).toBeDefined();
@@ -176,7 +154,6 @@ describe('Cursor MCP Configuration', () => {
     });
 
     it('preserves other servers when removing claude-mem', () => {
-      // Setup: both servers
       mkdirSync(join(tempDir, '.cursor'), { recursive: true });
       const config = {
         mcpServers: {
@@ -194,7 +171,6 @@ describe('Cursor MCP Configuration', () => {
     });
 
     it('does nothing if mcp.json does not exist', () => {
-      // Should not throw
       expect(() => removeMcpConfig(mcpJsonPath)).not.toThrow();
       expect(existsSync(mcpJsonPath)).toBe(false);
     });
@@ -239,7 +215,6 @@ describe('Cursor MCP Configuration', () => {
       const config: CursorMcpConfig = JSON.parse(readFileSync(mcpJsonPath, 'utf-8'));
       expect(config.mcpServers['claude-mem'].args).toEqual([specialPath]);
 
-      // Verify it survives JSON round-trip
       const reread: CursorMcpConfig = JSON.parse(readFileSync(mcpJsonPath, 'utf-8'));
       expect(reread.mcpServers['claude-mem'].args![0]).toBe(specialPath);
     });

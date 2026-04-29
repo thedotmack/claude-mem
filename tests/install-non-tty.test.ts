@@ -2,19 +2,6 @@ import { describe, it, expect } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-/**
- * Tests for the non-TTY detection in the install command.
- *
- * The install command (src/npx-cli/commands/install.ts) has non-interactive
- * fallbacks so it works in CI/CD, Docker, and piped environments where
- * process.stdin.isTTY is undefined.
- *
- * Since isInteractive, runTasks, and log are not exported, we verify
- * their presence and correctness via source inspection. This is a valid
- * approach for testing private module-level constructs that can't be
- * imported directly.
- */
-
 const installSourcePath = join(
   __dirname,
   '..',
@@ -32,7 +19,6 @@ describe('Install Non-TTY Support', () => {
     });
 
     it('uses strict equality (===) not truthy check for isTTY', () => {
-      // Ensures undefined isTTY is treated as false, not just falsy
       const match = installSource.match(/const isInteractive = process\.stdin\.isTTY === true/);
       expect(match).not.toBeNull();
     });
@@ -48,7 +34,6 @@ describe('Install Non-TTY Support', () => {
     });
 
     it('has non-interactive fallback using console.log', () => {
-      // In non-TTY mode, tasks iterate and log output directly
       expect(installSource).toContain('console.log(`  ${msg}`)');
     });
 
@@ -60,7 +45,6 @@ describe('Install Non-TTY Support', () => {
   describe('log wrapper', () => {
     it('defines log.info that falls back to console.log', () => {
       expect(installSource).toContain('info: (msg: string) =>');
-      // Should have console.log fallback
       expect(installSource).toMatch(/info:.*console\.log/);
     });
 
@@ -82,7 +66,6 @@ describe('Install Non-TTY Support', () => {
 
   describe('non-interactive install path', () => {
     it('defaults to claude-code when not interactive and no IDE specified', () => {
-      // The non-interactive path should have a fallback
       expect(installSource).toContain("selectedIDEs = ['claude-code']");
     });
 

@@ -1,24 +1,12 @@
 import type { PlatformAdapter, NormalizedHookInput, HookResult } from '../types.js';
 import { AdapterRejectedInput, isValidCwd } from './errors.js';
 
-// Maps Windsurf stdin format — JSON envelope with agent_action_name + tool_info payload
-//
-// Common envelope (all hooks):
-//   { agent_action_name, trajectory_id, execution_id, timestamp, tool_info: { ... } }
-//
-// Event-specific tool_info payloads:
-//   pre_user_prompt:      { user_prompt: string }
-//   post_write_code:      { file_path, edits: [{ old_string, new_string }] }
-//   post_run_command:     { command_line, cwd }
-//   post_mcp_tool_use:    { mcp_server_name, mcp_tool_name, mcp_tool_arguments, mcp_result }
-//   post_cascade_response: { response }
 export const windsurfAdapter: PlatformAdapter = {
   normalizeInput(raw) {
     const r = (raw ?? {}) as any;
     const toolInfo = r.tool_info ?? {};
     const actionName: string = r.agent_action_name ?? '';
 
-    // Plan 05 Phase 6 — cwd validation at the adapter boundary.
     const cwd = toolInfo.cwd ?? process.cwd();
     if (!isValidCwd(cwd)) {
       throw new AdapterRejectedInput('invalid_cwd');
@@ -73,14 +61,11 @@ export const windsurfAdapter: PlatformAdapter = {
         };
 
       default:
-        // Unknown action — pass through what we can
         return base;
     }
   },
 
   formatOutput(result) {
-    // Windsurf exit codes: 0 = success, 2 = block (pre-hooks only)
-    // The CLI layer handles exit codes; here we just return a simple continue flag
     return { continue: result.continue ?? true };
   },
 };

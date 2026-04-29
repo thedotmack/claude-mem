@@ -1,9 +1,3 @@
-/**
- * TimelineBuilder - Constructs timeline views for search results
- *
- * Builds chronological views around anchor points with depth control.
- * Used by the timeline tool and get_context_timeline tool.
- */
 import { logger } from '../../../utils/logger.js';
 
 import type {
@@ -21,18 +15,12 @@ import {
   estimateTokens
 } from '../../../shared/timeline-formatting.js';
 
-/**
- * Timeline item for unified chronological display
- */
 export interface TimelineItem {
   type: 'observation' | 'session' | 'prompt';
   data: ObservationSearchResult | SessionSummarySearchResult | UserPromptSearchResult;
   epoch: number;
 }
 
-/**
- * Raw timeline data from SessionStore
- */
 export interface TimelineData {
   observations: ObservationSearchResult[];
   sessions: SessionSummarySearchResult[];
@@ -40,9 +28,6 @@ export interface TimelineData {
 }
 
 export class TimelineBuilder {
-  /**
-   * Build timeline items from raw data
-   */
   buildTimeline(data: TimelineData): TimelineItem[] {
     const items: TimelineItem[] = [
       ...data.observations.map(obs => ({
@@ -62,14 +47,10 @@ export class TimelineBuilder {
       }))
     ];
 
-    // Sort chronologically
     items.sort((a, b) => a.epoch - b.epoch);
     return items;
   }
 
-  /**
-   * Filter timeline items to respect depth window around anchor
-   */
   filterByDepth(
     items: TimelineItem[],
     anchorId: number | string,
@@ -88,16 +69,12 @@ export class TimelineBuilder {
     return items.slice(startIndex, endIndex);
   }
 
-  /**
-   * Find anchor index in timeline items
-   */
   private findAnchorIndex(
     items: TimelineItem[],
     anchorId: number | string,
     anchorEpoch: number
   ): number {
     if (typeof anchorId === 'number') {
-      // Observation ID
       return items.findIndex(
         item => item.type === 'observation' &&
           (item.data as ObservationSearchResult).id === anchorId
@@ -105,7 +82,6 @@ export class TimelineBuilder {
     }
 
     if (typeof anchorId === 'string' && anchorId.startsWith('S')) {
-      // Session ID
       const sessionNum = parseInt(anchorId.slice(1), 10);
       return items.findIndex(
         item => item.type === 'session' &&
@@ -113,14 +89,10 @@ export class TimelineBuilder {
       );
     }
 
-    // Timestamp anchor - find closest item
     const index = items.findIndex(item => item.epoch >= anchorEpoch);
     return index === -1 ? items.length - 1 : index;
   }
 
-  /**
-   * Format timeline as markdown
-   */
   formatTimeline(
     items: TimelineItem[],
     anchorId: number | string | null,
@@ -141,7 +113,6 @@ export class TimelineBuilder {
 
     const lines: string[] = [];
 
-    // Header
     if (query && anchorId) {
       const anchorObs = items.find(
         item => item.type === 'observation' &&
@@ -165,11 +136,9 @@ export class TimelineBuilder {
     }
     lines.push('');
 
-    // Group by day
     const dayMap = this.groupByDay(items);
     const sortedDays = this.sortDaysChronologically(dayMap);
 
-    // Render each day
     for (const [day, dayItems] of sortedDays) {
       lines.push(`### ${day}`);
       lines.push('');
@@ -182,7 +151,6 @@ export class TimelineBuilder {
         const isAnchor = this.isAnchorItem(item, anchorId);
 
         if (item.type === 'session') {
-          // Close any open table
           if (tableOpen) {
             lines.push('');
             tableOpen = false;
@@ -254,9 +222,6 @@ export class TimelineBuilder {
     return lines.join('\n');
   }
 
-  /**
-   * Group timeline items by day
-   */
   private groupByDay(items: TimelineItem[]): Map<string, TimelineItem[]> {
     const dayMap = new Map<string, TimelineItem[]>();
 
@@ -271,9 +236,6 @@ export class TimelineBuilder {
     return dayMap;
   }
 
-  /**
-   * Sort days chronologically
-   */
   private sortDaysChronologically(
     dayMap: Map<string, TimelineItem[]>
   ): Array<[string, TimelineItem[]]> {
@@ -284,9 +246,6 @@ export class TimelineBuilder {
     });
   }
 
-  /**
-   * Check if item is the anchor
-   */
   private isAnchorItem(item: TimelineItem, anchorId: number | string | null): boolean {
     if (anchorId === null) return false;
 

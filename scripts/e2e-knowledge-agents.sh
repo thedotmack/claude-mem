@@ -1,11 +1,4 @@
 #!/usr/bin/env bash
-#
-# E2E Test: Knowledge Agents
-# Fully hands-off test of the complete knowledge agent lifecycle.
-# Designed to be orchestrated via tmux-cli from Claude Code.
-#
-# Flow: health check → build corpus → list → get → prime → query → reprime → query → rebuild → delete → verify
-#
 set -euo pipefail
 
 WORKER_URL="http://localhost:37777"
@@ -13,8 +6,6 @@ CORPUS_NAME="e2e-test-knowledge-agent"
 PASS_COUNT=0
 FAIL_COUNT=0
 LOG_FILE="${HOME}/.claude-mem/logs/e2e-knowledge-agents-$(date +%Y%m%d-%H%M%S).log"
-
-# -- Helpers ------------------------------------------------------------------
 
 log() { echo "[$(date +%H:%M:%S)] $*" | tee -a "$LOG_FILE"; }
 pass() { PASS_COUNT=$((PASS_COUNT + 1)); log "PASS: $1"; }
@@ -83,14 +74,10 @@ extract_body_and_status() {
   RESPONSE_STATUS=$(echo "$response" | tail -1)
 }
 
-# -- Cleanup ------------------------------------------------------------------
-
 cleanup_test_corpus() {
   log "Cleaning up test corpus '$CORPUS_NAME'..."
   curl -s -X DELETE "$WORKER_URL/api/corpus/$CORPUS_NAME" > /dev/null 2>&1 || true
 }
-
-# -- Tests --------------------------------------------------------------------
 
 test_worker_health() {
   log "=== Test: Worker Health ==="
@@ -132,7 +119,6 @@ test_list_corpora() {
   extract_body_and_status "$response"
   assert_http_status "List corpora" "200" "$RESPONSE_STATUS"
 
-  # Verify our test corpus is in the list
   local found
   found=$(echo "$RESPONSE_BODY" | jq -r ".[] | select(.name == \"$CORPUS_NAME\") | .name" 2>/dev/null)
   if [[ "$found" == "$CORPUS_NAME" ]]; then
@@ -193,18 +179,15 @@ test_query_corpus() {
 
 test_query_without_prime() {
   log "=== Test: Query Unprimed Corpus ==="
-  # Build a second corpus but don't prime it
   curl_post "/api/corpus" "{\"name\": \"e2e-unprimed-test\", \"limit\": 5}" > /dev/null 2>&1
   local response
   response=$(curl_post "/api/corpus/e2e-unprimed-test/query" '{"question": "test"}' 30)
   extract_body_and_status "$response"
-  # Should fail because corpus isn't primed
   if [[ "$RESPONSE_STATUS" != "200" ]] || echo "$RESPONSE_BODY" | jq -r '.error' 2>/dev/null | grep -qi "prime\|session"; then
     pass "Query unprimed corpus correctly rejected"
   else
     fail "Query unprimed corpus" "expected error about priming, got HTTP $RESPONSE_STATUS"
   fi
-  # Cleanup
   curl -s -X DELETE "$WORKER_URL/api/corpus/e2e-unprimed-test" > /dev/null 2>&1 || true
 }
 
@@ -212,7 +195,6 @@ test_reprime_corpus() {
   log "=== Test: Reprime Corpus ==="
   log "  (Creating fresh session...)"
 
-  # Capture old session_id
   local old_response old_session_id
   old_response=$(curl_get "/api/corpus/$CORPUS_NAME")
   extract_body_and_status "$old_response"
@@ -260,7 +242,6 @@ test_delete_corpus() {
   extract_body_and_status "$response"
   assert_http_status "Delete corpus" "200" "$RESPONSE_STATUS"
 
-  # Verify it's gone
   local verify_response
   verify_response=$(curl_get "/api/corpus/$CORPUS_NAME")
   extract_body_and_status "$verify_response"
@@ -275,8 +256,6 @@ test_delete_nonexistent() {
   assert_http_status "Delete nonexistent returns 404" "404" "$RESPONSE_STATUS"
 }
 
-# -- Main ---------------------------------------------------------------------
-
 main() {
   mkdir -p "$(dirname "$LOG_FILE")"
   log "======================================================"
@@ -285,39 +264,32 @@ main() {
   log "======================================================"
   log ""
 
-  # Cleanup any leftover test data
   cleanup_test_corpus
 
-  # Phase 1: Health checks
   test_worker_health
   test_worker_readiness
   log ""
 
-  # Phase 2: CRUD operations
   test_build_corpus
   test_list_corpora
   test_get_corpus
   test_get_corpus_404
   log ""
 
-  # Phase 3: Agent SDK operations (prime + query)
   test_prime_corpus
   test_query_corpus
   test_query_without_prime
   log ""
 
-  # Phase 4: Reprime + query again
   test_reprime_corpus
   test_query_after_reprime
   log ""
 
-  # Phase 5: Rebuild + cleanup
   test_rebuild_corpus
   test_delete_corpus
   test_delete_nonexistent
   log ""
 
-  # Summary
   local total=$((PASS_COUNT + FAIL_COUNT))
   log "======================================================"
   log "  RESULTS: $PASS_COUNT/$total passed, $FAIL_COUNT failed"

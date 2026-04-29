@@ -12,7 +12,6 @@ export function GitHubStarsButton({ username, repo, className = '' }: GitHubStar
   const { stars, isLoading, error } = useGitHubStars(username, repo);
   const repoUrl = `https://github.com/${username}/${repo}`;
 
-  // Graceful degradation: on error, show just the icon (like original static link)
   if (error) {
     return (
       <a

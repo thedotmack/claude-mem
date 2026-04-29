@@ -1,12 +1,5 @@
 #!/usr/bin/env bun
 
-/**
- * Fix ALL Corrupted Observation Timestamps
- *
- * This script finds and repairs ALL observations with timestamps that don't match
- * their session start times, not just ones in an arbitrary "bad window".
- */
-
 import Database from 'bun:sqlite';
 import { resolve } from 'path';
 
@@ -46,7 +39,6 @@ function main() {
   const db = new Database(DB_PATH);
 
   try {
-    // Find all observations where timestamp doesn't match session
     const corrupted = db.query<CorruptedObservation, []>(`
       SELECT
         o.id as obs_id,
@@ -71,7 +63,6 @@ function main() {
       return;
     }
 
-    // Display findings
     console.log('═══════════════════════════════════════════════════════════════════════');
     console.log('PROPOSED FIXES:');
     console.log('═══════════════════════════════════════════════════════════════════════\n');

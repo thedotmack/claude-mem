@@ -1,7 +1,3 @@
-/**
- * Session retrieval functions
- * Database-first parameter pattern for functional composition
- */
 
 import type { Database } from 'bun:sqlite';
 import { logger } from '../../../utils/logger.js';
@@ -12,9 +8,6 @@ import type {
   SessionSummaryDetail,
 } from './types.js';
 
-/**
- * Get session by ID (basic fields only)
- */
 export function getSessionById(db: Database, id: number): SessionBasic | null {
   const stmt = db.prepare(`
     SELECT id, content_session_id, memory_session_id, project,
@@ -28,10 +21,6 @@ export function getSessionById(db: Database, id: number): SessionBasic | null {
   return (stmt.get(id) as SessionBasic | undefined) || null;
 }
 
-/**
- * Get SDK sessions by memory session IDs
- * Used for exporting session metadata
- */
 export function getSdkSessionsBySessionIds(
   db: Database,
   memorySessionIds: string[]
@@ -52,10 +41,6 @@ export function getSdkSessionsBySessionIds(
   return stmt.all(...memorySessionIds) as SessionFull[];
 }
 
-/**
- * Get recent sessions with their status and summary info
- * Returns sessions ordered oldest-first for display
- */
 export function getRecentSessionsWithStatus(
   db: Database,
   project: string,
@@ -83,9 +68,6 @@ export function getRecentSessionsWithStatus(
   return stmt.all(project, limit) as SessionWithStatus[];
 }
 
-/**
- * Get full session summary by ID (includes request_summary and learned_summary)
- */
 export function getSessionSummaryById(
   db: Database,
   id: number

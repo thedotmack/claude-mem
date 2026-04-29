@@ -4,28 +4,17 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { writeContextFile, readContextFile } from '../src/utils/cursor-utils';
 
-/**
- * Tests for Cursor Context Update functionality
- *
- * These tests validate that context files are correctly written to
- * .cursor/rules/claude-mem-context.mdc for registered projects.
- *
- * The context file uses Cursor's MDC format with frontmatter.
- */
-
 describe('Cursor Context Update', () => {
   let tempDir: string;
   let workspacePath: string;
 
   beforeEach(() => {
-    // Create unique temp directory for each test
     tempDir = join(tmpdir(), `cursor-context-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     workspacePath = join(tempDir, 'my-project');
     mkdirSync(workspacePath, { recursive: true });
   });
 
   afterEach(() => {
-    // Clean up temp directory
     try {
       rmSync(tempDir, { recursive: true, force: true });
     } catch {
@@ -135,10 +124,8 @@ Paragraph 2`;
       const content = readContextFile(workspacePath)!;
       const lines = content.split('\n');
 
-      // First line should be ---
       expect(lines[0]).toBe('---');
 
-      // Should have closing --- for frontmatter
       const secondDashIndex = lines.indexOf('---', 1);
       expect(secondDashIndex).toBeGreaterThan(0);
     });
@@ -152,7 +139,6 @@ Paragraph 2`;
 
       const frontmatter = lines.slice(1, frontmatterEnd).join('\n');
 
-      // Should contain valid YAML key-value pairs
       expect(frontmatter).toMatch(/alwaysApply:\s*true/);
       expect(frontmatter).toMatch(/description:\s*"/);
     });
@@ -162,12 +148,9 @@ Paragraph 2`;
 
       const content = readContextFile(workspacePath)!;
 
-      // Should have markdown header
       expect(content).toMatch(/^# Memory Context/m);
 
-      // Should have horizontal rule (---)
-      // Note: The footer uses --- which is also a horizontal rule in markdown
-      const bodyPart = content.split('---')[2]; // After frontmatter
+      const bodyPart = content.split('---')[2]; 
       expect(bodyPart).toBeDefined();
     });
   });
@@ -196,7 +179,6 @@ Paragraph 2`;
     });
 
     it('handles very long context', () => {
-      // 100KB of context
       const longContext = 'x'.repeat(100 * 1024);
 
       writeContextFile(workspacePath, longContext);
@@ -206,13 +188,11 @@ Paragraph 2`;
     });
 
     it('works when .cursor directory already exists', () => {
-      // Pre-create .cursor with other content
       mkdirSync(join(workspacePath, '.cursor', 'other'), { recursive: true });
       writeFileSync(join(workspacePath, '.cursor', 'other', 'file.txt'), 'existing');
 
       writeContextFile(workspacePath, 'new context');
 
-      // Should not destroy existing content
       expect(existsSync(join(workspacePath, '.cursor', 'other', 'file.txt'))).toBe(true);
       expect(readContextFile(workspacePath)).toContain('new context');
     });

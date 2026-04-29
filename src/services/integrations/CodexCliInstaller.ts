@@ -1,18 +1,3 @@
-/**
- * CodexCliInstaller - Codex CLI integration for claude-mem
- *
- * Uses transcript-only watching (no notify hook). The watcher infrastructure
- * already exists in src/services/transcripts/. This installer:
- *
- * 1. Writes/merges transcript-watch config to ~/.claude-mem/transcript-watch.json
- * 2. Sets up watch for ~/.codex/sessions/**\/*.jsonl using existing watcher
- * 3. Injects context via workspace-local AGENTS.md files (Codex reads these natively)
- *
- * Anti-patterns:
- *   - Does NOT add notify hooks -- transcript watching is sufficient
- *   - Does NOT modify existing transcript watcher infrastructure
- *   - Does NOT overwrite existing transcript-watch.json -- merges only
- */
 
 import path from 'path';
 import { homedir } from 'os';
@@ -26,28 +11,12 @@ import {
 } from '../transcripts/config.js';
 import type { TranscriptWatchConfig, WatchTarget } from '../transcripts/types.js';
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
 const CODEX_DIR = path.join(homedir(), '.codex');
 const CODEX_AGENTS_MD_PATH = path.join(CODEX_DIR, 'AGENTS.md');
 const CLAUDE_MEM_DIR = path.join(homedir(), '.claude-mem');
 
-/**
- * The watch name used to identify the Codex CLI entry in transcript-watch.json.
- * Must match the name in SAMPLE_CONFIG for merging to work correctly.
- */
 const CODEX_WATCH_NAME = 'codex';
 
-// ---------------------------------------------------------------------------
-// Transcript Watch Config Merging
-// ---------------------------------------------------------------------------
-
-/**
- * Load existing transcript-watch.json, or return an empty config scaffold.
- * Never throws -- returns a valid empty config on any parse error.
- */
 function loadExistingTranscriptWatchConfig(): TranscriptWatchConfig {
   const configPath = DEFAULT_CONFIG_PATH;
 
@@ -59,7 +28,6 @@ function loadExistingTranscriptWatchConfig(): TranscriptWatchConfig {
     const raw = readFileSync(configPath, 'utf-8');
     const parsed = JSON.parse(raw) as TranscriptWatchConfig;
 
-    // Ensure required fields exist
     if (!parsed.version) parsed.version = 1;
     if (!parsed.watches) parsed.watches = [];
     if (!parsed.schemas) parsed.schemas = {};
@@ -73,7 +41,6 @@ function loadExistingTranscriptWatchConfig(): TranscriptWatchConfig {
       logger.error('WORKER', 'Corrupt transcript-watch.json, creating backup', { path: configPath }, new Error(String(parseError)));
     }
 
-    // Back up corrupt file
     const backupPath = `${configPath}.backup.${Date.now()}`;
     writeFileSync(backupPath, readFileSync(configPath));
     console.warn(`  Backed up corrupt transcript-watch.json to ${backupPath}`);
@@ -82,24 +49,15 @@ function loadExistingTranscriptWatchConfig(): TranscriptWatchConfig {
   }
 }
 
-/**
- * Merge Codex watch configuration into existing transcript-watch.json.
- *
- * - If a watch with name 'codex' already exists, it is replaced in-place.
- * - If the 'codex' schema already exists, it is replaced in-place.
- * - All other watches and schemas are preserved untouched.
- */
 function mergeCodexWatchConfig(existingConfig: TranscriptWatchConfig): TranscriptWatchConfig {
   const merged = { ...existingConfig };
 
-  // Merge schemas: add/replace the codex schema
   merged.schemas = { ...merged.schemas };
   const codexSchema = SAMPLE_CONFIG.schemas?.[CODEX_WATCH_NAME];
   if (codexSchema) {
     merged.schemas[CODEX_WATCH_NAME] = codexSchema;
   }
 
-  // Merge watches: add/replace the codex watch entry
   const codexWatchFromSample = SAMPLE_CONFIG.watches.find(
     (w: WatchTarget) => w.name === CODEX_WATCH_NAME,
   );
@@ -110,10 +68,8 @@ function mergeCodexWatchConfig(existingConfig: TranscriptWatchConfig): Transcrip
     );
 
     if (existingWatchIndex !== -1) {
-      // Replace existing codex watch in-place
       merged.watches[existingWatchIndex] = codexWatchFromSample;
     } else {
-      // Append new codex watch
       merged.watches.push(codexWatchFromSample);
     }
   }
@@ -121,23 +77,11 @@ function mergeCodexWatchConfig(existingConfig: TranscriptWatchConfig): Transcrip
   return merged;
 }
 
-/**
- * Write the merged transcript-watch.json config atomically.
- */
 function writeTranscriptWatchConfig(config: TranscriptWatchConfig): void {
   mkdirSync(CLAUDE_MEM_DIR, { recursive: true });
   writeFileSync(DEFAULT_CONFIG_PATH, JSON.stringify(config, null, 2) + '\n');
 }
 
-// ---------------------------------------------------------------------------
-// Context Injection (AGENTS.md)
-// ---------------------------------------------------------------------------
-
-/**
- * Remove legacy claude-mem context from ~/.codex/AGENTS.md.
- * Codex now uses workspace-local AGENTS.md files to avoid cross-project bleed.
- * Preserves any existing user content outside the tags.
- */
 function removeCodexAgentsMdContext(): void {
   if (!existsSync(CODEX_AGENTS_MD_PATH)) return;
 
@@ -173,28 +117,11 @@ function readAndStripContextTags(startTag: string, endTag: string): void {
   console.log(`  Removed legacy global context from ${CODEX_AGENTS_MD_PATH}`);
 }
 
-/**
- * @deprecated Codex now uses workspace-local AGENTS.md via transcript processor fallback.
- * Preserves user content outside the <claude-mem-context> tags.
- */
 const cleanupLegacyCodexAgentsMdContext = removeCodexAgentsMdContext;
 
-// ---------------------------------------------------------------------------
-// Public API: Install
-// ---------------------------------------------------------------------------
-
-/**
- * Install Codex CLI integration for claude-mem.
- *
- * 1. Merges Codex transcript-watch config into ~/.claude-mem/transcript-watch.json
- * 2. Cleans up any legacy global context block in ~/.codex/AGENTS.md
- *
- * @returns 0 on success, 1 on failure
- */
 export async function installCodexCli(): Promise<number> {
   console.log('\nInstalling Claude-Mem for Codex CLI (transcript watching)...\n');
 
-  // Step 1: Merge transcript-watch config
   const existingConfig = loadExistingTranscriptWatchConfig();
   const mergedConfig = mergeCodexWatchConfig(existingConfig);
 
@@ -233,22 +160,9 @@ Next steps:
 `);
 }
 
-// ---------------------------------------------------------------------------
-// Public API: Uninstall
-// ---------------------------------------------------------------------------
-
-/**
- * Remove Codex CLI integration from claude-mem.
- *
- * 1. Removes the codex watch and schema from transcript-watch.json (preserves others)
- * 2. Removes context section from AGENTS.md (preserves user content)
- *
- * @returns 0 on success, 1 on failure
- */
 export function uninstallCodexCli(): number {
   console.log('\nUninstalling Claude-Mem Codex CLI integration...\n');
 
-  // Step 1: Remove codex watch from transcript-watch.json
   if (existsSync(DEFAULT_CONFIG_PATH)) {
     const config = loadExistingTranscriptWatchConfig();
 
@@ -272,7 +186,6 @@ export function uninstallCodexCli(): number {
     console.log('  No transcript-watch.json found -- nothing to remove.');
   }
 
-  // Step 2: Remove legacy global context section from AGENTS.md
   cleanupLegacyCodexAgentsMdContext();
 
   console.log('\nUninstallation complete!');

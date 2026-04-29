@@ -1,14 +1,4 @@
-/**
- * Export/Import types for memory data
- *
- * These types represent the structure of exported memory data.
- * They are aligned with the actual database schema and include all fields
- * needed for complete data export and import operations.
- */
 
-/**
- * Observation record as stored in the database and exported
- */
 export interface ObservationRecord {
   id: number;
   memory_session_id: string;
@@ -28,9 +18,6 @@ export interface ObservationRecord {
   created_at_epoch: number;
 }
 
-/**
- * SDK Session record as stored in the database and exported
- */
 export interface SdkSessionRecord {
   id: number;
   content_session_id: string;
@@ -44,9 +31,6 @@ export interface SdkSessionRecord {
   status: string;
 }
 
-/**
- * Session Summary record as stored in the database and exported
- */
 export interface SessionSummaryRecord {
   id: number;
   memory_session_id: string;
@@ -65,9 +49,6 @@ export interface SessionSummaryRecord {
   created_at_epoch: number;
 }
 
-/**
- * User Prompt record as stored in the database and exported
- */
 export interface UserPromptRecord {
   id: number;
   content_session_id: string;
@@ -77,9 +58,6 @@ export interface UserPromptRecord {
   created_at_epoch: number;
 }
 
-/**
- * Complete export data structure
- */
 export interface ExportData {
   exportedAt: string;
   exportedAtEpoch: number;

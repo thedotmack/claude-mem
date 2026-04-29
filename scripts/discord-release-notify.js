@@ -1,15 +1,5 @@
 #!/usr/bin/env node
 
-/**
- * Post release notification to Discord
- *
- * Usage:
- *   node scripts/discord-release-notify.js v7.4.2
- *   node scripts/discord-release-notify.js v7.4.2 "Custom release notes"
- *
- * Requires DISCORD_UPDATES_WEBHOOK in .env file
- */
-
 import { execSync } from 'child_process';
 import { readFileSync, existsSync } from 'fs';
 import { resolve, dirname } from 'path';
@@ -49,7 +39,6 @@ function getReleaseNotes(version) {
 }
 
 function cleanNotes(notes) {
-  // Remove Claude Code footer and clean up
   return notes
     .replace(/🤖 Generated with \[Claude Code\].*$/s, '')
     .replace(/---\n*$/s, '')

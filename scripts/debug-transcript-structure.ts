@@ -1,8 +1,4 @@
 #!/usr/bin/env tsx
-/**
- * Debug Transcript Structure
- * Examines the first few entries to understand the conversation flow
- */
 
 import { TranscriptParser } from '../src/utils/transcript-parser.js';
 
@@ -18,7 +14,6 @@ const entries = parser.getAllEntries();
 
 console.log(`Total entries: ${entries.length}\n`);
 
-// Count entry types
 const typeCounts: Record<string, number> = {};
 for (const entry of entries) {
   typeCounts[entry.type] = (typeCounts[entry.type] || 0) + 1;
@@ -29,7 +24,6 @@ for (const [type, count] of Object.entries(typeCounts)) {
   console.log(`  ${type}: ${count}`);
 }
 
-// Find first user and assistant entries
 const firstUser = entries.find(e => e.type === 'user');
 const firstAssistant = entries.find(e => e.type === 'assistant');
 
@@ -69,7 +63,6 @@ if (firstAssistant) {
   }
 }
 
-// Find a few more user/assistant pairs
 console.log('\n\n=== First 3 Conversation Exchanges ===\n');
 
 let userCount = 0;

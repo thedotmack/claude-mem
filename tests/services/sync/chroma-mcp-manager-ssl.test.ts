@@ -1,24 +1,11 @@
-/**
- * Regression tests for ChromaMcpManager SSL flag handling (PR #1286)
- *
- * Validates that buildCommandArgs() always emits the correct `--ssl` flag
- * based on CLAUDE_MEM_CHROMA_SSL, and omits it entirely in local mode.
- *
- * Strategy: mock StdioClientTransport to capture the spawned args without
- * actually launching a subprocess, then inspect the captured args array.
- */
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 
-// ── Mutable settings closure (updated per test) ────────────────────────
 let currentSettings: Record<string, string> = {};
 
-// ── Mock modules BEFORE importing the module under test ────────────────
-// Capture the args passed to StdioClientTransport constructor
 let capturedTransportOpts: { command: string; args: string[] } | null = null;
 
 mock.module('@modelcontextprotocol/sdk/client/stdio.js', () => ({
   StdioClientTransport: class FakeTransport {
-    // Required: ChromaMcpManager assigns transport.onclose after connect()
     onclose: (() => void) | null = null;
     constructor(opts: { command: string; args: string[] }) {
       capturedTransportOpts = { command: opts.command, args: opts.args };
@@ -60,10 +47,8 @@ mock.module('../../../src/utils/logger.js', () => ({
   },
 }));
 
-// ── Now import the module under test ───────────────────────────────────
 import { ChromaMcpManager } from '../../../src/services/sync/ChromaMcpManager.js';
 
-// ── Helpers ────────────────────────────────────────────────────────────
 async function assertSslFlag(sslSetting: string | undefined, expectedValue: string) {
   currentSettings = { CLAUDE_MEM_CHROMA_MODE: 'remote' };
   if (sslSetting !== undefined) currentSettings.CLAUDE_MEM_CHROMA_SSL = sslSetting;
@@ -78,7 +63,6 @@ async function assertSslFlag(sslSetting: string | undefined, expectedValue: stri
 
 let mgr: ChromaMcpManager;
 
-// ── Test suite ─────────────────────────────────────────────────────────
 describe('ChromaMcpManager SSL flag regression (#1286)', () => {
   beforeEach(async () => {
     await ChromaMcpManager.reset();

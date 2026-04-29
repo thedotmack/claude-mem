@@ -1,12 +1,3 @@
-/**
- * Session module tests
- * Tests modular session functions with in-memory database
- *
- * Sources:
- * - API patterns from src/services/sqlite/sessions/create.ts
- * - API patterns from src/services/sqlite/sessions/get.ts
- * - Test pattern from tests/session_store.test.ts
- */
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { ClaudeMemDatabase } from '../../src/services/sqlite/Database.js';
@@ -73,7 +64,6 @@ describe('Sessions Module', () => {
       expect(session?.content_session_id).toBe(contentSessionId);
       expect(session?.project).toBe(project);
       expect(session?.user_prompt).toBe(userPrompt);
-      // memory_session_id should be null initially (set via updateMemorySessionId)
       expect(session?.memory_session_id).toBeNull();
     });
 
@@ -104,7 +94,6 @@ describe('Sessions Module', () => {
       let session = getSessionById(db, sessionId);
       expect(session?.custom_title).toBeNull();
 
-      // Second call with custom_title should backfill
       createSDKSession(db, 'session-title-3', 'project', 'prompt', 'Backfilled Title');
       session = getSessionById(db, sessionId);
       expect(session?.custom_title).toBe('Backfilled Title');
@@ -115,7 +104,6 @@ describe('Sessions Module', () => {
       let session = getSessionById(db, sessionId);
       expect(session?.custom_title).toBe('Original');
 
-      // Second call should NOT overwrite
       createSDKSession(db, 'session-title-4', 'project', 'prompt', 'Attempted Override');
       session = getSessionById(db, sessionId);
       expect(session?.custom_title).toBe('Original');
@@ -125,7 +113,6 @@ describe('Sessions Module', () => {
       const sessionId = createSDKSession(db, 'session-title-5', 'project', 'prompt', '');
       const session = getSessionById(db, sessionId);
 
-      // Empty string becomes null via the || null conversion
       expect(session?.custom_title).toBeNull();
     });
   });
@@ -171,14 +158,11 @@ describe('Sessions Module', () => {
 
       const sessionId = createSDKSession(db, contentSessionId, project, userPrompt);
 
-      // Verify memory_session_id is null initially
       let session = getSessionById(db, sessionId);
       expect(session?.memory_session_id).toBeNull();
 
-      // Update memory session ID
       updateMemorySessionId(db, sessionId, memorySessionId);
 
-      // Verify update
       session = getSessionById(db, sessionId);
       expect(session?.memory_session_id).toBe(memorySessionId);
     });

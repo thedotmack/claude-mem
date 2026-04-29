@@ -1,6 +1,5 @@
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
 
-// Mock the ModeManager before imports
 mock.module('../../../src/services/domain/ModeManager.js', () => ({
   ModeManager: {
     getInstance: () => ({
@@ -44,7 +43,6 @@ mock.module('../../../src/services/domain/ModeManager.js', () => ({
 import { SearchOrchestrator } from '../../../src/services/worker/search/SearchOrchestrator.js';
 import type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../../../src/services/worker/search/types.js';
 
-// Mock data
 const mockObservation: ObservationSearchResult = {
   id: 1,
   memory_session_id: 'session-123',
@@ -153,9 +151,6 @@ describe('SearchOrchestrator', () => {
       it('should throw ChromaUnavailableError (HTTP 503) when Chroma fails', async () => {
         mockChromaSync.queryChroma = mock(() => Promise.reject(new Error('Chroma unavailable')));
 
-        // Fail-fast: Chroma errors propagate as ChromaUnavailableError
-        // (HTTP 503 via the AppError status code) rather than silently
-        // falling back to SQLite.
         await expect(
           orchestrator.search({ query: 'test query' })
         ).rejects.toMatchObject({
@@ -171,7 +166,6 @@ describe('SearchOrchestrator', () => {
           limit: 10
         });
 
-        // Should be parsed into array internally
         const callArgs = mockSessionSearch.searchObservations.mock.calls[0];
         expect(callArgs[1].concepts).toEqual(['concept1', 'concept2', 'concept3']);
       });
@@ -204,7 +198,6 @@ describe('SearchOrchestrator', () => {
           type: 'observations'
         });
 
-        // Should search only observations
         expect(mockSessionSearch.searchObservations).toHaveBeenCalled();
         expect(mockSessionSearch.searchSessions).not.toHaveBeenCalled();
         expect(mockSessionSearch.searchUserPrompts).not.toHaveBeenCalled();
@@ -217,7 +210,6 @@ describe('SearchOrchestrator', () => {
           limit: 10
         });
 
-        // Hybrid strategy should be used
         expect(mockSessionSearch.findByConcept).toHaveBeenCalled();
         expect(mockChromaSync.queryChroma).toHaveBeenCalled();
       });
@@ -322,7 +314,6 @@ describe('SearchOrchestrator', () => {
           query: 'semantic query'
         });
 
-        // No Chroma available, can't do semantic search
         expect(result.results.observations).toHaveLength(0);
         expect(result.usedChroma).toBe(false);
       });
@@ -396,8 +387,6 @@ describe('SearchOrchestrator', () => {
       });
 
       const callArgs = mockSessionSearch.searchObservations.mock.calls[0];
-      // Empty strings are falsy, so the normalization doesn't process them
-      // They stay as empty strings (the underlying search functions handle this)
       expect(callArgs[1].concepts).toEqual('');
       expect(callArgs[1].files).toEqual('');
     });

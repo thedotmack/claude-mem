@@ -1,12 +1,3 @@
-/**
- * Install command for `npx claude-mem install`.
- *
- * Replaces the git-clone + build workflow. The npm package already ships
- * a pre-built `plugin/` directory; this command copies it into the right
- * locations and registers it with Claude Code.
- *
- * Pure Node.js — no Bun APIs used.
- */
 import * as p from '@clack/prompts';
 import pc from 'picocolors';
 import { execSync } from 'child_process';
@@ -17,19 +8,12 @@ import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/Set
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { ensureWorkerStarted } from '../../services/worker-spawner.js';
 
-/**
- * Read a setting with file-first priority: ~/.claude-mem/settings.json wins
- * over hardcoded defaults so the installer respects values it just persisted
- * within the same process. Env-var override is preserved by loadFromFile.
- */
 function getSetting<K extends keyof SettingsDefaults>(key: K): SettingsDefaults[K] {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH)[key];
 }
 
-// Non-TTY detection: @clack/prompts crashes with ENOENT in non-TTY environments
 const isInteractive = process.stdin.isTTY === true;
 
-/** Run a list of tasks, falling back to plain console.log when non-TTY */
 interface TaskDescriptor {
   title: string;
   task: (message: (msg: string) => void) => Promise<string>;
@@ -46,7 +30,6 @@ async function runTasks(tasks: TaskDescriptor[]): Promise<void> {
   }
 }
 
-/** Log helpers that fall back to console.log in non-TTY */
 const log = {
   info: (msg: string) => isInteractive ? p.log.info(msg) : console.log(`  ${msg}`),
   success: (msg: string) => isInteractive ? p.log.success(msg) : console.log(`  ${msg}`),
@@ -70,10 +53,6 @@ import {
 import { readJsonSafe } from '../../utils/json-utils.js';
 import { shutdownWorkerAndWait } from '../../services/install/shutdown-helper.js';
 import { detectInstalledIDEs } from './ide-detection.js';
-
-// ---------------------------------------------------------------------------
-// Registration helpers
-// ---------------------------------------------------------------------------
 
 function registerMarketplace(): void {
   const knownMarketplaces = readJsonSafe<Record<string, any>>(knownMarketplacesPath(), {});
@@ -123,19 +102,12 @@ function enablePluginInClaudeSettings(): void {
   writeJsonFileAtomic(claudeSettingsPath(), settings);
 }
 
-// ---------------------------------------------------------------------------
-// IDE setup dispatcher
-// ---------------------------------------------------------------------------
-
-/** Returns a list of IDE IDs that failed setup. */
 async function setupIDEs(selectedIDEs: string[]): Promise<string[]> {
   const failedIDEs: string[] = [];
 
   for (const ideId of selectedIDEs) {
     switch (ideId) {
       case 'claude-code': {
-        // Claude Code uses its native plugin CLI — two commands handle
-        // marketplace registration, plugin installation, and enablement.
         try {
           execSync(
             'claude plugin marketplace add thedotmack/claude-mem && claude plugin install claude-mem',
@@ -264,10 +236,6 @@ async function setupIDEs(selectedIDEs: string[]): Promise<string[]> {
   return failedIDEs;
 }
 
-// ---------------------------------------------------------------------------
-// Interactive IDE selection
-// ---------------------------------------------------------------------------
-
 async function promptForIDESelection(): Promise<string[]> {
   const detectedIDEs = detectInstalledIDEs();
   const detected = detectedIDEs.filter((ide) => ide.detected);
@@ -286,8 +254,6 @@ async function promptForIDESelection(): Promise<string[]> {
   const result = await p.multiselect({
     message: 'Which IDEs do you use?',
     options,
-    // No pre-selection — users must explicitly opt in to each IDE so we
-    // never wire up an integration the user did not actually request (#2106).
     initialValues: [],
     required: true,
   });
@@ -300,20 +266,12 @@ async function promptForIDESelection(): Promise<string[]> {
   return result as string[];
 }
 
-// ---------------------------------------------------------------------------
-// Core copy logic
-// ---------------------------------------------------------------------------
-
 function copyPluginToMarketplace(): void {
   const marketplaceDir = marketplaceDirectory();
   const packageRoot = npmPackageRootDirectory();
 
   ensureDirectoryExists(marketplaceDir);
 
-  // Only copy directories/files that are actually needed at runtime.
-  // The npm package ships plugin/, package.json, node_modules/, openclaw/, dist/.
-  // When running from a dev checkout, the root contains many extra dirs
-  // (.claude, .agents, src, docs, etc.) that must NOT be copied.
   const allowedTopLevelEntries = [
     'plugin',
     'package.json',
@@ -331,7 +289,6 @@ function copyPluginToMarketplace(): void {
     const destPath = join(marketplaceDir, entry);
     if (!existsSync(sourcePath)) continue;
 
-    // Clean replace: remove stale files from previous installs before copying
     if (existsSync(destPath)) {
       rmSync(destPath, { recursive: true, force: true });
     }
@@ -346,15 +303,10 @@ function copyPluginToCache(version: string): void {
   const sourcePluginDirectory = npmPackagePluginDirectory();
   const cachePath = pluginCacheDirectory(version);
 
-  // Clean replace: remove stale cache before copying
   rmSync(cachePath, { recursive: true, force: true });
   ensureDirectoryExists(cachePath);
   cpSync(sourcePluginDirectory, cachePath, { recursive: true, force: true });
 }
-
-// ---------------------------------------------------------------------------
-// npm install in marketplace dir
-// ---------------------------------------------------------------------------
 
 function runNpmInstallInMarketplace(): void {
   const marketplaceDir = marketplaceDirectory();
@@ -369,10 +321,6 @@ function runNpmInstallInMarketplace(): void {
     ...(IS_WINDOWS ? { shell: process.env.ComSpec ?? 'cmd.exe' } : {}),
   });
 }
-
-// ---------------------------------------------------------------------------
-// Trigger smart-install for Bun / uv
-// ---------------------------------------------------------------------------
 
 function runSmartInstall(): boolean {
   const smartInstallPath = join(marketplaceDirectory(), 'plugin', 'scripts', 'smart-install.js');
@@ -396,29 +344,11 @@ function runSmartInstall(): boolean {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Settings file read-merge-write
-// ---------------------------------------------------------------------------
-
-/**
- * Path to the user's claude-mem settings file. Mirrors the resolution used
- * inside SettingsDefaultsManager (CLAUDE_MEM_DATA_DIR default = ~/.claude-mem).
- */
 function settingsFilePath(): string {
   const dataDir = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
   return join(dataDir, 'settings.json');
 }
 
-/**
- * Read-merge-write only the changed keys to ~/.claude-mem/settings.json.
- *
- * Mirrors the merge-then-write pattern from SettingsDefaultsManager.loadFromFile.
- * Does NOT rewrite the entire defaults object — only the keys passed in `updates`
- * are mutated. On permission/IO failure, logs an error and returns false; never
- * throws and never aborts the install.
- *
- * IMPORTANT: never include API key values in log lines.
- */
 function mergeSettings(updates: Record<string, string>): boolean {
   const path = settingsFilePath();
   try {
@@ -427,7 +357,6 @@ function mergeSettings(updates: Record<string, string>): boolean {
       try {
         const raw = readFileSync(path, 'utf-8');
         const parsed = JSON.parse(raw);
-        // Handle legacy nested { env: {...} } schema same way the manager does.
         if (parsed && typeof parsed === 'object' && parsed.env && typeof parsed.env === 'object') {
           current = { ...parsed.env };
         } else if (parsed && typeof parsed === 'object') {
@@ -456,22 +385,8 @@ function mergeSettings(updates: Record<string, string>): boolean {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Provider and model prompts
-// ---------------------------------------------------------------------------
-
 type ProviderId = 'claude' | 'gemini' | 'openrouter';
 
-/**
- * Provider selection prompt (Sub-surface 1.A). Returns the resolved provider id.
- *
- * - On non-TTY: returns the existing setting (or default 'claude') without writes.
- * - On `options.provider`: writes settings non-interactively (key prompt still
- *   fires for non-claude branches when interactive — caller passes flag through).
- * - On interactive: prompts and persists settings on the gemini/openrouter branch.
- *
- * SECURITY: API keys are read with `p.password` (masked). Never logged.
- */
 async function promptProvider(options: InstallOptions): Promise<ProviderId> {
   const initialProvider = (getSetting('CLAUDE_MEM_PROVIDER') as ProviderId) || 'claude';
 
@@ -480,17 +395,12 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
     if (wrote) log.info('Saved provider=claude to ~/.claude-mem/settings.json');
   };
 
-  // Non-interactive: honor explicit --provider flag if present, else leave alone.
   if (!isInteractive) {
     if (options.provider) {
       if (options.provider === 'claude') {
         persistClaudeProvider();
         return 'claude';
       }
-      // Non-TTY scripted install with a non-claude provider — we cannot prompt
-      // for an API key, but we still persist CLAUDE_MEM_PROVIDER so the worker
-      // actually selects the requested provider on next start. The user supplies
-      // the API key via env var or by editing settings.json.
       const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: options.provider });
       if (wrote) log.info(`Saved provider=${options.provider} to ~/.claude-mem/settings.json`);
       log.warn(`Provider=${options.provider} requested non-interactively. API key prompt skipped — set CLAUDE_MEM_${options.provider.toUpperCase()}_API_KEY and CLAUDE_MEM_PROVIDER in settings.json or env manually if not already set.`);
@@ -520,20 +430,16 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
     selectedProvider = result as ProviderId;
   }
 
-  // Claude branch: persist so we overwrite any previously saved non-claude provider.
-  // Defer to model prompt (1.B) for model selection.
   if (selectedProvider === 'claude') {
     persistClaudeProvider();
     return 'claude';
   }
 
-  // gemini / openrouter branch: prompt for API key with masked input.
   const providerLabel = selectedProvider === 'gemini' ? 'Gemini' : 'OpenRouter';
   const keyEnvName = selectedProvider === 'gemini'
     ? 'CLAUDE_MEM_GEMINI_API_KEY'
     : 'CLAUDE_MEM_OPENROUTER_API_KEY';
 
-  // If a non-empty key is already saved, skip silently to avoid clobbering.
   const existingKey = getSetting(keyEnvName as keyof SettingsDefaults) as string | undefined;
   if (existingKey && existingKey.trim().length > 0) {
     const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: selectedProvider });
@@ -559,16 +465,11 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
     [keyEnvName]: apiKey,
   });
   if (wrote) {
-    // NEVER echo the key. Confirm only the destination.
     log.info(`Saved provider=${selectedProvider} to ~/.claude-mem/settings.json`);
   }
   return selectedProvider;
 }
 
-/**
- * Claude model selection prompt (Sub-surface 1.B). Only fires when the active
- * provider is 'claude'. Writes CLAUDE_MEM_MODEL via read-merge-write.
- */
 async function promptClaudeModel(options: InstallOptions): Promise<void> {
   const allowed = new Set([
     'claude-haiku-4-5-20251001',
@@ -615,18 +516,10 @@ async function promptClaudeModel(options: InstallOptions): Promise<void> {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
 export interface InstallOptions {
-  /** When provided, skip the interactive IDE multi-select and use this IDE. */
   ide?: string;
-  /** When provided, skip the interactive provider prompt and use this provider. */
   provider?: 'claude' | 'gemini' | 'openrouter';
-  /** When provided, skip the interactive Claude model prompt and use this model id. */
   model?: string;
-  /** When true, skip the worker auto-start runTasks entry. */
   noAutoStart?: boolean;
 }
 
@@ -641,12 +534,10 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
   log.info(`Version: ${pc.cyan(version)}`);
   log.info(`Platform: ${process.platform} (${process.arch})`);
 
-  // Check for existing installation
   const marketplaceDir = marketplaceDirectory();
   const alreadyInstalled = existsSync(join(marketplaceDir, 'plugin', '.claude-plugin', 'plugin.json'));
 
   if (alreadyInstalled) {
-    // Read existing version
     try {
       const existingPluginJson = JSON.parse(
         readFileSync(join(marketplaceDir, 'plugin', '.claude-plugin', 'plugin.json'), 'utf-8'),
@@ -670,7 +561,6 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
     }
   }
 
-  // IDE selection
   let selectedIDEs: string[];
   if (options.ide) {
     selectedIDEs = [options.ide];
@@ -688,28 +578,19 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
   } else if (process.stdin.isTTY) {
     selectedIDEs = await promptForIDESelection();
   } else {
-    // Non-interactive: default to claude-code
     selectedIDEs = ['claude-code'];
   }
 
-  // Provider + Claude model selection (1.A + 1.B). Skipped entirely on non-TTY
-  // unless --provider/--model flags are supplied (handled inside the helpers).
   const selectedProvider = await promptProvider(options);
   if (selectedProvider === 'claude') {
     await promptClaudeModel(options);
   }
 
-  // Non-Claude-Code IDEs need the manual file copy / registration flow.
-  // Claude Code handles its own installation via `claude plugin install`.
   const needsManualInstall = selectedIDEs.some((id) => id !== 'claude-code');
 
-  // Capture worker-start status for the Next Steps branch (1.C → 1.D).
   let workerStarted = false;
 
   if (needsManualInstall) {
-    // Shut down any running worker FIRST so it isn't holding open file
-    // handles when we overwrite plugin files (#2106 item 3). Best-effort:
-    // helper swallows its own errors when no worker is running.
     const installPort = getSetting('CLAUDE_MEM_WORKER_PORT');
     try {
       const result = await shutdownWorkerAndWait(installPort, 10000);
@@ -783,12 +664,8 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
     ]);
   }
 
-  // IDE-specific setup
   const failedIDEs = await setupIDEs(selectedIDEs);
 
-  // Worker auto-start (1.C). Runs AFTER setupIDEs so the marketplace plugin
-  // scripts exist on disk on a fresh `claude-code` install. Skipped on non-TTY
-  // or with --no-auto-start. Failure does not abort install.
   await runTasks([
     {
       title: 'Starting worker daemon',
@@ -810,7 +687,6 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
     },
   ]);
 
-  // Summary
   const installStatus = failedIDEs.length > 0 ? 'Installation Partial' : 'Installation Complete';
   const summaryLines = [
     `Version:     ${pc.cyan(version)}`,
@@ -828,15 +704,8 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
     summaryLines.forEach(l => console.log(`  ${l}`));
   }
 
-  // Resolve port via file-first getSetting so CLAUDE_MEM_WORKER_PORT env
-  // takes priority and the per-UID default (37700 + uid % 100) is used
-  // otherwise. Required for multi-account isolation (#2101).
   const workerPort = getSetting('CLAUDE_MEM_WORKER_PORT');
 
-  // Probe the actually-bound port (#2106 item 6). smart-install just
-  // started the worker; if it's reachable we report the real port the
-  // worker bound to. If the probe fails, the worker is still spinning
-  // up — say so plainly and exit cleanly. Don't loop, don't block.
   let actualPort: number | string = workerPort;
   let workerReady = false;
   try {

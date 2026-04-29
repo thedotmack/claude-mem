@@ -2,7 +2,6 @@ import { describe, it, expect, mock, beforeEach } from 'bun:test';
 import { HybridSearchStrategy } from '../../../../src/services/worker/search/strategies/HybridSearchStrategy.js';
 import type { StrategySearchOptions, ObservationSearchResult, SessionSummarySearchResult } from '../../../../src/services/worker/search/types.js';
 
-// Mock observation data
 const mockObservation1: ObservationSearchResult = {
   id: 1,
   memory_session_id: 'session-123',
@@ -95,7 +94,6 @@ describe('HybridSearchStrategy', () => {
 
     mockSessionStore = {
       getObservationsByIds: mock((ids: number[]) => {
-        // Return in the order we stored them (not Chroma order)
         const allObs = [mockObservation1, mockObservation2, mockObservation3];
         return allObs.filter(obs => ids.includes(obs.id));
       }),
@@ -153,7 +151,6 @@ describe('HybridSearchStrategy', () => {
     });
 
     it('should return false for filter-only without Chroma', () => {
-      // Create strategy without Chroma
       const strategyNoChroma = new HybridSearchStrategy(null as any, mockSessionStore, mockSessionSearch);
 
       const options: StrategySearchOptions = {
@@ -182,7 +179,6 @@ describe('HybridSearchStrategy', () => {
 
       const result = await strategy.search(options);
 
-      // Generic search returns empty - use findByConcept/findByType/findByFile instead
       expect(result.results.observations).toHaveLength(0);
     });
   });
@@ -202,9 +198,6 @@ describe('HybridSearchStrategy', () => {
     });
 
     it('should preserve semantic ranking order from Chroma', async () => {
-      // Chroma returns: [2, 1, 3] (obs 2 is most relevant)
-      // SQLite returns: [1, 2, 3] (by date or however)
-      // Result should be in Chroma order: [2, 1, 3]
 
       const options: StrategySearchOptions = {
         limit: 10
@@ -213,13 +206,10 @@ describe('HybridSearchStrategy', () => {
       const result = await strategy.findByConcept('test-concept', options);
 
       expect(result.results.observations.length).toBeGreaterThan(0);
-      // The first result should be id=2 (Chroma's top result)
       expect(result.results.observations[0].id).toBe(2);
     });
 
     it('should only include observations that match both metadata and Chroma', async () => {
-      // Metadata returns ids [1, 2, 3]
-      // Chroma returns ids [2, 4, 5] (4 and 5 don't exist in metadata results)
       mockChromaSync.queryChroma = mock(() => Promise.resolve({
         ids: [2, 4, 5],
         distances: [0.1, 0.2, 0.3],
@@ -232,7 +222,6 @@ describe('HybridSearchStrategy', () => {
 
       const result = await strategy.findByConcept('test-concept', options);
 
-      // Only id=2 should be in both sets
       expect(result.results.observations).toHaveLength(1);
       expect(result.results.observations[0].id).toBe(2);
     });
@@ -247,7 +236,7 @@ describe('HybridSearchStrategy', () => {
       const result = await strategy.findByConcept('nonexistent-concept', options);
 
       expect(result.results.observations).toHaveLength(0);
-      expect(mockChromaSync.queryChroma).not.toHaveBeenCalled(); // Should short-circuit
+      expect(mockChromaSync.queryChroma).not.toHaveBeenCalled(); 
     });
 
     it('should propagate Chroma error (fail-fast, no silent fallback)', async () => {
@@ -284,7 +273,6 @@ describe('HybridSearchStrategy', () => {
       await strategy.findByType(['decision', 'bugfix'], options);
 
       expect(mockSessionSearch.findByType).toHaveBeenCalledWith(['decision', 'bugfix'], expect.any(Object));
-      // Chroma query should use joined type string
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith('decision, bugfix', expect.any(Number));
     });
 
@@ -343,14 +331,12 @@ describe('HybridSearchStrategy', () => {
     });
 
     it('should return sessions without semantic ranking', async () => {
-      // Sessions are already summarized, no need for semantic ranking
       const options: StrategySearchOptions = {
         limit: 10
       };
 
       const result = await strategy.findByFile('/path/to/file.ts', options);
 
-      // Sessions should come directly from metadata search
       expect(result.sessions).toHaveLength(1);
       expect(result.sessions[0].id).toBe(1);
     });
@@ -368,7 +354,6 @@ describe('HybridSearchStrategy', () => {
 
       const result = await strategy.findByFile('/path/to/file.ts', options);
 
-      // Observations should be in Chroma order
       expect(result.observations[0].id).toBe(2);
       expect(result.usedChroma).toBe(true);
     });

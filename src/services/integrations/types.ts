@@ -1,6 +1,3 @@
-/**
- * Integration Types - Shared types for IDE integrations
- */
 
 export interface CursorMcpConfig {
   mcpServers: {

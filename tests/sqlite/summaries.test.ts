@@ -1,12 +1,3 @@
-/**
- * Summaries module tests
- * Tests modular summary functions with in-memory database
- *
- * Sources:
- * - API patterns from src/services/sqlite/summaries/store.ts
- * - API patterns from src/services/sqlite/summaries/get.ts
- * - Type definitions from src/services/sqlite/summaries/types.ts
- */
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { ClaudeMemDatabase } from '../../src/services/sqlite/Database.js';
@@ -32,7 +23,6 @@ describe('Summaries Module', () => {
     db.close();
   });
 
-  // Helper to create a valid summary input
   function createSummaryInput(overrides: Partial<SummaryInput> = {}): SummaryInput {
     return {
       request: 'User requested feature X',
@@ -45,7 +35,6 @@ describe('Summaries Module', () => {
     };
   }
 
-  // Helper to create a session and return memory_session_id for FK constraints
   function createSessionWithMemoryId(contentSessionId: string, memorySessionId: string, project: string = 'test-project'): string {
     const sessionId = createSDKSession(db, contentSessionId, project, 'initial prompt');
     updateMemorySessionId(db, sessionId, memorySessionId);
@@ -95,7 +84,7 @@ describe('Summaries Module', () => {
       const memorySessionId = createSessionWithMemoryId('content-sum-789', 'mem-session-sum-789');
       const project = 'test-project';
       const summary = createSummaryInput();
-      const pastTimestamp = 1650000000000; // Apr 15, 2022
+      const pastTimestamp = 1650000000000; 
 
       const result = storeSummary(
         db,
@@ -162,7 +151,6 @@ describe('Summaries Module', () => {
     it('should return most recent summary when multiple exist', () => {
       const memorySessionId = createSessionWithMemoryId('content-multi', 'multi-summary-session');
 
-      // Store older summary
       storeSummary(
         db,
         memorySessionId,
@@ -173,7 +161,6 @@ describe('Summaries Module', () => {
         1000000000000
       );
 
-      // Store newer summary
       storeSummary(
         db,
         memorySessionId,

@@ -1,14 +1,3 @@
-/**
- * CLAUDE.md Generation and Cleanup Commands
- *
- * Shared module for CLAUDE.md file management that can be invoked from:
- * - CLI: `claude-mem generate` / `claude-mem clean`
- * - Worker service API endpoints
- *
- * Provides two main operations:
- * - generateClaudeMd: Regenerate CLAUDE.md files for folders with observations
- * - cleanClaudeMd: Remove auto-generated content from CLAUDE.md files
- */
 
 import { Database } from 'bun:sqlite';
 import path from 'path';
@@ -45,7 +34,6 @@ interface ObservationRow {
   discovery_tokens: number | null;
 }
 
-// Type icon map (matches ModeManager)
 const TYPE_ICONS: Record<string, string> = {
   'bugfix': '🔴',
   'feature': '🟣',
@@ -69,10 +57,6 @@ function estimateTokens(obs: ObservationRow): number {
   return Math.ceil(size / 4);
 }
 
-/**
- * Get tracked folders using git ls-files.
- * Respects .gitignore and only returns folders within the project.
- */
 function getTrackedFolders(workingDir: string): Set<string> {
   const folders = new Set<string>();
 
@@ -105,9 +89,6 @@ function getTrackedFolders(workingDir: string): Set<string> {
   return folders;
 }
 
-/**
- * Fallback directory walker that skips common ignored patterns.
- */
 function walkDirectoriesWithIgnore(dir: string, folders: Set<string>, depth: number = 0): void {
   if (depth > 10) return;
 
@@ -133,9 +114,6 @@ function walkDirectoriesWithIgnore(dir: string, folders: Set<string>, depth: num
   }
 }
 
-/**
- * Check if an observation has any files that are direct children of the folder.
- */
 function hasDirectChildFile(obs: ObservationRow, folderPath: string): boolean {
   const checkFiles = (filesJson: string | null): boolean => {
     if (!filesJson) return false;
@@ -153,10 +131,6 @@ function hasDirectChildFile(obs: ObservationRow, folderPath: string): boolean {
   return checkFiles(obs.files_modified) || checkFiles(obs.files_read);
 }
 
-/**
- * Query observations for a specific folder.
- * Only returns observations with files directly in the folder (not in subfolders).
- */
 function findObservationsByFolder(db: Database, relativeFolderPath: string, project: string, limit: number): ObservationRow[] {
   const queryLimit = limit * 3;
 
@@ -169,7 +143,6 @@ function findObservationsByFolder(db: Database, relativeFolderPath: string, proj
     LIMIT ?
   `;
 
-  // Database stores paths with forward slashes (git-normalized)
   const normalizedFolderPath = relativeFolderPath.split(path.sep).join('/');
   const likePattern = `%"${normalizedFolderPath}/%`;
   const allMatches = db.prepare(sql).all(project, likePattern, likePattern, queryLimit) as ObservationRow[];
@@ -177,10 +150,6 @@ function findObservationsByFolder(db: Database, relativeFolderPath: string, proj
   return allMatches.filter(obs => hasDirectChildFile(obs, relativeFolderPath)).slice(0, limit);
 }
 
-/**
- * Extract relevant file from an observation for display.
- * Only returns files that are direct children of the folder.
- */
 function extractRelevantFile(obs: ObservationRow, relativeFolder: string): string {
   if (obs.files_modified) {
     try {
@@ -215,9 +184,6 @@ function extractRelevantFile(obs: ObservationRow, relativeFolder: string): strin
   return 'General';
 }
 
-/**
- * Format observations for CLAUDE.md content.
- */
 function formatObservationsForClaudeMd(observations: ObservationRow[], folderPath: string): string {
   const lines: string[] = [];
   lines.push('# Recent Activity');
@@ -268,14 +234,9 @@ function formatObservationsForClaudeMd(observations: ObservationRow[], folderPat
   return lines.join('\n').trim();
 }
 
-/**
- * Write CLAUDE.md file with tagged content preservation.
- * Only writes to folders that exist — never creates directories.
- */
 function writeClaudeMdToFolder(folderPath: string, newContent: string): void {
   const resolvedPath = path.resolve(folderPath);
 
-  // Never write inside .git directories — corrupts refs (#1165)
   if (resolvedPath.includes('/.git/') || resolvedPath.includes('\\.git\\') || resolvedPath.endsWith('/.git') || resolvedPath.endsWith('\\.git')) return;
 
   const claudeMdPath = path.join(folderPath, 'CLAUDE.md');
@@ -313,9 +274,6 @@ function writeClaudeMdToFolder(folderPath: string, newContent: string): void {
   renameSync(tempFile, claudeMdPath);
 }
 
-/**
- * Regenerate CLAUDE.md for a single folder.
- */
 function regenerateFolder(
   db: Database,
   absoluteFolder: string,
@@ -329,7 +287,6 @@ function regenerateFolder(
     return { success: false, observationCount: 0, error: 'Folder no longer exists' };
   }
 
-  // Validate folder is within project root (prevent path traversal)
   const resolvedFolder = path.resolve(absoluteFolder);
   const resolvedWorkingDir = path.resolve(workingDir);
   if (!resolvedFolder.startsWith(resolvedWorkingDir + path.sep)) {
@@ -413,12 +370,6 @@ function processAllFoldersForGeneration(
   return 0;
 }
 
-/**
- * Generate CLAUDE.md files for all folders with observations.
- *
- * @param dryRun - If true, only report what would be done without writing files
- * @returns Exit code (0 for success, 1 for error)
- */
 export async function generateClaudeMd(dryRun: boolean): Promise<number> {
   const workingDir = process.cwd();
   const settings = SettingsDefaultsManager.loadFromFile(SETTINGS_PATH);
@@ -508,17 +459,6 @@ function cleanSingleFile(file: string, relativePath: string, dryRun: boolean): '
   }
 }
 
-/**
- * Clean up auto-generated CLAUDE.md files.
- *
- * For each file with <claude-mem-context> tags:
- * - Strip the tagged section
- * - If empty after stripping, delete the file
- * - If has remaining content, save the stripped version
- *
- * @param dryRun - If true, only report what would be done without modifying files
- * @returns Exit code (0 for success, 1 for error)
- */
 export async function cleanClaudeMd(dryRun: boolean): Promise<number> {
   const workingDir = process.cwd();
 

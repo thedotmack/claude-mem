@@ -12,26 +12,17 @@ interface PaginationState {
 type DataType = 'observations' | 'summaries' | 'prompts';
 type DataItem = Observation | Summary | UserPrompt;
 
-/**
- * Generic pagination hook for observations, summaries, and prompts
- */
 function usePaginationFor<TItem extends DataItem>(endpoint: string, dataType: DataType, currentFilter: string, currentSource: string) {
   const [state, setState] = useState<PaginationState>({
     isLoading: false,
     hasMore: true
   });
 
-  // Track offset and filter in refs to handle synchronous resets
   const offsetRef = useRef(0);
   const lastSelectionRef = useRef(`${currentSource}::${currentFilter}`);
   const stateRef = useRef(state);
 
-  /**
-   * Load more items from the API
-   * Automatically resets offset to 0 if filter has changed
-   */
   const loadMore = useCallback(async (): Promise<TItem[]> => {
-    // Check if filter changed - if so, reset pagination synchronously
     const selectionKey = `${currentSource}::${currentFilter}`;
     const filterChanged = lastSelectionRef.current !== selectionKey;
 
@@ -39,14 +30,11 @@ function usePaginationFor<TItem extends DataItem>(endpoint: string, dataType: Da
       offsetRef.current = 0;
       lastSelectionRef.current = selectionKey;
 
-      // Reset state both in React state and ref synchronously
       const newState = { isLoading: false, hasMore: true };
       setState(newState);
-      stateRef.current = newState; // Update ref immediately to avoid stale checks
+      stateRef.current = newState; 
     }
 
-    // Prevent concurrent requests using ref (always current)
-    // Skip this check if we just reset the filter - we want to load the first page
     if (!filterChanged && (stateRef.current.isLoading || !stateRef.current.hasMore)) {
       return [];
     }
@@ -54,13 +42,11 @@ function usePaginationFor<TItem extends DataItem>(endpoint: string, dataType: Da
     stateRef.current = { ...stateRef.current, isLoading: true };
     setState(prev => ({ ...prev, isLoading: true }));
 
-    // Build query params using current offset from ref
     const params = new URLSearchParams({
       offset: offsetRef.current.toString(),
       limit: UI.PAGINATION_PAGE_SIZE.toString()
     });
 
-    // Add project filter if present
     if (currentFilter) {
       params.append('project', currentFilter);
     }
@@ -90,7 +76,6 @@ function usePaginationFor<TItem extends DataItem>(endpoint: string, dataType: Da
       hasMore: data.hasMore
     }));
 
-    // Increment offset after successful load
     offsetRef.current += UI.PAGINATION_PAGE_SIZE;
 
     return data.items;
@@ -102,9 +87,6 @@ function usePaginationFor<TItem extends DataItem>(endpoint: string, dataType: Da
   };
 }
 
-/**
- * Hook for paginating observations
- */
 export function usePagination(currentFilter: string, currentSource: string) {
   const observations = usePaginationFor<Observation>(API_ENDPOINTS.OBSERVATIONS, 'observations', currentFilter, currentSource);
   const summaries = usePaginationFor<Summary>(API_ENDPOINTS.SUMMARIES, 'summaries', currentFilter, currentSource);

@@ -1,20 +1,8 @@
-/**
- * DataRoutes Type Coercion Tests
- *
- * Tests that MCP clients sending string-encoded arrays for `ids` and
- * `memorySessionIds` are properly coerced before validation.
- *
- * Mock Justification:
- * - Express req/res mocks: Required because route handlers expect Express objects
- * - DatabaseManager/SessionStore: Avoids database setup; we test coercion logic, not queries
- * - Logger spies: Suppress console output during tests
- */
 
 import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
 import type { Request, Response } from 'express';
 import { logger } from '../../../../src/utils/logger.js';
 
-// Mock dependencies before importing DataRoutes
 mock.module('../../../../src/shared/paths.js', () => ({
   getPackageRoot: () => '/tmp/test',
 }));
@@ -26,7 +14,6 @@ import { DataRoutes } from '../../../../src/services/worker/http/routes/DataRout
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
 
-// Helper to create mock req/res
 function createMockReqRes(body: any): { req: Partial<Request>; res: Partial<Response>; jsonSpy: ReturnType<typeof mock>; statusSpy: ReturnType<typeof mock> } {
   const jsonSpy = mock(() => {});
   const statusSpy = mock(() => ({ json: jsonSpy }));
@@ -38,12 +25,6 @@ function createMockReqRes(body: any): { req: Partial<Request>; res: Partial<Resp
   };
 }
 
-/**
- * Plan 06 Phase 3 — body validation lives in `validateBody` middleware now.
- * Build a single chain function that runs the validateBody middleware
- * followed by the handler, mirroring how Express dispatches them in
- * production.
- */
 function captureChain(mockApp: any, targetPath: string): (req: Request, res: Response) => void {
   let middleware: (req: Request, res: Response, next: () => void) => void;
   let handler: (req: Request, res: Response) => void;
@@ -109,7 +90,6 @@ describe('DataRoutes Type Coercion', () => {
   });
 
   describe('handleGetObservationsByIds — ids coercion', () => {
-    // Access the handler via setupRoutes
     let handler: (req: Request, res: Response) => void;
 
     beforeEach(() => {
@@ -150,7 +130,6 @@ describe('DataRoutes Type Coercion', () => {
       const { req, res, statusSpy } = createMockReqRes({ ids: 'foo,bar' });
       handler(req as Request, res as Response);
 
-      // NaN values should fail the Number.isInteger check
       expect(statusSpy).toHaveBeenCalledWith(400);
     });
 

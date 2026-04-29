@@ -1,9 +1,3 @@
-/**
- * Project Filter Tests
- *
- * Tests glob-based path matching for project exclusion.
- * Source: src/utils/project-filter.ts
- */
 
 import { describe, it, expect } from 'bun:test';
 import { isProjectExcluded } from '../../src/utils/project-filter.js';

@@ -1,15 +1,3 @@
-/**
- * Tests for malformed schema repair in Database.ts
- *
- * Mock Justification: NONE (0% mock code)
- * - Uses real SQLite with temp file — tests actual schema repair logic
- * - Uses Python sqlite3 to simulate cross-version schema corruption
- *   (bun:sqlite doesn't allow writable_schema modifications)
- * - Covers the cross-machine sync scenario from issue #1307
- *
- * Value: Prevents the silent 503 failure loop when a DB is synced between
- * machines running different claude-mem versions
- */
 import { describe, it, expect } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { ClaudeMemDatabase } from '../../../src/services/sqlite/Database.js';
@@ -39,11 +27,6 @@ function hasPython(): boolean {
   }
 }
 
-/**
- * Use Python's sqlite3 to corrupt a DB by removing the content_hash column
- * from the observations table definition while leaving the index intact.
- * This simulates what happens when a DB from a newer version is synced.
- */
 function corruptDbViaPython(dbPath: string): void {
   const script = join(tmpdir(), `corrupt-${Date.now()}.py`);
   writeFileSync(script, `
@@ -74,7 +57,6 @@ describe('Schema repair on malformed database', () => {
 
     const dbPath = tempDbPath();
     try {
-      // Step 1: Create a valid database with all migrations
       const db = new Database(dbPath, { create: true, readwrite: true });
       db.run('PRAGMA journal_mode = WAL');
       db.run('PRAGMA foreign_keys = ON');
@@ -82,19 +64,15 @@ describe('Schema repair on malformed database', () => {
       const runner = new MigrationRunner(db);
       runner.runAllMigrations();
 
-      // Verify content_hash column and index exist
       const hasContentHash = db.prepare('PRAGMA table_info(observations)').all()
         .some((col: any) => col.name === 'content_hash');
       expect(hasContentHash).toBe(true);
 
-      // Checkpoint WAL so all data is in the main file
       db.run('PRAGMA wal_checkpoint(TRUNCATE)');
       db.close();
 
-      // Step 2: Corrupt the DB
       corruptDbViaPython(dbPath);
 
-      // Step 3: Verify the DB is actually corrupted
       const corruptDb = new Database(dbPath, { readwrite: true });
       let threw = false;
       try {
@@ -107,22 +85,18 @@ describe('Schema repair on malformed database', () => {
       corruptDb.close();
       expect(threw).toBe(true);
 
-      // Step 4: Open via ClaudeMemDatabase — it should auto-repair
       const repaired = new ClaudeMemDatabase(dbPath);
 
-      // Verify the DB is functional
       const tables = repaired.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
         .all() as { name: string }[];
       const tableNames = tables.map(t => t.name);
       expect(tableNames).toContain('observations');
       expect(tableNames).toContain('sdk_sessions');
 
-      // Verify the index was recreated by the migration runner
       const indexes = repaired.db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_observations_content_hash'")
         .all() as { name: string }[];
       expect(indexes.length).toBe(1);
 
-      // Verify the content_hash column was re-added by the migration
       const columns = repaired.db.prepare('PRAGMA table_info(observations)').all() as { name: string }[];
       expect(columns.some(c => c.name === 'content_hash')).toBe(true);
 
@@ -154,9 +128,6 @@ describe('Schema repair on malformed database', () => {
     const dbPath = tempDbPath();
     const scriptPath = join(tmpdir(), `corrupt-nosv-${Date.now()}.py`);
     try {
-      // Build a minimal DB with only a malformed observations table and orphaned index
-      // — no schema_versions table. This simulates a partially-initialized DB that was
-      // synced before migrations ever ran.
       writeFileSync(scriptPath, `
 import sqlite3, sys
 c = sqlite3.connect(sys.argv[1])
@@ -175,7 +146,6 @@ c.close()
 `);
       execFileSync('python3', [scriptPath, dbPath], { timeout: 10000 });
 
-      // Verify it's corrupted
       const corruptDb = new Database(dbPath, { readwrite: true });
       let threw = false;
       try {
@@ -187,7 +157,6 @@ c.close()
       corruptDb.close();
       expect(threw).toBe(true);
 
-      // ClaudeMemDatabase must repair and fully initialize despite missing schema_versions
       const repaired = new ClaudeMemDatabase(dbPath);
       const tables = repaired.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
         .all() as { name: string }[];
@@ -210,7 +179,6 @@ c.close()
 
     const dbPath = tempDbPath();
     try {
-      // Step 1: Create a fully migrated DB and insert a session + observation
       const db = new Database(dbPath, { create: true, readwrite: true });
       db.run('PRAGMA journal_mode = WAL');
       db.run('PRAGMA foreign_keys = ON');
@@ -233,13 +201,10 @@ c.close()
       db.run('PRAGMA wal_checkpoint(TRUNCATE)');
       db.close();
 
-      // Step 2: Corrupt the DB
       corruptDbViaPython(dbPath);
 
-      // Step 3: Repair via ClaudeMemDatabase
       const repaired = new ClaudeMemDatabase(dbPath);
 
-      // Data must survive the repair + re-migration
       const sessions = repaired.db.prepare('SELECT COUNT(*) as count FROM sdk_sessions').get() as { count: number };
       const observations = repaired.db.prepare('SELECT COUNT(*) as count FROM observations').get() as { count: number };
       expect(sessions.count).toBe(1);

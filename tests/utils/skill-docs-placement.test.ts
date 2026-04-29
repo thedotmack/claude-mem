@@ -1,9 +1,3 @@
-/**
- * Regression test for misplaced smart-explore language docs (#1651)
- *
- * The smart-explore language support section was missing from smart-explore/SKILL.md
- * and had previously been in mem-search/SKILL.md (where it doesn't belong).
- */
 import { describe, it, expect } from 'bun:test';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
@@ -48,7 +42,6 @@ describe('skill docs placement (#1651)', () => {
     expect(existsSync(path)).toBe(true);
     const content = readFileSync(path, 'utf-8');
 
-    // Language support docs belong in smart-explore, not mem-search
     expect(content).not.toContain('tree-sitter');
     expect(content).not.toContain('Bundled Languages');
   });

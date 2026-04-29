@@ -13,7 +13,6 @@ on:
 jobs:
   convert:
     runs-on: ubuntu-latest
-    # Only run on labeled event if the label is 'feature-request', or always run on workflow_dispatch
     if: |
       (github.event_name == 'issues' && github.event.label.name == 'feature-request') ||
       github.event_name == 'workflow_dispatch'

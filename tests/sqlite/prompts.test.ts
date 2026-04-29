@@ -1,12 +1,3 @@
-/**
- * Prompts module tests
- * Tests modular prompt functions with in-memory database
- *
- * Sources:
- * - API patterns from src/services/sqlite/prompts/store.ts
- * - API patterns from src/services/sqlite/prompts/get.ts
- * - Test pattern from tests/session_store.test.ts
- */
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { ClaudeMemDatabase } from '../../src/services/sqlite/Database.js';
@@ -28,7 +19,6 @@ describe('Prompts Module', () => {
     db.close();
   });
 
-  // Helper to create a session (for FK constraint on user_prompts.content_session_id)
   function createSession(contentSessionId: string, project: string = 'test-project'): string {
     createSDKSession(db, contentSessionId, project, 'initial prompt');
     return contentSessionId;
@@ -95,20 +85,15 @@ describe('Prompts Module', () => {
       const sessionA = createSession('isolation-session-a');
       const sessionB = createSession('isolation-session-b');
 
-      // Add prompts to session A
       saveUserPrompt(db, sessionA, 1, 'A1');
       saveUserPrompt(db, sessionA, 2, 'A2');
 
-      // Add prompts to session B
       saveUserPrompt(db, sessionB, 1, 'B1');
 
-      // Session A should have 2 prompts
       expect(getPromptNumberFromUserPrompts(db, sessionA)).toBe(2);
 
-      // Session B should have 1 prompt
       expect(getPromptNumberFromUserPrompts(db, sessionB)).toBe(1);
 
-      // Adding to session B shouldn't affect session A
       saveUserPrompt(db, sessionB, 2, 'B2');
       saveUserPrompt(db, sessionB, 3, 'B3');
 

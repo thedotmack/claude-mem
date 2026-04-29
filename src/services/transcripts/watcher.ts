@@ -121,10 +121,6 @@ export class TranscriptWatcher {
       await this.addTailer(filePath, watch, schema, true);
     }
 
-    // PATHFINDER plan 03 phase 5: 5-second rescan timer replaced by a
-    // recursive fs.watch on the configured root. Requires Node 20+ on Linux
-    // for recursive mode (engines.node >= 20.0.0 — already enforced in
-    // package.json).
     const watchRoot = this.deepestNonGlobAncestor(resolvedPath);
     if (!watchRoot || !existsSync(watchRoot)) {
       logger.debug('TRANSCRIPT', 'Watch root does not exist, skipping fs.watch', { watch: watch.name, watchRoot });
@@ -133,11 +129,7 @@ export class TranscriptWatcher {
 
     try {
       const watcher = fsWatch(watchRoot, { recursive: true, persistent: true }, (event, name) => {
-        if (!name) return;                                  // some events omit filename
-        // Skip the glob scan for paths we already tail — JSONL appends fire
-        // here on every line and a full resolveWatchFiles() per append is
-        // more expensive than the prior 5-s interval. Only unknown paths
-        // warrant a rescan (new transcript files surface here first).
+        if (!name) return;                                  
         const changed = resolvePath(watchRoot, name);
         if (this.tailers.has(changed)) return;
         const matches = this.resolveWatchFiles(resolvedPath);
@@ -157,20 +149,8 @@ export class TranscriptWatcher {
     }
   }
 
-  /**
-   * Return the deepest path component that contains no glob meta-characters.
-   * Used to anchor `fs.watch(recursive: true)` for both literal directories
-   * and patterns like `~/.codex/sessions/**\/*.jsonl`.
-   *
-   * Handles both `/` and `\` as separators so Windows-native paths
-   * (e.g. `C:\Users\x\codex\sessions\**\*.jsonl`) resolve correctly. When
-   * the input is purely glob meta (no literal prefix) we return an empty
-   * string so the caller skips the watch instead of anchoring at the
-   * filesystem root.
-   */
   private deepestNonGlobAncestor(inputPath: string): string {
     if (!this.hasGlob(inputPath)) {
-      // Literal path: if it's a file, return its directory; otherwise return as-is.
       if (existsSync(inputPath)) {
         try {
           const stat = statSync(inputPath);
@@ -190,8 +170,6 @@ export class TranscriptWatcher {
     }
     if (literalSegments.length === 0) return '';
     if (literalSegments.length === 1 && literalSegments[0] === '') {
-      // Input started with a separator but the first real segment was a
-      // glob (e.g. `/**/foo`). Don't silently broaden the watch to `/`.
       return '';
     }
     return literalSegments.join(pathSep);
@@ -241,8 +219,6 @@ export class TranscriptWatcher {
     const sessionIdOverride = this.extractSessionIdFromPath(filePath);
 
     let offset = this.state.offsets[filePath] ?? 0;
-    // `startAtEnd` is useful on worker startup to avoid replaying the full backlog,
-    // but new transcript files must be read from byte 0 or we lose session_meta/user_message.
     if (offset === 0 && watch.startAtEnd && initialDiscovery) {
       try {
         offset = statSync(filePath).size;

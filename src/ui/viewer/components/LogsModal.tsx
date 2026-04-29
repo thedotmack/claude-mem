@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { authFetch } from '../utils/api';
 
-// Log levels and components matching the logger.ts definitions
 type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
 type LogComponent = 'HOOK' | 'WORKER' | 'SDK' | 'PARSER' | 'DB' | 'SYSTEM' | 'HTTP' | 'SESSION' | 'CHROMA';
 
@@ -15,7 +14,6 @@ interface ParsedLogLine {
   isSpecial?: 'dataIn' | 'dataOut' | 'success' | 'failure' | 'timing' | 'happyPath';
 }
 
-// Configuration for log levels
 const LOG_LEVELS: { key: LogLevel; label: string; icon: string; color: string }[] = [
   { key: 'DEBUG', label: 'Debug', icon: '🔍', color: '#8b8b8b' },
   { key: 'INFO', label: 'Info', icon: 'ℹ️', color: '#58a6ff' },
@@ -23,7 +21,6 @@ const LOG_LEVELS: { key: LogLevel; label: string; icon: string; color: string }[
   { key: 'ERROR', label: 'Error', icon: '❌', color: '#f85149' },
 ];
 
-// Configuration for log components
 const LOG_COMPONENTS: { key: LogComponent; label: string; icon: string; color: string }[] = [
   { key: 'HOOK', label: 'Hook', icon: '🪝', color: '#a371f7' },
   { key: 'WORKER', label: 'Worker', icon: '⚙️', color: '#58a6ff' },
@@ -36,10 +33,7 @@ const LOG_COMPONENTS: { key: LogComponent; label: string; icon: string; color: s
   { key: 'CHROMA', label: 'Chroma', icon: '🔮', color: '#a855f7' },
 ];
 
-// Parse a single log line into structured data
 function parseLogLine(line: string): ParsedLogLine {
-  // Pattern: [timestamp] [LEVEL] [COMPONENT] [correlation?] message
-  // Example: [2025-01-02 14:30:45.123] [INFO ] [WORKER] [session-123] → message
   const pattern = /^\[([^\]]+)\]\s+\[(\w+)\s*\]\s+\[(\w+)\s*\]\s+(?:\[([^\]]+)\]\s+)?(.*)$/;
   const match = line.match(pattern);
 
@@ -49,7 +43,6 @@ function parseLogLine(line: string): ParsedLogLine {
 
   const [, timestamp, level, component, correlationId, message] = match;
 
-  // Detect special message types
   let isSpecial: ParsedLogLine['isSpecial'] = undefined;
   if (message.startsWith('→')) isSpecial = 'dataIn';
   else if (message.startsWith('←')) isSpecial = 'dataOut';
@@ -86,7 +79,6 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
   const contentRef = useRef<HTMLDivElement>(null);
   const wasAtBottomRef = useRef(true);
 
-  // Filter state
   const [activeLevels, setActiveLevels] = useState<Set<LogLevel>>(
     new Set(['DEBUG', 'INFO', 'WARN', 'ERROR'])
   );
@@ -95,7 +87,6 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
   );
   const [alignmentOnly, setAlignmentOnly] = useState(false);
 
-  // Parse and filter log lines
   const parsedLines = useMemo(() => {
     if (!logs) return [];
     return logs.split('\n').map(parseLogLine);
@@ -103,24 +94,20 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
 
   const filteredLines = useMemo(() => {
     return parsedLines.filter(line => {
-      // Alignment filter - if enabled, only show [ALIGNMENT] lines
       if (alignmentOnly) {
         return line.raw.includes('[ALIGNMENT]');
       }
-      // Always show unparsed lines
       if (!line.level || !line.component) return true;
       return activeLevels.has(line.level) && activeComponents.has(line.component);
     });
   }, [parsedLines, activeLevels, activeComponents, alignmentOnly]);
 
-  // Check if user is at bottom before updating
   const checkIfAtBottom = useCallback(() => {
     if (!contentRef.current) return true;
     const { scrollTop, scrollHeight, clientHeight } = contentRef.current;
     return scrollHeight - scrollTop - clientHeight < 50;
   }, []);
 
-  // Auto-scroll to bottom
   const scrollToBottom = useCallback(() => {
     if (contentRef.current && wasAtBottomRef.current) {
       contentRef.current.scrollTop = contentRef.current.scrollHeight;
@@ -128,7 +115,6 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
   }, []);
 
   const fetchLogs = useCallback(async () => {
-    // Save scroll position before fetch
     wasAtBottomRef.current = checkIfAtBottom();
 
     setIsLoading(true);
@@ -147,7 +133,6 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
     }
   }, [checkIfAtBottom]);
 
-  // Scroll to bottom after logs update
   useEffect(() => {
     scrollToBottom();
   }, [logs, scrollToBottom]);
@@ -171,7 +156,6 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
     }
   }, []);
 
-  // Handle resize
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     setIsResizing(true);
@@ -201,15 +185,13 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
     };
   }, [isResizing]);
 
-  // Fetch logs when drawer opens
   useEffect(() => {
     if (isOpen) {
-      wasAtBottomRef.current = true; // Start at bottom on open
+      wasAtBottomRef.current = true; 
       fetchLogs();
     }
   }, [isOpen, fetchLogs]);
 
-  // Auto-refresh logs every 2 seconds if enabled
   useEffect(() => {
     if (!isOpen || !autoRefresh) {
       return;
@@ -219,7 +201,6 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
     return () => clearInterval(interval);
   }, [isOpen, autoRefresh, fetchLogs]);
 
-  // Toggle level filter
   const toggleLevel = useCallback((level: LogLevel) => {
     setActiveLevels(prev => {
       const next = new Set(prev);
@@ -232,7 +213,6 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
     });
   }, []);
 
-  // Toggle component filter
   const toggleComponent = useCallback((component: LogComponent) => {
     setActiveComponents(prev => {
       const next = new Set(prev);
@@ -245,7 +225,6 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
     });
   }, []);
 
-  // Select all / none for levels
   const setAllLevels = useCallback((enabled: boolean) => {
     if (enabled) {
       setActiveLevels(new Set(['DEBUG', 'INFO', 'WARN', 'ERROR']));
@@ -254,7 +233,6 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
     }
   }, []);
 
-  // Select all / none for components
   const setAllComponents = useCallback((enabled: boolean) => {
     if (enabled) {
       setActiveComponents(new Set(['HOOK', 'WORKER', 'SDK', 'PARSER', 'DB', 'SYSTEM', 'HTTP', 'SESSION', 'CHROMA']));
@@ -267,7 +245,6 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
     return null;
   }
 
-  // Get style for a parsed log line
   const getLineStyle = (line: ParsedLogLine): React.CSSProperties => {
     const levelConfig = LOG_LEVELS.find(l => l.key === line.level);
     const componentConfig = LOG_COMPONENTS.find(c => c.key === line.component);
@@ -295,10 +272,8 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
     return { color, fontWeight, backgroundColor, padding: '1px 0', borderRadius: '2px' };
   };
 
-  // Render a single log line with syntax highlighting
   const renderLogLine = (line: ParsedLogLine, index: number) => {
     if (!line.timestamp) {
-      // Unparsed line - render as-is
       return (
         <div key={index} className="log-line log-line-raw">
           {line.raw}

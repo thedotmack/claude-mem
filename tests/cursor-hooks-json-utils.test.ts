@@ -7,20 +7,6 @@ import {
   urlEncode
 } from '../src/utils/cursor-utils';
 
-/**
- * Tests for Cursor Hooks JSON/Utility Functions
- *
- * These tests validate the logic used in common.sh bash utilities.
- * The TypeScript implementations in cursor-utils.ts mirror the bash logic,
- * allowing us to verify correct behavior and catch edge cases.
- *
- * The bash scripts use these functions:
- * - json_get: Extract fields from JSON, including array access
- * - get_project_name: Extract project name from workspace path
- * - is_empty: Check if a string is empty/null
- * - url_encode: URL-encode a string
- */
-
 describe('Cursor Hooks JSON Utilities', () => {
   describe('parseArrayField', () => {
     it('parses simple array access', () => {
@@ -97,7 +83,6 @@ describe('Cursor Hooks JSON Utilities', () => {
     });
 
     it('returns empty string value (not fallback)', () => {
-      // Empty string is a valid value, should not trigger fallback
       expect(jsonGet(testJson, 'empty_string', 'fallback')).toBe('');
     });
   });
@@ -158,7 +143,6 @@ describe('Cursor Hooks JSON Utilities', () => {
     });
 
     it('returns true for literal "null" string', () => {
-      // This is important - jq returns "null" as string when value is null
       expect(isEmpty('null')).toBe(true);
     });
 
@@ -171,7 +155,6 @@ describe('Cursor Hooks JSON Utilities', () => {
     });
 
     it('returns false for whitespace-only string', () => {
-      // Whitespace is not empty
       expect(isEmpty('   ')).toBe(false);
     });
 
@@ -217,7 +200,6 @@ describe('Cursor Hooks JSON Utilities', () => {
   });
 
   describe('integration: hook payload parsing', () => {
-    // Simulates parsing a real Cursor hook payload
 
     it('extracts all fields from typical beforeSubmitPrompt payload', () => {
       const payload = {

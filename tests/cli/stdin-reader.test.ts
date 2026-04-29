@@ -1,8 +1,3 @@
-// Tests for readJsonFromStdin's onEnd contract (#2089).
-//
-// The previous implementation silently dropped malformed JSON when stdin
-// closed, returning undefined just like the empty-input case. The fix mirrors
-// the safety-timeout path: non-empty + unparseable = reject.
 
 import { describe, it, expect, afterEach } from 'bun:test';
 import { Readable } from 'stream';
@@ -13,10 +8,7 @@ const realStdin = process.stdin;
 const realStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
 
 function installFakeStdin(payload: string): void {
-  // Build a Readable that emits the payload, then ends — matches the
-  // shape of a process.stdin pipe closing after a single write.
   const fake = Readable.from([payload], { objectMode: false }) as unknown as NodeJS.ReadStream;
-  // The reader checks isTTY (must be falsy) and `.readable` access.
   Object.defineProperty(fake, 'isTTY', { value: false, configurable: true });
   Object.defineProperty(process, 'stdin', {
     configurable: true,

@@ -17,7 +17,6 @@ export function useStats() {
   }, []);
 
   useEffect(() => {
-    // Load once on mount
     loadStats();
   }, [loadStats]);
 

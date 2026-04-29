@@ -1,9 +1,3 @@
-/**
- * CorpusRoutes Type Coercion Tests
- *
- * Tests that MCP/HTTP clients sending string-encoded corpus filters are coerced
- * before CorpusBuilder assumes array and number fields.
- */
 
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
 import type { Request, Response } from 'express';
@@ -50,12 +44,6 @@ async function flushPromises(): Promise<void> {
   await Promise.resolve();
 }
 
-/**
- * Plan 06 Phase 3 — body validation lives in `validateBody` middleware now.
- * Build a single chain function that runs the validateBody middleware
- * followed by the handler, mirroring how Express dispatches them in
- * production.
- */
 function captureChain(mockApp: any, targetPath: string): (req: Request, res: Response) => void {
   let middleware: ((req: Request, res: Response, next: () => void) => void) | undefined;
   let handler: (req: Request, res: Response) => void;

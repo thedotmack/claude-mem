@@ -1,8 +1,4 @@
 #!/usr/bin/env node
-/**
- * Cleanup duplicate observations and summaries from the database
- * Keeps the earliest entry (MIN(id)) for each duplicate group
- */
 
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 
@@ -11,7 +7,6 @@ function main() {
 
   const db = new SessionStore();
 
-  // Find and delete duplicate observations
   console.log('Finding duplicate observations...');
 
   const duplicateObsQuery = db['db'].prepare(`
@@ -46,7 +41,6 @@ function main() {
     deletedObs += deleteIds.length;
   }
 
-  // Find and delete duplicate summaries
   console.log('\n\nFinding duplicate summaries...');
 
   const duplicateSumQuery = db['db'].prepare(`
@@ -92,7 +86,6 @@ function main() {
   console.log('='.repeat(60));
 }
 
-// Run if executed directly
 if (import.meta.url === `file://${process.argv[1]}`) {
   main();
 }

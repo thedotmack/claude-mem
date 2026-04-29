@@ -1,12 +1,3 @@
-/**
- * Tests for hook-command error classifier
- *
- * Validates that isWorkerUnavailableError correctly distinguishes between:
- * - Transport failures (ECONNREFUSED, etc.) → true (graceful degradation)
- * - Server errors (5xx) → true (graceful degradation)
- * - Client errors (4xx) → false (handler bug, blocking)
- * - Programming errors (TypeError, etc.) → false (code bug, blocking)
- */
 import { describe, it, expect } from 'bun:test';
 import { isWorkerUnavailableError } from '../src/cli/hook-command.js';
 
@@ -129,8 +120,6 @@ describe('isWorkerUnavailableError', () => {
   describe('programming errors → false (blocking)', () => {
     it('should NOT classify TypeError as worker unavailable', () => {
       const error = new TypeError('Cannot read properties of undefined');
-      // Note: TypeError with "fetch failed" IS classified as unavailable (transport layer)
-      // But generic TypeErrors are NOT
       expect(isWorkerUnavailableError(new TypeError('Cannot read properties of undefined'))).toBe(false);
     });
 

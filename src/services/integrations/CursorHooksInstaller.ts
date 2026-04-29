@@ -1,13 +1,3 @@
-/**
- * CursorHooksInstaller - Cursor IDE integration for claude-mem
- *
- * Extracted from worker-service.ts monolith to provide centralized Cursor integration.
- * Handles:
- * - Cursor hooks installation/uninstallation
- * - MCP server configuration
- * - Context file generation
- * - Project registry management
- */
 
 import path from 'path';
 import { homedir } from 'os';
@@ -27,48 +17,24 @@ import type { CursorInstallTarget, CursorHooksJson, CursorMcpConfig, Platform } 
 
 const execAsync = promisify(exec);
 
-// Standard paths
 const CURSOR_REGISTRY_FILE = path.join(DATA_DIR, 'cursor-projects.json');
 
-// ============================================================================
-// Platform Detection
-// ============================================================================
-
-/**
- * Detect platform for script selection
- */
 export function detectPlatform(): Platform {
   return process.platform === 'win32' ? 'windows' : 'unix';
 }
 
-/**
- * Get script extension based on platform
- */
 export function getScriptExtension(): string {
   return detectPlatform() === 'windows' ? '.ps1' : '.sh';
 }
 
-// ============================================================================
-// Project Registry
-// ============================================================================
-
-/**
- * Read the Cursor project registry
- */
 export function readCursorRegistry(): CursorProjectRegistry {
   return readCursorRegistryFromFile(CURSOR_REGISTRY_FILE);
 }
 
-/**
- * Write the Cursor project registry
- */
 export function writeCursorRegistry(registry: CursorProjectRegistry): void {
   writeCursorRegistryToFile(CURSOR_REGISTRY_FILE, registry);
 }
 
-/**
- * Register a project for auto-context updates
- */
 export function registerCursorProject(projectName: string, workspacePath: string): void {
   const registry = readCursorRegistry();
   registry[projectName] = {
@@ -79,9 +45,6 @@ export function registerCursorProject(projectName: string, workspacePath: string
   logger.info('CURSOR', 'Registered project for auto-context updates', { projectName, workspacePath });
 }
 
-/**
- * Unregister a project from auto-context updates
- */
 export function unregisterCursorProject(projectName: string): void {
   const registry = readCursorRegistry();
   if (registry[projectName]) {
@@ -91,18 +54,13 @@ export function unregisterCursorProject(projectName: string): void {
   }
 }
 
-/**
- * Update Cursor context files for all registered projects matching this project name.
- * Called by SDK agents after saving a summary.
- */
 export async function updateCursorContextForProject(projectName: string, _port: number): Promise<void> {
   const registry = readCursorRegistry();
   const entry = registry[projectName];
 
-  if (!entry) return; // Project doesn't have Cursor hooks installed
+  if (!entry) return; 
 
   try {
-    // Fetch fresh context from worker (uses socket or TCP automatically)
     const response = await workerHttpRequest(
       `/api/context/inject?project=${encodeURIComponent(projectName)}`
     );
@@ -112,11 +70,9 @@ export async function updateCursorContextForProject(projectName: string, _port: 
     const context = await response.text();
     if (!context || !context.trim()) return;
 
-    // Write to the project's Cursor rules file using shared utility
     writeContextFile(entry.workspacePath, context);
     logger.debug('CURSOR', 'Updated context file', { projectName, workspacePath: entry.workspacePath });
   } catch (error) {
-    // [ANTI-PATTERN IGNORED]: Background context update - failure is non-critical, user workflow continues
     if (error instanceof Error) {
       logger.error('WORKER', 'Failed to update context file', { projectName }, error);
     } else {
@@ -125,19 +81,9 @@ export async function updateCursorContextForProject(projectName: string, _port: 
   }
 }
 
-// ============================================================================
-// Path Finding
-// ============================================================================
-
-/**
- * Find MCP server script path
- * Searches in order: marketplace install, source repo
- */
 export function findMcpServerPath(): string | null {
   const possiblePaths = [
-    // Marketplace install location
     path.join(MARKETPLACE_ROOT, 'plugin', 'scripts', 'mcp-server.cjs'),
-    // Development/source location
     path.join(process.cwd(), 'plugin', 'scripts', 'mcp-server.cjs'),
   ];
 
@@ -149,15 +95,9 @@ export function findMcpServerPath(): string | null {
   return null;
 }
 
-/**
- * Find worker-service.cjs path for unified CLI
- * Searches in order: marketplace install, source repo
- */
 export function findWorkerServicePath(): string | null {
   const possiblePaths = [
-    // Marketplace install location
     path.join(MARKETPLACE_ROOT, 'plugin', 'scripts', 'worker-service.cjs'),
-    // Development/source location
     path.join(process.cwd(), 'plugin', 'scripts', 'worker-service.cjs'),
   ];
 
@@ -169,19 +109,11 @@ export function findWorkerServicePath(): string | null {
   return null;
 }
 
-/**
- * Find the Bun executable path
- * Required because worker-service.cjs uses bun:sqlite which is Bun-specific
- * Searches common installation locations across platforms
- */
 export function findBunPath(): string {
   const possiblePaths = [
-    // Standard user install location (most common)
     path.join(homedir(), '.bun', 'bin', 'bun'),
-    // Global install locations
     '/usr/local/bin/bun',
     '/usr/bin/bun',
-    // Windows locations
     ...(process.platform === 'win32' ? [
       path.join(homedir(), '.bun', 'bin', 'bun.exe'),
       path.join(process.env.LOCALAPPDATA || '', 'bun', 'bun.exe'),
@@ -194,15 +126,9 @@ export function findBunPath(): string {
     }
   }
 
-  // Fallback to 'bun' and hope it's in PATH
-  // This allows the installation to proceed even if we can't find bun
-  // The user will get a clear error when the hook runs if bun isn't available
   return 'bun';
 }
 
-/**
- * Get the target directory for Cursor hooks based on install target
- */
 export function getTargetDir(target: CursorInstallTarget): string | null {
   switch (target) {
     case 'project':
@@ -223,15 +149,6 @@ export function getTargetDir(target: CursorInstallTarget): string | null {
   }
 }
 
-// ============================================================================
-// MCP Configuration
-// ============================================================================
-
-/**
- * Configure MCP server in Cursor's mcp.json
- * @param target 'project' or 'user'
- * @returns 0 on success, 1 on failure
- */
 export function configureCursorMcp(target: CursorInstallTarget): number {
   const mcpServerPath = findMcpServerPath();
 
@@ -250,10 +167,8 @@ export function configureCursorMcp(target: CursorInstallTarget): number {
   const mcpJsonPath = path.join(targetDir, 'mcp.json');
 
   try {
-    // Create directory if needed
     mkdirSync(targetDir, { recursive: true });
 
-    // Load existing config or create new
     let config: CursorMcpConfig = { mcpServers: {} };
     if (existsSync(mcpJsonPath)) {
       try {
@@ -262,7 +177,6 @@ export function configureCursorMcp(target: CursorInstallTarget): number {
           config.mcpServers = {};
         }
       } catch (error) {
-        // [ANTI-PATTERN IGNORED]: Fallback behavior - corrupt config, continue with empty
         if (error instanceof Error) {
           logger.error('WORKER', 'Corrupt mcp.json, creating new config', { path: mcpJsonPath }, error);
         } else {
@@ -272,7 +186,6 @@ export function configureCursorMcp(target: CursorInstallTarget): number {
       }
     }
 
-    // Add claude-mem MCP server
     config.mcpServers['claude-mem'] = {
       command: 'node',
       args: [mcpServerPath]
@@ -289,14 +202,6 @@ export function configureCursorMcp(target: CursorInstallTarget): number {
   }
 }
 
-// ============================================================================
-// Hook Installation
-// ============================================================================
-
-/**
- * Install Cursor hooks using unified CLI
- * No longer copies shell scripts - uses node CLI directly
- */
 export async function installCursorHooks(target: CursorInstallTarget): Promise<number> {
   console.log(`\nInstalling Claude-Mem Cursor hooks (${target} level)...\n`);
 
@@ -306,7 +211,6 @@ export async function installCursorHooks(target: CursorInstallTarget): Promise<n
     return 1;
   }
 
-  // Find the worker-service.cjs path
   const workerServicePath = findWorkerServicePath();
   if (!workerServicePath) {
     console.error('Could not find worker-service.cjs');
@@ -316,18 +220,13 @@ export async function installCursorHooks(target: CursorInstallTarget): Promise<n
 
   const workspaceRoot = process.cwd();
 
-  // Generate hooks.json with unified CLI commands
   const hooksJsonPath = path.join(targetDir, 'hooks.json');
 
-  // Find bun executable - required because worker-service.cjs uses bun:sqlite
   const bunPath = findBunPath();
   const escapedBunPath = bunPath.replace(/\\/g, '\\\\');
 
-  // Use the absolute path to worker-service.cjs
-  // Escape backslashes for JSON on Windows
   const escapedWorkerPath = workerServicePath.replace(/\\/g, '\\\\');
 
-  // Helper to create hook command using unified CLI with bun runtime
   const makeHookCommand = (command: string) => {
     return `"${escapedBunPath}" "${escapedWorkerPath}" hook cursor ${command}`;
   };
@@ -357,7 +256,6 @@ export async function installCursorHooks(target: CursorInstallTarget): Promise<n
   };
 
   try {
-    // Create target directory inside try to catch EACCES/EPERM
     mkdirSync(targetDir, { recursive: true });
     await writeHooksJsonAndSetupProject(hooksJsonPath, hooksJson, workerServicePath, target, targetDir, workspaceRoot);
     return 0;
@@ -383,7 +281,6 @@ async function writeHooksJsonAndSetupProject(
   console.log(`  Created hooks.json (unified CLI mode)`);
   console.log(`  Worker service: ${workerServicePath}`);
 
-  // For project-level: create initial context file
   if (target === 'project') {
     await setupProjectContext(targetDir, workspaceRoot);
   }
@@ -405,9 +302,6 @@ Context Injection:
 `);
 }
 
-/**
- * Setup initial context file for project-level installation
- */
 async function setupProjectContext(targetDir: string, workspaceRoot: string): Promise<void> {
   const rulesDir = path.join(targetDir, 'rules');
   mkdirSync(rulesDir, { recursive: true });
@@ -420,7 +314,6 @@ async function setupProjectContext(targetDir: string, workspaceRoot: string): Pr
   try {
     contextGenerated = await fetchInitialContextFromWorker(projectName, workspaceRoot);
   } catch (error) {
-    // [ANTI-PATTERN IGNORED]: Fallback behavior - worker not running, use placeholder
     if (error instanceof Error) {
       logger.debug('WORKER', 'Worker not running during install', {}, error);
     } else {
@@ -429,7 +322,6 @@ async function setupProjectContext(targetDir: string, workspaceRoot: string): Pr
   }
 
   if (!contextGenerated) {
-    // Create placeholder context file
     const rulesFile = path.join(rulesDir, 'claude-mem-context.mdc');
     const placeholderContent = `---
 alwaysApply: true
@@ -446,7 +338,6 @@ Use claude-mem's MCP search tools for manual memory queries.
     console.log(`  Created placeholder context file (will populate after first session)`);
   }
 
-  // Register project for automatic context updates after summaries
   registerCursorProject(projectName, workspaceRoot);
   console.log(`  Registered for auto-context updates`);
 }
@@ -472,9 +363,6 @@ async function fetchInitialContextFromWorker(
   return false;
 }
 
-/**
- * Uninstall Cursor hooks
- */
 export function uninstallCursorHooks(target: CursorInstallTarget): number {
   console.log(`\nUninstalling Claude-Mem Cursor hooks (${target} level)...\n`);
 
@@ -487,7 +375,6 @@ export function uninstallCursorHooks(target: CursorInstallTarget): number {
   const hooksDir = path.join(targetDir, 'hooks');
   const hooksJsonPath = path.join(targetDir, 'hooks.json');
 
-  // Remove legacy shell scripts if they exist (from old installations)
   const bashScripts = ['common.sh', 'session-init.sh', 'context-inject.sh',
                       'save-observation.sh', 'save-file-edit.sh', 'session-summary.sh'];
   const psScripts = ['common.ps1', 'session-init.ps1', 'context-inject.ps1',
@@ -541,9 +428,6 @@ function removeCursorHooksFiles(
   console.log('Restart Cursor to apply changes.');
 }
 
-/**
- * Check Cursor hooks installation status
- */
 export function checkCursorHooksStatus(): number {
   console.log('\nClaude-Mem Cursor Hooks Status\n');
 
@@ -569,7 +453,6 @@ export function checkCursorHooksStatus(): number {
       console.log(`${loc.name}: Installed`);
       console.log(`   Config: ${hooksJson}`);
 
-      // Check if using unified CLI mode or legacy shell scripts
       let hooksContent: any = null;
       try {
         hooksContent = JSON.parse(readFileSync(hooksJson, 'utf-8'));
@@ -588,7 +471,6 @@ export function checkCursorHooksStatus(): number {
         if (firstCommand.includes('worker-service.cjs') && firstCommand.includes('hook cursor')) {
           console.log(`   Mode: Unified CLI (bun worker-service.cjs)`);
         } else {
-          // Detect legacy shell scripts
           const bashScripts = ['session-init.sh', 'context-inject.sh', 'save-observation.sh'];
           const psScripts = ['session-init.ps1', 'context-inject.ps1', 'save-observation.ps1'];
 
@@ -610,7 +492,6 @@ export function checkCursorHooksStatus(): number {
         }
       }
 
-      // Check for context file (project only)
       if (loc.name === 'Project') {
         const contextFile = path.join(loc.dir, 'rules', 'claude-mem-context.mdc');
         if (existsSync(contextFile)) {
@@ -632,19 +513,13 @@ export function checkCursorHooksStatus(): number {
   return 0;
 }
 
-/**
- * Detect if Claude Code is available
- * Checks for the Claude Code CLI and plugin directory
- */
 export async function detectClaudeCode(): Promise<boolean> {
   try {
-    // Check for Claude Code CLI
     const { stdout } = await execAsync('which claude || where claude', { timeout: 5000 });
     if (stdout.trim()) {
       return true;
     }
   } catch (error) {
-    // [ANTI-PATTERN IGNORED]: Fallback behavior - CLI not found, continue to directory check
     if (error instanceof Error) {
       logger.debug('WORKER', 'Claude CLI not in PATH', {}, error);
     } else {
@@ -652,7 +527,6 @@ export async function detectClaudeCode(): Promise<boolean> {
     }
   }
 
-  // Check for Claude Code plugin directory (respects CLAUDE_CONFIG_DIR)
   const pluginDir = path.join(CLAUDE_CONFIG_DIR, 'plugins');
   if (existsSync(pluginDir)) {
     return true;
@@ -661,9 +535,6 @@ export async function detectClaudeCode(): Promise<boolean> {
   return false;
 }
 
-/**
- * Handle cursor subcommand for hooks installation
- */
 export async function handleCursorCommand(subcommand: string, args: string[]): Promise<number> {
   switch (subcommand) {
     case 'install': {
@@ -681,8 +552,6 @@ export async function handleCursorCommand(subcommand: string, args: string[]): P
     }
 
     case 'setup': {
-      // Interactive guided setup - handled by main() in worker-service.ts
-      // This is a placeholder that should not be reached
       console.log('Use the main entry point for setup');
       return 0;
     }

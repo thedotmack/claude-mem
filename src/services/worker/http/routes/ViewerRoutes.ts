@@ -1,9 +1,3 @@
-/**
- * Viewer Routes
- *
- * Handles health check, viewer UI, and SSE stream endpoints.
- * These are used by the web viewer UI at http://localhost:37777
- */
 
 import express, { Request, Response } from 'express';
 import path from 'path';
@@ -15,14 +9,6 @@ import { DatabaseManager } from '../../DatabaseManager.js';
 import { SessionManager } from '../../SessionManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 
-/**
- * Plan 06 Phase 6 — viewer.html is loaded once at module init and held in
- * memory for the lifetime of the worker process. Process restart is the
- * cache-invalidation event; no fs.watch, no TTL, no refresh.
- *
- * We probe the same two on-disk locations the legacy handler did so the
- * dev (cache) and installed (marketplace) layouts both keep working.
- */
 const VIEWER_HTML_CANDIDATE_PATHS: readonly string[] = (() => {
   const packageRoot = getPackageRoot();
   return [
@@ -59,7 +45,6 @@ export class ViewerRoutes extends BaseRouteHandler {
   }
 
   setupRoutes(app: express.Application): void {
-    // Serve static UI assets (JS, CSS, fonts, etc.)
     const packageRoot = getPackageRoot();
     app.use(express.static(path.join(packageRoot, 'ui')));
 
@@ -68,11 +53,7 @@ export class ViewerRoutes extends BaseRouteHandler {
     app.get('/stream', this.handleSSEStream.bind(this));
   }
 
-  /**
-   * Health check endpoint
-   */
   private handleHealth = this.wrapHandler((req: Request, res: Response): void => {
-    // Include queue liveness info so monitoring can detect dead queues (#1867)
     const activeSessions = this.sessionManager.getActiveSessionCount();
 
     res.json({
@@ -82,10 +63,6 @@ export class ViewerRoutes extends BaseRouteHandler {
     });
   });
 
-  /**
-   * Serve viewer UI from the in-memory cache populated at module init.
-   * Plan 06 Phase 6 — single read at boot, no per-request fs hit.
-   */
   private handleViewerUI = this.wrapHandler((req: Request, res: Response): void => {
     if (!viewerHtmlBytes) {
       throw new Error('Viewer UI not found at any expected location');
@@ -94,11 +71,7 @@ export class ViewerRoutes extends BaseRouteHandler {
     res.send(viewerHtmlBytes);
   });
 
-  /**
-   * SSE stream endpoint
-   */
   private handleSSEStream = this.wrapHandler((req: Request, res: Response): void => {
-    // Guard: if DB is not yet initialized, return 503 before registering client
     try {
       this.dbManager.getSessionStore();
     } catch (initError: unknown) {
@@ -109,15 +82,12 @@ export class ViewerRoutes extends BaseRouteHandler {
       return;
     }
 
-    // Setup SSE headers
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
-    // Add client to broadcaster
     this.sseBroadcaster.addClient(res);
 
-    // Send initial_load event with project/source catalog
     const projectCatalog = this.dbManager.getSessionStore().getProjectCatalog();
     this.sseBroadcaster.broadcast({
       type: 'initial_load',
@@ -127,9 +97,8 @@ export class ViewerRoutes extends BaseRouteHandler {
       timestamp: Date.now()
     });
 
-    // Send initial processing status (based on queue depth + active generators)
     const isProcessing = this.sessionManager.isAnySessionProcessing();
-    const queueDepth = this.sessionManager.getTotalActiveWork(); // Includes queued + actively processing
+    const queueDepth = this.sessionManager.getTotalActiveWork(); 
     this.sseBroadcaster.broadcast({
       type: 'processing_status',
       isProcessing,

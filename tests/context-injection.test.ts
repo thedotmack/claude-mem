@@ -8,13 +8,6 @@ import {
   CONTEXT_TAG_CLOSE,
 } from '../src/utils/context-injection';
 
-/**
- * Tests for the shared context injection utility.
- *
- * injectContextIntoMarkdownFile is used by MCP integrations and OpenCode
- * installer to inject or update a <claude-mem-context> section in markdown files.
- */
-
 describe('Context Injection', () => {
   let tempDir: string;
 
@@ -171,7 +164,6 @@ describe('Context Injection', () => {
       injectContextIntoMarkdownFile(filePath, 'data');
 
       const content = readFileSync(filePath, 'utf-8');
-      // Should have double newline before the tag
       expect(content).toContain(`# Header\n\n${CONTEXT_TAG_OPEN}`);
     });
 
@@ -182,7 +174,6 @@ describe('Context Injection', () => {
       injectContextIntoMarkdownFile(filePath, 'data');
 
       const content = readFileSync(filePath, 'utf-8');
-      // Should not have excessive whitespace before the tag
       expect(content).toContain(`# Header\n\n${CONTEXT_TAG_OPEN}`);
     });
   });

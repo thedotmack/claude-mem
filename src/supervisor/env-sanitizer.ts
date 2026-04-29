@@ -6,11 +6,6 @@ export const ENV_EXACT_MATCHES = new Set([
   'MCP_SESSION_ID',
 ]);
 
-/**
- * Proxy-related env vars stripped before spawning the worker / `claude` subprocess.
- * The user's proxy config bleeding into internal AI calls causes connection failures
- * (see issues #2115, #2099). Stripped unconditionally — no opt-in flag.
- */
 export const ENV_PROXY_VARS = new Set([
   'HTTP_PROXY',
   'HTTPS_PROXY',
@@ -24,7 +19,6 @@ export const ENV_PROXY_VARS = new Set([
   'npm_config_https_proxy',
 ]);
 
-/** Vars that start with CLAUDE_CODE_ but must be preserved for subprocess auth/tooling */
 export const ENV_PRESERVE = new Set([
   'CLAUDE_CODE_OAUTH_TOKEN',
   'CLAUDE_CODE_GIT_BASH_PATH',

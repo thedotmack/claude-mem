@@ -1,14 +1,5 @@
 #!/usr/bin/env node
 
-/**
- * Generate CHANGELOG.md from GitHub releases.
- *
- * Incremental by default: reads existing CHANGELOG.md, only fetches releases
- * newer than the newest version already documented, and prepends them.
- *
- * Pass --full to force a complete regeneration from every release.
- */
-
 import { execSync } from 'child_process';
 import { writeFileSync, readFileSync, existsSync } from 'fs';
 
@@ -69,11 +60,6 @@ function renderEntry(release) {
   return lines.join('\n');
 }
 
-/**
- * Parse the existing CHANGELOG.md and return:
- *   - knownVersions: Set of version strings already present
- *   - body: the content following the standard header (entries only)
- */
 function readExistingChangelog() {
   if (!existsSync(CHANGELOG_PATH)) {
     return { knownVersions: new Set(), body: '' };
@@ -85,7 +71,6 @@ function readExistingChangelog() {
   while ((match = versionHeaderRe.exec(content)) !== null) {
     knownVersions.add(match[1]);
   }
-  // Strip the standard header so we can re-emit it cleanly
   const firstEntryIndex = content.search(/^## \[/m);
   const body = firstEntryIndex === -1 ? '' : content.slice(firstEntryIndex);
   return { knownVersions, body };

@@ -13,7 +13,6 @@ export function getPlatformAdapter(platform: string): PlatformAdapter {
     case 'gemini-cli': return geminiCliAdapter;
     case 'windsurf': return windsurfAdapter;
     case 'raw': return rawAdapter;
-    // Codex CLI and other compatible platforms use the raw adapter (accepts both camelCase and snake_case fields)
     default: return rawAdapter;
   }
 }

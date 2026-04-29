@@ -1,14 +1,3 @@
-/**
- * SQLiteSearchStrategy - Direct SQLite queries for filter-only searches
- *
- * This strategy handles searches without query text (filter-only):
- * - Date range filtering
- * - Project filtering
- * - Type filtering
- * - Concept/file filtering
- *
- * Used when: No query text is provided, or as a fallback when Chroma fails
- */
 
 import { BaseSearchStrategy, SearchStrategy } from './SearchStrategy.js';
 import {
@@ -30,8 +19,6 @@ export class SQLiteSearchStrategy extends BaseSearchStrategy implements SearchSt
   }
 
   canHandle(options: StrategySearchOptions): boolean {
-    // Can handle filter-only queries (no query text)
-    // Also used as fallback when Chroma is unavailable
     return !options.query || options.strategyHint === 'sqlite';
   }
 
@@ -102,25 +89,16 @@ export class SQLiteSearchStrategy extends BaseSearchStrategy implements SearchSt
     };
   }
 
-  /**
-   * Find observations by concept (used by findByConcept tool)
-   */
   findByConcept(concept: string, options: StrategySearchOptions): ObservationSearchResult[] {
     const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project, dateRange, orderBy = 'date_desc' } = options;
     return this.sessionSearch.findByConcept(concept, { limit, project, dateRange, orderBy });
   }
 
-  /**
-   * Find observations by type (used by findByType tool)
-   */
   findByType(type: string | string[], options: StrategySearchOptions): ObservationSearchResult[] {
     const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project, dateRange, orderBy = 'date_desc' } = options;
     return this.sessionSearch.findByType(type as any, { limit, project, dateRange, orderBy });
   }
 
-  /**
-   * Find observations and sessions by file path (used by findByFile tool)
-   */
   findByFile(filePath: string, options: StrategySearchOptions): {
     observations: ObservationSearchResult[];
     sessions: SessionSummarySearchResult[];

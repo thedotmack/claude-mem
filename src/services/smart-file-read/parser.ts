@@ -1,14 +1,3 @@
-/**
- * Code structure parser — shells out to tree-sitter CLI for AST-based extraction.
- *
- * No native bindings. No WASM. Just the CLI binary + query patterns.
- *
- * Supported: JS, TS, Python, Go, Rust, Ruby, Java, C, C++,
- * Kotlin, Swift, PHP, Elixir, Lua, Scala, Bash, Haskell, Zig,
- * CSS, SCSS, TOML, YAML, SQL, Markdown
- *
- * by Copter Labs
- */
 
 import { execFileSync } from "node:child_process";
 import { writeFileSync, readFileSync, mkdtempSync, rmSync, existsSync } from "node:fs";
@@ -17,14 +6,9 @@ import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import { logger } from "../../utils/logger.js";
 
-// CJS-safe require for resolving external packages at runtime.
-// In ESM: import.meta.url works. In CJS bundle (esbuild): __filename works.
-// typeof check avoids ReferenceError in ESM where __filename doesn't exist.
 const _require = typeof __filename !== 'undefined'
   ? createRequire(__filename)
   : createRequire(import.meta.url);
-
-// --- Types ---
 
 export interface CodeSymbol {
   name: string;
@@ -46,8 +30,6 @@ export interface FoldedFile {
   totalLines: number;
   foldedTokenEstimate: number;
 }
-
-// --- Language detection ---
 
 const LANG_MAP: Record<string, string> = {
   ".js": "javascript",
@@ -98,10 +80,6 @@ export function detectLanguage(filePath: string): string {
   return LANG_MAP[ext] || "unknown";
 }
 
-/**
- * Detect language with fallback to user-configured grammar extensions.
- * Bundled LANG_MAP takes priority.
- */
 function detectLanguageWithUserGrammars(filePath: string, userConfig: UserGrammarConfig): string {
   const ext = filePath.slice(filePath.lastIndexOf("."));
   if (LANG_MAP[ext]) return LANG_MAP[ext];
@@ -109,19 +87,12 @@ function detectLanguageWithUserGrammars(filePath: string, userConfig: UserGramma
   return "unknown";
 }
 
-/**
- * Get the query key for a language, checking user config for custom queries.
- */
 function getUserAwareQueryKey(language: string, userConfig: UserGrammarConfig): string {
-  // If user config has a specific query key for this language, use it
   if (userConfig.languageToQueryKey[language]) {
     return userConfig.languageToQueryKey[language];
   }
-  // Otherwise fall back to the bundled query key mapping
   return getQueryKey(language);
 }
-
-// --- User-installable grammars via .claude-mem.json ---
 
 export interface UserGrammarEntry {
   package: string;
@@ -130,11 +101,8 @@ export interface UserGrammarEntry {
 }
 
 export interface UserGrammarConfig {
-  /** language name → grammar entry */
   grammars: Record<string, UserGrammarEntry>;
-  /** file extension → language name (for user-defined extensions only) */
   extensionToLanguage: Record<string, string>;
-  /** language name → query content (custom .scm file content or "generic") */
   languageToQueryKey: Record<string, string>;
 }
 
@@ -146,11 +114,6 @@ const EMPTY_USER_GRAMMAR_CONFIG: UserGrammarConfig = {
   languageToQueryKey: {},
 };
 
-/**
- * Load user grammar configuration from .claude-mem.json in a project root.
- * Cached per project root. Returns empty config if file doesn't exist or is invalid.
- * User entries do NOT override bundled grammars.
- */
 export function loadUserGrammars(projectRoot: string): UserGrammarConfig {
   if (userGrammarCache.has(projectRoot)) return userGrammarCache.get(projectRoot)!;
 
@@ -161,7 +124,6 @@ export function loadUserGrammars(projectRoot: string): UserGrammarConfig {
     const content = readFileSync(configPath, "utf-8");
     rawConfig = JSON.parse(content);
   } catch {
-    // [ANTI-PATTERN IGNORED]: .claude-mem.json missing is the normal case for most projects
     userGrammarCache.set(projectRoot, EMPTY_USER_GRAMMAR_CONFIG);
     return EMPTY_USER_GRAMMAR_CONFIG;
   }
@@ -179,7 +141,6 @@ export function loadUserGrammars(projectRoot: string): UserGrammarConfig {
   };
 
   for (const [language, entry] of Object.entries(grammarsRaw as Record<string, unknown>)) {
-    // Skip if this language is already bundled
     if (GRAMMAR_PACKAGES[language]) continue;
 
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
@@ -189,7 +150,6 @@ export function loadUserGrammars(projectRoot: string): UserGrammarConfig {
     const extensions = typedEntry.extensions;
     const queryPath = typedEntry.query;
 
-    // Validate required fields
     if (typeof pkg !== "string" || !Array.isArray(extensions)) continue;
     if (!extensions.every((e: unknown) => typeof e === "string")) continue;
 
@@ -199,19 +159,16 @@ export function loadUserGrammars(projectRoot: string): UserGrammarConfig {
       query: typeof queryPath === "string" ? queryPath : undefined,
     };
 
-    // Map extensions to language (skip extensions already handled by bundled LANG_MAP)
     for (const ext of extensions as string[]) {
       if (!LANG_MAP[ext]) {
         config.extensionToLanguage[ext] = language;
       }
     }
 
-    // Resolve query content
     if (typeof queryPath === "string") {
       const fullQueryPath = join(projectRoot, queryPath);
       try {
         const queryContent = readFileSync(fullQueryPath, "utf-8");
-        // Store with a unique key to avoid collisions with built-in queries
         const queryKey = `user_${language}`;
         QUERIES[queryKey] = queryContent;
         config.languageToQueryKey[language] = queryKey;
@@ -227,8 +184,6 @@ export function loadUserGrammars(projectRoot: string): UserGrammarConfig {
   userGrammarCache.set(projectRoot, config);
   return config;
 }
-
-// --- Grammar path resolution ---
 
 const GRAMMAR_PACKAGES: Record<string, string> = {
   javascript: "tree-sitter-javascript",
@@ -258,9 +213,6 @@ const GRAMMAR_PACKAGES: Record<string, string> = {
   markdown: "@tree-sitter-grammars/tree-sitter-markdown",
 };
 
-// Grammars where the parser source lives in a subdirectory of the npm package root,
-// AND that subdirectory lacks its own package.json (so require.resolve won't find it).
-// Maps language → subdirectory name under the package root.
 const GRAMMAR_SUBDIR: Record<string, string> = {
   markdown: "tree-sitter-markdown",
 };
@@ -271,7 +223,6 @@ function resolveGrammarPath(language: string): string | null {
 
   const subdir = GRAMMAR_SUBDIR[language];
   if (subdir) {
-    // Package root has no sub-package.json — resolve root then append subdir
     try {
       const rootPkgPath = _require.resolve(pkg + "/package.json");
       const resolved = join(dirname(rootPkgPath), subdir);
@@ -286,21 +237,14 @@ function resolveGrammarPath(language: string): string | null {
     const packageJsonPath = _require.resolve(pkg + "/package.json");
     return dirname(packageJsonPath);
   } catch {
-    // [ANTI-PATTERN IGNORED]: grammar package not installed is expected for unsupported languages
     return null;
   }
 }
 
-/**
- * Resolve grammar path with fallback to user-installed grammars.
- * First tries bundled grammars, then falls back to the project's node_modules.
- */
 export function resolveGrammarPathWithFallback(language: string, projectRoot?: string): string | null {
-  // Try bundled grammar first
   const bundled = resolveGrammarPath(language);
   if (bundled) return bundled;
 
-  // Fall back to user-installed grammar in project's node_modules
   if (!projectRoot) return null;
 
   const userConfig = loadUserGrammars(projectRoot);
@@ -311,7 +255,6 @@ export function resolveGrammarPathWithFallback(language: string, projectRoot?: s
     const packageJsonPath = join(projectRoot, "node_modules", entry.package, "package.json");
     if (existsSync(packageJsonPath)) {
       const grammarDir = dirname(packageJsonPath);
-      // Verify it has a src/ directory (required by tree-sitter CLI)
       if (existsSync(join(grammarDir, "src"))) return grammarDir;
     }
   } catch {
@@ -321,8 +264,6 @@ export function resolveGrammarPathWithFallback(language: string, projectRoot?: s
   console.error(`[smart-file-read] Grammar package not found for "${language}": ${entry.package} (install it in your project's node_modules)`);
   return null;
 }
-
-// --- Query patterns (declarative symbol extraction) ---
 
 const QUERIES: Record<string, string> = {
   jsts: `
@@ -513,8 +454,6 @@ function getQueryKey(language: string): string {
   }
 }
 
-// --- Temp file management ---
-
 let queryTmpDir: string | null = null;
 const queryFileCache = new Map<string, string>();
 
@@ -531,14 +470,11 @@ function getQueryFile(queryKey: string): string {
   return filePath;
 }
 
-// --- CLI execution ---
-
 let cachedBinPath: string | null = null;
 
 function getTreeSitterBin(): string {
   if (cachedBinPath) return cachedBinPath;
 
-  // Try direct binary from tree-sitter-cli package
   try {
     const pkgPath = _require.resolve("tree-sitter-cli/package.json");
     const binPath = join(dirname(pkgPath), "tree-sitter");
@@ -550,7 +486,6 @@ function getTreeSitterBin(): string {
     // [ANTI-PATTERN IGNORED]: tree-sitter-cli not in node_modules is expected; falls back to PATH
   }
 
-  // Fallback: assume it's on PATH
   cachedBinPath = "tree-sitter";
   return cachedBinPath;
 }
@@ -597,7 +532,6 @@ function parseMultiFileQueryOutput(output: string): Map<string, RawMatch[]> {
   let currentMatch: RawMatch | null = null;
 
   for (const line of output.split("\n")) {
-    // File header: a line that doesn't start with whitespace and isn't empty
     if (line.length > 0 && !line.startsWith(" ") && !line.startsWith("\t")) {
       currentFile = line.trim();
       if (!fileMatches.has(currentFile)) {
@@ -633,8 +567,6 @@ function parseMultiFileQueryOutput(output: string): Map<string, RawMatch[]> {
 
   return fileMatches;
 }
-
-// --- Symbol building ---
 
 const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
   func: "function",
@@ -733,7 +665,6 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   const exportRanges: Array<{ startRow: number; endRow: number }> = [];
   const containers: Array<{ sym: CodeSymbol; startRow: number; endRow: number }> = [];
 
-  // Collect exports and imports
   for (const match of matches) {
     for (const cap of match.captures) {
       if (cap.tag === "exp") {
@@ -745,7 +676,6 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     }
   }
 
-  // Build symbols
   for (const match of matches) {
     const kindCapture = match.captures.find(c => KIND_MAP[c.tag]);
     const nameCapture = match.captures.find(c => c.tag === "name");
@@ -756,7 +686,6 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     const kind = KIND_MAP[kindCapture.tag];
     const name = nameCapture?.text || "anonymous";
 
-    // Markdown-specific: extract heading level and build signature
     let signature: string;
     if (language === "markdown" && kind === "section") {
       const headingLine = lines[startRow] || "";
@@ -795,8 +724,6 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     symbols.push(sym);
   }
 
-  // Markdown: deduplicate code_block matches. The catch-all `(fenced_code_block) @code_block`
-  // pattern and the language-specific pattern both match the same block. Keep the named one.
   if (language === "markdown") {
     const codeBlocksByRange = new Map<string, CodeSymbol>();
     const duplicateCodeBlocks = new Set<CodeSymbol>();
@@ -805,7 +732,6 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       const rangeKey = `${sym.lineStart}:${sym.lineEnd}`;
       const existing = codeBlocksByRange.get(rangeKey);
       if (existing) {
-        // Prefer the named version (has actual language tag vs "anonymous")
         if (sym.name !== "anonymous") {
           duplicateCodeBlocks.add(existing);
           codeBlocksByRange.set(rangeKey, sym);
@@ -823,7 +749,6 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     }
   }
 
-  // Nest methods inside containers
   const nested = new Set<CodeSymbol>();
   for (const container of containers) {
     for (const sym of symbols) {
@@ -838,8 +763,6 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
 
   return { symbols: symbols.filter(s => !nested.has(s)), imports };
 }
-
-// --- Main parse functions ---
 
 export function parseFile(content: string, filePath: string, projectRoot?: string): FoldedFile {
   const userConfig = projectRoot ? loadUserGrammars(projectRoot) : EMPTY_USER_GRAMMAR_CONFIG;
@@ -857,7 +780,6 @@ export function parseFile(content: string, filePath: string, projectRoot?: strin
   const queryKey = getUserAwareQueryKey(language, userConfig);
   const queryFile = getQueryFile(queryKey);
 
-  // Write content to temp file with correct extension for language detection
   const ext = filePath.slice(filePath.lastIndexOf(".")) || ".txt";
   const tmpDir = mkdtempSync(join(tmpdir(), "smart-src-"));
   const tmpFile = join(tmpDir, `source${ext}`);
@@ -884,10 +806,6 @@ export function parseFile(content: string, filePath: string, projectRoot?: strin
   }
 }
 
-/**
- * Batch parse multiple on-disk files. Groups by language for one CLI call per language.
- * Much faster than calling parseFile() per file (one process spawn per language vs per file).
- */
 export function parseFilesBatch(
   files: Array<{ absolutePath: string; relativePath: string; content: string }>,
   projectRoot?: string
@@ -895,7 +813,6 @@ export function parseFilesBatch(
   const results = new Map<string, FoldedFile>();
   const userConfig = projectRoot ? loadUserGrammars(projectRoot) : EMPTY_USER_GRAMMAR_CONFIG;
 
-  // Group files by language (and thus by query + grammar)
   const languageGroups = new Map<string, typeof files>();
   for (const file of files) {
     const language = detectLanguageWithUserGrammars(file.relativePath, userConfig);
@@ -906,7 +823,6 @@ export function parseFilesBatch(
   for (const [language, groupFiles] of languageGroups) {
     const grammarPath = resolveGrammarPathWithFallback(language, projectRoot);
     if (!grammarPath) {
-      // No grammar — return empty results for these files
       for (const file of groupFiles) {
         const lines = file.content.split("\n");
         results.set(file.relativePath, {
@@ -920,11 +836,9 @@ export function parseFilesBatch(
     const queryKey = getUserAwareQueryKey(language, userConfig);
     const queryFile = getQueryFile(queryKey);
 
-    // Run one batch query for all files of this language
     const absolutePaths = groupFiles.map(f => f.absolutePath);
     const batchResults = runBatchQuery(queryFile, absolutePaths, grammarPath);
 
-    // Build FoldedFile for each file using the batch results
     for (const file of groupFiles) {
       const lines = file.content.split("\n");
       const matches = batchResults.get(file.absolutePath) || [];
@@ -947,8 +861,6 @@ export function parseFilesBatch(
 
   return results;
 }
-
-// --- Formatting ---
 
 export function formatFoldedView(file: FoldedFile): string {
   if (file.language === "markdown") {
@@ -980,14 +892,12 @@ export function formatFoldedView(file: FoldedFile): string {
 
 function formatMarkdownFoldedView(file: FoldedFile): string {
   const parts: string[] = [];
-  // Total width for the content column (before the line range)
   const COL_WIDTH = 56;
 
   parts.push(`📄 ${file.filePath} (${file.language}, ${file.totalLines} lines)`);
 
   for (const sym of file.symbols) {
     if (sym.kind === "section") {
-      // Extract heading level from the signature (count leading # characters)
       const hashMatch = sym.signature.match(/^(#{1,6})\s/);
       const level = hashMatch ? hashMatch[1].length : 1;
       const indent = "  ".repeat(level);
@@ -995,7 +905,6 @@ function formatMarkdownFoldedView(file: FoldedFile): string {
       const content = `${indent}${sym.signature}`;
       parts.push(`${content.padEnd(COL_WIDTH)}${lineRange}`);
     } else if (sym.kind === "code") {
-      // Find containing heading level for indentation
       const containingLevel = findContainingHeadingLevel(file.symbols, sym.lineStart);
       const indent = "  ".repeat(containingLevel + 1);
       const lineRange = sym.lineStart === sym.lineEnd
@@ -1021,10 +930,6 @@ function formatMarkdownFoldedView(file: FoldedFile): string {
   return parts.join("\n");
 }
 
-/**
- * Find the heading level of the most recent section heading before the given line.
- * Returns 0 if no heading precedes the line.
- */
 function findContainingHeadingLevel(symbols: CodeSymbol[], lineStart: number): number {
   let bestLevel = 0;
   for (const sym of symbols) {
@@ -1082,8 +987,6 @@ function getSymbolIcon(kind: CodeSymbol["kind"]): string {
   return icons[kind] || "·";
 }
 
-// --- Unfold ---
-
 export function unfoldSymbol(content: string, filePath: string, symbolName: string): string | null {
   const file = parseFile(content, filePath);
 
@@ -1103,13 +1006,11 @@ export function unfoldSymbol(content: string, filePath: string, symbolName: stri
 
   const lines = content.split("\n");
 
-  // Markdown section unfold: return from heading to next heading of same or higher level
   if (file.language === "markdown" && symbol.kind === "section") {
     const hashMatch = symbol.signature.match(/^(#{1,6})\s/);
     const level = hashMatch ? hashMatch[1].length : 1;
     const start = symbol.lineStart;
 
-    // Find the next heading at same or higher (lower number) level
     let end = lines.length - 1;
     for (const sym of file.symbols) {
       if (sym.kind === "section" && sym.lineStart > start) {
@@ -1117,7 +1018,6 @@ export function unfoldSymbol(content: string, filePath: string, symbolName: stri
         const otherLevel = otherHashMatch ? otherHashMatch[1].length : 1;
         if (otherLevel <= level) {
           end = sym.lineStart - 1;
-          // Trim trailing blank lines
           while (end > start && lines[end].trim() === "") end--;
           break;
         }
@@ -1128,7 +1028,6 @@ export function unfoldSymbol(content: string, filePath: string, symbolName: stri
     return `<!-- 📍 ${filePath} L${start + 1}-${end + 1} -->\n${extracted}`;
   }
 
-  // Include preceding comments/decorators
   let start = symbol.lineStart;
   for (let i = symbol.lineStart - 1; i >= 0; i--) {
     const trimmed = lines[i].trim();

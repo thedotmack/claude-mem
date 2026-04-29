@@ -1,9 +1,6 @@
 #!/usr/bin/env node
 const fs = require('fs');
 
-/**
- * Processes GitHub release JSON from stdin and outputs a formatted CHANGELOG.md
- */
 function generate() {
   try {
     const input = fs.readFileSync(0, 'utf8');

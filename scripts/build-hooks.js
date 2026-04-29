@@ -1,10 +1,5 @@
 #!/usr/bin/env node
 
-/**
- * Build script for claude-mem hooks
- * Bundles TypeScript hooks into individual standalone executables using esbuild
- */
-
 import { build } from 'esbuild';
 import fs from 'fs';
 import path from 'path';
@@ -27,39 +22,18 @@ const CONTEXT_GENERATOR = {
   source: 'src/services/context-generator.ts'
 };
 
-/**
- * Strip hardcoded __dirname/__filename from bundled CJS output.
- *
- * When esbuild converts ESM TypeScript source to CJS format, it inlines
- * __dirname and __filename as static strings based on the SOURCE file paths
- * at build time. These `var __dirname = "/build/machine/path/..."` declarations
- * shadow the runtime's native __dirname (provided by Bun/Node's CJS module
- * wrapper), causing path resolution to fail on end-user machines.
- *
- * This post-build step removes those hardcoded assignments so the runtime
- * globals are used instead.
- *
- * See: https://github.com/thedotmack/claude-mem/issues/1410
- */
 function stripHardcodedDirname(filePath) {
   let content = fs.readFileSync(filePath, 'utf-8');
   const before = content.length;
 
-  // Match both double-quoted and single-quoted string literals.
-  // esbuild currently emits double quotes, but single quotes are handled
-  // defensively in case future versions change quoting style.
   const str = `(?:"[^"]*"|'[^']*')`;
 
   for (const id of ['__dirname', '__filename']) {
-    // Remove `var <id> = "...", rest` → `var rest`
     content = content.replace(new RegExp(`\\bvar ${id}\\s*=\\s*${str},\\s*`, 'g'), 'var ');
-    // Remove standalone `var <id> = "...";`
     content = content.replace(new RegExp(`\\bvar ${id}\\s*=\\s*${str};\\s*`, 'g'), '');
-    // Remove `, <id> = "..."` from mid/end of var declarations
     content = content.replace(new RegExp(`,\\s*${id}\\s*=\\s*${str}`, 'g'), '');
   }
 
-  // Clean up dangling `var ;` left when __dirname was the sole declarator
   content = content.replace(/\bvar\s*;/g, '');
 
   const removed = before - content.length;
@@ -73,12 +47,10 @@ async function buildHooks() {
   console.log('🔨 Building claude-mem hooks and worker service...\n');
 
   try {
-    // Read version from package.json
     const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf-8'));
     const version = packageJson.version;
     console.log(`📌 Version: ${version}`);
 
-    // Create output directories
     console.log('\n📦 Preparing output directories...');
     const hooksDir = 'plugin/scripts';
     const uiDir = 'plugin/ui';
@@ -91,8 +63,6 @@ async function buildHooks() {
     }
     console.log('✓ Output directories ready');
 
-    // Generate plugin/package.json for cache directory dependency installation
-    // Note: bun:sqlite is a Bun built-in, no external dependencies needed for SQLite
     console.log('\n📦 Generating plugin package.json...');
     const pluginPackageJson = {
       name: 'claude-mem-plugin',
@@ -101,10 +71,6 @@ async function buildHooks() {
       description: 'Runtime dependencies for claude-mem bundled hooks',
       type: 'module',
       dependencies: {
-        // Externalized from mcp-server.cjs to avoid Zod version conflicts when
-        // OpenCode's Bun bundler assembles hook scripts (#2113). MCP SDK
-        // transitively imports Zod; loading it via node_modules at runtime
-        // ensures OpenCode controls the version.
         'zod': '^4.3.6',
         'tree-sitter-cli': '^0.26.5',
         'tree-sitter-c': '^0.24.1',
@@ -140,7 +106,6 @@ async function buildHooks() {
     fs.writeFileSync('plugin/package.json', JSON.stringify(pluginPackageJson, null, 2) + '\n');
     console.log('✓ plugin/package.json generated');
 
-    // Build React viewer
     console.log('\n📋 Building React viewer...');
     const { spawn } = await import('child_process');
     const viewerBuild = spawn('node', ['scripts/build-viewer.js'], { stdio: 'inherit' });
@@ -154,7 +119,6 @@ async function buildHooks() {
       });
     });
 
-    // Build worker service
     console.log(`\n🔧 Building worker service...`);
     await build({
       entryPoints: [WORKER_SERVICE.source],
@@ -167,10 +131,8 @@ async function buildHooks() {
       logLevel: 'error', // Suppress warnings (import.meta warning is benign)
       external: [
         'bun:sqlite',
-        // Optional chromadb embedding providers
         'cohere-ai',
         'ollama',
-        // Default embedding function with native binaries
         '@chroma-core/default-embed',
         'onnxruntime-node'
       ],
@@ -186,15 +148,12 @@ async function buildHooks() {
       }
     });
 
-    // Fix hardcoded __dirname/__filename in bundled output (#1410)
     stripHardcodedDirname(`${hooksDir}/${WORKER_SERVICE.name}.cjs`);
 
-    // Make worker service executable
     fs.chmodSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`, 0o755);
     const workerStats = fs.statSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`);
     console.log(`✓ worker-service built (${(workerStats.size / 1024).toFixed(2)} KB)`);
 
-    // Build MCP server
     console.log(`\n🔧 Building MCP server...`);
     await build({
       entryPoints: [MCP_SERVER.source],
@@ -207,10 +166,6 @@ async function buildHooks() {
       logLevel: 'error',
       external: [
         'bun:sqlite',
-        // Externalize Zod to avoid version conflicts when OpenCode's Bun bundler
-        // assembles hook scripts (see #2113). The MCP server transitively imports
-        // Zod via @modelcontextprotocol/sdk; bundling it caused two Zod versions
-        // to coexist at runtime and the v4 ↔ v3 _zod.def access crashed.
         'zod',
         'tree-sitter-cli',
         'tree-sitter-javascript',
@@ -246,24 +201,12 @@ async function buildHooks() {
       }
     });
 
-    // Fix hardcoded __dirname/__filename in bundled output (#1410)
     stripHardcodedDirname(`${hooksDir}/${MCP_SERVER.name}.cjs`);
 
-    // Make MCP server executable
     fs.chmodSync(`${hooksDir}/${MCP_SERVER.name}.cjs`, 0o755);
     const mcpServerStats = fs.statSync(`${hooksDir}/${MCP_SERVER.name}.cjs`);
     console.log(`✓ mcp-server built (${(mcpServerStats.size / 1024).toFixed(2)} KB)`);
 
-    // GUARDRAIL (#1645): The MCP server runs under Node, but the entire `bun:`
-    // module namespace (bun:sqlite, bun:ffi, bun:test, etc.) is Bun-only. If
-    // any transitive import in mcp-server.ts ever pulls one in, the bundle
-    // will crash on first require under Node — which is exactly the regression
-    // PR #1645 fixed for `bun:sqlite`. Fail the build instead of shipping a
-    // broken bundle so future contributors get an immediate signal.
-    //
-    // Only flag actual `require("bun:...")` / `require('bun:...')` calls, not
-    // the bare string — error messages and inline comments may legitimately
-    // mention `bun:sqlite` by name without re-introducing the import.
     const mcpBundleContent = fs.readFileSync(`${hooksDir}/${MCP_SERVER.name}.cjs`, 'utf-8');
     const bunRequireRegex = /require\(\s*["']bun:[a-z][a-z0-9_-]*["']\s*\)/;
     const bunRequireMatch = mcpBundleContent.match(bunRequireRegex);
@@ -273,16 +216,6 @@ async function buildHooks() {
       );
     }
 
-    // SECONDARY GUARDRAIL (#1645 round 11): bundle size budget. The bun:sqlite
-    // regex above catches the specific regression class we already know about,
-    // but esbuild could in theory change how it emits external module specifiers
-    // and silently slip past the regex. A bundle-size budget catches the
-    // structural symptom (worker-service.ts dragged into the bundle blew the
-    // size from ~358KB to ~1.96MB) regardless of how the imports look.
-    //
-    // 600KB is a generous ceiling — current size is ~384KB, the broken v12.0.0
-    // bundle was ~1920KB, and there's plenty of headroom for legitimate growth
-    // before we'd want to revisit this number.
     const MCP_SERVER_MAX_BYTES = 600 * 1024;
     if (mcpServerStats.size > MCP_SERVER_MAX_BYTES) {
       throw new Error(
@@ -290,7 +223,6 @@ async function buildHooks() {
       );
     }
 
-    // Build context generator
     console.log(`\n🔧 Building context generator...`);
     await build({
       entryPoints: [CONTEXT_GENERATOR.source],
@@ -308,13 +240,11 @@ async function buildHooks() {
       // No banner needed: CJS files under Node.js have __dirname/__filename natively
     });
 
-    // Fix hardcoded __dirname/__filename in bundled output (#1410)
     stripHardcodedDirname(`${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`);
 
     const contextGenStats = fs.statSync(`${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`);
     console.log(`✓ context-generator built (${(contextGenStats.size / 1024).toFixed(2)} KB)`);
 
-    // Build NPX CLI (pure Node.js — no Bun dependency)
     console.log(`\n🔧 Building NPX CLI...`);
     const npxCliOutDir = 'dist/npx-cli';
     if (!fs.existsSync(npxCliOutDir)) {
@@ -334,10 +264,6 @@ async function buildHooks() {
         'fs', 'fs/promises', 'path', 'os', 'child_process', 'url',
         'crypto', 'http', 'https', 'net', 'stream', 'util', 'events',
         'buffer', 'querystring', 'readline', 'tty', 'assert',
-        // Bun-only modules — present in transitive imports (ProcessManager
-        // pulls bun:sqlite via require for stale-PID detection). Mark external
-        // so esbuild leaves the require() string alone; npx-cli paths that hit
-        // these are guarded by Bun-runtime checks at call sites.
         'bun:sqlite',
       ],
       define: {
@@ -345,12 +271,10 @@ async function buildHooks() {
       },
     });
 
-    // Make NPX CLI executable
     fs.chmodSync(`${npxCliOutDir}/index.js`, 0o755);
     const npxCliStats = fs.statSync(`${npxCliOutDir}/index.js`);
     console.log(`✓ npx-cli built (${(npxCliStats.size / 1024).toFixed(2)} KB)`);
 
-    // Build OpenClaw plugin (self-contained, only Node builtins external)
     if (fs.existsSync('openclaw/src/index.ts')) {
       console.log(`\n🔧 Building OpenClaw plugin...`);
       const openclawOutDir = 'openclaw/dist';
@@ -376,7 +300,6 @@ async function buildHooks() {
       console.log(`✓ openclaw plugin built (${(openclawStats.size / 1024).toFixed(2)} KB)`);
     }
 
-    // Build OpenCode plugin (self-contained, Node.js ESM — Bun-compatible)
     if (fs.existsSync('src/integrations/opencode-plugin/index.ts')) {
       console.log(`\n🔧 Building OpenCode plugin...`);
       const opencodeOutDir = 'dist/opencode-plugin';
@@ -402,7 +325,6 @@ async function buildHooks() {
       console.log(`✓ opencode plugin built (${(opencodeStats.size / 1024).toFixed(2)} KB)`);
     }
 
-    // Verify critical distribution files exist (skills are source files, not build outputs)
     console.log('\n📋 Verifying distribution files...');
     const requiredDistributionFiles = [
       'plugin/skills/mem-search/SKILL.md',

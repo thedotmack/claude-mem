@@ -1,9 +1,3 @@
-/**
- * Project Name Tests
- *
- * Tests tilde expansion and project name extraction.
- * Source: src/utils/project-name.ts
- */
 
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import { homedir } from 'os';

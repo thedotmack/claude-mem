@@ -1,6 +1,5 @@
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
 
-// Mock the ModeManager before importing the formatter
 mock.module('../../../src/services/domain/ModeManager.js', () => ({
   ModeManager: {
     getInstance: () => ({
@@ -46,7 +45,6 @@ import {
 
 import type { Observation, TokenEconomics, ContextConfig, PriorMessages } from '../../../src/services/context/types.js';
 
-// Helper to create a minimal observation
 function createTestObservation(overrides: Partial<Observation> = {}): Observation {
   return {
     id: 1,
@@ -66,7 +64,6 @@ function createTestObservation(overrides: Partial<Observation> = {}): Observatio
   };
 }
 
-// Helper to create token economics
 function createTestEconomics(overrides: Partial<TokenEconomics> = {}): TokenEconomics {
   return {
     totalObservations: 10,
@@ -78,7 +75,6 @@ function createTestEconomics(overrides: Partial<TokenEconomics> = {}): TokenEcon
   };
 }
 
-// Helper to create context config
 function createTestConfig(overrides: Partial<ContextConfig> = {}): ContextConfig {
   return {
     totalObservationCount: 50,
@@ -281,7 +277,6 @@ describe('AgentFormatter', () => {
       const obs = createTestObservation();
       const config = createTestConfig();
 
-      // Empty string timeDisplay means "same as previous"
       const result = renderAgentTableRow(obs, '', config);
 
       expect(result).toContain('"');
@@ -316,7 +311,6 @@ describe('AgentFormatter', () => {
 
       const result = renderAgentFullObservation(obs, '10:00 AM', null, config);
 
-      // Should not have an extra content block
       expect(result.length).toBeLessThan(5);
     });
 
@@ -327,7 +321,6 @@ describe('AgentFormatter', () => {
       const result = renderAgentFullObservation(obs, '10:00 AM', null, config);
       const joined = result.join('\n');
 
-      // Compact format: "~{readTokens}t" and "W {discoveryTokens}"
       expect(joined).toContain('~');
       expect(joined).toContain('t');
       expect(joined).toContain('W 250');
@@ -381,7 +374,6 @@ describe('AgentFormatter', () => {
     it('should return empty array when value is empty string', () => {
       const result = renderAgentSummaryField('Learned', '');
 
-      // Empty string is falsy, so should return empty array
       expect(result).toHaveLength(0);
     });
   });
@@ -443,7 +435,6 @@ describe('AgentFormatter', () => {
       const result = renderAgentFooter(15500, 100);
       const joined = result.join('\n');
 
-      // 15500 / 1000 = 15.5 -> rounds to 16
       expect(joined).toContain('16k');
     });
   });
@@ -459,7 +450,6 @@ describe('AgentFormatter', () => {
     it('should be valid markdown', () => {
       const result = renderAgentEmptyState('test');
 
-      // Should start with h1
       expect(result.startsWith('#')).toBe(true);
     });
 

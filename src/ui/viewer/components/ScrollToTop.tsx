@@ -20,7 +20,7 @@ export function ScrollToTop({ targetRef }: ScrollToTopProps) {
       target.addEventListener('scroll', handleScroll);
       return () => target.removeEventListener('scroll', handleScroll);
     }
-  }, []); // Empty deps - only set up listener once on mount
+  }, []); 
 
   const scrollToTop = () => {
     const target = targetRef.current;

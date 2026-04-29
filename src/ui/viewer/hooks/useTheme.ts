@@ -35,14 +35,12 @@ export function useTheme() {
     resolveTheme(getStoredPreference())
   );
 
-  // Update resolved theme when preference changes
   useEffect(() => {
     const newResolvedTheme = resolveTheme(preference);
     setResolvedTheme(newResolvedTheme);
     document.documentElement.setAttribute('data-theme', newResolvedTheme);
   }, [preference]);
 
-  // Listen for system theme changes when preference is 'system'
   useEffect(() => {
     if (preference !== 'system') return;
 
@@ -63,7 +61,6 @@ export function useTheme() {
       setPreference(newPreference);
     } catch (e: unknown) {
       console.warn('Failed to save theme preference to localStorage:', e instanceof Error ? e.message : String(e));
-      // Still update the theme even if localStorage fails
       setPreference(newPreference);
     }
   };

@@ -1,15 +1,3 @@
-/**
- * Tests for Claude Code adapter subagent field extraction.
- *
- * Validates that normalizeInput picks up the `agent_id` / `agent_type`
- * fields from Claude Code hook stdin and that the type guard rejects
- * non-string values. These fields are the discriminator for subagent
- * context; they are undefined in main-session payloads.
- *
- * Sources:
- * - Adapter: src/cli/adapters/claude-code.ts
- * - Types:   src/cli/types.ts
- */
 import { describe, it, expect } from 'bun:test';
 import { claudeCodeAdapter } from '../../../src/cli/adapters/claude-code.js';
 

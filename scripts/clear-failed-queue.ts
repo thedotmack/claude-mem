@@ -1,12 +1,4 @@
 #!/usr/bin/env bun
-/**
- * Clear messages from the queue
- *
- * Usage:
- *   bun scripts/clear-failed-queue.ts           # Clear failed messages (interactive)
- *   bun scripts/clear-failed-queue.ts --all     # Clear ALL messages (pending, processing, failed)
- *   bun scripts/clear-failed-queue.ts --force   # Non-interactive - clear without prompting
- */
 
 const WORKER_URL = 'http://localhost:37777';
 
@@ -87,7 +79,6 @@ function formatAge(epochMs: number): string {
 }
 
 async function prompt(question: string): Promise<string> {
-  // Check if we have a TTY for interactive input
   if (!process.stdin.isTTY) {
     console.log(question + '(no TTY, use --force flag for non-interactive mode)');
     return 'n';
@@ -107,7 +98,6 @@ async function prompt(question: string): Promise<string> {
 async function main() {
   const args = process.argv.slice(2);
 
-  // Help flag
   if (args.includes('--help') || args.includes('-h')) {
     console.log(`
 Claude-Mem Queue Clearer
@@ -152,7 +142,6 @@ What is this for?
     ? '\n=== Claude-Mem Queue Clearer (ALL) ===\n'
     : '\n=== Claude-Mem Queue Clearer (Failed) ===\n');
 
-  // Check worker health
   const healthy = await checkWorkerHealth();
   if (!healthy) {
     console.log('Worker is not running. Start it with:');
@@ -161,7 +150,6 @@ What is this for?
   }
   console.log('Worker status: Running\n');
 
-  // Get queue status
   const status = await getQueueStatus();
   const { queue } = status;
 
@@ -171,7 +159,6 @@ What is this for?
   console.log(`  Failed:     ${queue.totalFailed}`);
   console.log('');
 
-  // Check if there are messages to clear
   const totalToClear = clearAll
     ? queue.totalPending + queue.totalProcessing + queue.totalFailed
     : queue.totalFailed;
@@ -183,13 +170,11 @@ What is this for?
     process.exit(0);
   }
 
-  // Show details about messages to clear
   const messagesToShow = clearAll ? queue.messages : queue.messages.filter(m => m.status === 'failed');
   if (messagesToShow.length > 0) {
     console.log(clearAll ? 'Messages to Clear:' : 'Failed Messages:');
     console.log('─'.repeat(80));
 
-    // Group by session
     const bySession = new Map<number, QueueMessage[]>();
     for (const msg of messagesToShow) {
       const list = bySession.get(msg.session_db_id) || [];
@@ -220,7 +205,6 @@ What is this for?
     console.log('');
   }
 
-  // Confirm before clearing
   const clearMessage = clearAll
     ? `Clear ${totalToClear} messages (pending, processing, and failed)?`
     : `Clear ${queue.totalFailed} failed messages?`;
@@ -236,7 +220,6 @@ What is this for?
     console.log('');
   }
 
-  // Clear the queue
   const result = clearAll ? await clearAllQueue() : await clearFailedQueue();
 
   console.log('Clearing Result:');

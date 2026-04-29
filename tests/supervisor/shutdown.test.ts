@@ -125,7 +125,6 @@ describe('supervisor shutdown cascade', () => {
     const registryPath = path.join(tempDir, 'supervisor.json');
     const registry = createProcessRegistry(registryPath);
 
-    // Register processes with PIDs that are definitely dead
     registry.register('dead:1', {
       pid: 2147483640,
       type: 'sdk',
@@ -137,14 +136,12 @@ describe('supervisor shutdown cascade', () => {
       startedAt: '2026-03-15T00:00:01.000Z'
     });
 
-    // Should not throw
     await runShutdownCascade({
       registry,
       currentPid: process.pid,
       pidFilePath: path.join(tempDir, 'worker.pid')
     });
 
-    // All entries should be unregistered
     const persisted = JSON.parse(readFileSync(registryPath, 'utf-8'));
     expect(Object.keys(persisted.processes)).toHaveLength(0);
   });
@@ -179,7 +176,6 @@ describe('supervisor shutdown cascade', () => {
       pidFilePath: path.join(tempDir, 'worker.pid')
     });
 
-    // All records (including the current process one) should be removed
     expect(registry.getAll()).toHaveLength(0);
   });
 });

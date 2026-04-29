@@ -1,23 +1,10 @@
-/**
- * Tests for session cleanup helper functionality
- *
- * Mock Justification (~19% mock code):
- * - Session fixtures: Required to create valid ActiveSession objects with
- *   all required fields - tests the actual cleanup logic
- * - Worker mocks: Verify broadcast notification calls - the actual
- *   cleanupProcessedMessages logic is tested against real session mutation
- *
- * What's NOT mocked: Session state mutation, null/undefined handling
- */
 import { describe, it, expect, mock } from 'bun:test';
 
-// Import directly from specific files to avoid worker-service import chain
 import { cleanupProcessedMessages } from '../../../src/services/worker/agents/SessionCleanupHelper.js';
 import type { WorkerRef } from '../../../src/services/worker/agents/types.js';
 import type { ActiveSession } from '../../../src/services/worker-types.js';
 
 describe('SessionCleanupHelper', () => {
-  // Helper to create a minimal mock session
   function createMockSession(
     overrides: Partial<ActiveSession> = {}
   ): ActiveSession {
@@ -42,7 +29,6 @@ describe('SessionCleanupHelper', () => {
     };
   }
 
-  // Helper to create mock worker
   function createMockWorker() {
     const broadcastProcessingStatusMock = mock(() => {});
     const worker: WorkerRef = {
@@ -93,12 +79,10 @@ describe('SessionCleanupHelper', () => {
         earliestPendingTimestamp: 1700000000000,
       });
 
-      // Should not throw
       expect(() => {
         cleanupProcessedMessages(session, undefined);
       }).not.toThrow();
 
-      // Should still reset timestamp
       expect(session.earliestPendingTimestamp).toBeNull();
     });
 
@@ -113,12 +97,10 @@ describe('SessionCleanupHelper', () => {
         // No broadcastProcessingStatus
       };
 
-      // Should not throw
       expect(() => {
         cleanupProcessedMessages(session, worker);
       }).not.toThrow();
 
-      // Should still reset timestamp
       expect(session.earliestPendingTimestamp).toBeNull();
     });
 
@@ -128,12 +110,10 @@ describe('SessionCleanupHelper', () => {
       });
       const worker: WorkerRef = {};
 
-      // Should not throw
       expect(() => {
         cleanupProcessedMessages(session, worker);
       }).not.toThrow();
 
-      // Should still reset timestamp
       expect(session.earliestPendingTimestamp).toBeNull();
     });
 
@@ -145,12 +125,10 @@ describe('SessionCleanupHelper', () => {
         broadcastProcessingStatus: undefined,
       };
 
-      // Should not throw
       expect(() => {
         cleanupProcessedMessages(session, worker);
       }).not.toThrow();
 
-      // Should still reset timestamp
       expect(session.earliestPendingTimestamp).toBeNull();
     });
 
@@ -166,7 +144,6 @@ describe('SessionCleanupHelper', () => {
 
       cleanupProcessedMessages(session, worker);
 
-      // Only earliestPendingTimestamp should change
       expect(session.earliestPendingTimestamp).toBeNull();
       expect(session.lastPromptNumber).toBe(10);
       expect(session.cumulativeInputTokens).toBe(500);

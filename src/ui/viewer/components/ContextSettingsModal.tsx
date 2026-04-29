@@ -12,7 +12,6 @@ interface ContextSettingsModalProps {
   saveStatus: string;
 }
 
-// Collapsible section component
 function CollapsibleSection({
   title,
   description,
@@ -54,7 +53,6 @@ function CollapsibleSection({
   );
 }
 
-// Form field with optional tooltip
 function FormField({
   label,
   tooltip,
@@ -83,7 +81,6 @@ function FormField({
   );
 }
 
-// Toggle switch component
 function ToggleSwitch({
   id,
   label,
@@ -130,12 +127,10 @@ export function ContextSettingsModal({
 }: ContextSettingsModalProps) {
   const [formState, setFormState] = useState<Settings>(settings);
 
-  // Update form state when settings prop changes
   useEffect(() => {
     setFormState(settings);
   }, [settings]);
 
-  // Get context preview based on current form state
   const {
     preview,
     isLoading,
@@ -163,7 +158,6 @@ export function ContextSettingsModal({
     updateSetting(key, newValue);
   }, [formState, updateSetting]);
 
-  // Handle ESC key
   useEffect(() => {
     const handleEsc = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();

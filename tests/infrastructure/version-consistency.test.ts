@@ -6,15 +6,6 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '../..');
 
-/**
- * Test suite to ensure version consistency across all package.json files
- * and built artifacts.
- *
- * This prevents the infinite restart loop issue where:
- * - Plugin reads version from plugin/package.json
- * - Worker returns built-in version from bundled code
- * - Mismatch triggers restart on every hook call
- */
 describe('Version Consistency', () => {
   let rootVersion: string;
 
@@ -61,19 +52,13 @@ describe('Version Consistency', () => {
   it('should have version injected into built worker-service.cjs', () => {
     const workerServicePath = path.join(projectRoot, 'plugin/scripts/worker-service.cjs');
     
-    // Skip if file doesn't exist (e.g., before first build)
     if (!existsSync(workerServicePath)) {
       console.log('⚠️  worker-service.cjs not found - run npm run build first');
       return;
     }
     
     const workerServiceContent = readFileSync(workerServicePath, 'utf-8');
-    
-    // The build script injects version via esbuild define:
-    // define: { '__DEFAULT_PACKAGE_VERSION__': `"${version}"` }
-    // This becomes: const BUILT_IN_VERSION = "9.0.0" (or minified: Bre="9.0.0")
-    
-    // Check for the version string in the minified code
+
     const versionPattern = new RegExp(`"${rootVersion.replace(/\./g, '\\.')}"`, 'g');
     const matches = workerServiceContent.match(versionPattern);
     
@@ -84,20 +69,16 @@ describe('Version Consistency', () => {
   it('should have built mcp-server.cjs', () => {
     const mcpServerPath = path.join(projectRoot, 'plugin/scripts/mcp-server.cjs');
 
-    // Skip if file doesn't exist (e.g., before first build)
     if (!existsSync(mcpServerPath)) {
       console.log('⚠️  mcp-server.cjs not found - run npm run build first');
       return;
     }
 
-    // mcp-server.cjs doesn't use __DEFAULT_PACKAGE_VERSION__ - it's a search server
-    // that doesn't need to expose version info. Just verify it exists and is built.
     const mcpServerContent = readFileSync(mcpServerPath, 'utf-8');
     expect(mcpServerContent.length).toBeGreaterThan(0);
   });
 
   it('should validate version format is semver compliant', () => {
-    // Ensure version follows semantic versioning: MAJOR.MINOR.PATCH
     expect(rootVersion).toMatch(/^\d+\.\d+\.\d+$/);
     
     const [major, minor, patch] = rootVersion.split('.').map(Number);
@@ -107,9 +88,6 @@ describe('Version Consistency', () => {
   });
 });
 
-/**
- * Additional test to ensure build script properly reads and injects version
- */
 describe('Build Script Version Handling', () => {
   it('should read version from package.json in build-hooks.js', () => {
     const buildScriptPath = path.join(projectRoot, 'scripts/build-hooks.js');
@@ -117,14 +95,11 @@ describe('Build Script Version Handling', () => {
     
     const buildScriptContent = readFileSync(buildScriptPath, 'utf-8');
     
-    // Verify build script reads from package.json
     expect(buildScriptContent).toContain("readFileSync('package.json'");
     expect(buildScriptContent).toContain('packageJson.version');
     
-    // Verify it generates plugin/package.json with the version
     expect(buildScriptContent).toContain('version: version');
     
-    // Verify it injects version into esbuild define
     expect(buildScriptContent).toContain('__DEFAULT_PACKAGE_VERSION__');
     expect(buildScriptContent).toContain('`"${version}"`');
   });

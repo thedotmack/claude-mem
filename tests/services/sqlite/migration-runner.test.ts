@@ -1,13 +1,3 @@
-/**
- * Tests for MigrationRunner idempotency and schema initialization (#979)
- *
- * Mock Justification: NONE (0% mock code)
- * - Uses real SQLite with ':memory:' — tests actual migration SQL
- * - Validates idempotency by running migrations multiple times
- * - Covers the version-conflict scenario from issue #979
- *
- * Value: Prevents regression where old DatabaseManager migrations mask core table creation
- */
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { MigrationRunner } from '../../../src/services/sqlite/migrations/runner.js';
@@ -121,21 +111,20 @@ describe('MigrationRunner', () => {
       runner.runAllMigrations();
 
       const versions = getSchemaVersions(db);
-      // Core set of expected versions
-      expect(versions).toContain(4);   // initializeSchema
-      expect(versions).toContain(5);   // worker_port
-      expect(versions).toContain(6);   // prompt tracking
-      expect(versions).toContain(7);   // remove unique constraint
-      expect(versions).toContain(8);   // hierarchical fields
-      expect(versions).toContain(9);   // text nullable
-      expect(versions).toContain(10);  // user_prompts
-      expect(versions).toContain(11);  // discovery_tokens
-      expect(versions).toContain(16);  // pending_messages
-      expect(versions).toContain(17);  // rename columns
-      expect(versions).toContain(20);  // failed_at_epoch
-      expect(versions).toContain(21);  // ON UPDATE CASCADE
-      expect(versions).toContain(22);  // content_hash
-      expect(versions).toContain(30);  // observations.metadata
+      expect(versions).toContain(4);   
+      expect(versions).toContain(5);   
+      expect(versions).toContain(6);   
+      expect(versions).toContain(7);   
+      expect(versions).toContain(8);   
+      expect(versions).toContain(9);   
+      expect(versions).toContain(10);  
+      expect(versions).toContain(11);  
+      expect(versions).toContain(16);  
+      expect(versions).toContain(17);  
+      expect(versions).toContain(20);  
+      expect(versions).toContain(21);  
+      expect(versions).toContain(22);  
+      expect(versions).toContain(30);  
     });
   });
 
@@ -143,10 +132,8 @@ describe('MigrationRunner', () => {
     it('should succeed when run twice on the same database', () => {
       const runner = new MigrationRunner(db);
 
-      // First run
       runner.runAllMigrations();
 
-      // Second run — must not throw
       expect(() => runner.runAllMigrations()).not.toThrow();
     });
 
@@ -206,8 +193,6 @@ describe('MigrationRunner', () => {
 
   describe('issue #979 — old DatabaseManager version conflict', () => {
     it('should create core tables even when old migration versions 1-7 are in schema_versions', () => {
-      // Simulate the old DatabaseManager having applied its migrations 1-7
-      // (which are completely different operations with the same version numbers)
       db.run(`
         CREATE TABLE IF NOT EXISTS schema_versions (
           id INTEGER PRIMARY KEY,
@@ -221,7 +206,6 @@ describe('MigrationRunner', () => {
         db.prepare('INSERT INTO schema_versions (version, applied_at) VALUES (?, ?)').run(v, now);
       }
 
-      // Now run MigrationRunner — core tables MUST still be created
       const runner = new MigrationRunner(db);
       runner.runAllMigrations();
 
@@ -234,9 +218,6 @@ describe('MigrationRunner', () => {
     });
 
     it('should handle version 5 conflict (old=drop tables, new=add column) correctly', () => {
-      // Old migration 5 drops streaming_sessions/observation_queue
-      // New migration 5 adds worker_port column to sdk_sessions
-      // With old version 5 already recorded, MigrationRunner must still add the column
       db.run(`
         CREATE TABLE IF NOT EXISTS schema_versions (
           id INTEGER PRIMARY KEY,
@@ -249,7 +230,6 @@ describe('MigrationRunner', () => {
       const runner = new MigrationRunner(db);
       runner.runAllMigrations();
 
-      // sdk_sessions should exist and have worker_port (added by later migrations even if v5 is skipped)
       const columns = getColumns(db, 'sdk_sessions');
       const columnNames = columns.map(c => c.name);
       expect(columnNames).toContain('content_session_id');
@@ -261,7 +241,6 @@ describe('MigrationRunner', () => {
       const runner = new MigrationRunner(db);
       runner.runAllMigrations();
 
-      // Simulate a leftover temp table from a crash
       db.run(`
         CREATE TABLE session_summaries_new (
           id INTEGER PRIMARY KEY,
@@ -269,10 +248,8 @@ describe('MigrationRunner', () => {
         )
       `);
 
-      // Remove version 7 so migration tries to re-run
       db.prepare('DELETE FROM schema_versions WHERE version = 7').run();
 
-      // Re-run should handle the leftover table gracefully
       expect(() => runner.runAllMigrations()).not.toThrow();
     });
 
@@ -280,7 +257,6 @@ describe('MigrationRunner', () => {
       const runner = new MigrationRunner(db);
       runner.runAllMigrations();
 
-      // Simulate a leftover temp table from a crash
       db.run(`
         CREATE TABLE observations_new (
           id INTEGER PRIMARY KEY,
@@ -288,10 +264,8 @@ describe('MigrationRunner', () => {
         )
       `);
 
-      // Remove version 9 so migration tries to re-run
       db.prepare('DELETE FROM schema_versions WHERE version = 9').run();
 
-      // Re-run should handle the leftover table gracefully
       expect(() => runner.runAllMigrations()).not.toThrow();
     });
   });
@@ -327,7 +301,6 @@ describe('MigrationRunner', () => {
       const runner = new MigrationRunner(db);
       runner.runAllMigrations();
 
-      // Insert test data
       const now = new Date().toISOString();
       const epoch = Date.now();
 
@@ -346,7 +319,6 @@ describe('MigrationRunner', () => {
         VALUES (?, ?, ?, ?, ?)
       `).run('test-memory-1', 'test-project', 'test request', now, epoch);
 
-      // Run migrations again — data should survive
       runner.runAllMigrations();
 
       const sessions = db.prepare('SELECT COUNT(*) as count FROM sdk_sessions').get() as { count: number };

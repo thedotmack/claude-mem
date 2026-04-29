@@ -1,13 +1,3 @@
-/**
- * SearchOrchestrator - Coordinates search strategies and handles fallback logic
- *
- * This is the main entry point for search operations. It:
- * 1. Normalizes input parameters
- * 2. Selects the appropriate strategy
- * 3. Executes the search
- * 4. Handles fallbacks on failure
- * 5. Delegates to formatters for output
- */
 
 import { SessionSearch } from '../../sqlite/SessionSearch.js';
 import { SessionStore } from '../../sqlite/SessionStore.js';
@@ -33,9 +23,6 @@ import type {
 import { ChromaUnavailableError } from './errors.js';
 import { logger } from '../../../utils/logger.js';
 
-/**
- * Normalized parameters from URL-friendly format
- */
 interface NormalizedParams extends StrategySearchOptions {
   concepts?: string[];
   files?: string[];
@@ -54,7 +41,6 @@ export class SearchOrchestrator {
     private sessionStore: SessionStore,
     private chromaSync: ChromaSync | null
   ) {
-    // Initialize strategies
     this.sqliteStrategy = new SQLiteSearchStrategy(sessionSearch);
 
     if (chromaSync) {
@@ -66,31 +52,20 @@ export class SearchOrchestrator {
     this.timelineBuilder = new TimelineBuilder();
   }
 
-  /**
-   * Main search entry point
-   */
   async search(args: any): Promise<StrategySearchResult> {
     const options = this.normalizeParams(args);
 
-    // Decision tree for strategy selection
     return await this.executeWithFallback(options);
   }
 
-  /**
-   * Execute search with fallback logic
-   */
   private async executeWithFallback(
     options: NormalizedParams
   ): Promise<StrategySearchResult> {
-    // PATH 1: FILTER-ONLY (no query text) - Use SQLite
     if (!options.query) {
       logger.debug('SEARCH', 'Orchestrator: Filter-only query, using SQLite', {});
       return await this.sqliteStrategy.search(options);
     }
 
-    // PATH 2: CHROMA SEMANTIC SEARCH (query text + Chroma available)
-    // Fail-fast: if Chroma errors, ChromaSearchStrategy now lets the error
-    // propagate. We catch it here only to translate into a typed 503.
     if (this.chromaStrategy) {
       logger.debug('SEARCH', 'Orchestrator: Using Chroma semantic search', {});
       try {
@@ -104,8 +79,6 @@ export class SearchOrchestrator {
       }
     }
 
-    // PATH 3: Chroma not configured (explicitly uninitialized at construction).
-    // This is a legitimate config state — return empty results, not an error.
     logger.debug('SEARCH', 'Orchestrator: Chroma not configured', {});
     return {
       results: { observations: [], sessions: [], prompts: [] },
@@ -114,9 +87,6 @@ export class SearchOrchestrator {
     };
   }
 
-  /**
-   * Find by concept with hybrid search
-   */
   async findByConcept(concept: string, args: any): Promise<StrategySearchResult> {
     const options = this.normalizeParams(args);
 
@@ -124,7 +94,6 @@ export class SearchOrchestrator {
       return await this.hybridStrategy.findByConcept(concept, options);
     }
 
-    // Chroma not configured: SQLite metadata-only result.
     const results = this.sqliteStrategy.findByConcept(concept, options);
     return {
       results: { observations: results, sessions: [], prompts: [] },
@@ -133,9 +102,6 @@ export class SearchOrchestrator {
     };
   }
 
-  /**
-   * Find by type with hybrid search
-   */
   async findByType(type: string | string[], args: any): Promise<StrategySearchResult> {
     const options = this.normalizeParams(args);
 
@@ -143,7 +109,6 @@ export class SearchOrchestrator {
       return await this.hybridStrategy.findByType(type, options);
     }
 
-    // Chroma not configured: SQLite metadata-only result.
     const results = this.sqliteStrategy.findByType(type, options);
     return {
       results: { observations: results, sessions: [], prompts: [] },
@@ -152,9 +117,6 @@ export class SearchOrchestrator {
     };
   }
 
-  /**
-   * Find by file with hybrid search
-   */
   async findByFile(filePath: string, args: any): Promise<{
     observations: ObservationSearchResult[];
     sessions: any[];
@@ -166,14 +128,10 @@ export class SearchOrchestrator {
       return await this.hybridStrategy.findByFile(filePath, options);
     }
 
-    // Fallback to SQLite
     const results = this.sqliteStrategy.findByFile(filePath, options);
     return { ...results, usedChroma: false };
   }
 
-  /**
-   * Get timeline around anchor
-   */
   getTimeline(
     timelineData: TimelineData,
     anchorId: number | string,
@@ -185,9 +143,6 @@ export class SearchOrchestrator {
     return this.timelineBuilder.filterByDepth(items, anchorId, anchorEpoch, depthBefore, depthAfter);
   }
 
-  /**
-   * Format timeline for display
-   */
   formatTimeline(
     items: TimelineItem[],
     anchorId: number | string | null,
@@ -200,9 +155,6 @@ export class SearchOrchestrator {
     return this.timelineBuilder.formatTimeline(items, anchorId, options);
   }
 
-  /**
-   * Format search results for display
-   */
   formatSearchResults(
     results: SearchResults,
     query: string,
@@ -211,48 +163,34 @@ export class SearchOrchestrator {
     return this.resultFormatter.formatSearchResults(results, query, chromaFailed);
   }
 
-  /**
-   * Get result formatter for direct access
-   */
   getFormatter(): ResultFormatter {
     return this.resultFormatter;
   }
 
-  /**
-   * Get timeline builder for direct access
-   */
   getTimelineBuilder(): TimelineBuilder {
     return this.timelineBuilder;
   }
 
-  /**
-   * Normalize query parameters from URL-friendly format
-   */
   private normalizeParams(args: any): NormalizedParams {
     const normalized: any = { ...args };
 
-    // Parse comma-separated concepts into array
     if (normalized.concepts && typeof normalized.concepts === 'string') {
       normalized.concepts = normalized.concepts.split(',').map((s: string) => s.trim()).filter(Boolean);
     }
 
-    // Parse comma-separated files into array
     if (normalized.files && typeof normalized.files === 'string') {
       normalized.files = normalized.files.split(',').map((s: string) => s.trim()).filter(Boolean);
     }
 
-    // Parse comma-separated obs_type into array
     if (normalized.obs_type && typeof normalized.obs_type === 'string') {
       normalized.obsType = normalized.obs_type.split(',').map((s: string) => s.trim()).filter(Boolean);
       delete normalized.obs_type;
     }
 
-    // Parse comma-separated type (for filterSchema) into array
     if (normalized.type && typeof normalized.type === 'string' && normalized.type.includes(',')) {
       normalized.type = normalized.type.split(',').map((s: string) => s.trim()).filter(Boolean);
     }
 
-    // Map 'type' param to 'searchType' for API consistency
     if (normalized.type && !normalized.searchType) {
       if (['observations', 'sessions', 'prompts'].includes(normalized.type)) {
         normalized.searchType = normalized.type;
@@ -260,7 +198,6 @@ export class SearchOrchestrator {
       }
     }
 
-    // Flatten dateStart/dateEnd into dateRange object
     if (normalized.dateStart || normalized.dateEnd) {
       normalized.dateRange = {
         start: normalized.dateStart,
@@ -273,9 +210,6 @@ export class SearchOrchestrator {
     return normalized;
   }
 
-  /**
-   * Check if Chroma is available
-   */
   isChromaAvailable(): boolean {
     return !!this.chromaSync;
   }

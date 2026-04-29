@@ -2,7 +2,6 @@ import { describe, it, expect, mock, beforeEach } from 'bun:test';
 import { ChromaSearchStrategy } from '../../../../src/services/worker/search/strategies/ChromaSearchStrategy.js';
 import type { StrategySearchOptions, ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../../../../src/services/worker/search/types.js';
 
-// Mock observation data
 const mockObservation: ObservationSearchResult = {
   id: 1,
   memory_session_id: 'session-123',
@@ -19,7 +18,7 @@ const mockObservation: ObservationSearchResult = {
   prompt_number: 1,
   discovery_tokens: 100,
   created_at: '2025-01-01T12:00:00.000Z',
-  created_at_epoch: Date.now() - 1000 * 60 * 60 * 24 // 1 day ago
+  created_at_epoch: Date.now() - 1000 * 60 * 60 * 24 
 };
 
 const mockSession: SessionSummarySearchResult = {
@@ -55,7 +54,7 @@ describe('ChromaSearchStrategy', () => {
   let mockSessionStore: any;
 
   beforeEach(() => {
-    const recentEpoch = Date.now() - 1000 * 60 * 60 * 24; // 1 day ago (within 90-day window)
+    const recentEpoch = Date.now() - 1000 * 60 * 60 * 24; 
 
     mockChromaSync = {
       queryChroma: mock(() => Promise.resolve({
@@ -118,7 +117,7 @@ describe('ChromaSearchStrategy', () => {
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
         100, // CHROMA_BATCH_SIZE
-        undefined // no where filter for 'all'
+        undefined 
       );
     });
 
@@ -285,11 +284,11 @@ describe('ChromaSearchStrategy', () => {
       const result = await strategy.search(options);
 
       expect(result.results.observations).toHaveLength(0);
-      expect(result.usedChroma).toBe(true); // Still used Chroma, just no results
+      expect(result.usedChroma).toBe(true); 
     });
 
     it('should filter out old results (beyond 90-day window)', async () => {
-      const oldEpoch = Date.now() - 1000 * 60 * 60 * 24 * 100; // 100 days ago
+      const oldEpoch = Date.now() - 1000 * 60 * 60 * 24 * 100; 
 
       mockChromaSync.queryChroma = mock(() => Promise.resolve({
         ids: [1],
@@ -305,7 +304,6 @@ describe('ChromaSearchStrategy', () => {
 
       const result = await strategy.search(options);
 
-      // Old results should be filtered out
       expect(mockSessionStore.getObservationsByIds).not.toHaveBeenCalled();
     });
 
@@ -316,7 +314,6 @@ describe('ChromaSearchStrategy', () => {
         query: 'test query'
       };
 
-      // Fail-fast: the orchestrator wraps this into a ChromaUnavailableError (HTTP 503).
       await expect(strategy.search(options)).rejects.toThrow('Chroma connection failed');
     });
 
@@ -334,19 +331,12 @@ describe('ChromaSearchStrategy', () => {
     });
 
     it('should correctly align IDs with metadatas when Chroma returns duplicate sqlite_ids (multiple docs per observation)', async () => {
-      // BUG SCENARIO: One observation (id=100) has 3 documents in Chroma (narrative + 2 facts)
-      // Another observation (id=200) has 1 document
-      // Chroma returns 4 metadatas but after deduplication we have 2 unique IDs
-      // The metadatas MUST be deduplicated/aligned to match the unique IDs
-      const recentEpoch = Date.now() - 1000 * 60 * 60 * 24; // 1 day ago
+      const recentEpoch = Date.now() - 1000 * 60 * 60 * 24; 
 
       mockChromaSync.queryChroma = mock(() => Promise.resolve({
-        // After deduplication in ChromaSync.queryChroma, ids should be [100, 200]
-        // But metadatas array has 4 elements - THIS IS THE BUG
         ids: [100, 200],  // Deduplicated
         distances: [0.3, 0.4, 0.5, 0.6],  // Original 4 distances
         metadatas: [
-          // Original 4 metadatas - not aligned with deduplicated ids!
           { sqlite_id: 100, doc_type: 'observation', created_at_epoch: recentEpoch },
           { sqlite_id: 100, doc_type: 'observation', created_at_epoch: recentEpoch },
           { sqlite_id: 100, doc_type: 'observation', created_at_epoch: recentEpoch },
@@ -354,11 +344,9 @@ describe('ChromaSearchStrategy', () => {
         ]
       }));
 
-      // Mock that returns observations when called with correct IDs
       const mockObs100 = { ...mockObservation, id: 100 };
       const mockObs200 = { ...mockObservation, id: 200, title: 'Second observation' };
       mockSessionStore.getObservationsByIds = mock((ids: number[]) => {
-        // Should receive [100, 200]
         return ids.map(id => id === 100 ? mockObs100 : mockObs200);
       });
 
@@ -369,21 +357,16 @@ describe('ChromaSearchStrategy', () => {
 
       const result = await strategy.search(options);
 
-      // The strategy should correctly identify BOTH observations
-      // Before the fix: idx=2 and idx=3 would access ids[2] and ids[3] which are undefined
       expect(result.usedChroma).toBe(true);
       expect(mockSessionStore.getObservationsByIds).toHaveBeenCalled();
 
-      // Verify the correct IDs were passed to SQLite hydration
       const calledWith = mockSessionStore.getObservationsByIds.mock.calls[0][0];
       expect(calledWith).toContain(100);
       expect(calledWith).toContain(200);
-      expect(calledWith.length).toBe(2); // Should have exactly 2 unique IDs
+      expect(calledWith.length).toBe(2); 
     });
 
     it('should handle misaligned arrays gracefully without undefined access', async () => {
-      // Edge case: metadatas array longer than ids array
-      // This simulates the actual bug condition
       const recentEpoch = Date.now() - 1000 * 60 * 60 * 24;
 
       mockChromaSync.queryChroma = mock(() => Promise.resolve({
@@ -393,7 +376,7 @@ describe('ChromaSearchStrategy', () => {
           { sqlite_id: 100, doc_type: 'observation', created_at_epoch: recentEpoch },
           { sqlite_id: 100, doc_type: 'observation', created_at_epoch: recentEpoch },
           { sqlite_id: 100, doc_type: 'observation', created_at_epoch: recentEpoch }
-        ]  // 3 metadatas for same observation
+        ]  
       }));
 
       mockSessionStore.getObservationsByIds = mock(() => [mockObservation]);
@@ -403,12 +386,9 @@ describe('ChromaSearchStrategy', () => {
         searchType: 'observations'
       };
 
-      // Before fix: This would try to access ids[1], ids[2] which are undefined
-      // causing incorrect filtering or crashes
       const result = await strategy.search(options);
 
       expect(result.usedChroma).toBe(true);
-      // Should still find the one observation correctly
       expect(mockSessionStore.getObservationsByIds).toHaveBeenCalled();
       const calledWith = mockSessionStore.getObservationsByIds.mock.calls[0][0];
       expect(calledWith).toEqual([100]);

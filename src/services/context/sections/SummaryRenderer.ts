@@ -1,17 +1,9 @@
-/**
- * SummaryRenderer - Renders the summary section at the end of context
- *
- * Handles rendering of the most recent session summary fields.
- */
 
 import type { ContextConfig, Observation, SessionSummary } from '../types.js';
 import { colors } from '../types.js';
 import * as Agent from '../formatters/AgentFormatter.js';
 import * as Human from '../formatters/HumanFormatter.js';
 
-/**
- * Check if summary should be displayed
- */
 export function shouldShowSummary(
   config: ContextConfig,
   mostRecentSummary: SessionSummary | undefined,
@@ -32,7 +24,6 @@ export function shouldShowSummary(
     return false;
   }
 
-  // Only show if summary is more recent than observations
   if (mostRecentObservation && mostRecentSummary.created_at_epoch <= mostRecentObservation.created_at_epoch) {
     return false;
   }
@@ -40,9 +31,6 @@ export function shouldShowSummary(
   return true;
 }
 
-/**
- * Render summary fields
- */
 export function renderSummaryFields(
   summary: SessionSummary,
   forHuman: boolean

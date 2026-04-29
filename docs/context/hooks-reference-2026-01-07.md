@@ -332,7 +332,6 @@ Block edits to sensitive files:
 * For troubleshooting steps and debugging techniques, see [Debugging](/en/hooks#debugging) in the hooks reference
   documentation.
 
-
 ---
 
 > To find navigation and other pages in this documentation, fetch the llms.txt file at: https://code.claude.com/docs/llms.txt

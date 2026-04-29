@@ -1,13 +1,3 @@
-/**
- * Server - Express app setup and route registration
- *
- * Extracted from worker-service.ts monolith to provide centralized HTTP server management.
- * Handles:
- * - Express app creation and configuration
- * - Middleware registration
- * - Route registration (delegates to route handlers)
- * - Core system endpoints (health, readiness, version, admin)
- */
 
 import express, { Request, Response, Application } from 'express';
 import http from 'http';
@@ -21,17 +11,6 @@ import { getSupervisor } from '../../supervisor/index.js';
 import { isPidAlive } from '../../supervisor/process-registry.js';
 import { ENV_PREFIXES, ENV_EXACT_MATCHES } from '../../supervisor/env-sanitizer.js';
 
-/**
- * Plan 06 Phase 6 — instruction content (SKILL.md + ALLOWED_OPERATIONS .md
- * files) is read once at module init and held in memory for the lifetime of
- * the worker process. Process restart is the cache-invalidation event.
- *
- * `SKILL.md` is held as the full UTF-8 string so `extractInstructionSection`
- * can slice topic windows on every request without re-reading the file.
- * Per-operation files are cached as a `Map<operation, content>`. Files that
- * are missing on disk simply omit from the map; the request handler returns
- * 404 in that case (preserving legacy behaviour).
- */
 const INSTRUCTIONS_BASE_DIR: string = path.resolve(__dirname, '../skills/mem-search');
 const INSTRUCTIONS_OPERATIONS_DIR: string = path.join(INSTRUCTIONS_BASE_DIR, 'operations');
 const INSTRUCTIONS_SKILL_PATH: string = path.join(INSTRUCTIONS_BASE_DIR, 'SKILL.md');
@@ -60,7 +39,6 @@ const cachedOperationContent: ReadonlyMap<string, string> = (() => {
     try {
       map.set(operation, fs.readFileSync(operationPath, 'utf-8'));
     } catch (error: unknown) {
-      // Missing operation files are non-fatal — 404 is returned per request.
       logger.debug('SYSTEM', 'Operation instruction file not present at boot', {
         path: operationPath,
         message: error instanceof Error ? error.message : String(error),
@@ -76,22 +54,15 @@ const cachedOperationContent: ReadonlyMap<string, string> = (() => {
   return map;
 })();
 
-// Build-time injected version constant (set by esbuild define)
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 const BUILT_IN_VERSION = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined'
   ? __DEFAULT_PACKAGE_VERSION__
   : 'development';
 
-/**
- * Interface for route handlers that can be registered with the server
- */
 export interface RouteHandler {
   setupRoutes(app: Application): void;
 }
 
-/**
- * AI provider status for health endpoint
- */
 export interface AiStatus {
   provider: string;
   authMethod: string;
@@ -102,28 +73,15 @@ export interface AiStatus {
   } | null;
 }
 
-/**
- * Options for initializing the server
- */
 export interface ServerOptions {
-  /** Whether initialization is complete (for readiness check) */
   getInitializationComplete: () => boolean;
-  /** Whether MCP is ready (for health/readiness info) */
   getMcpReady: () => boolean;
-  /** Shutdown function for admin endpoints */
   onShutdown: () => Promise<void>;
-  /** Restart function for admin endpoints */
   onRestart: () => Promise<void>;
-  /** Filesystem path to the worker entry point */
   workerPath: string;
-  /** Callback to get current AI provider status */
   getAiStatus: () => AiStatus;
 }
 
-/**
- * Express application and HTTP server wrapper
- * Provides centralized setup for middleware and routes
- */
 export class Server {
   readonly app: Application;
   private server: http.Server | null = null;
@@ -137,16 +95,10 @@ export class Server {
     this.setupCoreRoutes();
   }
 
-  /**
-   * Get the underlying HTTP server
-   */
   getHttpServer(): http.Server | null {
     return this.server;
   }
 
-  /**
-   * Start listening on the specified host and port
-   */
   async listen(port: number, host: string): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       const server = http.createServer(this.app);
@@ -166,26 +118,19 @@ export class Server {
     });
   }
 
-  /**
-   * Close the HTTP server
-   */
   async close(): Promise<void> {
     if (!this.server) return;
 
-    // Close all active connections
     this.server.closeAllConnections();
 
-    // Give Windows time to close connections before closing server
     if (process.platform === 'win32') {
       await new Promise(r => setTimeout(r, 500));
     }
 
-    // Close the server
     await new Promise<void>((resolve, reject) => {
       this.server!.close(err => err ? reject(err) : resolve());
     });
 
-    // Extra delay on Windows to ensure port is fully released
     if (process.platform === 'win32') {
       await new Promise(r => setTimeout(r, 500));
     }
@@ -194,38 +139,22 @@ export class Server {
     logger.info('SYSTEM', 'HTTP server closed');
   }
 
-  /**
-   * Register a route handler
-   */
   registerRoutes(handler: RouteHandler): void {
     handler.setupRoutes(this.app);
   }
 
-  /**
-   * Finalize route setup by adding error handlers
-   * Call this after all routes have been registered
-   */
   finalizeRoutes(): void {
-    // 404 handler for unmatched routes
     this.app.use(notFoundHandler);
 
-    // Global error handler (must be last)
     this.app.use(errorHandler);
   }
 
-  /**
-   * Setup Express middleware
-   */
   private setupMiddleware(): void {
     const middlewares = createMiddleware(summarizeRequestBody);
     middlewares.forEach(mw => this.app.use(mw));
   }
 
-  /**
-   * Setup core system routes (health, readiness, version, admin)
-   */
   private setupCoreRoutes(): void {
-    // Health check endpoint - always responds, even during initialization
     this.app.get('/api/health', (_req: Request, res: Response) => {
       res.status(200).json({
         status: 'ok',
@@ -242,7 +171,6 @@ export class Server {
       });
     });
 
-    // Readiness check endpoint - returns 503 until full initialization completes
     this.app.get('/api/readiness', (_req: Request, res: Response) => {
       if (this.options.getInitializationComplete()) {
         res.status(200).json({
@@ -257,18 +185,14 @@ export class Server {
       }
     });
 
-    // Version endpoint - returns the worker's built-in version
     this.app.get('/api/version', (_req: Request, res: Response) => {
       res.status(200).json({ version: BUILT_IN_VERSION });
     });
 
-    // Instructions endpoint — Plan 06 Phase 6 — serves the cached SKILL.md /
-    // operations content loaded once at module init.
     this.app.get('/api/instructions', (req: Request, res: Response) => {
       const topic = (req.query.topic as string) || 'all';
       const operation = req.query.operation as string | undefined;
 
-      // Validate topic
       if (topic && !ALLOWED_TOPICS.includes(topic)) {
         return res.status(400).json({ error: 'Invalid topic' });
       }
@@ -294,11 +218,9 @@ export class Server {
       res.json({ content: [{ type: 'text', text: sectionText }] });
     });
 
-    // Admin endpoints for process management (localhost-only)
     this.app.post('/api/admin/restart', requireLocalhost, async (_req: Request, res: Response) => {
       res.json({ status: 'restarting' });
 
-      // Handle Windows managed mode via IPC
       const isWindowsManaged = process.platform === 'win32' &&
         process.env.CLAUDE_MEM_MANAGED === 'true' &&
         process.send;
@@ -307,9 +229,6 @@ export class Server {
         logger.info('SYSTEM', 'Sending restart request to wrapper');
         process.send!({ type: 'restart' });
       } else {
-        // Unix or standalone Windows - handle restart ourselves
-        // The spawner (ensureWorkerStarted/restart command) handles spawning the new daemon.
-        // This process just needs to shut down and exit.
         setTimeout(async () => {
           try {
             await this.options.onRestart();
@@ -323,7 +242,6 @@ export class Server {
     this.app.post('/api/admin/shutdown', requireLocalhost, async (_req: Request, res: Response) => {
       res.json({ status: 'shutting_down' });
 
-      // Handle Windows managed mode via IPC
       const isWindowsManaged = process.platform === 'win32' &&
         process.env.CLAUDE_MEM_MANAGED === 'true' &&
         process.send;
@@ -332,27 +250,21 @@ export class Server {
         logger.info('SYSTEM', 'Sending shutdown request to wrapper');
         process.send!({ type: 'shutdown' });
       } else {
-        // Unix or standalone Windows - handle shutdown ourselves
         setTimeout(async () => {
           try {
             await this.options.onShutdown();
           } finally {
-            // CRITICAL: Exit the process after shutdown completes (or fails).
-            // Without this, the daemon stays alive as a zombie — background tasks
-            // (backfill, reconnects) keep running and respawn chroma-mcp subprocesses.
             process.exit(0);
           }
         }, 100);
       }
     });
 
-    // Doctor endpoint - diagnostic view of supervisor, processes, and health
     this.app.get('/api/admin/doctor', requireLocalhost, (_req: Request, res: Response) => {
       const supervisor = getSupervisor();
       const registry = supervisor.getRegistry();
       const allRecords = registry.getAll();
 
-      // Check each process liveness
       const processes = allRecords.map(record => ({
         id: record.id,
         pid: record.pid,
@@ -361,15 +273,12 @@ export class Server {
         startedAt: record.startedAt,
       }));
 
-      // Check for dead processes still in registry
       const deadProcessPids = processes.filter(p => p.status === 'dead').map(p => p.pid);
 
-      // Check if CLAUDECODE_* env vars are leaking into this process
       const envClean = !Object.keys(process.env).some(key =>
         ENV_EXACT_MATCHES.has(key) || ENV_PREFIXES.some(prefix => key.startsWith(prefix))
       );
 
-      // Format uptime
       const uptimeMs = Date.now() - this.startTime;
       const uptimeSeconds = Math.floor(uptimeMs / 1000);
       const hours = Math.floor(uptimeSeconds / 3600);
@@ -391,9 +300,6 @@ export class Server {
     });
   }
 
-  /**
-   * Extract a specific section from instruction content
-   */
   private extractInstructionSection(content: string, topic: string): string {
     const sections: Record<string, string> = {
       'workflow': this.extractBetween(content, '## The Workflow', '## Search Parameters'),
@@ -405,9 +311,6 @@ export class Server {
     return sections[topic] || sections['all'];
   }
 
-  /**
-   * Extract text between two markers
-   */
   private extractBetween(content: string, startMarker: string, endMarker: string): string {
     const startIdx = content.indexOf(startMarker);
     const endIdx = content.indexOf(endMarker);

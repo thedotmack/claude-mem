@@ -1,16 +1,9 @@
-// Tests for file-context cache validation and the #2094 deadlock fix.
-//
-// The hook used to truncate Reads to limit:1 and inject "you have enough info"
-// guidance — that combination broke Edit-after-Read because Claude Code's
-// read-state tracker saw a "read" but content was missing. Behavior now:
-// inject the timeline as supplementary context only; never set updatedInput.
 
 import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
 import { mkdtempSync, writeFileSync, utimesSync, rmSync } from 'fs';
 import { tmpdir, homedir } from 'os';
 import { join } from 'path';
 
-// Mock modules that cause import chain issues — MUST be before handler imports
 mock.module('../../src/shared/SettingsDefaultsManager.js', () => ({
   SettingsDefaultsManager: {
     get: (key: string) => {
@@ -44,11 +37,10 @@ mock.module('../../src/utils/project-filter.js', () => ({
   isProjectExcluded: () => false,
 }));
 
-// Import after mocks
 import { fileContextHandler } from '../../src/cli/handlers/file-context.js';
 import { logger } from '../../src/utils/logger.js';
 
-const PADDING = 'x'.repeat(2_000); // ensures file > FILE_READ_GATE_MIN_BYTES (1500)
+const PADDING = 'x'.repeat(2_000); 
 
 let tmpDir: string;
 let testFile: string;
@@ -97,7 +89,6 @@ afterEach(() => {
 
 describe('fileContextHandler — #2094 (no Read mutation)', () => {
   it('injects timeline context but never sets updatedInput on an unconstrained Read', async () => {
-    // File mtime is "now" (just written). Make observations newer to avoid mtime bypass.
     const future = Date.now() + 60_000;
     fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
       makeObservationsResponse([{ id: 1, created_at_epoch: future }])
@@ -112,7 +103,6 @@ describe('fileContextHandler — #2094 (no Read mutation)', () => {
 
     expect(result.hookSpecificOutput).toBeDefined();
     expect(result.hookSpecificOutput!.additionalContext).toContain('prior observations');
-    // The whole point of #2094: do not rewrite the Read call.
     expect((result.hookSpecificOutput as any).updatedInput).toBeUndefined();
   });
 
@@ -134,7 +124,6 @@ describe('fileContextHandler — #2094 (no Read mutation)', () => {
   });
 
   it('skips entirely when file mtime is newer than newest observation (#1719 still honored)', async () => {
-    // Backdate observations 1 hour into the past so the just-written file is newer.
     const stale = Date.now() - 3_600_000;
     fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
       makeObservationsResponse([
@@ -150,13 +139,11 @@ describe('fileContextHandler — #2094 (no Read mutation)', () => {
       toolInput: { file_path: testFile },
     });
 
-    // Pass-through: no hookSpecificOutput
     expect(result.continue).toBe(true);
     expect(result.hookSpecificOutput).toBeUndefined();
   });
 
   it('still injects context when file mtime is older than newest observation', async () => {
-    // Backdate the file by 1 hour, observations stamped "now"
     const past = (Date.now() - 3_600_000) / 1000;
     utimesSync(testFile, past, past);
 
@@ -192,7 +179,6 @@ describe('fileContextHandler — #2094 (no Read mutation)', () => {
 
     const ctx = result.hookSpecificOutput!.additionalContext as string;
     expect(ctx).not.toContain('Only line 1 was read');
-    // The new copy explicitly states the Read result is the full requested section.
     expect(ctx).toContain('full requested section');
   });
 });

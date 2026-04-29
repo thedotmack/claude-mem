@@ -1,12 +1,5 @@
 #!/usr/bin/env bun
 
-/**
- * Validate Timestamp Logic
- *
- * This script validates that the backlog timestamp logic would work correctly
- * by checking pending messages and simulating what timestamps they would get.
- */
-
 import Database from 'bun:sqlite';
 import { resolve } from 'path';
 
@@ -30,7 +23,6 @@ function main() {
   const db = new Database(DB_PATH);
 
   try {
-    // Check for pending messages
     const pendingStats = db.query(`
       SELECT
         status,
@@ -51,7 +43,6 @@ function main() {
     }
     console.log();
 
-    // Get sample pending messages with their session info
     const pendingWithSessions = db.query(`
       SELECT
         pm.id,
@@ -86,7 +77,6 @@ function main() {
         console.log(`  Session started: ${formatTimestamp(msg.session_started)}`);
         console.log(`  Project: ${msg.project}`);
 
-        // Validate logic
         const ageDays = Math.round((Date.now() - msg.msg_created) / (1000 * 60 * 60 * 24));
 
         if (msg.msg_created < msg.session_started) {
@@ -116,7 +106,6 @@ function main() {
     console.log('   - Backlog messages: get original created_at_epoch');
     console.log('   - Observations match their source message timestamps\n');
 
-    // Check for any sessions with stuck processing messages
     const stuckMessages = db.query(`
       SELECT
         session_db_id,

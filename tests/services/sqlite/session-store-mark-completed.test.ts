@@ -1,9 +1,3 @@
-/**
- * Tests for SessionStore.markSessionCompleted (fix for #1532)
- *
- * Mock Justification: NONE (0% mock code)
- * - Uses real SQLite with ':memory:' - tests actual SQL and schema
- */
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 

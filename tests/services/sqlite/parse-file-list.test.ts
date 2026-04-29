@@ -1,9 +1,3 @@
-/**
- * Tests for parseFileList (fix for #1359)
- *
- * Validates safe JSON array parsing for files_read/files_modified DB columns
- * that may contain legacy bare path strings instead of JSON arrays.
- */
 import { describe, it, expect } from 'bun:test';
 import { parseFileList } from '../../../src/services/sqlite/observations/files.js';
 

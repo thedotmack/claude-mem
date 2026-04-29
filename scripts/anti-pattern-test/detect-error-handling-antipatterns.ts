@@ -1,12 +1,4 @@
 #!/usr/bin/env bun
-/**
- * Error Handling Anti-Pattern Detector
- *
- * Detects try-catch anti-patterns that cause silent failures and debugging nightmares.
- * Run this before committing code that touches error handling.
- *
- * Based on hard-learned lessons: defensive try-catch wastes 10+ hours of debugging time.
- */
 
 import { readFileSync, readdirSync, statSync } from 'fs';
 import { join, relative } from 'path';
@@ -56,19 +48,15 @@ function detectAntiPatterns(filePath: string, projectRoot: string): AntiPattern[
   const relPath = relative(projectRoot, filePath);
   const isCriticalPath = CRITICAL_PATHS.some(cp => filePath.includes(cp));
 
-  // Detect error message string matching for type detection (line-by-line patterns)
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const trimmed = line.trim();
 
-    // Check for [ANTI-PATTERN IGNORED] on the same or previous line
     const hasOverride = trimmed.includes('[ANTI-PATTERN IGNORED]') ||
                        (i > 0 && lines[i - 1].includes('[ANTI-PATTERN IGNORED]'));
     const overrideMatch = (trimmed + (i > 0 ? lines[i - 1] : '')).match(/\[ANTI-PATTERN IGNORED\]:\s*(.+)/i);
     const overrideReason = overrideMatch?.[1]?.trim();
 
-    // CRITICAL: Error message string matching for type detection
-    // Patterns like: errorMessage.includes('connection') or error.message.includes('timeout')
     const errorStringMatchPatterns = [
       /error(?:Message|\.message)\s*\.includes\s*\(\s*['"`](\w+)['"`]\s*\)/i,
       /(?:err|e)\.message\s*\.includes\s*\(\s*['"`](\w+)['"`]\s*\)/i,
@@ -79,7 +67,6 @@ function detectAntiPatterns(filePath: string, projectRoot: string): AntiPattern[
       const match = trimmed.match(pattern);
       if (match) {
         const matchedString = match[1];
-        // Common generic patterns that are too broad
         const genericPatterns = ['error', 'fail', 'connection', 'timeout', 'not', 'invalid', 'unable'];
         const isGeneric = genericPatterns.some(gp => matchedString.toLowerCase().includes(gp));
 
@@ -106,8 +93,6 @@ function detectAntiPatterns(filePath: string, projectRoot: string): AntiPattern[
       }
     }
 
-    // HIGH: Logging only error.message instead of the full error object
-    // Patterns like: logger.error('X', 'Y', {}, error.message) or console.error(error.message)
     const partialErrorLoggingPatterns = [
       /logger\.(error|warn|info|debug|failure)\s*\([^)]*,\s*(?:error|err|e)\.message\s*\)/,
       /logger\.(error|warn|info|debug|failure)\s*\([^)]*\{\s*(?:error|err|e):\s*(?:error|err|e)\.message\s*\}/,
@@ -140,8 +125,6 @@ function detectAntiPatterns(filePath: string, projectRoot: string): AntiPattern[
       }
     }
 
-    // CRITICAL: Catch-all error type guessing based on message content
-    // Pattern: if (errorMessage.includes('X') || errorMessage.includes('Y'))
     const multipleIncludes = trimmed.match(/(?:error(?:Message|\.message)|(?:err|e)\.message).*\.includes.*\|\|.*\.includes/i);
     if (multipleIncludes) {
       if (hasOverride && overrideReason) {
@@ -167,7 +150,6 @@ function detectAntiPatterns(filePath: string, projectRoot: string): AntiPattern[
     }
   }
 
-  // Track try-catch blocks
   let inTry = false;
   let tryStartLine = 0;
   let tryLines: string[] = [];
@@ -180,7 +162,6 @@ function detectAntiPatterns(filePath: string, projectRoot: string): AntiPattern[
     const line = lines[i];
     const trimmed = line.trim();
 
-    // Detect standalone promise empty catch: .catch(() => {})
     const emptyPromiseCatch = trimmed.match(/\.catch\s*\(\s*\(\s*\)\s*=>\s*\{\s*\}\s*\)/);
     if (emptyPromiseCatch) {
       antiPatterns.push({
@@ -193,14 +174,11 @@ function detectAntiPatterns(filePath: string, projectRoot: string): AntiPattern[
       });
     }
 
-    // Detect standalone promise catch without logging: .catch(err => ...)
     const promiseCatchMatch = trimmed.match(/\.catch\s*\(\s*(?:\(\s*)?(\w+)(?:\s*\))?\s*=>/);
     if (promiseCatchMatch && !emptyPromiseCatch) {
-      // Look ahead up to 10 lines to see if there's logging in the handler body
       let catchBody = trimmed.substring(promiseCatchMatch.index || 0);
       let braceCount = (catchBody.match(/{/g) || []).length - (catchBody.match(/}/g) || []).length;
 
-      // Collect subsequent lines if the handler spans multiple lines
       let lookAhead = 0;
       while (braceCount > 0 && lookAhead < 10 && i + lookAhead + 1 < lines.length) {
         lookAhead++;
@@ -224,8 +202,6 @@ function detectAntiPatterns(filePath: string, projectRoot: string): AntiPattern[
       }
     }
 
-    // Detect try block start (only when NOT already inside a catch block —
-    // nested try/catch inside a catch is just catch-block content)
     if (!inCatch && (trimmed.match(/^\s*try\s*{/) || trimmed.match(/}\s*try\s*{/))) {
       inTry = true;
       tryStartLine = i + 1;
@@ -234,16 +210,13 @@ function detectAntiPatterns(filePath: string, projectRoot: string): AntiPattern[
       continue;
     }
 
-    // Track try block content
     if (inTry && !inCatch) {
       tryLines.push(line);
 
-      // Count braces to find try block end
       const openBraces = (line.match(/{/g) || []).length;
       const closeBraces = (line.match(/}/g) || []).length;
       braceDepth += openBraces - closeBraces;
 
-      // Found catch
       if (trimmed.match(/}\s*catch\s*(\(|{)/)) {
         inCatch = true;
         catchStartLine = i + 1;
@@ -253,7 +226,6 @@ function detectAntiPatterns(filePath: string, projectRoot: string): AntiPattern[
       }
     }
 
-    // Track catch block
     if (inCatch) {
       catchLines.push(line);
 
@@ -261,9 +233,7 @@ function detectAntiPatterns(filePath: string, projectRoot: string): AntiPattern[
       const closeBraces = (line.match(/}/g) || []).length;
       braceDepth += openBraces - closeBraces;
 
-      // Catch block ended
       if (braceDepth === 0) {
-        // Analyze the try-catch block
         analyzeTryCatchBlock(
           filePath,
           relPath,
@@ -275,7 +245,6 @@ function detectAntiPatterns(filePath: string, projectRoot: string): AntiPattern[
           antiPatterns
         );
 
-        // Reset
         inTry = false;
         inCatch = false;
         tryLines = [];
@@ -300,14 +269,12 @@ function analyzeTryCatchBlock(
   const tryBlock = tryLines.join('\n');
   const catchBlock = catchLines.join('\n');
 
-  // CRITICAL: Empty catch block
   const catchContent = catchBlock
-    .replace(/}\s*catch\s*\([^)]*\)\s*{/, '') // Remove catch signature
-    .replace(/}\s*catch\s*{/, '') // Remove catch without param
-    .replace(/}$/, '') // Remove closing brace
+    .replace(/}\s*catch\s*\([^)]*\)\s*{/, '') 
+    .replace(/}\s*catch\s*{/, '') 
+    .replace(/}$/, '') 
     .trim();
 
-  // Check for comment-only catch blocks
   const nonCommentContent = catchContent
     .split('\n')
     .filter(line => {
@@ -328,11 +295,9 @@ function analyzeTryCatchBlock(
     });
   }
 
-  // Check for [ANTI-PATTERN IGNORED] marker
   const overrideMatch = catchContent.match(/\/\/\s*\[ANTI-PATTERN IGNORED\]:\s*(.+)/i);
   const overrideReason = overrideMatch?.[1]?.trim();
 
-  // CRITICAL: No logging in catch block (unless explicitly approved)
   const hasLogging = catchContent.match(/logger\.(error|warn|debug|info|failure)/);
   const hasConsoleError = catchContent.match(/console\.(error|warn)/);
   const hasStderr = catchContent.match(/process\.stderr\.write/);
@@ -361,7 +326,6 @@ function analyzeTryCatchBlock(
     }
   }
 
-  // HIGH: Large try block (>10 lines)
   const significantTryLines = tryLines.filter(line => {
     const t = line.trim();
     return t && !t.startsWith('//') && t !== '{' && t !== '}';
@@ -378,7 +342,6 @@ function analyzeTryCatchBlock(
     });
   }
 
-  // HIGH: Generic catch without type checking
   const catchParam = catchBlock.match(/catch\s*\(([^)]+)\)/)?.[1]?.trim();
   const hasTypeCheck = catchContent.match(/instanceof\s+Error/) ||
                        catchContent.match(/\.name\s*===/) ||
@@ -395,7 +358,6 @@ function analyzeTryCatchBlock(
     });
   }
 
-  // CRITICAL on critical paths: Catch-and-continue
   if (isCriticalPath && nonCommentContent && !hasThrow) {
     const hasReturn = catchContent.match(/return/);
     const hasProcessExit = catchContent.match(/process\.exit/);
@@ -486,7 +448,6 @@ function formatReport(antiPatterns: AntiPattern[]): string {
   return report;
 }
 
-// Main execution
 const projectRoot = process.cwd();
 const srcDir = join(projectRoot, 'src');
 
@@ -505,7 +466,6 @@ for (const file of tsFiles) {
 const report = formatReport(allAntiPatterns);
 console.log(report);
 
-// Exit with error code if any issues found
 const issues = allAntiPatterns.filter(a => a.severity === 'ISSUE');
 if (issues.length > 0) {
   console.error(`❌ FAILED: ${issues.length} error handling anti-patterns must be fixed.\n`);

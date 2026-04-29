@@ -1,24 +1,15 @@
 #!/usr/bin/env bun
 
-/**
- * Verify Timestamp Fix
- *
- * This script verifies that the timestamp corruption has been properly fixed.
- * It checks for any remaining observations in the bad window that shouldn't be there.
- */
-
 import Database from 'bun:sqlite';
 import { resolve } from 'path';
 
 const DB_PATH = resolve(process.env.HOME!, '.claude-mem/claude-mem.db');
 
-// Bad window: Dec 24 19:45-20:31 (using actual epoch format from database)
-const BAD_WINDOW_START = 1766623500000; // Dec 24 19:45 PST
-const BAD_WINDOW_END = 1766626260000;   // Dec 24 20:31 PST
+const BAD_WINDOW_START = 1766623500000; 
+const BAD_WINDOW_END = 1766626260000;   
 
-// Original corruption window: Dec 16-22 (when sessions actually started)
-const ORIGINAL_WINDOW_START = 1765914000000; // Dec 16 00:00 PST
-const ORIGINAL_WINDOW_END = 1766613600000;   // Dec 23 23:59 PST
+const ORIGINAL_WINDOW_START = 1765914000000; 
+const ORIGINAL_WINDOW_END = 1766613600000;   
 
 interface Observation {
   id: number;
@@ -46,7 +37,6 @@ function main() {
   const db = new Database(DB_PATH);
 
   try {
-    // Check 1: Observations still in bad window
     console.log('Check 1: Looking for observations still in bad window (Dec 24 19:45-20:31)...');
     const badWindowObs = db.query<Observation, []>(`
       SELECT id, memory_session_id, created_at_epoch, created_at, title
@@ -67,7 +57,6 @@ function main() {
       }
     }
 
-    // Check 2: Observations now in original window
     console.log('Check 2: Counting observations in original window (Dec 17-20)...');
     const originalWindowObs = db.query<{ count: number }, []>(`
       SELECT COUNT(*) as count
@@ -79,7 +68,6 @@ function main() {
     console.log(`Found ${originalWindowObs?.count || 0} observations in Dec 17-20 window`);
     console.log('(These should be the corrected observations)\n');
 
-    // Check 3: Session distribution
     console.log('Check 3: Session distribution of corrected observations...');
     const sessionDist = db.query<{ memory_session_id: string; count: number }, []>(`
       SELECT memory_session_id, COUNT(*) as count
@@ -101,7 +89,6 @@ function main() {
       console.log();
     }
 
-    // Check 4: Pending messages processed count
     console.log('Check 4: Verifying processed pending_messages...');
     const processedCount = db.query<{ count: number }, []>(`
       SELECT COUNT(*) as count
@@ -113,7 +100,6 @@ function main() {
 
     console.log(`${processedCount?.count || 0} pending messages were processed during bad window\n`);
 
-    // Summary
     console.log('═══════════════════════════════════════════════════════════════════════');
     console.log('VERIFICATION SUMMARY:');
     console.log('═══════════════════════════════════════════════════════════════════════\n');

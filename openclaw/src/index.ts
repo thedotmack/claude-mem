@@ -1,9 +1,4 @@
-// No file-system imports needed — context is injected via system prompt hook,
-// not by writing to MEMORY.md.
 
-// Minimal type declarations for the OpenClaw Plugin SDK.
-// These match the real OpenClawPluginApi provided by the gateway at runtime.
-// See: https://docs.openclaw.ai/plugin
 
 interface PluginLogger {
   debug?: (message: string) => void;
@@ -30,7 +25,6 @@ interface PluginCommandContext {
 
 type PluginCommandResult = string | { text: string } | { text: string; format?: string };
 
-// OpenClaw event types for agent lifecycle
 interface BeforeAgentStartEvent {
   prompt?: string;
 }
@@ -136,10 +130,6 @@ interface OpenClawPluginApi {
   };
 }
 
-// ============================================================================
-// SSE Observation Feed Types
-// ============================================================================
-
 interface ObservationSSEPayload {
   id: number;
   memory_session_id: string;
@@ -166,10 +156,6 @@ interface SSENewObservationEvent {
 
 type ConnectionState = "disconnected" | "connected" | "reconnecting";
 
-// ============================================================================
-// Plugin Configuration
-// ============================================================================
-
 interface FeedEmojiConfig {
   primary?: string;
   claudeCode?: string;
@@ -193,16 +179,10 @@ interface ClaudeMemPluginConfig {
   };
 }
 
-// ============================================================================
-// Constants
-// ============================================================================
-
-const MAX_SSE_BUFFER_SIZE = 1024 * 1024; // 1MB
+const MAX_SSE_BUFFER_SIZE = 1024 * 1024; 
 const DEFAULT_WORKER_PORT = 37777;
 const DEFAULT_WORKER_HOST = "127.0.0.1";
 
-// Emoji pool for deterministic auto-assignment to unknown agents.
-// Uses a hash of the agentId to pick a consistent emoji — no persistent state needed.
 const EMOJI_POOL = [
   "🔧","📐","🔍","💻","🧪","🐛","🛡️","☁️","📦","🎯",
   "🔮","⚡","🌊","🎨","📊","🚀","🔬","🏗️","📝","🎭",
@@ -216,7 +196,6 @@ function poolEmojiForAgent(agentId: string): string {
   return EMOJI_POOL[Math.abs(hash) % EMOJI_POOL.length];
 }
 
-// Default emoji values — overridden by user config via observationFeed.emojis
 const DEFAULT_PRIMARY_EMOJI = "🦞";
 const DEFAULT_CLAUDE_CODE_EMOJI = "⌨️";
 const DEFAULT_CLAUDE_CODE_LABEL = "Claude Code Session";
@@ -233,19 +212,15 @@ function buildGetSourceLabel(
 
   return function getSourceLabel(project: string | null | undefined): string {
     if (!project) return fallback;
-    // OpenClaw agent projects are formatted as "openclaw-<agentId>"
     if (project.startsWith("openclaw-")) {
       const agentId = project.slice("openclaw-".length);
       if (!agentId) return `${primary} openclaw`;
       const emoji = pinnedAgents[agentId] || poolEmojiForAgent(agentId);
       return `${emoji} ${agentId}`;
     }
-    // OpenClaw project without agent suffix
     if (project === "openclaw") {
       return `${primary} openclaw`;
     }
-    // Everything else is a Claude Code session. Keep the project identifier
-    // visible so concurrent sessions can be distinguished in the feed.
     const trimmedLabel = claudeCodeLabel.trim();
     if (!trimmedLabel) {
       return `${claudeCode} ${project}`;
@@ -254,23 +229,11 @@ function buildGetSourceLabel(
   };
 }
 
-// ============================================================================
-// Worker HTTP Client
-// ============================================================================
-
 let _workerHost = DEFAULT_WORKER_HOST;
 
 function workerBaseUrl(port: number): string {
   return `http://${_workerHost}:${port}`;
 }
-
-// ============================================================================
-// Worker Circuit Breaker
-// ============================================================================
-// Prevents CPU-spinning retry loops when the worker is unreachable.
-// After CIRCUIT_BREAKER_THRESHOLD consecutive network errors, the circuit
-// opens and all worker calls are silently dropped for CIRCUIT_BREAKER_COOLDOWN_MS.
-// After the cooldown, one probe attempt is allowed to check if the worker recovered.
 
 const CIRCUIT_BREAKER_THRESHOLD = 3;
 const CIRCUIT_BREAKER_COOLDOWN_MS = 30_000;
@@ -294,7 +257,6 @@ function circuitAllow(logger: PluginLogger): boolean {
     }
     return false;
   }
-  // HALF_OPEN: allow one probe through
   if (_halfOpenProbeInFlight) return false;
   _halfOpenProbeInFlight = true;
   return true;
@@ -429,10 +391,6 @@ async function workerGetJson(
   }
 }
 
-// ============================================================================
-// SSE Observation Feed
-// ============================================================================
-
 function formatObservationMessage(
   observation: ObservationSSEPayload,
   getSourceLabel: (project: string | null | undefined) => string,
@@ -446,8 +404,6 @@ function formatObservationMessage(
   return message;
 }
 
-// Explicit mapping from channel name to [runtime namespace key, send function name].
-// These match the PluginRuntime.channel structure in the OpenClaw SDK.
 const CHANNEL_SEND_MAP: Record<string, { namespace: string; functionName: string }> = {
   telegram: { namespace: "telegram", functionName: "sendMessageTelegram" },
   whatsapp: { namespace: "whatsapp", functionName: "sendMessageWhatsApp" },
@@ -491,7 +447,6 @@ function sendToChannel(
   text: string,
   botToken?: string
 ): Promise<void> {
-  // If a dedicated bot token is provided for Telegram, send directly
   if (botToken && channel === "telegram") {
     return sendDirectTelegram(botToken, to, text, api.logger);
   }
@@ -514,7 +469,6 @@ function sendToChannel(
     return Promise.resolve();
   }
 
-  // WhatsApp requires a third options argument with { verbose: boolean }
   const args: unknown[] = channel === "whatsapp"
     ? [to, text, { verbose: false }]
     : [to, text];
@@ -579,7 +533,6 @@ async function connectToSSEStream(
         buffer = frames.pop() || "";
 
         for (const frame of frames) {
-          // SSE spec: concatenate all data: lines with \n
           const dataLines = frame
             .split("\n")
             .filter((line) => line.startsWith("data:"))
@@ -620,10 +573,6 @@ async function connectToSSEStream(
   setConnectionState("disconnected");
 }
 
-// ============================================================================
-// Plugin Entry Point
-// ============================================================================
-
 export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   const userConfig = (api.pluginConfig || {}) as ClaudeMemPluginConfig;
   const workerPort = userConfig.workerPort || DEFAULT_WORKER_PORT;
@@ -638,14 +587,11 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     return baseProjectName;
   }
 
-  // ------------------------------------------------------------------
-  // Session tracking for observation I/O
-  // ------------------------------------------------------------------
   const sessionIds = new Map<string, string>();
   const canonicalSessionKeys = new Map<string, string>();
   const sessionAliasesByCanonicalKey = new Map<string, Set<string>>();
   const recentPromptInits = new Map<string, number>();
-  const syncMemoryFile = userConfig.syncMemoryFile !== false; // default true
+  const syncMemoryFile = userConfig.syncMemoryFile !== false; 
   const syncMemoryFileExclude = new Set(userConfig.syncMemoryFileExclude || []);
 
   function getContentSessionId(sessionKey?: string): string {
@@ -707,9 +653,6 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     }
     const cacheKey = `${contentSessionId}::${project}::${prompt}`;
     const lastSeenAt = recentPromptInits.get(cacheKey);
-    // Note: cache is set unconditionally before return. If workerPost fails
-    // after this check, a retry within 2s would be incorrectly skipped.
-    // Acceptable because before_agent_start is not retried by the runtime.
     recentPromptInits.set(cacheKey, now);
     return typeof lastSeenAt === "number" && now - lastSeenAt <= 2000;
   }
@@ -728,14 +671,10 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     sessionIds.delete(canonicalKey);
   }
 
-  // TTL cache for context injection to avoid re-fetching on every LLM turn.
-  // before_prompt_build fires on every turn; caching for 60s keeps the worker
-  // load manageable while still picking up new observations reasonably quickly.
   const CONTEXT_CACHE_TTL_MS = 60_000;
   const contextCache = new Map<string, { text: string; fetchedAt: number }>();
 
   async function getContextForPrompt(ctx?: EventContext): Promise<string | null> {
-    // Include both the base project and agent-scoped project (e.g. "openclaw" + "openclaw-main")
     const projects = [baseProjectName];
     const agentProject = ctx ? getProjectName(ctx) : null;
     if (agentProject && agentProject !== baseProjectName) {
@@ -743,7 +682,6 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     }
     const cacheKey = projects.join(",");
 
-    // Return cached context if still fresh
     const cached = contextCache.get(cacheKey);
     if (cached && Date.now() - cached.fetchedAt < CONTEXT_CACHE_TTL_MS) {
       return cached.text;
@@ -762,36 +700,21 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     return null;
   }
 
-  // ------------------------------------------------------------------
-  // Event: session_start — track session (fires on /new, /reset)
-  // Init is deferred to before_agent_start to avoid duplicate prompt records.
-  // ------------------------------------------------------------------
   api.on("session_start", async (_event, ctx) => {
     const { contentSessionId } = rememberSessionContext(ctx);
     api.logger.info(`[claude-mem] Session tracking initialized: ${contentSessionId}`);
   });
 
-  // ------------------------------------------------------------------
-  // Event: message_received — alias tracking only; init deferred to before_agent_start
-  // ------------------------------------------------------------------
   api.on("message_received", async (event, ctx) => {
     const { canonicalKey, contentSessionId } = rememberSessionContext(ctx);
     api.logger.info(`[claude-mem] Message received — prompt capture deferred to before_agent_start: session=${canonicalKey} contentSessionId=${contentSessionId} hasContent=${Boolean(event.content)}`);
   });
 
-  // ------------------------------------------------------------------
-  // Event: after_compaction — preserve session tracking after context compaction.
-  // Re-init is intentionally NOT called here; the worker retains session state
-  // independently and re-initializing would create duplicate prompt records.
-  // ------------------------------------------------------------------
   api.on("after_compaction", async (_event, ctx) => {
     const { contentSessionId } = rememberSessionContext(ctx);
     api.logger.info(`[claude-mem] Session preserved after compaction: ${contentSessionId}`);
   });
 
-  // ------------------------------------------------------------------
-  // Event: before_agent_start — single init point with dedup guard
-  // ------------------------------------------------------------------
   api.on("before_agent_start", async (event, ctx) => {
     const { contentSessionId } = rememberSessionContext(ctx);
     const projectName = getProjectName(ctx);
@@ -802,8 +725,6 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       return;
     }
 
-    // Initialize session in the worker so observations are not skipped
-    // (the privacy check requires a stored user prompt to exist)
     await workerPost(workerPort, "/api/sessions/init", {
       contentSessionId,
       project: projectName,
@@ -813,14 +734,6 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     api.logger.info(`[claude-mem] Session initialized via before_agent_start: contentSessionId=${contentSessionId} project=${projectName}`);
   });
 
-  // ------------------------------------------------------------------
-  // Event: before_prompt_build — inject context into system prompt
-  //
-  // Instead of writing to MEMORY.md (which conflicts with agent-curated
-  // memory), inject the observation timeline via appendSystemContext.
-  // This keeps MEMORY.md under the agent's control while still providing
-  // cross-session context to the LLM.
-  // ------------------------------------------------------------------
   api.on("before_prompt_build", async (_event, ctx) => {
     if (!shouldInjectContext(ctx)) return;
 
@@ -831,20 +744,15 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     }
   });
 
-  // ------------------------------------------------------------------
-  // Event: tool_result_persist — record tool observations
-  // ------------------------------------------------------------------
   api.on("tool_result_persist", (event, ctx) => {
     api.logger.info(`[claude-mem] tool_result_persist fired: tool=${event.toolName ?? "unknown"} agent=${ctx.agentId ?? "none"} session=${ctx.sessionKey ?? "none"}`);
     const toolName = event.toolName;
     if (!toolName) return;
 
-    // Skip memory_ tools to prevent recursive observation loops
     if (toolName.startsWith("memory_")) return;
 
     const { canonicalKey, contentSessionId } = rememberSessionContext(ctx);
 
-    // Extract result text from all content blocks
     let toolResponseText = "";
     const content = event.message?.content;
     if (Array.isArray(content)) {
@@ -854,15 +762,11 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
         .join("\n");
     }
 
-    // Truncate long responses to prevent oversized payloads
     const MAX_TOOL_RESPONSE_LENGTH = 1000;
     if (toolResponseText.length > MAX_TOOL_RESPONSE_LENGTH) {
       toolResponseText = toolResponseText.slice(0, MAX_TOOL_RESPONSE_LENGTH);
     }
 
-    // Resolve workspaceDir with fallback chain.
-    // Empty cwd causes worker-side observation queueing failures,
-    // so we drop the observation rather than sending cwd: "".
     const workspaceDir = ctx.workspaceDir;
 
     if (!workspaceDir) {
@@ -870,7 +774,6 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       return;
     }
 
-    // Fire-and-forget: send observation to worker
     workerPostFireAndForget(workerPort, "/api/sessions/observations", {
       contentSessionId,
       tool_name: toolName,
@@ -880,13 +783,9 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     }, api.logger);
   });
 
-  // ------------------------------------------------------------------
-  // Event: agent_end — summarize session (worker self-completes)
-  // ------------------------------------------------------------------
   api.on("agent_end", async (event, ctx) => {
     const { contentSessionId } = rememberSessionContext(ctx);
 
-    // Extract last assistant message for summarization
     let lastAssistantMessage = "";
     if (Array.isArray(event.messages)) {
       for (let i = event.messages.length - 1; i >= 0; i--) {
@@ -905,25 +804,17 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       }
     }
 
-    // Send summarize. The worker self-completes the session when its SDK-agent
-    // generator drains; no explicit complete call needed.
     await workerPost(workerPort, "/api/sessions/summarize", {
       contentSessionId,
       last_assistant_message: lastAssistantMessage,
     }, api.logger);
   });
 
-  // ------------------------------------------------------------------
-  // Event: session_end — clean up session tracking to prevent unbounded growth
-  // ------------------------------------------------------------------
   api.on("session_end", async (_event, ctx) => {
     clearSessionContext(ctx);
     api.logger.info(`[claude-mem] Session tracking cleaned up`);
   });
 
-  // ------------------------------------------------------------------
-  // Event: gateway_start — clear session tracking for fresh start
-  // ------------------------------------------------------------------
   api.on("gateway_start", async () => {
     circuitReset();
     sessionIds.clear();
@@ -934,9 +825,6 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     api.logger.info("[claude-mem] Gateway started — session tracking reset");
   });
 
-  // ------------------------------------------------------------------
-  // Service: SSE observation feed → messaging channels
-  // ------------------------------------------------------------------
   let sseAbortController: AbortController | null = null;
   let connectionState: ConnectionState = "disconnected";
   let connectionPromise: Promise<void> | null = null;
@@ -1014,9 +902,6 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     return Math.max(1, Math.min(50, Math.trunc(parsed)));
   }
 
-  // ------------------------------------------------------------------
-  // Command: /claude_mem_feed — status & toggle
-  // ------------------------------------------------------------------
   api.registerCommand({
     name: "claude_mem_feed",
     description: "Show or toggle Claude-Mem observation feed status",
@@ -1050,10 +935,6 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     },
   });
 
-  // ------------------------------------------------------------------
-  // Command: /claude-mem-search — query worker search API
-  // Usage: /claude-mem-search <query> [limit]
-  // ------------------------------------------------------------------
   api.registerCommand({
     name: "claude-mem-search",
     description: "Search Claude-Mem observations by query",
@@ -1088,10 +969,6 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     },
   });
 
-  // ------------------------------------------------------------------
-  // Command: /claude-mem-recent — recent context snapshot
-  // Usage: /claude-mem-recent [project] [limit]
-  // ------------------------------------------------------------------
   api.registerCommand({
     name: "claude-mem-recent",
     description: "Show recent Claude-Mem context for a project",
@@ -1131,10 +1008,6 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     },
   });
 
-  // ------------------------------------------------------------------
-  // Command: /claude-mem-timeline — search and timeline around best match
-  // Usage: /claude-mem-timeline <query> [depthBefore] [depthAfter]
-  // ------------------------------------------------------------------
   api.registerCommand({
     name: "claude-mem-timeline",
     description: "Find best memory match and show nearby timeline events",
@@ -1185,9 +1058,6 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     },
   });
 
-  // ------------------------------------------------------------------
-  // Command: /claude_mem_status — worker health check
-  // ------------------------------------------------------------------
   api.registerCommand({
     name: "claude_mem_status",
     description: "Check Claude-Mem worker health and session status",

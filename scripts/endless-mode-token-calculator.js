@@ -1,17 +1,5 @@
 #!/usr/bin/env node
 
-/**
- * Endless Mode Token Economics Calculator
- *
- * Simulates the recursive/cumulative token savings from Endless Mode by
- * "playing the tape through" with real observation data from SQLite.
- *
- * Key Insight:
- * - Discovery tokens are ALWAYS spent (creating observations)
- * - But Endless Mode feeds compressed observations as context instead of full tool outputs
- * - Savings compound recursively - each tool benefits from ALL previous compressions
- */
-
 const observationsData = [{"id":10136,"type":"decision","title":"Token Accounting Function for Recursive Continuation Pattern","discovery_tokens":4037,"created_at_epoch":1763360747429,"compressed_size":1613},
 {"id":10135,"type":"discovery","title":"Sequential Thinking Analysis of Token Economics Calculator","discovery_tokens":1439,"created_at_epoch":1763360651617,"compressed_size":1812},
 {"id":10134,"type":"discovery","title":"Recent Context Query Execution","discovery_tokens":1273,"created_at_epoch":1763360646273,"compressed_size":1228},
@@ -61,25 +49,14 @@ const observationsData = [{"id":10136,"type":"decision","title":"Token Accountin
 {"id":10090,"type":"discovery","title":"UserPromptSubmit Hook as Compression Integration Point","discovery_tokens":1546,"created_at_epoch":1763358931936,"compressed_size":1621},
 {"id":10089,"type":"decision","title":"Hypothesis 5 Selected: UserPromptSubmit Hook for Transcript Compression","discovery_tokens":1465,"created_at_epoch":1763358920209,"compressed_size":1918}];
 
-// Estimate original tool output size from discovery tokens
-// Heuristic: discovery_tokens roughly correlates with original content size
-// Assumption: If it took 10k tokens to analyze, original was probably 15-30k tokens
 function estimateOriginalToolOutputSize(discoveryTokens) {
-  // Conservative multiplier: 2x (original content was 2x the discovery cost)
-  // This accounts for: reading the tool output + analyzing it + generating observation
   return discoveryTokens * 2;
 }
 
-// Convert compressed_size (character count) to approximate token count
-// Rough heuristic: 1 token ≈ 4 characters for English text
 function charsToTokens(chars) {
   return Math.ceil(chars / 4);
 }
 
-/**
- * Simulate session WITHOUT Endless Mode (current behavior)
- * Each continuation carries ALL previous full tool outputs in context
- */
 function calculateWithoutEndlessMode(observations) {
   let cumulativeContextTokens = 0;
   let totalDiscoveryTokens = 0;
@@ -90,12 +67,9 @@ function calculateWithoutEndlessMode(observations) {
     const toolNumber = index + 1;
     const originalToolSize = estimateOriginalToolOutputSize(obs.discovery_tokens);
 
-    // Discovery cost (creating observation from full tool output)
     const discoveryCost = obs.discovery_tokens;
     totalDiscoveryTokens += discoveryCost;
 
-    // Continuation cost: Re-process ALL previous tool outputs + current one
-    // This is the key recursive cost
     cumulativeContextTokens += originalToolSize;
     const continuationCost = cumulativeContextTokens;
     totalContinuationTokens += continuationCost;
@@ -120,10 +94,6 @@ function calculateWithoutEndlessMode(observations) {
   };
 }
 
-/**
- * Simulate session WITH Endless Mode
- * Each continuation carries ALL previous COMPRESSED observations in context
- */
 function calculateWithEndlessMode(observations) {
   let cumulativeContextTokens = 0;
   let totalDiscoveryTokens = 0;
@@ -135,11 +105,9 @@ function calculateWithEndlessMode(observations) {
     const originalToolSize = estimateOriginalToolOutputSize(obs.discovery_tokens);
     const compressedSize = charsToTokens(obs.compressed_size);
 
-    // Discovery cost (same as without Endless Mode - still need to create observation)
     const discoveryCost = obs.discovery_tokens;
     totalDiscoveryTokens += discoveryCost;
 
-    // KEY DIFFERENCE: Add COMPRESSED size to context, not original size
     cumulativeContextTokens += compressedSize;
     const continuationCost = cumulativeContextTokens;
     totalContinuationTokens += continuationCost;
@@ -168,9 +136,6 @@ function calculateWithEndlessMode(observations) {
   };
 }
 
-/**
- * Play the tape through - show token-by-token progression
- */
 function playTheTapeThrough(observations) {
   console.log('\n' + '='.repeat(100));
   console.log('ENDLESS MODE TOKEN ECONOMICS CALCULATOR');
@@ -179,11 +144,9 @@ function playTheTapeThrough(observations) {
 
   console.log(`📊 Dataset: ${observations.length} observations from live sessions\n`);
 
-  // Calculate both scenarios
   const without = calculateWithoutEndlessMode(observations);
   const withMode = calculateWithEndlessMode(observations);
 
-  // Show first 10 tools from each scenario side by side
   console.log('🎬 TAPE PLAYBACK: First 10 Tools\n');
   console.log('WITHOUT Endless Mode (Current) | WITH Endless Mode (Proposed)');
   console.log('-'.repeat(100));
@@ -198,7 +161,6 @@ function playTheTapeThrough(observations) {
     console.log(`  Total:    ${w.totalCostSoFar.toLocaleString()}t | Total:      ${e.totalCostSoFar.toLocaleString()}t`);
   }
 
-  // Summary table
   console.log('\n' + '='.repeat(100));
   console.log('📈 FINAL TOTALS\n');
 
@@ -220,14 +182,12 @@ function playTheTapeThrough(observations) {
   console.log(`  Percentage saved:    ${percentSaved}%`);
   console.log(`  Efficiency gain:     ${(without.totalTokens / withMode.totalTokens).toFixed(2)}x`);
 
-  // Anthropic scale calculation
   console.log('\n' + '='.repeat(100));
   console.log('🌍 ANTHROPIC SCALE IMPACT\n');
 
-  // Conservative assumptions
-  const activeUsers = 100000; // Claude Code users
-  const sessionsPerWeek = 10; // Per user
-  const toolsPerSession = observations.length; // Use our actual data
+  const activeUsers = 100000; 
+  const sessionsPerWeek = 10; 
+  const toolsPerSession = observations.length; 
   const weeklyToolUses = activeUsers * sessionsPerWeek * toolsPerSession;
 
   const avgTokensPerToolWithout = without.totalTokens / observations.length;
@@ -269,5 +229,4 @@ function playTheTapeThrough(observations) {
   };
 }
 
-// Run the calculation
 playTheTapeThrough(observationsData);

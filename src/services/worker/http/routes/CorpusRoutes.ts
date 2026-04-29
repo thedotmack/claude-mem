@@ -1,9 +1,3 @@
-/**
- * Corpus Routes
- *
- * Handles knowledge agent corpus CRUD operations: build, list, get, delete, rebuild.
- * All endpoints delegate to CorpusStore (file I/O) and CorpusBuilder (search + hydrate).
- */
 
 import express, { Request, Response } from 'express';
 import { z } from 'zod';
@@ -17,9 +11,6 @@ import type { CorpusFilter } from '../../knowledge/types.js';
 const ALLOWED_CORPUS_TYPES = ['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change', 'security_alert', 'security_note'] as const;
 const ALLOWED_CORPUS_TYPE_SET = new Set<string>(ALLOWED_CORPUS_TYPES);
 
-// Plan 06 Phase 3 — per-route Zod schemas. Coercions match the legacy
-// `coerceStringArray` / `coercePositiveInteger` semantics: accept JSON
-// strings, comma-separated strings, or native arrays; reject empty fields.
 const stringArrayLike = z.preprocess((value) => {
   if (value === undefined || value === null || value === '') return undefined;
   if (Array.isArray(value)) return value;
@@ -86,11 +77,6 @@ export class CorpusRoutes extends BaseRouteHandler {
     app.post('/api/corpus/:name/reprime', validateBody(emptyBodySchema), this.handleReprimeCorpus.bind(this));
   }
 
-  /**
-   * Build a new corpus from matching observations
-   * POST /api/corpus
-   * Body: { name, description?, project?, types?, concepts?, files?, query?, date_start?, date_end?, limit? }
-   */
   private handleBuildCorpus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { name, description, project, types, concepts, files, query, date_start, date_end, limit } =
       req.body as z.infer<typeof buildCorpusSchema>;
@@ -107,31 +93,17 @@ export class CorpusRoutes extends BaseRouteHandler {
 
     const corpus = await this.corpusBuilder.build(name, description || '', filter);
 
-    // Return stats without the full observations array
     const { observations, ...metadata } = corpus;
     res.json(metadata);
   });
 
-  /**
-   * List all corpora with stats
-   * GET /api/corpus
-   */
   private handleListCorpora = this.wrapHandler((_req: Request, res: Response): void => {
     const corpora = this.corpusStore.list();
-    // Wrap in MCP CallToolResult shape so the MCP server wrapper (callWorkerAPI)
-    // can forward it without failing tools/call schema validation.
-    // See: #1700 — every other corpus endpoint is a POST that already returns
-    // {content:[...]}, but this GET used to return a bare array, which MCP
-    // rejects with "expected object, received array".
     res.json({
       content: [{ type: 'text', text: JSON.stringify(corpora, null, 2) }]
     });
   });
 
-  /**
-   * Get corpus metadata (without observations)
-   * GET /api/corpus/:name
-   */
   private handleGetCorpus = this.wrapHandler((req: Request, res: Response): void => {
     const { name } = req.params;
     const corpus = this.corpusStore.read(name);
@@ -145,15 +117,10 @@ export class CorpusRoutes extends BaseRouteHandler {
       return;
     }
 
-    // Return metadata without the full observations array
     const { observations, ...metadata } = corpus;
     res.json(metadata);
   });
 
-  /**
-   * Delete a corpus
-   * DELETE /api/corpus/:name
-   */
   private handleDeleteCorpus = this.wrapHandler((req: Request, res: Response): void => {
     const { name } = req.params;
     const existed = this.corpusStore.delete(name);
@@ -170,10 +137,6 @@ export class CorpusRoutes extends BaseRouteHandler {
     res.json({ success: true });
   });
 
-  /**
-   * Rebuild a corpus from its stored filter
-   * POST /api/corpus/:name/rebuild
-   */
   private handleRebuildCorpus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { name } = req.params;
     const existingCorpus = this.corpusStore.read(name);
@@ -189,15 +152,10 @@ export class CorpusRoutes extends BaseRouteHandler {
 
     const corpus = await this.corpusBuilder.build(name, existingCorpus.description, existingCorpus.filter);
 
-    // Return stats without the full observations array
     const { observations, ...metadata } = corpus;
     res.json(metadata);
   });
 
-  /**
-   * Prime a corpus — load all observations into a new Agent SDK session
-   * POST /api/corpus/:name/prime
-   */
   private handlePrimeCorpus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { name } = req.params;
     const corpus = this.corpusStore.read(name);
@@ -215,11 +173,6 @@ export class CorpusRoutes extends BaseRouteHandler {
     res.json({ session_id: sessionId, name: corpus.name });
   });
 
-  /**
-   * Query a primed corpus — resume the SDK session with a question
-   * POST /api/corpus/:name/query
-   * Body: { question: string }
-   */
   private handleQueryCorpus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { name } = req.params;
     const corpus = this.corpusStore.read(name);
@@ -238,10 +191,6 @@ export class CorpusRoutes extends BaseRouteHandler {
     res.json({ answer: result.answer, session_id: result.session_id });
   });
 
-  /**
-   * Reprime a corpus — create a fresh session, clearing prior Q&A context
-   * POST /api/corpus/:name/reprime
-   */
   private handleReprimeCorpus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { name } = req.params;
     const corpus = this.corpusStore.read(name);

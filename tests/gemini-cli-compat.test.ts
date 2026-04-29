@@ -1,35 +1,14 @@
-/**
- * Tests for Gemini CLI 0.37.0 compatibility fixes (Issue #1664)
- *
- * Validates:
- * 1. BeforeAgent is mapped to session-init (not user-message)
- * 2. Transcript parser handles Gemini JSON document format (type: "gemini")
- * 3. Summarize handler includes platformSource in the request body
- */
 import { describe, it, expect } from 'bun:test';
 import { writeFileSync, mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
-// ---------------------------------------------------------------------------
-// 1. BeforeAgent event mapping
-// ---------------------------------------------------------------------------
-
 describe('GeminiCliHooksInstaller - event mapping', () => {
   it('should map BeforeAgent to session-init, not user-message', async () => {
-    // Import the module to access the constant indirectly by inspecting
-    // the generated command string through the installer's internal mapping.
-    // The constant GEMINI_EVENT_TO_INTERNAL_EVENT is module-private, but we
-    // can verify the effect by checking that the installer installs the
-    // correct internal event name.
-    //
-    // Strategy: read the source file and assert the mapping directly.
     const { readFileSync } = await import('fs');
     const src = readFileSync('src/services/integrations/GeminiCliHooksInstaller.ts', 'utf-8');
 
-    // BeforeAgent must map to 'session-init'
     expect(src).toContain("'BeforeAgent': 'session-init'");
-    // BeforeAgent must NOT map to 'user-message'
     expect(src).not.toContain("'BeforeAgent': 'user-message'");
   });
 
@@ -46,21 +25,15 @@ describe('GeminiCliHooksInstaller - event mapping', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// 2. Transcript parser — Gemini JSON document format
-// ---------------------------------------------------------------------------
-
 describe('extractLastMessage - Gemini CLI 0.37.0 transcript format', () => {
   let tmpDir: string;
 
-  // Helper: write a temp transcript file and return its path
   const writeTranscript = (name: string, content: string): string => {
     const filePath = join(tmpDir, name);
     writeFileSync(filePath, content, 'utf-8');
     return filePath;
   };
 
-  // Set up / tear down a fresh temp directory per suite
   const setup = () => {
     tmpDir = join(tmpdir(), `gemini-transcript-test-${Date.now()}`);
     mkdirSync(tmpDir, { recursive: true });
@@ -214,10 +187,6 @@ describe('extractLastMessage - Gemini CLI 0.37.0 transcript format', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// 3. Summarize handler includes platformSource
-// ---------------------------------------------------------------------------
-
 describe('Summarize handler - platformSource in request body', () => {
   it('should include platformSource import in summarize.ts', async () => {
     const { readFileSync } = await import('fs');
@@ -229,9 +198,7 @@ describe('Summarize handler - platformSource in request body', () => {
   it('should pass platformSource in the summarize request body', async () => {
     const { readFileSync } = await import('fs');
     const src = readFileSync('src/cli/handlers/summarize.ts', 'utf-8');
-    // The body must include platformSource
     expect(src).toContain('platformSource');
-    // It must appear in the JSON.stringify call for the summarize endpoint
     expect(src).toContain('/api/sessions/summarize');
   });
 });

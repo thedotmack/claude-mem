@@ -1,9 +1,3 @@
-/**
- * TimelineRenderer - Renders the chronological timeline of observations and summaries
- *
- * Handles day grouping and rendering. In agent (LLM) mode, uses flat compact lines.
- * In human (terminal) mode, uses file grouping with visual formatting.
- */
 
 import type {
   ContextConfig,
@@ -15,9 +9,6 @@ import { formatTime, formatDate, formatDateTime, extractFirstFile, parseJsonArra
 import * as Agent from '../formatters/AgentFormatter.js';
 import * as Human from '../formatters/HumanFormatter.js';
 
-/**
- * Group timeline items by day
- */
 export function groupTimelineByDay(timeline: TimelineItem[]): Map<string, TimelineItem[]> {
   const itemsByDay = new Map<string, TimelineItem[]>();
 
@@ -30,7 +21,6 @@ export function groupTimelineByDay(timeline: TimelineItem[]): Map<string, Timeli
     itemsByDay.get(day)!.push(item);
   }
 
-  // Sort days chronologically
   const sortedEntries = Array.from(itemsByDay.entries()).sort((a, b) => {
     const aDate = new Date(a[0]).getTime();
     const bDate = new Date(b[0]).getTime();
@@ -40,9 +30,6 @@ export function groupTimelineByDay(timeline: TimelineItem[]): Map<string, Timeli
   return new Map(sortedEntries);
 }
 
-/**
- * Get detail field content for full observation display
- */
 function getDetailField(obs: Observation, config: ContextConfig): string | null {
   if (config.fullObservationField === 'narrative') {
     return obs.narrative;
@@ -50,9 +37,6 @@ function getDetailField(obs: Observation, config: ContextConfig): string | null 
   return obs.facts ? parseJsonArray(obs.facts).join('\n') : null;
 }
 
-/**
- * Render a single day's timeline items (agent/LLM mode - flat compact lines)
- */
 function renderDayTimelineAgent(
   day: string,
   dayItems: TimelineItem[],
@@ -91,9 +75,6 @@ function renderDayTimelineAgent(
   return output;
 }
 
-/**
- * Render a single day's timeline items (human/terminal mode - file grouped with tables)
- */
 function renderDayTimelineHuman(
   day: string,
   dayItems: TimelineItem[],
@@ -125,7 +106,6 @@ function renderDayTimelineHuman(
 
       const shouldShowFull = fullObservationIds.has(obs.id);
 
-      // Check if we need a new file section
       if (file !== currentFile) {
         output.push(...Human.renderHumanFileHeader(file));
         currentFile = file;
@@ -145,9 +125,6 @@ function renderDayTimelineHuman(
   return output;
 }
 
-/**
- * Render a single day's timeline items
- */
 export function renderDayTimeline(
   day: string,
   dayItems: TimelineItem[],
@@ -162,9 +139,6 @@ export function renderDayTimeline(
   return renderDayTimelineAgent(day, dayItems, fullObservationIds, config);
 }
 
-/**
- * Render the complete timeline
- */
 export function renderTimeline(
   timeline: TimelineItem[],
   fullObservationIds: Set<number>,

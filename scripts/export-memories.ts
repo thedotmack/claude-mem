@@ -1,9 +1,4 @@
 #!/usr/bin/env node
-/**
- * Export memories matching a search query to a portable JSON format
- * Usage: npx tsx scripts/export-memories.ts <query> <output-file> [--project=name]
- * Example: npx tsx scripts/export-memories.ts "windows" windows-memories.json --project=claude-mem
- */
 
 import { writeFileSync } from 'fs';
 import { homedir } from 'os';
@@ -19,14 +14,12 @@ import type {
 
 async function exportMemories(query: string, outputFile: string, project?: string) {
   try {
-    // Read port from settings
     const settings = SettingsDefaultsManager.loadFromFile(join(homedir(), '.claude-mem', 'settings.json'));
     const port = parseInt(settings.CLAUDE_MEM_WORKER_PORT, 10);
     const baseUrl = `http://localhost:${port}`;
 
     console.log(`🔍 Searching for: "${query}"${project ? ` (project: ${project})` : ' (all projects)'}`);
 
-    // Build query params - use format=json for raw data
     const params = new URLSearchParams({
       query,
       format: 'json',
@@ -34,7 +27,6 @@ async function exportMemories(query: string, outputFile: string, project?: strin
     });
     if (project) params.set('project', project);
 
-    // Unified search - gets all result types using hybrid search
     console.log('📡 Fetching all memories via hybrid search...');
     const searchResponse = await fetch(`${baseUrl}/api/search?${params.toString()}`);
     if (!searchResponse.ok) {
@@ -50,7 +42,6 @@ async function exportMemories(query: string, outputFile: string, project?: strin
     console.log(`✅ Found ${summaries.length} session summaries`);
     console.log(`✅ Found ${prompts.length} user prompts`);
 
-    // Get unique memory session IDs from observations and summaries
     const memorySessionIds = new Set<string>();
     observations.forEach((o) => {
       if (o.memory_session_id) memorySessionIds.add(o.memory_session_id);
@@ -59,7 +50,6 @@ async function exportMemories(query: string, outputFile: string, project?: strin
       if (s.memory_session_id) memorySessionIds.add(s.memory_session_id);
     });
 
-    // Get SDK sessions metadata via API
     console.log('📡 Fetching SDK sessions metadata...');
     let sessions: SdkSessionRecord[] = [];
     if (memorySessionIds.size > 0) {
@@ -76,7 +66,6 @@ async function exportMemories(query: string, outputFile: string, project?: strin
     }
     console.log(`✅ Found ${sessions.length} SDK sessions`);
 
-    // Create export data
     const exportData: ExportData = {
       exportedAt: new Date().toISOString(),
       exportedAtEpoch: Date.now(),
@@ -92,7 +81,6 @@ async function exportMemories(query: string, outputFile: string, project?: strin
       prompts
     };
 
-    // Write to file
     writeFileSync(outputFile, JSON.stringify(exportData, null, 2));
 
     console.log(`\n📦 Export complete!`);
@@ -109,7 +97,6 @@ async function exportMemories(query: string, outputFile: string, project?: strin
   }
 }
 
-// CLI interface
 const args = process.argv.slice(2);
 if (args.length < 2) {
   console.error('Usage: npx tsx scripts/export-memories.ts <query> <output-file> [--project=name]');
@@ -118,7 +105,6 @@ if (args.length < 2) {
   process.exit(1);
 }
 
-// Parse arguments
 const [query, outputFile, ...flags] = args;
 const project = flags.find(f => f.startsWith('--project='))?.split('=')[1];
 

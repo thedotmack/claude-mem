@@ -16,13 +16,6 @@ export interface ManagedProcessInfo {
   type: string;
   sessionId?: string | number;
   startedAt: string;
-  // POSIX process group leader PID for group-scoped teardown.
-  // On Unix, when a child is spawned with `detached: true`, the kernel calls
-  // setpgid() and the child becomes the leader of its own group — its pgid
-  // equals its pid. Stored so `process.kill(-pgid, signal)` can tear down
-  // the child AND every descendant it spawned in one syscall (Principle 5).
-  // Undefined on Windows (no POSIX groups) and for processes that were not
-  // spawned with detached: true (e.g. the worker itself, MCP stdio clients).
   pgid?: number;
 }
 
@@ -57,55 +50,18 @@ export interface PidInfo {
   pid: number;
   port: number;
   startedAt: string;
-  // Opaque process-start token used to distinguish a worker incarnation from
-  // another process that happens to reuse the same PID. Captured via
-  // captureProcessStartToken() at write time, checked via
-  // verifyPidFileOwnership() at read time. Optional for backwards
-  // compatibility with PID files written by older versions.
   startToken?: string;
 }
 
-/**
- * Capture an opaque "identity" token for a running PID — something stable
- * across time for that exact process incarnation, but different if the PID
- * gets reused by a later process.
- *
- * Fixes a class of false-positive "worker already running" errors where the
- * PID file survives (bind-mounted volume, persistent home dir, etc.) while
- * the PID namespace resets (docker stop / docker start), and the new worker
- * incarnation happens to get the same PID as the old one. A plain kill(0)
- * liveness check then says "yes, PID is alive" — but it's actually *us*
- * checking against our own PID file and refusing to boot.
- *
- * Sources by platform (`process.platform`):
- * - `linux`: field 22 of /proc/<pid>/stat (starttime, jiffies since boot).
- *   Cheap, no exec. Same approach pgrep/systemd use.
- * - `darwin` and any other POSIX (*BSD, SunOS) that falls through the Linux
- *   check: `ps -p <pid> -o lstart=` (wall-clock start time). A one-shot exec
- *   at worker startup — fine. If `ps` is missing the ENOENT is caught and
- *   null is returned; callers then fall back to liveness-only.
- * - `win32`: null (caller falls back to liveness-only behavior). The PID-
- *   reuse scenario doesn't affect Windows deployments the way containers do.
- *
- * Returns null when we can't read a token (permission denied, process gone,
- * unsupported platform). Callers should treat null as "can't verify" and
- * fall back to the liveness-only code path to preserve existing behavior.
- */
 export function captureProcessStartToken(pid: number): string | null {
   if (!Number.isInteger(pid) || pid <= 0) return null;
 
   if (process.platform === 'linux') {
     try {
-      // /proc/<pid>/stat format:
-      //   <pid> (comm) <state> <ppid> ... <starttime@field-22> ...
-      // `comm` can contain spaces and parens, so we key off the LAST ')' and
-      // split the tail — avoids being confused by weird process names.
       const raw = readFileSync(`/proc/${pid}/stat`, 'utf-8');
       const tailStart = raw.lastIndexOf(') ');
       if (tailStart < 0) return null;
       const fields = raw.slice(tailStart + 2).split(' ');
-      // After ') ' we're at field 3 (state). starttime is field 22.
-      // Offset into `fields`: 22 - 3 = 19.
       const starttime = fields[19];
       return starttime && /^\d+$/.test(starttime) ? starttime : null;
     } catch (error: unknown) {
@@ -122,12 +78,6 @@ export function captureProcessStartToken(pid: number): string | null {
   }
 
   try {
-    // Pin LC_ALL=C so `ps lstart=` emits a locale-independent timestamp
-    // (e.g. `Mon Apr 21 09:00:00 2026`). Without this, a bind-mounted PID
-    // file written under one locale and read under another would hash to
-    // different tokens and the new worker would incorrectly treat itself
-    // as a stale prior incarnation — reintroducing the bug this helper
-    // exists to prevent. Flagged by Greptile on PR #2082.
     const result = spawnSync('ps', ['-p', String(pid), '-o', 'lstart='], {
       encoding: 'utf-8',
       timeout: 2000,
@@ -145,18 +95,6 @@ export function captureProcessStartToken(pid: number): string | null {
   }
 }
 
-/**
- * Verify that the process named by `info` is the same worker incarnation
- * that wrote the PID file. Returns true only when:
- *   - the PID is currently alive, AND
- *   - either the stored start token matches the current token for that PID,
- *     OR no token is stored (PID file written by an older version — fall
- *     back to liveness-only for backwards compatibility).
- *
- * Returns false for null input, dead PIDs, and token mismatches. A token
- * mismatch means the PID has been reused by an unrelated process — the PID
- * file is stale even though kill(0) succeeds.
- */
 export function verifyPidFileOwnership(info: PidInfo | null): info is PidInfo {
   if (!info) return false;
   if (!isPidAlive(info.pid)) return false;
@@ -168,10 +106,6 @@ export function verifyPidFileOwnership(info: PidInfo | null): info is PidInfo {
 
   const match = currentToken === info.startToken;
   if (!match) {
-    // Emit a debug signal when liveness passes but identity fails — the
-    // exact container-restart scenario this helper exists to catch. Without
-    // this log the callers just say "stale" and can't distinguish
-    // "process dead" from "PID reused by a different process".
     logger.debug('SYSTEM', 'verifyPidFileOwnership: start-token mismatch (PID reused)', {
       pid: info.pid,
       stored: info.startToken,
@@ -293,11 +227,6 @@ export class ProcessRegistry {
     return removed;
   }
 
-  /**
-   * Kill and unregister all processes tagged with the given sessionId.
-   * Sends SIGTERM first, waits up to 5s, then SIGKILL for survivors.
-   * Called when a session is deleted to prevent leaked child processes (#1351).
-   */
   async reapSession(sessionId: string | number): Promise<number> {
     this.initialize();
 
@@ -312,9 +241,6 @@ export class ProcessRegistry {
       pids: sessionRecords.map(r => r.pid)
     });
 
-    // Phase 1: SIGTERM all alive processes — use process-group teardown for
-    // records that carry pgid so any descendants the SDK spawned are killed
-    // too (Principle 5).
     const aliveRecords = sessionRecords.filter(r => isPidAlive(r.pid));
     for (const record of aliveRecords) {
       try {
@@ -342,7 +268,6 @@ export class ProcessRegistry {
       }
     }
 
-    // Phase 2: Wait for processes to exit
     const deadline = Date.now() + REAP_SESSION_SIGTERM_TIMEOUT_MS;
     while (Date.now() < deadline) {
       const survivors = aliveRecords.filter(r => isPidAlive(r.pid));
@@ -350,8 +275,6 @@ export class ProcessRegistry {
       await new Promise(resolve => setTimeout(resolve, 100));
     }
 
-    // Phase 3: SIGKILL any survivors — process-group teardown when pgid is
-    // recorded so descendants are killed too.
     const survivors = aliveRecords.filter(r => isPidAlive(r.pid));
     for (const record of survivors) {
       logger.warn('SYSTEM', `Session process PID ${record.pid} did not exit after SIGTERM, sending SIGKILL`, {
@@ -384,7 +307,6 @@ export class ProcessRegistry {
       }
     }
 
-    // Brief wait for SIGKILL to take effect
     if (survivors.length > 0) {
       const sigkillDeadline = Date.now() + REAP_SESSION_SIGKILL_TIMEOUT_MS;
       while (Date.now() < sigkillDeadline) {
@@ -394,7 +316,6 @@ export class ProcessRegistry {
       }
     }
 
-    // Phase 4: Unregister all session records
     for (const record of sessionRecords) {
       this.entries.delete(record.id);
       this.runtimeProcesses.delete(record.id);
@@ -432,10 +353,6 @@ export function createProcessRegistry(registryPath: string): ProcessRegistry {
   return new ProcessRegistry(registryPath);
 }
 
-// ---------------------------------------------------------------------------
-// SDK session lookup + exit verification
-// ---------------------------------------------------------------------------
-
 export interface TrackedSdkProcess {
   pid: number;
   pgid: number | undefined;
@@ -443,14 +360,6 @@ export interface TrackedSdkProcess {
   process: ChildProcess;
 }
 
-/**
- * Look up the live SDK subprocess for a given session, if any.
- *
- * Returns undefined when no SDK record is registered for the session, or
- * when the ChildProcess reference has been dropped (process exited and was
- * unregistered). Warns on duplicates — multiple SDK records per session
- * indicate a race in createSdkSpawnFactory's pre-spawn cleanup.
- */
 export function getSdkProcessForSession(sessionDbId: number): TrackedSdkProcess | undefined {
   const registry = getProcessRegistry();
   const matches = registry.getBySession(sessionDbId).filter(r => r.type === 'sdk');
@@ -476,23 +385,12 @@ export function getSdkProcessForSession(sessionDbId: number): TrackedSdkProcess 
   };
 }
 
-/**
- * Wait for an SDK subprocess to exit, escalating to SIGKILL on the process
- * group if it overstays `timeoutMs`. Fully event-driven — no polling.
- *
- * This is primary-path cleanup invoked from session-level finally() blocks
- * when a session ends; it is NOT a reaper. It runs at most once per session
- * deletion. Process-group teardown (`kill(-pgid, SIGKILL)`) ensures any
- * descendants the SDK spawned are also killed.
- */
 export async function ensureSdkProcessExit(
   tracked: TrackedSdkProcess,
   timeoutMs: number = 5000
 ): Promise<void> {
   const { pid, pgid, process: proc } = tracked;
 
-  // Already exited? Trust exitCode, not proc.killed — proc.killed only means
-  // Node sent a signal; the process may still be running.
   if (proc.exitCode !== null) return;
 
   const exitPromise = new Promise<void>((resolve) => {
@@ -507,8 +405,6 @@ export async function ensureSdkProcessExit(
 
   if (proc.exitCode !== null) return;
 
-  // Timeout: escalate to SIGKILL on the whole process group so any
-  // descendants the SDK spawned are killed too (Principle 5).
   logger.warn('PROCESS', `PID ${pid} did not exit after ${timeoutMs}ms, sending SIGKILL to process group`, {
     pid, pgid, timeoutMs,
   });
@@ -522,7 +418,6 @@ export async function ensureSdkProcessExit(
     // Already dead — fine.
   }
 
-  // Wait up to 1s for SIGKILL to take effect (event-driven, not blind sleep).
   const sigkillExit = new Promise<void>((resolve) => {
     proc.once('exit', () => resolve());
   });
@@ -531,16 +426,6 @@ export async function ensureSdkProcessExit(
   });
   await Promise.race([sigkillExit, sigkillTimeout]);
 }
-
-// ---------------------------------------------------------------------------
-// Pool slot waiters — backpressure without eviction
-// ---------------------------------------------------------------------------
-//
-// waitForSlot is used by ClaudeProvider to avoid starting more concurrent SDK
-// subprocesses than configured. It is event-driven: when a process exits and
-// is unregistered, notifySlotAvailable() wakes exactly one waiter. There is
-// no polling. There is no idle-session eviction (Principle 1 — do not kick
-// live sessions to make room; a full pool must apply backpressure upstream).
 
 const TOTAL_PROCESS_HARD_CAP = 10;
 const slotWaiters: Array<() => void> = [];
@@ -554,14 +439,6 @@ function notifySlotAvailable(): void {
   if (waiter) waiter();
 }
 
-/**
- * Wait until a pool slot is available to spawn another SDK subprocess.
- *
- * Resolves immediately when active SDK process count is below `maxConcurrent`.
- * Otherwise enqueues a waiter that is woken by a subsequent exit handler.
- * Rejects with a timeout error if no slot opens within `timeoutMs`.
- * Rejects immediately if the registry is already at the hard cap.
- */
 export async function waitForSlot(maxConcurrent: number, timeoutMs: number = 60_000): Promise<void> {
   const activeCount = getActiveSdkCount();
   if (activeCount >= TOTAL_PROCESS_HARD_CAP) {
@@ -592,10 +469,6 @@ export async function waitForSlot(maxConcurrent: number, timeoutMs: number = 60_
   });
 }
 
-// ---------------------------------------------------------------------------
-// SDK subprocess spawn
-// ---------------------------------------------------------------------------
-
 export interface SpawnedSdkProcess {
   stdin: NonNullable<ChildProcess['stdin']>;
   stdout: NonNullable<ChildProcess['stdout']>;
@@ -616,40 +489,15 @@ export interface SpawnSdkOptions {
   signal?: AbortSignal;
 }
 
-/**
- * Spawn a Claude SDK subprocess in its own POSIX process group.
- *
- * The spawn uses `detached: true` so the child becomes the leader of a new
- * process group (setpgid). The leader's PID equals its pgid on Unix, so we
- * store `child.pid` as both pid and pgid on the managed process record.
- * Shutdown then signals the group via `process.kill(-pgid, signal)`, tearing
- * down the SDK child AND every descendant in one syscall (Principle 5).
- *
- * Windows caveat: `detached: true` does not create a POSIX group. The
- * recorded pgid is still the child PID so Windows teardown at least kills
- * the direct child; full subtree teardown on Windows requires Job Objects
- * or `taskkill /T /F` (see shutdown.ts).
- *
- * Node's child_process.spawn is used intentionally — Bun.spawn does NOT
- * support `detached: true` (see PATHFINDER-2026-04-22/_reference.md Part 2
- * row 3), and this module must work under Bun as well as Node.
- */
 export function spawnSdkProcess(
   sessionDbId: number,
   options: SpawnSdkOptions
 ): { process: SpawnedSdkProcess; pid: number; pgid: number } | null {
   const registry = getProcessRegistry();
 
-  // On Windows, use cmd.exe wrapper for .cmd files to properly handle paths with spaces.
   const useCmdWrapper = process.platform === 'win32' && options.command.endsWith('.cmd');
   const env = sanitizeEnv(options.env ?? process.env);
 
-  // Filter empty string args AND their preceding flag (Issue #2049).
-  // The Agent SDK emits ["--setting-sources", ""] when settingSources defaults to [].
-  // Simply dropping "" leaves an orphan --setting-sources that consumes the next
-  // flag as its value, crashing Claude Code 2.1.109+ with
-  // "Invalid setting source: --permission-mode". Drop the flag too so the SDK
-  // default (no setting sources) is preserved by omission.
   const filteredArgs: string[] = [];
   for (const arg of options.args) {
     if (arg === '') {
@@ -661,15 +509,6 @@ export function spawnSdkProcess(
     filteredArgs.push(arg);
   }
 
-  // Unix: detached:true causes the kernel to setpgid() on the child so the
-  // child becomes leader of a new process group whose pgid equals its pid.
-  // Windows: detached:true decouples the child from the parent console; there
-  // is no POSIX group, but the flag is still safe to pass.
-  //
-  // stdin must be 'pipe' (not 'ignore') because SpawnedSdkProcess.stdin is
-  // typed NonNullable<...> and the Claude Agent SDK consumes that pipe to
-  // stream prompts in. With 'ignore', child.stdin would be null and the
-  // null-check below (line ~737) would tear the child down immediately.
   const child = useCmdWrapper
     ? spawn('cmd.exe', ['/d', '/c', options.command, ...filteredArgs], {
         cwd: options.cwd,
@@ -688,11 +527,6 @@ export function spawnSdkProcess(
         windowsHide: true,
       });
 
-  // ALWAYS attach an 'error' listener BEFORE any other code runs, regardless of
-  // whether the child has a PID. child_process.spawn emits 'error' asynchronously
-  // for ENOENT, EACCES, AbortSignal-driven aborts, etc. Without a listener these
-  // become uncaughtException — the cause of "The operation was aborted." escaping
-  // to the daemon during crash-recovery loops.
   child.on('error', (err: Error) => {
     logger.warn('SDK_SPAWN', `[session-${sessionDbId}] child emitted error event`, {
       sessionDbId,
@@ -708,17 +542,14 @@ export function spawnSdkProcess(
   }
 
   const pid = child.pid;
-  const pgid = pid; // On Unix with detached:true, pgid === pid. On Windows, this is an alias.
+  const pgid = pid; 
 
-  // Capture stderr for debugging spawn failures.
   if (child.stderr) {
     child.stderr.on('data', (data: Buffer) => {
       logger.debug('SDK_SPAWN', `[session-${sessionDbId}] stderr: ${data.toString().trim()}`);
     });
   }
 
-  // Register the process in the supervisor registry with pgid recorded so
-  // the shutdown cascade can signal the whole group.
   const recordId = `sdk:${sessionDbId}:${pid}`;
   registry.register(recordId, {
     pid,
@@ -728,14 +559,11 @@ export function spawnSdkProcess(
     pgid,
   }, child);
 
-  // Auto-unregister on exit. child.on('exit') is the authoritative event-driven
-  // signal that a process has left — no polling, no sweeper needed (Principle 4).
   child.on('exit', (code: number | null, signal: string | null) => {
     if (code !== 0) {
       logger.warn('SDK_SPAWN', `[session-${sessionDbId}] Claude process exited`, { code, signal, pid });
     }
     registry.unregister(recordId);
-    // Wake one pool-slot waiter since a slot just freed up.
     notifySlotAvailable();
   });
 
@@ -766,32 +594,15 @@ export function spawnSdkProcess(
   return { process: spawned, pid, pgid };
 }
 
-/**
- * SDK-compatible spawn factory.
- *
- * The Claude Agent SDK's `spawnClaudeCodeProcess` option calls our factory
- * with its own spawn arguments; we forward them into `spawnSdkProcess` which
- * creates the child in its own process group and records it in the supervisor
- * registry. The returned shape is the minimal subset of ChildProcess that the
- * SDK consumes — stdin/stdout/stderr pipes, killed/exitCode getters, and
- * kill/on/once/off.
- *
- * Pre-spawn cleanup: if a previous process for this session is still alive
- * (e.g. a crash-recovery attempt that collided with a still-running SDK),
- * SIGTERM it. Multiple processes sharing the same --resume UUID waste API
- * credits and can conflict with each other (Issue #1590).
- */
 export function createSdkSpawnFactory(sessionDbId: number) {
   return (spawnOptions: SpawnSdkOptions): SpawnedSdkProcess => {
     const registry = getProcessRegistry();
 
-    // Kill any existing process for this session before spawning a new one.
     const existing = registry.getBySession(sessionDbId).filter(r => r.type === 'sdk');
     for (const record of existing) {
       if (!isPidAlive(record.pid)) continue;
       try {
         if (typeof record.pgid === 'number') {
-          // Signal the whole group — kill the SDK child and any descendants.
           if (process.platform !== 'win32') {
             process.kill(-record.pgid, 'SIGTERM');
           } else {
@@ -820,9 +631,6 @@ export function createSdkSpawnFactory(sessionDbId: number) {
 
     const result = spawnSdkProcess(sessionDbId, spawnOptions);
     if (!result) {
-      // Match the legacy failure mode: the SDK needs a process-like object
-      // even on spawn failure; throwing here surfaces via exit code 2 to the
-      // hook layer (Principle 2 — fail-fast).
       throw new Error(`Failed to spawn SDK subprocess for session ${sessionDbId}`);
     }
 

@@ -1,26 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# claude-mem OpenClaw Plugin Installer
-# Installs the claude-mem persistent memory plugin for OpenClaw gateways.
-#
-# Usage:
-#   curl -fsSL https://install.cmem.ai/openclaw.sh | bash
-#   # Or with options:
-#   curl -fsSL https://install.cmem.ai/openclaw.sh | bash -s -- --provider=gemini --api-key=YOUR_KEY
-#   # Direct execution:
-#   bash install.sh [--non-interactive] [--upgrade] [--provider=claude|gemini|openrouter] [--api-key=KEY]
-
-###############################################################################
-# Constants
-###############################################################################
-
 readonly MIN_BUN_VERSION="1.1.14"
 readonly INSTALLER_VERSION="1.0.0"
-
-###############################################################################
-# Argument parsing
-###############################################################################
 
 NON_INTERACTIVE=""
 CLI_PROVIDER=""
@@ -68,36 +50,22 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-###############################################################################
-# TTY detection — ensure interactive prompts work under curl | bash
-# When piped, stdin reads from curl's output, not the terminal.
-# We open /dev/tty on fd 3 and read interactive input from there.
-###############################################################################
-
 TTY_FD=0
 
 setup_tty() {
   if [[ -t 0 ]]; then
-    # stdin IS a terminal — use it directly
     TTY_FD=0
   elif [[ "$NON_INTERACTIVE" == "true" ]]; then
-    # In non-interactive mode, do not require /dev/tty
     TTY_FD=0
   elif [[ -r /dev/tty ]]; then
-    # stdin is piped (curl | bash) but /dev/tty is available and readable
     exec 3</dev/tty
     TTY_FD=3
   else
-    # No terminal available at all
     echo "Error: No terminal available for interactive prompts." >&2
     echo "Use --non-interactive or run directly: bash install.sh" >&2
     exit 1
   fi
 }
-
-###############################################################################
-# Color utilities — auto-detect terminal color support
-###############################################################################
 
 if [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]]; then
   readonly COLOR_RED='\033[0;31m'
@@ -132,16 +100,9 @@ prompt_user() {
   echo -en "${COLOR_CYAN}?${COLOR_RESET}  $* "
 }
 
-# Read a line from the terminal (works even when stdin is piped from curl)
-# Callers always pass -r via $@; shellcheck can't see through the delegation
 read_tty() {
-  # shellcheck disable=SC2162
   read "$@" <&"$TTY_FD"
 }
-
-###############################################################################
-# Global cleanup trap — removes temp directories on unexpected exit
-###############################################################################
 
 CLEANUP_DIRS=()
 
@@ -165,10 +126,6 @@ cleanup_on_exit() {
 }
 
 trap cleanup_on_exit EXIT
-
-###############################################################################
-# Prerequisite checks
-###############################################################################
 
 check_git() {
   if command -v git &>/dev/null; then
@@ -196,24 +153,17 @@ check_git() {
   exit 1
 }
 
-###############################################################################
-# Port conflict detection — check if port 37777 is already in use
-###############################################################################
-
 check_port_37777() {
   local port_in_use=""
 
-  # Try lsof first (macOS/Linux)
   if command -v lsof &>/dev/null; then
     if lsof -i :37777 -sTCP:LISTEN &>/dev/null; then
       port_in_use="true"
     fi
-  # Fallback to ss (Linux)
   elif command -v ss &>/dev/null; then
     if ss -tlnp 2>/dev/null | grep -q ':37777 '; then
       port_in_use="true"
     fi
-  # Fallback to curl probe
   elif command -v curl &>/dev/null; then
     local response
     response="$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:37777/api/health" 2>/dev/null)" || true
@@ -223,36 +173,23 @@ check_port_37777() {
   fi
 
   if [[ "$port_in_use" == "true" ]]; then
-    return 0  # port IS in use
+    return 0
   fi
-  return 1  # port is free
+  return 1
 }
 
-###############################################################################
-# Upgrade detection — check if claude-mem is already installed
-###############################################################################
-
 is_claude_mem_installed() {
-  # Check if the plugin directory exists with the worker script
   if find_claude_mem_install_dir 2>/dev/null; then
     return 0
   fi
   return 1
 }
 
-###############################################################################
-# JSON manipulation helper — jq with python3/node fallback
-# Usage: ensure_jq_or_fallback <json_file> <jq_filter> [jq_args...]
-# For simple read operations, returns the result on stdout.
-# For write operations, updates the file in-place.
-###############################################################################
-
 ensure_jq_or_fallback() {
   local json_file="$1"
   shift
   local jq_filter="$1"
   shift
-  # remaining args are passed as jq --arg pairs
 
   if command -v jq &>/dev/null; then
     local tmp_file
@@ -262,29 +199,16 @@ ensure_jq_or_fallback() {
   fi
 
   if command -v python3 &>/dev/null; then
-    # For complex jq filters, fall back to node instead
-    # Python is used only for simple operations
     :
   fi
 
-  # Fallback to node (always available — it's a dependency)
-  # This is a passthrough; callers that need node-specific logic
-  # should use node -e directly. This function is for jq compatibility.
   warn "jq not found — using node for JSON manipulation"
   return 1
 }
 
-###############################################################################
-# Parse /api/health JSON response — extract worker metadata into globals
-# Uses jq → python3 → node fallback chain (matching installer conventions)
-# Sets: WORKER_VERSION, WORKER_AI_PROVIDER, WORKER_AI_AUTH_METHOD,
-#        WORKER_INITIALIZED, WORKER_REPORTED_PID, WORKER_UPTIME
-###############################################################################
-
 parse_health_json() {
   local raw_json="$1"
 
-  # Reset all health globals before parsing
   WORKER_VERSION=""
   WORKER_AI_PROVIDER=""
   WORKER_AI_AUTH_METHOD=""
@@ -296,7 +220,6 @@ parse_health_json() {
     return 0
   fi
 
-  # Try jq first (fastest, most reliable)
   if command -v jq &>/dev/null; then
     WORKER_VERSION="$(echo "$raw_json" | jq -r '.version // empty' 2>/dev/null)" || true
     WORKER_AI_PROVIDER="$(echo "$raw_json" | jq -r '.ai.provider // empty' 2>/dev/null)" || true
@@ -307,7 +230,6 @@ parse_health_json() {
     return 0
   fi
 
-  # Try python3 fallback
   if command -v python3 &>/dev/null; then
     local parsed
     parsed="$(INSTALLER_HEALTH_JSON="$raw_json" python3 -c "
@@ -337,7 +259,6 @@ except Exception:
       WORKER_INITIALIZED="${health_fields[3]:-}"
       WORKER_REPORTED_PID="${health_fields[4]:-}"
       WORKER_UPTIME="${health_fields[5]:-}"
-      # Normalize python's None/empty representations
       [[ "$WORKER_VERSION" == "None" ]] && WORKER_VERSION=""
       [[ "$WORKER_AI_PROVIDER" == "None" ]] && WORKER_AI_PROVIDER=""
       [[ "$WORKER_AI_AUTH_METHOD" == "None" ]] && WORKER_AI_AUTH_METHOD=""
@@ -348,7 +269,6 @@ except Exception:
     return 0
   fi
 
-  # Fallback to node (always available — it's a dependency)
   local parsed
   parsed="$(INSTALLER_HEALTH_JSON="$raw_json" node -e "
     try {
@@ -380,10 +300,6 @@ except Exception:
   fi
 }
 
-###############################################################################
-# Format uptime from milliseconds to human-readable (e.g., "2m 15s", "1h 23m")
-###############################################################################
-
 format_uptime_ms() {
   local ms="$1"
   local secs=$((ms / 1000))
@@ -395,10 +311,6 @@ format_uptime_ms() {
     echo "${secs}s"
   fi
 }
-
-###############################################################################
-# Banner
-###############################################################################
 
 print_banner() {
   echo -e "${COLOR_MAGENTA}${COLOR_BOLD}"
@@ -412,10 +324,6 @@ BANNER
   info "Installer v${INSTALLER_VERSION}"
   echo ""
 }
-
-###############################################################################
-# Platform detection
-###############################################################################
 
 PLATFORM=""
 IS_WSL=""
@@ -448,10 +356,6 @@ detect_platform() {
   info "Detected platform: ${PLATFORM}${IS_WSL:+ (WSL)}"
 }
 
-###############################################################################
-# Version comparison — returns 0 if $1 >= $2
-###############################################################################
-
 version_gte() {
   local v1="$1" v2="$2"
   local -a parts1 parts2
@@ -467,21 +371,14 @@ version_gte() {
   return 0
 }
 
-###############################################################################
-# Bun detection and installation
-# Translated from plugin/scripts/smart-install.js patterns
-###############################################################################
-
 BUN_PATH=""
 
 find_bun_path() {
-  # Try PATH first
   if command -v bun &>/dev/null; then
     BUN_PATH="$(command -v bun)"
     return 0
   fi
 
-  # Check common installation paths (handles fresh installs before PATH reload)
   local -a bun_paths=(
     "${HOME}/.bun/bin/bun"
     "/usr/local/bin/bun"
@@ -504,7 +401,6 @@ check_bun() {
     return 1
   fi
 
-  # Verify minimum version
   local bun_version
   bun_version="$("$BUN_PATH" --version 2>/dev/null)" || return 1
 
@@ -529,7 +425,6 @@ install_bun() {
     exit 1
   fi
 
-  # Re-detect after install (installer may have placed it in ~/.bun/bin)
   if ! find_bun_path; then
     error "Bun installation completed but binary not found in expected locations"
     error "Please restart your terminal and re-run this installer."
@@ -541,21 +436,14 @@ install_bun() {
   success "Bun ${bun_version} installed at ${BUN_PATH}"
 }
 
-###############################################################################
-# uv detection and installation
-# Translated from plugin/scripts/smart-install.js patterns
-###############################################################################
-
 UV_PATH=""
 
 find_uv_path() {
-  # Try PATH first
   if command -v uv &>/dev/null; then
     UV_PATH="$(command -v uv)"
     return 0
   fi
 
-  # Check common installation paths (handles fresh installs before PATH reload)
   local -a uv_paths=(
     "${HOME}/.local/bin/uv"
     "${HOME}/.cargo/bin/uv"
@@ -597,7 +485,6 @@ install_uv() {
     exit 1
   fi
 
-  # Re-detect after install
   if ! find_uv_path; then
     error "uv installation completed but binary not found in expected locations"
     error "Please restart your terminal and re-run this installer."
@@ -609,14 +496,9 @@ install_uv() {
   success "uv ${uv_version} installed at ${UV_PATH}"
 }
 
-###############################################################################
-# OpenClaw gateway detection
-###############################################################################
-
 OPENCLAW_PATH=""
 
 find_openclaw() {
-  # Try PATH first — check both "openclaw" and "openclaw.mjs" binary names
   for bin_name in openclaw openclaw.mjs; do
     if command -v "$bin_name" &>/dev/null; then
       OPENCLAW_PATH="$(command -v "$bin_name")"
@@ -624,7 +506,6 @@ find_openclaw() {
     fi
   done
 
-  # Check common installation paths
   local -a openclaw_paths=(
     "${HOME}/.openclaw/openclaw.mjs"
     "/usr/local/bin/openclaw.mjs"
@@ -634,7 +515,6 @@ find_openclaw() {
     "${HOME}/.npm-global/bin/openclaw"
   )
 
-  # Also check for node_modules in common project locations
   if [[ -n "${NODE_PATH:-}" ]]; then
     openclaw_paths+=("${NODE_PATH}/openclaw/openclaw.mjs")
   fi
@@ -667,7 +547,6 @@ check_openclaw() {
   success "OpenClaw gateway found at ${OPENCLAW_PATH}"
 }
 
-# Run openclaw command — uses node for .mjs files, direct execution otherwise
 run_openclaw() {
   if [[ "$OPENCLAW_PATH" == *.mjs ]]; then
     node "$OPENCLAW_PATH" "$@"
@@ -676,17 +555,10 @@ run_openclaw() {
   fi
 }
 
-###############################################################################
-# Plugin installation — clone, build, install, enable
-# Flow based on openclaw/Dockerfile.e2e
-###############################################################################
-
 CLAUDE_MEM_REPO="https://github.com/thedotmack/claude-mem.git"
 CLAUDE_MEM_BRANCH="${CLI_BRANCH:-main}"
 PLUGIN_FRESHLY_INSTALLED=""
 
-# Resolve the target extension directory.
-# Priority: existing installPath from config > plugins.load.paths > default.
 resolve_extension_dir() {
   local oc_config="${HOME}/.openclaw/openclaw.json"
   if [[ -f "$oc_config" ]] && command -v node &>/dev/null; then
@@ -722,12 +594,10 @@ resolve_extension_dir() {
 CLAUDE_MEM_EXTENSION_DIR=""
 
 install_plugin() {
-  # Check for git before attempting clone
   check_git
 
   CLAUDE_MEM_EXTENSION_DIR="$(resolve_extension_dir)"
 
-  # Remove existing plugin installation to allow clean re-install
   local existing_plugin_dir="$CLAUDE_MEM_EXTENSION_DIR"
   if [[ -d "$existing_plugin_dir" ]]; then
     info "Removing existing claude-mem plugin at ${existing_plugin_dir}..."
@@ -747,7 +617,6 @@ install_plugin() {
 
   local plugin_src="${build_dir}/claude-mem/openclaw"
 
-  # Build the TypeScript plugin
   info "Building TypeScript plugin..."
   if ! (cd "$plugin_src" && NODE_ENV=development npm install --ignore-scripts 2>&1 && npx tsc 2>&1); then
     error "Failed to build the claude-mem OpenClaw plugin"
@@ -755,7 +624,6 @@ install_plugin() {
     exit 1
   fi
 
-  # Create minimal installable package (matches Dockerfile.e2e pattern)
   local installable_dir="${build_dir}/claude-mem-installable"
   mkdir -p "${installable_dir}/dist"
 
@@ -763,7 +631,6 @@ install_plugin() {
   cp "${plugin_src}/dist/index.d.ts" "${installable_dir}/dist/" 2>/dev/null || true
   cp "${plugin_src}/openclaw.plugin.json" "${installable_dir}/"
 
-  # Generate the installable package.json with openclaw.extensions field
   INSTALLER_PACKAGE_DIR="$installable_dir" node -e "
     const pkg = {
       name: 'claude-mem',
@@ -775,11 +642,6 @@ install_plugin() {
     require('fs').writeFileSync(process.env.INSTALLER_PACKAGE_DIR + '/package.json', JSON.stringify(pkg, null, 2));
   "
 
-  # Clean up stale claude-mem plugin entry before installing.
-  # If the config references claude-mem but the plugin isn't installed,
-  # OpenClaw's config validator blocks ALL CLI commands (including plugins install).
-  # We temporarily remove the entry and save the config so `plugins install` can run,
-  # then `plugins install` + `plugins enable` will re-create it properly.
   local oc_config="${HOME}/.openclaw/openclaw.json"
   local saved_plugin_config=""
   if [[ -f "$oc_config" ]]; then
@@ -808,7 +670,6 @@ install_plugin() {
     " 2>/dev/null) || true
   fi
 
-  # Install the plugin using OpenClaw's CLI
   info "Installing claude-mem plugin into OpenClaw..."
   if ! run_openclaw plugins install "$installable_dir" 2>&1; then
     error "Failed to install claude-mem plugin"
@@ -816,7 +677,6 @@ install_plugin() {
     exit 1
   fi
 
-  # Enable the plugin
   info "Enabling claude-mem plugin..."
   if ! run_openclaw plugins enable claude-mem 2>&1; then
     error "Failed to enable claude-mem plugin"
@@ -824,9 +684,6 @@ install_plugin() {
     exit 1
   fi
 
-  # Ensure claude-mem is present in plugins.allow after successful install+enable.
-  # Some OpenClaw environments require explicit allowlisting for local plugins.
-  # This write is guaranteed: if config doesn't exist, configure_memory_slot() will create it.
   if [[ -f "$oc_config" ]]; then
     if ! INSTALLER_CONFIG_FILE="$oc_config" node -e "
       const fs = require('fs');
@@ -845,10 +702,7 @@ install_plugin() {
       warn "Failed to write plugins.allow — claude-mem may need manual allowlisting"
     fi
   else
-    # Config doesn't exist yet; configure_memory_slot() will create it with plugins.allow
-    # We'll add claude-mem to the allowlist in a follow-up step after config is materialized
     info "OpenClaw config not yet materialized; will ensure allowlist in post-install"
-    # Force config materialization by running a harmless OpenClaw command
     if run_openclaw status --json >/dev/null 2>&1 && [[ -f "$oc_config" ]]; then
       if ! INSTALLER_CONFIG_FILE="$oc_config" node -e "
         const fs = require('fs');
@@ -867,8 +721,6 @@ install_plugin() {
     fi
   fi
 
-  # Restore saved plugin config (workerPort, syncMemoryFile, observationFeed, etc.)
-  # from any pre-existing installation that was temporarily removed above.
   if [[ -n "$saved_plugin_config" && "$saved_plugin_config" != "{}" ]]; then
     info "Restoring previous plugin configuration..."
     INSTALLER_CONFIG_FILE="$oc_config" INSTALLER_SAVED_CONFIG="$saved_plugin_config" node -e "
@@ -885,23 +737,14 @@ install_plugin() {
 
   success "claude-mem plugin installed and enabled"
 
-  # ── Copy core plugin files (worker, hooks, scripts) to extension directory ──
-  # The OpenClaw extension only contains the gateway hook (dist/index.js).
-  # The actual worker service and Claude Code hooks live in the plugin/ directory
-  # of the main repo. We copy them so find_claude_mem_install_dir() can locate
-  # the worker-service.cjs and the worker runs the updated version.
   local extension_dir="$CLAUDE_MEM_EXTENSION_DIR"
   local repo_root="${build_dir}/claude-mem"
 
   if [[ -d "$extension_dir" && -d "${repo_root}/plugin" ]]; then
     info "Copying core plugin files to ${extension_dir}..."
 
-    # Copy plugin/ directory (worker service, hooks, scripts, skills, UI)
     cp -R "${repo_root}/plugin" "${extension_dir}/"
 
-    # Merge the canonical version from root package.json into the existing
-    # extension package.json, preserving the openclaw.extensions field that
-    # plugin discovery requires.
     local root_version
     root_version="$(node -e "console.log(require('${repo_root}/package.json').version)")"
     node -e "
@@ -920,11 +763,6 @@ install_plugin() {
   PLUGIN_FRESHLY_INSTALLED="true"
 }
 
-###############################################################################
-# Memory slot configuration
-# Sets plugins.slots.memory = "claude-mem" in ~/.openclaw/openclaw.json
-###############################################################################
-
 configure_memory_slot() {
   local config_dir="${HOME}/.openclaw"
   local config_file="${config_dir}/openclaw.json"
@@ -932,7 +770,6 @@ configure_memory_slot() {
   mkdir -p "$config_dir"
 
   if [[ ! -f "$config_file" ]]; then
-    # No config file exists — create one with the memory slot
     info "Creating OpenClaw configuration with claude-mem memory slot..."
     INSTALLER_CONFIG_FILE="$config_file" node -e "
       const config = {
@@ -955,10 +792,8 @@ configure_memory_slot() {
     return 0
   fi
 
-  # Config file exists — update it to set the memory slot
   info "Updating OpenClaw configuration to use claude-mem memory slot..."
 
-  # Use node for reliable JSON manipulation
   INSTALLER_CONFIG_FILE="$config_file" node -e "
     const fs = require('fs');
     const configPath = process.env.INSTALLER_CONFIG_FILE;
@@ -998,11 +833,6 @@ configure_memory_slot() {
   success "Memory slot set to claude-mem in ${config_file}"
 }
 
-###############################################################################
-# AI Provider setup — interactive provider selection
-# Reads defaults from SettingsDefaultsManager.ts (single source of truth)
-###############################################################################
-
 AI_PROVIDER=""
 AI_PROVIDER_API_KEY=""
 
@@ -1026,7 +856,6 @@ setup_ai_provider() {
   info "AI Provider Configuration"
   echo ""
 
-  # Handle --provider flag (pre-selected via CLI)
   if [[ -n "$CLI_PROVIDER" ]]; then
     case "$CLI_PROVIDER" in
       claude)
@@ -1060,7 +889,6 @@ setup_ai_provider() {
     return 0
   fi
 
-  # Handle non-interactive mode (no --provider flag)
   if [[ "$NON_INTERACTIVE" == "true" ]]; then
     info "Non-interactive mode: defaulting to Claude Max Plan (no API key needed)"
     AI_PROVIDER="claude"
@@ -1124,19 +952,12 @@ setup_ai_provider() {
   done
 }
 
-###############################################################################
-# Write settings.json — creates ~/.claude-mem/settings.json with all defaults
-# Schema: flat key-value (not nested { env: {...} })
-# Defaults sourced from SettingsDefaultsManager.ts
-###############################################################################
-
 write_settings() {
   local settings_dir="${HOME}/.claude-mem"
   local settings_file="${settings_dir}/settings.json"
 
   mkdir -p "$settings_dir"
 
-  # Pass provider and API key via environment variables to avoid shell-to-JS injection
   INSTALLER_AI_PROVIDER="$AI_PROVIDER" \
   INSTALLER_AI_API_KEY="$AI_PROVIDER_API_KEY" \
   INSTALLER_SETTINGS_FILE="$settings_file" \
@@ -1226,11 +1047,6 @@ write_settings() {
   success "Settings written to ${settings_file}"
 }
 
-###############################################################################
-# Locate the installed claude-mem plugin directory
-# Checks common OpenClaw and Claude Code plugin install paths
-###############################################################################
-
 CLAUDE_MEM_INSTALL_DIR=""
 
 find_claude_mem_install_dir() {
@@ -1250,7 +1066,6 @@ find_claude_mem_install_dir() {
     fi
   done
 
-  # Fallback: search for the worker script under common plugin roots
   local -a roots=(
     "${HOME}/.openclaw"
     "${HOME}/.claude/plugins"
@@ -1260,7 +1075,6 @@ find_claude_mem_install_dir() {
       local found
       found="$(find "$root" -name "worker-service.cjs" -path "*/plugin/scripts/*" 2>/dev/null | head -n 1)" || true
       if [[ -n "$found" ]]; then
-        # Strip /plugin/scripts/worker-service.cjs to get the install dir
         CLAUDE_MEM_INSTALL_DIR="${found%/plugin/scripts/worker-service.cjs}"
         return 0
       fi
@@ -1270,11 +1084,6 @@ find_claude_mem_install_dir() {
   CLAUDE_MEM_INSTALL_DIR=""
   return 1
 }
-
-###############################################################################
-# Worker service startup
-# Starts the claude-mem worker using bun in the background
-###############################################################################
 
 WORKER_PID=""
 WORKER_VERSION=""
@@ -1305,7 +1114,6 @@ start_worker() {
 
   mkdir -p "$log_dir"
 
-  # Ensure bun path is available
   if [[ -z "$BUN_PATH" ]]; then
     if ! find_bun_path; then
       error "Bun not found — cannot start worker service"
@@ -1313,12 +1121,10 @@ start_worker() {
     fi
   fi
 
-  # Start worker in background with nohup
   CLAUDE_MEM_WORKER_PORT=37777 nohup "$BUN_PATH" "$worker_script" \
     >> "$log_file" 2>&1 &
   WORKER_PID=$!
 
-  # Write PID file for future management
   local pid_file="${HOME}/.claude-mem/worker.pid"
   mkdir -p "${HOME}/.claude-mem"
   INSTALLER_PID_FILE="$pid_file" INSTALLER_WORKER_PID="$WORKER_PID" node -e "
@@ -1335,13 +1141,6 @@ start_worker() {
   info "Logs: ${log_file}"
 }
 
-###############################################################################
-# Health verification — two-stage: health (alive) then readiness (initialized)
-# Stage 1: Poll /api/health for HTTP 200 (worker process is running)
-# Stage 2: Poll /api/readiness for HTTP 200 (worker is fully initialized)
-# Total budget: 30 attempts (30 seconds) shared across both stages
-###############################################################################
-
 verify_health() {
   local max_attempts=30
   local attempt=1
@@ -1351,7 +1150,6 @@ verify_health() {
 
   info "Verifying worker health..."
 
-  # ── Stage 1: Wait for /api/health to return HTTP 200 (worker is alive) ──
   while (( attempt <= max_attempts )); do
     local http_status
     http_status="$(curl -s -o /dev/null -w "%{http_code}" "$health_url" 2>/dev/null)" || true
@@ -1359,7 +1157,6 @@ verify_health() {
     if [[ "$http_status" == "200" ]]; then
       health_alive=true
 
-      # Fetch the full health response body and parse metadata
       local body
       body="$(curl -s "$health_url" 2>/dev/null)" || true
       parse_health_json "$body"
@@ -1374,7 +1171,6 @@ verify_health() {
     attempt=$((attempt + 1))
   done
 
-  # If health never responded, the worker is not running at all
   if [[ "$health_alive" != "true" ]]; then
     warn "Worker health check timed out after ${max_attempts} attempts"
     warn "The worker may still be starting up. Check status with:"
@@ -1383,7 +1179,6 @@ verify_health() {
     return 1
   fi
 
-  # ── Stage 2: Wait for /api/readiness to return HTTP 200 (fully initialized) ──
   attempt=$((attempt + 1))
   while (( attempt <= max_attempts )); do
     local readiness_status
@@ -1399,16 +1194,11 @@ verify_health() {
     attempt=$((attempt + 1))
   done
 
-  # Readiness timed out but health is OK — worker is running, just not fully initialized yet
   warn "Worker is running but initialization is still in progress"
   warn "This is normal on first run — the worker will finish initializing in the background."
   warn "Check readiness with: curl http://127.0.0.1:37777/api/readiness"
   return 0
 }
-
-###############################################################################
-# Observation feed setup — optional interactive channel configuration
-###############################################################################
 
 FEED_CHANNEL=""
 FEED_TARGET_ID=""
@@ -1531,10 +1321,6 @@ setup_observation_feed() {
   FEED_CONFIGURED=true
 }
 
-###############################################################################
-# Write observation feed config into ~/.openclaw/openclaw.json
-###############################################################################
-
 write_observation_feed_config() {
   if [[ "$FEED_CONFIGURED" != "true" ]]; then
     return 0
@@ -1550,7 +1336,6 @@ write_observation_feed_config() {
 
   info "Writing observation feed configuration..."
 
-  # Use jq if available, fall back to python3, then node for JSON manipulation
   if command -v jq &>/dev/null; then
     local tmp_file
     tmp_file="$(mktemp)"
@@ -1592,7 +1377,6 @@ with open(config_path, 'w') as f:
     json.dump(config, f, indent=2)
 "
   else
-    # Fallback to node (always available since it's a dependency)
     INSTALLER_FEED_CHANNEL="$FEED_CHANNEL" \
     INSTALLER_FEED_TARGET_ID="$FEED_TARGET_ID" \
     INSTALLER_CONFIG_FILE="$config_file" \
@@ -1638,10 +1422,6 @@ with open(config_path, 'w') as f:
   info "the feed is connected."
 }
 
-###############################################################################
-# Completion summary
-###############################################################################
-
 print_completion_summary() {
   local provider_display=""
   case "$AI_PROVIDER" in
@@ -1661,7 +1441,6 @@ print_completion_summary() {
   echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  Dependencies installed (Bun, uv)"
   echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  OpenClaw gateway detected"
 
-  # Show installed version from health data if available
   if [[ -n "$WORKER_VERSION" ]]; then
     echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  claude-mem v${COLOR_BOLD}${WORKER_VERSION}${COLOR_RESET} installed and running"
   else
@@ -1670,7 +1449,6 @@ print_completion_summary() {
 
   echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  Memory slot configured"
 
-  # Show AI provider with auth method from health data if available
   if [[ -n "$WORKER_AI_AUTH_METHOD" ]]; then
     echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  AI provider: ${COLOR_BOLD}${WORKER_AI_PROVIDER} (${WORKER_AI_AUTH_METHOD})${COLOR_RESET}"
   else
@@ -1689,7 +1467,6 @@ print_completion_summary() {
     echo -e "  ${COLOR_YELLOW}⚠${COLOR_RESET}  Worker may not be running — check logs at ~/.claude-mem/logs/"
   fi
 
-  # Show initialization warning if worker is alive but not yet initialized
   if [[ "$WORKER_INITIALIZED" != "true" ]] && { [[ -n "$WORKER_REPORTED_PID" ]] || { [[ -n "$WORKER_PID" ]] && kill -0 "$WORKER_PID" 2>/dev/null; }; }; then
     echo -e "  ${COLOR_YELLOW}⚠${COLOR_RESET}  Worker is starting but still initializing (this is normal on first run)"
   fi
@@ -1717,16 +1494,11 @@ print_completion_summary() {
   echo ""
 }
 
-###############################################################################
-# Main
-###############################################################################
-
 main() {
   setup_tty
   print_banner
   detect_platform
 
-  # --- Step 1: Dependencies ---
   echo ""
   info "${COLOR_BOLD}[1/8]${COLOR_RESET} Checking dependencies..."
   echo ""
@@ -1742,12 +1514,10 @@ main() {
   echo ""
   success "All dependencies satisfied"
 
-  # --- Step 2: OpenClaw gateway ---
   echo ""
   info "${COLOR_BOLD}[2/8]${COLOR_RESET} Locating OpenClaw gateway..."
   check_openclaw
 
-  # --- Step 3: Plugin installation (skip if upgrading and already installed) ---
   echo ""
   info "${COLOR_BOLD}[3/8]${COLOR_RESET} Installing claude-mem plugin..."
 
@@ -1758,22 +1528,18 @@ main() {
     install_plugin
   fi
 
-  # --- Step 4: Memory slot configuration ---
   echo ""
   info "${COLOR_BOLD}[4/8]${COLOR_RESET} Configuring memory slot..."
   configure_memory_slot
 
-  # --- Step 5: AI provider setup ---
   echo ""
   info "${COLOR_BOLD}[5/8]${COLOR_RESET} AI provider setup..."
   setup_ai_provider
 
-  # --- Step 6: Write settings ---
   echo ""
   info "${COLOR_BOLD}[6/8]${COLOR_RESET} Writing settings..."
   write_settings
 
-  # --- Step 7: Start worker and verify ---
   echo ""
   info "${COLOR_BOLD}[7/8]${COLOR_RESET} Starting worker service..."
 
@@ -1781,8 +1547,6 @@ main() {
     warn "Port 37777 is already in use (worker may already be running)"
     info "Checking if the existing service is healthy..."
     if verify_health; then
-      # verify_health already called parse_health_json — WORKER_* globals are set.
-      # Determine the expected version from the installed plugin's package.json.
       local expected_version=""
       if [[ -n "$CLAUDE_MEM_INSTALL_DIR" ]] || find_claude_mem_install_dir; then
         expected_version="$(INSTALLER_PKG="${CLAUDE_MEM_INSTALL_DIR}/package.json" node -e "
@@ -1793,8 +1557,6 @@ main() {
 
       local needs_restart=""
 
-      # If we just installed fresh plugin files, always restart the worker
-      # to pick up the new version — even if the old worker was healthy.
       if [[ "$PLUGIN_FRESHLY_INSTALLED" == "true" ]]; then
         if [[ -n "$WORKER_VERSION" && -n "$expected_version" && "$WORKER_VERSION" != "$expected_version" ]]; then
           info "Upgrading worker from v${WORKER_VERSION} to v${expected_version}..."
@@ -1804,32 +1566,26 @@ main() {
         needs_restart="true"
       fi
 
-      # Check if worker version is outdated compared to installed version
       if [[ "$needs_restart" != "true" && -n "$WORKER_VERSION" && -n "$expected_version" && "$WORKER_VERSION" != "$expected_version" ]]; then
         info "Upgrading worker from v${WORKER_VERSION} to v${expected_version}..."
         needs_restart="true"
       fi
 
-      # Check if AI provider doesn't match current configuration
       if [[ "$needs_restart" != "true" && -n "$WORKER_AI_PROVIDER" && -n "$AI_PROVIDER" && "$WORKER_AI_PROVIDER" != "$AI_PROVIDER" ]]; then
         warn "Worker is using ${WORKER_AI_PROVIDER} but you configured ${AI_PROVIDER} — restarting to apply"
         needs_restart="true"
       fi
 
-      # Restart worker if needed: kill old process, start fresh
       if [[ "$needs_restart" == "true" ]]; then
         info "Stopping existing worker..."
-        # Try graceful shutdown via API first, fall back to SIGTERM
         curl -s -X POST "http://127.0.0.1:37777/api/admin/shutdown" >/dev/null 2>&1 || true
         sleep 2
 
-        # If still running, send SIGTERM to known PID
         if check_port_37777; then
           if [[ -n "$WORKER_REPORTED_PID" ]]; then
             kill "$WORKER_REPORTED_PID" 2>/dev/null || true
             sleep 1
           fi
-          # Check PID file as fallback
           local pid_file="${HOME}/.claude-mem/worker.pid"
           if [[ -f "$pid_file" ]]; then
             local file_pid
@@ -1844,14 +1600,12 @@ main() {
           fi
         fi
 
-        # Start fresh worker
         if start_worker; then
           verify_health || true
         else
           warn "Worker restart failed — you can start it manually later"
         fi
       else
-        # No restart needed — show healthy status
         local uptime_display=""
         if [[ -n "$WORKER_UPTIME" && "$WORKER_UPTIME" =~ ^[0-9]+$ && "$WORKER_UPTIME" != "0" ]]; then
           uptime_display="$(format_uptime_ms "$WORKER_UPTIME")"
@@ -1888,13 +1642,11 @@ main() {
     fi
   fi
 
-  # --- Step 8: Observation feed setup (optional) ---
   echo ""
   info "${COLOR_BOLD}[8/8]${COLOR_RESET} Observation feed setup..."
   setup_observation_feed
   write_observation_feed_config
 
-  # --- Completion ---
   print_completion_summary
 }
 

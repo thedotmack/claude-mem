@@ -1,12 +1,4 @@
 #!/usr/bin/env bun
-/**
- * Check and process pending observation queue
- *
- * Usage:
- *   bun scripts/check-pending-queue.ts           # Check status and prompt to process
- *   bun scripts/check-pending-queue.ts --process # Auto-process without prompting
- *   bun scripts/check-pending-queue.ts --limit 5 # Process up to 5 sessions
- */
 
 const WORKER_URL = 'http://localhost:37777';
 
@@ -82,7 +74,6 @@ function formatAge(epochMs: number): string {
 }
 
 async function prompt(question: string): Promise<string> {
-  // Check if we have a TTY for interactive input
   if (!process.stdin.isTTY) {
     console.log(question + '(no TTY, use --process flag for non-interactive mode)');
     return 'n';
@@ -102,7 +93,6 @@ async function prompt(question: string): Promise<string> {
 async function main() {
   const args = process.argv.slice(2);
 
-  // Help flag
   if (args.includes('--help') || args.includes('-h')) {
     console.log(`
 Claude-Mem Pending Queue Manager
@@ -142,7 +132,6 @@ What is this for?
 
   console.log('\n=== Claude-Mem Pending Queue Status ===\n');
 
-  // Check worker health
   const healthy = await checkWorkerHealth();
   if (!healthy) {
     console.log('Worker is not running. Start it with:');
@@ -151,11 +140,9 @@ What is this for?
   }
   console.log('Worker status: Running\n');
 
-  // Get queue status
   const status = await getQueueStatus();
   const { queue, sessionsWithPendingWork } = status;
 
-  // Display summary
   console.log('Queue Summary:');
   console.log(`  Pending:    ${queue.totalPending}`);
   console.log(`  Processing: ${queue.totalProcessing}`);
@@ -163,26 +150,22 @@ What is this for?
   console.log(`  Stuck:      ${queue.stuckCount} (processing > 5 min)`);
   console.log(`  Sessions:   ${sessionsWithPendingWork.length} with pending work\n`);
 
-  // Check if there's any backlog
   const hasBacklog = queue.totalPending > 0 || queue.totalFailed > 0;
   const hasStuck = queue.stuckCount > 0;
 
   if (!hasBacklog && !hasStuck) {
     console.log('No backlog detected. Queue is healthy.\n');
 
-    // Show recently processed if any
     if (status.recentlyProcessed.length > 0) {
       console.log(`Recently processed: ${status.recentlyProcessed.length} messages in last 30 min\n`);
     }
     process.exit(0);
   }
 
-  // Show details about pending messages
   if (queue.messages.length > 0) {
     console.log('Pending Messages:');
     console.log('─'.repeat(80));
 
-    // Group by session
     const bySession = new Map<number, QueueMessage[]>();
     for (const msg of queue.messages) {
       const list = bySession.get(msg.session_db_id) || [];
@@ -208,7 +191,6 @@ What is this for?
     console.log('');
   }
 
-  // Offer to process
   if (autoProcess) {
     console.log(`Auto-processing up to ${limit} sessions...\n`);
   } else {
@@ -220,7 +202,6 @@ What is this for?
     console.log('');
   }
 
-  // Process the queue
   const result = await processQueue(limit);
 
   console.log('Processing Result:');

@@ -1,13 +1,3 @@
-/**
- * Observations module tests
- * Tests modular observation functions with in-memory database
- *
- * Sources:
- * - API patterns from src/services/sqlite/observations/store.ts
- * - API patterns from src/services/sqlite/observations/get.ts
- * - API patterns from src/services/sqlite/observations/recent.ts
- * - Type definitions from src/services/sqlite/observations/types.ts
- */
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { ClaudeMemDatabase } from '../../src/services/sqlite/Database.js';
@@ -34,7 +24,6 @@ describe('Observations Module', () => {
     db.close();
   });
 
-  // Helper to create a valid observation input
   function createObservationInput(overrides: Partial<ObservationInput> = {}): ObservationInput {
     return {
       type: 'discovery',
@@ -49,7 +38,6 @@ describe('Observations Module', () => {
     };
   }
 
-  // Helper to create a session and return memory_session_id for FK constraints
   function createSessionWithMemoryId(contentSessionId: string, memorySessionId: string, project: string = 'test-project'): string {
     const sessionId = createSDKSession(db, contentSessionId, project, 'initial prompt');
     updateMemorySessionId(db, sessionId, memorySessionId);
@@ -98,7 +86,7 @@ describe('Observations Module', () => {
       const memorySessionId = createSessionWithMemoryId('content-789', 'mem-session-789');
       const project = 'test-project';
       const observation = createObservationInput();
-      const pastTimestamp = 1600000000000; // Sep 13, 2020
+      const pastTimestamp = 1600000000000; 
 
       const result = storeObservation(
         db,
@@ -114,7 +102,6 @@ describe('Observations Module', () => {
 
       const stored = getObservationById(db, result.id);
       expect(stored?.created_at_epoch).toBe(pastTimestamp);
-      // Verify ISO string matches epoch
       expect(new Date(stored!.created_at).getTime()).toBe(pastTimestamp);
     });
 
@@ -172,7 +159,6 @@ describe('Observations Module', () => {
     it('should return observations ordered by date DESC', () => {
       const project = 'test-project';
 
-      // Create sessions and store observations with different timestamps (oldest first)
       const mem1 = createSessionWithMemoryId('content-1', 'session1', project);
       const mem2 = createSessionWithMemoryId('content-2', 'session2', project);
       const mem3 = createSessionWithMemoryId('content-3', 'session3', project);
@@ -184,7 +170,6 @@ describe('Observations Module', () => {
       const recent = getRecentObservations(db, project, 10);
 
       expect(recent.length).toBe(3);
-      // Most recent first (DESC order)
       expect(recent[0].prompt_number).toBe(3);
       expect(recent[1].prompt_number).toBe(2);
       expect(recent[2].prompt_number).toBe(1);

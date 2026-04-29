@@ -1,22 +1,7 @@
-/**
- * Store session summaries in the database
- */
 import type { Database } from 'bun:sqlite';
 import { logger } from '../../../utils/logger.js';
 import type { SummaryInput, StoreSummaryResult } from './types.js';
 
-/**
- * Store a session summary (from SDK parsing)
- * Assumes session already exists - will fail with FK error if not
- *
- * @param db - Database instance
- * @param memorySessionId - SDK memory session ID
- * @param project - Project name
- * @param summary - Summary content from SDK parsing
- * @param promptNumber - Optional prompt number
- * @param discoveryTokens - Token count for discovery (default 0)
- * @param overrideTimestampEpoch - Optional timestamp override for backlog processing
- */
 export function storeSummary(
   db: Database,
   memorySessionId: string,
@@ -26,7 +11,6 @@ export function storeSummary(
   discoveryTokens: number = 0,
   overrideTimestampEpoch?: number
 ): StoreSummaryResult {
-  // Use override timestamp if provided (for processing backlog messages with original timestamps)
   const timestampEpoch = overrideTimestampEpoch ?? Date.now();
   const timestampIso = new Date(timestampEpoch).toISOString();
 

@@ -1,36 +1,8 @@
-/**
- * NPX CLI entry point for claude-mem.
- *
- * Usage:
- *   npx claude-mem                     → interactive install
- *   npx claude-mem install             → interactive install
- *   npx claude-mem install --ide <id>  → direct IDE setup
- *   npx claude-mem update              → update to latest version
- *   npx claude-mem uninstall           → remove plugin and IDE configs
- *   npx claude-mem version             → print version
- *   npx claude-mem start               → start worker service
- *   npx claude-mem stop                → stop worker service
- *   npx claude-mem restart             → restart worker service
- *   npx claude-mem status              → show worker status
- *   npx claude-mem search <query>      → search observations
- *   npx claude-mem transcript watch    → start transcript watcher
- *
- * This file is pure Node.js — Bun is NOT required for install commands.
- * Runtime commands (`start`, `stop`, etc.) delegate to Bun via the installed plugin.
- */
 import pc from 'picocolors';
 import { readPluginVersion } from './utils/paths.js';
 
-// ---------------------------------------------------------------------------
-// Argument parsing
-// ---------------------------------------------------------------------------
-
 const args = process.argv.slice(2);
 const command = args[0]?.toLowerCase() ?? '';
-
-// ---------------------------------------------------------------------------
-// Help text
-// ---------------------------------------------------------------------------
 
 function printHelp(): void {
   const version = readPluginVersion();
@@ -63,20 +35,14 @@ ${pc.bold('IDE Identifiers')}:
 `);
 }
 
-// ---------------------------------------------------------------------------
-// Command routing
-// ---------------------------------------------------------------------------
-
 async function main(): Promise<void> {
   switch (command) {
-    // -- No command: default to install ------------------------------------
     case '': {
       const { runInstallCommand } = await import('./commands/install.js');
       await runInstallCommand();
       break;
     }
 
-    // -- Install -----------------------------------------------------------
     case 'install': {
       const ideIndex = args.indexOf('--ide');
       const ideValue = ideIndex !== -1 ? args[ideIndex + 1] : undefined;
@@ -86,7 +52,6 @@ async function main(): Promise<void> {
       break;
     }
 
-    // -- Update (alias for install — overwrite with latest) ----------------
     case 'update':
     case 'upgrade': {
       const { runInstallCommand } = await import('./commands/install.js');
@@ -94,7 +59,6 @@ async function main(): Promise<void> {
       break;
     }
 
-    // -- Uninstall ---------------------------------------------------------
     case 'uninstall':
     case 'remove': {
       const { runUninstallCommand } = await import('./commands/uninstall.js');
@@ -102,7 +66,6 @@ async function main(): Promise<void> {
       break;
     }
 
-    // -- Version -----------------------------------------------------------
     case 'version':
     case '--version':
     case '-v': {
@@ -110,7 +73,6 @@ async function main(): Promise<void> {
       break;
     }
 
-    // -- Help --------------------------------------------------------------
     case 'help':
     case '--help':
     case '-h': {
@@ -118,7 +80,6 @@ async function main(): Promise<void> {
       break;
     }
 
-    // -- Runtime: start / stop / restart / status --------------------------
     case 'start': {
       const { runStartCommand } = await import('./commands/runtime.js');
       runStartCommand();
@@ -140,28 +101,24 @@ async function main(): Promise<void> {
       break;
     }
 
-    // -- Search ------------------------------------------------------------
     case 'search': {
       const { runSearchCommand } = await import('./commands/runtime.js');
       await runSearchCommand(args.slice(1));
       break;
     }
 
-    // -- Adopt merged worktrees -------------------------------------------
     case 'adopt': {
       const { runAdoptCommand } = await import('./commands/runtime.js');
       runAdoptCommand(args.slice(1));
       break;
     }
 
-    // -- One-time v12.4.3 cleanup ------------------------------------------
     case 'cleanup': {
       const { runCleanupCommand } = await import('./commands/runtime.js');
       runCleanupCommand(args.slice(1));
       break;
     }
 
-    // -- Transcript --------------------------------------------------------
     case 'transcript': {
       const subCommand = args[1]?.toLowerCase();
       if (subCommand === 'watch') {
@@ -175,7 +132,6 @@ async function main(): Promise<void> {
       break;
     }
 
-    // -- Unknown -----------------------------------------------------------
     default: {
       console.error(pc.red(`Unknown command: ${command}`));
       console.error(`Run ${pc.bold('npx claude-mem --help')} for usage information.`);

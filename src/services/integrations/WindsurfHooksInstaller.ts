@@ -1,25 +1,3 @@
-/**
- * WindsurfHooksInstaller - Windsurf IDE integration for claude-mem
- *
- * Handles:
- * - Windsurf hooks installation/uninstallation to ~/.codeium/windsurf/hooks.json
- * - Context file generation (.windsurf/rules/claude-mem-context.md)
- * - Project registry management for auto-context updates
- *
- * Windsurf hooks.json format:
- *   {
- *     "hooks": {
- *       "<event_name>": [{ "command": "...", "show_output": false, "working_directory": "..." }]
- *     }
- *   }
- *
- * Events registered (all post-action, non-blocking):
- *   - pre_user_prompt      — session init + context injection
- *   - post_write_code      — code generation observation
- *   - post_run_command     — command execution observation
- *   - post_mcp_tool_use    — MCP tool results
- *   - post_cascade_response — full AI response
- */
 
 import path from 'path';
 import { homedir } from 'os';
@@ -28,10 +6,6 @@ import { logger } from '../../utils/logger.js';
 import { getWorkerPort } from '../../shared/worker-utils.js';
 import { DATA_DIR } from '../../shared/paths.js';
 import { findBunPath, findWorkerServicePath } from './CursorHooksInstaller.js';
-
-// ============================================================================
-// Types
-// ============================================================================
 
 interface WindsurfHookEntry {
   command: string;
@@ -51,21 +25,13 @@ interface WindsurfProjectRegistry {
   };
 }
 
-// ============================================================================
-// Constants
-// ============================================================================
-
-/** User-level hooks config — global coverage across all Windsurf workspaces */
 const WINDSURF_HOOKS_DIR = path.join(homedir(), '.codeium', 'windsurf');
 const WINDSURF_HOOKS_JSON_PATH = path.join(WINDSURF_HOOKS_DIR, 'hooks.json');
 
-/** Windsurf context rule limit: 6,000 chars per file */
 const WINDSURF_CONTEXT_CHAR_LIMIT = 6000;
 
-/** Registry file for tracking projects with Windsurf hooks */
 const WINDSURF_REGISTRY_FILE = path.join(DATA_DIR, 'windsurf-projects.json');
 
-/** Hook events we register */
 const WINDSURF_HOOK_EVENTS = [
   'pre_user_prompt',
   'post_write_code',
@@ -74,13 +40,6 @@ const WINDSURF_HOOK_EVENTS = [
   'post_cascade_response',
 ] as const;
 
-// ============================================================================
-// Project Registry
-// ============================================================================
-
-/**
- * Read the Windsurf project registry
- */
 export function readWindsurfRegistry(): WindsurfProjectRegistry {
   try {
     if (!existsSync(WINDSURF_REGISTRY_FILE)) return {};
@@ -95,19 +54,12 @@ export function readWindsurfRegistry(): WindsurfProjectRegistry {
   }
 }
 
-/**
- * Write the Windsurf project registry
- */
 export function writeWindsurfRegistry(registry: WindsurfProjectRegistry): void {
   const dir = path.dirname(WINDSURF_REGISTRY_FILE);
   mkdirSync(dir, { recursive: true });
   writeFileSync(WINDSURF_REGISTRY_FILE, JSON.stringify(registry, null, 2));
 }
 
-/**
- * Register a project for auto-context updates.
- * Keys by full workspacePath to avoid collisions between directories with the same basename.
- */
 export function registerWindsurfProject(workspacePath: string): void {
   const registry = readWindsurfRegistry();
   registry[workspacePath] = {
@@ -117,9 +69,6 @@ export function registerWindsurfProject(workspacePath: string): void {
   logger.info('WINDSURF', 'Registered project for auto-context updates', { workspacePath });
 }
 
-/**
- * Unregister a project from auto-context updates
- */
 export function unregisterWindsurfProject(workspacePath: string): void {
   const registry = readWindsurfRegistry();
   if (registry[workspacePath]) {
@@ -129,15 +78,11 @@ export function unregisterWindsurfProject(workspacePath: string): void {
   }
 }
 
-/**
- * Update Windsurf context files for a registered project.
- * Called by SDK agents after saving a summary.
- */
 export async function updateWindsurfContextForProject(projectName: string, workspacePath: string, port: number): Promise<void> {
   const registry = readWindsurfRegistry();
   const entry = registry[workspacePath];
 
-  if (!entry) return; // Project doesn't have Windsurf hooks installed
+  if (!entry) return; 
 
   try {
     const response = await fetch(
@@ -152,7 +97,6 @@ export async function updateWindsurfContextForProject(projectName: string, works
     writeWindsurfContextFile(workspacePath, context);
     logger.debug('WINDSURF', 'Updated context file', { projectName, workspacePath });
   } catch (error) {
-    // Background context update — failure is non-critical
     if (error instanceof Error) {
       logger.error('WORKER', 'Failed to update context file', { projectName, workspacePath }, error);
     } else {
@@ -161,15 +105,6 @@ export async function updateWindsurfContextForProject(projectName: string, works
   }
 }
 
-// ============================================================================
-// Context File
-// ============================================================================
-
-/**
- * Write context to the workspace-level Windsurf rules directory.
- * Windsurf rules are workspace-scoped: .windsurf/rules/claude-mem-context.md
- * Rule file limit: 6,000 chars per file.
- */
 export function writeWindsurfContextFile(workspacePath: string, context: string): void {
   const rulesDir = path.join(workspacePath, '.windsurf', 'rules');
   const rulesFile = path.join(rulesDir, 'claude-mem-context.md');
@@ -187,27 +122,16 @@ ${context}
 *Auto-updated by claude-mem after each session. Use MCP search tools for detailed queries.*
 `;
 
-  // Enforce Windsurf's 6K char limit
   if (content.length > WINDSURF_CONTEXT_CHAR_LIMIT) {
     content = content.slice(0, WINDSURF_CONTEXT_CHAR_LIMIT - 50) +
       '\n\n*[Truncated — use MCP search for full history]*\n';
   }
 
-  // Atomic write: temp file + rename
   writeFileSync(tempFile, content);
   renameSync(tempFile, rulesFile);
 }
 
-// ============================================================================
-// Hook Installation
-// ============================================================================
-
-/**
- * Build the hook command string for a given event.
- * Uses bun to run worker-service.cjs with the windsurf platform adapter.
- */
 function buildHookCommand(bunPath: string, workerServicePath: string, eventName: string): string {
-  // Map Windsurf event names to unified CLI hook commands
   const eventToCommand: Record<string, string> = {
     'pre_user_prompt': 'session-init',
     'post_write_code': 'file-edit',
@@ -221,10 +145,6 @@ function buildHookCommand(bunPath: string, workerServicePath: string, eventName:
   return `"${bunPath}" "${workerServicePath}" hook windsurf ${hookCommand}`;
 }
 
-/**
- * Read existing hooks.json, merge our hooks, and write back.
- * Preserves any existing hooks from other tools.
- */
 function mergeAndWriteHooksJson(
   bunPath: string,
   workerServicePath: string,
@@ -232,7 +152,6 @@ function mergeAndWriteHooksJson(
 ): void {
   mkdirSync(WINDSURF_HOOKS_DIR, { recursive: true });
 
-  // Read existing hooks.json if present
   let existingConfig: WindsurfHooksJson = { hooks: {} };
   if (existsSync(WINDSURF_HOOKS_JSON_PATH)) {
     try {
@@ -250,7 +169,6 @@ function mergeAndWriteHooksJson(
     }
   }
 
-  // For each event, add our hook entry (remove any previous claude-mem entries first)
   for (const eventName of WINDSURF_HOOK_EVENTS) {
     const command = buildHookCommand(bunPath, workerServicePath, eventName);
 
@@ -260,7 +178,6 @@ function mergeAndWriteHooksJson(
       working_directory: workingDirectory,
     };
 
-    // Get existing hooks for this event, filtering out old claude-mem ones
     const existingHooks = (existingConfig.hooks[eventName] ?? []).filter(
       (hook) => !hook.command.includes('worker-service') || !hook.command.includes('windsurf')
     );
@@ -271,14 +188,9 @@ function mergeAndWriteHooksJson(
   writeFileSync(WINDSURF_HOOKS_JSON_PATH, JSON.stringify(existingConfig, null, 2));
 }
 
-/**
- * Install Windsurf hooks to ~/.codeium/windsurf/hooks.json (user-level).
- * Merges with existing hooks.json to preserve other integrations.
- */
 export async function installWindsurfHooks(): Promise<number> {
   console.log('\nInstalling Claude-Mem Windsurf hooks (user level)...\n');
 
-  // Find the worker-service.cjs path
   const workerServicePath = findWorkerServicePath();
   if (!workerServicePath) {
     console.error('Could not find worker-service.cjs');
@@ -286,7 +198,6 @@ export async function installWindsurfHooks(): Promise<number> {
     return 1;
   }
 
-  // Find bun executable — required because worker-service.cjs uses bun:sqlite
   const bunPath = findBunPath();
   if (!bunPath) {
     console.error('Could not find Bun runtime');
@@ -294,7 +205,6 @@ export async function installWindsurfHooks(): Promise<number> {
     return 1;
   }
 
-  // IMPORTANT: Tilde expansion is NOT supported in working_directory — use absolute paths
   const workingDirectory = path.dirname(workerServicePath);
 
   console.log(`  Using Bun runtime: ${bunPath}`);
@@ -343,9 +253,6 @@ Next steps:
 `);
 }
 
-/**
- * Setup initial context file for a Windsurf workspace
- */
 async function setupWindsurfProjectContext(workspaceRoot: string): Promise<void> {
   const port = getWorkerPort();
   const projectName = path.basename(workspaceRoot);
@@ -356,7 +263,6 @@ async function setupWindsurfProjectContext(workspaceRoot: string): Promise<void>
   try {
     contextGenerated = await fetchWindsurfContextFromWorker(port, projectName, workspaceRoot);
   } catch (error) {
-    // Worker not running during install — non-critical
     if (error instanceof Error) {
       logger.debug('WORKER', 'Worker not running during install', {}, error);
     } else {
@@ -365,7 +271,6 @@ async function setupWindsurfProjectContext(workspaceRoot: string): Promise<void>
   }
 
   if (!contextGenerated) {
-    // Create placeholder context file
     const rulesDir = path.join(workspaceRoot, '.windsurf', 'rules');
     mkdirSync(rulesDir, { recursive: true });
     const rulesFile = path.join(rulesDir, 'claude-mem-context.md');
@@ -379,7 +284,6 @@ Use claude-mem's MCP search tools for manual memory queries.
     console.log(`  Created placeholder context file (will populate after first session)`);
   }
 
-  // Register project for automatic context updates after summaries
   registerWindsurfProject(workspaceRoot);
   console.log(`  Registered for auto-context updates`);
 }
@@ -406,13 +310,9 @@ async function fetchWindsurfContextFromWorker(
   return false;
 }
 
-/**
- * Uninstall Windsurf hooks — removes claude-mem entries from hooks.json
- */
 export function uninstallWindsurfHooks(): number {
   console.log('\nUninstalling Claude-Mem Windsurf hooks...\n');
 
-  // Remove our entries from hooks.json (preserve other integrations)
   if (existsSync(WINDSURF_HOOKS_JSON_PATH)) {
     try {
       removeClaudeMemHookEntries();
@@ -479,9 +379,6 @@ function removeWindsurfContextAndUnregister(workspaceRoot: string): void {
   console.log('Restart Windsurf to apply changes.');
 }
 
-/**
- * Check Windsurf hooks installation status
- */
 export function checkWindsurfHooksStatus(): number {
   console.log('\nClaude-Mem Windsurf Hooks Status\n');
 
@@ -510,7 +407,6 @@ export function checkWindsurfHooksStatus(): number {
       }
     }
 
-    // Check for context file in current workspace
     const contextFile = path.join(process.cwd(), '.windsurf', 'rules', 'claude-mem-context.md');
     if (existsSync(contextFile)) {
       console.log(`   Context: Active (current workspace)`);
@@ -526,9 +422,6 @@ export function checkWindsurfHooksStatus(): number {
   return 0;
 }
 
-/**
- * Handle windsurf subcommand for hooks installation
- */
 export async function handleWindsurfCommand(subcommand: string, _args: string[]): Promise<number> {
   switch (subcommand) {
     case 'install':

@@ -1,11 +1,3 @@
-/**
- * Transactions module tests
- * Tests atomic transaction functions with in-memory database
- *
- * Sources:
- * - API patterns from src/services/sqlite/transactions.ts
- * - Type definitions from src/services/sqlite/transactions.ts
- */
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { ClaudeMemDatabase } from '../../src/services/sqlite/Database.js';
@@ -34,7 +26,6 @@ describe('Transactions Module', () => {
     db.close();
   });
 
-  // Helper to create a valid observation input
   function createObservationInput(overrides: Partial<ObservationInput> = {}): ObservationInput {
     return {
       type: 'discovery',
@@ -49,7 +40,6 @@ describe('Transactions Module', () => {
     };
   }
 
-  // Helper to create a valid summary input
   function createSummaryInput(overrides: Partial<SummaryInput> = {}): SummaryInput {
     return {
       request: 'User requested feature X',
@@ -62,7 +52,6 @@ describe('Transactions Module', () => {
     };
   }
 
-  // Helper to create a session and return memory_session_id for FK constraints
   function createSessionWithMemoryId(contentSessionId: string, memorySessionId: string, project: string = 'test-project'): { memorySessionId: string; sessionDbId: number } {
     const sessionDbId = createSDKSession(db, contentSessionId, project, 'initial prompt');
     updateMemorySessionId(db, sessionDbId, memorySessionId);
@@ -109,7 +98,6 @@ describe('Transactions Module', () => {
 
       expect(result.createdAtEpoch).toBe(fixedTimestamp);
 
-      // Verify each observation has the same timestamp
       for (const id of result.observationIds) {
         const obs = getObservationById(db, id);
         expect(obs?.created_at_epoch).toBe(fixedTimestamp);
@@ -128,7 +116,6 @@ describe('Transactions Module', () => {
       expect(result.summaryId).not.toBeNull();
       expect(typeof result.summaryId).toBe('number');
 
-      // Verify summary was stored
       const storedSummary = getSummaryForSession(db, memorySessionId);
       expect(storedSummary).not.toBeNull();
       expect(storedSummary?.request).toBe('Test request');
@@ -201,8 +188,6 @@ describe('Transactions Module', () => {
   });
 
   describe('storeObservationsAndMarkComplete', () => {
-    // Note: This function also marks a pending message as processed.
-    // For testing, we need a pending_messages row to exist first.
 
     it('should store observations, summary, and mark message complete', () => {
       const { memorySessionId, sessionDbId } = createSessionWithMemoryId('content-complete', 'complete-session');
@@ -210,7 +195,6 @@ describe('Transactions Module', () => {
       const observations = [createObservationInput({ title: 'Complete Obs' })];
       const summary = createSummaryInput({ request: 'Complete request' });
 
-      // First, insert a pending message to mark as complete
       const insertStmt = db.prepare(`
         INSERT INTO pending_messages
         (session_db_id, content_session_id, message_type, created_at_epoch, status)
@@ -231,7 +215,6 @@ describe('Transactions Module', () => {
       expect(result.observationIds).toHaveLength(1);
       expect(result.summaryId).not.toBeNull();
 
-      // Verify message was marked as processed
       const msgStmt = db.prepare('SELECT status FROM pending_messages WHERE id = ?');
       const msg = msgStmt.get(messageId) as { status: string } | undefined;
       expect(msg?.status).toBe('processed');
@@ -247,7 +230,6 @@ describe('Transactions Module', () => {
       const summary = createSummaryInput();
       const fixedTimestamp = 1700000000000;
 
-      // Create pending message
       db.prepare(`
         INSERT INTO pending_messages
         (session_db_id, content_session_id, message_type, created_at_epoch, status)
@@ -269,13 +251,11 @@ describe('Transactions Module', () => {
 
       expect(result.createdAtEpoch).toBe(fixedTimestamp);
 
-      // All observations should have same timestamp
       for (const id of result.observationIds) {
         const obs = getObservationById(db, id);
         expect(obs?.created_at_epoch).toBe(fixedTimestamp);
       }
 
-      // Summary should have same timestamp
       const storedSummary = getSummaryForSession(db, memorySessionId);
       expect(storedSummary?.created_at_epoch).toBe(fixedTimestamp);
     });
@@ -285,7 +265,6 @@ describe('Transactions Module', () => {
       const project = 'test-project';
       const observations = [createObservationInput({ title: 'Only Obs' })];
 
-      // Create pending message
       db.prepare(`
         INSERT INTO pending_messages
         (session_db_id, content_session_id, message_type, created_at_epoch, status)

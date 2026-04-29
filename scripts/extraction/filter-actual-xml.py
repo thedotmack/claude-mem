@@ -46,15 +46,14 @@ def extract_xml_blocks(text):
 
 def is_example_xml(xml_block):
     """Check if XML block is an example/template"""
-    # Patterns that indicate this is example/template XML
     example_indicators = [
-        r'\[.*?\]',  # Square brackets with placeholders
-        r'\*\*\w+\*\*:',  # Bold markdown like **title**:
-        r'\.\.\..*?\.\.\.',  # Ellipsis indicating placeholder
-        r'feature\|bugfix\|refactor',  # Multiple options separated by |
-        r'change \| discovery \| decision',  # Example types
-        r'\{.*?\}',  # Curly braces (template variables)
-        r'Concise, self-contained statement',  # Literal example text
+        r'\[.*?\]',
+        r'\*\*\w+\*\*:',
+        r'\.\.\..*?\.\.\.',
+        r'feature\|bugfix\|refactor',
+        r'change \| discovery \| decision',
+        r'\{.*?\}',
+        r'Concise, self-contained statement',
         r'Short title capturing',
         r'One sentence explanation',
         r'What was the user trying',
@@ -62,7 +61,7 @@ def is_example_xml(xml_block):
         r'What did you learn',
         r'What was done',
         r'What should happen next',
-        r'file1\.ts',  # Example filenames
+        r'file1\.ts',
         r'file2\.ts',
         r'file3\.ts',
         r'Any additional context',
@@ -83,10 +82,8 @@ def process_transcript_file(filepath):
             try:
                 data = json.loads(line)
 
-                # Get timestamp
                 timestamp = data.get('timestamp', 'unknown')
 
-                # Only process assistant messages
                 message = data.get('message', {})
                 role = message.get('role')
 
@@ -98,14 +95,11 @@ def process_transcript_file(filepath):
                 if isinstance(content, list):
                     for item in content:
                         if isinstance(item, dict) and item.get('type') == 'text':
-                            # This is text in an assistant response, not tool_use
                             text = item.get('text', '')
 
-                            # Extract XML blocks
                             xml_blocks = extract_xml_blocks(text)
 
                             for block in xml_blocks:
-                                # Filter out example/template XML
                                 if not is_example_xml(block):
                                     results.append({
                                         'timestamp': timestamp,
@@ -117,13 +111,11 @@ def process_transcript_file(filepath):
 
     return results
 
-# Get list of Oct 18 transcript files
 import subprocess
 
 transcript_dir = os.path.expanduser('~/.claude/projects/-Users-alexnewman-Scripts-claude-mem/')
 os.chdir(transcript_dir)
 
-# Get all transcript files sorted by modification time
 result = subprocess.run(['ls', '-t'], capture_output=True, text=True)
 files = [f for f in result.stdout.strip().split('\n') if f.endswith('.jsonl')][:62]
 
@@ -135,7 +127,6 @@ for filename in files:
     all_results.extend(results)
     print(f"  Found {len(results)} actual XML blocks")
 
-# Write results with timestamps
 output_file = os.path.expanduser('~/Scripts/claude-mem/actual_xml_only_with_timestamps.xml')
 with open(output_file, 'w', encoding='utf-8') as f:
     f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
@@ -147,7 +138,6 @@ with open(output_file, 'w', encoding='utf-8') as f:
         timestamp = item['timestamp']
         xml = item['xml']
 
-        # Format timestamp nicely if it's ISO format
         if timestamp != 'unknown' and timestamp:
             try:
                 dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))

@@ -1,12 +1,3 @@
-/**
- * MemoryRoutes Tests — POST /api/memory/save (#2116)
- *
- * Asserts:
- *  - `metadata` is persisted verbatim (no silent drop)
- *  - top-level `project` wins; `metadata.project` used as fallback
- *  - unknown top-level fields are rejected (400) — no silent drop
- *  - chromaSync is invoked when present, skipped when absent
- */
 
 import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
 import type { Request, Response } from 'express';
@@ -86,7 +77,6 @@ describe('MemoryRoutes — POST /api/memory/save (#2116)', () => {
         storeObservation: mockStoreObservation,
         getOrCreateManualSession: mockGetOrCreateManualSession,
       }),
-      // Return null so we skip the chroma path in tests
       getChromaSync: () => null,
     };
 

@@ -7,7 +7,6 @@ import {
 import type { Observation } from '../../src/services/context/types.js';
 import { CHARS_PER_TOKEN_ESTIMATE } from '../../src/services/context/types.js';
 
-// Helper to create a minimal observation for testing
 function createTestObservation(overrides: Partial<Observation> = {}): Observation {
   return {
     id: 1,
@@ -38,45 +37,34 @@ describe('TokenCalculator', () => {
     it('should return 0 for an observation with no content', () => {
       const obs = createTestObservation();
       const tokens = calculateObservationTokens(obs);
-      // Even empty observations have facts as "[]" when stringified
-      // null facts becomes '[]' = 2 chars / 4 = 0.5 -> ceil = 1
       expect(tokens).toBe(1);
     });
 
     it('should estimate tokens based on title length', () => {
-      const title = 'A'.repeat(40); // 40 chars = 10 tokens
+      const title = 'A'.repeat(40); 
       const obs = createTestObservation({ title });
       const tokens = calculateObservationTokens(obs);
-      // title (40) + facts stringified (null -> '[]' = 2) = 42 / 4 = 10.5 -> 11
       expect(tokens).toBe(11);
     });
 
     it('should estimate tokens based on subtitle length', () => {
-      const subtitle = 'B'.repeat(20); // 20 chars = 5 tokens
+      const subtitle = 'B'.repeat(20); 
       const obs = createTestObservation({ subtitle });
       const tokens = calculateObservationTokens(obs);
-      // subtitle (20) + facts (2) = 22 / 4 = 5.5 -> 6
       expect(tokens).toBe(6);
     });
 
     it('should estimate tokens based on narrative length', () => {
-      const narrative = 'C'.repeat(80); // 80 chars = 20 tokens
+      const narrative = 'C'.repeat(80); 
       const obs = createTestObservation({ narrative });
       const tokens = calculateObservationTokens(obs);
-      // narrative (80) + facts (2) = 82 / 4 = 20.5 -> 21
       expect(tokens).toBe(21);
     });
 
     it('should estimate tokens based on facts JSON length', () => {
-      // When facts is a string, JSON.stringify adds quotes around it
-      // '["fact"]' as string becomes '"[\\"fact\\"]"' when stringified
-      // But in practice, obs.facts is a string that gets stringified
-      const facts = '["fact one", "fact two", "fact three"]'; // 38 chars
+      const facts = '["fact one", "fact two", "fact three"]'; 
       const obs = createTestObservation({ facts });
       const tokens = calculateObservationTokens(obs);
-      // JSON.stringify of string adds quotes: 38 + 2 = 40, plus escaping
-      // Actually becomes: '"[\"fact one\", \"fact two\", \"fact three\"]"' = 46 chars
-      // 46 / 4 = 11.5 -> 12
       expect(tokens).toBe(12);
     });
 
@@ -88,23 +76,19 @@ describe('TokenCalculator', () => {
         facts: '["test"]',            // 8 chars, but JSON.stringify adds quotes = 10 chars
       });
       const tokens = calculateObservationTokens(obs);
-      // 20 + 20 + 40 + 10 (stringified) = 90 / 4 = 22.5 -> 23
       expect(tokens).toBe(23);
     });
 
     it('should handle large observations correctly', () => {
-      const largeNarrative = 'X'.repeat(4000); // 4000 chars = 1000 tokens
+      const largeNarrative = 'X'.repeat(4000); 
       const obs = createTestObservation({ narrative: largeNarrative });
       const tokens = calculateObservationTokens(obs);
-      // 4000 + 2 (null facts) = 4002 / 4 = 1000.5 -> 1001
       expect(tokens).toBe(1001);
     });
 
     it('should round up fractional tokens using ceil', () => {
-      // 9 chars / 4 = 2.25 -> should be 3
-      const obs = createTestObservation({ title: 'ABCDEFGHI' }); // 9 chars
+      const obs = createTestObservation({ title: 'ABCDEFGHI' }); 
       const tokens = calculateObservationTokens(obs);
-      // 9 + 2 = 11 / 4 = 2.75 -> 3
       expect(tokens).toBe(3);
     });
   });
@@ -177,7 +161,6 @@ describe('TokenCalculator', () => {
     });
 
     it('should calculate savings percent correctly', () => {
-      // If discovery = 1000 and read = 100, savings = 900, percent = 90%
       const observations = [
         createTestObservation({
           title: 'A'.repeat(396), // 396 + 2 = 398 / 4 = 99.5 -> 100 read tokens
@@ -203,7 +186,6 @@ describe('TokenCalculator', () => {
     });
 
     it('should handle negative savings correctly', () => {
-      // When read tokens > discovery tokens, savings is negative
       const observations = [
         createTestObservation({
           narrative: 'X'.repeat(400), // ~101 read tokens
@@ -216,8 +198,6 @@ describe('TokenCalculator', () => {
     });
 
     it('should round savings percent to nearest integer', () => {
-      // Create a scenario where savings percent is fractional
-      // discovery = 100, read = 33, savings = 67, percent = 67%
       const observations = [
         createTestObservation({
           title: 'A'.repeat(130), // 130 + 2 = 132 / 4 = 33 read tokens

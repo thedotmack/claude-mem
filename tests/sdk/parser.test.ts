@@ -1,6 +1,5 @@
 import { describe, it, expect, mock } from 'bun:test';
 
-// Mock ModeManager before importing parser (it's used at module load time)
 mock.module('../../src/services/domain/ModeManager.js', () => ({
   ModeManager: {
     getInstance: () => ({
@@ -73,8 +72,6 @@ describe('parseAgentXml — observations', () => {
     expect(result[0].concepts).toEqual(['dependency-injection']);
   });
 
-  // Regression test for issue #1625:
-  // Ghost observations (all content fields null/empty) must be filtered out.
   it('filters out ghost observations where all content fields are null (#1625)', () => {
     const xml = `<observation>
       <type>bugfix</type>
@@ -113,8 +110,6 @@ describe('parseAgentXml — observations', () => {
     expect(result[0].title).toBe('Real observation');
   });
 
-  // Subtitle alone is explicitly excluded from the content guard (see parser comment).
-  // An observation with only a subtitle is too thin to be useful and must be filtered.
   it('filters out observation with only a subtitle (excluded from survival criteria) (#1625)', () => {
     const xml = `<observation>
       <type>discovery</type>
@@ -133,7 +128,6 @@ describe('parseAgentXml — observations', () => {
     const result = expectObservation(xml);
 
     expect(result).toHaveLength(1);
-    // First type in mocked mode is 'bugfix'
     expect(result[0].type).toBe('bugfix');
   });
 

@@ -1,12 +1,6 @@
-/**
- * Example: Using readme-translator in build scripts
- *
- * These examples show how to integrate the translator into your build pipeline.
- */
 
 import { translateReadme, TranslationJobResult, SUPPORTED_LANGUAGES } from "./index.js";
 
-// Example 1: Simple usage - translate to a few common languages
 async function translateToCommonLanguages(): Promise<void> {
   const result = await translateReadme({
     source: "./README.md",
@@ -17,7 +11,6 @@ async function translateToCommonLanguages(): Promise<void> {
   console.log(`Translated to ${result.successful} languages`);
 }
 
-// Example 2: Full i18n setup with custom output directory
 async function fullI18nSetup(): Promise<void> {
   const result = await translateReadme({
     source: "./README.md",
@@ -30,7 +23,6 @@ async function fullI18nSetup(): Promise<void> {
     verbose: true,
   });
 
-  // Handle results programmatically
   for (const r of result.results) {
     if (!r.success) {
       console.error(`Failed to translate to ${r.language}: ${r.error}`);
@@ -38,9 +30,6 @@ async function fullI18nSetup(): Promise<void> {
   }
 }
 
-// Example 3: Build script integration with error handling
-// Note: If Claude Code is authenticated, no API key needed locally.
-// CI/CD environments will need ANTHROPIC_API_KEY set.
 async function buildScriptIntegration(): Promise<number> {
   try {
     const result = await translateReadme({
@@ -50,7 +39,6 @@ async function buildScriptIntegration(): Promise<number> {
       verbose: process.env.CI !== "true", // Quiet in CI
     });
 
-    // Return exit code for build scripts
     return result.failed > 0 ? 1 : 0;
   } catch (error) {
     console.error("Translation failed:", error);
@@ -58,7 +46,6 @@ async function buildScriptIntegration(): Promise<number> {
   }
 }
 
-// Example 4: Batch translation of multiple READMEs
 async function batchTranslation(): Promise<void> {
   const readmes = [
     "./README.md",
@@ -78,9 +65,7 @@ async function batchTranslation(): Promise<void> {
   }
 }
 
-// Example 5: Custom output pattern for docs sites
 async function docsiteSetup(): Promise<void> {
-  // For docusaurus/vitepress style: docs/README.es.md
   await translateReadme({
     source: "./README.md",
     languages: ["es", "fr", "de", "ja", "zh"],
@@ -90,9 +75,7 @@ async function docsiteSetup(): Promise<void> {
   });
 }
 
-// Example 6: Conditional translation in CI/CD
 async function cicdTranslation(): Promise<void> {
-  // Only translate on main branch releases
   const isRelease = process.env.GITHUB_REF === "refs/heads/main";
   const isManualTrigger = process.env.GITHUB_EVENT_NAME === "workflow_dispatch";
 
@@ -109,7 +92,6 @@ async function cicdTranslation(): Promise<void> {
     verbose: true,
   });
 
-  // Write summary for GitHub Actions
   if (process.env.GITHUB_STEP_SUMMARY) {
     const summary = `
 ## Translation Summary
@@ -117,12 +99,10 @@ async function cicdTranslation(): Promise<void> {
 - ❌ Failed: ${result.failed}
 - 💰 Cost: $${result.totalCostUsd.toFixed(4)}
 `;
-    // In real usage, write to GITHUB_STEP_SUMMARY
     console.log(summary);
   }
 }
 
-// Run an example
 const example = process.argv[2];
 
 switch (example) {

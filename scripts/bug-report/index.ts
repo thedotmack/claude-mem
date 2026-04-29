@@ -27,14 +27,12 @@ export async function generateBugReport(
   input: BugReportInput
 ): Promise<BugReportResult> {
   try {
-    // Collect system diagnostics
     const diagnostics = await collectDiagnostics({
       includeLogs: input.includeLogs !== false,
     });
 
     const formattedDiagnostics = formatDiagnostics(diagnostics);
 
-    // Build the prompt
     const prompt = buildPrompt(
       formattedDiagnostics,
       input.issueDescription,
@@ -42,7 +40,6 @@ export async function generateBugReport(
       input.stepsToReproduce
     );
 
-    // Use Agent SDK to generate formatted issue
     let generatedMarkdown = "";
     let charCount = 0;
     const startTime = Date.now();
@@ -58,11 +55,9 @@ export async function generateBugReport(
       },
     });
 
-    // Progress spinner frames
     const spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     let spinnerIdx = 0;
 
-    // Stream the response
     for await (const message of stream) {
       if (message.type === "stream_event") {
         const event = message.event as { type: string; delta?: { type: string; text?: string } };
@@ -76,7 +71,6 @@ export async function generateBugReport(
         }
       }
 
-      // Handle full assistant messages (fallback)
       if (message.type === "assistant") {
         for (const block of message.message.content) {
           if (block.type === "text" && !generatedMarkdown) {
@@ -86,7 +80,6 @@ export async function generateBugReport(
         }
       }
 
-      // Handle result
       if (message.type === "result") {
         const result = message as SDKResultMessage;
         if (result.subtype === "success" && !generatedMarkdown && result.result) {
@@ -96,10 +89,8 @@ export async function generateBugReport(
       }
     }
 
-    // Clear the progress line
     process.stdout.write("\r" + " ".repeat(60) + "\r");
 
-    // Extract title from markdown (first heading)
     const titleMatch = generatedMarkdown.match(/^#\s+(.+)$/m);
     const title = titleMatch ? titleMatch[1] : "Bug Report";
 
@@ -109,7 +100,6 @@ export async function generateBugReport(
       success: true,
     };
   } catch (error) {
-    // Fallback to template-based generation
     console.error("Agent SDK failed, using template fallback:", error);
     return generateTemplateFallback(input);
   }

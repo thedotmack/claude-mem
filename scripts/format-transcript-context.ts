@@ -1,10 +1,4 @@
 #!/usr/bin/env tsx
-/**
- * Format Transcript Context
- *
- * Parses a Claude Code transcript and formats it to show rich contextual data
- * that could be used for improved observation generation.
- */
 
 import { TranscriptParser } from '../src/utils/transcript-parser.js';
 import { writeFileSync } from 'fs';
@@ -40,21 +34,17 @@ function extractConversationTurns(parser: TranscriptParser): ConversationTurn[] 
   let turnNumber = 0;
 
   for (const entry of entries) {
-    // User messages start a new turn
     if (entry.type === 'user') {
-      // If previous turn exists, push it
       if (currentTurn) {
         turns.push(currentTurn);
       }
 
-      // Start new turn
       turnNumber++;
       currentTurn = {
         turnNumber,
         toolResults: []
       };
 
-      // Extract user text (skip tool results)
       if (typeof entry.content === 'string') {
         currentTurn.userMessage = {
           content: entry.content,
@@ -73,7 +63,6 @@ function extractConversationTurns(parser: TranscriptParser): ConversationTurn[] 
           };
         }
 
-        // Extract tool results
         const toolResults = entry.content.filter((c: any) => c.type === 'tool_result');
         for (const result of toolResults) {
           currentTurn.toolResults!.push({
@@ -85,7 +74,6 @@ function extractConversationTurns(parser: TranscriptParser): ConversationTurn[] 
       }
     }
 
-    // Assistant messages
     if (entry.type === 'assistant' && currentTurn) {
       if (!Array.isArray(entry.content)) continue;
 
@@ -106,7 +94,6 @@ function extractConversationTurns(parser: TranscriptParser): ConversationTurn[] 
     }
   }
 
-  // Push last turn
   if (currentTurn) {
     turns.push(currentTurn);
   }
@@ -119,7 +106,6 @@ function formatTurnToMarkdown(turn: ConversationTurn): string {
 
   md += `## Turn ${turn.turnNumber}\n\n`;
 
-  // User message
   if (turn.userMessage) {
     md += `### 👤 User Request\n`;
     md += `**Time:** ${new Date(turn.userMessage.timestamp).toLocaleString()}\n\n`;
@@ -131,12 +117,10 @@ function formatTurnToMarkdown(turn: ConversationTurn): string {
     md += '\n```\n\n';
   }
 
-  // Assistant response
   if (turn.assistantMessage) {
     md += `### 🤖 Assistant Response\n`;
     md += `**Time:** ${new Date(turn.assistantMessage.timestamp).toLocaleString()}\n\n`;
 
-    // Text content
     if (turn.assistantMessage.textContent.trim()) {
       md += '**Response:**\n```\n';
       md += turn.assistantMessage.textContent.substring(0, 500);
@@ -146,7 +130,6 @@ function formatTurnToMarkdown(turn: ConversationTurn): string {
       md += '\n```\n\n';
     }
 
-    // Thinking
     if (turn.assistantMessage.thinkingContent?.trim()) {
       md += '**Thinking:**\n```\n';
       md += turn.assistantMessage.thinkingContent.substring(0, 300);
@@ -156,7 +139,6 @@ function formatTurnToMarkdown(turn: ConversationTurn): string {
       md += '\n```\n\n';
     }
 
-    // Tool uses
     if (turn.assistantMessage.toolUses.length > 0) {
       md += `**Tools Used:** ${turn.assistantMessage.toolUses.length}\n\n`;
       for (const tool of turn.assistantMessage.toolUses) {
@@ -173,7 +155,6 @@ function formatTurnToMarkdown(turn: ConversationTurn): string {
     }
   }
 
-  // Tool results summary
   if (turn.toolResults && turn.toolResults.length > 0) {
     md += `**Tool Results:** ${turn.toolResults.length} results received\n\n`;
   }
@@ -209,7 +190,6 @@ function formatTranscriptToMarkdown(transcriptPath: string): string {
   md += `---\n\n`;
   md += `# Conversation Turns\n\n`;
 
-  // Format each turn
   for (const turn of turns.slice(0, 20)) { // Limit to first 20 turns for readability
     md += formatTurnToMarkdown(turn);
   }
@@ -221,7 +201,6 @@ function formatTranscriptToMarkdown(transcriptPath: string): string {
   return md;
 }
 
-// Main execution
 const transcriptPath = process.argv[2];
 
 if (!transcriptPath) {

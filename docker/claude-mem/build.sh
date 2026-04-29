@@ -1,9 +1,4 @@
 #!/usr/bin/env bash
-# Build the basic claude-mem Docker image from the current worktree.
-#
-# Usage:
-#   docker/claude-mem/build.sh               # builds claude-mem:basic
-#   TAG=my-tag docker/claude-mem/build.sh    # override the tag
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

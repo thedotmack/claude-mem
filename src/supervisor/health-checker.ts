@@ -1,9 +1,3 @@
-/**
- * Health Checker - Periodic background cleanup of dead processes
- *
- * Runs every 30 seconds to prune dead processes from the supervisor registry.
- * The interval is unref'd so it does not keep the process alive.
- */
 
 import { logger } from '../utils/logger.js';
 import { getProcessRegistry } from './process-registry.js';

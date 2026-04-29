@@ -1,16 +1,4 @@
-/**
- * Tests for Hook Lifecycle Fixes (TRIAGE-04)
- *
- * Validates:
- * - Stop hook returns suppressOutput: true (prevents infinite loop #987)
- * - All handlers return suppressOutput: true (prevents conversation pollution #598, #784)
- * - Unknown event types handled gracefully (fixes #984)
- * - stderr suppressed in hook context (fixes #1181)
- * - Claude Code adapter defaults suppressOutput to true
- */
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
-
-// --- Event Handler Tests ---
 
 describe('Hook Lifecycle - Event Handlers', () => {
   describe('getEventHandler', () => {
@@ -45,13 +33,10 @@ describe('Hook Lifecycle - Event Handlers', () => {
   });
 });
 
-// --- Codex CLI Compatibility Tests (#744) ---
-
 describe('Codex CLI Compatibility (#744)', () => {
   describe('getPlatformAdapter', () => {
     it('should return rawAdapter for unknown platforms like codex', async () => {
       const { getPlatformAdapter, rawAdapter } = await import('../src/cli/adapters/index.js');
-      // Should not throw for unknown platforms — falls back to rawAdapter
       const adapter = getPlatformAdapter('codex');
       expect(adapter).toBe(rawAdapter);
     });
@@ -98,7 +83,6 @@ describe('Codex CLI Compatibility (#744)', () => {
 
   describe('session-init handler undefined prompt', () => {
     it('should not throw when prompt is undefined', () => {
-      // Verify the short-circuit logic works for undefined
       const rawPrompt: string | undefined = undefined;
       const prompt = (!rawPrompt || !rawPrompt.trim()) ? '[media prompt]' : rawPrompt;
       expect(prompt).toBe('[media prompt]');
@@ -123,8 +107,6 @@ describe('Codex CLI Compatibility (#744)', () => {
     });
   });
 });
-
-// --- Cursor IDE Compatibility Tests (#838, #1049) ---
 
 describe('Cursor IDE Compatibility (#838, #1049)', () => {
   describe('cursorAdapter session ID fallbacks', () => {
@@ -244,15 +226,11 @@ describe('Cursor IDE Compatibility (#838, #1049)', () => {
   });
 });
 
-// --- Platform Adapter Tests ---
-
 describe('Hook Lifecycle - Claude Code Adapter', () => {
   const fmt = async (input: any) => {
     const { claudeCodeAdapter } = await import('../src/cli/adapters/claude-code.js');
     return claudeCodeAdapter.formatOutput(input);
   };
-
-  // --- Happy paths ---
 
   it('should return empty object for empty result', async () => {
     expect(await fmt({})).toEqual({});
@@ -278,8 +256,6 @@ describe('Hook Lifecycle - Claude Code Adapter', () => {
       hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: 'ctx' },
     });
   });
-
-  // --- Edge cases / unhappy paths (addresses PR #1291 review) ---
 
   it('should return empty object for malformed input (undefined/null)', async () => {
     expect(await fmt(undefined)).toEqual({});
@@ -318,8 +294,6 @@ describe('Hook Lifecycle - Claude Code Adapter', () => {
   });
 });
 
-// --- stderr Suppression Tests ---
-
 describe('Hook Lifecycle - stderr Suppression (#1181)', () => {
   let originalStderrWrite: typeof process.stderr.write;
   let stderrOutput: string[];
@@ -327,7 +301,6 @@ describe('Hook Lifecycle - stderr Suppression (#1181)', () => {
   beforeEach(() => {
     originalStderrWrite = process.stderr.write.bind(process.stderr);
     stderrOutput = [];
-    // Capture stderr writes
     process.stderr.write = ((chunk: any) => {
       stderrOutput.push(String(chunk));
       return true;
@@ -339,25 +312,17 @@ describe('Hook Lifecycle - stderr Suppression (#1181)', () => {
   });
 
   it('should not use console.error in handlers/index.ts for unknown events', async () => {
-    // Re-import to get fresh module
     const { getEventHandler } = await import('../src/cli/handlers/index.js');
 
-    // Clear any stderr from import
     stderrOutput.length = 0;
 
-    // Call with unknown event — should use logger (writes to file), not console.error (writes to stderr)
     const handler = getEventHandler('unknown-event-type');
     await handler.execute({ sessionId: 'test', cwd: '/tmp' });
 
-    // No stderr output should have leaked from the handler dispatcher itself
-    // (logger may write to stderr as fallback if log file unavailable, but that's
-    // the logger's responsibility, not the dispatcher's)
     const dispatcherStderr = stderrOutput.filter(s => s.includes('[claude-mem] Unknown event'));
     expect(dispatcherStderr).toHaveLength(0);
   });
 });
-
-// --- Hook Response Constants ---
 
 describe('Hook Lifecycle - Standard Response', () => {
   it('should define standard hook response with suppressOutput: true', async () => {
@@ -368,30 +333,19 @@ describe('Hook Lifecycle - Standard Response', () => {
   });
 });
 
-// --- hookCommand stderr suppression ---
-
 describe('hookCommand - stderr suppression', () => {
   it('should not use console.error for worker unavailable errors', async () => {
-    // The hookCommand function should use logger.warn instead of console.error
-    // for worker unavailable errors, so stderr stays clean (#1181)
     const { hookCommand } = await import('../src/cli/hook-command.js');
 
-    // Verify the import includes logger
     const hookCommandSource = await Bun.file(
       new URL('../src/cli/hook-command.ts', import.meta.url).pathname
     ).text();
 
-    // Should import logger
     expect(hookCommandSource).toContain("import { logger }");
-    // Should use logger.warn for worker unavailable
     expect(hookCommandSource).toContain("logger.warn('HOOK'");
-    // Should use logger.error for hook errors
     expect(hookCommandSource).toContain("logger.error('HOOK'");
-    // Should suppress stderr
     expect(hookCommandSource).toContain("process.stderr.write = (() => true)");
-    // Should restore stderr in finally block
     expect(hookCommandSource).toContain("process.stderr.write = originalStderrWrite");
-    // Should NOT have console.error for error reporting
     expect(hookCommandSource).not.toContain("console.error(`[claude-mem]");
     expect(hookCommandSource).not.toContain("console.error(`Hook error:");
   });

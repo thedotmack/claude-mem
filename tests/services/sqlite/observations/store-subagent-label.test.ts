@@ -1,21 +1,3 @@
-/**
- * Tests for storeObservation subagent labeling (agent_type, agent_id).
- *
- * Validates:
- * 1. Rows carry agent_type / agent_id when set on ObservationInput.
- * 2. Omitted subagent fields store as NULL (main-session rows).
- * 3. Dedup is intentionally UNAFFECTED by agent_type — the content hash
- *    covers (memory_session_id, title, narrative) only, so two observations
- *    with the same semantic identity but different originating subagents
- *    dedup to the same row. This preserves stable observation identity
- *    across main-session and subagent contexts and is the documented
- *    intended behavior per Phase 4 anti-pattern guard in the plan.
- *
- * Sources:
- * - Store:  src/services/sqlite/observations/store.ts
- * - Types:  src/services/sqlite/observations/types.ts
- * - Test pattern: tests/sqlite/observations.test.ts
- */
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { ClaudeMemDatabase } from '../../../../src/services/sqlite/Database.js';
 import { storeObservation } from '../../../../src/services/sqlite/Observations.js';
@@ -82,7 +64,6 @@ describe('storeObservation — subagent labeling', () => {
   it('stores NULL for agent_type and agent_id when fields are omitted (main-session row)', () => {
     const memorySessionId = createSessionWithMemoryId('content-main-1', 'mem-main-1');
     const input = createObservationInput();
-    // input has no agent_type / agent_id
 
     const result = storeObservation(db, memorySessionId, 'test-project', input);
 
@@ -113,11 +94,6 @@ describe('storeObservation — subagent labeling', () => {
   });
 
   it('dedup is NOT affected by agent fields — second insert with different agent_type returns existing id', () => {
-    // INTENDED BEHAVIOR (per plan Phase 4 anti-pattern guard):
-    //   The content hash covers (memory_session_id, title, narrative) only.
-    //   Two observations with identical title + narrative but different
-    //   agent_type must dedup to the same row so observation identity is
-    //   stable across main-session and subagent contexts.
     const memorySessionId = createSessionWithMemoryId('content-dedup-1', 'mem-dedup-1');
 
     const first = storeObservation(
@@ -144,7 +120,6 @@ describe('storeObservation — subagent labeling', () => {
       })
     );
 
-    // Second insert is deduped → same id, no new row, original agent fields preserved.
     expect(second.id).toBe(first.id);
 
     const rowCount = db

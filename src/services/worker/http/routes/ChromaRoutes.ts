@@ -1,8 +1,3 @@
-/**
- * Chroma Routes
- *
- * Provides diagnostic endpoints for ChromaDB integration.
- */
 
 import express, { Request, Response } from 'express';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
@@ -16,20 +11,10 @@ export class ChromaRoutes extends BaseRouteHandler {
     app.get('/api/chroma/status', this.handleGetStatus.bind(this));
   }
 
-  /**
-   * GET /api/chroma/status
-   * Returns current health and connection status of chroma-mcp.
-   *
-   * Pass `?deep=1` (or `?deep=true`) to additionally run a real
-   * semantic-search round-trip via ChromaMcpManager.probeSemanticSearch().
-   * The cheap path (no `deep`) stays cheap — it only calls isHealthy().
-   */
   private handleGetStatus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const chromaEnabled = settings.CLAUDE_MEM_CHROMA_ENABLED !== 'false';
 
-    // Truthy check: any non-empty, non-"false"/"0" value enables deep probe.
-    // Bare `?deep` (no value) shows up as '' in Express, which we treat as enabled.
     const deepRaw = req.query.deep;
     const deepEnabled =
       deepRaw !== undefined &&

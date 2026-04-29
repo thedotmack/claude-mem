@@ -1,16 +1,3 @@
-/**
- * ChromaSync Service
- *
- * Automatically syncs observations and session summaries to ChromaDB via MCP.
- * This service provides real-time semantic search capabilities by maintaining
- * a vector database synchronized with SQLite.
- *
- * Uses ChromaMcpManager to communicate with chroma-mcp over stdio MCP protocol.
- * The chroma-mcp server handles its own embedding and persistent storage,
- * eliminating the need for chromadb npm package and ONNX/WASM dependencies.
- *
- * Design: Fail-fast with no fallbacks - if Chroma is unavailable, syncing fails.
- */
 
 import { ChromaMcpManager } from './ChromaMcpManager.js';
 import { ChromaSyncState, ProjectWatermarks } from './ChromaSyncState.js';
@@ -34,13 +21,13 @@ interface StoredObservation {
   type: string;
   title: string | null;
   subtitle: string | null;
-  facts: string | null; // JSON
+  facts: string | null; 
   narrative: string | null;
-  concepts: string | null; // JSON
-  files_read: string | null; // JSON
-  files_modified: string | null; // JSON
+  concepts: string | null; 
+  files_read: string | null; 
+  files_modified: string | null; 
   prompt_number: number;
-  discovery_tokens: number; // ROI metrics
+  discovery_tokens: number; 
   created_at: string;
   created_at_epoch: number;
 }
@@ -57,7 +44,7 @@ interface StoredSummary {
   next_steps: string | null;
   notes: string | null;
   prompt_number: number;
-  discovery_tokens: number; // ROI metrics
+  discovery_tokens: number; 
   created_at: string;
   created_at_epoch: number;
 }
@@ -81,19 +68,12 @@ export class ChromaSync {
 
   constructor(project: string) {
     this.project = project;
-    // Chroma collection names only allow [a-zA-Z0-9._-], 3-512 chars,
-    // must start/end with [a-zA-Z0-9]
     const sanitized = project
       .replace(/[^a-zA-Z0-9._-]/g, '_')
-      .replace(/[^a-zA-Z0-9]+$/, '');  // strip trailing non-alphanumeric
+      .replace(/[^a-zA-Z0-9]+$/, '');  
     this.collectionName = `cm__${sanitized || 'unknown'}`;
   }
 
-  /**
-   * Ensure collection exists in Chroma via MCP.
-   * chroma_create_collection is idempotent - safe to call multiple times.
-   * Uses collectionCreated flag to avoid redundant calls within a session.
-   */
   private async ensureCollectionExists(): Promise<void> {
     if (this.collectionCreated) {
       return;
@@ -119,14 +99,9 @@ export class ChromaSync {
     });
   }
 
-  /**
-   * Format observation into Chroma documents (granular approach)
-   * Each semantic field becomes a separate vector document
-   */
   private formatObservationDocs(obs: StoredObservation): ChromaDocument[] {
     const documents: ChromaDocument[] = [];
 
-    // Parse JSON fields
     const facts = obs.facts ? JSON.parse(obs.facts) : [];
     const concepts = obs.concepts ? JSON.parse(obs.concepts) : [];
     const files_read = parseFileList(obs.files_read);
@@ -143,7 +118,6 @@ export class ChromaSync {
       title: obs.title || 'Untitled'
     };
 
-    // Add optional metadata fields
     if (obs.subtitle) {
       baseMetadata.subtitle = obs.subtitle;
     }
@@ -157,7 +131,6 @@ export class ChromaSync {
       baseMetadata.files_modified = files_modified.join(',');
     }
 
-    // Narrative as separate document
     if (obs.narrative) {
       documents.push({
         id: `obs_${obs.id}_narrative`,
@@ -166,7 +139,6 @@ export class ChromaSync {
       });
     }
 
-    // Text as separate document (legacy field)
     if (obs.text) {
       documents.push({
         id: `obs_${obs.id}_text`,
@@ -175,7 +147,6 @@ export class ChromaSync {
       });
     }
 
-    // Each fact as separate document
     facts.forEach((fact: string, index: number) => {
       documents.push({
         id: `obs_${obs.id}_fact_${index}`,
@@ -187,10 +158,6 @@ export class ChromaSync {
     return documents;
   }
 
-  /**
-   * Format summary into Chroma documents (granular approach)
-   * Each summary field becomes a separate vector document
-   */
   private formatSummaryDocs(summary: StoredSummary): ChromaDocument[] {
     const documents: ChromaDocument[] = [];
 
@@ -204,7 +171,6 @@ export class ChromaSync {
       prompt_number: summary.prompt_number || 0
     };
 
-    // Each field becomes a separate document
     if (summary.request) {
       documents.push({
         id: `summary_${summary.id}_request`,
@@ -256,10 +222,6 @@ export class ChromaSync {
     return documents;
   }
 
-  /**
-   * Add documents to Chroma in batch via MCP
-   * Throws error if batch add fails
-   */
   private async addDocuments(documents: ChromaDocument[]): Promise<void> {
     if (documents.length === 0) {
       return;
@@ -269,12 +231,9 @@ export class ChromaSync {
 
     const chromaMcp = ChromaMcpManager.getInstance();
 
-    // Add in batches
     for (let i = 0; i < documents.length; i += this.BATCH_SIZE) {
       const batch = documents.slice(i, i + this.BATCH_SIZE);
 
-      // Sanitize metadata: filter out null, undefined, and empty string values
-      // that chroma-mcp may reject (e.g., null subtitle from raw SQLite rows)
       const cleanMetadatas = batch.map(d =>
         Object.fromEntries(
           Object.entries(d.metadata).filter(([_, v]) => v !== null && v !== undefined && v !== '')
@@ -290,9 +249,6 @@ export class ChromaSync {
         });
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error);
-        // APPROVED OVERRIDE: Duplicate IDs from partial write before timeout/crash.
-        // chroma_update_documents only updates *existing* IDs — it silently ignores
-        // missing ones. So we delete-then-add to guarantee all IDs are written.
         if (errMsg.includes('already exist')) {
           try {
             await chromaMcp.callTool('chroma_delete_documents', {
@@ -333,10 +289,6 @@ export class ChromaSync {
     });
   }
 
-  /**
-   * Sync a single observation to Chroma
-   * Blocks until sync completes, throws on error
-   */
   async syncObservation(
     observationId: number,
     memorySessionId: string,
@@ -346,7 +298,6 @@ export class ChromaSync {
     createdAtEpoch: number,
     discoveryTokens: number = 0
   ): Promise<void> {
-    // Convert ParsedObservation to StoredObservation format
     const stored: StoredObservation = {
       id: observationId,
       memory_session_id: memorySessionId,
@@ -379,10 +330,6 @@ export class ChromaSync {
     ChromaSyncState.bump(project, 'observations', observationId);
   }
 
-  /**
-   * Sync a single summary to Chroma
-   * Blocks until sync completes, throws on error
-   */
   async syncSummary(
     summaryId: number,
     memorySessionId: string,
@@ -392,7 +339,6 @@ export class ChromaSync {
     createdAtEpoch: number,
     discoveryTokens: number = 0
   ): Promise<void> {
-    // Convert ParsedSummary to StoredSummary format
     const stored: StoredSummary = {
       id: summaryId,
       memory_session_id: memorySessionId,
@@ -422,10 +368,6 @@ export class ChromaSync {
     ChromaSyncState.bump(project, 'summaries', summaryId);
   }
 
-  /**
-   * Format user prompt into Chroma document
-   * Each prompt becomes a single document (unlike observations/summaries which split by field)
-   */
   private formatUserPromptDoc(prompt: StoredUserPrompt): ChromaDocument {
     return {
       id: `prompt_${prompt.id}`,
@@ -441,10 +383,6 @@ export class ChromaSync {
     };
   }
 
-  /**
-   * Sync a single user prompt to Chroma
-   * Blocks until sync completes, throws on error
-   */
   async syncUserPrompt(
     promptId: number,
     memorySessionId: string,
@@ -453,7 +391,6 @@ export class ChromaSync {
     promptNumber: number,
     createdAtEpoch: number
   ): Promise<void> {
-    // Create StoredUserPrompt format
     const stored: StoredUserPrompt = {
       id: promptId,
       content_session_id: '', // Not needed for Chroma sync
@@ -476,10 +413,6 @@ export class ChromaSync {
     ChromaSyncState.bump(project, 'prompts', promptId);
   }
 
-  /**
-   * Fetch all existing document IDs from Chroma collection via MCP
-   * Returns Sets of SQLite IDs for observations, summaries, and prompts
-   */
   private async getExistingChromaIds(projectOverride?: string): Promise<{
     observations: Set<number>;
     summaries: Set<number>;
@@ -495,7 +428,7 @@ export class ChromaSync {
     const promptIds = new Set<number>();
 
     let offset = 0;
-    const limit = 1000; // Large batches, metadata only = fast
+    const limit = 1000; 
 
     logger.info('CHROMA_SYNC', 'Fetching existing Chroma document IDs...', { project: targetProject });
 
@@ -508,14 +441,12 @@ export class ChromaSync {
         include: ['metadatas']
       }) as any;
 
-      // chroma_get_documents returns flat arrays: { ids, metadatas, documents }
       const metadatas = result?.metadatas || [];
 
       if (metadatas.length === 0) {
-        break; // No more documents
+        break; 
       }
 
-      // Extract SQLite IDs from metadata
       for (const meta of metadatas) {
         if (meta && meta.sqlite_id) {
           const sqliteId = meta.sqlite_id as number;
@@ -549,11 +480,6 @@ export class ChromaSync {
     return { observations: observationIds, summaries: summaryIds, prompts: promptIds };
   }
 
-  /**
-   * One-time bootstrap: scan Chroma for a project, derive the highest sqlite_id
-   * per doc_type, and persist as watermarks. After this runs once at install,
-   * the watermark file owns the truth and Chroma is never scanned again.
-   */
   async bootstrapWatermarksFromChroma(project: string): Promise<void> {
     const existing = await this.getExistingChromaIds(project);
     const max = (set: Set<number>): number => {
@@ -572,14 +498,6 @@ export class ChromaSync {
     });
   }
 
-  /**
-   * Backfill: Sync all observations missing from Chroma
-   * Reads from SQLite and syncs in batches
-   * @param projectOverride - If provided, backfill this project instead of this.project.
-   *   Used by backfillAllProjects() to iterate projects without mutating instance state.
-   * @param storeOverride - If provided, use this SessionStore instead of creating a new one.
-   * Throws error if backfill fails
-   */
   async ensureBackfilled(projectOverride?: string, storeOverride?: SessionStore): Promise<void> {
     const backfillProject = projectOverride ?? this.project;
     logger.info('CHROMA_SYNC', 'Starting smart backfill', { project: backfillProject });
@@ -596,7 +514,6 @@ export class ChromaSync {
       logger.error('CHROMA_SYNC', 'Backfill failed', { project: backfillProject }, error instanceof Error ? error : new Error(String(error)));
       throw new Error(`Backfill failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
-      // Only close if we created it
       if (!storeOverride) {
         db.close();
       }
@@ -623,10 +540,6 @@ export class ChromaSync {
     });
   }
 
-  /**
-   * Backfill observations missing from Chroma for a given project.
-   * Returns the formatted documents that were synced.
-   */
   private async backfillObservations(
     db: SessionStore,
     backfillProject: string,
@@ -661,9 +574,6 @@ export class ChromaSync {
       obsByDocCount.push({ obs, docs });
     }
 
-    // Track how many docs we've successfully written so we can bump the
-    // watermark to the highest fully-synced observation id, even if a later
-    // batch fails.
     let writtenDocs = 0;
     let lastSyncedObsIdx = -1;
     try {
@@ -672,7 +582,6 @@ export class ChromaSync {
         await this.addDocuments(batch);
         writtenDocs += batch.length;
 
-        // Find which observation the last fully-written doc belongs to.
         let cursor = 0;
         for (let j = 0; j < obsByDocCount.length; j++) {
           cursor += obsByDocCount[j].docs.length;
@@ -698,10 +607,6 @@ export class ChromaSync {
     return allDocs;
   }
 
-  /**
-   * Backfill summaries missing from Chroma for a given project.
-   * Returns the formatted documents that were synced.
-   */
   private async backfillSummaries(
     db: SessionStore,
     backfillProject: string,
@@ -765,10 +670,6 @@ export class ChromaSync {
     return summaryDocs;
   }
 
-  /**
-   * Backfill user prompts missing from Chroma for a given project.
-   * Returns the formatted documents that were synced.
-   */
   private async backfillPrompts(
     db: SessionStore,
     backfillProject: string,
@@ -808,8 +709,6 @@ export class ChromaSync {
       promptDocs.push(this.formatUserPromptDoc(prompt));
     }
 
-    // Prompts are 1 doc each, so the highest fully-synced prompt id moves
-    // forward in lockstep with each batch.
     let lastSyncedPromptId = 0;
     try {
       for (let i = 0; i < promptDocs.length; i += this.BATCH_SIZE) {
@@ -832,10 +731,6 @@ export class ChromaSync {
     return promptDocs;
   }
 
-  /**
-   * Query Chroma collection for semantic search via MCP
-   * Used by SearchManager for vector-based search
-   */
   async queryChroma(
     query: string,
     limit: number,
@@ -856,18 +751,14 @@ export class ChromaSync {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
 
-      // chroma-mcp surfaces connection failures as Error messages with no structured
-      // error codes or typed error classes. String matching is the only way to distinguish
-      // transient connection errors (which need collection state reset) from semantic query errors.
       const isConnectionError =
-        errorMessage.includes('ECONNREFUSED') || // [ANTI-PATTERN IGNORED]: chroma-mcp has no typed error classes, string matching is the only option
-        errorMessage.includes('ENOTFOUND') || // [ANTI-PATTERN IGNORED]: chroma-mcp has no typed error classes, string matching is the only option
-        errorMessage.includes('fetch failed') || // [ANTI-PATTERN IGNORED]: chroma-mcp has no typed error classes, string matching is the only option
-        errorMessage.includes('subprocess closed') || // [ANTI-PATTERN IGNORED]: chroma-mcp has no typed error classes, string matching is the only option
-        errorMessage.includes('timed out'); // [ANTI-PATTERN IGNORED]: chroma-mcp has no typed error classes, string matching is the only option
+        errorMessage.includes('ECONNREFUSED') || 
+        errorMessage.includes('ENOTFOUND') || 
+        errorMessage.includes('fetch failed') || 
+        errorMessage.includes('subprocess closed') || 
+        errorMessage.includes('timed out'); 
 
       if (isConnectionError) {
-        // Reset collection state so next call attempts reconnect
         this.collectionCreated = false;
         logger.error('CHROMA_SYNC', 'Connection lost during query',
           { project: this.project, query }, error as Error);
@@ -881,14 +772,7 @@ export class ChromaSync {
     return this.deduplicateQueryResults(results);
   }
 
-  /**
-   * Deduplicate Chroma query results by SQLite ID.
-   * Multiple Chroma docs map to the same SQLite ID (one per field).
-   * Keeps the first (best-ranked) distance and metadata per SQLite ID.
-   */
   private deduplicateQueryResults(results: any): { ids: number[]; distances: number[]; metadatas: any[] } {
-    // chroma_query_documents returns nested arrays (one per query text)
-    // We always pass a single query text, so we access [0]
     const ids: number[] = [];
     const seen = new Set<string>();
     const docIds = results?.ids?.[0] || [];
@@ -900,10 +784,6 @@ export class ChromaSync {
 
     for (let i = 0; i < docIds.length; i++) {
       const docId = docIds[i];
-      // Extract sqlite_id from document ID (supports three formats):
-      // - obs_{id}_narrative, obs_{id}_fact_0, etc (observations)
-      // - summary_{id}_request, summary_{id}_learned, etc (session summaries)
-      // - prompt_{id} (user prompts)
       const obsMatch = docId.match(/obs_(\d+)_/);
       const summaryMatch = docId.match(/summary_(\d+)_/);
       const promptMatch = docId.match(/prompt_(\d+)/);
@@ -934,14 +814,6 @@ export class ChromaSync {
     return { ids, distances, metadatas };
   }
 
-  /**
-   * Backfill all projects that have observations in SQLite but may be missing from Chroma.
-   * Uses a single shared ChromaSync('claude-mem') instance and Chroma connection.
-   * Per-project scoping is passed as a parameter to ensureBackfilled(), avoiding
-   * instance state mutation. All documents land in the cm__claude-mem collection
-   * with project scoped via metadata, matching how DatabaseManager and SearchManager operate.
-   * Designed to be called fire-and-forget on worker startup.
-   */
   static async backfillAllProjects(storeOverride?: SessionStore): Promise<void> {
     const db = storeOverride ?? new SessionStore();
     const sync = new ChromaSync('claude-mem');
@@ -952,10 +824,6 @@ export class ChromaSync {
 
       logger.info('CHROMA_SYNC', `Backfill check for ${projects.length} projects`);
 
-      // Cold-start bootstrap: if no watermark file exists, derive watermarks
-      // from one Chroma scan per project. This is the slow operation we are
-      // permanently replacing — after this runs once, subsequent worker starts
-      // skip the scan entirely.
       if (!ChromaSyncState.exists()) {
         logger.info('CHROMA_SYNC', 'Watermark cache missing — bootstrapping from Chroma (one-time)');
         for (const { project } of projects) {
@@ -983,24 +851,12 @@ export class ChromaSync {
       }
     } finally {
       await sync.close();
-      // Only close if we created it
       if (!storeOverride) {
         db.close();
       }
     }
   }
 
-  /**
-   * Stamp `merged_into_project` on every Chroma document whose metadata
-   * `sqlite_id` is in the provided set. Used by the worktree adoption engine
-   * to keep Chroma's metadata in lockstep with SQLite after a parent branch
-   * absorbs a worktree branch via merge.
-   *
-   * Batched: fetches docs by `sqlite_id IN sqliteIds`, rewrites metadata with
-   * the new field, and calls `chroma_update_documents` once per page of up to
-   * BATCH_SIZE ids. Idempotent — re-running with the same value is a no-op
-   * because the write doesn't depend on the prior value.
-   */
   async updateMergedIntoProject(
     sqliteIds: number[],
     mergedIntoProject: string
@@ -1012,7 +868,6 @@ export class ChromaSync {
 
     let totalPatched = 0;
 
-    // Chunk the sqlite_id set to keep each Chroma call bounded.
     for (let i = 0; i < sqliteIds.length; i += this.BATCH_SIZE) {
       const idBatch = sqliteIds.slice(i, i + this.BATCH_SIZE);
 
@@ -1026,9 +881,6 @@ export class ChromaSync {
       if (docIds.length === 0) continue;
 
       const metadatas = (existing?.metadatas ?? []).map(m => {
-        // Merge old metadata with the new field, then filter out null/undefined/''
-        // to match the sanitization other callTool sites apply (chroma-mcp
-        // rejects null values in metadata).
         const merged: Record<string, any> = {
           ...(m ?? {}),
           merged_into_project: mergedIntoProject
@@ -1056,14 +908,7 @@ export class ChromaSync {
     });
   }
 
-  /**
-   * Close the ChromaSync instance
-   * ChromaMcpManager is a singleton and manages its own lifecycle
-   * We don't close it here - it's closed during graceful shutdown
-   */
   async close(): Promise<void> {
-    // ChromaMcpManager is a singleton and manages its own lifecycle
-    // We don't close it here - it's closed during graceful shutdown
     logger.info('CHROMA_SYNC', 'ChromaSync closed', { project: this.project });
   }
 }

@@ -1,8 +1,4 @@
 #!/usr/bin/env tsx
-/**
- * Transcript to Markdown - Complete 1:1 representation
- * Shows ALL available context data from a Claude Code transcript
- */
 
 import { TranscriptParser } from '../src/utils/transcript-parser.js';
 import type { UserTranscriptEntry, AssistantTranscriptEntry, ToolResultContent } from '../types/transcript.js';
@@ -17,20 +13,13 @@ if (!transcriptPath) {
   process.exit(1);
 }
 
-/**
- * Truncate string to max length, adding ellipsis if needed
- */
 function truncate(str: string, maxLen: number = 500): string {
   if (str.length <= maxLen) return str;
   return str.substring(0, maxLen) + '\n... [truncated]';
 }
 
-/**
- * Format tool result content for display
- */
 function formatToolResult(result: ToolResultContent): string {
   if (typeof result.content === 'string') {
-    // Try to parse as JSON for better formatting
     try {
       const parsed = JSON.parse(result.content);
       return JSON.stringify(parsed, null, 2);
@@ -40,7 +29,6 @@ function formatToolResult(result: ToolResultContent): string {
   }
 
   if (Array.isArray(result.content)) {
-    // Handle array of content items - extract text and parse if JSON
     const formatted = result.content.map((item: any) => {
       if (item.type === 'text' && item.text) {
         try {
@@ -75,10 +63,8 @@ let turnNumber = 0;
 let inTurn = false;
 
 for (const entry of entries) {
-  // Skip summary and file-history-snapshot entries
   if (entry.type === 'summary' || entry.type === 'file-history-snapshot') continue;
 
-  // USER MESSAGE
   if (entry.type === 'user') {
     const userEntry = entry as UserTranscriptEntry;
 
@@ -93,7 +79,6 @@ for (const entry of entries) {
     output += `**Session ID:** ${userEntry.sessionId}\n`;
     output += `**CWD:** ${userEntry.cwd}\n\n`;
 
-    // Extract user message text
     if (typeof userEntry.message.content === 'string') {
       output += userEntry.message.content + '\n\n';
     } else if (Array.isArray(userEntry.message.content)) {
@@ -103,7 +88,6 @@ for (const entry of entries) {
         output += text + '\n\n';
       }
 
-      // Show ACTUAL tool results with their data
       const toolResults = userEntry.message.content.filter((c): c is ToolResultContent => c.type === 'tool_result');
       if (toolResults.length > 0) {
         output += `**Tool Results Submitted (${toolResults.length}):**\n\n`;
@@ -120,7 +104,6 @@ for (const entry of entries) {
     }
   }
 
-  // ASSISTANT MESSAGE
   if (entry.type === 'assistant' && inTurn) {
     const assistantEntry = entry as AssistantTranscriptEntry;
 
@@ -137,13 +120,11 @@ for (const entry of entries) {
 
     const content = assistantEntry.message.content;
 
-    // 1. Thinking blocks (show first, as they happen first in reasoning)
     const thinkingBlocks = content.filter((c) => c.type === 'thinking');
     if (thinkingBlocks.length > 0) {
       output += `**💭 Thinking:**\n\n`;
       for (const block of thinkingBlocks) {
         const thinking = (block as any).thinking;
-        // Format thinking with proper line breaks and indentation
         const formattedThinking = thinking
           .split('\n')
           .map((line: string) => line.trimEnd())
@@ -155,7 +136,6 @@ for (const entry of entries) {
       }
     }
 
-    // 2. Text responses
     const textBlocks = content.filter((c) => c.type === 'text');
     if (textBlocks.length > 0) {
       output += `**Response:**\n\n`;
@@ -164,7 +144,6 @@ for (const entry of entries) {
       }
     }
 
-    // 3. Tool uses - show complete input
     const toolUseBlocks = content.filter((c) => c.type === 'tool_use');
     if (toolUseBlocks.length > 0) {
       output += `**🔧 Tools Used (${toolUseBlocks.length}):**\n\n`;
@@ -177,7 +156,6 @@ for (const entry of entries) {
       }
     }
 
-    // 4. Token usage
     if (assistantEntry.message.usage) {
       const usage = assistantEntry.message.usage;
       output += `**📊 Token Usage:**\n`;
@@ -201,7 +179,6 @@ if (turnNumber < (stats.entriesByType['user'] || 0)) {
   output += `\n*... ${(stats.entriesByType['user'] || 0) - turnNumber} more turns not shown*\n`;
 }
 
-// Write output
 const outputPath = transcriptPath.replace('.jsonl', '-complete.md');
 writeFileSync(outputPath, output, 'utf-8');
 

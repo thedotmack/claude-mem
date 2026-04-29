@@ -2,14 +2,6 @@ import { describe, it, expect } from 'bun:test';
 import { buildTimeline } from '../../src/services/context/index.js';
 import type { Observation, SummaryTimelineItem } from '../../src/services/context/types.js';
 
-/**
- * Timeline building tests - validates real sorting and merging logic
- *
- * Removed: queryObservations, querySummaries tests (mock database - not testing real behavior)
- * Kept: buildTimeline tests (tests actual sorting algorithm)
- */
-
-// Helper to create a minimal observation
 function createTestObservation(overrides: Partial<Observation> = {}): Observation {
   return {
     id: 1,
@@ -29,7 +21,6 @@ function createTestObservation(overrides: Partial<Observation> = {}): Observatio
   };
 }
 
-// Helper to create a summary timeline item
 function createTestSummaryTimelineItem(overrides: Partial<SummaryTimelineItem> = {}): SummaryTimelineItem {
   return {
     id: 1,
@@ -73,7 +64,6 @@ describe('buildTimeline', () => {
 
       const timeline = buildTimeline(observations, summaries);
 
-      // Should be sorted: obs2 (1000), summary (2000), obs1 (3000)
       expect(timeline).toHaveLength(3);
       expect(timeline[0].type).toBe('observation');
       expect((timeline[0].data as Observation).id).toBe(2);
@@ -139,7 +129,6 @@ describe('buildTimeline', () => {
 
       const timeline = buildTimeline(observations, summaries);
 
-      // Summary should come first because its displayEpoch is earlier
       expect(timeline[0].type).toBe('summary');
       expect(timeline[1].type).toBe('observation');
     });

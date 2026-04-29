@@ -1,9 +1,3 @@
-/**
- * ResultFormatter - Formats search results for display
- *
- * Consolidates formatting logic from FormattingService and SearchManager.
- * Provides consistent table and text formatting for all search result types.
- */
 import { logger } from '../../../utils/logger.js';
 
 import {
@@ -19,9 +13,6 @@ import { formatTime, extractFirstFile, groupByDate, estimateTokens } from '../..
 const CHARS_PER_TOKEN_ESTIMATE = 4;
 
 export class ResultFormatter {
-  /**
-   * Format search results as markdown text
-   */
   formatSearchResults(
     results: SearchResults,
     query: string,
@@ -33,9 +24,6 @@ export class ResultFormatter {
 
     if (totalResults === 0) {
       if (chromaFailed) {
-        // Legacy callers route through here without a specific reason; surface a
-        // generic non-connection failure so users still get the diagnostic pointer
-        // instead of the old "install uv" lie.
         return ResultFormatter.formatChromaFailureMessage({
           message: 'unknown error (no reason captured by caller)',
           isConnectionError: false,
@@ -44,17 +32,13 @@ export class ResultFormatter {
       return `No results found matching "${query}"`;
     }
 
-    // Combine all results with timestamps for unified sorting
     const combined = this.combineResults(results);
 
-    // Sort by date
     combined.sort((a, b) => b.epoch - a.epoch);
 
-    // Group by date, then by file within each day
     const cwd = process.cwd();
     const resultsByDate = groupByDate(combined, item => item.created_at);
 
-    // Build output with date/file grouping
     const lines: string[] = [];
     lines.push(`Found ${totalResults} result(s) matching "${query}" (${results.observations.length} obs, ${results.sessions.length} sessions, ${results.prompts.length} prompts)`);
     lines.push('');
@@ -63,7 +47,6 @@ export class ResultFormatter {
       lines.push(`### ${day}`);
       lines.push('');
 
-      // Group by file within this day
       const resultsByFile = new Map<string, CombinedResult[]>();
       for (const result of dayResults) {
         let file = 'General';
@@ -77,7 +60,6 @@ export class ResultFormatter {
         resultsByFile.get(file)!.push(result);
       }
 
-      // Render each file section
       for (const [file, fileResults] of resultsByFile) {
         lines.push(`**${file}**`);
         lines.push(this.formatSearchTableHeader());
@@ -115,9 +97,6 @@ export class ResultFormatter {
     return lines.join('\n');
   }
 
-  /**
-   * Combine results into unified format
-   */
   combineResults(results: SearchResults): CombinedResult[] {
     return [
       ...results.observations.map(obs => ({
@@ -141,25 +120,16 @@ export class ResultFormatter {
     ];
   }
 
-  /**
-   * Format search table header (no Work column)
-   */
   formatSearchTableHeader(): string {
     return `| ID | Time | T | Title | Read |
 |----|------|---|-------|------|`;
   }
 
-  /**
-   * Format full table header (with Work column)
-   */
   formatTableHeader(): string {
     return `| ID | Time | T | Title | Read | Work |
 |-----|------|---|-------|------|------|`;
   }
 
-  /**
-   * Format observation as table row for search results
-   */
   formatObservationSearchRow(
     obs: ObservationSearchResult,
     lastTime: string
@@ -178,16 +148,13 @@ export class ResultFormatter {
     };
   }
 
-  /**
-   * Format session as table row for search results
-   */
   formatSessionSearchRow(
     session: SessionSummarySearchResult,
     lastTime: string
   ): { row: string; time: string } {
     const id = `#S${session.id}`;
     const time = formatTime(session.created_at_epoch);
-    const icon = '\uD83C\uDFAF'; // Target emoji
+    const icon = '\uD83C\uDFAF'; 
     const title = session.request ||
       `Session ${session.memory_session_id?.substring(0, 8) || 'unknown'}`;
 
@@ -199,16 +166,13 @@ export class ResultFormatter {
     };
   }
 
-  /**
-   * Format user prompt as table row for search results
-   */
   formatPromptSearchRow(
     prompt: UserPromptSearchResult,
     lastTime: string
   ): { row: string; time: string } {
     const id = `#P${prompt.id}`;
     const time = formatTime(prompt.created_at_epoch);
-    const icon = '\uD83D\uDCAC'; // Speech bubble emoji
+    const icon = '\uD83D\uDCAC'; 
     const title = prompt.prompt_text.length > 60
       ? prompt.prompt_text.substring(0, 57) + '...'
       : prompt.prompt_text;
@@ -221,9 +185,6 @@ export class ResultFormatter {
     };
   }
 
-  /**
-   * Format observation as index row (with Work column)
-   */
   formatObservationIndex(obs: ObservationSearchResult, _index: number): string {
     const id = `#${obs.id}`;
     const time = formatTime(obs.created_at_epoch);
@@ -237,9 +198,6 @@ export class ResultFormatter {
     return `| ${id} | ${time} | ${icon} | ${title} | ~${readTokens} | ${workDisplay} |`;
   }
 
-  /**
-   * Format session as index row
-   */
   formatSessionIndex(session: SessionSummarySearchResult, _index: number): string {
     const id = `#S${session.id}`;
     const time = formatTime(session.created_at_epoch);
@@ -250,9 +208,6 @@ export class ResultFormatter {
     return `| ${id} | ${time} | ${icon} | ${title} | - | - |`;
   }
 
-  /**
-   * Format user prompt as index row
-   */
   formatPromptIndex(prompt: UserPromptSearchResult, _index: number): string {
     const id = `#P${prompt.id}`;
     const time = formatTime(prompt.created_at_epoch);
@@ -264,9 +219,6 @@ export class ResultFormatter {
     return `| ${id} | ${time} | ${icon} | ${title} | - | - |`;
   }
 
-  /**
-   * Estimate read tokens for an observation
-   */
   private estimateReadTokens(obs: ObservationSearchResult): number {
     const size = (obs.title?.length || 0) +
       (obs.subtitle?.length || 0) +
@@ -275,14 +227,6 @@ export class ResultFormatter {
     return Math.ceil(size / CHARS_PER_TOKEN_ESTIMATE);
   }
 
-  /**
-   * Format Chroma failure message with the real underlying error.
-   *
-   * Static so callers (e.g. SearchManager) can format without needing
-   * an instance. The message intentionally surfaces the raw error text
-   * and points users at /api/chroma/status?deep=1 for diagnostics —
-   * never a static "install uv" instruction (which lies about the cause).
-   */
   static formatChromaFailureMessage(reason: { message: string; isConnectionError: boolean }): string {
     if (reason.isConnectionError) {
       return `Semantic search is offline (Chroma MCP unreachable: ${reason.message}). Falling back to keyword search; results may be incomplete. Run \`/api/chroma/status?deep=1\` to diagnose.`;
@@ -290,9 +234,6 @@ export class ResultFormatter {
     return `Semantic search failed: ${reason.message}. Falling back to keyword search; results may be incomplete. Check \`~/.claude-mem/logs/\` for the CHROMA_SYNC entry. Run \`/api/chroma/status?deep=1\` for a deeper probe.`;
   }
 
-  /**
-   * Format search tips footer
-   */
   formatSearchTips(): string {
     return `
 ---

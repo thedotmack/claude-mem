@@ -1,9 +1,3 @@
-/**
- * Happy-path tests for runOneTimeV12_4_3Cleanup.
- *
- * Uses a real on-disk SQLite under a tmpdir so VACUUM INTO, statSync,
- * statfsSync, and marker-file writes all exercise their real code paths.
- */
 
 import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { mkdtempSync, rmSync, existsSync, writeFileSync, mkdirSync, readFileSync, readdirSync } from 'fs';
@@ -58,12 +52,10 @@ function seedDatabase(dbPath: string, opts: { observerSessions: number; stuckCou
     insertObservation.run(`obs-memory-${i}`, OBSERVER_SESSIONS_PROJECT, `obs ${i}`, now, epoch);
   }
 
-  // Real session that should survive
   const keepResult = insertSession.run('keep-content', 'keep-memory', 'real-project', now, epoch);
   const keepSessionDbId = Number(keepResult.lastInsertRowid);
   insertPrompt.run('keep-content', 'survives', now, epoch);
 
-  // Stuck pending_messages tied to the surviving session (so FK passes).
   const insertPending = db.prepare(
     `INSERT INTO pending_messages (session_db_id, content_session_id, message_type, status, created_at_epoch)
      VALUES (?, 'keep-content', 'observation', 'failed', ?)`
@@ -105,7 +97,6 @@ describe('runOneTimeV12_4_3Cleanup', () => {
     const dbPath = path.join(tmpDataDir, 'claude-mem.db');
     seedDatabase(dbPath, { observerSessions: 3, stuckCount: 12 });
 
-    // chroma artifacts that should be wiped
     mkdirSync(path.join(tmpDataDir, 'chroma'), { recursive: true });
     writeFileSync(path.join(tmpDataDir, 'chroma', 'collection.bin'), 'opaque');
     writeFileSync(path.join(tmpDataDir, 'chroma-sync-state.json'), '{}');
@@ -117,20 +108,17 @@ describe('runOneTimeV12_4_3Cleanup', () => {
     const payload = JSON.parse(readFileSync(markerPath, 'utf8'));
 
     expect(payload.counts.observerSessions).toBe(3);
-    expect(payload.counts.observerCascadeRows).toBe(6); // 3 user_prompts + 3 observations
+    expect(payload.counts.observerCascadeRows).toBe(6); 
     expect(payload.counts.stuckPendingMessages).toBe(12);
     expect(payload.chromaWiped).toBe(true);
     expect(payload.chromaWipeError).toBeUndefined();
     expect(payload.backupPath).toBeTruthy();
 
-    // Backup file is real and non-empty
     expect(existsSync(payload.backupPath)).toBe(true);
 
-    // Chroma artifacts gone
     expect(existsSync(path.join(tmpDataDir, 'chroma'))).toBe(false);
     expect(existsSync(path.join(tmpDataDir, 'chroma-sync-state.json'))).toBe(false);
 
-    // Real session still present; observer rows gone
     const verify = new Database(dbPath, { readonly: true });
     const observerCount = (verify.prepare('SELECT COUNT(*) AS n FROM sdk_sessions WHERE project = ?').get(OBSERVER_SESSIONS_PROJECT) as { n: number }).n;
     const realCount = (verify.prepare(`SELECT COUNT(*) AS n FROM sdk_sessions WHERE project = 'real-project'`).get() as { n: number }).n;
@@ -140,7 +128,7 @@ describe('runOneTimeV12_4_3Cleanup', () => {
 
     expect(observerCount).toBe(0);
     expect(realCount).toBe(1);
-    expect(survivingPrompts).toBe(1); // only the keep-content prompt
+    expect(survivingPrompts).toBe(1); 
     expect(survivingPending).toBe(0);
   });
 
@@ -191,6 +179,6 @@ describe('runOneTimeV12_4_3Cleanup', () => {
     const verify = new Database(dbPath, { readonly: true });
     const observerCount = (verify.prepare('SELECT COUNT(*) AS n FROM sdk_sessions WHERE project = ?').get(OBSERVER_SESSIONS_PROJECT) as { n: number }).n;
     verify.close();
-    expect(observerCount).toBe(1); // untouched
+    expect(observerCount).toBe(1); 
   });
 });

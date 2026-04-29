@@ -1,12 +1,3 @@
-/**
- * DatabaseManager: Single long-lived database connection
- *
- * Responsibility:
- * - Manage single database connection for worker lifetime
- * - Provide centralized access to SessionStore and SessionSearch
- * - High-level database operations
- * - ChromaSync integration
- */
 
 import { Database } from 'bun:sqlite';
 import { SessionStore } from '../sqlite/SessionStore.js';
@@ -23,18 +14,12 @@ export class DatabaseManager {
   private sessionSearch: SessionSearch | null = null;
   private chromaSync: ChromaSync | null = null;
 
-  /**
-   * Initialize database connection (once, stays open)
-   */
   async initialize(): Promise<void> {
-    // Open database connection (ONCE)
     this.db = new Database(DB_PATH);
     
-    // Shared connection between store and search
     this.sessionStore = new SessionStore(this.db);
     this.sessionSearch = new SessionSearch(this.db);
 
-    // Initialize ChromaSync only if Chroma is enabled (SQLite-only fallback when disabled)
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const chromaEnabled = settings.CLAUDE_MEM_CHROMA_ENABLED !== 'false';
     if (chromaEnabled) {
@@ -46,18 +31,12 @@ export class DatabaseManager {
     logger.info('DB', 'Database initialized (shared connection)');
   }
 
-  /**
-   * Close database connection and cleanup all resources
-   */
   async close(): Promise<void> {
-    // Close ChromaSync first (MCP connection lifecycle managed by ChromaMcpManager)
     if (this.chromaSync) {
       await this.chromaSync.close();
       this.chromaSync = null;
     }
 
-    // We don't call sessionStore.close() or sessionSearch.close() 
-    // because they share this.db which we close below.
     this.sessionStore = null;
     this.sessionSearch = null;
 
@@ -68,9 +47,6 @@ export class DatabaseManager {
     logger.info('DB', 'Database closed');
   }
 
-  /**
-   * Get SessionStore instance (throws if not initialized)
-   */
   getSessionStore(): SessionStore {
     if (!this.sessionStore) {
       throw new Error('Database not initialized');
@@ -78,9 +54,6 @@ export class DatabaseManager {
     return this.sessionStore;
   }
 
-  /**
-   * Get SessionSearch instance (throws if not initialized)
-   */
   getSessionSearch(): SessionSearch {
     if (!this.sessionSearch) {
       throw new Error('Database not initialized');
@@ -88,16 +61,10 @@ export class DatabaseManager {
     return this.sessionSearch;
   }
 
-  /**
-   * Get ChromaSync instance (returns null if Chroma is disabled)
-   */
   getChromaSync(): ChromaSync | null {
     return this.chromaSync;
   }
 
-  /**
-   * Get session by ID (throws if not found)
-   */
   getSessionById(sessionDbId: number): {
     id: number;
     content_session_id: string;

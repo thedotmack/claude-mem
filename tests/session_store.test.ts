@@ -1,13 +1,3 @@
-/**
- * Tests for SessionStore in-memory database operations
- *
- * Mock Justification: NONE (0% mock code)
- * - Uses real SQLite with ':memory:' - tests actual SQL and schema
- * - All CRUD operations are tested against real database behavior
- * - Timestamp handling and FK relationships are validated
- *
- * Value: Validates core persistence layer without filesystem dependencies
- */
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { SessionStore } from '../src/services/sqlite/SessionStore.js';
 
@@ -26,18 +16,14 @@ describe('SessionStore', () => {
     const claudeId = 'claude-session-1';
     store.createSDKSession(claudeId, 'test-project', 'initial prompt');
     
-    // Should be 0 initially
     expect(store.getPromptNumberFromUserPrompts(claudeId)).toBe(0);
 
-    // Save prompt 1
     store.saveUserPrompt(claudeId, 1, 'First prompt');
     expect(store.getPromptNumberFromUserPrompts(claudeId)).toBe(1);
 
-    // Save prompt 2
     store.saveUserPrompt(claudeId, 2, 'Second prompt');
     expect(store.getPromptNumberFromUserPrompts(claudeId)).toBe(2);
 
-    // Save prompt for another session
     store.createSDKSession('claude-session-2', 'test-project', 'initial prompt');
     store.saveUserPrompt('claude-session-2', 1, 'Other prompt');
     expect(store.getPromptNumberFromUserPrompts(claudeId)).toBe(2);
@@ -48,8 +34,6 @@ describe('SessionStore', () => {
     const memoryId = 'memory-sess-obs';
     const sdkId = store.createSDKSession(claudeId, 'test-project', 'initial prompt');
 
-    // Set the memory_session_id before storing observations
-    // createSDKSession now initializes memory_session_id = NULL
     store.updateMemorySessionId(sdkId, memoryId);
 
     const obs = {
@@ -63,7 +47,7 @@ describe('SessionStore', () => {
       files_modified: []
     };
 
-    const pastTimestamp = 1600000000000; // Some time in the past
+    const pastTimestamp = 1600000000000; 
 
     const result = store.storeObservation(
       memoryId, // Use memorySessionId for FK reference
@@ -80,7 +64,6 @@ describe('SessionStore', () => {
     expect(stored).not.toBeNull();
     expect(stored?.created_at_epoch).toBe(pastTimestamp);
 
-    // Verify ISO string matches
     expect(new Date(stored!.created_at).getTime()).toBe(pastTimestamp);
   });
 
@@ -89,7 +72,6 @@ describe('SessionStore', () => {
     const memoryId = 'memory-sess-sum';
     const sdkId = store.createSDKSession(claudeId, 'test-project', 'initial prompt');
 
-    // Set the memory_session_id before storing summaries
     store.updateMemorySessionId(sdkId, memoryId);
 
     const summary = {

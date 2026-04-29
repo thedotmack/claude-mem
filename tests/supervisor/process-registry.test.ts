@@ -45,7 +45,6 @@ describe('supervisor ProcessRegistry', () => {
       mkdirSync(tempDir, { recursive: true });
       const registryPath = path.join(tempDir, 'supervisor.json');
 
-      // Create a registry, register an entry, and let it persist
       const registry1 = createProcessRegistry(registryPath);
       registry1.register('worker:1', {
         pid: process.pid,
@@ -53,12 +52,10 @@ describe('supervisor ProcessRegistry', () => {
         startedAt: '2026-03-15T00:00:00.000Z'
       });
 
-      // Verify file exists on disk
       expect(existsSync(registryPath)).toBe(true);
       const diskData = JSON.parse(readFileSync(registryPath, 'utf-8'));
       expect(diskData.processes['worker:1']).toBeDefined();
 
-      // Create a second registry from the same path — it should load the persisted entry
       const registry2 = createProcessRegistry(registryPath);
       registry2.initialize();
       const records = registry2.getAll();
@@ -108,7 +105,6 @@ describe('supervisor ProcessRegistry', () => {
       const registry = createProcessRegistry(registryPath);
       registry.initialize();
 
-      // Should recover with an empty registry
       expect(registry.getAll()).toHaveLength(0);
     });
   });
@@ -254,7 +250,6 @@ describe('supervisor ProcessRegistry', () => {
         startedAt: '2026-03-15T00:00:00.000Z'
       });
 
-      // Querying with number should find string "42"
       expect(registry.getBySession(42)).toHaveLength(1);
     });
   });
@@ -341,7 +336,6 @@ describe('supervisor ProcessRegistry', () => {
       registry.clear();
       expect(registry.getAll()).toHaveLength(0);
 
-      // Verify persisted to disk
       const diskData = JSON.parse(readFileSync(registryPath, 'utf-8'));
       expect(Object.keys(diskData.processes)).toHaveLength(0);
     });
@@ -362,7 +356,6 @@ describe('supervisor ProcessRegistry', () => {
         startedAt: '2026-03-15T00:00:00.000Z'
       });
 
-      // registry2 should be independent
       expect(registry1.getAll()).toHaveLength(1);
       expect(registry2.getAll()).toHaveLength(0);
     });
@@ -387,7 +380,6 @@ describe('supervisor ProcessRegistry', () => {
         startedAt: '2026-03-15T00:00:01.000Z'
       });
 
-      // Register a process for a different session (should survive)
       registry.register('sdk:100:50003', {
         pid: process.pid,
         type: 'sdk',

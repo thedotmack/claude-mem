@@ -1,16 +1,3 @@
-/**
- * ChromaMcpManager - Singleton managing a persistent MCP connection to chroma-mcp via uvx
- *
- * Replaces ChromaServerManager (which spawned `npx chroma run`) with a stdio-based
- * MCP client that communicates with chroma-mcp as a subprocess. The chroma-mcp server
- * handles its own embedding and persistent storage, eliminating the need for a separate
- * HTTP server, chromadb npm package, and ONNX/WASM embedding dependencies.
- *
- * Lifecycle: lazy-connects on first callTool() use, maintains a single persistent
- * connection per worker lifetime, and auto-reconnects if the subprocess dies.
- *
- * Cross-platform: Linux, macOS, Windows
- */
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -27,26 +14,10 @@ import { getSupervisor } from '../../supervisor/index.js';
 const CHROMA_MCP_CLIENT_NAME = 'claude-mem-chroma';
 const CHROMA_MCP_CLIENT_VERSION = '1.0.0';
 const MCP_CONNECTION_TIMEOUT_MS = 30_000;
-const RECONNECT_BACKOFF_MS = 10_000; // Don't retry connections faster than this after failure
+const RECONNECT_BACKOFF_MS = 10_000; 
 const DEFAULT_CHROMA_DATA_DIR = path.join(os.homedir(), '.claude-mem', 'chroma');
 const CHROMA_SUPERVISOR_ID = 'chroma-mcp';
 
-/**
- * Pinned chroma-mcp version for deterministic installs.
- *
- * Why pin: `uvx chroma-mcp` (unpinned) resolves whatever version PyPI happens
- * to serve at install time. That has bitten us multiple ways:
- *   - #2046: transient missing httpcore/httpx after dependency resolver shifts
- *   - #2085: surprise breaking changes between point releases
- *   - #2102: subprocess spawn storms triggered by version drift in chromadb deps
- *
- * Pinning to a specific known-good version makes installs reproducible across
- * machines and across time. Bump deliberately, not accidentally.
- *
- * Verified 2026-04-25 with `uvx --python 3.13 chroma-mcp==0.2.6 --help` in a
- * clean uv cache: starts cleanly, no httpcore/httpx ImportError, no `--with`
- * flags required. If that changes on a future bump, re-add the flags here.
- */
 const CHROMA_MCP_PINNED_VERSION = '0.2.6';
 
 export class ChromaMcpManager {
@@ -59,9 +30,6 @@ export class ChromaMcpManager {
 
   private constructor() {}
 
-  /**
-   * Get or create the singleton instance
-   */
   static getInstance(): ChromaMcpManager {
     if (!ChromaMcpManager.instance) {
       ChromaMcpManager.instance = new ChromaMcpManager();
@@ -69,23 +37,16 @@ export class ChromaMcpManager {
     return ChromaMcpManager.instance;
   }
 
-  /**
-   * Ensure the MCP client is connected to chroma-mcp.
-   * Uses a connection lock to prevent concurrent connection attempts.
-   * If the subprocess has died since the last use, reconnects transparently.
-   */
   private async ensureConnected(): Promise<void> {
     if (this.connected && this.client) {
       return;
     }
 
-    // Backoff: don't retry connections too fast after a failure
     const timeSinceLastFailure = Date.now() - this.lastConnectionFailureTimestamp;
     if (this.lastConnectionFailureTimestamp > 0 && timeSinceLastFailure < RECONNECT_BACKOFF_MS) {
       throw new Error(`chroma-mcp connection in backoff (${Math.ceil((RECONNECT_BACKOFF_MS - timeSinceLastFailure) / 1000)}s remaining)`);
     }
 
-    // If another caller is already connecting, wait for that attempt
     if (this.connecting) {
       await this.connecting;
       return;
@@ -107,14 +68,7 @@ export class ChromaMcpManager {
     }
   }
 
-  /**
-   * Internal connection logic - spawns uvx chroma-mcp and performs MCP handshake.
-   * Called behind the connection lock to ensure only one connection attempt at a time.
-   */
   private async connectInternal(): Promise<void> {
-    // Clean up any stale client/transport from a dead subprocess.
-    // Close transport first (kills subprocess via SIGTERM) before client
-    // to avoid hanging on a stuck process.
     if (this.transport) {
       try { await this.transport.close(); } catch { /* already dead */ }
     }
@@ -129,11 +83,6 @@ export class ChromaMcpManager {
     const spawnEnvironment = this.getSpawnEnv();
     getSupervisor().assertCanSpawn('chroma mcp');
 
-    // On Windows, .cmd files require shell resolution. Since MCP SDK's
-    // StdioClientTransport doesn't support `shell: true`, route through
-    // cmd.exe which resolves .cmd/.bat extensions and PATH automatically.
-    // This also fixes Git Bash compatibility (#1062) since cmd.exe handles
-    // Windows-native command resolution regardless of the calling shell.
     const isWindows = process.platform === 'win32';
     const uvxSpawnCommand = isWindows ? (process.env.ComSpec || 'cmd.exe') : 'uvx';
     const uvxSpawnArgs = isWindows ? ['/c', 'uvx', ...commandArgs] : commandArgs;
@@ -143,11 +92,6 @@ export class ChromaMcpManager {
       args: uvxSpawnArgs.join(' ')
     });
 
-    // Run chroma-mcp from the home directory so that pydantic-settings (used
-    // by chroma-mcp internally) does not pick up .env / .env.local files from
-    // the project directory. Those files often contain project-specific vars
-    // that pydantic rejects with "Extra inputs are not permitted", crashing the
-    // subprocess immediately. Fixes #1297.
     this.transport = new StdioClientTransport({
       command: uvxSpawnCommand,
       args: uvxSpawnArgs,
@@ -173,7 +117,6 @@ export class ChromaMcpManager {
     try {
       await Promise.race([mcpConnectionPromise, timeoutPromise]);
     } catch (connectionError) {
-      // Connection failed or timed out - kill the subprocess to prevent zombies
       clearTimeout(timeoutId!);
       logger.warn('CHROMA_MCP', 'Connection failed, killing subprocess to prevent zombie', {
         error: connectionError instanceof Error ? connectionError.message : String(connectionError)
@@ -192,9 +135,6 @@ export class ChromaMcpManager {
 
     logger.info('CHROMA_MCP', 'Connected to chroma-mcp successfully');
 
-    // Listen for transport close to mark connection as dead and apply backoff.
-    // CRITICAL: Guard with reference check to prevent stale onclose handlers from
-    // previous transports overwriting the current connection (race condition).
     const currentTransport = this.transport;
     this.transport.onclose = () => {
       if (this.transport !== currentTransport) {
@@ -210,11 +150,6 @@ export class ChromaMcpManager {
     };
   }
 
-  /**
-   * Build the uvx command arguments based on current settings.
-   * In local mode: uses persistent client with local data directory.
-   * In remote mode: uses http client with configured host/port/auth.
-   */
   private buildCommandArgs(): string[] {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const chromaMode = settings.CLAUDE_MEM_CHROMA_MODE || 'local';
@@ -253,7 +188,6 @@ export class ChromaMcpManager {
       return args;
     }
 
-    // Local mode: persistent client with data directory
     return [
       '--python', pythonVersion,
       `chroma-mcp==${CHROMA_MCP_PINNED_VERSION}`,
@@ -262,14 +196,6 @@ export class ChromaMcpManager {
     ];
   }
 
-  /**
-   * Call a chroma-mcp tool by name with the given arguments.
-   * Lazily connects on first call. Reconnects if the subprocess has died.
-   *
-   * @param toolName - The chroma-mcp tool name (e.g. 'chroma_query_documents')
-   * @param toolArguments - The tool arguments as a plain object
-   * @returns The parsed JSON result from the tool's text output
-   */
   async callTool(toolName: string, toolArguments: Record<string, unknown>): Promise<unknown> {
     await this.ensureConnected();
 
@@ -284,9 +210,6 @@ export class ChromaMcpManager {
         arguments: toolArguments
       });
     } catch (transportError) {
-      // Transport error: chroma-mcp subprocess likely died (e.g., killed by orphan reaper,
-      // HNSW index corruption). Mark connection dead and retry once after reconnect (#1131).
-      // Without this retry, callers see a one-shot error even though reconnect would succeed.
       this.connected = false;
       this.client = null;
       this.transport = null;
@@ -307,14 +230,12 @@ export class ChromaMcpManager {
       }
     }
 
-    // MCP tools signal errors via isError flag on the CallToolResult
     if (result.isError) {
       const errorText = (result.content as Array<{ type: string; text?: string }>)
         ?.find(item => item.type === 'text')?.text || 'Unknown chroma-mcp error';
       throw new Error(`chroma-mcp tool "${toolName}" returned error: ${errorText}`);
     }
 
-    // Extract text from MCP CallToolResult: { content: Array<{ type, text? }> }
     const contentArray = result.content as Array<{ type: string; text?: string }>;
     if (!contentArray || contentArray.length === 0) {
       return null;
@@ -325,14 +246,9 @@ export class ChromaMcpManager {
       return null;
     }
 
-    // chroma-mcp returns JSON for query/get results, but plain text for
-    // mutating operations (e.g. "Successfully created collection ...").
-    // Try JSON parse first; if it fails, return the raw text for non-error responses.
     try {
       return JSON.parse(firstTextContent.text);
     } catch (parseError: unknown) {
-      // Plain text response (e.g. "Successfully created collection cm__foo")
-      // Return null for void-like success messages, callers don't need the text
       if (parseError instanceof Error) {
         logger.debug('CHROMA_MCP', 'Non-JSON response from tool, returning null', {
           toolName,
@@ -343,10 +259,6 @@ export class ChromaMcpManager {
     }
   }
 
-  /**
-   * Check if the MCP connection is alive by calling chroma_list_collections.
-   * Returns true if the connection is healthy, false otherwise.
-   */
   async isHealthy(): Promise<boolean> {
     try {
       await this.callTool('chroma_list_collections', { limit: 1 });
@@ -359,17 +271,6 @@ export class ChromaMcpManager {
     }
   }
 
-  /**
-   * Deep semantic-search probe — verifies the actual query path works,
-   * not just that the subprocess responds to one tool. Each stage is wrapped
-   * in its own try/catch so the returned `stage` reflects where it failed.
-   *
-   * Stages:
-   *  - 'list'  → chroma_list_collections (also counts collections)
-   *  - 'query' → chroma_query_documents against cm__claude-mem with a trivial
-   *              query and n_results: 1 (measures latency)
-   *  - 'done'  → both stages succeeded
-   */
   async probeSemanticSearch(): Promise<{
     ok: boolean;
     stage: 'connect' | 'list' | 'query' | 'done';
@@ -379,7 +280,6 @@ export class ChromaMcpManager {
   }> {
     let collections: number | undefined;
 
-    // Stage: list — also lazy-connects via callTool
     try {
       const listResult: any = await this.callTool('chroma_list_collections', { limit: 100 });
       if (Array.isArray(listResult)) {
@@ -395,7 +295,6 @@ export class ChromaMcpManager {
       return { ok: false, stage: 'list', error: message };
     }
 
-    // Stage: query — round-trip through the embedding/vector path
     const queryStartedAt = Date.now();
     try {
       await this.callTool('chroma_query_documents', {
@@ -426,10 +325,6 @@ export class ChromaMcpManager {
     }
   }
 
-  /**
-   * Gracefully stop the MCP connection and kill the chroma-mcp subprocess.
-   * client.close() sends stdin close -> SIGTERM -> SIGKILL to the subprocess.
-   */
   async stop(): Promise<void> {
     if (!this.client) {
       logger.debug('CHROMA_MCP', 'No active MCP connection to stop');
@@ -457,10 +352,6 @@ export class ChromaMcpManager {
     logger.info('CHROMA_MCP', 'chroma-mcp MCP connection stopped');
   }
 
-  /**
-   * Reset the singleton instance (for testing).
-   * Awaits stop() to prevent dual subprocesses.
-   */
   static async reset(): Promise<void> {
     if (ChromaMcpManager.instance) {
       await ChromaMcpManager.instance.stop();
@@ -468,13 +359,6 @@ export class ChromaMcpManager {
     ChromaMcpManager.instance = null;
   }
 
-  /**
-   * Get or create a combined SSL certificate bundle for Zscaler/corporate proxy environments.
-   * On macOS, combines the Python certifi CA bundle with any Zscaler certificates from
-   * the system keychain. Caches the result for 24 hours at ~/.claude-mem/combined_certs.pem.
-   *
-   * Returns the path to the combined cert file, or undefined if not needed/available.
-   */
   private getCombinedCertPath(): string | undefined {
     const combinedCertPath = path.join(os.homedir(), '.claude-mem', 'combined_certs.pem');
 
@@ -543,11 +427,6 @@ export class ChromaMcpManager {
     }
   }
 
-  /**
-   * Build subprocess environment with SSL certificate overrides for enterprise proxy compatibility.
-   * If a combined cert bundle exists (Zscaler), injects SSL_CERT_FILE, REQUESTS_CA_BUNDLE, etc.
-   * Otherwise returns a plain string-keyed copy of process.env.
-   */
   private getSpawnEnv(): Record<string, string> {
     const baseEnv: Record<string, string> = {};
     for (const [key, value] of Object.entries(sanitizeEnv(process.env))) {

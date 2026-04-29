@@ -1,19 +1,8 @@
-/**
- * Tag Stripping Utility Tests
- *
- * Tests the tag privacy system for <private>, <claude-mem-context>, and <system_instruction> tags.
- * These tags enable users and the system to exclude content from memory storage.
- *
- * Sources:
- * - Implementation from src/utils/tag-stripping.ts
- * - Privacy patterns from src/services/worker/http/routes/SessionRoutes.ts
- */
 
 import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
 import { stripMemoryTagsFromPrompt, stripMemoryTagsFromJson, isInternalProtocolPayload } from '../../src/utils/tag-stripping.js';
 import { logger } from '../../src/utils/logger.js';
 
-// Suppress logger output during tests
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
 
 describe('Tag Stripping Utilities', () => {
@@ -77,7 +66,6 @@ describe('Tag Stripping Utilities', () => {
         }
         input += ' end';
         const result = stripMemoryTagsFromPrompt(input);
-        // Tags are stripped but spaces between them remain
         expect(result).not.toContain('<private>');
         expect(result).not.toContain('<claude-mem-context>');
         expect(result).toContain('start');
@@ -164,7 +152,6 @@ finish`;
 
     describe('ReDoS protection', () => {
       it('should handle content with many tags without hanging (< 1 second)', async () => {
-        // Generate content with many tags
         let content = '';
         for (let i = 0; i < 150; i++) {
           content += `<private>secret${i}</private> text${i} `;
@@ -174,16 +161,12 @@ finish`;
         const result = stripMemoryTagsFromPrompt(content);
         const duration = Date.now() - startTime;
 
-        // Should complete quickly despite many tags
         expect(duration).toBeLessThan(1000);
-        // Should not contain any private content
         expect(result).not.toContain('<private>');
-        // Should warn about exceeding tag limit
-        expect(loggerSpies[2]).toHaveBeenCalled(); // warn spy
+        expect(loggerSpies[2]).toHaveBeenCalled(); 
       });
 
       it('should process within reasonable time with nested-looking patterns', () => {
-        // Content that looks like it could cause backtracking
         const content = '<private>' + 'x'.repeat(10000) + '</private> keep this';
 
         const startTime = Date.now();
@@ -392,11 +375,9 @@ after`;
 
   describe('privacy enforcement integration', () => {
     it('should allow empty result to trigger privacy skip', () => {
-      // Simulates what SessionRoutes does with private-only prompts
       const prompt = '<private>entirely private prompt</private>';
       const cleanedPrompt = stripMemoryTagsFromPrompt(prompt);
 
-      // Empty/whitespace prompts should trigger skip
       const shouldSkip = !cleanedPrompt || cleanedPrompt.trim() === '';
       expect(shouldSkip).toBe(true);
     });

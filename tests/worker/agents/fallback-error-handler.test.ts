@@ -1,16 +1,5 @@
-/**
- * Tests for fallback error classification logic
- *
- * Mock Justification: NONE (0% mock code)
- * - Tests pure functions directly with no external dependencies
- * - shouldFallbackToClaude: Pattern matching on error messages
- * - isAbortError: Simple type checking
- *
- * High-value tests: Ensure correct provider fallback behavior for transient errors
- */
 import { describe, it, expect } from 'bun:test';
 
-// Import directly from specific files to avoid worker-service import chain
 import { shouldFallbackToClaude, isAbortError } from '../../../src/services/worker/agents/FallbackErrorHandler.js';
 import { FALLBACK_ERROR_PATTERNS } from '../../../src/services/worker/agents/types.js';
 
@@ -112,8 +101,8 @@ describe('FallbackErrorHandler', () => {
       });
 
       it('should handle non-error objects by stringifying', () => {
-        expect(shouldFallbackToClaude({ code: 429 })).toBe(false); // toString won't include 429
-        expect(shouldFallbackToClaude(429)).toBe(true); // number 429 stringifies to "429"
+        expect(shouldFallbackToClaude({ code: 429 })).toBe(false); 
+        expect(shouldFallbackToClaude(429)).toBe(true); 
       });
     });
   });

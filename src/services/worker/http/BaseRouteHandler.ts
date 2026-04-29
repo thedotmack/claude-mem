@@ -1,22 +1,9 @@
-/**
- * BaseRouteHandler
- *
- * Base class for all route handlers providing:
- * - Automatic try-catch wrapping with error logging
- * - Integer parameter validation
- * - Required body parameter validation
- * - Standard HTTP response helpers
- * - Centralized error handling
- */
 
 import { Request, Response } from 'express';
 import { logger } from '../../../utils/logger.js';
 import { AppError } from '../../server/ErrorHandler.js';
 
 export abstract class BaseRouteHandler {
-  /**
-   * Wrap handler with automatic try-catch and error logging
-   */
   protected wrapHandler(
     handler: (req: Request, res: Response) => void | Promise<void>
   ): (req: Request, res: Response) => void {
@@ -34,10 +21,6 @@ export abstract class BaseRouteHandler {
     };
   }
 
-  /**
-   * Parse and validate integer parameter
-   * Returns the integer value or sends 400 error response
-   */
   protected parseIntParam(req: Request, res: Response, paramName: string): number | null {
     const value = parseInt(req.params[paramName], 10);
     if (isNaN(value)) {
@@ -47,27 +30,15 @@ export abstract class BaseRouteHandler {
     return value;
   }
 
-  /**
-   * Send 400 Bad Request response
-   */
   protected badRequest(res: Response, message: string): void {
     res.status(400).json({ error: message });
   }
 
-  /**
-   * Send 404 Not Found response
-   */
   protected notFound(res: Response, message: string): void {
     res.status(404).json({ error: message });
   }
 
-  /**
-   * Centralized error logging and response
-   * Checks headersSent to avoid "Cannot set headers after they are sent" errors
-   */
   protected handleError(res: Response, error: Error, context?: string): void {
-    // [APPROVED OVERRIDE]: Worker routes need centralized AppError translation so
-    // status/code/details stay consistent across every HTTP handler.
     logger.failure('WORKER', context || 'Request failed', {}, error);
     if (!res.headersSent) {
       const statusCode = error instanceof AppError ? error.statusCode : 500;

@@ -1,17 +1,11 @@
 #!/usr/bin/env node
-/**
- * Extract prompt sections from src/sdk/prompts.ts and generate modes/code.yaml
- * This ensures the YAML contains the exact same wording as the hardcoded prompts
- */
 
 const fs = require('fs');
 const path = require('path');
 
-// Read the prompts.ts from main branch (saved to /tmp)
 const promptsPath = '/tmp/prompts-main.ts';
 const promptsContent = fs.readFileSync(promptsPath, 'utf-8');
 
-// Extract buildInitPrompt function content
 const initPromptMatch = promptsContent.match(/export function buildInitPrompt\([^)]+\): string \{[\s\S]*?return `([\s\S]*?)`;\s*\}/);
 if (!initPromptMatch) {
   console.error('Could not find buildInitPrompt function');
@@ -19,24 +13,18 @@ if (!initPromptMatch) {
 }
 const initPrompt = initPromptMatch[1];
 
-// Extract sections from buildInitPrompt
-// Line 41: observer_role starts with "Your job is to monitor..."
 const observerRoleMatch = initPrompt.match(/Your job is to monitor[^\n]*\n\n(?:SPATIAL AWARENESS:[\s\S]*?\n\n)?/);
 const observerRole = observerRoleMatch ? observerRoleMatch[0].replace(/\n\n$/, '') : '';
 
-// Extract recording_focus (WHAT TO RECORD section)
 const recordingFocusMatch = initPrompt.match(/WHAT TO RECORD\n-{14}\n([\s\S]*?)(?=\n\nWHEN TO SKIP)/);
 const recordingFocus = recordingFocusMatch ? `WHAT TO RECORD\n--------------\n${recordingFocusMatch[1]}` : '';
 
-// Extract skip_guidance (WHEN TO SKIP section)
 const skipGuidanceMatch = initPrompt.match(/WHEN TO SKIP\n-{12}\n([\s\S]*?)(?=\n\nOUTPUT FORMAT)/);
 const skipGuidance = skipGuidanceMatch ? `WHEN TO SKIP\n------------\n${skipGuidanceMatch[1]}` : '';
 
-// Extract type_guidance (from XML comment)
 const typeGuidanceMatch = initPrompt.match(/<!--\n\s+\*\*type\*\*: MUST be EXACTLY[^\n]*\n([\s\S]*?)-->/);
 const typeGuidance = typeGuidanceMatch ? typeGuidanceMatch[0].replace(/<!--\n\s+/, '').replace(/\s+-->/, '').trim() : '';
 
-// Extract field_guidance (facts AND files comments combined)
 const factsMatch = initPrompt.match(/\*\*facts\*\*: Concise[^\n]*\n([\s\S]*?)(?=\n  -->)/);
 const filesMatch = initPrompt.match(/\*\*files\*\*:[^\n]*\n/);
 
@@ -45,11 +33,9 @@ const filesText = filesMatch ? filesMatch[0].trim() : '**files**: All files touc
 
 const fieldGuidance = `${factsText}\n\n${filesText}`;
 
-// Extract concept_guidance (concepts comment)
 const conceptGuidanceMatch = initPrompt.match(/<!--\n\s+\*\*concepts\*\*: 2-5 knowledge[^\n]*\n([\s\S]*?)-->/);
 const conceptGuidance = conceptGuidanceMatch ? conceptGuidanceMatch[0].replace(/<!--\n\s+/, '').replace(/\s+-->/, '').trim() : '';
 
-// Build the JSON content
 const jsonData = {
   name: "Code Development",
   description: "Software development and engineering work",
@@ -82,7 +68,6 @@ const jsonData = {
   }
 };
 
-// OLD YAML BUILD:
 const yamlContent_OLD = `name: "Code Development"
 description: "Software development and engineering work"
 version: "1.0.0"
@@ -164,7 +149,6 @@ prompts:
   format_examples: ""
 `;
 
-// Write to modes/code.json
 const outputPath = path.join(__dirname, '../modes/code.json');
 fs.writeFileSync(outputPath, JSON.stringify(jsonData, null, 2), 'utf-8');
 

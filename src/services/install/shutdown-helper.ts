@@ -1,19 +1,6 @@
-/**
- * Shared worker-shutdown helper used by both `install` (to clear out a
- * running worker before overwriting plugin files) and `uninstall` (to
- * release file locks before deletion).
- *
- * Posts to `/api/admin/shutdown`, then polls `/api/health` until the
- * connection is refused (= worker is gone) or the timeout elapses.
- *
- * Best-effort: if the worker is not running, the POST throws and we
- * return immediately. Callers should never depend on this throwing.
- */
 
 export interface ShutdownResult {
-  /** True if we actively shut down a worker; false if none was running. */
   workerWasRunning: boolean;
-  /** True if we observed the worker stop responding before the timeout. */
   confirmedStopped: boolean;
 }
 
@@ -31,8 +18,6 @@ export async function shutdownWorkerAndWait(
     });
     workerWasRunning = true;
   } catch {
-    // Worker not running (connection refused) or shutdown POST timed out.
-    // Either way, nothing more to do.
     return { workerWasRunning: false, confirmedStopped: true };
   }
 
@@ -46,9 +31,6 @@ export async function shutdownWorkerAndWait(
       });
       // Health endpoint still responding — worker is still alive, keep waiting.
     } catch (err) {
-      // AbortError = health endpoint timed out (worker still accepting
-      // connections but slow). Keep polling. Any other error
-      // (ECONNREFUSED, ECONNRESET) means the worker is gone.
       if (err instanceof Error && err.name === 'AbortError') continue;
       return { workerWasRunning, confirmedStopped: true };
     }

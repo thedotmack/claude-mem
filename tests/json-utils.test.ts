@@ -4,13 +4,6 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { readJsonSafe } from '../src/utils/json-utils';
 
-/**
- * Tests for the shared JSON file utilities.
- *
- * readJsonSafe is used across the CLI and services to safely read JSON
- * files with fallback to defaults when files are missing or corrupt.
- */
-
 describe('JSON Utils', () => {
   let tempDir: string;
 

@@ -1,15 +1,3 @@
-/**
- * Regression test for mock.module() worker pollution (#1299)
- *
- * context-reinjection-guard.test.ts used to call mock.module('../../src/utils/project-name.js', ...)
- * at the top level, which permanently stubbed getProjectName to return 'test-project'
- * for every subsequent import in the same Bun worker process.
- *
- * Without bunfig.toml [test] smol=true, this test would fail when Bun scheduled
- * it in the same worker as context-reinjection-guard.test.ts, because the module
- * was mocked before these tests ran and getProjectName() returned 'test-project'
- * instead of the real extracted basename.
- */
 import { describe, it, expect } from 'bun:test';
 import { getProjectName } from '../../src/utils/project-name.js';
 

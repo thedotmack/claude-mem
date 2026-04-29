@@ -70,13 +70,10 @@ describe('sanitizeEnv', () => {
 
     const result = sanitizeEnv(original);
 
-    // Result should be a different object
     expect(result).not.toBe(original);
 
-    // Original should be unchanged
     expect(original).toEqual(originalCopy);
 
-    // Result should not contain stripped vars
     expect(result.CLAUDECODE_FOO).toBeUndefined();
     expect(result.PATH).toBe('/usr/bin');
   });
@@ -170,15 +167,12 @@ describe('sanitizeEnv', () => {
       PATH: '/usr/bin'
     });
 
-    // Preserved: explicitly allowed CLAUDE_CODE_* vars
     expect(result.CLAUDE_CODE_OAUTH_TOKEN).toBe('my-oauth-token');
     expect(result.CLAUDE_CODE_GIT_BASH_PATH).toBe('/usr/bin/bash');
 
-    // Stripped: all other CLAUDE_CODE_* vars
     expect(result.CLAUDE_CODE_RANDOM_OTHER).toBeUndefined();
     expect(result.CLAUDE_CODE_INTERNAL_FLAG).toBeUndefined();
 
-    // Preserved: normal env vars
     expect(result.PATH).toBe('/usr/bin');
   });
 });

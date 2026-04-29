@@ -1,9 +1,3 @@
-/**
- * User Message Handler - SessionStart (parallel)
- *
- * Displays context info to user via stderr.
- * Uses exit code 0 (SUCCESS) - stderr is not shown to Claude with exit 0.
- */
 
 import { basename } from 'path';
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
@@ -20,7 +14,6 @@ export const userMessageHandler: EventHandler = {
     const project = basename(input.cwd ?? process.cwd());
     const colorsParam = input.platform === 'claude-code' ? '&colors=true' : '';
 
-    // Plan 05 Phase 2: single helper for ensure-worker-alive → request → fallback.
     const result = await executeWithWorkerFallback<string>(
       `/api/context/inject?project=${encodeURIComponent(project)}${colorsParam}`,
       'GET',

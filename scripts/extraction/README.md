@@ -61,14 +61,12 @@ These are Claude Code session transcripts stored in JSONL (JSON Lines) format.
 <?xml version="1.0" encoding="UTF-8"?>
 <transcript_extracts>
 
-<!-- Block 1 | 2025-10-19 03:03:23 UTC -->
 <observation>
   <type>discovery</type>
   <title>Example observation</title>
   ...
 </observation>
 
-<!-- Block 2 | 2025-10-19 03:03:45 UTC -->
 <summary>
   <request>What was accomplished</request>
   ...

@@ -1,8 +1,3 @@
-/**
- * Knowledge Agent types
- *
- * Defines the corpus data model for building and querying knowledge agent context.
- */
 
 export interface CorpusFilter {
   project?: string;
@@ -10,8 +5,8 @@ export interface CorpusFilter {
   concepts?: string[];
   files?: string[];
   query?: string;
-  date_start?: string;  // ISO date
-  date_end?: string;    // ISO date
+  date_start?: string;  
+  date_end?: string;    
   limit?: number;
 }
 

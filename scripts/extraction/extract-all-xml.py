@@ -49,10 +49,8 @@ def process_transcript_file(filepath):
             try:
                 data = json.loads(line)
 
-                # Get timestamp
                 timestamp = data.get('timestamp', 'unknown')
 
-                # Extract text content from message
                 message = data.get('message', {})
                 content = message.get('content', [])
 
@@ -63,13 +61,11 @@ def process_transcript_file(filepath):
                             if item.get('type') == 'text':
                                 text = item.get('text', '')
                             elif item.get('type') == 'tool_use':
-                                # Also check tool_use input fields
                                 tool_input = item.get('input', {})
                                 if isinstance(tool_input, dict):
                                     text = str(tool_input)
 
                             if text:
-                                # Extract XML blocks
                                 xml_blocks = extract_xml_blocks(text)
 
                                 for block in xml_blocks:
@@ -83,11 +79,9 @@ def process_transcript_file(filepath):
 
     return results
 
-# Get list of transcript files
 transcript_dir = os.path.expanduser('~/.claude/projects/-Users-alexnewman-Scripts-claude-mem/')
 os.chdir(transcript_dir)
 
-# Get all transcript files sorted by modification time
 result = subprocess.run(['ls', '-t'], capture_output=True, text=True)
 files = [f for f in result.stdout.strip().split('\n') if f.endswith('.jsonl')][:62]
 
@@ -99,7 +93,6 @@ for filename in files:
     all_results.extend(results)
     print(f"  Found {len(results)} XML blocks")
 
-# Write results with timestamps
 output_file = os.path.expanduser('~/Scripts/claude-mem/all_xml_fragments_with_timestamps.xml')
 with open(output_file, 'w', encoding='utf-8') as f:
     f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
@@ -109,7 +102,6 @@ with open(output_file, 'w', encoding='utf-8') as f:
         timestamp = item['timestamp']
         xml = item['xml']
 
-        # Format timestamp nicely if it's ISO format
         if timestamp != 'unknown' and timestamp:
             try:
                 dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))

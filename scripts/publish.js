@@ -1,10 +1,5 @@
 #!/usr/bin/env node
 
-/**
- * Release script for claude-mem
- * Handles version bumping, building, and creating marketplace releases
- */
-
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
@@ -23,7 +18,6 @@ async function publish() {
   try {
     console.log('📦 Claude-mem Marketplace Release Tool\n');
 
-    // Check git status
     console.log('🔍 Checking git status...');
     const { stdout: gitStatus } = await execAsync('git status --porcelain');
     if (gitStatus.trim()) {
@@ -39,12 +33,10 @@ async function publish() {
       console.log('✓ Working directory clean');
     }
 
-    // Get current version
     const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf-8'));
     const currentVersion = packageJson.version;
     console.log(`\n📌 Current version: ${currentVersion}`);
 
-    // Ask for version bump type
     console.log('\nVersion bump type:');
     console.log('  1. patch (x.x.X) - Bug fixes');
     console.log('  2. minor (x.X.0) - New features');
@@ -82,7 +74,6 @@ async function publish() {
       process.exit(0);
     }
 
-    // Update package.json and marketplace.json versions
     console.log('\n📝 Updating package.json and marketplace.json...');
     packageJson.version = newVersion;
     fs.writeFileSync('package.json', JSON.stringify(packageJson, null, 2) + '\n');
@@ -92,12 +83,10 @@ async function publish() {
     fs.writeFileSync('.claude-plugin/marketplace.json', JSON.stringify(marketplaceJson, null, 2) + '\n');
     console.log('✓ Versions updated in both files');
 
-    // Run build
     console.log('\n🔨 Building hooks...');
     await execAsync('npm run build');
     console.log('✓ Build complete');
 
-    // Run tests if they exist
     if (packageJson.scripts?.test) {
       console.log('\n🧪 Running tests...');
       try {
@@ -114,7 +103,6 @@ async function publish() {
       }
     }
 
-    // Git commit and tag
     console.log('\n📌 Creating git commit and tag...');
     await execAsync('git add package.json .claude-plugin/marketplace.json plugin/');
     await execAsync(`git commit -m "chore: Release v${newVersion}
@@ -124,7 +112,6 @@ https://github.com/thedotmack/claude-mem"`);
     await execAsync(`git tag v${newVersion}`);
     console.log(`✓ Created commit and tag v${newVersion}`);
 
-    // Push to git
     console.log('\n⬆️  Pushing to git...');
     await execAsync('git push');
     await execAsync('git push --tags');

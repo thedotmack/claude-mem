@@ -1,8 +1,4 @@
 #!/usr/bin/env node
-/**
- * Wipes the Chroma data directory so backfillAllProjects rebuilds it on next worker start.
- * Chroma is always rebuildable from SQLite — this is safe.
- */
 const fs = require('fs');
 const path = require('path');
 const os = require('os');

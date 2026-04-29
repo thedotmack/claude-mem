@@ -1,9 +1,3 @@
-/**
- * Data Routes
- *
- * Handles data retrieval operations: observations, summaries, prompts, stats, processing status.
- * All endpoints use direct database access via service layer.
- */
 
 import express, { Request, Response } from 'express';
 import { z } from 'zod';
@@ -23,9 +17,6 @@ import { validateBody } from '../middleware/validateBody.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 import { getObservationsByFilePath } from '../../../sqlite/observations/get.js';
 
-// Plan 06 Phase 3 — per-route Zod schemas. Coercions match the legacy
-// behaviour where MCP clients sometimes send arrays as JSON-encoded strings
-// or comma-separated strings.
 const integerArrayLike = z.preprocess((value) => {
   if (Array.isArray(value)) return value;
   if (typeof value === 'string') {
@@ -35,8 +26,6 @@ const integerArrayLike = z.preprocess((value) => {
     } catch {
       // not JSON, fall through to comma split
     }
-    // Keep NaN values so the inner z.number().int() schema rejects them
-    // — coercion does not silently drop garbage input.
     return value.split(',').map((part) => Number(part.trim()));
   }
   return value;
@@ -89,12 +78,10 @@ export class DataRoutes extends BaseRouteHandler {
   }
 
   setupRoutes(app: express.Application): void {
-    // Pagination endpoints
     app.get('/api/observations', this.handleGetObservations.bind(this));
     app.get('/api/summaries', this.handleGetSummaries.bind(this));
     app.get('/api/prompts', this.handleGetPrompts.bind(this));
 
-    // Fetch by ID endpoints
     app.get('/api/observation/:id', this.handleGetObservationById.bind(this));
     app.get('/api/observations/by-file', this.handleGetObservationsByFile.bind(this));
     app.post('/api/observations/batch', validateBody(observationsBatchSchema), this.handleGetObservationsByIds.bind(this));
@@ -102,49 +89,33 @@ export class DataRoutes extends BaseRouteHandler {
     app.post('/api/sdk-sessions/batch', validateBody(sdkSessionsBatchSchema), this.handleGetSdkSessionsByIds.bind(this));
     app.get('/api/prompt/:id', this.handleGetPromptById.bind(this));
 
-    // Metadata endpoints
     app.get('/api/stats', this.handleGetStats.bind(this));
     app.get('/api/projects', this.handleGetProjects.bind(this));
 
-    // Processing status endpoints
     app.get('/api/processing-status', this.handleGetProcessingStatus.bind(this));
     app.post('/api/processing', validateBody(setProcessingSchema), this.handleSetProcessing.bind(this));
 
-    // Import endpoint
     app.post('/api/import', validateBody(importSchema), this.handleImport.bind(this));
   }
 
-  /**
-   * Get paginated observations
-   */
   private handleGetObservations = this.wrapHandler((req: Request, res: Response): void => {
     const { offset, limit, project, platformSource } = this.parsePaginationParams(req);
     const result = this.paginationHelper.getObservations(offset, limit, project, platformSource);
     res.json(result);
   });
 
-  /**
-   * Get paginated summaries
-   */
   private handleGetSummaries = this.wrapHandler((req: Request, res: Response): void => {
     const { offset, limit, project, platformSource } = this.parsePaginationParams(req);
     const result = this.paginationHelper.getSummaries(offset, limit, project, platformSource);
     res.json(result);
   });
 
-  /**
-   * Get paginated user prompts
-   */
   private handleGetPrompts = this.wrapHandler((req: Request, res: Response): void => {
     const { offset, limit, project, platformSource } = this.parsePaginationParams(req);
     const result = this.paginationHelper.getPrompts(offset, limit, project, platformSource);
     res.json(result);
   });
 
-  /**
-   * Get observation by ID
-   * GET /api/observation/:id
-   */
   private handleGetObservationById = this.wrapHandler((req: Request, res: Response): void => {
     const id = this.parseIntParam(req, res, 'id');
     if (id === null) return;
@@ -160,10 +131,6 @@ export class DataRoutes extends BaseRouteHandler {
     res.json(observation);
   });
 
-  /**
-   * Get observations associated with a file path, scoped to projects
-   * GET /api/observations/by-file?path=<file_path>&projects=<comma,separated>&limit=15
-   */
   private handleGetObservationsByFile = this.wrapHandler((req: Request, res: Response): void => {
     const filePath = req.query.path as string | undefined;
     if (!filePath) {
@@ -182,11 +149,6 @@ export class DataRoutes extends BaseRouteHandler {
     res.json({ observations, count: observations.length });
   });
 
-  /**
-   * Get observations by array of IDs
-   * POST /api/observations/batch
-   * Body: { ids: number[], orderBy?: 'date_desc' | 'date_asc', limit?: number, project?: string }
-   */
   private handleGetObservationsByIds = this.wrapHandler((req: Request, res: Response): void => {
     const { ids, orderBy, limit, project } = req.body as z.infer<typeof observationsBatchSchema>;
 
@@ -201,10 +163,6 @@ export class DataRoutes extends BaseRouteHandler {
     res.json(observations);
   });
 
-  /**
-   * Get session by ID
-   * GET /api/session/:id
-   */
   private handleGetSessionById = this.wrapHandler((req: Request, res: Response): void => {
     const id = this.parseIntParam(req, res, 'id');
     if (id === null) return;
@@ -220,11 +178,6 @@ export class DataRoutes extends BaseRouteHandler {
     res.json(sessions[0]);
   });
 
-  /**
-   * Get SDK sessions by SDK session IDs
-   * POST /api/sdk-sessions/batch
-   * Body: { memorySessionIds: string[] }
-   */
   private handleGetSdkSessionsByIds = this.wrapHandler((req: Request, res: Response): void => {
     const { memorySessionIds } = req.body as z.infer<typeof sdkSessionsBatchSchema>;
 
@@ -233,10 +186,6 @@ export class DataRoutes extends BaseRouteHandler {
     res.json(sessions);
   });
 
-  /**
-   * Get user prompt by ID
-   * GET /api/prompt/:id
-   */
   private handleGetPromptById = this.wrapHandler((req: Request, res: Response): void => {
     const id = this.parseIntParam(req, res, 'id');
     if (id === null) return;
@@ -252,31 +201,24 @@ export class DataRoutes extends BaseRouteHandler {
     res.json(prompts[0]);
   });
 
-  /**
-   * Get database statistics (with worker metadata)
-   */
   private handleGetStats = this.wrapHandler((req: Request, res: Response): void => {
     const db = this.dbManager.getSessionStore().db;
 
-    // Read version from package.json
     const packageRoot = getPackageRoot();
     const packageJsonPath = path.join(packageRoot, 'package.json');
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
     const version = packageJson.version;
 
-    // Get database stats
     const totalObservations = db.prepare('SELECT COUNT(*) as count FROM observations').get() as { count: number };
     const totalSessions = db.prepare('SELECT COUNT(*) as count FROM sdk_sessions').get() as { count: number };
     const totalSummaries = db.prepare('SELECT COUNT(*) as count FROM session_summaries').get() as { count: number };
 
-    // Get database file size and path
     const dbPath = path.join(homedir(), '.claude-mem', 'claude-mem.db');
     let dbSize = 0;
     if (existsSync(dbPath)) {
       dbSize = statSync(dbPath).size;
     }
 
-    // Worker metadata
     const uptime = Math.floor((Date.now() - this.startTime) / 1000);
     const activeSessions = this.sessionManager.getActiveSessionCount();
     const sseClients = this.sseBroadcaster.getClientCount();
@@ -299,10 +241,6 @@ export class DataRoutes extends BaseRouteHandler {
     });
   });
 
-  /**
-   * Get list of distinct projects from observations
-   * GET /api/projects
-   */
   private handleGetProjects = this.wrapHandler((req: Request, res: Response): void => {
     const store = this.dbManager.getSessionStore();
     const rawPlatformSource = req.query.platformSource as string | undefined;
@@ -321,22 +259,13 @@ export class DataRoutes extends BaseRouteHandler {
     res.json(store.getProjectCatalog());
   });
 
-  /**
-   * Get current processing status
-   * GET /api/processing-status
-   */
   private handleGetProcessingStatus = this.wrapHandler((req: Request, res: Response): void => {
     const isProcessing = this.sessionManager.isAnySessionProcessing();
-    const queueDepth = this.sessionManager.getTotalActiveWork(); // Includes queued + actively processing
+    const queueDepth = this.sessionManager.getTotalActiveWork(); 
     res.json({ isProcessing, queueDepth });
   });
 
-  /**
-   * Set processing status (called by hooks)
-   * NOTE: This now broadcasts computed status based on active processing (ignores input)
-   */
   private handleSetProcessing = this.wrapHandler((req: Request, res: Response): void => {
-    // Broadcast current computed status (ignores manual input)
     this.workerService.broadcastProcessingStatus();
 
     const isProcessing = this.sessionManager.isAnySessionProcessing();
@@ -346,12 +275,9 @@ export class DataRoutes extends BaseRouteHandler {
     res.json({ status: 'ok', isProcessing, queueDepth, activeSessions });
   });
 
-  /**
-   * Parse pagination parameters from request query
-   */
   private parsePaginationParams(req: Request): { offset: number; limit: number; project?: string; platformSource?: string } {
     const offset = parseInt(req.query.offset as string, 10) || 0;
-    const limit = Math.min(parseInt(req.query.limit as string, 10) || 20, 100); // Max 100
+    const limit = Math.min(parseInt(req.query.limit as string, 10) || 20, 100); 
     const project = req.query.project as string | undefined;
     const rawPlatformSource = req.query.platformSource as string | undefined;
     const platformSource = rawPlatformSource ? normalizePlatformSource(rawPlatformSource) : undefined;
@@ -359,11 +285,6 @@ export class DataRoutes extends BaseRouteHandler {
     return { offset, limit, project, platformSource };
   }
 
-  /**
-   * Import memories from export file
-   * POST /api/import
-   * Body: { sessions: [], summaries: [], observations: [], prompts: [] }
-   */
   private handleImport = this.wrapHandler((req: Request, res: Response): void => {
     const { sessions, summaries, observations, prompts } = req.body;
 
@@ -380,7 +301,6 @@ export class DataRoutes extends BaseRouteHandler {
 
     const store = this.dbManager.getSessionStore();
 
-    // Import sessions first (dependency for everything else)
     if (Array.isArray(sessions)) {
       for (const session of sessions) {
         const result = store.importSdkSession(session);
@@ -392,7 +312,6 @@ export class DataRoutes extends BaseRouteHandler {
       }
     }
 
-    // Import summaries (depends on sessions)
     if (Array.isArray(summaries)) {
       for (const summary of summaries) {
         const result = store.importSessionSummary(summary);
@@ -404,7 +323,6 @@ export class DataRoutes extends BaseRouteHandler {
       }
     }
 
-    // Import observations (depends on sessions)
     const importedObservations: Array<{ id: number; obs: typeof observations[0] }> = [];
     if (Array.isArray(observations)) {
       for (const obs of observations) {
@@ -417,16 +335,10 @@ export class DataRoutes extends BaseRouteHandler {
         }
       }
 
-      // Rebuild FTS index so imported observations are immediately searchable.
-      // The FTS5 content table relies on triggers for incremental updates, but
-      // those triggers may not have fired correctly for all import paths.
       if (stats.observationsImported > 0) {
         store.rebuildObservationsFTSIndex();
       }
 
-      // Sync imported observations to ChromaDB for vector search.
-      // Fire-and-forget: Chroma sync failure should not block the import response.
-      // Bounded concurrency to prevent overwhelming Chroma on large imports.
       const chromaSync = this.dbManager.getChromaSync();
       if (chromaSync && importedObservations.length > 0) {
         const CHROMA_SYNC_CONCURRENCY = 8;
@@ -460,7 +372,6 @@ export class DataRoutes extends BaseRouteHandler {
           });
         };
 
-        // Fire-and-forget: process in batches but don't block the response
         (async () => {
           for (let i = 0; i < importedObservations.length; i += CHROMA_SYNC_CONCURRENCY) {
             const batch = importedObservations.slice(i, i + CHROMA_SYNC_CONCURRENCY);
@@ -472,7 +383,6 @@ export class DataRoutes extends BaseRouteHandler {
       }
     }
 
-    // Import prompts (depends on sessions)
     if (Array.isArray(prompts)) {
       for (const prompt of prompts) {
         const result = store.importUserPrompt(prompt);

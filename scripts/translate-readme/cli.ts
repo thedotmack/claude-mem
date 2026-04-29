@@ -67,7 +67,6 @@ SUPPORTED LANGUAGES:
 
 function printLanguages(): void {
   const LANGUAGE_NAMES: Record<string, string> = {
-    // Tier 1 - No-brainers
     zh: "Chinese (Simplified)",
     ja: "Japanese",
     "pt-br": "Brazilian Portuguese",
@@ -75,7 +74,6 @@ function printLanguages(): void {
     es: "Spanish",
     de: "German",
     fr: "French",
-    // Tier 2 - Strong tech scenes
     he: "Hebrew",
     ar: "Arabic",
     ru: "Russian",
@@ -84,7 +82,6 @@ function printLanguages(): void {
     nl: "Dutch",
     tr: "Turkish",
     uk: "Ukrainian",
-    // Tier 3 - Emerging/Growing fast
     vi: "Vietnamese",
     id: "Indonesian",
     th: "Thai",
@@ -93,14 +90,12 @@ function printLanguages(): void {
     ur: "Urdu",
     ro: "Romanian",
     sv: "Swedish",
-    // Tier 4 - Why not
     it: "Italian",
     el: "Greek",
     hu: "Hungarian",
     fi: "Finnish",
     da: "Danish",
     no: "Norwegian",
-    // Other supported
     bg: "Bulgarian",
     et: "Estonian",
     lt: "Lithuanian",
@@ -134,7 +129,7 @@ function parseArgs(argv: string[]): CliArgs {
   };
 
   const positional: string[] = [];
-  let i = 2; // Skip node and script path
+  let i = 2; 
 
   while (i < argv.length) {
     const arg = argv[i];
@@ -219,7 +214,6 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Validate language codes
   const invalidLangs = args.languages.filter(
     (lang) => !SUPPORTED_LANGUAGES.includes(lang.toLowerCase())
   );
@@ -243,7 +237,6 @@ async function main(): Promise<void> {
       useExisting: args.useExisting,
     });
 
-    // Exit with error code if any translations failed
     if (result.failed > 0) {
       process.exit(1);
     }

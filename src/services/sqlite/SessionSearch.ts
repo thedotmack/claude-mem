@@ -15,11 +15,6 @@ import {
   UserPromptRow
 } from './types.js';
 
-/**
- * Search interface for session-based memory
- * Provides filter-only structured queries for sessions, observations, and user prompts
- * Vector search is handled by ChromaDB - this class only supports filtering without query text
- */
 export class SessionSearch {
   private db: Database;
 
@@ -34,45 +29,21 @@ export class SessionSearch {
       this.db.run('PRAGMA journal_mode = WAL');
     }
 
-    // Cache FTS5 availability once at construction (avoids DDL probe on every query)
     this._fts5Available = this.isFts5Available();
 
-    // Ensure FTS tables exist — may downgrade _fts5Available if creation fails
     this.ensureFTSTables();
   }
 
   private _fts5Available: boolean;
 
-  /**
-   * Ensure FTS5 tables exist (backward compatibility only - no longer used for search)
-   *
-   * FTS5 tables are maintained for backward compatibility but not used for search.
-   * Vector search (Chroma) is now the primary search mechanism.
-   *
-   * Retention Rationale:
-   * - Prevents breaking existing installations with FTS5 tables
-   * - Allows graceful migration path for users
-   * - Tables maintained but search paths removed
-   * - Triggers still fire to keep tables synchronized
-   *
-   * FTS5 may be unavailable on some platforms (e.g., Bun on Windows #791).
-   * When unavailable, we skip FTS table creation — search falls back to
-   * ChromaDB (vector) and LIKE queries (structured filters) which are unaffected.
-   *
-   * TODO: Remove FTS5 infrastructure in future major version (v7.0.0)
-   */
   private ensureFTSTables(): void {
-    // Check if FTS tables already exist
     const tables = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%_fts'").all() as TableNameRow[];
     const hasFTS = tables.some(t => t.name === 'observations_fts' || t.name === 'session_summaries_fts');
 
     if (hasFTS) {
-      // Already migrated
       return;
     }
 
-    // Runtime check: verify FTS5 is available before attempting to create tables.
-    // bun:sqlite on Windows may not include the FTS5 extension (#791).
     if (!this.isFts5Available()) {
       logger.warn('DB', 'FTS5 not available on this platform — skipping FTS table creation (search uses ChromaDB)');
       return;
@@ -84,33 +55,22 @@ export class SessionSearch {
       this.createFTSTablesAndTriggers();
       logger.info('DB', 'FTS5 tables created successfully');
     } catch (error) {
-      // FTS5 creation failed at runtime despite probe succeeding — degrade gracefully
       this._fts5Available = false;
       logger.warn('DB', 'FTS5 table creation failed — search will use ChromaDB and LIKE queries', {}, error instanceof Error ? error : undefined);
     }
   }
 
-  /**
-   * Probe whether the FTS5 extension is available in the current SQLite build.
-   * Creates and immediately drops a temporary FTS5 table.
-   */
   private isFts5Available(): boolean {
     try {
       this.db.run('CREATE VIRTUAL TABLE _fts5_probe USING fts5(test_column)');
       this.db.run('DROP TABLE _fts5_probe');
       return true;
     } catch {
-      // [ANTI-PATTERN IGNORED]: FTS5 unavailability is an expected platform condition, not an error
       return false;
     }
   }
 
-  /**
-   * Create FTS5 virtual tables and sync triggers for observations and session_summaries.
-   * Extracted from ensureFTSTables to keep try block small.
-   */
   private createFTSTablesAndTriggers(): void {
-    // Create observations_fts virtual table
     this.db.run(`
       CREATE VIRTUAL TABLE IF NOT EXISTS observations_fts USING fts5(
         title,
@@ -124,14 +84,12 @@ export class SessionSearch {
       );
     `);
 
-    // Populate with existing data
     this.db.run(`
       INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
       SELECT id, title, subtitle, narrative, text, facts, concepts
       FROM observations;
     `);
 
-    // Create triggers for observations
     this.db.run(`
       CREATE TRIGGER IF NOT EXISTS observations_ai AFTER INSERT ON observations BEGIN
         INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
@@ -151,7 +109,6 @@ export class SessionSearch {
       END;
     `);
 
-    // Create session_summaries_fts virtual table
     this.db.run(`
       CREATE VIRTUAL TABLE IF NOT EXISTS session_summaries_fts USING fts5(
         request,
@@ -165,14 +122,12 @@ export class SessionSearch {
       );
     `);
 
-    // Populate with existing data
     this.db.run(`
       INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
       SELECT id, request, investigated, learned, completed, next_steps, notes
       FROM session_summaries;
     `);
 
-    // Create triggers for session_summaries
     this.db.run(`
       CREATE TRIGGER IF NOT EXISTS session_summaries_ai AFTER INSERT ON session_summaries BEGIN
         INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
@@ -193,9 +148,6 @@ export class SessionSearch {
     `);
   }
 
-  /**
-   * Build WHERE clause for structured filters
-   */
   private buildFilterClause(
     filters: SearchFilters,
     params: any[],
@@ -203,13 +155,11 @@ export class SessionSearch {
   ): string {
     const conditions: string[] = [];
 
-    // Project filter
     if (filters.project) {
       conditions.push(`${tableAlias}.project = ?`);
       params.push(filters.project);
     }
 
-    // Type filter (for observations only)
     if (filters.type) {
       if (Array.isArray(filters.type)) {
         const placeholders = filters.type.map(() => '?').join(',');
@@ -221,7 +171,6 @@ export class SessionSearch {
       }
     }
 
-    // Date range filter
     if (filters.dateRange) {
       const { start, end } = filters.dateRange;
       if (start) {
@@ -236,7 +185,6 @@ export class SessionSearch {
       }
     }
 
-    // Concepts filter (JSON array search)
     if (filters.concepts) {
       const concepts = Array.isArray(filters.concepts) ? filters.concepts : [filters.concepts];
       const conceptConditions = concepts.map(() => {
@@ -248,7 +196,6 @@ export class SessionSearch {
       }
     }
 
-    // Files filter (JSON array search)
     if (filters.files) {
       const files = Array.isArray(filters.files) ? filters.files : [filters.files];
       const fileConditions = files.map(() => {
@@ -268,9 +215,6 @@ export class SessionSearch {
     return conditions.length > 0 ? conditions.join(' AND ') : '';
   }
 
-  /**
-   * Build ORDER BY clause
-   */
   private buildOrderClause(orderBy: SearchOptions['orderBy'] = 'relevance', hasFTS: boolean = true, ftsTable: string = 'observations_fts'): string {
     switch (orderBy) {
       case 'relevance':
@@ -284,16 +228,10 @@ export class SessionSearch {
     }
   }
 
-  /**
-   * Search observations using filter-only direct SQLite query.
-   * Vector search is handled by ChromaDB - this only supports filtering without query text.
-   */
   searchObservations(query: string | undefined, options: SearchOptions = {}): ObservationSearchResult[] {
     const params: any[] = [];
     const { limit = 50, offset = 0, orderBy = 'relevance', ...filters } = options;
 
-    // FILTER-ONLY PATH: When no query text, query table directly
-    // This enables date filtering which Chroma cannot do (requires direct SQLite access)
     if (!query) {
       const filterClause = this.buildFilterClause(filters, params, 'o');
       if (!filterClause) {
@@ -314,7 +252,6 @@ export class SessionSearch {
       return this.db.prepare(sql).all(...params) as ObservationSearchResult[];
     }
 
-    // FTS5 keyword fallback when ChromaDB is unavailable (#1913, #2048)
     if (this._fts5Available) {
       const filterClause = this.buildFilterClause(filters, params, 'o');
       const orderClause = this.buildOrderClause(orderBy, true, 'observations_fts');
@@ -329,7 +266,6 @@ export class SessionSearch {
         LIMIT ? OFFSET ?
       `;
 
-      // Escape FTS5 special characters: wrap in quotes to treat as literal phrase
       const escapedQuery = '"' + query.replace(/"/g, '""') + '"';
       params.unshift(escapedQuery);
       params.push(limit, offset);
@@ -337,7 +273,6 @@ export class SessionSearch {
       try {
         return this.db.prepare(sql).all(...params) as ObservationSearchResult[];
       } catch (error) {
-        // Re-throw so callers can distinguish FTS failure from "no results"
         logger.warn('DB', 'FTS5 observation search failed', {}, error instanceof Error ? error : undefined);
         throw error;
       }
@@ -347,15 +282,10 @@ export class SessionSearch {
     return [];
   }
 
-  /**
-   * Search session summaries using filter-only direct SQLite query.
-   * Vector search is handled by ChromaDB - this only supports filtering without query text.
-   */
   searchSessions(query: string | undefined, options: SearchOptions = {}): SessionSummarySearchResult[] {
     const params: any[] = [];
     const { limit = 50, offset = 0, orderBy = 'relevance', ...filters } = options;
 
-    // FILTER-ONLY PATH: When no query text, query session_summaries table directly
     if (!query) {
       const filterOptions = { ...filters };
       delete filterOptions.type;
@@ -380,7 +310,6 @@ export class SessionSearch {
       return this.db.prepare(sql).all(...params) as SessionSummarySearchResult[];
     }
 
-    // FTS5 keyword fallback when ChromaDB is unavailable (#1913, #2048)
     if (this._fts5Available) {
       const filterOptions = { ...filters };
       delete filterOptions.type;
@@ -402,7 +331,6 @@ export class SessionSearch {
         LIMIT ? OFFSET ?
       `;
 
-      // Escape FTS5 special characters: wrap in quotes to treat as literal phrase
       const escapedQuery = '"' + query.replace(/"/g, '""') + '"';
       params.unshift(escapedQuery);
       params.push(limit, offset);
@@ -410,7 +338,6 @@ export class SessionSearch {
       try {
         return this.db.prepare(sql).all(...params) as SessionSummarySearchResult[];
       } catch (error) {
-        // Re-throw so callers can distinguish FTS failure from "no results"
         logger.warn('DB', 'FTS5 session search failed', {}, error instanceof Error ? error : undefined);
         throw error;
       }
@@ -420,14 +347,10 @@ export class SessionSearch {
     return [];
   }
 
-  /**
-   * Find observations by concept tag
-   */
   findByConcept(concept: string, options: SearchOptions = {}): ObservationSearchResult[] {
     const params: any[] = [];
     const { limit = 50, offset = 0, orderBy = 'date_desc', ...filters } = options;
 
-    // Add concept to filters
     const conceptFilters = { ...filters, concepts: concept };
     const filterClause = this.buildFilterClause(conceptFilters, params, 'o');
     const orderClause = this.buildOrderClause(orderBy, false);
@@ -445,9 +368,6 @@ export class SessionSearch {
     return this.db.prepare(sql).all(...params) as ObservationSearchResult[];
   }
 
-  /**
-   * Check if an observation has any files that are direct children of the folder
-   */
   private hasDirectChildFile(obs: ObservationSearchResult, folderPath: string): boolean {
     const checkFiles = (filesJson: string | null): boolean => {
       if (!filesJson) return false;
@@ -465,9 +385,6 @@ export class SessionSearch {
     return checkFiles(obs.files_modified) || checkFiles(obs.files_read);
   }
 
-  /**
-   * Check if a session has any files that are direct children of the folder
-   */
   private hasDirectChildFileSession(session: SessionSummarySearchResult, folderPath: string): boolean {
     const checkFiles = (filesJson: string | null): boolean => {
       if (!filesJson) return false;
@@ -485,10 +402,6 @@ export class SessionSearch {
     return checkFiles(session.files_read) || checkFiles(session.files_edited);
   }
 
-  /**
-   * Find observations and summaries by file path
-   * When isFolder=true, only returns results with files directly in the folder (not subfolders)
-   */
   findByFile(filePath: string, options: SearchOptions = {}): {
     observations: ObservationSearchResult[];
     sessions: SessionSummarySearchResult[];
@@ -496,10 +409,8 @@ export class SessionSearch {
     const params: any[] = [];
     const { limit = 50, offset = 0, orderBy = 'date_desc', isFolder = false, ...filters } = options;
 
-    // Query more results if we're filtering to direct children
     const queryLimit = isFolder ? limit * 3 : limit;
 
-    // Add file to filters
     const fileFilters = { ...filters, files: filePath };
     const filterClause = this.buildFilterClause(fileFilters, params, 'o');
     const orderClause = this.buildOrderClause(orderBy, false);
@@ -516,15 +427,13 @@ export class SessionSearch {
 
     let observations = this.db.prepare(observationsSql).all(...params) as ObservationSearchResult[];
 
-    // Post-filter to direct children if isFolder mode
     if (isFolder) {
       observations = observations.filter(obs => this.hasDirectChildFile(obs, filePath)).slice(0, limit);
     }
 
-    // For session summaries, search files_read and files_edited
     const sessionParams: any[] = [];
     const sessionFilters = { ...filters };
-    delete sessionFilters.type; // Remove type filter for sessions
+    delete sessionFilters.type; 
 
     const baseConditions: string[] = [];
     if (sessionFilters.project) {
@@ -546,7 +455,6 @@ export class SessionSearch {
       }
     }
 
-    // File condition
     baseConditions.push(`(
       EXISTS (SELECT 1 FROM json_each(s.files_read) WHERE value LIKE ?)
       OR EXISTS (SELECT 1 FROM json_each(s.files_edited) WHERE value LIKE ?)
@@ -565,7 +473,6 @@ export class SessionSearch {
 
     let sessions = this.db.prepare(sessionsSql).all(...sessionParams) as SessionSummarySearchResult[];
 
-    // Post-filter to direct children if isFolder mode
     if (isFolder) {
       sessions = sessions.filter(s => this.hasDirectChildFileSession(s, filePath)).slice(0, limit);
     }
@@ -573,9 +480,6 @@ export class SessionSearch {
     return { observations, sessions };
   }
 
-  /**
-   * Find observations by type
-   */
   findByType(
     type: ObservationRow['type'] | ObservationRow['type'][],
     options: SearchOptions = {}
@@ -583,7 +487,6 @@ export class SessionSearch {
     const params: any[] = [];
     const { limit = 50, offset = 0, orderBy = 'date_desc', ...filters } = options;
 
-    // Add type to filters
     const typeFilters = { ...filters, type };
     const filterClause = this.buildFilterClause(typeFilters, params, 'o');
     const orderClause = this.buildOrderClause(orderBy, false);
@@ -601,15 +504,10 @@ export class SessionSearch {
     return this.db.prepare(sql).all(...params) as ObservationSearchResult[];
   }
 
-  /**
-   * Search user prompts using filter-only direct SQLite query.
-   * Vector search is handled by ChromaDB - this only supports filtering without query text.
-   */
   searchUserPrompts(query: string | undefined, options: SearchOptions = {}): UserPromptSearchResult[] {
     const params: any[] = [];
     const { limit = 20, offset = 0, orderBy = 'relevance', ...filters } = options;
 
-    // Build filter conditions (join with sdk_sessions for project filtering)
     const baseConditions: string[] = [];
     if (filters.project) {
       baseConditions.push('s.project = ?');
@@ -630,7 +528,6 @@ export class SessionSearch {
       }
     }
 
-    // FILTER-ONLY PATH: When no query text, query user_prompts table directly
     if (!query) {
       if (baseConditions.length === 0) {
         throw new AppError(SessionSearch.MISSING_SEARCH_INPUT_MESSAGE, 400, 'INVALID_SEARCH_REQUEST');
@@ -654,8 +551,6 @@ export class SessionSearch {
       return this.db.prepare(sql).all(...params) as UserPromptSearchResult[];
     }
 
-    // LIKE fallback for user prompts text search (no FTS table for this entity)
-    // Escape LIKE metacharacters so %, _, and \ in user input are treated as literals
     const escapedQuery = query.replace(/[\\%_]/g, '\\$&');
     baseConditions.push("up.prompt_text LIKE ? ESCAPE '\\'");
     params.push(`%${escapedQuery}%`);
@@ -678,9 +573,6 @@ export class SessionSearch {
     return this.db.prepare(sql).all(...params) as UserPromptSearchResult[];
   }
 
-  /**
-   * Get all prompts for a session by content_session_id
-   */
   getUserPromptsBySession(contentSessionId: string): UserPromptRow[] {
     const stmt = this.db.prepare(`
       SELECT
@@ -698,9 +590,6 @@ export class SessionSearch {
     return stmt.all(contentSessionId) as UserPromptRow[];
   }
 
-  /**
-   * Close the database connection
-   */
   close(): void {
     this.db.close();
   }

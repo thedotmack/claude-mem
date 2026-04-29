@@ -1,10 +1,4 @@
 #!/usr/bin/env tsx
-/**
- * Test script for TranscriptParser
- * Validates data extraction from Claude Code transcript JSONL files
- *
- * Usage: npx tsx scripts/test-transcript-parser.ts <path-to-transcript.jsonl>
- */
 
 import { TranscriptParser } from '../src/utils/transcript-parser.js';
 import { existsSync } from 'fs';
@@ -39,7 +33,6 @@ function main() {
   try {
     const parser = new TranscriptParser(transcriptPath);
 
-    // Get parse statistics
     const stats = parser.getParseStats();
 
     console.log('📊 Parse Statistics:');
@@ -57,7 +50,6 @@ function main() {
     }
     console.log();
 
-    // Show parse errors if any
     if (stats.failedLines > 0) {
       console.log('❌ Parse Errors:');
       console.log('─'.repeat(60));
@@ -71,7 +63,6 @@ function main() {
       console.log();
     }
 
-    // Test data extraction methods
     console.log('💬 Message Extraction:');
     console.log('─'.repeat(60));
 
@@ -83,7 +74,6 @@ function main() {
     console.log(`Last assistant message: ${lastAssistantMessage ? `"${lastAssistantMessage.substring(0, 100)}..."` : '(none)'}`);
     console.log();
 
-    // Token usage
     const tokenUsage = parser.getTotalTokenUsage();
     console.log('💰 Token Usage:');
     console.log('─'.repeat(60));
@@ -94,14 +84,12 @@ function main() {
     console.log(`Total tokens:          ${formatTokens(tokenUsage.inputTokens + tokenUsage.outputTokens)}`);
     console.log();
 
-    // Tool use history
     const toolUses = parser.getToolUseHistory();
     console.log('🔧 Tool Use History:');
     console.log('─'.repeat(60));
     if (toolUses.length > 0) {
       console.log(`Total tool uses: ${toolUses.length}\n`);
 
-      // Group by tool name
       const toolCounts = toolUses.reduce((acc, tool) => {
         acc[tool.name] = (acc[tool.name] || 0) + 1;
         return acc;
@@ -116,7 +104,6 @@ function main() {
     }
     console.log();
 
-    // System entries
     const systemEntries = parser.getSystemEntries();
     if (systemEntries.length > 0) {
       console.log('⚠️  System Entries:');
@@ -131,7 +118,6 @@ function main() {
       console.log();
     }
 
-    // Summary entries
     const summaryEntries = parser.getSummaryEntries();
     if (summaryEntries.length > 0) {
       console.log('📝 Summary Entries:');
@@ -144,7 +130,6 @@ function main() {
       console.log();
     }
 
-    // Queue operations
     const queueOps = parser.getQueueOperationEntries();
     if (queueOps.length > 0) {
       console.log('🔄 Queue Operations:');

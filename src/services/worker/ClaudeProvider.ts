@@ -1,12 +1,3 @@
-/**
- * ClaudeProvider: SDK query loop handler
- *
- * Responsibility:
- * - Spawn Claude subprocess via Agent SDK
- * - Run event-driven query loop (no polling)
- * - Process SDK responses (observations, summaries)
- * - Sync to database and Chroma
- */
 
 import { execSync } from 'child_process';
 import { homedir } from 'os';
@@ -29,7 +20,6 @@ import {
 } from '../../supervisor/process-registry.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 
-// Import Agent SDK (assumes it's installed)
 // @ts-ignore - Agent SDK types may not be available
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
@@ -48,21 +38,12 @@ export class ClaudeProvider {
     session.forceInit = true;
   }
 
-  /**
-   * Start SDK agent for a session (event-driven, no polling)
-   * @param worker WorkerService reference for spinner control (optional)
-   */
   async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
-    // Track cwd from messages for CLAUDE.md generation (worktree support)
-    // Uses mutable object so generator updates are visible in response processing
     const cwdTracker = { lastCwd: undefined as string | undefined };
 
-    // Find Claude executable
     const claudePath = this.findClaudeExecutable();
 
-    // Get model ID (tier routing override takes precedence)
     const modelId = session.modelOverride || this.getModelId();
-    // Memory agent is OBSERVER ONLY - no tools allowed
     const disallowedTools = [
       'Bash',           // Prevent infinite loops
       'Read',           // No file reading
@@ -75,23 +56,14 @@ export class ClaudeProvider {
       'Task',           // No spawning sub-agents
       'NotebookEdit',   // No notebook editing
       'AskUserQuestion',// No asking questions
-      'TodoWrite'       // No todo management
+      'TodoWrite'       
     ];
 
-    // Create message generator (event-driven)
     const messageGenerator = this.createMessageGenerator(session, cwdTracker);
 
-    // CRITICAL: Only resume if:
-    // 1. memorySessionId exists (was captured from a previous SDK response)
-    // 2. lastPromptNumber > 1 (this is a continuation within the same SDK session)
-    // 3. forceInit is NOT set (stale session recovery clears this)
-    // On worker restart or crash recovery, memorySessionId may exist from a previous
-    // SDK session but we must NOT resume because the SDK context was lost.
-    // NEVER use contentSessionId for resume - that would inject messages into the user's transcript!
     const hasRealMemorySessionId = !!session.memorySessionId;
     const shouldResume = hasRealMemorySessionId && session.lastPromptNumber > 1 && !session.forceInit;
 
-    // Clear forceInit after using it
     if (session.forceInit) {
       logger.info('SDK', 'forceInit flag set, starting fresh SDK session', {
         sessionDbId: session.sessionDbId,
@@ -100,16 +72,10 @@ export class ClaudeProvider {
       session.forceInit = false;
     }
 
-    // Wait for agent pool slot (configurable via CLAUDE_MEM_MAX_CONCURRENT_AGENTS)
-    // Backpressure only — a full pool waits, never evicts a live session
-    // (Principle 1: do not kick live work to make room).
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const maxConcurrent = parseInt(settings.CLAUDE_MEM_MAX_CONCURRENT_AGENTS, 10) || 2;
     await waitForSlot(maxConcurrent, 60_000);
 
-    // Build isolated environment from ~/.claude-mem/.env
-    // This prevents Issue #733: random ANTHROPIC_API_KEY from project .env files
-    // being used instead of the configured auth method (CLI subscription or explicit API key)
     const isolatedEnv = sanitizeEnv(buildIsolatedEnv());
     const authMethod = getAuthMethodDescription();
 
@@ -124,11 +90,9 @@ export class ClaudeProvider {
       authMethod
     });
 
-    // Debug-level alignment logs for detailed tracing
     if (session.lastPromptNumber > 1) {
       logger.debug('SDK', `[ALIGNMENT] Resume Decision | contentSessionId=${session.contentSessionId} | memorySessionId=${session.memorySessionId} | prompt#=${session.lastPromptNumber} | hasRealMemorySessionId=${hasRealMemorySessionId} | shouldResume=${shouldResume} | resumeWith=${shouldResume ? session.memorySessionId : 'NONE'}`);
     } else {
-      // INIT prompt - never resume even if memorySessionId exists (stale from previous session)
       const hasStaleMemoryId = hasRealMemorySessionId;
       logger.debug('SDK', `[ALIGNMENT] First Prompt (INIT) | contentSessionId=${session.contentSessionId} | prompt#=${session.lastPromptNumber} | hasStaleMemoryId=${hasStaleMemoryId} | action=START_FRESH | Will capture new memorySessionId from SDK response`);
       if (hasStaleMemoryId) {
@@ -136,56 +100,31 @@ export class ClaudeProvider {
       }
     }
 
-    // Run Agent SDK query loop
-    // Only resume if we have a captured memory session ID
-    // Use custom spawn to capture PIDs for zombie process cleanup (Issue #737)
-    // Use dedicated cwd to isolate observer sessions from user's `claude --resume` list
     ensureDir(OBSERVER_SESSIONS_DIR);
-    // CRITICAL: Pass isolated env to prevent Issue #733 (API key pollution from project .env files)
     const queryResult = query({
       prompt: messageGenerator,
       options: {
         model: modelId,
-        // Isolate observer sessions - they'll appear under project "observer-sessions"
-        // instead of polluting user's actual project resume lists
         cwd: OBSERVER_SESSIONS_DIR,
-        // Only resume if shouldResume is true (memorySessionId exists, not first prompt, not forceInit)
         ...(shouldResume && session.memorySessionId ? { resume: session.memorySessionId } : {}),
         disallowedTools,
         abortController: session.abortController,
         pathToClaudeCodeExecutable: claudePath,
-        // Custom spawn factory: spawns the SDK child in its own POSIX process
-        // group so the worker can tear down the whole subtree on shutdown.
         spawnClaudeCodeProcess: createSdkSpawnFactory(session.sessionDbId),
         env: isolatedEnv,  // Use isolated credentials from ~/.claude-mem/.env, not process.env
         mcpServers: {},
       }
     });
 
-    // Process SDK messages — cleanup in finally ensures subprocess termination
-    // even if the loop throws (e.g., context overflow, invalid API key)
     try {
       for await (const message of queryResult) {
-        // Capture or update memory session ID from SDK message
-        // IMPORTANT: The SDK may return a DIFFERENT session_id on resume than what we sent!
-        // We must always sync the DB to match what the SDK actually uses.
-        //
-        // MULTI-TERMINAL COLLISION FIX (FK constraint bug):
-        // Use ensureMemorySessionIdRegistered() instead of updateMemorySessionId() because:
-        // 1. It's idempotent - safe to call multiple times
-        // 2. It verifies the update happened (SELECT before UPDATE)
-        // 3. Consistent with ResponseProcessor's usage pattern
-        // This ensures FK constraint compliance BEFORE any observations are stored.
         if (message.session_id && message.session_id !== session.memorySessionId) {
           const previousId = session.memorySessionId;
           session.memorySessionId = message.session_id;
-          // Persist to database IMMEDIATELY for FK constraint compliance
-          // This must happen BEFORE any observations referencing this ID are stored
           this.dbManager.getSessionStore().ensureMemorySessionIdRegistered(
             session.sessionDbId,
             message.session_id
           );
-          // Verify the update by reading back from DB
           const verification = this.dbManager.getSessionStore().getSessionById(session.sessionDbId);
           const dbVerified = verification?.memory_session_id === message.session_id;
           const logMessage = previousId
@@ -201,18 +140,15 @@ export class ClaudeProvider {
               sessionId: session.sessionDbId
             });
           }
-          // Debug-level alignment log for detailed tracing
           logger.debug('SDK', `[ALIGNMENT] ${previousId ? 'Updated' : 'Captured'} | contentSessionId=${session.contentSessionId} → memorySessionId=${message.session_id} | Future prompts will resume with this ID`);
         }
 
-        // Handle assistant messages
         if (message.type === 'assistant') {
           const content = message.message.content;
           const textContent = Array.isArray(content)
             ? content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
             : typeof content === 'string' ? content : '';
 
-          // Check for context overflow - prevents infinite retry loops
           if (textContent.includes('prompt is too long') ||
               textContent.includes('context window')) {
             logger.error('SDK', 'Context overflow detected - terminating session and forcing fresh start');
@@ -223,16 +159,13 @@ export class ClaudeProvider {
 
           const responseSize = textContent.length;
 
-          // Capture token state BEFORE updating (for delta calculation)
           const tokensBeforeResponse = session.cumulativeInputTokens + session.cumulativeOutputTokens;
 
-          // Extract and track token usage
           const usage = message.message.usage;
           if (usage) {
             session.cumulativeInputTokens += usage.input_tokens || 0;
             session.cumulativeOutputTokens += usage.output_tokens || 0;
 
-            // Cache creation counts as discovery, cache read doesn't
             if (usage.cache_creation_input_tokens) {
               session.cumulativeInputTokens += usage.cache_creation_input_tokens;
             }
@@ -248,11 +181,8 @@ export class ClaudeProvider {
             });
           }
 
-          // Calculate discovery tokens (delta for this response only)
           const discoveryTokens = (session.cumulativeInputTokens + session.cumulativeOutputTokens) - tokensBeforeResponse;
 
-          // Process response (empty or not) and mark messages as processed
-          // Capture earliest timestamp BEFORE processing (will be cleared after)
           const originalTimestamp = session.earliestPendingTimestamp;
 
           if (responseSize > 0) {
@@ -265,10 +195,7 @@ export class ClaudeProvider {
             }, truncatedResponse);
           }
 
-          // Detect fatal context overflow and terminate gracefully (issue #870)
           if (typeof textContent === 'string' && textContent.includes('Prompt is too long')) {
-            // Resume of this SDK session will overflow forever. Force a fresh session on the
-            // next spawn so crash-recovery can drain remaining pending messages successfully.
             this.resetSessionForFreshStart(session);
             logger.error('SDK', 'Context overflow — cleared memorySessionId so next spawn starts fresh', {
               sessionDbId: session.sessionDbId
@@ -276,13 +203,10 @@ export class ClaudeProvider {
             throw new Error('Claude session context overflow: prompt is too long');
           }
 
-          // Detect invalid API key — SDK returns this as response text, not an error.
-          // Throw so it surfaces in health endpoint and prevents silent failures.
           if (typeof textContent === 'string' && textContent.includes('Invalid API key')) {
             throw new Error('Invalid API key: check your API key configuration in ~/.claude-mem/settings.json or ~/.claude-mem/.env');
           }
 
-          // Parse and process response using shared ResponseProcessor
           await processAgentResponse(
             textContent,
             session,
@@ -297,22 +221,17 @@ export class ClaudeProvider {
           );
         }
 
-        // Log result messages
         if (message.type === 'result' && message.subtype === 'success') {
           // Usage telemetry is captured at SDK level
         }
       }
     } finally {
-      // Ensure subprocess is terminated after query completes (or on error).
-      // Process-group teardown via ensureSdkProcessExit kills any descendants
-      // the SDK spawned, so no orphan reaper is needed (Principle 5).
       const tracked = getSdkProcessForSession(session.sessionDbId);
       if (tracked && tracked.process.exitCode === null) {
         await ensureSdkProcessExit(tracked, 5000);
       }
     }
 
-    // Mark session complete
     const sessionDuration = Date.now() - session.startTime;
     logger.success('SDK', 'Agent completed', {
       sessionId: session.sessionDbId,
@@ -320,49 +239,12 @@ export class ClaudeProvider {
     });
   }
 
-  /**
-   * Create event-driven message generator (yields messages from SessionManager)
-   *
-   * CRITICAL: CONTINUATION PROMPT LOGIC
-   * ====================================
-   * This is where NEW hook's dual-purpose nature comes together:
-   *
-   * - Prompt #1 (lastPromptNumber === 1): buildInitPrompt
-   *   - Full initialization prompt with instructions
-   *   - Sets up the SDK agent's context
-   *
-   * - Prompt #2+ (lastPromptNumber > 1): buildContinuationPrompt
-   *   - Continuation prompt for same session
-   *   - Includes session context and prompt number
-   *
-   * BOTH prompts receive session.contentSessionId:
-   * - This comes from the hook's session_id (see new-hook.ts)
-   * - Same session_id used by SAVE hook to store observations
-   * - This is how everything stays connected in one unified session
-   *
-   * NO SESSION EXISTENCE CHECKS NEEDED:
-   * - SessionManager.initializeSession already fetched this from database
-   * - Database row was created by new-hook's createSDKSession call
-   * - We just use the session_id we're given - simple and reliable
-   *
-   * SHARED CONVERSATION HISTORY:
-   * - Each user message is added to session.conversationHistory
-   * - This allows provider switching (Claude→Gemini) with full context
-   * - SDK manages its own internal state, but we mirror it for interop
-   *
-   * CWD TRACKING:
-   * - cwdTracker is a mutable object shared with startSession
-   * - As messages with cwd are processed, cwdTracker.lastCwd is updated
-   * - This enables processAgentResponse to use the correct cwd for CLAUDE.md
-   */
   private async *createMessageGenerator(
     session: ActiveSession,
     cwdTracker: { lastCwd: string | undefined }
   ): AsyncIterableIterator<SDKUserMessage> {
-    // Load active mode
     const mode = ModeManager.getInstance().getActiveMode();
 
-    // Build initial prompt
     const isInitPrompt = session.lastPromptNumber === 1;
     logger.info('SDK', 'Creating message generator', {
       sessionDbId: session.sessionDbId,
@@ -376,11 +258,8 @@ export class ClaudeProvider {
       ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode)
       : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
 
-    // Add to shared conversation history for provider interop
     session.conversationHistory.push({ role: 'user', content: initPrompt });
 
-    // Yield initial user prompt with context (or continuation if prompt #2+)
-    // CRITICAL: Both paths use session.contentSessionId from the hook
     yield {
       type: 'user',
       message: {
@@ -392,26 +271,17 @@ export class ClaudeProvider {
       isSynthetic: true
     };
 
-    // Consume pending messages from SessionManager (event-driven, no polling)
     for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
-      // CLAIM-CONFIRM: Track message ID for confirmProcessed() after successful storage
-      // The message is now in 'processing' status in DB until ResponseProcessor calls confirmProcessed()
       session.processingMessageIds.push(message._persistentId);
 
-      // Capture subagent identity from the claimed message so ResponseProcessor
-      // can label observation rows with the originating Claude Code subagent.
-      // Always overwrite (even with null) so a main-session message after a subagent
-      // message clears the stale identity; otherwise mixed batches could mislabel.
       session.pendingAgentId = message.agentId ?? null;
       session.pendingAgentType = message.agentType ?? null;
 
-      // Capture cwd from each message for worktree support
       if (message.cwd) {
         cwdTracker.lastCwd = message.cwd;
       }
 
       if (message.type === 'observation') {
-        // Update last prompt number
         if (message.prompt_number !== undefined) {
           session.lastPromptNumber = message.prompt_number;
         }
@@ -425,7 +295,6 @@ export class ClaudeProvider {
           cwd: message.cwd
         });
 
-        // Add to shared conversation history for provider interop
         session.conversationHistory.push({ role: 'user', content: obsPrompt });
 
         yield {
@@ -447,7 +316,6 @@ export class ClaudeProvider {
           last_assistant_message: message.last_assistant_message || ''
         }, mode);
 
-        // Add to shared conversation history for provider interop
         session.conversationHistory.push({ role: 'user', content: summaryPrompt });
 
         yield {
@@ -464,19 +332,10 @@ export class ClaudeProvider {
     }
   }
 
-  // ============================================================================
-  // Configuration Helpers
-  // ============================================================================
-
-  /**
-   * Find Claude executable (inline, called once per session)
-   */
   private findClaudeExecutable(): string {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
 
-    // 1. Check configured path
     if (settings.CLAUDE_CODE_PATH) {
-      // Lazy load fs to keep startup fast
       const { existsSync } = require('fs');
       if (!existsSync(settings.CLAUDE_CODE_PATH)) {
         throw new Error(`CLAUDE_CODE_PATH is set to "${settings.CLAUDE_CODE_PATH}" but the file does not exist.`);
@@ -484,17 +343,15 @@ export class ClaudeProvider {
       return settings.CLAUDE_CODE_PATH;
     }
 
-    // 2. On Windows, prefer "claude.cmd" via PATH to avoid spawn issues with spaces in paths
     if (process.platform === 'win32') {
       try {
         execSync('where claude.cmd', { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
-        return 'claude.cmd'; // Let Windows resolve via PATHEXT
+        return 'claude.cmd'; 
       } catch {
         // Fall through to generic error
       }
     }
 
-    // 3. Try auto-detection for non-Windows platforms
     try {
       const claudePath = execSync(
         process.platform === 'win32' ? 'where claude' : 'which claude',
@@ -503,7 +360,6 @@ export class ClaudeProvider {
 
       if (claudePath) return claudePath;
     } catch (error) {
-      // [ANTI-PATTERN IGNORED]: Fallback behavior - which/where failed, continue to throw clear error
       if (error instanceof Error) {
         logger.debug('SDK', 'Claude executable auto-detection failed', {}, error);
       } else {
@@ -514,9 +370,6 @@ export class ClaudeProvider {
     throw new Error('Claude executable not found. Please either:\n1. Add "claude" to your system PATH, or\n2. Set CLAUDE_CODE_PATH in ~/.claude-mem/settings.json');
   }
 
-  /**
-   * Get model ID from settings or environment
-   */
   private getModelId(): string {
     const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);

@@ -1,7 +1,3 @@
-/**
- * Store observation function
- * Extracted from SessionStore.ts for modular organization
- */
 
 import { createHash } from 'crypto';
 import { Database } from 'bun:sqlite';
@@ -9,12 +5,6 @@ import { logger } from '../../../utils/logger.js';
 import { getProjectContext } from '../../../utils/project-name.js';
 import type { ObservationInput, StoreObservationResult } from './types.js';
 
-/**
- * Compute a short content hash for deduplication.
- * Uses (memory_session_id, title, narrative) as the semantic identity of an observation.
- * Subagent fields (agent_type, agent_id) are intentionally excluded so the same work
- * described once by a subagent and once by its parent deduplicates across contexts.
- */
 export function computeObservationContentHash(
   memorySessionId: string,
   title: string | null,
@@ -26,15 +16,6 @@ export function computeObservationContentHash(
     .slice(0, 16);
 }
 
-/**
- * Store an observation (from SDK parsing).
- *
- * Assumes session already exists (created by hook). Deduplication is enforced
- * by the database via UNIQUE(memory_session_id, content_hash) (Plan 01 Phase 4):
- * INSERT … ON CONFLICT DO NOTHING absorbs duplicates silently. The returned id
- * is the existing row's id when a conflict occurred, otherwise the freshly
- * inserted row.
- */
 export function storeObservation(
   db: Database,
   memorySessionId: string,
@@ -44,11 +25,9 @@ export function storeObservation(
   discoveryTokens: number = 0,
   overrideTimestampEpoch?: number
 ): StoreObservationResult {
-  // Use override timestamp if provided (for processing backlog messages with original timestamps)
   const timestampEpoch = overrideTimestampEpoch ?? Date.now();
   const timestampIso = new Date(timestampEpoch).toISOString();
 
-  // Guard against empty project string (race condition where project isn't set yet)
   const resolvedProject = project || getProjectContext(process.cwd()).primary;
 
   const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
@@ -86,13 +65,11 @@ export function storeObservation(
     return { id: inserted.id, createdAtEpoch: inserted.created_at_epoch };
   }
 
-  // Conflict — fetch the existing row's id for the (memory_session_id, content_hash) pair.
   const existing = db.prepare(
     'SELECT id, created_at_epoch FROM observations WHERE memory_session_id = ? AND content_hash = ?'
   ).get(memorySessionId, contentHash) as { id: number; created_at_epoch: number } | null;
 
   if (!existing) {
-    // Unreachable in practice (UNIQUE conflict implies existing row), but be explicit.
     throw new Error(
       `storeObservation: ON CONFLICT fired but no row exists for (memory_session_id=${memorySessionId}, content_hash=${contentHash})`
     );

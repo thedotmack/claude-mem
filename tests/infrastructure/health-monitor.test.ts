@@ -16,15 +16,11 @@ describe('HealthMonitor', () => {
   });
 
   describe('isPortInUse', () => {
-    // Note: Since we are on Linux (as per session_context), isPortInUse uses 'net'
-    // instead of 'fetch'. We need to mock 'net.createServer().listen()'
 
     it('should return true for occupied port (EADDRINUSE)', async () => {
-      // Create a specific mock for this test
       const createServerMock = mock(() => ({
         once: mock((event: string, cb: Function) => {
           if (event === 'error') {
-            // Trigger EADDRINUSE immediately
             setTimeout(() => cb({ code: 'EADDRINUSE' }), 0);
           }
         }),
@@ -46,7 +42,6 @@ describe('HealthMonitor', () => {
       const createServerMock = mock(() => ({
         once: mock((event: string, cb: Function) => {
           if (event === 'listening') {
-            // Trigger listening success
             setTimeout(() => cb(), 0);
           }
         }),
@@ -69,7 +64,6 @@ describe('HealthMonitor', () => {
       const createServerMock = mock(() => ({
         once: mock((event: string, cb: Function) => {
           if (event === 'error') {
-            // Trigger other error (e.g., EACCES)
             setTimeout(() => cb({ code: 'EACCES' }), 0);
           }
         }),
@@ -99,7 +93,6 @@ describe('HealthMonitor', () => {
       const elapsed = Date.now() - start;
 
       expect(result).toBe(true);
-      // Should return quickly (within first poll cycle)
       expect(elapsed).toBeLessThan(1000);
     });
 
@@ -111,7 +104,6 @@ describe('HealthMonitor', () => {
       const elapsed = Date.now() - start;
 
       expect(result).toBe(false);
-      // Should take close to timeout duration
       expect(elapsed).toBeGreaterThanOrEqual(1400);
       expect(elapsed).toBeLessThan(2500);
     });
@@ -120,7 +112,6 @@ describe('HealthMonitor', () => {
       let callCount = 0;
       global.fetch = mock(() => {
         callCount++;
-        // Fail first 2 calls, succeed on third
         if (callCount < 3) {
           return Promise.reject(new Error('ECONNREFUSED'));
         }
@@ -147,9 +138,6 @@ describe('HealthMonitor', () => {
 
       await waitForHealth(37777, 1000);
 
-      // waitForHealth uses /api/health (liveness), not /api/readiness
-      // This is because hooks have 15-second timeout but full initialization can take 5+ minutes
-      // See: https://github.com/thedotmack/claude-mem/issues/811
       const calls = fetchMock.mock.calls;
       expect(calls.length).toBeGreaterThan(0);
       expect(calls[0][0]).toBe('http://127.0.0.1:37777/api/health');
@@ -162,7 +150,6 @@ describe('HealthMonitor', () => {
         text: () => Promise.resolve('')
       } as unknown as Response));
 
-      // Just verify it doesn't throw and returns quickly
       const result = await waitForHealth(37777);
 
       expect(result).toBe(true);
@@ -173,15 +160,12 @@ describe('HealthMonitor', () => {
     it('should return a valid semver string', () => {
       const version = getInstalledPluginVersion();
 
-      // Should be a string matching semver pattern or 'unknown'
       if (version !== 'unknown') {
         expect(version).toMatch(/^\d+\.\d+\.\d+/);
       }
     });
 
     it('should not throw on ENOENT (graceful degradation)', () => {
-      // The function handles ENOENT internally — should not throw
-      // If package.json exists, it returns the version; if not, 'unknown'
       expect(() => getInstalledPluginVersion()).not.toThrow();
     });
   });
@@ -205,7 +189,6 @@ describe('HealthMonitor', () => {
 
       const result = await checkVersionMatch(37777);
 
-      // Unless the plugin version is also '0.0.0-definitely-wrong', this should be a mismatch
       const pluginVersion = getInstalledPluginVersion();
       if (pluginVersion !== 'unknown' && pluginVersion !== '0.0.0-definitely-wrong') {
         expect(result.matches).toBe(false);
@@ -214,7 +197,7 @@ describe('HealthMonitor', () => {
 
     it('should detect version match', async () => {
       const pluginVersion = getInstalledPluginVersion();
-      if (pluginVersion === 'unknown') return; // Skip if can't read plugin version
+      if (pluginVersion === 'unknown') return; 
 
       global.fetch = mock(() => Promise.resolve({
         ok: true,
@@ -274,7 +257,6 @@ describe('HealthMonitor', () => {
       const spy = spyOn(net, 'createServer').mockImplementation(() => ({
         once: mock((event: string, cb: Function) => {
           callCount++;
-          // Port occupied for first 2 checks, then free
           if (callCount < 3) {
             if (event === 'error') setTimeout(() => cb({ code: 'EADDRINUSE' }), 0);
           } else {

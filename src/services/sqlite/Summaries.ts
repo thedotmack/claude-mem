@@ -1,6 +1,3 @@
-/**
- * Summaries module - Named re-exports for summary-related database operations
- */
 import { logger } from '../../utils/logger.js';
 
 export * from './summaries/types.js';

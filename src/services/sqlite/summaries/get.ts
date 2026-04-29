@@ -1,18 +1,8 @@
-/**
- * Get session summaries from the database
- */
 import type { Database } from 'bun:sqlite';
 import { logger } from '../../../utils/logger.js';
 import type { SessionSummaryRecord } from '../../../types/database.js';
 import type { SessionSummary, GetByIdsOptions } from './types.js';
 
-/**
- * Get summary for a specific session
- *
- * @param db - Database instance
- * @param memorySessionId - SDK memory session ID
- * @returns Most recent summary for the session, or null if none exists
- */
 export function getSummaryForSession(
   db: Database,
   memorySessionId: string
@@ -31,13 +21,6 @@ export function getSummaryForSession(
   return (stmt.get(memorySessionId) as SessionSummary | undefined) || null;
 }
 
-/**
- * Get a single session summary by ID
- *
- * @param db - Database instance
- * @param id - Summary ID
- * @returns Full summary record or null if not found
- */
 export function getSummaryById(
   db: Database,
   id: number
@@ -49,14 +32,6 @@ export function getSummaryById(
   return (stmt.get(id) as SessionSummaryRecord | undefined) || null;
 }
 
-/**
- * Get session summaries by IDs (for hybrid Chroma search)
- * Returns summaries in specified temporal order
- *
- * @param db - Database instance
- * @param ids - Array of summary IDs
- * @param options - Query options (orderBy, limit, project)
- */
 export function getSummariesByIds(
   db: Database,
   ids: number[],
@@ -70,7 +45,6 @@ export function getSummariesByIds(
   const placeholders = ids.map(() => '?').join(',');
   const params: (number | string)[] = [...ids];
 
-  // Apply project filter
   const whereClause = project
     ? `WHERE id IN (${placeholders}) AND project = ?`
     : `WHERE id IN (${placeholders})`;

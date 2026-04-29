@@ -1,9 +1,3 @@
-/**
- * CorpusStore - File I/O for corpus JSON files
- *
- * Manages reading, writing, listing, and deleting corpus files
- * stored in ~/.claude-mem/corpora/
- */
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -24,18 +18,12 @@ export class CorpusStore {
     }
   }
 
-  /**
-   * Write a corpus file to disk as {name}.corpus.json
-   */
   write(corpus: CorpusFile): void {
     const filePath = this.getFilePath(corpus.name);
     fs.writeFileSync(filePath, JSON.stringify(corpus, null, 2), 'utf-8');
     logger.debug('WORKER', `Wrote corpus file: ${filePath} (${corpus.observations.length} observations)`);
   }
 
-  /**
-   * Read a corpus file by name, return null if not found
-   */
   read(name: string): CorpusFile | null {
     const filePath = this.getFilePath(name);
     if (!fs.existsSync(filePath)) {
@@ -55,9 +43,6 @@ export class CorpusStore {
     }
   }
 
-  /**
-   * List all corpora metadata (reads each file but omits observations for efficiency)
-   */
   list(): Array<{ name: string; description: string; stats: CorpusStats; session_id: string | null }> {
     if (!fs.existsSync(this.corporaDir)) {
       return [];
@@ -88,9 +73,6 @@ export class CorpusStore {
     return results;
   }
 
-  /**
-   * Delete a corpus file, return true if it existed
-   */
   delete(name: string): boolean {
     const filePath = this.getFilePath(name);
     if (!fs.existsSync(filePath)) {
@@ -102,9 +84,6 @@ export class CorpusStore {
     return true;
   }
 
-  /**
-   * Validate corpus name to prevent path traversal
-   */
   private validateCorpusName(name: string): string {
     const trimmed = name.trim();
     if (!/^[a-zA-Z0-9._-]+$/.test(trimmed)) {
@@ -113,9 +92,6 @@ export class CorpusStore {
     return trimmed;
   }
 
-  /**
-   * Resolve the full file path for a corpus by name
-   */
   private getFilePath(name: string): string {
     const safeName = this.validateCorpusName(name);
     const resolved = path.resolve(this.corporaDir, `${safeName}.corpus.json`);

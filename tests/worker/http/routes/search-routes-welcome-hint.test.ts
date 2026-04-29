@@ -1,26 +1,8 @@
-/**
- * SearchRoutes Welcome Hint Tests
- *
- * Phase 4: When a project has zero observations, /api/context/inject returns
- * a templated welcome message instead of empty context. The hint is
- * self-healing — it disappears once any observation lands.
- *
- * Mock Justification:
- * - Express req/res mocks: route handlers expect Express objects.
- * - SearchManager.getSessionStore: returns a stub SessionStore whose
- *   `db.prepare(...).get(...)` mimics the COUNT(*) row shape used by
- *   countObservationsByProjects.
- * - context-generator: stubbed via mock.module so the welcome-hint branch
- *   can be verified without spinning up the full context pipeline.
- * - Logger spies: suppress console output during tests.
- */
 
 import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
 import type { Request, Response } from 'express';
 import { logger } from '../../../../src/utils/logger.js';
 
-// Stub the dynamic import inside handleContextInject so we never reach the
-// real context generator on the "has observations" branch.
 const generateContextStub = mock(async () => 'CONTEXT_FROM_GENERATOR');
 mock.module('../../../../src/services/context-generator.js', () => ({
   generateContext: generateContextStub,
@@ -81,7 +63,6 @@ describe('SearchRoutes Welcome Hint', () => {
       spyOn(logger, 'failure').mockImplementation(() => {}),
     ];
 
-    // Default: zero observations
     countQueryStub = mock(() => ({ count: 0 }));
     prepareStub = mock(() => ({ get: countQueryStub }));
     mockSessionStore = { db: { prepare: prepareStub } };
@@ -90,7 +71,6 @@ describe('SearchRoutes Welcome Hint', () => {
     };
 
     generateContextStub.mockClear();
-    // Ensure default-on hint behavior in case env was set
     delete process.env.CLAUDE_MEM_WELCOME_HINT_ENABLED;
   });
 
@@ -107,7 +87,6 @@ describe('SearchRoutes Welcome Hint', () => {
     const req = { query: { projects: '/path/to/empty-project' } } as unknown as Request;
 
     handler(req, res as unknown as Response);
-    // Allow the async wrapped handler to resolve
     await new Promise(resolve => setImmediate(resolve));
 
     expect(res.send).toHaveBeenCalledTimes(1);
@@ -115,9 +94,7 @@ describe('SearchRoutes Welcome Hint', () => {
     expect(body).toContain('# Welcome to claude-mem');
     expect(body).toContain('/learn-codebase');
     expect(body).toContain('http://localhost:');
-    // Self-healing copy
     expect(body).toContain('disappear once your first observation lands');
-    // Generator must NOT have been invoked
     expect(generateContextStub).not.toHaveBeenCalled();
   });
 
@@ -166,9 +143,7 @@ describe('SearchRoutes Welcome Hint', () => {
     handler(req, res as unknown as Response);
     await new Promise(resolve => setImmediate(resolve));
 
-    // Hint fires (count===0)
     expect(res.send).toHaveBeenCalledTimes(1);
-    // Both projects appear (twice each — once for project, once for merged_into_project)
     expect(countQueryStub).toHaveBeenCalledWith(
       '/path/parent',
       '/path/worktree',

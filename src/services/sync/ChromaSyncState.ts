@@ -1,16 +1,3 @@
-/**
- * ChromaSyncState — per-project watermark cache for Chroma backfill.
- *
- * Replaces full Chroma metadata scans on every worker start with a tiny JSON file
- * tracking the highest sqlite_id synced to Chroma for each (project, doc_type).
- *
- * File: $CLAUDE_MEM_DATA_DIR/chroma-sync-state.json
- * Schema: { [project]: { observations: number, summaries: number, prompts: number } }
- *
- * Reads/writes are synchronous — the file is small and only touched at startup
- * and after batched adds. An in-memory cache mirrors the file; writes are
- * atomic via .tmp + rename.
- */
 import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
@@ -67,18 +54,15 @@ function persist(): void {
 }
 
 export const ChromaSyncState = {
-  /** Whether the state file exists on disk. Used by callers to detect cold-start. */
   exists(): boolean {
     return existsSync(statePath());
   },
 
-  /** Read current watermarks for a project. Returns zeros if unknown. */
   get(project: string): ProjectWatermarks {
     const all = load();
     return { ...(all[project] ?? ZERO) };
   },
 
-  /** Bump a single watermark to max(current, id). No-op if id is not greater. */
   bump(project: string, kind: DocKind, id: number): void {
     if (!Number.isInteger(id) || id <= 0) return;
     const all = load();
@@ -90,10 +74,6 @@ export const ChromaSyncState = {
     persist();
   },
 
-  /**
-   * Replace watermarks for a project wholesale. Used by the bootstrap path
-   * after a one-time Chroma scan derives the initial highest IDs.
-   */
   replace(project: string, marks: ProjectWatermarks): void {
     const all = load();
     all[project] = { ...marks };
@@ -101,12 +81,10 @@ export const ChromaSyncState = {
     persist();
   },
 
-  /** Persist any pending writes. Defensive — bump/replace flush already. */
   flush(): void {
     if (dirty) persist();
   },
 
-  /** Test/diagnostic helper: drop in-memory cache so the next read re-reads disk. */
   resetCache(): void {
     cache = null;
     dirty = false;

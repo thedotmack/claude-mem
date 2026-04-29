@@ -1,16 +1,8 @@
-/**
- * DateFilter - Date range filtering for search results
- *
- * Provides utilities for filtering search results by date range.
- */
 
 import type { DateRange, SearchResult, CombinedResult } from '../types.js';
 import { logger } from '../../../../utils/logger.js';
 import { SEARCH_CONSTANTS } from '../types.js';
 
-/**
- * Parse date range values to epoch milliseconds
- */
 export function parseDateRange(dateRange?: DateRange): {
   startEpoch?: number;
   endEpoch?: number;
@@ -36,9 +28,6 @@ export function parseDateRange(dateRange?: DateRange): {
   return result;
 }
 
-/**
- * Check if an epoch timestamp is within a date range
- */
 export function isWithinDateRange(
   epoch: number,
   dateRange?: DateRange
@@ -60,17 +49,11 @@ export function isWithinDateRange(
   return true;
 }
 
-/**
- * Check if an epoch timestamp is within the recency window
- */
 export function isRecent(epoch: number): boolean {
   const cutoff = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
   return epoch > cutoff;
 }
 
-/**
- * Filter combined results by date range
- */
 export function filterResultsByDate<T extends { epoch: number }>(
   results: T[],
   dateRange?: DateRange
@@ -82,9 +65,6 @@ export function filterResultsByDate<T extends { epoch: number }>(
   return results.filter(result => isWithinDateRange(result.epoch, dateRange));
 }
 
-/**
- * Get date boundaries for common ranges
- */
 export function getDateBoundaries(range: 'today' | 'week' | 'month' | '90days'): DateRange {
   const now = Date.now();
   const startOfToday = new Date();

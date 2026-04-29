@@ -1,21 +1,7 @@
-/**
- * Tests for subagent-context short-circuit in summarizeHandler.
- *
- * Validates that when the Stop hook fires inside a Claude Code subagent
- * (identified by `agentId` or `agentType` on NormalizedHookInput), the
- * summarize handler exits before calling the worker — subagents must not
- * own the session summary.
- *
- * Sources:
- * - Handler: src/cli/handlers/summarize.ts
- * - Mock pattern: tests/hooks/context-reinjection-guard.test.ts
- */
 import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
 import { homedir } from 'os';
 import { join } from 'path';
 
-// Mock modules that touch the filesystem / network at import time.
-// MUST be declared before the handler is imported.
 mock.module('../../../src/shared/SettingsDefaultsManager.js', () => ({
   SettingsDefaultsManager: {
     get: (key: string) => {
@@ -27,9 +13,6 @@ mock.module('../../../src/shared/SettingsDefaultsManager.js', () => ({
   },
 }));
 
-// workerHttpRequest is the only worker entry point we must NOT call in
-// subagent context. It throws so we can assert "never called" by proving
-// the handler returns success anyway.
 const workerCallLog: Array<{ path: string; options: any }> = [];
 mock.module('../../../src/shared/worker-utils.js', () => ({
   ensureWorkerRunning: () => Promise.resolve(true),
@@ -42,7 +25,6 @@ mock.module('../../../src/shared/worker-utils.js', () => ({
   },
 }));
 
-// Suppress logger during tests
 import { logger } from '../../../src/utils/logger.js';
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
@@ -78,17 +60,10 @@ describe('summarizeHandler — subagent short-circuit', () => {
     expect(result.continue).toBe(true);
     expect(result.suppressOutput).toBe(true);
     expect(result.exitCode).toBe(0);
-    // Guard fires BEFORE any worker HTTP request. If workerHttpRequest were
-    // called, our mock would have thrown — reaching this expect proves it.
     expect(workerCallLog.length).toBe(0);
   });
 
   it('does NOT skip when only agentType is set (--agent main session still owns its summary)', async () => {
-    // agent_type without agent_id is how Claude Code signals a main session started
-    // with --agent. These are main sessions, not Task-spawned subagents, so the
-    // summary path must proceed. Here the transcript path is missing so the handler
-    // falls through to the existing no-transcriptPath return — the key assertion is
-    // that the subagent guard did NOT short-circuit (handler reached the normal path).
     const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
 
     const result = await summarizeHandler.execute({
@@ -123,9 +98,6 @@ describe('summarizeHandler — subagent short-circuit', () => {
   });
 
   it('falls through to existing no-transcriptPath guard in main-session context', async () => {
-    // Neither agentId nor agentType → NOT a subagent. Handler should
-    // proceed past the subagent guard and hit the existing
-    // "no transcriptPath" early return. Worker must still not be called.
     const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
 
     const result = await summarizeHandler.execute({

@@ -1,15 +1,7 @@
-/**
- * SettingsDefaultsManager
- *
- * Single source of truth for all default configuration values.
- * Provides methods to get defaults with optional environment variable overrides.
- */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
-// NOTE: Do NOT import logger here - it creates a circular dependency
-// logger.ts depends on SettingsDefaultsManager for its initialization
 
 export interface SettingsDefaults {
   CLAUDE_MEM_MODEL: string;
@@ -17,68 +9,56 @@ export interface SettingsDefaults {
   CLAUDE_MEM_WORKER_PORT: string;
   CLAUDE_MEM_WORKER_HOST: string;
   CLAUDE_MEM_SKIP_TOOLS: string;
-  // AI Provider Configuration
-  CLAUDE_MEM_PROVIDER: string;  // 'claude' | 'gemini' | 'openrouter'
-  CLAUDE_MEM_CLAUDE_AUTH_METHOD: string;  // 'cli' | 'api' - how Claude provider authenticates
+  CLAUDE_MEM_PROVIDER: string;  
+  CLAUDE_MEM_CLAUDE_AUTH_METHOD: string;  
   CLAUDE_MEM_GEMINI_API_KEY: string;
-  CLAUDE_MEM_GEMINI_MODEL: string;  // 'gemini-2.5-flash-lite' | 'gemini-2.5-flash' | 'gemini-3-flash-preview'
-  CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: string;  // 'true' | 'false' - enable rate limiting for free tier
-  CLAUDE_MEM_GEMINI_MAX_CONTEXT_MESSAGES: string;  // Max messages in Gemini context window (prevents O(N²) cost growth)
-  CLAUDE_MEM_GEMINI_MAX_TOKENS: string;  // Max estimated tokens for Gemini context (~100k safety limit)
+  CLAUDE_MEM_GEMINI_MODEL: string;  
+  CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: string;  
+  CLAUDE_MEM_GEMINI_MAX_CONTEXT_MESSAGES: string;  
+  CLAUDE_MEM_GEMINI_MAX_TOKENS: string;  
   CLAUDE_MEM_OPENROUTER_API_KEY: string;
   CLAUDE_MEM_OPENROUTER_MODEL: string;
   CLAUDE_MEM_OPENROUTER_SITE_URL: string;
   CLAUDE_MEM_OPENROUTER_APP_NAME: string;
   CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: string;
   CLAUDE_MEM_OPENROUTER_MAX_TOKENS: string;
-  // System Configuration
   CLAUDE_MEM_DATA_DIR: string;
   CLAUDE_MEM_LOG_LEVEL: string;
   CLAUDE_MEM_PYTHON_VERSION: string;
   CLAUDE_CODE_PATH: string;
   CLAUDE_MEM_MODE: string;
-  // Token Economics
   CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: string;
   CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: string;
   CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT: string;
   CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT: string;
-  // Display Configuration
   CLAUDE_MEM_CONTEXT_FULL_COUNT: string;
   CLAUDE_MEM_CONTEXT_FULL_FIELD: string;
   CLAUDE_MEM_CONTEXT_SESSION_COUNT: string;
-  // Feature Toggles
   CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: string;
   CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: string;
   CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: string;
   CLAUDE_MEM_WELCOME_HINT_ENABLED: string;
   CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: string;
-  CLAUDE_MEM_FOLDER_USE_LOCAL_MD: string;  // 'true' | 'false' - write to CLAUDE.local.md instead of CLAUDE.md
-  CLAUDE_MEM_TRANSCRIPTS_ENABLED: string;  // 'true' | 'false' - enable transcript watcher ingestion for Codex and other transcript-based clients
-  CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH: string;  // Path to transcript watcher config JSON
-  // Process Management
-  CLAUDE_MEM_MAX_CONCURRENT_AGENTS: string;  // Max concurrent Claude SDK agent subprocesses (default: 2)
-  CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: string;  // Plan 05 Phase 8 — consecutive hook→worker unreachable failures before exit code 2 (default: 3)
-  // Exclusion Settings
-  CLAUDE_MEM_EXCLUDED_PROJECTS: string;  // Comma-separated glob patterns for excluded project paths
-  CLAUDE_MEM_FOLDER_MD_EXCLUDE: string;  // JSON array of folder paths to exclude from CLAUDE.md generation
-  // Semantic Context Injection (per-prompt via Chroma)
-  CLAUDE_MEM_SEMANTIC_INJECT: string;        // 'true' | 'false' - inject relevant observations on each prompt
-  CLAUDE_MEM_SEMANTIC_INJECT_LIMIT: string;  // Max observations to inject per prompt
-  // Tier Routing (model selection by queue complexity)
-  CLAUDE_MEM_TIER_ROUTING_ENABLED: string;   // 'true' | 'false' - enable model tier routing
-  CLAUDE_MEM_TIER_SIMPLE_MODEL: string;      // Tier alias or model ID for simple tool observations (Read, Glob, Grep)
-  CLAUDE_MEM_TIER_SUMMARY_MODEL: string;     // Tier alias or model ID for session summaries
-  // Chroma Vector Database Configuration
-  CLAUDE_MEM_CHROMA_ENABLED: string;   // 'true' | 'false' - set to 'false' for SQLite-only mode
-  CLAUDE_MEM_CHROMA_MODE: string;      // 'local' | 'remote'
+  CLAUDE_MEM_FOLDER_USE_LOCAL_MD: string;  
+  CLAUDE_MEM_TRANSCRIPTS_ENABLED: string;  
+  CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH: string;  
+  CLAUDE_MEM_MAX_CONCURRENT_AGENTS: string;  
+  CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: string;  
+  CLAUDE_MEM_EXCLUDED_PROJECTS: string;  
+  CLAUDE_MEM_FOLDER_MD_EXCLUDE: string;  
+  CLAUDE_MEM_SEMANTIC_INJECT: string;        
+  CLAUDE_MEM_SEMANTIC_INJECT_LIMIT: string;  
+  CLAUDE_MEM_TIER_ROUTING_ENABLED: string;   
+  CLAUDE_MEM_TIER_SIMPLE_MODEL: string;      
+  CLAUDE_MEM_TIER_SUMMARY_MODEL: string;     
+  CLAUDE_MEM_CHROMA_ENABLED: string;   
+  CLAUDE_MEM_CHROMA_MODE: string;      
   CLAUDE_MEM_CHROMA_HOST: string;
   CLAUDE_MEM_CHROMA_PORT: string;
   CLAUDE_MEM_CHROMA_SSL: string;
-  // Future cloud support
   CLAUDE_MEM_CHROMA_API_KEY: string;
   CLAUDE_MEM_CHROMA_TENANT: string;
   CLAUDE_MEM_CHROMA_DATABASE: string;
-  // Telegram Notifier
   CLAUDE_MEM_TELEGRAM_ENABLED: string;
   CLAUDE_MEM_TELEGRAM_BOT_TOKEN: string;
   CLAUDE_MEM_TELEGRAM_CHAT_ID: string;
@@ -87,16 +67,12 @@ export interface SettingsDefaults {
 }
 
 export class SettingsDefaultsManager {
-  /**
-   * Default values for all settings
-   */
   private static readonly DEFAULTS: SettingsDefaults = {
     CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001',
     CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
     CLAUDE_MEM_WORKER_PORT: String(37700 + ((process.getuid?.() ?? 77) % 100)),
     CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
     CLAUDE_MEM_SKIP_TOOLS: 'ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion',
-    // AI Provider Configuration
     CLAUDE_MEM_PROVIDER: 'claude',  // Default to Claude
     CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'cli',  // Default to CLI subscription billing (not API key)
     CLAUDE_MEM_GEMINI_API_KEY: '',  // Empty by default, can be set via UI or env
@@ -110,22 +86,18 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',  // App name for OpenRouter analytics
     CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: '20',  // Max messages in context window
     CLAUDE_MEM_OPENROUTER_MAX_TOKENS: '100000',  // Max estimated tokens (~100k safety limit)
-    // System Configuration
     CLAUDE_MEM_DATA_DIR: join(homedir(), '.claude-mem'),
     CLAUDE_MEM_LOG_LEVEL: 'INFO',
     CLAUDE_MEM_PYTHON_VERSION: '3.13',
     CLAUDE_CODE_PATH: '', // Empty means auto-detect via 'which claude'
     CLAUDE_MEM_MODE: 'code', // Default mode profile
-    // Token Economics
     CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: 'false',
     CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: 'false',
     CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT: 'false',
     CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT: 'true',
-    // Display Configuration
     CLAUDE_MEM_CONTEXT_FULL_COUNT: '0',
     CLAUDE_MEM_CONTEXT_FULL_FIELD: 'narrative',
     CLAUDE_MEM_CONTEXT_SESSION_COUNT: '10',
-    // Feature Toggles
     CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: 'true',
     CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: 'false',
     CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: 'true',
@@ -134,30 +106,23 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_FOLDER_USE_LOCAL_MD: 'false',  // When true, writes to CLAUDE.local.md instead of CLAUDE.md
     CLAUDE_MEM_TRANSCRIPTS_ENABLED: 'true',
     CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH: join(homedir(), '.claude-mem', 'transcript-watch.json'),
-    // Process Management
     CLAUDE_MEM_MAX_CONCURRENT_AGENTS: '2',  // Max concurrent Claude SDK agent subprocesses
     CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: '3',  // Plan 05 Phase 8 — escalate to exit code 2 after N consecutive worker-unreachable hook invocations
-    // Exclusion Settings
     CLAUDE_MEM_EXCLUDED_PROJECTS: '',  // Comma-separated glob patterns for excluded project paths
     CLAUDE_MEM_FOLDER_MD_EXCLUDE: '[]',  // JSON array of folder paths to exclude from CLAUDE.md generation
-    // Semantic Context Injection (per-prompt via Chroma vector search)
     CLAUDE_MEM_SEMANTIC_INJECT: 'false',             // Inject relevant past observations on every UserPromptSubmit (experimental, disabled by default)
     CLAUDE_MEM_SEMANTIC_INJECT_LIMIT: '5',           // Top-N most relevant observations to inject per prompt
-    // Tier Routing (model selection by queue complexity)
     CLAUDE_MEM_TIER_ROUTING_ENABLED: 'true',         // Route observations to models by complexity
     CLAUDE_MEM_TIER_SIMPLE_MODEL: 'haiku', // Portable tier alias — works across Direct API, Bedrock, Vertex, Azure (see #1463)
     CLAUDE_MEM_TIER_SUMMARY_MODEL: '',                // Empty = use default model for summaries
-    // Chroma Vector Database Configuration
     CLAUDE_MEM_CHROMA_ENABLED: 'true',         // Set to 'false' to disable Chroma and use SQLite-only search
     CLAUDE_MEM_CHROMA_MODE: 'local',           // 'local' uses persistent chroma-mcp via uvx, 'remote' connects to existing server
     CLAUDE_MEM_CHROMA_HOST: '127.0.0.1',
     CLAUDE_MEM_CHROMA_PORT: '8000',
     CLAUDE_MEM_CHROMA_SSL: 'false',
-    // Future cloud support (claude-mem pro)
     CLAUDE_MEM_CHROMA_API_KEY: '',
     CLAUDE_MEM_CHROMA_TENANT: 'default_tenant',
     CLAUDE_MEM_CHROMA_DATABASE: 'default_database',
-    // Telegram Notifier
     CLAUDE_MEM_TELEGRAM_ENABLED: 'true',
     CLAUDE_MEM_TELEGRAM_BOT_TOKEN: '',
     CLAUDE_MEM_TELEGRAM_CHAT_ID: '',
@@ -165,46 +130,24 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_TELEGRAM_TRIGGER_CONCEPTS: '',
   };
 
-  /**
-   * Get all defaults as an object
-   */
   static getAllDefaults(): SettingsDefaults {
     return { ...this.DEFAULTS };
   }
 
-  /**
-   * Get a setting value with environment variable override.
-   * Priority: process.env > hardcoded default
-   *
-   * For full priority (env > settings file > default), use loadFromFile().
-   * This method is safe to call at module-load time (no file I/O) and still
-   * respects environment variable overrides that were previously ignored.
-   */
   static get(key: keyof SettingsDefaults): string {
     return process.env[key] ?? this.DEFAULTS[key];
   }
 
-  /**
-   * Get an integer default value
-   */
   static getInt(key: keyof SettingsDefaults): number {
     const value = this.get(key);
     return parseInt(value, 10);
   }
 
-  /**
-   * Get a boolean default value
-   * Handles both string 'true' and boolean true from JSON
-   */
   static getBool(key: keyof SettingsDefaults): boolean {
     const value: unknown = this.get(key);
     return value === 'true' || value === true;
   }
 
-  /**
-   * Apply environment variable overrides to settings
-   * Environment variables take highest priority over file and defaults
-   */
   private static applyEnvOverrides(settings: SettingsDefaults): SettingsDefaults {
     const result = { ...settings };
     for (const key of Object.keys(this.DEFAULTS) as Array<keyof SettingsDefaults>) {
@@ -215,16 +158,6 @@ export class SettingsDefaultsManager {
     return result;
   }
 
-  /**
-   * Load settings from file with fallback to defaults
-   * Returns merged settings with proper priority: process.env > settings file > defaults
-   * Handles all errors (missing file, corrupted JSON, permissions) gracefully
-   *
-   * Configuration Priority:
-   *   1. Environment variables (highest priority)
-   *   2. Settings file (~/.claude-mem/settings.json)
-   *   3. Default values (lowest priority)
-   */
   static loadFromFile(settingsPath: string): SettingsDefaults {
     try {
       if (!existsSync(settingsPath)) {
@@ -235,25 +168,20 @@ export class SettingsDefaultsManager {
             mkdirSync(dir, { recursive: true });
           }
           writeFileSync(settingsPath, JSON.stringify(defaults, null, 2), 'utf-8');
-          // Use console instead of logger to avoid circular dependency
           console.log('[SETTINGS] Created settings file with defaults:', settingsPath);
         } catch (error: unknown) {
           console.warn('[SETTINGS] Failed to create settings file, using in-memory defaults:', settingsPath, error instanceof Error ? error.message : String(error));
         }
-        // Still apply env var overrides even when file doesn't exist
         return this.applyEnvOverrides(defaults);
       }
 
       const settingsData = readFileSync(settingsPath, 'utf-8');
       const settings = JSON.parse(settingsData);
 
-      // MIGRATION: Handle old nested schema { env: {...} }
       let flatSettings = settings;
       if (settings.env && typeof settings.env === 'object') {
-        // Migrate from nested to flat schema
         flatSettings = settings.env;
 
-        // Auto-migrate the file to flat schema
         try {
           writeFileSync(settingsPath, JSON.stringify(flatSettings, null, 2), 'utf-8');
           console.log('[SETTINGS] Migrated settings file from nested to flat schema:', settingsPath);
@@ -263,7 +191,6 @@ export class SettingsDefaultsManager {
         }
       }
 
-      // Merge file settings with defaults (flat schema)
       const result: SettingsDefaults = { ...this.DEFAULTS };
       for (const key of Object.keys(this.DEFAULTS) as Array<keyof SettingsDefaults>) {
         if (flatSettings[key] !== undefined) {
@@ -271,11 +198,9 @@ export class SettingsDefaultsManager {
         }
       }
 
-      // Apply environment variable overrides (highest priority)
       return this.applyEnvOverrides(result);
     } catch (error: unknown) {
       console.warn('[SETTINGS] Failed to load settings, using defaults:', settingsPath, error instanceof Error ? error.message : String(error));
-      // Still apply env var overrides even on error
       return this.applyEnvOverrides(this.getAllDefaults());
     }
   }

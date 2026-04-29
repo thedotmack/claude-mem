@@ -1,7 +1,3 @@
-/**
- * Observations module - named re-exports
- * Provides all observation-related database operations
- */
 import { logger } from '../../utils/logger.js';
 
 export * from './observations/types.js';

@@ -1,13 +1,3 @@
-/**
- * Tests for hook timeout and exit code constants
- *
- * Mock Justification (~12% mock code):
- * - process.platform: Only mocked to test cross-platform timeout multiplier
- *   logic - ensures Windows users get appropriate longer timeouts
- *
- * Value: Prevents regressions in timeout values that could cause
- * hook failures on slow systems or Windows
- */
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { HOOK_TIMEOUTS, HOOK_EXIT_CODES, getTimeout } from '../src/shared/hook-constants.js';
 
@@ -15,7 +5,6 @@ describe('hook-constants', () => {
   const originalPlatform = process.platform;
 
   afterEach(() => {
-    // Restore original platform after each test
     Object.defineProperty(process, 'platform', {
       value: originalPlatform,
       writable: true,
@@ -101,7 +90,6 @@ describe('hook-constants', () => {
         configurable: true
       });
 
-      // 333 * 1.5 = 499.5, should round to 500
       expect(getTimeout(333)).toBe(500);
     });
 

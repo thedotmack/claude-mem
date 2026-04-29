@@ -1,9 +1,3 @@
-/**
- * Tests for readLastLines() — tail-read function for /api/logs endpoint (#1203)
- *
- * Verifies that log files are read from the end without loading the entire
- * file into memory, preventing OOM on large log files.
- */
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { writeFileSync, mkdirSync, rmSync, existsSync } from 'fs';
@@ -73,7 +67,6 @@ describe('readLastLines (#1203 OOM fix)', () => {
   });
 
   it('should work with lines larger than initial chunk size', () => {
-    // Create a file where lines are long enough to exceed the 64KB initial chunk
     const longLine = 'X'.repeat(10000);
     const lines = Array.from({ length: 20 }, (_, i) => `${i}:${longLine}`);
     writeFileSync(testFile, lines.join('\n') + '\n', 'utf-8');
@@ -91,7 +84,6 @@ describe('readLastLines (#1203 OOM fix)', () => {
     writeFileSync(testFile, lines.join('\n') + '\n', 'utf-8');
 
     const result = readLastLines(testFile, 100);
-    // When file fits in one chunk, totalEstimate should be exact
     expect(result.totalEstimate).toBe(5);
   });
 
@@ -105,22 +97,17 @@ describe('readLastLines (#1203 OOM fix)', () => {
     writeFileSync(testFile, '\n\n\n', 'utf-8');
     const result = readLastLines(testFile, 2);
     const resultLines = result.lines.split('\n');
-    // The last two "lines" before trailing newline are empty strings
     expect(resultLines.length).toBe(2);
   });
 
   it('should not load entire large file for small tail request', () => {
-    // This test verifies the core fix: a file with many lines should
-    // not be fully loaded when only a few lines are requested.
-    // We create a file larger than the initial 64KB chunk.
-    const line = 'A'.repeat(100) + '\n'; // ~101 bytes per line
-    const lineCount = 1000; // ~101KB total
+    const line = 'A'.repeat(100) + '\n'; 
+    const lineCount = 1000; 
     writeFileSync(testFile, line.repeat(lineCount), 'utf-8');
 
     const result = readLastLines(testFile, 5);
     const resultLines = result.lines.split('\n');
     expect(resultLines.length).toBe(5);
-    // Each returned line should be our repeated 'A' pattern
     for (const l of resultLines) {
       expect(l).toBe('A'.repeat(100));
     }

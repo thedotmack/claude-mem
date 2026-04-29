@@ -1,11 +1,5 @@
-/**
- * Type definitions for summary-related database operations
- */
 import { logger } from '../../../utils/logger.js';
 
-/**
- * Summary input for storage (from SDK parsing)
- */
 export interface SummaryInput {
   request: string;
   investigated: string;
@@ -15,17 +9,11 @@ export interface SummaryInput {
   notes: string | null;
 }
 
-/**
- * Result from storing a summary
- */
 export interface StoreSummaryResult {
   id: number;
   createdAtEpoch: number;
 }
 
-/**
- * Summary for a specific session (minimal fields)
- */
 export interface SessionSummary {
   request: string | null;
   investigated: string | null;
@@ -40,9 +28,6 @@ export interface SessionSummary {
   created_at_epoch: number;
 }
 
-/**
- * Summary with session info for context display
- */
 export interface SummaryWithSessionInfo {
   memory_session_id: string;
   request: string | null;
@@ -53,9 +38,6 @@ export interface SummaryWithSessionInfo {
   created_at: string;
 }
 
-/**
- * Recent summary (for project-scoped queries)
- */
 export interface RecentSummary {
   request: string | null;
   investigated: string | null;
@@ -69,9 +51,6 @@ export interface RecentSummary {
   created_at: string;
 }
 
-/**
- * Full summary with all fields (for web UI)
- */
 export interface FullSummary {
   id: number;
   request: string | null;
@@ -88,9 +67,6 @@ export interface FullSummary {
   created_at_epoch: number;
 }
 
-/**
- * Options for getByIds query
- */
 export interface GetByIdsOptions {
   orderBy?: 'date_desc' | 'date_asc';
   limit?: number;

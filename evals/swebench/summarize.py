@@ -10,7 +10,6 @@ import json
 import sys
 from pathlib import Path
 
-
 def load_expected_instance_ids(predictions_path: Path) -> list[str]:
     """Read instance_ids from a predictions.jsonl file (one JSON object per line)."""
     instance_ids: list[str] = []
@@ -37,7 +36,6 @@ def load_expected_instance_ids(predictions_path: Path) -> list[str]:
             if instance_id:
                 instance_ids.append(instance_id)
     return instance_ids
-
 
 def load_run_results(
     run_id: str,
@@ -81,8 +79,6 @@ def load_run_results(
             error_count += 1
             continue
 
-        # SWE-bench harness typically nests per-instance data under the
-        # instance_id key; fall back to the top-level dict for flexibility.
         inner = report_data.get(instance_id, report_data)
         resolved_value = inner.get("resolved")
         if resolved_value is True:
@@ -116,14 +112,12 @@ def load_run_results(
         "error_count": error_count,
     }
 
-
 def format_resolved_cell(resolved: bool | None) -> str:
     if resolved is True:
         return "yes"
     if resolved is False:
         return "no"
     return "error"
-
 
 def render_summary_markdown(run_id: str, results: dict) -> str:
     total = (
@@ -147,12 +141,10 @@ def render_summary_markdown(run_id: str, results: dict) -> str:
     for instance_id, record in results["per_instance"].items():
         resolved_cell = format_resolved_cell(record["resolved"])
         notes_cell = record.get("notes", "") or ""
-        # Escape pipe chars in notes to avoid breaking markdown tables.
         notes_cell = notes_cell.replace("|", "\\|")
         lines.append(f"| {instance_id} | {resolved_cell} | {notes_cell} |")
     lines.append("")
     return "\n".join(lines)
-
 
 def render_diff_markdown(
     current_run_id: str,
@@ -214,7 +206,6 @@ def render_diff_markdown(
     lines.append("")
     return "\n".join(lines)
 
-
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Summarize SWE-bench evaluation run results."
@@ -242,7 +233,6 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    # Resolve repo root from this script's location: evals/swebench/summarize.py
     script_path = Path(__file__).resolve()
     repo_root = script_path.parent.parent.parent
 
@@ -302,7 +292,6 @@ def main() -> int:
 
     print(str(output_path))
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

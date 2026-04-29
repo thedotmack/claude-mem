@@ -1,10 +1,4 @@
 #!/usr/bin/env node
-/**
- * Protected sync-marketplace script
- *
- * Prevents accidental rsync overwrite when installed plugin is on beta branch.
- * If on beta, the user should use the UI to update instead.
- */
 
 const { execSync } = require('child_process');
 const { existsSync, readFileSync } = require('fs');
@@ -57,7 +51,6 @@ if (branch && branch !== 'main' && !isForce) {
   process.exit(1);
 }
 
-// Get version from plugin.json
 function getPluginVersion() {
   try {
     const pluginJsonPath = path.join(__dirname, '..', 'plugin', '.claude-plugin', 'plugin.json');
@@ -69,10 +62,6 @@ function getPluginVersion() {
   }
 }
 
-// Preflight: if a worker is running on an older version than what we're about
-// to build, Claude Code's plugin loader is pinned to that older version and
-// hooks will keep respawning the worker from the old cache path no matter how
-// many times we sync. Bail loudly so the user updates the plugin first.
 function preflightVersionCheck(buildVersion) {
   const dataDir = process.env.CLAUDE_MEM_DATA_DIR || path.join(os.homedir(), '.claude-mem');
   const settingsPath = path.join(dataDir, 'settings.json');
@@ -93,7 +82,7 @@ function preflightVersionCheck(buildVersion) {
       stdio: ['ignore', 'pipe', 'ignore'],
     }).toString().trim();
   } catch {
-    return; // No worker running — nothing to compare against; sync proceeds.
+    return; 
   }
   if (!healthBody) return;
   let installedVersion;
@@ -125,7 +114,6 @@ if (!isForce) {
   preflightVersionCheck(getPluginVersion());
 }
 
-// Normal rsync for main branch or fresh install
 console.log('Syncing to marketplace...');
 try {
   const rootDir = path.join(__dirname, '..');
@@ -142,7 +130,6 @@ try {
     { stdio: 'inherit' }
   );
 
-  // Sync to cache folder with version
   const version = getPluginVersion();
   const CACHE_VERSION_PATH = path.join(CACHE_BASE_PATH, version);
 
@@ -155,13 +142,11 @@ try {
     { stdio: 'inherit' }
   );
 
-  // Install dependencies in cache directory so worker can resolve them
   console.log(`Running bun install in cache folder (version ${version})...`);
   execSync(`bun install`, { cwd: CACHE_VERSION_PATH, stdio: 'inherit' });
 
   console.log('\x1b[32m%s\x1b[0m', 'Sync complete!');
 
-  // Trigger worker restart after file sync
   console.log('\n🔄 Triggering worker restart...');
   const http = require('http');
   const dataDir = process.env.CLAUDE_MEM_DATA_DIR || path.join(os.homedir(), '.claude-mem');

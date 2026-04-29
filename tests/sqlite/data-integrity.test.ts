@@ -1,7 +1,3 @@
-/**
- * Data integrity tests for TRIAGE-03
- * Tests: content-hash deduplication, project name collision, empty project guard, stuck isProcessing
- */
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { ClaudeMemDatabase } from '../../src/services/sqlite/Database.js';
@@ -69,7 +65,6 @@ describe('TRIAGE-03: Data Integrity', () => {
     });
 
     it('computeObservationContentHash avoids collision from field boundary ambiguity', () => {
-      // These tuples would collide without a delimiter between fields
       const hash1 = computeObservationContentHash('session-abc', 'debug log', '');
       const hash2 = computeObservationContentHash('session-ab', 'cdebug log', '');
       const hash3 = computeObservationContentHash('session-', 'abcdebug log', '');
@@ -86,20 +81,15 @@ describe('TRIAGE-03: Data Integrity', () => {
       const result1 = storeObservation(db, memId, 'test-project', obs, 1, 0, now);
       const result2 = storeObservation(db, memId, 'test-project', obs, 1, 0, now + 1000);
 
-      // Second call should return the same id as the first (deduped)
       expect(result2.id).toBe(result1.id);
     });
 
     it('storeObservation deduplicates identical content regardless of time gap (UNIQUE constraint)', () => {
-      // PATHFINDER-2026-04-22 Plan 01 Phase 4: the legacy time-window dedup
-      // was replaced by UNIQUE(memory_session_id, content_hash) +
-      // ON CONFLICT DO NOTHING. Identical content always dedupes.
       const memId = createSessionWithMemoryId(db, 'content-dedup-2', 'mem-dedup-2');
       const obs = createObservationInput({ title: 'Same Title', narrative: 'Same Narrative' });
 
       const now = Date.now();
       const result1 = storeObservation(db, memId, 'test-project', obs, 1, 0, now);
-      // Far outside any legacy window — UNIQUE constraint still dedupes.
       const result2 = storeObservation(db, memId, 'test-project', obs, 1, 0, now + 31_000);
 
       expect(result2.id).toBe(result1.id);
@@ -136,12 +126,10 @@ describe('TRIAGE-03: Data Integrity', () => {
 
       const result = storeObservations(db, memId, 'test-project', [obs, obs, obs], null);
 
-      // First is inserted, second and third are deduped to the first
       expect(result.observationIds.length).toBe(3);
       expect(result.observationIds[1]).toBe(result.observationIds[0]);
       expect(result.observationIds[2]).toBe(result.observationIds[0]);
 
-      // Only 1 row in the database
       const count = db.prepare('SELECT COUNT(*) as count FROM observations').get() as { count: number };
       expect(count.count).toBe(1);
     });
@@ -155,16 +143,12 @@ describe('TRIAGE-03: Data Integrity', () => {
       const result = storeObservation(db, memId, '', obs);
       const row = db.prepare('SELECT project FROM observations WHERE id = ?').get(result.id) as { project: string };
 
-      // Should not be empty — will be derived from cwd
       expect(row.project).toBeTruthy();
       expect(row.project.length).toBeGreaterThan(0);
     });
   });
 
   describe('hasAnyPendingWork', () => {
-    // PATHFINDER-2026-04-22 Plan 01: time-based stale-reset on
-    // started_processing_at_epoch was replaced by worker-PID liveness.
-    // The legacy "5-minute reset" tests were removed with the column.
 
     it('hasAnyPendingWork returns false when no pending or processing messages exist', () => {
       const pendingStore = new PendingMessageStore(db);

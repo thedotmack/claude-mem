@@ -35,7 +35,6 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
   const [selectedSource, setSelectedSource] = useState<string | null>(null);
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
 
-  // Fetch projects on mount
   useEffect(() => {
     async function fetchProjects() {
       let data: ProjectCatalog;
@@ -117,7 +116,6 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
     setIsLoading(false);
   }, [selectedProject, selectedSource]);
 
-  // Debounced refresh when settings or selectedProject change
   useEffect(() => {
     const timeout = setTimeout(() => {
       refresh();

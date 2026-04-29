@@ -3,7 +3,6 @@ import { startHealthChecker, stopHealthChecker } from '../../src/supervisor/heal
 
 describe('health-checker', () => {
   afterEach(() => {
-    // Always stop the checker to avoid leaking intervals between tests
     stopHealthChecker();
   });
 
@@ -21,7 +20,6 @@ describe('health-checker', () => {
   });
 
   it('multiple startHealthChecker calls do not create multiple intervals', () => {
-    // Track setInterval calls
     const originalSetInterval = globalThis.setInterval;
     let setIntervalCallCount = 0;
 
@@ -31,7 +29,6 @@ describe('health-checker', () => {
     }) as typeof setInterval;
 
     try {
-      // Stop any existing checker first to ensure clean state
       stopHealthChecker();
       setIntervalCallCount = 0;
 
@@ -39,7 +36,6 @@ describe('health-checker', () => {
       startHealthChecker();
       startHealthChecker();
 
-      // Only one interval should have been created due to the guard
       expect(setIntervalCallCount).toBe(1);
     } finally {
       globalThis.setInterval = originalSetInterval;

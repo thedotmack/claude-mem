@@ -1,10 +1,4 @@
 #!/usr/bin/env node
-/**
- * Smart Install Script for claude-mem
- *
- * Ensures Bun runtime and uv (Python package manager) are installed
- * (auto-installs if missing) and handles dependency installation when needed.
- */
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { execSync, spawnSync } from 'child_process';
 import { join, dirname } from 'path';
@@ -13,24 +7,12 @@ import { fileURLToPath } from 'url';
 
 const IS_WINDOWS = process.platform === 'win32';
 
-/**
- * Resolve the plugin root directory where dependencies should be installed.
- *
- * Priority:
- * 1. CLAUDE_PLUGIN_ROOT env var (set by Claude Code for hooks — works for
- *    both cache-based and marketplace installs)
- * 2. Script location (dirname of this file, up one level from scripts/)
- * 3. XDG path (~/.config/claude/plugins/marketplaces/thedotmack)
- * 4. Legacy path (~/.claude/plugins/marketplaces/thedotmack)
- */
 function resolveRoot() {
-  // CLAUDE_PLUGIN_ROOT is the authoritative location set by Claude Code
   if (process.env.CLAUDE_PLUGIN_ROOT) {
     const root = process.env.CLAUDE_PLUGIN_ROOT;
     if (existsSync(join(root, 'package.json'))) return root;
   }
 
-  // Derive from script location (this file is in <root>/scripts/)
   try {
     const scriptDir = dirname(fileURLToPath(import.meta.url));
     const candidate = dirname(scriptDir);
@@ -39,7 +21,6 @@ function resolveRoot() {
     // import.meta.url not available
   }
 
-  // Probe XDG path, then legacy
   const marketplaceRel = join('plugins', 'marketplaces', 'thedotmack');
   const xdg = join(homedir(), '.config', 'claude', marketplaceRel);
   if (existsSync(join(xdg, 'package.json'))) return xdg;
@@ -50,7 +31,6 @@ function resolveRoot() {
 const ROOT = resolveRoot();
 const MARKER = join(ROOT, '.install-version');
 
-// Common installation paths (handles fresh installs before PATH reload)
 const BUN_COMMON_PATHS = IS_WINDOWS
   ? [join(homedir(), '.bun', 'bin', 'bun.exe')]
   : [join(homedir(), '.bun', 'bin', 'bun'), '/usr/local/bin/bun', '/opt/homebrew/bin/bun'];
@@ -59,11 +39,7 @@ const UV_COMMON_PATHS = IS_WINDOWS
   ? [join(homedir(), '.local', 'bin', 'uv.exe'), join(homedir(), '.cargo', 'bin', 'uv.exe')]
   : [join(homedir(), '.local', 'bin', 'uv'), join(homedir(), '.cargo', 'bin', 'uv'), '/usr/local/bin/uv', '/opt/homebrew/bin/uv'];
 
-/**
- * Get the Bun executable path (from PATH or common install locations)
- */
 function getBunPath() {
-  // Try PATH first
   try {
     const result = spawnSync('bun', ['--version'], {
       encoding: 'utf-8',
@@ -75,20 +51,13 @@ function getBunPath() {
     // Not in PATH
   }
 
-  // Check common installation paths
   return BUN_COMMON_PATHS.find(existsSync) || null;
 }
 
-/**
- * Check if Bun is installed and accessible
- */
 function isBunInstalled() {
   return getBunPath() !== null;
 }
 
-/**
- * Get Bun version if installed
- */
 function getBunVersion() {
   const bunPath = getBunPath();
   if (!bunPath) return null;
@@ -105,11 +74,7 @@ function getBunVersion() {
   }
 }
 
-/**
- * Get the uv executable path (from PATH or common install locations)
- */
 function getUvPath() {
-  // Try PATH first
   try {
     const result = spawnSync('uv', ['--version'], {
       encoding: 'utf-8',
@@ -121,20 +86,13 @@ function getUvPath() {
     // Not in PATH
   }
 
-  // Check common installation paths
   return UV_COMMON_PATHS.find(existsSync) || null;
 }
 
-/**
- * Check if uv is installed and accessible
- */
 function isUvInstalled() {
   return getUvPath() !== null;
 }
 
-/**
- * Get uv version if installed
- */
 function getUvVersion() {
   const uvPath = getUvPath();
   if (!uvPath) return null;
@@ -151,9 +109,6 @@ function getUvVersion() {
   }
 }
 
-/**
- * Install Bun automatically based on platform
- */
 function installBun() {
   console.error('🔧 Bun not found. Installing Bun runtime...');
 
@@ -196,9 +151,6 @@ function installBun() {
   }
 }
 
-/**
- * Install uv automatically based on platform
- */
 function installUv() {
   console.error('🐍 Installing uv for Python/Chroma support...');
 
@@ -241,9 +193,6 @@ function installUv() {
   }
 }
 
-/**
- * Check if dependencies need to be installed
- */
 function needsInstall() {
   if (!existsSync(join(ROOT, 'node_modules'))) return true;
   try {
@@ -255,9 +204,6 @@ function needsInstall() {
   }
 }
 
-/**
- * Install dependencies using Bun
- */
 function installDeps() {
   const bunPath = getBunPath();
   if (!bunPath) {
@@ -266,12 +212,10 @@ function installDeps() {
 
   console.error('📦 Installing dependencies with Bun...');
 
-  // Quote path for Windows paths with spaces
   const bunCmd = IS_WINDOWS && bunPath.includes(' ') ? `"${bunPath}"` : bunPath;
 
   execSync(`${bunCmd} install`, { cwd: ROOT, stdio: 'inherit', shell: IS_WINDOWS });
 
-  // Write version marker
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
   writeFileSync(MARKER, JSON.stringify({
     version: pkg.version,
@@ -281,10 +225,6 @@ function installDeps() {
   }));
 }
 
-/**
- * Verify that critical runtime modules are resolvable from the install directory.
- * Returns true if all critical modules exist, false otherwise.
- */
 function verifyCriticalModules() {
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
   const dependencies = Object.keys(pkg.dependencies || {});
@@ -305,7 +245,6 @@ function verifyCriticalModules() {
   return true;
 }
 
-// Main execution
 try {
   if (!isBunInstalled()) installBun();
   if (!isUvInstalled()) installUv();

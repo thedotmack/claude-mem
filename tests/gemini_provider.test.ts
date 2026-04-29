@@ -8,11 +8,8 @@ import { SessionManager } from '../src/services/worker/SessionManager';
 import { ModeManager } from '../src/services/domain/ModeManager';
 import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager';
 
-// Track rate limiting setting (controls Gemini RPM throttling)
-// Set to 'false' to disable rate limiting for faster tests
 let rateLimitingEnabled = 'false';
 
-// Mock mode config
 const mockMode = {
   name: 'code',
   prompts: {
@@ -24,8 +21,6 @@ const mockMode = {
   observation_concepts: []
 };
 
-// Use spyOn for all dependencies to avoid affecting other test files
-// spyOn restores automatically, unlike mock.module which persists
 let loadFromFileSpy: ReturnType<typeof spyOn>;
 let getSpy: ReturnType<typeof spyOn>;
 let modeManagerSpy: ReturnType<typeof spyOn>;
@@ -34,9 +29,8 @@ describe('GeminiProvider', () => {
   let agent: GeminiProvider;
   let originalFetch: typeof global.fetch;
 
-  // Mocks
   let mockStoreObservation: any;
-  let mockStoreObservations: any; // Plural - atomic transaction method used by ResponseProcessor
+  let mockStoreObservations: any; 
   let mockStoreSummary: any;
   let mockMarkSessionCompleted: any;
   let mockSyncObservation: any;
@@ -48,16 +42,13 @@ describe('GeminiProvider', () => {
   let mockSessionManager: SessionManager;
 
   beforeEach(() => {
-    // Reset rate limiting to disabled by default (speeds up tests)
     rateLimitingEnabled = 'false';
 
-    // Mock ModeManager using spyOn (restores properly)
     modeManagerSpy = spyOn(ModeManager, 'getInstance').mockImplementation(() => ({
       getActiveMode: () => mockMode,
       loadMode: () => {},
     } as any));
 
-    // Mock SettingsDefaultsManager methods using spyOn (restores properly)
     loadFromFileSpy = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
       ...SettingsDefaultsManager.getAllDefaults(),
       CLAUDE_MEM_GEMINI_API_KEY: 'test-api-key',
@@ -74,7 +65,6 @@ describe('GeminiProvider', () => {
       return SettingsDefaultsManager.getAllDefaults()[key as keyof ReturnType<typeof SettingsDefaultsManager.getAllDefaults>] ?? '';
     });
 
-    // Initialize mocks
     mockStoreObservation = mock(() => ({ id: 1, createdAtEpoch: Date.now() }));
     mockStoreSummary = mock(() => ({ id: 1, createdAtEpoch: Date.now() }));
     mockMarkSessionCompleted = mock(() => {});
@@ -84,7 +74,6 @@ describe('GeminiProvider', () => {
     mockCleanupProcessed = mock(() => 0);
     mockResetStuckMessages = mock(() => 0);
 
-    // Mock for storeObservations (plural) - the atomic transaction method called by ResponseProcessor
     mockStoreObservations = mock(() => ({
       observationIds: [1],
       summaryId: 1,
@@ -97,7 +86,7 @@ describe('GeminiProvider', () => {
       storeSummary: mockStoreSummary,
       markSessionCompleted: mockMarkSessionCompleted,
       getSessionById: mock(() => ({ memory_session_id: 'mem-session-123' })), // Required by ResponseProcessor.ts for FK fix
-      ensureMemorySessionIdRegistered: mock(() => {}) // Required by ResponseProcessor.ts for FK constraint fix (Issue #846)
+      ensureMemorySessionIdRegistered: mock(() => {}) 
     };
 
     const mockChromaSync = {
@@ -128,7 +117,6 @@ describe('GeminiProvider', () => {
 
   afterEach(() => {
     global.fetch = originalFetch;
-    // Restore spied methods
     if (modeManagerSpy) modeManagerSpy.mockRestore();
     if (loadFromFileSpy) loadFromFileSpy.mockRestore();
     if (getSpy) getSpy.mockRestore();
@@ -152,7 +140,7 @@ describe('GeminiProvider', () => {
       earliestPendingTimestamp: null,
       currentProvider: null,
       startTime: Date.now(),
-      processingMessageIds: []  // CLAIM-CONFIRM pattern: track message IDs being processed
+      processingMessageIds: []  
     } as any;
 
     global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
@@ -189,7 +177,7 @@ describe('GeminiProvider', () => {
       earliestPendingTimestamp: null,
       currentProvider: null,
       startTime: Date.now(),
-      processingMessageIds: []  // CLAIM-CONFIRM pattern: track message IDs being processed
+      processingMessageIds: []  
     } as any;
 
     global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
@@ -222,7 +210,7 @@ describe('GeminiProvider', () => {
       earliestPendingTimestamp: null,
       currentProvider: null,
       startTime: Date.now(),
-      processingMessageIds: []  // CLAIM-CONFIRM pattern: track message IDs being processed
+      processingMessageIds: []  
     } as any;
 
     const observationXml = `
@@ -245,16 +233,12 @@ describe('GeminiProvider', () => {
 
     await agent.startSession(session);
 
-    // ResponseProcessor uses storeObservations (plural) for atomic transactions
     expect(mockStoreObservations).toHaveBeenCalled();
     expect(mockSyncObservation).toHaveBeenCalled();
     expect(session.cumulativeInputTokens).toBeGreaterThan(0);
   });
 
   it('should throw on rate limit (429) error — no Claude fallback (#2087)', async () => {
-    // The Claude-SDK fallback path was removed in #2087: it was never wired in
-    // production (`fallbackAgent` was always null) so 429s already threw.
-    // This test pins the new explicit behavior.
     const session = {
       sessionDbId: 1,
       contentSessionId: 'test-session',
@@ -271,7 +255,7 @@ describe('GeminiProvider', () => {
       earliestPendingTimestamp: null,
       currentProvider: null,
       startTime: Date.now(),
-      processingMessageIds: []  // CLAIM-CONFIRM pattern: track message IDs being processed
+      processingMessageIds: []  
     } as any;
 
     global.fetch = mock(() => Promise.resolve(new Response('Resource has been exhausted (e.g. check quota).', { status: 429 })));
@@ -296,7 +280,7 @@ describe('GeminiProvider', () => {
       earliestPendingTimestamp: null,
       currentProvider: null,
       startTime: Date.now(),
-      processingMessageIds: []  // CLAIM-CONFIRM pattern: track message IDs being processed
+      processingMessageIds: []  
     } as any;
 
     global.fetch = mock(() => Promise.resolve(new Response('Invalid argument', { status: 400 })));
@@ -305,8 +289,6 @@ describe('GeminiProvider', () => {
   });
 
   it('should respect rate limits when rate limiting enabled', async () => {
-    // Enable rate limiting - this means requests will be throttled
-    // Note: CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED !== 'false' means enabled
     rateLimitingEnabled = 'true';
 
     const originalSetTimeout = global.setTimeout;
@@ -330,7 +312,7 @@ describe('GeminiProvider', () => {
         earliestPendingTimestamp: null,
         currentProvider: null,
         startTime: Date.now(),
-        processingMessageIds: []  // CLAIM-CONFIRM pattern: track message IDs being processed
+        processingMessageIds: []  
       } as any;
 
       global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
@@ -348,7 +330,6 @@ describe('GeminiProvider', () => {
 
   describe('conversation history truncation', () => {
     it('should truncate history when message count exceeds limit', async () => {
-      // Build a history with 25 small messages (limit is 20)
       const history: any[] = [];
       for (let i = 0; i < 25; i++) {
         history.push({ role: i % 2 === 0 ? 'user' : 'assistant', content: `message ${i}` });
@@ -379,13 +360,11 @@ describe('GeminiProvider', () => {
 
       await agent.startSession(session);
 
-      // The request body should have truncated contents (init adds 1 more, so 26 total → truncated to 20)
       const body = JSON.parse((global.fetch as any).mock.calls[0][1].body);
       expect(body.contents.length).toBeLessThanOrEqual(20);
     });
 
     it('should always keep at least the newest message even if it exceeds token limit', async () => {
-      // Override settings to have a very low token limit
       loadFromFileSpy.mockImplementation(() => ({
         ...SettingsDefaultsManager.getAllDefaults(),
         CLAUDE_MEM_GEMINI_API_KEY: 'test-api-key',
@@ -396,8 +375,7 @@ describe('GeminiProvider', () => {
         CLAUDE_MEM_DATA_DIR: '/tmp/claude-mem-test',
       }));
 
-      // Create a single large message that exceeds the token limit
-      const largeContent = 'x'.repeat(8000);  // ~2000 tokens, well above 1000 limit
+      const largeContent = 'x'.repeat(8000);  
 
       const session = {
         sessionDbId: 1,
@@ -424,7 +402,6 @@ describe('GeminiProvider', () => {
 
       await agent.startSession(session);
 
-      // Should still send at least 1 message (the newest), not empty contents
       const body = JSON.parse((global.fetch as any).mock.calls[0][1].body);
       expect(body.contents.length).toBeGreaterThanOrEqual(1);
     });
@@ -432,7 +409,6 @@ describe('GeminiProvider', () => {
 
   describe('gemini-3-flash-preview model support', () => {
     it('should accept gemini-3-flash-preview as a valid model', async () => {
-      // The GeminiModel type includes gemini-3-flash-preview - compile-time check
       const validModels = [
         'gemini-2.5-flash-lite',
         'gemini-2.5-flash',
@@ -442,15 +418,11 @@ describe('GeminiProvider', () => {
         'gemini-3-flash-preview'
       ];
 
-      // Verify all models are strings (type guard)
       expect(validModels.every(m => typeof m === 'string')).toBe(true);
       expect(validModels).toContain('gemini-3-flash-preview');
     });
 
     it('should have rate limit defined for gemini-3-flash-preview', async () => {
-      // GEMINI_RPM_LIMITS['gemini-3-flash-preview'] = 5
-      // This is enforced at compile time, but we can test the rate limiting behavior
-      // by checking that the rate limit is applied when using gemini-3-flash-preview
       const session = {
         sessionDbId: 1,
         contentSessionId: 'test-session',
@@ -467,7 +439,7 @@ describe('GeminiProvider', () => {
         earliestPendingTimestamp: null,
         currentProvider: null,
         startTime: Date.now(),
-        processingMessageIds: []  // CLAIM-CONFIRM pattern: track message IDs being processed
+        processingMessageIds: []  
       } as any;
 
       global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
@@ -475,8 +447,6 @@ describe('GeminiProvider', () => {
         usageMetadata: { totalTokenCount: 10 }
       }))));
 
-      // This validates that gemini-3-flash-preview is a valid model at runtime
-      // The agent's validation array includes gemini-3-flash-preview
       await agent.startSession(session);
       expect(global.fetch).toHaveBeenCalled();
     });

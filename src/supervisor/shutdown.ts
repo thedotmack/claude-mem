@@ -117,14 +117,6 @@ async function waitForExit(records: ManagedProcessRecord[], timeoutMs: number): 
 async function signalProcess(record: ManagedProcessRecord, signal: 'SIGTERM' | 'SIGKILL'): Promise<void> {
   const { pid, pgid } = record;
 
-  // Unix path: when the record carries a pgid (set when the child was spawned
-  // with detached:true so it became its own group leader), signal the negative
-  // PID to tear down the whole process group in one syscall — the SDK child
-  // AND every descendant it spawned. This replaces hand-rolled orphan sweeps
-  // (Principle 5: OS-supervised process groups over hand-rolled reapers).
-  //
-  // Falls back to single-PID kill when pgid is absent (the worker itself,
-  // MCP stdio clients, anything not spawned with detached:true).
   if (process.platform !== 'win32') {
     try {
       if (typeof pgid === 'number') {
@@ -144,8 +136,6 @@ async function signalProcess(record: ManagedProcessRecord, signal: 'SIGTERM' | '
     return;
   }
 
-  // Windows: no POSIX process groups. SIGTERM uses single-PID kill; SIGKILL
-  // uses tree-kill or taskkill /T to walk the descendant tree.
   if (signal === 'SIGTERM') {
     try {
       process.kill(pid, signal);

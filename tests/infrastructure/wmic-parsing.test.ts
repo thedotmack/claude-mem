@@ -1,15 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 
-/**
- * Tests for PowerShell output parsing logic used in Windows process enumeration.
- *
- * This tests the parsing behavior directly since mocking promisified exec
- * is unreliable across module boundaries. The parsing logic matches exactly
- * what's in ProcessManager.getChildProcesses().
- */
-
-// Extract the parsing logic from ProcessManager for direct testing
-// This matches the implementation in src/services/infrastructure/ProcessManager.ts lines 95-100
 function parsePowerShellOutput(stdout: string): number[] {
   return stdout
     .split('\n')
@@ -19,7 +9,6 @@ function parsePowerShellOutput(stdout: string): number[] {
     .filter(pid => pid > 0);
 }
 
-// Validate parent PID - matches ProcessManager.getChildProcesses() lines 85-88
 function isValidParentPid(parentPid: number): boolean {
   return Number.isInteger(parentPid) && parentPid > 0;
 }
@@ -107,7 +96,6 @@ describe('PowerShell output parsing (Windows)', () => {
     });
 
     it('should handle very large PIDs', () => {
-      // Windows PIDs can be large but are still 32-bit integers
       const stdout = '2147483647\r\n';
 
       const result = parsePowerShellOutput(stdout);
@@ -119,7 +107,6 @@ describe('PowerShell output parsing (Windows)', () => {
       const stdout = `
 
 1234
-
 
 5678
 
@@ -190,7 +177,6 @@ describe('getChildProcesses platform behavior', () => {
       configurable: true
     });
 
-    // Import fresh to get updated platform value
     const { getChildProcesses } = await import('../../src/services/infrastructure/ProcessManager.js');
 
     const result = await getChildProcesses(1000);
@@ -213,7 +199,6 @@ describe('getChildProcesses platform behavior', () => {
   });
 
   it('should return empty array for invalid parent PID regardless of platform', async () => {
-    // Even on Windows, invalid parent PIDs should be rejected before exec
     const { getChildProcesses } = await import('../../src/services/infrastructure/ProcessManager.js');
 
     expect(await getChildProcesses(0)).toEqual([]);

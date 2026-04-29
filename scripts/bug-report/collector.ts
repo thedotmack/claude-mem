@@ -216,7 +216,6 @@ export async function collectDiagnostics(
   const cwd = process.cwd();
   const isDevMode = cwd.includes("claude-mem") && !cwd.includes(".claude");
 
-  // Collect version information
   const [claudeMem, claudeCode, bun, osVersion] = await Promise.all([
     getClaudememVersion(),
     getClaudeCodeVersion(),
@@ -244,7 +243,6 @@ export async function collectDiagnostics(
     isDevMode,
   };
 
-  // Check worker status
   const pidInfo = await readPidFile(dataDir);
   const workerPort = pidInfo?.port || 37777;
 
@@ -263,7 +261,6 @@ export async function collectDiagnostics(
     stats,
   };
 
-  // Collect logs if requested
   let workerLog: string[] = [];
   let silentLog: string[] = [];
 
@@ -283,7 +280,6 @@ export async function collectDiagnostics(
     silentLog: silentLog.map(sanitizePath),
   };
 
-  // Database info
   const [dbInfo, tableCounts] = await Promise.all([
     getDatabaseInfo(dataDir),
     getTableCounts(dataDir),
@@ -295,7 +291,6 @@ export async function collectDiagnostics(
     counts: tableCounts,
   };
 
-  // Configuration
   const settingsInfo = await getSettings(dataDir);
   const config = {
     settingsPath: sanitizePath(path.join(dataDir, "settings.json")),
@@ -381,7 +376,6 @@ export function formatDiagnostics(diagnostics: SystemDiagnostics): string {
   }
   output += "\n";
 
-  // Add logs if present
   if (diagnostics.logs.workerLog.length > 0) {
     output += "## Recent Worker Logs (Last 50 Lines)\n\n";
     output += "```\n";

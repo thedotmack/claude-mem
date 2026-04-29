@@ -1,20 +1,4 @@
 #!/usr/bin/env bun
-/**
- * cwd-remap — Rewrite sdk_sessions.project (+ observations.project,
- * session_summaries.project) using the cwd captured per-message in
- * pending_messages.cwd as the single source of truth.
- *
- * For each distinct cwd:
- *   - git -C <cwd> rev-parse --git-dir  AND  --git-common-dir
- *     If they differ → worktree. parent = basename(dirname(common-dir)),
- *     project = parent/<basename(cwd)>.
- *     Else → project = basename(cwd).
- *   - If the directory doesn't exist, or git errors, skip that cwd.
- *
- * Usage:
- *   bun scripts/cwd-remap.ts          # dry-run (default)
- *   bun scripts/cwd-remap.ts --apply  # write updates in a single transaction
- */
 
 import { Database } from 'bun:sqlite';
 import { homedir } from 'os';
@@ -51,7 +35,6 @@ function classify(cwd: string): Classification {
   const commonDir = git(cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
   if (!commonDir) return { kind: 'skip', reason: 'no-common-dir' };
 
-  // Use the worktree root, not the cwd — a session may be in a subdir.
   const toplevel = git(cwd, ['rev-parse', '--show-toplevel']);
   if (!toplevel) return { kind: 'skip', reason: 'no-toplevel' };
   const leaf = basename(toplevel);
@@ -60,8 +43,6 @@ function classify(cwd: string): Classification {
     return { kind: 'main', project: leaf };
   }
 
-  // worktree: common-dir = <parent-repo>/.git (normal) or <parent>.git (bare).
-  // Normal: dirname strips the trailing /.git. Bare: strip the .git suffix.
   const parentRepoDir = commonDir.endsWith('/.git')
     ? dirname(commonDir)
     : commonDir.replace(/\.git$/, '');
@@ -101,16 +82,12 @@ function main() {
   }
   console.log(`  main=${counts.main}  worktree=${counts.worktree}  skip=${counts.skip}`);
 
-  // Skipped cwds (so user sees what's missing)
   const skipped = [...byCwd.entries()].filter(([, c]) => c.kind === 'skip') as Array<[string, Extract<Classification, { kind: 'skip' }>]>;
   if (skipped.length) {
     console.log('\nSkipped cwds:');
     for (const [cwd, c] of skipped) console.log(`  [${c.reason}] ${cwd}`);
   }
 
-  // Per-session target: use the EARLIEST pending_messages.cwd for each session.
-  // (Dominant-cwd is wrong: claude-mem's own hooks run from nested dirs like
-  //  `.context/claude-mem/` and dominate the count, misattributing the session.)
   const sessionRows = db.prepare(`
     SELECT s.id AS session_id, s.memory_session_id, s.content_session_id, s.project AS old_project, p.cwd
     FROM sdk_sessions s
