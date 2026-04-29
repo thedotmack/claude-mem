@@ -107,10 +107,13 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
     let sessions: SessionSummarySearchResult[] = [];
     let prompts: UserPromptSearchResult[] = [];
 
-    // Chroma already ranks by vector similarity; 'relevance' has no SQL
-    // equivalent, so drop it before hydrating rows from SessionStore.
-    const sqlOrderBy: 'date_desc' | 'date_asc' | undefined =
-      options.orderBy === 'relevance' ? undefined : options.orderBy;
+    // Pass orderBy through unchanged. SessionStore's getObservationsByIds /
+    // getSessionSummariesByIds / getUserPromptsByIds accept 'relevance' as a
+    // valid value: they skip ORDER BY and preserve the caller-provided ID
+    // order (Chroma's vector similarity ranking). Coercing 'relevance' to
+    // undefined here would let SessionStore default to 'date_desc' and
+    // destroy the semantic ranking. See #2153.
+    const sqlOrderBy = options.orderBy;
 
     if (categorized.obsIds.length > 0) {
       const obsOptions = { type: options.obsType, concepts: options.concepts, files: options.files, orderBy: sqlOrderBy, limit: options.limit, project: options.project };
