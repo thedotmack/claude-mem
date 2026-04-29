@@ -302,8 +302,14 @@ class Logger {
           ? `\n${data.message}\n${data.stack}`
           : ` ${data.message}`;
       } else if (this.getLevel() === LogLevel.DEBUG && typeof data === 'object') {
-        // In debug mode, show full JSON for objects
-        dataStr = '\n' + JSON.stringify(data, null, 2);
+        // In debug mode, show full JSON for objects.
+        // Wrap stringify in try/catch so circular structures don't crash the logger;
+        // fall back to formatData (which marks arrays/object key counts safely).
+        try {
+          dataStr = '\n' + JSON.stringify(data, null, 2);
+        } catch {
+          dataStr = ' ' + this.formatData(data);
+        }
       } else {
         dataStr = ' ' + this.formatData(data);
       }

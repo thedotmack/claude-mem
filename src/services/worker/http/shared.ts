@@ -209,9 +209,17 @@ export function ingestObservation(payload: ObservationPayload): IngestResult {
   // Closes #2201: a single user generated 345M tokens/day because high-volume
   // tool outputs (multi-MB exec_command results, full-file apply_patch diffs)
   // were stored verbatim. Cap at the gate, before persistence.
-  const MAX_OBSERVATION_BYTES = parseInt(settings.CLAUDE_MEM_MAX_OBSERVATION_BYTES, 10) || 65536;
+  const parsedMax = Number.parseInt(settings.CLAUDE_MEM_MAX_OBSERVATION_BYTES, 10);
+  const MAX_OBSERVATION_BYTES =
+    Number.isFinite(parsedMax) && parsedMax > 0 ? parsedMax : 65536;
   if (payload.toolResponse !== undefined) {
-    const responseBytes = Buffer.byteLength(JSON.stringify(payload.toolResponse), 'utf8');
+    let serialized: string;
+    try {
+      serialized = JSON.stringify(payload.toolResponse) ?? 'null';
+    } catch {
+      return { ok: true, status: 'skipped', reason: 'payload_unserializable' };
+    }
+    const responseBytes = Buffer.byteLength(serialized, 'utf8');
     if (responseBytes > MAX_OBSERVATION_BYTES) {
       return { ok: true, status: 'skipped', reason: 'payload_too_large' };
     }
