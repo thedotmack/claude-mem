@@ -33,23 +33,39 @@ jobs:
       # restart from a hardcoded ~/.claude/plugins path that doesn't exist on CI.
       - run: npm run build
 
-      - name: Smoke - daemon spawn must not pop visible cmd window
-        shell: pwsh
-        run: |
-          $before = (Get-Process cmd -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Measure-Object).Count
-          # Trigger the worker spawn path. Best-effort: don't fail the smoke if start
-          # itself errors for unrelated reasons; we're only asserting that any spawn
-          # the daemon path performs does not surface a visible window.
-          try { node ./dist/npx-cli/index.js start } catch { Write-Host "start exited non-zero (acceptable for smoke): $_" }
-          Start-Sleep -Seconds 4
-          $after = (Get-Process cmd -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Measure-Object).Count
-          if ($after -gt $before) { throw "Visible cmd.exe window count increased ($before -> $after) — Windows spawn regression!" }
-          try { node ./dist/npx-cli/index.js stop } catch { }
-
-      - name: Anti-regression - PowerShell branch present in spawnDaemon
+      # Static regression checks. The dynamic smoke (counting cmd windows
+      # before/after `claude-mem start`) is not viable in CI without a
+      # full install step — `start` exits early with "claude-mem is not
+      # installed" before exercising the spawn path. The static checks
+      # below catch the exact regressions PR #2208 was written to prevent.
+      - name: Anti-regression - PowerShell hidden-spawn branch present
         shell: pwsh
         run: |
           $proc = Get-Content src/services/infrastructure/ProcessManager.ts -Raw
           if ($proc -notmatch "Start-Process") {
-            throw "spawnDaemon Windows branch missing Start-Process — PR #751 regression!"
+            throw "spawnDaemon Windows branch missing Start-Process — PR #751 regression risk (commit d13662d5 deleted this branch)!"
+          }
+          if ($proc -notmatch "WindowStyle Hidden") {
+            throw "spawnDaemon PowerShell branch missing -WindowStyle Hidden — visible cmd window will pop!"
+          }
+
+      - name: Anti-regression - bun-runner shell true uses quoted command string
+        shell: pwsh
+        run: |
+          $runner = Get-Content plugin/scripts/bun-runner.js -Raw
+          # When shell:true is set, args must be passed via a single quoted
+          # command string (DEP0190 on Node 22+) — empty args array required.
+          if ($runner -match "spawnOptions\.shell\s*=\s*true" -and $runner -notmatch "spawnArgs\s*=\s*\[\]") {
+            throw "bun-runner.js: shell:true without spawnArgs=[] — DEP0190 / unsafe arg concatenation on Windows!"
+          }
+          if ($runner -match "cmd\s*/c\s+\\?`?bunPath") {
+            throw "bun-runner.js: cmd /c wrapper resurfaced — pops visible window on Windows hooks (issues #2150, #2186)"
+          }
+
+      - name: Anti-regression - SDK spawn factory sets windowsHide
+        shell: pwsh
+        run: |
+          $reg = Get-Content src/supervisor/process-registry.ts -Raw
+          if ($reg -notmatch "windowsHide") {
+            throw "process-registry.ts: windowsHide not set on SDK spawn — grandchild claude.exe will pop windows (issue #2190)!"
           }
