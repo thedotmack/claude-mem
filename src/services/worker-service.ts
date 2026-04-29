@@ -49,7 +49,9 @@ import {
   cleanStalePidFile,
   verifyPidFileOwnership,
   spawnDaemon,
-  touchPidFile
+  touchPidFile,
+  startOrphanReaperInterval,
+  stopOrphanReaperInterval
 } from './infrastructure/ProcessManager.js';
 import { runOneTimeV12_4_3Cleanup } from './infrastructure/CleanupV12_4_3.js';
 import {
@@ -370,6 +372,11 @@ export class WorkerService implements WorkerRef {
       type: 'worker',
       startedAt: new Date().toISOString()
     });
+
+    // Start the periodic orphan reaper now that worker.pid is in place — the
+    // reaper consults that file to distinguish live workers from re-parented
+    // chroma-mcp orphans (#2184, #2195).
+    startOrphanReaperInterval();
 
     logger.info('SYSTEM', 'Worker started', { host, port, pid: process.pid });
 
@@ -1041,6 +1048,8 @@ export class WorkerService implements WorkerRef {
    * Shutdown the worker service
    */
   async shutdown(): Promise<void> {
+    stopOrphanReaperInterval();
+
     if (this.transcriptWatcher) {
       this.transcriptWatcher.stop();
       this.transcriptWatcher = null;

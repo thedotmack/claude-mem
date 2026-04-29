@@ -32,8 +32,19 @@ const ORPHAN_PROCESS_PATTERNS = [
   'chroma-mcp'          // ChromaDB MCP subprocess
 ];
 
-// Only kill processes older than this to avoid killing the current session
+// Only kill processes older than this to avoid killing the current session.
+// Per-pattern overrides apply when a row matches the listed substring; otherwise
+// the default applies. chroma-mcp lifetime is bounded by its worker — when the
+// worker is gone, the python child can sit forever consuming RAM/CPU (#2184, #2195).
 const ORPHAN_MAX_AGE_MINUTES = 30;
+const ORPHAN_AGE_OVERRIDES_MINUTES: Record<string, number> = {
+  'chroma-mcp': 5,
+};
+
+// Periodic reaper interval — runs `cleanupOrphanedProcesses()` to catch orphans
+// from worker crashes / SIGKILL where the in-process exit handlers can't fire.
+const ORPHAN_REAPER_INTERVAL_MS = 120_000;
+let orphanReaperTimer: NodeJS.Timeout | null = null;
 
 interface RuntimeResolverOptions {
   platform?: NodeJS.Platform;
@@ -388,12 +399,44 @@ export function parseElapsedTime(etime: string): number {
   return -1;
 }
 
+/** Pick the most-specific age threshold for a row matching a known pattern. */
+function ageThresholdForCommand(commandText: string): number {
+  for (const [needle, minutes] of Object.entries(ORPHAN_AGE_OVERRIDES_MINUTES)) {
+    if (commandText.includes(needle)) return minutes;
+  }
+  return ORPHAN_MAX_AGE_MINUTES;
+}
+
+/** Read the live worker.pid contents (without throwing on missing/garbage). */
+function readLiveWorkerPid(): number | null {
+  try {
+    if (!existsSync(PID_FILE)) return null;
+    const raw = readFileSync(PID_FILE, 'utf8').trim();
+    // PID file may be JSON or plain int
+    const parsed = raw.startsWith('{') ? JSON.parse(raw) : { pid: parseInt(raw, 10) };
+    const pid = Number(parsed.pid);
+    if (!Number.isInteger(pid) || pid <= 0) return null;
+    try { process.kill(pid, 0); } catch { return null; }
+    return pid;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Enumerate orphaned claude-mem processes matching ORPHAN_PROCESS_PATTERNS.
- * Returns PIDs of processes older than ORPHAN_MAX_AGE_MINUTES.
+ *
+ * A process is orphaned if any of:
+ *   - its parent process is init (Unix ppid==1) — re-parented because its
+ *     spawning worker died (#2184)
+ *   - its parent is not the live worker recorded in worker.pid (Windows analog)
+ *   - it is older than the per-pattern age threshold and not the current process
+ *
+ * Per-pattern thresholds: chroma-mcp has a 5-minute floor; default 30 min.
  */
 async function enumerateOrphanedProcesses(isWindows: boolean, currentPid: number): Promise<number[]> {
   const pidsToKill: number[] = [];
+  const liveWorkerPid = readLiveWorkerPid();
 
   if (isWindows) {
     // Windows: Use WQL -Filter for server-side filtering (no $_ pipeline syntax).
@@ -402,7 +445,7 @@ async function enumerateOrphanedProcesses(isWindows: boolean, currentPid: number
       .map(p => `CommandLine LIKE '%${p}%'`)
       .join(' OR ');
 
-    const cmd = `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process -Filter '(${wqlPatternConditions}) AND ProcessId != ${currentPid}' | Select-Object ProcessId, CreationDate | ConvertTo-Json"`;
+    const cmd = `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process -Filter '(${wqlPatternConditions}) AND ProcessId != ${currentPid}' | Select-Object ProcessId, ParentProcessId, CommandLine, CreationDate | ConvertTo-Json"`;
     const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND, windowsHide: true });
 
     if (!stdout.trim() || stdout.trim() === 'null') {
@@ -419,23 +462,37 @@ async function enumerateOrphanedProcesses(isWindows: boolean, currentPid: number
       // SECURITY: Validate PID is positive integer and not current process
       if (!Number.isInteger(pid) || pid <= 0 || pid === currentPid) continue;
 
+      const ppid = Number.isInteger(proc.ParentProcessId) ? proc.ParentProcessId : 0;
+      const commandText = String(proc.CommandLine ?? '');
+      const isChromaMcp = commandText.includes('chroma-mcp');
+
+      // chroma-mcp orphan if parent is gone (not the live worker, not us, not alive).
+      // Uses a best-effort liveness check: the live worker.pid must match the parent.
+      if (isChromaMcp && liveWorkerPid !== null && ppid !== liveWorkerPid && ppid !== currentPid) {
+        pidsToKill.push(pid);
+        logger.debug('SYSTEM', 'Found orphaned chroma-mcp (parent != live worker)', { pid, ppid, liveWorkerPid });
+        continue;
+      }
+
       // Parse Windows WMI date format: /Date(1234567890123)/
-      const creationMatch = proc.CreationDate?.match(/\/Date\((\d+)\)\//);
+      const creationMatch = String(proc.CreationDate ?? '').match(/\/Date\((\d+)\)\//);
       if (creationMatch) {
         const creationTime = parseInt(creationMatch[1], 10);
         const ageMinutes = (now - creationTime) / (1000 * 60);
+        const threshold = ageThresholdForCommand(commandText);
 
-        if (ageMinutes >= ORPHAN_MAX_AGE_MINUTES) {
+        if (ageMinutes >= threshold) {
           pidsToKill.push(pid);
-          logger.debug('SYSTEM', 'Found orphaned process', { pid, ageMinutes: Math.round(ageMinutes) });
+          logger.debug('SYSTEM', 'Found orphaned process', { pid, ageMinutes: Math.round(ageMinutes), threshold });
         }
       }
     }
   } else {
-    // Unix: Use ps with elapsed time for age-based filtering
+    // Unix: ps -o pid,ppid,etime,command. PPID is critical for chroma-mcp because
+    // re-parented orphans (ppid==1) are the dominant failure pattern (#2184).
     const patternRegex = ORPHAN_PROCESS_PATTERNS.join('|');
     const { stdout } = await execAsync(
-      `ps -eo pid,etime,command | grep -E "${patternRegex}" | grep -v grep || true`
+      `ps -eo pid,ppid,etime,command | grep -E "${patternRegex}" | grep -v grep || true`
     );
 
     if (!stdout.trim()) {
@@ -445,20 +502,33 @@ async function enumerateOrphanedProcesses(isWindows: boolean, currentPid: number
 
     const lines = stdout.trim().split('\n');
     for (const line of lines) {
-      // Parse: "  1234  01:23:45 /path/to/process"
-      const match = line.trim().match(/^(\d+)\s+(\S+)\s+(.*)$/);
+      // Parse: "  1234   5678   01:23:45 /path/to/process arg arg"
+      const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/);
       if (!match) continue;
 
       const pid = parseInt(match[1], 10);
-      const etime = match[2];
+      const ppid = parseInt(match[2], 10);
+      const etime = match[3];
+      const commandText = match[4];
 
       // SECURITY: Validate PID is positive integer and not current process
       if (!Number.isInteger(pid) || pid <= 0 || pid === currentPid) continue;
 
-      const ageMinutes = parseElapsedTime(etime);
-      if (ageMinutes >= ORPHAN_MAX_AGE_MINUTES) {
+      const isChromaMcp = commandText.includes('chroma-mcp');
+
+      // Re-parented orphan (Unix ppid==1) is unconditional for chroma-mcp.
+      // The python child has lost its worker and will sit forever otherwise.
+      if (isChromaMcp && ppid === 1) {
         pidsToKill.push(pid);
-        logger.debug('SYSTEM', 'Found orphaned process', { pid, ageMinutes, command: match[3].substring(0, 80) });
+        logger.debug('SYSTEM', 'Found re-parented orphan chroma-mcp (ppid==1)', { pid });
+        continue;
+      }
+
+      const ageMinutes = parseElapsedTime(etime);
+      const threshold = ageThresholdForCommand(commandText);
+      if (ageMinutes >= threshold) {
+        pidsToKill.push(pid);
+        logger.debug('SYSTEM', 'Found orphaned process', { pid, ppid, ageMinutes, threshold, command: commandText.substring(0, 80) });
       }
     }
   }
@@ -467,14 +537,17 @@ async function enumerateOrphanedProcesses(isWindows: boolean, currentPid: number
 }
 
 /**
- * Clean up orphaned claude-mem processes from previous worker sessions
+ * Clean up orphaned claude-mem processes from previous worker sessions.
  *
  * Targets mcp-server.cjs, worker-service.cjs, and chroma-mcp processes
- * that survived a previous daemon crash. Only kills processes older than
- * ORPHAN_MAX_AGE_MINUTES to avoid killing the current session.
+ * that survived a previous daemon crash or SIGKILL. Each pattern uses its
+ * own age threshold (chroma-mcp: 5 min, others: 30 min) and chroma-mcp
+ * processes whose parent is not the live worker are reaped unconditionally.
  *
- * The periodic ProcessRegistry reaper handles in-session orphans;
- * this function handles cross-session orphans at startup.
+ * Run once at worker bootstrap and on every ORPHAN_REAPER_INTERVAL_MS tick
+ * (see startOrphanReaperInterval()). PR #1175 documented a periodic reaper
+ * but the interval wiring was missing — issues #2184 and #2195 trace orphan
+ * accumulation directly to that gap.
  */
 export async function cleanupOrphanedProcesses(): Promise<void> {
   const isWindows = process.platform === 'win32';
@@ -539,6 +612,43 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
   }
 
   logger.info('SYSTEM', 'Orphaned processes cleaned up', { count: pidsToKill.length });
+}
+
+/**
+ * Start the periodic orphan reaper. Idempotent — calling twice does not
+ * stack timers. The first run fires immediately so startup-orphans (from a
+ * previous crashed worker) are reaped before any new chroma-mcp is spawned.
+ */
+export function startOrphanReaperInterval(): void {
+  if (orphanReaperTimer) return;
+
+  void cleanupOrphanedProcesses().catch(error => {
+    if (error instanceof Error) {
+      logger.error('SYSTEM', 'Initial orphan reap failed', {}, error);
+    }
+  });
+
+  orphanReaperTimer = setInterval(() => {
+    void cleanupOrphanedProcesses().catch(error => {
+      if (error instanceof Error) {
+        logger.error('SYSTEM', 'Periodic orphan reap failed', {}, error);
+      }
+    });
+  }, ORPHAN_REAPER_INTERVAL_MS);
+  // Don't keep the worker process alive solely on the reaper timer.
+  if (typeof orphanReaperTimer.unref === 'function') {
+    orphanReaperTimer.unref();
+  }
+  logger.info('SYSTEM', 'Orphan reaper started', { intervalMs: ORPHAN_REAPER_INTERVAL_MS });
+}
+
+/** Stop the periodic orphan reaper. Safe to call when not running. */
+export function stopOrphanReaperInterval(): void {
+  if (orphanReaperTimer) {
+    clearInterval(orphanReaperTimer);
+    orphanReaperTimer = null;
+    logger.info('SYSTEM', 'Orphan reaper stopped');
+  }
 }
 
 const CHROMA_MIGRATION_MARKER_FILENAME = '.chroma-cleaned-v10.3';
