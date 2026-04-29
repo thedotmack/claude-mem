@@ -9,7 +9,7 @@
  * for both cache and marketplace installs), falling back to script location
  * and legacy paths.
  */
-import { existsSync, readFileSync, writeFileSync, openSync, readSync, closeSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, openSync, readSync, closeSync, readdirSync, rmSync, statSync } from 'fs';
 import { execSync, spawnSync } from 'child_process';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
@@ -485,6 +485,37 @@ export function checkBinaryPlatformCompatibility(binaryPath = join(ROOT, 'script
   }
 }
 
+/**
+ * Prune older claude-mem version directories from the plugin cache so Claude
+ * Code's hook resolver can never fall back to a stale path. Closes #2172.
+ * Keeps only the most recently modified version directory.
+ */
+function pruneStaleVersionCache() {
+  try {
+    const cacheRoot = join(homedir(), '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem');
+    if (!existsSync(cacheRoot)) return;
+
+    const entries = readdirSync(cacheRoot, { withFileTypes: true })
+      .filter(d => d.isDirectory() && /^\d/.test(d.name));
+    if (entries.length <= 1) return;
+
+    const sorted = entries
+      .map(d => ({ name: d.name, mtime: statSync(join(cacheRoot, d.name)).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime);
+
+    for (const old of sorted.slice(1)) {
+      try {
+        rmSync(join(cacheRoot, old.name), { recursive: true, force: true });
+        console.error(`🧹 Pruned stale plugin cache: ${old.name}`);
+      } catch (err) {
+        console.error(`⚠️  Could not prune ${old.name}: ${err.message}`);
+      }
+    }
+  } catch {
+    // Best-effort; never fail the install for cache prune
+  }
+}
+
 // Main execution
 try {
   // Step 1: Ensure Bun is installed and meets minimum version (REQUIRED)
@@ -576,6 +607,13 @@ try {
 
   // Step 4 (removed in #2054): legacy `claude-mem` shell alias was deleted.
   // Users invoke the CLI via `npx claude-mem <cmd>` or `bunx claude-mem <cmd>`.
+
+  // Step 4.5: Prune older claude-mem version directories from the plugin cache.
+  // Issue #2172: Claude Code resolves hook commands once per session and caches
+  // the result, so a stale 12.x dir on disk keeps the old hook path alive
+  // across restarts even though hooks.json picks the newest by mtime. Pruning
+  // here makes the stale path physically unreachable.
+  pruneStaleVersionCache();
 
   // Step 5: Warn if the bundled native binary is incompatible with this platform
   checkBinaryPlatformCompatibility();

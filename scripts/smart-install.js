@@ -5,7 +5,7 @@
  * Ensures Bun runtime and uv (Python package manager) are installed
  * (auto-installs if missing) and handles dependency installation when needed.
  */
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs';
 import { execSync, spawnSync } from 'child_process';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
@@ -305,6 +305,40 @@ function verifyCriticalModules() {
   return true;
 }
 
+/**
+ * Prune older claude-mem version directories from the plugin cache so Claude
+ * Code's hook resolver can never fall back to a stale path. Issue #2172
+ * tracked errors that referenced a 12.2.0 directory long after upgrade — the
+ * resolver in plugin/hooks.json picks the most-recently-modified version,
+ * but Claude Code itself caches the resolved hook command per session, so a
+ * stale dir on disk keeps the old path alive across restarts.
+ */
+function pruneStaleVersionCache() {
+  try {
+    const cacheRoot = join(homedir(), '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem');
+    if (!existsSync(cacheRoot)) return;
+
+    const entries = readdirSync(cacheRoot, { withFileTypes: true })
+      .filter(d => d.isDirectory() && /^\d/.test(d.name));
+    if (entries.length <= 1) return;
+
+    const sorted = entries
+      .map(d => ({ name: d.name, mtime: statSync(join(cacheRoot, d.name)).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime);
+
+    for (const old of sorted.slice(1)) {
+      try {
+        rmSync(join(cacheRoot, old.name), { recursive: true, force: true });
+        console.error(`🧹 Removed stale plugin cache: ${old.name}`);
+      } catch (err) {
+        console.error(`⚠️  Could not remove ${old.name}: ${err.message}`);
+      }
+    }
+  } catch {
+    // Cache prune is best-effort; never fail the install for it.
+  }
+}
+
 // Main execution
 try {
   if (!isBunInstalled()) installBun();
@@ -319,6 +353,7 @@ try {
 
     console.error('✅ Dependencies installed');
   }
+  pruneStaleVersionCache();
 } catch (e) {
   console.error('❌ Installation failed:', e.message);
   process.exit(1);

@@ -132,6 +132,14 @@ async function buildHooks() {
         '@derekstride/tree-sitter-sql': '^0.3.11',
         '@tree-sitter-grammars/tree-sitter-markdown': '^0.3.2',
       },
+      // The grammar packages above declare three different majors of `tree-sitter`
+      // as peer deps (^0.21, ^0.22, ^0.25). Bun and pnpm are lenient enough to
+      // pick one and move on, but plain `npm install --production` aborts with
+      // ERESOLVE. Pinning a single version via `overrides` lets npm resolve a
+      // working tree without `--legacy-peer-deps`. Closes #2147.
+      overrides: {
+        'tree-sitter': '^0.25.0'
+      },
       engines: {
         node: '>=18.0.0',
         bun: '>=1.0.0'
