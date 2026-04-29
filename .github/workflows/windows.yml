@@ -1,0 +1,54 @@
+name: Windows
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'plugin/scripts/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/windows.yml'
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install Bun (worker runtime)
+        run: |
+          irm bun.sh/install.ps1 | iex
+        shell: pwsh
+
+      - run: npm ci
+
+      - run: npm run build-and-sync
+
+      - name: Smoke - daemon spawn must not pop visible cmd window
+        shell: pwsh
+        run: |
+          $before = (Get-Process cmd -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Measure-Object).Count
+          # Trigger the worker spawn path. Best-effort: don't fail the smoke if start
+          # itself errors for unrelated reasons; we're only asserting that any spawn
+          # the daemon path performs does not surface a visible window.
+          try { node ./dist/npx-cli/index.js start } catch { Write-Host "start exited non-zero (acceptable for smoke): $_" }
+          Start-Sleep -Seconds 4
+          $after = (Get-Process cmd -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Measure-Object).Count
+          if ($after -gt $before) { throw "Visible cmd.exe window count increased ($before -> $after) — Windows spawn regression!" }
+          try { node ./dist/npx-cli/index.js stop } catch { }
+
+      - name: Anti-regression - PowerShell branch present in spawnDaemon
+        shell: pwsh
+        run: |
+          $proc = Get-Content src/services/infrastructure/ProcessManager.ts -Raw
+          if ($proc -notmatch "Start-Process") {
+            throw "spawnDaemon Windows branch missing Start-Process — PR #751 regression!"
+          }

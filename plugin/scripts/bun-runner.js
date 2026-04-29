@@ -179,9 +179,14 @@ let spawnCmd = bunPath;
 let spawnArgs = args;
 
 if (IS_WINDOWS) {
-  // On Windows, bun.cmd must be executed via cmd /c
-  spawnCmd = 'cmd';
-  spawnArgs = ['/c', bunPath, ...args];
+  // On Windows, npm-installed bun is bun.cmd (a batch file) which spawn()
+  // can't execute directly. The previous `cmd /c` wrapper made a visible
+  // console window flash on every hook (issues #2150, #2186, #2187).
+  // shell:true lets Node resolve via PATHEXT *and* respects windowsHide,
+  // unlike an explicit cmd.exe wrapper. bun.exe paths work the same way.
+  spawnOptions.shell = true;
+  spawnCmd = bunPath;
+  spawnArgs = args;
 }
 
 const child = spawn(spawnCmd, spawnArgs, spawnOptions);
