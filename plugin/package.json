@@ -32,6 +32,9 @@
     "@derekstride/tree-sitter-sql": "^0.3.11",
     "@tree-sitter-grammars/tree-sitter-markdown": "^0.3.2"
   },
+  "overrides": {
+    "tree-sitter": "^0.25.0"
+  },
   "engines": {
     "node": ">=18.0.0",
     "bun": ">=1.0.0"

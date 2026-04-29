@@ -33,6 +33,7 @@ import { parseFile, formatFoldedView, unfoldSymbol } from '../services/smart-fil
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 // Resolve the path to worker-service.cjs, which lives alongside mcp-server.cjs
@@ -676,6 +677,49 @@ function cleanup(reason: string = 'shutdown') {
 process.on('SIGTERM', cleanup);
 process.on('SIGINT', cleanup);
 
+/**
+ * Issue #2174: When the IDE extension (e.g. Cursor's Claude Code) loses its
+ * marketplace directory at ~/.claude/plugins/marketplaces/<source>/, the
+ * extension's hook loader silently skips claude-mem hooks while the MCP
+ * server (this process) keeps working. The session becomes invisible to
+ * memory with no error surfaced.
+ *
+ * The MCP server is the one piece that DOES boot in this state, so we use
+ * it as the canary: detect the missing marketplace dir and emit a single
+ * loud, actionable warning. We don't run smart-install.js from here — the
+ * MCP server runs under the IDE's permission model, not the user's shell,
+ * so attempting an install at MCP startup creates more failure modes than
+ * it fixes. Instead we tell the user exactly what to do.
+ */
+function checkMarketplaceMarker(): void {
+  try {
+    // Use os.homedir() so this works on Windows (HOME is unset there;
+    // USERPROFILE is the Windows convention and homedir() picks it up).
+    const home = homedir();
+    const marketplaceCandidates = [
+      resolve(home, '.claude', 'plugins', 'marketplaces', 'thedotmack'),
+      resolve(home, '.config', 'claude', 'plugins', 'marketplaces', 'thedotmack'),
+    ];
+    const present = marketplaceCandidates.some(p => p && existsSync(p));
+    const cacheCandidates = [
+      resolve(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem'),
+      resolve(home, '.config', 'claude', 'plugins', 'cache', 'thedotmack', 'claude-mem'),
+    ];
+    const cachePresent = cacheCandidates.some(p => p && existsSync(p));
+    const cacheRoot = cacheCandidates[0];
+
+    if (!present && cachePresent) {
+      logger.error(
+        'SYSTEM',
+        'claude-mem MCP started but no marketplace directory was found at ~/.claude/plugins/marketplaces/thedotmack or the XDG equivalent. The IDE plugin loader needs that directory to fire claude-mem hooks (SessionStart, PostToolUse, Stop, etc.). Without it, MCP search will work but no new memories will be captured. To self-heal, run: node ~/.claude/plugins/cache/thedotmack/claude-mem/*/scripts/smart-install.js (or reinstall the plugin from the marketplace).',
+        { marketplaceCandidates, cacheRoot }
+      );
+    }
+  } catch {
+    // Self-heal probe is best-effort; never fail MCP startup for it.
+  }
+}
+
 // Start the server
 async function main() {
   // Start the MCP server
@@ -683,6 +727,9 @@ async function main() {
   attachStdioLifecycle();
   await server.connect(transport);
   logger.info('SYSTEM', 'Claude-mem search server started');
+
+  // Surface marketplace-dir corruption that silently disables hook loading
+  checkMarketplaceMarker();
 
   // Start parent heartbeat to detect orphaned MCP servers
   startParentHeartbeat();
