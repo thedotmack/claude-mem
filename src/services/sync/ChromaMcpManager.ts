@@ -149,10 +149,29 @@ export class ChromaMcpManager {
     const transportCommand = process.execPath;
     const transportArgs = [wrapperPath, uvxSpawnCommand, ...uvxSpawnArgs];
 
+    // Redact secret-valued flags before logging so credentials never land in
+    // worker logs (issue: PR #2203 review by CodeRabbit). Today only --api-key
+    // is constructed in remote mode, but redact a small set of common secret
+    // flag names defensively in case buildCommandArgs() grows.
+    const SECRET_FLAGS = new Set(['--api-key', '--api_key', '--password', '--token']);
+    const loggedArgs = [uvxSpawnCommand, ...uvxSpawnArgs].map((arg, i, arr) => {
+      // --flag=value form
+      const eq = arg.indexOf('=');
+      if (eq > 0 && SECRET_FLAGS.has(arg.slice(0, eq))) {
+        return `${arg.slice(0, eq)}=[REDACTED]`;
+      }
+      // Following entry of `--flag value` form
+      const prev = i > 0 ? arr[i - 1] : '';
+      if (typeof prev === 'string' && SECRET_FLAGS.has(prev) && prev.indexOf('=') === -1) {
+        return '[REDACTED]';
+      }
+      return arg;
+    });
+
     logger.info('CHROMA_MCP', 'Connecting to chroma-mcp via MCP stdio (filtered)', {
       command: transportCommand,
       wrapper: wrapperPath,
-      args: [uvxSpawnCommand, ...uvxSpawnArgs].join(' ')
+      args: loggedArgs.join(' ')
     });
 
     // Run chroma-mcp from the home directory so that pydantic-settings (used

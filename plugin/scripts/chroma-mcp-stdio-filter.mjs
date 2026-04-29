@@ -16,6 +16,7 @@
 
 import { spawn } from 'node:child_process';
 import { constants as osConstants } from 'node:os';
+import { StringDecoder } from 'node:string_decoder';
 
 const [, , innerCommand, ...innerArgs] = process.argv;
 if (!innerCommand) {
@@ -29,6 +30,7 @@ const child = spawn(innerCommand, innerArgs, {
   windowsHide: true,
 });
 
+const decoder = new StringDecoder('utf8');
 let buf = '';
 
 function flushLine(line) {
@@ -41,7 +43,7 @@ function flushLine(line) {
 }
 
 child.stdout.on('data', (chunk) => {
-  buf += chunk.toString('utf8');
+  buf += decoder.write(chunk);
   let nl;
   while ((nl = buf.indexOf('\n')) !== -1) {
     const line = buf.slice(0, nl);
@@ -50,12 +52,18 @@ child.stdout.on('data', (chunk) => {
   }
 });
 
+child.stdout.on('end', () => {
+  buf += decoder.end();
+});
+
 child.on('error', (err) => {
   process.stderr.write(`chroma-mcp-stdio-filter: spawn error: ${err.message}\n`);
   process.exit(127);
 });
 
-child.on('exit', (code, signal) => {
+// Wait for 'close' (not 'exit') so all buffered stdout has been drained
+// before we flush the remaining frame and exit.
+child.on('close', (code, signal) => {
   if (buf.length) {
     const trimmed = buf.trim();
     if (trimmed.startsWith('{') || trimmed.startsWith('[')) process.stdout.write(buf);
