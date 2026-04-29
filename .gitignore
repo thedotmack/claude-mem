@@ -40,6 +40,13 @@ src/ui/viewer.html
 # Installer marker — dropped by the claude-mem CLI at install time
 plugin/.cli-installed
 
+# Compiled macOS binary — produced on demand by `npm run build:cli-binary`,
+# never committed. Committed binaries drift from source and end up shipping
+# since-removed routes/handlers and stale version constants (see #2158,
+# #2200, #2154). The JS fallback (bun-runner.js → worker-service.cjs) covers
+# all functionality on every platform.
+plugin/scripts/claude-mem
+
 # Local contribution analysis (not part of upstream)
 CONTRIB_NOTES.md
 
