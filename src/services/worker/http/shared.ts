@@ -205,6 +205,18 @@ export function ingestObservation(payload: ObservationPayload): IngestResult {
     return { ok: true, status: 'skipped', reason: 'tool_excluded' };
   }
 
+  // Drop observations whose tool_response payload exceeds the configured cap.
+  // Closes #2201: a single user generated 345M tokens/day because high-volume
+  // tool outputs (multi-MB exec_command results, full-file apply_patch diffs)
+  // were stored verbatim. Cap at the gate, before persistence.
+  const MAX_OBSERVATION_BYTES = parseInt(settings.CLAUDE_MEM_MAX_OBSERVATION_BYTES, 10) || 65536;
+  if (payload.toolResponse !== undefined) {
+    const responseBytes = Buffer.byteLength(JSON.stringify(payload.toolResponse), 'utf8');
+    if (responseBytes > MAX_OBSERVATION_BYTES) {
+      return { ok: true, status: 'skipped', reason: 'payload_too_large' };
+    }
+  }
+
   // Skip meta-observations: file operations on session-memory files.
   const fileOperationTools = new Set(['Edit', 'Write', 'Read', 'NotebookEdit']);
   if (fileOperationTools.has(payload.toolName) && payload.toolInput && typeof payload.toolInput === 'object') {

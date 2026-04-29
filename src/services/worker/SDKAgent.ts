@@ -159,6 +159,13 @@ export class SDKAgent {
         spawnClaudeCodeProcess: createSdkSpawnFactory(session.sessionDbId),
         env: isolatedEnv,  // Use isolated credentials from ~/.claude-mem/.env, not process.env
         mcpServers: {},
+        // Reject inheritance of the user's settings.json / project settings —
+        // observer SDK runs with only the options we pass explicitly.
+        // Closes #2155.
+        settingSources: [],
+        // Reject inheritance of the user's MCP config — the worker SDK gets
+        // exactly mcpServers: {} and nothing else. Closes #2159, #2171, #2194.
+        strictMcpConfig: true,
       }
     });
 
