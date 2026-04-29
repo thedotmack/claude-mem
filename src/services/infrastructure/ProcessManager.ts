@@ -469,17 +469,18 @@ async function enumerateOrphanedProcesses(isWindows: boolean, currentPid: number
       const commandText = String(proc.CommandLine ?? '');
       const isChromaMcp = commandText.includes('chroma-mcp');
 
-      // chroma-mcp orphan only when its parent process is genuinely dead.
-      // On Windows the spawn chain is `worker → cmd.exe → uvx → chroma-mcp`,
-      // so the immediate parent is NOT the live worker even on a healthy
-      // chain. Killing on `ppid !== liveWorkerPid` alone false-positives
-      // every reaper interval. Require the immediate parent to be unreachable
-      // before treating chroma-mcp as orphaned.
+      // chroma-mcp orphan only when its immediate parent process is dead.
+      // On Windows the spawn chain is `worker → cmd.exe → uvx → chroma-mcp`
+      // so the parent is intentionally NOT the worker even on a healthy
+      // chain — the dead-parent check below correctly leaves those alone.
+      // We deliberately do NOT gate on `liveWorkerPid !== null`: when the
+      // worker has crashed, `worker.pid` is gone and readLiveWorkerPid()
+      // returns null, but that's exactly when chroma-mcp orphans need
+      // reaping (#2195). The dead-parent guard alone is sufficient and
+      // correct in both states.
       if (
         isChromaMcp &&
-        liveWorkerPid !== null &&
-        ppid !== liveWorkerPid &&
-        ppid !== currentPid &&
+        pid !== currentPid &&
         (ppid <= 0 || !isProcessAlive(ppid))
       ) {
         pidsToKill.push(pid);
