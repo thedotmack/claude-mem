@@ -22,8 +22,12 @@ mock.module('../../../src/shared/SettingsDefaultsManager.js', () => ({
       return '';
     },
     getInt: () => 0,
-    loadFromFile: () => ({ CLAUDE_MEM_EXCLUDED_PROJECTS: [] }),
+    loadFromFile: () => ({ CLAUDE_MEM_EXCLUDED_PROJECTS: '' }),
   },
+}));
+
+mock.module('../../../src/shared/hook-settings.js', () => ({
+  loadFromFileOnce: () => ({ CLAUDE_MEM_EXCLUDED_PROJECTS: '' }),
 }));
 
 // Per-test control over what the transcript parser "extracts".
@@ -32,16 +36,21 @@ mock.module('../../../src/shared/transcript-parser.js', () => ({
   extractLastMessage: () => mockExtractedMessage,
 }));
 
-// Capture every workerHttpRequest call. Resolve successfully so the handler
-// completes its normal path — the assertions inspect what got POSTed.
-const workerCallLog: Array<{ path: string; options: any }> = [];
+// Capture every executeWithWorkerFallback call. Resolve successfully so the
+// handler completes its normal path — the assertions inspect what got POSTed.
+const workerCallLog: Array<{ path: string; method: string; body: any }> = [];
 mock.module('../../../src/shared/worker-utils.js', () => ({
   ensureWorkerRunning: () => Promise.resolve(true),
   getWorkerPort: () => 37777,
   workerHttpRequest: (apiPath: string, options?: any) => {
-    workerCallLog.push({ path: apiPath, options });
+    workerCallLog.push({ path: apiPath, method: options?.method ?? 'GET', body: options?.body });
     return Promise.resolve(new Response('{"status":"queued"}', { status: 200 }));
   },
+  executeWithWorkerFallback: async (apiPath: string, method: string, body: unknown) => {
+    workerCallLog.push({ path: apiPath, method, body });
+    return { status: 'queued' };
+  },
+  isWorkerFallback: (_result: unknown) => false,
 }));
 
 import { logger } from '../../../src/utils/logger.js';
@@ -74,7 +83,10 @@ const baseInput = {
 
 function postedBody(): any {
   expect(workerCallLog).toHaveLength(1);
-  return JSON.parse(workerCallLog[0].options.body);
+  const { body } = workerCallLog[0];
+  // executeWithWorkerFallback receives the body as a plain object; the legacy
+  // workerHttpRequest path receives a JSON string. Support both for forward-compat.
+  return typeof body === 'string' ? JSON.parse(body) : body;
 }
 
 describe('summarizeHandler — privacy tag stripping', () => {
