@@ -74,34 +74,31 @@ Claude Code's hook system provides exactly what we need:
 
 ## The Hook Scripts
 
-Claude-Mem uses lifecycle hook scripts across 5 lifecycle events. SessionStart runs 3 hooks in sequence: smart-install, worker-service start, and context-hook.
+Claude-Mem uses lifecycle hook scripts across 5 lifecycle events. Runtime setup is handled out-of-band by `npx claude-mem install` (and `npx claude-mem repair`); the Setup hook only runs a sub-100ms `version-check.js` to flag stale installs. SessionStart runs 2 hooks in sequence: worker-service start, then context-hook.
 
-### Pre-Hook: Smart Install (Before SessionStart)
+### Setup Hook: Version Check
 
-**Purpose:** Intelligently manage dependencies and start worker service
+**Purpose:** Detect stale installs caused by external plugin upgrades and prompt the user to repair.
 
-**Note:** This is NOT a lifecycle hook - it's a pre-hook script executed via command chaining before context-hook runs.
+**Note:** Runtime installation (Bun, uv, `bun install` in the plugin cache) is performed by `npx claude-mem install` and `npx claude-mem repair` — the Setup hook itself never installs anything.
 
-**When:** Claude Code starts (startup, clear, or compact)
+**When:** Claude Code Setup phase, before every session.
 
 **What it does:**
-1. Checks if dependencies need installation (version marker)
-2. Only runs `npm install` when necessary:
-   - First-time installation
-   - Version changed in package.json
-3. Provides Windows-specific error messages
-4. Starts Bun worker service
+1. Reads the `.install-version` marker written by the npx installer.
+2. Compares it against the currently loaded plugin version.
+3. On mismatch, writes `run: npx claude-mem repair` to stderr.
+4. Always exits 0 (non-blocking, sub-100ms).
 
 **Configuration:**
 ```json
 {
   "hooks": {
-    "SessionStart": [{
-      "matcher": "startup|clear|compact",
+    "Setup": [{
       "hooks": [{
         "type": "command",
-        "command": "node \"${CLAUDE_PLUGIN_ROOT}/../scripts/smart-install.js\" && node ${CLAUDE_PLUGIN_ROOT}/scripts/context-hook.js",
-        "timeout": 300
+        "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/version-check.js",
+        "timeout": 60
       }]
     }]
   }
@@ -109,14 +106,11 @@ Claude-Mem uses lifecycle hook scripts across 5 lifecycle events. SessionStart r
 ```
 
 **Key Features:**
-- ✅ Version caching (`.install-version` file)
-- ✅ Fast when already installed (~10ms vs 2-5 seconds)
-- ✅ Cross-platform compatible
-- ✅ Helpful Windows error messages for build tools
+- ✅ Sub-100ms version-marker check (no I/O beyond reading the marker)
+- ✅ Always exit 0 — never blocks a session
+- ✅ Clear repair instructions on stderr when the plugin was upgraded externally (e.g. `claude plugin update`)
 
-**v5.0.3 Enhancement:** Smart caching eliminates redundant installs
-
-**Source:** `scripts/smart-install.js`
+**Source:** `scripts/version-check.js`. The matching installer logic lives in `npx claude-mem install` / `npx claude-mem repair`, which install Bun + uv globally, run `bun install` in the plugin cache, and write the `.install-version` marker — all behind a visible clack spinner.
 
 ---
 
@@ -124,7 +118,7 @@ Claude-Mem uses lifecycle hook scripts across 5 lifecycle events. SessionStart r
 
 **Purpose:** Inject relevant context from previous sessions
 
-**When:** Claude Code starts (runs after smart-install pre-hook)
+**When:** Claude Code starts (runs after the worker-start SessionStart entry)
 
 **What it does:**
 1. Extracts project name from current working directory
@@ -429,7 +423,7 @@ sequenceDiagram
 
 | Event | Timing | Blocking | Timeout | Output Handling |
 |-------|--------|----------|---------|-----------------|
-| **SessionStart (smart-install)** | Before session | No | 300s | stderr (log only) |
+| **Setup (version-check)** | Before session | No | 60s | stderr hint on stale install (always exit 0) |
 | **SessionStart (worker-start)** | Before session | No | 60s | stderr (log only) |
 | **SessionStart (context)** | Before session | No | 60s | JSON → additionalContext (silent) |
 | **UserPromptSubmit** | Before processing | No | 60s | stdout → context |
@@ -692,23 +686,18 @@ claude --debug
 
 | Hook | Average | p95 | p99 |
 |------|---------|-----|-----|
-| SessionStart (smart-install, cached) | 10ms | 20ms | 40ms |
-| SessionStart (smart-install, first run) | 2500ms | 5000ms | 8000ms |
+| Setup (version-check, marker matches) | 8ms | 20ms | 40ms |
+| Setup (version-check, marker mismatch — stderr hint, still non-blocking) | 10ms | 25ms | 50ms |
 | SessionStart (context) | 45ms | 120ms | 250ms |
 | SessionStart (user-message) | 5ms | 10ms | 15ms |
 | UserPromptSubmit | 12ms | 25ms | 50ms |
 | PostToolUse | 8ms | 15ms | 30ms |
 | SessionEnd | 5ms | 10ms | 20ms |
 
-**Why smart-install is sometimes slow:**
-- First-time: Full npm install (2-5 seconds)
-- Cached: Version check only (~10ms)
-- Version change: Full npm install + worker restart
-
-**Optimization (v5.0.3):**
-- Version caching with `.install-version` marker
-- Only install on version change or missing deps
-- Windows-specific error messages with build tool help
+**Why the Setup hook stays fast:**
+- The Setup hook only reads the `.install-version` marker — no `npm install`, no spawned subprocesses.
+- All heavy lifting (Bun + uv install, `bun install` inside the plugin cache) happens in `npx claude-mem install` / `npx claude-mem repair`, which run with a visible clack spinner outside the session lifecycle.
+- On marker mismatch the hook prints a one-line `run: npx claude-mem repair` hint to stderr and exits 0; the user opts into the slow path explicitly.
 
 ### Database Performance
 

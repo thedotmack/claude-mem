@@ -32,12 +32,14 @@
 
 | Event | Handler | What it does | Timeout |
 |-------|---------|-------------|---------|
-| Setup | setup.sh | Install system dependencies | 300s |
-| SessionStart | smart-install.js + context | Install deps + start worker + inject context | 60s |
+| Setup | version-check.js | Sub-100ms version-marker check; prompts `npx claude-mem repair` on mismatch | 60s |
+| SessionStart | worker start + context | Start worker service and inject context | 60s |
 | UserPromptSubmit | session-init | Register session + start SDK agent + semantic injection | 60s |
 | PostToolUse | observation | Capture tool usage -> enqueue in worker | 120s |
 | Summary | summarize | Request session summary from SDK agent | 120s |
 | SessionEnd | session-complete | End session + drain pending messages | 30s |
+
+On first install, `npx claude-mem install` sets up Bun and uv globally, runs `bun install` in the plugin cache, and writes an `.install-version` marker — all behind a visible clack spinner. The Setup hook then runs `version-check.js` on every Claude Code startup; if the plugin was upgraded externally (e.g. `claude plugin update`), it writes a hint to stderr asking the user to run `npx claude-mem repair`. The hook always exits 0 (non-blocking).
 
 ## Data Flow
 

@@ -190,13 +190,16 @@ Hooks are configured in `plugin/hooks/hooks.json`:
 ```json
 {
   "hooks": {
+    "Setup": [{
+      "hooks": [{
+        "type": "command",
+        "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/version-check.js",
+        "timeout": 60
+      }]
+    }],
     "SessionStart": [{
       "matcher": "startup|clear|compact",
       "hooks": [{
-        "type": "command",
-        "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/smart-install.js",
-        "timeout": 300
-      }, {
         "type": "command",
         "command": "bun ${CLAUDE_PLUGIN_ROOT}/scripts/worker-service.cjs start",
         "timeout": 60
@@ -246,9 +249,10 @@ Hooks are configured in `plugin/hooks/hooks.json`:
 **Timing**: When user opens Claude Code or resumes session
 
 **Hooks Triggered** (in order):
-1. `smart-install.js` - Ensures dependencies are installed
-2. `worker-service.cjs start` - Starts the worker service
-3. `context-hook.js` - Fetches and silently injects prior session context
+1. `worker-service.cjs start` - Starts the worker service
+2. `context-hook.js` - Fetches and silently injects prior session context
+
+(Runtime setup is handled out-of-band by `npx claude-mem install` / `npx claude-mem repair`. The Setup phase runs a sub-100ms `version-check.js` that prompts the user to repair if the `.install-version` marker is stale.)
 
 <Note>
 As of Claude Code 2.1.0 (ultrathink update), SessionStart hooks no longer display user-visible messages. Context is silently injected via `hookSpecificOutput.additionalContext`.

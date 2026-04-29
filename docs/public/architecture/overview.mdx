@@ -146,7 +146,7 @@ claude-mem/
 │       └── port-allocator.ts
 │
 ├── scripts/                    # Build and utility scripts
-│   └── smart-install.js        # Cached dependency checker (pre-hook)
+│   └── version-check.js        # Sub-100ms Setup-hook version-marker check
 │
 ├── plugin/                     # Plugin distribution
 │   ├── .claude-plugin/
@@ -190,7 +190,7 @@ claude-mem/
 - **summary-hook.js** - Stop: Generates session summary
 - **cleanup-hook.js** - SessionEnd: Marks session complete
 
-**Note**: smart-install.js is a pre-hook dependency checker (not a lifecycle hook). It's called before context-hook via command chaining in hooks.json and only runs when dependencies need updating.
+**Note**: `version-check.js` runs in the Setup phase (not as a lifecycle hook). It performs a sub-100ms read of the `.install-version` marker and, on mismatch, asks the user to run `npx claude-mem repair`. The actual runtime install (Bun, uv, `bun install`) is performed by `npx claude-mem install` / `npx claude-mem repair` with a visible clack spinner.
 
 See [Plugin Hooks](/architecture/hooks) for detailed hook documentation.
 

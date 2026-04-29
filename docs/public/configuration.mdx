@@ -119,7 +119,7 @@ The data directory location depends on the environment:
 ```
 ~/.claude-mem/
 ├── claude-mem.db           # SQLite database
-├── .install-version        # Cached version for smart installer
+├── .install-version        # Version marker written by `npx claude-mem install`/`repair`
 ├── worker.port             # Current worker port file
 └── logs/
     ├── worker-out.log      # Worker stdout logs
@@ -136,7 +136,7 @@ ${CLAUDE_PLUGIN_ROOT}/
 ├── hooks/
 │   └── hooks.json          # Hook configuration
 ├── scripts/                # Built executables
-│   ├── smart-install.js    # Smart installer script
+│   ├── version-check.js    # Sub-100ms Setup-hook version marker check
 │   ├── context-hook.js     # Context injection hook
 │   ├── new-hook.js         # Session creation hook
 │   ├── save-hook.js        # Observation capture hook
@@ -160,7 +160,7 @@ Hooks are configured in `plugin/hooks/hooks.json`:
     "SessionStart": [{
       "hooks": [{
         "type": "command",
-        "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/smart-install.js && node ${CLAUDE_PLUGIN_ROOT}/scripts/context-hook.js",
+        "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/context-hook.js",
         "timeout": 120
       }]
     }],

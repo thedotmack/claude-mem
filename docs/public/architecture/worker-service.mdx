@@ -612,7 +612,7 @@ The worker service auto-starts when the SessionStart hook fires. Manual start is
 
 ### Bun Requirement
 
-Bun is required to run the worker service. If Bun is not installed, the smart-install script will automatically install it on first run:
+Bun is required to run the worker service. If Bun is not installed, `npx claude-mem install` (and `npx claude-mem repair`) installs it globally during setup, with a visible clack spinner:
 
 - **Windows**: `powershell -c "irm bun.sh/install.ps1 | iex"`
 - **macOS/Linux**: `curl -fsSL https://bun.sh/install | bash`
