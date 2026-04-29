@@ -7,6 +7,13 @@ import { dirname, join } from 'path';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { ensureWorkerStarted } from '../../services/worker-spawner.js';
+import {
+  ensureBun,
+  ensureUv,
+  installPluginDependencies,
+  writeInstallMarker,
+  isInstallCurrent,
+} from '../install/setup-runtime.js';
 
 function getSetting<K extends keyof SettingsDefaults>(key: K): SettingsDefaults[K] {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH)[key];
@@ -108,17 +115,7 @@ async function setupIDEs(selectedIDEs: string[]): Promise<string[]> {
   for (const ideId of selectedIDEs) {
     switch (ideId) {
       case 'claude-code': {
-        try {
-          execSync(
-            'claude plugin marketplace add thedotmack/claude-mem && claude plugin install claude-mem',
-            { stdio: 'inherit' },
-          );
-          log.success('Claude Code: plugin installed via CLI.');
-        } catch (error: unknown) {
-          console.error('[install] Claude Code plugin install error:', error instanceof Error ? error.message : String(error));
-          log.error('Claude Code: plugin install failed. Is `claude` CLI on your PATH?');
-          failedIDEs.push(ideId);
-        }
+        log.success('Claude Code: plugin registered (cache + settings written by npx).');
         break;
       }
 
@@ -320,28 +317,6 @@ function runNpmInstallInMarketplace(): void {
     encoding: 'utf8',
     ...(IS_WINDOWS ? { shell: process.env.ComSpec ?? 'cmd.exe' } : {}),
   });
-}
-
-function runSmartInstall(): boolean {
-  const smartInstallPath = join(marketplaceDirectory(), 'plugin', 'scripts', 'smart-install.js');
-
-  if (!existsSync(smartInstallPath)) {
-    log.warn('smart-install.js not found — skipping Bun/uv auto-install.');
-    return false;
-  }
-
-  try {
-    execSync(`node "${smartInstallPath}"`, {
-      stdio: 'inherit',
-      encoding: 'utf8',
-      ...(IS_WINDOWS ? { shell: process.env.ComSpec ?? 'cmd.exe' } : {}),
-    });
-    return true;
-  } catch (error: unknown) {
-    console.warn('[install] smart-install error:', error instanceof Error ? error.message : String(error));
-    log.warn('smart-install encountered an issue. You may need to install Bun/uv manually.');
-    return false;
-  }
 }
 
 function settingsFilePath(): string {
@@ -586,11 +561,9 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
     await promptClaudeModel(options);
   }
 
-  const needsManualInstall = selectedIDEs.some((id) => id !== 'claude-code');
-
   let workerStarted = false;
 
-  if (needsManualInstall) {
+  {
     const installPort = getSetting('CLAUDE_MEM_WORKER_PORT');
     try {
       const result = await shutdownWorkerAndWait(installPort, 10000);
@@ -653,12 +626,20 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
         },
       },
       {
-        title: 'Setting up Bun and uv',
+        title: 'Setting up runtime (first install can take ~30s)',
         task: async (message) => {
-          message('Running smart-install...');
-          return runSmartInstall()
-            ? `Runtime dependencies ready ${pc.green('OK')}`
-            : `Runtime setup may need attention ${pc.yellow('!')}`;
+          message('Checking Bun…');
+          const { version: bunVersion } = await ensureBun();
+          message('Checking uv…');
+          const { version: uvVersion } = await ensureUv();
+          const cacheDir = pluginCacheDirectory(version);
+          if (!isInstallCurrent(cacheDir, version)) {
+            message('Installing plugin dependencies…');
+            const { bunPath } = await ensureBun();
+            await installPluginDependencies(cacheDir, bunPath);
+            writeInstallMarker(cacheDir, version, bunVersion, uvVersion);
+          }
+          return `Runtime ready (Bun ${bunVersion}, uv ${uvVersion}) ${pc.green('OK')}`;
         },
       },
     ]);
@@ -757,5 +738,40 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
     } else {
       console.log('\nclaude-mem installed successfully!');
     }
+  }
+}
+
+export async function runRepairCommand(): Promise<void> {
+  const version = readPluginVersion();
+  const cacheDir = pluginCacheDirectory(version);
+
+  if (isInteractive) {
+    p.intro(pc.bgCyan(pc.black(' claude-mem repair ')));
+  } else {
+    console.log('claude-mem repair');
+  }
+  log.info(`Version: ${pc.cyan(version)}`);
+
+  await runTasks([
+    {
+      title: 'Setting up runtime',
+      task: async (message) => {
+        message('Checking Bun…');
+        const { version: bunVersion } = await ensureBun();
+        message('Checking uv…');
+        const { version: uvVersion } = await ensureUv();
+        message('Reinstalling plugin dependencies…');
+        const { bunPath } = await ensureBun();
+        await installPluginDependencies(cacheDir, bunPath);
+        writeInstallMarker(cacheDir, version, bunVersion, uvVersion);
+        return `Runtime ready (Bun ${bunVersion}, uv ${uvVersion}) ${pc.green('OK')}`;
+      },
+    },
+  ]);
+
+  if (isInteractive) {
+    p.outro(pc.green('claude-mem repair complete.'));
+  } else {
+    console.log('claude-mem repair complete.');
   }
 }

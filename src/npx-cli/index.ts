@@ -14,6 +14,7 @@ ${pc.bold('Install Commands')} (no Bun required):
   ${pc.cyan('npx claude-mem')}                     Interactive install
   ${pc.cyan('npx claude-mem install')}              Interactive install
   ${pc.cyan('npx claude-mem install --ide <id>')}   Install for specific IDE
+  ${pc.cyan('npx claude-mem repair')}                Repair runtime (re-runs Bun/uv setup and bun install in plugin cache)
   ${pc.cyan('npx claude-mem update')}               Update to latest version
   ${pc.cyan('npx claude-mem uninstall')}            Remove plugin and configs
   ${pc.cyan('npx claude-mem version')}              Print version
@@ -49,6 +50,12 @@ async function main(): Promise<void> {
 
       const { runInstallCommand } = await import('./commands/install.js');
       await runInstallCommand({ ide: ideValue });
+      break;
+    }
+
+    case 'repair': {
+      const { runRepairCommand } = await import('./commands/install.js');
+      await runRepairCommand();
       break;
     }
 
