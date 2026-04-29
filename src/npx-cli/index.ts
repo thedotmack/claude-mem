@@ -14,6 +14,9 @@ ${pc.bold('Install Commands')} (no Bun required):
   ${pc.cyan('npx claude-mem')}                     Interactive install
   ${pc.cyan('npx claude-mem install')}              Interactive install
   ${pc.cyan('npx claude-mem install --ide <id>')}   Install for specific IDE
+  ${pc.cyan('npx claude-mem install --provider claude|gemini|openrouter')}   Set LLM provider non-interactively
+  ${pc.cyan('npx claude-mem install --model <id>')}   Set Claude model (when provider=claude)
+  ${pc.cyan('npx claude-mem install --no-auto-start')}   Skip worker auto-start at the end
   ${pc.cyan('npx claude-mem repair')}                Repair runtime (re-runs Bun/uv setup and bun install in plugin cache)
   ${pc.cyan('npx claude-mem update')}               Update to latest version
   ${pc.cyan('npx claude-mem uninstall')}            Remove plugin and configs
@@ -36,20 +39,36 @@ ${pc.bold('IDE Identifiers')}:
 `);
 }
 
+function readFlag(argv: string[], name: string): string | undefined {
+  const i = argv.indexOf(name);
+  return i !== -1 ? argv[i + 1] : undefined;
+}
+
+function parseInstallOptions(argv: string[]): {
+  ide?: string;
+  provider?: 'claude' | 'gemini' | 'openrouter';
+  model?: string;
+  noAutoStart?: boolean;
+} {
+  const provider = readFlag(argv, '--provider');
+  if (provider !== undefined && provider !== 'claude' && provider !== 'gemini' && provider !== 'openrouter') {
+    console.error(`Unknown --provider: ${provider}. Allowed: claude, gemini, openrouter`);
+    process.exit(1);
+  }
+  return {
+    ide: readFlag(argv, '--ide'),
+    provider: provider as 'claude' | 'gemini' | 'openrouter' | undefined,
+    model: readFlag(argv, '--model'),
+    noAutoStart: argv.includes('--no-auto-start'),
+  };
+}
+
 async function main(): Promise<void> {
   switch (command) {
-    case '': {
-      const { runInstallCommand } = await import('./commands/install.js');
-      await runInstallCommand();
-      break;
-    }
-
+    case '':
     case 'install': {
-      const ideIndex = args.indexOf('--ide');
-      const ideValue = ideIndex !== -1 ? args[ideIndex + 1] : undefined;
-
       const { runInstallCommand } = await import('./commands/install.js');
-      await runInstallCommand({ ide: ideValue });
+      await runInstallCommand(parseInstallOptions(args));
       break;
     }
 
