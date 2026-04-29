@@ -2,7 +2,6 @@ import * as p from '@clack/prompts';
 import pc from 'picocolors';
 import { execSync } from 'child_process';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
-import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
@@ -319,13 +318,8 @@ function runNpmInstallInMarketplace(): void {
   });
 }
 
-function settingsFilePath(): string {
-  const dataDir = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
-  return join(dataDir, 'settings.json');
-}
-
 function mergeSettings(updates: Record<string, string>): boolean {
-  const path = settingsFilePath();
+  const path = USER_SETTINGS_PATH;
   try {
     let current: Record<string, unknown> = {};
     if (existsSync(path)) {
