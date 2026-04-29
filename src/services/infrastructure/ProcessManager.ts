@@ -37,9 +37,12 @@ const ORPHAN_PROCESS_PATTERNS = [
 // the default applies. chroma-mcp lifetime is bounded by its worker — when the
 // worker is gone, the python child can sit forever consuming RAM/CPU (#2184, #2195).
 const ORPHAN_MAX_AGE_MINUTES = 30;
-const ORPHAN_AGE_OVERRIDES_MINUTES: Record<string, number> = {
-  'chroma-mcp': 5,
-};
+// chroma-mcp is intentionally absent from the age-based reap path:
+// healthy chroma-mcp instances naturally outlive any sensible age
+// threshold (a long Claude session can keep one alive for hours).
+// chroma-mcp is reaped only by orphan-specific signals (Unix ppid==1,
+// Windows dead immediate parent). Other patterns use the default.
+const ORPHAN_AGE_OVERRIDES_MINUTES: Record<string, number> = {};
 
 // Periodic reaper interval — runs `cleanupOrphanedProcesses()` to catch orphans
 // from worker crashes / SIGKILL where the in-process exit handlers can't fire.
@@ -484,6 +487,11 @@ async function enumerateOrphanedProcesses(isWindows: boolean, currentPid: number
         continue;
       }
 
+      // chroma-mcp is exempt from age-based reaping (healthy instances
+      // naturally outlive any sensible threshold). The dead-parent guard
+      // above is its only reap criterion.
+      if (isChromaMcp) continue;
+
       // Parse Windows WMI date format: /Date(1234567890123)/
       const creationMatch = String(proc.CreationDate ?? '').match(/\/Date\((\d+)\)\//);
       if (creationMatch) {
@@ -534,6 +542,11 @@ async function enumerateOrphanedProcesses(isWindows: boolean, currentPid: number
         continue;
       }
 
+      // chroma-mcp is exempt from age-based reaping (healthy instances
+      // naturally outlive any sensible threshold). ppid==1 above is its
+      // only reap criterion.
+      if (isChromaMcp) continue;
+
       const ageMinutes = parseElapsedTime(etime);
       const threshold = ageThresholdForCommand(commandText);
       if (ageMinutes >= threshold) {
@@ -550,9 +563,15 @@ async function enumerateOrphanedProcesses(isWindows: boolean, currentPid: number
  * Clean up orphaned claude-mem processes from previous worker sessions.
  *
  * Targets mcp-server.cjs, worker-service.cjs, and chroma-mcp processes
- * that survived a previous daemon crash or SIGKILL. Each pattern uses its
- * own age threshold (chroma-mcp: 5 min, others: 30 min) and chroma-mcp
- * processes whose parent is not the live worker are reaped unconditionally.
+ * that survived a previous daemon crash or SIGKILL. Reap criteria differ
+ * by pattern:
+ *
+ * - chroma-mcp is reaped only when clearly orphaned: Unix ppid==1
+ *   (re-parented to init), Windows immediate parent unreachable. Healthy
+ *   chroma-mcp can run for hours during a long Claude session, so the
+ *   age-threshold path is intentionally skipped for this pattern.
+ * - Other patterns (mcp-server.cjs, worker-service.cjs) are reaped via
+ *   the default 30-minute age threshold.
  *
  * Run once at worker bootstrap and on every ORPHAN_REAPER_INTERVAL_MS tick
  * (see startOrphanReaperInterval()). PR #1175 documented a periodic reaper
