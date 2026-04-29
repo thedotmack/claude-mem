@@ -314,28 +314,36 @@ function verifyCriticalModules() {
  * stale dir on disk keeps the old path alive across restarts.
  */
 function pruneStaleVersionCache() {
-  try {
-    const cacheRoot = join(homedir(), '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem');
-    if (!existsSync(cacheRoot)) return;
+  // Probe both the legacy and XDG cache locations — checkMarketplaceMarker
+  // in mcp-server.ts handles both and we need symmetric pruning so users
+  // on the XDG layout don't keep stale dirs that re-trigger #2172.
+  const cacheRoots = [
+    join(homedir(), '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem'),
+    join(homedir(), '.config', 'claude', 'plugins', 'cache', 'thedotmack', 'claude-mem'),
+  ];
+  for (const cacheRoot of cacheRoots) {
+    try {
+      if (!existsSync(cacheRoot)) continue;
 
-    const entries = readdirSync(cacheRoot, { withFileTypes: true })
-      .filter(d => d.isDirectory() && /^\d/.test(d.name));
-    if (entries.length <= 1) return;
+      const entries = readdirSync(cacheRoot, { withFileTypes: true })
+        .filter(d => d.isDirectory() && /^\d/.test(d.name));
+      if (entries.length <= 1) continue;
 
-    const sorted = entries
-      .map(d => ({ name: d.name, mtime: statSync(join(cacheRoot, d.name)).mtimeMs }))
-      .sort((a, b) => b.mtime - a.mtime);
+      const sorted = entries
+        .map(d => ({ name: d.name, mtime: statSync(join(cacheRoot, d.name)).mtimeMs }))
+        .sort((a, b) => b.mtime - a.mtime);
 
-    for (const old of sorted.slice(1)) {
-      try {
-        rmSync(join(cacheRoot, old.name), { recursive: true, force: true });
-        console.error(`🧹 Removed stale plugin cache: ${old.name}`);
-      } catch (err) {
-        console.error(`⚠️  Could not remove ${old.name}: ${err.message}`);
+      for (const old of sorted.slice(1)) {
+        try {
+          rmSync(join(cacheRoot, old.name), { recursive: true, force: true });
+          console.error(`🧹 Removed stale plugin cache: ${old.name}`);
+        } catch (err) {
+          console.error(`⚠️  Could not remove ${old.name}: ${err.message}`);
+        }
       }
+    } catch {
+      // Cache prune is best-effort; never fail the install for it.
     }
-  } catch {
-    // Cache prune is best-effort; never fail the install for it.
   }
 }
 

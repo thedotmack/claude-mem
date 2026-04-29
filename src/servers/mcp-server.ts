@@ -33,6 +33,7 @@ import { parseFile, formatFoldedView, unfoldSymbol } from '../services/smart-fil
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 // Resolve the path to worker-service.cjs, which lives alongside mcp-server.cjs
@@ -692,13 +693,20 @@ process.on('SIGINT', cleanup);
  */
 function checkMarketplaceMarker(): void {
   try {
+    // Use os.homedir() so this works on Windows (HOME is unset there;
+    // USERPROFILE is the Windows convention and homedir() picks it up).
+    const home = homedir();
     const marketplaceCandidates = [
-      resolve(process.env.HOME ?? '', '.claude', 'plugins', 'marketplaces', 'thedotmack'),
-      resolve(process.env.HOME ?? '', '.config', 'claude', 'plugins', 'marketplaces', 'thedotmack'),
+      resolve(home, '.claude', 'plugins', 'marketplaces', 'thedotmack'),
+      resolve(home, '.config', 'claude', 'plugins', 'marketplaces', 'thedotmack'),
     ];
     const present = marketplaceCandidates.some(p => p && existsSync(p));
-    const cacheRoot = resolve(process.env.HOME ?? '', '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem');
-    const cachePresent = existsSync(cacheRoot);
+    const cacheCandidates = [
+      resolve(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem'),
+      resolve(home, '.config', 'claude', 'plugins', 'cache', 'thedotmack', 'claude-mem'),
+    ];
+    const cachePresent = cacheCandidates.some(p => p && existsSync(p));
+    const cacheRoot = cacheCandidates[0];
 
     if (!present && cachePresent) {
       logger.error(
