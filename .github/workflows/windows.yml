@@ -6,7 +6,7 @@ on:
       - 'src/**'
       - 'plugin/scripts/**'
       - 'package.json'
-      - 'package-lock.json'
+      - 'bunfig.toml'
       - '.github/workflows/windows.yml'
   push:
     branches: [main]
@@ -21,16 +21,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: 'npm'
 
       - name: Install Bun (worker runtime)
         run: |
           irm bun.sh/install.ps1 | iex
         shell: pwsh
 
-      - run: npm ci
+      - run: npm install --no-audit --no-fund
 
-      - run: npm run build-and-sync
+      # Build only — the build-and-sync script also runs marketplace sync + worker
+      # restart from a hardcoded ~/.claude/plugins path that doesn't exist on CI.
+      - run: npm run build
 
       - name: Smoke - daemon spawn must not pop visible cmd window
         shell: pwsh
