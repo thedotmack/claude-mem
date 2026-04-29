@@ -20,7 +20,7 @@ import os from 'os';
 import fs from 'fs';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { USER_SETTINGS_PATH, getPackageRoot } from '../../shared/paths.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
 
@@ -138,9 +138,21 @@ export class ChromaMcpManager {
     const uvxSpawnCommand = isWindows ? (process.env.ComSpec || 'cmd.exe') : 'uvx';
     const uvxSpawnArgs = isWindows ? ['/c', 'uvx', ...commandArgs] : commandArgs;
 
-    logger.info('CHROMA_MCP', 'Connecting to chroma-mcp via MCP stdio', {
-      command: uvxSpawnCommand,
-      args: uvxSpawnArgs.join(' ')
+    // Wrap the uvx invocation through a stdout-filtering Node script.
+    // chroma-mcp 0.2.x writes startup banners ("Starting MCP server", etc.)
+    // to stdout BEFORE the first JSON-RPC frame, which causes the MCP SDK's
+    // StdioClientTransport to drop the connection. The wrapper line-buffers
+    // stdout, forwards JSON-looking lines, and redirects everything else
+    // to stderr so banners stay visible in worker logs but never reach the
+    // MCP protocol stream. Fixes #2197.
+    const wrapperPath = path.join(getPackageRoot(), 'scripts', 'chroma-mcp-stdio-filter.mjs');
+    const transportCommand = process.execPath;
+    const transportArgs = [wrapperPath, uvxSpawnCommand, ...uvxSpawnArgs];
+
+    logger.info('CHROMA_MCP', 'Connecting to chroma-mcp via MCP stdio (filtered)', {
+      command: transportCommand,
+      wrapper: wrapperPath,
+      args: [uvxSpawnCommand, ...uvxSpawnArgs].join(' ')
     });
 
     // Run chroma-mcp from the home directory so that pydantic-settings (used
@@ -149,8 +161,8 @@ export class ChromaMcpManager {
     // that pydantic rejects with "Extra inputs are not permitted", crashing the
     // subprocess immediately. Fixes #1297.
     this.transport = new StdioClientTransport({
-      command: uvxSpawnCommand,
-      args: uvxSpawnArgs,
+      command: transportCommand,
+      args: transportArgs,
       env: spawnEnvironment,
       cwd: os.homedir(),
       stderr: 'pipe'
