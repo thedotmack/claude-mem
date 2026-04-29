@@ -601,7 +601,10 @@ export class SessionRoutes extends BaseRouteHandler {
 
     const { last_assistant_message } = req.body;
 
-    this.sessionManager.queueSummarize(sessionDbId, last_assistant_message);
+    const cleanedLastAssistantMessage = last_assistant_message
+      ? stripMemoryTagsFromPrompt(String(last_assistant_message))
+      : last_assistant_message;
+    this.sessionManager.queueSummarize(sessionDbId, cleanedLastAssistantMessage);
 
     // CRITICAL: Ensure SDK agent is running to consume the queue
     this.ensureGeneratorRunning(sessionDbId, 'summarize');
@@ -747,7 +750,10 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     // Queue summarize
-    this.sessionManager.queueSummarize(sessionDbId, last_assistant_message);
+    const cleanedLastAssistantMessage = last_assistant_message
+      ? stripMemoryTagsFromPrompt(String(last_assistant_message))
+      : last_assistant_message;
+    this.sessionManager.queueSummarize(sessionDbId, cleanedLastAssistantMessage);
 
     // Ensure SDK agent is running
     this.ensureGeneratorRunning(sessionDbId, 'summarize');
