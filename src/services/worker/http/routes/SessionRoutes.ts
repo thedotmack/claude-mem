@@ -292,6 +292,29 @@ export class SessionRoutes extends BaseRouteHandler {
 
         if (wasAborted) {
           logger.info('SESSION', `Generator aborted`, { sessionId: sessionDbId });
+
+          // #2192: when the generator aborts (idle timeout, user cancel,
+          // shutdown) with rows already claimed and yielded but not yet
+          // confirmed by ResponseProcessor, those rows sit in 'processing'
+          // under THIS worker's PID. The self-healing claim predicate skips
+          // them because the worker is still alive — the queue deadlocks
+          // until the worker restarts. Walk the in-flight ids and run them
+          // through markFailed so the retry ladder requeues them or marks
+          // them terminally failed.
+          const inflightStore = this.sessionManager.getPendingMessageStore();
+          const inflightIds = session.processingMessageIds.slice();
+          session.processingMessageIds = [];
+          for (const messageId of inflightIds) {
+            try {
+              inflightStore.markFailed(messageId);
+            } catch (markErr) {
+              const normalized = markErr instanceof Error ? markErr : new Error(String(markErr));
+              logger.error('SESSION', 'Failed to requeue in-flight message after abort', {
+                sessionId: sessionDbId,
+                messageId,
+              }, normalized);
+            }
+          }
         }
         // Don't log "exited unexpectedly" here — a non-abort exit is normal when
         // the SDK subprocess completes its work. The crash-recovery block below

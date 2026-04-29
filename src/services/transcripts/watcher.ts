@@ -37,6 +37,14 @@ class FileTailer {
     this.watcher = null;
   }
 
+  // Public wrapper so the recursive root watcher can prod an existing tailer
+  // when fs.watch on the file itself misses an append event on Windows
+  // (#2192). Per-file fs.watch is unreliable on Windows ReFS/SMB; the root
+  // recursive watcher is the only signal we can trust there.
+  poke(): void {
+    this.readNewData().catch(() => undefined);
+  }
+
   private async readNewData(): Promise<void> {
     if (!existsSync(this.filePath)) return;
 
@@ -138,8 +146,18 @@ export class TranscriptWatcher {
         // here on every line and a full resolveWatchFiles() per append is
         // more expensive than the prior 5-s interval. Only unknown paths
         // warrant a rescan (new transcript files surface here first).
-        const changed = resolvePath(watchRoot, name);
-        if (this.tailers.has(changed)) return;
+        // Normalize so the key matches what globSync stored (forward slashes
+        // on Windows). Without this, every append from the recursive watcher
+        // looks like a "new file" and we re-scan instead of poking the tailer.
+        const changed = resolvePath(watchRoot, name).replace(/\\/g, '/');
+        const existingTailer = this.tailers.get(changed);
+        if (existingTailer) {
+          // #2192: per-file fs.watch on Windows misses appends to live JSONL
+          // files. The recursive root watcher fires reliably; poke the tailer
+          // so it picks up new lines without a full glob rescan.
+          existingTailer.poke();
+          return;
+        }
         const matches = this.resolveWatchFiles(resolvedPath);
         for (const filePath of matches) {
           if (!this.tailers.has(filePath)) {
@@ -206,7 +224,11 @@ export class TranscriptWatcher {
 
   private resolveWatchFiles(inputPath: string): string[] {
     if (this.hasGlob(inputPath)) {
-      return globSync(inputPath, { nodir: true, absolute: true });
+      // #2192: glob treats backslashes as escape chars, not separators. On
+      // Windows, expandHomePath() emits backslash paths from Node's path.join
+      // which globSync silently fails to match. Normalize separators here
+      // before passing to glob — leaves Unix paths untouched.
+      return globSync(this.normalizeGlobPattern(inputPath), { nodir: true, absolute: true });
     }
 
     if (existsSync(inputPath)) {
@@ -214,7 +236,7 @@ export class TranscriptWatcher {
         const stat = statSync(inputPath);
         if (stat.isDirectory()) {
           const pattern = join(inputPath, '**', '*.jsonl');
-          return globSync(pattern, { nodir: true, absolute: true });
+          return globSync(this.normalizeGlobPattern(pattern), { nodir: true, absolute: true });
         }
         return [inputPath];
       } catch (error: unknown) {
@@ -224,6 +246,10 @@ export class TranscriptWatcher {
     }
 
     return [];
+  }
+
+  private normalizeGlobPattern(inputPath: string): string {
+    return inputPath.replace(/\\/g, '/');
   }
 
   private hasGlob(inputPath: string): boolean {
