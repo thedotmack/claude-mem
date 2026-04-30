@@ -1,7 +1,8 @@
 import * as p from '@clack/prompts';
 import pc from 'picocolors';
-import { execSync } from 'child_process';
+import { execSync, spawn } from 'child_process';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
@@ -233,21 +234,119 @@ async function setupIDEs(selectedIDEs: string[]): Promise<string[]> {
   return failedIDEs;
 }
 
-function installClaudeCode(): boolean {
+function detectShellConfigFile(): { path: string; shell: 'zsh' | 'bash' | 'fish' } {
+  const home = homedir();
+  const shellEnv = process.env.SHELL ?? '';
+
+  if (shellEnv.includes('fish')) {
+    return { path: join(home, '.config', 'fish', 'config.fish'), shell: 'fish' };
+  }
+  if (shellEnv.includes('zsh')) {
+    return { path: join(home, '.zshrc'), shell: 'zsh' };
+  }
+  if (process.platform === 'darwin') {
+    const bashProfile = join(home, '.bash_profile');
+    if (existsSync(bashProfile)) return { path: bashProfile, shell: 'bash' };
+  }
+  return { path: join(home, '.bashrc'), shell: 'bash' };
+}
+
+function applyClaudeCodePathSetupIfNeeded(): void {
+  const home = homedir();
+  const claudeBinDir = join(home, '.local', 'bin');
+  const claudeBinary = join(claudeBinDir, 'claude');
+
+  if (!existsSync(claudeBinary)) return;
+
+  const currentPath = process.env.PATH ?? '';
+  const pathEntries = currentPath.split(':');
+  if (pathEntries.includes(claudeBinDir)) return;
+
+  const { path: configFile, shell } = detectShellConfigFile();
+  const binPathLiteral = '$HOME/.local/bin';
+  const exportLine = shell === 'fish'
+    ? `set -gx PATH ${claudeBinDir} $PATH`
+    : `export PATH="${binPathLiteral}:$PATH"`;
+
+  let existing = '';
+  if (existsSync(configFile)) {
+    try {
+      existing = readFileSync(configFile, 'utf-8');
+    } catch (error: unknown) {
+      log.warn(`Could not read ${configFile}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  } else {
+    try {
+      mkdirSync(dirname(configFile), { recursive: true });
+    } catch {
+      // Best-effort directory creation.
+    }
+  }
+
+  if (existing.includes(claudeBinDir) || existing.includes(binPathLiteral)) {
+    log.info(`Claude Code PATH already configured in ${configFile}`);
+  } else {
+    try {
+      const trailing = existing.length === 0 || existing.endsWith('\n') ? '' : '\n';
+      const block = `${trailing}\n# Added by claude-mem installer for Claude Code\n${exportLine}\n`;
+      writeFileSync(configFile, existing + block, 'utf-8');
+      log.success(`Added Claude Code to PATH in ${configFile}`);
+    } catch (error: unknown) {
+      log.warn(`Could not update ${configFile}: ${error instanceof Error ? error.message : String(error)}`);
+      log.info(`Run manually: echo '${exportLine}' >> ${configFile}`);
+      return;
+    }
+  }
+
+  process.env.PATH = `${claudeBinDir}:${currentPath}`;
+}
+
+async function installClaudeCode(): Promise<boolean> {
   const command = IS_WINDOWS
     ? 'powershell -ExecutionPolicy ByPass -c "irm https://claude.ai/install.ps1 | iex"'
     : 'curl -fsSL https://claude.ai/install.sh | bash';
-  try {
-    execSync(command, {
-      stdio: 'inherit',
-      ...(IS_WINDOWS ? { shell: process.env.ComSpec ?? 'cmd.exe' } : { shell: '/bin/bash' }),
+
+  const spinner = isInteractive ? p.spinner() : null;
+  spinner?.start('Installing Claude Code (this can take a few minutes — downloading the native build)…');
+
+  return new Promise<boolean>((resolve) => {
+    let captured = '';
+    const child = spawn(command, [], {
+      shell: IS_WINDOWS ? (process.env.ComSpec ?? 'cmd.exe') : '/bin/bash',
+      stdio: spinner ? ['inherit', 'pipe', 'pipe'] : 'inherit',
     });
-    return true;
-  } catch (error: unknown) {
-    log.error(`Claude Code install failed: ${error instanceof Error ? error.message : String(error)}`);
-    log.info('You can install it manually later: https://claude.ai/install.sh');
-    return false;
-  }
+
+    child.stdout?.on('data', (chunk: Buffer) => { captured += chunk.toString(); });
+    child.stderr?.on('data', (chunk: Buffer) => { captured += chunk.toString(); });
+
+    child.on('error', (error: Error) => {
+      spinner?.stop('Claude Code install failed', 1);
+      if (captured) process.stderr.write(captured);
+      log.error(`Claude Code install failed: ${error.message}`);
+      log.info('You can install it manually later: https://claude.ai/install.sh');
+      resolve(false);
+    });
+
+    child.on('exit', (code) => {
+      if (code !== 0) {
+        spinner?.stop('Claude Code install failed', 1);
+        if (captured) process.stderr.write(captured);
+        log.error(`Claude Code install failed (exit ${code ?? 'unknown'})`);
+        log.info('You can install it manually later: https://claude.ai/install.sh');
+        resolve(false);
+        return;
+      }
+      spinner?.stop('Claude Code installed');
+      if (!IS_WINDOWS) {
+        try {
+          applyClaudeCodePathSetupIfNeeded();
+        } catch (error: unknown) {
+          log.warn(`Could not auto-apply PATH setup: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      resolve(true);
+    });
+  });
 }
 
 async function promptForIDESelection(): Promise<string[]> {
@@ -270,8 +369,7 @@ async function promptForIDESelection(): Promise<string[]> {
       process.exit(0);
     }
     if (choice === 'install') {
-      if (installClaudeCode()) {
-        log.success('Claude Code installed.');
+      if (await installClaudeCode()) {
         detectedIDEs = detectInstalledIDEs();
       }
     }
@@ -546,23 +644,32 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
   } else {
     console.log('claude-mem install');
   }
-  log.info(`Version: ${pc.cyan(version)}`);
-  log.info(`Platform: ${process.platform} (${process.arch})`);
-
   const marketplaceDir = marketplaceDirectory();
   const alreadyInstalled = existsSync(join(marketplaceDir, 'plugin', '.claude-plugin', 'plugin.json'));
 
+  let existingVersion: string | undefined;
   if (alreadyInstalled) {
     try {
       const existingPluginJson = JSON.parse(
         readFileSync(join(marketplaceDir, 'plugin', '.claude-plugin', 'plugin.json'), 'utf-8'),
       );
-      log.warn(`Existing installation detected (v${existingPluginJson.version ?? 'unknown'}).`);
+      existingVersion = existingPluginJson.version ?? undefined;
     } catch (error: unknown) {
       console.warn('[install] Failed to read existing plugin version:', error instanceof Error ? error.message : String(error));
-      log.warn('Existing installation detected.');
     }
+  }
 
+  // Single horizontal info line: target version + (if differs) currently installed.
+  const dot = pc.dim('·');
+  const segments = [`${pc.bold('claude-mem')} ${pc.cyan(`v${version}`)}`];
+  if (existingVersion && existingVersion !== version) {
+    segments.push(`installed ${pc.yellow(`v${existingVersion}`)}`);
+  } else if (existingVersion) {
+    segments.push(pc.dim('reinstall'));
+  }
+  log.info(segments.join(` ${dot} `));
+
+  if (alreadyInstalled) {
     if (process.stdin.isTTY) {
       const shouldContinue = await p.confirm({
         message: 'Overwrite existing installation?',
