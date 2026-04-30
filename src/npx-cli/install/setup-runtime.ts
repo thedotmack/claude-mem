@@ -94,16 +94,30 @@ function getUvVersion(): string | null {
   }
 }
 
+function describeExecError(error: unknown): string {
+  if (error && typeof error === 'object') {
+    const e = error as { message?: string; stdout?: Buffer | string; stderr?: Buffer | string };
+    const parts: string[] = [];
+    if (e.message) parts.push(e.message);
+    const stderr = e.stderr ? e.stderr.toString().trim() : '';
+    if (stderr) parts.push(`stderr: ${stderr}`);
+    const stdout = e.stdout ? e.stdout.toString().trim() : '';
+    if (!stderr && stdout) parts.push(`stdout: ${stdout}`);
+    return parts.join('\n');
+  }
+  return String(error);
+}
+
 function installBun(): void {
   try {
     if (IS_WINDOWS) {
       execSync('powershell -c "irm bun.sh/install.ps1 | iex"', {
-        stdio: 'inherit',
+        stdio: 'pipe',
         shell: process.env.ComSpec ?? 'cmd.exe',
       });
     } else {
       execSync('curl -fsSL https://bun.sh/install | bash', {
-        stdio: 'inherit',
+        stdio: 'pipe',
         shell: '/bin/bash',
       });
     }
@@ -119,7 +133,7 @@ function installBun(): void {
       : '  - curl -fsSL https://bun.sh/install | bash\n  - Or: brew install oven-sh/bun/bun';
     throw new Error(
       `Failed to install Bun. Please install manually:\n${manualInstructions}\nThen restart your terminal and try again.\n` +
-        `Underlying error: ${error instanceof Error ? error.message : String(error)}`,
+        `Underlying error: ${describeExecError(error)}`,
     );
   }
 }
@@ -128,12 +142,12 @@ function installUv(): void {
   try {
     if (IS_WINDOWS) {
       execSync('powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"', {
-        stdio: 'inherit',
+        stdio: 'pipe',
         shell: process.env.ComSpec ?? 'cmd.exe',
       });
     } else {
       execSync('curl -LsSf https://astral.sh/uv/install.sh | sh', {
-        stdio: 'inherit',
+        stdio: 'pipe',
         shell: '/bin/bash',
       });
     }
@@ -149,7 +163,7 @@ function installUv(): void {
       : '  - curl -LsSf https://astral.sh/uv/install.sh | sh\n  - Or: brew install uv (macOS)';
     throw new Error(
       `Failed to install uv. Please install manually:\n${manualInstructions}\nThen restart your terminal and try again.\n` +
-        `Underlying error: ${error instanceof Error ? error.message : String(error)}`,
+        `Underlying error: ${describeExecError(error)}`,
     );
   }
 }
@@ -208,11 +222,15 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
 
   const bunCmd = IS_WINDOWS && bunPath.includes(' ') ? `"${bunPath}"` : bunPath;
 
-  execSync(`${bunCmd} install`, {
-    cwd: targetDir,
-    stdio: 'inherit',
-    ...(IS_WINDOWS ? { shell: process.env.ComSpec ?? 'cmd.exe' } : {}),
-  });
+  try {
+    execSync(`${bunCmd} install`, {
+      cwd: targetDir,
+      stdio: 'pipe',
+      ...(IS_WINDOWS ? { shell: process.env.ComSpec ?? 'cmd.exe' } : {}),
+    });
+  } catch (error) {
+    throw new Error(`bun install failed in ${targetDir}\n${describeExecError(error)}`);
+  }
 
   verifyCriticalModules(targetDir);
 }

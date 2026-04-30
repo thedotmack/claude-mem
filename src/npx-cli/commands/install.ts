@@ -237,20 +237,23 @@ async function promptForIDESelection(): Promise<string[]> {
   const detected = detectedIDEs.filter((ide) => ide.detected);
 
   if (detected.length === 0) {
-    log.warn('No supported IDEs detected. Installing for Claude Code by default.');
-    return ['claude-code'];
+    log.warn('No supported IDEs detected — pick the one(s) you plan to use.');
   }
 
-  const options = detected.map((ide) => ({
-    value: ide.id,
-    label: ide.label,
-    hint: ide.supported ? ide.hint : 'coming soon',
-  }));
+  const options = detectedIDEs.map((ide) => {
+    const detectedTag = ide.detected ? ' [detected]' : '';
+    const hint = ide.supported ? `${ide.hint}${detectedTag}` : `coming soon${detectedTag}`;
+    return {
+      value: ide.id,
+      label: ide.label,
+      hint,
+    };
+  });
 
   const result = await p.multiselect({
     message: 'Which IDEs do you use?',
     options,
-    initialValues: [],
+    initialValues: detected.map((ide) => ide.id),
     required: true,
   });
 
