@@ -36,6 +36,7 @@ export interface ClaudeMemEnv {
   ANTHROPIC_BASE_URL?: string;
   GEMINI_API_KEY?: string;
   OPENROUTER_API_KEY?: string;
+  CLAUDE_CODE_OAUTH_TOKEN?: string;
 }
 
 /**
@@ -112,6 +113,7 @@ export function loadClaudeMemEnv(): ClaudeMemEnv {
     if (parsed.ANTHROPIC_BASE_URL) result.ANTHROPIC_BASE_URL = parsed.ANTHROPIC_BASE_URL;
     if (parsed.GEMINI_API_KEY) result.GEMINI_API_KEY = parsed.GEMINI_API_KEY;
     if (parsed.OPENROUTER_API_KEY) result.OPENROUTER_API_KEY = parsed.OPENROUTER_API_KEY;
+    if (parsed.CLAUDE_CODE_OAUTH_TOKEN) result.CLAUDE_CODE_OAUTH_TOKEN = parsed.CLAUDE_CODE_OAUTH_TOKEN;
 
     return result;
   } catch (error: unknown) {
@@ -174,6 +176,13 @@ export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
       updated.OPENROUTER_API_KEY = env.OPENROUTER_API_KEY;
     } else {
       delete updated.OPENROUTER_API_KEY;
+    }
+  }
+  if (env.CLAUDE_CODE_OAUTH_TOKEN !== undefined) {
+    if (env.CLAUDE_CODE_OAUTH_TOKEN) {
+      updated.CLAUDE_CODE_OAUTH_TOKEN = env.CLAUDE_CODE_OAUTH_TOKEN;
+    } else {
+      delete updated.CLAUDE_CODE_OAUTH_TOKEN;
     }
   }
 
@@ -251,9 +260,12 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
     // 4. Pass through Claude CLI's OAuth token if available (fallback for CLI subscription billing)
     // When no ANTHROPIC_API_KEY is configured, the spawned CLI uses subscription billing
     // which requires either ~/.claude/.credentials.json or CLAUDE_CODE_OAUTH_TOKEN.
-    // The worker inherits this token from the Claude Code session that started it.
-    if (!isolatedEnv.ANTHROPIC_API_KEY && process.env.CLAUDE_CODE_OAUTH_TOKEN) {
-      isolatedEnv.CLAUDE_CODE_OAUTH_TOKEN = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    // The token can come from claude-mem's .env file (#2215) or from the parent process env.
+    if (!isolatedEnv.ANTHROPIC_API_KEY) {
+      const oauthToken = credentials.CLAUDE_CODE_OAUTH_TOKEN || process.env.CLAUDE_CODE_OAUTH_TOKEN;
+      if (oauthToken) {
+        isolatedEnv.CLAUDE_CODE_OAUTH_TOKEN = oauthToken;
+      }
     }
   }
 
