@@ -232,8 +232,50 @@ async function setupIDEs(selectedIDEs: string[]): Promise<string[]> {
   return failedIDEs;
 }
 
+function installClaudeCode(): boolean {
+  const command = IS_WINDOWS
+    ? 'powershell -ExecutionPolicy ByPass -c "irm https://claude.ai/install.ps1 | iex"'
+    : 'curl -fsSL https://claude.ai/install.sh | bash';
+  try {
+    execSync(command, {
+      stdio: 'inherit',
+      ...(IS_WINDOWS ? { shell: process.env.ComSpec ?? 'cmd.exe' } : { shell: '/bin/bash' }),
+    });
+    return true;
+  } catch (error: unknown) {
+    log.error(`Claude Code install failed: ${error instanceof Error ? error.message : String(error)}`);
+    log.info('You can install it manually later: https://claude.ai/install.sh');
+    return false;
+  }
+}
+
 async function promptForIDESelection(): Promise<string[]> {
-  const detectedIDEs = detectInstalledIDEs();
+  let detectedIDEs = detectInstalledIDEs();
+  const claudeCodeInfo = detectedIDEs.find((ide) => ide.id === 'claude-code');
+
+  if (claudeCodeInfo && !claudeCodeInfo.detected) {
+    log.warn('Claude Code is not installed. Claude-mem works best in Claude Code, but also works with the IDEs below.');
+    const choice = await p.select<'install' | 'skip' | 'cancel'>({
+      message: 'Install Claude Code now?',
+      options: [
+        { value: 'install', label: 'Yes — install Claude Code (recommended)' },
+        { value: 'skip', label: 'No — pick another IDE below' },
+        { value: 'cancel', label: 'Cancel installation' },
+      ],
+      initialValue: 'install',
+    });
+    if (p.isCancel(choice) || choice === 'cancel') {
+      p.cancel('Installation cancelled.');
+      process.exit(0);
+    }
+    if (choice === 'install') {
+      if (installClaudeCode()) {
+        log.success('Claude Code installed.');
+        detectedIDEs = detectInstalledIDEs();
+      }
+    }
+  }
+
   const detected = detectedIDEs.filter((ide) => ide.detected);
 
   if (detected.length === 0) {
@@ -275,7 +317,6 @@ function copyPluginToMarketplace(): void {
     'plugin',
     'package.json',
     'package-lock.json',
-    'node_modules',
     'openclaw',
     'dist',
     'LICENSE',
@@ -559,27 +600,22 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
   }
 
   let workerStarted = false;
+  const needsMarketplace = selectedIDEs.some((id) => id !== 'claude-code');
 
   {
-    const installPort = getSetting('CLAUDE_MEM_WORKER_PORT');
-    try {
-      const result = await shutdownWorkerAndWait(installPort, 10000);
-      if (result.workerWasRunning) {
-        log.info('Stopped running worker before overwrite.');
+    if (needsMarketplace) {
+      const installPort = getSetting('CLAUDE_MEM_WORKER_PORT');
+      try {
+        const result = await shutdownWorkerAndWait(installPort, 10000);
+        if (result.workerWasRunning) {
+          log.info('Stopped running worker before overwrite.');
+        }
+      } catch (error: unknown) {
+        console.warn('[install] Pre-overwrite worker shutdown failed:', error instanceof Error ? error.message : String(error));
       }
-    } catch (error: unknown) {
-      console.warn('[install] Pre-overwrite worker shutdown failed:', error instanceof Error ? error.message : String(error));
     }
 
-    await runTasks([
-      {
-        title: 'Copying plugin files',
-        task: async (message) => {
-          message('Copying to marketplace directory...');
-          copyPluginToMarketplace();
-          return `Plugin files copied ${pc.green('OK')}`;
-        },
-      },
+    const tasks: TaskDescriptor[] = [
       {
         title: 'Caching plugin version',
         task: async (message) => {
@@ -610,19 +646,6 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
         },
       },
       {
-        title: 'Installing dependencies',
-        task: async (message) => {
-          message('Running npm install...');
-          try {
-            runNpmInstallInMarketplace();
-            return `Dependencies installed ${pc.green('OK')}`;
-          } catch (error: unknown) {
-            console.warn('[install] npm install error:', error instanceof Error ? error.message : String(error));
-            return `Dependencies may need manual install ${pc.yellow('!')}`;
-          }
-        },
-      },
-      {
         title: 'Setting up runtime (first install can take ~30s)',
         task: async (message) => {
           message('Checking Bun…');
@@ -639,7 +662,33 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
           return `Runtime ready (Bun ${bunVersion}, uv ${uvVersion}) ${pc.green('OK')}`;
         },
       },
-    ]);
+    ];
+
+    if (needsMarketplace) {
+      tasks.unshift({
+        title: 'Copying plugin files to marketplace',
+        task: async (message) => {
+          message('Copying to marketplace directory...');
+          copyPluginToMarketplace();
+          return `Plugin files copied ${pc.green('OK')}`;
+        },
+      });
+      tasks.push({
+        title: 'Installing marketplace dependencies',
+        task: async (message) => {
+          message('Running npm install...');
+          try {
+            runNpmInstallInMarketplace();
+            return `Dependencies installed ${pc.green('OK')}`;
+          } catch (error: unknown) {
+            console.warn('[install] npm install error:', error instanceof Error ? error.message : String(error));
+            return `Dependencies may need manual install ${pc.yellow('!')}`;
+          }
+        },
+      });
+    }
+
+    await runTasks(tasks);
   }
 
   const failedIDEs = await setupIDEs(selectedIDEs);
