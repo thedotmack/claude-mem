@@ -1,142 +1,103 @@
-import { BANNER_TIERS, type TierFrames } from './banner-frames.js';
-
-type Tier = 'small' | 'medium' | 'hero';
-type Cell = string;
+import { inflateRawSync } from 'zlib';
+import { BANNER } from './banner-frames.js';
 
 const HIDE_CURSOR = '\x1b[?25l';
 const SHOW_CURSOR = '\x1b[?25h';
+const CURSOR_HOME = '\x1b[H';
+const CLEAR_DOWN = '\x1b[J';
+const CLEAR_SCREEN = '\x1b[2J\x1b[3J\x1b[H';
+const RESET = '\x1b[0m';
 
-let canvas: Cell[][] = [];
+const FRAME_SEP = '\x01';
 
-function detectTier(): Tier | null {
-  const cols = process.stdout.columns ?? 0;
-  if (cols >= 160) return 'hero';
-  if (cols >= 120) return 'medium';
-  if (cols >= 80) return 'small';
-  return null;
+// Brand colors. Primary = the orange logo body. Accent = outline highlight
+// applied to <span>-tagged cells (the high-gradient edges).
+function primaryColor(truecolor: boolean, brightness: number = 1.0): string {
+  if (!truecolor) return '\x1b[38;5;208m';
+  const r = Math.min(255, Math.round(230 * brightness));
+  const g = Math.min(255, Math.round(115 * brightness));
+  const b = Math.min(255, Math.round(70 * brightness));
+  return `\x1b[38;2;${r};${g};${b}m`;
+}
+
+function accentColor(truecolor: boolean, brightness: number = 1.0): string {
+  if (!truecolor) return '\x1b[38;5;215m';
+  const r = Math.min(255, Math.round(255 * brightness));
+  const g = Math.min(255, Math.round(180 * brightness));
+  const b = Math.min(255, Math.round(122 * brightness));
+  return `\x1b[38;2;${r};${g};${b}m`;
+}
+
+let frames: string[] | null = null;
+function getFrames(): string[] {
+  if (frames) return frames;
+  const raw = inflateRawSync(Buffer.from(BANNER.compressed, 'base64')).toString('utf8');
+  frames = raw.split(FRAME_SEP);
+  return frames;
+}
+
+// Render one frame: walks the text, switching ANSI styles on <span>...</span>
+// tags. Mirrors the state machine in ghostty's src/cli/boo.zig updateFrame().
+function styleFrame(
+  frame: string,
+  truecolor: boolean,
+  brightness: number = 1.0,
+): string {
+  const primary = primaryColor(truecolor, brightness);
+  const accent = accentColor(truecolor, brightness);
+  let out = primary;
+  let i = 0;
+  let inSpan = false;
+  while (i < frame.length) {
+    const ch = frame[i];
+    if (ch === '<') {
+      // Skip until '>'. Track whether we're entering or leaving a span.
+      const isClosing = frame[i + 1] === '/';
+      while (i < frame.length && frame[i] !== '>') i++;
+      i++; // skip '>'
+      inSpan = !isClosing;
+      out += inSpan ? accent : primary;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out + RESET;
 }
 
 function detectTruecolor(): boolean {
   return process.env.COLORTERM === 'truecolor' || process.env.COLORTERM === '24bit';
 }
 
-function cellColor(
-  col: number,
-  row: number,
-  tierCols: number,
-  tierRows: number,
-  truecolor: boolean,
-  brightness: number = 1.0,
-): string {
-  const cx = tierCols / 2;
-  const cy = tierRows / 2;
-  const dx = col - cx;
-  const dy = row - cy;
-  const dist = Math.sqrt(dx * dx + dy * dy) / Math.sqrt(cx * cx + cy * cy);
-  // lerp #FFB47A → #C04A30
-  let r = Math.round(255 * (1 - dist) + 192 * dist);
-  let g = Math.round(180 * (1 - dist) + 74 * dist);
-  let b = Math.round(122 * (1 - dist) + 48 * dist);
-  r = Math.min(255, Math.round(r * brightness));
-  g = Math.min(255, Math.round(g * brightness));
-  b = Math.min(255, Math.round(b * brightness));
-  if (truecolor) return `\x1b[38;2;${r};${g};${b}m`;
-  return '\x1b[38;5;208m';
+// figlet -f standard "claude-mem" — geometric ASCII letters, 5 rows × 62 cols.
+const WORDMARK_BUBBLE: readonly string[] = [
+  "      _                 _                                     ",
+  "  ___| | __ _ _   _  __| | ___       _ __ ___   ___ _ __ ___  ",
+  " / __| |/ _` | | | |/ _` |/ _ \\_____| '_ ` _ \\ / _ \\ '_ ` _ \\ ",
+  "| (__| | (_| | |_| | (_| |  __/_____| | | | | |  __/ | | | | |",
+  " \\___|_|\\__,_|\\__,_|\\__,_|\\___|     |_| |_| |_|\\___|_| |_| |_|",
+] as const;
+const BUBBLE_HEIGHT = WORDMARK_BUBBLE.length;
+const BUBBLE_WIDTH = WORDMARK_BUBBLE[0].length;
+
+// Reserve canvas: animation + wordmark (5 rows) + 1 blank gap + 1 tagline row.
+const TAGLINE_GAP = 1;
+const TOTAL_ROWS = BANNER.height + BUBBLE_HEIGHT + TAGLINE_GAP + 1;
+
+function writeBubbleRow(rowIdx: number, colsRevealed: number): string {
+  // Reveal left-to-right by column. Hidden cols become spaces so the row width
+  // is always BUBBLE_WIDTH and centering stays stable.
+  const src = WORDMARK_BUBBLE[rowIdx];
+  const W = BANNER.width;
+  const visible = src.slice(0, Math.min(BUBBLE_WIDTH, colsRevealed)).padEnd(BUBBLE_WIDTH, ' ');
+  const pad = Math.max(0, Math.floor((W - BUBBLE_WIDTH) / 2));
+  return ' '.repeat(pad) + `\x1b[1;97m${visible}\x1b[0m` + ' '.repeat(Math.max(0, W - pad - BUBBLE_WIDTH));
 }
 
-function renderFrame(
-  frameStr: string,
-  tier: TierFrames,
-  truecolor: boolean,
-  brightness: number = 1.0,
-): Cell[][] {
-  const { cols, rows } = tier;
-  const newCanvas: Cell[][] = [];
-  const CHARS = [' ', '▄', '▀', '█'];
-  for (let row = 0; row < rows; row++) {
-    newCanvas[row] = [];
-    for (let col = 0; col < cols; col++) {
-      const idx = row * cols + col;
-      const val = parseInt(frameStr[idx] ?? '0', 10);
-      if (val === 0) {
-        newCanvas[row][col] = ' ';
-        continue;
-      }
-      let isTip = false;
-      outer: for (let dr = -1; dr <= 1; dr++) {
-        for (let dc = -1; dc <= 1; dc++) {
-          if (dr === 0 && dc === 0) continue;
-          const nr = row + dr;
-          const nc = col + dc;
-          if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) {
-            isTip = true;
-            break outer;
-          }
-          if (parseInt(frameStr[nr * cols + nc] ?? '0', 10) === 0) {
-            isTip = true;
-            break outer;
-          }
-        }
-      }
-      const b = isTip ? Math.min(1.5, brightness * 1.2) : brightness;
-      const color = cellColor(col, row, cols, rows, truecolor, b);
-      newCanvas[row][col] = color + CHARS[val] + '\x1b[0m';
-    }
-  }
-  return newCanvas;
-}
-
-function diffWrite(newCanvas: Cell[][], first: boolean): void {
-  if (first) {
-    process.stdout.write('\x1b[s');
-    for (const row of newCanvas) {
-      process.stdout.write(row.join('') + '\n');
-    }
-    canvas = newCanvas.map((r) => [...r]);
-    return;
-  }
-  for (let row = 0; row < newCanvas.length; row++) {
-    const rowDirty = newCanvas[row].some((cell, col) => cell !== canvas[row]?.[col]);
-    if (!rowDirty) continue;
-    process.stdout.write('\x1b[u');
-    if (row > 0) process.stdout.write(`\x1b[${row}B`);
-    process.stdout.write('\x1b[1G');
-    process.stdout.write(newCanvas[row].join(''));
-  }
-  canvas = newCanvas.map((r) => [...r]);
-}
-
-function buildDiscFrame(tier: TierFrames, fraction: number): string {
-  const { cols, rows, finalFrame } = tier;
-  const cx = cols / 2;
-  const cy = rows / 2;
-  const maxDiscRadius = Math.min(cols, rows) * 0.15;
-  const radius = maxDiscRadius * fraction;
-  let result = '';
-  for (let row = 0; row < rows; row++) {
-    for (let col = 0; col < cols; col++) {
-      const dx = col - cx;
-      const dy = row - cy;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      result += dist <= radius ? finalFrame[row * cols + col] : '0';
-    }
-  }
-  return result;
-}
-
-function addWordmark(c: Cell[][], tier: TierFrames, wordmark: string, tagline: string): void {
-  const { cols, rows } = tier;
-  const midY = Math.floor(rows / 2);
-  if (wordmark) {
-    c[midY - 1] = c[midY - 1] ?? [];
-    while (c[midY - 1].length < cols + 2) c[midY - 1].push(' ');
-    c[midY - 1].push(`\x1b[1;37m${wordmark}\x1b[0m`);
-  }
-  if (tagline) {
-    c[midY] = c[midY] ?? [];
-    while (c[midY].length < cols + 2) c[midY].push(' ');
-    c[midY].push(`\x1b[2;37m${tagline}\x1b[0m`);
-  }
+function writeTaglineRow(text: string): string {
+  const W = BANNER.width;
+  const pad = Math.max(0, Math.floor((W - text.length) / 2));
+  return ' '.repeat(pad) + `\x1b[2;37m${text}\x1b[0m` + ' '.repeat(Math.max(0, W - pad - text.length));
 }
 
 export function isBannerEnabled(): boolean {
@@ -144,77 +105,87 @@ export function isBannerEnabled(): boolean {
   if (process.env.CI) return false;
   if (process.env.CLAUDE_MEM_NO_BANNER) return false;
   if (process.env.NO_COLOR) return false;
-  return detectTier() !== null;
+  const cols = process.stdout.columns ?? 0;
+  return cols >= BANNER.width;
 }
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 export async function playBanner(): Promise<void> {
   if (!isBannerEnabled()) return;
-  const tierName = detectTier()!;
-  const tier = BANNER_TIERS[tierName];
   const truecolor = detectTruecolor();
+  const allFrames = getFrames();
   let aborted = false;
-  const onResize = () => {
-    aborted = true;
-  };
+  const onResize = () => { aborted = true; };
   process.stdout.on('resize', onResize);
+  process.stdout.write(CLEAR_SCREEN);
   process.stdout.write(HIDE_CURSOR);
-  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-  canvas = [];
-  let first = true;
+
+  // Reserve vertical space (logo + 2 wordmark rows) so we have a stable
+  // canvas to redraw on. Save cursor at the top of the canvas.
+  process.stdout.write('\n'.repeat(TOTAL_ROWS));
+  process.stdout.write(`\x1b[${TOTAL_ROWS}A`);
+  process.stdout.write('\x1b[s');
+
+  const blankRow = ' '.repeat(BANNER.width);
+
+  const writeFrame = (frameText: string, colsRevealed: number, tagline: string, brightness: number = 1.0) => {
+    process.stdout.write('\x1b[u');
+    process.stdout.write(styleFrame(frameText, truecolor, brightness));
+    // Frames don't end with \n on the last line, so add one before drawing wordmark rows
+    process.stdout.write('\n');
+    for (let i = 0; i < BUBBLE_HEIGHT; i++) {
+      process.stdout.write(writeBubbleRow(i, colsRevealed));
+      process.stdout.write('\n');
+    }
+    for (let g = 0; g < TAGLINE_GAP; g++) {
+      process.stdout.write(blankRow);
+      process.stdout.write('\n');
+    }
+    process.stdout.write(writeTaglineRow(tagline));
+  };
 
   try {
-    // ACT 1: Ignition (0–480ms) — center disc grows, 8 steps × 60ms
-    for (let step = 1; step <= 8; step++) {
+    // ACT 1+2: play the prerendered animation
+    for (let i = 0; i < allFrames.length; i++) {
       if (aborted) return;
-      const discFrame = buildDiscFrame(tier, step / 8);
-      const nc = renderFrame(discFrame, tier, truecolor);
-      diffWrite(nc, first);
-      first = false;
-      await sleep(60);
+      writeFrame(allFrames[i], 0, '');
+      await sleep(BANNER.frameDelay);
     }
 
-    // ACT 2: Bloom (480–1200ms) — 12 rays × 60ms = 720ms
-    for (let i = 0; i < 12; i++) {
-      if (aborted) return;
-      const nc = renderFrame(tier.bloomFrames[i], tier, truecolor);
-      diffWrite(nc, false);
-      await sleep(60);
-    }
-
-    // ACT 3a: Type-on wordmark (350ms, 10 chars × 35ms)
-    const WORDMARK = 'claude-mem';
-    for (let c = 1; c <= WORDMARK.length; c++) {
-      if (aborted) return;
-      const nc = renderFrame(tier.finalFrame, tier, truecolor);
-      addWordmark(nc, tier, WORDMARK.slice(0, c), '');
-      diffWrite(nc, false);
-      await sleep(35);
-    }
-
-    // ACT 3b: Tagline fade-in (200ms, 6 steps)
+    // ACT 3: reveal bubble wordmark letter-by-letter, then tagline
+    const finalFrame = allFrames[allFrames.length - 1];
     const TAGLINE = 'persistent memory across sessions';
+
+    // Sweep reveal across all columns
+    const REVEAL_STEPS = 14;
+    for (let s = 1; s <= REVEAL_STEPS; s++) {
+      if (aborted) return;
+      const cols = Math.ceil(BUBBLE_WIDTH * (s / REVEAL_STEPS));
+      writeFrame(finalFrame, cols, '');
+      await sleep(45);
+    }
+
     for (let s = 1; s <= 6; s++) {
       if (aborted) return;
       const chars = Math.ceil(TAGLINE.length * (s / 6));
-      const nc = renderFrame(tier.finalFrame, tier, truecolor);
-      addWordmark(nc, tier, WORDMARK, TAGLINE.slice(0, chars));
-      diffWrite(nc, false);
+      writeFrame(finalFrame, BUBBLE_WIDTH, TAGLINE.slice(0, chars));
       await sleep(33);
     }
 
-    // ACT 3c: Breathe (300ms)
-    for (const brightness of [0.9, 0.95, 1.0]) {
+    // Brief breathe pulse on the final pose
+    for (const brightness of [0.85, 0.95, 1.0]) {
       if (aborted) return;
-      const nc = renderFrame(tier.finalFrame, tier, truecolor, brightness);
-      addWordmark(nc, tier, WORDMARK, TAGLINE);
-      diffWrite(nc, false);
+      writeFrame(finalFrame, BUBBLE_WIDTH, TAGLINE, brightness);
       await sleep(100);
     }
 
-    // Hold 200ms
-    await sleep(200);
+    await sleep(150);
   } finally {
     process.stdout.off('resize', onResize);
+    process.stdout.write(RESET);
     process.stdout.write(SHOW_CURSOR);
+    // Move cursor below the banner so subsequent output starts on a fresh line.
+    process.stdout.write('\n');
   }
 }

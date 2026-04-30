@@ -1,132 +1,151 @@
 #!/usr/bin/env node
+// Renders pre-extracted video frames as ASCII art using a luminosity ramp.
+// Frames are concatenated with \x01 separators and gzip-deflated, matching
+// ghostty's boo wire format so the runtime player can be a near-direct port.
+//
+// Source frames are produced from the webm via:
+//   ffmpeg -y -i <video> -vf "scale=320:180" /tmp/cmem-banner-frames/frame_%04d.png
 import { Jimp } from 'jimp';
-import { writeFileSync } from 'fs';
+import { writeFileSync, readdirSync, existsSync } from 'fs';
+import { deflateRawSync } from 'zlib';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, '..');
 
-const SRC = join(repoRoot, 'assets/cmem-logo.png');
+const FRAMES_DIR = process.env.FRAMES_DIR || '/tmp/cmem-banner-frames';
 const OUT = join(repoRoot, 'src/npx-cli/banner-frames.ts');
 
-const ALPHA_THRESHOLD = 110;
-const BLOOM_RAYS = 12;
-const DISC_RADIUS_FRACTION = 0.15;
+const COLS = 128;
+// Match 16:9 source aspect with 2:1 cell aspect: 128 * 9 / 16 / 2 = 36.
+const VIDEO_ROWS = Math.round(COLS * (9 / 16) / 2); // 36
+const ROWS = VIDEO_ROWS;
+const TOP_PAD = 0;
+const BOTTOM_PAD = 0;
 
-const TIERS = [
-  { name: 'small',  cols: 40, rows: 20 },
-  { name: 'medium', cols: 60, rows: 30 },
-  { name: 'hero',   cols: 80, rows: 40 },
-];
+const RAMP = ' .·~+=*x%$@#';
+// Aggressive clip + steeper curve = high contrast. Background falls to space,
+// bright cells push into the dense end of the ramp.
+const BLACK_FLOOR = 50;
+const WHITE_CEIL = 160;
+const HALO_MIN = 70;
+const HALO_MAX = 175;
 
-function sectorMask(img, visibleSectors, discRadius) {
-  const result = img.clone();
-  const cx = result.bitmap.width / 2;
-  const cy = result.bitmap.height / 2;
-  for (let y = 0; y < result.bitmap.height; y++) {
-    for (let x = 0; x < result.bitmap.width; x++) {
-      const dx = x - cx, dy = y - cy;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist <= discRadius) continue;
-      // angle: 0 = top (12 o'clock), clockwise
-      const angle = ((Math.atan2(dx, -dy) * 180 / Math.PI) + 360) % 360;
-      const sector = Math.floor(angle / (360 / BLOOM_RAYS));
-      if (!visibleSectors.includes(sector)) {
-        const idx = (y * result.bitmap.width + x) * 4;
-        result.bitmap.data[idx + 3] = 0;
-      }
+function rasterize(img, gridW, gridH) {
+  // Resize to the terminal grid and read luminance (Y) per cell.
+  // Video is full-color, so we use perceptual luminance rather than alpha.
+  const resized = img.clone().resize({ w: gridW, h: gridH });
+  const data = resized.bitmap.data;
+  const density = new Float32Array(gridW * gridH);
+  for (let cy = 0; cy < gridH; cy++) {
+    for (let cx = 0; cx < gridW; cx++) {
+      const idx = (cy * gridW + cx) * 4;
+      const r = data[idx], g = data[idx + 1], b = data[idx + 2];
+      density[cy * gridW + cx] = 0.2126 * r + 0.7152 * g + 0.0722 * b;
     }
   }
-  return result;
+  return density;
 }
 
-function imgToFrameString(resizedImg, cols, rows) {
-  const pixelW = cols;
-  const cells = [];
-  for (let row = 0; row < rows; row++) {
-    for (let col = 0; col < cols; col++) {
-      const topIdx = (row * 2 * pixelW + col) * 4;
-      const botIdx = ((row * 2 + 1) * pixelW + col) * 4;
-      const topA = resizedImg.bitmap.data[topIdx + 3];
-      const botA = resizedImg.bitmap.data[botIdx + 3];
-      const top = topA > ALPHA_THRESHOLD ? 1 : 0;
-      const bot = botA > ALPHA_THRESHOLD ? 1 : 0;
-      cells.push((top << 1) | bot);
+function densityToChar(d) {
+  if (d <= BLACK_FLOOR) return ' ';
+  const range = WHITE_CEIL - BLACK_FLOOR;
+  const norm = Math.min(1, (d - BLACK_FLOOR) / range);
+  const t = Math.pow(norm, 1.3);
+  const idx = Math.min(RAMP.length - 1, Math.max(1, Math.round(t * (RAMP.length - 1))));
+  return RAMP[idx];
+}
+
+function renderASCII(density, w, h) {
+  const lines = [];
+  for (let y = 0; y < h; y++) {
+    let line = '';
+    let inSpan = false;
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      const d = density[i];
+      const ch = densityToChar(d);
+      const wantSpan = d > HALO_MIN && d < HALO_MAX && ch !== ' ';
+      if (wantSpan && !inSpan) { line += '<span>'; inSpan = true; }
+      if (!wantSpan && inSpan) { line += '</span>'; inSpan = false; }
+      line += ch;
     }
+    if (inSpan) line += '</span>';
+    lines.push(line);
   }
-  return cells.join('');
+  return lines.join('\n');
 }
 
 async function main() {
-  const img = await Jimp.read(SRC);
-  const size = Math.max(img.bitmap.width, img.bitmap.height);
-  const square = new Jimp({ width: size, height: size, color: 0x00000000 });
-  square.composite(
-    img,
-    Math.floor((size - img.bitmap.width) / 2),
-    Math.floor((size - img.bitmap.height) / 2),
-  );
+  if (!existsSync(FRAMES_DIR)) {
+    throw new Error(`Frames directory not found: ${FRAMES_DIR}\n` +
+      `Run: ffmpeg -y -i <video> -vf "scale=320:180" ${FRAMES_DIR}/frame_%04d.png`);
+  }
+  const files = readdirSync(FRAMES_DIR)
+    .filter((f) => f.endsWith('.png'))
+    .sort();
+  if (files.length === 0) {
+    throw new Error(`No PNG frames found in ${FRAMES_DIR}`);
+  }
 
-  const tierResults = {};
+  const blankLine = ' '.repeat(COLS);
+  const topPadding = Array(TOP_PAD).fill(blankLine).join('\n');
+  const bottomPadding = Array(BOTTOM_PAD).fill(blankLine).join('\n');
 
-  for (const tier of TIERS) {
-    const pixelW = tier.cols;
-    const pixelH = tier.rows * 2;
-    const discRadius = (size / 2) * DISC_RADIUS_FRACTION;
-
-    // Generate finalFrame (full logo, no masking)
-    const full = square.clone().resize({ w: pixelW, h: pixelH });
-    const finalFrame = imgToFrameString(full, tier.cols, tier.rows);
-
-    // Generate 12 bloom frames
-    const bloomFrames = [];
-    for (let i = 0; i < BLOOM_RAYS; i++) {
-      const visibleSectors = Array.from({ length: i + 1 }, (_, k) => k);
-      const masked = sectorMask(square, visibleSectors, discRadius);
-      const resized = masked.resize({ w: pixelW, h: pixelH });
-      bloomFrames.push(imgToFrameString(resized, tier.cols, tier.rows));
+  const frameStrings = [];
+  for (let i = 0; i < files.length; i++) {
+    const img = await Jimp.read(join(FRAMES_DIR, files[i]));
+    const density = rasterize(img, COLS, VIDEO_ROWS);
+    const body = renderASCII(density, COLS, VIDEO_ROWS);
+    const padded = [topPadding, body, bottomPadding].filter(Boolean).join('\n');
+    frameStrings.push(padded);
+    if ((i + 1) % 32 === 0 || i === files.length - 1) {
+      process.stdout.write(`  rasterized ${i + 1}/${files.length}\r`);
     }
-
-    tierResults[tier.name] = { cols: tier.cols, rows: tier.rows, bloomFrames, finalFrame };
-    console.log(`✓ Generated tier: ${tier.name} (${tier.cols}×${tier.rows}, ${bloomFrames.length + 1} frames)`);
   }
+  process.stdout.write('\n');
 
-  // Build TypeScript output
-  const lines = [
-    '// Auto-generated by scripts/generate-banner-frames.mjs — do not edit by hand.',
-    '',
-    'export interface TierFrames {',
-    '  cols: number;',
-    '  rows: number;',
-    '  /** 12 progressive bloom frames, each = cols×rows cells encoded as 0-3 ASCII digits */',
-    '  bloomFrames: string[];',
-    '  /** Final fully-revealed frame */',
-    '  finalFrame: string;',
-    '}',
-    '',
-    'export const BANNER_TIERS: Record<\'small\' | \'medium\' | \'hero\', TierFrames> = {',
-  ];
+  const joined = frameStrings.join('\x01');
+  const compressed = deflateRawSync(Buffer.from(joined, 'utf8'), { level: 9 });
+  const b64 = compressed.toString('base64');
 
-  for (const [i, tier] of TIERS.entries()) {
-    const r = tierResults[tier.name];
-    const bloomArrayStr = r.bloomFrames.map(f => `    ${JSON.stringify(f)}`).join(',\n');
-    lines.push(`  ${tier.name}: {`);
-    lines.push(`    cols: ${r.cols},`);
-    lines.push(`    rows: ${r.rows},`);
-    lines.push(`    bloomFrames: [`);
-    lines.push(bloomArrayStr);
-    lines.push(`    ],`);
-    lines.push(`    finalFrame: ${JSON.stringify(r.finalFrame)},`);
-    lines.push(`  }${i < TIERS.length - 1 ? ',' : ''}`);
-  }
+  const FRAME_DELAY = 22; // ~45 fps — sped up ~12% from prior 25ms
 
-  lines.push('};');
-  lines.push('');
+  const ts = `// Auto-generated by scripts/generate-banner-frames.mjs — do not edit by hand.
+// Frames are gzip-deflated, base64-encoded, separated by \\x01.
+// Source: webm video rasterized to ASCII via luminance ramp.
 
-  writeFileSync(OUT, lines.join('\n'));
-  console.log(`✓ Generated tiers: small (40×20, 13 frames), medium (60×30, 13 frames), hero (80×40, 13 frames)`);
+export interface BannerData {
+  /** Base64-encoded raw deflate of all frames joined by \\x01 */
+  compressed: string;
+  frameCount: number;
+  width: number;
+  height: number;
+  /** Milliseconds per frame */
+  frameDelay: number;
+}
+
+export const BANNER: BannerData = {
+  compressed: ${JSON.stringify(b64)},
+  frameCount: ${files.length},
+  width: ${COLS},
+  height: ${ROWS},
+  frameDelay: ${FRAME_DELAY},
+};
+`;
+
+  writeFileSync(OUT, ts);
+  console.log(`✓ Generated ${files.length} ASCII frames at ${COLS}×${ROWS}`);
+  console.log(`  Raw size: ${joined.length} bytes`);
+  console.log(`  Compressed: ${compressed.length} bytes (${((compressed.length / joined.length) * 100).toFixed(1)}%)`);
+  console.log(`  Base64: ${b64.length} bytes`);
   console.log(`  Written to: ${OUT}`);
+
+  if (process.env.PREVIEW) {
+    console.log('\n--- final frame preview ---');
+    console.log(frameStrings[frameStrings.length - 1].replace(/<\/?span>/g, ''));
+  }
 }
 
 main().catch((err) => {
