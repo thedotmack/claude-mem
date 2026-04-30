@@ -574,34 +574,38 @@ export class ChromaSync {
       obsByDocCount.push({ obs, docs });
     }
 
+    // Watermark must be durable per-batch: SIGKILL / OOM / reboot mid-flight
+    // skips any trailing finally, so a once-at-end bump leaves the watermark
+    // at zero and the next boot re-embeds everything (#2214, amplifies #2220).
     let writtenDocs = 0;
     let lastSyncedObsIdx = -1;
-    try {
-      for (let i = 0; i < allDocs.length; i += this.BATCH_SIZE) {
-        const batch = allDocs.slice(i, i + this.BATCH_SIZE);
-        await this.addDocuments(batch);
-        writtenDocs += batch.length;
+    for (let i = 0; i < allDocs.length; i += this.BATCH_SIZE) {
+      const batch = allDocs.slice(i, i + this.BATCH_SIZE);
+      await this.addDocuments(batch);
+      writtenDocs += batch.length;
 
-        let cursor = 0;
-        for (let j = 0; j < obsByDocCount.length; j++) {
-          cursor += obsByDocCount[j].docs.length;
-          if (cursor <= writtenDocs) {
-            lastSyncedObsIdx = j;
-          } else {
-            break;
-          }
+      let cursor = 0;
+      for (let j = 0; j < obsByDocCount.length; j++) {
+        cursor += obsByDocCount[j].docs.length;
+        if (cursor <= writtenDocs) {
+          lastSyncedObsIdx = j;
+        } else {
+          break;
         }
+      }
 
-        logger.debug('CHROMA_SYNC', 'Backfill progress', {
-          project: backfillProject,
-          progress: `${Math.min(i + this.BATCH_SIZE, allDocs.length)}/${allDocs.length}`
-        });
-      }
-    } finally {
       if (lastSyncedObsIdx >= 0) {
-        const highestId = obsByDocCount[lastSyncedObsIdx].obs.id;
-        ChromaSyncState.bump(backfillProject, 'observations', highestId);
+        ChromaSyncState.bump(
+          backfillProject,
+          'observations',
+          obsByDocCount[lastSyncedObsIdx].obs.id
+        );
       }
+
+      logger.debug('CHROMA_SYNC', 'Backfill progress', {
+        project: backfillProject,
+        progress: `${Math.min(i + this.BATCH_SIZE, allDocs.length)}/${allDocs.length}`
+      });
     }
 
     return allDocs;
@@ -643,28 +647,30 @@ export class ChromaSync {
 
     let writtenDocs = 0;
     let lastSyncedIdx = -1;
-    try {
-      for (let i = 0; i < summaryDocs.length; i += this.BATCH_SIZE) {
-        const batch = summaryDocs.slice(i, i + this.BATCH_SIZE);
-        await this.addDocuments(batch);
-        writtenDocs += batch.length;
+    for (let i = 0; i < summaryDocs.length; i += this.BATCH_SIZE) {
+      const batch = summaryDocs.slice(i, i + this.BATCH_SIZE);
+      await this.addDocuments(batch);
+      writtenDocs += batch.length;
 
-        let cursor = 0;
-        for (let j = 0; j < summaryByDocCount.length; j++) {
-          cursor += summaryByDocCount[j].docs.length;
-          if (cursor <= writtenDocs) lastSyncedIdx = j;
-          else break;
-        }
-
-        logger.debug('CHROMA_SYNC', 'Backfill progress', {
-          project: backfillProject,
-          progress: `${Math.min(i + this.BATCH_SIZE, summaryDocs.length)}/${summaryDocs.length}`
-        });
+      let cursor = 0;
+      for (let j = 0; j < summaryByDocCount.length; j++) {
+        cursor += summaryByDocCount[j].docs.length;
+        if (cursor <= writtenDocs) lastSyncedIdx = j;
+        else break;
       }
-    } finally {
+
       if (lastSyncedIdx >= 0) {
-        ChromaSyncState.bump(backfillProject, 'summaries', summaryByDocCount[lastSyncedIdx].summary.id);
+        ChromaSyncState.bump(
+          backfillProject,
+          'summaries',
+          summaryByDocCount[lastSyncedIdx].summary.id
+        );
       }
+
+      logger.debug('CHROMA_SYNC', 'Backfill progress', {
+        project: backfillProject,
+        progress: `${Math.min(i + this.BATCH_SIZE, summaryDocs.length)}/${summaryDocs.length}`
+      });
     }
 
     return summaryDocs;
@@ -709,23 +715,19 @@ export class ChromaSync {
       promptDocs.push(this.formatUserPromptDoc(prompt));
     }
 
-    let lastSyncedPromptId = 0;
-    try {
-      for (let i = 0; i < promptDocs.length; i += this.BATCH_SIZE) {
-        const batch = promptDocs.slice(i, i + this.BATCH_SIZE);
-        await this.addDocuments(batch);
-        const upTo = Math.min(i + this.BATCH_SIZE, prompts.length);
-        lastSyncedPromptId = prompts[upTo - 1].id;
+    // Prompts are 1 doc each — bump the watermark per batch so an interrupted
+    // backfill resumes where it left off instead of re-embedding from zero.
+    for (let i = 0; i < promptDocs.length; i += this.BATCH_SIZE) {
+      const batch = promptDocs.slice(i, i + this.BATCH_SIZE);
+      await this.addDocuments(batch);
+      const upTo = Math.min(i + this.BATCH_SIZE, prompts.length);
+      const lastSyncedPromptId = prompts[upTo - 1].id;
+      ChromaSyncState.bump(backfillProject, 'prompts', lastSyncedPromptId);
 
-        logger.debug('CHROMA_SYNC', 'Backfill progress', {
-          project: backfillProject,
-          progress: `${upTo}/${promptDocs.length}`
-        });
-      }
-    } finally {
-      if (lastSyncedPromptId > 0) {
-        ChromaSyncState.bump(backfillProject, 'prompts', lastSyncedPromptId);
-      }
+      logger.debug('CHROMA_SYNC', 'Backfill progress', {
+        project: backfillProject,
+        progress: `${upTo}/${promptDocs.length}`
+      });
     }
 
     return promptDocs;
