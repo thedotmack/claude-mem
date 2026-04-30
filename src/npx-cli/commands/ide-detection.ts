@@ -44,7 +44,7 @@ export function detectInstalledIDEs(): IDEInfo[] {
     {
       id: 'claude-code',
       label: 'Claude Code',
-      detected: existsSync(join(home, '.claude')),
+      detected: isCommandInPath('claude'),
       supported: true,
       hint: 'recommended',
     },
