@@ -292,7 +292,7 @@ export class SearchRoutes extends BaseRouteHandler {
 
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const hintEnabled = String(settings.CLAUDE_MEM_WELCOME_HINT_ENABLED ?? '').toLowerCase() === 'true';
-    if (hintEnabled) {
+    if (hintEnabled && !full) {
       const sessionStore = this.searchManager.getSessionStore();
       const observationCount = countObservationsByProjects(sessionStore, projects);
       if (observationCount === 0) {
