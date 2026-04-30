@@ -13,6 +13,7 @@ import {
   writeInstallMarker,
   isInstallCurrent,
 } from '../install/setup-runtime.js';
+import { playBanner } from '../banner.js';
 
 function getSetting<K extends keyof SettingsDefaults>(key: K): SettingsDefaults[K] {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH)[key];
@@ -540,6 +541,7 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
   const version = readPluginVersion();
 
   if (isInteractive) {
+    await playBanner();
     p.intro(pc.bgCyan(pc.black(' claude-mem install ')));
   } else {
     console.log('claude-mem install');
