@@ -1,7 +1,8 @@
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { execSync } from 'child_process';
+import { execFile, execSync, type ChildProcess } from 'child_process';
+import { promisify } from 'util';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
@@ -10,6 +11,8 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
+
+const execFileAsync = promisify(execFile);
 
 const CHROMA_MCP_CLIENT_NAME = 'claude-mem-chroma';
 const CHROMA_MCP_CLIENT_VERSION = '1.0.0';
@@ -325,6 +328,18 @@ export class ChromaMcpManager {
     }
   }
 
+  /**
+   * Gracefully stop the MCP connection and kill the chroma-mcp subprocess tree.
+   *
+   * The MCP SDK's client.close() sends stdin close -> SIGTERM -> SIGKILL to the
+   * direct child (uvx), but the spawn chain (uvx -> uv -> python -> chroma-mcp)
+   * can leave descendants orphaned because MCP SDK does not use process groups.
+   *
+   * Fix: kill the entire process tree rooted at the direct child PID BEFORE
+   * closing the MCP client, ensuring no orphan python/chroma-mcp processes
+   * accumulate across reconnects or worker restarts. Matches the tree-kill
+   * pattern from shutdown.ts (Principle 5: OS-supervised teardown).
+   */
   async stop(): Promise<void> {
     if (!this.client) {
       logger.debug('CHROMA_MCP', 'No active MCP connection to stop');
@@ -332,6 +347,13 @@ export class ChromaMcpManager {
     }
 
     logger.info('CHROMA_MCP', 'Stopping chroma-mcp MCP connection');
+
+    // Kill the entire process tree before closing the MCP client so
+    // descendants (uv, python, chroma-mcp) don't become orphans.
+    const chromaProcess = (this.transport as unknown as { _process?: ChildProcess })?._process;
+    if (chromaProcess?.pid) {
+      await ChromaMcpManager.killProcessTree(chromaProcess.pid);
+    }
 
     try {
       await this.client.close();
@@ -352,6 +374,83 @@ export class ChromaMcpManager {
     logger.info('CHROMA_MCP', 'chroma-mcp MCP connection stopped');
   }
 
+  /**
+   * Kill a process and all its descendants (tree-kill).
+   *
+   * POSIX: Sends SIGTERM to the process, then uses `pkill -P` to signal
+   * children recursively. Falls back to single-PID kill if pkill is unavailable.
+   *
+   * Windows: Uses `taskkill /T /F /PID` for full subtree teardown (same
+   * pattern as shutdown.ts).
+   *
+   * Best-effort — swallows ESRCH (already dead) and logs other errors.
+   */
+  private static async killProcessTree(pid: number): Promise<void> {
+    logger.debug('CHROMA_MCP', `Killing process tree rooted at PID ${pid}`);
+
+    if (process.platform === 'win32') {
+      try {
+        await execFileAsync('taskkill', ['/PID', String(pid), '/T', '/F'], {
+          timeout: 5_000,
+          windowsHide: true
+        });
+      } catch (error) {
+        // taskkill exits non-zero when the process is already dead — that's fine.
+        logger.debug('CHROMA_MCP', `taskkill tree-kill finished (may already be dead)`, {
+          pid,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+      return;
+    }
+
+    // POSIX: kill children first (bottom-up), then the parent.
+    // `pkill -P <pid>` sends SIGTERM to all direct children. We run it twice
+    // with a brief pause to catch grandchildren that were re-parented to init.
+    try {
+      // Signal direct children
+      try {
+        await execFileAsync('pkill', ['-TERM', '-P', String(pid)], { timeout: 2_000 });
+      } catch {
+        // pkill exits 1 when no processes match — expected if children already exited.
+      }
+
+      // Signal the parent process itself
+      try {
+        process.kill(pid, 'SIGTERM');
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== 'ESRCH') {
+          logger.debug('CHROMA_MCP', `Failed to SIGTERM PID ${pid}`, { code });
+        }
+      }
+
+      // Brief wait for SIGTERM to propagate, then SIGKILL stragglers
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      try {
+        await execFileAsync('pkill', ['-KILL', '-P', String(pid)], { timeout: 2_000 });
+      } catch {
+        // No children left — expected.
+      }
+
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {
+        // Already dead — fine.
+      }
+    } catch (error) {
+      logger.debug('CHROMA_MCP', `Process tree kill completed (best-effort)`, {
+        pid,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  /**
+   * Reset the singleton instance (for testing).
+   * Awaits stop() to prevent dual subprocesses.
+   */
   static async reset(): Promise<void> {
     if (ChromaMcpManager.instance) {
       await ChromaMcpManager.instance.stop();
@@ -467,15 +566,30 @@ export class ChromaMcpManager {
   }
 
   private registerManagedProcess(): void {
-    const chromaProcess = (this.transport as unknown as { _process?: import('child_process').ChildProcess })._process;
+    const chromaProcess = (this.transport as unknown as { _process?: ChildProcess })._process;
     if (!chromaProcess?.pid) {
       return;
     }
 
+    // Register with pgid so the supervisor's shutdown cascade can use
+    // process-group signaling (kill(-pgid, signal)) to tear down the
+    // entire spawn chain (uvx -> uv -> python -> chroma-mcp) in one
+    // syscall, matching the SDK subprocess pattern in process-registry.ts.
+    //
+    // Note: MCP SDK's StdioClientTransport does NOT use detached:true,
+    // so the child shares our process group — setting pgid here enables
+    // tree-kill via signalProcess() in shutdown.ts which falls back to
+    // taskkill /T on Windows when pgid is present but group signal fails.
+    // On POSIX the pgid recorded here is used by killProcessTree() in
+    // stop() for explicit tree teardown rather than negative-PID signaling.
     getSupervisor().registerProcess(CHROMA_SUPERVISOR_ID, {
       pid: chromaProcess.pid,
       type: 'chroma',
-      startedAt: new Date().toISOString()
+      startedAt: new Date().toISOString(),
+      // Store pid as pgid — shutdown.ts will attempt kill(-pgid) on POSIX.
+      // If the child isn't actually its own group leader, the ESRCH is caught
+      // and shutdown falls back to single-PID kill (see signalProcess()).
+      pgid: chromaProcess.pid
     }, chromaProcess);
 
     chromaProcess.once('exit', () => {

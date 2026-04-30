@@ -816,7 +816,31 @@ export class ChromaSync {
     return { ids, distances, metadatas };
   }
 
+  /** Maximum number of concurrent project backfills to run at once. */
+  private static readonly BACKFILL_CONCURRENCY_LIMIT = 3;
+
+  /** Guard flag to prevent overlapping backfill runs from fire-and-forget callers. */
+  private static backfillInProgress = false;
+
+  /**
+   * Backfill all projects that have observations in SQLite but may be missing from Chroma.
+   * Uses a single shared ChromaSync('claude-mem') instance and Chroma connection.
+   * Per-project scoping is passed as a parameter to ensureBackfilled(), avoiding
+   * instance state mutation. All documents land in the cm__claude-mem collection
+   * with project scoped via metadata, matching how DatabaseManager and SearchManager operate.
+   * Designed to be called fire-and-forget on worker startup.
+   *
+   * Concurrency: processes at most BACKFILL_CONCURRENCY_LIMIT projects in parallel
+   * to bound CPU and memory pressure from concurrent Chroma embedding operations.
+   * A re-entrant guard prevents overlapping backfill runs from accumulating.
+   */
   static async backfillAllProjects(storeOverride?: SessionStore): Promise<void> {
+    if (ChromaSync.backfillInProgress) {
+      logger.info('CHROMA_SYNC', 'Backfill already in progress, skipping duplicate run');
+      return;
+    }
+
+    ChromaSync.backfillInProgress = true;
     const db = storeOverride ?? new SessionStore();
     const sync = new ChromaSync('claude-mem');
     try {
@@ -839,19 +863,34 @@ export class ChromaSync {
         logger.info('CHROMA_SYNC', 'Bootstrap complete — incremental backfills will use watermarks');
       }
 
-      for (const { project } of projects) {
-        try {
-          await sync.ensureBackfilled(project, db);
-        } catch (error) {
-          if (error instanceof Error) {
-            logger.error('CHROMA_SYNC', `Backfill failed for project: ${project}`, {}, error);
-          } else {
-            logger.error('CHROMA_SYNC', `Backfill failed for project: ${project}`, { error: String(error) });
+      // Process projects in chunks of BACKFILL_CONCURRENCY_LIMIT to bound
+      // CPU/memory pressure from concurrent Chroma embedding operations.
+      // Each chunk runs its projects in parallel; we wait for the entire chunk
+      // before starting the next one. Simple and predictable — no semaphore
+      // overhead, no unbounded fan-out.
+      const concurrency = ChromaSync.BACKFILL_CONCURRENCY_LIMIT;
+      for (let i = 0; i < projects.length; i += concurrency) {
+        const chunk = projects.slice(i, i + concurrency);
+        const chunkResults = await Promise.allSettled(
+          chunk.map(({ project }) => sync.ensureBackfilled(project, db))
+        );
+
+        for (let j = 0; j < chunkResults.length; j++) {
+          const result = chunkResults[j];
+          if (result.status === 'rejected') {
+            const project = chunk[j].project;
+            const error = result.reason;
+            if (error instanceof Error) {
+              logger.error('CHROMA_SYNC', `Backfill failed for project: ${project}`, {}, error);
+            } else {
+              logger.error('CHROMA_SYNC', `Backfill failed for project: ${project}`, { error: String(error) });
+            }
+            // Continue to next chunk — don't let one failure stop others
           }
-          // Continue to next project — don't let one failure stop others
         }
       }
     } finally {
+      ChromaSync.backfillInProgress = false;
       await sync.close();
       if (!storeOverride) {
         db.close();
