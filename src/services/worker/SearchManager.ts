@@ -413,10 +413,19 @@ export class SearchManager {
     };
   }
 
+  private parseNumericAnchor(anchor: unknown): number | null {
+    if (typeof anchor === 'number') return anchor;
+    if (typeof anchor === 'string' && /^\d+$/.test(anchor.trim())) {
+      return Number(anchor.trim());
+    }
+    return null;
+  }
+
   async timeline(args: any): Promise<any> {
     const { anchor, query, depth_before, depth_after, project } = args;
     const depthBefore = depth_before != null ? Number(depth_before) : 10;
     const depthAfter = depth_after != null ? Number(depth_after) : 10;
+    const anchorAsNumber = this.parseNumericAnchor(anchor);
     const cwd = process.cwd();
 
     if (!anchor && !query) {
@@ -484,20 +493,20 @@ export class SearchManager {
       timelineData = this.sessionStore.getTimelineAroundObservation(topResult.id, topResult.created_at_epoch, depthBefore, depthAfter, project);
     }
     // MODE 2: Anchor-based timeline
-    else if (typeof anchor === 'number') {
-      const obs = this.sessionStore.getObservationById(anchor);
+    else if (anchorAsNumber !== null) {
+      const obs = this.sessionStore.getObservationById(anchorAsNumber);
       if (!obs) {
         return {
           content: [{
             type: 'text' as const,
-            text: `Observation #${anchor} not found`
+            text: `Observation #${anchorAsNumber} not found`
           }],
           isError: true
         };
       }
-      anchorId = anchor;
+      anchorId = anchorAsNumber;
       anchorEpoch = obs.created_at_epoch;
-      timelineData = this.sessionStore.getTimelineAroundObservation(anchor, anchorEpoch, depthBefore, depthAfter, project);
+      timelineData = this.sessionStore.getTimelineAroundObservation(anchorAsNumber, anchorEpoch, depthBefore, depthAfter, project);
     } else if (typeof anchor === 'string') {
       if (anchor.startsWith('S') || anchor.startsWith('#S')) {
         const sessionId = anchor.replace(/^#?S/, '');

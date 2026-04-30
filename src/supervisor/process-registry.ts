@@ -509,11 +509,12 @@ export function spawnSdkProcess(
     filteredArgs.push(arg);
   }
 
+  const isWin = process.platform === 'win32';
   const child = useCmdWrapper
     ? spawn('cmd.exe', ['/d', '/c', options.command, ...filteredArgs], {
         cwd: options.cwd,
         env,
-        detached: true,
+        detached: !isWin,
         stdio: ['pipe', 'pipe', 'pipe'],
         signal: options.signal,
         windowsHide: true,
@@ -521,7 +522,7 @@ export function spawnSdkProcess(
     : spawn(options.command, filteredArgs, {
         cwd: options.cwd,
         env,
-        detached: true,
+        detached: !isWin,
         stdio: ['pipe', 'pipe', 'pipe'],
         signal: options.signal,
         windowsHide: true,

@@ -243,7 +243,11 @@ class Logger {
           ? `\n${data.message}\n${data.stack}`
           : ` ${data.message}`;
       } else if (this.getLevel() === LogLevel.DEBUG && typeof data === 'object') {
-        dataStr = '\n' + JSON.stringify(data, null, 2);
+        try {
+          dataStr = '\n' + JSON.stringify(data, null, 2);
+        } catch {
+          dataStr = ' ' + this.formatData(data);
+        }
       } else {
         dataStr = ' ' + this.formatData(data);
       }

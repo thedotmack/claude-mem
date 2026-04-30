@@ -4,6 +4,32 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [12.4.9] - 2026-04-30
+
+Patches in 7 critical fixes from PR #2219 (integration/critical-fixes-april):
+
+- #2211 build/bundle drift — remove stale macOS binary + regen artifacts (closes #2158, #2200, #2154)
+- #2204 strip privacy tags before summarization (closes #2149)
+- #2205 preserve relevance order in semantic search (closes #2153)
+- #2208 restore Windows spawn (PR #751 re-apply) + Windows CI
+- #2209 Codex transcript ingestion + queue self-deadlock on Windows (closes #2192)
+- #2206 isolate SDK boundary — close 6 issues at 3 call sites
+- #2210 standalone batch — npm peer deps, marketplace self-heal, cache prune
+
+## [12.4.8] - 2026-04-28
+
+## Bug Fixes
+
+- **timeline tool:** Coerce stringified numeric anchors (e.g. `"123"`) into the observation-ID dispatch path so they no longer fall through to ISO-timestamp parsing and return wrong-epoch windows. The HTTP layer always sends anchor as a string, so this fixes anchor lookups via MCP and HTTP across the board. (#2176)
+
+## Tests
+
+- Added a 7-case regression suite covering JS-number anchors, stringified-number anchors (incl. whitespace-padded), session-ID anchors (`S<n>`), ISO-timestamp anchors, garbage anchors, and explicit numeric-not-found behavior. The suite runs against a real in-memory SQLite `SessionStore` to exercise the full dispatch path.
+
+## Refactors
+
+- Extracted `parseNumericAnchor` helper in `SearchManager` to centralize anchor coercion across timeline handlers.
+
 ## [12.4.7] - 2026-04-26
 
 ## Cynical deletion + review fixes

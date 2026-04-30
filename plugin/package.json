@@ -1,6 +1,6 @@
 {
   "name": "claude-mem-plugin",
-  "version": "12.4.7",
+  "version": "12.4.9",
   "private": true,
   "description": "Runtime dependencies for claude-mem bundled hooks",
   "type": "module",
@@ -31,6 +31,9 @@
     "@tree-sitter-grammars/tree-sitter-yaml": "^0.7.1",
     "@derekstride/tree-sitter-sql": "^0.3.11",
     "@tree-sitter-grammars/tree-sitter-markdown": "^0.3.2"
+  },
+  "overrides": {
+    "tree-sitter": "^0.25.0"
   },
   "engines": {
     "node": ">=18.0.0",

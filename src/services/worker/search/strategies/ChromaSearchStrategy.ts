@@ -93,8 +93,7 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
     let sessions: SessionSummarySearchResult[] = [];
     let prompts: UserPromptSearchResult[] = [];
 
-    const sqlOrderBy: 'date_desc' | 'date_asc' | undefined =
-      options.orderBy === 'relevance' ? undefined : options.orderBy;
+    const sqlOrderBy = options.orderBy;
 
     if (categorized.obsIds.length > 0) {
       const obsOptions = { type: options.obsType, concepts: options.concepts, files: options.files, orderBy: sqlOrderBy, limit: options.limit, project: options.project };

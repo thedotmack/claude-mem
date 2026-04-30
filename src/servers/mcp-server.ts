@@ -21,6 +21,7 @@ import { parseFile, formatFoldedView, unfoldSymbol } from '../services/smart-fil
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 let mcpServerDirResolutionFailed = false;
@@ -593,11 +594,39 @@ function cleanup(reason: string = 'shutdown') {
 process.on('SIGTERM', cleanup);
 process.on('SIGINT', cleanup);
 
+function checkMarketplaceMarker(): void {
+  try {
+    const home = homedir();
+    const marketplaceCandidates = [
+      resolve(home, '.claude', 'plugins', 'marketplaces', 'thedotmack'),
+      resolve(home, '.config', 'claude', 'plugins', 'marketplaces', 'thedotmack'),
+    ];
+    const present = marketplaceCandidates.some(p => p && existsSync(p));
+    const cacheCandidates = [
+      resolve(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem'),
+      resolve(home, '.config', 'claude', 'plugins', 'cache', 'thedotmack', 'claude-mem'),
+    ];
+    const cachePresent = cacheCandidates.some(p => p && existsSync(p));
+    const cacheRoot = cacheCandidates[0];
+
+    if (!present && cachePresent) {
+      logger.error(
+        'SYSTEM',
+        'claude-mem MCP started but no marketplace directory was found at ~/.claude/plugins/marketplaces/thedotmack or the XDG equivalent. The IDE plugin loader needs that directory to fire claude-mem hooks (SessionStart, PostToolUse, Stop, etc.). Without it, MCP search will work but no new memories will be captured. To self-heal, run: node ~/.claude/plugins/cache/thedotmack/claude-mem/*/scripts/smart-install.js (or reinstall the plugin from the marketplace).',
+        { marketplaceCandidates, cacheRoot }
+      );
+    }
+  } catch {
+  }
+}
+
 async function main() {
   const transport = new StdioServerTransport();
   attachStdioLifecycle();
   await server.connect(transport);
   logger.info('SYSTEM', 'Claude-mem search server started');
+
+  checkMarketplaceMarker();
 
   startParentHeartbeat();
 

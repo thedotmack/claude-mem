@@ -611,8 +611,30 @@ export function spawnDaemon(
     return undefined;
   }
 
+  if (process.platform === 'win32') {
+    const psScript = `Start-Process -FilePath '${runtimePath.replace(/'/g, "''")}' -ArgumentList @('${scriptPath.replace(/'/g, "''")}','--daemon') -WindowStyle Hidden`;
+    const encodedCommand = Buffer.from(psScript, 'utf16le').toString('base64');
+
+    try {
+      execSync(`powershell -NoProfile -EncodedCommand ${encodedCommand}`, {
+        stdio: 'ignore',
+        windowsHide: true,
+        env
+      });
+      return 0;
+    } catch (error: unknown) {
+      logger.error(
+        'SYSTEM',
+        'Failed to spawn worker daemon on Windows',
+        { runtimePath },
+        error instanceof Error ? error : new Error(String(error))
+      );
+      return undefined;
+    }
+  }
+
   const setsidPath = '/usr/bin/setsid';
-  const useSetsid = process.platform !== 'win32' && existsSync(setsidPath);
+  const useSetsid = existsSync(setsidPath);
 
   const execPath = useSetsid ? setsidPath : runtimePath;
   const args = useSetsid
@@ -622,7 +644,6 @@ export function spawnDaemon(
   const child = spawn(execPath, args, {
     detached: true,
     stdio: 'ignore',
-    windowsHide: true,
     env
   });
 
