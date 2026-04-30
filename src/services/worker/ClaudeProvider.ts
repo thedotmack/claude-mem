@@ -1,5 +1,4 @@
 
-import { execSync } from 'child_process';
 import { homedir } from 'os';
 import path from 'path';
 import { DatabaseManager } from './DatabaseManager.js';
@@ -9,6 +8,7 @@ import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildConti
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, OBSERVER_SESSIONS_DIR, ensureDir } from '../../shared/paths.js';
 import { buildIsolatedEnv, getAuthMethodDescription } from '../../shared/EnvManager.js';
+import { findClaudeExecutable } from '../../shared/find-claude-executable.js';
 import type { ActiveSession, SDKUserMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import { processAgentResponse, type WorkerRef } from './agents/index.js';
@@ -41,7 +41,8 @@ export class ClaudeProvider {
   async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
     const cwdTracker = { lastCwd: undefined as string | undefined };
 
-    const claudePath = this.findClaudeExecutable();
+    // Find and validate Claude executable (shared utility, closes #2222)
+    const claudePath = findClaudeExecutable('SDK');
 
     const modelId = session.modelOverride || this.getModelId();
     const disallowedTools = [
@@ -331,44 +332,6 @@ export class ClaudeProvider {
         };
       }
     }
-  }
-
-  private findClaudeExecutable(): string {
-    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-
-    if (settings.CLAUDE_CODE_PATH) {
-      const { existsSync } = require('fs');
-      if (!existsSync(settings.CLAUDE_CODE_PATH)) {
-        throw new Error(`CLAUDE_CODE_PATH is set to "${settings.CLAUDE_CODE_PATH}" but the file does not exist.`);
-      }
-      return settings.CLAUDE_CODE_PATH;
-    }
-
-    if (process.platform === 'win32') {
-      try {
-        execSync('where claude.cmd', { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
-        return 'claude.cmd'; 
-      } catch {
-        // Fall through to generic error
-      }
-    }
-
-    try {
-      const claudePath = execSync(
-        process.platform === 'win32' ? 'where claude' : 'which claude',
-        { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }
-      ).trim().split('\n')[0].trim();
-
-      if (claudePath) return claudePath;
-    } catch (error) {
-      if (error instanceof Error) {
-        logger.debug('SDK', 'Claude executable auto-detection failed', {}, error);
-      } else {
-        logger.debug('SDK', 'Claude executable auto-detection failed with non-Error', {}, new Error(String(error)));
-      }
-    }
-
-    throw new Error('Claude executable not found. Please either:\n1. Add "claude" to your system PATH, or\n2. Set CLAUDE_CODE_PATH in ~/.claude-mem/settings.json');
   }
 
   private getModelId(): string {
