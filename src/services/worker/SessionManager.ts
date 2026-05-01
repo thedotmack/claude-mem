@@ -206,18 +206,13 @@ export class SessionManager {
         });
       }
     } catch (error) {
-      if (error instanceof Error) {
-        logger.error('SESSION', 'Failed to persist observation to DB', {
-          sessionId: sessionDbId,
-          tool: data.tool_name
-        }, error);
-      } else {
-        logger.error('SESSION', 'Failed to persist observation to DB with non-Error', {
-          sessionId: sessionDbId,
-          tool: data.tool_name
-        }, new Error(String(error)));
-      }
-      throw error; 
+      const normalized = error instanceof Error ? error : new Error(String(error));
+      logger.info('QUEUE', 'enqueue failed; observation dropped', {
+        sessionId: sessionDbId,
+        tool: data.tool_name,
+        err: normalized.message
+      });
+      throw normalized;
     }
 
     const emitter = this.sessionQueues.get(sessionDbId);

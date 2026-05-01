@@ -59,7 +59,14 @@ export async function processAgentResponse(
   const sessionStore = dbManager.getSessionStore();
 
   if (!session.memorySessionId) {
-    throw new Error('Cannot store observations: memorySessionId not yet captured');
+    logger.warn('SDK', 'memorySessionId not yet captured; re-pending in-flight messages', {
+      sessionId: session.sessionDbId
+    });
+    for (const messageId of session.processingMessageIds) {
+      sessionManager.markMessageFailed(session.sessionDbId, messageId);
+    }
+    session.processingMessageIds = [];
+    return;
   }
 
   sessionStore.ensureMemorySessionIdRegistered(session.sessionDbId, session.memorySessionId);
