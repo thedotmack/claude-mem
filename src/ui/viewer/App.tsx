@@ -135,7 +135,7 @@ export function App() {
       {!welcomeDismissed && (
         <WelcomeCard
           onDismiss={() => setWelcomeDismissed(true)}
-          observationCount={allObservations.length}
+          observationCount={stats?.database?.observations ?? 0}
           projectCount={projects.length}
           isConnected={isConnected}
           firstObservationAt={stats?.database?.firstObservationAt ?? null}
