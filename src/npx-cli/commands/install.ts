@@ -38,6 +38,29 @@ async function runTasks(tasks: TaskDescriptor[]): Promise<void> {
   }
 }
 
+async function bufferConsole<T>(fn: () => Promise<T>): Promise<{ result: T; output: string }> {
+  if (!isInteractive) {
+    const result = await fn();
+    return { result, output: '' };
+  }
+  let buffer = '';
+  const append = (...args: unknown[]) => {
+    buffer += args.map((a) => (typeof a === 'string' ? a : String(a))).join(' ') + '\n';
+  };
+  const orig = { log: console.log, error: console.error, warn: console.warn };
+  console.log = append;
+  console.error = append;
+  console.warn = append;
+  try {
+    const result = await fn();
+    return { result, output: buffer };
+  } finally {
+    console.log = orig.log;
+    console.error = orig.error;
+    console.warn = orig.warn;
+  }
+}
+
 const log = {
   info: (msg: string) => isInteractive ? p.log.info(msg) : console.log(`  ${msg}`),
   success: (msg: string) => isInteractive ? p.log.success(msg) : console.log(`  ${msg}`),
@@ -110,125 +133,188 @@ function enablePluginInClaudeSettings(): void {
   writeJsonFileAtomic(claudeSettingsPath(), settings);
 }
 
+function makeIDETask(ideId: string, failedIDEs: string[], pendingErrors: string[]): TaskDescriptor | null {
+  const recordFailure = (label: string, output: string) => {
+    failedIDEs.push(ideId);
+    if (output && output.trim().length > 0) {
+      pendingErrors.push(`${label}\n${output.trim()}`);
+    }
+  };
+
+  switch (ideId) {
+    case 'claude-code': {
+      return {
+        title: 'Claude Code: registering plugin',
+        task: async () => `Claude Code: plugin registered ${pc.green('OK')}`,
+      };
+    }
+
+    case 'cursor': {
+      return {
+        title: 'Cursor: installing hooks + MCP',
+        task: async (message) => {
+          message('Loading Cursor installer…');
+          const { installCursorHooks, configureCursorMcp } = await import('../../services/integrations/CursorHooksInstaller.js');
+          message('Installing Cursor hooks…');
+          const { result: cursorResult, output: hooksOutput } = await bufferConsole(() => installCursorHooks('user'));
+          if (cursorResult !== 0) {
+            recordFailure('Cursor: hook installation failed', hooksOutput);
+            return `Cursor: hook installation failed ${pc.red('FAIL')}`;
+          }
+          message('Configuring Cursor MCP…');
+          const { result: mcpResult } = await bufferConsole(async () => configureCursorMcp('user'));
+          if (mcpResult === 0) {
+            return `Cursor: hooks + MCP installed ${pc.green('OK')}`;
+          }
+          return `Cursor: hooks installed; MCP setup failed — run \`npx claude-mem cursor mcp\` ${pc.yellow('!')}`;
+        },
+      };
+    }
+
+    case 'gemini-cli': {
+      return {
+        title: 'Gemini CLI: installing hooks',
+        task: async (message) => {
+          message('Loading Gemini CLI installer…');
+          const { installGeminiCliHooks } = await import('../../services/integrations/GeminiCliHooksInstaller.js');
+          message('Installing Gemini CLI hooks…');
+          const { result, output } = await bufferConsole(() => installGeminiCliHooks());
+          if (result !== 0) {
+            recordFailure('Gemini CLI: hook installation failed', output);
+            return `Gemini CLI: hook installation failed ${pc.red('FAIL')}`;
+          }
+          return `Gemini CLI: hooks installed ${pc.green('OK')}`;
+        },
+      };
+    }
+
+    case 'opencode': {
+      return {
+        title: 'OpenCode: installing plugin',
+        task: async (message) => {
+          message('Loading OpenCode installer…');
+          const { installOpenCodeIntegration } = await import('../../services/integrations/OpenCodeInstaller.js');
+          message('Installing OpenCode plugin…');
+          const { result, output } = await bufferConsole(() => installOpenCodeIntegration());
+          if (result !== 0) {
+            recordFailure('OpenCode: plugin installation failed', output);
+            return `OpenCode: plugin installation failed ${pc.red('FAIL')}`;
+          }
+          return `OpenCode: plugin installed ${pc.green('OK')}`;
+        },
+      };
+    }
+
+    case 'windsurf': {
+      return {
+        title: 'Windsurf: installing hooks',
+        task: async (message) => {
+          message('Loading Windsurf installer…');
+          const { installWindsurfHooks } = await import('../../services/integrations/WindsurfHooksInstaller.js');
+          message('Installing Windsurf hooks…');
+          const { result, output } = await bufferConsole(() => installWindsurfHooks());
+          if (result !== 0) {
+            recordFailure('Windsurf: hook installation failed', output);
+            return `Windsurf: hook installation failed ${pc.red('FAIL')}`;
+          }
+          return `Windsurf: hooks installed ${pc.green('OK')}`;
+        },
+      };
+    }
+
+    case 'openclaw': {
+      return {
+        title: 'OpenClaw: installing plugin',
+        task: async (message) => {
+          message('Loading OpenClaw installer…');
+          const { installOpenClawIntegration } = await import('../../services/integrations/OpenClawInstaller.js');
+          message('Copying plugin files…');
+          const { result, output } = await bufferConsole(() => installOpenClawIntegration());
+          if (result !== 0) {
+            recordFailure('OpenClaw: plugin installation failed', output);
+            return `OpenClaw: plugin installation failed ${pc.red('FAIL')}`;
+          }
+          return `OpenClaw: plugin installed ${pc.green('OK')}`;
+        },
+      };
+    }
+
+    case 'codex-cli': {
+      return {
+        title: 'Codex CLI: configuring transcript watching',
+        task: async (message) => {
+          message('Loading Codex CLI installer…');
+          const { installCodexCli } = await import('../../services/integrations/CodexCliInstaller.js');
+          message('Configuring transcript watching…');
+          const { result, output } = await bufferConsole(() => installCodexCli());
+          if (result !== 0) {
+            recordFailure('Codex CLI: integration setup failed', output);
+            return `Codex CLI: integration setup failed ${pc.red('FAIL')}`;
+          }
+          return `Codex CLI: transcript watching configured ${pc.green('OK')}`;
+        },
+      };
+    }
+
+    case 'copilot-cli':
+    case 'antigravity':
+    case 'goose':
+    case 'crush':
+    case 'roo-code':
+    case 'warp': {
+      const allIDEs = detectInstalledIDEs();
+      const ideInfo = allIDEs.find((i) => i.id === ideId);
+      const ideLabel = ideInfo?.label ?? ideId;
+      return {
+        title: `${ideLabel}: installing MCP integration`,
+        task: async (message) => {
+          message('Loading MCP installer…');
+          const { MCP_IDE_INSTALLERS } = await import('../../services/integrations/McpIntegrations.js');
+          const mcpInstaller = MCP_IDE_INSTALLERS[ideId];
+          if (!mcpInstaller) {
+            return `${ideLabel}: MCP installer not found ${pc.yellow('!')}`;
+          }
+          message(`Configuring ${ideLabel} MCP…`);
+          const { result, output } = await bufferConsole(() => mcpInstaller());
+          if (result !== 0) {
+            recordFailure(`${ideLabel}: MCP integration failed`, output);
+            return `${ideLabel}: MCP integration failed ${pc.red('FAIL')}`;
+          }
+          return `${ideLabel}: MCP integration installed ${pc.green('OK')}`;
+        },
+      };
+    }
+
+    default: {
+      const allIDEs = detectInstalledIDEs();
+      const ide = allIDEs.find((i) => i.id === ideId);
+      if (ide && !ide.supported) {
+        return {
+          title: `${ide.label}: skipping`,
+          task: async () => `${ide.label}: support coming soon ${pc.yellow('!')}`,
+        };
+      }
+      return null;
+    }
+  }
+}
+
 async function setupIDEs(selectedIDEs: string[]): Promise<string[]> {
   const failedIDEs: string[] = [];
+  const pendingErrors: string[] = [];
 
+  const tasks: TaskDescriptor[] = [];
   for (const ideId of selectedIDEs) {
-    switch (ideId) {
-      case 'claude-code': {
-        log.success('Claude Code: plugin registered (cache + settings written by npx).');
-        break;
-      }
+    const taskDescriptor = makeIDETask(ideId, failedIDEs, pendingErrors);
+    if (taskDescriptor) tasks.push(taskDescriptor);
+  }
 
-      case 'cursor': {
-        const { installCursorHooks, configureCursorMcp } = await import('../../services/integrations/CursorHooksInstaller.js');
-        const cursorResult = await installCursorHooks('user');
-        if (cursorResult === 0) {
-          const mcpResult = configureCursorMcp('user');
-          if (mcpResult === 0) {
-            log.success('Cursor: hooks + MCP installed.');
-          } else {
-            log.success('Cursor: hooks installed (MCP setup failed — run `npx claude-mem cursor mcp` to retry).');
-          }
-        } else {
-          log.error('Cursor: hook installation failed.');
-          failedIDEs.push(ideId);
-        }
-        break;
-      }
+  if (tasks.length > 0) {
+    await runTasks(tasks);
+  }
 
-      case 'gemini-cli': {
-        const { installGeminiCliHooks } = await import('../../services/integrations/GeminiCliHooksInstaller.js');
-        const geminiResult = await installGeminiCliHooks();
-        if (geminiResult === 0) {
-          log.success('Gemini CLI: hooks installed.');
-        } else {
-          log.error('Gemini CLI: hook installation failed.');
-          failedIDEs.push(ideId);
-        }
-        break;
-      }
-
-      case 'opencode': {
-        const { installOpenCodeIntegration } = await import('../../services/integrations/OpenCodeInstaller.js');
-        const openCodeResult = await installOpenCodeIntegration();
-        if (openCodeResult === 0) {
-          log.success('OpenCode: plugin installed.');
-        } else {
-          log.error('OpenCode: plugin installation failed.');
-          failedIDEs.push(ideId);
-        }
-        break;
-      }
-
-      case 'windsurf': {
-        const { installWindsurfHooks } = await import('../../services/integrations/WindsurfHooksInstaller.js');
-        const windsurfResult = await installWindsurfHooks();
-        if (windsurfResult === 0) {
-          log.success('Windsurf: hooks installed.');
-        } else {
-          log.error('Windsurf: hook installation failed.');
-          failedIDEs.push(ideId);
-        }
-        break;
-      }
-
-      case 'openclaw': {
-        const { installOpenClawIntegration } = await import('../../services/integrations/OpenClawInstaller.js');
-        const openClawResult = await installOpenClawIntegration();
-        if (openClawResult === 0) {
-          log.success('OpenClaw: plugin installed.');
-        } else {
-          log.error('OpenClaw: plugin installation failed.');
-          failedIDEs.push(ideId);
-        }
-        break;
-      }
-
-      case 'codex-cli': {
-        const { installCodexCli } = await import('../../services/integrations/CodexCliInstaller.js');
-        const codexResult = await installCodexCli();
-        if (codexResult === 0) {
-          log.success('Codex CLI: transcript watching configured.');
-        } else {
-          log.error('Codex CLI: integration setup failed.');
-          failedIDEs.push(ideId);
-        }
-        break;
-      }
-
-      case 'copilot-cli':
-      case 'antigravity':
-      case 'goose':
-      case 'crush':
-      case 'roo-code':
-      case 'warp': {
-        const { MCP_IDE_INSTALLERS } = await import('../../services/integrations/McpIntegrations.js');
-        const mcpInstaller = MCP_IDE_INSTALLERS[ideId];
-        if (mcpInstaller) {
-          const mcpResult = await mcpInstaller();
-          const allIDEs = detectInstalledIDEs();
-          const ideInfo = allIDEs.find((i) => i.id === ideId);
-          const ideLabel = ideInfo?.label ?? ideId;
-          if (mcpResult === 0) {
-            log.success(`${ideLabel}: MCP integration installed.`);
-          } else {
-            log.error(`${ideLabel}: MCP integration failed.`);
-            failedIDEs.push(ideId);
-          }
-        }
-        break;
-      }
-
-      default: {
-        const allIDEs = detectInstalledIDEs();
-        const ide = allIDEs.find((i) => i.id === ideId);
-        if (ide && !ide.supported) {
-          log.warn(`Support for ${ide.label} coming soon.`);
-        }
-        break;
-      }
-    }
+  for (const errorBlock of pendingErrors) {
+    log.warn(errorBlock);
   }
 
   return failedIDEs;
@@ -714,13 +800,26 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
   {
     if (needsMarketplace) {
       const installPort = getSetting('CLAUDE_MEM_WORKER_PORT');
+      const shutdownSpinner = isInteractive ? p.spinner() : null;
+      shutdownSpinner?.start('Stopping running worker (so we can overwrite cleanly)…');
       try {
         const result = await shutdownWorkerAndWait(installPort, 10000);
-        if (result.workerWasRunning) {
+        if (shutdownSpinner) {
+          shutdownSpinner.stop(
+            result.workerWasRunning
+              ? 'Stopped running worker before overwrite.'
+              : 'No worker running — proceeding.',
+          );
+        } else if (result.workerWasRunning) {
           log.info('Stopped running worker before overwrite.');
         }
       } catch (error: unknown) {
-        console.warn('[install] Pre-overwrite worker shutdown failed:', error instanceof Error ? error.message : String(error));
+        const message = error instanceof Error ? error.message : String(error);
+        if (shutdownSpinner) {
+          shutdownSpinner.stop(`Pre-overwrite worker shutdown failed: ${message}`, 1);
+        } else {
+          console.warn('[install] Pre-overwrite worker shutdown failed:', message);
+        }
       }
     }
 
@@ -844,6 +943,8 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
 
   let actualPort: number | string = workerPort;
   let workerReady = false;
+  const healthSpinner = isInteractive ? p.spinner() : null;
+  healthSpinner?.start(`Verifying worker on port ${workerPort}…`);
   try {
     const healthResponse = await fetch(`http://127.0.0.1:${workerPort}/api/health`, {
       signal: AbortSignal.timeout(3000),
@@ -859,8 +960,13 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
         // Health endpoint returned non-JSON — keep using the requested port.
       }
     }
+    healthSpinner?.stop(
+      workerReady
+        ? `Worker ready at http://localhost:${actualPort}`
+        : `Worker reachable but not ready on port ${workerPort}`,
+    );
   } catch {
-    // Health probe failed — worker may still be starting.
+    healthSpinner?.stop(`Worker not yet responding on port ${workerPort} (still starting)`);
   }
 
   const nextSteps = (workerStarted || workerReady)
