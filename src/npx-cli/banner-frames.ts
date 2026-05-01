@@ -1,9 +1,14 @@
+// @strip-comments-keep — auto-generated, do not edit by hand.
+// Source: scripts/generate-banner-frames.mjs (webm video → ASCII via luminance ramp).
+// Frames are gzip-deflated, base64-encoded, separated by \x01.
 
 export interface BannerData {
+  /** Base64-encoded raw deflate of all frames joined by \x01 */
   compressed: string;
   frameCount: number;
   width: number;
   height: number;
+  /** Milliseconds per frame */
   frameDelay: number;
 }
 
