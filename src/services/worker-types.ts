@@ -34,6 +34,7 @@ export interface ActiveSession {
   lastSummaryStored?: boolean;
   pendingAgentId?: string | null;
   pendingAgentType?: string | null;
+  abortReason?: 'idle' | 'shutdown' | 'overflow' | 'restart-guard' | null;
 }
 
 export interface PendingMessage {

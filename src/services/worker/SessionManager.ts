@@ -277,6 +277,7 @@ export class SessionManager {
 
     const sessionDuration = Date.now() - session.startTime;
 
+    session.abortReason = 'shutdown';
     session.abortController.abort();
 
     if (session.generatorPromise) {
@@ -395,6 +396,7 @@ export class SessionManager {
       onIdleTimeout: () => {
         logger.info('SESSION', 'Triggering abort due to idle timeout to kill subprocess', { sessionDbId });
         session.idleTimedOut = true;
+        session.abortReason = 'idle';
         session.abortController.abort();
       }
     })) {

@@ -155,6 +155,7 @@ export class ClaudeProvider {
               textContent.includes('context window')) {
             logger.error('SDK', 'Context overflow detected - terminating session and forcing fresh start');
             this.resetSessionForFreshStart(session);
+            session.abortReason = 'overflow';
             session.abortController.abort();
             return;
           }

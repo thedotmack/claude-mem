@@ -166,10 +166,14 @@ export class SessionRoutes extends BaseRouteHandler {
         }
 
         const sessionDbId = session.sessionDbId;
-        const wasAborted = session.abortController.signal.aborted;
+        const reason = session.abortReason ?? null;
+        session.abortReason = null;  // consume the reason
+
+        const wasAborted = reason !== null || session.abortController.signal.aborted;
+        const skipRestart = reason === 'shutdown' || reason === 'restart-guard';
 
         if (wasAborted) {
-          logger.info('SESSION', `Generator aborted`, { sessionId: sessionDbId });
+          logger.info('SESSION', `Generator aborted`, { sessionId: sessionDbId, reason });
 
           const inflightIds = session.processingMessageIds.slice();
           session.processingMessageIds = [];
@@ -189,7 +193,7 @@ export class SessionRoutes extends BaseRouteHandler {
         session.generatorPromise = null;
         session.currentProvider = null;
 
-        if (!wasAborted) {
+        if (!skipRestart) {
           const pendingStore = this.sessionManager.getPendingMessageStore();
 
           let pendingCount: number;
@@ -198,6 +202,7 @@ export class SessionRoutes extends BaseRouteHandler {
           } catch (e) {
             const normalizedRecoveryError = e instanceof Error ? e : new Error(String(e));
             logger.error('HTTP', 'Error during recovery check, aborting to prevent leaks', { sessionId: sessionDbId }, normalizedRecoveryError);
+            session.abortReason = 'restart-guard';
             session.abortController.abort();
             return;
           }
@@ -218,6 +223,7 @@ export class SessionRoutes extends BaseRouteHandler {
                 maxConsecutiveFailures: session.restartGuard.maxConsecutiveFailures,
                 action: 'Generator will NOT restart. Pending messages drained to abandoned. Check logs for root cause.'
               });
+              session.abortReason = 'restart-guard';
               session.abortController.abort();
               try {
                 const drained = pendingStore.transitionMessagesTo('abandoned', { sessionDbId });
