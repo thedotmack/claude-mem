@@ -12,10 +12,10 @@ The worker service is a long-running HTTP API built with Express.js and managed 
 - **Technology**: Express.js HTTP server
 - **Runtime**: Bun (auto-installed if missing)
 - **Process Manager**: Native Bun process management via ProcessManager
-- **Port**: Fixed port 37777 (configurable via `CLAUDE_MEM_WORKER_PORT`)
+- **Port**: Per-user default `37700 + (uid % 100)` (override with `CLAUDE_MEM_WORKER_PORT`). The currently running port is also written to `~/.claude-mem/.worker.port`.
 - **Location**: `src/services/worker-service.ts`
 - **Built Output**: `plugin/scripts/worker-service.cjs`
-- **Model**: Configurable via `CLAUDE_MEM_MODEL` environment variable (default: sonnet)
+- **Model**: Configurable via `CLAUDE_MEM_MODEL` (default: `claude-haiku-4-5-20251001`)
 
 ## REST API Endpoints
 
@@ -640,26 +640,26 @@ The worker service routes observations to the Claude Agent SDK for AI-powered pr
 
 ### Model Configuration
 
-Set the AI model used for processing via environment variable:
+Set the Claude model used for compression via environment variable or `~/.claude-mem/settings.json`:
 
 ```bash
-export CLAUDE_MEM_MODEL=sonnet
+export CLAUDE_MEM_MODEL=claude-haiku-4-5-20251001
 ```
 
-Available shorthand models (forward to latest version):
-- `haiku` - Fast, cost-efficient
-- `sonnet` - Balanced (default)
-- `opus` - Most capable
+Allowed values:
+- `claude-haiku-4-5-20251001` - default, fast and cheap (best for compression)
+- `claude-sonnet-4-6` - balanced quality and cost
+- `claude-opus-4-7` - highest quality, most expensive
 
 ## Port Allocation
 
-The worker uses a fixed port (37777 by default) for consistent communication:
+The worker uses a per-user default port so different OS users on the same machine never collide:
 
-- **Default**: Port 37777
-- **Override**: Set `CLAUDE_MEM_WORKER_PORT` environment variable
-- **Port File**: `${CLAUDE_PLUGIN_ROOT}/data/worker.port` tracks current port
+- **Default**: `37700 + (uid % 100)` (set in `src/shared/SettingsDefaultsManager.ts`)
+- **Override**: Set `CLAUDE_MEM_WORKER_PORT` (env or `~/.claude-mem/settings.json`)
+- **Port File**: `~/.claude-mem/.worker.port` records the currently running port
 
-If port 37777 is in use, the worker will fail to start. Set a custom port via environment variable.
+If the chosen port is occupied, the worker fails to start — pin a different port via `CLAUDE_MEM_WORKER_PORT` and restart.
 
 ## Data Storage
 

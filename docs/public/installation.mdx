@@ -16,10 +16,12 @@ npx claude-mem install
 ```
 
 The interactive installer will:
-- Detect your installed IDEs (Claude Code, Cursor, Gemini CLI, Windsurf, etc.)
-- Copy plugin files to the correct locations
-- Register the plugin with Claude Code
-- Install all dependencies (including Bun and uv)
+- Run a runtime check (auto-installs Bun and uv if missing)
+- Detect your installed IDEs (Claude Code, Cursor, Gemini CLI, Windsurf, OpenCode, Codex CLI) and let you multi-select which ones to wire up
+- Offer to install Claude Code if it isn't found
+- Prompt for an LLM provider (Claude Code auth, Gemini API key, or OpenRouter API key)
+- Prompt for the Claude model used to compress observations (Haiku / Sonnet / Opus) when the Claude provider is selected
+- Copy plugin files into the marketplace directory and register the plugin
 - Auto-start the worker service
 
 ### Option 2: Plugin Marketplace
@@ -39,10 +41,11 @@ Both methods will automatically configure hooks and start the worker service. St
 
 ## System Requirements
 
-- **Node.js**: 18.0.0 or higher
-- **Claude Code**: Latest version with plugin support
-- **Bun**: JavaScript runtime and process manager (auto-installed if missing)
-- **SQLite 3**: For persistent storage (bundled)
+- **Node.js**: 20.0.0 or higher
+- **Bun** ≥ 1.0 (auto-installed by `npx claude-mem install` if missing)
+- **uv** (auto-installed if missing — provides Python for Chroma's embedding service)
+- **Claude Code** or another supported IDE (Cursor, Gemini CLI, Windsurf, OpenCode, Codex CLI, OpenClaw)
+- **SQLite 3**: bundled via `bun:sqlite`
 
 ## Advanced Installation
 
@@ -73,7 +76,7 @@ npm run worker:status
 
 #### 1. Automatic Dependency Installation
 
-Dependencies are installed automatically during plugin installation. The SessionStart hook also ensures dependencies are up-to-date on each session start (this is fast and idempotent). Works cross-platform on Windows, macOS, and Linux.
+Dependencies are installed automatically by `npx claude-mem install` and `npx claude-mem repair`. Heavy lifting (Bun + uv install, `bun install` inside the plugin cache) happens behind a visible installer spinner. The Setup hook only performs a sub-100ms `version-check.js` read of the `.install-version` marker — on mismatch it prints `run: npx claude-mem repair` to stderr and exits 0, so it never blocks a session. Works cross-platform on Windows, macOS, and Linux.
 
 #### 2. Verify Plugin Installation
 
@@ -110,13 +113,7 @@ npm run test:context
 
 ## Upgrading
 
-Upgrades are automatic when updating via the plugin marketplace. Key changes in recent versions:
-
-**v7.1.0**: PM2 replaced with native Bun process management. Migration is automatic on first hook trigger.
-
-**v7.0.0+**: 11 configuration settings, dual-tag privacy system.
-
-**v5.4.0+**: Skill-based search replaces MCP tools, saving ~2,250 tokens per session.
+Upgrades are automatic when updating via the plugin marketplace. After an external upgrade (for example `claude plugin update`), the Setup hook detects a version-marker mismatch and asks you to run `npx claude-mem repair`, which installs any missing runtime dependencies and refreshes the marker.
 
 See [CHANGELOG](https://github.com/thedotmack/claude-mem/blob/main/CHANGELOG.md) for complete version history.
 

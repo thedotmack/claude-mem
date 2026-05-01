@@ -7,30 +7,29 @@ description: "System components and data flow in Claude-Mem"
 
 ## System Components
 
-Claude-Mem operates as a Claude Code plugin with five core components:
+Claude-Mem operates as a Claude Code plugin with the following core components:
 
-1. **Plugin Hooks** - Capture lifecycle events (6 hook files)
-2. **Smart Install** - Cached dependency checker (pre-hook script, runs before context-hook)
-3. **Worker Service** - Process observations via Claude Agent SDK + HTTP API (10 search endpoints)
-4. **Database Layer** - Store sessions and observations (SQLite + FTS5 + ChromaDB)
-5. **mem-search Skill** - Skill-based search with progressive disclosure (v5.4.0+)
-6. **Viewer UI** - Web-based real-time memory stream visualization
+1. **Plugin Hooks** - Lifecycle events (Setup version-check + 5 lifecycle hooks: SessionStart, UserPromptSubmit, PreToolUse for `Read`, PostToolUse, Stop)
+2. **Worker Service** - Express HTTP API on a per-user port; processes observations via the Claude Agent SDK (or Gemini / OpenRouter)
+3. **Database Layer** - SQLite + FTS5 (and optional Chroma for semantic search)
+4. **Search Tools** - HTTP API + the `mem-search` skill / MCP server for progressive disclosure search
+5. **Viewer UI** - React-based real-time memory stream served by the worker
 
 ## Technology Stack
 
 | Layer                  | Technology                                |
 |------------------------|-------------------------------------------|
 | **Language**           | TypeScript (ES2022, ESNext modules)       |
-| **Runtime**            | Node.js 18+                               |
+| **Runtime**            | Node.js 20+ and Bun ≥ 1.0                 |
 | **Database**           | SQLite 3 with bun:sqlite driver           |
-| **Vector Store**       | ChromaDB (optional, for semantic search)  |
-| **HTTP Server**        | Express.js 4.18                           |
+| **Vector Store**       | Chroma (optional, for semantic search)    |
+| **HTTP Server**        | Express.js 5                              |
 | **Real-time**          | Server-Sent Events (SSE)                  |
 | **UI Framework**       | React + TypeScript                        |
-| **AI SDK**             | @anthropic-ai/claude-agent-sdk            |
+| **AI SDK**             | @anthropic-ai/claude-agent-sdk (or Gemini / OpenRouter) |
 | **Build Tool**         | esbuild (bundles TypeScript)              |
 | **Process Manager**    | Bun                                       |
-| **Testing**            | Node.js built-in test runner              |
+| **Testing**            | `bun test`                                 |
 
 ## Data Flow
 
@@ -63,13 +62,13 @@ Uses 3-layer progressive disclosure: search → timeline → get_observations
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│ 0. Smart Install Pre-Hook Fires                                 │
-│    Checks dependencies (cached), only runs on version changes   │
-│    Not a lifecycle hook - runs before context-hook starts       │
+│ 0. Setup Hook Fires (version-check.js)                          │
+│    Sub-100ms read of .install-version; on mismatch prints       │
+│    "run: npx claude-mem repair" to stderr. Always exits 0.      │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│ 1. Session Starts → Context Hook Fires                          │
+│ 1. Session Starts → Worker-start, then Context Hook             │
 │    Starts Bun worker if needed, injects context from previous   │
 │    sessions (configurable observation count)                    │
 └─────────────────────────────────────────────────────────────────┘
@@ -106,99 +105,60 @@ Uses 3-layer progressive disclosure: search → timeline → get_observations
 ```
 claude-mem/
 ├── src/
-│   ├── hooks/                  # Hook implementations (6 hooks)
-│   │   ├── context-hook.ts     # SessionStart
-│   │   ├── user-message-hook.ts # UserMessage (for debugging)
-│   │   ├── new-hook.ts         # UserPromptSubmit
-│   │   ├── save-hook.ts        # PostToolUse
-│   │   ├── summary-hook.ts     # Stop
-│   │   ├── cleanup-hook.ts     # SessionEnd
-│   │   └── hook-response.ts    # Hook response utilities
-│   │
+│   ├── hooks/                  # TypeScript hook implementations (built via esbuild)
 │   ├── sdk/                    # Claude Agent SDK integration
-│   │   ├── prompts.ts          # XML prompt builders
-│   │   ├── parser.ts           # XML response parser
-│   │   └── worker.ts           # Main SDK agent loop
-│   │
 │   ├── services/
-│   │   ├── worker-service.ts   # Express HTTP + SSE service
-│   │   └── sqlite/             # Database layer
-│   │       ├── SessionStore.ts # CRUD operations
-│   │       ├── SessionSearch.ts # FTS5 search service
-│   │       ├── migrations.ts
-│   │       └── types.ts
-│   │
-│   ├── ui/                     # Viewer UI
-│   │   └── viewer/             # React + TypeScript web interface
-│   │       ├── components/     # UI components
-│   │       ├── hooks/          # React hooks
-│   │       ├── utils/          # Utilities
-│   │       └── assets/         # Fonts, logos
-│   │
-│   ├── shared/                 # Shared utilities
-│   │   ├── config.ts
-│   │   ├── paths.ts
-│   │   └── storage.ts
-│   │
-│   └── utils/
-│       ├── logger.ts
-│       ├── platform.ts
-│       └── port-allocator.ts
+│   │   ├── worker-service.ts   # Express HTTP + SSE service (worker entry point)
+│   │   ├── sync/ChromaSync.ts  # Optional Chroma vector index
+│   │   └── sqlite/             # SQLite + FTS5 storage layer
+│   ├── ui/viewer/              # React + TypeScript web viewer
+│   ├── shared/                 # Shared utilities (paths, settings defaults)
+│   └── utils/                  # Logging, platform, tag-stripping helpers
 │
-├── scripts/                    # Build and utility scripts
-│   └── version-check.js        # Sub-100ms Setup-hook version-marker check
+├── scripts/                    # Build + utility scripts
 │
-├── plugin/                     # Plugin distribution
-│   ├── .claude-plugin/
-│   │   └── plugin.json
-│   ├── hooks/
-│   │   └── hooks.json
+├── plugin/                     # Plugin distribution (synced to marketplace)
+│   ├── .claude-plugin/plugin.json
+│   ├── hooks/hooks.json        # Hook registration (Setup + 5 lifecycle hooks)
 │   ├── scripts/                # Built executables
-│   │   ├── context-hook.js
-│   │   ├── user-message-hook.js
-│   │   ├── new-hook.js
-│   │   ├── save-hook.js
-│   │   ├── summary-hook.js
-│   │   ├── cleanup-hook.js
-│   │   └── worker-service.cjs  # Background worker + HTTP API
-│   │
-│   ├── skills/                 # Agent skills (v5.4.0+)
-│   │   ├── mem-search/         # Search skill with progressive disclosure (v5.5.0)
-│   │   │   ├── SKILL.md        # Skill frontmatter (~250 tokens)
-│   │   │   ├── operations/     # 12 detailed operation docs
-│   │   │   └── principles/     # 2 principle guides
-│   │   ├── troubleshoot/       # Troubleshooting skill
-│   │   │   ├── SKILL.md
-│   │   │   └── operations/     # 6 operation docs
-│   │   └── version-bump/       # Version management skill (deprecated)
-│   │
-│   └── ui/                     # Built viewer UI
-│       └── viewer.html         # Self-contained bundle
+│   │   ├── version-check.js    # Setup-phase marker check (sub-100ms)
+│   │   ├── bun-runner.js       # Resolves Bun and runs worker-service.cjs
+│   │   ├── worker-service.cjs  # Worker daemon + lifecycle hook dispatcher
+│   │   ├── worker-cli.js       # CLI shim
+│   │   ├── worker-wrapper.cjs  # Process wrapper
+│   │   ├── mcp-server.cjs      # MCP search server
+│   │   ├── statusline-counts.js
+│   │   └── context-generator.cjs
+│   ├── skills/                 # Agent skills (mem-search, make-plan, do, etc.)
+│   └── ui/viewer.html          # Self-contained React bundle
 │
-├── tests/                      # Test suite
-├── docs/                       # Documentation
-└── ecosystem.config.cjs        # Process configuration (deprecated)
+├── tests/                      # Test suite (`bun test`)
+├── docs/                       # Mintlify documentation
+└── openclaw/                   # OpenClaw integration plugin
 ```
 
 ## Component Details
 
-### 1. Plugin Hooks (6 Hooks)
-- **context-hook.js** - SessionStart: Starts Bun worker, injects context
-- **user-message-hook.js** - UserMessage: Debugging hook
-- **new-hook.js** - UserPromptSubmit: Creates session, saves prompt
-- **save-hook.js** - PostToolUse: Captures tool executions
-- **summary-hook.js** - Stop: Generates session summary
-- **cleanup-hook.js** - SessionEnd: Marks session complete
+### 1. Plugin Hooks
 
-**Note**: `version-check.js` runs in the Setup phase (not as a lifecycle hook). It performs a sub-100ms read of the `.install-version` marker and, on mismatch, asks the user to run `npx claude-mem repair`. The actual runtime install (Bun, uv, `bun install`) is performed by `npx claude-mem install` / `npx claude-mem repair` with a visible clack spinner.
+The plugin registers a Setup-phase `version-check.js` plus five lifecycle hooks. Each lifecycle event invokes `bun-runner.js` to spawn `worker-service.cjs` with a `hook claude-code <event>` argument; the worker process is the single dispatcher for all hook logic. Events:
+
+- **Setup** → `version-check.js` (sub-100ms marker check; never installs anything)
+- **SessionStart** → start worker, then `hook claude-code context` (context injection)
+- **UserPromptSubmit** → `hook claude-code session-init`
+- **PreToolUse** (matcher `Read`) → `hook claude-code file-context`
+- **PostToolUse** (matcher `*`) → `hook claude-code observation`
+- **Stop** → `hook claude-code summarize` (summary generation)
+
+The actual runtime install (Bun, uv, `bun install`) is performed by `npx claude-mem install` / `npx claude-mem repair` with a visible installer spinner; the Setup hook itself only reads the `.install-version` marker.
 
 See [Plugin Hooks](/architecture/hooks) for detailed hook documentation.
 
 ### 2. Worker Service
-Express.js HTTP server on port 37777 (configurable) with:
-- 10 search HTTP API endpoints (v5.4.0+)
-- 8 viewer UI HTTP/SSE endpoints
-- Async observation processing via Claude Agent SDK
+Express.js HTTP server on a per-user port (default `37700 + (uid % 100)`, override via `CLAUDE_MEM_WORKER_PORT`) with:
+- Search HTTP API endpoints
+- Viewer UI HTTP/SSE endpoints
+- Async observation processing via the Claude Agent SDK (or Gemini / OpenRouter)
 - Real-time updates via Server-Sent Events
 - Auto-managed by Bun
 
@@ -230,7 +190,7 @@ Skill-based search with progressive disclosure providing 10 search operations:
 See [Search Architecture](/architecture/search-architecture) for technical details and examples.
 
 ### 5. Viewer UI
-React + TypeScript web interface at http://localhost:37777 featuring:
+React + TypeScript web interface served by the worker on its configured port (default `http://127.0.0.1:<worker-port>`) featuring:
 - Real-time memory stream via Server-Sent Events
 - Infinite scroll pagination with automatic deduplication
 - Project filtering and settings persistence

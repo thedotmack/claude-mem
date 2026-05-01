@@ -34,7 +34,7 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 - 🎭 **Mode System** - Switch between workflows (Code, Email Investigation, Chill)
 - 🔍 **MCP Search Tools** - Query your project history with natural language
 - 🧠 **Knowledge Agents** - Build queryable "brains" from your observation history
-- 🌐 **Web Viewer UI** - Real-time memory stream visualization at http://localhost:37777
+- 🌐 **Web Viewer UI** - Real-time memory stream visualization served by the local worker
 - 🔒 **Privacy Control** - Use `<private>` tags to exclude sensitive content from storage
 - ⚙️ **Context Configuration** - Fine-grained control over what context gets injected
 - 🤖 **Automatic Operation** - No manual intervention required
@@ -66,40 +66,22 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 ```
 
 **Core Components:**
-1. **4 Lifecycle Hooks** - SessionStart, UserPromptSubmit, PostToolUse, Stop
-2. **Smart Install** - Cached dependency checker (pre-hook script)
-3. **Worker Service** - HTTP API on port 37777 managed by Bun
-4. **SQLite Database** - Stores sessions, observations, summaries with FTS5 search
-5. **MCP Search Tools** - Query historical context with natural language
+1. **5 Lifecycle Hooks** - SessionStart, UserPromptSubmit, PostToolUse, Summary (Stop), SessionEnd
+2. **Worker Service** - Express HTTP API managed by Bun on a per-user port (default `37700 + (uid % 100)`)
+3. **SQLite Database** - Stores sessions, observations, summaries with FTS5 search
+4. **Chroma Vector Index** - Optional embedding-based semantic search
+5. **MCP / Skill Search Tools** - Query historical context with natural language
 6. **Web Viewer UI** - Real-time visualization with SSE and infinite scroll
 
 See [Architecture Overview](architecture/overview) for details.
 
 ## System Requirements
 
-- **Node.js**: 18.0.0 or higher
-- **Claude Code**: Latest version with plugin support
-- **Bun**: JavaScript runtime and process manager (auto-installed if missing)
-- **SQLite 3**: For persistent storage (bundled)
-
-## What's New
-
-**v9.0.0 - Live Context:**
-- **Folder Context Files**: Auto-generated `CLAUDE.md` in project folders with activity timelines
-- **Worktree Support**: Unified context from parent repos and git worktrees
-- **Configurable Observation Limits**: Control how many observations appear in context
-- **Windows Fixes**: Resolved IPC detection and hook execution issues
-- **Settings Auto-Creation**: `settings.json` now auto-creates on first run
-- **MCP Tools Naming**: Updated from "mem-search skill" to "MCP tools" terminology
-
-**v7.1.0 - Bun Migration:**
-- Replaced PM2 with native Bun process management
-- Switched from better-sqlite3 to bun:sqlite for faster database access
-- Simplified cross-platform support
-
-**v7.0.0 - Context Configuration:**
-- 11 settings for fine-grained control over context injection
-- Dual-tag privacy system (`<private>` tags)
+- **Node.js**: 20.0.0 or higher
+- **Bun** ≥ 1.0 (auto-installed by `npx claude-mem install` if missing)
+- **uv** (auto-installed if missing — provides Python for Chroma)
+- **Claude Code** (or another supported IDE: Cursor, Gemini CLI, Windsurf, OpenCode, Codex CLI, OpenClaw)
+- **SQLite 3** — bundled via `bun:sqlite`
 
 ## Next Steps
 

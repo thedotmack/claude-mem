@@ -21,24 +21,25 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
 
 ---
 
-## v5.x Specific Issues
+## Common Issues
 
 ### Viewer UI Not Loading
 
-**Symptoms**: Cannot access http://localhost:37777, page doesn't load, or shows connection error.
+**Symptoms**: Cannot reach the viewer URL, page doesn't load, or browser shows a connection error.
 
 **Solutions**:
 
-1. Check if worker is running on port 37777:
+1. Find the worker port. The default is `37700 + (uid % 100)`. The actual running port is written to `~/.claude-mem/.worker.port`:
    ```bash
-   lsof -i :37777
-   # or
+   cat ~/.claude-mem/.worker.port
+   PORT=$(cat ~/.claude-mem/.worker.port)
+   lsof -i :$PORT
    npm run worker:status
    ```
 
 2. Verify worker is healthy:
    ```bash
-   curl http://localhost:37777/health
+   curl http://127.0.0.1:$PORT/health
    ```
 
 3. Check worker logs for errors:
@@ -51,9 +52,8 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
    npm run worker:restart
    ```
 
-5. Check for port conflicts:
+5. Pin a fixed port if the auto-assigned one collides:
    ```bash
-   # If port 37777 is in use by another service
    export CLAUDE_MEM_WORKER_PORT=38000
    npm run worker:restart
    ```

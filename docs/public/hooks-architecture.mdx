@@ -54,7 +54,7 @@ Claude Code's hook system provides exactly what we need:
 
 <CardGroup cols={2}>
   <Card title="Lifecycle Events" icon="clock">
-    SessionStart, UserPromptSubmit, PostToolUse, Stop
+    SessionStart, UserPromptSubmit, PreToolUse (Read), PostToolUse, Stop, SessionEnd
   </Card>
 
   <Card title="Non-Blocking" icon="forward">
@@ -495,7 +495,7 @@ npm run worker:stop
 
 ### Worker HTTP API
 
-**Technology:** Express.js REST API on port 37777
+**Technology:** Express.js REST API on the worker's per-user port (default `37700 + (uid % 100)`, override via `CLAUDE_MEM_WORKER_PORT`)
 
 **Endpoints:**
 

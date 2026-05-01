@@ -6,9 +6,9 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 
 **5 Lifecycle Hooks**: SessionStart → UserPromptSubmit → PostToolUse → Summary → SessionEnd
 
-**Hooks** (`src/hooks/*.ts`) - TypeScript → ESM, built to `plugin/scripts/*-hook.js`
+**Hooks** (`src/hooks/*.ts`) - TypeScript hook logic compiled into the unified worker dispatcher (`plugin/scripts/worker-service.cjs`). Lifecycle hook entries in `plugin/hooks/hooks.json` invoke the worker via `bun-runner.js`. The Setup-phase `version-check.js` is the only standalone hook script.
 
-**Worker Service** (`src/services/worker-service.ts`) - Express API on port 37777, Bun-managed, handles AI processing asynchronously
+**Worker Service** (`src/services/worker-service.ts`) - Express API on the per-user worker port (default `37700 + (uid % 100)`, configurable via `CLAUDE_MEM_WORKER_PORT`), Bun-managed, handles AI processing asynchronously
 
 **Database** (`src/services/sqlite/`) - SQLite3 at `~/.claude-mem/claude-mem.db`
 
@@ -20,7 +20,7 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 
 **Chroma** (`src/services/sync/ChromaSync.ts`) - Vector embeddings for semantic search
 
-**Viewer UI** (`src/ui/viewer/`) - React interface at http://localhost:37777, built to `plugin/ui/viewer.html`
+**Viewer UI** (`src/ui/viewer/`) - React interface served by the worker on its configured port (default `http://127.0.0.1:<worker-port>`), built to `plugin/ui/viewer.html`
 
 ## Privacy Tags
 - `<private>content</private>` - User-level privacy control (manual, prevents storage)
@@ -55,7 +55,7 @@ Claude-mem supports running multiple isolated profiles on the same machine (e.g.
 
 - **All paths and ports derive from these two env vars.** Hooks, npx-cli (`install`/`uninstall`/`start`/`search`), the OpenCode plugin, the OpenClaw installer, and the timeline-report skill all honor them. The settings file itself lives at `$CLAUDE_MEM_DATA_DIR/settings.json`.
 
-- **Closes #2101.** See `src/shared/SettingsDefaultsManager.ts` for the canonical port/data-dir defaults and `plugin/skills/timeline-report/SKILL.md` for the shell snippet that resolves the port for arbitrary skills.
+- See `src/shared/SettingsDefaultsManager.ts` for the canonical port/data-dir defaults and `plugin/skills/timeline-report/SKILL.md` for the shell snippet that resolves the port for arbitrary skills.
 
 ## File Locations
 
@@ -95,14 +95,14 @@ Claude-mem is designed with a clean separation between open-source core function
 
 **Open-Source Core** (this repository):
 
-- All worker API endpoints on localhost:37777 remain fully open and accessible
+- All local worker HTTP API endpoints (per-user port — see Architecture above) remain fully open and accessible
 - Pro features are headless - no proprietary UI elements in this codebase
 - Pro integration points are minimal: settings for license keys, tunnel provisioning logic
 - The architecture ensures Pro features extend rather than replace core functionality
 
 **Pro Features** (coming soon, external):
 
-- Enhanced UI (Memory Stream) connects to the same localhost:37777 endpoints as the open viewer
+- Enhanced UI (Memory Stream) connects to the same local worker endpoints as the open viewer
 - Additional features like advanced filtering, timeline scrubbing, and search tools
 - Access gated by license validation, not by modifying core endpoints
 - Users without Pro licenses continue using the full open-source viewer UI without limitation

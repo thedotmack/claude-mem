@@ -76,7 +76,7 @@ This means Claude "remembers" what happened in previous sessions!
 
 ### Worker Management
 
-v4.0+ auto-starts the worker on first session. Manual commands below are optional.
+The worker auto-starts on the first SessionStart hook, so you usually don't need these commands. They're handy for diagnostics.
 
 ```bash
 # Start worker service (optional - auto-starts automatically)
