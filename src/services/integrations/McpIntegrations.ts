@@ -141,13 +141,6 @@ const ANTIGRAVITY_CONFIG: McpInstallerConfig = {
   },
 };
 
-const CRUSH_CONFIG: McpInstallerConfig = {
-  ideId: 'crush',
-  ideLabel: 'Crush',
-  configPath: path.join(homedir(), '.config', 'crush', 'mcp.json'),
-  configKey: 'mcpServers',
-};
-
 const ROO_CODE_CONFIG: McpInstallerConfig = {
   ideId: 'roo-code',
   ideLabel: 'Roo Code',
@@ -278,7 +271,6 @@ export const MCP_IDE_INSTALLERS: Record<string, () => Promise<number>> = {
   'copilot-cli': installMcpIntegration(COPILOT_CLI_CONFIG),
   'antigravity': installMcpIntegration(ANTIGRAVITY_CONFIG),
   'goose': installGooseMcpIntegration,
-  'crush': installMcpIntegration(CRUSH_CONFIG),
   'roo-code': installMcpIntegration(ROO_CODE_CONFIG),
   'warp': installMcpIntegration(WARP_CONFIG),
 };

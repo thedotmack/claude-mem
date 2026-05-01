@@ -256,46 +256,6 @@ function makeIDETask(ideId: string, failedIDEs: string[], pendingErrors: string[
       };
     }
 
-    case 'crush': {
-      const allIDEs = detectInstalledIDEs();
-      const ideInfo = allIDEs.find((i) => i.id === ideId);
-      const ideLabel = ideInfo?.label ?? ideId;
-      return {
-        title: `${ideLabel}: installing MCP + hooks + transcript watcher`,
-        task: async (message) => {
-          message('Loading MCP installer…');
-          const { MCP_IDE_INSTALLERS } = await import('../../services/integrations/McpIntegrations.js');
-          const mcpInstaller = MCP_IDE_INSTALLERS[ideId];
-          if (!mcpInstaller) {
-            return `${ideLabel}: MCP installer not found ${pc.yellow('!')}`;
-          }
-          message(`Configuring ${ideLabel} MCP…`);
-          const mcpRun = await bufferConsole(() => mcpInstaller());
-          if (mcpRun.result !== 0) {
-            recordFailure(`${ideLabel}: MCP integration failed`, mcpRun.output);
-            return `${ideLabel}: MCP integration failed ${pc.red('FAIL')}`;
-          }
-
-          message(`Writing ${ideLabel} PreToolUse hooks…`);
-          const { installCrushHooks, installCrushTranscript } = await import('../../services/integrations/CrushHooksInstaller.js');
-          const hooksRun = await bufferConsole(() => installCrushHooks());
-          if (hooksRun.result !== 0) {
-            recordFailure(`${ideLabel}: hooks integration failed`, hooksRun.output);
-            return `${ideLabel}: MCP OK, hooks ${pc.red('FAIL')}`;
-          }
-
-          message(`Registering ${ideLabel} transcript watcher…`);
-          const transcriptRun = await bufferConsole(() => Promise.resolve(installCrushTranscript()));
-          if (transcriptRun.result !== 0) {
-            recordFailure(`${ideLabel}: transcript watcher failed`, transcriptRun.output);
-            return `${ideLabel}: MCP + hooks OK, transcript ${pc.red('FAIL')}`;
-          }
-
-          return `${ideLabel}: MCP + hooks + transcript installed ${pc.green('OK')}`;
-        },
-      };
-    }
-
     case 'copilot-cli':
     case 'antigravity':
     case 'goose':

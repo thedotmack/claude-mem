@@ -112,13 +112,6 @@ export function detectInstalledIDEs(): IDEInfo[] {
       hint: 'MCP-based integration',
     },
     {
-      id: 'crush',
-      label: 'Crush',
-      detected: isCommandInPath('crush'),
-      supported: true,
-      hint: 'MCP-based integration',
-    },
-    {
       id: 'roo-code',
       label: 'Roo Code',
       detected: hasVscodeExtension('roo-code'),
