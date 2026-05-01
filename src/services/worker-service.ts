@@ -14,7 +14,7 @@ import { configureSupervisorSignalHandlers, getSupervisor, startSupervisor } fro
 import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
 
 import { ensureWorkerStarted as ensureWorkerStartedShared, type WorkerStartResult } from './worker-spawner.js';
-import { RestartGuard } from './worker/RestartGuard.js';
+import { handleGeneratorExit } from './worker/session/GeneratorExitHandler.js';
 
 export { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
 import { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
@@ -86,8 +86,6 @@ import { ChromaRoutes } from './worker/http/routes/ChromaRoutes.js';
 import { CorpusStore } from './worker/knowledge/CorpusStore.js';
 import { CorpusBuilder } from './worker/knowledge/CorpusBuilder.js';
 import { KnowledgeAgent } from './worker/knowledge/KnowledgeAgent.js';
-
-import { getSdkProcessForSession, ensureSdkProcessExit } from '../supervisor/process-registry.js';
 
 export interface StatusOutput {
   continue: true;
@@ -261,7 +259,7 @@ export class WorkerService implements WorkerRef {
     });
 
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
-    const sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this);
+    const sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this, this.completionHandler);
     this.server.registerRoutes(sessionRoutes);
     attachIngestGeneratorStarter((sessionDbId, source) =>
       sessionRoutes.ensureGeneratorRunning(sessionDbId, source),
@@ -602,13 +600,6 @@ export class WorkerService implements WorkerRef {
         throw error;
       })
       .finally(async () => {
-        const trackedProcess = getSdkProcessForSession(session.sessionDbId);
-        if (trackedProcess && trackedProcess.process.exitCode === null) {
-          await ensureSdkProcessExit(trackedProcess, 5000);
-        }
-
-        session.generatorPromise = null;
-
         if (!sessionFailed && !hadUnrecoverableError) {
           this.lastAiInteraction = {
             timestamp: Date.now(),
@@ -617,56 +608,20 @@ export class WorkerService implements WorkerRef {
           };
         }
 
-        if (hadUnrecoverableError) {
-          this.terminateSession(session.sessionDbId, 'unrecoverable_error');
-          return;
-        }
-
-        const pendingStore = this.sessionManager.getPendingMessageStore();
-
-        const pendingCount = pendingStore.getPendingCount(session.sessionDbId);
-
+        // Translate worker-service-specific error flags into the canonical reason enum.
+        let reason = session.abortReason ?? null;
+        session.abortReason = null;
+        if (hadUnrecoverableError) reason = 'restart-guard';
         if (session.idleTimedOut) {
-          session.idleTimedOut = false; 
-          if (pendingCount === 0) {
-            this.terminateSession(session.sessionDbId, 'idle_timeout');
-            return;
-          }
-          // Fall through to pending-work restart below
+          session.idleTimedOut = false;
+          reason = reason ?? 'idle';
         }
-        if (pendingCount > 0) {
-          if (!session.restartGuard) session.restartGuard = new RestartGuard();
-          const restartAllowed = session.restartGuard.recordRestart();
-          session.consecutiveRestarts = (session.consecutiveRestarts || 0) + 1; 
 
-          if (!restartAllowed) {
-            logger.error('SYSTEM', 'Restart guard tripped: session is dead, terminating', {
-              sessionId: session.sessionDbId,
-              pendingCount,
-              restartsInWindow: session.restartGuard.restartsInWindow,
-              windowMs: session.restartGuard.windowMs,
-              maxRestarts: session.restartGuard.maxRestarts,
-              consecutiveFailures: session.restartGuard.consecutiveFailuresSinceSuccess,
-              maxConsecutiveFailures: session.restartGuard.maxConsecutiveFailures
-            });
-            session.consecutiveRestarts = 0;
-            this.terminateSession(session.sessionDbId, 'max_restarts_exceeded');
-            return;
-          }
-
-          logger.info('SYSTEM', 'Pending work remains after generator exit, restarting with fresh AbortController', {
-            sessionId: session.sessionDbId,
-            pendingCount,
-            attempt: session.consecutiveRestarts
-          });
-          session.abortController = new AbortController();
-          this.startSessionProcessor(session, 'pending-work-restart');
-        } else {
-          session.restartGuard?.recordSuccess();
-          session.consecutiveRestarts = 0;
-          this.completionHandler.finalizeSession(session.sessionDbId);
-          this.sessionManager.removeSessionImmediate(session.sessionDbId);
-        }
+        await handleGeneratorExit(session, reason, {
+          sessionManager: this.sessionManager,
+          completionHandler: this.completionHandler,
+          restartGenerator: (s, source) => this.startSessionProcessor(s, source),
+        });
       });
   }
 

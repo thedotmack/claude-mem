@@ -16,10 +16,10 @@ import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js
 import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
-import { getSdkProcessForSession, ensureSdkProcessExit } from '../../../../supervisor/process-registry.js';
 import { getProjectContext } from '../../../../utils/project-name.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
-import { RestartGuard } from '../../RestartGuard.js';
+import { handleGeneratorExit } from '../../session/GeneratorExitHandler.js';
+import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
 
@@ -32,6 +32,7 @@ export class SessionRoutes extends BaseRouteHandler {
     private openRouterAgent: OpenRouterProvider,
     private eventBroadcaster: SessionEventBroadcaster,
     private workerService: WorkerService,
+    private completionHandler: SessionCompletionHandler,
   ) {
     super();
   }
@@ -160,122 +161,16 @@ export class SessionRoutes extends BaseRouteHandler {
         }
       })
       .finally(async () => {
-        const tracked = getSdkProcessForSession(session.sessionDbId);
-        if (tracked && !tracked.process.killed && tracked.process.exitCode === null) {
-          await ensureSdkProcessExit(tracked, 5000);
-        }
-
-        const sessionDbId = session.sessionDbId;
         const reason = session.abortReason ?? null;
         session.abortReason = null;  // consume the reason
-
-        const wasAborted = reason !== null || session.abortController.signal.aborted;
-        const skipRestart = reason === 'shutdown' || reason === 'restart-guard';
-
-        if (wasAborted) {
-          logger.info('SESSION', `Generator aborted`, { sessionId: sessionDbId, reason });
-
-          const inflightIds = session.processingMessageIds.slice();
-          session.processingMessageIds = [];
-          for (const messageId of inflightIds) {
-            try {
-              this.sessionManager.markMessageFailed(sessionDbId, messageId);
-            } catch (markErr) {
-              const normalized = markErr instanceof Error ? markErr : new Error(String(markErr));
-              logger.error('SESSION', 'Failed to requeue in-flight message after abort', {
-                sessionId: sessionDbId,
-                messageId,
-              }, normalized);
-            }
-          }
-        }
-
-        session.generatorPromise = null;
-        session.currentProvider = null;
-
-        if (!skipRestart) {
-          const pendingStore = this.sessionManager.getPendingMessageStore();
-
-          let pendingCount: number;
-          try {
-            pendingCount = pendingStore.getPendingCount(sessionDbId);
-          } catch (e) {
-            const normalizedRecoveryError = e instanceof Error ? e : new Error(String(e));
-            logger.error('HTTP', 'Error during recovery check, aborting to prevent leaks', { sessionId: sessionDbId }, normalizedRecoveryError);
-            session.abortReason = 'restart-guard';
-            session.abortController.abort();
-            return;
-          }
-
-          if (pendingCount > 0) {
-            if (!session.restartGuard) session.restartGuard = new RestartGuard();
-            const restartAllowed = session.restartGuard.recordRestart();
-            session.consecutiveRestarts = (session.consecutiveRestarts || 0) + 1; 
-
-            if (!restartAllowed) {
-              logger.error('SESSION', `CRITICAL: Restart guard tripped — session is dead, draining pending messages and terminating`, {
-                sessionId: sessionDbId,
-                pendingCount,
-                restartsInWindow: session.restartGuard.restartsInWindow,
-                windowMs: session.restartGuard.windowMs,
-                maxRestarts: session.restartGuard.maxRestarts,
-                consecutiveFailures: session.restartGuard.consecutiveFailuresSinceSuccess,
-                maxConsecutiveFailures: session.restartGuard.maxConsecutiveFailures,
-                action: 'Generator will NOT restart. Pending messages drained to abandoned. Check logs for root cause.'
-              });
-              session.abortReason = 'restart-guard';
-              session.abortController.abort();
-              try {
-                const drained = pendingStore.transitionMessagesTo('abandoned', { sessionDbId });
-                if (drained > 0) {
-                  logger.error('SESSION', 'Drained pending messages to abandoned after restart guard trip', {
-                    sessionId: sessionDbId,
-                    drained,
-                  });
-                }
-              } catch (drainErr) {
-                const normalized = drainErr instanceof Error ? drainErr : new Error(String(drainErr));
-                logger.error('SESSION', 'Failed to drain pending messages after restart guard trip', {
-                  sessionId: sessionDbId,
-                }, normalized);
-              }
-              return;
-            }
-
-            logger.info('SESSION', `Restarting generator after crash/exit with pending work`, {
-              sessionId: sessionDbId,
-              pendingCount,
-              consecutiveRestarts: session.consecutiveRestarts,
-              restartsInWindow: session.restartGuard!.restartsInWindow,
-              maxRestarts: session.restartGuard!.maxRestarts,
-              consecutiveFailures: session.restartGuard!.consecutiveFailuresSinceSuccess,
-              maxConsecutiveFailures: session.restartGuard!.maxConsecutiveFailures
-            });
-
-            const oldController = session.abortController;
-            session.abortController = new AbortController();
-            oldController.abort();
-
-            const backoffMs = Math.min(1000 * Math.pow(2, session.consecutiveRestarts - 1), 8000);
-
-            setTimeout(() => {
-              const stillExists = this.sessionManager.getSession(sessionDbId);
-              if (stillExists && !stillExists.generatorPromise) {
-                this.applyTierRouting(stillExists);
-                this.startGeneratorWithProvider(stillExists, this.getSelectedProvider(), 'crash-recovery');
-              }
-            }, backoffMs);
-          } else {
-            session.abortController.abort();
-            session.consecutiveRestarts = 0;
-            logger.debug('SESSION', 'Aborted controller after natural completion', {
-              sessionId: sessionDbId
-            });
-          }
-        }
-        // NOTE: We do NOT delete the session here anymore.
-        // The generator waits for events, so if it exited, it's either aborted or crashed.
-        // Idle sessions stay in memory (ActiveSession is small) to listen for future events.
+        await handleGeneratorExit(session, reason, {
+          sessionManager: this.sessionManager,
+          completionHandler: this.completionHandler,
+          restartGenerator: (s, source) => {
+            this.applyTierRouting(s);
+            this.startGeneratorWithProvider(s, this.getSelectedProvider(), source);
+          },
+        });
       });
   }
 

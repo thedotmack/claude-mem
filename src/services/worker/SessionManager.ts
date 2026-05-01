@@ -272,10 +272,15 @@ export class SessionManager {
   async deleteSession(sessionDbId: number): Promise<void> {
     const session = this.sessions.get(sessionDbId);
     if (!session) {
-      return; 
+      return;
     }
 
     const sessionDuration = Date.now() - session.startTime;
+
+    if (session.respawnTimer) {
+      clearTimeout(session.respawnTimer);
+      session.respawnTimer = undefined;
+    }
 
     session.abortReason = 'shutdown';
     session.abortController.abort();
@@ -333,6 +338,11 @@ export class SessionManager {
   removeSessionImmediate(sessionDbId: number): void {
     const session = this.sessions.get(sessionDbId);
     if (!session) return;
+
+    if (session.respawnTimer) {
+      clearTimeout(session.respawnTimer);
+      session.respawnTimer = undefined;
+    }
 
     this.sessions.delete(sessionDbId);
     this.sessionQueues.delete(sessionDbId);

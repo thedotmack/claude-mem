@@ -35,6 +35,7 @@ export interface ActiveSession {
   pendingAgentId?: string | null;
   pendingAgentType?: string | null;
   abortReason?: 'idle' | 'shutdown' | 'overflow' | 'restart-guard' | null;
+  respawnTimer?: ReturnType<typeof setTimeout>;
 }
 
 export interface PendingMessage {
