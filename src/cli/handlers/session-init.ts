@@ -85,23 +85,6 @@ export const sessionInitHandler: EventHandler = {
       return { continue: true, suppressOutput: true };
     }
 
-    if (input.platform !== 'cursor' && sessionDbId) {
-      const cleanedPrompt = prompt.startsWith('/') ? prompt.substring(1) : prompt;
-
-      logger.debug('HOOK', 'session-init: Calling /sessions/{sessionDbId}/init', { sessionDbId, promptNumber });
-
-      const agentInitResult = await executeWithWorkerFallback<{ status?: string }>(
-        `/sessions/${sessionDbId}/init`,
-        'POST',
-        { userPrompt: cleanedPrompt, promptNumber },
-      );
-      if (isWorkerFallback(agentInitResult)) {
-        return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
-      }
-    } else if (input.platform === 'cursor') {
-      logger.debug('HOOK', 'session-init: Skipping SDK agent init for Cursor platform', { sessionDbId, promptNumber });
-    }
-
     const settings = loadFromFileOnce();
     const semanticInject =
       String(settings.CLAUDE_MEM_SEMANTIC_INJECT).toLowerCase() === 'true';

@@ -3,9 +3,8 @@ import express, { Request, Response } from 'express';
 import { z } from 'zod';
 import { ingestObservation } from '../shared.js';
 import { validateBody } from '../middleware/validateBody.js';
-import { getWorkerPort } from '../../../../shared/worker-utils.js';
 import { logger } from '../../../../utils/logger.js';
-import { stripMemoryTagsFromJson, stripMemoryTagsFromPrompt, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
+import { stripMemoryTagsFromPrompt, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
 import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { ClaudeProvider } from '../../ClaudeProvider.js';
@@ -14,7 +13,6 @@ import { OpenRouterProvider, isOpenRouterSelected, isOpenRouterAvailable } from 
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
-import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
 import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
@@ -26,9 +24,6 @@ import { RestartGuard } from '../../RestartGuard.js';
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
 
 export class SessionRoutes extends BaseRouteHandler {
-  private spawnInProgress = new Map<number, boolean>();
-  private crashRecoveryScheduled = new Set<number>();
-
   constructor(
     private sessionManager: SessionManager,
     private dbManager: DatabaseManager,
@@ -37,7 +32,6 @@ export class SessionRoutes extends BaseRouteHandler {
     private openRouterAgent: OpenRouterProvider,
     private eventBroadcaster: SessionEventBroadcaster,
     private workerService: WorkerService,
-    private completionHandler: SessionCompletionHandler,
   ) {
     super();
   }
@@ -69,64 +63,15 @@ export class SessionRoutes extends BaseRouteHandler {
     return (isGeminiSelected() && isGeminiAvailable()) ? 'gemini' : 'claude';
   }
 
-  private static readonly STALE_GENERATOR_THRESHOLD_MS = 30_000; 
-
-  private static readonly MAX_SESSION_WALL_CLOCK_MS = 24 * 60 * 60 * 1000; 
-
   public ensureGeneratorRunning(sessionDbId: number, source: string): void {
     const session = this.sessionManager.getSession(sessionDbId);
     if (!session) return;
-
-    const dbSessionRecord = this.dbManager.getSessionStore().db
-      .prepare('SELECT started_at_epoch FROM sdk_sessions WHERE id = ? LIMIT 1')
-      .get(sessionDbId) as { started_at_epoch: number } | undefined;
-    const sessionOriginMs = dbSessionRecord?.started_at_epoch ?? session.startTime;
-    const sessionAgeMs = Date.now() - sessionOriginMs;
-    if (sessionAgeMs > SessionRoutes.MAX_SESSION_WALL_CLOCK_MS) {
-      logger.warn('SESSION', 'Session exceeded wall-clock age limit — aborting to prevent runaway spend', {
-        sessionId: sessionDbId,
-        ageHours: Math.round(sessionAgeMs / 3_600_000 * 10) / 10,
-        limitHours: SessionRoutes.MAX_SESSION_WALL_CLOCK_MS / 3_600_000,
-        source
-      });
-      if (!session.abortController.signal.aborted) {
-        session.abortController.abort();
-      }
-      const pendingStore = this.sessionManager.getPendingMessageStore();
-      pendingStore.transitionMessagesTo('abandoned', { sessionDbId });
-      this.sessionManager.removeSessionImmediate(sessionDbId);
-      return;
-    }
-
-    if (this.spawnInProgress.get(sessionDbId)) {
-      logger.debug('SESSION', 'Spawn already in progress, skipping', { sessionDbId, source });
-      return;
-    }
 
     const selectedProvider = this.getSelectedProvider();
 
     if (!session.generatorPromise) {
       this.applyTierRouting(session);
-      this.spawnInProgress.set(sessionDbId, true);
       this.startGeneratorWithProvider(session, selectedProvider, source);
-      return;
-    }
-
-    const timeSinceActivity = Date.now() - session.lastGeneratorActivity;
-    if (timeSinceActivity > SessionRoutes.STALE_GENERATOR_THRESHOLD_MS) {
-      logger.warn('SESSION', 'Stale generator detected, aborting to prevent queue stall (#1099)', {
-        sessionId: sessionDbId,
-        timeSinceActivityMs: timeSinceActivity,
-        thresholdMs: SessionRoutes.STALE_GENERATOR_THRESHOLD_MS,
-        source
-      });
-      session.abortController.abort();
-      session.generatorPromise = null;
-      session.abortController = new AbortController();
-      session.lastGeneratorActivity = Date.now();
-      this.applyTierRouting(session);
-      this.spawnInProgress.set(sessionDbId, true);
-      this.startGeneratorWithProvider(session, selectedProvider, 'stale-recovery');
       return;
     }
 
@@ -221,7 +166,6 @@ export class SessionRoutes extends BaseRouteHandler {
         }
 
         const sessionDbId = session.sessionDbId;
-        this.spawnInProgress.delete(sessionDbId);
         const wasAborted = session.abortController.signal.aborted;
 
         if (wasAborted) {
@@ -259,11 +203,6 @@ export class SessionRoutes extends BaseRouteHandler {
           }
 
           if (pendingCount > 0) {
-            if (this.crashRecoveryScheduled.has(sessionDbId)) {
-              logger.debug('SESSION', 'Crash recovery already scheduled', { sessionDbId });
-              return;
-            }
-
             if (!session.restartGuard) session.restartGuard = new RestartGuard();
             const restartAllowed = session.restartGuard.recordRestart();
             session.consecutiveRestarts = (session.consecutiveRestarts || 0) + 1; 
@@ -311,12 +250,9 @@ export class SessionRoutes extends BaseRouteHandler {
             session.abortController = new AbortController();
             oldController.abort();
 
-            this.crashRecoveryScheduled.add(sessionDbId);
-
             const backoffMs = Math.min(1000 * Math.pow(2, session.consecutiveRestarts - 1), 8000);
 
             setTimeout(() => {
-              this.crashRecoveryScheduled.delete(sessionDbId);
               const stillExists = this.sessionManager.getSession(sessionDbId);
               if (stillExists && !stillExists.generatorPromise) {
                 this.applyTierRouting(stillExists);
@@ -339,25 +275,6 @@ export class SessionRoutes extends BaseRouteHandler {
 
   setupRoutes(app: express.Application): void {
     app.post(
-      '/sessions/:sessionDbId/init',
-      validateBody(SessionRoutes.legacySessionInitSchema),
-      this.handleSessionInit.bind(this)
-    );
-    app.post(
-      '/sessions/:sessionDbId/observations',
-      validateBody(SessionRoutes.legacyObservationsSchema),
-      this.handleObservations.bind(this)
-    );
-    app.post(
-      '/sessions/:sessionDbId/summarize',
-      validateBody(SessionRoutes.legacySummarizeSchema),
-      this.handleSummarize.bind(this)
-    );
-    app.get('/sessions/:sessionDbId/status', this.handleSessionStatus.bind(this));
-    app.delete('/sessions/:sessionDbId', this.handleSessionDelete.bind(this));
-    app.post('/sessions/:sessionDbId/complete', this.handleSessionComplete.bind(this));
-
-    app.post(
       '/api/sessions/init',
       validateBody(SessionRoutes.sessionInitByClaudeIdSchema),
       this.handleSessionInitByClaudeId.bind(this)
@@ -374,23 +291,6 @@ export class SessionRoutes extends BaseRouteHandler {
     );
     app.get('/api/sessions/status', this.handleStatusByClaudeId.bind(this));
   }
-
-  private static readonly legacySessionInitSchema = z.object({
-    userPrompt: z.string().optional(),
-    promptNumber: z.number().int().optional(),
-  }).passthrough();
-
-  private static readonly legacyObservationsSchema = z.object({
-    tool_name: z.string().min(1),
-    tool_input: z.unknown().optional(),
-    tool_response: z.unknown().optional(),
-    prompt_number: z.number().int().optional(),
-    cwd: z.string().optional(),
-  }).passthrough();
-
-  private static readonly legacySummarizeSchema = z.object({
-    last_assistant_message: z.string().optional(),
-  }).passthrough();
 
   private static readonly sessionInitByClaudeIdSchema = z.object({
     contentSessionId: z.string().min(1),
@@ -419,146 +319,6 @@ export class SessionRoutes extends BaseRouteHandler {
     agentId: z.string().optional(),
     platformSource: z.string().optional(),
   }).passthrough();
-
-  private handleSessionInit = this.wrapHandler((req: Request, res: Response): void => {
-    const sessionDbId = this.parseIntParam(req, res, 'sessionDbId');
-    if (sessionDbId === null) return;
-
-    const { userPrompt, promptNumber } = req.body;
-    logger.info('HTTP', 'SessionRoutes: handleSessionInit called', {
-      sessionDbId,
-      promptNumber,
-      has_userPrompt: !!userPrompt
-    });
-
-    const session = this.sessionManager.initializeSession(sessionDbId, userPrompt, promptNumber);
-
-    const latestPrompt = this.dbManager.getSessionStore().getLatestUserPrompt(session.contentSessionId);
-
-    if (latestPrompt) {
-      this.eventBroadcaster.broadcastNewPrompt({
-        id: latestPrompt.id,
-        content_session_id: latestPrompt.content_session_id,
-        project: latestPrompt.project,
-        platform_source: latestPrompt.platform_source,
-        prompt_number: latestPrompt.prompt_number,
-        prompt_text: latestPrompt.prompt_text,
-        created_at_epoch: latestPrompt.created_at_epoch
-      });
-
-      const chromaStart = Date.now();
-      const promptText = latestPrompt.prompt_text;
-      this.dbManager.getChromaSync()?.syncUserPrompt(
-        latestPrompt.id,
-        latestPrompt.memory_session_id,
-        latestPrompt.project,
-        promptText,
-        latestPrompt.prompt_number,
-        latestPrompt.created_at_epoch
-      ).then(() => {
-        const chromaDuration = Date.now() - chromaStart;
-        const truncatedPrompt = promptText.length > 60
-          ? promptText.substring(0, 60) + '...'
-          : promptText;
-        logger.debug('CHROMA', 'User prompt synced', {
-          promptId: latestPrompt.id,
-          duration: `${chromaDuration}ms`,
-          prompt: truncatedPrompt
-        });
-      }).catch((error) => {
-        logger.error('CHROMA', 'User prompt sync failed, continuing without vector search', {
-          promptId: latestPrompt.id,
-          prompt: promptText.length > 60 ? promptText.substring(0, 60) + '...' : promptText
-        }, error);
-      });
-    }
-
-    this.ensureGeneratorRunning(sessionDbId, 'init');
-
-    this.eventBroadcaster.broadcastSessionStarted(sessionDbId, session.project);
-
-    res.json({ status: 'initialized', sessionDbId, port: getWorkerPort() });
-  });
-
-  private handleObservations = this.wrapHandler((req: Request, res: Response): void => {
-    const sessionDbId = this.parseIntParam(req, res, 'sessionDbId');
-    if (sessionDbId === null) return;
-
-    const { tool_name, tool_input, tool_response, prompt_number, cwd } = req.body;
-
-    this.sessionManager.queueObservation(sessionDbId, {
-      tool_name,
-      tool_input,
-      tool_response,
-      prompt_number,
-      cwd
-    });
-
-    this.ensureGeneratorRunning(sessionDbId, 'observation');
-
-    this.eventBroadcaster.broadcastObservationQueued(sessionDbId);
-
-    res.json({ status: 'queued' });
-  });
-
-  private handleSummarize = this.wrapHandler((req: Request, res: Response): void => {
-    const sessionDbId = this.parseIntParam(req, res, 'sessionDbId');
-    if (sessionDbId === null) return;
-
-    const { last_assistant_message } = req.body;
-
-    const cleanedLastAssistantMessage = last_assistant_message
-      ? stripMemoryTagsFromPrompt(String(last_assistant_message))
-      : last_assistant_message;
-    this.sessionManager.queueSummarize(sessionDbId, cleanedLastAssistantMessage);
-
-    this.ensureGeneratorRunning(sessionDbId, 'summarize');
-
-    this.eventBroadcaster.broadcastSummarizeQueued();
-
-    res.json({ status: 'queued' });
-  });
-
-  private handleSessionStatus = this.wrapHandler((req: Request, res: Response): void => {
-    const sessionDbId = this.parseIntParam(req, res, 'sessionDbId');
-    if (sessionDbId === null) return;
-
-    const session = this.sessionManager.getSession(sessionDbId);
-
-    if (!session) {
-      res.json({ status: 'not_found' });
-      return;
-    }
-
-    const pendingStore = this.sessionManager.getPendingMessageStore();
-    const queueLength = pendingStore.getPendingCount(sessionDbId);
-
-    res.json({
-      status: 'active',
-      sessionDbId,
-      project: session.project,
-      queueLength,
-      uptime: Date.now() - session.startTime
-    });
-  });
-
-  private handleSessionDelete = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const sessionDbId = this.parseIntParam(req, res, 'sessionDbId');
-    if (sessionDbId === null) return;
-
-    await this.completionHandler.completeByDbId(sessionDbId);
-
-    res.json({ status: 'deleted' });
-  });
-
-  private handleSessionComplete = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const sessionDbId = this.parseIntParam(req, res, 'sessionDbId');
-    if (sessionDbId === null) return;
-
-    await this.completionHandler.completeByDbId(sessionDbId);
-
-    res.json({ success: true });
-  });
 
   private handleObservationsByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
     const {
@@ -752,11 +512,63 @@ export class SessionRoutes extends BaseRouteHandler {
       contextInjected
     });
 
+    if (platformSource !== 'cursor') {
+      const sdkPrompt = cleanedPrompt.startsWith('/') ? cleanedPrompt.substring(1) : cleanedPrompt;
+      const session = this.sessionManager.initializeSession(sessionDbId, sdkPrompt, promptNumber);
+
+      const latestPrompt = store.getLatestUserPrompt(session.contentSessionId);
+
+      if (latestPrompt) {
+        this.eventBroadcaster.broadcastNewPrompt({
+          id: latestPrompt.id,
+          content_session_id: latestPrompt.content_session_id,
+          project: latestPrompt.project,
+          platform_source: latestPrompt.platform_source,
+          prompt_number: latestPrompt.prompt_number,
+          prompt_text: latestPrompt.prompt_text,
+          created_at_epoch: latestPrompt.created_at_epoch
+        });
+
+        const chromaStart = Date.now();
+        const promptText = latestPrompt.prompt_text;
+        this.dbManager.getChromaSync()?.syncUserPrompt(
+          latestPrompt.id,
+          latestPrompt.memory_session_id,
+          latestPrompt.project,
+          promptText,
+          latestPrompt.prompt_number,
+          latestPrompt.created_at_epoch
+        ).then(() => {
+          const chromaDuration = Date.now() - chromaStart;
+          const truncatedPrompt = promptText.length > 60
+            ? promptText.substring(0, 60) + '...'
+            : promptText;
+          logger.debug('CHROMA', 'User prompt synced', {
+            promptId: latestPrompt.id,
+            duration: `${chromaDuration}ms`,
+            prompt: truncatedPrompt
+          });
+        }).catch((error) => {
+          logger.error('CHROMA', 'User prompt sync failed, continuing without vector search', {
+            promptId: latestPrompt.id,
+            prompt: promptText.length > 60 ? promptText.substring(0, 60) + '...' : promptText
+          }, error);
+        });
+      }
+
+      this.ensureGeneratorRunning(sessionDbId, 'init');
+
+      this.eventBroadcaster.broadcastSessionStarted(sessionDbId, session.project);
+    } else {
+      logger.debug('HTTP', 'session-init: Skipping SDK agent init for Cursor platform', { sessionDbId, promptNumber });
+    }
+
     res.json({
       sessionDbId,
       promptNumber,
       skipped: false,
-      contextInjected
+      contextInjected,
+      status: 'initialized'
     });
   });
 

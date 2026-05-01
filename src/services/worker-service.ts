@@ -261,7 +261,7 @@ export class WorkerService implements WorkerRef {
     });
 
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
-    const sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this, this.completionHandler);
+    const sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this);
     this.server.registerRoutes(sessionRoutes);
     attachIngestGeneratorStarter((sessionDbId, source) =>
       sessionRoutes.ensureGeneratorRunning(sessionDbId, source),
@@ -739,111 +739,6 @@ export class WorkerService implements WorkerRef {
     this.completionHandler.finalizeSession(sessionDbId);
 
     this.sessionManager.removeSessionImmediate(sessionDbId);
-  }
-
-  async processPendingQueues(sessionLimit: number = 10): Promise<{
-    totalPendingSessions: number;
-    sessionsStarted: number;
-    sessionsSkipped: number;
-    startedSessionIds: number[];
-  }> {
-    const { PendingMessageStore } = await import('./sqlite/PendingMessageStore.js');
-    const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
-    const sessionStore = this.dbManager.getSessionStore();
-
-    const STALE_SESSION_THRESHOLD_MS = 6 * 60 * 60 * 1000;
-    const staleThreshold = Date.now() - STALE_SESSION_THRESHOLD_MS;
-
-    const staleSessionIds = sessionStore.db.prepare(`
-      SELECT id FROM sdk_sessions
-      WHERE status = 'active' AND started_at_epoch < ?
-    `).all(staleThreshold) as { id: number }[];
-
-    if (staleSessionIds.length > 0) {
-      const ids = staleSessionIds.map(r => r.id);
-      const placeholders = ids.map(() => '?').join(',');
-      const now = Date.now();
-
-      try {
-        sessionStore.db.prepare(`
-          UPDATE sdk_sessions
-          SET status = 'failed', completed_at_epoch = ?
-          WHERE id IN (${placeholders})
-        `).run(now, ...ids);
-        logger.info('SYSTEM', `Marked ${ids.length} stale sessions as failed`);
-      } catch (error) {
-        if (error instanceof Error) {
-          logger.error('WORKER', 'Failed to mark stale sessions as failed', { staleCount: ids.length }, error);
-        } else {
-          logger.error('WORKER', 'Failed to mark stale sessions as failed with non-Error', { staleCount: ids.length }, new Error(String(error)));
-        }
-      }
-
-      try {
-        const msgResult = sessionStore.db.prepare(`
-          UPDATE pending_messages
-          SET status = 'failed', failed_at_epoch = ?
-          WHERE status = 'pending'
-          AND session_db_id IN (${placeholders})
-        `).run(now, ...ids);
-        if (msgResult.changes > 0) {
-          logger.info('SYSTEM', `Marked ${msgResult.changes} pending messages from stale sessions as failed`);
-        }
-      } catch (error) {
-        if (error instanceof Error) {
-          logger.error('WORKER', 'Failed to clean up stale pending messages', { staleCount: ids.length }, error);
-        } else {
-          logger.error('WORKER', 'Failed to clean up stale pending messages with non-Error', { staleCount: ids.length }, new Error(String(error)));
-        }
-      }
-    }
-
-    const orphanedSessionIds = pendingStore.getSessionsWithPendingMessages();
-
-    const result = {
-      totalPendingSessions: orphanedSessionIds.length,
-      sessionsStarted: 0,
-      sessionsSkipped: 0,
-      startedSessionIds: [] as number[]
-    };
-
-    if (orphanedSessionIds.length === 0) return result;
-
-    logger.info('SYSTEM', `Processing up to ${sessionLimit} of ${orphanedSessionIds.length} pending session queues`);
-
-    for (const sessionDbId of orphanedSessionIds) {
-      if (result.sessionsStarted >= sessionLimit) break;
-
-      const existingSession = this.sessionManager.getSession(sessionDbId);
-      if (existingSession?.generatorPromise) {
-        result.sessionsSkipped++;
-        continue;
-      }
-
-      try {
-        const session = this.sessionManager.initializeSession(sessionDbId);
-        this.startSessionProcessor(session, 'startup-recovery');
-        result.sessionsStarted++;
-        result.startedSessionIds.push(sessionDbId);
-      } catch (error) {
-        if (error instanceof Error) {
-          logger.error('WORKER', `Failed to initialize/start session ${sessionDbId}`, { sessionDbId }, error);
-        } else {
-          logger.error('WORKER', `Failed to initialize/start session ${sessionDbId} with non-Error`, { sessionDbId }, new Error(String(error)));
-        }
-        result.sessionsSkipped++;
-        continue;
-      }
-
-      logger.info('SYSTEM', `Starting processor for session ${sessionDbId}`, {
-        project: this.sessionManager.getSession(sessionDbId)?.project,
-        pendingCount: pendingStore.getPendingCount(sessionDbId)
-      });
-
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
-
-    return result;
   }
 
   async shutdown(): Promise<void> {

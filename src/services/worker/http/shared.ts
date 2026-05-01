@@ -97,13 +97,6 @@ export interface ObservationPayload {
 export function ingestObservation(payload: ObservationPayload): IngestResult {
   const { sessionManager, dbManager, eventBroadcaster, ensureGeneratorRunning } = requireContext();
 
-  if (!payload.contentSessionId) {
-    return { ok: false, reason: 'missing contentSessionId', status: 400 };
-  }
-  if (!payload.toolName) {
-    return { ok: false, reason: 'missing toolName', status: 400 };
-  }
-
   const platformSource = normalizePlatformSource(payload.platformSource);
   const cwd = typeof payload.cwd === 'string' ? payload.cwd : '';
   const project = cwd.trim() ? getProjectContext(cwd).primary : '';
