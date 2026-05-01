@@ -360,11 +360,12 @@ export class SessionManager {
   }
 
   getTotalQueueDepth(): number {
-    let total = 0;
-    for (const session of this.sessions.values()) {
-      total += this.getPendingStore().getPendingCount(session.sessionDbId);
-    }
-    return total;
+    const stmt = this.dbManager.getSessionStore().db.prepare(`
+      SELECT COUNT(*) as count FROM pending_messages
+      WHERE status IN ('pending', 'processing')
+    `);
+    const result = stmt.get() as { count: number };
+    return result.count;
   }
 
   getTotalActiveWork(): number {
