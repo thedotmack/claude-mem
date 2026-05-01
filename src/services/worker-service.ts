@@ -349,6 +349,16 @@ export class WorkerService implements WorkerRef {
       logger.info('WORKER', 'Initializing database manager...');
       await this.dbManager.initialize();
 
+      const sweepResult = this.dbManager.getSessionStore().db.prepare(`
+        UPDATE pending_messages
+           SET status = 'pending', worker_pid = NULL
+         WHERE status = 'processing'
+      `).run();
+
+      if (sweepResult.changes > 0) {
+        logger.info('SYSTEM', `Startup orphan sweep reclaimed ${sweepResult.changes} processing rows`);
+      }
+
       try {
         logger.info('WORKER', 'Running startup GC for pending messages...');
         const { PendingMessageStore } = await import('./sqlite/PendingMessageStore.js');
