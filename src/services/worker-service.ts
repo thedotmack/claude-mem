@@ -13,7 +13,7 @@ import { ChromaSync } from './sync/ChromaSync.js';
 import { configureSupervisorSignalHandlers, getSupervisor, startSupervisor } from '../supervisor/index.js';
 import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
 
-import { ensureWorkerStarted as ensureWorkerStartedShared } from './worker-spawner.js';
+import { ensureWorkerStarted as ensureWorkerStartedShared, type WorkerStartResult } from './worker-spawner.js';
 import { RestartGuard } from './worker/RestartGuard.js';
 
 export { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
@@ -884,7 +884,7 @@ export class WorkerService implements WorkerRef {
   }
 }
 
-export async function ensureWorkerStarted(port: number): Promise<boolean> {
+export async function ensureWorkerStarted(port: number): Promise<WorkerStartResult> {
   return ensureWorkerStartedShared(port, __filename);
 }
 
@@ -906,11 +906,11 @@ async function main() {
 
   switch (command) {
     case 'start': {
-      const success = await ensureWorkerStarted(port);
-      if (success) {
-        exitWithStatus('ready');
-      } else {
+      const result = await ensureWorkerStarted(port);
+      if (result === 'dead') {
         exitWithStatus('error', 'Failed to start worker');
+      } else {
+        exitWithStatus('ready', result === 'warming' ? 'Worker started; still warming up' : undefined);
       }
       break;
     }
@@ -985,8 +985,8 @@ async function main() {
         process.exit(1);
       }
 
-      const workerReady = await ensureWorkerStarted(port);
-      if (!workerReady) {
+      const workerStartResult = await ensureWorkerStarted(port);
+      if (workerStartResult === 'dead') {
         logger.warn('SYSTEM', 'Worker failed to start before hook, handler will proceed gracefully');
       }
 

@@ -6,7 +6,7 @@ import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
-import { ensureWorkerStarted } from '../../services/worker-spawner.js';
+import { ensureWorkerStarted, type WorkerStartResult } from '../../services/worker-spawner.js';
 import {
   ensureBun,
   ensureUv,
@@ -256,10 +256,49 @@ function makeIDETask(ideId: string, failedIDEs: string[], pendingErrors: string[
       };
     }
 
+    case 'crush': {
+      const allIDEs = detectInstalledIDEs();
+      const ideInfo = allIDEs.find((i) => i.id === ideId);
+      const ideLabel = ideInfo?.label ?? ideId;
+      return {
+        title: `${ideLabel}: installing MCP + hooks + transcript watcher`,
+        task: async (message) => {
+          message('Loading MCP installer…');
+          const { MCP_IDE_INSTALLERS } = await import('../../services/integrations/McpIntegrations.js');
+          const mcpInstaller = MCP_IDE_INSTALLERS[ideId];
+          if (!mcpInstaller) {
+            return `${ideLabel}: MCP installer not found ${pc.yellow('!')}`;
+          }
+          message(`Configuring ${ideLabel} MCP…`);
+          const mcpRun = await bufferConsole(() => mcpInstaller());
+          if (mcpRun.result !== 0) {
+            recordFailure(`${ideLabel}: MCP integration failed`, mcpRun.output);
+            return `${ideLabel}: MCP integration failed ${pc.red('FAIL')}`;
+          }
+
+          message(`Writing ${ideLabel} PreToolUse hooks…`);
+          const { installCrushHooks, installCrushTranscript } = await import('../../services/integrations/CrushHooksInstaller.js');
+          const hooksRun = await bufferConsole(() => installCrushHooks());
+          if (hooksRun.result !== 0) {
+            recordFailure(`${ideLabel}: hooks integration failed`, hooksRun.output);
+            return `${ideLabel}: MCP OK, hooks ${pc.red('FAIL')}`;
+          }
+
+          message(`Registering ${ideLabel} transcript watcher…`);
+          const transcriptRun = await bufferConsole(() => Promise.resolve(installCrushTranscript()));
+          if (transcriptRun.result !== 0) {
+            recordFailure(`${ideLabel}: transcript watcher failed`, transcriptRun.output);
+            return `${ideLabel}: MCP + hooks OK, transcript ${pc.red('FAIL')}`;
+          }
+
+          return `${ideLabel}: MCP + hooks + transcript installed ${pc.green('OK')}`;
+        },
+      };
+    }
+
     case 'copilot-cli':
     case 'antigravity':
     case 'goose':
-    case 'crush':
     case 'roo-code':
     case 'warp': {
       const allIDEs = detectInstalledIDEs();
@@ -796,7 +835,7 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
     await promptClaudeModel(options);
   }
 
-  let workerStarted = false;
+  let workerStartResult: WorkerStartResult = 'dead';
   const needsMarketplace = selectedIDEs.some((id) => id !== 'claude-code');
 
   {
@@ -913,13 +952,19 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
             : `Skipped (non-TTY)`;
         }
         const port = Number(getSetting('CLAUDE_MEM_WORKER_PORT'));
-        const scriptPath = join(marketplaceDirectory(), 'plugin', 'scripts', 'worker-service.cjs');
+        const marketplaceScriptPath = join(marketplaceDirectory(), 'plugin', 'scripts', 'worker-service.cjs');
+        const cacheScriptPath = join(pluginCacheDirectory(version), 'scripts', 'worker-service.cjs');
+        const scriptPath = existsSync(marketplaceScriptPath) ? marketplaceScriptPath : cacheScriptPath;
         message(`Spawning worker on port ${port}...`);
-        const ok = await ensureWorkerStarted(port, scriptPath);
-        workerStarted = ok;
-        return ok
-          ? `Worker running at http://localhost:${port} ${pc.green('OK')}`
-          : `Worker did not start — try \`npx claude-mem start\` manually ${pc.yellow('!')}`;
+        workerStartResult = await ensureWorkerStarted(port, scriptPath);
+        switch (workerStartResult) {
+          case 'ready':
+            return `Worker ready at http://localhost:${port} ${pc.green('OK')}`;
+          case 'warming':
+            return `Worker starting on port ${port} — finishing in background ${pc.yellow('⏳')}`;
+          case 'dead':
+            return `Worker did not start — try \`npx claude-mem start\` manually ${pc.yellow('!')}`;
+        }
       },
     },
   ]);
@@ -971,9 +1016,14 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
     healthSpinner?.stop(`Worker not yet responding on port ${workerPort} (still starting)`);
   }
 
-  const nextSteps = (workerStarted || workerReady)
+  const finalWorkerState = workerStartResult as WorkerStartResult;
+  const workerAlive = finalWorkerState !== 'dead' || workerReady;
+  const workerHeadline = workerReady || finalWorkerState === 'ready'
+    ? `${pc.green('✓')} Worker running at ${pc.underline(`http://localhost:${actualPort}`)}`
+    : `${pc.yellow('⏳')} Worker starting at ${pc.underline(`http://localhost:${actualPort}`)} — give it ~30s, then refresh`;
+  const nextSteps = workerAlive
     ? [
-        `${pc.green('✓')} Worker running at ${pc.underline(`http://localhost:${actualPort}`)}`,
+        workerHeadline,
         ``,
         `${pc.bold('First success:')} keep that URL open in a browser, then open Claude Code in any project. Observations stream in as Claude reads, edits, and runs commands.`,
         ``,

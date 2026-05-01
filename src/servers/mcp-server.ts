@@ -161,14 +161,14 @@ async function ensureWorkerConnection(): Promise<boolean> {
 
   try {
     const port = getWorkerPort();
-    const started = await ensureWorkerStarted(port, WORKER_SCRIPT_PATH);
-    if (!started) {
+    const result = await ensureWorkerStarted(port, WORKER_SCRIPT_PATH);
+    if (result === 'dead') {
       logger.error(
         'SYSTEM',
-        'Worker auto-start returned false — MCP tools that require the worker (search, timeline, get_observations) will fail until the worker is running. Check earlier log lines for the specific failure reason (Bun not found, missing worker bundle, port conflict, etc.).'
+        'Worker auto-start failed — MCP tools that require the worker (search, timeline, get_observations) will fail until the worker is running. Check earlier log lines for the specific failure reason (Bun not found, missing worker bundle, port conflict, etc.).'
       );
     }
-    return started;
+    return result !== 'dead';
   } catch (error: unknown) {
     logger.error(
       'SYSTEM',

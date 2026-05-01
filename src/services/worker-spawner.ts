@@ -7,7 +7,6 @@ import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import {
   cleanStalePidFile,
   getPlatformTimeout,
-  removePidFile,
   spawnDaemon,
   touchPidFile,
 } from './infrastructure/ProcessManager.js';
@@ -66,13 +65,15 @@ function clearWorkerSpawnAttempted(): void {
   }
 }
 
+export type WorkerStartResult = 'ready' | 'warming' | 'dead';
+
 export async function ensureWorkerStarted(
   port: number,
   workerScriptPath: string
-): Promise<boolean> {
+): Promise<WorkerStartResult> {
   if (!workerScriptPath) {
     logger.error('SYSTEM', 'ensureWorkerStarted called with empty workerScriptPath — caller bug');
-    return false;
+    return 'dead';
   }
   if (!existsSync(workerScriptPath)) {
     logger.error(
@@ -80,7 +81,7 @@ export async function ensureWorkerStarted(
       'ensureWorkerStarted: worker script not found at expected path — likely a partial install or build artifact missing',
       { workerScriptPath }
     );
-    return false;
+    return 'dead';
   }
 
   const pidFileStatus = cleanStalePidFile();
@@ -89,11 +90,12 @@ export async function ensureWorkerStarted(
     const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
     if (healthy) {
       clearWorkerSpawnAttempted();
+      const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
       logger.info('SYSTEM', 'Worker became healthy while waiting on live PID');
-      return true;
+      return ready ? 'ready' : 'warming';
     }
-    logger.warn('SYSTEM', 'Live PID detected but worker did not become healthy before timeout');
-    return false;
+    logger.warn('SYSTEM', 'Live PID detected but worker did not become healthy before timeout — likely still starting');
+    return 'warming';
   }
 
   if (await waitForHealth(port, 1000)) {
@@ -103,7 +105,7 @@ export async function ensureWorkerStarted(
       logger.warn('SYSTEM', 'Worker is alive but readiness timed out — proceeding anyway');
     }
     logger.info('SYSTEM', 'Worker already running and healthy');
-    return true;
+    return ready ? 'ready' : 'warming';
   }
 
   const portInUse = await isPortInUse(port);
@@ -112,16 +114,17 @@ export async function ensureWorkerStarted(
     const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
     if (healthy) {
       clearWorkerSpawnAttempted();
+      const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
       logger.info('SYSTEM', 'Worker is now healthy');
-      return true;
+      return ready ? 'ready' : 'warming';
     }
     logger.error('SYSTEM', 'Port in use but worker not responding to health checks');
-    return false;
+    return 'dead';
   }
 
   if (shouldSkipSpawnOnWindows()) {
     logger.warn('SYSTEM', 'Worker unavailable on Windows — skipping spawn (recent attempt failed within cooldown)');
-    return false;
+    return 'dead';
   }
 
   logger.info('SYSTEM', 'Starting worker daemon', { workerScriptPath });
@@ -129,14 +132,13 @@ export async function ensureWorkerStarted(
   const pid = spawnDaemon(workerScriptPath, port);
   if (pid === undefined) {
     logger.error('SYSTEM', 'Failed to spawn worker daemon');
-    return false;
+    return 'dead';
   }
 
   const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.POST_SPAWN_WAIT));
   if (!healthy) {
-    removePidFile();
-    logger.error('SYSTEM', 'Worker failed to start (health check timeout)');
-    return false;
+    logger.warn('SYSTEM', 'Worker spawned but health endpoint not responding within window — likely still starting in background');
+    return 'warming';
   }
 
   const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
@@ -147,5 +149,5 @@ export async function ensureWorkerStarted(
   clearWorkerSpawnAttempted();
   touchPidFile();
   logger.info('SYSTEM', 'Worker started successfully');
-  return true;
+  return ready ? 'ready' : 'warming';
 }
