@@ -15,6 +15,7 @@ export class SessionManager {
   private sessionQueues: Map<number, EventEmitter> = new Map();
   private onSessionDeletedCallback?: () => void;
   private pendingStore: PendingMessageStore | null = null;
+  private onPendingMutate?: () => void;
 
   constructor(dbManager: DatabaseManager) {
     this.dbManager = dbManager;
@@ -23,13 +24,22 @@ export class SessionManager {
   private getPendingStore(): PendingMessageStore {
     if (!this.pendingStore) {
       const sessionStore = this.dbManager.getSessionStore();
-      this.pendingStore = new PendingMessageStore(sessionStore.db, 3);
+      this.pendingStore = new PendingMessageStore(
+        sessionStore.db,
+        3,
+        process.pid,
+        () => this.onPendingMutate?.()
+      );
     }
     return this.pendingStore;
   }
 
   setOnSessionDeleted(callback: () => void): void {
     this.onSessionDeletedCallback = callback;
+  }
+
+  setOnPendingMutate(cb: () => void): void {
+    this.onPendingMutate = cb;
   }
 
   initializeSession(sessionDbId: number, currentUserPrompt?: string, promptNumber?: number): ActiveSession {
@@ -252,6 +262,11 @@ export class SessionManager {
 
     const emitter = this.sessionQueues.get(sessionDbId);
     emitter?.emit('message');
+  }
+
+  markMessageFailed(sessionDbId: number, messageId: number): void {
+    this.getPendingStore().markFailed(messageId);
+    this.sessionQueues.get(sessionDbId)?.emit('message');
   }
 
   async deleteSession(sessionDbId: number): Promise<void> {

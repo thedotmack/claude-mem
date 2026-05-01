@@ -39,9 +39,8 @@ export async function processAgentResponse(
     logger.warn('PARSER', `${agentName} returned unparseable response: ${parsed.reason}`, {
       sessionId: session.sessionDbId,
     });
-    const pendingStore = sessionManager.getPendingMessageStore();
     for (const messageId of session.processingMessageIds) {
-      pendingStore.markFailed(messageId);
+      sessionManager.markMessageFailed(session.sessionDbId, messageId);
     }
     session.processingMessageIds = [];
     return;

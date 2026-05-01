@@ -22,8 +22,6 @@ export class SessionEventBroadcaster {
       type: 'new_prompt',
       prompt
     });
-
-    this.workerService.broadcastProcessingStatus();
   }
 
   broadcastSessionStarted(sessionDbId: number, project: string): void {
@@ -32,8 +30,6 @@ export class SessionEventBroadcaster {
       sessionDbId,
       project
     });
-
-    this.workerService.broadcastProcessingStatus();
   }
 
   broadcastObservationQueued(sessionDbId: number): void {
@@ -41,8 +37,6 @@ export class SessionEventBroadcaster {
       type: 'observation_queued',
       sessionDbId
     });
-
-    this.workerService.broadcastProcessingStatus();
   }
 
   broadcastSessionCompleted(sessionDbId: number): void {
@@ -51,11 +45,8 @@ export class SessionEventBroadcaster {
       timestamp: Date.now(),
       sessionDbId
     });
-
-    this.workerService.broadcastProcessingStatus();
   }
 
   broadcastSummarizeQueued(): void {
-    this.workerService.broadcastProcessingStatus();
   }
 }

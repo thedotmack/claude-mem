@@ -227,12 +227,11 @@ export class SessionRoutes extends BaseRouteHandler {
         if (wasAborted) {
           logger.info('SESSION', `Generator aborted`, { sessionId: sessionDbId });
 
-          const inflightStore = this.sessionManager.getPendingMessageStore();
           const inflightIds = session.processingMessageIds.slice();
           session.processingMessageIds = [];
           for (const messageId of inflightIds) {
             try {
-              inflightStore.markFailed(messageId);
+              this.sessionManager.markMessageFailed(sessionDbId, messageId);
             } catch (markErr) {
               const normalized = markErr instanceof Error ? markErr : new Error(String(markErr));
               logger.error('SESSION', 'Failed to requeue in-flight message after abort', {
@@ -245,7 +244,6 @@ export class SessionRoutes extends BaseRouteHandler {
 
         session.generatorPromise = null;
         session.currentProvider = null;
-        this.workerService.broadcastProcessingStatus();
 
         if (!wasAborted) {
           const pendingStore = this.sessionManager.getPendingMessageStore();

@@ -170,9 +170,7 @@ export class WorkerService implements WorkerRef {
       eventBroadcaster: this.sessionEventBroadcaster,
     });
 
-    this.sessionManager.setOnSessionDeleted(() => {
-      this.broadcastProcessingStatus();
-    });
+    this.sessionManager.setOnPendingMutate(() => this.broadcastProcessingStatus());
 
     this.mcpClient = new Client({
       name: 'worker-search-proxy',
@@ -663,7 +661,6 @@ export class WorkerService implements WorkerRef {
           });
           session.abortController = new AbortController();
           this.startSessionProcessor(session, 'pending-work-restart');
-          this.broadcastProcessingStatus();
         } else {
           session.restartGuard?.recordSuccess();
           session.consecutiveRestarts = 0;

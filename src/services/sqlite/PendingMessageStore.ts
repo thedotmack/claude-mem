@@ -2,8 +2,6 @@ import { Database } from 'bun:sqlite';
 import type { PendingMessage } from '../worker-types.js';
 import { logger } from '../../utils/logger.js';
 
-export type LiveWorkerPidsProvider = () => readonly number[];
-
 export interface PersistentPendingMessage {
   id: number;
   session_db_id: number;
@@ -28,18 +26,16 @@ export class PendingMessageStore {
   private db: Database;
   private maxRetries: number;
   private workerPid: number;
-  private getLiveWorkerPids: LiveWorkerPidsProvider;
 
   constructor(
     db: Database,
     maxRetries: number = 3,
     workerPid: number = process.pid,
-    getLiveWorkerPids?: LiveWorkerPidsProvider
+    private onMutate?: () => void
   ) {
     this.db = db;
     this.maxRetries = maxRetries;
     this.workerPid = workerPid;
-    this.getLiveWorkerPids = getLiveWorkerPids ?? (() => [this.workerPid]);
   }
 
   enqueue(sessionDbId: number, contentSessionId: string, message: PendingMessage): number {
@@ -70,46 +66,31 @@ export class PendingMessageStore {
       message.agentId ?? null
     );
 
+    this.onMutate?.();
     return result.lastInsertRowid as number;
   }
 
   claimNextMessage(sessionDbId: number): PersistentPendingMessage | null {
-    const livePids = this.getLivePidsIncludingSelf();
-    const placeholders = livePids.map(() => '?').join(',');
-
     const sql = `
       UPDATE pending_messages
          SET status     = 'processing',
              worker_pid = ?
        WHERE id = (
          SELECT id FROM pending_messages
-          WHERE session_db_id = ?
-            AND (
-              status = 'pending'
-              OR (status = 'processing' AND (worker_pid IS NULL OR worker_pid NOT IN (${placeholders})))
-            )
+          WHERE session_db_id = ? AND status = 'pending'
           ORDER BY id ASC
           LIMIT 1
        )
        RETURNING *
     `;
-
-    const stmt = this.db.prepare(sql);
-    const params: (number | string)[] = [this.workerPid, sessionDbId, ...livePids];
-    const claimed = stmt.get(...params) as PersistentPendingMessage | null;
-
+    const claimed = this.db.prepare(sql).get(this.workerPid, sessionDbId) as PersistentPendingMessage | null;
     if (claimed) {
       logger.info('QUEUE', `CLAIMED | sessionDbId=${sessionDbId} | messageId=${claimed.id} | type=${claimed.message_type} | workerPid=${this.workerPid}`, {
         sessionId: sessionDbId
       });
     }
+    this.onMutate?.();
     return claimed;
-  }
-
-  private getLivePidsIncludingSelf(): number[] {
-    const pids = this.getLiveWorkerPids();
-    if (pids.includes(this.workerPid)) return [...pids];
-    return [...pids, this.workerPid];
   }
 
   confirmProcessed(messageId: number): void {
@@ -117,6 +98,7 @@ export class PendingMessageStore {
     const result = stmt.run(messageId);
     if (result.changes > 0) {
       logger.debug('QUEUE', `CONFIRMED | messageId=${messageId} | deleted from queue`);
+      this.onMutate?.();
     }
   }
 
@@ -126,7 +108,9 @@ export class PendingMessageStore {
       DELETE FROM pending_messages
       WHERE status = 'failed' AND COALESCE(failed_at_epoch, completed_at_epoch, 0) < ?
     `);
-    return stmt.run(cutoff).changes;
+    const changes = stmt.run(cutoff).changes;
+    this.onMutate?.();
+    return changes;
   }
 
   getAllPending(sessionDbId: number): PersistentPendingMessage[] {
@@ -152,7 +136,9 @@ export class PendingMessageStore {
       SET status = 'failed', failed_at_epoch = ?
       WHERE session_db_id = ? AND ${statusClause}
     `);
-    return stmt.run(now, filter.sessionDbId).changes;
+    const changes = stmt.run(now, filter.sessionDbId).changes;
+    this.onMutate?.();
+    return changes;
   }
 
   markFailed(messageId: number): void {
@@ -169,6 +155,7 @@ export class PendingMessageStore {
         WHERE id = ?
       `);
       stmt.run(messageId);
+      this.onMutate?.();
     } else {
       const stmt = this.db.prepare(`
         UPDATE pending_messages
@@ -176,6 +163,7 @@ export class PendingMessageStore {
         WHERE id = ?
       `);
       stmt.run(now, messageId);
+      this.onMutate?.();
     }
   }
 
@@ -198,14 +186,10 @@ export class PendingMessageStore {
   }
 
   hasAnyPendingWork(): boolean {
-    const livePids = this.getLivePidsIncludingSelf();
-    const placeholders = livePids.map(() => '?').join(',');
     const stmt = this.db.prepare(`
-      SELECT COUNT(*) as count FROM pending_messages
-       WHERE status = 'pending'
-          OR (status = 'processing' AND (worker_pid IS NULL OR worker_pid NOT IN (${placeholders})))
+      SELECT COUNT(*) as count FROM pending_messages WHERE status = 'pending'
     `);
-    const result = stmt.get(...livePids) as { count: number };
+    const result = stmt.get() as { count: number };
     return result.count > 0;
   }
 

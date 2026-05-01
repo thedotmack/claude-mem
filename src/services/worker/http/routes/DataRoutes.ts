@@ -269,8 +269,6 @@ export class DataRoutes extends BaseRouteHandler {
   });
 
   private handleSetProcessing = this.wrapHandler((req: Request, res: Response): void => {
-    this.workerService.broadcastProcessingStatus();
-
     const isProcessing = this.sessionManager.isAnySessionProcessing();
     const queueDepth = this.sessionManager.getTotalQueueDepth();
     const activeSessions = this.sessionManager.getActiveSessionCount();
