@@ -101,8 +101,12 @@ function writeTaglineRow(text: string): string {
 }
 
 export function isBannerEnabled(): boolean {
+  if (!process.stdout.isTTY) return false;
+  if (process.env.CI) return false;
   if (process.env.CLAUDE_MEM_NO_BANNER) return false;
-  return true;
+  if (process.env.NO_COLOR) return false;
+  const cols = process.stdout.columns ?? 0;
+  return cols >= BANNER.width;
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
