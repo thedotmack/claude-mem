@@ -84,10 +84,87 @@ const CODEX_SAMPLE_SCHEMA: TranscriptSchema = {
   ]
 };
 
+const CRUSH_SAMPLE_SCHEMA: TranscriptSchema = {
+  name: 'crush',
+  version: '0.1',
+  description: 'Schema for Crush CLI session data in per-project SQLite databases under <project>/.crush/crush.db. Each row emitted by the SqliteTailer represents one entry in messages.parts.',
+  events: [
+    {
+      name: 'user-text',
+      match: {
+        all: [
+          { path: 'role', equals: 'user' },
+          { path: 'part.type', equals: 'text' },
+        ],
+      },
+      action: 'session_init',
+      fields: {
+        prompt: 'part.data.text',
+        sessionId: 'session_id',
+      },
+    },
+    {
+      name: 'assistant-text',
+      match: {
+        all: [
+          { path: 'role', equals: 'assistant' },
+          { path: 'part.type', equals: 'text' },
+        ],
+      },
+      action: 'assistant_message',
+      fields: {
+        message: 'part.data.text',
+        sessionId: 'session_id',
+      },
+    },
+    {
+      name: 'tool-call',
+      match: { path: 'part.type', equals: 'tool_call' },
+      action: 'tool_use',
+      fields: {
+        sessionId: 'session_id',
+        toolId: {
+          coalesce: ['part.data.id', 'part.data.tool_call_id', 'part.data.call_id'],
+        },
+        toolName: {
+          coalesce: ['part.data.name', 'part.data.tool_name'],
+        },
+        toolInput: {
+          coalesce: ['part.data.input', 'part.data.arguments', 'part.data.params'],
+        },
+      },
+    },
+    {
+      name: 'tool-result',
+      match: { path: 'part.type', equals: 'tool_result' },
+      action: 'tool_result',
+      fields: {
+        sessionId: 'session_id',
+        toolId: {
+          coalesce: ['part.data.tool_call_id', 'part.data.id', 'part.data.call_id'],
+        },
+        toolName: 'part.data.name',
+        toolResponse: {
+          coalesce: ['part.data.content', 'part.data.output', 'part.data.result'],
+        },
+      },
+    },
+    {
+      name: 'turn-finish',
+      match: { path: 'part.type', equals: 'finish' },
+      action: 'session_end',
+      fields: {
+        sessionId: 'session_id',
+      },
+    },
+  ],
+};
+
 export const SAMPLE_CONFIG: TranscriptWatchConfig = {
   version: 1,
   schemas: {
-    codex: CODEX_SAMPLE_SCHEMA
+    codex: CODEX_SAMPLE_SCHEMA,
+    crush: CRUSH_SAMPLE_SCHEMA,
   },
   watches: [
     {
@@ -99,7 +176,33 @@ export const SAMPLE_CONFIG: TranscriptWatchConfig = {
         mode: 'agents',
         updateOn: ['session_start', 'session_end']
       }
-    }
+    },
+    {
+      name: 'crush',
+      path: '<registry:crush-projects>',
+      source: 'sqlite',
+      schema: 'crush',
+      registry: 'crush-projects',
+      rescanIntervalMs: 30000,
+      sqlite: {
+        sql: [
+          'SELECT',
+          '  m.session_id AS session_id,',
+          '  m.role       AS role,',
+          '  m.created_at AS created_at,',
+          '  m.rowid      AS rowid,',
+          '  p.key        AS part_index,',
+          '  p.value      AS part',
+          'FROM messages m, json_each(m.parts) p',
+          'WHERE m.rowid > :cursor',
+          'ORDER BY m.rowid ASC, p.key ASC',
+          'LIMIT 500',
+        ].join(' '),
+        cursorColumn: 'rowid',
+        jsonColumns: ['part'],
+        pollIntervalMs: 2000,
+      },
+    },
   ],
   stateFile: DEFAULT_STATE_PATH
 };

@@ -6,6 +6,9 @@ import { expandHomePath } from './config.js';
 import { loadWatchState, saveWatchState, type TranscriptWatchState } from './state.js';
 import type { TranscriptWatchConfig, TranscriptSchema, WatchTarget } from './types.js';
 import { TranscriptEventProcessor } from './processor.js';
+import { SqliteTailer, resolveRegistry, type SqliteTargetRef } from './sqlite-tailer.js';
+
+type Timer = ReturnType<typeof setInterval>;
 
 interface TailState {
   offset: number;
@@ -91,8 +94,10 @@ class FileTailer {
 export class TranscriptWatcher {
   private processor = new TranscriptEventProcessor();
   private tailers = new Map<string, FileTailer>();
+  private sqliteTailers = new Map<string, SqliteTailer>();
   private state: TranscriptWatchState;
   private rootWatchers: Array<ReturnType<typeof fsWatch>> = [];
+  private registryRescanTimers: Timer[] = [];
 
   constructor(private config: TranscriptWatchConfig, private statePath: string) {
     this.state = loadWatchState(statePath);
@@ -109,16 +114,29 @@ export class TranscriptWatcher {
       tailer.close();
     }
     this.tailers.clear();
+    for (const tailer of this.sqliteTailers.values()) {
+      tailer.close();
+    }
+    this.sqliteTailers.clear();
     for (const watcher of this.rootWatchers) {
       watcher.close();
     }
     this.rootWatchers = [];
+    for (const timer of this.registryRescanTimers) {
+      clearInterval(timer);
+    }
+    this.registryRescanTimers = [];
   }
 
   private async setupWatch(watch: WatchTarget): Promise<void> {
     const schema = this.resolveSchema(watch);
     if (!schema) {
       logger.warn('TRANSCRIPT', 'Missing schema for watch', { watch: watch.name });
+      return;
+    }
+
+    if (watch.source === 'sqlite') {
+      await this.setupSqliteWatch(watch, schema);
       return;
     }
 
@@ -159,6 +177,77 @@ export class TranscriptWatcher {
         watchRoot,
       }, error instanceof Error ? error : undefined);
     }
+  }
+
+  private async setupSqliteWatch(
+    watch: WatchTarget,
+    schema: TranscriptSchema,
+  ): Promise<void> {
+    if (!watch.sqlite) {
+      logger.warn('TRANSCRIPT', 'sqlite watch missing sqlite config', { watch: watch.name });
+      return;
+    }
+
+    const addAllTargets = () => {
+      const targets = this.resolveSqliteTargets(watch);
+      for (const target of targets) {
+        this.addSqliteTailer(target, watch, schema);
+      }
+    };
+
+    addAllTargets();
+
+    const rescanMs = watch.rescanIntervalMs ?? 30_000;
+    if (watch.registry) {
+      const timer = setInterval(addAllTargets, rescanMs);
+      if (typeof (timer as any).unref === 'function') (timer as any).unref();
+      this.registryRescanTimers.push(timer);
+    }
+  }
+
+  private resolveSqliteTargets(watch: WatchTarget): SqliteTargetRef[] {
+    if (watch.registry) {
+      return resolveRegistry(watch.registry);
+    }
+    const dbPath = expandHomePath(watch.path);
+    if (!existsSync(dbPath)) return [];
+    return [{ dbPath }];
+  }
+
+  private addSqliteTailer(
+    target: SqliteTargetRef,
+    watch: WatchTarget,
+    schema: TranscriptSchema,
+  ): void {
+    const key = `sqlite::${target.dbPath}`;
+    if (this.sqliteTailers.has(key)) return;
+    if (!watch.sqlite) return;
+
+    const initialCursor = this.state.offsets[key] ?? (
+      typeof watch.sqlite.initialCursor === 'number' ? watch.sqlite.initialCursor : 0
+    );
+
+    const tailer = new SqliteTailer(
+      target.dbPath,
+      watch.sqlite,
+      initialCursor,
+      async (entry) => {
+        const enriched = { ...entry, __sqlite_target: target.label ?? target.dbPath };
+        await this.processor.processEntry(enriched, watch, schema);
+      },
+      (cursor) => {
+        this.state.offsets[key] = cursor;
+        saveWatchState(this.statePath, this.state);
+      },
+    );
+
+    tailer.start();
+    this.sqliteTailers.set(key, tailer);
+    logger.info('TRANSCRIPT', 'Watching sqlite transcript source', {
+      dbPath: target.dbPath,
+      watch: watch.name,
+      schema: schema.name,
+    });
   }
 
   private deepestNonGlobAncestor(inputPath: string): string {

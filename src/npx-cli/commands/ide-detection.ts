@@ -116,7 +116,7 @@ export function detectInstalledIDEs(): IDEInfo[] {
       label: 'Crush',
       detected: isCommandInPath('crush'),
       supported: true,
-      hint: 'MCP-based integration',
+      hint: 'MCP + PreToolUse hooks',
     },
     {
       id: 'roo-code',

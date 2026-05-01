@@ -120,6 +120,20 @@ export function matchesRule(
 ): boolean {
   if (!rule) return true;
 
+  if (Array.isArray(rule.all) && rule.all.length > 0) {
+    for (const sub of rule.all) {
+      if (!matchesRule(entry, sub, schema)) return false;
+    }
+    const hasOwnPredicate =
+      rule.path !== undefined ||
+      rule.equals !== undefined ||
+      rule.in !== undefined ||
+      rule.contains !== undefined ||
+      rule.exists !== undefined ||
+      rule.regex !== undefined;
+    if (!hasOwnPredicate) return true;
+  }
+
   const path = rule.path || schema.eventTypePath || 'type';
   const value = path ? getValueByPath(entry, path) : undefined;
 

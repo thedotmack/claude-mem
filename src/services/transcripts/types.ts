@@ -14,6 +14,7 @@ export interface MatchRule {
   contains?: string;
   exists?: boolean;
   regex?: string;
+  all?: MatchRule[];
 }
 
 export type EventAction =
@@ -51,6 +52,18 @@ export interface WatchContextConfig {
   updateOn?: Array<'session_start' | 'session_end'>;
 }
 
+export type TranscriptSource = 'jsonl' | 'sqlite';
+
+export interface SqliteQueryConfig {
+  sql: string;
+  cursorColumn: string;
+  jsonColumns?: string[];
+  pollIntervalMs?: number;
+  initialCursor?: string | number;
+}
+
+export type RegistryResolver = 'crush-projects';
+
 export interface WatchTarget {
   name: string;
   path: string;
@@ -60,6 +73,9 @@ export interface WatchTarget {
   context?: WatchContextConfig;
   rescanIntervalMs?: number;
   startAtEnd?: boolean;
+  source?: TranscriptSource;
+  sqlite?: SqliteQueryConfig;
+  registry?: RegistryResolver;
 }
 
 export interface TranscriptWatchConfig {
