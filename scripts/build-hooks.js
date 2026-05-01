@@ -98,11 +98,6 @@ async function buildHooks() {
         '@derekstride/tree-sitter-sql': '^0.3.11',
         '@tree-sitter-grammars/tree-sitter-markdown': '^0.3.2',
       },
-      // The grammar packages above declare three different majors of `tree-sitter`
-      // as peer deps (^0.21, ^0.22, ^0.25). Bun and pnpm are lenient enough to
-      // pick one and move on, but plain `npm install --production` aborts with
-      // ERESOLVE. Pinning a single version via `overrides` lets npm resolve a
-      // working tree without `--legacy-peer-deps`. Closes #2147.
       overrides: {
         'tree-sitter': '^0.25.0'
       },
@@ -334,8 +329,6 @@ async function buildHooks() {
     }
 
     console.log('\n📋 Copying onboarding explainer to plugin tree...');
-    // Canonical source lives at src/services/worker/onboarding-explainer.md;
-    // worker-service.cjs reads it at boot via path.resolve(__dirname, '../skills/how-it-works/onboarding-explainer.md').
     const onboardingExplainerSrc = 'src/services/worker/onboarding-explainer.md';
     const onboardingExplainerDst = 'plugin/skills/how-it-works/onboarding-explainer.md';
     if (!fs.existsSync(onboardingExplainerSrc)) {

@@ -72,7 +72,6 @@ describe('setup-runtime install marker', () => {
       expect(parsed.bun).toBe('1.2.0');
       expect(parsed.uv).toBe('0.4.18');
       expect(typeof parsed.installedAt).toBe('string');
-      // ISO 8601 timestamp
       expect(() => new Date(parsed.installedAt).toISOString()).not.toThrow();
     });
 
@@ -104,8 +103,6 @@ describe('setup-runtime install marker', () => {
     it('returns true when marker matches version and bun version matches', () => {
       const bunVersion = probeBunVersion();
       if (!bunVersion) {
-        // Skip when bun isn't available to probe; the function compares against
-        // currentBun only when both sides exist.
         return;
       }
       mkdirSync(join(tempDir, 'node_modules'));

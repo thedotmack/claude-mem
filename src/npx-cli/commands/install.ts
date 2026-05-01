@@ -516,8 +516,6 @@ async function promptForIDESelection(): Promise<string[]> {
     };
   });
 
-  // No pre-selection — users must explicitly opt in to each IDE so we never
-  // wire up an integration the user did not actually request (#2106).
   const result = await p.multiselect({
     message: 'Which IDEs do you use?',
     options,
@@ -786,7 +784,6 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
     }
   }
 
-  // Single horizontal info line: target version + (if differs) currently installed.
   const dot = pc.dim('·');
   const segments = [`${pc.bold('claude-mem')} ${pc.cyan(`v${version}`)}`];
   if (existingVersion && existingVersion !== version) {

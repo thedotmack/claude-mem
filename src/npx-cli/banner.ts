@@ -10,8 +10,6 @@ const RESET = '\x1b[0m';
 
 const FRAME_SEP = '\x01';
 
-// Brand colors. Primary = the orange logo body. Accent = outline highlight
-// applied to <span>-tagged cells (the high-gradient edges).
 function primaryColor(truecolor: boolean, brightness: number = 1.0): string {
   if (!truecolor) return '\x1b[38;5;208m';
   const r = Math.min(255, Math.round(230 * brightness));
@@ -36,8 +34,6 @@ function getFrames(): string[] {
   return frames;
 }
 
-// Render one frame: walks the text, switching ANSI styles on <span>...</span>
-// tags. Mirrors the state machine in ghostty's src/cli/boo.zig updateFrame().
 function styleFrame(
   frame: string,
   truecolor: boolean,
@@ -51,10 +47,9 @@ function styleFrame(
   while (i < frame.length) {
     const ch = frame[i];
     if (ch === '<') {
-      // Skip until '>'. Track whether we're entering or leaving a span.
       const isClosing = frame[i + 1] === '/';
       while (i < frame.length && frame[i] !== '>') i++;
-      i++; // skip '>'
+      i++; 
       inSpan = !isClosing;
       out += inSpan ? accent : primary;
       continue;
@@ -69,7 +64,6 @@ function detectTruecolor(): boolean {
   return process.env.COLORTERM === 'truecolor' || process.env.COLORTERM === '24bit';
 }
 
-// figlet -f standard "claude-mem" — geometric ASCII letters, 5 rows × 62 cols.
 const WORDMARK_BUBBLE: readonly string[] = [
   "      _                 _                                     ",
   "  ___| | __ _ _   _  __| | ___       _ __ ___   ___ _ __ ___  ",
@@ -80,13 +74,10 @@ const WORDMARK_BUBBLE: readonly string[] = [
 const BUBBLE_HEIGHT = WORDMARK_BUBBLE.length;
 const BUBBLE_WIDTH = WORDMARK_BUBBLE[0].length;
 
-// Reserve canvas: animation + wordmark (5 rows) + 1 blank gap + 1 tagline row.
 const TAGLINE_GAP = 1;
 const TOTAL_ROWS = BANNER.height + BUBBLE_HEIGHT + TAGLINE_GAP + 1;
 
 function writeBubbleRow(rowIdx: number, colsRevealed: number): string {
-  // Reveal left-to-right by column. Hidden cols become spaces so the row width
-  // is always BUBBLE_WIDTH and centering stays stable.
   const src = WORDMARK_BUBBLE[rowIdx];
   const W = BANNER.width;
   const visible = src.slice(0, Math.min(BUBBLE_WIDTH, colsRevealed)).padEnd(BUBBLE_WIDTH, ' ');
@@ -121,8 +112,6 @@ export async function playBanner(): Promise<void> {
   process.stdout.write(CLEAR_SCREEN);
   process.stdout.write(HIDE_CURSOR);
 
-  // Reserve vertical space (logo + 2 wordmark rows) so we have a stable
-  // canvas to redraw on. Save cursor at the top of the canvas.
   process.stdout.write('\n'.repeat(TOTAL_ROWS));
   process.stdout.write(`\x1b[${TOTAL_ROWS}A`);
   process.stdout.write('\x1b[s');
@@ -132,7 +121,6 @@ export async function playBanner(): Promise<void> {
   const writeFrame = (frameText: string, colsRevealed: number, tagline: string, brightness: number = 1.0) => {
     process.stdout.write('\x1b[u');
     process.stdout.write(styleFrame(frameText, truecolor, brightness));
-    // Frames don't end with \n on the last line, so add one before drawing wordmark rows
     process.stdout.write('\n');
     for (let i = 0; i < BUBBLE_HEIGHT; i++) {
       process.stdout.write(writeBubbleRow(i, colsRevealed));
@@ -146,18 +134,15 @@ export async function playBanner(): Promise<void> {
   };
 
   try {
-    // ACT 1+2: play the prerendered animation
     for (let i = 0; i < allFrames.length; i++) {
       if (aborted) return;
       writeFrame(allFrames[i], 0, '');
       await sleep(BANNER.frameDelay);
     }
 
-    // ACT 3: reveal bubble wordmark letter-by-letter, then tagline
     const finalFrame = allFrames[allFrames.length - 1];
     const TAGLINE = 'persistent memory across sessions';
 
-    // Sweep reveal across all columns
     const REVEAL_STEPS = 14;
     for (let s = 1; s <= REVEAL_STEPS; s++) {
       if (aborted) return;
@@ -173,7 +158,6 @@ export async function playBanner(): Promise<void> {
       await sleep(33);
     }
 
-    // Brief breathe pulse on the final pose
     for (const brightness of [0.85, 0.95, 1.0]) {
       if (aborted) return;
       writeFrame(finalFrame, BUBBLE_WIDTH, TAGLINE, brightness);
@@ -185,7 +169,6 @@ export async function playBanner(): Promise<void> {
     process.stdout.off('resize', onResize);
     process.stdout.write(RESET);
     process.stdout.write(SHOW_CURSOR);
-    // Move cursor below the banner so subsequent output starts on a fresh line.
     process.stdout.write('\n');
   }
 }

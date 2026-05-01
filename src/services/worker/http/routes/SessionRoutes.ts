@@ -227,14 +227,6 @@ export class SessionRoutes extends BaseRouteHandler {
         if (wasAborted) {
           logger.info('SESSION', `Generator aborted`, { sessionId: sessionDbId });
 
-          // #2192: when the generator aborts (idle timeout, user cancel,
-          // shutdown) with rows already claimed and yielded but not yet
-          // confirmed by ResponseProcessor, those rows sit in 'processing'
-          // under THIS worker's PID. The self-healing claim predicate skips
-          // them because the worker is still alive — the queue deadlocks
-          // until the worker restarts. Walk the in-flight ids and run them
-          // through markFailed so the retry ladder requeues them or marks
-          // them terminally failed.
           const inflightStore = this.sessionManager.getPendingMessageStore();
           const inflightIds = session.processingMessageIds.slice();
           session.processingMessageIds = [];

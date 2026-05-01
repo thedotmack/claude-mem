@@ -13,10 +13,6 @@ import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsMana
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from '../../../sqlite/types.js';
 
-// Onboarding explainer markdown — canonical source at src/services/worker/onboarding-explainer.md,
-// copied to plugin/skills/how-it-works/onboarding-explainer.md by scripts/build-hooks.js.
-// At runtime, worker-service.cjs lives in plugin/scripts/, so the file is at ../skills/how-it-works/onboarding-explainer.md.
-// Cache pattern mirrors src/services/server/Server.ts:18-33 (cachedSkillMd).
 const ONBOARDING_EXPLAINER_PATH: string = path.resolve(__dirname, '../skills/how-it-works/onboarding-explainer.md');
 
 const cachedOnboardingExplainer: string | null = (() => {

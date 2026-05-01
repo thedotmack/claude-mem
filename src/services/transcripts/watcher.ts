@@ -37,10 +37,6 @@ class FileTailer {
     this.watcher = null;
   }
 
-  // Public wrapper so the recursive root watcher can prod an existing tailer
-  // when fs.watch on the file itself misses an append event on Windows
-  // (#2192). Per-file fs.watch is unreliable on Windows ReFS/SMB; the root
-  // recursive watcher is the only signal we can trust there.
   poke(): void {
     this.readNewData().catch(() => undefined);
   }
@@ -196,10 +192,6 @@ export class TranscriptWatcher {
 
   private resolveWatchFiles(inputPath: string): string[] {
     if (this.hasGlob(inputPath)) {
-      // #2192: glob treats backslashes as escape chars, not separators. On
-      // Windows, expandHomePath() emits backslash paths from Node's path.join
-      // which globSync silently fails to match. Normalize separators here
-      // before passing to glob — leaves Unix paths untouched.
       return globSync(this.normalizeGlobPattern(inputPath), { nodir: true, absolute: true });
     }
 

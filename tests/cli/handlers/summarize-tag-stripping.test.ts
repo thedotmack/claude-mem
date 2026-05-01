@@ -1,16 +1,3 @@
-/**
- * Tests for privacy-tag stripping in summarizeHandler.
- *
- * Validates that the Stop hook strips memory tags (<private>, <claude-mem-context>,
- * <system-instruction>, <system_instruction>, <persisted-output>) from the assistant's
- * last message before POSTing to /api/sessions/summarize. This is the fix for the bug
- * where private content was leaking into the summarize queue and downstream summary LLM.
- *
- * Sources:
- * - Handler: src/cli/handlers/summarize.ts
- * - Stripping utility: src/utils/tag-stripping.ts
- * - Mock pattern: tests/cli/handlers/summarize-subagent-skip.test.ts
- */
 import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
 import { homedir } from 'os';
 import { join } from 'path';
@@ -30,14 +17,11 @@ mock.module('../../../src/shared/hook-settings.js', () => ({
   loadFromFileOnce: () => ({ CLAUDE_MEM_EXCLUDED_PROJECTS: '' }),
 }));
 
-// Per-test control over what the transcript parser "extracts".
 let mockExtractedMessage: string = '';
 mock.module('../../../src/shared/transcript-parser.js', () => ({
   extractLastMessage: () => mockExtractedMessage,
 }));
 
-// Capture every executeWithWorkerFallback call. Resolve successfully so the
-// handler completes its normal path — the assertions inspect what got POSTed.
 const workerCallLog: Array<{ path: string; method: string; body: any }> = [];
 mock.module('../../../src/shared/worker-utils.js', () => ({
   ensureWorkerRunning: () => Promise.resolve(true),
@@ -84,8 +68,6 @@ const baseInput = {
 function postedBody(): any {
   expect(workerCallLog).toHaveLength(1);
   const { body } = workerCallLog[0];
-  // executeWithWorkerFallback receives the body as a plain object; the legacy
-  // workerHttpRequest path receives a JSON string. Support both for forward-compat.
   return typeof body === 'string' ? JSON.parse(body) : body;
 }
 
@@ -119,8 +101,6 @@ describe('summarizeHandler — privacy tag stripping', () => {
   });
 
   it('skips the worker POST when the entire turn is wrapped in a privacy tag', async () => {
-    // After stripping, the message is empty — handler should hit the
-    // "no assistant message" guard and return without POSTing.
     mockExtractedMessage = '<private>everything is private</private>';
 
     const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');

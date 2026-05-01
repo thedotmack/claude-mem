@@ -62,7 +62,6 @@ export class KnowledgeAgent {
         pathToClaudeCodeExecutable: claudePath,
         env: isolatedEnv,
         mcpServers: {},
-        // Same SDK-boundary isolation as SDKAgent. Closes #2155, #2159, #2171, #2194.
         settingSources: [],
         strictMcpConfig: true,
       }
@@ -159,7 +158,6 @@ export class KnowledgeAgent {
         pathToClaudeCodeExecutable: claudePath,
         env: isolatedEnv,
         mcpServers: {},
-        // Same SDK-boundary isolation as SDKAgent. Closes #2155, #2159, #2171, #2194.
         settingSources: [],
         strictMcpConfig: true,
       }

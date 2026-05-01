@@ -104,8 +104,6 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentFilter, currentSource]);
 
-  // Refresh stats whenever a new observation arrives via SSE.
-  // No timer-based polling — just react to live observation count changes.
   useEffect(() => {
     refreshStats();
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -1,12 +1,3 @@
-/**
- * Regression test for #2153: ChromaSearchStrategy passes orderBy='relevance'
- * to SessionStore.getObservationsByIds expecting Chroma's vector ranking
- * (caller-provided ID order) to be preserved. The old code coerced
- * 'relevance' to undefined, which then defaulted to 'date_desc' inside
- * SessionStore, destroying the semantic ranking.
- *
- * Mock Justification: NONE - real SQLite ':memory:' covers SQL + ordering.
- */
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 
@@ -25,9 +16,6 @@ describe('SessionStore.*ByIds — orderBy: "relevance" preserves caller ID order
     const sdkId = store.createSDKSession('content-relevance', 'p', 'prompt');
     store.updateMemorySessionId(sdkId, 'session-relevance');
 
-    // Insert 5 observations with strictly increasing created_at_epoch so that
-    // a date_desc default would reverse the natural insertion order. The test
-    // proves that caller-provided ID order, not date order, is honored.
     const baseTs = 1_700_000_000_000;
     const inserted: number[] = [];
     for (let i = 0; i < 5; i++) {
@@ -52,8 +40,6 @@ describe('SessionStore.*ByIds — orderBy: "relevance" preserves caller ID order
       inserted.push(result.observationIds[0]);
     }
 
-    // Reverse the IDs — semantic ranking from Chroma would not match
-    // chronological order.
     const callerOrder = [...inserted].reverse();
     const results = store.getObservationsByIds(callerOrder, { orderBy: 'relevance' });
 
@@ -87,8 +73,7 @@ describe('SessionStore.*ByIds — orderBy: "relevance" preserves caller ID order
       inserted.push(result.observationIds[0]);
     }
 
-    const callerOrder = [...inserted].reverse(); // [oldId... newer... oldest]
-    // Default order is date_desc -> newest first regardless of input order.
+    const callerOrder = [...inserted].reverse(); 
     const results = store.getObservationsByIds(callerOrder);
     expect(results.map(r => r.id)).toEqual([...inserted].reverse());
   });

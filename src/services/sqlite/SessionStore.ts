@@ -1440,7 +1440,6 @@ export class SessionStore {
     const rows = stmt.all(...params) as ObservationSearchResult[];
     if (!preserveIdOrder) return rows;
 
-    // Preserve caller-provided ID order (Chroma vector similarity ranking)
     const rowMap = new Map(rows.map(r => [r.id, r]));
     return ids.map(id => rowMap.get(id)).filter((r): r is ObservationSearchResult => !!r);
   }

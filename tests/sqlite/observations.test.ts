@@ -233,7 +233,6 @@ describe('Observations Module', () => {
       const midEpoch = 2000000000000;
       const latestEpoch = 3000000000000;
 
-      // Insert out of order to confirm we sort by created_at_epoch ASC, not insertion order
       storeObservation(db, memMid, project, createObservationInput(), 2, 0, midEpoch);
       storeObservation(db, memLate, project, createObservationInput(), 3, 0, latestEpoch);
       storeObservation(db, memEarly, project, createObservationInput(), 1, 0, earliestEpoch);
