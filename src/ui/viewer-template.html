@@ -1560,6 +1560,58 @@
       text-decoration: underline;
     }
 
+    /* Empty-state variant — slightly larger lede + status row */
+    .welcome-card-empty .welcome-card-lede h2 {
+      font-size: 18px;
+    }
+
+    .welcome-card-status-row {
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      gap: 8px;
+      margin: 0 0 14px 0;
+      font-size: 13px;
+      color: var(--color-text-secondary);
+    }
+
+    .welcome-card-status-dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      background: var(--color-accent-error);
+      animation: pulse 1.4s ease-in-out infinite;
+    }
+
+    .welcome-card-status-dot[data-connected="true"] {
+      background: var(--color-accent-success);
+      animation: none;
+    }
+
+    .welcome-card-status-label {
+      line-height: 1.4;
+    }
+
+    /* Has-data variant — single-row stat strip with dot separators */
+    .welcome-card-stats {
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin: 0 0 14px 0;
+      font-size: 12px;
+      color: var(--color-text-muted);
+      line-height: 1.5;
+    }
+
+    .welcome-card-stats-sep {
+      color: var(--color-text-muted);
+      opacity: 0.6;
+    }
+
     .card-content {
       margin-top: 14px;
       margin-bottom: 12px;

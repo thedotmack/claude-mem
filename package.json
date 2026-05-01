@@ -143,6 +143,7 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "esbuild": "^0.28.0",
+    "jimp": "^1.6.1",
     "np": "^11.2.0",
     "tree-sitter-bash": "^0.25.1",
     "tree-sitter-c": "^0.24.1",

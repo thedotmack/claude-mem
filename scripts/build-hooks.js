@@ -333,10 +333,24 @@ async function buildHooks() {
       console.log(`✓ opencode plugin built (${(opencodeStats.size / 1024).toFixed(2)} KB)`);
     }
 
+    console.log('\n📋 Copying onboarding explainer to plugin tree...');
+    // Canonical source lives at src/services/worker/onboarding-explainer.md;
+    // worker-service.cjs reads it at boot via path.resolve(__dirname, '../skills/how-it-works/onboarding-explainer.md').
+    const onboardingExplainerSrc = 'src/services/worker/onboarding-explainer.md';
+    const onboardingExplainerDst = 'plugin/skills/how-it-works/onboarding-explainer.md';
+    if (!fs.existsSync(onboardingExplainerSrc)) {
+      throw new Error(`Missing onboarding explainer source: ${onboardingExplainerSrc}`);
+    }
+    fs.mkdirSync(path.dirname(onboardingExplainerDst), { recursive: true });
+    fs.copyFileSync(onboardingExplainerSrc, onboardingExplainerDst);
+    console.log(`✓ Copied ${onboardingExplainerSrc} → ${onboardingExplainerDst}`);
+
     console.log('\n📋 Verifying distribution files...');
     const requiredDistributionFiles = [
       'plugin/skills/mem-search/SKILL.md',
       'plugin/skills/smart-explore/SKILL.md',
+      'plugin/skills/how-it-works/SKILL.md',
+      'plugin/skills/how-it-works/onboarding-explainer.md',
       'plugin/hooks/hooks.json',
       'plugin/.claude-plugin/plugin.json',
     ];

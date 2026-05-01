@@ -5,6 +5,7 @@ import {
   storeObservation,
   getObservationById,
   getRecentObservations,
+  getFirstObservationCreatedAt,
 } from '../../src/services/sqlite/Observations.js';
 import {
   createSDKSession,
@@ -211,6 +212,36 @@ describe('Observations Module', () => {
       const recent = getRecentObservations(db, 'nonexistent-project', 10);
 
       expect(recent).toEqual([]);
+    });
+  });
+
+  describe('getFirstObservationCreatedAt', () => {
+    it('should return null when there are no observations', () => {
+      const result = getFirstObservationCreatedAt(db);
+
+      expect(result).toBeNull();
+    });
+
+    it('should return the earliest observation created_at as ISO string', () => {
+      const project = 'test-project';
+
+      const memEarly = createSessionWithMemoryId('content-early', 'session-early', project);
+      const memMid = createSessionWithMemoryId('content-mid', 'session-mid', project);
+      const memLate = createSessionWithMemoryId('content-late', 'session-late', project);
+
+      const earliestEpoch = 1000000000000;
+      const midEpoch = 2000000000000;
+      const latestEpoch = 3000000000000;
+
+      // Insert out of order to confirm we sort by created_at_epoch ASC, not insertion order
+      storeObservation(db, memMid, project, createObservationInput(), 2, 0, midEpoch);
+      storeObservation(db, memLate, project, createObservationInput(), 3, 0, latestEpoch);
+      storeObservation(db, memEarly, project, createObservationInput(), 1, 0, earliestEpoch);
+
+      const result = getFirstObservationCreatedAt(db);
+
+      expect(result).not.toBeNull();
+      expect(new Date(result!).getTime()).toBe(earliestEpoch);
     });
   });
 });

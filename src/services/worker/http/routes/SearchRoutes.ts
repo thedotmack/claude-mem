@@ -1,5 +1,7 @@
 
 import express, { Request, Response } from 'express';
+import * as fs from 'fs';
+import path from 'path';
 import { z } from 'zod';
 import { SearchManager } from '../../SearchManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
@@ -11,19 +13,41 @@ import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsMana
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from '../../../sqlite/types.js';
 
-const WELCOME_HINT_TEMPLATE = `# Welcome to claude-mem
+// Onboarding explainer markdown — canonical source at src/services/worker/onboarding-explainer.md,
+// copied to plugin/skills/how-it-works/onboarding-explainer.md by scripts/build-hooks.js.
+// At runtime, worker-service.cjs lives in plugin/scripts/, so the file is at ../skills/how-it-works/onboarding-explainer.md.
+// Cache pattern mirrors src/services/server/Server.ts:18-33 (cachedSkillMd).
+const ONBOARDING_EXPLAINER_PATH: string = path.resolve(__dirname, '../skills/how-it-works/onboarding-explainer.md');
 
-This is your first session in this project. claude-mem will start
-building memory as you and Claude work together — every Read, Edit,
-Bash, and search Claude makes turns into a compressed observation.
+const cachedOnboardingExplainer: string | null = (() => {
+  try {
+    const text = fs.readFileSync(ONBOARDING_EXPLAINER_PATH, 'utf-8');
+    logger.info('SYSTEM', 'Cached onboarding explainer at boot', {
+      path: ONBOARDING_EXPLAINER_PATH,
+      bytes: Buffer.byteLength(text, 'utf-8'),
+    });
+    return text;
+  } catch (error: unknown) {
+    logger.debug('SYSTEM', 'Onboarding explainer not present at boot, /api/onboarding/explainer will 404', {
+      path: ONBOARDING_EXPLAINER_PATH,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+})();
 
-To kick things off:
+const WELCOME_HINT_TEMPLATE = `# claude-mem status
 
-- Run \`/learn-codebase\` to have Claude read every file in this repo
-- Browse the viewer at {viewer_url}
-- Ask "did we already solve X?" or use \`/mem-search\` to recall past work
+This project has no memory yet. The current session will seed it; subsequent sessions will receive auto-injected context for relevant past work.
 
-This message will disappear once your first observation lands.
+Memory injection starts on your second session in a project.
+
+\`/learn-codebase\` is available if the user wants to front-load the entire repo into memory in a single pass (~5 minutes on a typical repo, optional). Otherwise memory builds passively as work happens.
+
+Live activity: {viewer_url}
+How it works: \`/how-it-works\`
+
+This message disappears once the first observation lands.
 `;
 
 const semanticContextSchema = z.object({
@@ -58,6 +82,7 @@ export class SearchRoutes extends BaseRouteHandler {
     app.get('/api/context/preview', this.handleContextPreview.bind(this));
     app.get('/api/context/inject', this.handleContextInject.bind(this));
     app.post('/api/context/semantic', validateBody(semanticContextSchema), this.handleSemanticContext.bind(this));
+    app.get('/api/onboarding/explainer', this.handleOnboardingExplainer.bind(this));
 
     app.get('/api/timeline/by-query', this.handleGetTimelineByQuery.bind(this));
     app.get('/api/search/help', this.handleSearchHelp.bind(this));
@@ -361,6 +386,15 @@ export class SearchRoutes extends BaseRouteHandler {
     }
 
     res.json({ context: lines.join('\n'), count: observations.length });
+  });
+
+  private handleOnboardingExplainer = this.wrapHandler((_req: Request, res: Response): void => {
+    if (cachedOnboardingExplainer === null) {
+      res.status(404).json({ error: 'Onboarding explainer not available' });
+      return;
+    }
+    res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+    res.send(cachedOnboardingExplainer);
   });
 
   private handleGetTimelineByQuery = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {

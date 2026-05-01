@@ -16,6 +16,7 @@ import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 import { getObservationsByFilePath } from '../../../sqlite/observations/get.js';
+import { getFirstObservationCreatedAt } from '../../../sqlite/observations/recent.js';
 
 const integerArrayLike = z.preprocess((value) => {
   if (Array.isArray(value)) return value;
@@ -212,6 +213,7 @@ export class DataRoutes extends BaseRouteHandler {
     const totalObservations = db.prepare('SELECT COUNT(*) as count FROM observations').get() as { count: number };
     const totalSessions = db.prepare('SELECT COUNT(*) as count FROM sdk_sessions').get() as { count: number };
     const totalSummaries = db.prepare('SELECT COUNT(*) as count FROM session_summaries').get() as { count: number };
+    const firstObservationAt = getFirstObservationCreatedAt(db);
 
     const dbPath = path.join(homedir(), '.claude-mem', 'claude-mem.db');
     let dbSize = 0;
@@ -236,7 +238,8 @@ export class DataRoutes extends BaseRouteHandler {
         size: dbSize,
         observations: totalObservations.count,
         sessions: totalSessions.count,
-        summaries: totalSummaries.count
+        summaries: totalSummaries.count,
+        firstObservationAt
       }
     });
   });

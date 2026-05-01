@@ -107,6 +107,7 @@ export interface DatabaseStats {
   observations?: number;
   sessions?: number;
   summaries?: number;
+  firstObservationAt?: string | null;
 }
 
 export interface Stats {

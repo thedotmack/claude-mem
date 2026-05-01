@@ -92,4 +92,43 @@ describe('Install Non-TTY Support', () => {
       expect(installSource).toContain('ide?: string');
     });
   });
+
+  describe('post-install Next Steps copy', () => {
+    it('frames the choice as two paths', () => {
+      expect(installSource).toContain('Two paths from here:');
+    });
+
+    it('sets timing honesty about second-session memory injection', () => {
+      expect(installSource).toContain('Memory injection starts on your second session in a project.');
+    });
+
+    it('addresses privacy: everything stays local', () => {
+      expect(installSource).toContain('Everything stays in ');
+      expect(installSource).toContain("pc.cyan('~/.claude-mem')");
+    });
+
+    it('keeps /learn-codebase as the optional front-load path', () => {
+      expect(installSource).toContain('/learn-codebase');
+    });
+
+    it('demotes the uninstall caveat into a dim footer', () => {
+      expect(installSource).toContain('close all Claude Code sessions before uninstalling');
+    });
+
+    it('does not advertise /mem-search in the post-install Next Steps', () => {
+      const nextStepsRegion = installSource.slice(
+        installSource.indexOf('const nextSteps = '),
+        installSource.indexOf("p.note(nextSteps.join"),
+      );
+      expect(nextStepsRegion).not.toContain('/mem-search');
+    });
+
+    it('does not advertise /knowledge-agent in the post-install Next Steps', () => {
+      const nextStepsRegion = installSource.slice(
+        installSource.indexOf('const nextSteps = '),
+        installSource.indexOf("p.note(nextSteps.join"),
+      );
+      expect(nextStepsRegion).not.toContain('/knowledge-agent');
+    });
+  });
 });

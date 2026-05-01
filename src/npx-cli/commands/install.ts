@@ -866,15 +866,33 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
   const nextSteps = (workerStarted || workerReady)
     ? [
         `${pc.green('✓')} Worker running at ${pc.underline(`http://localhost:${actualPort}`)}`,
-        `→ Open Claude Code in a project, then run ${pc.bold('/learn-codebase')} to have Claude read your repo end-to-end`,
-        `→ Search past work: ask "did we already solve X?" or use ${pc.bold('/mem-search')}`,
-        `→ Build focused brains: ${pc.bold('/knowledge-agent')}`,
-        `Note: Close all Claude Code sessions before uninstalling, or ${pc.cyan('~/.claude-mem')} will be recreated by active hooks.`,
+        ``,
+        `${pc.bold('First success:')} keep that URL open in a browser, then open Claude Code in any project. Observations stream in as Claude reads, edits, and runs commands.`,
+        ``,
+        `${pc.bold('Two paths from here:')}`,
+        `  ${pc.cyan('A.')} Just start working. Memory builds passively from your first prompt. (Recommended.)`,
+        `  ${pc.cyan('B.')} Front-load it: open Claude Code and run ${pc.bold('/learn-codebase')} to ingest the whole repo (~5 min, optional).`,
+        ``,
+        `Memory injection starts on your second session in a project.`,
+        `Everything stays in ${pc.cyan('~/.claude-mem')} on this machine.`,
+        ``,
+        `${pc.dim('How it works: /how-it-works   ·   Disable first-session hint: CLAUDE_MEM_WELCOME_HINT_ENABLED=false')}`,
+        `${pc.dim('Note: close all Claude Code sessions before uninstalling, or ~/.claude-mem will be recreated by active hooks.')}`,
       ]
     : [
         `${pc.yellow('!')} Worker not yet ready on port ${pc.cyan(String(workerPort))} -- still starting up; check ${pc.bold('claude-mem status')} later, or start manually: ${pc.bold('npx claude-mem start')}`,
-        `→ View your memories: ${pc.underline(`http://localhost:${workerPort}`)}`,
-        `→ Search past work: ask "did we already solve X?" or use ${pc.bold('/mem-search')}`,
+        ``,
+        `${pc.bold('First success:')} keep ${pc.underline(`http://localhost:${workerPort}`)} open in a browser, then open Claude Code in any project. Observations stream in as Claude reads, edits, and runs commands.`,
+        ``,
+        `${pc.bold('Two paths from here:')}`,
+        `  ${pc.cyan('A.')} Just start working. Memory builds passively from your first prompt. (Recommended.)`,
+        `  ${pc.cyan('B.')} Front-load it: open Claude Code and run ${pc.bold('/learn-codebase')} to ingest the whole repo (~5 min, optional).`,
+        ``,
+        `Memory injection starts on your second session in a project.`,
+        `Everything stays in ${pc.cyan('~/.claude-mem')} on this machine.`,
+        ``,
+        `${pc.dim('How it works: /how-it-works   ·   Disable first-session hint: CLAUDE_MEM_WELCOME_HINT_ENABLED=false')}`,
+        `${pc.dim('Note: close all Claude Code sessions before uninstalling, or ~/.claude-mem will be recreated by active hooks.')}`,
       ];
 
   if (isInteractive) {
