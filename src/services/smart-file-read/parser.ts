@@ -75,11 +75,6 @@ const LANG_MAP: Record<string, string> = {
   ".mdx": "markdown",
 };
 
-export function detectLanguage(filePath: string): string {
-  const ext = filePath.slice(filePath.lastIndexOf("."));
-  return LANG_MAP[ext] || "unknown";
-}
-
 function detectLanguageWithUserGrammars(filePath: string, userConfig: UserGrammarConfig): string {
   const ext = filePath.slice(filePath.lastIndexOf("."));
   if (LANG_MAP[ext]) return LANG_MAP[ext];
