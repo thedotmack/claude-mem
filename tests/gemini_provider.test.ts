@@ -137,10 +137,8 @@ describe('GeminiProvider', () => {
       pendingMessages: [],
       abortController: new AbortController(),
       generatorPromise: null,
-      earliestPendingTimestamp: null,
       currentProvider: null,
       startTime: Date.now(),
-      processingMessageIds: []  
     } as any;
 
     global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
@@ -174,10 +172,8 @@ describe('GeminiProvider', () => {
       pendingMessages: [],
       abortController: new AbortController(),
       generatorPromise: null,
-      earliestPendingTimestamp: null,
       currentProvider: null,
       startTime: Date.now(),
-      processingMessageIds: []  
     } as any;
 
     global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
@@ -207,10 +203,8 @@ describe('GeminiProvider', () => {
       pendingMessages: [],
       abortController: new AbortController(),
       generatorPromise: null,
-      earliestPendingTimestamp: null,
       currentProvider: null,
       startTime: Date.now(),
-      processingMessageIds: []  
     } as any;
 
     const observationXml = `
@@ -252,10 +246,8 @@ describe('GeminiProvider', () => {
       pendingMessages: [],
       abortController: new AbortController(),
       generatorPromise: null,
-      earliestPendingTimestamp: null,
       currentProvider: null,
       startTime: Date.now(),
-      processingMessageIds: []  
     } as any;
 
     global.fetch = mock(() => Promise.resolve(new Response('Resource has been exhausted (e.g. check quota).', { status: 429 })));
@@ -277,10 +269,8 @@ describe('GeminiProvider', () => {
       pendingMessages: [],
       abortController: new AbortController(),
       generatorPromise: null,
-      earliestPendingTimestamp: null,
       currentProvider: null,
       startTime: Date.now(),
-      processingMessageIds: []  
     } as any;
 
     global.fetch = mock(() => Promise.resolve(new Response('Invalid argument', { status: 400 })));
@@ -309,10 +299,8 @@ describe('GeminiProvider', () => {
         pendingMessages: [],
         abortController: new AbortController(),
         generatorPromise: null,
-        earliestPendingTimestamp: null,
         currentProvider: null,
         startTime: Date.now(),
-        processingMessageIds: []  
       } as any;
 
       global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
@@ -348,10 +336,8 @@ describe('GeminiProvider', () => {
         pendingMessages: [],
         abortController: new AbortController(),
         generatorPromise: null,
-        earliestPendingTimestamp: null,
         currentProvider: null,
         startTime: Date.now(),
-        processingMessageIds: []
       } as any;
 
       global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
@@ -390,10 +376,8 @@ describe('GeminiProvider', () => {
         pendingMessages: [],
         abortController: new AbortController(),
         generatorPromise: null,
-        earliestPendingTimestamp: null,
         currentProvider: null,
         startTime: Date.now(),
-        processingMessageIds: []
       } as any;
 
       global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
@@ -436,10 +420,8 @@ describe('GeminiProvider', () => {
         pendingMessages: [],
         abortController: new AbortController(),
         generatorPromise: null,
-        earliestPendingTimestamp: null,
         currentProvider: null,
         startTime: Date.now(),
-        processingMessageIds: []  
       } as any;
 
       global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
