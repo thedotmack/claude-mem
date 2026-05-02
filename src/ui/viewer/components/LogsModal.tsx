@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { authFetch } from '../utils/api';
 
 type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
 type LogComponent = 'HOOK' | 'WORKER' | 'SDK' | 'PARSER' | 'DB' | 'SYSTEM' | 'HTTP' | 'SESSION' | 'CHROMA';
@@ -120,7 +119,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
     setIsLoading(true);
     setError(null);
     try {
-      const response = await authFetch('/api/logs');
+      const response = await fetch('/api/logs');
       if (!response.ok) {
         throw new Error(`Failed to fetch logs: ${response.statusText}`);
       }
@@ -144,7 +143,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
     setIsLoading(true);
     setError(null);
     try {
-      const response = await authFetch('/api/logs/clear', { method: 'POST' });
+      const response = await fetch('/api/logs/clear', { method: 'POST' });
       if (!response.ok) {
         throw new Error(`Failed to clear logs: ${response.statusText}`);
       }

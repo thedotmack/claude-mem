@@ -3,7 +3,6 @@ import { Settings } from '../types';
 import { DEFAULT_SETTINGS } from '../constants/settings';
 import { API_ENDPOINTS } from '../constants/api';
 import { TIMING } from '../constants/timing';
-import { authFetch } from '../utils/api';
 
 export function useSettings() {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
@@ -11,7 +10,7 @@ export function useSettings() {
   const [saveStatus, setSaveStatus] = useState('');
 
   useEffect(() => {
-    authFetch(API_ENDPOINTS.SETTINGS)
+    fetch(API_ENDPOINTS.SETTINGS)
       .then(async res => {
         if (!res.ok) {
           throw new Error(`Failed to load settings (${res.status})`);
@@ -58,7 +57,7 @@ export function useSettings() {
     setSaveStatus('Saving...');
 
     try {
-      const response = await authFetch(API_ENDPOINTS.SETTINGS, {
+      const response = await fetch(API_ENDPOINTS.SETTINGS, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newSettings)
