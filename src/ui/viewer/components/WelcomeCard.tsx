@@ -143,19 +143,19 @@ const FEATURES: Feature[] = [
     kind: 'stream',
     illustration: <StreamIllustration />,
     title: 'Live feed',
-    description: 'Observations, summaries, and prompts stream in as Claude works.',
+    description: 'Observations, summaries, and prompts stream in live.',
   },
   {
     kind: 'tune',
     illustration: <TuneIllustration />,
     title: 'Tune it',
-    description: 'Use the gear in the top-right to control how memory injects.',
+    description: 'The gear in the top-right tunes memory injection.',
   },
   {
     kind: 'recall',
     illustration: <RecallIllustration />,
     title: 'Recall it',
-    description: 'Ask Claude about past work or run /mem-search to dig in.',
+    description: 'Ask Claude or run /mem-search to find past work.',
   },
 ];
 
@@ -194,9 +194,11 @@ export function WelcomeCard({ onDismiss }: WelcomeCardProps) {
         <div className="welcome-modal-grid">
           {FEATURES.map(feature => (
             <div key={feature.kind} className={`welcome-modal-feature welcome-modal-feature-${feature.kind}`}>
-              {feature.illustration}
-              <h3 className="welcome-modal-feature-title">{feature.title}</h3>
-              <p className="welcome-modal-feature-desc">{feature.description}</p>
+              <div className="welcome-modal-feature-inner">
+                {feature.illustration}
+                <h3 className="welcome-modal-feature-title">{feature.title}</h3>
+                <p className="welcome-modal-feature-desc">{feature.description}</p>
+              </div>
             </div>
           ))}
         </div>

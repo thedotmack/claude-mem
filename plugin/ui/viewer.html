@@ -1404,7 +1404,10 @@
       color: var(--color-observation-badge-text);
     }
 
-    /* Welcome modal — first-launch + reusable as help via the ? button */
+    /* Welcome modal — first-launch + reusable as help via the ? button.
+       Layout strategy: desktop-first, fluid type via clamp(), and squares
+       built with the padding-bottom:100% trick (percentage padding resolves
+       against width, so the box is always W × W regardless of content). */
     .welcome-modal-backdrop {
       position: fixed;
       inset: 0;
@@ -1412,7 +1415,7 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 32px 24px;
+      padding: clamp(16px, 3vw, 40px);
       background: transparent;
       animation: fadeIn 0.18s ease-out;
       overflow-y: auto;
@@ -1421,9 +1424,9 @@
     .welcome-modal {
       position: relative;
       width: 100%;
-      max-width: 760px;
-      padding: 44px 48px 36px;
-      border-radius: 18px;
+      max-width: clamp(560px, 70vw, 960px);
+      padding: clamp(28px, 4vw, 52px) clamp(28px, 4.5vw, 60px) clamp(24px, 3vw, 40px);
+      border-radius: clamp(14px, 1.4vw, 20px);
       background: color-mix(in srgb, var(--color-bg-card) 55%, transparent);
       border: 1px solid color-mix(in srgb, var(--color-border-primary) 55%, transparent);
       box-shadow:
@@ -1436,8 +1439,8 @@
 
     .welcome-modal-dismiss {
       position: absolute;
-      top: 16px;
-      right: 16px;
+      top: clamp(12px, 1.4vw, 18px);
+      right: clamp(12px, 1.4vw, 18px);
       width: 36px;
       height: 36px;
       border-radius: 999px;
@@ -1468,20 +1471,20 @@
       flex-direction: column;
       align-items: center;
       text-align: center;
-      gap: 10px;
-      margin-bottom: 32px;
+      gap: clamp(8px, 0.8vw, 12px);
+      margin-bottom: clamp(20px, 2.4vw, 36px);
     }
 
     .welcome-modal-logo {
-      width: 96px;
-      height: 96px;
+      width: clamp(72px, 7.5vw, 104px);
+      height: clamp(72px, 7.5vw, 104px);
       object-fit: contain;
       filter: drop-shadow(0 6px 20px rgba(0, 0, 0, 0.18));
     }
 
     .welcome-modal-header h2 {
-      margin: 6px 0 0 0;
-      font-size: 28px;
+      margin: clamp(4px, 0.5vw, 8px) 0 0 0;
+      font-size: clamp(22px, 2.4vw, 32px);
       font-weight: 600;
       color: var(--color-text-title);
       letter-spacing: -0.02em;
@@ -1490,7 +1493,7 @@
 
     .welcome-modal-header p {
       margin: 0;
-      font-size: 16px;
+      font-size: clamp(13px, 1.2vw, 17px);
       color: var(--color-text-secondary);
       line-height: 1.5;
     }
@@ -1498,21 +1501,20 @@
     .welcome-modal-grid {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
-      gap: 14px;
+      gap: clamp(10px, 1.2vw, 18px);
     }
 
+    /* True-square shell: padding-bottom:100% resolves against parent
+       width, so the box is always W × W. Content is positioned absolutely
+       inside so it cannot push the box taller. */
     .welcome-modal-feature {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      text-align: center;
-      gap: 10px;
-      padding: 26px 18px 22px;
-      border-radius: 12px;
+      position: relative;
+      width: 100%;
+      height: 0;
+      padding-bottom: 100%;
+      border-radius: clamp(10px, 1vw, 14px);
       background: color-mix(in srgb, var(--color-bg-tertiary) 35%, transparent);
       border: 1px solid color-mix(in srgb, var(--color-border-primary) 50%, transparent);
-      color: var(--color-text-secondary);
-      aspect-ratio: 1 / 1;
       transition: border-color 0.18s ease, transform 0.18s ease, background 0.18s ease;
     }
 
@@ -1522,16 +1524,28 @@
       background: color-mix(in srgb, var(--color-bg-tertiary) 55%, transparent);
     }
 
+    .welcome-modal-feature-inner {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      gap: clamp(6px, 0.7vw, 12px);
+      padding: clamp(14px, 1.8vw, 26px);
+    }
+
     .welcome-modal-feature-art {
-      width: 88px;
-      height: 88px;
+      width: clamp(56px, 6.5vw, 96px);
+      height: clamp(56px, 6.5vw, 96px);
       color: var(--color-text-tertiary);
       flex-shrink: 0;
     }
 
     .welcome-modal-feature-title {
-      margin: 4px 0 0 0;
-      font-size: 16px;
+      margin: clamp(2px, 0.3vw, 6px) 0 0 0;
+      font-size: clamp(14px, 1.2vw, 17px);
       font-weight: 600;
       letter-spacing: -0.01em;
       color: var(--color-text-primary);
@@ -1540,17 +1554,17 @@
 
     .welcome-modal-feature-desc {
       margin: 0;
-      font-size: 13px;
-      line-height: 1.5;
+      font-size: clamp(11px, 0.9vw, 13px);
+      line-height: 1.45;
       color: var(--color-text-secondary);
     }
 
     .welcome-modal-footer {
-      margin-top: 28px;
-      padding-top: 18px;
+      margin-top: clamp(20px, 2.2vw, 32px);
+      padding-top: clamp(14px, 1.4vw, 20px);
       border-top: 1px solid color-mix(in srgb, var(--color-border-primary) 50%, transparent);
       text-align: center;
-      font-size: 13px;
+      font-size: clamp(12px, 1vw, 14px);
       color: var(--color-text-muted);
     }
 
@@ -1569,33 +1583,25 @@
       opacity: 0.5;
     }
 
-    @media (max-width: 720px) {
+    /* Below ~600px three squares get too small to read — stack to one
+       column and let each block grow to natural content height. */
+    @media (max-width: 600px) {
       .welcome-modal {
-        padding: 36px 28px 28px;
-        border-radius: 14px;
-      }
-
-      .welcome-modal-header h2 {
-        font-size: 24px;
-      }
-
-      .welcome-modal-header p {
-        font-size: 14px;
+        max-width: 100%;
       }
 
       .welcome-modal-grid {
         grid-template-columns: 1fr;
-        gap: 10px;
       }
 
       .welcome-modal-feature {
-        aspect-ratio: auto;
-        padding: 22px 18px;
+        height: auto;
+        padding-bottom: 0;
       }
 
-      .welcome-modal-feature-art {
-        width: 72px;
-        height: 72px;
+      .welcome-modal-feature-inner {
+        position: static;
+        padding: 22px 18px;
       }
     }
 
