@@ -13,7 +13,6 @@ import { ModeManager } from '../domain/ModeManager.js';
 
 import {
   SearchOrchestrator,
-  TimelineBuilder,
   SEARCH_CONSTANTS
 } from './search/index.js';
 
@@ -22,7 +21,6 @@ import { ChromaUnavailableError } from './search/errors.js';
 
 export class SearchManager {
   private orchestrator: SearchOrchestrator;
-  private timelineBuilder: TimelineBuilder;
 
   constructor(
     private sessionSearch: SessionSearch,
@@ -36,7 +34,6 @@ export class SearchManager {
       sessionStore,
       chromaSync
     );
-    this.timelineBuilder = new TimelineBuilder();
   }
 
   getOrchestrator(): SearchOrchestrator {

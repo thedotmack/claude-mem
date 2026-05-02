@@ -104,7 +104,6 @@ export class WorkerService implements WorkerRef {
 
   private mcpReady: boolean = false;
   private initializationCompleteFlag: boolean = false;
-  private isShuttingDown: boolean = false;
 
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
@@ -199,7 +198,6 @@ export class WorkerService implements WorkerRef {
 
   private registerSignalHandlers(): void {
     configureSupervisorSignalHandlers(async () => {
-      this.isShuttingDown = true;
       await this.shutdown();
     });
   }
