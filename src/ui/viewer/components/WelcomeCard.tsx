@@ -1,11 +1,7 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 
 interface WelcomeCardProps {
   onDismiss: () => void;
-  observationCount: number;
-  projectCount: number;
-  isConnected: boolean;
-  firstObservationAt: string | null;
 }
 
 const STORAGE_KEY = 'claude-mem-welcome-dismissed-v3';
@@ -33,27 +29,16 @@ export function setStoredWelcomeDismissed(dismissed: boolean): void {
   }
 }
 
-function formatDate(iso: string | null): string {
-  if (!iso) return '—';
-  try {
-    const d = new Date(iso);
-    if (isNaN(d.getTime())) return '—';
-    return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
-  } catch {
-    return '—';
-  }
-}
-
 function DismissButton({ onClick }: { onClick: () => void }) {
   return (
     <button
       type="button"
-      className="welcome-card-dismiss"
+      className="welcome-modal-dismiss"
       onClick={onClick}
-      aria-label="Dismiss welcome card"
-      title="Dismiss"
+      aria-label="Close welcome"
+      title="Close (Esc)"
     >
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <line x1="18" y1="6" x2="6" y2="18"></line>
         <line x1="6" y1="6" x2="18" y2="18"></line>
       </svg>
@@ -64,7 +49,7 @@ function DismissButton({ onClick }: { onClick: () => void }) {
 function StreamIllustration() {
   return (
     <svg
-      className="welcome-card-feature-art"
+      className="welcome-modal-feature-art"
       viewBox="0 0 96 96"
       fill="none"
       stroke="currentColor"
@@ -94,7 +79,7 @@ function StreamIllustration() {
 function TuneIllustration() {
   return (
     <svg
-      className="welcome-card-feature-art"
+      className="welcome-modal-feature-art"
       viewBox="0 0 96 96"
       fill="none"
       stroke="currentColor"
@@ -121,7 +106,7 @@ function TuneIllustration() {
 function RecallIllustration() {
   return (
     <svg
-      className="welcome-card-feature-art"
+      className="welcome-modal-feature-art"
       viewBox="0 0 96 96"
       fill="none"
       stroke="currentColor"
@@ -174,68 +159,58 @@ const FEATURES: Feature[] = [
   },
 ];
 
-export function WelcomeCard({
-  onDismiss,
-  observationCount,
-  projectCount,
-  isConnected,
-  firstObservationAt,
-}: WelcomeCardProps) {
+export function WelcomeCard({ onDismiss }: WelcomeCardProps) {
   const handleDismiss = () => {
     setStoredWelcomeDismissed(true);
     onDismiss();
   };
 
-  const isEmpty = observationCount === 0;
+  useEffect(() => {
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') handleDismiss();
+    };
+    window.addEventListener('keydown', handleEsc);
+    return () => window.removeEventListener('keydown', handleEsc);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
-    <article className={`card welcome-card ${isEmpty ? 'welcome-card-empty' : ''}`}>
-      <header className="welcome-card-header">
-        <img src="claude-mem-logomark.webp" alt="" width="32" height="32" />
-        <div className="welcome-card-lede">
-          <h2>{isEmpty ? 'Welcome to claude-mem' : 'claude-mem'}</h2>
-          <p>Persistent memory for Claude Code.</p>
-          {!isEmpty && (
-            <div className="welcome-card-stats">
-              <span>{observationCount.toLocaleString()} {observationCount === 1 ? 'observation' : 'observations'}</span>
-              <span className="welcome-card-stats-sep">{'·'}</span>
-              <span>{projectCount} {projectCount === 1 ? 'project' : 'projects'}</span>
-              <span className="welcome-card-stats-sep">{'·'}</span>
-              <span>since {formatDate(firstObservationAt)}</span>
-            </div>
-          )}
-        </div>
+    <div className="welcome-modal-backdrop" onClick={handleDismiss}>
+      <article
+        className="welcome-modal"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="welcome-modal-title"
+      >
         <DismissButton onClick={handleDismiss} />
-      </header>
 
-      {isEmpty && (
-        <div className="welcome-card-status-row">
-          <span className="welcome-card-status-dot" data-connected={isConnected ? 'true' : 'false'} />
-          <span className="welcome-card-status-label">
-            {isConnected ? 'Connected · waiting for activity' : 'Reconnecting to worker…'}
-          </span>
+        <header className="welcome-modal-header">
+          <img className="welcome-modal-logo" src="claude-mem-logo-stylized.png" alt="" width="96" height="96" />
+          <h2 id="welcome-modal-title">Welcome to claude-mem</h2>
+          <p>Persistent memory for Claude Code.</p>
+        </header>
+
+        <div className="welcome-modal-grid">
+          {FEATURES.map(feature => (
+            <div key={feature.kind} className={`welcome-modal-feature welcome-modal-feature-${feature.kind}`}>
+              {feature.illustration}
+              <h3 className="welcome-modal-feature-title">{feature.title}</h3>
+              <p className="welcome-modal-feature-desc">{feature.description}</p>
+            </div>
+          ))}
         </div>
-      )}
 
-      <div className="welcome-card-grid">
-        {FEATURES.map(feature => (
-          <div key={feature.kind} className={`welcome-card-feature welcome-card-feature-${feature.kind}`}>
-            {feature.illustration}
-            <h3 className="welcome-card-feature-title">{feature.title}</h3>
-            <p className="welcome-card-feature-desc">{feature.description}</p>
-          </div>
-        ))}
-      </div>
-
-      <footer className="welcome-card-footer">
-        <a href={EXPLAINER_URL} target="_blank" rel="noopener noreferrer">
-          How it works
-        </a>
-        {' · '}
-        <a href={DOCS_URL} target="_blank" rel="noopener noreferrer">
-          Read the docs
-        </a>
-      </footer>
-    </article>
+        <footer className="welcome-modal-footer">
+          <a href={EXPLAINER_URL} target="_blank" rel="noopener noreferrer">
+            How it works
+          </a>
+          <span className="welcome-modal-footer-sep">{'·'}</span>
+          <a href={DOCS_URL} target="_blank" rel="noopener noreferrer">
+            Read the docs
+          </a>
+        </footer>
+      </article>
+    </div>
   );
 }

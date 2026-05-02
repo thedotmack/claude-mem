@@ -23,7 +23,7 @@ export function App() {
 
   const { observations, summaries, prompts, projects, isProcessing, queueDepth, isConnected } = useSSE();
   const { settings, saveSettings, isSaving, saveStatus } = useSettings();
-  const { stats, refreshStats } = useStats();
+  const { refreshStats } = useStats();
   const { preference, setThemePreference } = useTheme();
   const pagination = usePagination(currentFilter);
 
@@ -123,18 +123,11 @@ export function App() {
         onLoadMore={handleLoadMore}
         isLoading={pagination.observations.isLoading || pagination.summaries.isLoading || pagination.prompts.isLoading}
         hasMore={pagination.observations.hasMore || pagination.summaries.hasMore || pagination.prompts.hasMore}
-        pinnedTop={
-          !welcomeDismissed ? (
-            <WelcomeCard
-              onDismiss={() => setWelcomeDismissed(true)}
-              observationCount={stats?.database?.observations ?? 0}
-              projectCount={projects.length}
-              isConnected={isConnected}
-              firstObservationAt={stats?.database?.firstObservationAt ?? null}
-            />
-          ) : null
-        }
       />
+
+      {!welcomeDismissed && (
+        <WelcomeCard onDismiss={() => setWelcomeDismissed(true)} />
+      )}
 
       <ContextSettingsModal
         isOpen={contextPreviewOpen}

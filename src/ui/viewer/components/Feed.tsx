@@ -13,10 +13,9 @@ interface FeedProps {
   onLoadMore: () => void;
   isLoading: boolean;
   hasMore: boolean;
-  pinnedTop?: React.ReactNode;
 }
 
-export function Feed({ observations, summaries, prompts, onLoadMore, isLoading, hasMore, pinnedTop }: FeedProps) {
+export function Feed({ observations, summaries, prompts, onLoadMore, isLoading, hasMore }: FeedProps) {
   const loadMoreRef = useRef<HTMLDivElement>(null);
   const feedRef = useRef<HTMLDivElement>(null);
   const onLoadMoreRef = useRef(onLoadMore);
@@ -63,7 +62,6 @@ export function Feed({ observations, summaries, prompts, onLoadMore, isLoading, 
     <div className="feed" ref={feedRef}>
       <ScrollToTop targetRef={feedRef} />
       <div className="feed-content">
-        {pinnedTop}
         {items.map(item => {
           const key = `${item.itemType}-${item.id}`;
           if (item.itemType === 'observation') {

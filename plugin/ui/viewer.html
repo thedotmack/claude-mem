@@ -1404,215 +1404,200 @@
       color: var(--color-observation-badge-text);
     }
 
-    /* Welcome card — pinned, dismissable, re-openable */
-    .welcome-card {
-      margin-bottom: 24px;
-      padding: 24px 28px;
-      background: var(--color-bg-card);
-      border: 1px solid var(--color-border-primary);
-      border-left: 3px solid var(--color-accent-primary);
-      border-radius: 8px;
-      transition: border-color 0.2s ease;
-      animation: slideIn 0.3s ease-out;
-      line-height: 1.7;
-    }
-
-    .welcome-card:hover {
-      border-color: var(--color-border-hover);
-      border-left-color: var(--color-accent-primary);
-    }
-
-    .welcome-card-header {
+    /* Welcome modal — first-launch + reusable as help via the ? button */
+    .welcome-modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 1100;
       display: flex;
-      align-items: flex-start;
-      gap: 14px;
-      margin-bottom: 4px;
+      align-items: center;
+      justify-content: center;
+      padding: 32px 24px;
+      background: rgba(10, 10, 14, 0.55);
+      backdrop-filter: blur(18px) saturate(140%);
+      -webkit-backdrop-filter: blur(18px) saturate(140%);
+      animation: fadeIn 0.18s ease-out;
+      overflow-y: auto;
     }
 
-    .welcome-card-header img {
-      flex-shrink: 0;
-      margin-top: 2px;
+    .welcome-modal {
+      position: relative;
+      width: 100%;
+      max-width: 760px;
+      padding: 44px 48px 36px;
+      border-radius: 18px;
+      background: color-mix(in srgb, var(--color-bg-card) 78%, transparent);
+      border: 1px solid color-mix(in srgb, var(--color-border-primary) 60%, transparent);
+      box-shadow:
+        0 24px 80px rgba(0, 0, 0, 0.45),
+        0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+      animation: slideUp 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+      backdrop-filter: blur(28px) saturate(160%);
+      -webkit-backdrop-filter: blur(28px) saturate(160%);
     }
 
-    .welcome-card-lede {
-      flex: 1;
-      min-width: 0;
-    }
-
-    .welcome-card-lede h2 {
-      font-size: 18px;
-      font-weight: 600;
-      color: var(--color-text-title);
-      margin: 0 0 4px 0;
-      letter-spacing: -0.01em;
-      line-height: 1.4;
-    }
-
-    .welcome-card-empty .welcome-card-lede h2 {
-      font-size: 19px;
-    }
-
-    .welcome-card-lede p {
-      margin: 0;
-      font-size: 13px;
+    .welcome-modal-dismiss {
+      position: absolute;
+      top: 16px;
+      right: 16px;
+      width: 36px;
+      height: 36px;
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--color-bg-card) 70%, transparent);
+      border: 1px solid color-mix(in srgb, var(--color-border-primary) 70%, transparent);
       color: var(--color-text-secondary);
-      line-height: 1.6;
-    }
-
-    .welcome-card-dismiss {
-      flex-shrink: 0;
-      background: transparent;
-      border: 1px solid var(--color-border-primary);
-      width: 28px;
-      height: 28px;
-      border-radius: 6px;
       cursor: pointer;
       display: flex;
       align-items: center;
       justify-content: center;
-      color: var(--color-text-muted);
       transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
       padding: 0;
     }
 
-    .welcome-card-dismiss:hover {
+    .welcome-modal-dismiss:hover {
       background: var(--color-bg-card-hover);
       border-color: var(--color-border-focus);
       color: var(--color-text-primary);
       transform: scale(1.05);
     }
 
-    .welcome-card-dismiss:active {
+    .welcome-modal-dismiss:active {
       transform: scale(0.95);
     }
 
-    .welcome-card-stats {
-      display: flex;
-      flex-direction: row;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 6px;
-      margin-top: 8px;
-      font-size: 12px;
-      color: var(--color-text-muted);
-      line-height: 1.5;
-    }
-
-    .welcome-card-stats-sep {
-      color: var(--color-text-muted);
-      opacity: 0.6;
-    }
-
-    .welcome-card-status-row {
-      display: flex;
-      flex-direction: row;
-      align-items: center;
-      gap: 8px;
-      margin: 14px 0 0 0;
-      padding: 8px 12px;
-      background: var(--color-bg-tertiary);
-      border-radius: 6px;
-      font-size: 12px;
-      color: var(--color-text-secondary);
-    }
-
-    .welcome-card-status-dot {
-      display: inline-block;
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      flex-shrink: 0;
-      background: var(--color-accent-error);
-      animation: pulse 1.4s ease-in-out infinite;
-    }
-
-    .welcome-card-status-dot[data-connected="true"] {
-      background: var(--color-accent-success);
-      animation: none;
-    }
-
-    .welcome-card-status-label {
-      line-height: 1.4;
-    }
-
-    .welcome-card-grid {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 10px;
-      margin-top: 18px;
-    }
-
-    .welcome-card-feature {
+    .welcome-modal-header {
       display: flex;
       flex-direction: column;
       align-items: center;
       text-align: center;
-      gap: 8px;
-      padding: 18px 14px 16px;
-      border-radius: 8px;
-      background: var(--color-bg-tertiary);
-      border: 1px solid var(--color-border-primary);
+      gap: 10px;
+      margin-bottom: 32px;
+    }
+
+    .welcome-modal-logo {
+      width: 96px;
+      height: 96px;
+      object-fit: contain;
+      filter: drop-shadow(0 6px 20px rgba(0, 0, 0, 0.18));
+    }
+
+    .welcome-modal-header h2 {
+      margin: 6px 0 0 0;
+      font-size: 28px;
+      font-weight: 600;
+      color: var(--color-text-title);
+      letter-spacing: -0.02em;
+      line-height: 1.2;
+    }
+
+    .welcome-modal-header p {
+      margin: 0;
+      font-size: 16px;
       color: var(--color-text-secondary);
-      transition: border-color 0.15s ease, transform 0.15s ease;
+      line-height: 1.5;
     }
 
-    .welcome-card-feature:hover {
+    .welcome-modal-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+    }
+
+    .welcome-modal-feature {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      gap: 10px;
+      padding: 26px 18px 22px;
+      border-radius: 12px;
+      background: color-mix(in srgb, var(--color-bg-tertiary) 75%, transparent);
+      border: 1px solid color-mix(in srgb, var(--color-border-primary) 60%, transparent);
+      color: var(--color-text-secondary);
+      aspect-ratio: 1 / 1;
+      transition: border-color 0.18s ease, transform 0.18s ease, background 0.18s ease;
+    }
+
+    .welcome-modal-feature:hover {
       border-color: var(--color-border-focus);
-      transform: translateY(-1px);
+      transform: translateY(-2px);
+      background: color-mix(in srgb, var(--color-bg-tertiary) 90%, transparent);
     }
 
-    .welcome-card-feature-art {
-      width: 64px;
-      height: 64px;
+    .welcome-modal-feature-art {
+      width: 88px;
+      height: 88px;
       color: var(--color-text-tertiary);
       flex-shrink: 0;
     }
 
-    .welcome-card-feature-title {
+    .welcome-modal-feature-title {
       margin: 4px 0 0 0;
-      font-size: 13px;
+      font-size: 16px;
       font-weight: 600;
-      letter-spacing: -0.005em;
+      letter-spacing: -0.01em;
       color: var(--color-text-primary);
       line-height: 1.3;
     }
 
-    .welcome-card-feature-desc {
+    .welcome-modal-feature-desc {
       margin: 0;
-      font-size: 12px;
+      font-size: 13px;
       line-height: 1.5;
       color: var(--color-text-secondary);
     }
 
-    .welcome-card-footer {
-      margin-top: 18px;
-      padding-top: 14px;
-      border-top: 1px solid var(--color-border-primary);
-      font-size: 12px;
+    .welcome-modal-footer {
+      margin-top: 28px;
+      padding-top: 18px;
+      border-top: 1px solid color-mix(in srgb, var(--color-border-primary) 50%, transparent);
+      text-align: center;
+      font-size: 13px;
       color: var(--color-text-muted);
     }
 
-    .welcome-card-footer a {
+    .welcome-modal-footer a {
       color: var(--color-accent-primary);
       text-decoration: none;
       font-weight: 500;
     }
 
-    .welcome-card-footer a:hover {
+    .welcome-modal-footer a:hover {
       text-decoration: underline;
     }
 
-    @media (max-width: 600px) {
-      .welcome-card {
-        padding: 18px 20px;
+    .welcome-modal-footer-sep {
+      margin: 0 8px;
+      opacity: 0.5;
+    }
+
+    @media (max-width: 720px) {
+      .welcome-modal {
+        padding: 36px 28px 28px;
+        border-radius: 14px;
       }
 
-      .welcome-card-grid {
+      .welcome-modal-header h2 {
+        font-size: 24px;
+      }
+
+      .welcome-modal-header p {
+        font-size: 14px;
+      }
+
+      .welcome-modal-grid {
         grid-template-columns: 1fr;
+        gap: 10px;
       }
 
-      .welcome-card-feature {
-        padding: 16px 14px;
+      .welcome-modal-feature {
+        aspect-ratio: auto;
+        padding: 22px 18px;
+      }
+
+      .welcome-modal-feature-art {
+        width: 72px;
+        height: 72px;
       }
     }
 
