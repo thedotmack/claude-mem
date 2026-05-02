@@ -7,7 +7,9 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-SOURCE_DIR="plugin/"
+# Resolve SOURCE_DIR relative to this script so it works regardless of cwd.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SOURCE_DIR="$SCRIPT_DIR/../plugin/"
 DEST_DIR="$HOME/.claude/plugins/marketplaces/thedotmack/plugin/"
 
 print_status() {

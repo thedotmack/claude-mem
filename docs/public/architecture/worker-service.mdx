@@ -12,7 +12,7 @@ The worker service is a long-running HTTP API built with Express.js and managed 
 - **Technology**: Express.js HTTP server
 - **Runtime**: Bun (auto-installed if missing)
 - **Process Manager**: Native Bun process management via ProcessManager
-- **Port**: Per-user default `37700 + (uid % 100)` (override with `CLAUDE_MEM_WORKER_PORT`). The currently running port is also written to `~/.claude-mem/.worker.port`.
+- **Port**: Per-user default `37700 + (uid % 100)` (override with `CLAUDE_MEM_WORKER_PORT`). The active port is stored in `~/.claude-mem/settings.json` and reported by `GET /api/health`.
 - **Location**: `src/services/worker-service.ts`
 - **Built Output**: `plugin/scripts/worker-service.cjs`
 - **Model**: Configurable via `CLAUDE_MEM_MODEL` (default: `claude-haiku-4-5-20251001`)
@@ -51,9 +51,11 @@ GET /health
 {
   "status": "ok",
   "uptime": 12345,
-  "port": 37777
+  "port": 37742
 }
 ```
+
+The `port` value is the actual worker port for the current user — per-user default `37700 + (uid % 100)`, or whatever `CLAUDE_MEM_WORKER_PORT` is set to. The example above is illustrative; your value will differ.
 
 #### 3. Server-Sent Events Stream
 ```
@@ -657,7 +659,7 @@ The worker uses a per-user default port so different OS users on the same machin
 
 - **Default**: `37700 + (uid % 100)` (set in `src/shared/SettingsDefaultsManager.ts`)
 - **Override**: Set `CLAUDE_MEM_WORKER_PORT` (env or `~/.claude-mem/settings.json`)
-- **Port File**: `~/.claude-mem/.worker.port` records the currently running port
+- **Discovery**: `GET /api/health` returns the active port; `~/.claude-mem/settings.json` stores the configured value
 
 If the chosen port is occupied, the worker fails to start — pin a different port via `CLAUDE_MEM_WORKER_PORT` and restart.
 

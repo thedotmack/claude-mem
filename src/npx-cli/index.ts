@@ -3,7 +3,15 @@ import { readPluginVersion } from './utils/paths.js';
 import type { InstallOptions } from './commands/install.js';
 
 const args = process.argv.slice(2);
-const command = args[0]?.toLowerCase() ?? '';
+const firstArg = args[0]?.toLowerCase() ?? '';
+// If the first token is a flag (e.g. `npx claude-mem --provider claude`),
+// treat the invocation as `install` with those flags. Help/version flags are
+// handled directly so they don't get swallowed by the install path.
+const HELP_OR_VERSION_FLAGS = new Set(['-h', '--help', '-v', '--version']);
+const command =
+  firstArg.startsWith('-') && !HELP_OR_VERSION_FLAGS.has(firstArg)
+    ? 'install'
+    : firstArg;
 
 function printHelp(): void {
   const version = readPluginVersion();
@@ -42,7 +50,15 @@ ${pc.bold('IDE Identifiers')}:
 
 function readFlag(argv: string[], name: string): string | undefined {
   const i = argv.indexOf(name);
-  return i !== -1 ? argv[i + 1] : undefined;
+  if (i === -1) return undefined;
+  const next = argv[i + 1];
+  // Reject missing or flag-shaped values so e.g. `--model --no-auto-start`
+  // doesn't silently treat `--no-auto-start` as the model name.
+  if (next === undefined || next.startsWith('-')) {
+    console.error(pc.red(`Flag ${name} requires a value.`));
+    process.exit(1);
+  }
+  return next;
 }
 
 function parseInstallOptions(argv: string[]): InstallOptions {

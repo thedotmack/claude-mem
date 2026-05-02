@@ -14,8 +14,9 @@ icon: plug
 
 ```typescript
 // Resolve the worker port at runtime. The default is per-user (37700 + uid % 100),
-// or whatever the user set via CLAUDE_MEM_WORKER_PORT / settings.json.
-// Read it from ~/.claude-mem/.worker.port or ${CLAUDE_MEM_DATA_DIR}/.worker.port.
+// or whatever the user set via CLAUDE_MEM_WORKER_PORT / settings.json. Read it from
+// process.env.CLAUDE_MEM_WORKER_PORT, then ~/.claude-mem/settings.json
+// (CLAUDE_MEM_WORKER_PORT key), then fall back to the deterministic default.
 const WORKER_BASE_URL = `http://127.0.0.1:${workerPort}`;
 ```
 
@@ -70,7 +71,7 @@ npm run worker:status         # Check worker status
 
 ```plaintext
 Platform Hook/Extension
-  → HTTP Request to Worker (localhost:37777)
+  → HTTP Request to Worker (`${WORKER_BASE_URL}` — per-user, default 37700+uid%100)
     → Route Handler (SessionRoutes/DataRoutes/SearchRoutes/etc.)
       → Domain Service (SessionManager/SearchManager/DatabaseManager)
         → Database (SQLite3 + Chroma vector DB)
@@ -313,7 +314,7 @@ GET /api/stats
     "uptime": 12345,
     "activeSessions": 2,
     "sseClients": 1,
-    "port": 37777
+    "port": 37742
   },
   "database": {
     "path": "~/.claude-mem/claude-mem.db",
@@ -798,7 +799,7 @@ interface TimelineItem {
     async function onPostToolUse(context: HookContext) {
       const { session_id, tool_name, tool_input, tool_result, cwd } = context;
 
-      const response = await fetch('http://localhost:37777/api/sessions/observations', {
+      const response = await fetch(`${WORKER_BASE_URL}/api/sessions/observations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -820,7 +821,7 @@ interface TimelineItem {
     async function onSummary(context: HookContext) {
       const { session_id, last_user_message, last_assistant_message } = context;
 
-      await fetch('http://localhost:37777/api/sessions/summarize', {
+      await fetch(`${WORKER_BASE_URL}/api/sessions/summarize`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -837,7 +838,7 @@ interface TimelineItem {
     async function onSessionEnd(context: HookContext) {
       const { session_id } = context;
 
-      await fetch('http://localhost:37777/api/sessions/complete', {
+      await fetch(`${WORKER_BASE_URL}/api/sessions/complete`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -869,7 +870,7 @@ const searchTool: SearchTool = {
 
     try {
       const response = await fetch(
-        `http://localhost:37777/api/search?query=${encodeURIComponent(query)}&format=index&limit=10`
+        `${WORKER_BASE_URL}/api/search?query=${encodeURIComponent(query)}&format=index&limit=10`
       );
 
       if (!response.ok) {
@@ -907,7 +908,7 @@ const participant = vscode.chat.createChatParticipant('claude-mem', async (reque
   stream.markdown(`Searching memory for: ${request.prompt}\n\n`);
 
   const response = await fetch(
-    `http://localhost:37777/api/search?query=${encodeURIComponent(request.prompt)}&format=index&limit=5`
+    `${WORKER_BASE_URL}/api/search?query=${encodeURIComponent(request.prompt)}&format=index&limit=5`
   );
 
   const results = await response.json();
@@ -933,7 +934,7 @@ async function callWorkerWithFallback<T>(
   options?: RequestInit
 ): Promise<T | null> {
   try {
-    const response = await fetch(`http://localhost:37777${endpoint}`, {
+    const response = await fetch(`${WORKER_BASE_URL}${endpoint}`, {
       ...options,
       signal: AbortSignal.timeout(5000) // 5s timeout
     });
@@ -977,7 +978,7 @@ async function retryWithBackoff<T>(
 ```typescript
 async function isWorkerHealthy(): Promise<boolean> {
   try {
-    const response = await fetch('http://localhost:37777/api/health', {
+    const response = await fetch(`${WORKER_BASE_URL}/api/health`, {
       signal: AbortSignal.timeout(2000)
     });
     return response.ok;
@@ -1019,7 +1020,7 @@ class WorkerTimeoutError extends Error {
 
 ```typescript
 function connectToSSE(onEvent: (event: any) => void) {
-  const eventSource = new EventSource('http://localhost:37777/stream');
+  const eventSource = new EventSource(`${WORKER_BASE_URL}/stream`);
 
   eventSource.onmessage = (event) => {
     try {
@@ -1140,8 +1141,8 @@ esbuild.build({
   </Step>
   <Step title="Terminal 3: Test API manually">
     ```bash
-    curl http://localhost:37777/api/health
-    curl "http://localhost:37777/api/search?query=test&limit=5"
+    curl http://127.0.0.1:$WORKER_PORT/api/health
+    curl "http://127.0.0.1:$WORKER_PORT/api/search?query=test&limit=5"
     ```
   </Step>
   <Step title="VSCode: Launch extension host">
@@ -1241,8 +1242,8 @@ describe('Worker Integration', () => {
 <AccordionGroup>
   <Accordion title="Phase 1: Connection & Health">
     - [ ] Worker starts successfully (`npm run worker:status`)
-    - [ ] Health endpoint responds (`curl http://localhost:37777/api/health`)
-    - [ ] SSE stream connects (`curl http://localhost:37777/stream`)
+    - [ ] Health endpoint responds (`curl http://127.0.0.1:$WORKER_PORT/api/health`)
+    - [ ] SSE stream connects (`curl http://127.0.0.1:$WORKER_PORT/stream`)
   </Accordion>
 
   <Accordion title="Phase 2: Session Lifecycle">
@@ -1286,8 +1287,11 @@ describe('Worker Integration', () => {
 export class WorkerClient {
   private baseUrl: string;
 
-  constructor(port: number = 37777) {
-    this.baseUrl = `http://localhost:${port}`;
+  // Resolve the active worker port via env / settings.json, falling back
+  // to the deterministic per-user default. See parseWorkerPort() for an
+  // example helper; never hardcode a single value.
+  constructor(port: number = resolveWorkerPort()) {
+    this.baseUrl = `http://127.0.0.1:${port}`;
   }
 
   async isHealthy(): Promise<boolean> {

@@ -117,7 +117,7 @@ The data directory location depends on the environment:
 ~/.claude-mem/
 ├── claude-mem.db           # SQLite database
 ├── .install-version        # Version marker written by `npx claude-mem install`/`repair`
-├── worker.port             # Current worker port file
+├── settings.json           # Worker port + provider/model settings
 └── logs/
     ├── worker-out.log      # Worker stdout logs
     └── worker-error.log    # Worker stderr logs
@@ -167,7 +167,7 @@ Claude-Mem provides MCP search tools for querying your project history.
 
 Search operations are provided via:
 - **MCP Server**: 3 tools (search, timeline, get_observations) with progressive disclosure
-- **HTTP API**: 10 endpoints on worker service port 37777
+- **HTTP API**: 10 endpoints on the worker service port (per-user, default `37700 + (uid % 100)`; see `~/.claude-mem/settings.json`)
 - **Auto-Invocation**: Claude recognizes natural language queries about past work
 
 ## Version Channel
@@ -176,7 +176,7 @@ Claude-Mem supports switching between stable and beta versions via the web viewe
 
 ### Accessing Version Channel
 
-1. Open the viewer at the worker URL (default `http://127.0.0.1:<worker-port>`; check `~/.claude-mem/.worker.port` if unsure)
+1. Open the viewer at the worker URL (default `http://127.0.0.1:<worker-port>`; the active port is the value of `CLAUDE_MEM_WORKER_PORT` in `~/.claude-mem/settings.json`)
 2. Click the Settings gear icon
 3. Find the **Version Channel** section
 
@@ -284,7 +284,7 @@ Token economics help you understand the value of cached observations vs. re-read
 | Setting | Default | Description |
 |---------|---------|-------------|
 | **Model** | sonnet | AI model for generating observations |
-| **Worker Port** | 37777 | Port for background worker service |
+| **Worker Port** | `37700 + (uid % 100)` | Port for background worker service (override with `CLAUDE_MEM_WORKER_PORT`) |
 | **MCP search server** | true | Enable Model Context Protocol search tools |
 | **Include last summary** | false | Add previous session's summary to context |
 | **Include last message** | false | Add previous session's final message |
@@ -457,7 +457,7 @@ The default worker port is `37700 + (uid % 100)`, so different OS users on the s
 
 3. Verify new port:
    ```bash
-   cat ~/.claude-mem/.worker.port
+   curl -s http://127.0.0.1:$CLAUDE_MEM_WORKER_PORT/api/health | jq .port
    ```
 
 ## Next Steps

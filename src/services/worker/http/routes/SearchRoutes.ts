@@ -32,6 +32,25 @@ const cachedOnboardingExplainer: string | null = (() => {
   }
 })();
 
+// TTL-cached settings reader. handleContextInject runs on every hook callback
+// (PostToolUse fires after every Read/Edit), so re-parsing settings.json from
+// disk on every request would mean a sync read per tool call. 5s is short
+// enough that toggling CLAUDE_MEM_WELCOME_HINT_ENABLED is responsive in
+// practice and long enough to absorb hook bursts.
+const SETTINGS_CACHE_TTL_MS = 5000;
+let cachedSettings: ReturnType<typeof SettingsDefaultsManager.loadFromFile> | null = null;
+let cachedSettingsAt = 0;
+
+function getCachedSettings(): ReturnType<typeof SettingsDefaultsManager.loadFromFile> {
+  const now = Date.now();
+  if (cachedSettings && now - cachedSettingsAt < SETTINGS_CACHE_TTL_MS) {
+    return cachedSettings;
+  }
+  cachedSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+  cachedSettingsAt = now;
+  return cachedSettings;
+}
+
 const WELCOME_HINT_TEMPLATE = `# claude-mem status
 
 This project has no memory yet. The current session will seed it; subsequent sessions will receive auto-injected context for relevant past work.
@@ -311,7 +330,7 @@ export class SearchRoutes extends BaseRouteHandler {
       return;
     }
 
-    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const settings = getCachedSettings();
     const hintEnabled = String(settings.CLAUDE_MEM_WELCOME_HINT_ENABLED ?? '').toLowerCase() === 'true';
     if (hintEnabled && !full) {
       const sessionStore = this.searchManager.getSessionStore();

@@ -676,8 +676,9 @@ async function promptClaudeModel(options: InstallOptions): Promise<void> {
 
   if (options.model) {
     if (!allowed.has(options.model)) {
-      log.error(`Unknown Claude model: ${options.model}. Allowed: ${[...allowed].join(', ')}`);
-      return;
+      throw new Error(
+        `Unknown Claude model: ${options.model}. Allowed: ${[...allowed].join(', ')}`,
+      );
     }
     const wrote = mergeSettings({ CLAUDE_MEM_MODEL: options.model });
     if (wrote) {
@@ -793,7 +794,11 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
   }
 
   let workerStartResult: WorkerStartResult = 'dead';
-  const needsMarketplace = selectedIDEs.some((id) => id !== 'claude-code');
+  // Claude Code consumes the marketplace plugin system directly, so any selection
+  // (claude-code or otherwise) needs the marketplace + plugin registration steps.
+  // The only time we'd skip is a hypothetical no-IDE install, which the prompt above
+  // doesn't allow today.
+  const needsMarketplace = selectedIDEs.length > 0;
 
   {
     if (needsMarketplace) {
@@ -899,11 +904,13 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
 
   const failedIDEs = await setupIDEs(selectedIDEs);
 
+  const autoStartSkipped = !isInteractive || options.noAutoStart;
+
   await runTasks([
     {
       title: 'Starting worker daemon',
       task: async (message) => {
-        if (!isInteractive || options.noAutoStart) {
+        if (autoStartSkipped) {
           return isInteractive
             ? `Skipped (--no-auto-start)`
             : `Skipped (non-TTY)`;
@@ -947,38 +954,62 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
 
   let actualPort: number | string = workerPort;
   let workerReady = false;
-  const healthSpinner = isInteractive ? p.spinner() : null;
-  healthSpinner?.start(`Verifying worker on port ${workerPort}…`);
-  try {
-    const healthResponse = await fetch(`http://127.0.0.1:${workerPort}/api/health`, {
-      signal: AbortSignal.timeout(3000),
-    });
-    if (healthResponse.ok) {
-      workerReady = true;
-      try {
-        const body = await healthResponse.json() as { port?: number | string };
-        if (body && (typeof body.port === 'number' || typeof body.port === 'string')) {
-          actualPort = body.port;
+  // Don't poll the worker or imply it's "still starting" when autostart was
+  // intentionally skipped (--no-auto-start, or non-interactive default). The
+  // user knows they have to start it themselves; lying about a starting worker
+  // is misleading.
+  if (!autoStartSkipped) {
+    const healthSpinner = isInteractive ? p.spinner() : null;
+    healthSpinner?.start(`Verifying worker on port ${workerPort}…`);
+    try {
+      const healthResponse = await fetch(`http://127.0.0.1:${workerPort}/api/health`, {
+        signal: AbortSignal.timeout(3000),
+      });
+      if (healthResponse.ok) {
+        workerReady = true;
+        try {
+          const body = await healthResponse.json() as { port?: number | string };
+          if (body && (typeof body.port === 'number' || typeof body.port === 'string')) {
+            actualPort = body.port;
+          }
+        } catch {
+          // Health endpoint returned non-JSON — keep using the requested port.
         }
-      } catch {
-        // Health endpoint returned non-JSON — keep using the requested port.
       }
+      healthSpinner?.stop(
+        workerReady
+          ? `Worker ready at http://localhost:${actualPort}`
+          : `Worker reachable but not ready on port ${workerPort}`,
+      );
+    } catch {
+      healthSpinner?.stop(`Worker not yet responding on port ${workerPort} (still starting)`);
     }
-    healthSpinner?.stop(
-      workerReady
-        ? `Worker ready at http://localhost:${actualPort}`
-        : `Worker reachable but not ready on port ${workerPort}`,
-    );
-  } catch {
-    healthSpinner?.stop(`Worker not yet responding on port ${workerPort} (still starting)`);
   }
 
   const finalWorkerState = workerStartResult as WorkerStartResult;
   const workerAlive = finalWorkerState !== 'dead' || workerReady;
-  const workerHeadline = workerReady || finalWorkerState === 'ready'
-    ? `${pc.green('✓')} Worker running at ${pc.underline(`http://localhost:${actualPort}`)}`
-    : `${pc.yellow('⏳')} Worker starting at ${pc.underline(`http://localhost:${actualPort}`)} — give it ~30s, then refresh`;
-  const nextSteps = workerAlive
+  const workerHeadline = autoStartSkipped
+    ? `${pc.yellow('!')} Worker autostart skipped — start it manually with ${pc.bold('npx claude-mem start')}`
+    : workerReady || finalWorkerState === 'ready'
+      ? `${pc.green('✓')} Worker running at ${pc.underline(`http://localhost:${actualPort}`)}`
+      : `${pc.yellow('⏳')} Worker starting at ${pc.underline(`http://localhost:${actualPort}`)} — give it ~30s, then refresh`;
+  const nextSteps = autoStartSkipped
+    ? [
+        workerHeadline,
+        ``,
+        `${pc.bold('First success:')} once the worker is running, keep ${pc.underline(`http://localhost:${workerPort}`)} open in a browser, then open Claude Code in any project. Observations stream in as Claude reads, edits, and runs commands.`,
+        ``,
+        `${pc.bold('Two paths from here:')}`,
+        `  ${pc.cyan('A.')} Just start working. Memory builds passively from your first prompt. (Recommended.)`,
+        `  ${pc.cyan('B.')} Front-load it: open Claude Code and run ${pc.bold('/learn-codebase')} to ingest the whole repo (~5 min, optional).`,
+        ``,
+        `Memory injection starts on your second session in a project.`,
+        `Everything stays in ${pc.cyan('~/.claude-mem')} on this machine.`,
+        ``,
+        `${pc.dim('How it works: /how-it-works   ·   Disable first-session hint: CLAUDE_MEM_WELCOME_HINT_ENABLED=false')}`,
+        `${pc.dim('Note: close all Claude Code sessions before uninstalling, or ~/.claude-mem will be recreated by active hooks.')}`,
+      ]
+    : workerAlive
     ? [
         workerHeadline,
         ``,
@@ -1048,6 +1079,13 @@ export async function runRepairCommand(): Promise<void> {
         const { version: bunVersion } = await ensureBun();
         message('Checking uv…');
         const { version: uvVersion } = await ensureUv();
+        // Repair must regenerate the cache if it was wiped (e.g. user ran
+        // `rm -rf ~/.claude/plugins/cache`). Without this, bun install would
+        // fail immediately with no package.json to install against.
+        if (!existsSync(join(cacheDir, 'package.json'))) {
+          message('Cache missing — repopulating from npm package…');
+          copyPluginToCache(version);
+        }
         message('Reinstalling plugin dependencies…');
         const { bunPath } = await ensureBun();
         await installPluginDependencies(cacheDir, bunPath);

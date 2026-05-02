@@ -8,6 +8,13 @@ const os = require('os');
 const INSTALLED_PATH = path.join(os.homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
 const CACHE_BASE_PATH = path.join(os.homedir(), '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem');
 
+// Reject obviously invalid ports before they reach http.request, which would
+// throw with a confusing error like "RangeError: Port should be > 0 and < 65536".
+function parseWorkerPort(value) {
+  const port = Number.parseInt(String(value ?? ''), 10);
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : null;
+}
+
 function getCurrentBranch() {
   try {
     if (!existsSync(path.join(INSTALLED_PATH, '.git'))) {
@@ -65,11 +72,12 @@ function getPluginVersion() {
 function detectInstalledVersion(buildVersion) {
   const dataDir = process.env.CLAUDE_MEM_DATA_DIR || path.join(os.homedir(), '.claude-mem');
   const settingsPath = path.join(dataDir, 'settings.json');
-  let port = parseInt(process.env.CLAUDE_MEM_WORKER_PORT, 10);
+  let port = parseWorkerPort(process.env.CLAUDE_MEM_WORKER_PORT);
   if (!port && existsSync(settingsPath)) {
     try {
       const s = JSON.parse(readFileSync(settingsPath, 'utf8'));
-      if (s.CLAUDE_MEM_WORKER_PORT) port = parseInt(s.CLAUDE_MEM_WORKER_PORT, 10);
+      const settingsPort = parseWorkerPort(s.CLAUDE_MEM_WORKER_PORT);
+      if (settingsPort) port = settingsPort;
     } catch {}
   }
   if (!port) {
@@ -167,9 +175,7 @@ try {
   if (existsSync(settingsPath)) {
     try {
       const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
-      if (settings.CLAUDE_MEM_WORKER_PORT) {
-        settingsPort = parseInt(settings.CLAUDE_MEM_WORKER_PORT, 10);
-      }
+      settingsPort = parseWorkerPort(settings.CLAUDE_MEM_WORKER_PORT);
     } catch {
       // fall through to env / default
     }
@@ -177,8 +183,8 @@ try {
   const uid = typeof process.getuid === 'function' ? process.getuid() : 77;
   const defaultPort = 37700 + (uid % 100);
   const workerPort =
-    parseInt(process.env.CLAUDE_MEM_WORKER_PORT, 10) ||
-    settingsPort ||
+    parseWorkerPort(process.env.CLAUDE_MEM_WORKER_PORT) ??
+    settingsPort ??
     defaultPort;
   const req = http.request({
     hostname: '127.0.0.1',

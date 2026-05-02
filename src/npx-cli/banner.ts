@@ -27,8 +27,15 @@ function accentColor(truecolor: boolean, brightness: number = 1.0): string {
 let frames: string[] | null = null;
 function getFrames(): string[] {
   if (frames) return frames;
-  const raw = inflateRawSync(Buffer.from(BANNER.compressed, 'base64')).toString('utf8');
-  frames = raw.split(FRAME_SEP);
+  // Banner is decorative — if frame payload decoding fails for any reason
+  // (corrupted bundle, mismatched zlib, etc.) we must not break the CLI.
+  // Fail open by returning an empty frame list; playBanner() bails on empty.
+  try {
+    const raw = inflateRawSync(Buffer.from(BANNER.compressed, 'base64')).toString('utf8');
+    frames = raw.split(FRAME_SEP).filter(Boolean);
+  } catch {
+    frames = [];
+  }
   return frames;
 }
 
@@ -104,6 +111,7 @@ export async function playBanner(): Promise<void> {
   if (!isBannerEnabled()) return;
   const truecolor = detectTruecolor();
   const allFrames = getFrames();
+  if (allFrames.length === 0) return;
   let aborted = false;
   const onResize = () => { aborted = true; };
   process.stdout.on('resize', onResize);

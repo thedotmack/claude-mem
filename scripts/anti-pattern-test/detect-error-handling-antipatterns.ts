@@ -270,9 +270,9 @@ function analyzeTryCatchBlock(
   const catchBlock = catchLines.join('\n');
 
   const catchContent = catchBlock
-    .replace(/}\s*catch\s*\([^)]*\)\s*{/, '') 
-    .replace(/}\s*catch\s*{/, '') 
-    .replace(/}$/, '') 
+    .replace(/}\s*catch\s*\([^)]*\)\s*{/, '')
+    .replace(/}\s*catch\s*{/, '')
+    .replace(/}\s*$/, '')
     .trim();
 
   const nonCommentContent = catchContent

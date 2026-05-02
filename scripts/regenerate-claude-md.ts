@@ -56,6 +56,10 @@ function estimateTokens(obs: ObservationRow): number {
 
 function getTrackedFolders(workingDir: string): Set<string> {
   const folders = new Set<string>();
+  // Always include the project root — the git-ls-files walker only adds
+  // ancestors of files, and the fallback walker only adds child directories,
+  // so neither path is guaranteed to add `workingDir` itself.
+  folders.add(workingDir);
 
   try {
     const output = execSync('git ls-files', {
@@ -85,7 +89,8 @@ function getTrackedFolders(workingDir: string): Set<string> {
 }
 
 function walkDirectoriesWithIgnore(dir: string, folders: Set<string>, depth: number = 0): void {
-  if (depth > 10) return; 
+  if (depth > 10) return;
+  folders.add(dir);
 
   const ignorePatterns = [
     'node_modules', '.git', '.next', 'dist', 'build', '.cache',

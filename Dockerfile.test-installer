@@ -52,4 +52,8 @@ cat <<'BANNER'
 BANNER
 EOF
 
+# bash --login reads ~/.bash_profile (or ~/.profile), not ~/.bashrc, so
+# without this the banner above never runs in the container's CMD shell.
+RUN printf '%s\n' '[[ -f ~/.bashrc ]] && . ~/.bashrc' > /root/.bash_profile
+
 CMD ["bash", "--login"]
