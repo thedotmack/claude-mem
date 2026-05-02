@@ -554,10 +554,12 @@ function mergeSettings(updates: Record<string, string>): boolean {
       try {
         const raw = readFileSync(path, 'utf-8');
         const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === 'object' && parsed.env && typeof parsed.env === 'object') {
-          current = { ...parsed.env };
-        } else if (parsed && typeof parsed === 'object') {
+        if (parsed && typeof parsed === 'object') {
           current = { ...parsed };
+          if (parsed.env && typeof parsed.env === 'object') {
+            current = { ...parsed.env, ...current };
+            delete current.env;
+          }
         }
       } catch (parseError: unknown) {
         console.warn('[install] Failed to parse existing settings.json, starting from empty:', parseError instanceof Error ? parseError.message : String(parseError));
