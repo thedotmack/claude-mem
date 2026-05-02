@@ -37,26 +37,6 @@ export class SessionRoutes extends BaseRouteHandler {
     super();
   }
 
-  private getActiveAgent(): ClaudeProvider | GeminiProvider | OpenRouterProvider {
-    if (isOpenRouterSelected()) {
-      if (isOpenRouterAvailable()) {
-        logger.debug('SESSION', 'Using OpenRouter agent');
-        return this.openRouterAgent;
-      } else {
-        throw new Error('OpenRouter provider selected but no API key configured. Set CLAUDE_MEM_OPENROUTER_API_KEY in settings or OPENROUTER_API_KEY environment variable.');
-      }
-    }
-    if (isGeminiSelected()) {
-      if (isGeminiAvailable()) {
-        logger.debug('SESSION', 'Using Gemini agent');
-        return this.geminiAgent;
-      } else {
-        throw new Error('Gemini provider selected but no API key configured. Set CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.');
-      }
-    }
-    return this.sdkAgent;
-  }
-
   private getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' {
     if (isOpenRouterSelected() && isOpenRouterAvailable()) {
       return 'openrouter';
@@ -141,9 +121,8 @@ export class SessionRoutes extends BaseRouteHandler {
         }, error);
       })
       .finally(async () => {
-        const reason = session.abortReason ?? null;
-        session.abortReason = null;  // consume the reason
-        await handleGeneratorExit(session, reason, {
+        session.abortReason = null;
+        await handleGeneratorExit(session, {
           sessionManager: this.sessionManager,
           completionHandler: this.completionHandler,
         });

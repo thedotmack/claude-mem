@@ -79,11 +79,6 @@ export class LogsRoutes extends BaseRouteHandler {
     return join(logsDir, `claude-mem-${date}.log`);
   }
 
-  private getLogsDir(): string {
-    const dataDir = SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
-    return join(dataDir, 'logs');
-  }
-
   setupRoutes(app: express.Application): void {
     app.get('/api/logs', this.handleGetLogs.bind(this));
     app.post('/api/logs/clear', validateBody(clearLogsSchema), this.handleClearLogs.bind(this));
