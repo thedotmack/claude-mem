@@ -32,13 +32,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
     );
   }
 
-  async search(options: StrategySearchOptions): Promise<StrategySearchResult> {
-    const { query, limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project } = options;
-
-    if (!query) {
-      return this.emptyResult('hybrid');
-    }
-
+  async search(_options: StrategySearchOptions): Promise<StrategySearchResult> {
     return this.emptyResult('hybrid');
   }
 

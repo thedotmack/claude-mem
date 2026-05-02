@@ -66,13 +66,10 @@ function extractLastMessageFromJsonl(
   stripSystemReminders: boolean
 ): string {
   const lines = content.split('\n');
-  let foundMatchingRole = false;
 
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = JSON.parse(lines[i]);
     if (line.type === role) {
-      foundMatchingRole = true;
-
       if (line.message?.content) {
         let text = '';
         const msgContent = line.message.content;
@@ -96,10 +93,6 @@ function extractLastMessageFromJsonl(
         return text;
       }
     }
-  }
-
-  if (!foundMatchingRole) {
-    return '';
   }
 
   return '';
