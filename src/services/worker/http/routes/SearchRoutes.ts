@@ -51,6 +51,27 @@ function getCachedSettings(): ReturnType<typeof SettingsDefaultsManager.loadFrom
   return cachedSettings;
 }
 
+// Memoize the "this project has observations" answer per project. Observation
+// counts are monotonically increasing — once a project hits >0 it stays >0,
+// so we never need to re-query that combination again. Only cache the positive
+// result; zero counts have to be re-checked because new observations may land.
+const projectsKnownNonEmpty = new Set<string>();
+
+function projectsHaveObservations(
+  sessionStore: ReturnType<SearchManager['getSessionStore']>,
+  projects: string[],
+): boolean {
+  if (projects.every(p => projectsKnownNonEmpty.has(p))) {
+    return true;
+  }
+  const observationCount = countObservationsByProjects(sessionStore, projects);
+  if (observationCount > 0) {
+    for (const p of projects) projectsKnownNonEmpty.add(p);
+    return true;
+  }
+  return false;
+}
+
 const WELCOME_HINT_TEMPLATE = `# claude-mem status
 
 This project has no memory yet. The current session will seed it; subsequent sessions will receive auto-injected context for relevant past work.
@@ -334,8 +355,9 @@ export class SearchRoutes extends BaseRouteHandler {
     const hintEnabled = String(settings.CLAUDE_MEM_WELCOME_HINT_ENABLED ?? '').toLowerCase() === 'true';
     if (hintEnabled && !full) {
       const sessionStore = this.searchManager.getSessionStore();
-      const observationCount = countObservationsByProjects(sessionStore, projects);
-      if (observationCount === 0) {
+      // Memoized: skips the COUNT(*) query once any project in the set has
+      // observations. Hot-path: PostToolUse fires after every Read/Edit.
+      if (!projectsHaveObservations(sessionStore, projects)) {
         const port = settings.CLAUDE_MEM_WORKER_PORT;
         const viewerUrl = `http://localhost:${port}`;
         const hintBody = WELCOME_HINT_TEMPLATE.replace('{viewer_url}', viewerUrl);
