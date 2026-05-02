@@ -29,10 +29,9 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
 
 **Solutions**:
 
-1. Find the worker port. The default is `37700 + (uid % 100)`. The actual running port is written to `~/.claude-mem/.worker.port`:
+1. Find the worker port. The default is `37700 + (uid % 100)`. The configured port is the value of `CLAUDE_MEM_WORKER_PORT` in `~/.claude-mem/settings.json`; the running worker also reports it on `/api/health`:
    ```bash
-   cat ~/.claude-mem/.worker.port
-   PORT=$(cat ~/.claude-mem/.worker.port)
+   PORT=$(jq -r .CLAUDE_MEM_WORKER_PORT ~/.claude-mem/settings.json)
    lsof -i :$PORT
    npm run worker:status
    ```
@@ -229,7 +228,7 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
 
 4. Verify new port:
    ```bash
-   cat ~/.claude-mem/worker.port
+   curl -s http://127.0.0.1:$CLAUDE_MEM_WORKER_PORT/api/health | jq .port
    ```
 
 ### Worker Keeps Crashing
@@ -953,11 +952,11 @@ npm run worker:status
 # View logs
 npm run worker:logs
 
-# Check port file
-cat ~/.claude-mem/worker.port
+# Check configured port (per-user default = 37700 + uid % 100)
+jq -r .CLAUDE_MEM_WORKER_PORT ~/.claude-mem/settings.json
 
-# Test worker health
-curl http://localhost:37777/health
+# Test worker health (substitute PORT for the value above)
+curl "http://127.0.0.1:$PORT/health"
 ```
 
 ### Database Inspection

@@ -488,6 +488,17 @@ def main() -> int:
                     f"[{instance_id}] orchestrator future raised: {exc!r}",
                     file=sys.stderr,
                 )
+                # The orchestrator died before run_one_instance could write a
+                # row. Append a fallback so this instance still appears in
+                # predictions.jsonl — preserving the "never drop an instance"
+                # guarantee that downstream evaluation depends on.
+                append_prediction_row(
+                    predictions_path=predictions_path,
+                    instance_id=instance_id,
+                    model_patch="",
+                    model_name_or_path=model_name_or_path,
+                    lock=predictions_lock,
+                )
 
             if status == "succeeded":
                 succeeded += 1
