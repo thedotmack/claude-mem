@@ -35,13 +35,19 @@ export async function processAgentResponse(
 
   const parsed = parseAgentXml(text, session.contentSessionId);
 
+  const consumedMessage = session.processingMessageIds.shift() ?? null;
+
   if (!parsed.valid) {
     logger.warn('PARSER', `${agentName} returned unparseable response: ${parsed.reason}`, {
       sessionId: session.sessionDbId,
     });
-    const failed = session.processingMessageIds.shift();
-    if (failed) {
-      sessionManager.markMessageFailed(session.sessionDbId, failed.id);
+    if (consumedMessage) {
+      if (consumedMessage.type === 'summarize') {
+        sessionManager.getPendingMessageStore().confirmProcessed(consumedMessage.id);
+        logger.debug('QUEUE', `CONFIRMED | sessionDbId=${session.sessionDbId} | messageId=${consumedMessage.id} | type=summarize | reason=parse-fail (best-effort)`);
+      } else {
+        sessionManager.markMessageFailed(session.sessionDbId, consumedMessage.id);
+      }
     }
     return;
   }
@@ -62,6 +68,9 @@ export async function processAgentResponse(
     logger.warn('SDK', 'memorySessionId not yet captured; re-pending in-flight messages', {
       sessionId: session.sessionDbId
     });
+    if (consumedMessage) {
+      sessionManager.markMessageFailed(session.sessionDbId, consumedMessage.id);
+    }
     for (const inflight of session.processingMessageIds) {
       sessionManager.markMessageFailed(session.sessionDbId, inflight.id);
     }
@@ -106,18 +115,11 @@ export async function processAgentResponse(
 
   session.lastSummaryStored = result.summaryId !== null;
 
-  const matchingType: 'observation' | 'summarize' = parsed.kind === 'summary' ? 'summarize' : 'observation';
-  const matchedIdx = session.processingMessageIds.findIndex(m => m.type === matchingType);
-  const matchedMessage = matchedIdx >= 0 ? session.processingMessageIds[matchedIdx] : null;
-  if (matchedIdx >= 0) {
-    session.processingMessageIds.splice(matchedIdx, 1);
-  }
-
   if (parsed.kind === 'summary' && (parsed.data.skipped || session.lastSummaryStored)) {
     ingestSummary({
       kind: 'parsed',
       sessionDbId: session.sessionDbId,
-      messageId: matchedMessage?.id ?? -1,
+      messageId: consumedMessage?.id ?? -1,
       contentSessionId: session.contentSessionId,
       parsed: parsed.data,
     });
@@ -128,9 +130,9 @@ export async function processAgentResponse(
     });
   }
 
-  if (matchedMessage) {
-    sessionManager.getPendingMessageStore().confirmProcessed(matchedMessage.id);
-    logger.debug('QUEUE', `CONFIRMED | sessionDbId=${session.sessionDbId} | messageId=${matchedMessage.id} | type=${matchedMessage.type}`);
+  if (consumedMessage) {
+    sessionManager.getPendingMessageStore().confirmProcessed(consumedMessage.id);
+    logger.debug('QUEUE', `CONFIRMED | sessionDbId=${session.sessionDbId} | messageId=${consumedMessage.id} | type=${consumedMessage.type}`);
     session.restartGuard?.recordSuccess();
   }
 
