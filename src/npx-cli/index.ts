@@ -1,5 +1,6 @@
 import pc from 'picocolors';
 import { readPluginVersion } from './utils/paths.js';
+import type { InstallOptions } from './commands/install.js';
 
 const args = process.argv.slice(2);
 const command = args[0]?.toLowerCase() ?? '';
@@ -44,12 +45,7 @@ function readFlag(argv: string[], name: string): string | undefined {
   return i !== -1 ? argv[i + 1] : undefined;
 }
 
-function parseInstallOptions(argv: string[]): {
-  ide?: string;
-  provider?: 'claude' | 'gemini' | 'openrouter';
-  model?: string;
-  noAutoStart?: boolean;
-} {
+function parseInstallOptions(argv: string[]): InstallOptions {
   const provider = readFlag(argv, '--provider');
   if (provider !== undefined && provider !== 'claude' && provider !== 'gemini' && provider !== 'openrouter') {
     console.error(`Unknown --provider: ${provider}. Allowed: claude, gemini, openrouter`);
@@ -57,7 +53,7 @@ function parseInstallOptions(argv: string[]): {
   }
   return {
     ide: readFlag(argv, '--ide'),
-    provider: provider as 'claude' | 'gemini' | 'openrouter' | undefined,
+    provider: provider as InstallOptions['provider'],
     model: readFlag(argv, '--model'),
     noAutoStart: argv.includes('--no-auto-start'),
   };
