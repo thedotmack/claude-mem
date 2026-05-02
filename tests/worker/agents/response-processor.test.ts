@@ -40,7 +40,6 @@ describe('ResponseProcessor', () => {
   let mockChromaSyncObservation: ReturnType<typeof mock>;
   let mockChromaSyncSummary: ReturnType<typeof mock>;
   let mockBroadcast: ReturnType<typeof mock>;
-  let mockBroadcastProcessingStatus: ReturnType<typeof mock>;
   let mockDbManager: DatabaseManager;
   let mockSessionManager: SessionManager;
   let mockWorker: WorkerRef;
@@ -74,26 +73,14 @@ describe('ResponseProcessor', () => {
       }),
     } as unknown as DatabaseManager;
 
-    mockSessionManager = {
-      getMessageIterator: async function* () {
-        yield* [];
-      },
-      getPendingMessageStore: () => ({
-        markProcessed: mock(() => {}),
-        confirmProcessed: mock(() => {}),  // CLAIM-CONFIRM pattern: confirm after successful storage
-        cleanupProcessed: mock(() => 0),
-        resetStuckMessages: mock(() => 0),
-      }),
-    } as unknown as SessionManager;
+    mockSessionManager = {} as unknown as SessionManager;
 
     mockBroadcast = mock(() => {});
-    mockBroadcastProcessingStatus = mock(() => {});
 
     mockWorker = {
       sseBroadcaster: {
         broadcast: mockBroadcast,
       },
-      broadcastProcessingStatus: mockBroadcastProcessingStatus,
     };
   });
 
@@ -118,10 +105,8 @@ describe('ResponseProcessor', () => {
       startTime: Date.now(),
       cumulativeInputTokens: 100,
       cumulativeOutputTokens: 50,
-      earliestPendingTimestamp: Date.now() - 10000,
       conversationHistory: [],
       currentProvider: 'claude',
-      processingMessageIds: [],  // CLAIM-CONFIRM pattern: track message IDs being processed
       ...overrides,
     } as ActiveSession;
   }

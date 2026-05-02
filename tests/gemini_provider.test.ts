@@ -35,9 +35,6 @@ describe('GeminiProvider', () => {
   let mockMarkSessionCompleted: any;
   let mockSyncObservation: any;
   let mockSyncSummary: any;
-  let mockMarkProcessed: any;
-  let mockCleanupProcessed: any;
-  let mockResetStuckMessages: any;
   let mockDbManager: DatabaseManager;
   let mockSessionManager: SessionManager;
 
@@ -70,10 +67,6 @@ describe('GeminiProvider', () => {
     mockMarkSessionCompleted = mock(() => {});
     mockSyncObservation = mock(() => Promise.resolve());
     mockSyncSummary = mock(() => Promise.resolve());
-    mockMarkProcessed = mock(() => {});
-    mockCleanupProcessed = mock(() => 0);
-    mockResetStuckMessages = mock(() => 0);
-
     mockStoreObservations = mock(() => ({
       observationIds: [1],
       summaryId: 1,
@@ -99,16 +92,8 @@ describe('GeminiProvider', () => {
       getChromaSync: () => mockChromaSync
     } as unknown as DatabaseManager;
 
-    const mockPendingMessageStore = {
-      markProcessed: mockMarkProcessed,
-      confirmProcessed: mock(() => {}),  // CLAIM-CONFIRM pattern: confirm after successful storage
-      cleanupProcessed: mockCleanupProcessed,
-      resetStuckMessages: mockResetStuckMessages
-    };
-
     mockSessionManager = {
       getMessageIterator: async function* () { yield* []; },
-      getPendingMessageStore: () => mockPendingMessageStore
     } as unknown as SessionManager;
 
     agent = new GeminiProvider(mockDbManager, mockSessionManager);

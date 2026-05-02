@@ -155,7 +155,6 @@ export class WorkerService implements WorkerRef {
     this.settingsManager = new SettingsManager(this.dbManager);
     this.sessionEventBroadcaster = new SessionEventBroadcaster(this.sseBroadcaster, this);
     this.completionHandler = new SessionCompletionHandler(
-      this.sessionManager,
       this.sessionEventBroadcaster,
       this.dbManager,
     );
