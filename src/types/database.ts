@@ -4,12 +4,10 @@ export interface TableColumnInfo {
   name: string;
   type: string;
   notnull: number;
-  dflt_value: string | null;
   pk: number;
 }
 
 export interface IndexInfo {
-  seq: number;
   name: string;
   unique: number;
   origin: string;
@@ -34,7 +32,6 @@ export interface ObservationRecord {
   created_at_epoch: number;
   title?: string;
   concept?: string;
-  source_files?: string;
   prompt_number?: number;
   discovery_tokens?: number;
 }

@@ -2,8 +2,6 @@ import { useState, useEffect, useCallback } from 'react';
 
 export interface GitHubStarsData {
   stargazers_count: number;
-  watchers_count: number;
-  forks_count: number;
 }
 
 export interface UseGitHubStarsReturn {

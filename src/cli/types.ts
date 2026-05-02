@@ -21,7 +21,6 @@ export interface HookResult {
     hookEventName: string;
     additionalContext: string;
     permissionDecision?: 'allow' | 'deny';
-    permissionDecisionReason?: string;
     updatedInput?: Record<string, unknown>;
   };
   systemMessage?: string;
