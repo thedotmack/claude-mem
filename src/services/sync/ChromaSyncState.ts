@@ -3,7 +3,7 @@ import { join } from 'path';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { logger } from '../../utils/logger.js';
 
-export type DocKind = 'observations' | 'summaries' | 'prompts';
+type DocKind = 'observations' | 'summaries' | 'prompts';
 
 export interface ProjectWatermarks {
   observations: number;
