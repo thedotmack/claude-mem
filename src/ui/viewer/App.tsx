@@ -116,16 +116,6 @@ export function App() {
         }}
       />
 
-      {!welcomeDismissed && (
-        <WelcomeCard
-          onDismiss={() => setWelcomeDismissed(true)}
-          observationCount={stats?.database?.observations ?? 0}
-          projectCount={projects.length}
-          isConnected={isConnected}
-          firstObservationAt={stats?.database?.firstObservationAt ?? null}
-        />
-      )}
-
       <Feed
         observations={allObservations}
         summaries={allSummaries}
@@ -133,6 +123,17 @@ export function App() {
         onLoadMore={handleLoadMore}
         isLoading={pagination.observations.isLoading || pagination.summaries.isLoading || pagination.prompts.isLoading}
         hasMore={pagination.observations.hasMore || pagination.summaries.hasMore || pagination.prompts.hasMore}
+        pinnedTop={
+          !welcomeDismissed ? (
+            <WelcomeCard
+              onDismiss={() => setWelcomeDismissed(true)}
+              observationCount={stats?.database?.observations ?? 0}
+              projectCount={projects.length}
+              isConnected={isConnected}
+              firstObservationAt={stats?.database?.firstObservationAt ?? null}
+            />
+          ) : null
+        }
       />
 
       <ContextSettingsModal

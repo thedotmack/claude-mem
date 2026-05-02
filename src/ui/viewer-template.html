@@ -1535,135 +1535,57 @@
       line-height: 1.4;
     }
 
-    .welcome-card-section {
-      margin-top: 22px;
-    }
-
-    .welcome-card-section-title {
-      margin: 0 0 10px 0;
-      font-size: 11px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      color: var(--color-text-muted);
-    }
-
-    .welcome-card-types {
-      list-style: none;
-      margin: 0;
-      padding: 0;
+    .welcome-card-grid {
       display: grid;
-      gap: 8px;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      margin-top: 18px;
     }
 
-    .welcome-card-type {
+    .welcome-card-feature {
       display: flex;
-      align-items: baseline;
-      gap: 12px;
-      padding: 10px 12px;
-      border-radius: 6px;
-      background: var(--color-bg-tertiary);
-      border-left: 3px solid var(--color-border-primary);
-      font-size: 13px;
-      line-height: 1.55;
-    }
-
-    .welcome-card-type-observation {
-      border-left-color: var(--color-border-observation);
-    }
-
-    .welcome-card-type-summary {
-      border-left-color: var(--color-border-summary);
-    }
-
-    .welcome-card-type-prompt {
-      border-left-color: var(--color-border-prompt);
-    }
-
-    .welcome-card-type-tag {
-      font-size: 10px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      white-space: nowrap;
-      flex-shrink: 0;
-      padding: 2px 8px;
-      border-radius: 4px;
-      border: 1px solid transparent;
-    }
-
-    .welcome-card-type-observation .welcome-card-type-tag {
-      background: var(--color-observation-badge-bg);
-      color: var(--color-observation-badge-text);
-    }
-
-    .welcome-card-type-summary .welcome-card-type-tag {
-      background: var(--color-bg-summary);
-      color: var(--color-accent-summary);
-      border-color: var(--color-border-summary);
-    }
-
-    .welcome-card-type-prompt .welcome-card-type-tag {
-      background: var(--color-bg-prompt);
-      color: var(--color-accent-prompt);
-      border-color: var(--color-border-prompt);
-    }
-
-    .welcome-card-type-desc {
-      color: var(--color-text-secondary);
-      flex: 1;
-      min-width: 0;
-    }
-
-    .welcome-card-tips {
-      list-style: none;
-      margin: 0;
-      padding: 0;
-      display: grid;
-      gap: 12px;
-    }
-
-    .welcome-card-tips li {
-      display: flex;
-      align-items: flex-start;
-      gap: 12px;
-      font-size: 13px;
-      line-height: 1.55;
-      color: var(--color-text-secondary);
-    }
-
-    .welcome-card-tips strong {
-      color: var(--color-text-primary);
-      font-weight: 600;
-    }
-
-    .welcome-card-tip-icon {
-      flex-shrink: 0;
-      width: 26px;
-      height: 26px;
-      border-radius: 6px;
-      background: var(--color-bg-tertiary);
-      border: 1px solid var(--color-border-primary);
-      display: inline-flex;
+      flex-direction: column;
       align-items: center;
-      justify-content: center;
-      color: var(--color-accent-primary);
-      margin-top: 1px;
-    }
-
-    .welcome-card-tips code {
-      display: inline-block;
-      padding: 1px 6px;
+      text-align: center;
+      gap: 8px;
+      padding: 18px 14px 16px;
+      border-radius: 8px;
       background: var(--color-bg-tertiary);
       border: 1px solid var(--color-border-primary);
-      border-radius: 4px;
-      font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+      color: var(--color-text-secondary);
+      transition: border-color 0.15s ease, transform 0.15s ease;
+    }
+
+    .welcome-card-feature:hover {
+      border-color: var(--color-border-focus);
+      transform: translateY(-1px);
+    }
+
+    .welcome-card-feature-art {
+      width: 64px;
+      height: 64px;
+      color: var(--color-text-tertiary);
+      flex-shrink: 0;
+    }
+
+    .welcome-card-feature-title {
+      margin: 4px 0 0 0;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: -0.005em;
+      color: var(--color-text-primary);
+      line-height: 1.3;
+    }
+
+    .welcome-card-feature-desc {
+      margin: 0;
       font-size: 12px;
-      color: var(--color-accent-primary);
+      line-height: 1.5;
+      color: var(--color-text-secondary);
     }
 
     .welcome-card-footer {
-      margin-top: 22px;
+      margin-top: 18px;
       padding-top: 14px;
       border-top: 1px solid var(--color-border-primary);
       font-size: 12px;
@@ -1685,10 +1607,12 @@
         padding: 18px 20px;
       }
 
-      .welcome-card-type {
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 6px;
+      .welcome-card-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .welcome-card-feature {
+        padding: 16px 14px;
       }
     }
 

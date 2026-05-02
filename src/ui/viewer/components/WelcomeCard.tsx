@@ -61,49 +61,118 @@ function DismissButton({ onClick }: { onClick: () => void }) {
   );
 }
 
-function GearIcon() {
+function StreamIllustration() {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path>
-      <circle cx="12" cy="12" r="3"></circle>
+    <svg
+      className="welcome-card-feature-art"
+      viewBox="0 0 96 96"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="14" y="56" width="68" height="22" rx="4" />
+      <line x1="20" y1="56" x2="20" y2="78" stroke="var(--color-border-prompt)" strokeWidth="3" />
+      <line x1="30" y1="64" x2="56" y2="64" opacity="0.6" />
+      <line x1="30" y1="71" x2="48" y2="71" opacity="0.6" />
+
+      <rect x="10" y="30" width="68" height="22" rx="4" />
+      <line x1="16" y1="30" x2="16" y2="52" stroke="var(--color-border-summary)" strokeWidth="3" />
+      <line x1="26" y1="38" x2="60" y2="38" opacity="0.6" />
+      <line x1="26" y1="45" x2="52" y2="45" opacity="0.6" />
+
+      <rect x="18" y="6" width="68" height="22" rx="4" />
+      <line x1="24" y1="6" x2="24" y2="28" stroke="var(--color-border-observation)" strokeWidth="3" />
+      <line x1="34" y1="14" x2="68" y2="14" opacity="0.6" />
+      <line x1="34" y1="21" x2="60" y2="21" opacity="0.6" />
     </svg>
   );
 }
 
-function FilterIcon() {
+function TuneIllustration() {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon>
+    <svg
+      className="welcome-card-feature-art"
+      viewBox="0 0 96 96"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <line x1="14" y1="26" x2="82" y2="26" />
+      <line x1="14" y1="48" x2="82" y2="48" />
+      <line x1="14" y1="70" x2="82" y2="70" />
+
+      <circle cx="32" cy="26" r="6" fill="var(--color-bg-card)" />
+      <circle cx="62" cy="48" r="6" fill="var(--color-bg-card)" />
+      <circle cx="44" cy="70" r="6" fill="var(--color-bg-card)" />
+
+      <circle cx="32" cy="26" r="2.5" fill="currentColor" stroke="none" />
+      <circle cx="62" cy="48" r="2.5" fill="currentColor" stroke="none" />
+      <circle cx="44" cy="70" r="2.5" fill="currentColor" stroke="none" />
     </svg>
   );
 }
 
-function SearchIcon() {
+function RecallIllustration() {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <circle cx="11" cy="11" r="8"></circle>
-      <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+    <svg
+      className="welcome-card-feature-art"
+      viewBox="0 0 96 96"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="10" y="14" width="58" height="40" rx="4" opacity="0.45" />
+      <line x1="20" y1="24" x2="56" y2="24" opacity="0.45" />
+      <line x1="20" y1="32" x2="48" y2="32" opacity="0.45" />
+      <line x1="20" y1="40" x2="52" y2="40" opacity="0.45" />
+
+      <rect x="18" y="26" width="58" height="40" rx="4" fill="var(--color-bg-card)" />
+      <line x1="28" y1="36" x2="64" y2="36" opacity="0.6" />
+      <line x1="28" y1="44" x2="56" y2="44" opacity="0.6" />
+      <line x1="28" y1="52" x2="60" y2="52" opacity="0.6" />
+
+      <circle cx="62" cy="62" r="14" fill="var(--color-bg-card)" stroke="currentColor" strokeWidth="2.25" />
+      <line x1="73" y1="73" x2="84" y2="84" strokeWidth="2.5" />
     </svg>
   );
 }
 
-const CARD_TYPES = [
+interface Feature {
+  kind: string;
+  illustration: React.ReactNode;
+  title: string;
+  description: string;
+}
+
+const FEATURES: Feature[] = [
   {
-    kind: 'observation',
-    label: 'Observation',
-    description: 'Captured in real time as Claude reads files, edits code, or runs commands.',
+    kind: 'stream',
+    illustration: <StreamIllustration />,
+    title: 'Live feed',
+    description: 'Observations, summaries, and prompts stream in as Claude works.',
   },
   {
-    kind: 'summary',
-    label: 'Summary',
-    description: 'A condensed roll-up of what happened, written when each session ends.',
+    kind: 'tune',
+    illustration: <TuneIllustration />,
+    title: 'Tune it',
+    description: 'Use the gear in the top-right to control how memory injects.',
   },
   {
-    kind: 'prompt',
-    label: 'Prompt',
-    description: 'Your messages, kept alongside the work they triggered for searchable context.',
+    kind: 'recall',
+    illustration: <RecallIllustration />,
+    title: 'Recall it',
+    description: 'Ask Claude about past work or run /mem-search to dig in.',
   },
-] as const;
+];
 
 export function WelcomeCard({
   onDismiss,
@@ -125,7 +194,7 @@ export function WelcomeCard({
         <img src="claude-mem-logomark.webp" alt="" width="32" height="32" />
         <div className="welcome-card-lede">
           <h2>{isEmpty ? 'Welcome to claude-mem' : 'claude-mem'}</h2>
-          <p>Persistent memory for Claude Code &mdash; observations stream in here as Claude reads, edits, and runs commands, then carry forward into the next session.</p>
+          <p>Persistent memory for Claude Code.</p>
           {!isEmpty && (
             <div className="welcome-card-stats">
               <span>{observationCount.toLocaleString()} {observationCount === 1 ? 'observation' : 'observations'}</span>
@@ -143,46 +212,20 @@ export function WelcomeCard({
         <div className="welcome-card-status-row">
           <span className="welcome-card-status-dot" data-connected={isConnected ? 'true' : 'false'} />
           <span className="welcome-card-status-label">
-            {isConnected ? 'Connected to worker · waiting for activity' : 'Reconnecting to worker…'}
+            {isConnected ? 'Connected · waiting for activity' : 'Reconnecting to worker…'}
           </span>
         </div>
       )}
 
-      <section className="welcome-card-section">
-        <h3 className="welcome-card-section-title">What you'll see in this feed</h3>
-        <ul className="welcome-card-types">
-          {CARD_TYPES.map(t => (
-            <li key={t.kind} className={`welcome-card-type welcome-card-type-${t.kind}`}>
-              <span className="welcome-card-type-tag">{t.label}</span>
-              <span className="welcome-card-type-desc">{t.description}</span>
-            </li>
-          ))}
-        </ul>
-      </section>
-
-      <section className="welcome-card-section">
-        <h3 className="welcome-card-section-title">Make it yours</h3>
-        <ul className="welcome-card-tips">
-          <li>
-            <span className="welcome-card-tip-icon" aria-hidden="true"><GearIcon /></span>
-            <div>
-              <strong>Settings</strong> — click the gear in the top-right to tune how many observations get injected on session start, expand specific fields, and toggle token economics.
-            </div>
-          </li>
-          <li>
-            <span className="welcome-card-tip-icon" aria-hidden="true"><FilterIcon /></span>
-            <div>
-              <strong>Filter by project</strong> — use the project dropdown in the header to scope the feed to a single repo.
-            </div>
-          </li>
-          <li>
-            <span className="welcome-card-tip-icon" aria-hidden="true"><SearchIcon /></span>
-            <div>
-              <strong>Recall past work</strong> — ask Claude <code>did we already solve X?</code> or run <code>/mem-search</code> to dig through every observation across sessions.
-            </div>
-          </li>
-        </ul>
-      </section>
+      <div className="welcome-card-grid">
+        {FEATURES.map(feature => (
+          <div key={feature.kind} className={`welcome-card-feature welcome-card-feature-${feature.kind}`}>
+            {feature.illustration}
+            <h3 className="welcome-card-feature-title">{feature.title}</h3>
+            <p className="welcome-card-feature-desc">{feature.description}</p>
+          </div>
+        ))}
+      </div>
 
       <footer className="welcome-card-footer">
         <a href={EXPLAINER_URL} target="_blank" rel="noopener noreferrer">
