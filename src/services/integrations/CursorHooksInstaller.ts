@@ -13,15 +13,11 @@ import {
   writeContextFile,
   type CursorProjectRegistry
 } from '../../utils/cursor-utils.js';
-import type { CursorInstallTarget, CursorHooksJson, CursorMcpConfig, Platform } from './types.js';
+import type { CursorInstallTarget, CursorHooksJson, CursorMcpConfig } from './types.js';
 
 const execAsync = promisify(exec);
 
 const CURSOR_REGISTRY_FILE = path.join(DATA_DIR, 'cursor-projects.json');
-
-export function detectPlatform(): Platform {
-  return process.platform === 'win32' ? 'windows' : 'unix';
-}
 
 export function readCursorRegistry(): CursorProjectRegistry {
   return readCursorRegistryFromFile(CURSOR_REGISTRY_FILE);

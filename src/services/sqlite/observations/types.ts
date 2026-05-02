@@ -26,11 +26,6 @@ export interface GetObservationsByIdsOptions {
   files?: string | string[];
 }
 
-export interface SessionFilesResult {
-  filesRead: string[];
-  filesModified: string[];
-}
-
 export interface ObservationSessionRow {
   title: string;
   subtitle: string;
@@ -43,16 +38,4 @@ export interface RecentObservationRow {
   text: string;
   prompt_number: number | null;
   created_at: string;
-}
-
-export interface AllRecentObservationRow {
-  id: number;
-  type: string;
-  title: string | null;
-  subtitle: string | null;
-  text: string;
-  project: string;
-  prompt_number: number | null;
-  created_at: string;
-  created_at_epoch: number;
 }
