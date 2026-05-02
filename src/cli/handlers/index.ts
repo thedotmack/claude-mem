@@ -41,11 +41,3 @@ export function getEventHandler(eventType: string): EventHandler {
   }
   return handler;
 }
-
-export { contextHandler } from './context.js';
-export { sessionInitHandler } from './session-init.js';
-export { observationHandler } from './observation.js';
-export { summarizeHandler } from './summarize.js';
-export { userMessageHandler } from './user-message.js';
-export { fileEditHandler } from './file-edit.js';
-export { fileContextHandler } from './file-context.js';
