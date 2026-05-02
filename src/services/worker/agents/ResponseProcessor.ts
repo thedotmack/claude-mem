@@ -38,6 +38,11 @@ export async function processAgentResponse(
     logger.warn('PARSER', `${agentName} returned unparseable response — leaving queue intact`, {
       sessionId: session.sessionDbId,
     });
+    // Reset claimed messages back to pending so they're re-claimed on the
+    // next pass instead of leaving them in `processing` (which counts toward
+    // pendingCount, which triggers a respawn loop, which trips the restart
+    // guard, which deletes the message — silent data loss).
+    sessionManager.getPendingMessageStore().resetProcessingToPending(session.sessionDbId);
     return;
   }
 
@@ -45,6 +50,10 @@ export async function processAgentResponse(
     logger.warn('SDK', 'memorySessionId not yet captured; deferring storage until next round', {
       sessionId: session.sessionDbId
     });
+    // Reset any claimed-but-undelivered messages back to pending so they don't
+    // count as "in progress" and trigger a respawn loop while we wait for the
+    // memory session id to appear. The next generator pass will re-claim them.
+    sessionManager.getPendingMessageStore().resetProcessingToPending(session.sessionDbId);
     return;
   }
 
