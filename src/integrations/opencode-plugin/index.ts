@@ -86,32 +86,6 @@ const MAX_TOOL_RESPONSE_LENGTH = 1000;
 
 const JSON_HEADERS: Record<string, string> = { "Content-Type": "application/json" };
 
-async function workerPost(
-  path: string,
-  body: Record<string, unknown>,
-): Promise<Record<string, unknown> | null> {
-  let response: Response;
-  try {
-    response = await fetch(`${WORKER_BASE_URL}${path}`, {
-      method: "POST",
-      headers: JSON_HEADERS,
-      body: JSON.stringify(body),
-    });
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!message.includes("ECONNREFUSED")) {
-      console.warn(`[claude-mem] Worker POST ${path} failed: ${message}`);
-    }
-    return null;
-  }
-
-  if (!response.ok) {
-    console.warn(`[claude-mem] Worker POST ${path} returned ${response.status}`);
-    return null;
-  }
-  return (await response.json()) as Record<string, unknown>;
-}
-
 function workerPostFireAndForget(
   path: string,
   body: Record<string, unknown>,
