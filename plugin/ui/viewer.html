@@ -1416,7 +1416,7 @@
       align-items: center;
       justify-content: center;
       padding: clamp(16px, 3vw, 40px);
-      background: transparent;
+      background: rgba(0, 0, 0, 0.15);
       animation: fadeIn 0.18s ease-out;
       overflow-y: auto;
     }
@@ -1430,7 +1430,8 @@
       background: color-mix(in srgb, var(--color-bg-card) 55%, transparent);
       border: 1px solid color-mix(in srgb, var(--color-border-primary) 55%, transparent);
       box-shadow:
-        0 24px 80px rgba(0, 0, 0, 0.35),
+        0 40px 120px rgba(0, 0, 0, 0.6),
+        0 16px 48px rgba(0, 0, 0, 0.35),
         0 0 0 1px rgba(255, 255, 255, 0.05) inset;
       animation: slideUp 0.28s cubic-bezier(0.4, 0, 0.2, 1);
       backdrop-filter: blur(28px) saturate(170%);
