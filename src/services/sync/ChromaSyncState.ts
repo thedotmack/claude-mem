@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from '
 import { join } from 'path';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 
-export type DocKind = 'observations' | 'summaries' | 'prompts';
+type DocKind = 'observations' | 'summaries' | 'prompts';
 
 export interface ProjectWatermarks {
   observations: number;
