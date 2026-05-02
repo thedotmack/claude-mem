@@ -12,7 +12,5 @@ export { SQLiteSearchStrategy } from './strategies/SQLiteSearchStrategy.js';
 export { HybridSearchStrategy } from './strategies/HybridSearchStrategy.js';
 
 export * from './filters/DateFilter.js';
-export * from './filters/ProjectFilter.js';
-export * from './filters/TypeFilter.js';
 
 export * from './types.js';

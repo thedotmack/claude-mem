@@ -1,7 +1,5 @@
 
-import type { DateRange, SearchResult, CombinedResult } from '../types.js';
-import { logger } from '../../../../utils/logger.js';
-import { SEARCH_CONSTANTS } from '../types.js';
+import type { DateRange } from '../types.js';
 
 export function parseDateRange(dateRange?: DateRange): {
   startEpoch?: number;
@@ -49,35 +47,3 @@ export function isWithinDateRange(
   return true;
 }
 
-export function isRecent(epoch: number): boolean {
-  const cutoff = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
-  return epoch > cutoff;
-}
-
-export function filterResultsByDate<T extends { epoch: number }>(
-  results: T[],
-  dateRange?: DateRange
-): T[] {
-  if (!dateRange) {
-    return results;
-  }
-
-  return results.filter(result => isWithinDateRange(result.epoch, dateRange));
-}
-
-export function getDateBoundaries(range: 'today' | 'week' | 'month' | '90days'): DateRange {
-  const now = Date.now();
-  const startOfToday = new Date();
-  startOfToday.setHours(0, 0, 0, 0);
-
-  switch (range) {
-    case 'today':
-      return { start: startOfToday.getTime() };
-    case 'week':
-      return { start: now - 7 * 24 * 60 * 60 * 1000 };
-    case 'month':
-      return { start: now - 30 * 24 * 60 * 60 * 1000 };
-    case '90days':
-      return { start: now - SEARCH_CONSTANTS.RECENCY_WINDOW_MS };
-  }
-}
