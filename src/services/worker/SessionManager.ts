@@ -11,6 +11,7 @@ export class SessionManager {
   private sessions: Map<number, ActiveSession> = new Map();
   private sessionQueues: Map<number, EventEmitter> = new Map();
   private onPendingMutate?: () => void;
+  private inFlightCount = 0;
 
   constructor(dbManager: DatabaseManager) {
     this.dbManager = dbManager;
@@ -281,11 +282,11 @@ export class SessionManager {
   }
 
   getTotalActiveWork(): number {
-    return this.getTotalQueueDepth();
+    return this.getTotalQueueDepth() + this.inFlightCount;
   }
 
   isAnySessionProcessing(): boolean {
-    return this.getTotalQueueDepth() > 0;
+    return this.getTotalActiveWork() > 0;
   }
 
   async *getMessageIterator(sessionDbId: number): AsyncIterableIterator<PendingMessage> {
@@ -303,8 +304,14 @@ export class SessionManager {
     while (!signal.aborted) {
       const msg = session.pendingMessages.shift();
       if (msg) {
+        this.inFlightCount++;
         this.onPendingMutate?.();
-        yield msg;
+        try {
+          yield msg;
+        } finally {
+          this.inFlightCount--;
+          this.onPendingMutate?.();
+        }
         continue;
       }
       await new Promise<void>(resolve => {
