@@ -8,7 +8,7 @@ interface WelcomeCardProps {
   firstObservationAt: string | null;
 }
 
-const STORAGE_KEY = 'claude-mem-welcome-dismissed-v2';
+const STORAGE_KEY = 'claude-mem-welcome-dismissed-v3';
 const EXPLAINER_URL = '/api/onboarding/explainer';
 const DOCS_URL = 'https://docs.claude-mem.ai';
 
@@ -61,6 +61,50 @@ function DismissButton({ onClick }: { onClick: () => void }) {
   );
 }
 
+function GearIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path>
+      <circle cx="12" cy="12" r="3"></circle>
+    </svg>
+  );
+}
+
+function FilterIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon>
+    </svg>
+  );
+}
+
+function SearchIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="11" cy="11" r="8"></circle>
+      <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+    </svg>
+  );
+}
+
+const CARD_TYPES = [
+  {
+    kind: 'observation',
+    label: 'Observation',
+    description: 'Captured in real time as Claude reads files, edits code, or runs commands.',
+  },
+  {
+    kind: 'summary',
+    label: 'Summary',
+    description: 'A condensed roll-up of what happened, written when each session ends.',
+  },
+  {
+    kind: 'prompt',
+    label: 'Prompt',
+    description: 'Your messages, kept alongside the work they triggered for searchable context.',
+  },
+] as const;
+
 export function WelcomeCard({
   onDismiss,
   observationCount,
@@ -75,53 +119,71 @@ export function WelcomeCard({
 
   const isEmpty = observationCount === 0;
 
-  if (isEmpty) {
-    return (
-      <article className="card welcome-card welcome-card-empty">
-        <header className="welcome-card-header">
-          <img src="claude-mem-logomark.webp" alt="" width="32" height="32" />
-          <div className="welcome-card-lede">
-            <h2>No observations yet.</h2>
-            <p>Open Claude Code in any project &mdash; entries stream in here as Claude reads, edits, and runs commands.</p>
-          </div>
-          <DismissButton onClick={handleDismiss} />
-        </header>
-        <div className="welcome-card-status-row">
-          <span className="welcome-card-status-dot" data-connected={isConnected ? 'true' : 'false'} />
-          <span className="welcome-card-status-label">
-            {isConnected ? 'Connected to worker · waiting for activity' : 'Reconnecting…'}
-          </span>
-        </div>
-        <footer className="welcome-card-footer">
-          <a href={EXPLAINER_URL} target="_blank" rel="noopener noreferrer">
-            How it works
-          </a>
-        </footer>
-      </article>
-    );
-  }
-
   return (
-    <article className="card welcome-card">
+    <article className={`card welcome-card ${isEmpty ? 'welcome-card-empty' : ''}`}>
       <header className="welcome-card-header">
         <img src="claude-mem-logomark.webp" alt="" width="32" height="32" />
         <div className="welcome-card-lede">
-          <h2>claude-mem</h2>
-          <p>Persistent memory across Claude Code sessions.</p>
+          <h2>{isEmpty ? 'Welcome to claude-mem' : 'claude-mem'}</h2>
+          <p>Persistent memory for Claude Code &mdash; observations stream in here as Claude reads, edits, and runs commands, then carry forward into the next session.</p>
+          {!isEmpty && (
+            <div className="welcome-card-stats">
+              <span>{observationCount.toLocaleString()} {observationCount === 1 ? 'observation' : 'observations'}</span>
+              <span className="welcome-card-stats-sep">{'·'}</span>
+              <span>{projectCount} {projectCount === 1 ? 'project' : 'projects'}</span>
+              <span className="welcome-card-stats-sep">{'·'}</span>
+              <span>since {formatDate(firstObservationAt)}</span>
+            </div>
+          )}
         </div>
         <DismissButton onClick={handleDismiss} />
       </header>
-      <div className="welcome-card-stats">
-        <span>{observationCount} observations</span>
-        <span className="welcome-card-stats-sep">{'·'}</span>
-        <span>{projectCount} projects</span>
-        <span className="welcome-card-stats-sep">{'·'}</span>
-        <span>since {formatDate(firstObservationAt)}</span>
-      </div>
-      <ul className="welcome-card-prompts">
-        <li><code>ask:</code> did we already solve X?</li>
-        <li><code>/mem-search</code> dig into past work</li>
-      </ul>
+
+      {isEmpty && (
+        <div className="welcome-card-status-row">
+          <span className="welcome-card-status-dot" data-connected={isConnected ? 'true' : 'false'} />
+          <span className="welcome-card-status-label">
+            {isConnected ? 'Connected to worker · waiting for activity' : 'Reconnecting to worker…'}
+          </span>
+        </div>
+      )}
+
+      <section className="welcome-card-section">
+        <h3 className="welcome-card-section-title">What you'll see in this feed</h3>
+        <ul className="welcome-card-types">
+          {CARD_TYPES.map(t => (
+            <li key={t.kind} className={`welcome-card-type welcome-card-type-${t.kind}`}>
+              <span className="welcome-card-type-tag">{t.label}</span>
+              <span className="welcome-card-type-desc">{t.description}</span>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      <section className="welcome-card-section">
+        <h3 className="welcome-card-section-title">Make it yours</h3>
+        <ul className="welcome-card-tips">
+          <li>
+            <span className="welcome-card-tip-icon" aria-hidden="true"><GearIcon /></span>
+            <div>
+              <strong>Settings</strong> — click the gear in the top-right to tune how many observations get injected on session start, expand specific fields, and toggle token economics.
+            </div>
+          </li>
+          <li>
+            <span className="welcome-card-tip-icon" aria-hidden="true"><FilterIcon /></span>
+            <div>
+              <strong>Filter by project</strong> — use the project dropdown in the header to scope the feed to a single repo.
+            </div>
+          </li>
+          <li>
+            <span className="welcome-card-tip-icon" aria-hidden="true"><SearchIcon /></span>
+            <div>
+              <strong>Recall past work</strong> — ask Claude <code>did we already solve X?</code> or run <code>/mem-search</code> to dig through every observation across sessions.
+            </div>
+          </li>
+        </ul>
+      </section>
+
       <footer className="welcome-card-footer">
         <a href={EXPLAINER_URL} target="_blank" rel="noopener noreferrer">
           How it works

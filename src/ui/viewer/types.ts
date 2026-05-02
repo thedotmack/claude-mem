@@ -52,8 +52,6 @@ export interface StreamEvent {
   summaries?: Summary[];
   prompts?: UserPrompt[];
   projects?: string[];
-  sources?: string[];
-  projectsBySource?: Record<string, string[]>;
   observation?: Observation;
   summary?: Summary;
   prompt?: UserPrompt;

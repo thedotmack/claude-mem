@@ -12,27 +12,26 @@ interface PaginationState {
 type DataType = 'observations' | 'summaries' | 'prompts';
 type DataItem = Observation | Summary | UserPrompt;
 
-function usePaginationFor<TItem extends DataItem>(endpoint: string, dataType: DataType, currentFilter: string, currentSource: string) {
+function usePaginationFor<TItem extends DataItem>(endpoint: string, dataType: DataType, currentFilter: string) {
   const [state, setState] = useState<PaginationState>({
     isLoading: false,
     hasMore: true
   });
 
   const offsetRef = useRef(0);
-  const lastSelectionRef = useRef(`${currentSource}::${currentFilter}`);
+  const lastSelectionRef = useRef(currentFilter);
   const stateRef = useRef(state);
 
   const loadMore = useCallback(async (): Promise<TItem[]> => {
-    const selectionKey = `${currentSource}::${currentFilter}`;
-    const filterChanged = lastSelectionRef.current !== selectionKey;
+    const filterChanged = lastSelectionRef.current !== currentFilter;
 
     if (filterChanged) {
       offsetRef.current = 0;
-      lastSelectionRef.current = selectionKey;
+      lastSelectionRef.current = currentFilter;
 
       const newState = { isLoading: false, hasMore: true };
       setState(newState);
-      stateRef.current = newState; 
+      stateRef.current = newState;
     }
 
     if (!filterChanged && (stateRef.current.isLoading || !stateRef.current.hasMore)) {
@@ -49,10 +48,6 @@ function usePaginationFor<TItem extends DataItem>(endpoint: string, dataType: Da
 
     if (currentFilter) {
       params.append('project', currentFilter);
-    }
-
-    if (currentSource && currentSource !== 'all') {
-      params.append('platformSource', currentSource);
     }
 
     const response = await authFetch(`${endpoint}?${params}`);
@@ -79,7 +74,7 @@ function usePaginationFor<TItem extends DataItem>(endpoint: string, dataType: Da
     offsetRef.current += UI.PAGINATION_PAGE_SIZE;
 
     return data.items;
-  }, [currentFilter, currentSource, endpoint, dataType]);
+  }, [currentFilter, endpoint, dataType]);
 
   return {
     ...state,
@@ -87,10 +82,10 @@ function usePaginationFor<TItem extends DataItem>(endpoint: string, dataType: Da
   };
 }
 
-export function usePagination(currentFilter: string, currentSource: string) {
-  const observations = usePaginationFor<Observation>(API_ENDPOINTS.OBSERVATIONS, 'observations', currentFilter, currentSource);
-  const summaries = usePaginationFor<Summary>(API_ENDPOINTS.SUMMARIES, 'summaries', currentFilter, currentSource);
-  const prompts = usePaginationFor<UserPrompt>(API_ENDPOINTS.PROMPTS, 'prompts', currentFilter, currentSource);
+export function usePagination(currentFilter: string) {
+  const observations = usePaginationFor<Observation>(API_ENDPOINTS.OBSERVATIONS, 'observations', currentFilter);
+  const summaries = usePaginationFor<Summary>(API_ENDPOINTS.SUMMARIES, 'summaries', currentFilter);
+  const prompts = usePaginationFor<UserPrompt>(API_ENDPOINTS.PROMPTS, 'prompts', currentFilter);
 
   return {
     observations,

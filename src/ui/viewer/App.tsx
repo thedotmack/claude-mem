@@ -14,7 +14,6 @@ import { mergeAndDeduplicateByProject } from './utils/data';
 
 export function App() {
   const [currentFilter, setCurrentFilter] = useState('');
-  const [currentSource, setCurrentSource] = useState('all');
   const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
   const [logsModalOpen, setLogsModalOpen] = useState(false);
   const [welcomeDismissed, setWelcomeDismissed] = useState<boolean>(getStoredWelcomeDismissed);
@@ -22,31 +21,21 @@ export function App() {
   const [paginatedSummaries, setPaginatedSummaries] = useState<Summary[]>([]);
   const [paginatedPrompts, setPaginatedPrompts] = useState<UserPrompt[]>([]);
 
-  const { observations, summaries, prompts, projects, sources, projectsBySource, isProcessing, queueDepth, isConnected } = useSSE();
+  const { observations, summaries, prompts, projects, isProcessing, queueDepth, isConnected } = useSSE();
   const { settings, saveSettings, isSaving, saveStatus } = useSettings();
   const { stats, refreshStats } = useStats();
-  const { preference, resolvedTheme, setThemePreference } = useTheme();
-  const pagination = usePagination(currentFilter, currentSource);
+  const { preference, setThemePreference } = useTheme();
+  const pagination = usePagination(currentFilter);
 
-  const availableProjects = useMemo(() => {
-    if (currentSource === 'all') {
-      return projects;
-    }
-
-    return projectsBySource[currentSource] || [];
-  }, [currentSource, projects, projectsBySource]);
-
-  const matchesSelection = useCallback((item: { project: string; platform_source: string }) => {
-    const matchesProject = !currentFilter || item.project === currentFilter;
-    const matchesSource = currentSource === 'all' || (item.platform_source || 'claude') === currentSource;
-    return matchesProject && matchesSource;
-  }, [currentFilter, currentSource]);
+  const matchesSelection = useCallback((item: { project: string }) => {
+    return !currentFilter || item.project === currentFilter;
+  }, [currentFilter]);
 
   useEffect(() => {
-    if (currentFilter && !availableProjects.includes(currentFilter)) {
+    if (currentFilter && !projects.includes(currentFilter)) {
       setCurrentFilter('');
     }
-  }, [availableProjects, currentFilter]);
+  }, [projects, currentFilter]);
 
   const allObservations = useMemo(() => {
     const live = observations.filter(matchesSelection);
@@ -102,7 +91,7 @@ export function App() {
     setPaginatedPrompts([]);
     handleLoadMore();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentFilter, currentSource]);
+  }, [currentFilter]);
 
   useEffect(() => {
     refreshStats();
@@ -113,12 +102,9 @@ export function App() {
     <>
       <Header
         isConnected={isConnected}
-        projects={availableProjects}
-        sources={sources}
+        projects={projects}
         currentFilter={currentFilter}
-        currentSource={currentSource}
         onFilterChange={setCurrentFilter}
-        onSourceChange={setCurrentSource}
         isProcessing={isProcessing}
         queueDepth={queueDepth}
         themePreference={preference}
