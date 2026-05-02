@@ -255,6 +255,3 @@ export async function pullUpdates(): Promise<SwitchResult> {
   };
 }
 
-export function getInstalledPluginPath(): string {
-  return INSTALLED_PLUGIN_PATH;
-}
