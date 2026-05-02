@@ -121,19 +121,5 @@ export interface UserPrompt {
   created_at_epoch: number;
 }
 
-export interface DBSession {
-  id: number;
-  content_session_id: string;    
-  project: string;
-  platform_source: string;
-  user_prompt: string;
-  memory_session_id: string | null;  
-  status: 'active' | 'completed' | 'failed';
-  started_at: string;
-  started_at_epoch: number;
-  completed_at: string | null;
-  completed_at_epoch: number | null;
-}
-
 export type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 

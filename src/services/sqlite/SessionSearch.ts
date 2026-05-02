@@ -11,7 +11,6 @@ import {
   SearchOptions,
   SearchFilters,
   ObservationRow,
-  UserPromptRow
 } from './types.js';
 
 export class SessionSearch {
@@ -570,23 +569,6 @@ export class SessionSearch {
 
     params.push(limit, offset);
     return this.db.prepare(sql).all(...params) as UserPromptSearchResult[];
-  }
-
-  getUserPromptsBySession(contentSessionId: string): UserPromptRow[] {
-    const stmt = this.db.prepare(`
-      SELECT
-        id,
-        content_session_id,
-        prompt_number,
-        prompt_text,
-        created_at,
-        created_at_epoch
-      FROM user_prompts
-      WHERE content_session_id = ?
-      ORDER BY prompt_number ASC
-    `);
-
-    return stmt.all(contentSessionId) as UserPromptRow[];
   }
 
   close(): void {
