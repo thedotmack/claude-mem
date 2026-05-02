@@ -62,7 +62,7 @@ function getPluginVersion() {
   }
 }
 
-function preflightVersionCheck(buildVersion) {
+function detectInstalledVersion(buildVersion) {
   const dataDir = process.env.CLAUDE_MEM_DATA_DIR || path.join(os.homedir(), '.claude-mem');
   const settingsPath = path.join(dataDir, 'settings.json');
   let port = parseInt(process.env.CLAUDE_MEM_WORKER_PORT, 10);
@@ -82,9 +82,9 @@ function preflightVersionCheck(buildVersion) {
       stdio: ['ignore', 'pipe', 'ignore'],
     }).toString().trim();
   } catch {
-    return; 
+    return null;
   }
-  if (!healthBody) return;
+  if (!healthBody) return null;
   let installedVersion;
   let installedPath;
   try {
@@ -92,26 +92,27 @@ function preflightVersionCheck(buildVersion) {
     installedVersion = j.version;
     installedPath = j.workerPath;
   } catch {
-    return;
+    return null;
   }
-  if (!installedVersion || installedVersion === buildVersion) return;
-  console.log('');
-  console.log('\x1b[31m%s\x1b[0m', `Version mismatch:`);
-  console.log(`  Building:   ${buildVersion}`);
-  console.log(`  Installed:  ${installedVersion}`);
-  if (installedPath) console.log(`  Worker path: ${installedPath}`);
-  console.log('');
-  console.log('Claude Code is pinned to the installed version, so syncing will not');
-  console.log('actually change which worker runs. Update the plugin first:');
-  console.log('');
-  console.log('\x1b[36m%s\x1b[0m', '  claude plugin update thedotmack/claude-mem');
-  console.log('');
-  console.log('then re-run build-and-sync. To sync anyway, pass --force.');
-  process.exit(1);
+  if (!installedVersion || installedVersion === buildVersion) return null;
+  return { installedVersion, installedPath };
 }
 
-if (!isForce) {
-  preflightVersionCheck(getPluginVersion());
+const installedMismatch = detectInstalledVersion(getPluginVersion());
+if (installedMismatch) {
+  console.log('');
+  console.log('\x1b[33m%s\x1b[0m', 'Version mismatch detected:');
+  console.log(`  Building:   ${getPluginVersion()}`);
+  console.log(`  Installed:  ${installedMismatch.installedVersion}`);
+  if (installedMismatch.installedPath) console.log(`  Worker path: ${installedMismatch.installedPath}`);
+  console.log('');
+  console.log('Claude Code is pinned to the installed version, so the worker loads from');
+  console.log(`its cache dir. Mirroring this build into the installed-version cache so the`);
+  console.log('worker restart picks up new code without a Claude Code session restart.');
+  console.log('');
+  console.log('\x1b[36m%s\x1b[0m', `For a formal version bump, run \`claude plugin update thedotmack/claude-mem\``);
+  console.log('\x1b[36m%s\x1b[0m', `and restart Claude Code so it loads the ${getPluginVersion()} cache dir.`);
+  console.log('');
 }
 
 console.log('Syncing to marketplace...');
@@ -144,6 +145,17 @@ try {
 
   console.log(`Running bun install in cache folder (version ${version})...`);
   execSync(`bun install`, { cwd: CACHE_VERSION_PATH, stdio: 'inherit' });
+
+  if (installedMismatch && installedMismatch.installedVersion !== version) {
+    const INSTALLED_CACHE_PATH = path.join(CACHE_BASE_PATH, installedMismatch.installedVersion);
+    console.log(`Mirroring to installed-version cache (${installedMismatch.installedVersion}) for hot reload...`);
+    execSync(
+      `rsync -av --delete --exclude=.git ${pluginGitignoreExcludes} plugin/ "${INSTALLED_CACHE_PATH}/"`,
+      { stdio: 'inherit' }
+    );
+    console.log(`Running bun install in installed-version cache (${installedMismatch.installedVersion})...`);
+    execSync(`bun install`, { cwd: INSTALLED_CACHE_PATH, stdio: 'inherit' });
+  }
 
   console.log('\x1b[32m%s\x1b[0m', 'Sync complete!');
 
