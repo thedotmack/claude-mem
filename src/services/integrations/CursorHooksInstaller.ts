@@ -2,8 +2,6 @@
 import path from 'path';
 import { homedir } from 'os';
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'fs';
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import { logger } from '../../utils/logger.js';
 import {workerHttpRequest} from '../../shared/worker-utils.js';
 import { DATA_DIR, MARKETPLACE_ROOT, CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
@@ -14,8 +12,6 @@ import {
   type CursorProjectRegistry
 } from '../../utils/cursor-utils.js';
 import type { CursorInstallTarget, CursorHooksJson, CursorMcpConfig } from './types.js';
-
-const execAsync = promisify(exec);
 
 const CURSOR_REGISTRY_FILE = path.join(DATA_DIR, 'cursor-projects.json');
 

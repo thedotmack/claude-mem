@@ -407,7 +407,6 @@ export class WorkerService implements WorkerRef {
         ) as Record<string, string>
       });
 
-      const MCP_INIT_TIMEOUT_MS = 60000; 
       const mcpConnectionPromise = this.mcpClient.connect(transport);
       
       const timeoutPromise = new Promise<never>((_, reject) => {
