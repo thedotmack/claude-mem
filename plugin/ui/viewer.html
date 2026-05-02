@@ -1413,9 +1413,7 @@
       align-items: center;
       justify-content: center;
       padding: 32px 24px;
-      background: rgba(10, 10, 14, 0.55);
-      backdrop-filter: blur(18px) saturate(140%);
-      -webkit-backdrop-filter: blur(18px) saturate(140%);
+      background: transparent;
       animation: fadeIn 0.18s ease-out;
       overflow-y: auto;
     }
@@ -1426,14 +1424,14 @@
       max-width: 760px;
       padding: 44px 48px 36px;
       border-radius: 18px;
-      background: color-mix(in srgb, var(--color-bg-card) 78%, transparent);
-      border: 1px solid color-mix(in srgb, var(--color-border-primary) 60%, transparent);
+      background: color-mix(in srgb, var(--color-bg-card) 55%, transparent);
+      border: 1px solid color-mix(in srgb, var(--color-border-primary) 55%, transparent);
       box-shadow:
-        0 24px 80px rgba(0, 0, 0, 0.45),
-        0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+        0 24px 80px rgba(0, 0, 0, 0.35),
+        0 0 0 1px rgba(255, 255, 255, 0.05) inset;
       animation: slideUp 0.28s cubic-bezier(0.4, 0, 0.2, 1);
-      backdrop-filter: blur(28px) saturate(160%);
-      -webkit-backdrop-filter: blur(28px) saturate(160%);
+      backdrop-filter: blur(28px) saturate(170%);
+      -webkit-backdrop-filter: blur(28px) saturate(170%);
     }
 
     .welcome-modal-dismiss {
@@ -1511,8 +1509,8 @@
       gap: 10px;
       padding: 26px 18px 22px;
       border-radius: 12px;
-      background: color-mix(in srgb, var(--color-bg-tertiary) 75%, transparent);
-      border: 1px solid color-mix(in srgb, var(--color-border-primary) 60%, transparent);
+      background: color-mix(in srgb, var(--color-bg-tertiary) 35%, transparent);
+      border: 1px solid color-mix(in srgb, var(--color-border-primary) 50%, transparent);
       color: var(--color-text-secondary);
       aspect-ratio: 1 / 1;
       transition: border-color 0.18s ease, transform 0.18s ease, background 0.18s ease;
@@ -1521,7 +1519,7 @@
     .welcome-modal-feature:hover {
       border-color: var(--color-border-focus);
       transform: translateY(-2px);
-      background: color-mix(in srgb, var(--color-bg-tertiary) 90%, transparent);
+      background: color-mix(in srgb, var(--color-bg-tertiary) 55%, transparent);
     }
 
     .welcome-modal-feature-art {
