@@ -97,6 +97,28 @@ export class PendingMessageStore {
     return changes;
   }
 
+  /**
+   * Delete only the rows currently in `processing` for this session. Used by
+   * the success path after the AI's response was stored — must NOT also delete
+   * `pending` rows that arrived during the (1-5s) AI call, or those messages
+   * are silently dropped. The unconditional clearPendingForSession remains
+   * correct for hard-stop / restart-guard-trip paths.
+   */
+  clearProcessingForSession(sessionDbId: number): number {
+    const stmt = this.db.prepare(`
+      DELETE FROM pending_messages
+       WHERE session_db_id = ? AND status = 'processing'
+    `);
+    const changes = stmt.run(sessionDbId).changes;
+    if (changes > 0) {
+      logger.info('QUEUE', `CLEARED_PROCESSING | sessionDbId=${sessionDbId} | rowsDeleted=${changes}`, {
+        sessionId: sessionDbId
+      });
+      this.onMutate?.();
+    }
+    return changes;
+  }
+
   resetProcessingToPending(sessionDbId: number): number {
     const stmt = this.db.prepare(`
       UPDATE pending_messages
