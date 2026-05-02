@@ -254,51 +254,6 @@ export function uninstallOpenClawPlugin(): number {
   return hasErrors ? 1 : 0;
 }
 
-export function checkOpenClawStatus(): number {
-  console.log('\nClaude-Mem OpenClaw Integration Status\n');
-
-  const configDirectory = getOpenClawConfigDirectory();
-  const extensionDirectory = getOpenClawClaudeMemExtensionDirectory();
-  const configFilePath = getOpenClawConfigFilePath();
-  const pluginEntryPoint = path.join(extensionDirectory, 'dist', 'index.js');
-
-  console.log(`Config directory: ${configDirectory}`);
-  console.log(`  Exists: ${existsSync(configDirectory) ? 'yes' : 'no'}`);
-  console.log('');
-
-  console.log(`Extension directory: ${extensionDirectory}`);
-  console.log(`  Exists: ${existsSync(extensionDirectory) ? 'yes' : 'no'}`);
-  console.log(`  Plugin entry: ${existsSync(pluginEntryPoint) ? 'yes' : 'no'}`);
-  console.log('');
-
-  console.log(`Config (openclaw.json): ${configFilePath}`);
-  if (existsSync(configFilePath)) {
-    const config = readOpenClawConfig();
-    const isRegistered = config.plugins?.entries?.['claude-mem'] !== undefined;
-    const isEnabled = config.plugins?.entries?.['claude-mem']?.enabled === true;
-    const isMemorySlot = config.plugins?.slots?.memory === 'claude-mem';
-
-    console.log(`  Exists: yes`);
-    console.log(`  Registered: ${isRegistered ? 'yes' : 'no'}`);
-    console.log(`  Enabled: ${isEnabled ? 'yes' : 'no'}`);
-    console.log(`  Memory slot: ${isMemorySlot ? 'yes' : 'no'}`);
-
-    if (isRegistered) {
-      const pluginConfig = config.plugins.entries['claude-mem'].config;
-      if (pluginConfig) {
-        console.log(`  Worker port: ${pluginConfig.workerPort ?? 'default'}`);
-        console.log(`  Project: ${pluginConfig.project ?? 'default'}`);
-        console.log(`  Sync MEMORY.md: ${pluginConfig.syncMemoryFile ?? 'default'}`);
-      }
-    }
-  } else {
-    console.log(`  Exists: no`);
-  }
-
-  console.log('');
-  return 0;
-}
-
 export async function installOpenClawIntegration(): Promise<number> {
   console.log('\nInstalling Claude-Mem for OpenClaw...\n');
 

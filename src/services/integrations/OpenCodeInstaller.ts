@@ -87,21 +87,6 @@ export function injectContextIntoAgentsMd(contextContent: string): number {
   }
 }
 
-export async function syncContextToAgentsMd(
-  port: number,
-  project: string,
-): Promise<void> {
-  try {
-    await fetchAndInjectOpenCodeContext(port, project);
-  } catch (error) {
-    if (error instanceof Error) {
-      logger.debug('WORKER', 'Worker not available during context sync', {}, error);
-    } else {
-      logger.debug('WORKER', 'Worker not available during context sync', {}, new Error(String(error)));
-    }
-  }
-}
-
 async function fetchRealContextFromWorker(): Promise<string | null> {
   const workerPort = getWorkerPort();
   const healthResponse = await fetch(`http://127.0.0.1:${workerPort}/api/readiness`);
@@ -114,21 +99,6 @@ async function fetchRealContextFromWorker(): Promise<string | null> {
 
   const realContext = await contextResponse.text();
   return realContext && realContext.trim() ? realContext : null;
-}
-
-async function fetchAndInjectOpenCodeContext(port: number, project: string): Promise<void> {
-  const response = await fetch(
-    `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(project)}`,
-  );
-  if (!response.ok) return;
-
-  const contextText = await response.text();
-  if (contextText && contextText.trim()) {
-    const injectResult = injectContextIntoAgentsMd(contextText);
-    if (injectResult !== 0) {
-      logger.warn('OPENCODE', 'Failed to inject context into AGENTS.md during sync');
-    }
-  }
 }
 
 function writeOrRemoveCleanedAgentsMd(agentsMdPath: string, trimmedContent: string): void {
@@ -194,34 +164,6 @@ export function uninstallOpenCodePlugin(): number {
   return hasErrors ? 1 : 0;
 }
 
-export function checkOpenCodeStatus(): number {
-  console.log('\nClaude-Mem OpenCode Integration Status\n');
-
-  const configDirectory = getOpenCodeConfigDirectory();
-  const pluginPath = getInstalledPluginPath();
-  const agentsMdPath = getOpenCodeAgentsMdPath();
-
-  console.log(`Config directory: ${configDirectory}`);
-  console.log(`  Exists: ${existsSync(configDirectory) ? 'yes' : 'no'}`);
-  console.log('');
-
-  console.log(`Plugin: ${pluginPath}`);
-  console.log(`  Installed: ${existsSync(pluginPath) ? 'yes' : 'no'}`);
-  console.log('');
-
-  console.log(`Context (AGENTS.md): ${agentsMdPath}`);
-  if (existsSync(agentsMdPath)) {
-    const content = readFileSync(agentsMdPath, 'utf-8');
-    const hasContextTags = content.includes(CONTEXT_TAG_OPEN);
-    console.log(`  Exists: yes`);
-    console.log(`  Has claude-mem context: ${hasContextTags ? 'yes' : 'no'}`);
-  } else {
-    console.log(`  Exists: no`);
-  }
-
-  console.log('');
-  return 0;
-}
 
 export async function installOpenCodeIntegration(): Promise<number> {
   console.log('\nInstalling Claude-Mem for OpenCode...\n');

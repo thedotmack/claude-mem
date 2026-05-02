@@ -23,10 +23,6 @@ export function detectPlatform(): Platform {
   return process.platform === 'win32' ? 'windows' : 'unix';
 }
 
-export function getScriptExtension(): string {
-  return detectPlatform() === 'windows' ? '.ps1' : '.sh';
-}
-
 export function readCursorRegistry(): CursorProjectRegistry {
   return readCursorRegistryFromFile(CURSOR_REGISTRY_FILE);
 }
@@ -511,28 +507,6 @@ export function checkCursorHooksStatus(): number {
   }
 
   return 0;
-}
-
-export async function detectClaudeCode(): Promise<boolean> {
-  try {
-    const { stdout } = await execAsync('which claude || where claude', { timeout: 5000 });
-    if (stdout.trim()) {
-      return true;
-    }
-  } catch (error) {
-    if (error instanceof Error) {
-      logger.debug('WORKER', 'Claude CLI not in PATH', {}, error);
-    } else {
-      logger.debug('WORKER', 'Claude CLI not in PATH', {}, new Error(String(error)));
-    }
-  }
-
-  const pluginDir = path.join(CLAUDE_CONFIG_DIR, 'plugins');
-  if (existsSync(pluginDir)) {
-    return true;
-  }
-
-  return false;
 }
 
 export async function handleCursorCommand(subcommand: string, args: string[]): Promise<number> {
