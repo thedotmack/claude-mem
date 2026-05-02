@@ -14,7 +14,6 @@ export const HOOK_EXIT_CODES = {
   SUCCESS: 0,
   FAILURE: 1,
   BLOCKING_ERROR: 2,
-  USER_MESSAGE_ONLY: 3,
 } as const;
 
 export function getTimeout(baseTimeout: number): number {
