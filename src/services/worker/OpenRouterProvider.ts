@@ -114,8 +114,8 @@ export class OpenRouterProvider {
     });
   }
 
-  private prepareMessageMetadata(session: ActiveSession, message: { _persistentId: number; agentId?: string | null; agentType?: string | null }): void {
-    session.processingMessageIds.push(message._persistentId);
+  private prepareMessageMetadata(session: ActiveSession, message: { _persistentId: number; type: 'observation' | 'summarize'; agentId?: string | null; agentType?: string | null }): void {
+    session.processingMessageIds.push({ id: message._persistentId, type: message.type });
 
     session.pendingAgentId = message.agentId ?? null;
     session.pendingAgentType = message.agentType ?? null;
@@ -146,7 +146,7 @@ export class OpenRouterProvider {
 
   private async processOneMessage(
     session: ActiveSession,
-    message: { _persistentId: number; agentId?: string | null; agentType?: string | null; type?: string; cwd?: string; prompt_number?: number; tool_name?: string; tool_input?: unknown; tool_response?: unknown; last_assistant_message?: string },
+    message: { _persistentId: number; agentId?: string | null; agentType?: string | null; type: 'observation' | 'summarize'; cwd?: string; prompt_number?: number; tool_name?: string; tool_input?: unknown; tool_response?: unknown; last_assistant_message?: string },
     lastCwd: string | undefined,
     apiKey: string,
     model: string,

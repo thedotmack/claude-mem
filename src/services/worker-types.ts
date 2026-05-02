@@ -29,7 +29,7 @@ export interface ActiveSession {
   forceInit?: boolean;  
   idleTimedOut?: boolean;  
   lastGeneratorActivity: number;  
-  processingMessageIds: number[];
+  processingMessageIds: Array<{ id: number; type: 'observation' | 'summarize' }>;
   modelOverride?: string;
   lastSummaryStored?: boolean;
   pendingAgentId?: string | null;

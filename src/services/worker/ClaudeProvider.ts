@@ -275,7 +275,7 @@ export class ClaudeProvider {
     };
 
     for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
-      session.processingMessageIds.push(message._persistentId);
+      session.processingMessageIds.push({ id: message._persistentId, type: message.type });
 
       session.pendingAgentId = message.agentId ?? null;
       session.pendingAgentType = message.agentType ?? null;

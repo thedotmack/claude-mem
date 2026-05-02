@@ -39,10 +39,10 @@ export async function processAgentResponse(
     logger.warn('PARSER', `${agentName} returned unparseable response: ${parsed.reason}`, {
       sessionId: session.sessionDbId,
     });
-    for (const messageId of session.processingMessageIds) {
-      sessionManager.markMessageFailed(session.sessionDbId, messageId);
+    const failed = session.processingMessageIds.shift();
+    if (failed) {
+      sessionManager.markMessageFailed(session.sessionDbId, failed.id);
     }
-    session.processingMessageIds = [];
     return;
   }
 
@@ -62,8 +62,8 @@ export async function processAgentResponse(
     logger.warn('SDK', 'memorySessionId not yet captured; re-pending in-flight messages', {
       sessionId: session.sessionDbId
     });
-    for (const messageId of session.processingMessageIds) {
-      sessionManager.markMessageFailed(session.sessionDbId, messageId);
+    for (const inflight of session.processingMessageIds) {
+      sessionManager.markMessageFailed(session.sessionDbId, inflight.id);
     }
     session.processingMessageIds = [];
     return;
@@ -106,12 +106,18 @@ export async function processAgentResponse(
 
   session.lastSummaryStored = result.summaryId !== null;
 
+  const matchingType: 'observation' | 'summarize' = parsed.kind === 'summary' ? 'summarize' : 'observation';
+  const matchedIdx = session.processingMessageIds.findIndex(m => m.type === matchingType);
+  const matchedMessage = matchedIdx >= 0 ? session.processingMessageIds[matchedIdx] : null;
+  if (matchedIdx >= 0) {
+    session.processingMessageIds.splice(matchedIdx, 1);
+  }
+
   if (parsed.kind === 'summary' && (parsed.data.skipped || session.lastSummaryStored)) {
-    const messageId = session.processingMessageIds[0] ?? -1;
     ingestSummary({
       kind: 'parsed',
       sessionDbId: session.sessionDbId,
-      messageId,
+      messageId: matchedMessage?.id ?? -1,
       contentSessionId: session.contentSessionId,
       parsed: parsed.data,
     });
@@ -122,15 +128,11 @@ export async function processAgentResponse(
     });
   }
 
-  const pendingStore = sessionManager.getPendingMessageStore();
-  for (const messageId of session.processingMessageIds) {
-    pendingStore.confirmProcessed(messageId);
-  }
-  if (session.processingMessageIds.length > 0) {
-    logger.debug('QUEUE', `CONFIRMED_BATCH | sessionDbId=${session.sessionDbId} | count=${session.processingMessageIds.length} | ids=[${session.processingMessageIds.join(',')}]`);
+  if (matchedMessage) {
+    sessionManager.getPendingMessageStore().confirmProcessed(matchedMessage.id);
+    logger.debug('QUEUE', `CONFIRMED | sessionDbId=${session.sessionDbId} | messageId=${matchedMessage.id} | type=${matchedMessage.type}`);
     session.restartGuard?.recordSuccess();
   }
-  session.processingMessageIds = [];
 
   void notifyTelegram({
     observations: labeledObservations,

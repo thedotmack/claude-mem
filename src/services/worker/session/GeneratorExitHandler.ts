@@ -49,14 +49,14 @@ export async function handleGeneratorExit(
   // 2. Drain processingMessageIds (re-pend or fail per markFailed retry policy).
   const inflightIds = session.processingMessageIds.slice();
   session.processingMessageIds = [];
-  for (const messageId of inflightIds) {
+  for (const inflight of inflightIds) {
     try {
-      sessionManager.markMessageFailed(sessionDbId, messageId);
+      sessionManager.markMessageFailed(sessionDbId, inflight.id);
     } catch (markErr) {
       const normalized = markErr instanceof Error ? markErr : new Error(String(markErr));
       logger.error('SESSION', 'Failed to requeue in-flight message after generator exit', {
         sessionId: sessionDbId,
-        messageId,
+        messageId: inflight.id,
       }, normalized);
     }
   }

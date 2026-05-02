@@ -165,7 +165,7 @@ export class GeminiProvider {
     let lastCwd: string | undefined;
 
     for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
-      session.processingMessageIds.push(message._persistentId);
+      session.processingMessageIds.push({ id: message._persistentId, type: message.type });
 
       session.pendingAgentId = message.agentId ?? null;
       session.pendingAgentType = message.agentType ?? null;
@@ -226,7 +226,7 @@ export class GeminiProvider {
     } else {
       logger.warn('SDK', 'Empty Gemini observation response, skipping processing to preserve message', {
         sessionId: session.sessionDbId,
-        messageId: session.processingMessageIds[session.processingMessageIds.length - 1]
+        messageId: session.processingMessageIds[session.processingMessageIds.length - 1]?.id
       });
       // Don't confirm - leave message for stale recovery
     }
@@ -271,7 +271,7 @@ export class GeminiProvider {
     } else {
       logger.warn('SDK', 'Empty Gemini summary response, skipping processing to preserve message', {
         sessionId: session.sessionDbId,
-        messageId: session.processingMessageIds[session.processingMessageIds.length - 1]
+        messageId: session.processingMessageIds[session.processingMessageIds.length - 1]?.id
       });
       // Don't confirm - leave message for stale recovery
     }
