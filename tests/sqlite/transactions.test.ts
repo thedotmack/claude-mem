@@ -1,10 +1,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { ClaudeMemDatabase } from '../../src/services/sqlite/Database.js';
-import {
-  storeObservations,
-  storeObservationsAndMarkComplete,
-} from '../../src/services/sqlite/transactions.js';
+import { storeObservations } from '../../src/services/sqlite/transactions.js';
 import { getObservationById } from '../../src/services/sqlite/Observations.js';
 import { getSummaryForSession } from '../../src/services/sqlite/Summaries.js';
 import {
@@ -187,102 +184,4 @@ describe('Transactions Module', () => {
     });
   });
 
-  describe('storeObservationsAndMarkComplete', () => {
-
-    it('should store observations, summary, and mark message complete', () => {
-      const { memorySessionId, sessionDbId } = createSessionWithMemoryId('content-complete', 'complete-session');
-      const project = 'test-project';
-      const observations = [createObservationInput({ title: 'Complete Obs' })];
-      const summary = createSummaryInput({ request: 'Complete request' });
-
-      const insertStmt = db.prepare(`
-        INSERT INTO pending_messages
-        (session_db_id, content_session_id, message_type, created_at_epoch, status)
-        VALUES (?, ?, 'observation', ?, 'processing')
-      `);
-      const msgResult = insertStmt.run(sessionDbId, 'content-complete', Date.now());
-      const messageId = Number(msgResult.lastInsertRowid);
-
-      const result = storeObservationsAndMarkComplete(
-        db,
-        memorySessionId,
-        project,
-        observations,
-        summary,
-        messageId
-      );
-
-      expect(result.observationIds).toHaveLength(1);
-      expect(result.summaryId).not.toBeNull();
-
-      const msgStmt = db.prepare('SELECT status FROM pending_messages WHERE id = ?');
-      const msg = msgStmt.get(messageId) as { status: string } | undefined;
-      expect(msg?.status).toBe('processed');
-    });
-
-    it('should maintain atomicity - all operations share same timestamp', () => {
-      const { memorySessionId, sessionDbId } = createSessionWithMemoryId('content-atomic-ts', 'atomic-timestamp-session');
-      const project = 'test-project';
-      const observations = [
-        createObservationInput({ title: 'Obs 1' }),
-        createObservationInput({ title: 'Obs 2' }),
-      ];
-      const summary = createSummaryInput();
-      const fixedTimestamp = 1700000000000;
-
-      db.prepare(`
-        INSERT INTO pending_messages
-        (session_db_id, content_session_id, message_type, created_at_epoch, status)
-        VALUES (?, ?, 'observation', ?, 'processing')
-      `).run(sessionDbId, 'content-atomic-ts', Date.now());
-      const messageId = db.prepare('SELECT last_insert_rowid() as id').get() as { id: number };
-
-      const result = storeObservationsAndMarkComplete(
-        db,
-        memorySessionId,
-        project,
-        observations,
-        summary,
-        messageId.id,
-        1,
-        0,
-        fixedTimestamp
-      );
-
-      expect(result.createdAtEpoch).toBe(fixedTimestamp);
-
-      for (const id of result.observationIds) {
-        const obs = getObservationById(db, id);
-        expect(obs?.created_at_epoch).toBe(fixedTimestamp);
-      }
-
-      const storedSummary = getSummaryForSession(db, memorySessionId);
-      expect(storedSummary?.created_at_epoch).toBe(fixedTimestamp);
-    });
-
-    it('should handle null summary', () => {
-      const { memorySessionId, sessionDbId } = createSessionWithMemoryId('content-no-sum', 'no-summary-session');
-      const project = 'test-project';
-      const observations = [createObservationInput({ title: 'Only Obs' })];
-
-      db.prepare(`
-        INSERT INTO pending_messages
-        (session_db_id, content_session_id, message_type, created_at_epoch, status)
-        VALUES (?, ?, 'observation', ?, 'processing')
-      `).run(sessionDbId, 'content-no-sum', Date.now());
-      const messageId = db.prepare('SELECT last_insert_rowid() as id').get() as { id: number };
-
-      const result = storeObservationsAndMarkComplete(
-        db,
-        memorySessionId,
-        project,
-        observations,
-        null,
-        messageId.id
-      );
-
-      expect(result.observationIds).toHaveLength(1);
-      expect(result.summaryId).toBeNull();
-    });
-  });
 });

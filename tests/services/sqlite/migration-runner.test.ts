@@ -69,7 +69,6 @@ describe('MigrationRunner', () => {
       expect(tables).toContain('observations');
       expect(tables).toContain('session_summaries');
       expect(tables).toContain('user_prompts');
-      expect(tables).toContain('pending_messages');
     });
 
     it('should create sdk_sessions with all expected columns', () => {
@@ -119,12 +118,11 @@ describe('MigrationRunner', () => {
       expect(versions).toContain(9);   
       expect(versions).toContain(10);  
       expect(versions).toContain(11);  
-      expect(versions).toContain(16);  
-      expect(versions).toContain(17);  
-      expect(versions).toContain(20);  
-      expect(versions).toContain(21);  
-      expect(versions).toContain(22);  
-      expect(versions).toContain(30);  
+      expect(versions).toContain(17);
+      expect(versions).toContain(21);
+      expect(versions).toContain(22);
+      expect(versions).toContain(30);
+      expect(versions).toContain(31);
     });
   });
 
@@ -214,7 +212,6 @@ describe('MigrationRunner', () => {
       expect(tables).toContain('observations');
       expect(tables).toContain('session_summaries');
       expect(tables).toContain('user_prompts');
-      expect(tables).toContain('pending_messages');
     });
 
     it('should handle version 5 conflict (old=drop tables, new=add column) correctly', () => {

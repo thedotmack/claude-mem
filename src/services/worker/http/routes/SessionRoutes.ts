@@ -105,17 +105,13 @@ export class SessionRoutes extends BaseRouteHandler {
     const agent = provider === 'openrouter' ? this.openRouterAgent : (provider === 'gemini' ? this.geminiAgent : this.sdkAgent);
     const agentName = provider === 'openrouter' ? 'OpenRouter' : (provider === 'gemini' ? 'Gemini' : 'Claude SDK');
 
-    const pendingStore = this.sessionManager.getPendingMessageStore();
-    const actualQueueDepth = pendingStore.getPendingCount(session.sessionDbId);
-
     logger.info('SESSION', `Generator auto-starting (${source}) using ${agentName}`, {
       sessionId: session.sessionDbId,
-      queueDepth: actualQueueDepth,
+      queueDepth: session.pendingMessages.length,
       historyLength: session.conversationHistory.length
     });
 
     session.currentProvider = provider;
-    session.lastGeneratorActivity = Date.now();
 
     const myController = session.abortController;
 
@@ -143,22 +139,6 @@ export class SessionRoutes extends BaseRouteHandler {
           provider: provider,
           error: errorMsg
         }, error);
-
-        const pendingStore = this.sessionManager.getPendingMessageStore();
-        try {
-          const failedCount = pendingStore.transitionMessagesTo('failed', { sessionDbId: session.sessionDbId });
-          if (failedCount > 0) {
-            logger.error('SESSION', `Marked messages as failed after generator error`, {
-              sessionId: session.sessionDbId,
-              failedCount
-            });
-          }
-        } catch (dbError) {
-          const normalizedDbError = dbError instanceof Error ? dbError : new Error(String(dbError));
-          logger.error('HTTP', 'Failed to mark messages as failed', {
-            sessionId: session.sessionDbId
-          }, normalizedDbError);
-        }
       })
       .finally(async () => {
         const reason = session.abortReason ?? null;
@@ -166,10 +146,6 @@ export class SessionRoutes extends BaseRouteHandler {
         await handleGeneratorExit(session, reason, {
           sessionManager: this.sessionManager,
           completionHandler: this.completionHandler,
-          restartGenerator: (s, source) => {
-            this.applyTierRouting(s);
-            this.startGeneratorWithProvider(s, this.getSelectedProvider(), source);
-          },
         });
       });
   }
@@ -314,13 +290,10 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
-    const pendingStore = this.sessionManager.getPendingMessageStore();
-    const queueLength = pendingStore.getPendingCount(sessionDbId);
-
     res.json({
       status: 'active',
       sessionDbId,
-      queueLength,
+      queueLength: session.pendingMessages.length,
       summaryStored: session.lastSummaryStored ?? null,
       uptime: Date.now() - session.startTime
     });
@@ -486,17 +459,16 @@ export class SessionRoutes extends BaseRouteHandler {
 
     session.modelOverride = undefined;
 
-    const pendingStore = this.sessionManager.getPendingMessageStore();
-    const pending = pendingStore.peekPendingTypes(session.sessionDbId);
+    const pending = session.pendingMessages;
 
     if (pending.length === 0) {
       session.modelOverride = undefined;
       return;
     }
 
-    const hasSummarize = pending.some(m => m.message_type === 'summarize');
+    const hasSummarize = pending.some(m => m.type === 'summarize');
     const allSimple = pending.every(m =>
-      m.message_type === 'observation' && m.tool_name && SessionRoutes.SIMPLE_TOOLS.has(m.tool_name)
+      m.type === 'observation' && !!m.tool_name && SessionRoutes.SIMPLE_TOOLS.has(m.tool_name)
     );
 
     if (hasSummarize) {

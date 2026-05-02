@@ -165,20 +165,17 @@ export class GeminiProvider {
     let lastCwd: string | undefined;
 
     for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
-      session.processingMessageIds.push(message._persistentId);
-
       session.pendingAgentId = message.agentId ?? null;
       session.pendingAgentType = message.agentType ?? null;
 
       if (message.cwd) {
         lastCwd = message.cwd;
       }
-      const originalTimestamp = session.earliestPendingTimestamp;
 
       if (message.type === 'observation') {
-        await this.processObservationMessage(session, message, worker, apiKey, model, rateLimitingEnabled, originalTimestamp, lastCwd);
+        await this.processObservationMessage(session, message, worker, apiKey, model, rateLimitingEnabled, null, lastCwd);
       } else if (message.type === 'summarize') {
-        await this.processSummaryMessage(session, message, worker, apiKey, model, rateLimitingEnabled, mode, originalTimestamp, lastCwd);
+        await this.processSummaryMessage(session, message, worker, apiKey, model, rateLimitingEnabled, mode, null, lastCwd);
       }
     }
   }
@@ -224,11 +221,9 @@ export class GeminiProvider {
     if (obsResponse.content) {
       await processAgentResponse(obsResponse.content, session, this.dbManager, this.sessionManager, worker, tokensUsed, originalTimestamp, 'Gemini', lastCwd, model);
     } else {
-      logger.warn('SDK', 'Empty Gemini observation response, skipping processing to preserve message', {
-        sessionId: session.sessionDbId,
-        messageId: session.processingMessageIds[session.processingMessageIds.length - 1]
+      logger.warn('SDK', 'Empty Gemini observation response, skipping', {
+        sessionId: session.sessionDbId
       });
-      // Don't confirm - leave message for stale recovery
     }
   }
 
@@ -269,11 +264,9 @@ export class GeminiProvider {
     if (summaryResponse.content) {
       await processAgentResponse(summaryResponse.content, session, this.dbManager, this.sessionManager, worker, tokensUsed, originalTimestamp, 'Gemini', lastCwd, model);
     } else {
-      logger.warn('SDK', 'Empty Gemini summary response, skipping processing to preserve message', {
-        sessionId: session.sessionDbId,
-        messageId: session.processingMessageIds[session.processingMessageIds.length - 1]
+      logger.warn('SDK', 'Empty Gemini summary response, skipping', {
+        sessionId: session.sessionDbId
       });
-      // Don't confirm - leave message for stale recovery
     }
   }
 

@@ -20,19 +20,23 @@ export class MigrationRunner {
     this.makeObservationsTextNullable();
     this.createUserPromptsTable();
     this.ensureDiscoveryTokensColumn();
-    this.createPendingMessagesTable();
     this.renameSessionIdColumns();
-    this.addFailedAtEpochColumn();
     this.addOnUpdateCascadeToForeignKeys();
     this.addObservationContentHashColumn();
     this.addSessionCustomTitleColumn();
-    this.createObservationFeedbackTable();
     this.addSessionPlatformSourceColumn();
     this.ensureMergedIntoProjectColumns();
     this.addObservationSubagentColumns();
-    this.rebuildPendingMessagesForSelfHealingClaim();
     this.addObservationsUniqueContentHashIndex();
     this.addObservationsMetadataColumn();
+    this.dropPendingMessagesTable();
+  }
+
+  private dropPendingMessagesTable(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(31) as SchemaVersion | undefined;
+    if (applied) return;
+    this.db.run('DROP TABLE IF EXISTS pending_messages');
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(31, new Date().toISOString());
   }
 
   private initializeSchema(): void {
@@ -396,47 +400,6 @@ export class MigrationRunner {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(11, new Date().toISOString());
   }
 
-  private createPendingMessagesTable(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(16) as SchemaVersion | undefined;
-    if (applied) return;
-
-    const tables = this.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='pending_messages'").all() as TableNameRow[];
-    if (tables.length > 0) {
-      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(16, new Date().toISOString());
-      return;
-    }
-
-    logger.debug('DB', 'Creating pending_messages table');
-
-    this.db.run(`
-      CREATE TABLE pending_messages (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        session_db_id INTEGER NOT NULL,
-        content_session_id TEXT NOT NULL,
-        message_type TEXT NOT NULL CHECK(message_type IN ('observation', 'summarize')),
-        tool_name TEXT,
-        tool_input TEXT,
-        tool_response TEXT,
-        cwd TEXT,
-        last_user_message TEXT,
-        last_assistant_message TEXT,
-        prompt_number INTEGER,
-        status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'processing', 'processed', 'failed')),
-        retry_count INTEGER NOT NULL DEFAULT 0,
-        created_at_epoch INTEGER NOT NULL,
-        completed_at_epoch INTEGER,
-        FOREIGN KEY (session_db_id) REFERENCES sdk_sessions(id) ON DELETE CASCADE
-      )
-    `);
-
-    this.db.run('CREATE INDEX IF NOT EXISTS idx_pending_messages_session ON pending_messages(session_db_id)');
-    this.db.run('CREATE INDEX IF NOT EXISTS idx_pending_messages_status ON pending_messages(status)');
-    this.db.run('CREATE INDEX IF NOT EXISTS idx_pending_messages_claude_session ON pending_messages(content_session_id)');
-
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(16, new Date().toISOString());
-
-    logger.debug('DB', 'pending_messages table created successfully');
-  }
 
   private renameSessionIdColumns(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(17) as SchemaVersion | undefined;
@@ -485,20 +448,6 @@ export class MigrationRunner {
     }
   }
 
-  private addFailedAtEpochColumn(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(20) as SchemaVersion | undefined;
-    if (applied) return;
-
-    const tableInfo = this.db.query('PRAGMA table_info(pending_messages)').all() as TableColumnInfo[];
-    const hasColumn = tableInfo.some(col => col.name === 'failed_at_epoch');
-
-    if (!hasColumn) {
-      this.db.run('ALTER TABLE pending_messages ADD COLUMN failed_at_epoch INTEGER');
-      logger.debug('DB', 'Added failed_at_epoch column to pending_messages table');
-    }
-
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(20, new Date().toISOString());
-  }
 
   private addOnUpdateCascadeToForeignKeys(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(21) as SchemaVersion | undefined;
@@ -698,28 +647,6 @@ export class MigrationRunner {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(23, new Date().toISOString());
   }
 
-  private createObservationFeedbackTable(): void {
-    const applied = this.db.query('SELECT 1 FROM schema_versions WHERE version = 24').get();
-    if (applied) return;
-
-    this.db.run(`
-      CREATE TABLE IF NOT EXISTS observation_feedback (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        observation_id INTEGER NOT NULL,
-        signal_type TEXT NOT NULL,
-        session_db_id INTEGER,
-        created_at_epoch INTEGER NOT NULL,
-        metadata TEXT,
-        FOREIGN KEY (observation_id) REFERENCES observations(id) ON DELETE CASCADE
-      )
-    `);
-    this.db.run('CREATE INDEX IF NOT EXISTS idx_feedback_observation ON observation_feedback(observation_id)');
-    this.db.run('CREATE INDEX IF NOT EXISTS idx_feedback_signal ON observation_feedback(signal_type)');
-
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(24, new Date().toISOString());
-    logger.debug('DB', 'Created observation_feedback table for usage tracking');
-  }
-
   private addSessionPlatformSourceColumn(): void {
     const tableInfo = this.db.query('PRAGMA table_info(sdk_sessions)').all() as TableColumnInfo[];
     const hasColumn = tableInfo.some(col => col.name === 'platform_source');
@@ -806,125 +733,6 @@ export class MigrationRunner {
     }
   }
 
-  private rebuildPendingMessagesForSelfHealingClaim(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(28) as SchemaVersion | undefined;
-    if (applied) return;
-
-    const pendingExists = (this.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='pending_messages'").all() as TableNameRow[]).length > 0;
-    if (!pendingExists) {
-      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(28, new Date().toISOString());
-      return;
-    }
-
-    logger.debug('DB', 'Rebuilding pending_messages for self-healing claim (migration 28)');
-
-    this.db.run('PRAGMA foreign_keys = OFF');
-    this.db.run('BEGIN TRANSACTION');
-
-    try {
-      const sourceCols = this.db.query('PRAGMA table_info(pending_messages)').all() as TableColumnInfo[];
-      const colNames = new Set(sourceCols.map(c => c.name));
-      const has = (name: string) => colNames.has(name);
-
-      this.db.run('DROP TABLE IF EXISTS pending_messages_new');
-
-      this.db.run(`
-        CREATE TABLE pending_messages_new (
-          id                       INTEGER PRIMARY KEY AUTOINCREMENT,
-          session_db_id            INTEGER NOT NULL,
-          content_session_id       TEXT    NOT NULL,
-          tool_use_id              TEXT,
-          message_type             TEXT    NOT NULL CHECK(message_type IN ('observation', 'summarize')),
-          tool_name                TEXT,
-          tool_input               TEXT,
-          tool_response            TEXT,
-          cwd                      TEXT,
-          last_user_message        TEXT,
-          last_assistant_message   TEXT,
-          prompt_number            INTEGER,
-          status                   TEXT    NOT NULL DEFAULT 'pending'
-                                           CHECK(status IN ('pending', 'processing', 'processed', 'failed')),
-          retry_count              INTEGER NOT NULL DEFAULT 0,
-          created_at_epoch         INTEGER NOT NULL,
-          failed_at_epoch          INTEGER,
-          completed_at_epoch       INTEGER,
-          worker_pid               INTEGER,
-          agent_type               TEXT,
-          agent_id                 TEXT,
-          FOREIGN KEY (session_db_id) REFERENCES sdk_sessions(id) ON DELETE CASCADE
-        )
-      `);
-
-      this.db.run(`
-        INSERT INTO pending_messages_new (
-          id, session_db_id, content_session_id, tool_use_id, message_type,
-          tool_name, tool_input, tool_response, cwd, last_user_message,
-          last_assistant_message, prompt_number, status, retry_count,
-          created_at_epoch, failed_at_epoch, completed_at_epoch, worker_pid,
-          agent_type, agent_id
-        )
-        SELECT
-          id,
-          session_db_id,
-          content_session_id,
-          ${has('tool_use_id') ? 'tool_use_id' : 'NULL'},
-          message_type,
-          tool_name,
-          tool_input,
-          tool_response,
-          cwd,
-          ${has('last_user_message') ? 'last_user_message' : 'NULL'},
-          ${has('last_assistant_message') ? 'last_assistant_message' : 'NULL'},
-          ${has('prompt_number') ? 'prompt_number' : 'NULL'},
-          status,
-          retry_count,
-          created_at_epoch,
-          ${has('failed_at_epoch') ? 'failed_at_epoch' : 'NULL'},
-          ${has('completed_at_epoch') ? 'completed_at_epoch' : 'NULL'},
-          NULL,
-          ${has('agent_type') ? 'agent_type' : 'NULL'},
-          ${has('agent_id') ? 'agent_id' : 'NULL'}
-        FROM pending_messages
-      `);
-
-      this.db.run('DROP TABLE pending_messages');
-      this.db.run('ALTER TABLE pending_messages_new RENAME TO pending_messages');
-
-      this.db.run('CREATE INDEX IF NOT EXISTS idx_pending_messages_session        ON pending_messages(session_db_id)');
-      this.db.run('CREATE INDEX IF NOT EXISTS idx_pending_messages_status         ON pending_messages(status)');
-      this.db.run('CREATE INDEX IF NOT EXISTS idx_pending_messages_claude_session ON pending_messages(content_session_id)');
-      this.db.run('CREATE INDEX IF NOT EXISTS idx_pending_messages_worker_pid     ON pending_messages(worker_pid)');
-
-      this.db.run(`
-        DELETE FROM pending_messages
-         WHERE tool_use_id IS NOT NULL
-           AND id NOT IN (
-             SELECT MIN(id) FROM pending_messages
-              WHERE tool_use_id IS NOT NULL
-              GROUP BY content_session_id, tool_use_id
-           )
-      `);
-
-      this.db.run(`
-        CREATE UNIQUE INDEX IF NOT EXISTS ux_pending_session_tool
-        ON pending_messages(content_session_id, tool_use_id)
-        WHERE tool_use_id IS NOT NULL
-      `);
-
-      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(28, new Date().toISOString());
-      this.db.run('COMMIT');
-      this.db.run('PRAGMA foreign_keys = ON');
-
-      logger.debug('DB', 'Rebuilt pending_messages for self-healing claim');
-    } catch (error) {
-      this.db.run('ROLLBACK');
-      this.db.run('PRAGMA foreign_keys = ON');
-      if (error instanceof Error) {
-        throw error;
-      }
-      throw new Error(`Migration 28 failed: ${String(error)}`);
-    }
-  }
 
   private addObservationsUniqueContentHashIndex(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(29) as SchemaVersion | undefined;

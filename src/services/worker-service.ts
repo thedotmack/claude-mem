@@ -34,7 +34,6 @@ import {
   spawnDaemon,
   touchPidFile
 } from './infrastructure/ProcessManager.js';
-import { runOneTimeV12_4_3Cleanup } from './infrastructure/CleanupV12_4_3.js';
 import {
   isPortInUse,
   waitForHealth,
@@ -349,30 +348,6 @@ export class WorkerService implements WorkerRef {
       logger.info('WORKER', 'Initializing database manager...');
       await this.dbManager.initialize();
 
-      const sweepResult = this.dbManager.getSessionStore().db.prepare(`
-        UPDATE pending_messages
-           SET status = 'pending', worker_pid = NULL
-         WHERE status = 'processing'
-      `).run();
-
-      if (sweepResult.changes > 0) {
-        logger.info('SYSTEM', `Startup orphan sweep reclaimed ${sweepResult.changes} processing rows`);
-      }
-
-      try {
-        logger.info('WORKER', 'Running startup GC for pending messages...');
-        const { PendingMessageStore } = await import('./sqlite/PendingMessageStore.js');
-        const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
-        const cleared = pendingStore.clearFailedOlderThan(7 * 24 * 60 * 60 * 1000);
-        if (cleared > 0) {
-          logger.info('QUEUE', 'Startup GC cleared old failed pending_messages rows', { cleared });
-        }
-      } catch (err) {
-        logger.warn('QUEUE', 'Startup GC for failed pending_messages rows failed', {}, err instanceof Error ? err : undefined);
-      }
-
-      runOneTimeV12_4_3Cleanup();
-
       logger.info('WORKER', 'Initializing search services...');
       const formattingService = new FormattingService();
       const timelineService = new TimelineService();
@@ -537,7 +512,6 @@ export class WorkerService implements WorkerRef {
 
     logger.info('SYSTEM', `Starting generator (${source}) using ${providerName}`, { sessionId: sid });
 
-    session.lastGeneratorActivity = Date.now();
 
     session.generatorPromise = agent.startSession(session, this)
       .catch(async (error: unknown) => {
@@ -618,19 +592,11 @@ export class WorkerService implements WorkerRef {
           };
         }
 
-        // Translate worker-service-specific error flags into the canonical reason enum.
-        let reason = session.abortReason ?? null;
         session.abortReason = null;
-        if (hadUnrecoverableError) reason = 'restart-guard';
-        if (session.idleTimedOut) {
-          session.idleTimedOut = false;
-          reason = reason ?? 'idle';
-        }
 
-        await handleGeneratorExit(session, reason, {
+        await handleGeneratorExit(session, {
           sessionManager: this.sessionManager,
           completionHandler: this.completionHandler,
-          restartGenerator: (s, source) => this.startSessionProcessor(s, source),
         });
       });
   }
@@ -901,23 +867,6 @@ async function main() {
       }
       for (const err of result.errors) {
         console.log(`  ! ${err.worktree}: ${err.error}`);
-      }
-      process.exit(0);
-    }
-
-    case 'cleanup': {
-      const dryRun = process.argv.includes('--dry-run');
-      const counts = runOneTimeV12_4_3Cleanup(undefined, { dryRun });
-      const tag = dryRun ? '(dry-run, no changes made)' : '(applied)';
-      console.log(`\nv12.4.3 cleanup ${tag}`);
-      if (counts) {
-        console.log(`  Observer sessions:        ${counts.observerSessions}`);
-        console.log(`  Observer cascade rows:    ${counts.observerCascadeRows}`);
-        console.log(`  Stuck pending_messages:   ${counts.stuckPendingMessages}`);
-      } else if (dryRun) {
-        console.log('  Scan failed — see worker log for details.');
-      } else {
-        console.log('  Already applied (marker present) or skipped.');
       }
       process.exit(0);
     }

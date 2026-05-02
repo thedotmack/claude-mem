@@ -2,36 +2,19 @@
 import { EventEmitter } from 'events';
 import { DatabaseManager } from './DatabaseManager.js';
 import { logger } from '../../utils/logger.js';
-import type { ActiveSession, PendingMessage, PendingMessageWithId, ObservationData } from '../worker-types.js';
-import { PendingMessageStore } from '../sqlite/PendingMessageStore.js';
-import { SessionQueueProcessor } from '../queue/SessionQueueProcessor.js';
+import type { ActiveSession, PendingMessage, ObservationData } from '../worker-types.js';
 import { getSdkProcessForSession, ensureSdkProcessExit } from '../../supervisor/process-registry.js';
 import { getSupervisor } from '../../supervisor/index.js';
-import { RestartGuard } from './RestartGuard.js';
 
 export class SessionManager {
   private dbManager: DatabaseManager;
   private sessions: Map<number, ActiveSession> = new Map();
   private sessionQueues: Map<number, EventEmitter> = new Map();
   private onSessionDeletedCallback?: () => void;
-  private pendingStore: PendingMessageStore | null = null;
   private onPendingMutate?: () => void;
 
   constructor(dbManager: DatabaseManager) {
     this.dbManager = dbManager;
-  }
-
-  private getPendingStore(): PendingMessageStore {
-    if (!this.pendingStore) {
-      const sessionStore = this.dbManager.getSessionStore();
-      this.pendingStore = new PendingMessageStore(
-        sessionStore.db,
-        3,
-        process.pid,
-        () => this.onPendingMutate?.()
-      );
-    }
-    return this.pendingStore;
   }
 
   setOnSessionDeleted(callback: () => void): void {
@@ -135,15 +118,10 @@ export class SessionManager {
       startTime: Date.now(),
       cumulativeInputTokens: 0,
       cumulativeOutputTokens: 0,
-      earliestPendingTimestamp: null,
-      conversationHistory: [],  // Initialize empty - will be populated by agents
-      currentProvider: null,  // Will be set when generator starts
-      consecutiveRestarts: 0,  // DEPRECATED: use restartGuard. Kept for logging compat.
-      restartGuard: new RestartGuard(),
-      processingMessageIds: [],  // CLAIM-CONFIRM: Track message IDs for confirmProcessed()
-      lastGeneratorActivity: Date.now(),  // Initialize for stale detection (Issue #1099)
-      pendingAgentId: null,   // Subagent identity carried from the most recent claimed message
-      pendingAgentType: null  
+      conversationHistory: [],
+      currentProvider: null,
+      pendingAgentId: null,
+      pendingAgentType: null
     };
 
     logger.debug('SESSION', 'Creating new session object (memorySessionId cleared to prevent stale resume)', {
@@ -192,31 +170,13 @@ export class SessionManager {
       toolUseId: data.toolUseId,
     };
 
-    try {
-      const messageId = this.getPendingStore().enqueue(sessionDbId, session.contentSessionId, message);
-      const queueDepth = this.getPendingStore().getPendingCount(sessionDbId);
-      const toolSummary = logger.formatTool(data.tool_name, data.tool_input);
-      if (messageId === 0) {
-        logger.debug('QUEUE', `DUP_SUPPRESSED | sessionDbId=${sessionDbId} | type=observation | tool=${toolSummary} | toolUseId=${data.toolUseId ?? 'null'} | depth=${queueDepth}`, {
-          sessionId: sessionDbId
-        });
-      } else {
-        logger.info('QUEUE', `ENQUEUED | sessionDbId=${sessionDbId} | messageId=${messageId} | type=observation | tool=${toolSummary} | depth=${queueDepth}`, {
-          sessionId: sessionDbId
-        });
-      }
-    } catch (error) {
-      const normalized = error instanceof Error ? error : new Error(String(error));
-      logger.info('QUEUE', 'enqueue failed; observation dropped', {
-        sessionId: sessionDbId,
-        tool: data.tool_name,
-        err: normalized.message
-      });
-      throw normalized;
-    }
-
-    const emitter = this.sessionQueues.get(sessionDbId);
-    emitter?.emit('message');
+    session.pendingMessages.push(message);
+    const toolSummary = logger.formatTool(data.tool_name, data.tool_input);
+    logger.info('QUEUE', `ENQUEUED | sessionDbId=${sessionDbId} | type=observation | tool=${toolSummary} | depth=${session.pendingMessages.length}`, {
+      sessionId: sessionDbId
+    });
+    this.sessionQueues.get(sessionDbId)?.emit('message');
+    this.onPendingMutate?.();
   }
 
   queueSummarize(sessionDbId: number, lastAssistantMessage?: string): void {
@@ -230,38 +190,12 @@ export class SessionManager {
       last_assistant_message: lastAssistantMessage
     };
 
-    try {
-      const messageId = this.getPendingStore().enqueue(sessionDbId, session.contentSessionId, message);
-      const queueDepth = this.getPendingStore().getPendingCount(sessionDbId);
-      if (messageId === 0) {
-        logger.debug('QUEUE', `DUP_SUPPRESSED | sessionDbId=${sessionDbId} | type=summarize | depth=${queueDepth}`, {
-          sessionId: sessionDbId
-        });
-      } else {
-        logger.info('QUEUE', `ENQUEUED | sessionDbId=${sessionDbId} | messageId=${messageId} | type=summarize | depth=${queueDepth}`, {
-          sessionId: sessionDbId
-        });
-      }
-    } catch (error) {
-      if (error instanceof Error) {
-        logger.error('SESSION', 'Failed to persist summarize to DB', {
-          sessionId: sessionDbId
-        }, error);
-      } else {
-        logger.error('SESSION', 'Failed to persist summarize to DB with non-Error', {
-          sessionId: sessionDbId
-        }, new Error(String(error)));
-      }
-      throw error; 
-    }
-
-    const emitter = this.sessionQueues.get(sessionDbId);
-    emitter?.emit('message');
-  }
-
-  markMessageFailed(sessionDbId: number, messageId: number): void {
-    this.getPendingStore().markFailed(messageId);
+    session.pendingMessages.push(message);
+    logger.info('QUEUE', `ENQUEUED | sessionDbId=${sessionDbId} | type=summarize | depth=${session.pendingMessages.length}`, {
+      sessionId: sessionDbId
+    });
     this.sessionQueues.get(sessionDbId)?.emit('message');
+    this.onPendingMutate?.();
   }
 
   async deleteSession(sessionDbId: number): Promise<void> {
@@ -271,11 +205,6 @@ export class SessionManager {
     }
 
     const sessionDuration = Date.now() - session.startTime;
-
-    if (session.respawnTimer) {
-      clearTimeout(session.respawnTimer);
-      session.respawnTimer = undefined;
-    }
 
     session.abortReason = 'shutdown';
     session.abortController.abort();
@@ -334,11 +263,6 @@ export class SessionManager {
     const session = this.sessions.get(sessionDbId);
     if (!session) return;
 
-    if (session.respawnTimer) {
-      clearTimeout(session.respawnTimer);
-      session.respawnTimer = undefined;
-    }
-
     this.sessions.delete(sessionDbId);
     this.sessionQueues.delete(sessionDbId);
 
@@ -382,42 +306,36 @@ export class SessionManager {
     return this.getTotalQueueDepth() > 0;
   }
 
-  async *getMessageIterator(sessionDbId: number): AsyncIterableIterator<PendingMessageWithId> {
+  async *getMessageIterator(sessionDbId: number): AsyncIterableIterator<PendingMessage> {
     let session = this.sessions.get(sessionDbId);
     if (!session) {
       session = this.initializeSession(sessionDbId);
     }
-
     const emitter = this.sessionQueues.get(sessionDbId);
     if (!emitter) {
       throw new Error(`No emitter for session ${sessionDbId}`);
     }
 
-    const processor = new SessionQueueProcessor(this.getPendingStore(), emitter);
+    const signal = session.abortController.signal;
 
-    for await (const message of processor.createIterator({
-      sessionDbId,
-      signal: session.abortController.signal,
-      onIdleTimeout: () => {
-        logger.info('SESSION', 'Triggering abort due to idle timeout to kill subprocess', { sessionDbId });
-        session.idleTimedOut = true;
-        session.abortReason = 'idle';
-        session.abortController.abort();
+    while (!signal.aborted) {
+      const msg = session.pendingMessages.shift();
+      if (msg) {
+        this.onPendingMutate?.();
+        yield msg;
+        continue;
       }
-    })) {
-      if (session.earliestPendingTimestamp === null) {
-        session.earliestPendingTimestamp = message._originalTimestamp;
-      } else {
-        session.earliestPendingTimestamp = Math.min(session.earliestPendingTimestamp, message._originalTimestamp);
-      }
-
-      session.lastGeneratorActivity = Date.now();
-
-      yield message;
+      await new Promise<void>(resolve => {
+        const onMessage = () => { cleanup(); resolve(); };
+        const onAbort = () => { cleanup(); resolve(); };
+        const cleanup = () => {
+          emitter.off('message', onMessage);
+          signal.removeEventListener('abort', onAbort);
+        };
+        emitter.once('message', onMessage);
+        signal.addEventListener('abort', onAbort, { once: true });
+      });
     }
   }
 
-  getPendingMessageStore(): PendingMessageStore {
-    return this.getPendingStore();
-  }
 }

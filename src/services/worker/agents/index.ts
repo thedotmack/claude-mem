@@ -16,6 +16,4 @@ export { processAgentResponse } from './ResponseProcessor.js';
 
 export { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
 
-export { cleanupProcessedMessages } from './SessionCleanupHelper.js';
-
 export { shouldFallbackToClaude, isAbortError } from './FallbackErrorHandler.js';

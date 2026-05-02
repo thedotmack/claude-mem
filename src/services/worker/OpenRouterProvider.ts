@@ -114,9 +114,7 @@ export class OpenRouterProvider {
     });
   }
 
-  private prepareMessageMetadata(session: ActiveSession, message: { _persistentId: number; agentId?: string | null; agentType?: string | null }): void {
-    session.processingMessageIds.push(message._persistentId);
-
+  private prepareMessageMetadata(session: ActiveSession, message: { agentId?: string | null; agentType?: string | null }): void {
     session.pendingAgentId = message.agentId ?? null;
     session.pendingAgentType = message.agentType ?? null;
   }
@@ -146,7 +144,7 @@ export class OpenRouterProvider {
 
   private async processOneMessage(
     session: ActiveSession,
-    message: { _persistentId: number; agentId?: string | null; agentType?: string | null; type?: string; cwd?: string; prompt_number?: number; tool_name?: string; tool_input?: unknown; tool_response?: unknown; last_assistant_message?: string },
+    message: { agentId?: string | null; agentType?: string | null; type?: string; cwd?: string; prompt_number?: number; tool_name?: string; tool_input?: unknown; tool_response?: unknown; last_assistant_message?: string },
     lastCwd: string | undefined,
     apiKey: string,
     model: string,
@@ -160,16 +158,15 @@ export class OpenRouterProvider {
     if (message.cwd) {
       lastCwd = message.cwd;
     }
-    const originalTimestamp = session.earliestPendingTimestamp;
 
     if (message.type === 'observation') {
       await this.processObservationMessage(
-        session, message, originalTimestamp, lastCwd,
+        session, message, null, lastCwd,
         apiKey, model, siteUrl, appName, worker, mode
       );
     } else if (message.type === 'summarize') {
       await this.processSummaryMessage(
-        session, message, originalTimestamp, lastCwd,
+        session, message, null, lastCwd,
         apiKey, model, siteUrl, appName, worker, mode
       );
     }

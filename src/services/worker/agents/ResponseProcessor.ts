@@ -13,7 +13,6 @@ import type { DatabaseManager } from '../DatabaseManager.js';
 import type { SessionManager } from '../SessionManager.js';
 import type { WorkerRef, StorageResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
-import { cleanupProcessedMessages } from './SessionCleanupHelper.js';
 
 export async function processAgentResponse(
   text: string,
@@ -27,8 +26,6 @@ export async function processAgentResponse(
   projectRoot?: string,
   modelId?: string
 ): Promise<void> {
-  session.lastGeneratorActivity = Date.now();
-
   if (text) {
     session.conversationHistory.push({ role: 'assistant', content: text });
   }
@@ -39,10 +36,6 @@ export async function processAgentResponse(
     logger.warn('PARSER', `${agentName} returned unparseable response: ${parsed.reason}`, {
       sessionId: session.sessionDbId,
     });
-    for (const messageId of session.processingMessageIds) {
-      sessionManager.markMessageFailed(session.sessionDbId, messageId);
-    }
-    session.processingMessageIds = [];
     return;
   }
 
@@ -59,13 +52,9 @@ export async function processAgentResponse(
   const sessionStore = dbManager.getSessionStore();
 
   if (!session.memorySessionId) {
-    logger.warn('SDK', 'memorySessionId not yet captured; re-pending in-flight messages', {
+    logger.warn('SDK', 'memorySessionId not yet captured; dropping in-flight messages', {
       sessionId: session.sessionDbId
     });
-    for (const messageId of session.processingMessageIds) {
-      sessionManager.markMessageFailed(session.sessionDbId, messageId);
-    }
-    session.processingMessageIds = [];
     return;
   }
 
@@ -107,11 +96,10 @@ export async function processAgentResponse(
   session.lastSummaryStored = result.summaryId !== null;
 
   if (parsed.kind === 'summary' && (parsed.data.skipped || session.lastSummaryStored)) {
-    const messageId = session.processingMessageIds[0] ?? -1;
     ingestSummary({
       kind: 'parsed',
       sessionDbId: session.sessionDbId,
-      messageId,
+      messageId: -1,
       contentSessionId: session.contentSessionId,
       parsed: parsed.data,
     });
@@ -121,16 +109,6 @@ export async function processAgentResponse(
       memorySessionId: session.memorySessionId,
     });
   }
-
-  const pendingStore = sessionManager.getPendingMessageStore();
-  for (const messageId of session.processingMessageIds) {
-    pendingStore.confirmProcessed(messageId);
-  }
-  if (session.processingMessageIds.length > 0) {
-    logger.debug('QUEUE', `CONFIRMED_BATCH | sessionDbId=${session.sessionDbId} | count=${session.processingMessageIds.length} | ids=[${session.processingMessageIds.join(',')}]`);
-    session.restartGuard?.recordSuccess();
-  }
-  session.processingMessageIds = [];
 
   void notifyTelegram({
     observations: labeledObservations,
@@ -160,8 +138,6 @@ export async function processAgentResponse(
     discoveryTokens,
     agentName
   );
-
-  cleanupProcessedMessages(session, worker);
 }
 
 function normalizeSummaryForStorage(summary: ParsedSummary | null): {

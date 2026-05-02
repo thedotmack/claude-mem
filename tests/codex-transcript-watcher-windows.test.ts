@@ -30,9 +30,4 @@ describe('Codex transcript ingestion on Windows (#2192)', () => {
     expect(watcherSource).toMatch(/resolvePath\(watchRoot, name\)\.replace\(\/\\\\\/g, '\/'\)/);
   });
 
-  it('requeues in-flight processing rows when the generator aborts (queue self-deadlock fix)', () => {
-    expect(sessionRoutesSource).toMatch(/Generator aborted/);
-    expect(sessionRoutesSource).toMatch(/processingMessageIds\.slice\(\)/);
-    expect(sessionRoutesSource).toMatch(/inflightStore\.markFailed\(messageId\)/);
-  });
 });

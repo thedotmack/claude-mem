@@ -495,46 +495,6 @@ describe('ResponseProcessor', () => {
   });
 
   describe('session cleanup', () => {
-    it('should reset earliestPendingTimestamp after processing', async () => {
-      const session = createMockSession({
-        earliestPendingTimestamp: 1700000000000,
-      });
-      const responseText = `
-        <observation>
-          <type>discovery</type>
-          <title>Test</title>
-          <facts></facts>
-          <concepts></concepts>
-          <files_read></files_read>
-          <files_modified></files_modified>
-        </observation>
-      `;
-
-      mockStoreObservations = mock(() => ({
-        observationIds: [1],
-        summaryId: null,
-        createdAtEpoch: 1700000000000,
-      }));
-      (mockDbManager.getSessionStore as any) = () => ({
-        storeObservations: mockStoreObservations,
-        ensureMemorySessionIdRegistered: mock(() => {}),
-        getSessionById: mock(() => ({ memory_session_id: 'memory-session-456' })),
-      });
-
-      await processAgentResponse(
-        responseText,
-        session,
-        mockDbManager,
-        mockSessionManager,
-        mockWorker,
-        100,
-        null,
-        'TestAgent'
-      );
-
-      expect(session.earliestPendingTimestamp).toBeNull();
-    });
-
     it('should call broadcastProcessingStatus after processing', async () => {
       const session = createMockSession();
       const responseText = `

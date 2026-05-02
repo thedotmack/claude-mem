@@ -26,20 +26,6 @@ export class SessionCompletionHandler {
 
     sessionStore.markSessionCompleted(sessionDbId);
 
-    try {
-      const pendingStore = this.sessionManager.getPendingMessageStore();
-      const drainedCount = pendingStore.transitionMessagesTo('abandoned', { sessionDbId });
-      if (drainedCount > 0) {
-        logger.warn('SESSION', `Drained ${drainedCount} orphaned pending messages on session finalize`, {
-          sessionId: sessionDbId, drainedCount
-        });
-      }
-    } catch (e) {
-      logger.debug('SESSION', 'Failed to drain pending queue on session finalize', {
-        sessionId: sessionDbId, error: e instanceof Error ? e.message : String(e)
-      });
-    }
-
     this.eventBroadcaster.broadcastSessionCompleted(sessionDbId);
 
     logger.info('SESSION', 'Session finalized', { sessionId: sessionDbId });

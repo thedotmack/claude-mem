@@ -186,7 +186,7 @@ export class ClaudeProvider {
 
           const discoveryTokens = (session.cumulativeInputTokens + session.cumulativeOutputTokens) - tokensBeforeResponse;
 
-          const originalTimestamp = session.earliestPendingTimestamp;
+          const originalTimestamp = null;
 
           if (responseSize > 0) {
             const truncatedResponse = responseSize > 100
@@ -275,8 +275,6 @@ export class ClaudeProvider {
     };
 
     for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
-      session.processingMessageIds.push(message._persistentId);
-
       session.pendingAgentId = message.agentId ?? null;
       session.pendingAgentType = message.agentType ?? null;
 

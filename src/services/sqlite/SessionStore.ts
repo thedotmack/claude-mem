@@ -12,7 +12,6 @@ import {
   UserPromptRecord,
   LatestPromptResult
 } from '../../types/database.js';
-import type { PendingMessageStore } from './PendingMessageStore.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from './types.js';
 import { computeObservationContentHash } from './observations/store.js';
 import { parseFileList } from './observations/files.js';
@@ -55,10 +54,7 @@ export class SessionStore {
     this.makeObservationsTextNullable();
     this.createUserPromptsTable();
     this.ensureDiscoveryTokensColumn();
-    this.createPendingMessagesTable();
     this.renameSessionIdColumns();
-    this.repairSessionIdColumnRename();
-    this.addFailedAtEpochColumn();
     this.addOnUpdateCascadeToForeignKeys();
     this.addObservationContentHashColumn();
     this.addSessionCustomTitleColumn();
@@ -66,9 +62,16 @@ export class SessionStore {
     this.addObservationModelColumns();
     this.ensureMergedIntoProjectColumns();
     this.addObservationSubagentColumns();
-    this.addPendingMessagesToolUseIdAndWorkerPidColumns();
     this.addObservationsUniqueContentHashIndex();
     this.addObservationsMetadataColumn();
+    this.dropPendingMessagesTable();
+  }
+
+  private dropPendingMessagesTable(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(31) as SchemaVersion | undefined;
+    if (applied) return;
+    this.db.run('DROP TABLE IF EXISTS pending_messages');
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(31, new Date().toISOString());
   }
 
   private initializeSchema(): void {
@@ -438,47 +441,6 @@ export class SessionStore {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(11, new Date().toISOString());
   }
 
-  private createPendingMessagesTable(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(16) as SchemaVersion | undefined;
-    if (applied) return;
-
-    const tables = this.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='pending_messages'").all() as TableNameRow[];
-    if (tables.length > 0) {
-      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(16, new Date().toISOString());
-      return;
-    }
-
-    logger.debug('DB', 'Creating pending_messages table');
-
-    this.db.run(`
-      CREATE TABLE pending_messages (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        session_db_id INTEGER NOT NULL,
-        content_session_id TEXT NOT NULL,
-        message_type TEXT NOT NULL CHECK(message_type IN ('observation', 'summarize')),
-        tool_name TEXT,
-        tool_input TEXT,
-        tool_response TEXT,
-        cwd TEXT,
-        last_user_message TEXT,
-        last_assistant_message TEXT,
-        prompt_number INTEGER,
-        status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'processing', 'processed', 'failed')),
-        retry_count INTEGER NOT NULL DEFAULT 0,
-        created_at_epoch INTEGER NOT NULL,
-        completed_at_epoch INTEGER,
-        FOREIGN KEY (session_db_id) REFERENCES sdk_sessions(id) ON DELETE CASCADE
-      )
-    `);
-
-    this.db.run('CREATE INDEX IF NOT EXISTS idx_pending_messages_session ON pending_messages(session_db_id)');
-    this.db.run('CREATE INDEX IF NOT EXISTS idx_pending_messages_status ON pending_messages(status)');
-    this.db.run('CREATE INDEX IF NOT EXISTS idx_pending_messages_claude_session ON pending_messages(content_session_id)');
-
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(16, new Date().toISOString());
-
-    logger.debug('DB', 'pending_messages table created successfully');
-  }
 
   private renameSessionIdColumns(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(17) as SchemaVersion | undefined;
@@ -525,28 +487,6 @@ export class SessionStore {
     } else {
       logger.debug('DB', 'No session ID column renames needed (already up to date)');
     }
-  }
-
-  private repairSessionIdColumnRename(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(19) as SchemaVersion | undefined;
-    if (applied) return;
-
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(19, new Date().toISOString());
-  }
-
-  private addFailedAtEpochColumn(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(20) as SchemaVersion | undefined;
-    if (applied) return;
-
-    const tableInfo = this.db.query('PRAGMA table_info(pending_messages)').all() as TableColumnInfo[];
-    const hasColumn = tableInfo.some(col => col.name === 'failed_at_epoch');
-
-    if (!hasColumn) {
-      this.db.run('ALTER TABLE pending_messages ADD COLUMN failed_at_epoch INTEGER');
-      logger.debug('DB', 'Added failed_at_epoch column to pending_messages table');
-    }
-
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(20, new Date().toISOString());
   }
 
   private addOnUpdateCascadeToForeignKeys(): void {
@@ -854,52 +794,6 @@ export class SessionStore {
     }
   }
 
-  private addPendingMessagesToolUseIdAndWorkerPidColumns(): void {
-    const tables = this.db.query(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='pending_messages'"
-    ).all() as TableNameRow[];
-    if (tables.length === 0) {
-      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(28, new Date().toISOString());
-      return;
-    }
-
-    const cols = this.db.query('PRAGMA table_info(pending_messages)').all() as TableColumnInfo[];
-    const hasToolUseId = cols.some(c => c.name === 'tool_use_id');
-    const hasWorkerPid = cols.some(c => c.name === 'worker_pid');
-
-    if (!hasToolUseId) {
-      this.db.run('ALTER TABLE pending_messages ADD COLUMN tool_use_id TEXT');
-    }
-    if (!hasWorkerPid) {
-      this.db.run('ALTER TABLE pending_messages ADD COLUMN worker_pid INTEGER');
-    }
-
-    this.db.run('BEGIN TRANSACTION');
-    try {
-      this.db.run('CREATE INDEX IF NOT EXISTS idx_pending_messages_worker_pid ON pending_messages(worker_pid)');
-
-      this.db.run(`
-        DELETE FROM pending_messages
-         WHERE tool_use_id IS NOT NULL
-           AND id NOT IN (
-             SELECT MIN(id) FROM pending_messages
-              WHERE tool_use_id IS NOT NULL
-              GROUP BY content_session_id, tool_use_id
-           )
-      `);
-      this.db.run(`
-        CREATE UNIQUE INDEX IF NOT EXISTS ux_pending_session_tool
-        ON pending_messages(content_session_id, tool_use_id)
-        WHERE tool_use_id IS NOT NULL
-      `);
-
-      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(28, new Date().toISOString());
-      this.db.run('COMMIT');
-    } catch (error) {
-      this.db.run('ROLLBACK');
-      throw error;
-    }
-  }
 
   private addObservationsUniqueContentHashIndex(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(29) as SchemaVersion | undefined;
@@ -1904,134 +1798,6 @@ export class SessionStore {
     return storeTx();
   }
 
-  storeObservationsAndMarkComplete(
-    memorySessionId: string,
-    project: string,
-    observations: Array<{
-      type: string;
-      title: string | null;
-      subtitle: string | null;
-      facts: string[];
-      narrative: string | null;
-      concepts: string[];
-      files_read: string[];
-      files_modified: string[];
-      agent_type?: string | null;
-      agent_id?: string | null;
-    }>,
-    summary: {
-      request: string;
-      investigated: string;
-      learned: string;
-      completed: string;
-      next_steps: string;
-      notes: string | null;
-    } | null,
-    messageId: number,
-    _pendingStore: PendingMessageStore,
-    promptNumber?: number,
-    discoveryTokens: number = 0,
-    overrideTimestampEpoch?: number,
-    generatedByModel?: string
-  ): { observationIds: number[]; summaryId?: number; createdAtEpoch: number } {
-    const timestampEpoch = overrideTimestampEpoch ?? Date.now();
-    const timestampIso = new Date(timestampEpoch).toISOString();
-
-    const storeAndMarkTx = this.db.transaction(() => {
-      const observationIds: number[] = [];
-
-      const obsStmt = this.db.prepare(`
-        INSERT INTO observations
-        (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-         files_read, files_modified, prompt_number, discovery_tokens, agent_type, agent_id, content_hash, created_at, created_at_epoch,
-         generated_by_model)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(memory_session_id, content_hash) DO NOTHING
-        RETURNING id
-      `);
-      const lookupExistingStmt = this.db.prepare(
-        'SELECT id FROM observations WHERE memory_session_id = ? AND content_hash = ?'
-      );
-
-      for (const observation of observations) {
-        const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
-        const inserted = obsStmt.get(
-          memorySessionId,
-          project,
-          observation.type,
-          observation.title,
-          observation.subtitle,
-          JSON.stringify(observation.facts),
-          observation.narrative,
-          JSON.stringify(observation.concepts),
-          JSON.stringify(observation.files_read),
-          JSON.stringify(observation.files_modified),
-          promptNumber || null,
-          discoveryTokens,
-          observation.agent_type ?? null,
-          observation.agent_id ?? null,
-          contentHash,
-          timestampIso,
-          timestampEpoch,
-          generatedByModel || null
-        ) as { id: number } | null;
-
-        if (inserted) {
-          observationIds.push(inserted.id);
-          continue;
-        }
-
-        const existing = lookupExistingStmt.get(memorySessionId, contentHash) as { id: number } | null;
-        if (!existing) {
-          throw new Error(
-            `storeObservationsAndMarkComplete: ON CONFLICT without existing row for content_hash=${contentHash}`
-          );
-        }
-        observationIds.push(existing.id);
-      }
-
-      let summaryId: number | undefined;
-      if (summary) {
-        const summaryStmt = this.db.prepare(`
-          INSERT INTO session_summaries
-          (memory_session_id, project, request, investigated, learned, completed,
-           next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `);
-
-        const result = summaryStmt.run(
-          memorySessionId,
-          project,
-          summary.request,
-          summary.investigated,
-          summary.learned,
-          summary.completed,
-          summary.next_steps,
-          summary.notes,
-          promptNumber || null,
-          discoveryTokens,
-          timestampIso,
-          timestampEpoch
-        );
-        summaryId = Number(result.lastInsertRowid);
-      }
-
-      const updateStmt = this.db.prepare(`
-        UPDATE pending_messages
-        SET
-          status = 'processed',
-          completed_at_epoch = ?,
-          tool_input = NULL,
-          tool_response = NULL
-        WHERE id = ? AND status = 'processing'
-      `);
-      updateStmt.run(timestampEpoch, messageId);
-
-      return { observationIds, summaryId, createdAtEpoch: timestampEpoch };
-    });
-
-    return storeAndMarkTx();
-  }
 
   getSessionSummariesByIds(
     ids: number[],

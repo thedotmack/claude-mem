@@ -1,6 +1,5 @@
 
 import type { Response } from 'express';
-import type { RestartGuard } from './worker/RestartGuard.js';
 
 export interface ConversationMessage {
   role: 'user' | 'assistant';
@@ -9,33 +8,26 @@ export interface ConversationMessage {
 
 export interface ActiveSession {
   sessionDbId: number;
-  contentSessionId: string;      
-  memorySessionId: string | null; 
+  contentSessionId: string;
+  memorySessionId: string | null;
   project: string;
   platformSource: string;
   userPrompt: string;
-  pendingMessages: PendingMessage[];  
+  pendingMessages: PendingMessage[];
   abortController: AbortController;
   generatorPromise: Promise<void> | null;
   lastPromptNumber: number;
   startTime: number;
-  cumulativeInputTokens: number;   
-  cumulativeOutputTokens: number;  
-  earliestPendingTimestamp: number | null;  
-  conversationHistory: ConversationMessage[];  
-  currentProvider: 'claude' | 'gemini' | 'openrouter' | null;  
-  consecutiveRestarts: number;  
-  restartGuard?: RestartGuard;
-  forceInit?: boolean;  
-  idleTimedOut?: boolean;  
-  lastGeneratorActivity: number;  
-  processingMessageIds: number[];
+  cumulativeInputTokens: number;
+  cumulativeOutputTokens: number;
+  conversationHistory: ConversationMessage[];
+  currentProvider: 'claude' | 'gemini' | 'openrouter' | null;
+  forceInit?: boolean;
   modelOverride?: string;
   lastSummaryStored?: boolean;
   pendingAgentId?: string | null;
   pendingAgentType?: string | null;
   abortReason?: 'idle' | 'shutdown' | 'overflow' | 'restart-guard' | null;
-  respawnTimer?: ReturnType<typeof setTimeout>;
 }
 
 export interface PendingMessage {
@@ -49,11 +41,6 @@ export interface PendingMessage {
   agentId?: string;
   agentType?: string;
   toolUseId?: string;
-}
-
-export interface PendingMessageWithId extends PendingMessage {
-  _persistentId: number;
-  _originalTimestamp: number;
 }
 
 export interface ObservationData {
