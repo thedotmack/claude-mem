@@ -181,38 +181,6 @@ export function ingestObservation(payload: ObservationPayload): IngestResult {
   return { ok: true, sessionDbId };
 }
 
-export interface PromptPayload {
-  contentSessionId: string;
-  prompt: string;
-  cwd?: string;
-  platformSource?: string;
-  promptNumber?: number;
-}
-
-export function ingestPrompt(payload: PromptPayload): IngestResult {
-  const { dbManager } = requireContext();
-
-  if (!payload.contentSessionId) {
-    return { ok: false, reason: 'missing contentSessionId', status: 400 };
-  }
-  if (typeof payload.prompt !== 'string') {
-    return { ok: false, reason: 'missing prompt text', status: 400 };
-  }
-
-  const platformSource = normalizePlatformSource(payload.platformSource);
-  const cwd = typeof payload.cwd === 'string' ? payload.cwd : '';
-  const project = cwd.trim() ? getProjectContext(cwd).primary : '';
-
-  try {
-    const store = dbManager.getSessionStore();
-    const sessionDbId = store.createSDKSession(payload.contentSessionId, project, payload.prompt, undefined, platformSource);
-    return { ok: true, sessionDbId };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return { ok: false, reason: message, status: 500 };
-  }
-}
-
 export type SummaryPayload =
   | {
       kind: 'queue';

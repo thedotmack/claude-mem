@@ -1,7 +1,7 @@
 
 import type { Database } from 'bun:sqlite';
 import type { UserPromptRecord, LatestPromptResult } from '../../../types/database.js';
-import type { RecentUserPromptResult, PromptWithProject, GetPromptsByIdsOptions } from './types.js';
+import type { GetPromptsByIdsOptions } from './types.js';
 
 export function getUserPrompt(
   db: Database,
@@ -43,69 +43,6 @@ export function getLatestUserPrompt(
   `);
 
   return stmt.get(contentSessionId) as LatestPromptResult | undefined;
-}
-
-export function getAllRecentUserPrompts(
-  db: Database,
-  limit: number = 100
-): RecentUserPromptResult[] {
-  const stmt = db.prepare(`
-    SELECT
-      up.id,
-      up.content_session_id,
-      s.project,
-      up.prompt_number,
-      up.prompt_text,
-      up.created_at,
-      up.created_at_epoch
-    FROM user_prompts up
-    LEFT JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
-    ORDER BY up.created_at_epoch DESC
-    LIMIT ?
-  `);
-
-  return stmt.all(limit) as RecentUserPromptResult[];
-}
-
-export function getPromptById(db: Database, id: number): PromptWithProject | null {
-  const stmt = db.prepare(`
-    SELECT
-      p.id,
-      p.content_session_id,
-      p.prompt_number,
-      p.prompt_text,
-      s.project,
-      p.created_at,
-      p.created_at_epoch
-    FROM user_prompts p
-    LEFT JOIN sdk_sessions s ON p.content_session_id = s.content_session_id
-    WHERE p.id = ?
-    LIMIT 1
-  `);
-
-  return (stmt.get(id) as PromptWithProject | undefined) || null;
-}
-
-export function getPromptsByIds(db: Database, ids: number[]): PromptWithProject[] {
-  if (ids.length === 0) return [];
-
-  const placeholders = ids.map(() => '?').join(',');
-  const stmt = db.prepare(`
-    SELECT
-      p.id,
-      p.content_session_id,
-      p.prompt_number,
-      p.prompt_text,
-      s.project,
-      p.created_at,
-      p.created_at_epoch
-    FROM user_prompts p
-    LEFT JOIN sdk_sessions s ON p.content_session_id = s.content_session_id
-    WHERE p.id IN (${placeholders})
-    ORDER BY p.created_at_epoch DESC
-  `);
-
-  return stmt.all(...ids) as PromptWithProject[];
 }
 
 export function getUserPromptsByIds(

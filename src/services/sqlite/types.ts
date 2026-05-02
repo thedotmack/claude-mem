@@ -1,37 +1,4 @@
 
-export function normalizeTimestamp(timestamp: string | Date | number | undefined): { isoString: string; epoch: number } {
-  let date: Date;
-  
-  if (!timestamp) {
-    date = new Date();
-  } else if (timestamp instanceof Date) {
-    date = timestamp;
-  } else if (typeof timestamp === 'number') {
-    date = new Date(timestamp);
-  } else if (typeof timestamp === 'string') {
-    if (!timestamp.trim()) {
-      date = new Date();
-    } else {
-      date = new Date(timestamp);
-      if (isNaN(date.getTime())) {
-        const cleaned = timestamp.replace(/\s+/g, 'T').replace(/T+/g, 'T');
-        date = new Date(cleaned);
-        
-        if (isNaN(date.getTime())) {
-          date = new Date();
-        }
-      }
-    }
-  } else {
-    date = new Date();
-  }
-  
-  return {
-    isoString: date.toISOString(),
-    epoch: date.getTime()
-  };
-}
-
 export interface ObservationRow {
   id: number;
   memory_session_id: string;

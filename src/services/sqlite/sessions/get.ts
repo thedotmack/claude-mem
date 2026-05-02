@@ -4,7 +4,6 @@ import type {
   SessionBasic,
   SessionFull,
   SessionWithStatus,
-  SessionSummaryDetail,
 } from './types.js';
 
 export function getSessionById(db: Database, id: number): SessionBasic | null {
@@ -65,28 +64,4 @@ export function getRecentSessionsWithStatus(
   `);
 
   return stmt.all(project, limit) as SessionWithStatus[];
-}
-
-export function getSessionSummaryById(
-  db: Database,
-  id: number
-): SessionSummaryDetail | null {
-  const stmt = db.prepare(`
-    SELECT
-      id,
-      memory_session_id,
-      content_session_id,
-      project,
-      user_prompt,
-      request_summary,
-      learned_summary,
-      status,
-      created_at,
-      created_at_epoch
-    FROM sdk_sessions
-    WHERE id = ?
-    LIMIT 1
-  `);
-
-  return (stmt.get(id) as SessionSummaryDetail | undefined) || null;
 }
