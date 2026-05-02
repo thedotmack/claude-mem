@@ -1,6 +1,5 @@
 
 import { existsSync, readFileSync } from 'fs';
-import { logger } from './logger.js';
 
 export function readJsonSafe<T>(filePath: string, defaultValue: T): T {
   if (!existsSync(filePath)) return defaultValue;

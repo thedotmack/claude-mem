@@ -1,6 +1,5 @@
 
 import type { Database } from 'bun:sqlite';
-import { logger } from '../../../utils/logger.js';
 
 export function saveUserPrompt(
   db: Database,

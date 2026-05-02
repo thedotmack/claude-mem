@@ -1,24 +1,10 @@
 
 import type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../sqlite/types.js';
 import { ModeManager } from '../domain/ModeManager.js';
-import { logger } from '../../utils/logger.js';
 
 const CHARS_PER_TOKEN_ESTIMATE = 4;
 
 export class FormattingService {
-  formatSearchTips(): string {
-    return `\n---
-💡 Search Strategy:
-1. Search with index to see titles, dates, IDs
-2. Use timeline to get context around interesting results
-3. Batch fetch full details: get_observations(ids=[...])
-
-Tips:
-• Filter by type: obs_type="bugfix,feature"
-• Filter by date: dateStart="2025-01-01"
-• Sort: orderBy="date_desc" or "date_asc"`;
-  }
-
   private formatTime(epoch: number): string {
     return new Date(epoch).toLocaleString('en-US', {
       hour: 'numeric',

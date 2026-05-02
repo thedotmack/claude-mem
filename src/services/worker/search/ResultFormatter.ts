@@ -1,4 +1,3 @@
-import { logger } from '../../../utils/logger.js';
 
 import {
   ObservationSearchResult,
@@ -8,7 +7,7 @@ import {
   SearchResults
 } from './types.js';
 import { ModeManager } from '../../domain/ModeManager.js';
-import { formatTime, extractFirstFile, groupByDate, estimateTokens } from '../../../shared/timeline-formatting.js';
+import {formatTime, extractFirstFile, groupByDate} from '../../../shared/timeline-formatting.js';
 
 const CHARS_PER_TOKEN_ESTIMATE = 4;
 

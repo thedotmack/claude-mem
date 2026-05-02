@@ -2,7 +2,6 @@
 import path from 'path';
 import { homedir } from 'os';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
-import { logger } from '../../utils/logger.js';
 import { findMcpServerPath } from './CursorHooksInstaller.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
 import { injectContextIntoMarkdownFile } from '../../utils/context-injection.js';

@@ -1,4 +1,3 @@
-import { logger } from '../../utils/logger.js';
 
 export * from './observations/types.js';
 export * from './observations/store.js';

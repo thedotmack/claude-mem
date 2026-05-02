@@ -1,10 +1,8 @@
-import { logger } from '../../../utils/logger.js';
 
 import type {
   ObservationSearchResult,
   SessionSummarySearchResult,
-  UserPromptSearchResult,
-  CombinedResult
+  UserPromptSearchResult
 } from './types.js';
 import { ModeManager } from '../../domain/ModeManager.js';
 import {

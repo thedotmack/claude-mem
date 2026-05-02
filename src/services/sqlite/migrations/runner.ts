@@ -3,7 +3,6 @@ import { logger } from '../../../utils/logger.js';
 import {
   TableColumnInfo,
   IndexInfo,
-  TableNameRow,
   SchemaVersion
 } from '../../../types/database.js';
 import { DEFAULT_PLATFORM_SOURCE } from '../../../shared/platform-source.js';
@@ -400,7 +399,6 @@ export class MigrationRunner {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(11, new Date().toISOString());
   }
 
-
   private renameSessionIdColumns(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(17) as SchemaVersion | undefined;
     if (applied) return;
@@ -447,7 +445,6 @@ export class MigrationRunner {
       logger.debug('DB', 'No session ID column renames needed (already up to date)');
     }
   }
-
 
   private addOnUpdateCascadeToForeignKeys(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(21) as SchemaVersion | undefined;
@@ -732,7 +729,6 @@ export class MigrationRunner {
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(27, new Date().toISOString());
     }
   }
-
 
   private addObservationsUniqueContentHashIndex(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(29) as SchemaVersion | undefined;

@@ -4,9 +4,7 @@ import { logger } from '../../utils/logger.js';
 import {
   TableColumnInfo,
   IndexInfo,
-  TableNameRow,
   SchemaVersion,
-  SdkSessionRecord,
   ObservationRecord,
   SessionSummaryRecord,
   UserPromptRecord,
@@ -441,7 +439,6 @@ export class SessionStore {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(11, new Date().toISOString());
   }
 
-
   private renameSessionIdColumns(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(17) as SchemaVersion | undefined;
     if (applied) return;
@@ -793,7 +790,6 @@ export class SessionStore {
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(27, new Date().toISOString());
     }
   }
-
 
   private addObservationsUniqueContentHashIndex(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(29) as SchemaVersion | undefined;
@@ -1797,7 +1793,6 @@ export class SessionStore {
 
     return storeTx();
   }
-
 
   getSessionSummariesByIds(
     ids: number[],

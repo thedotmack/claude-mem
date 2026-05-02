@@ -2,9 +2,8 @@
 import type {
   ContextConfig,
   Observation,
-  SessionSummary,
   TokenEconomics,
-  PriorMessages,
+  PriorMessages
 } from '../types.js';
 import { ModeManager } from '../../domain/ModeManager.js';
 import { formatObservationTokenDisplay } from '../TokenCalculator.js';

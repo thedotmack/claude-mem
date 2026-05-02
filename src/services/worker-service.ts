@@ -4,7 +4,7 @@ import { existsSync } from 'fs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
-import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
+
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { getAuthMethodDescription } from '../shared/EnvManager.js';
 import { logger } from '../utils/logger.js';
@@ -29,15 +29,12 @@ import {
   getPlatformTimeout,
   runOneTimeChromaMigration,
   runOneTimeCwdRemap,
-  cleanStalePidFile,
   verifyPidFileOwnership,
-  spawnDaemon,
-  touchPidFile
+  spawnDaemon
 } from './infrastructure/ProcessManager.js';
 import {
   isPortInUse,
   waitForHealth,
-  waitForReadiness,
   waitForPortFree,
   httpShutdown
 } from './infrastructure/HealthMonitor.js';
@@ -47,7 +44,6 @@ import { adoptMergedWorktrees, adoptMergedWorktreesForAllKnownRepos } from './in
 import { Server } from './server/Server.js';
 
 import {
-  updateCursorContextForProject,
   handleCursorCommand
 } from './integrations/CursorHooksInstaller.js';
 import {
@@ -510,7 +506,6 @@ export class WorkerService implements WorkerRef {
     let sessionFailed = false;
 
     logger.info('SYSTEM', `Starting generator (${source}) using ${providerName}`, { sessionId: sid });
-
 
     session.generatorPromise = agent.startSession(session, this)
       .catch(async (error: unknown) => {

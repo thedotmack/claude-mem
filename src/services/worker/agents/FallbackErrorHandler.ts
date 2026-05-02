@@ -1,6 +1,5 @@
 
 import { FALLBACK_ERROR_PATTERNS } from './types.js';
-import { logger } from '../../../utils/logger.js';
 
 export function shouldFallbackToClaude(error: unknown): boolean {
   const message = getErrorMessage(error);

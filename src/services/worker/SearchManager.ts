@@ -16,7 +16,7 @@ import {
   TimelineBuilder,
   SEARCH_CONSTANTS
 } from './search/index.js';
-import type { TimelineData } from './search/index.js';
+
 import { ResultFormatter } from './search/ResultFormatter.js';
 import { ChromaUnavailableError } from './search/errors.js';
 

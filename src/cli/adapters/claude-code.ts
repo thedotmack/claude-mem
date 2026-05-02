@@ -1,4 +1,4 @@
-import type { PlatformAdapter, NormalizedHookInput, HookResult } from '../types.js';
+import type {PlatformAdapter, HookResult} from '../types.js';
 import { AdapterRejectedInput, isValidCwd } from './errors.js';
 
 const MAX_AGENT_FIELD_LEN = 128;

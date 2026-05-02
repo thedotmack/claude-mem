@@ -1,4 +1,3 @@
-import { logger } from '../../../utils/logger.js';
 
 export interface SummaryInput {
   request: string;

@@ -6,7 +6,6 @@ import { ChromaSync } from '../sync/ChromaSync.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, DB_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
-import type { DBSession } from '../worker-types.js';
 
 export class DatabaseManager {
   private db: Database | null = null;

@@ -1,6 +1,5 @@
 
-import type { SearchResults, StrategySearchOptions, StrategySearchResult } from '../types.js';
-import { logger } from '../../../../utils/logger.js';
+import type {StrategySearchOptions, StrategySearchResult} from '../types.js';
 
 export interface SearchStrategy {
   search(options: StrategySearchOptions): Promise<StrategySearchResult>;

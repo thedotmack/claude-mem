@@ -1,4 +1,4 @@
-import type { PlatformAdapter, NormalizedHookInput, HookResult } from '../types.js';
+import type {PlatformAdapter} from '../types.js';
 import { AdapterRejectedInput, isValidCwd } from './errors.js';
 
 export const cursorAdapter: PlatformAdapter = {

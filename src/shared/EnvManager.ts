@@ -1,6 +1,6 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'fs';
-import { join, dirname } from 'path';
+import {join} from 'path';
 import { homedir } from 'os';
 import { logger } from '../utils/logger.js';
 

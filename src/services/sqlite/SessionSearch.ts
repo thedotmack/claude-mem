@@ -10,7 +10,6 @@ import {
   UserPromptSearchResult,
   SearchOptions,
   SearchFilters,
-  DateRange,
   ObservationRow,
   UserPromptRow
 } from './types.js';

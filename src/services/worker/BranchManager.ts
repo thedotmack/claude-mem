@@ -1,5 +1,5 @@
 
-import { execSync, spawnSync } from 'child_process';
+import {spawnSync} from 'child_process';
 import { existsSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { logger } from '../../utils/logger.js';

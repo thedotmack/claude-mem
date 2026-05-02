@@ -1,4 +1,3 @@
-import { logger } from '../../../utils/logger.js';
 
 export interface ObservationInput {
   type: string;

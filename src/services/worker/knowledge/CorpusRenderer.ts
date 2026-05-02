@@ -1,5 +1,5 @@
 
-import type { CorpusFile, CorpusObservation, CorpusFilter } from './types.js';
+import type {CorpusFile, CorpusObservation} from './types.js';
 
 export class CorpusRenderer {
   renderCorpus(corpus: CorpusFile): string {

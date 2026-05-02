@@ -5,7 +5,7 @@ import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from '
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { logger } from '../../utils/logger.js';
-import { getWorkerPort, workerHttpRequest } from '../../shared/worker-utils.js';
+import {workerHttpRequest} from '../../shared/worker-utils.js';
 import { DATA_DIR, MARKETPLACE_ROOT, CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
 import {
   readCursorRegistry as readCursorRegistryFromFile,

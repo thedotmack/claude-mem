@@ -1,5 +1,4 @@
 import type { Database } from 'bun:sqlite';
-import { logger } from '../../../utils/logger.js';
 import type { RecentSummary, SummaryWithSessionInfo, FullSummary } from './types.js';
 
 export function getRecentSummaries(

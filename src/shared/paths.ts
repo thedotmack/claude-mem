@@ -1,9 +1,9 @@
-import { join, dirname, basename, sep } from 'path';
+import {join, dirname, basename} from 'path';
 import { homedir } from 'os';
 import { existsSync, mkdirSync } from 'fs';
 import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
-import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
+
 import { logger } from '../utils/logger.js';
 
 function getDirname(): string {

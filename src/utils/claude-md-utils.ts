@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync, renameSync } from 'fs';
 import path from 'path';
 import os from 'os';
 import { logger } from './logger.js';
-import { formatDate, groupByDate } from '../shared/timeline-formatting.js';
+import {groupByDate} from '../shared/timeline-formatting.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { workerHttpRequest } from '../shared/worker-utils.js';
 

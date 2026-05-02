@@ -1,6 +1,5 @@
 
 import { Database } from 'bun:sqlite';
-import { logger } from '../../../utils/logger.js';
 import type { ObservationRecord } from '../../../types/database.js';
 import type { GetObservationsByIdsOptions, ObservationSessionRow } from './types.js';
 

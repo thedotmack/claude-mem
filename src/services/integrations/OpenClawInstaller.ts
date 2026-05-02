@@ -7,8 +7,7 @@ import {
   writeFileSync,
   mkdirSync,
   cpSync,
-  rmSync,
-  unlinkSync,
+  rmSync
 } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';

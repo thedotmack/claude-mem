@@ -2,7 +2,6 @@
 import express, { Request, Response } from 'express';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { ChromaMcpManager } from '../../../sync/ChromaMcpManager.js';
-import { logger } from '../../../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 
