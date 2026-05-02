@@ -14,19 +14,9 @@ export function useSSE() {
   });
   const [isConnected, setIsConnected] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [waitingForObservation, setWaitingForObservation] = useState(false);
   const [queueDepth, setQueueDepth] = useState(0);
   const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout>();
-  const observationWaitTimeoutRef = useRef<NodeJS.Timeout>();
-
-  const clearObservationWait = () => {
-    if (observationWaitTimeoutRef.current) {
-      clearTimeout(observationWaitTimeoutRef.current);
-      observationWaitTimeoutRef.current = undefined;
-    }
-    setWaitingForObservation(false);
-  };
 
   const updateCatalogForItem = (project: string, platformSource: string) => {
     setCatalog(prev => {
@@ -101,7 +91,6 @@ export function useSSE() {
               console.log('[SSE] New observation:', data.observation.id);
               updateCatalogForItem(data.observation.project, data.observation.platform_source || 'claude');
               setObservations(prev => [data.observation!, ...prev]);
-              clearObservationWait();
             }
             break;
 
@@ -124,21 +113,8 @@ export function useSSE() {
           case 'processing_status':
             if (typeof data.isProcessing === 'boolean') {
               console.log('[SSE] Processing status:', data.isProcessing, 'Queue depth:', data.queueDepth);
-              const nextQueueDepth = data.queueDepth || 0;
               setIsProcessing(data.isProcessing);
-              setQueueDepth(nextQueueDepth);
-              if (data.isProcessing) {
-                clearObservationWait();
-              } else if (nextQueueDepth === 0) {
-                if (observationWaitTimeoutRef.current) {
-                  clearTimeout(observationWaitTimeoutRef.current);
-                }
-                setWaitingForObservation(true);
-                observationWaitTimeoutRef.current = setTimeout(() => {
-                  setWaitingForObservation(false);
-                  observationWaitTimeoutRef.current = undefined;
-                }, TIMING.SPINNER_OBSERVATION_WAIT_MS);
-              }
+              setQueueDepth(data.queueDepth || 0);
             }
             break;
         }
@@ -154,9 +130,6 @@ export function useSSE() {
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
       }
-      if (observationWaitTimeoutRef.current) {
-        clearTimeout(observationWaitTimeoutRef.current);
-      }
     };
   }, []);
 
@@ -167,7 +140,7 @@ export function useSSE() {
     projects: catalog.projects,
     sources: catalog.sources,
     projectsBySource: catalog.projectsBySource,
-    isProcessing: isProcessing || waitingForObservation,
+    isProcessing,
     queueDepth,
     isConnected
   };
