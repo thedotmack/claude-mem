@@ -14,14 +14,6 @@ const execAsync = promisify(exec);
 const DATA_DIR = path.join(homedir(), '.claude-mem');
 const PID_FILE = path.join(DATA_DIR, 'worker.pid');
 
-const ORPHAN_PROCESS_PATTERNS = [
-  'mcp-server.cjs',    // Main MCP server process
-  'worker-service.cjs', // Background worker daemon
-  'chroma-mcp'          
-];
-
-const ORPHAN_MAX_AGE_MINUTES = 30;
-
 interface RuntimeResolverOptions {
   platform?: NodeJS.Platform;
   execPath?: string;
@@ -65,10 +57,6 @@ function lookupBinaryInPath(binaryName: string, platform: NodeJS.Platform): stri
 }
 
 let cachedWorkerRuntimePath: string | undefined = undefined;
-
-export function resetWorkerRuntimePathCache(): void {
-  cachedWorkerRuntimePath = undefined;
-}
 
 export function resolveWorkerRuntimePath(options: RuntimeResolverOptions = {}): string | null {
   const isMemoizable = Object.keys(options).length === 0;
@@ -211,53 +199,6 @@ export async function getChildProcesses(parentPid: number): Promise<number[]> {
   }
 }
 
-export async function forceKillProcess(pid: number): Promise<void> {
-  if (!Number.isInteger(pid) || pid <= 0) {
-    logger.warn('SYSTEM', 'Invalid PID for force kill', { pid });
-    return;
-  }
-
-  try {
-    if (process.platform === 'win32') {
-      await execAsync(`taskkill /PID ${pid} /T /F`, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND, windowsHide: true });
-    } else {
-      process.kill(pid, 'SIGKILL');
-    }
-    logger.info('SYSTEM', 'Killed process', { pid });
-  } catch (error: unknown) {
-    if (error instanceof Error) {
-      logger.debug('SYSTEM', 'Process already exited during force kill', { pid }, error);
-    } else {
-      logger.debug('SYSTEM', 'Process already exited during force kill', { pid }, new Error(String(error)));
-    }
-  }
-}
-
-export async function waitForProcessesExit(pids: number[], timeoutMs: number): Promise<void> {
-  const start = Date.now();
-
-  while (Date.now() - start < timeoutMs) {
-    const stillAlive = pids.filter(pid => {
-      try {
-        process.kill(pid, 0);
-        return true;
-      } catch {
-        return false;
-      }
-    });
-
-    if (stillAlive.length === 0) {
-      logger.info('SYSTEM', 'All child processes exited');
-      return;
-    }
-
-    logger.debug('SYSTEM', 'Waiting for processes to exit', { stillAlive });
-    await new Promise(r => setTimeout(r, 100));
-  }
-
-  logger.warn('SYSTEM', 'Timeout waiting for child processes to exit');
-}
-
 export function parseElapsedTime(etime: string): number {
   if (!etime || etime.trim() === '') return -1;
 
@@ -284,133 +225,6 @@ export function parseElapsedTime(etime: string): number {
   }
 
   return -1;
-}
-
-async function enumerateOrphanedProcesses(isWindows: boolean, currentPid: number): Promise<number[]> {
-  const pidsToKill: number[] = [];
-
-  if (isWindows) {
-    const wqlPatternConditions = ORPHAN_PROCESS_PATTERNS
-      .map(p => `CommandLine LIKE '%${p}%'`)
-      .join(' OR ');
-
-    const cmd = `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process -Filter '(${wqlPatternConditions}) AND ProcessId != ${currentPid}' | Select-Object ProcessId, CreationDate | ConvertTo-Json"`;
-    const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND, windowsHide: true });
-
-    if (!stdout.trim() || stdout.trim() === 'null') {
-      logger.debug('SYSTEM', 'No orphaned claude-mem processes found (Windows)');
-      return [];
-    }
-
-    const processes = JSON.parse(stdout);
-    const processList = Array.isArray(processes) ? processes : [processes];
-    const now = Date.now();
-
-    for (const proc of processList) {
-      const pid = proc.ProcessId;
-      if (!Number.isInteger(pid) || pid <= 0 || pid === currentPid) continue;
-
-      const creationMatch = proc.CreationDate?.match(/\/Date\((\d+)\)\//);
-      if (creationMatch) {
-        const creationTime = parseInt(creationMatch[1], 10);
-        const ageMinutes = (now - creationTime) / (1000 * 60);
-
-        if (ageMinutes >= ORPHAN_MAX_AGE_MINUTES) {
-          pidsToKill.push(pid);
-          logger.debug('SYSTEM', 'Found orphaned process', { pid, ageMinutes: Math.round(ageMinutes) });
-        }
-      }
-    }
-  } else {
-    const patternRegex = ORPHAN_PROCESS_PATTERNS.join('|');
-    const { stdout } = await execAsync(
-      `ps -eo pid,etime,command | grep -E "${patternRegex}" | grep -v grep || true`
-    );
-
-    if (!stdout.trim()) {
-      logger.debug('SYSTEM', 'No orphaned claude-mem processes found (Unix)');
-      return [];
-    }
-
-    const lines = stdout.trim().split('\n');
-    for (const line of lines) {
-      const match = line.trim().match(/^(\d+)\s+(\S+)\s+(.*)$/);
-      if (!match) continue;
-
-      const pid = parseInt(match[1], 10);
-      const etime = match[2];
-
-      if (!Number.isInteger(pid) || pid <= 0 || pid === currentPid) continue;
-
-      const ageMinutes = parseElapsedTime(etime);
-      if (ageMinutes >= ORPHAN_MAX_AGE_MINUTES) {
-        pidsToKill.push(pid);
-        logger.debug('SYSTEM', 'Found orphaned process', { pid, ageMinutes, command: match[3].substring(0, 80) });
-      }
-    }
-  }
-
-  return pidsToKill;
-}
-
-export async function cleanupOrphanedProcesses(): Promise<void> {
-  const isWindows = process.platform === 'win32';
-  const currentPid = process.pid;
-  let pidsToKill: number[];
-
-  try {
-    pidsToKill = await enumerateOrphanedProcesses(isWindows, currentPid);
-  } catch (error: unknown) {
-    if (error instanceof Error) {
-      logger.error('SYSTEM', 'Failed to enumerate orphaned processes', {}, error);
-    } else {
-      logger.error('SYSTEM', 'Failed to enumerate orphaned processes', {}, new Error(String(error)));
-    }
-    return;
-  }
-
-  if (pidsToKill.length === 0) {
-    return;
-  }
-
-  logger.info('SYSTEM', 'Cleaning up orphaned claude-mem processes', {
-    platform: isWindows ? 'Windows' : 'Unix',
-    count: pidsToKill.length,
-    pids: pidsToKill,
-    maxAgeMinutes: ORPHAN_MAX_AGE_MINUTES
-  });
-
-  if (isWindows) {
-    for (const pid of pidsToKill) {
-      if (!Number.isInteger(pid) || pid <= 0) {
-        logger.warn('SYSTEM', 'Skipping invalid PID', { pid });
-        continue;
-      }
-      try {
-        execSync(`taskkill /PID ${pid} /T /F`, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND, stdio: 'ignore', windowsHide: true });
-      } catch (error: unknown) {
-        if (error instanceof Error) {
-          logger.debug('SYSTEM', 'Failed to kill process, may have already exited', { pid }, error);
-        } else {
-          logger.debug('SYSTEM', 'Failed to kill process, may have already exited', { pid }, new Error(String(error)));
-        }
-      }
-    }
-  } else {
-    for (const pid of pidsToKill) {
-      try {
-        process.kill(pid, 'SIGKILL');
-      } catch (error: unknown) {
-        if (error instanceof Error) {
-          logger.debug('SYSTEM', 'Process already exited', { pid }, error);
-        } else {
-          logger.debug('SYSTEM', 'Process already exited', { pid }, new Error(String(error)));
-        }
-      }
-    }
-  }
-
-  logger.info('SYSTEM', 'Orphaned processes cleaned up', { count: pidsToKill.length });
 }
 
 const CHROMA_MIGRATION_MARKER_FILENAME = '.chroma-cleaned-v10.3';
@@ -703,28 +517,3 @@ export function cleanStalePidFile(): ValidateWorkerPidStatus {
   return validateWorkerPidFile({ logAlive: false });
 }
 
-export function createSignalHandler(
-  shutdownFn: () => Promise<void>,
-  isShuttingDownRef: { value: boolean }
-): (signal: string) => Promise<void> {
-  return async (signal: string) => {
-    if (isShuttingDownRef.value) {
-      logger.warn('SYSTEM', `Received ${signal} but shutdown already in progress`);
-      return;
-    }
-    isShuttingDownRef.value = true;
-
-    logger.info('SYSTEM', `Received ${signal}, shutting down...`);
-    try {
-      await shutdownFn();
-      process.exit(0);
-    } catch (error: unknown) {
-      if (error instanceof Error) {
-        logger.error('SYSTEM', 'Error during shutdown', {}, error);
-      } else {
-        logger.error('SYSTEM', 'Error during shutdown', {}, new Error(String(error)));
-      }
-      process.exit(0);
-    }
-  };
-}
