@@ -128,6 +128,3 @@ export function detectInstalledIDEs(): IDEInfo[] {
   ];
 }
 
-export function getDetectedIDEs(): IDEInfo[] {
-  return detectInstalledIDEs().filter((ide) => ide.detected);
-}
