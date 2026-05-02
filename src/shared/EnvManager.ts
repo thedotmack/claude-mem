@@ -1,5 +1,5 @@
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import {join} from 'path';
 import { homedir } from 'os';
 import { logger } from '../utils/logger.js';
@@ -46,24 +46,6 @@ function parseEnvFile(content: string): Record<string, string> {
   return result;
 }
 
-function serializeEnvFile(env: Record<string, string>): string {
-  const lines: string[] = [
-    '# claude-mem credentials',
-    '# This file stores API keys for claude-mem memory agent',
-    '# Edit this file or use claude-mem settings to configure',
-    '',
-  ];
-
-  for (const [key, value] of Object.entries(env)) {
-    if (value) {
-      const needsQuotes = /[\s#=]/.test(value);
-      lines.push(`${key}=${needsQuotes ? `"${value}"` : value}`);
-    }
-  }
-
-  return lines.join('\n') + '\n';
-}
-
 export function loadClaudeMemEnv(): ClaudeMemEnv {
   if (!existsSync(ENV_FILE_PATH)) {
     return {};
@@ -83,63 +65,6 @@ export function loadClaudeMemEnv(): ClaudeMemEnv {
   } catch (error: unknown) {
     logger.warn('ENV', 'Failed to load .env file', { path: ENV_FILE_PATH }, error instanceof Error ? error : new Error(String(error)));
     return {};
-  }
-}
-
-export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
-  let existing: Record<string, string> = {};
-  try {
-    if (!existsSync(DATA_DIR)) {
-      mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
-    }
-    chmodSync(DATA_DIR, 0o700);
-
-    existing = existsSync(ENV_FILE_PATH)
-      ? parseEnvFile(readFileSync(ENV_FILE_PATH, 'utf-8'))
-      : {};
-  } catch (error) {
-    const normalizedError = error instanceof Error ? error : new Error(String(error));
-    logger.error('ENV', 'Failed to set up env directory or read existing env', {}, normalizedError);
-    throw normalizedError;
-  }
-
-  const updated: Record<string, string> = { ...existing };
-
-  if (env.ANTHROPIC_API_KEY !== undefined) {
-    if (env.ANTHROPIC_API_KEY) {
-      updated.ANTHROPIC_API_KEY = env.ANTHROPIC_API_KEY;
-    } else {
-      delete updated.ANTHROPIC_API_KEY;
-    }
-  }
-  if (env.ANTHROPIC_BASE_URL !== undefined) {
-    if (env.ANTHROPIC_BASE_URL) {
-      updated.ANTHROPIC_BASE_URL = env.ANTHROPIC_BASE_URL;
-    } else {
-      delete updated.ANTHROPIC_BASE_URL;
-    }
-  }
-  if (env.GEMINI_API_KEY !== undefined) {
-    if (env.GEMINI_API_KEY) {
-      updated.GEMINI_API_KEY = env.GEMINI_API_KEY;
-    } else {
-      delete updated.GEMINI_API_KEY;
-    }
-  }
-  if (env.OPENROUTER_API_KEY !== undefined) {
-    if (env.OPENROUTER_API_KEY) {
-      updated.OPENROUTER_API_KEY = env.OPENROUTER_API_KEY;
-    } else {
-      delete updated.OPENROUTER_API_KEY;
-    }
-  }
-
-  try {
-    writeFileSync(ENV_FILE_PATH, serializeEnvFile(updated), { encoding: 'utf-8', mode: 0o600 });
-    chmodSync(ENV_FILE_PATH, 0o600);
-  } catch (error: unknown) {
-    logger.error('ENV', 'Failed to save .env file', { path: ENV_FILE_PATH }, error instanceof Error ? error : new Error(String(error)));
-    throw error;
   }
 }
 
