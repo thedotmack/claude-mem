@@ -33,10 +33,6 @@ export function pluginCacheDirectory(version: string): string {
   return join(pluginsDirectory(), 'cache', 'thedotmack', 'claude-mem', version);
 }
 
-export function claudeMemDataDirectory(): string {
-  return join(homedir(), '.claude-mem');
-}
-
 export function npmPackageRootDirectory(): string {
   const currentFilePath = fileURLToPath(import.meta.url);
   const root = join(dirname(currentFilePath), '..', '..');
