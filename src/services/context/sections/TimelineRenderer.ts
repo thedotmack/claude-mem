@@ -5,29 +5,14 @@ import type {
   TimelineItem,
   SummaryTimelineItem,
 } from '../types.js';
-import { formatTime, formatDate, formatDateTime, extractFirstFile, parseJsonArray } from '../../../shared/timeline-formatting.js';
+import { formatTime, formatDateTime, extractFirstFile, parseJsonArray, groupByDate } from '../../../shared/timeline-formatting.js';
 import * as Agent from '../formatters/AgentFormatter.js';
 import * as Human from '../formatters/HumanFormatter.js';
 
 export function groupTimelineByDay(timeline: TimelineItem[]): Map<string, TimelineItem[]> {
-  const itemsByDay = new Map<string, TimelineItem[]>();
-
-  for (const item of timeline) {
-    const itemDate = item.type === 'observation' ? item.data.created_at : item.data.displayTime;
-    const day = formatDate(itemDate);
-    if (!itemsByDay.has(day)) {
-      itemsByDay.set(day, []);
-    }
-    itemsByDay.get(day)!.push(item);
-  }
-
-  const sortedEntries = Array.from(itemsByDay.entries()).sort((a, b) => {
-    const aDate = new Date(a[0]).getTime();
-    const bDate = new Date(b[0]).getTime();
-    return aDate - bDate;
-  });
-
-  return new Map(sortedEntries);
+  return groupByDate(timeline, item =>
+    item.type === 'observation' ? item.data.created_at : item.data.displayTime
+  );
 }
 
 function getDetailField(obs: Observation, config: ContextConfig): string | null {
