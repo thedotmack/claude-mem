@@ -108,12 +108,7 @@ export async function processAgentResponse(
     });
   }
 
-  // Only delete the rows we actually consumed in this batch (status='processing').
-  // If we used the unconditional clearPendingForSession here, any messages that
-  // arrived as 'pending' during the AI's response latency (1-5s, easy to hit
-  // with a hook burst) would also be deleted — silent data loss. The full clear
-  // is still correct in GeneratorExitHandler for hard-stop / guard-trip paths.
-  sessionManager.clearProcessingForSession(session.sessionDbId);
+  sessionManager.clearPendingForSession(session.sessionDbId);
   session.earliestPendingTimestamp = null;
   session.restartGuard?.recordSuccess();
 

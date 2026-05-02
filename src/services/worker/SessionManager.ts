@@ -261,11 +261,6 @@ export class SessionManager {
     this.sessionQueues.get(sessionDbId)?.emit('message');
   }
 
-  clearProcessingForSession(sessionDbId: number): void {
-    this.getPendingStore().clearProcessingForSession(sessionDbId);
-    this.sessionQueues.get(sessionDbId)?.emit('message');
-  }
-
   async deleteSession(sessionDbId: number): Promise<void> {
     const session = this.sessions.get(sessionDbId);
     if (!session) {
