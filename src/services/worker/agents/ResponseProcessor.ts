@@ -13,7 +13,6 @@ import type { DatabaseManager } from '../DatabaseManager.js';
 import type { SessionManager } from '../SessionManager.js';
 import type { WorkerRef, StorageResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
-import { cleanupProcessedMessages } from './SessionCleanupHelper.js';
 
 export async function processAgentResponse(
   text: string,
@@ -35,49 +34,24 @@ export async function processAgentResponse(
 
   const parsed = parseAgentXml(text, session.contentSessionId);
 
-  const consumedMessage = session.processingMessageIds.shift() ?? null;
-
   if (!parsed.valid) {
-    logger.warn('PARSER', `${agentName} returned unparseable response: ${parsed.reason}`, {
+    logger.warn('PARSER', `${agentName} returned unparseable response — leaving queue intact`, {
       sessionId: session.sessionDbId,
     });
-    if (consumedMessage) {
-      if (consumedMessage.type === 'summarize') {
-        sessionManager.getPendingMessageStore().confirmProcessed(consumedMessage.id);
-        logger.debug('QUEUE', `CONFIRMED | sessionDbId=${session.sessionDbId} | messageId=${consumedMessage.id} | type=summarize | reason=parse-fail (best-effort)`);
-      } else {
-        sessionManager.markMessageFailed(session.sessionDbId, consumedMessage.id);
-      }
-    }
     return;
   }
 
-  let observations: ParsedObservation[] = [];
-  let summary: ParsedSummary | null = null;
-  if (parsed.kind === 'observation') {
-    observations = parsed.data;
-  } else if (!parsed.data.skipped) {
-    summary = parsed.data;
+  if (!session.memorySessionId) {
+    logger.warn('SDK', 'memorySessionId not yet captured; deferring storage until next round', {
+      sessionId: session.sessionDbId
+    });
+    return;
   }
 
+  const { observations, summary } = parsed;
   const summaryForStore = normalizeSummaryForStorage(summary);
 
   const sessionStore = dbManager.getSessionStore();
-
-  if (!session.memorySessionId) {
-    logger.warn('SDK', 'memorySessionId not yet captured; re-pending in-flight messages', {
-      sessionId: session.sessionDbId
-    });
-    if (consumedMessage) {
-      sessionManager.markMessageFailed(session.sessionDbId, consumedMessage.id);
-    }
-    for (const inflight of session.processingMessageIds) {
-      sessionManager.markMessageFailed(session.sessionDbId, inflight.id);
-    }
-    session.processingMessageIds = [];
-    return;
-  }
-
   sessionStore.ensureMemorySessionIdRegistered(session.sessionDbId, session.memorySessionId);
 
   logger.info('DB', `STORING | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${observations.length} | hasSummary=${!!summaryForStore}`, {
@@ -115,26 +89,19 @@ export async function processAgentResponse(
 
   session.lastSummaryStored = result.summaryId !== null;
 
-  if (parsed.kind === 'summary' && (parsed.data.skipped || session.lastSummaryStored)) {
+  if (summary && (summary.skipped || session.lastSummaryStored)) {
     ingestSummary({
       kind: 'parsed',
       sessionDbId: session.sessionDbId,
-      messageId: consumedMessage?.id ?? -1,
+      messageId: -1,
       contentSessionId: session.contentSessionId,
-      parsed: parsed.data,
-    });
-  } else if (parsed.kind === 'summary') {
-    logger.warn('DB', 'summary parsed but no row persisted; suppressing summaryStoredEvent', {
-      sessionId: session.sessionDbId,
-      memorySessionId: session.memorySessionId,
+      parsed: summary,
     });
   }
 
-  if (consumedMessage) {
-    sessionManager.getPendingMessageStore().confirmProcessed(consumedMessage.id);
-    logger.debug('QUEUE', `CONFIRMED | sessionDbId=${session.sessionDbId} | messageId=${consumedMessage.id} | type=${consumedMessage.type}`);
-    session.restartGuard?.recordSuccess();
-  }
+  sessionManager.clearPendingForSession(session.sessionDbId);
+  session.earliestPendingTimestamp = null;
+  session.restartGuard?.recordSuccess();
 
   void notifyTelegram({
     observations: labeledObservations,
@@ -164,8 +131,6 @@ export async function processAgentResponse(
     discoveryTokens,
     agentName
   );
-
-  cleanupProcessedMessages(session, worker);
 }
 
 function normalizeSummaryForStorage(summary: ParsedSummary | null): {
@@ -177,6 +142,7 @@ function normalizeSummaryForStorage(summary: ParsedSummary | null): {
   notes: string | null;
 } | null {
   if (!summary) return null;
+  if (summary.skipped) return null;
 
   return {
     request: summary.request || '',
@@ -235,7 +201,7 @@ async function syncAndBroadcastObservations(
       type: obs.type,
       title: obs.title,
       subtitle: obs.subtitle,
-      text: null,  // text field is not in ParsedObservation
+      text: null,
       narrative: obs.narrative || null,
       facts: JSON.stringify(obs.facts || []),
       concepts: JSON.stringify(obs.concepts || []),

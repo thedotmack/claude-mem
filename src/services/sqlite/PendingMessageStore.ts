@@ -13,29 +13,20 @@ export interface PersistentPendingMessage {
   cwd: string | null;
   last_assistant_message: string | null;
   prompt_number: number | null;
-  status: 'pending' | 'processing' | 'processed' | 'failed';
-  retry_count: number;
+  status: 'pending' | 'processing';
   created_at_epoch: number;
-  completed_at_epoch: number | null;
-  worker_pid: number | null;
   agent_type: string | null;
   agent_id: string | null;
 }
 
 export class PendingMessageStore {
   private db: Database;
-  private maxRetries: number;
-  private workerPid: number;
 
   constructor(
     db: Database,
-    maxRetries: number = 3,
-    workerPid: number = process.pid,
     private onMutate?: () => void
   ) {
     this.db = db;
-    this.maxRetries = maxRetries;
-    this.workerPid = workerPid;
   }
 
   enqueue(sessionDbId: number, contentSessionId: string, message: PendingMessage): number {
@@ -45,9 +36,9 @@ export class PendingMessageStore {
         session_db_id, content_session_id, tool_use_id, message_type,
         tool_name, tool_input, tool_response, cwd,
         last_assistant_message,
-        prompt_number, status, retry_count, created_at_epoch,
+        prompt_number, status, created_at_epoch,
         agent_type, agent_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -73,8 +64,7 @@ export class PendingMessageStore {
   claimNextMessage(sessionDbId: number): PersistentPendingMessage | null {
     const sql = `
       UPDATE pending_messages
-         SET status     = 'processing',
-             worker_pid = ?
+         SET status = 'processing'
        WHERE id = (
          SELECT id FROM pending_messages
           WHERE session_db_id = ? AND status = 'pending'
@@ -83,9 +73,9 @@ export class PendingMessageStore {
        )
        RETURNING *
     `;
-    const claimed = this.db.prepare(sql).get(this.workerPid, sessionDbId) as PersistentPendingMessage | null;
+    const claimed = this.db.prepare(sql).get(sessionDbId) as PersistentPendingMessage | null;
     if (claimed) {
-      logger.info('QUEUE', `CLAIMED | sessionDbId=${sessionDbId} | messageId=${claimed.id} | type=${claimed.message_type} | workerPid=${this.workerPid}`, {
+      logger.info('QUEUE', `CLAIMED | sessionDbId=${sessionDbId} | messageId=${claimed.id} | type=${claimed.message_type}`, {
         sessionId: sessionDbId
       });
     }
@@ -93,78 +83,34 @@ export class PendingMessageStore {
     return claimed;
   }
 
-  confirmProcessed(messageId: number): void {
-    const stmt = this.db.prepare('DELETE FROM pending_messages WHERE id = ?');
-    const result = stmt.run(messageId);
-    if (result.changes > 0) {
-      logger.debug('QUEUE', `CONFIRMED | messageId=${messageId} | deleted from queue`);
+  clearPendingForSession(sessionDbId: number): number {
+    const stmt = this.db.prepare(`
+      DELETE FROM pending_messages WHERE session_db_id = ?
+    `);
+    const changes = stmt.run(sessionDbId).changes;
+    if (changes > 0) {
+      logger.info('QUEUE', `CLEARED | sessionDbId=${sessionDbId} | rowsDeleted=${changes}`, {
+        sessionId: sessionDbId
+      });
       this.onMutate?.();
     }
-  }
-
-  clearFailedOlderThan(thresholdMs: number): number {
-    const cutoff = Date.now() - thresholdMs;
-    const stmt = this.db.prepare(`
-      DELETE FROM pending_messages
-      WHERE status = 'failed' AND COALESCE(failed_at_epoch, completed_at_epoch, 0) < ?
-    `);
-    const changes = stmt.run(cutoff).changes;
-    this.onMutate?.();
     return changes;
   }
 
-  getAllPending(sessionDbId: number): PersistentPendingMessage[] {
-    const stmt = this.db.prepare(`
-      SELECT * FROM pending_messages
-      WHERE session_db_id = ? AND status = 'pending'
-      ORDER BY id ASC
-    `);
-    return stmt.all(sessionDbId) as PersistentPendingMessage[];
-  }
-
-  transitionMessagesTo(
-    status: 'failed' | 'abandoned',
-    filter: { sessionDbId: number }
-  ): number {
-    const now = Date.now();
-    const statusClause = status === 'failed'
-      ? `status = 'processing'`
-      : `status IN ('pending', 'processing')`;
-
+  resetProcessingToPending(sessionDbId: number): number {
     const stmt = this.db.prepare(`
       UPDATE pending_messages
-      SET status = 'failed', failed_at_epoch = ?
-      WHERE session_db_id = ? AND ${statusClause}
+         SET status = 'pending'
+       WHERE session_db_id = ? AND status = 'processing'
     `);
-    const changes = stmt.run(now, filter.sessionDbId).changes;
-    this.onMutate?.();
-    return changes;
-  }
-
-  markFailed(messageId: number): void {
-    const now = Date.now();
-
-    const msg = this.db.prepare('SELECT retry_count FROM pending_messages WHERE id = ?').get(messageId) as { retry_count: number } | undefined;
-
-    if (!msg) return;
-
-    if (msg.retry_count < this.maxRetries) {
-      const stmt = this.db.prepare(`
-        UPDATE pending_messages
-        SET status = 'pending', retry_count = retry_count + 1, worker_pid = NULL
-        WHERE id = ?
-      `);
-      stmt.run(messageId);
-      this.onMutate?.();
-    } else {
-      const stmt = this.db.prepare(`
-        UPDATE pending_messages
-        SET status = 'failed', completed_at_epoch = ?
-        WHERE id = ?
-      `);
-      stmt.run(now, messageId);
+    const changes = stmt.run(sessionDbId).changes;
+    if (changes > 0) {
+      logger.info('QUEUE', `RESET_PROCESSING | sessionDbId=${sessionDbId} | rowsReset=${changes}`, {
+        sessionId: sessionDbId
+      });
       this.onMutate?.();
     }
+    return changes;
   }
 
   getPendingCount(sessionDbId: number): number {
@@ -183,31 +129,6 @@ export class PendingMessageStore {
       ORDER BY id ASC
     `);
     return stmt.all(sessionDbId) as Array<{ message_type: string; tool_name: string | null }>;
-  }
-
-  hasAnyPendingWork(): boolean {
-    const stmt = this.db.prepare(`
-      SELECT COUNT(*) as count FROM pending_messages WHERE status = 'pending'
-    `);
-    const result = stmt.get() as { count: number };
-    return result.count > 0;
-  }
-
-  getSessionsWithPendingMessages(): number[] {
-    const stmt = this.db.prepare(`
-      SELECT DISTINCT session_db_id FROM pending_messages
-      WHERE status IN ('pending', 'processing')
-    `);
-    const results = stmt.all() as { session_db_id: number }[];
-    return results.map(r => r.session_db_id);
-  }
-
-  getSessionInfoForMessage(messageId: number): { sessionDbId: number; contentSessionId: string } | null {
-    const stmt = this.db.prepare(`
-      SELECT session_db_id, content_session_id FROM pending_messages WHERE id = ?
-    `);
-    const result = stmt.get(messageId) as { session_db_id: number; content_session_id: string } | undefined;
-    return result ? { sessionDbId: result.session_db_id, contentSessionId: result.content_session_id } : null;
   }
 
   toPendingMessage(persistent: PersistentPendingMessage): PendingMessage {

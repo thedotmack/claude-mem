@@ -69,6 +69,53 @@ export class SessionStore {
     this.addPendingMessagesToolUseIdAndWorkerPidColumns();
     this.addObservationsUniqueContentHashIndex();
     this.addObservationsMetadataColumn();
+    this.dropDeadPendingMessagesColumns();
+    this.dropWorkerPidColumn();
+  }
+
+  private dropWorkerPidColumn(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(32) as SchemaVersion | undefined;
+    if (applied) return;
+
+    const cols = this.db.query('PRAGMA table_info(pending_messages)').all() as TableColumnInfo[];
+    const hasColumn = cols.some(c => c.name === 'worker_pid');
+
+    if (hasColumn) {
+      try {
+        this.db.run('DROP INDEX IF EXISTS idx_pending_messages_worker_pid');
+        this.db.run('ALTER TABLE pending_messages DROP COLUMN worker_pid');
+        logger.debug('DB', 'Dropped worker_pid column and its index from pending_messages');
+      } catch (error) {
+        logger.warn('DB', 'Failed to drop worker_pid column from pending_messages', {}, error instanceof Error ? error : new Error(String(error)));
+      }
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(32, new Date().toISOString());
+  }
+
+  private dropDeadPendingMessagesColumns(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(31) as SchemaVersion | undefined;
+    if (applied) return;
+
+    const cols = this.db.query('PRAGMA table_info(pending_messages)').all() as TableColumnInfo[];
+    const colNames = new Set(cols.map(c => c.name));
+    const deadColumns = ['retry_count', 'failed_at_epoch', 'completed_at_epoch', 'worker_pid'];
+    const toDrop = deadColumns.filter(name => colNames.has(name));
+
+    if (toDrop.length > 0) {
+      this.db.run(`DELETE FROM pending_messages WHERE status NOT IN ('pending', 'processing')`);
+
+      for (const colName of toDrop) {
+        try {
+          this.db.run(`ALTER TABLE pending_messages DROP COLUMN ${colName}`);
+          logger.debug('DB', `Dropped dead column ${colName} from pending_messages`);
+        } catch (error) {
+          logger.warn('DB', `Failed to drop column ${colName} from pending_messages`, {}, error instanceof Error ? error : new Error(String(error)));
+        }
+      }
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(31, new Date().toISOString());
   }
 
   private initializeSchema(): void {
@@ -463,10 +510,8 @@ export class SessionStore {
         last_user_message TEXT,
         last_assistant_message TEXT,
         prompt_number INTEGER,
-        status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'processing', 'processed', 'failed')),
-        retry_count INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'processing')),
         created_at_epoch INTEGER NOT NULL,
-        completed_at_epoch INTEGER,
         FOREIGN KEY (session_db_id) REFERENCES sdk_sessions(id) ON DELETE CASCADE
       )
     `);

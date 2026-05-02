@@ -28,14 +28,14 @@ export class SessionCompletionHandler {
 
     try {
       const pendingStore = this.sessionManager.getPendingMessageStore();
-      const drainedCount = pendingStore.transitionMessagesTo('abandoned', { sessionDbId });
-      if (drainedCount > 0) {
-        logger.warn('SESSION', `Drained ${drainedCount} orphaned pending messages on session finalize`, {
-          sessionId: sessionDbId, drainedCount
+      const cleared = pendingStore.clearPendingForSession(sessionDbId);
+      if (cleared > 0) {
+        logger.warn('SESSION', `Cleared ${cleared} orphaned pending messages on session finalize`, {
+          sessionId: sessionDbId, cleared
         });
       }
     } catch (e) {
-      logger.debug('SESSION', 'Failed to drain pending queue on session finalize', {
+      logger.debug('SESSION', 'Failed to clear pending queue on session finalize', {
         sessionId: sessionDbId, error: e instanceof Error ? e.message : String(e)
       });
     }

@@ -114,9 +114,7 @@ export class OpenRouterProvider {
     });
   }
 
-  private prepareMessageMetadata(session: ActiveSession, message: { _persistentId: number; type: 'observation' | 'summarize'; agentId?: string | null; agentType?: string | null }): void {
-    session.processingMessageIds.push({ id: message._persistentId, type: message.type });
-
+  private prepareMessageMetadata(session: ActiveSession, message: { agentId?: string | null; agentType?: string | null }): void {
     session.pendingAgentId = message.agentId ?? null;
     session.pendingAgentType = message.agentType ?? null;
   }

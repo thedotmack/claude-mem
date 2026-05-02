@@ -28,8 +28,7 @@ export interface ActiveSession {
   restartGuard?: RestartGuard;
   forceInit?: boolean;  
   idleTimedOut?: boolean;  
-  lastGeneratorActivity: number;  
-  processingMessageIds: Array<{ id: number; type: 'observation' | 'summarize' }>;
+  lastGeneratorActivity: number;
   modelOverride?: string;
   lastSummaryStored?: boolean;
   pendingAgentId?: string | null;

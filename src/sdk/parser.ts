@@ -25,21 +25,20 @@ export interface ParsedSummary {
 }
 
 export type ParseResult =
-  | { valid: true; kind: 'observation'; data: ParsedObservation[] }
-  | { valid: true; kind: 'summary'; data: ParsedSummary }
-  | { valid: false; reason: string };
+  | { valid: true; observations: ParsedObservation[]; summary: ParsedSummary | null }
+  | { valid: false };
 
 export function parseAgentXml(raw: string, correlationId?: string | number): ParseResult {
   if (typeof raw !== 'string' || !raw.trim()) {
-    return { valid: false, reason: 'empty: response had no content' };
+    return { valid: false };
   }
 
   const skipMatch = /<skip_summary(?:\s+reason="([^"]*)")?\s*\/>/.exec(raw);
   if (skipMatch) {
     return {
       valid: true,
-      kind: 'summary',
-      data: {
+      observations: [],
+      summary: {
         request: null,
         investigated: null,
         learned: null,
@@ -54,33 +53,23 @@ export function parseAgentXml(raw: string, correlationId?: string | number): Par
 
   const firstRoot = /<(observation|summary)\b/i.exec(raw);
   if (!firstRoot) {
-    const preview = raw.length > 120 ? `${raw.slice(0, 120)}…` : raw;
-    return {
-      valid: false,
-      reason: `unknown root: response contained no <observation>, <summary>, or <skip_summary/> element (preview: ${preview.replace(/\s+/g, ' ')})`,
-    };
+    return { valid: false };
   }
 
   const rootName = firstRoot[1].toLowerCase();
   if (rootName === 'observation') {
     const observations = parseObservationBlocks(raw, correlationId);
     if (observations.length === 0) {
-      return {
-        valid: false,
-        reason: '<observation>: no parseable observation block (every block was empty or ghost)',
-      };
+      return { valid: false };
     }
-    return { valid: true, kind: 'observation', data: observations };
+    return { valid: true, observations, summary: null };
   }
 
   const summary = parseSummaryBlock(raw, correlationId);
   if (!summary) {
-    return {
-      valid: false,
-      reason: '<summary>: empty or missing every required sub-tag (request/investigated/learned/completed/next_steps)',
-    };
+    return { valid: false };
   }
-  return { valid: true, kind: 'summary', data: summary };
+  return { valid: true, observations: [], summary };
 }
 
 function parseObservationBlocks(text: string, correlationId?: string | number): ParsedObservation[] {

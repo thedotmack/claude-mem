@@ -10,6 +10,7 @@ import { errorHandler, notFoundHandler } from './ErrorHandler.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { isPidAlive } from '../../supervisor/process-registry.js';
 import { ENV_PREFIXES, ENV_EXACT_MATCHES } from '../../supervisor/env-sanitizer.js';
+import { flushResponseThen } from './flushResponseThen.js';
 
 const INSTRUCTIONS_BASE_DIR: string = path.resolve(__dirname, '../skills/mem-search');
 const INSTRUCTIONS_OPERATIONS_DIR: string = path.join(INSTRUCTIONS_BASE_DIR, 'operations');
@@ -219,44 +220,30 @@ export class Server {
     });
 
     this.app.post('/api/admin/restart', requireLocalhost, async (_req: Request, res: Response) => {
-      res.json({ status: 'restarting' });
-
       const isWindowsManaged = process.platform === 'win32' &&
         process.env.CLAUDE_MEM_MANAGED === 'true' &&
         process.send;
 
       if (isWindowsManaged) {
+        res.json({ status: 'restarting' });
         logger.info('SYSTEM', 'Sending restart request to wrapper');
         process.send!({ type: 'restart' });
       } else {
-        setTimeout(async () => {
-          try {
-            await this.options.onRestart();
-          } finally {
-            process.exit(0);
-          }
-        }, 100);
+        flushResponseThen(res, { status: 'restarting' }, () => this.options.onRestart());
       }
     });
 
     this.app.post('/api/admin/shutdown', requireLocalhost, async (_req: Request, res: Response) => {
-      res.json({ status: 'shutting_down' });
-
       const isWindowsManaged = process.platform === 'win32' &&
         process.env.CLAUDE_MEM_MANAGED === 'true' &&
         process.send;
 
       if (isWindowsManaged) {
+        res.json({ status: 'shutting_down' });
         logger.info('SYSTEM', 'Sending shutdown request to wrapper');
         process.send!({ type: 'shutdown' });
       } else {
-        setTimeout(async () => {
-          try {
-            await this.options.onShutdown();
-          } finally {
-            process.exit(0);
-          }
-        }, 100);
+        flushResponseThen(res, { status: 'shutting_down' }, () => this.options.onShutdown());
       }
     });
 

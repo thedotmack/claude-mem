@@ -351,24 +351,12 @@ export class WorkerService implements WorkerRef {
 
       const sweepResult = this.dbManager.getSessionStore().db.prepare(`
         UPDATE pending_messages
-           SET status = 'pending', worker_pid = NULL
+           SET status = 'pending'
          WHERE status = 'processing'
       `).run();
 
       if (sweepResult.changes > 0) {
         logger.info('SYSTEM', `Startup orphan sweep reclaimed ${sweepResult.changes} processing rows`);
-      }
-
-      try {
-        logger.info('WORKER', 'Running startup GC for pending messages...');
-        const { PendingMessageStore } = await import('./sqlite/PendingMessageStore.js');
-        const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
-        const cleared = pendingStore.clearFailedOlderThan(7 * 24 * 60 * 60 * 1000);
-        if (cleared > 0) {
-          logger.info('QUEUE', 'Startup GC cleared old failed pending_messages rows', { cleared });
-        }
-      } catch (err) {
-        logger.warn('QUEUE', 'Startup GC for failed pending_messages rows failed', {}, err instanceof Error ? err : undefined);
       }
 
       runOneTimeV12_4_3Cleanup();
@@ -440,13 +428,13 @@ export class WorkerService implements WorkerRef {
         ) as Record<string, string>
       });
 
-      const MCP_INIT_TIMEOUT_MS = 60000; 
+      const MCP_INIT_TIMEOUT_MS = 60000;
       const mcpConnectionPromise = this.mcpClient.connect(transport);
-      
+
       const timeoutPromise = new Promise<never>((_, reject) => {
         setTimeout(
           () => reject(new Error('MCP connection timeout')),
-          60000
+          MCP_INIT_TIMEOUT_MS
         );
       });
 

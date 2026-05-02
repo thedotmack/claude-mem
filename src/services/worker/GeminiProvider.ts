@@ -165,8 +165,6 @@ export class GeminiProvider {
     let lastCwd: string | undefined;
 
     for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
-      session.processingMessageIds.push({ id: message._persistentId, type: message.type });
-
       session.pendingAgentId = message.agentId ?? null;
       session.pendingAgentType = message.agentType ?? null;
 
@@ -224,11 +222,9 @@ export class GeminiProvider {
     if (obsResponse.content) {
       await processAgentResponse(obsResponse.content, session, this.dbManager, this.sessionManager, worker, tokensUsed, originalTimestamp, 'Gemini', lastCwd, model);
     } else {
-      logger.warn('SDK', 'Empty Gemini observation response, skipping processing to preserve message', {
-        sessionId: session.sessionDbId,
-        messageId: session.processingMessageIds[session.processingMessageIds.length - 1]?.id
+      logger.warn('SDK', 'Empty Gemini observation response, leaving queue intact', {
+        sessionId: session.sessionDbId
       });
-      // Don't confirm - leave message for stale recovery
     }
   }
 
@@ -269,11 +265,9 @@ export class GeminiProvider {
     if (summaryResponse.content) {
       await processAgentResponse(summaryResponse.content, session, this.dbManager, this.sessionManager, worker, tokensUsed, originalTimestamp, 'Gemini', lastCwd, model);
     } else {
-      logger.warn('SDK', 'Empty Gemini summary response, skipping processing to preserve message', {
-        sessionId: session.sessionDbId,
-        messageId: session.processingMessageIds[session.processingMessageIds.length - 1]?.id
+      logger.warn('SDK', 'Empty Gemini summary response, leaving queue intact', {
+        sessionId: session.sessionDbId
       });
-      // Don't confirm - leave message for stale recovery
     }
   }
 

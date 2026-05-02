@@ -33,6 +33,7 @@ export class MigrationRunner {
     this.rebuildPendingMessagesForSelfHealingClaim();
     this.addObservationsUniqueContentHashIndex();
     this.addObservationsMetadataColumn();
+    this.dropDeadPendingMessagesColumns();
   }
 
   private initializeSchema(): void {
@@ -975,5 +976,30 @@ export class MigrationRunner {
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(30, new Date().toISOString());
+  }
+
+  private dropDeadPendingMessagesColumns(): void {
+    const cols = this.db.query('PRAGMA table_info(pending_messages)').all() as TableColumnInfo[];
+    const colNames = new Set(cols.map(c => c.name));
+    const deadColumns = ['retry_count', 'failed_at_epoch', 'completed_at_epoch', 'worker_pid'];
+    const toDrop = deadColumns.filter(name => colNames.has(name));
+
+    if (toDrop.length === 0) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(31, new Date().toISOString());
+      return;
+    }
+
+    this.db.run(`DELETE FROM pending_messages WHERE status NOT IN ('pending', 'processing')`);
+
+    for (const colName of toDrop) {
+      try {
+        this.db.run(`ALTER TABLE pending_messages DROP COLUMN ${colName}`);
+        logger.debug('DB', `Dropped dead column ${colName} from pending_messages`);
+      } catch (error) {
+        logger.warn('DB', `Failed to drop column ${colName} from pending_messages`, {}, error instanceof Error ? error : new Error(String(error)));
+      }
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(31, new Date().toISOString());
   }
 }

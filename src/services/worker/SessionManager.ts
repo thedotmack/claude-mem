@@ -26,8 +26,6 @@ export class SessionManager {
       const sessionStore = this.dbManager.getSessionStore();
       this.pendingStore = new PendingMessageStore(
         sessionStore.db,
-        3,
-        process.pid,
         () => this.onPendingMutate?.()
       );
     }
@@ -140,7 +138,6 @@ export class SessionManager {
       currentProvider: null,  // Will be set when generator starts
       consecutiveRestarts: 0,  // DEPRECATED: use restartGuard. Kept for logging compat.
       restartGuard: new RestartGuard(),
-      processingMessageIds: [],  // CLAIM-CONFIRM: Track message IDs for confirmProcessed()
       lastGeneratorActivity: Date.now(),  // Initialize for stale detection (Issue #1099)
       pendingAgentId: null,   // Subagent identity carried from the most recent claimed message
       pendingAgentType: null  
@@ -259,8 +256,8 @@ export class SessionManager {
     emitter?.emit('message');
   }
 
-  markMessageFailed(sessionDbId: number, messageId: number): void {
-    this.getPendingStore().markFailed(messageId);
+  clearPendingForSession(sessionDbId: number): void {
+    this.getPendingStore().clearPendingForSession(sessionDbId);
     this.sessionQueues.get(sessionDbId)?.emit('message');
   }
 
@@ -392,6 +389,8 @@ export class SessionManager {
     if (!emitter) {
       throw new Error(`No emitter for session ${sessionDbId}`);
     }
+
+    this.getPendingStore().resetProcessingToPending(sessionDbId);
 
     const processor = new SessionQueueProcessor(this.getPendingStore(), emitter);
 

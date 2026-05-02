@@ -28,9 +28,8 @@ export class SessionQueueProcessor {
       } catch (error) {
         if (signal.aborted) return;
         const normalizedError = error instanceof Error ? error : new Error(String(error));
-        logger.error('QUEUE', 'Failed to claim next message', { sessionDbId }, normalizedError);
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        continue;
+        logger.error('QUEUE', 'Failed to claim next message; ending iterator', { sessionDbId }, normalizedError);
+        return;
       }
 
       if (persistentMessage) {
@@ -46,8 +45,8 @@ export class SessionQueueProcessor {
       } catch (error) {
         if (signal.aborted) return;
         const normalizedError = error instanceof Error ? error : new Error(String(error));
-        logger.error('QUEUE', 'Error waiting for message', { sessionDbId }, normalizedError);
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        logger.error('QUEUE', 'Error waiting for message; ending iterator', { sessionDbId }, normalizedError);
+        return;
       }
     }
   }

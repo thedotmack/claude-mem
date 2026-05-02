@@ -146,16 +146,16 @@ export class SessionRoutes extends BaseRouteHandler {
 
         const pendingStore = this.sessionManager.getPendingMessageStore();
         try {
-          const failedCount = pendingStore.transitionMessagesTo('failed', { sessionDbId: session.sessionDbId });
-          if (failedCount > 0) {
-            logger.error('SESSION', `Marked messages as failed after generator error`, {
+          const cleared = pendingStore.clearPendingForSession(session.sessionDbId);
+          if (cleared > 0) {
+            logger.error('SESSION', `Cleared pending messages after generator error`, {
               sessionId: session.sessionDbId,
-              failedCount
+              cleared
             });
           }
         } catch (dbError) {
           const normalizedDbError = dbError instanceof Error ? dbError : new Error(String(dbError));
-          logger.error('HTTP', 'Failed to mark messages as failed', {
+          logger.error('HTTP', 'Failed to clear pending messages', {
             sessionId: session.sessionDbId
           }, normalizedDbError);
         }

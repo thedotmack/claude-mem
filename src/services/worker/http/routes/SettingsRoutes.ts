@@ -13,6 +13,7 @@ import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { clearPortCache } from '../../../../shared/worker-utils.js';
+import { flushResponseThen } from '../../../server/flushResponseThen.js';
 
 const updateSettingsSchema = z.object({}).passthrough();
 
@@ -164,13 +165,12 @@ export class SettingsRoutes extends BaseRouteHandler {
     const result = await switchBranch(branch);
 
     if (result.success) {
-      setTimeout(() => {
+      flushResponseThen(res, result, () => {
         logger.info('WORKER', 'Restarting worker after branch switch');
-        process.exit(0); 
-      }, 1000);
+      });
+    } else {
+      res.json(result);
     }
-
-    res.json(result);
   });
 
   private handleUpdateBranch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
@@ -179,13 +179,12 @@ export class SettingsRoutes extends BaseRouteHandler {
     const result = await pullUpdates();
 
     if (result.success) {
-      setTimeout(() => {
+      flushResponseThen(res, result, () => {
         logger.info('WORKER', 'Restarting worker after branch update');
-        process.exit(0); 
-      }, 1000);
+      });
+    } else {
+      res.json(result);
     }
-
-    res.json(result);
   });
 
   private validateSettings(settings: any): { valid: boolean; error?: string } {

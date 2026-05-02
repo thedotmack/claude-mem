@@ -138,12 +138,8 @@ CREATE TABLE IF NOT EXISTS pending_messages (
   last_assistant_message   TEXT,
   prompt_number            INTEGER,
   status                   TEXT    NOT NULL DEFAULT 'pending'
-                                   CHECK(status IN ('pending', 'processing', 'processed', 'failed')),
-  retry_count              INTEGER NOT NULL DEFAULT 0,
+                                   CHECK(status IN ('pending', 'processing')),
   created_at_epoch         INTEGER NOT NULL,
-  failed_at_epoch          INTEGER,
-  completed_at_epoch       INTEGER,
-  worker_pid               INTEGER,
   agent_type               TEXT,
   agent_id                 TEXT,
   FOREIGN KEY (session_db_id) REFERENCES sdk_sessions(id) ON DELETE CASCADE

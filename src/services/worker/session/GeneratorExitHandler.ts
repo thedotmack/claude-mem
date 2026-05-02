@@ -12,25 +12,17 @@ export interface GeneratorExitDependencies {
 }
 
 /**
- * Unified post-generator-exit handler. Both `worker-service.ts:startSessionProcessor`
- * and `SessionRoutes.ts:startGeneratorWithProvider` finally blocks delegate here.
+ * Post-generator-exit handler. Under the new model:
+ *   - 'processing' rows reset to 'pending' on next generator start (handled by SessionManager.getMessageIterator).
+ *   - Per-message retry/drain logic is gone; messages live in the queue until clearPendingForSession lands.
  *
- * Behavior contract (matches Phase 5 of `kill-the-asshole-gates.md`):
- *   1. Always: ensure SDK subprocess is dead (kill with timeout if alive).
- *   2. Always: drain `processingMessageIds` via `sessionManager.markMessageFailed`
- *      (which now wakes the iterator — Phase 1.2).
- *   3. If `reason === 'shutdown'` or `'restart-guard'`:
- *        - Drain pending rows via `transitionMessagesTo('failed', { sessionDbId })`.
- *        - Finalize session (marks sdk_sessions complete) and remove from Map.
- *        - This fixes the L16 worker-service bug where rows were orphaned.
- *   4. If `pendingCount === 0`:
- *        - Record restart-guard success.
- *        - Finalize session normally (mark sdk_sessions complete, remove from Map).
- *   5. If `pendingCount > 0`:
- *        - Increment restart guard.
- *        - If guard allows: schedule respawn with exponential backoff via
- *          `session.respawnTimer` (per-session timer, no global Set).
- *        - If guard tripped: drain to 'abandoned' and remove from Map.
+ * Behavior:
+ *   1. Always: ensure SDK subprocess is dead.
+ *   2. Hard-stop reasons (shutdown / restart-guard): clear pending rows for the session and finalize.
+ *   3. Otherwise (idle / overflow / natural completion):
+ *        - If 0 pending → finalize.
+ *        - If pending > 0 and restart guard allows → respawn with backoff.
+ *        - If guard tripped → clear pending and finalize.
  */
 export async function handleGeneratorExit(
   session: ActiveSession,
@@ -40,25 +32,9 @@ export async function handleGeneratorExit(
   const { sessionManager, completionHandler, restartGenerator } = deps;
   const sessionDbId = session.sessionDbId;
 
-  // 1. Ensure SDK subprocess is dead.
   const tracked = getSdkProcessForSession(sessionDbId);
   if (tracked && !tracked.process.killed && tracked.process.exitCode === null) {
     await ensureSdkProcessExit(tracked, 5000);
-  }
-
-  // 2. Drain processingMessageIds (re-pend or fail per markFailed retry policy).
-  const inflightIds = session.processingMessageIds.slice();
-  session.processingMessageIds = [];
-  for (const inflight of inflightIds) {
-    try {
-      sessionManager.markMessageFailed(sessionDbId, inflight.id);
-    } catch (markErr) {
-      const normalized = markErr instanceof Error ? markErr : new Error(String(markErr));
-      logger.error('SESSION', 'Failed to requeue in-flight message after generator exit', {
-        sessionId: sessionDbId,
-        messageId: inflight.id,
-      }, normalized);
-    }
   }
 
   session.generatorPromise = null;
@@ -66,34 +42,17 @@ export async function handleGeneratorExit(
 
   const pendingStore = sessionManager.getPendingMessageStore();
 
-  // 3. Hard-stop reasons: shutdown / restart-guard. Drain and remove from Map.
   if (reason === 'shutdown' || reason === 'restart-guard') {
-    logger.info('SESSION', `Generator exited with hard-stop reason — draining pending rows and finalizing`, {
+    logger.info('SESSION', `Generator exited with hard-stop reason — clearing pending and finalizing`, {
       sessionId: sessionDbId,
       reason
     });
-    try {
-      const drained = pendingStore.transitionMessagesTo('failed', { sessionDbId });
-      if (drained > 0) {
-        logger.error('SESSION', 'Drained pending rows after hard-stop generator exit', {
-          sessionId: sessionDbId,
-          reason,
-          drained,
-        });
-      }
-    } catch (drainErr) {
-      const normalized = drainErr instanceof Error ? drainErr : new Error(String(drainErr));
-      logger.error('SESSION', 'Failed to drain pending rows after hard-stop generator exit', {
-        sessionId: sessionDbId,
-        reason,
-      }, normalized);
-    }
+    pendingStore.clearPendingForSession(sessionDbId);
     completionHandler.finalizeSession(sessionDbId);
     sessionManager.removeSessionImmediate(sessionDbId);
     return;
   }
 
-  // 4 / 5. Soft-exit reasons (idle / overflow / natural-completion).
   let pendingCount: number;
   try {
     pendingCount = pendingStore.getPendingCount(sessionDbId);
@@ -102,17 +61,13 @@ export async function handleGeneratorExit(
     logger.error('SESSION', 'Error during recovery pending-count check; aborting to prevent leaks', {
       sessionId: sessionDbId
     }, normalized);
-    // Treat as restart-guard: drain and remove.
-    try {
-      pendingStore.transitionMessagesTo('failed', { sessionDbId });
-    } catch {/* already logged */}
+    pendingStore.clearPendingForSession(sessionDbId);
     completionHandler.finalizeSession(sessionDbId);
     sessionManager.removeSessionImmediate(sessionDbId);
     return;
   }
 
   if (pendingCount === 0) {
-    // 4. Natural completion. Finalize and remove.
     session.restartGuard?.recordSuccess();
     session.consecutiveRestarts = 0;
     completionHandler.finalizeSession(sessionDbId);
@@ -120,13 +75,12 @@ export async function handleGeneratorExit(
     return;
   }
 
-  // 5. Pending work remains. Try to respawn with restart-guard backoff.
   if (!session.restartGuard) session.restartGuard = new RestartGuard();
   const restartAllowed = session.restartGuard.recordRestart();
   session.consecutiveRestarts = (session.consecutiveRestarts || 0) + 1;
 
   if (!restartAllowed) {
-    logger.error('SESSION', `CRITICAL: Restart guard tripped — session is dead, draining pending messages and terminating`, {
+    logger.error('SESSION', `CRITICAL: Restart guard tripped — session is dead, clearing pending and terminating`, {
       sessionId: sessionDbId,
       pendingCount,
       restartsInWindow: session.restartGuard.restartsInWindow,
@@ -134,23 +88,9 @@ export async function handleGeneratorExit(
       maxRestarts: session.restartGuard.maxRestarts,
       consecutiveFailures: session.restartGuard.consecutiveFailuresSinceSuccess,
       maxConsecutiveFailures: session.restartGuard.maxConsecutiveFailures,
-      action: 'Generator will NOT restart. Pending messages drained to abandoned.'
     });
     session.consecutiveRestarts = 0;
-    try {
-      const drained = pendingStore.transitionMessagesTo('abandoned', { sessionDbId });
-      if (drained > 0) {
-        logger.error('SESSION', 'Drained pending messages to abandoned after restart guard trip', {
-          sessionId: sessionDbId,
-          drained,
-        });
-      }
-    } catch (drainErr) {
-      const normalized = drainErr instanceof Error ? drainErr : new Error(String(drainErr));
-      logger.error('SESSION', 'Failed to drain pending messages after restart guard trip', {
-        sessionId: sessionDbId,
-      }, normalized);
-    }
+    pendingStore.clearPendingForSession(sessionDbId);
     completionHandler.finalizeSession(sessionDbId);
     sessionManager.removeSessionImmediate(sessionDbId);
     return;
