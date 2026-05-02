@@ -17,7 +17,6 @@ function isValidBranchName(branchName: string): boolean {
 
 const GIT_COMMAND_TIMEOUT_MS = 300_000;
 const NPM_INSTALL_TIMEOUT_MS = 600_000;
-const DEFAULT_SHELL_TIMEOUT_MS = 60_000;
 
 export interface BranchInfo {
   branch: string | null;

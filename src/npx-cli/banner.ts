@@ -3,8 +3,6 @@ import { BANNER } from './banner-frames.js';
 
 const HIDE_CURSOR = '\x1b[?25l';
 const SHOW_CURSOR = '\x1b[?25h';
-const CURSOR_HOME = '\x1b[H';
-const CLEAR_DOWN = '\x1b[J';
 const CLEAR_SCREEN = '\x1b[2J\x1b[3J\x1b[H';
 const RESET = '\x1b[0m';
 
