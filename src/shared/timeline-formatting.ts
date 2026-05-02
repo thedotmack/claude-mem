@@ -44,6 +44,18 @@ export function formatDate(dateInput: string | number): string {
   });
 }
 
+export function formatHeaderDateTime(): string {
+  const now = new Date();
+  const date = now.toLocaleDateString('en-CA');
+  const time = now.toLocaleTimeString('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true
+  }).toLowerCase().replace(' ', '');
+  const tz = now.toLocaleTimeString('en-US', { timeZoneName: 'short' }).split(' ').pop();
+  return `${date} ${time} ${tz}`;
+}
+
 export function toRelativePath(filePath: string, cwd: string): string {
   if (path.isAbsolute(filePath)) {
     return path.relative(cwd, filePath);
