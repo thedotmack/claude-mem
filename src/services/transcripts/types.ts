@@ -58,7 +58,6 @@ export interface WatchTarget {
   workspace?: string;
   project?: string;
   context?: WatchContextConfig;
-  rescanIntervalMs?: number;
   startAtEnd?: boolean;
 }
 

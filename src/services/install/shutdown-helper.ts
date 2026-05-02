@@ -1,7 +1,6 @@
 
 export interface ShutdownResult {
   workerWasRunning: boolean;
-  confirmedStopped: boolean;
 }
 
 export async function shutdownWorkerAndWait(
@@ -18,7 +17,7 @@ export async function shutdownWorkerAndWait(
     });
     workerWasRunning = true;
   } catch {
-    return { workerWasRunning: false, confirmedStopped: true };
+    return { workerWasRunning: false };
   }
 
   const pollIntervalMs = 500;
@@ -29,12 +28,11 @@ export async function shutdownWorkerAndWait(
       await fetch(`${baseUrl}/api/health`, {
         signal: AbortSignal.timeout(1000),
       });
-      // Health endpoint still responding — worker is still alive, keep waiting.
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') continue;
-      return { workerWasRunning, confirmedStopped: true };
+      return { workerWasRunning };
     }
   }
 
-  return { workerWasRunning, confirmedStopped: false };
+  return { workerWasRunning };
 }

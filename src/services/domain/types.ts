@@ -14,9 +14,8 @@ export interface ObservationConcept {
 }
 
 export interface ModePrompts {
-  system_identity: string;       
-  language_instruction?: string; 
-  spatial_awareness: string;     
+  system_identity: string;
+  spatial_awareness: string;
   observer_role: string;         
   recording_focus: string;       
   skip_guidance: string;         
