@@ -163,6 +163,22 @@ export function shouldAbortForQuota(
     const util = entry.utilization;
     const threshold = UTILIZATION_THRESHOLDS[window];
 
+    // Provider-side rejection trumps utilization heuristics. A snapshot with
+    // status='rejected' (or overageStatus='rejected' on the overage window)
+    // means the provider has already declared the bucket exhausted; we must
+    // stop regardless of whether utilization is reported.
+    const isRejected =
+      entry.status === 'rejected' ||
+      (window === 'overage' && entry.overageStatus === 'rejected');
+
+    if (isRejected) {
+      return {
+        abort: true,
+        window,
+        reason: `quota:${window} rejected by provider`,
+      };
+    }
+
     if (typeof util === 'number' && util >= threshold) {
       return {
         abort: true,
