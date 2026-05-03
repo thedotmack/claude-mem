@@ -154,7 +154,17 @@ Claude-mem stores data locally in `~/.claude-mem/`:
 - **Logs:** `~/.claude-mem/logs/`
 - **Settings:** `~/.claude-mem/settings.json`
 
-All data remains on the user's machine. No telemetry or external data transmission.
+All claude-mem state files (database, vector store, logs, settings, supervisor and PID files) are written to the local user directory and are not uploaded by claude-mem itself. Claude-mem does not collect telemetry.
+
+However, by design claude-mem invokes upstream model providers and optional integrations to do its work, so observation/transcript/prompt content can leave the machine through those channels:
+
+- **Claude Agent SDK** (default summarization/observation path): sends prompts and transcript context to Anthropic's API.
+- **Alternate providers** (`gemini`, `openrouter`): when configured, send the same context to those providers instead.
+- **Chroma MCP / `chroma-mcp`**: when enabled, computes embeddings via the configured embedding backend, which may be a remote API depending on the user's chroma-mcp configuration.
+- **OAuth / keychain reads**: claude-mem reads the Claude Code OAuth token from the platform-native credential store at spawn time. The token is injected into worker subprocesses but is not transmitted by claude-mem.
+- **GitHub releases / npm registry**: version-check and self-update flows fetch metadata from public registries.
+
+Review your provider/Chroma configuration in `~/.claude-mem/settings.json` and `~/.claude-mem/.env` before sending sensitive content. Use `<private>...</private>` tags to keep specific content out of the local store.
 
 ## Permissions
 
@@ -191,6 +201,6 @@ For security-related questions (non-vulnerabilities), please:
 
 ---
 
-**Last Updated:** 2025-12-16
+**Last Updated:** 2026-05-03
 **Last Audit:** 2025-12-16 (Issue #354)
-**Next Scheduled Audit:** 2025-03-16
+**Next Scheduled Audit:** 2026-09-16
