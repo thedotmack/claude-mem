@@ -101,19 +101,37 @@ describe('Install: disable Claude Code auto-memory', () => {
       )?.[0];
       expect(integrationBlock).toBeDefined();
       expect(integrationBlock).toContain('try {');
-      expect(integrationBlock).toContain('autoMemoryDisabled = disableClaudeAutoMemory()');
+      expect(integrationBlock).toMatch(/const wrote = disableClaudeAutoMemory\(\)/);
       expect(integrationBlock).toContain('catch');
       expect(integrationBlock).toMatch(/log\.warn/);
     });
 
-    it('surfaces the result in the install summary on every claude-code install', () => {
-      // The summary line shows whether auto-memory is disabled for both first-time
-      // installs (write happened) and re-installs (already set) — users always see
-      // the final state of their settings, not just the transient log line.
-      // Match the summary region specifically (gated on the IDE check, then a
-      // ternary on autoMemoryDisabled, then a summaryLines.push).
+    it('tracks a tri-state autoMemoryStatus (disabled / already-disabled / failed)', () => {
+      // A boolean would conflate the error path with "already set", so a write
+      // failure mid-install would silently render "already disabled" in the
+      // summary while the warning above said the opposite. Tri-state keeps the
+      // log line and the summary line truthful and consistent.
       expect(installSource).toMatch(
-        /selectedIDEs\.includes\(['"]claude-code['"]\)[\s\S]{0,200}autoMemoryDisabled\s*\?\s*['"]disabled['"]\s*:\s*['"]already disabled['"][\s\S]{0,200}summaryLines\.push/,
+        /let autoMemoryStatus:\s*['"]disabled['"]\s*\|\s*['"]already-disabled['"]\s*\|\s*['"]failed['"]\s*\|\s*null/,
+      );
+      const integrationBlock = installSource.match(
+        /selectedIDEs\.includes\(['"]claude-code['"]\)[\s\S]{0,800}/,
+      )?.[0];
+      expect(integrationBlock).toMatch(/autoMemoryStatus = wrote \? ['"]disabled['"] : ['"]already-disabled['"]/);
+      expect(integrationBlock).toMatch(/autoMemoryStatus = ['"]failed['"]/);
+    });
+
+    it('surfaces all three states in the install summary distinctly', () => {
+      // The error case must NOT render as "already disabled" — that would
+      // contradict the warn line above it and falsely imply the env var is set.
+      expect(installSource).toMatch(
+        /autoMemoryStatus === ['"]disabled['"][\s\S]{0,200}CLAUDE_CODE_DISABLE_AUTO_MEMORY=1/,
+      );
+      expect(installSource).toMatch(
+        /autoMemoryStatus === ['"]already-disabled['"][\s\S]{0,200}already disabled/,
+      );
+      expect(installSource).toMatch(
+        /autoMemoryStatus === ['"]failed['"][\s\S]{0,200}write failed/,
       );
     });
   });

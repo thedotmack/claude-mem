@@ -933,17 +933,22 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
   // for any install that targets claude-code. claude-mem's hook-based memory is the
   // intended source of cross-session context; the built-in MEMORY.md system creates
   // shadow state and competes for context-window tokens.
-  let autoMemoryDisabled = false;
+  // Tri-state so the summary can distinguish "wrote", "already set", and "failed".
+  // A boolean would conflate the error path with "already set", which is misleading
+  // when a write fails mid-install (the warn would say one thing, the summary another).
+  let autoMemoryStatus: 'disabled' | 'already-disabled' | 'failed' | null = null;
   if (selectedIDEs.includes('claude-code')) {
     try {
-      autoMemoryDisabled = disableClaudeAutoMemory();
-      if (autoMemoryDisabled) {
+      const wrote = disableClaudeAutoMemory();
+      autoMemoryStatus = wrote ? 'disabled' : 'already-disabled';
+      if (wrote) {
         log.success('Claude Code: auto-memory disabled (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1).');
       } else {
         log.info('Claude Code: auto-memory already disabled, leaving settings.json untouched.');
       }
     } catch (error: unknown) {
       // Don't fail the install over this — surface the warning and continue.
+      autoMemoryStatus = 'failed';
       log.warn(`Could not disable Claude Code auto-memory: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
@@ -983,9 +988,12 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
     `Plugin dir:  ${pc.cyan(marketplaceDir)}`,
     `IDEs:        ${pc.cyan(selectedIDEs.join(', '))}`,
   ];
-  if (selectedIDEs.includes('claude-code')) {
-    const status = autoMemoryDisabled ? 'disabled' : 'already disabled';
-    summaryLines.push(`Auto-memory: ${pc.cyan(status)} (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1)`);
+  if (autoMemoryStatus === 'disabled') {
+    summaryLines.push(`Auto-memory: ${pc.cyan('disabled')} (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1)`);
+  } else if (autoMemoryStatus === 'already-disabled') {
+    summaryLines.push(`Auto-memory: ${pc.cyan('already disabled')} (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1)`);
+  } else if (autoMemoryStatus === 'failed') {
+    summaryLines.push(`Auto-memory: ${pc.red('write failed')} (see warning above)`);
   }
   if (failedIDEs.length > 0) {
     summaryLines.push(`Failed:      ${pc.red(failedIDEs.join(', '))}`);
