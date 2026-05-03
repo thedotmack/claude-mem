@@ -99,7 +99,24 @@ export async function withRetry<T>(
         kind: isClassified(err) ? err.kind : 'unclassified',
         message: errMsg.substring(0, 200),
       });
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      // Abort-aware sleep: an external abort during backoff should exit
+      // immediately instead of waiting out the full delay.
+      await new Promise<void>((resolve, reject) => {
+        const signal = options.abortSignal;
+        if (signal?.aborted) {
+          reject(new Error('Aborted'));
+          return;
+        }
+        const timer = setTimeout(() => {
+          signal?.removeEventListener('abort', onAbort);
+          resolve();
+        }, delayMs);
+        const onAbort = () => {
+          clearTimeout(timer);
+          reject(new Error('Aborted'));
+        };
+        signal?.addEventListener('abort', onAbort, { once: true });
+      });
     } finally {
       clearTimeout(timeoutHandle);
       options.abortSignal?.removeEventListener('abort', onExternalAbort);
