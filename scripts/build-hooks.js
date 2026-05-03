@@ -101,6 +101,9 @@ async function buildHooks() {
       overrides: {
         'tree-sitter': '^0.25.0'
       },
+      trustedDependencies: [
+        'tree-sitter-cli'
+      ],
       engines: {
         node: '>=18.0.0',
         bun: '>=1.0.0'
