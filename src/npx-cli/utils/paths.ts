@@ -1,7 +1,19 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeSync,
+} from 'fs';
 import { homedir } from 'os';
-import { dirname, join } from 'path';
+import { basename, dirname, join } from 'path';
 import { fileURLToPath } from 'url';
+import { randomBytes } from 'crypto';
 
 export const IS_WINDOWS = process.platform === 'win32';
 
@@ -86,7 +98,49 @@ export function ensureDirectoryExists(directoryPath: string): void {
 
 export { readJsonSafe } from '../../utils/json-utils.js';
 
+/**
+ * Write JSON to disk with crash-safe atomic-rename semantics.
+ *
+ * Sequence: write payload to a uniquely named temp file in the same directory,
+ * fsync the file descriptor, close, then rename over the destination. The
+ * rename is atomic on POSIX and on Windows Vista+ (Node uses
+ * MoveFileExW/MOVEFILE_REPLACE_EXISTING under the hood). A crash mid-write
+ * leaves either the old contents or the new contents — never a truncated file.
+ *
+ * Preserves the destination file's mode bits when the file already exists so
+ * we don't accidentally widen permissions on user-owned configs like
+ * ~/.claude/settings.json.
+ */
 export function writeJsonFileAtomic(filepath: string, data: any): void {
   ensureDirectoryExists(dirname(filepath));
-  writeFileSync(filepath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+
+  const dir = dirname(filepath);
+  const base = basename(filepath);
+  const tmpPath = join(dir, `.${base}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`);
+  const payload = JSON.stringify(data, null, 2) + '\n';
+
+  // Preserve existing mode if the destination already exists; otherwise let
+  // the OS apply the standard new-file default (0o666 minus umask via openSync).
+  let mode: number | undefined;
+  try {
+    mode = statSync(filepath).mode & 0o777;
+  } catch {
+    // File doesn't exist yet — fall through to default mode.
+  }
+
+  let fd: number | undefined;
+  try {
+    fd = mode !== undefined ? openSync(tmpPath, 'w', mode) : openSync(tmpPath, 'w');
+    writeSync(fd, payload, 0, 'utf-8');
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = undefined;
+    renameSync(tmpPath, filepath);
+  } catch (err) {
+    if (fd !== undefined) {
+      try { closeSync(fd); } catch { /* ignore close-after-error */ }
+    }
+    try { unlinkSync(tmpPath); } catch { /* tempfile may not exist */ }
+    throw err;
+  }
 }
