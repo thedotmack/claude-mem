@@ -145,7 +145,7 @@ function enablePluginInClaudeSettings(): void {
  * settings keys, and merges atomically. Returns true when a write happened (for the
  * caller to surface in the install summary).
  */
-function disableClaudeAutoMemory(): boolean {
+export function disableClaudeAutoMemory(): boolean {
   const settings = readJsonSafe<Record<string, any>>(claudeSettingsPath(), {});
   const env = (settings.env && typeof settings.env === 'object') ? settings.env : {};
 
@@ -983,8 +983,9 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
     `Plugin dir:  ${pc.cyan(marketplaceDir)}`,
     `IDEs:        ${pc.cyan(selectedIDEs.join(', '))}`,
   ];
-  if (autoMemoryDisabled) {
-    summaryLines.push(`Auto-memory: ${pc.cyan('disabled')} (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1)`);
+  if (selectedIDEs.includes('claude-code')) {
+    const status = autoMemoryDisabled ? 'disabled' : 'already disabled';
+    summaryLines.push(`Auto-memory: ${pc.cyan(status)} (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1)`);
   }
   if (failedIDEs.length > 0) {
     summaryLines.push(`Failed:      ${pc.red(failedIDEs.join(', '))}`);

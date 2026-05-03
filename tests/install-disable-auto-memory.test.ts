@@ -1,6 +1,8 @@
-import { describe, it, expect } from 'bun:test';
-import { readFileSync } from 'fs';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import { join } from 'path';
+import { disableClaudeAutoMemory } from '../src/npx-cli/commands/install.js';
 
 /**
  * Tests for auto-memory disable behavior in the install command.
@@ -104,11 +106,111 @@ describe('Install: disable Claude Code auto-memory', () => {
       expect(integrationBlock).toMatch(/log\.warn/);
     });
 
-    it('surfaces the result in the install summary when a write happened', () => {
-      // Users should see exactly what the installer did to their settings.
+    it('surfaces the result in the install summary on every claude-code install', () => {
+      // The summary line shows whether auto-memory is disabled for both first-time
+      // installs (write happened) and re-installs (already set) — users always see
+      // the final state of their settings, not just the transient log line.
+      // Match the summary region specifically (gated on the IDE check, then a
+      // ternary on autoMemoryDisabled, then a summaryLines.push).
       expect(installSource).toMatch(
-        /if \(autoMemoryDisabled\)[\s\S]{0,300}CLAUDE_CODE_DISABLE_AUTO_MEMORY=1/,
+        /selectedIDEs\.includes\(['"]claude-code['"]\)[\s\S]{0,200}autoMemoryDisabled\s*\?\s*['"]disabled['"]\s*:\s*['"]already disabled['"][\s\S]{0,200}summaryLines\.push/,
       );
+    });
+  });
+
+  // Behavioral test that exercises real file I/O against a temp Claude config dir.
+  // Complements the source-inspection tests above: catches runtime bugs (overwriting
+  // env block, dropping existing keys, non-string values, etc.) that string matching
+  // can't see. Uses CLAUDE_CONFIG_DIR override so we don't touch the user's settings.
+  describe('disableClaudeAutoMemory runtime behavior', () => {
+    let tempDir: string;
+    let originalConfigDir: string | undefined;
+
+    beforeEach(() => {
+      tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-disable-auto-memory-'));
+      originalConfigDir = process.env.CLAUDE_CONFIG_DIR;
+      process.env.CLAUDE_CONFIG_DIR = tempDir;
+    });
+
+    afterEach(() => {
+      if (originalConfigDir === undefined) {
+        delete process.env.CLAUDE_CONFIG_DIR;
+      } else {
+        process.env.CLAUDE_CONFIG_DIR = originalConfigDir;
+      }
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    it('writes the env var when settings.json is missing', () => {
+      const wrote = disableClaudeAutoMemory();
+      expect(wrote).toBe(true);
+
+      const settings = JSON.parse(readFileSync(join(tempDir, 'settings.json'), 'utf-8'));
+      expect(settings.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe('1');
+    });
+
+    it('preserves existing env vars and other top-level keys', () => {
+      writeFileSync(
+        join(tempDir, 'settings.json'),
+        JSON.stringify({
+          theme: 'dark',
+          env: {
+            ANTHROPIC_AUTH_TOKEN: 'sk-test',
+            AWS_REGION: 'us-east-1',
+          },
+          permissions: { defaultMode: 'auto' },
+        }, null, 2),
+      );
+
+      const wrote = disableClaudeAutoMemory();
+      expect(wrote).toBe(true);
+
+      const settings = JSON.parse(readFileSync(join(tempDir, 'settings.json'), 'utf-8'));
+      expect(settings.theme).toBe('dark');
+      expect(settings.permissions).toEqual({ defaultMode: 'auto' });
+      expect(settings.env.ANTHROPIC_AUTH_TOKEN).toBe('sk-test');
+      expect(settings.env.AWS_REGION).toBe('us-east-1');
+      expect(settings.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe('1');
+    });
+
+    it('is idempotent — second call returns false and leaves the file untouched', () => {
+      const firstWrite = disableClaudeAutoMemory();
+      expect(firstWrite).toBe(true);
+
+      const settingsPath = join(tempDir, 'settings.json');
+      const contentBefore = readFileSync(settingsPath, 'utf-8');
+
+      const secondWrite = disableClaudeAutoMemory();
+      expect(secondWrite).toBe(false);
+
+      const contentAfter = readFileSync(settingsPath, 'utf-8');
+      expect(contentAfter).toBe(contentBefore);
+    });
+
+    it('writes the literal string "1", not boolean true', () => {
+      // Env vars are always strings — boolean true would be coerced unpredictably
+      // by Claude Code's env loader.
+      disableClaudeAutoMemory();
+      const raw = readFileSync(join(tempDir, 'settings.json'), 'utf-8');
+      expect(raw).toMatch(/"CLAUDE_CODE_DISABLE_AUTO_MEMORY":\s*"1"/);
+      expect(raw).not.toMatch(/"CLAUDE_CODE_DISABLE_AUTO_MEMORY":\s*true/);
+    });
+
+    it('replaces a non-object env value with a fresh env block', () => {
+      // Defensive: if settings.env is malformed (string, null, array), the helper
+      // still has to land on a valid object containing the env var.
+      writeFileSync(
+        join(tempDir, 'settings.json'),
+        JSON.stringify({ env: 'not-an-object', theme: 'dark' }),
+      );
+
+      const wrote = disableClaudeAutoMemory();
+      expect(wrote).toBe(true);
+
+      const settings = JSON.parse(readFileSync(join(tempDir, 'settings.json'), 'utf-8'));
+      expect(settings.theme).toBe('dark');
+      expect(typeof settings.env).toBe('object');
+      expect(settings.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe('1');
     });
   });
 });
