@@ -1,6 +1,7 @@
 import * as p from '@clack/prompts';
 import pc from 'picocolors';
-import { execSync, spawn } from 'child_process';
+import { execSync } from 'child_process';
+import { spawnHidden } from '../../shared/spawn.js';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, join } from 'path';
@@ -396,7 +397,7 @@ async function installClaudeCode(): Promise<boolean> {
 
   return new Promise<boolean>((resolve) => {
     let captured = '';
-    const child = spawn(command, [], {
+    const child = spawnHidden(command, [], {
       shell: IS_WINDOWS ? (process.env.ComSpec ?? 'cmd.exe') : '/bin/bash',
       stdio: spinner ? ['inherit', 'pipe', 'pipe'] : 'inherit',
     });

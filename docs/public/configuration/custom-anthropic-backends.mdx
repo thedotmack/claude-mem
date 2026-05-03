@@ -1,0 +1,112 @@
+---
+title: "Custom Anthropic-Compatible Backends"
+description: "Point claude-mem at bridged or self-hosted Anthropic-compatible API endpoints with ANTHROPIC_BASE_URL"
+---
+
+# Custom Anthropic-Compatible Backends
+
+When you use the `claude` provider, claude-mem talks to the Anthropic API through the Claude Agent SDK. By default, the SDK targets the official Anthropic endpoint, but it honors the standard `ANTHROPIC_BASE_URL` environment variable. That means you can route claude-mem at any Anthropic-protocol-compatible backend — for example a corporate gateway, a regional bridge, or a third-party provider that exposes an Anthropic-shaped API — without changing any claude-mem source code.
+
+<Note>
+This page documents how to **persist a custom base URL** so claude-mem's worker uses it consistently. It does **not** add an OpenAI-compatible provider, and it does **not** auto-detect the bridge configuration from your shell — both of those are tracked separately in [issue #2196](https://github.com/thedotmack/claude-mem/issues/2196). For now, configuration is manual.
+</Note>
+
+## When to Use This
+
+Use `ANTHROPIC_BASE_URL` if you need claude-mem's observation worker to talk to:
+
+- A **corporate Anthropic gateway** (proxy in front of `api.anthropic.com`)
+- A **regional Anthropic deployment** (e.g. AWS Bedrock or GCP Vertex via an Anthropic-compatible shim)
+- A **third-party provider** that bridges its API to the Anthropic protocol
+
+If your provider only speaks the OpenAI chat-completions protocol (DeepSeek native, Ollama, vLLM, LiteLLM), use the [OpenRouter provider](../usage/openrouter-provider) instead — it speaks OpenAI-style chat completions and accepts a base URL via OpenRouter's gateway.
+
+## How the Plumbing Works
+
+The flow is intentionally simple:
+
+1. **You write the credential** to `~/.claude-mem/.env`.
+2. **`EnvManager.loadClaudeMemEnv()`** reads that file (`src/shared/EnvManager.ts:67`).
+3. **`buildIsolatedEnv()`** copies `ANTHROPIC_BASE_URL` into the worker's spawn environment alongside `ANTHROPIC_API_KEY` (`src/shared/EnvManager.ts:164`).
+4. **`ClaudeProvider.startSession()`** spawns the Claude Agent SDK with that isolated env (`src/services/worker/ClaudeProvider.ts:115`). The SDK reads `ANTHROPIC_BASE_URL` natively — claude-mem does not parse or rewrite it.
+
+Because the variable is isolated to the worker process, your interactive Claude Code sessions are unaffected; only the background memory agent uses the override.
+
+## Configuration
+
+### Step 1: Edit `~/.claude-mem/.env`
+
+The credentials file is a plain `KEY=VALUE` env file at `~/.claude-mem/.env` (mode `0600`). Add or update the `ANTHROPIC_BASE_URL` line:
+
+```bash
+# ~/.claude-mem/.env
+ANTHROPIC_API_KEY=sk-ant-...
+ANTHROPIC_BASE_URL=https://your-gateway.example.com/v1
+```
+
+If the file does not yet exist, create it. The directory permissions are enforced to `0700` and the file to `0600` automatically on the next worker write.
+
+### Step 2: Pick a Compatible Model
+
+`CLAUDE_MEM_MODEL` (in `~/.claude-mem/settings.json`) is passed straight through to the SDK. The model name **must be one your bridge accepts** — claude-mem does not translate names.
+
+```json
+{
+  "CLAUDE_MEM_MODEL": "claude-haiku-4-5-20251001"
+}
+```
+
+If your bridge expects a non-Anthropic model name (for example, a Bedrock inference profile), set that string here instead.
+
+### Step 3: Restart the Worker
+
+Credentials are loaded when the worker spawns the SDK, so a restart is required after you edit `.env`:
+
+```bash
+npm run worker:restart
+```
+
+## Worked Example: Corporate Gateway
+
+Suppose your team runs `https://anthropic-proxy.internal.example.com` in front of `api.anthropic.com` for audit and rate-limit purposes. The proxy accepts the same protocol and the same model names.
+
+`~/.claude-mem/.env`:
+
+```bash
+ANTHROPIC_API_KEY=sk-corp-...
+ANTHROPIC_BASE_URL=https://anthropic-proxy.internal.example.com
+```
+
+`~/.claude-mem/settings.json`:
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "claude",
+  "CLAUDE_MEM_MODEL": "claude-haiku-4-5-20251001"
+}
+```
+
+Restart, and the next observation will be routed through your gateway.
+
+## Verifying
+
+After restarting, watch the worker logs for the next observation flush:
+
+```bash
+npm run worker:logs
+```
+
+A successful request through your gateway shows the standard `SDK Starting SDK query` line followed by `Response received`. If the gateway rejects the request, the SDK error surfaces verbatim in `worker-error.log` — there is no silent fallback to the public Anthropic endpoint.
+
+## Limitations and Gotchas
+
+- **No model-name translation.** If your bridge expects `glm-4.7` and `CLAUDE_MEM_MODEL` is `claude-haiku-4-5-20251001`, the request will fail. Pin `CLAUDE_MEM_MODEL` to a name your bridge recognizes.
+- **`ANTHROPIC_API_KEY` is required even if your gateway uses a different auth header.** The SDK refuses to spawn without it; many gateways either pass the value through or accept any non-empty placeholder. Check your gateway's docs.
+- **`ANTHROPIC_BASE_URL` from your shell is not inherited.** `ANTHROPIC_API_KEY` is in the BLOCKED_ENV_VARS list (`src/shared/EnvManager.ts:10`) to prevent accidental billing on a shell-leaked key — `ANTHROPIC_BASE_URL` is not blocked, but it must still be set in `~/.claude-mem/.env` for the worker to pick it up reliably across restarts. Do not rely on shell exports.
+- **No auto-detection.** If you have already configured `ANTHROPIC_BASE_URL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL`, etc. for Claude Code itself, claude-mem will **not** read those today. Mirror the relevant values into `~/.claude-mem/.env` and `~/.claude-mem/settings.json`. See [issue #2196](https://github.com/thedotmack/claude-mem/issues/2196) for the auto-detect feature request.
+
+## Related
+
+- [Configuration](../configuration) — All claude-mem settings
+- [OpenRouter Provider](../usage/openrouter-provider) — OpenAI-compatible bridge for non-Anthropic protocols
+- [Gemini Provider](../usage/gemini-provider) — Native Gemini API alternative

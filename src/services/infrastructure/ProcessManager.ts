@@ -2,7 +2,8 @@
 import path from 'path';
 import { homedir } from 'os';
 import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, rmSync, statSync, utimesSync, copyFileSync } from 'fs';
-import { exec, execSync, spawn, spawnSync } from 'child_process';
+import { exec, execSync, spawnSync } from 'child_process';
+import { spawnHidden } from '../../shared/spawn.js';
 import { promisify } from 'util';
 import { logger } from '../../utils/logger.js';
 import { HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
@@ -455,7 +456,7 @@ export function spawnDaemon(
     ? [runtimePath, scriptPath, '--daemon']
     : [scriptPath, '--daemon'];
 
-  const child = spawn(execPath, args, {
+  const child = spawnHidden(execPath, args, {
     detached: true,
     stdio: 'ignore',
     env

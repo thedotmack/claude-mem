@@ -17,6 +17,7 @@ import { validateBody } from '../middleware/validateBody.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 import { getObservationsByFilePath } from '../../../sqlite/observations/get.js';
 import { getFirstObservationCreatedAt } from '../../../sqlite/observations/recent.js';
+import { getUptimeSeconds } from '../../../../shared/uptime.js';
 
 const integerArrayLike = z.preprocess((value) => {
   if (Array.isArray(value)) return value;
@@ -221,7 +222,7 @@ export class DataRoutes extends BaseRouteHandler {
       dbSize = statSync(dbPath).size;
     }
 
-    const uptime = Math.floor((Date.now() - this.startTime) / 1000);
+    const uptime = getUptimeSeconds(this.startTime);
     const activeSessions = this.sessionManager.getActiveSessionCount();
     const sseClients = this.sseBroadcaster.getClientCount();
 

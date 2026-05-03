@@ -1,4 +1,5 @@
-import { ChildProcess, spawn, spawnSync } from 'child_process';
+import { ChildProcess, spawnSync } from 'child_process';
+import { spawnHidden } from '../shared/spawn.js';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import path from 'path';
@@ -511,7 +512,7 @@ export function spawnSdkProcess(
 
   const isWin = process.platform === 'win32';
   const child = useCmdWrapper
-    ? spawn('cmd.exe', ['/d', '/c', options.command, ...filteredArgs], {
+    ? spawnHidden('cmd.exe', ['/d', '/c', options.command, ...filteredArgs], {
         cwd: options.cwd,
         env,
         detached: !isWin,
@@ -519,7 +520,7 @@ export function spawnSdkProcess(
         signal: options.signal,
         windowsHide: true,
       })
-    : spawn(options.command, filteredArgs, {
+    : spawnHidden(options.command, filteredArgs, {
         cwd: options.cwd,
         env,
         detached: !isWin,
