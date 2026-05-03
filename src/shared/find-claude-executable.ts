@@ -8,7 +8,7 @@
  * Closes #2222.
  */
 
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import { existsSync } from 'fs';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from './paths.js';
@@ -33,10 +33,15 @@ function looksLikeDesktopAppPath(candidatePath: string): boolean {
 /**
  * Run `<candidate> --version` and return the trimmed stdout, or null on failure.
  * Failures include: timeout, non-zero exit, missing binary, etc.
+ *
+ * Uses execFileSync (not execSync) so the candidate path is passed as a
+ * separate argument and never interpreted by a shell. This prevents shell
+ * injection if the path contains characters like `"`, `;`, `&` — reachable
+ * on Windows via a crafted CLAUDE_CODE_PATH in settings.json.
  */
 function verifyClaudeVersion(candidate: string): string | null {
   try {
-    const versionOutput = execSync(`"${candidate}" --version`, {
+    const versionOutput = execFileSync(candidate, ['--version'], {
       encoding: 'utf8',
       timeout: VERSION_CHECK_TIMEOUT_MS,
       windowsHide: true,

@@ -106,5 +106,8 @@ export async function withRetry<T>(
     }
   }
 
-  throw lastError;
+  // Reachable only if opts.maxRetries < 0 (loop never executed). The success
+  // and exhaustion paths both return/throw inside the loop. This guards
+  // pathological inputs and satisfies TypeScript's return-type exhaustiveness.
+  throw lastError ?? new Error('withRetry exited without an attempt (maxRetries < 0)');
 }

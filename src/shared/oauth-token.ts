@@ -11,7 +11,7 @@
 
 import { execFile, type ExecFileException } from 'child_process';
 import { promisify } from 'util';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs';
 import { userInfo } from 'os';
 import { join } from 'path';
 import { paths } from './paths.js';
@@ -114,9 +114,12 @@ async function readWindowsCredentialManager(): Promise<OAuthTokenResult> {
   // The exact target name on Windows is "Claude Code-credentials" or
   // "Claude Code:credentials" (Claude Desktop uses `${service}:${account}` or
   // `${service}` depending on version). This script tries both.
+  // Username is escaped with PowerShell's single-quote convention (' → '') in
+  // case future Windows versions or domain-joined machines permit ' in usernames.
+  const psSafeUsername = userInfo().username.replace(/'/g, "''");
   const psScript = `
     $ErrorActionPreference = 'SilentlyContinue'
-    $candidates = @('Claude Code-credentials', 'Claude Code:credentials', 'Claude Code-credentials:${userInfo().username}')
+    $candidates = @('Claude Code-credentials', 'Claude Code:credentials', 'Claude Code-credentials:${psSafeUsername}')
     Add-Type -Namespace ClaudeMem -Name CredRead -MemberDefinition @"
       [DllImport("Advapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
       public static extern bool CredRead(string target, uint type, uint reservedFlag, out IntPtr CredentialPtr);
@@ -339,7 +342,6 @@ export function clearStaleMarker(): void {
   try {
     const markerPath = join(paths.dataDir(), 'oauth-stale.marker');
     if (existsSync(markerPath)) {
-      const { unlinkSync } = require('fs');
       unlinkSync(markerPath);
     }
   } catch {
