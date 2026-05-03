@@ -17,6 +17,11 @@ import {
   waitForSlot,
 } from '../../supervisor/process-registry.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
+import {
+  globalRateLimitStore,
+  shouldAbortForQuota,
+  type RateLimitInfo,
+} from './RateLimitStore.js';
 
 // @ts-ignore - Agent SDK types may not be available
 import { query } from '@anthropic-ai/claude-agent-sdk';
@@ -191,6 +196,36 @@ export class ClaudeProvider {
 
     try {
       for await (const message of queryResult) {
+        // Quota-aware wall-clock guard (#2234): the SDK pushes `system` events
+        // with subtype `rate_limit` carrying live subscription quota state.
+        // Capture the snapshot, then bail out of the loop before issuing
+        // another request if we've crossed a per-window threshold. API-key
+        // users are exempt — they authorized per-call spend.
+        if (
+          (message as any)?.type === 'system' &&
+          (message as any)?.subtype === 'rate_limit'
+        ) {
+          const info = (message as any).rate_limit_info as RateLimitInfo | undefined;
+          if (info) {
+            globalRateLimitStore.set(info);
+          }
+          const decision = shouldAbortForQuota(authMethod, globalRateLimitStore);
+          if (decision.abort) {
+            logger.warn('SDK', `Aborting session for quota guard: ${decision.reason}`, {
+              sessionDbId: session.sessionDbId,
+              window: decision.window,
+              authMethod,
+            });
+            session.abortReason = `quota:${decision.window ?? 'unknown'}`;
+            try {
+              session.abortController.abort();
+            } catch {
+              // best-effort
+            }
+            break;
+          }
+        }
+
         if (message.session_id && message.session_id !== session.memorySessionId) {
           const previousId = session.memorySessionId;
           session.memorySessionId = message.session_id;
