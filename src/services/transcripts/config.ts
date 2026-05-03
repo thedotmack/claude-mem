@@ -78,7 +78,8 @@ const CODEX_SAMPLE_SCHEMA: TranscriptSchema = {
     },
     {
       name: 'session-end',
-      match: { path: 'payload.type', in: ['turn_aborted', 'turn_completed'] },
+      // TODO(#2249): delete watcher when Codex hook lifecycle migration ships
+      match: { path: 'payload.type', in: ['turn_aborted', 'turn_completed', 'task_complete'] },
       action: 'session_end'
     }
   ]
