@@ -208,4 +208,28 @@ Trailing prose.`;
     expect(result.observations[0].title).toBe('Mid-text observation');
     expect(result.observations[0].narrative).toBe('No fences anywhere in the input.');
   });
+
+  it('does not strip inner triple-backtick lines when payload is not a full fenced wrapper', () => {
+    // Regression for CodeRabbit review on PR #2282: stripCodeFences() used to
+    // greedily remove the first ``` and last ``` anywhere in the input, which
+    // could mangle content that contains internal fenced examples or surrounds
+    // the XML with prose. The fence-stripper must only fire when the entire
+    // payload is a single fenced block.
+    const xml = 'Lead-in text with ```inline``` markers.\n' +
+      '<observation>\n' +
+      '  <type>discovery</type>\n' +
+      '  <title>Body with ``` inside narrative</title>\n' +
+      '  <narrative>Snippet: ```\nfoo\n``` end of snippet.</narrative>\n' +
+      '</observation>\n' +
+      'Trailing ``` prose with another ``` mark.';
+
+    const result = parseAgentXml(xml);
+    expect(result.valid).toBe(true);
+    if (!result.valid) return;
+    expect(result.observations).toHaveLength(1);
+    expect(result.observations[0].title).toBe('Body with ``` inside narrative');
+    // Narrative should still contain the inner ``` markers — i.e. the
+    // stripper did not eat them.
+    expect(result.observations[0].narrative).toContain('```');
+  });
 });
