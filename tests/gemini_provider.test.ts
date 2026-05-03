@@ -275,7 +275,11 @@ describe('GeminiProvider', () => {
 
     global.fetch = mock(() => Promise.resolve(new Response('Invalid argument', { status: 400 })));
 
-    await expect(agent.startSession(session)).rejects.toThrow('Gemini API error: 400 - Invalid argument');
+    // F4 classifyGeminiError surfaces 400 as a classified `unrecoverable` error
+    // with a stable message ("Gemini bad request (status 400)") rather than
+    // forwarding the raw upstream body. The original cause is preserved on
+    // `.cause` for diagnostics — see classifyGeminiError in GeminiProvider.ts.
+    await expect(agent.startSession(session)).rejects.toThrow('Gemini bad request (status 400)');
   });
 
   it('should respect rate limits when rate limiting enabled', async () => {
