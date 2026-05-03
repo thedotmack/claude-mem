@@ -12,8 +12,11 @@ import {
 export const ENV_FILE_PATH = paths.envFile();
 
 const BLOCKED_ENV_VARS = [
-  'ANTHROPIC_API_KEY',  // Issue #733: Prevent auto-discovery from project .env files
-  'CLAUDECODE',         // Prevent "cannot be launched inside another Claude Code session" error
+  'ANTHROPIC_API_KEY',       // Issue #733: Prevent auto-discovery from project .env files
+  'CLAUDECODE',              // Prevent "cannot be launched inside another Claude Code session" error
+  'CLAUDE_CODE_OAUTH_TOKEN', // Issue #2215: prevent stale parent-process token from leaking into
+                             // isolated env. The fresh token is read from the keychain at spawn
+                             // time by buildIsolatedEnvWithFreshOAuth().
 ];
 
 export interface ClaudeMemEnv {
@@ -204,6 +207,10 @@ export async function buildIsolatedEnvWithFreshOAuth(
   includeCredentials: boolean = true,
 ): Promise<Record<string, string>> {
   const isolatedEnv = buildIsolatedEnv(includeCredentials);
+
+  // Defensive: ensure no parent-process OAuth token survives this path even
+  // if BLOCKED_ENV_VARS is bypassed. Issue #2215.
+  delete isolatedEnv.CLAUDE_CODE_OAUTH_TOKEN;
 
   if (!includeCredentials) return isolatedEnv;
 
