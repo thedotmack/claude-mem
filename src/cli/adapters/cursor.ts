@@ -14,8 +14,14 @@ import { AdapterRejectedInput, isValidCwd } from './errors.js';
  * and any '/' or '.' replaced with '-' (e.g. /Users/foo.bar/workspaces ->
  * Users-foo-bar-workspaces). Returns undefined if the file does not exist.
  */
+// Cursor session ids are UUID-style identifiers. Restrict to a safe character
+// set so a malicious sessionId from stdin cannot escape ~/.cursor/projects via
+// path separators, '..' segments, or null bytes (security review on PR #2282).
+const SAFE_SESSION_ID_RE = /^[A-Za-z0-9_-]+$/;
+
 export function deriveCursorTranscriptPath(cwd: string | undefined, sessionId: string | undefined): string | undefined {
   if (!cwd || !sessionId) return undefined;
+  if (!SAFE_SESSION_ID_RE.test(sessionId)) return undefined;
   const slug = cwd.replace(/^\//, '').replace(/[/.]/g, '-');
   const candidate = join(homedir(), '.cursor', 'projects', slug, 'agent-transcripts', sessionId, `${sessionId}.jsonl`);
   return existsSync(candidate) ? candidate : undefined;
