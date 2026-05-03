@@ -133,6 +133,31 @@ function enablePluginInClaudeSettings(): void {
   writeJsonFileAtomic(claudeSettingsPath(), settings);
 }
 
+/**
+ * Disable Claude Code's built-in auto-memory by setting CLAUDE_CODE_DISABLE_AUTO_MEMORY=1
+ * in ~/.claude/settings.json `env` block. claude-mem provides its own persistent memory
+ * via plugin hooks; the built-in MEMORY.md system creates shadow state outside the user's
+ * control and competes with claude-mem for context window tokens.
+ *
+ * Per anthropics/claude-code#23544, the env var is the only supported toggle.
+ *
+ * Idempotent: only writes when not already set, preserves existing env vars and other
+ * settings keys, and merges atomically. Returns true when a write happened (for the
+ * caller to surface in the install summary).
+ */
+function disableClaudeAutoMemory(): boolean {
+  const settings = readJsonSafe<Record<string, any>>(claudeSettingsPath(), {});
+  const env = (settings.env && typeof settings.env === 'object') ? settings.env : {};
+
+  if (env.CLAUDE_CODE_DISABLE_AUTO_MEMORY === '1') {
+    return false;
+  }
+
+  settings.env = { ...env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' };
+  writeJsonFileAtomic(claudeSettingsPath(), settings);
+  return true;
+}
+
 function makeIDETask(ideId: string, failedIDEs: string[], pendingErrors: string[]): TaskDescriptor | null {
   const recordFailure = (label: string, output: string) => {
     failedIDEs.push(ideId);
@@ -904,6 +929,25 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
 
   const failedIDEs = await setupIDEs(selectedIDEs);
 
+  // Disable Claude Code's built-in auto-memory (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1)
+  // for any install that targets claude-code. claude-mem's hook-based memory is the
+  // intended source of cross-session context; the built-in MEMORY.md system creates
+  // shadow state and competes for context-window tokens.
+  let autoMemoryDisabled = false;
+  if (selectedIDEs.includes('claude-code')) {
+    try {
+      autoMemoryDisabled = disableClaudeAutoMemory();
+      if (autoMemoryDisabled) {
+        log.success('Claude Code: auto-memory disabled (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1).');
+      } else {
+        log.info('Claude Code: auto-memory already disabled, leaving settings.json untouched.');
+      }
+    } catch (error: unknown) {
+      // Don't fail the install over this — surface the warning and continue.
+      log.warn(`Could not disable Claude Code auto-memory: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   const autoStartSkipped = !isInteractive || options.noAutoStart;
 
   await runTasks([
@@ -939,6 +983,9 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
     `Plugin dir:  ${pc.cyan(marketplaceDir)}`,
     `IDEs:        ${pc.cyan(selectedIDEs.join(', '))}`,
   ];
+  if (autoMemoryDisabled) {
+    summaryLines.push(`Auto-memory: ${pc.cyan('disabled')} (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1)`);
+  }
   if (failedIDEs.length > 0) {
     summaryLines.push(`Failed:      ${pc.red(failedIDEs.join(', '))}`);
   }
