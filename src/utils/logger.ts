@@ -29,6 +29,7 @@ export type Component =
   | 'HTTP'
   | 'IMPORT'
   | 'INGEST'
+  | 'OAUTH'
   | 'OPENCLAW'
   | 'OPENCODE'
   | 'PARSER'

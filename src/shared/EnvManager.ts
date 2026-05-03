@@ -2,6 +2,12 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'fs';
 import { logger } from '../utils/logger.js';
 import { paths } from './paths.js';
+import {
+  readClaudeOAuthToken,
+  writeStaleMarker,
+  clearStaleMarker,
+  type OAuthTokenResult,
+} from './oauth-token.js';
 
 export const ENV_FILE_PATH = paths.envFile();
 
@@ -169,9 +175,79 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
       isolatedEnv.OPENROUTER_API_KEY = credentials.OPENROUTER_API_KEY;
     }
 
-    if (!isolatedEnv.ANTHROPIC_API_KEY && process.env.CLAUDE_CODE_OAUTH_TOKEN) {
-      isolatedEnv.CLAUDE_CODE_OAUTH_TOKEN = process.env.CLAUDE_CODE_OAUTH_TOKEN;
-    }
+    // Note: CLAUDE_CODE_OAUTH_TOKEN is intentionally NOT copied from
+    // process.env here. OAuth tokens have refresh semantics that this
+    // sync path cannot model — copying a parent-process token captured
+    // at startup means injecting a stale token days later (issue #2215).
+    // Use buildIsolatedEnvWithFreshOAuth() for spawn-time injection.
+  }
+
+  return isolatedEnv;
+}
+
+/**
+ * Async variant of buildIsolatedEnv() that reads the OAuth token from the
+ * platform-native credential store at the moment of spawn. Use this at SDK
+ * spawn-time so the worker subprocess always gets a fresh token.
+ *
+ * Behavior per OAuthTokenResult:
+ *   - present: inject as CLAUDE_CODE_OAUTH_TOKEN env var, clear stale marker.
+ *   - expired: do NOT inject. Log re-login message. Write stale marker so
+ *     the session-start hook can surface the message to the user.
+ *   - absent: proceed without the token. Worker may fall back to
+ *     ANTHROPIC_API_KEY or other auth.
+ *
+ * Issue #2215: this replaces the old "copy CLAUDE_CODE_OAUTH_TOKEN from
+ * process.env" path which silently injected stale tokens.
+ */
+export async function buildIsolatedEnvWithFreshOAuth(
+  includeCredentials: boolean = true,
+): Promise<Record<string, string>> {
+  const isolatedEnv = buildIsolatedEnv(includeCredentials);
+
+  if (!includeCredentials) return isolatedEnv;
+
+  // If the user already configured an ANTHROPIC_API_KEY in ~/.claude-mem/.env,
+  // honor that and skip OAuth lookup entirely. API key auth is preferred when
+  // explicitly configured because it's stateless and stable.
+  if (isolatedEnv.ANTHROPIC_API_KEY) {
+    clearStaleMarker();
+    return isolatedEnv;
+  }
+
+  let result: OAuthTokenResult;
+  try {
+    result = await readClaudeOAuthToken();
+  } catch (error) {
+    logger.warn(
+      'OAUTH',
+      'OAuth token read failed unexpectedly; proceeding without token',
+      {},
+      error instanceof Error ? error : new Error(String(error)),
+    );
+    return isolatedEnv;
+  }
+
+  switch (result.kind) {
+    case 'present':
+      isolatedEnv.CLAUDE_CODE_OAUTH_TOKEN = result.token;
+      logger.info('OAUTH', 'Injected fresh CLAUDE_CODE_OAUTH_TOKEN at spawn-time', {
+        source: result.source,
+        expiresAt: result.expiresAt,
+      });
+      clearStaleMarker();
+      break;
+    case 'expired':
+      logger.warn(
+        'OAUTH',
+        `Refusing to inject expired CLAUDE_CODE_OAUTH_TOKEN: ${result.reason}. Re-login via Claude Desktop to refresh.`,
+        { expiresAt: result.expiresAt },
+      );
+      writeStaleMarker(result.reason);
+      break;
+    case 'absent':
+      logger.debug('OAUTH', `No OAuth token available: ${result.reason}`);
+      break;
   }
 
   return isolatedEnv;
@@ -191,8 +267,11 @@ export function getAuthMethodDescription(): string {
   if (hasAnthropicApiKey()) {
     return 'API key (from ~/.claude-mem/.env)';
   }
+  // Note: this is a quick sync hint for logging — the authoritative OAuth
+  // path is buildIsolatedEnvWithFreshOAuth() which reads the keychain at
+  // spawn time. process.env may or may not carry a token here.
   if (process.env.CLAUDE_CODE_OAUTH_TOKEN) {
-    return 'Claude Code OAuth token (from parent process)';
+    return 'Claude Code OAuth token (env, refreshed via keychain at spawn)';
   }
-  return 'Claude Code CLI (subscription billing)';
+  return 'Claude Code OAuth token (read from system keychain at spawn)';
 }

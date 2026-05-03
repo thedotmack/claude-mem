@@ -39,7 +39,6 @@ ${mode.prompts.skip_guidance}
 
 ${mode.prompts.output_format_header}
 
-\`\`\`xml
 <observation>
   <type>[ ${mode.observation_types.map(t => t.id).join(' | ')} ]</type>
   <!--
@@ -72,7 +71,6 @@ ${mode.prompts.output_format_header}
     <file>${mode.prompts.xml_file_placeholder}</file>
   </files_modified>
 </observation>
-\`\`\`
 ${mode.prompts.format_examples}
 
 ${mode.prompts.footer}
@@ -170,7 +168,6 @@ ${mode.prompts.continuation_instruction}
 
 ${mode.prompts.output_format_header}
 
-\`\`\`xml
 <observation>
   <type>[ ${mode.observation_types.map(t => t.id).join(' | ')} ]</type>
   <!--
@@ -203,7 +200,6 @@ ${mode.prompts.output_format_header}
     <file>${mode.prompts.xml_file_placeholder}</file>
   </files_modified>
 </observation>
-\`\`\`
 ${mode.prompts.format_examples}
 
 ${mode.prompts.footer}

@@ -5,7 +5,7 @@ import { logger } from '../../utils/logger.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, OBSERVER_SESSIONS_DIR, ensureDir, paths } from '../../shared/paths.js';
-import { buildIsolatedEnv, getAuthMethodDescription } from '../../shared/EnvManager.js';
+import { buildIsolatedEnvWithFreshOAuth, getAuthMethodDescription } from '../../shared/EnvManager.js';
 import { findClaudeExecutable } from '../../shared/find-claude-executable.js';
 import type { ActiveSession, SDKUserMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
@@ -20,6 +20,78 @@ import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 
 // @ts-ignore - Agent SDK types may not be available
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import { ClassifiedProviderError } from './provider-errors.js';
+
+/**
+ * Classify a ClaudeProvider error (executable spawn failures, SDK errors,
+ * Anthropic API errors). Provider-specific because it relies on:
+ *   - SDK error class names (e.g. OverloadedError) when present
+ *   - spawn errors (ENOENT) when the Claude executable is missing
+ *   - Anthropic-specific message strings ("Invalid API key", "Prompt is too long")
+ */
+export function classifyClaudeError(err: unknown): ClassifiedProviderError {
+  const message = err instanceof Error ? err.message : String(err);
+  const errAny = err as { name?: string; status?: number; error?: { type?: string } };
+
+  // Executable / spawn issues — unrecoverable, no point retrying.
+  if (
+    message.includes('Claude executable not found') ||
+    message.includes('CLAUDE_CODE_PATH') ||
+    message.includes('ENOENT') ||
+    message.startsWith('spawn ')
+  ) {
+    return new ClassifiedProviderError(message, { kind: 'unrecoverable', cause: err });
+  }
+
+  // Anthropic auth failures.
+  if (
+    errAny.status === 401 ||
+    errAny.status === 403 ||
+    message.includes('Invalid API key') ||
+    message.includes('API_KEY_INVALID') ||
+    message.includes('API key expired') ||
+    message.includes('API key not valid')
+  ) {
+    return new ClassifiedProviderError(message, { kind: 'auth_invalid', cause: err });
+  }
+
+  // SDK-level overloaded — Anthropic emits OverloadedError or 529 with type:'overloaded_error'.
+  if (
+    errAny.name === 'OverloadedError' ||
+    errAny.status === 529 ||
+    errAny.error?.type === 'overloaded_error'
+  ) {
+    return new ClassifiedProviderError(message || 'Anthropic overloaded', { kind: 'transient', cause: err });
+  }
+
+  // Rate limit.
+  if (errAny.status === 429) {
+    return new ClassifiedProviderError(message, { kind: 'rate_limit', cause: err });
+  }
+
+  // Quota.
+  if (message.toLowerCase().includes('quota exceeded')) {
+    return new ClassifiedProviderError(message, { kind: 'quota_exhausted', cause: err });
+  }
+
+  // Context overflow — unrecoverable in this session, requires reset.
+  if (
+    message.includes('Prompt is too long') ||
+    message.includes('prompt is too long') ||
+    message.includes('context window')
+  ) {
+    return new ClassifiedProviderError(message, { kind: 'unrecoverable', cause: err });
+  }
+
+  // Server errors → transient.
+  if (typeof errAny.status === 'number' && errAny.status >= 500 && errAny.status < 600) {
+    return new ClassifiedProviderError(message, { kind: 'transient', cause: err });
+  }
+
+  // Default: treat unknown errors as transient (preserve old behavior of
+  // retrying everything not explicitly marked unrecoverable).
+  return new ClassifiedProviderError(message, { kind: 'transient', cause: err });
+}
 
 export class ClaudeProvider {
   private dbManager: DatabaseManager;
@@ -75,7 +147,7 @@ export class ClaudeProvider {
     const maxConcurrent = parseInt(settings.CLAUDE_MEM_MAX_CONCURRENT_AGENTS, 10) || 2;
     await waitForSlot(maxConcurrent, 60_000);
 
-    const isolatedEnv = sanitizeEnv(buildIsolatedEnv());
+    const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
     const authMethod = getAuthMethodDescription();
 
     logger.info('SDK', 'Starting SDK query', {

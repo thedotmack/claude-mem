@@ -2,6 +2,11 @@
 import { logger } from '../utils/logger.js';
 import { ModeManager } from '../services/domain/ModeManager.js';
 
+// TODO(#2233): migrate to Anthropic tool-use API for deterministic JSON output. This text-XML path is the bridge.
+function stripCodeFences(text: string): string {
+  return text.replace(/^```(?:xml)?\s*\n?/m, '').replace(/\n?```\s*$/m, '');
+}
+
 export interface ParsedObservation {
   type: string;
   title: string | null;
@@ -32,6 +37,8 @@ export function parseAgentXml(raw: string, correlationId?: string | number): Par
   if (typeof raw !== 'string' || !raw.trim()) {
     return { valid: false };
   }
+
+  raw = stripCodeFences(raw);
 
   const skipMatch = /<skip_summary(?:\s+reason="([^"]*)")?\s*\/>/.exec(raw);
   if (skipMatch) {
