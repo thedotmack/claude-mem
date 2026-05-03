@@ -1,11 +1,9 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'fs';
-import { join, dirname } from 'path';
-import { homedir } from 'os';
 import { logger } from '../utils/logger.js';
+import { paths } from './paths.js';
 
-const DATA_DIR = join(homedir(), '.claude-mem');
-export const ENV_FILE_PATH = join(DATA_DIR, '.env');
+export const ENV_FILE_PATH = paths.envFile();
 
 const BLOCKED_ENV_VARS = [
   'ANTHROPIC_API_KEY',  // Issue #733: Prevent auto-discovery from project .env files
@@ -89,10 +87,10 @@ export function loadClaudeMemEnv(): ClaudeMemEnv {
 export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
   let existing: Record<string, string> = {};
   try {
-    if (!existsSync(DATA_DIR)) {
-      mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+    if (!existsSync(paths.dataDir())) {
+      mkdirSync(paths.dataDir(), { recursive: true, mode: 0o700 });
     }
-    chmodSync(DATA_DIR, 0o700);
+    chmodSync(paths.dataDir(), 0o700);
 
     existing = existsSync(ENV_FILE_PATH)
       ? parseEnvFile(readFileSync(ENV_FILE_PATH, 'utf-8'))

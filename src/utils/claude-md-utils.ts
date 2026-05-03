@@ -1,13 +1,13 @@
 
 import { existsSync, readFileSync, writeFileSync, renameSync } from 'fs';
 import path from 'path';
-import os from 'os';
 import { logger } from './logger.js';
 import { formatDate, groupByDate } from '../shared/timeline-formatting.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { workerHttpRequest } from '../shared/worker-utils.js';
+import { paths } from '../shared/paths.js';
 
-const SETTINGS_PATH = path.join(os.homedir(), '.claude-mem', 'settings.json');
+const SETTINGS_PATH = paths.settings();
 
 const CLAUDE_MD_FILENAME = 'CLAUDE.md';
 

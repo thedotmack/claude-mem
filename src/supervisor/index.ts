@@ -1,6 +1,4 @@
 import { existsSync, readFileSync, rmSync } from 'fs';
-import { homedir } from 'os';
-import path from 'path';
 import { logger } from '../utils/logger.js';
 import {
   getProcessRegistry,
@@ -11,9 +9,9 @@ import {
 } from './process-registry.js';
 import { runShutdownCascade } from './shutdown.js';
 import { startHealthChecker, stopHealthChecker } from './health-checker.js';
+import { paths } from '../shared/paths.js';
 
-const DATA_DIR = path.join(homedir(), '.claude-mem');
-const PID_FILE = path.join(DATA_DIR, 'worker.pid');
+const PID_FILE = paths.workerPid();
 
 interface ValidateWorkerPidOptions {
   logAlive?: boolean;

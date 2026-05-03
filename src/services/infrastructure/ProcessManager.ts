@@ -9,11 +9,12 @@ import { logger } from '../../utils/logger.js';
 import { HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor, validateWorkerPidFile, type ValidateWorkerPidStatus } from '../../supervisor/index.js';
+import { paths } from '../../shared/paths.js';
 
 const execAsync = promisify(exec);
 
-const DATA_DIR = path.join(homedir(), '.claude-mem');
-const PID_FILE = path.join(DATA_DIR, 'worker.pid');
+const DATA_DIR = paths.dataDir();
+const PID_FILE = paths.workerPid();
 
 interface RuntimeResolverOptions {
   platform?: NodeJS.Platform;

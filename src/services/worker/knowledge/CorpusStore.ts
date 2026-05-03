@@ -1,11 +1,11 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import * as os from 'node:os';
 import { logger } from '../../../utils/logger.js';
+import { paths } from '../../../shared/paths.js';
 import type { CorpusFile, CorpusStats } from './types.js';
 
-const CORPORA_DIR = path.join(os.homedir(), '.claude-mem', 'corpora');
+const CORPORA_DIR = paths.corpora();
 
 export class CorpusStore {
   private readonly corporaDir: string;

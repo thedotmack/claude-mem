@@ -1,13 +1,13 @@
 
 import path from 'path';
-import { homedir } from 'os';
 import { existsSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
+import { paths } from '../../shared/paths.js';
 
-const DEFAULT_DATA_DIR = path.join(homedir(), '.claude-mem');
+const DEFAULT_DATA_DIR = paths.dataDir();
 
 export interface AdoptionResult {
   repoPath: string;

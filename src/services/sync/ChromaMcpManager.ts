@@ -8,7 +8,7 @@ import os from 'os';
 import fs from 'fs';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
 
@@ -17,8 +17,8 @@ const execFileAsync = promisify(execFile);
 const CHROMA_MCP_CLIENT_NAME = 'claude-mem-chroma';
 const CHROMA_MCP_CLIENT_VERSION = '1.0.0';
 const MCP_CONNECTION_TIMEOUT_MS = 30_000;
-const RECONNECT_BACKOFF_MS = 10_000; 
-const DEFAULT_CHROMA_DATA_DIR = path.join(os.homedir(), '.claude-mem', 'chroma');
+const RECONNECT_BACKOFF_MS = 10_000;
+const DEFAULT_CHROMA_DATA_DIR = paths.chroma();
 const CHROMA_SUPERVISOR_ID = 'chroma-mcp';
 
 const CHROMA_MCP_PINNED_VERSION = '0.2.6';
@@ -459,7 +459,7 @@ export class ChromaMcpManager {
   }
 
   private getCombinedCertPath(): string | undefined {
-    const combinedCertPath = path.join(os.homedir(), '.claude-mem', 'combined_certs.pem');
+    const combinedCertPath = paths.combinedCerts();
 
     if (fs.existsSync(combinedCertPath)) {
       const stats = fs.statSync(combinedCertPath);
