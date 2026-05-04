@@ -1,6 +1,22 @@
 #!/usr/bin/env bun
 
-const WORKER_PORT = process.env.CLAUDE_MEM_WORKER_PORT || 37777;
+const DEFAULT_WORKER_PORT = 37777;
+
+function resolveWorkerPort(): number {
+  const raw = process.env.CLAUDE_MEM_WORKER_PORT;
+  if (raw === undefined || raw === '') return DEFAULT_WORKER_PORT;
+  const parsed = parseInt(raw, 10);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+    console.warn(
+      `[check-pending-queue] Invalid CLAUDE_MEM_WORKER_PORT=${JSON.stringify(raw)}; ` +
+        `falling back to ${DEFAULT_WORKER_PORT}`
+    );
+    return DEFAULT_WORKER_PORT;
+  }
+  return parsed;
+}
+
+const WORKER_PORT = resolveWorkerPort();
 const WORKER_URL = `http://127.0.0.1:${WORKER_PORT}`;
 const WORKER_FETCH_TIMEOUT_MS = 10_000;
 
