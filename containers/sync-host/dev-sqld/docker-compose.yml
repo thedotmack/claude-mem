@@ -1,0 +1,46 @@
+# Local sqld dev harness for the libSQL migration (Phase 1A).
+#
+# Pinned to v0.24.8 — the GHCR `:latest` tag is stale at v0.22.0 (May 2024)
+# and DOES NOT reflect current sqld behavior. See README "Troubleshooting".
+#
+# Source image:    https://github.com/tursodatabase/libsql-server
+# Docker docs:     https://github.com/tursodatabase/libsql/blob/main/docs/DOCKER.md
+# Embedded reps:   https://docs.turso.tech/features/embedded-replicas/introduction
+#
+# Phase 2 will deploy the production `libsql` service to Railway separately.
+# This compose file is for local-dev iteration only.
+
+services:
+  sqld:
+    image: ghcr.io/tursodatabase/libsql-server:v0.24.8
+    container_name: claude-mem-dev-sqld
+    restart: unless-stopped
+    ports:
+      # Hrana over HTTP (also serves /v2 and /v3) — the only port clients need.
+      # Internal gRPC on 5001 is intentionally not exposed; primaries don't
+      # need it for embedded-replica clients.
+      - "8080:8080"
+    environment:
+      # Run as a standalone primary. Replicas live elsewhere (Mac + container app).
+      SQLD_NODE: primary
+      # Bind on all interfaces inside the container so the host port mapping works.
+      SQLD_HTTP_LISTEN_ADDR: 0.0.0.0:8080
+      # Explicit DB path. v0.24.8's default is /var/lib/sqld/iku.db (NOT data.db
+      # as older docs suggest); spelling it out here removes ambiguity if the
+      # default ever changes again. Spike finding §5 gotcha 2.
+      SQLD_DB_PATH: /var/lib/sqld/iku.db
+      # JWT verification key. Empty = no-auth dev mode (fine for localhost).
+      # To enable: copy .env.example to .env, paste the public key, restart.
+      # See README "Optional: JWT auth".
+      SQLD_AUTH_JWT_KEY: ${SQLD_AUTH_JWT_KEY:-}
+    volumes:
+      # Persistent DB volume. Add to .gitignore (already done).
+      # The DB file (iku.db) plus its WAL/SHM sidecars live here.
+      - ./sqld-data:/var/lib/sqld
+    healthcheck:
+      # The libsql-server image is distroless and ships with NO shell, NO curl,
+      # NO wget. We can't run a CMD-SHELL test. Skip the in-container healthcheck
+      # and verify from the host instead:
+      #     curl -f http://localhost:8080/health
+      # See README "Verifying it works".
+      disable: true

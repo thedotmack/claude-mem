@@ -1,0 +1,10 @@
+# Local sqld primary's DB volume. Never commit — contains observation data.
+sqld-data/
+
+# Local JWT keypair if you generate one for the optional auth flow.
+# (See README "Optional: JWT auth".)
+sqld-private.pem
+sqld-public.pem
+
+# Local env override (the .env that docker-compose reads).
+.env
