@@ -222,15 +222,25 @@ export class ChromaSync {
     return documents;
   }
 
-  private async addDocuments(documents: ChromaDocument[]): Promise<void> {
+  /**
+   * Write `documents` to Chroma in BATCH_SIZE-sized batches.
+   *
+   * Returns the number of documents that were successfully written (or
+   * confirmed via delete+add reconcile). Per-batch failures are logged and the
+   * loop continues — we never throw — so callers must use the returned count
+   * to advance their watermark, otherwise an interrupted backfill can mark
+   * unsynced records as synced.
+   */
+  private async addDocuments(documents: ChromaDocument[]): Promise<number> {
     if (documents.length === 0) {
-      return;
+      return 0;
     }
 
     await this.ensureCollectionExists();
 
     const chromaMcp = ChromaMcpManager.getInstance();
 
+    let written = 0;
     for (let i = 0; i < documents.length; i += this.BATCH_SIZE) {
       const batch = documents.slice(i, i + this.BATCH_SIZE);
 
@@ -247,6 +257,7 @@ export class ChromaSync {
           documents: batch.map(d => d.document),
           metadatas: cleanMetadatas
         });
+        written += batch.length;
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error);
         if (errMsg.includes('already exist')) {
@@ -261,20 +272,21 @@ export class ChromaSync {
               documents: batch.map(d => d.document),
               metadatas: cleanMetadatas
             });
+            written += batch.length;
             logger.info('CHROMA_SYNC', 'Batch reconciled via delete+add after duplicate conflict', {
               collection: this.collectionName,
               batchStart: i,
               batchSize: batch.length
             });
           } catch (reconcileError) {
-            logger.error('CHROMA_SYNC', 'Batch reconcile (delete+add) failed', {
+            logger.error('CHROMA_SYNC', 'Batch reconcile (delete+add) failed — watermark will not advance for this batch', {
               collection: this.collectionName,
               batchStart: i,
               batchSize: batch.length
             }, reconcileError as Error);
           }
         } else {
-          logger.error('CHROMA_SYNC', 'Batch add failed, continuing with remaining batches', {
+          logger.error('CHROMA_SYNC', 'Batch add failed — watermark will not advance for this batch, continuing with remaining batches', {
             collection: this.collectionName,
             batchStart: i,
             batchSize: batch.length
@@ -285,8 +297,10 @@ export class ChromaSync {
 
     logger.debug('CHROMA_SYNC', 'Documents added', {
       collection: this.collectionName,
-      count: documents.length
+      requested: documents.length,
+      written
     });
+    return written;
   }
 
   async syncObservation(
@@ -581,8 +595,19 @@ export class ChromaSync {
     let lastSyncedObsIdx = -1;
     for (let i = 0; i < allDocs.length; i += this.BATCH_SIZE) {
       const batch = allDocs.slice(i, i + this.BATCH_SIZE);
-      await this.addDocuments(batch);
-      writtenDocs += batch.length;
+      const writtenInBatch = await this.addDocuments(batch);
+      // Only advance the watermark for documents that actually landed in
+      // Chroma. addDocuments() logs and continues on per-batch failures, so a
+      // partial write must not mark unwritten docs as synced.
+      if (writtenInBatch <= 0) {
+        logger.debug('CHROMA_SYNC', 'Skipping watermark bump for failed batch', {
+          project: backfillProject,
+          batchStart: i,
+          batchSize: batch.length
+        });
+        continue;
+      }
+      writtenDocs += writtenInBatch;
 
       let cursor = 0;
       for (let j = 0; j < obsByDocCount.length; j++) {
@@ -649,8 +674,18 @@ export class ChromaSync {
     let lastSyncedIdx = -1;
     for (let i = 0; i < summaryDocs.length; i += this.BATCH_SIZE) {
       const batch = summaryDocs.slice(i, i + this.BATCH_SIZE);
-      await this.addDocuments(batch);
-      writtenDocs += batch.length;
+      const writtenInBatch = await this.addDocuments(batch);
+      // Only advance the watermark for documents that actually landed in
+      // Chroma. See the analogous comment in backfillObservations().
+      if (writtenInBatch <= 0) {
+        logger.debug('CHROMA_SYNC', 'Skipping watermark bump for failed batch', {
+          project: backfillProject,
+          batchStart: i,
+          batchSize: batch.length
+        });
+        continue;
+      }
+      writtenDocs += writtenInBatch;
 
       let cursor = 0;
       for (let j = 0; j < summaryByDocCount.length; j++) {
@@ -717,10 +752,21 @@ export class ChromaSync {
 
     // Prompts are 1 doc each — bump the watermark per batch so an interrupted
     // backfill resumes where it left off instead of re-embedding from zero.
+    // Only advance the watermark when the batch actually wrote — partial
+    // writes must not skip the failed prompts on restart.
     for (let i = 0; i < promptDocs.length; i += this.BATCH_SIZE) {
       const batch = promptDocs.slice(i, i + this.BATCH_SIZE);
-      await this.addDocuments(batch);
+      const writtenInBatch = await this.addDocuments(batch);
       const upTo = Math.min(i + this.BATCH_SIZE, prompts.length);
+      if (writtenInBatch < batch.length) {
+        logger.debug('CHROMA_SYNC', 'Skipping prompt watermark bump for failed/partial batch', {
+          project: backfillProject,
+          batchStart: i,
+          requested: batch.length,
+          written: writtenInBatch
+        });
+        continue;
+      }
       const lastSyncedPromptId = prompts[upTo - 1].id;
       ChromaSyncState.bump(backfillProject, 'prompts', lastSyncedPromptId);
 
@@ -840,9 +886,26 @@ export class ChromaSync {
       return;
     }
 
+    // Allocate first so a constructor throw cannot leave the guard stuck true
+    // and silently skip every subsequent backfill (CodeRabbit review on PR
+    // #2282). The guard only flips to true after both resources are alive,
+    // and the finally always clears it.
+    let db: SessionStore | undefined;
+    let sync: ChromaSync | undefined;
+    try {
+      db = storeOverride ?? new SessionStore();
+      sync = new ChromaSync('claude-mem');
+    } catch (error) {
+      logger.error('CHROMA_SYNC', 'Failed to initialize backfill resources',
+        {}, error instanceof Error ? error : new Error(String(error)));
+      // Best-effort cleanup if SessionStore allocated but ChromaSync threw.
+      if (db && !storeOverride) {
+        try { db.close(); } catch { /* ignore */ }
+      }
+      throw error;
+    }
+
     ChromaSync.backfillInProgress = true;
-    const db = storeOverride ?? new SessionStore();
-    const sync = new ChromaSync('claude-mem');
     try {
       const projects = db.db.prepare(
         'SELECT DISTINCT project FROM observations WHERE project IS NOT NULL AND project != ?'
@@ -872,7 +935,7 @@ export class ChromaSync {
       for (let i = 0; i < projects.length; i += concurrency) {
         const chunk = projects.slice(i, i + concurrency);
         const chunkResults = await Promise.allSettled(
-          chunk.map(({ project }) => sync.ensureBackfilled(project, db))
+          chunk.map(({ project }) => sync!.ensureBackfilled(project, db!))
         );
 
         for (let j = 0; j < chunkResults.length; j++) {
@@ -891,9 +954,17 @@ export class ChromaSync {
       }
     } finally {
       ChromaSync.backfillInProgress = false;
-      await sync.close();
-      if (!storeOverride) {
-        db.close();
+      if (sync) {
+        try { await sync.close(); } catch (closeError) {
+          logger.debug('CHROMA_SYNC', 'sync.close() failed during backfill teardown',
+            {}, closeError instanceof Error ? closeError : new Error(String(closeError)));
+        }
+      }
+      if (!storeOverride && db) {
+        try { db.close(); } catch (closeError) {
+          logger.debug('CHROMA_SYNC', 'db.close() failed during backfill teardown',
+            {}, closeError instanceof Error ? closeError : new Error(String(closeError)));
+        }
       }
     }
   }
