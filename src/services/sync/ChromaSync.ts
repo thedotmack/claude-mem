@@ -340,8 +340,22 @@ export class ChromaSync {
       project
     });
 
-    await this.addDocuments(documents);
-    ChromaSyncState.bump(project, 'observations', observationId);
+    // Only advance the watermark on a confirmed full write. addDocuments() now
+    // returns a written count and tolerates per-batch failures, so a transient
+    // Chroma error must NOT mark this observation as synced — otherwise the
+    // backfill pass on next boot will skip past it (CodeRabbit review on PR
+    // #2282).
+    const written = await this.addDocuments(documents);
+    if (written === documents.length) {
+      ChromaSyncState.bump(project, 'observations', observationId);
+    } else {
+      logger.warn('CHROMA_SYNC', 'Observation watermark bump skipped — partial write', {
+        observationId,
+        project,
+        requested: documents.length,
+        written
+      });
+    }
   }
 
   async syncSummary(
@@ -378,8 +392,18 @@ export class ChromaSync {
       project
     });
 
-    await this.addDocuments(documents);
-    ChromaSyncState.bump(project, 'summaries', summaryId);
+    // Only bump on a confirmed full write — see syncObservation() for rationale.
+    const written = await this.addDocuments(documents);
+    if (written === documents.length) {
+      ChromaSyncState.bump(project, 'summaries', summaryId);
+    } else {
+      logger.warn('CHROMA_SYNC', 'Summary watermark bump skipped — partial write', {
+        summaryId,
+        project,
+        requested: documents.length,
+        written
+      });
+    }
   }
 
   private formatUserPromptDoc(prompt: StoredUserPrompt): ChromaDocument {
@@ -423,8 +447,17 @@ export class ChromaSync {
       project
     });
 
-    await this.addDocuments([document]);
-    ChromaSyncState.bump(project, 'prompts', promptId);
+    // Only bump on a confirmed full write — see syncObservation() for rationale.
+    const written = await this.addDocuments([document]);
+    if (written === 1) {
+      ChromaSyncState.bump(project, 'prompts', promptId);
+    } else {
+      logger.warn('CHROMA_SYNC', 'Prompt watermark bump skipped — write failed', {
+        promptId,
+        project,
+        written
+      });
+    }
   }
 
   private async getExistingChromaIds(projectOverride?: string): Promise<{
