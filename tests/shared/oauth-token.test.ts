@@ -10,6 +10,7 @@ import {
   readStaleMarker,
 } from '../../src/shared/oauth-token.js';
 import { paths } from '../../src/shared/paths.js';
+import { buildIsolatedEnvWithFreshOAuth } from '../../src/shared/EnvManager.js';
 
 /**
  * The implementation uses promisify(execFile), which captures execFile at
@@ -251,5 +252,37 @@ describe('readClaudeOAuthToken — Windows branch', () => {
     delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
     const result = await readClaudeOAuthToken();
     expect(['present', 'expired', 'absent']).toContain(result.kind);
+  });
+});
+
+// CodeRabbit Minor (PR #2282 follow-up): when the OAuth token is absent, any
+// previously-written stale marker is no longer accurate (the token is gone,
+// not expired). buildIsolatedEnvWithFreshOAuth must clear it on the absent
+// branch the same way it does on present.
+describe('buildIsolatedEnvWithFreshOAuth — absent token clears stale marker', () => {
+  beforeEach(() => {
+    setPlatform('aix' as NodeJS.Platform); // unsupported -> always absent
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  });
+
+  it('clears a pre-existing stale marker when token is absent', async () => {
+    // Pre-existing marker from an earlier "expired" pass.
+    writeStaleMarker('left over from previous run');
+    expect(readStaleMarker()).toBe('left over from previous run');
+
+    // Force the absent path: ANTHROPIC_API_KEY must NOT be set in either the
+    // env file or the process env, otherwise the early-return branch fires
+    // before we ever reach the OAuth resolution.
+    const origAnthropicKey = process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    try {
+      await buildIsolatedEnvWithFreshOAuth(true);
+    } finally {
+      if (origAnthropicKey !== undefined) {
+        process.env.ANTHROPIC_API_KEY = origAnthropicKey;
+      }
+    }
+
+    expect(readStaleMarker()).toBeUndefined();
   });
 });

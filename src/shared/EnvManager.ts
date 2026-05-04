@@ -254,6 +254,12 @@ export async function buildIsolatedEnvWithFreshOAuth(
       break;
     case 'absent':
       logger.debug('OAUTH', `No OAuth token available: ${result.reason}`);
+      // Token is absent — any prior stale-marker would have been written
+      // when the token was expired, but is no longer accurate now that the
+      // token is gone. Clear it so the session-start hook stops surfacing
+      // a stale "expired token, re-login" warning (CodeRabbit review on PR
+      // #2282).
+      clearStaleMarker();
       break;
   }
 
