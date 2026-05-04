@@ -1,6 +1,12 @@
 #!/bin/bash
 # claude-mem-sync — Synchronize claude-mem observations between machines
 #
+# WARNING: DEPRECATED — replaced by libSQL embedded replicas (Phase 1 of the
+# multi-device sync plan in .scratch/sync-container-plan.md). This script
+# remains for one release while consumers migrate to the new sync mechanism.
+# Once the libSQL DB layer migration (Phase 1B) lands, this script will be
+# removed. Do not build new automation on top of it.
+#
 # Usage:
 #   claude-mem-sync push <remote-host>    # local → remote
 #   claude-mem-sync pull <remote-host>    # remote → local
