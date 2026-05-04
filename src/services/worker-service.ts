@@ -572,12 +572,14 @@ export class WorkerService implements WorkerRef {
           : this.reclassifyAtDispatch(error, agent);
 
         // FOREIGN KEY constraint failures from SQLite are unrecoverable but
-        // not provider-specific; map them here.
+        // not provider-specific; check before deferring to the classifier so
+        // FK failures don't get misclassified as transient and retry forever
+        // (per-provider classifiers don't recognize FK errors).
         const isFkConstraintFailure = errorMessage.includes('FOREIGN KEY constraint failed');
 
-        const dispatchKind: ProviderErrorClass | null = classified
-          ? classified.kind
-          : (isFkConstraintFailure ? 'unrecoverable' : null);
+        const dispatchKind: ProviderErrorClass | null = isFkConstraintFailure
+          ? 'unrecoverable'
+          : (classified ? classified.kind : null);
 
         if (dispatchKind === 'unrecoverable' || dispatchKind === 'auth_invalid' || dispatchKind === 'quota_exhausted') {
           hadUnrecoverableError = true;
