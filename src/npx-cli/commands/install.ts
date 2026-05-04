@@ -539,7 +539,7 @@ function runNpmInstallInMarketplace(): void {
 
   if (!existsSync(packageJsonPath)) return;
 
-  execSync('npm install --production', {
+  execSync('npm install --omit=dev --legacy-peer-deps', {
     cwd: marketplaceDir,
     stdio: 'pipe',
     encoding: 'utf8',
