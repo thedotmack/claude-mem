@@ -85,7 +85,14 @@ export function extractLastMessageFromJsonl(
   for (let i = lines.length - 1; i >= 0; i--) {
     const rawLine = lines[i];
     if (!rawLine) continue;
-    const line = JSON.parse(rawLine);
+    // Tolerate truncated/malformed JSONL lines (crash mid-write, partial flush).
+    // A bad line shouldn't crash the summarization pipeline — skip and move on.
+    let line: any;
+    try {
+      line = JSON.parse(rawLine);
+    } catch {
+      continue;
+    }
     const lineRole = line.type ?? line.role;
     if (lineRole !== role) continue;
     foundMatchingRole = true;

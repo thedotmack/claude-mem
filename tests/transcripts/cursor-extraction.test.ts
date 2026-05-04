@@ -151,3 +151,26 @@ describe('cursor-extraction: cursorAdapter transcriptPath derivation', () => {
     expect(deriveCursorTranscriptPath(undefined, sessionId)).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Greptile P1 (PR #2282): malformed JSONL lines must not crash the pipeline
+// ---------------------------------------------------------------------------
+
+describe('cursor-extraction: malformed JSONL tolerance', () => {
+  it('skips truncated/malformed lines and returns the last valid match', () => {
+    const validLine = JSON.stringify({
+      role: 'assistant',
+      message: { content: [{ type: 'text', text: 'recovered text' }] },
+    });
+    const malformed = '{"role":"assistant","message":{"content":[{"type":"tex'; // truncated mid-write
+    const content = [validLine, malformed].join('\n');
+
+    expect(() => extractLastMessageFromJsonl(content, 'assistant', false)).not.toThrow();
+    expect(extractLastMessageFromJsonl(content, 'assistant', false)).toBe('recovered text');
+  });
+
+  it('returns empty string when ALL lines are malformed', () => {
+    const content = ['{partial', 'not even close to json', '}{'].join('\n');
+    expect(extractLastMessageFromJsonl(content, 'assistant', false)).toBe('');
+  });
+});
