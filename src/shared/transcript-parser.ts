@@ -105,8 +105,11 @@ export function extractLastMessageFromJsonl(
       text = msgContent;
     } else if (Array.isArray(msgContent)) {
       text = msgContent
-        .filter((c: any) => c.type === 'text')
-        .map((c: any) => c.text)
+        .filter(
+          (c: any): c is { type: 'text'; text: string } =>
+            !!c && typeof c === 'object' && c.type === 'text' && typeof c.text === 'string'
+        )
+        .map((c) => c.text)
         .join('\n');
     } else {
       // Unknown content shape (null, number, plain object, etc.) — skip rather
