@@ -404,18 +404,22 @@ export class ChromaMcpManager {
       return;
     }
 
-    // POSIX: kill children first (bottom-up), then the parent.
-    // `pkill -P <pid>` sends SIGTERM to all direct children. We run it twice
-    // with a brief pause to catch grandchildren that were re-parented to init.
+    // POSIX: walk descendants recursively (bottom-up) and signal each.
+    // `pkill -P <pid>` only reaches direct children, so `python` /
+    // `chroma-mcp` under `uv` (grandchildren) get re-parented to init and
+    // survive. We collect the full descendant set via `pgrep -P` walks before
+    // signaling, so the SIGTERM phase reaches every layer
+    // (CodeRabbit review on PR #2282).
     try {
-      // Signal direct children
-      try {
-        await execFileAsync('pkill', ['-TERM', '-P', String(pid)], { timeout: 2_000 });
-      } catch {
-        // pkill exits 1 when no processes match — expected if children already exited.
+      const descendantsBeforeTerm = await ChromaMcpManager.collectDescendantPids(pid);
+      // Signal leaves first, then the root.
+      for (const child of descendantsBeforeTerm) {
+        try {
+          process.kill(child, 'SIGTERM');
+        } catch {
+          // Already gone — fine.
+        }
       }
-
-      // Signal the parent process itself
       try {
         process.kill(pid, 'SIGTERM');
       } catch (error) {
@@ -425,15 +429,19 @@ export class ChromaMcpManager {
         }
       }
 
-      // Brief wait for SIGTERM to propagate, then SIGKILL stragglers
+      // Brief wait for SIGTERM to propagate, then SIGKILL stragglers.
       await new Promise(resolve => setTimeout(resolve, 500));
 
-      try {
-        await execFileAsync('pkill', ['-KILL', '-P', String(pid)], { timeout: 2_000 });
-      } catch {
-        // No children left — expected.
+      // Re-collect descendants — some layers may have re-parented during the
+      // SIGTERM grace window.
+      const descendantsBeforeKill = await ChromaMcpManager.collectDescendantPids(pid);
+      for (const child of descendantsBeforeKill) {
+        try {
+          process.kill(child, 'SIGKILL');
+        } catch {
+          // Already dead — fine.
+        }
       }
-
       try {
         process.kill(pid, 'SIGKILL');
       } catch {
@@ -445,6 +453,43 @@ export class ChromaMcpManager {
         error: error instanceof Error ? error.message : String(error)
       });
     }
+  }
+
+  /**
+   * Recursively collect all descendant PIDs of `rootPid` using `pgrep -P`.
+   * Returned bottom-up (leaves first) so callers can signal leaves before
+   * their ancestors. Best-effort: missing pgrep / non-zero exits return [].
+   */
+  private static async collectDescendantPids(rootPid: number): Promise<number[]> {
+    const seen = new Set<number>();
+    const collected: number[] = [];
+
+    async function walk(pid: number): Promise<void> {
+      let stdout = '';
+      try {
+        const result = await execFileAsync('pgrep', ['-P', String(pid)], { timeout: 2_000 });
+        stdout = result.stdout;
+      } catch {
+        // pgrep exits 1 when no children match — that's fine, just return.
+        return;
+      }
+      const children = stdout
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => line.length > 0)
+        .map(line => Number.parseInt(line, 10))
+        .filter(n => Number.isFinite(n) && n > 0 && !seen.has(n));
+
+      for (const child of children) {
+        seen.add(child);
+        await walk(child);
+        // Bottom-up: push after recursion so leaves come first.
+        collected.push(child);
+      }
+    }
+
+    await walk(rootPid);
+    return collected;
   }
 
   /**
