@@ -434,8 +434,17 @@ export class ChromaMcpManager {
 
       // Re-collect descendants — some layers may have re-parented during the
       // SIGTERM grace window.
+      //
+      // SIGKILL targets the UNION of pre-TERM and post-wait descendant sets:
+      // when the root exits between snapshots, children get re-parented to
+      // init and drop out of `pgrep -P <root>`. Without the union, those
+      // re-parented descendants would never receive SIGKILL even though they
+      // were definitely children before SIGTERM (CodeRabbit review on PR
+      // #2282). Dedupe via Set since `descendantsBeforeKill` typically
+      // overlaps with `descendantsBeforeTerm`.
       const descendantsBeforeKill = await ChromaMcpManager.collectDescendantPids(pid);
-      for (const child of descendantsBeforeKill) {
+      const killTargets = Array.from(new Set([...descendantsBeforeTerm, ...descendantsBeforeKill]));
+      for (const child of killTargets) {
         try {
           process.kill(child, 'SIGKILL');
         } catch {
