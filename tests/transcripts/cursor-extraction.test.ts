@@ -173,4 +173,53 @@ describe('cursor-extraction: malformed JSONL tolerance', () => {
     const content = ['{partial', 'not even close to json', '}{'].join('\n');
     expect(extractLastMessageFromJsonl(content, 'assistant', false)).toBe('');
   });
+
+  // CodeRabbit Major + Greptile P1 (PR #2282 follow-up): a valid JSON line
+  // whose `message.content` is an unexpected type (null, number, plain
+  // object) used to throw. It must now be skipped — same tolerance class as
+  // truncated lines.
+  it('skips a line whose message.content is null and falls back to a valid earlier line', () => {
+    const valid = JSON.stringify({
+      role: 'assistant',
+      message: { content: [{ type: 'text', text: 'kept' }] },
+    });
+    const nullContent = JSON.stringify({
+      role: 'assistant',
+      message: { content: null },
+    });
+    const content = [valid, nullContent].join('\n');
+
+    expect(() => extractLastMessageFromJsonl(content, 'assistant', false)).not.toThrow();
+    expect(extractLastMessageFromJsonl(content, 'assistant', false)).toBe('kept');
+  });
+
+  it('skips a line whose message.content is a number without throwing', () => {
+    const valid = JSON.stringify({
+      role: 'assistant',
+      message: { content: [{ type: 'text', text: 'kept too' }] },
+    });
+    const numericContent = JSON.stringify({
+      role: 'assistant',
+      message: { content: 42 },
+    });
+    const content = [valid, numericContent].join('\n');
+
+    expect(() => extractLastMessageFromJsonl(content, 'assistant', false)).not.toThrow();
+    expect(extractLastMessageFromJsonl(content, 'assistant', false)).toBe('kept too');
+  });
+
+  it('skips a line whose message.content is a plain object without throwing', () => {
+    const valid = JSON.stringify({
+      role: 'assistant',
+      message: { content: [{ type: 'text', text: 'survivor' }] },
+    });
+    const objectContent = JSON.stringify({
+      role: 'assistant',
+      message: { content: { unexpected: 'shape' } },
+    });
+    const content = [valid, objectContent].join('\n');
+
+    expect(() => extractLastMessageFromJsonl(content, 'assistant', false)).not.toThrow();
+    expect(extractLastMessageFromJsonl(content, 'assistant', false)).toBe('survivor');
+  });
 });

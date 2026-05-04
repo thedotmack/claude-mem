@@ -109,7 +109,12 @@ export function extractLastMessageFromJsonl(
         .map((c: any) => c.text)
         .join('\n');
     } else {
-      throw new Error(`Unknown message content format in transcript. Type: ${typeof msgContent}`);
+      // Unknown content shape (null, number, plain object, etc.) — skip rather
+      // than throw. A single weird line should not crash the entire summary
+      // pipeline; we already tolerate malformed JSONL via the parse-catch
+      // above, and this is the same class of defensive forward compat
+      // (CodeRabbit / Greptile review on PR #2282).
+      continue;
     }
 
     if (stripSystemReminders) {
