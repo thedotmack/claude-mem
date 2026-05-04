@@ -35,10 +35,12 @@ function createSessionWithMemoryId(db: Database, contentSessionId: string, memor
 }
 
 describe('TRIAGE-03: Data Integrity', () => {
+  let dbWrapper: ClaudeMemDatabase;
   let db: Database;
 
   beforeEach(() => {
-    db = new ClaudeMemDatabase(':memory:').db;
+    dbWrapper = new ClaudeMemDatabase(':memory:');
+    db = dbWrapper.db;
   });
 
   afterEach(() => {
@@ -120,11 +122,11 @@ describe('TRIAGE-03: Data Integrity', () => {
   });
 
   describe('Transaction-level deduplication', () => {
-    it('storeObservations deduplicates within a batch', () => {
+    it('storeObservations deduplicates within a batch', async () => {
       const memId = createSessionWithMemoryId(db, 'content-tx-1', 'mem-tx-1');
       const obs = createObservationInput({ title: 'Duplicate', narrative: 'Same content' });
 
-      const result = storeObservations(db, memId, 'test-project', [obs, obs, obs], null);
+      const result = await storeObservations(dbWrapper, memId, 'test-project', [obs, obs, obs], null);
 
       expect(result.observationIds.length).toBe(3);
       expect(result.observationIds[1]).toBe(result.observationIds[0]);

@@ -13,13 +13,14 @@ import {
 } from '../../src/services/sqlite/Sessions.js';
 import type { ObservationInput } from '../../src/services/sqlite/observations/types.js';
 import type { SummaryInput } from '../../src/services/sqlite/summaries/types.js';
-import type { Database } from 'bun:sqlite';
 
 describe('Transactions Module', () => {
-  let db: Database;
+  let dbWrapper: ClaudeMemDatabase;
+  let db: ClaudeMemDatabase['db'];
 
   beforeEach(() => {
-    db = new ClaudeMemDatabase(':memory:').db;
+    dbWrapper = new ClaudeMemDatabase(':memory:');
+    db = dbWrapper.db;
   });
 
   afterEach(() => {
@@ -59,7 +60,7 @@ describe('Transactions Module', () => {
   }
 
   describe('storeObservations', () => {
-    it('should store multiple observations atomically and return result', () => {
+    it('should store multiple observations atomically and return result', async () => {
       const { memorySessionId } = createSessionWithMemoryId('content-atomic-123', 'atomic-session-123');
       const project = 'test-project';
       const observations = [
@@ -68,7 +69,7 @@ describe('Transactions Module', () => {
         createObservationInput({ title: 'Obs 3' }),
       ];
 
-      const result = storeObservations(db, memorySessionId, project, observations, null);
+      const result = await storeObservations(dbWrapper, memorySessionId, project, observations, null);
 
       expect(result.observationIds).toHaveLength(3);
       expect(result.observationIds.every((id) => typeof id === 'number')).toBe(true);
@@ -76,7 +77,7 @@ describe('Transactions Module', () => {
       expect(typeof result.createdAtEpoch).toBe('number');
     });
 
-    it('should store all observations with same timestamp', () => {
+    it('should store all observations with same timestamp', async () => {
       const { memorySessionId } = createSessionWithMemoryId('content-ts', 'timestamp-session');
       const project = 'test-project';
       const observations = [
@@ -85,8 +86,8 @@ describe('Transactions Module', () => {
       ];
       const fixedTimestamp = 1600000000000;
 
-      const result = storeObservations(
-        db,
+      const result = await storeObservations(
+        dbWrapper,
         memorySessionId,
         project,
         observations,
@@ -104,13 +105,13 @@ describe('Transactions Module', () => {
       }
     });
 
-    it('should store observations with summary', () => {
+    it('should store observations with summary', async () => {
       const { memorySessionId } = createSessionWithMemoryId('content-with-sum', 'with-summary-session');
       const project = 'test-project';
       const observations = [createObservationInput({ title: 'Main Obs' })];
       const summary = createSummaryInput({ request: 'Test request' });
 
-      const result = storeObservations(db, memorySessionId, project, observations, summary);
+      const result = await storeObservations(dbWrapper, memorySessionId, project, observations, summary);
 
       expect(result.observationIds).toHaveLength(1);
       expect(result.summaryId).not.toBeNull();
@@ -121,23 +122,23 @@ describe('Transactions Module', () => {
       expect(storedSummary?.request).toBe('Test request');
     });
 
-    it('should handle empty observations array', () => {
+    it('should handle empty observations array', async () => {
       const { memorySessionId } = createSessionWithMemoryId('content-empty', 'empty-obs-session');
       const project = 'test-project';
       const observations: ObservationInput[] = [];
 
-      const result = storeObservations(db, memorySessionId, project, observations, null);
+      const result = await storeObservations(dbWrapper, memorySessionId, project, observations, null);
 
       expect(result.observationIds).toHaveLength(0);
       expect(result.summaryId).toBeNull();
     });
 
-    it('should handle summary-only (no observations)', () => {
+    it('should handle summary-only (no observations)', async () => {
       const { memorySessionId } = createSessionWithMemoryId('content-sum-only', 'summary-only-session');
       const project = 'test-project';
       const summary = createSummaryInput({ request: 'Summary-only request' });
 
-      const result = storeObservations(db, memorySessionId, project, [], summary);
+      const result = await storeObservations(dbWrapper, memorySessionId, project, [], summary);
 
       expect(result.observationIds).toHaveLength(0);
       expect(result.summaryId).not.toBeNull();
@@ -146,11 +147,11 @@ describe('Transactions Module', () => {
       expect(storedSummary?.request).toBe('Summary-only request');
     });
 
-    it('should return correct createdAtEpoch', () => {
+    it('should return correct createdAtEpoch', async () => {
       const { memorySessionId } = createSessionWithMemoryId('content-epoch', 'session-epoch');
       const before = Date.now();
-      const result = storeObservations(
-        db,
+      const result = await storeObservations(
+        dbWrapper,
         memorySessionId,
         'project',
         [createObservationInput()],
@@ -162,7 +163,7 @@ describe('Transactions Module', () => {
       expect(result.createdAtEpoch).toBeLessThanOrEqual(after);
     });
 
-    it('should apply promptNumber to all observations', () => {
+    it('should apply promptNumber to all observations', async () => {
       const { memorySessionId } = createSessionWithMemoryId('content-pn', 'prompt-num-session');
       const project = 'test-project';
       const observations = [
@@ -171,8 +172,8 @@ describe('Transactions Module', () => {
       ];
       const promptNumber = 5;
 
-      const result = storeObservations(
-        db,
+      const result = await storeObservations(
+        dbWrapper,
         memorySessionId,
         project,
         observations,
@@ -185,11 +186,30 @@ describe('Transactions Module', () => {
         expect(obs?.prompt_number).toBe(promptNumber);
       }
     });
+
+    it('dedups by content_hash across separate calls — same (sessionId, title, narrative) returns same id', async () => {
+      const { memorySessionId } = createSessionWithMemoryId('content-dedup', 'session-dedup');
+      const project = 'test-project';
+      const observation = createObservationInput({
+        title: 'Identical Title',
+        narrative: 'Identical narrative content for dedup test',
+      });
+
+      const first = await storeObservations(dbWrapper, memorySessionId, project, [observation], null);
+      const second = await storeObservations(dbWrapper, memorySessionId, project, [observation], null);
+
+      expect(first.observationIds).toHaveLength(1);
+      expect(second.observationIds).toHaveLength(1);
+      // Critical: dedup-by-content-hash must yield the same row id across
+      // calls. This is the load-bearing semantic preserved by the libSQL
+      // conversion (PHASE_1_HANDOFF.md §2 Step 2).
+      expect(second.observationIds[0]).toBe(first.observationIds[0]);
+    });
   });
 
   describe('storeObservationsAndMarkComplete', () => {
 
-    it('should store observations, summary, and mark message complete', () => {
+    it('should store observations, summary, and mark message complete', async () => {
       const { memorySessionId, sessionDbId } = createSessionWithMemoryId('content-complete', 'complete-session');
       const project = 'test-project';
       const observations = [createObservationInput({ title: 'Complete Obs' })];
@@ -203,8 +223,8 @@ describe('Transactions Module', () => {
       const msgResult = insertStmt.run(sessionDbId, 'content-complete', Date.now());
       const messageId = Number(msgResult.lastInsertRowid);
 
-      const result = storeObservationsAndMarkComplete(
-        db,
+      const result = await storeObservationsAndMarkComplete(
+        dbWrapper,
         memorySessionId,
         project,
         observations,
@@ -220,7 +240,7 @@ describe('Transactions Module', () => {
       expect(msg?.status).toBe('processed');
     });
 
-    it('should maintain atomicity - all operations share same timestamp', () => {
+    it('should maintain atomicity - all operations share same timestamp', async () => {
       const { memorySessionId, sessionDbId } = createSessionWithMemoryId('content-atomic-ts', 'atomic-timestamp-session');
       const project = 'test-project';
       const observations = [
@@ -237,8 +257,8 @@ describe('Transactions Module', () => {
       `).run(sessionDbId, 'content-atomic-ts', Date.now());
       const messageId = db.prepare('SELECT last_insert_rowid() as id').get() as { id: number };
 
-      const result = storeObservationsAndMarkComplete(
-        db,
+      const result = await storeObservationsAndMarkComplete(
+        dbWrapper,
         memorySessionId,
         project,
         observations,
@@ -260,7 +280,7 @@ describe('Transactions Module', () => {
       expect(storedSummary?.created_at_epoch).toBe(fixedTimestamp);
     });
 
-    it('should handle null summary', () => {
+    it('should handle null summary', async () => {
       const { memorySessionId, sessionDbId } = createSessionWithMemoryId('content-no-sum', 'no-summary-session');
       const project = 'test-project';
       const observations = [createObservationInput({ title: 'Only Obs' })];
@@ -272,8 +292,8 @@ describe('Transactions Module', () => {
       `).run(sessionDbId, 'content-no-sum', Date.now());
       const messageId = db.prepare('SELECT last_insert_rowid() as id').get() as { id: number };
 
-      const result = storeObservationsAndMarkComplete(
-        db,
+      const result = await storeObservationsAndMarkComplete(
+        dbWrapper,
         memorySessionId,
         project,
         observations,
