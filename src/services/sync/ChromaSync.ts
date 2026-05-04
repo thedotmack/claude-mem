@@ -624,19 +624,37 @@ export class ChromaSync {
     // Watermark must be durable per-batch: SIGKILL / OOM / reboot mid-flight
     // skips any trailing finally, so a once-at-end bump leaves the watermark
     // at zero and the next boot re-embeds everything (#2214, amplifies #2220).
+    //
+    // Non-contiguous failure guard: once any batch under-writes, ALL later
+    // batches must also skip the watermark bump. The watermark is a single
+    // monotonic id, so it cannot represent "synced through 200, then a gap at
+    // 201–250, then 251 onward" — bumping past the gap would silently drop
+    // 201–250 forever (CodeRabbit review on PR #2282).
     let writtenDocs = 0;
     let lastSyncedObsIdx = -1;
+    let hadGap = false;
     for (let i = 0; i < allDocs.length; i += this.BATCH_SIZE) {
       const batch = allDocs.slice(i, i + this.BATCH_SIZE);
       const writtenInBatch = await this.addDocuments(batch);
       // Only advance the watermark for documents that actually landed in
       // Chroma. addDocuments() logs and continues on per-batch failures, so a
       // partial write must not mark unwritten docs as synced.
-      if (writtenInBatch <= 0) {
-        logger.debug('CHROMA_SYNC', 'Skipping watermark bump for failed batch', {
+      if (writtenInBatch < batch.length) {
+        hadGap = true;
+        logger.debug('CHROMA_SYNC', 'Skipping watermark bump for failed/partial batch', {
           project: backfillProject,
           batchStart: i,
-          batchSize: batch.length
+          requested: batch.length,
+          written: writtenInBatch
+        });
+        continue;
+      }
+      if (hadGap) {
+        // A previous batch left a gap; downstream batches cannot bump the
+        // watermark even if they themselves succeeded.
+        logger.debug('CHROMA_SYNC', 'Skipping watermark bump after prior gap', {
+          project: backfillProject,
+          batchStart: i
         });
         continue;
       }
@@ -703,18 +721,29 @@ export class ChromaSync {
       summaryByDocCount.push({ summary, docs });
     }
 
+    // Non-contiguous failure guard: see backfillObservations() for rationale.
     let writtenDocs = 0;
     let lastSyncedIdx = -1;
+    let hadGap = false;
     for (let i = 0; i < summaryDocs.length; i += this.BATCH_SIZE) {
       const batch = summaryDocs.slice(i, i + this.BATCH_SIZE);
       const writtenInBatch = await this.addDocuments(batch);
       // Only advance the watermark for documents that actually landed in
       // Chroma. See the analogous comment in backfillObservations().
-      if (writtenInBatch <= 0) {
-        logger.debug('CHROMA_SYNC', 'Skipping watermark bump for failed batch', {
+      if (writtenInBatch < batch.length) {
+        hadGap = true;
+        logger.debug('CHROMA_SYNC', 'Skipping watermark bump for failed/partial batch', {
           project: backfillProject,
           batchStart: i,
-          batchSize: batch.length
+          requested: batch.length,
+          written: writtenInBatch
+        });
+        continue;
+      }
+      if (hadGap) {
+        logger.debug('CHROMA_SYNC', 'Skipping watermark bump after prior gap', {
+          project: backfillProject,
+          batchStart: i
         });
         continue;
       }
@@ -787,16 +816,27 @@ export class ChromaSync {
     // backfill resumes where it left off instead of re-embedding from zero.
     // Only advance the watermark when the batch actually wrote — partial
     // writes must not skip the failed prompts on restart.
+    //
+    // Non-contiguous failure guard: see backfillObservations() for rationale.
+    let hadGap = false;
     for (let i = 0; i < promptDocs.length; i += this.BATCH_SIZE) {
       const batch = promptDocs.slice(i, i + this.BATCH_SIZE);
       const writtenInBatch = await this.addDocuments(batch);
       const upTo = Math.min(i + this.BATCH_SIZE, prompts.length);
       if (writtenInBatch < batch.length) {
+        hadGap = true;
         logger.debug('CHROMA_SYNC', 'Skipping prompt watermark bump for failed/partial batch', {
           project: backfillProject,
           batchStart: i,
           requested: batch.length,
           written: writtenInBatch
+        });
+        continue;
+      }
+      if (hadGap) {
+        logger.debug('CHROMA_SYNC', 'Skipping prompt watermark bump after prior gap', {
+          project: backfillProject,
+          batchStart: i
         });
         continue;
       }
