@@ -75,7 +75,7 @@ export class SettingsRoutes extends BaseRouteHandler {
         logger.error('HTTP', 'Failed to parse settings file', { settingsPath }, normalizedParseError);
         res.status(500).json({
           success: false,
-          error: 'Settings file is corrupted. Delete ~/.claude-mem/settings.json to reset.'
+          error: `Settings file is corrupted. Delete ${settingsPath} to reset.`
         });
         return;
       }

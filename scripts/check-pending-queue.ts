@@ -2,6 +2,7 @@
 
 const WORKER_PORT = process.env.CLAUDE_MEM_WORKER_PORT || 37777;
 const WORKER_URL = `http://127.0.0.1:${WORKER_PORT}`;
+const WORKER_FETCH_TIMEOUT_MS = 10_000;
 
 interface ProcessingStatusResponse {
   isProcessing: boolean;
@@ -15,9 +16,33 @@ interface SetProcessingResponse {
   activeSessions: number;
 }
 
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit | undefined,
+  timeoutMessage: string,
+  timeoutMs: number = WORKER_FETCH_TIMEOUT_MS,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (err) {
+    if ((err as { name?: string })?.name === 'AbortError') {
+      throw new Error(`${timeoutMessage} (timed out after ${timeoutMs}ms)`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function checkWorkerHealth(): Promise<boolean> {
   try {
-    const res = await fetch(`${WORKER_URL}/api/health`);
+    const res = await fetchWithTimeout(
+      `${WORKER_URL}/api/health`,
+      undefined,
+      'Health check did not respond',
+    );
     return res.ok;
   } catch {
     return false;
@@ -25,7 +50,11 @@ async function checkWorkerHealth(): Promise<boolean> {
 }
 
 async function getProcessingStatus(): Promise<ProcessingStatusResponse> {
-  const res = await fetch(`${WORKER_URL}/api/processing-status`);
+  const res = await fetchWithTimeout(
+    `${WORKER_URL}/api/processing-status`,
+    undefined,
+    'Failed to get processing status',
+  );
   if (!res.ok) {
     throw new Error(`Failed to get processing status: ${res.status}`);
   }
@@ -33,11 +62,15 @@ async function getProcessingStatus(): Promise<ProcessingStatusResponse> {
 }
 
 async function triggerProcessing(): Promise<SetProcessingResponse> {
-  const res = await fetch(`${WORKER_URL}/api/processing`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({})
-  });
+  const res = await fetchWithTimeout(
+    `${WORKER_URL}/api/processing`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    },
+    'Failed to trigger processing',
+  );
   if (!res.ok) {
     throw new Error(`Failed to trigger processing: ${res.status}`);
   }
