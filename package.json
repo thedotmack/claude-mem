@@ -118,6 +118,7 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.119",
     "@clack/prompts": "^1.2.0",
+    "@libsql/client": "^0.17.3",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "ansi-to-html": "^0.7.2",
     "dompurify": "^3.4.1",
