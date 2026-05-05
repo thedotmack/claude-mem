@@ -1,17 +1,20 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import {
   chmodSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { writeJsonFileAtomic } from '../src/npx-cli/utils/paths.js';
+import { IS_WINDOWS, writeJsonFileAtomic } from '../src/npx-cli/utils/paths.js';
 
 /**
  * Tests for writeJsonFileAtomic's crash-safe semantics.
@@ -104,6 +107,39 @@ describe('writeJsonFileAtomic', () => {
 
     const leftovers = readdirSync(tempDir).filter(name => name.endsWith('.tmp'));
     expect(leftovers).toEqual([]);
+  });
+
+  it('writes through a symlinked destination instead of replacing the link', () => {
+    if (IS_WINDOWS) {
+      // Symlink creation requires elevated privileges on Windows; skip there.
+      return;
+    }
+    // Users who keep ~/.claude/settings.json under a dotfiles repo often
+    // symlink it. POSIX rename(2) replaces the symlink with the temp file,
+    // which would silently break the link — verify we resolve it instead.
+    const realDir = mkdtempSync(join(tmpdir(), 'claude-mem-real-'));
+    try {
+      const realTarget = join(realDir, 'real-config.json');
+      writeFileSync(realTarget, '{"v":0}');
+      const linkPath = join(tempDir, 'config.json');
+      symlinkSync(realTarget, linkPath);
+
+      writeJsonFileAtomic(linkPath, { v: 42 });
+
+      // Underlying file is updated.
+      expect(JSON.parse(readFileSync(realTarget, 'utf-8'))).toEqual({ v: 42 });
+      // Symlink is preserved (not clobbered into a regular file).
+      expect(lstatSync(linkPath).isSymbolicLink()).toBe(true);
+      // And it still resolves to the same realpath.
+      expect(realpathSync(linkPath)).toBe(realpathSync(realTarget));
+      // Temp file landed next to the real target, not at the symlink site.
+      const realDirLeftovers = readdirSync(realDir).filter(name => name.endsWith('.tmp'));
+      expect(realDirLeftovers).toEqual([]);
+      const tempDirLeftovers = readdirSync(tempDir).filter(name => name.endsWith('.tmp'));
+      expect(tempDirLeftovers).toEqual([]);
+    } finally {
+      rmSync(realDir, { recursive: true, force: true });
+    }
   });
 
   it('cleans up the temp file when the rename step fails', () => {
