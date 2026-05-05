@@ -35,6 +35,7 @@ function stripHardcodedDirname(filePath) {
   }
 
   content = content.replace(/\bvar\s*;/g, '');
+  content = content.replace(/[ \t]+$/gm, '');
 
   const removed = before - content.length;
   if (removed > 0) {
@@ -97,6 +98,7 @@ async function buildHooks() {
         '@tree-sitter-grammars/tree-sitter-yaml': '^0.7.1',
         '@derekstride/tree-sitter-sql': '^0.3.11',
         '@tree-sitter-grammars/tree-sitter-markdown': '^0.3.2',
+        'shell-quote': '^1.8.3',
       },
       overrides: {
         'tree-sitter': '^0.25.0'
@@ -342,17 +344,37 @@ async function buildHooks() {
     console.log(`✓ Copied ${onboardingExplainerSrc} → ${onboardingExplainerDst}`);
 
     console.log('\n📋 Verifying distribution files...');
+    const validCodexHookEvents = new Set([
+      'SessionStart',
+      'UserPromptSubmit',
+      'PreToolUse',
+      'PermissionRequest',
+      'PostToolUse',
+      'Stop',
+    ]);
     const requiredDistributionFiles = [
       'plugin/skills/mem-search/SKILL.md',
       'plugin/skills/smart-explore/SKILL.md',
       'plugin/skills/how-it-works/SKILL.md',
       'plugin/skills/how-it-works/onboarding-explainer.md',
       'plugin/hooks/hooks.json',
+      'plugin/hooks/codex-hooks.json',
       'plugin/.claude-plugin/plugin.json',
+      'plugin/.codex-plugin/plugin.json',
+      'plugin/.mcp.json',
+      '.codex-plugin/plugin.json',
+      '.mcp.json',
+      '.agents/plugins/marketplace.json',
     ];
     for (const filePath of requiredDistributionFiles) {
       if (!fs.existsSync(filePath)) {
         throw new Error(`Missing required distribution file: ${filePath}`);
+      }
+    }
+    const codexHooks = JSON.parse(fs.readFileSync('plugin/hooks/codex-hooks.json', 'utf-8'));
+    for (const eventName of Object.keys(codexHooks.hooks ?? {})) {
+      if (!validCodexHookEvents.has(eventName)) {
+        throw new Error(`plugin/hooks/codex-hooks.json contains unknown Codex hook event: ${eventName}`);
       }
     }
     console.log('✓ All required distribution files present');

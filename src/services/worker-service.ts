@@ -71,7 +71,7 @@ import { TimelineService } from './worker/TimelineService.js';
 import { SessionEventBroadcaster } from './worker/events/SessionEventBroadcaster.js';
 import { SessionCompletionHandler } from './worker/session/SessionCompletionHandler.js';
 import { setIngestContext, attachIngestGeneratorStarter } from './worker/http/shared.js';
-import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, loadTranscriptWatchConfig, writeSampleConfig } from './transcripts/config.js';
+import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, loadTranscriptWatchConfig } from './transcripts/config.js';
 import { TranscriptWatcher } from './transcripts/watcher.js';
 
 import { ViewerRoutes } from './worker/http/routes/ViewerRoutes.js';
@@ -128,9 +128,7 @@ export class WorkerService implements WorkerRef {
   private searchRoutes: SearchRoutes | null = null;
 
   private chromaMcpManager: ChromaMcpManager | null = null;
-
   private transcriptWatcher: TranscriptWatcher | null = null;
-
   private initializationComplete: Promise<void>;
   private resolveInitialization!: () => void;
 
@@ -461,10 +459,10 @@ export class WorkerService implements WorkerRef {
     const resolvedConfigPath = expandHomePath(configPath);
 
     if (!existsSync(resolvedConfigPath)) {
-      writeSampleConfig(configPath);
-      logger.info('TRANSCRIPT', 'Created default transcript watch config', {
+      logger.info('TRANSCRIPT', 'Transcript watcher config not found; skipping automatic transcript capture', {
         configPath: resolvedConfigPath
       });
+      return;
     }
 
     const transcriptConfig = loadTranscriptWatchConfig(configPath);
@@ -477,11 +475,11 @@ export class WorkerService implements WorkerRef {
       this.transcriptWatcher?.stop();
       this.transcriptWatcher = null;
       if (error instanceof Error) {
-        logger.error('WORKER', 'Failed to start transcript watcher (continuing without Codex ingestion)', {
+        logger.error('WORKER', 'Failed to start transcript watcher (continuing without transcript ingestion)', {
           configPath: resolvedConfigPath
         }, error);
       } else {
-        logger.error('WORKER', 'Failed to start transcript watcher with non-Error (continuing without Codex ingestion)', {
+        logger.error('WORKER', 'Failed to start transcript watcher with non-Error (continuing without transcript ingestion)', {
           configPath: resolvedConfigPath
         }, new Error(String(error)));
       }

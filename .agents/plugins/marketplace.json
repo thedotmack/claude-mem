@@ -1,0 +1,20 @@
+{
+  "name": "claude-mem-local",
+  "interface": {
+    "displayName": "claude-mem (local)"
+  },
+  "plugins": [
+    {
+      "name": "claude-mem",
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

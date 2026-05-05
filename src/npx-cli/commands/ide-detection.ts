@@ -80,7 +80,7 @@ export function detectInstalledIDEs(): IDEInfo[] {
       label: 'Codex CLI',
       detected: existsSync(join(home, '.codex')),
       supported: true,
-      hint: 'transcript-based integration',
+      hint: 'native hooks integration',
     },
     {
       id: 'cursor',
@@ -127,4 +127,3 @@ export function detectInstalledIDEs(): IDEInfo[] {
     },
   ];
 }
-

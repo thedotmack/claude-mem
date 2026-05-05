@@ -35,10 +35,10 @@ describe('Hook Lifecycle - Event Handlers', () => {
 
 describe('Codex CLI Compatibility (#744)', () => {
   describe('getPlatformAdapter', () => {
-    it('should return rawAdapter for unknown platforms like codex', async () => {
-      const { getPlatformAdapter, rawAdapter } = await import('../src/cli/adapters/index.js');
+    it('should return codexAdapter for codex', async () => {
+      const { getPlatformAdapter, codexAdapter } = await import('../src/cli/adapters/index.js');
       const adapter = getPlatformAdapter('codex');
-      expect(adapter).toBe(rawAdapter);
+      expect(adapter).toBe(codexAdapter);
     });
 
     it('should return rawAdapter for any unrecognized platform string', async () => {
@@ -78,6 +78,55 @@ describe('Codex CLI Compatibility (#744)', () => {
       const input = claudeCodeAdapter.normalizeInput(undefined);
       expect(input.sessionId).toBeUndefined();
       expect(input.cwd).toBe(process.cwd());
+    });
+  });
+
+  describe('codexAdapter', () => {
+    it('normalizes snake_case Stop payloads with last assistant message', async () => {
+      const { codexAdapter } = await import('../src/cli/adapters/codex.js');
+      const input = codexAdapter.normalizeInput({
+        hook_event_name: 'Stop',
+        session_id: 'codex-session',
+        turn_id: 'turn-1',
+        cwd: '/tmp',
+        stop_hook_active: false,
+        last_assistant_message: 'done',
+      });
+
+      expect(input.sessionId).toBe('codex-session');
+      expect(input.turnId).toBe('turn-1');
+      expect(input.lastAssistantMessage).toBe('done');
+      expect(input.stopHookActive).toBe(false);
+    });
+
+    it('drops PreToolUse allow decisions because Codex only accepts deny', async () => {
+      const { codexAdapter } = await import('../src/cli/adapters/codex.js');
+      const output = codexAdapter.formatOutput({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          additionalContext: 'file history',
+          permissionDecision: 'allow',
+        },
+      }) as any;
+
+      expect(output.hookSpecificOutput).toEqual({
+        hookEventName: 'PreToolUse',
+        additionalContext: 'file history',
+      });
+    });
+
+    it('does not emit hookSpecificOutput for Stop outputs', async () => {
+      const { codexAdapter } = await import('../src/cli/adapters/codex.js');
+      const output = codexAdapter.formatOutput({
+        continue: true,
+        suppressOutput: true,
+        hookSpecificOutput: {
+          hookEventName: 'Stop',
+          additionalContext: 'ignored',
+        },
+      }) as any;
+
+      expect(output).toEqual({ continue: true, suppressOutput: true });
     });
   });
 

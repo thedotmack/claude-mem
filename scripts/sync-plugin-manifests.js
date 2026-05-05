@@ -9,7 +9,9 @@ const rootDir = path.resolve(__dirname, '..');
 
 const packageJsonPath = path.join(rootDir, 'package.json');
 const codexPluginPath = path.join(rootDir, '.codex-plugin', 'plugin.json');
+const bundledCodexPluginPath = path.join(rootDir, 'plugin', '.codex-plugin', 'plugin.json');
 const claudePluginPath = path.join(rootDir, '.claude-plugin', 'plugin.json');
+const bundledClaudePluginPath = path.join(rootDir, 'plugin', '.claude-plugin', 'plugin.json');
 
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
@@ -75,7 +77,7 @@ function normalizeRepositoryUrl(repository) {
 }
 
 function main() {
-  for (const filePath of [packageJsonPath, codexPluginPath, claudePluginPath]) {
+  for (const filePath of [packageJsonPath, codexPluginPath, bundledCodexPluginPath, claudePluginPath, bundledClaudePluginPath]) {
     if (!fs.existsSync(filePath)) {
       console.error(`Missing required file: ${filePath}`);
       process.exit(1);
@@ -84,10 +86,14 @@ function main() {
 
   const pkg = readJson(packageJsonPath);
   const codexPlugin = readJson(codexPluginPath);
+  const bundledCodexPlugin = readJson(bundledCodexPluginPath);
   const claudePlugin = readJson(claudePluginPath);
+  const bundledClaudePlugin = readJson(bundledClaudePluginPath);
 
   writeJson(codexPluginPath, syncCodexPlugin(codexPlugin, pkg));
+  writeJson(bundledCodexPluginPath, syncCodexPlugin(bundledCodexPlugin, pkg));
   writeJson(claudePluginPath, syncClaudePlugin(claudePlugin, pkg));
+  writeJson(bundledClaudePluginPath, syncClaudePlugin(bundledClaudePlugin, pkg));
 
   console.log('✓ Synced plugin manifests from package.json');
 }

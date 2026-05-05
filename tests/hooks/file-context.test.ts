@@ -181,4 +181,30 @@ describe('fileContextHandler — #2094 (no Read mutation)', () => {
     expect(ctx).not.toContain('Only line 1 was read');
     expect(ctx).toContain('full requested section');
   });
+
+  it('accepts a Codex filePaths array and joins per-file context blocks', async () => {
+    const otherFile = join(tmpDir, 'other.md');
+    writeFileSync(otherFile, PADDING);
+
+    const future = Date.now() + 60_000;
+    fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((url: string | URL | Request) => {
+      const text = String(url);
+      if (text.includes('other.md')) {
+        return Promise.resolve(makeObservationsResponse([{ id: 2, created_at_epoch: future, title: 'Other file context' }]));
+      }
+      return Promise.resolve(makeObservationsResponse([{ id: 1, created_at_epoch: future, title: 'Main file context' }]));
+    });
+
+    const result = await fileContextHandler.execute({
+      sessionId: 'sess',
+      cwd: tmpDir,
+      toolName: 'Bash',
+      toolInput: { filePaths: [testFile, otherFile] },
+    });
+
+    const ctx = result.hookSpecificOutput!.additionalContext as string;
+    expect(ctx).toContain('Main file context');
+    expect(ctx).toContain('Other file context');
+    expect(ctx).toContain('\n\n---\n\n');
+  });
 });

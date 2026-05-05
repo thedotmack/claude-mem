@@ -42,7 +42,12 @@
   },
   "files": [
     "dist",
+    ".agents/plugins/marketplace.json",
+    ".codex-plugin",
+    ".mcp.json",
     "plugin/.claude-plugin",
+    "plugin/.codex-plugin",
+    "plugin/.mcp.json",
     "plugin/CLAUDE.md",
     "plugin/package.json",
     "plugin/hooks",
@@ -127,6 +132,7 @@
     "picocolors": "^1.1.1",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
+    "shell-quote": "^1.8.3",
     "yaml": "^2.8.3",
     "zod": "^4.3.6",
     "zod-to-json-schema": "^3.25.2"

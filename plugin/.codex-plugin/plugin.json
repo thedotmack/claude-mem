@@ -22,9 +22,9 @@
     "typescript",
     "nodejs"
   ],
-  "skills": "./plugin/skills/",
+  "skills": "./skills/",
   "mcpServers": "./.mcp.json",
-  "hooks": "./plugin/hooks/codex-hooks.json",
+  "hooks": "./hooks/codex-hooks.json",
   "interface": {
     "displayName": "claude-mem",
     "shortDescription": "Persistent memory and context compression across coding sessions.",
