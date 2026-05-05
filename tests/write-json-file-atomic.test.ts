@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import {
   chmodSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -92,9 +93,9 @@ describe('writeJsonFileAtomic', () => {
     }
   });
 
-  it('throws and cleans up the temp file on a serialization failure', () => {
-    // A circular structure makes JSON.stringify throw before any disk write —
-    // verifies the error path doesn't leak a half-written temp file.
+  it('throws on serialization failure without creating a temp file', () => {
+    // A circular structure makes JSON.stringify throw before openSync runs,
+    // so no temp file should ever appear in the destination directory.
     const target = join(tempDir, 'config.json');
     const circular: any = { a: 1 };
     circular.self = circular;
@@ -103,5 +104,21 @@ describe('writeJsonFileAtomic', () => {
 
     const leftovers = readdirSync(tempDir).filter(name => name.endsWith('.tmp'));
     expect(leftovers).toEqual([]);
+  });
+
+  it('cleans up the temp file when the rename step fails', () => {
+    // Force the catch-block cleanup path: pre-create a directory at the
+    // destination so renameSync(tmpPath, filepath) fails (EISDIR/ENOTDIR).
+    // By that point the temp file has already been opened, written, fsync'd,
+    // and closed — so the catch must unlinkSync the leftover .tmp file.
+    const target = join(tempDir, 'config.json');
+    mkdirSync(target);
+
+    expect(() => writeJsonFileAtomic(target, { v: 1 })).toThrow();
+
+    const leftovers = readdirSync(tempDir).filter(name => name.endsWith('.tmp'));
+    expect(leftovers).toEqual([]);
+    // The pre-existing directory should still be there — we didn't clobber it.
+    expect(statSync(target).isDirectory()).toBe(true);
   });
 });
