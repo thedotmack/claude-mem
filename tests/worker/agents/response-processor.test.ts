@@ -234,6 +234,7 @@ describe('ResponseProcessor', () => {
         expect.objectContaining({ sessionId: 1 })
       );
       expect(clearPendingForSession).toHaveBeenCalledWith(1);
+      expect(session.earliestPendingTimestamp).toBeNull();
       expect(mockStoreObservations).not.toHaveBeenCalled();
     });
   });
@@ -495,6 +496,7 @@ describe('ResponseProcessor', () => {
 
       expect(mockStoreObservations).not.toHaveBeenCalled();
       expect(clearPendingForSession).toHaveBeenCalledWith(1);
+      expect(session.earliestPendingTimestamp).toBeNull();
     });
   });
 
