@@ -47,3 +47,5 @@ claude-opus-4-7+claude-mem.*.json
 logs/run_evaluation/
 .venv-swebench/
 .docker-blowout-data/
+.scratch/
+docker/install-test/

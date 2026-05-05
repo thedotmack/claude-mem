@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [12.6.1] - 2026-05-05
+
+## Patch release
+
+### Fixed
+- **install:** marketplace `npm install` no longer fails on tree-sitter peer-dep ERESOLVE. Tree-sitter grammar packages moved from `devDependencies` to `dependencies` and the install command updated to `--omit=dev --legacy-peer-deps` (#2300).
+- **chroma-mcp:** removed ONNX/OpenBLAS thread cap from spawn env to restore performance on multi-core systems.
+
+### Docs
+- Documented the `--legacy-peer-deps` rationale in `runNpmInstallInMarketplace`.
+
 ## [12.6.0] - 2026-05-04
 
 ## Highlights
