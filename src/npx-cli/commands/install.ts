@@ -539,6 +539,10 @@ function runNpmInstallInMarketplace(): void {
 
   if (!existsSync(packageJsonPath)) return;
 
+  // --legacy-peer-deps suppresses a known false-positive ERESOLVE between
+  // tree-sitter@0.21 and @tree-sitter-grammars/* peer ranges. The native
+  // bindings path is unused (we load .wasm), so the conflict is benign.
+  // Revisit if real peer constraints are added to the marketplace deps.
   execSync('npm install --omit=dev --legacy-peer-deps', {
     cwd: marketplaceDir,
     stdio: 'pipe',
