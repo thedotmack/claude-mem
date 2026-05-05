@@ -429,9 +429,9 @@ Same pattern — replace smart-install lifecycle description with the npx-instal
 
 CLAUDE.md says: "No need to edit the changelog ever, it's generated automatically." Don't touch it.
 
-### Edit 6F — Skip docs/reports/
+### Edit 6F — Skip historical incident-report backfills
 
-Those are historical incident reports. Do not retroactively edit them — they describe past behavior.
+The old `docs/reports/` archive was removed during later cleanup. Do not recreate it as part of this installer work.
 
 **Verification checklist:**
 - [ ] `grep -rn "smart-install" docs/public/` returns no results
@@ -439,7 +439,7 @@ Those are historical incident reports. Do not retroactively edit them — they d
 - [ ] (Optional) Render docs locally via Mintlify dev server and visually scan the architecture page
 
 **Anti-pattern guards:**
-- ❌ Do not edit `docs/reports/*.md` — those are dated incident reports, leave them alone.
+- ❌ Do not recreate the removed `docs/reports/` archive from this plan.
 - ❌ Do not edit CHANGELOG.md.
 
 ---

@@ -11,6 +11,8 @@ import { getSupervisor } from '../../supervisor/index.js';
 import { isPidAlive } from '../../supervisor/process-registry.js';
 import { ENV_PREFIXES, ENV_EXACT_MATCHES } from '../../supervisor/env-sanitizer.js';
 import { flushResponseThen } from './flushResponseThen.js';
+import { getUptimeSeconds } from '../../shared/uptime.js';
+import { globalRateLimitStore } from '../worker/RateLimitStore.js';
 
 const INSTRUCTIONS_BASE_DIR: string = path.resolve(__dirname, '../skills/mem-search');
 const INSTRUCTIONS_OPERATIONS_DIR: string = path.join(INSTRUCTIONS_BASE_DIR, 'operations');
@@ -161,7 +163,7 @@ export class Server {
         status: 'ok',
         version: BUILT_IN_VERSION,
         workerPath: this.options.workerPath,
-        uptime: Date.now() - this.startTime,
+        uptime: getUptimeSeconds(this.startTime),
         managed: process.env.CLAUDE_MEM_MANAGED === 'true',
         hasIpc: typeof process.send === 'function',
         platform: process.platform,
@@ -169,6 +171,7 @@ export class Server {
         initialized: this.options.getInitializationComplete(),
         mcpReady: this.options.getMcpReady(),
         ai: this.options.getAiStatus(),
+        rateLimits: globalRateLimitStore.getMostRecentByWindow(),
       });
     });
 
@@ -266,8 +269,7 @@ export class Server {
         ENV_EXACT_MATCHES.has(key) || ENV_PREFIXES.some(prefix => key.startsWith(prefix))
       );
 
-      const uptimeMs = Date.now() - this.startTime;
-      const uptimeSeconds = Math.floor(uptimeMs / 1000);
+      const uptimeSeconds = getUptimeSeconds(this.startTime);
       const hours = Math.floor(uptimeSeconds / 3600);
       const minutes = Math.floor((uptimeSeconds % 3600) / 60);
       const formattedUptime = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;

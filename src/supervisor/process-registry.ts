@@ -1,15 +1,15 @@
-import { ChildProcess, spawn, spawnSync } from 'child_process';
+import { ChildProcess, spawnSync } from 'child_process';
+import { spawnHidden } from '../shared/spawn.js';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
-import { homedir } from 'os';
 import path from 'path';
 import { logger } from '../utils/logger.js';
 import { sanitizeEnv } from './env-sanitizer.js';
+import { paths } from '../shared/paths.js';
 
 const REAP_SESSION_SIGTERM_TIMEOUT_MS = 5_000;
 const REAP_SESSION_SIGKILL_TIMEOUT_MS = 1_000;
 
-const DATA_DIR = path.join(homedir(), '.claude-mem');
-const DEFAULT_REGISTRY_PATH = path.join(DATA_DIR, 'supervisor.json');
+const DEFAULT_REGISTRY_PATH = paths.supervisorRegistry();
 
 export interface ManagedProcessInfo {
   pid: number;
@@ -511,7 +511,7 @@ export function spawnSdkProcess(
 
   const isWin = process.platform === 'win32';
   const child = useCmdWrapper
-    ? spawn('cmd.exe', ['/d', '/c', options.command, ...filteredArgs], {
+    ? spawnHidden('cmd.exe', ['/d', '/c', options.command, ...filteredArgs], {
         cwd: options.cwd,
         env,
         detached: !isWin,
@@ -519,7 +519,7 @@ export function spawnSdkProcess(
         signal: options.signal,
         windowsHide: true,
       })
-    : spawn(options.command, filteredArgs, {
+    : spawnHidden(options.command, filteredArgs, {
         cwd: options.cwd,
         env,
         detached: !isWin,

@@ -2,6 +2,16 @@
 import { logger } from '../utils/logger.js';
 import { ModeManager } from '../services/domain/ModeManager.js';
 
+// TODO(#2233): migrate to Anthropic tool-use API for deterministic JSON output. This text-XML path is the bridge.
+// Only strip fences when the entire payload is a single fenced block. Stripping
+// the first opening + last closing fence anywhere in the string can corrupt
+// content that contains internal fenced examples or surrounding prose
+// (CodeRabbit review on PR #2282).
+function stripCodeFences(text: string): string {
+  const match = text.match(/^\s*```(?:xml)?\s*\n([\s\S]*?)\n```\s*$/i);
+  return match ? match[1] : text;
+}
+
 export interface ParsedObservation {
   type: string;
   title: string | null;
@@ -32,6 +42,8 @@ export function parseAgentXml(raw: string, correlationId?: string | number): Par
   if (typeof raw !== 'string' || !raw.trim()) {
     return { valid: false };
   }
+
+  raw = stripCodeFences(raw);
 
   const skipMatch = /<skip_summary(?:\s+reason="([^"]*)")?\s*\/>/.exec(raw);
   if (skipMatch) {

@@ -1,4 +1,4 @@
-import { spawn } from 'child_process';
+import { spawnHidden } from '../../shared/spawn.js';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import pc from 'picocolors';
@@ -42,7 +42,7 @@ function spawnBunWorkerCommand(command: string, extraArgs: string[] = []): void 
 
   const args = [workerScript, command, ...extraArgs];
 
-  const child = spawn(bunPath, args, {
+  const child = spawnHidden(bunPath, args, {
     stdio: 'inherit',
     cwd: marketplaceDirectory(),
     env: process.env,
@@ -88,7 +88,7 @@ export function runAdoptCommand(extraArgs: string[] = []): void {
   const userCwd = process.cwd();
   const args = [workerScript, 'adopt', '--cwd', userCwd, ...extraArgs];
 
-  const child = spawn(bunPath, args, {
+  const child = spawnHidden(bunPath, args, {
     stdio: 'inherit',
     cwd: marketplaceDirectory(),
     env: process.env,
@@ -177,7 +177,7 @@ export function runTranscriptWatchCommand(): void {
     return;
   }
 
-  const child = spawn(bunPath, [transcriptWatcherPath, 'watch'], {
+  const child = spawnHidden(bunPath, [transcriptWatcherPath, 'watch'], {
     stdio: 'inherit',
     cwd: marketplaceDirectory(),
     env: process.env,

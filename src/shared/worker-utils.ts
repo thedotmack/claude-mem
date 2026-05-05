@@ -1,6 +1,7 @@
 import path from "path";
 import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync } from "fs";
-import { spawn, execSync } from "child_process";
+import { execSync } from "child_process";
+import { spawnHidden } from "./spawn.js";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, HOOK_EXIT_CODES, getTimeout } from "./hook-constants.js";
 import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
@@ -241,7 +242,7 @@ export async function ensureWorkerRunning(): Promise<boolean> {
   logger.info('SYSTEM', 'Worker not running — lazy-spawning', { runtimePath, scriptPath });
 
   try {
-    const proc = spawn(runtimePath, [scriptPath, '--daemon'], {
+    const proc = spawnHidden(runtimePath, [scriptPath, '--daemon'], {
       detached: true,
       stdio: ['ignore', 'ignore', 'ignore'],
     });

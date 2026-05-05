@@ -20,6 +20,7 @@ import { getProjectContext } from '../../../../utils/project-name.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 import { handleGeneratorExit } from '../../session/GeneratorExitHandler.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
+import { getUptimeSeconds } from '../../../../shared/uptime.js';
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
 
@@ -322,7 +323,7 @@ export class SessionRoutes extends BaseRouteHandler {
       sessionDbId,
       queueLength,
       summaryStored: session.lastSummaryStored ?? null,
-      uptime: Date.now() - session.startTime
+      uptime: getUptimeSeconds(session.startTime)
     });
   });
 

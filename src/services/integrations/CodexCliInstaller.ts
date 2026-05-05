@@ -9,11 +9,12 @@ import {
   DEFAULT_STATE_PATH,
   SAMPLE_CONFIG,
 } from '../transcripts/config.js';
+import { paths } from '../../shared/paths.js';
 import type { TranscriptWatchConfig, WatchTarget } from '../transcripts/types.js';
 
 const CODEX_DIR = path.join(homedir(), '.codex');
 const CODEX_AGENTS_MD_PATH = path.join(CODEX_DIR, 'AGENTS.md');
-const CLAUDE_MEM_DIR = path.join(homedir(), '.claude-mem');
+const CLAUDE_MEM_DIR = paths.dataDir();
 
 const CODEX_WATCH_NAME = 'codex';
 

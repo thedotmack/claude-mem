@@ -1,10 +1,11 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import { join, dirname } from 'path';
+import { paths } from '../../shared/paths.js';
 import type { TranscriptSchema, TranscriptWatchConfig } from './types.js';
 
-export const DEFAULT_CONFIG_PATH = join(homedir(), '.claude-mem', 'transcript-watch.json');
-export const DEFAULT_STATE_PATH = join(homedir(), '.claude-mem', 'transcript-watch-state.json');
+export const DEFAULT_CONFIG_PATH = paths.transcriptsConfig();
+export const DEFAULT_STATE_PATH = paths.transcriptsState();
 
 const CODEX_SAMPLE_SCHEMA: TranscriptSchema = {
   name: 'codex',
@@ -78,7 +79,8 @@ const CODEX_SAMPLE_SCHEMA: TranscriptSchema = {
     },
     {
       name: 'session-end',
-      match: { path: 'payload.type', in: ['turn_aborted', 'turn_completed'] },
+      // TODO(#2249): delete watcher when Codex hook lifecycle migration ships
+      match: { path: 'payload.type', in: ['turn_aborted', 'turn_completed', 'task_complete'] },
       action: 'session_end'
     }
   ]

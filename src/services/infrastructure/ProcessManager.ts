@@ -2,17 +2,19 @@
 import path from 'path';
 import { homedir } from 'os';
 import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, rmSync, statSync, utimesSync, copyFileSync } from 'fs';
-import { exec, execSync, spawn, spawnSync } from 'child_process';
+import { exec, execSync, spawnSync } from 'child_process';
+import { spawnHidden } from '../../shared/spawn.js';
 import { promisify } from 'util';
 import { logger } from '../../utils/logger.js';
 import { HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor, validateWorkerPidFile, type ValidateWorkerPidStatus } from '../../supervisor/index.js';
+import { paths } from '../../shared/paths.js';
 
 const execAsync = promisify(exec);
 
-const DATA_DIR = path.join(homedir(), '.claude-mem');
-const PID_FILE = path.join(DATA_DIR, 'worker.pid');
+const DATA_DIR = paths.dataDir();
+const PID_FILE = paths.workerPid();
 
 interface RuntimeResolverOptions {
   platform?: NodeJS.Platform;
@@ -455,7 +457,7 @@ export function spawnDaemon(
     ? [runtimePath, scriptPath, '--daemon']
     : [scriptPath, '--daemon'];
 
-  const child = spawn(execPath, args, {
+  const child = spawnHidden(execPath, args, {
     detached: true,
     stdio: 'ignore',
     env

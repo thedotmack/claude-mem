@@ -4,6 +4,57 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [12.6.0] - 2026-05-04
+
+## Highlights
+
+**17 issues fixed** and **4 new foundations** introduced via PR #2282 — a 24-cycle review-loop landed across 33 commits.
+
+### New capabilities
+
+- **OAuth keychain reader** (#2215) — `readClaudeOAuthToken()` reads from platform-native credential stores (macOS keychain, Windows DPAPI, Linux libsecret) at worker spawn-time. JWT exp / sidecar `expiresAt` validation refuses stale tokens. Re-login hint surfaced via SessionStart `additionalContext`.
+- **Quota-aware wall-clock guard** (#2234) — new `RateLimitStore` with auth-type gate: `api_key` never aborts; cli/oauth aborts at per-window thresholds (5h:0.95, 7d_opus:0.93, 7d_sonnet:0.92). 15min reset-grace buffer with 0.85 utilization floor. `rateLimits` exposed on `/api/health`.
+- **Network retry helper** (#2254) — `withRetry` honors `ClassifiedProviderError.kind`, exponential backoff with jitter, request-id capture for dedup logging.
+
+### Foundations (new public modules)
+
+- **F1 `spawnHidden`** (`src/shared/spawn.ts`) — `windowsHide: true` default; 8 spawn sites adopted.
+- **F2 `paths`** (`src/shared/paths.ts`) — 24 hardcoded `homedir() + '.claude-mem'` sites collapsed into 18 named accessors. `CLAUDE_MEM_DATA_DIR` flows through 100% of runtime. Self-extending invariant test.
+- **F3 `getUptimeSeconds`** (`src/shared/uptime.ts`) — fixes ms-bug at `Server.ts:165`.
+- **F4 `ClassifiedProviderError`** (`src/services/worker/provider-errors.ts`) — `kind` union (`transient | unrecoverable | rate_limit | quota_exhausted | auth_invalid`); per-provider classifiers; `unrecoverablePatterns` allowlist deleted.
+
+### Bug fixes
+
+- #2188 — empty stdin no longer falls back to `'{}'`; diagnostic log + `CAPTURE_BROKEN` marker
+- #2196 — `ANTHROPIC_BASE_URL` documentation added
+- #2220 / #2253 — chroma-mcp CPU storm (Windows + macOS): thread caps, per-batch watermarks, telemetry off, `killProcessTree` on shutdown
+- #2225 — opencode `_zod.def` crash: Zod schemas replace plain JSON-schema arg shapes
+- #2231 — `SECURITY.md` at repo root populates GitHub Security tab
+- #2233 — Part A: `stripCodeFences()` + fence example removed from prompt (Part B deferred)
+- #2236 — observer agent visible windows on Windows (consumed F1)
+- #2237 / #2238 — hardcoded paths (consumed F2)
+- #2240 — dedupe `observationIds` before Chroma sync
+- #2242 — `check-pending-queue.ts` points at `/api/processing-status` + `/api/processing`; honors `CLAUDE_MEM_WORKER_PORT`
+- #2243 — `scripts/sync-marketplace.cjs` rsync excludes stale `scripts/package.json` + `scripts/node_modules`
+- #2244 — `unrecoverablePatterns` allowlist deleted; worker dispatches on `error.kind`
+- #2247 — Codex `task_complete` event added to session-end matched types
+- #2248 — Cursor sessions never summarized: 3 bugs in stop→summarize path fixed (transcriptPath, type-only match, empty-text first-match) — 10-case regression test added
+- #2250 — health endpoint uptime returns seconds (consumed F3)
+- #2222 — `CLAUDE_CODE_PATH` desktop-app silent fail: rejects `Claude.exe` paths, falls back to real CLI binary
+
+### Tests / CI
+
+- 1454 pass / 77 fail — matches main baseline, zero net regressions
+- All CI green: build, CodeRabbit (17 rounds resolved), Greptile (clean)
+
+### Out of scope (deferred)
+
+#2213 dual-queue avalanche, #2256 unbounded transcript retention, #2217 observation chunking, #2202 codex compression provider, #2249 Codex hook lifecycle migration, #2218 installer cache cleanup, #2167 parallel-agent throughput, #2191 Kiro IDE, #2212 Windows PTY, #2166 stable/beta channels.
+
+---
+
+**Full diff:** d384d3c5 → a3b161f8
+
 ## [12.5.1] - 2026-05-03
 
 ## Fixed

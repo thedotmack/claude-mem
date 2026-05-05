@@ -1,76 +1,96 @@
 #!/usr/bin/env bun
 
-const WORKER_URL = 'http://localhost:37777';
+const DEFAULT_WORKER_PORT = 37777;
 
-interface QueueMessage {
-  id: number;
-  session_db_id: number;
-  message_type: string;
-  tool_name: string | null;
-  status: 'pending' | 'processing' | 'failed';
-  retry_count: number;
-  created_at_epoch: number;
-  project: string | null;
+function resolveWorkerPort(): number {
+  const raw = process.env.CLAUDE_MEM_WORKER_PORT;
+  if (raw === undefined || raw === '') return DEFAULT_WORKER_PORT;
+  const parsed = parseInt(raw, 10);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+    console.warn(
+      `[check-pending-queue] Invalid CLAUDE_MEM_WORKER_PORT=${JSON.stringify(raw)}; ` +
+        `falling back to ${DEFAULT_WORKER_PORT}`
+    );
+    return DEFAULT_WORKER_PORT;
+  }
+  return parsed;
 }
 
-interface QueueResponse {
-  queue: {
-    messages: QueueMessage[];
-    totalPending: number;
-    totalProcessing: number;
-    totalFailed: number;
-    stuckCount: number;
-  };
-  recentlyProcessed: QueueMessage[];
-  sessionsWithPendingWork: number[];
+const WORKER_PORT = resolveWorkerPort();
+const WORKER_URL = `http://127.0.0.1:${WORKER_PORT}`;
+const WORKER_FETCH_TIMEOUT_MS = 10_000;
+
+interface ProcessingStatusResponse {
+  isProcessing: boolean;
+  queueDepth: number;
 }
 
-interface ProcessResponse {
-  success: boolean;
-  totalPendingSessions: number;
-  sessionsStarted: number;
-  sessionsSkipped: number;
-  startedSessionIds: number[];
+interface SetProcessingResponse {
+  status: string;
+  isProcessing: boolean;
+  queueDepth: number;
+  activeSessions: number;
+}
+
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit | undefined,
+  timeoutMessage: string,
+  timeoutMs: number = WORKER_FETCH_TIMEOUT_MS,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (err) {
+    if ((err as { name?: string })?.name === 'AbortError') {
+      throw new Error(`${timeoutMessage} (timed out after ${timeoutMs}ms)`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function checkWorkerHealth(): Promise<boolean> {
   try {
-    const res = await fetch(`${WORKER_URL}/api/health`);
+    const res = await fetchWithTimeout(
+      `${WORKER_URL}/api/health`,
+      undefined,
+      'Health check did not respond',
+    );
     return res.ok;
   } catch {
     return false;
   }
 }
 
-async function getQueueStatus(): Promise<QueueResponse> {
-  const res = await fetch(`${WORKER_URL}/api/pending-queue`);
+async function getProcessingStatus(): Promise<ProcessingStatusResponse> {
+  const res = await fetchWithTimeout(
+    `${WORKER_URL}/api/processing-status`,
+    undefined,
+    'Failed to get processing status',
+  );
   if (!res.ok) {
-    throw new Error(`Failed to get queue status: ${res.status}`);
+    throw new Error(`Failed to get processing status: ${res.status}`);
   }
-  return res.json();
+  return res.json() as Promise<ProcessingStatusResponse>;
 }
 
-async function processQueue(limit: number): Promise<ProcessResponse> {
-  const res = await fetch(`${WORKER_URL}/api/pending-queue/process`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sessionLimit: limit })
-  });
+async function triggerProcessing(): Promise<SetProcessingResponse> {
+  const res = await fetchWithTimeout(
+    `${WORKER_URL}/api/processing`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    },
+    'Failed to trigger processing',
+  );
   if (!res.ok) {
-    throw new Error(`Failed to process queue: ${res.status}`);
+    throw new Error(`Failed to trigger processing: ${res.status}`);
   }
-  return res.json();
-}
-
-function formatAge(epochMs: number): string {
-  const ageMs = Date.now() - epochMs;
-  const minutes = Math.floor(ageMs / 60000);
-  const hours = Math.floor(minutes / 60);
-  const days = Math.floor(hours / 24);
-
-  if (days > 0) return `${days}d ${hours % 24}h ago`;
-  if (hours > 0) return `${hours}h ${minutes % 60}m ago`;
-  return `${minutes}m ago`;
+  return res.json() as Promise<SetProcessingResponse>;
 }
 
 async function prompt(question: string): Promise<string> {
@@ -97,104 +117,61 @@ async function main() {
     console.log(`
 Claude-Mem Pending Queue Manager
 
-Check and process pending observation queue backlog.
+Check current processing status and queue depth, optionally trigger processing.
 
 Usage:
   bun scripts/check-pending-queue.ts [options]
 
 Options:
   --help, -h     Show this help message
-  --process      Auto-process without prompting
-  --limit N      Process up to N sessions (default: 10)
+  --process      Trigger processing without prompting
+
+Environment:
+  CLAUDE_MEM_WORKER_PORT  Worker port (default: 37777)
 
 Examples:
   # Check queue status interactively
   bun scripts/check-pending-queue.ts
 
-  # Auto-process up to 10 sessions
+  # Trigger processing non-interactively
   bun scripts/check-pending-queue.ts --process
 
-  # Process up to 5 sessions
-  bun scripts/check-pending-queue.ts --process --limit 5
-
 What is this for?
-  If the claude-mem worker crashes or restarts, pending observations may
-  be left unprocessed. This script shows the backlog and lets you trigger
-  processing. The worker no longer auto-recovers on startup to give you
-  control over when processing happens.
+  If the claude-mem worker has unprocessed observations queued, this script
+  reports the current queue depth and lets you trigger processing.
 `);
     process.exit(0);
   }
 
   const autoProcess = args.includes('--process');
-  const limitArg = args.find((_, i) => args[i - 1] === '--limit');
-  const limit = limitArg ? parseInt(limitArg, 10) : 10;
 
   console.log('\n=== Claude-Mem Pending Queue Status ===\n');
 
   const healthy = await checkWorkerHealth();
   if (!healthy) {
-    console.log('Worker is not running. Start it with:');
+    console.log(`Worker is not running at ${WORKER_URL}. Start it with:`);
     console.log('  cd ~/.claude/plugins/marketplaces/thedotmack && npm run worker:start\n');
     process.exit(1);
   }
-  console.log('Worker status: Running\n');
+  console.log(`Worker status: Running at ${WORKER_URL}\n`);
 
-  const status = await getQueueStatus();
-  const { queue, sessionsWithPendingWork } = status;
+  const status = await getProcessingStatus();
 
   console.log('Queue Summary:');
-  console.log(`  Pending:    ${queue.totalPending}`);
-  console.log(`  Processing: ${queue.totalProcessing}`);
-  console.log(`  Failed:     ${queue.totalFailed}`);
-  console.log(`  Stuck:      ${queue.stuckCount} (processing > 5 min)`);
-  console.log(`  Sessions:   ${sessionsWithPendingWork.length} with pending work\n`);
+  console.log(`  Processing: ${status.isProcessing ? 'yes' : 'no'}`);
+  console.log(`  Queue depth: ${status.queueDepth}\n`);
 
-  const hasBacklog = queue.totalPending > 0 || queue.totalFailed > 0;
-  const hasStuck = queue.stuckCount > 0;
+  const hasBacklog = status.queueDepth > 0;
 
-  if (!hasBacklog && !hasStuck) {
-    console.log('No backlog detected. Queue is healthy.\n');
-
-    if (status.recentlyProcessed.length > 0) {
-      console.log(`Recently processed: ${status.recentlyProcessed.length} messages in last 30 min\n`);
-    }
+  if (!hasBacklog) {
+    console.log('No backlog detected. Queue is empty.\n');
     process.exit(0);
   }
 
-  if (queue.messages.length > 0) {
-    console.log('Pending Messages:');
-    console.log('─'.repeat(80));
-
-    const bySession = new Map<number, QueueMessage[]>();
-    for (const msg of queue.messages) {
-      const list = bySession.get(msg.session_db_id) || [];
-      list.push(msg);
-      bySession.set(msg.session_db_id, list);
-    }
-
-    for (const [sessionId, messages] of bySession) {
-      const project = messages[0].project || 'unknown';
-      const oldest = Math.min(...messages.map(m => m.created_at_epoch));
-      const statuses = {
-        pending: messages.filter(m => m.status === 'pending').length,
-        processing: messages.filter(m => m.status === 'processing').length,
-        failed: messages.filter(m => m.status === 'failed').length
-      };
-
-      console.log(`  Session ${sessionId} (${project})`);
-      console.log(`    Messages: ${messages.length} total`);
-      console.log(`    Status:   ${statuses.pending} pending, ${statuses.processing} processing, ${statuses.failed} failed`);
-      console.log(`    Age:      ${formatAge(oldest)}`);
-    }
-    console.log('─'.repeat(80));
-    console.log('');
-  }
-
   if (autoProcess) {
-    console.log(`Auto-processing up to ${limit} sessions...\n`);
+    console.log('Triggering processing...\n');
   } else {
-    const answer = await prompt(`Process pending queue? (up to ${limit} sessions) [y/N]: `);
+    const answer = await prompt(`Trigger processing for ${status.queueDepth} queued items? [y/N]: `);
     if (answer.toLowerCase() !== 'y') {
       console.log('\nSkipped. Run with --process to auto-process.\n');
       process.exit(0);
@@ -202,18 +179,15 @@ What is this for?
     console.log('');
   }
 
-  const result = await processQueue(limit);
+  const result = await triggerProcessing();
 
   console.log('Processing Result:');
-  console.log(`  Sessions started: ${result.sessionsStarted}`);
-  console.log(`  Sessions skipped: ${result.sessionsSkipped} (already active)`);
-  console.log(`  Remaining:        ${result.totalPendingSessions - result.sessionsStarted}`);
+  console.log(`  Status:           ${result.status}`);
+  console.log(`  Is processing:    ${result.isProcessing ? 'yes' : 'no'}`);
+  console.log(`  Queue depth:      ${result.queueDepth}`);
+  console.log(`  Active sessions:  ${result.activeSessions}`);
 
-  if (result.startedSessionIds.length > 0) {
-    console.log(`  Started IDs:      ${result.startedSessionIds.join(', ')}`);
-  }
-
-  console.log('\nProcessing started in background. Check status again in a few minutes.\n');
+  console.log('\nProcessing handled by worker. Check status again in a few minutes.\n');
 }
 
 main().catch(err => {

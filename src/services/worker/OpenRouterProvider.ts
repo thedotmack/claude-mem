@@ -14,8 +14,98 @@ import {
   processAgentResponse,
   type WorkerRef
 } from './agents/index.js';
+import { ClassifiedProviderError } from './provider-errors.js';
+import { withRetry } from './retry.js';
 
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
+
+/**
+ * Parse Retry-After header (seconds or HTTP-date). Returns ms or undefined.
+ */
+function parseRetryAfterMs(value: string | null): number | undefined {
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (!Number.isNaN(seconds) && seconds >= 0) {
+    return Math.floor(seconds * 1000);
+  }
+  const dateMs = Date.parse(value);
+  if (!Number.isNaN(dateMs)) {
+    const delta = dateMs - Date.now();
+    return delta > 0 ? delta : 0;
+  }
+  return undefined;
+}
+
+/**
+ * Classify an OpenRouter fetch failure into ClassifiedProviderError. Called
+ * at the boundary right after `fetch()` returns or throws.
+ */
+export function classifyOpenRouterError(input: {
+  status?: number;
+  bodyText?: string;
+  headers?: Headers | { get(name: string): string | null };
+  cause: unknown;
+  requestId?: string;
+}): ClassifiedProviderError {
+  const status = input.status;
+  const body = input.bodyText ?? '';
+  const lower = body.toLowerCase();
+  const headers = input.headers;
+  const retryAfterMs = headers ? parseRetryAfterMs(headers.get('retry-after')) : undefined;
+
+  // Quota / insufficient credits — body marker takes precedence over status.
+  if (
+    lower.includes('quota exceeded') ||
+    lower.includes('insufficient credits') ||
+    lower.includes('insufficient_quota')
+  ) {
+    return new ClassifiedProviderError(
+      `OpenRouter quota exhausted${status !== undefined ? ` (status ${status})` : ''}`,
+      { kind: 'quota_exhausted', cause: input.cause },
+    );
+  }
+
+  if (status === 429) {
+    return new ClassifiedProviderError(
+      'OpenRouter rate limit (429)',
+      { kind: 'rate_limit', cause: input.cause, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) },
+    );
+  }
+
+  if (status === 401 || status === 403) {
+    return new ClassifiedProviderError(
+      `OpenRouter auth error (status ${status})`,
+      { kind: 'auth_invalid', cause: input.cause },
+    );
+  }
+
+  if (status === 400 || status === 404) {
+    return new ClassifiedProviderError(
+      `OpenRouter bad request (status ${status})`,
+      { kind: 'unrecoverable', cause: input.cause },
+    );
+  }
+
+  if (status !== undefined && status >= 500 && status < 600) {
+    return new ClassifiedProviderError(
+      `OpenRouter upstream error (status ${status})`,
+      { kind: 'transient', cause: input.cause },
+    );
+  }
+
+  // Network errors (no status) — treat as transient.
+  if (status === undefined) {
+    return new ClassifiedProviderError(
+      `OpenRouter network error: ${input.cause instanceof Error ? input.cause.message : String(input.cause)}`,
+      { kind: 'transient', cause: input.cause },
+    );
+  }
+
+  return new ClassifiedProviderError(
+    `OpenRouter API error: ${status}${body ? ` - ${body.substring(0, 200)}` : ''}`,
+    { kind: 'unrecoverable', cause: input.cause },
+  );
+}
 
 const DEFAULT_MAX_CONTEXT_MESSAGES = 20;  
 const DEFAULT_MAX_ESTIMATED_TOKENS = 100000;  
@@ -339,32 +429,64 @@ export class OpenRouterProvider {
       estimatedTokens
     });
 
-    const response = await fetch(OPENROUTER_API_URL, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'HTTP-Referer': siteUrl || 'https://github.com/thedotmack/claude-mem',
-        'X-Title': appName || 'claude-mem',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model,
-        messages,
-        temperature: 0.3,  // Lower temperature for structured extraction
-        max_tokens: 4096,
-      }),
-    });
+    let priorRequestId: string | null = null;
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`OpenRouter API error: ${response.status} - ${errorText}`);
-    }
+    const data = await withRetry<OpenRouterResponse>(async (attemptSignal) => {
+      let response: Response;
+      try {
+        response = await fetch(OPENROUTER_API_URL, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'HTTP-Referer': siteUrl || 'https://github.com/thedotmack/claude-mem',
+            'X-Title': appName || 'claude-mem',
+            'Content-Type': 'application/json',
+            ...(priorRequestId ? { 'x-claude-mem-prior-request-id': priorRequestId } : {}),
+          },
+          body: JSON.stringify({
+            model,
+            messages,
+            temperature: 0.3,  // Lower temperature for structured extraction
+            max_tokens: 4096,
+          }),
+          signal: attemptSignal,
+        });
+      } catch (networkError: unknown) {
+        throw classifyOpenRouterError({ cause: networkError });
+      }
 
-    const data = await response.json() as OpenRouterResponse;
+      const requestId = response.headers.get('x-request-id') ?? response.headers.get('x-openrouter-request-id');
+      if (requestId) {
+        priorRequestId = requestId;
+      } else {
+        logger.debug('SDK', 'OpenRouter response missing request-id header; retry dedup is best-effort');
+      }
 
-    if (data.error) {
-      throw new Error(`OpenRouter API error: ${data.error.code} - ${data.error.message}`);
-    }
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw classifyOpenRouterError({
+          status: response.status,
+          bodyText: errorText,
+          headers: response.headers,
+          cause: new Error(`OpenRouter API error: ${response.status} - ${errorText}`),
+          ...(requestId ? { requestId } : {}),
+        });
+      }
+
+      const responseData = await response.json() as OpenRouterResponse;
+
+      if (responseData.error) {
+        // Per OpenRouter spec, errors can come in 200 responses too.
+        throw classifyOpenRouterError({
+          status: response.status,
+          bodyText: `${responseData.error.code} ${responseData.error.message ?? ''}`,
+          headers: response.headers,
+          cause: new Error(`OpenRouter API error: ${responseData.error.code} - ${responseData.error.message}`),
+        });
+      }
+
+      return responseData;
+    }, { label: `OpenRouter ${model}` });
 
     if (!data.choices?.[0]?.message?.content) {
       logger.error('SDK', 'Empty response from OpenRouter');

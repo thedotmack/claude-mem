@@ -3,8 +3,7 @@ import express, { Request, Response } from 'express';
 import { z } from 'zod';
 import path from 'path';
 import { readFileSync, writeFileSync, existsSync, renameSync, mkdirSync } from 'fs';
-import { homedir } from 'os';
-import { getPackageRoot } from '../../../../shared/paths.js';
+import { getPackageRoot, paths } from '../../../../shared/paths.js';
 import { logger } from '../../../../utils/logger.js';
 import { SettingsManager } from '../../SettingsManager.js';
 import { getBranchInfo, switchBranch, pullUpdates } from '../../BranchManager.js';
@@ -47,7 +46,7 @@ export class SettingsRoutes extends BaseRouteHandler {
   }
 
   private handleGetSettings = this.wrapHandler((req: Request, res: Response): void => {
-    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+    const settingsPath = paths.settings();
     this.ensureSettingsFile(settingsPath);
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
     res.json(settings);
@@ -63,7 +62,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       return;
     }
 
-    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+    const settingsPath = paths.settings();
     this.ensureSettingsFile(settingsPath);
     let settings: any = {};
 
@@ -76,7 +75,7 @@ export class SettingsRoutes extends BaseRouteHandler {
         logger.error('HTTP', 'Failed to parse settings file', { settingsPath }, normalizedParseError);
         res.status(500).json({
           success: false,
-          error: 'Settings file is corrupted. Delete ~/.claude-mem/settings.json to reset.'
+          error: `Settings file is corrupted. Delete ${settingsPath} to reset.`
         });
         return;
       }

@@ -1,0 +1,5 @@
+{"role":"user","message":{"content":[{"type":"text","text":"please list the files in src/"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"I'll list the files now."}]}}
+{"role":"user","message":{"content":[{"type":"text","text":"thanks, also tell me what you found"}]}}
+{"role":"assistant","message":{"content":[{"type":"tool_use","name":"Shell","input":{"command":"ls src/"}}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"Here are the files: adapters, handlers, types."}]}}

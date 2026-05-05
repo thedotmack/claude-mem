@@ -1,4 +1,4 @@
-
+import { z } from "zod";
 
 interface OpenCodeProject {
   name?: string;
@@ -249,10 +249,7 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
         description:
           "Search claude-mem memory database for past observations, sessions, and context",
         args: {
-          query: {
-            type: "string",
-            description: "Search query for memory observations",
-          },
+          query: z.string().describe("Search query for memory observations"),
         },
         async execute(
           args: Record<string, unknown>,

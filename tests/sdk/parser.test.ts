@@ -154,3 +154,82 @@ describe('parseAgentXml — observations', () => {
     expect(result[0].files_modified).toEqual(['src/utils.ts']);
   });
 });
+
+describe('parseAgentXml — fence tolerance (#2233 Part A)', () => {
+  it('parses plain XML input correctly (no fence)', () => {
+    const xml = `<observation>
+      <type>discovery</type>
+      <title>Plain XML input</title>
+      <narrative>No fence wrapper present.</narrative>
+    </observation>`;
+
+    const result = parseAgentXml(xml);
+    expect(result.valid).toBe(true);
+    if (!result.valid) return;
+    expect(result.observations).toHaveLength(1);
+    expect(result.observations[0].title).toBe('Plain XML input');
+  });
+
+  it('parses fenced XML with language tag (```xml ... ```)', () => {
+    const xml = '```xml\n<observation>\n  <type>discovery</type>\n  <title>Fenced with lang</title>\n  <narrative>Wrapped in xml-tagged code fence.</narrative>\n</observation>\n```';
+
+    const result = parseAgentXml(xml);
+    expect(result.valid).toBe(true);
+    if (!result.valid) return;
+    expect(result.observations).toHaveLength(1);
+    expect(result.observations[0].title).toBe('Fenced with lang');
+    expect(result.observations[0].narrative).toBe('Wrapped in xml-tagged code fence.');
+  });
+
+  it('parses fenced XML without language tag (``` ... ```)', () => {
+    const xml = '```\n<observation>\n  <type>bugfix</type>\n  <title>Bare fence</title>\n  <narrative>Wrapped in language-less fence.</narrative>\n</observation>\n```';
+
+    const result = parseAgentXml(xml);
+    expect(result.valid).toBe(true);
+    if (!result.valid) return;
+    expect(result.observations).toHaveLength(1);
+    expect(result.observations[0].title).toBe('Bare fence');
+    expect(result.observations[0].narrative).toBe('Wrapped in language-less fence.');
+  });
+
+  it('does not falsely strip when XML appears mid-text without fences', () => {
+    const xml = `Some intro prose.
+<observation>
+  <type>refactor</type>
+  <title>Mid-text observation</title>
+  <narrative>No fences anywhere in the input.</narrative>
+</observation>
+Trailing prose.`;
+
+    const result = parseAgentXml(xml);
+    expect(result.valid).toBe(true);
+    if (!result.valid) return;
+    expect(result.observations).toHaveLength(1);
+    expect(result.observations[0].title).toBe('Mid-text observation');
+    expect(result.observations[0].narrative).toBe('No fences anywhere in the input.');
+  });
+
+  it('does not strip inner triple-backtick lines when payload is not a full fenced wrapper', () => {
+    // Regression for CodeRabbit review on PR #2282: stripCodeFences() used to
+    // greedily remove the first ``` and last ``` anywhere in the input, which
+    // could mangle content that contains internal fenced examples or surrounds
+    // the XML with prose. The fence-stripper must only fire when the entire
+    // payload is a single fenced block.
+    const xml = 'Lead-in text with ```inline``` markers.\n' +
+      '<observation>\n' +
+      '  <type>discovery</type>\n' +
+      '  <title>Body with ``` inside narrative</title>\n' +
+      '  <narrative>Snippet: ```\nfoo\n``` end of snippet.</narrative>\n' +
+      '</observation>\n' +
+      'Trailing ``` prose with another ``` mark.';
+
+    const result = parseAgentXml(xml);
+    expect(result.valid).toBe(true);
+    if (!result.valid) return;
+    expect(result.observations).toHaveLength(1);
+    expect(result.observations[0].title).toBe('Body with ``` inside narrative');
+    // Narrative should still contain the inner ``` markers — i.e. the
+    // stripper did not eat them.
+    expect(result.observations[0].narrative).toContain('```');
+  });
+});

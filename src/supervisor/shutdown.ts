@@ -1,15 +1,13 @@
 import { execFile } from 'child_process';
 import { rmSync } from 'fs';
-import { homedir } from 'os';
-import path from 'path';
 import { promisify } from 'util';
 import { logger } from '../utils/logger.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { isPidAlive, type ManagedProcessRecord, type ProcessRegistry } from './process-registry.js';
+import { paths } from '../shared/paths.js';
 
 const execFileAsync = promisify(execFile);
-const DATA_DIR = path.join(homedir(), '.claude-mem');
-const PID_FILE = path.join(DATA_DIR, 'worker.pid');
+const PID_FILE = paths.workerPid();
 
 type TreeKillFn = (pid: number, signal?: string, callback?: (error?: Error | null) => void) => void;
 
@@ -118,20 +116,31 @@ async function signalProcess(record: ManagedProcessRecord, signal: 'SIGTERM' | '
   const { pid, pgid } = record;
 
   if (process.platform !== 'win32') {
-    try {
-      if (typeof pgid === 'number') {
+    // Try the process group first when we have one — it reaches grandchildren
+    // re-parented to init. If the group is already gone (ESRCH) the actual
+    // root pid may still be alive (e.g. it survived its own group teardown);
+    // fall through to the per-pid signal so shutdown isn't a no-op
+    // (CodeRabbit review on PR #2282).
+    if (typeof pgid === 'number') {
+      try {
         process.kill(-pgid, signal);
-      } else {
-        process.kill(pid, signal);
-      }
-    } catch (error: unknown) {
-      if (error instanceof Error) {
-        const errno = (error as NodeJS.ErrnoException).code;
-        if (errno === 'ESRCH') {
-          return;
+        return;
+      } catch (error: unknown) {
+        const errno = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+        if (errno !== 'ESRCH') {
+          throw error;
         }
+        // ESRCH on the group — fall through and try the bare pid below.
       }
-      throw error;
+    }
+
+    try {
+      process.kill(pid, signal);
+    } catch (error: unknown) {
+      const errno = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+      if (errno !== 'ESRCH') {
+        throw error;
+      }
     }
     return;
   }

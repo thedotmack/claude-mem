@@ -51,6 +51,16 @@ describe('GracefulShutdown', () => {
   });
 
   describe('performGracefulShutdown', () => {
+    // Timeout bumped to 15s. performGracefulShutdown calls
+    // getSupervisor().stop() which runs runShutdownCascade against the real
+    // ~/.claude-mem/supervisor.json registry. If the developer has a live
+    // worker + chroma-mcp registered, the cascade SIGTERMs/SIGKILLs them
+    // and waits up to ~5–6s for them to exit, which sails past the default
+    // 5000ms test timeout. The other shutdown tests below are unaffected
+    // because they don't register an mcpClient/dbManager/chromaMcpManager
+    // mock that exercises the same path. This is test-infrastructure debt
+    // — the test interacts with the production supervisor singleton — not
+    // a code regression in the shutdown flow itself.
     it('should call shutdown steps in correct order', async () => {
       const callOrder: string[] = [];
 
@@ -115,7 +125,7 @@ describe('GracefulShutdown', () => {
       expect(callOrder.indexOf('mcpClient.close')).toBeLessThan(callOrder.indexOf('dbManager.close'));
 
       expect(callOrder.indexOf('chromaMcpManager.stop')).toBeLessThan(callOrder.indexOf('dbManager.close'));
-    });
+    }, 15000);
 
     it('should remove PID file during shutdown', async () => {
       const mockSessionManager: ShutdownableService = {

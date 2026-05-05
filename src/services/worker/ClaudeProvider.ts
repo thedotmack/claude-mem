@@ -1,14 +1,12 @@
 
-import { execSync } from 'child_process';
-import { homedir } from 'os';
-import path from 'path';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH, OBSERVER_SESSIONS_DIR, ensureDir } from '../../shared/paths.js';
-import { buildIsolatedEnv, getAuthMethodDescription } from '../../shared/EnvManager.js';
+import { USER_SETTINGS_PATH, OBSERVER_SESSIONS_DIR, ensureDir, paths } from '../../shared/paths.js';
+import { buildIsolatedEnvWithFreshOAuth, getAuthMethodDescription } from '../../shared/EnvManager.js';
+import { findClaudeExecutable } from '../../shared/find-claude-executable.js';
 import type { ActiveSession, SDKUserMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import { processAgentResponse, type WorkerRef } from './agents/index.js';
@@ -19,9 +17,86 @@ import {
   waitForSlot,
 } from '../../supervisor/process-registry.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
+import {
+  globalRateLimitStore,
+  shouldAbortForQuota,
+  type RateLimitInfo,
+} from './RateLimitStore.js';
 
 // @ts-ignore - Agent SDK types may not be available
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import { ClassifiedProviderError } from './provider-errors.js';
+
+/**
+ * Classify a ClaudeProvider error (executable spawn failures, SDK errors,
+ * Anthropic API errors). Provider-specific because it relies on:
+ *   - SDK error class names (e.g. OverloadedError) when present
+ *   - spawn errors (ENOENT) when the Claude executable is missing
+ *   - Anthropic-specific message strings ("Invalid API key", "Prompt is too long")
+ */
+export function classifyClaudeError(err: unknown): ClassifiedProviderError {
+  const message = err instanceof Error ? err.message : String(err);
+  const errAny = err as { name?: string; status?: number; error?: { type?: string } };
+
+  // Executable / spawn issues — unrecoverable, no point retrying.
+  if (
+    message.includes('Claude executable not found') ||
+    message.includes('CLAUDE_CODE_PATH') ||
+    message.includes('ENOENT') ||
+    message.startsWith('spawn ')
+  ) {
+    return new ClassifiedProviderError(message, { kind: 'unrecoverable', cause: err });
+  }
+
+  // Anthropic auth failures.
+  if (
+    errAny.status === 401 ||
+    errAny.status === 403 ||
+    message.includes('Invalid API key') ||
+    message.includes('API_KEY_INVALID') ||
+    message.includes('API key expired') ||
+    message.includes('API key not valid')
+  ) {
+    return new ClassifiedProviderError(message, { kind: 'auth_invalid', cause: err });
+  }
+
+  // SDK-level overloaded — Anthropic emits OverloadedError or 529 with type:'overloaded_error'.
+  if (
+    errAny.name === 'OverloadedError' ||
+    errAny.status === 529 ||
+    errAny.error?.type === 'overloaded_error'
+  ) {
+    return new ClassifiedProviderError(message || 'Anthropic overloaded', { kind: 'transient', cause: err });
+  }
+
+  // Rate limit.
+  if (errAny.status === 429) {
+    return new ClassifiedProviderError(message, { kind: 'rate_limit', cause: err });
+  }
+
+  // Quota.
+  if (message.toLowerCase().includes('quota exceeded')) {
+    return new ClassifiedProviderError(message, { kind: 'quota_exhausted', cause: err });
+  }
+
+  // Context overflow — unrecoverable in this session, requires reset.
+  if (
+    message.includes('Prompt is too long') ||
+    message.includes('prompt is too long') ||
+    message.includes('context window')
+  ) {
+    return new ClassifiedProviderError(message, { kind: 'unrecoverable', cause: err });
+  }
+
+  // Server errors → transient.
+  if (typeof errAny.status === 'number' && errAny.status >= 500 && errAny.status < 600) {
+    return new ClassifiedProviderError(message, { kind: 'transient', cause: err });
+  }
+
+  // Default: treat unknown errors as transient (preserve old behavior of
+  // retrying everything not explicitly marked unrecoverable).
+  return new ClassifiedProviderError(message, { kind: 'transient', cause: err });
+}
 
 export class ClaudeProvider {
   private dbManager: DatabaseManager;
@@ -41,7 +116,8 @@ export class ClaudeProvider {
   async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
     const cwdTracker = { lastCwd: undefined as string | undefined };
 
-    const claudePath = this.findClaudeExecutable();
+    // Find and validate Claude executable (shared utility, closes #2222)
+    const claudePath = findClaudeExecutable('SDK');
 
     const modelId = session.modelOverride || this.getModelId();
     const disallowedTools = [
@@ -76,7 +152,7 @@ export class ClaudeProvider {
     const maxConcurrent = parseInt(settings.CLAUDE_MEM_MAX_CONCURRENT_AGENTS, 10) || 2;
     await waitForSlot(maxConcurrent, 60_000);
 
-    const isolatedEnv = sanitizeEnv(buildIsolatedEnv());
+    const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
     const authMethod = getAuthMethodDescription();
 
     logger.info('SDK', 'Starting SDK query', {
@@ -120,6 +196,36 @@ export class ClaudeProvider {
 
     try {
       for await (const message of queryResult) {
+        // Quota-aware wall-clock guard (#2234): the SDK pushes `system` events
+        // with subtype `rate_limit` carrying live subscription quota state.
+        // Capture the snapshot, then bail out of the loop before issuing
+        // another request if we've crossed a per-window threshold. API-key
+        // users are exempt — they authorized per-call spend.
+        if (
+          (message as any)?.type === 'system' &&
+          (message as any)?.subtype === 'rate_limit'
+        ) {
+          const info = (message as any).rate_limit_info as RateLimitInfo | undefined;
+          if (info) {
+            globalRateLimitStore.set(info);
+          }
+          const decision = shouldAbortForQuota(authMethod, globalRateLimitStore);
+          if (decision.abort) {
+            logger.warn('SDK', `Aborting session for quota guard: ${decision.reason}`, {
+              sessionDbId: session.sessionDbId,
+              window: decision.window,
+              authMethod,
+            });
+            session.abortReason = `quota:${decision.window ?? 'unknown'}`;
+            try {
+              session.abortController.abort();
+            } catch {
+              // best-effort
+            }
+            break;
+          }
+        }
+
         if (message.session_id && message.session_id !== session.memorySessionId) {
           const previousId = session.memorySessionId;
           session.memorySessionId = message.session_id;
@@ -333,46 +439,8 @@ export class ClaudeProvider {
     }
   }
 
-  private findClaudeExecutable(): string {
-    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-
-    if (settings.CLAUDE_CODE_PATH) {
-      const { existsSync } = require('fs');
-      if (!existsSync(settings.CLAUDE_CODE_PATH)) {
-        throw new Error(`CLAUDE_CODE_PATH is set to "${settings.CLAUDE_CODE_PATH}" but the file does not exist.`);
-      }
-      return settings.CLAUDE_CODE_PATH;
-    }
-
-    if (process.platform === 'win32') {
-      try {
-        execSync('where claude.cmd', { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
-        return 'claude.cmd'; 
-      } catch {
-        // Fall through to generic error
-      }
-    }
-
-    try {
-      const claudePath = execSync(
-        process.platform === 'win32' ? 'where claude' : 'which claude',
-        { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }
-      ).trim().split('\n')[0].trim();
-
-      if (claudePath) return claudePath;
-    } catch (error) {
-      if (error instanceof Error) {
-        logger.debug('SDK', 'Claude executable auto-detection failed', {}, error);
-      } else {
-        logger.debug('SDK', 'Claude executable auto-detection failed with non-Error', {}, new Error(String(error)));
-      }
-    }
-
-    throw new Error('Claude executable not found. Please either:\n1. Add "claude" to your system PATH, or\n2. Set CLAUDE_CODE_PATH in ~/.claude-mem/settings.json');
-  }
-
   private getModelId(): string {
-    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+    const settingsPath = paths.settings();
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
     return settings.CLAUDE_MEM_MODEL;
   }

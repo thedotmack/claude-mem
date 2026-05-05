@@ -1,15 +1,22 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'fs';
-import { join, dirname } from 'path';
-import { homedir } from 'os';
 import { logger } from '../utils/logger.js';
+import { paths } from './paths.js';
+import {
+  readClaudeOAuthToken,
+  writeStaleMarker,
+  clearStaleMarker,
+  type OAuthTokenResult,
+} from './oauth-token.js';
 
-const DATA_DIR = join(homedir(), '.claude-mem');
-export const ENV_FILE_PATH = join(DATA_DIR, '.env');
+export const ENV_FILE_PATH = paths.envFile();
 
 const BLOCKED_ENV_VARS = [
-  'ANTHROPIC_API_KEY',  // Issue #733: Prevent auto-discovery from project .env files
-  'CLAUDECODE',         // Prevent "cannot be launched inside another Claude Code session" error
+  'ANTHROPIC_API_KEY',       // Issue #733: Prevent auto-discovery from project .env files
+  'CLAUDECODE',              // Prevent "cannot be launched inside another Claude Code session" error
+  'CLAUDE_CODE_OAUTH_TOKEN', // Issue #2215: prevent stale parent-process token from leaking into
+                             // isolated env. The fresh token is read from the keychain at spawn
+                             // time by buildIsolatedEnvWithFreshOAuth().
 ];
 
 export interface ClaudeMemEnv {
@@ -89,10 +96,10 @@ export function loadClaudeMemEnv(): ClaudeMemEnv {
 export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
   let existing: Record<string, string> = {};
   try {
-    if (!existsSync(DATA_DIR)) {
-      mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+    if (!existsSync(paths.dataDir())) {
+      mkdirSync(paths.dataDir(), { recursive: true, mode: 0o700 });
     }
-    chmodSync(DATA_DIR, 0o700);
+    chmodSync(paths.dataDir(), 0o700);
 
     existing = existsSync(ENV_FILE_PATH)
       ? parseEnvFile(readFileSync(ENV_FILE_PATH, 'utf-8'))
@@ -171,9 +178,89 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
       isolatedEnv.OPENROUTER_API_KEY = credentials.OPENROUTER_API_KEY;
     }
 
-    if (!isolatedEnv.ANTHROPIC_API_KEY && process.env.CLAUDE_CODE_OAUTH_TOKEN) {
-      isolatedEnv.CLAUDE_CODE_OAUTH_TOKEN = process.env.CLAUDE_CODE_OAUTH_TOKEN;
-    }
+    // Note: CLAUDE_CODE_OAUTH_TOKEN is intentionally NOT copied from
+    // process.env here. OAuth tokens have refresh semantics that this
+    // sync path cannot model — copying a parent-process token captured
+    // at startup means injecting a stale token days later (issue #2215).
+    // Use buildIsolatedEnvWithFreshOAuth() for spawn-time injection.
+  }
+
+  return isolatedEnv;
+}
+
+/**
+ * Async variant of buildIsolatedEnv() that reads the OAuth token from the
+ * platform-native credential store at the moment of spawn. Use this at SDK
+ * spawn-time so the worker subprocess always gets a fresh token.
+ *
+ * Behavior per OAuthTokenResult:
+ *   - present: inject as CLAUDE_CODE_OAUTH_TOKEN env var, clear stale marker.
+ *   - expired: do NOT inject. Log re-login message. Write stale marker so
+ *     the session-start hook can surface the message to the user.
+ *   - absent: proceed without the token. Worker may fall back to
+ *     ANTHROPIC_API_KEY or other auth.
+ *
+ * Issue #2215: this replaces the old "copy CLAUDE_CODE_OAUTH_TOKEN from
+ * process.env" path which silently injected stale tokens.
+ */
+export async function buildIsolatedEnvWithFreshOAuth(
+  includeCredentials: boolean = true,
+): Promise<Record<string, string>> {
+  const isolatedEnv = buildIsolatedEnv(includeCredentials);
+
+  // Defensive: ensure no parent-process OAuth token survives this path even
+  // if BLOCKED_ENV_VARS is bypassed. Issue #2215.
+  delete isolatedEnv.CLAUDE_CODE_OAUTH_TOKEN;
+
+  if (!includeCredentials) return isolatedEnv;
+
+  // If the user already configured an ANTHROPIC_API_KEY in ~/.claude-mem/.env,
+  // honor that and skip OAuth lookup entirely. API key auth is preferred when
+  // explicitly configured because it's stateless and stable.
+  if (isolatedEnv.ANTHROPIC_API_KEY) {
+    clearStaleMarker();
+    return isolatedEnv;
+  }
+
+  let result: OAuthTokenResult;
+  try {
+    result = await readClaudeOAuthToken();
+  } catch (error) {
+    logger.warn(
+      'OAUTH',
+      'OAuth token read failed unexpectedly; proceeding without token',
+      {},
+      error instanceof Error ? error : new Error(String(error)),
+    );
+    return isolatedEnv;
+  }
+
+  switch (result.kind) {
+    case 'present':
+      isolatedEnv.CLAUDE_CODE_OAUTH_TOKEN = result.token;
+      logger.info('OAUTH', 'Injected fresh CLAUDE_CODE_OAUTH_TOKEN at spawn-time', {
+        source: result.source,
+        expiresAt: result.expiresAt,
+      });
+      clearStaleMarker();
+      break;
+    case 'expired':
+      logger.warn(
+        'OAUTH',
+        `Refusing to inject expired CLAUDE_CODE_OAUTH_TOKEN: ${result.reason}. Re-login via Claude Desktop to refresh.`,
+        { expiresAt: result.expiresAt },
+      );
+      writeStaleMarker(result.reason);
+      break;
+    case 'absent':
+      logger.debug('OAUTH', `No OAuth token available: ${result.reason}`);
+      // Token is absent — any prior stale-marker would have been written
+      // when the token was expired, but is no longer accurate now that the
+      // token is gone. Clear it so the session-start hook stops surfacing
+      // a stale "expired token, re-login" warning (CodeRabbit review on PR
+      // #2282).
+      clearStaleMarker();
+      break;
   }
 
   return isolatedEnv;
@@ -193,8 +280,11 @@ export function getAuthMethodDescription(): string {
   if (hasAnthropicApiKey()) {
     return 'API key (from ~/.claude-mem/.env)';
   }
+  // Note: this is a quick sync hint for logging — the authoritative OAuth
+  // path is buildIsolatedEnvWithFreshOAuth() which reads the keychain at
+  // spawn time. process.env may or may not carry a token here.
   if (process.env.CLAUDE_CODE_OAUTH_TOKEN) {
-    return 'Claude Code OAuth token (from parent process)';
+    return 'Claude Code OAuth token (env, refreshed via keychain at spawn)';
   }
-  return 'Claude Code CLI (subscription billing)';
+  return 'Claude Code OAuth token (read from system keychain at spawn)';
 }

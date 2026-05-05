@@ -1,7 +1,6 @@
 
 import { Database } from 'bun:sqlite';
 import path from 'path';
-import os from 'os';
 import {
   existsSync,
   writeFileSync,
@@ -15,9 +14,10 @@ import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { formatTime, groupByDate } from '../shared/timeline-formatting.js';
 import { isDirectChild } from '../shared/path-utils.js';
 import { logger } from '../utils/logger.js';
+import { paths } from '../shared/paths.js';
 
-const DB_PATH = path.join(os.homedir(), '.claude-mem', 'claude-mem.db');
-const SETTINGS_PATH = path.join(os.homedir(), '.claude-mem', 'settings.json');
+const DB_PATH = paths.database();
+const SETTINGS_PATH = paths.settings();
 
 interface ObservationRow {
   id: number;

@@ -1,6 +1,7 @@
 import * as p from '@clack/prompts';
 import pc from 'picocolors';
-import { execSync, spawn } from 'child_process';
+import { execSync } from 'child_process';
+import { spawnHidden } from '../../shared/spawn.js';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, join } from 'path';
@@ -421,7 +422,7 @@ async function installClaudeCode(): Promise<boolean> {
 
   return new Promise<boolean>((resolve) => {
     let captured = '';
-    const child = spawn(command, [], {
+    const child = spawnHidden(command, [], {
       shell: IS_WINDOWS ? (process.env.ComSpec ?? 'cmd.exe') : '/bin/bash',
       stdio: spinner ? ['inherit', 'pipe', 'pipe'] : 'inherit',
     });
@@ -563,7 +564,11 @@ function runNpmInstallInMarketplace(): void {
 
   if (!existsSync(packageJsonPath)) return;
 
-  execSync('npm install --production', {
+  // --legacy-peer-deps suppresses a known false-positive ERESOLVE between
+  // tree-sitter@0.21 and @tree-sitter-grammars/* peer ranges. The native
+  // bindings path is unused (we load .wasm), so the conflict is benign.
+  // Revisit if real peer constraints are added to the marketplace deps.
+  execSync('npm install --omit=dev --legacy-peer-deps', {
     cwd: marketplaceDir,
     stdio: 'pipe',
     encoding: 'utf8',

@@ -58,10 +58,11 @@ import {
 import { DatabaseManager } from './worker/DatabaseManager.js';
 import { SessionManager } from './worker/SessionManager.js';
 import { SSEBroadcaster } from './worker/SSEBroadcaster.js';
-import { ClaudeProvider } from './worker/ClaudeProvider.js';
+import { ClaudeProvider, classifyClaudeError } from './worker/ClaudeProvider.js';
 import type { WorkerRef } from './worker/agents/types.js';
-import { GeminiProvider, isGeminiSelected, isGeminiAvailable } from './worker/GeminiProvider.js';
-import { OpenRouterProvider, isOpenRouterSelected, isOpenRouterAvailable } from './worker/OpenRouterProvider.js';
+import { GeminiProvider, classifyGeminiError, isGeminiSelected, isGeminiAvailable } from './worker/GeminiProvider.js';
+import { OpenRouterProvider, classifyOpenRouterError, isOpenRouterSelected, isOpenRouterAvailable } from './worker/OpenRouterProvider.js';
+import { ClassifiedProviderError, isClassified, type ProviderErrorClass } from './worker/provider-errors.js';
 import { PaginationHelper } from './worker/PaginationHelper.js';
 import { SettingsManager } from './worker/SettingsManager.js';
 import { SearchManager } from './worker/SearchManager.js';
@@ -503,6 +504,36 @@ export class WorkerService implements WorkerRef {
     return this.sdkAgent;
   }
 
+  /**
+   * Re-classify a raw error at the worker-service dispatch site using the
+   * active provider's classifier. Returns null when the provider classifier
+   * doesn't recognize the shape (caller falls back to default behavior).
+   *
+   * Most provider errors should already be classified at the provider
+   * boundary — this is a safety net for errors from inside the SDK that
+   * never round-tripped through fetch (e.g. Anthropic SDK exceptions).
+   */
+  private reclassifyAtDispatch(
+    error: unknown,
+    agent: ClaudeProvider | GeminiProvider | OpenRouterProvider
+  ): ClassifiedProviderError | null {
+    try {
+      if (agent instanceof ClaudeProvider) {
+        return classifyClaudeError(error);
+      }
+      if (agent instanceof GeminiProvider) {
+        // Without a status code we still want network/spawn detection.
+        return classifyGeminiError({ cause: error });
+      }
+      if (agent instanceof OpenRouterProvider) {
+        return classifyOpenRouterError({ cause: error });
+      }
+    } catch {
+      // If the classifier itself throws, fall back to unclassified.
+    }
+    return null;
+  }
+
   private startSessionProcessor(
     session: ReturnType<typeof this.sessionManager.getSession>,
     source: string
@@ -531,22 +562,26 @@ export class WorkerService implements WorkerRef {
       .catch(async (error: unknown) => {
         const errorMessage = (error as Error)?.message || '';
 
-        const unrecoverablePatterns = [
-          'Claude executable not found',
-          'CLAUDE_CODE_PATH',
-          'ENOENT',
-          'spawn',
-          'Invalid API key',
-          'API_KEY_INVALID',
-          'API key expired',
-          'API key not valid',
-          'PERMISSION_DENIED',
-          'Gemini API error: 400',
-          'Gemini API error: 401',
-          'Gemini API error: 403',
-          'FOREIGN KEY constraint failed',
-        ];
-        if (unrecoverablePatterns.some(pattern => errorMessage.includes(pattern))) {
+        // Dispatch on F4 ClassifiedProviderError.kind. Replaces the old
+        // string-matching allowlist (#2244). Already-classified errors
+        // propagate kind from the provider boundary; raw errors get
+        // re-classified here using provider-specific helpers based on the
+        // active agent.
+        const classified: ClassifiedProviderError | null = isClassified(error)
+          ? error
+          : this.reclassifyAtDispatch(error, agent);
+
+        // FOREIGN KEY constraint failures from SQLite are unrecoverable but
+        // not provider-specific; check before deferring to the classifier so
+        // FK failures don't get misclassified as transient and retry forever
+        // (per-provider classifiers don't recognize FK errors).
+        const isFkConstraintFailure = errorMessage.includes('FOREIGN KEY constraint failed');
+
+        const dispatchKind: ProviderErrorClass | null = isFkConstraintFailure
+          ? 'unrecoverable'
+          : (classified ? classified.kind : null);
+
+        if (dispatchKind === 'unrecoverable' || dispatchKind === 'auth_invalid' || dispatchKind === 'quota_exhausted') {
           hadUnrecoverableError = true;
           this.lastAiInteraction = {
             timestamp: Date.now(),
@@ -554,9 +589,13 @@ export class WorkerService implements WorkerRef {
             provider: providerName,
             error: errorMessage,
           };
-          logger.error('SDK', 'Unrecoverable generator error - will NOT restart', {
+          const logLabel =
+            dispatchKind === 'auth_invalid' ? 'auth invalid' :
+            dispatchKind === 'quota_exhausted' ? 'quota exhausted' : 'unrecoverable';
+          logger.error('SDK', `Unrecoverable generator error (${logLabel}) - will NOT restart`, {
             sessionId: session.sessionDbId,
             project: session.project,
+            errorKind: dispatchKind,
             errorMessage
           });
           return;

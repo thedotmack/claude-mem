@@ -1,13 +1,11 @@
 
-import path from 'path';
-import { homedir } from 'os';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { getCredential } from '../../shared/EnvManager.js';
-import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 import { estimateTokens } from '../../shared/timeline-formatting.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
@@ -17,8 +15,104 @@ import {
   isAbortError,
   type WorkerRef
 } from './agents/index.js';
+import { ClassifiedProviderError } from './provider-errors.js';
+import { withRetry } from './retry.js';
 
 const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1/models';
+
+/**
+ * Parse Retry-After header (seconds or HTTP-date).
+ * Returns ms or undefined.
+ */
+function parseRetryAfterMs(value: string | null): number | undefined {
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (!Number.isNaN(seconds) && seconds >= 0) {
+    return Math.floor(seconds * 1000);
+  }
+  const dateMs = Date.parse(value);
+  if (!Number.isNaN(dateMs)) {
+    const delta = dateMs - Date.now();
+    return delta > 0 ? delta : 0;
+  }
+  return undefined;
+}
+
+/**
+ * Classify a Gemini fetch failure into ClassifiedProviderError. Called at
+ * the boundary right after `fetch()` returns or throws. Provider-specific
+ * because Gemini surfaces auth/quota/rate-limit signals via specific status
+ * codes and body strings (e.g. "quota exceeded", "API key not valid").
+ */
+export function classifyGeminiError(input: {
+  status?: number;
+  bodyText?: string;
+  headers?: Headers | { get(name: string): string | null };
+  cause: unknown;
+  requestId?: string;
+}): ClassifiedProviderError {
+  const status = input.status;
+  const body = input.bodyText ?? '';
+  const lower = body.toLowerCase();
+  const headers = input.headers;
+  const retryAfterMs = headers ? parseRetryAfterMs(headers.get('retry-after')) : undefined;
+
+  // Quota exceeded — by body marker — even on 500 (Gemini quirk).
+  if (lower.includes('quota exceeded') || lower.includes('resource_exhausted')) {
+    return new ClassifiedProviderError(
+      `Gemini quota exhausted${status !== undefined ? ` (status ${status})` : ''}`,
+      { kind: 'quota_exhausted', cause: input.cause },
+    );
+  }
+
+  if (status === 429) {
+    return new ClassifiedProviderError(
+      'Gemini rate limit (429)',
+      { kind: 'rate_limit', cause: input.cause, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) },
+    );
+  }
+
+  if (status === 401 || status === 403) {
+    // API_KEY_INVALID, PERMISSION_DENIED, etc.
+    if (lower.includes('api key not valid') || lower.includes('api_key_invalid') || lower.includes('api key expired')) {
+      return new ClassifiedProviderError(
+        `Gemini auth invalid (status ${status})`,
+        { kind: 'auth_invalid', cause: input.cause },
+      );
+    }
+    return new ClassifiedProviderError(
+      `Gemini auth error (status ${status})`,
+      { kind: 'auth_invalid', cause: input.cause },
+    );
+  }
+
+  if (status === 400) {
+    return new ClassifiedProviderError(
+      `Gemini bad request (status 400)`,
+      { kind: 'unrecoverable', cause: input.cause },
+    );
+  }
+
+  if (status !== undefined && status >= 500 && status < 600) {
+    return new ClassifiedProviderError(
+      `Gemini upstream error (status ${status})`,
+      { kind: 'transient', cause: input.cause },
+    );
+  }
+
+  // Network errors (no status) — treat as transient.
+  if (status === undefined) {
+    return new ClassifiedProviderError(
+      `Gemini network error: ${input.cause instanceof Error ? input.cause.message : String(input.cause)}`,
+      { kind: 'transient', cause: input.cause },
+    );
+  }
+
+  return new ClassifiedProviderError(
+    `Gemini API error: ${status}${body ? ` - ${body.substring(0, 200)}` : ''}`,
+    { kind: 'unrecoverable', cause: input.cause },
+  );
+}
 
 export type GeminiModel =
   | 'gemini-2.5-flash-lite'
@@ -346,26 +440,54 @@ export class GeminiProvider {
 
     await enforceRateLimitForModel(model, rateLimitingEnabled);
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        contents,
-        generationConfig: {
-          temperature: 0.3,  // Lower temperature for structured extraction
-          maxOutputTokens: 4096,
-        },
-      }),
-    });
+    // Track request-id (best-effort dedup) across retries.
+    let priorRequestId: string | null = null;
 
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`Gemini API error: ${response.status} - ${error}`);
-    }
+    const data = await withRetry<GeminiResponse>(async (attemptSignal) => {
+      let response: Response;
+      try {
+        response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(priorRequestId ? { 'x-claude-mem-prior-request-id': priorRequestId } : {}),
+          },
+          body: JSON.stringify({
+            contents,
+            generationConfig: {
+              temperature: 0.3,  // Lower temperature for structured extraction
+              maxOutputTokens: 4096,
+            },
+          }),
+          signal: attemptSignal,
+        });
+      } catch (networkError: unknown) {
+        // Network failures, aborts, DNS, etc.
+        throw classifyGeminiError({
+          cause: networkError,
+        });
+      }
 
-    const data = await response.json() as GeminiResponse;
+      const requestId = response.headers.get('x-goog-request-id') ?? response.headers.get('x-request-id');
+      if (requestId) {
+        priorRequestId = requestId;
+      } else {
+        logger.debug('SDK', 'Gemini response missing request-id header; retry dedup is best-effort');
+      }
+
+      if (!response.ok) {
+        const errorBody = await response.text();
+        throw classifyGeminiError({
+          status: response.status,
+          bodyText: errorBody,
+          headers: response.headers,
+          cause: new Error(`Gemini API error: ${response.status} - ${errorBody}`),
+          ...(requestId ? { requestId } : {}),
+        });
+      }
+
+      return await response.json() as GeminiResponse;
+    }, { label: `Gemini ${model}` });
 
     if (!data.candidates?.[0]?.content?.parts?.[0]?.text) {
       logger.error('SDK', 'Empty response from Gemini');
@@ -379,7 +501,7 @@ export class GeminiProvider {
   }
 
   private getGeminiConfig(): { apiKey: string; model: GeminiModel; rateLimitingEnabled: boolean } {
-    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+    const settingsPath = paths.settings();
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
 
     const apiKey = settings.CLAUDE_MEM_GEMINI_API_KEY || getCredential('GEMINI_API_KEY') || '';
@@ -414,13 +536,13 @@ export class GeminiProvider {
 }
 
 export function isGeminiAvailable(): boolean {
-  const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+  const settingsPath = paths.settings();
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
   return !!(settings.CLAUDE_MEM_GEMINI_API_KEY || getCredential('GEMINI_API_KEY'));
 }
 
 export function isGeminiSelected(): boolean {
-  const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+  const settingsPath = paths.settings();
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
   return settings.CLAUDE_MEM_PROVIDER === 'gemini';
 }

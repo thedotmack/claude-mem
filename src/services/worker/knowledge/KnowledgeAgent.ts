@@ -1,12 +1,12 @@
 
-import { execSync } from 'child_process';
 import { CorpusStore } from './CorpusStore.js';
 import { CorpusRenderer } from './CorpusRenderer.js';
 import type { CorpusFile, QueryResult } from './types.js';
 import { logger } from '../../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, OBSERVER_SESSIONS_DIR, ensureDir } from '../../../shared/paths.js';
-import { buildIsolatedEnv } from '../../../shared/EnvManager.js';
+import { buildIsolatedEnvWithFreshOAuth } from '../../../shared/EnvManager.js';
+import { findClaudeExecutable } from '../../../shared/find-claude-executable.js';
 import { sanitizeEnv } from '../../../supervisor/env-sanitizer.js';
 
 // @ts-ignore - Agent SDK types may not be available
@@ -50,8 +50,8 @@ export class KnowledgeAgent {
     ].join('\n');
 
     ensureDir(OBSERVER_SESSIONS_DIR);
-    const claudePath = this.findClaudeExecutable();
-    const isolatedEnv = sanitizeEnv(buildIsolatedEnv());
+    const claudePath = findClaudeExecutable('WORKER');
+    const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
 
     const queryResult = query({
       prompt: primePrompt,
@@ -145,8 +145,8 @@ export class KnowledgeAgent {
 
   private async executeQuery(corpus: CorpusFile, question: string): Promise<QueryResult> {
     ensureDir(OBSERVER_SESSIONS_DIR);
-    const claudePath = this.findClaudeExecutable();
-    const isolatedEnv = sanitizeEnv(buildIsolatedEnv());
+    const claudePath = findClaudeExecutable('WORKER');
+    const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
 
     const queryResult = query({
       prompt: question,
@@ -196,41 +196,4 @@ export class KnowledgeAgent {
     return settings.CLAUDE_MEM_MODEL;
   }
 
-  private findClaudeExecutable(): string {
-    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-
-    if (settings.CLAUDE_CODE_PATH) {
-      const { existsSync } = require('fs');
-      if (!existsSync(settings.CLAUDE_CODE_PATH)) {
-        throw new Error(`CLAUDE_CODE_PATH is set to "${settings.CLAUDE_CODE_PATH}" but the file does not exist.`);
-      }
-      return settings.CLAUDE_CODE_PATH;
-    }
-
-    if (process.platform === 'win32') {
-      try {
-        execSync('where claude.cmd', { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
-        return 'claude.cmd';
-      } catch {
-        // Fall through to generic detection
-      }
-    }
-
-    try {
-      const claudePath = execSync(
-        process.platform === 'win32' ? 'where claude' : 'which claude',
-        { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }
-      ).trim().split('\n')[0].trim();
-
-      if (claudePath) return claudePath;
-    } catch (error) {
-      if (error instanceof Error) {
-        logger.debug('WORKER', 'Claude executable auto-detection failed', {}, error);
-      } else {
-        logger.debug('WORKER', 'Claude executable auto-detection failed (non-Error thrown)', { thrownValue: String(error) });
-      }
-    }
-
-    throw new Error('Claude executable not found. Please either:\n1. Add "claude" to your system PATH, or\n2. Set CLAUDE_CODE_PATH in ~/.claude-mem/settings.json');
-  }
 }

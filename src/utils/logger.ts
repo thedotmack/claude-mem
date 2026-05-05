@@ -1,7 +1,7 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
+import { paths } from '../shared/paths.js';
 
 export enum LogLevel {
   DEBUG = 0,
@@ -29,6 +29,7 @@ export type Component =
   | 'HTTP'
   | 'IMPORT'
   | 'INGEST'
+  | 'OAUTH'
   | 'OPENCLAW'
   | 'OPENCODE'
   | 'PARSER'
@@ -55,7 +56,6 @@ interface LogContext {
   [key: string]: any;
 }
 
-const DEFAULT_DATA_DIR = join(homedir(), '.claude-mem');
 
 class Logger {
   private level: LogLevel | null = null;
@@ -73,7 +73,7 @@ class Logger {
     this.logFileInitialized = true;
 
     try {
-      const logsDir = join(DEFAULT_DATA_DIR, 'logs');
+      const logsDir = paths.logsDir();
 
       if (!existsSync(logsDir)) {
         mkdirSync(logsDir, { recursive: true });
@@ -90,7 +90,7 @@ class Logger {
   private getLevel(): LogLevel {
     if (this.level === null) {
       try {
-        const settingsPath = join(DEFAULT_DATA_DIR, 'settings.json');
+        const settingsPath = paths.settings();
         if (existsSync(settingsPath)) {
           const settingsData = readFileSync(settingsPath, 'utf-8');
           const settings = JSON.parse(settingsData);
