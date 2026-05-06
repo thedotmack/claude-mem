@@ -34,12 +34,31 @@ owner=$(jq -r '.owner.login // .owner.name' <<<"$repo_json")
 repo=$(jq -r '.name' <<<"$repo_json")
 ```
 
-Use GraphQL for unresolved review threads. Include `pageInfo`; if `hasNextPage` is `true`, repeat the query with `-f cursor="$cursor"` where `cursor` is the previous `endCursor`.
+Use GraphQL for unresolved review threads. Include `pageInfo`; omit `cursor` on the first page, then pass the previous `endCursor` with `-f cursor="$cursor"` while `hasNextPage` is `true`.
 
 ```bash
 gh api graphql \
   -f query='query($owner:String!,$repo:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewThreads(first:100,after:$cursor){pageInfo{hasNextPage endCursor}nodes{id,isResolved,isOutdated,path,line,comments(last:1){nodes{author{login},body,createdAt,url}}}}}}}' \
   -f owner="$owner" -f repo="$repo" -F number=<number>
+```
+
+Use this loop when a PR may have many review threads:
+
+```bash
+thread_query='query($owner:String!,$repo:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewThreads(first:100,after:$cursor){pageInfo{hasNextPage endCursor}nodes{id,isResolved,isOutdated,path,line,comments(last:1){nodes{author{login},body,createdAt,url}}}}}}}'
+cursor_args=()
+
+while :; do
+  page=$(gh api graphql -f query="$thread_query" -f owner="$owner" -f repo="$repo" -F number=<number> "${cursor_args[@]}")
+  printf '%s\n' "$page" | jq -r '.data.repository.pullRequest.reviewThreads.nodes[]
+    | select(.isResolved==false)
+    | [.id,.path,(.line//""),(.isOutdated|tostring),(.comments.nodes[-1].author.login//""),(.comments.nodes[-1].body|gsub("\n";" ")|.[0:240])]
+    | @tsv'
+
+  jq -e '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage' >/dev/null <<<"$page" || break
+  cursor=$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor' <<<"$page")
+  cursor_args=(-f cursor="$cursor")
+done
 ```
 
 Filter unresolved threads with `jq`:
