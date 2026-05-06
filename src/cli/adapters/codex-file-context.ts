@@ -4,7 +4,11 @@ import { parse, type ParsedToken } from 'shell-quote';
 
 const MAX_FILE_PATHS = 10;
 const READ_COMMANDS = new Set(['cat', 'head', 'tail', 'less', 'more', 'bat', 'view', 'nl', 'tac']);
-const FLAGS_WITH_VALUES = new Set(['-n', '-c', '--lines', '--bytes']);
+const FLAGS_WITH_VALUES_BY_COMMAND: Record<string, Set<string>> = {
+  head: new Set(['-n', '-c', '--lines', '--bytes']),
+  tail: new Set(['-n', '-c', '--lines', '--bytes']),
+};
+const NO_FLAGS_WITH_VALUES = new Set<string>();
 
 function isOperatorToken(token: ParsedToken): boolean {
   return typeof token === 'object' && token !== null && 'op' in token;
@@ -42,10 +46,15 @@ function isFlagLike(value: string): boolean {
   return value.startsWith('-') || value.startsWith('+');
 }
 
-function dropFlagValue(flag: string): boolean {
-  if (FLAGS_WITH_VALUES.has(flag)) return true;
+function flagsWithValues(command: string): Set<string> {
+  return FLAGS_WITH_VALUES_BY_COMMAND[command] ?? NO_FLAGS_WITH_VALUES;
+}
+
+function dropFlagValue(flag: string, command: string): boolean {
+  const valueFlags = flagsWithValues(command);
+  if (valueFlags.has(flag)) return true;
   const eqIndex = flag.indexOf('=');
-  return eqIndex > 0 && FLAGS_WITH_VALUES.has(flag.slice(0, eqIndex));
+  return eqIndex > 0 && valueFlags.has(flag.slice(0, eqIndex));
 }
 
 function isExistingFile(candidate: string, cwd: string): boolean {
@@ -93,7 +102,7 @@ function extractFromBash(toolInput: unknown, cwd: string): string[] {
         continue;
       }
       if (isFlagLike(token)) {
-        skipNext = dropFlagValue(token) && !token.includes('=');
+        skipNext = dropFlagValue(token, argv0) && !token.includes('=');
         continue;
       }
       if (isExistingFile(token, cwd)) {

@@ -27,6 +27,14 @@ describe('extractFilePaths', () => {
     expect(paths).toEqual(['README.md', 'src.ts']);
   });
 
+  it('does not consume cat boolean flags as file arguments', () => {
+    const paths = extractFilePaths('Bash', {
+      command: 'cat -n README.md',
+    }, tmpDir);
+
+    expect(paths).toEqual(['README.md']);
+  });
+
   it('ignores non-read Bash commands', () => {
     const paths = extractFilePaths('Bash', {
       command: 'rm README.md; echo src.ts',
