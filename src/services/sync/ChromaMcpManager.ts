@@ -588,15 +588,6 @@ export class ChromaMcpManager {
       }
     }
 
-    // Cap embedding-thread fanout. ONNX Runtime / OpenBLAS / MKL all default to
-    // cpu_count(), so a 12-core box runs 12 threads burning embeddings in
-    // parallel — the dominant cause of the chroma-mcp CPU storm on Windows
-    // (#2220). Two threads keeps backfill latency reasonable without saturating
-    // the box. Only set if the user hasn't pinned them explicitly.
-    const threadCap = '2';
-    for (const key of ['OMP_NUM_THREADS', 'ONNX_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS']) {
-      if (!baseEnv[key]) baseEnv[key] = threadCap;
-    }
     // Disable Chroma's anonymous telemetry — it issues background HTTP from
     // the embedding subprocess on every collection touch.
     if (!baseEnv.ANONYMIZED_TELEMETRY) baseEnv.ANONYMIZED_TELEMETRY = 'false';

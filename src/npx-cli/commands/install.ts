@@ -7,6 +7,7 @@ import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { loadClaudeMemEnv, saveClaudeMemEnv } from '../../shared/EnvManager.js';
 import { ensureWorkerStarted, type WorkerStartResult } from '../../services/worker-spawner.js';
 import {
   ensureBun,
@@ -542,7 +543,11 @@ function runNpmInstallInMarketplace(): void {
 
   if (!existsSync(packageJsonPath)) return;
 
-  execSync('npm install --production', {
+  // --legacy-peer-deps suppresses a known false-positive ERESOLVE between
+  // tree-sitter@0.21 and @tree-sitter-grammars/* peer ranges. The native
+  // bindings path is unused (we load .wasm), so the conflict is benign.
+  // Revisit if real peer constraints are added to the marketplace deps.
+  execSync('npm install --omit=dev --legacy-peer-deps', {
     cwd: marketplaceDir,
     stdio: 'pipe',
     encoding: 'utf8',
@@ -587,13 +592,143 @@ function mergeSettings(updates: Record<string, string>): boolean {
 }
 
 type ProviderId = 'claude' | 'gemini' | 'openrouter';
+type ClaudeAccessMode = 'subscription' | 'api-key';
+type ClaudeApiMode = 'direct' | 'gateway';
+
+function readRawStoredAuthMethod(): 'subscription' | 'api-key' | 'gateway' | undefined {
+  try {
+    if (!existsSync(USER_SETTINGS_PATH)) return undefined;
+    const raw = JSON.parse(readFileSync(USER_SETTINGS_PATH, 'utf-8')) as Record<string, unknown>;
+    const flat = (raw.env && typeof raw.env === 'object' ? raw.env : raw) as Record<string, unknown>;
+    const value = flat.CLAUDE_MEM_CLAUDE_AUTH_METHOD;
+    if (value === 'subscription' || value === 'api-key' || value === 'gateway') return value;
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function resolveClaudeAuthMethod(): 'subscription' | 'api-key' | 'gateway' {
+  const stored = readRawStoredAuthMethod();
+  if (stored) return stored;
+  const env = loadClaudeMemEnv();
+  if (env.ANTHROPIC_BASE_URL?.trim()) return 'gateway';
+  if (env.ANTHROPIC_API_KEY?.trim()) return 'api-key';
+  return 'subscription';
+}
 
 async function promptProvider(options: InstallOptions): Promise<ProviderId> {
   const initialProvider = (getSetting('CLAUDE_MEM_PROVIDER') as ProviderId) || 'claude';
 
-  const persistClaudeProvider = () => {
-    const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: 'claude' });
-    if (wrote) log.info('Saved provider=claude to ~/.claude-mem/settings.json');
+  const persistClaudeProvider = (authMethod?: 'subscription' | 'api-key' | 'gateway') => {
+    const resolvedAuthMethod = authMethod ?? resolveClaudeAuthMethod();
+    const wrote = mergeSettings({
+      CLAUDE_MEM_PROVIDER: 'claude',
+      CLAUDE_MEM_CLAUDE_AUTH_METHOD: resolvedAuthMethod,
+    });
+    if (wrote) log.info('Saved Claude Agent SDK configuration to ~/.claude-mem/settings.json');
+  };
+
+  const useSubscriptionAuth = () => {
+    persistClaudeProvider('subscription');
+    saveClaudeMemEnv({
+      ANTHROPIC_API_KEY: '',
+      ANTHROPIC_BASE_URL: '',
+      ANTHROPIC_AUTH_TOKEN: '',
+    });
+    log.info('Configured claude-mem to use your logged-in Claude SDK account.');
+  };
+
+  const configureDirectApiKey = async (): Promise<void> => {
+    const existing = loadClaudeMemEnv().ANTHROPIC_API_KEY || '';
+    if (existing.trim().length > 0) {
+      const choice = await p.select<'keep' | 'replace'>({
+        message: 'An Anthropic API key is already configured. Keep it or enter a new one?',
+        options: [
+          { value: 'keep', label: 'Keep existing key' },
+          { value: 'replace', label: 'Enter a new key (rotate)' },
+        ],
+        initialValue: 'keep',
+      });
+      if (p.isCancel(choice)) {
+        log.warn('API key prompt cancelled — leaving existing configuration untouched.');
+        return;
+      }
+      if (choice === 'keep') {
+        saveClaudeMemEnv({
+          ANTHROPIC_API_KEY: existing.trim(),
+          ANTHROPIC_BASE_URL: '',
+          ANTHROPIC_AUTH_TOKEN: '',
+        });
+        persistClaudeProvider('api-key');
+        return;
+      }
+    }
+
+    const apiKeyResult = await p.password({
+      message: 'Paste your Anthropic API key:',
+      mask: '*',
+      validate: (v?: string) => (!v || v.trim().length === 0) ? 'API key required' : undefined,
+    });
+
+    if (p.isCancel(apiKeyResult)) {
+      log.warn('API key prompt cancelled — leaving existing configuration untouched.');
+      return;
+    }
+
+    saveClaudeMemEnv({
+      ANTHROPIC_API_KEY: String(apiKeyResult).trim(),
+      ANTHROPIC_BASE_URL: '',
+      ANTHROPIC_AUTH_TOKEN: '',
+    });
+    persistClaudeProvider('api-key');
+    log.info('Saved Anthropic API key for the Claude Agent SDK path.');
+  };
+
+  const configureGateway = async (): Promise<void> => {
+    const existing = loadClaudeMemEnv();
+    const baseUrlResult = await p.text({
+      message: 'Gateway URL:',
+      placeholder: existing.ANTHROPIC_BASE_URL || 'http://localhost:4000',
+      defaultValue: existing.ANTHROPIC_BASE_URL || '',
+      validate: (v?: string) => {
+        const value = v?.trim() ?? '';
+        if (!value) return 'Gateway URL required';
+        try {
+          new URL(value);
+          return undefined;
+        } catch {
+          return 'Enter a valid URL, for example http://localhost:4000';
+        }
+      },
+    });
+
+    if (p.isCancel(baseUrlResult)) {
+      log.warn('Gateway setup cancelled — leaving existing configuration untouched.');
+      return;
+    }
+
+    const tokenResult = await p.password({
+      message: 'Gateway key/token (leave blank to keep current token, or type a new one):',
+      mask: '*',
+    });
+
+    const tokenCancelled = p.isCancel(tokenResult);
+    const tokenInput = tokenCancelled ? '' : String(tokenResult).trim();
+    const env: Record<string, string> = {
+      ANTHROPIC_API_KEY: '',
+      ANTHROPIC_BASE_URL: String(baseUrlResult).trim(),
+    };
+    if (!tokenCancelled && tokenInput.length > 0) {
+      env.ANTHROPIC_AUTH_TOKEN = tokenInput;
+    }
+    saveClaudeMemEnv(env);
+    persistClaudeProvider('gateway');
+    if (tokenCancelled || tokenInput.length === 0) {
+      log.info('Gateway URL saved; existing gateway token preserved.');
+    } else {
+      log.info('Configured Claude Agent SDK gateway in ~/.claude-mem/.env.');
+    }
   };
 
   if (!isInteractive) {
@@ -610,29 +745,72 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
     return initialProvider;
   }
 
-  let selectedProvider: ProviderId;
-  if (options.provider) {
-    selectedProvider = options.provider;
-  } else {
-    const result = await p.select<ProviderId>({
-      message: 'Which LLM provider should claude-mem use to compress observations?',
+  const runClaudeAuthFlow = async (): Promise<void> => {
+    const resolvedAuthMethod = resolveClaudeAuthMethod();
+    const initialAccessMode: ClaudeAccessMode =
+      resolvedAuthMethod === 'subscription' ? 'subscription' : 'api-key';
+
+    const result = await p.select<ClaudeAccessMode>({
+      message: 'Do you use a subscription plan or an API key/gateway for the memory agent?',
       options: [
-        { value: 'claude', label: 'Claude Code auth (default — no extra setup, uses your existing Claude Code subscription)' },
-        { value: 'gemini', label: 'Gemini API key (free tier available — fast and cheap)' },
-        { value: 'openrouter', label: 'OpenRouter API key (BYO model — wide selection of frontier and open models)' },
+        { value: 'subscription', label: 'Subscription plan (recommended — uses your logged-in Claude SDK account)' },
+        { value: 'api-key', label: 'API key or gateway (Anthropic, LiteLLM, or compatible proxy)' },
       ],
-      initialValue: initialProvider,
+      initialValue: initialAccessMode,
     });
 
     if (p.isCancel(result)) {
       p.cancel('Installation cancelled.');
       process.exit(0);
     }
-    selectedProvider = result as ProviderId;
+    if (result === 'subscription') {
+      useSubscriptionAuth();
+      return;
+    }
+
+    const apiModeResult = await p.select<ClaudeApiMode>({
+      message: 'How should claude-mem connect?',
+      options: [
+        { value: 'direct', label: 'Anthropic API key' },
+        { value: 'gateway', label: 'LiteLLM or custom gateway' },
+      ],
+      initialValue: resolvedAuthMethod === 'gateway' || loadClaudeMemEnv().ANTHROPIC_BASE_URL ? 'gateway' : 'direct',
+    });
+
+    if (p.isCancel(apiModeResult)) {
+      p.cancel('Installation cancelled.');
+      process.exit(0);
+    }
+
+    if (apiModeResult === 'gateway') {
+      await configureGateway();
+    } else {
+      await configureDirectApiKey();
+    }
+  };
+
+  let selectedProvider: ProviderId;
+  if (options.provider) {
+    selectedProvider = options.provider;
+  } else {
+    const providerResult = await p.select<ProviderId>({
+      message: 'Which memory provider do you want to use?',
+      options: [
+        { value: 'claude', label: 'Claude Agent SDK (recommended)' },
+        { value: 'gemini', label: 'Gemini' },
+        { value: 'openrouter', label: 'OpenRouter' },
+      ],
+      initialValue: initialProvider,
+    });
+    if (p.isCancel(providerResult)) {
+      p.cancel('Installation cancelled.');
+      process.exit(0);
+    }
+    selectedProvider = providerResult;
   }
 
   if (selectedProvider === 'claude') {
-    persistClaudeProvider();
+    await runClaudeAuthFlow();
     return 'claude';
   }
 
@@ -651,7 +829,7 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
   const apiKeyResult = await p.password({
     message: `Paste your ${providerLabel} API key:`,
     mask: '*',
-    validate: (v: string) => (!v || v.trim().length === 0) ? 'API key required' : undefined,
+    validate: (v?: string) => (!v || v.trim().length === 0) ? 'API key required' : undefined,
   });
 
   if (p.isCancel(apiKeyResult)) {
@@ -677,8 +855,9 @@ async function promptClaudeModel(options: InstallOptions): Promise<void> {
     'claude-sonnet-4-6',
     'claude-opus-4-7',
   ]);
+  const allowCustomModel = resolveClaudeAuthMethod() === 'gateway';
 
-  if (options.model) {
+  if (options.model && !allowCustomModel) {
     if (!allowed.has(options.model)) {
       throw new Error(
         `Unknown Claude model: ${options.model}. Allowed: ${[...allowed].join(', ')}`,
@@ -690,10 +869,39 @@ async function promptClaudeModel(options: InstallOptions): Promise<void> {
     }
     return;
   }
+  if (options.model && allowCustomModel) {
+    const wrote = mergeSettings({ CLAUDE_MEM_MODEL: options.model });
+    if (wrote) {
+      log.info(`Saved gateway model=${options.model} to ~/.claude-mem/settings.json`);
+    }
+    return;
+  }
 
   if (!isInteractive) return;
 
   const initialModel = getSetting('CLAUDE_MEM_MODEL');
+
+  if (allowCustomModel) {
+    const result = await p.text({
+      message: 'Which model should the gateway use?',
+      placeholder: 'claude-haiku-4-5-20251001',
+      defaultValue: initialModel || 'claude-haiku-4-5-20251001',
+      validate: (v?: string) => (!v || v.trim().length === 0) ? 'Model required' : undefined,
+    });
+
+    if (p.isCancel(result)) {
+      p.cancel('Installation cancelled.');
+      process.exit(0);
+    }
+
+    const selectedModel = String(result).trim();
+    const wrote = mergeSettings({ CLAUDE_MEM_MODEL: selectedModel });
+    if (wrote) {
+      log.info(`Saved gateway model=${selectedModel} to ~/.claude-mem/settings.json`);
+    }
+    return;
+  }
+
   const initialValue = allowed.has(initialModel) ? initialModel : 'claude-haiku-4-5-20251001';
 
   const result = await p.select<string>({

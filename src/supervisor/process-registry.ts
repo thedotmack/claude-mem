@@ -174,9 +174,11 @@ export class ProcessRegistry {
 
   unregister(id: string): void {
     this.initialize();
+    const existing = this.entries.get(id);
     this.entries.delete(id);
     this.runtimeProcesses.delete(id);
     this.persist();
+    if (existing?.type === 'sdk') notifySlotAvailable();
   }
 
   clear(): void {
@@ -213,16 +215,19 @@ export class ProcessRegistry {
     this.initialize();
 
     let removed = 0;
+    let removedSdk = 0;
     for (const [id, info] of this.entries) {
       if (isPidAlive(info.pid)) continue;
       this.entries.delete(id);
       this.runtimeProcesses.delete(id);
       removed += 1;
+      if (info.type === 'sdk') removedSdk += 1;
     }
 
     if (removed > 0) {
       this.persist();
     }
+    for (let i = 0; i < removedSdk; i += 1) notifySlotAvailable();
 
     return removed;
   }
@@ -321,6 +326,9 @@ export class ProcessRegistry {
       this.runtimeProcesses.delete(record.id);
     }
     this.persist();
+    for (const record of sessionRecords) {
+      if (record.type === 'sdk') notifySlotAvailable();
+    }
 
     logger.info('SYSTEM', `Reaped ${sessionRecords.length} process(es) for session ${sessionId}`, {
       sessionId: sessionIdNum,
@@ -428,6 +436,7 @@ export async function ensureSdkProcessExit(
 }
 
 const TOTAL_PROCESS_HARD_CAP = 10;
+const SLOT_RECHECK_INTERVAL_MS = 5_000;
 const slotWaiters: Array<() => void> = [];
 
 function getActiveSdkCount(): number {
@@ -439,7 +448,8 @@ function notifySlotAvailable(): void {
   if (waiter) waiter();
 }
 
-export async function waitForSlot(maxConcurrent: number, timeoutMs: number = 60_000): Promise<void> {
+export async function waitForSlot(maxConcurrent: number, signal?: AbortSignal): Promise<void> {
+  getProcessRegistry().pruneDeadEntries();
   const activeCount = getActiveSdkCount();
   if (activeCount >= TOTAL_PROCESS_HARD_CAP) {
     throw new Error(`Hard cap exceeded: ${activeCount} processes in registry (cap=${TOTAL_PROCESS_HARD_CAP}). Refusing to spawn more.`);
@@ -447,25 +457,55 @@ export async function waitForSlot(maxConcurrent: number, timeoutMs: number = 60_
 
   if (activeCount < maxConcurrent) return;
 
+  if (signal?.aborted) {
+    throw new Error('waitForSlot aborted before queuing');
+  }
+
   logger.info('PROCESS', `Pool limit reached (${activeCount}/${maxConcurrent}), waiting for slot...`);
 
   return new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(() => {
+    let recheckTimer: ReturnType<typeof setInterval> | null = null;
+    let abortHandler: (() => void) | null = null;
+    const cleanup = () => {
+      if (recheckTimer) clearInterval(recheckTimer);
+      if (abortHandler && signal) signal.removeEventListener('abort', abortHandler);
       const idx = slotWaiters.indexOf(onSlot);
       if (idx >= 0) slotWaiters.splice(idx, 1);
-      reject(new Error(`Timed out waiting for agent pool slot after ${timeoutMs}ms`));
-    }, timeoutMs);
-
+    };
     const onSlot = () => {
-      clearTimeout(timeout);
-      if (getActiveSdkCount() < maxConcurrent) {
+      const count = getActiveSdkCount();
+      if (count >= TOTAL_PROCESS_HARD_CAP) {
+        cleanup();
+        reject(new Error(`Hard cap exceeded: ${count} processes in registry (cap=${TOTAL_PROCESS_HARD_CAP}). Refusing to spawn more.`));
+        return;
+      }
+
+      if (count < maxConcurrent) {
+        cleanup();
         resolve();
       } else {
         slotWaiters.push(onSlot);
       }
     };
 
+    if (signal) {
+      abortHandler = () => {
+        cleanup();
+        reject(new Error('waitForSlot aborted'));
+      };
+      signal.addEventListener('abort', abortHandler, { once: true });
+    }
+
     slotWaiters.push(onSlot);
+    recheckTimer = setInterval(() => {
+      const removed = getProcessRegistry().pruneDeadEntries();
+      if (removed > 0) {
+        logger.info('PROCESS', 'Pruned stale process registry entries while waiting for agent slot', { removed });
+        return;
+      }
+      notifySlotAvailable();
+    }, SLOT_RECHECK_INTERVAL_MS);
+    recheckTimer.unref?.();
   });
 }
 
@@ -565,7 +605,6 @@ export function spawnSdkProcess(
       logger.warn('SDK_SPAWN', `[session-${sessionDbId}] Claude process exited`, { code, signal, pid });
     }
     registry.unregister(recordId);
-    notifySlotAvailable();
   });
 
   if (!child.stdin || !child.stdout || !child.stderr) {

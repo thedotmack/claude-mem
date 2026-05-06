@@ -1,0 +1,307 @@
+---
+title: "LiteLLM Gateway"
+description: "Route claude-mem's Claude Agent SDK worker through LiteLLM while keeping one agentic execution path"
+---
+
+# LiteLLM Gateway
+
+claude-mem can route its background memory agent through a LiteLLM proxy. This lets teams keep claude-mem's Claude Agent SDK workflow while using LiteLLM for model routing, centralized credentials, usage tracking, budgets, audit logs, and provider failover.
+
+The important detail: claude-mem does **not** call LiteLLM with the OpenAI client directly. claude-mem still uses the Claude Agent SDK, and the SDK sends Anthropic-format requests to LiteLLM. LiteLLM then translates those requests to the upstream model provider you configured.
+
+```text
+Claude Code session
+  -> claude-mem hooks
+  -> claude-mem worker
+  -> Claude Agent SDK subprocess
+  -> ANTHROPIC_BASE_URL=http://localhost:4000
+  -> LiteLLM proxy
+  -> OpenAI / Azure / Vertex / Bedrock / OpenRouter / local model
+```
+
+This keeps the memory agent on one implementation path. The Claude provider, knowledge agents, session resume behavior, XML observation prompts, and queue retry logic all continue to use the same SDK code path whether the upstream model is Anthropic or routed through LiteLLM.
+
+## When to Use This
+
+Use LiteLLM gateway mode when you want:
+
+- A single organization-level LLM gateway for claude-mem traffic
+- Provider routing without changing claude-mem source code
+- Centralized API keys instead of storing provider keys in each developer's claude-mem settings
+- LiteLLM budgets, rate limits, logging, fallback routing, or virtual keys
+- A non-Anthropic upstream model while preserving the Claude Agent SDK execution path used by claude-mem
+
+Use the native [OpenRouter Provider](../usage/openrouter-provider) or [Gemini Provider](../usage/gemini-provider) instead if you want claude-mem's REST providers directly and do not need the Claude Agent SDK path.
+
+## Architecture
+
+### One Agent Path
+
+The LiteLLM integration is intentionally small. There is no custom LiteLLM provider, no Python handler, and no OpenAI-compatible server embedded in claude-mem.
+
+At runtime:
+
+1. The installer or user writes gateway settings to `~/.claude-mem/.env`.
+2. `~/.claude-mem/settings.json` keeps `CLAUDE_MEM_PROVIDER` set to `claude`.
+3. The worker starts the Claude Agent SDK with an isolated environment.
+4. The SDK reads `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN`.
+5. LiteLLM receives the SDK's Anthropic-format request.
+6. LiteLLM maps the request to the upstream provider and model configured in LiteLLM.
+7. The SDK response is parsed by the normal claude-mem observation pipeline.
+
+The code paths involved are:
+
+| Layer | Responsibility |
+| --- | --- |
+| `src/npx-cli/commands/install.ts` | Prompts for "LiteLLM or custom gateway", stores the gateway URL/token, and allows custom gateway model names |
+| `src/shared/EnvManager.ts` | Stores credentials in `~/.claude-mem/.env`, blocks shell-leaked auth vars, and injects only explicit claude-mem credentials |
+| `src/services/worker/ClaudeProvider.ts` | Starts the Claude Agent SDK for observation extraction with the isolated environment |
+| `src/services/worker/knowledge/KnowledgeAgent.ts` | Uses the same isolated SDK path for knowledge corpus Q&A |
+
+### Why `CLAUDE_MEM_PROVIDER` Stays `claude`
+
+LiteLLM is a gateway for the Claude Agent SDK path, not a fourth claude-mem provider.
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "claude",
+  "CLAUDE_MEM_CLAUDE_AUTH_METHOD": "gateway",
+  "CLAUDE_MEM_MODEL": "claude-haiku-4-5-20251001"
+}
+```
+
+Keeping the provider as `claude` matters because the worker should continue to use `ClaudeProvider`, not the native Gemini or OpenRouter REST providers. The gateway URL changes where the SDK sends model traffic; it does not change how claude-mem manages memory sessions.
+
+## Configure LiteLLM
+
+LiteLLM must expose an Anthropic-compatible endpoint for Claude Code / Claude Agent SDK traffic. Anthropic's gateway guidance recommends the unified LiteLLM endpoint as the normal setup:
+
+```bash
+export ANTHROPIC_BASE_URL=http://localhost:4000
+```
+
+For claude-mem, that value goes in `~/.claude-mem/.env`, not your shell, so the background worker uses it consistently across restarts.
+
+### Minimal LiteLLM Example
+
+Create a LiteLLM config that defines the model name claude-mem will request:
+
+```yaml
+# litellm-config.yaml
+model_list:
+  - model_name: claude-haiku-4-5-20251001
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+litellm_settings:
+  master_key: sk-litellm-local
+```
+
+Start LiteLLM:
+
+```bash
+OPENAI_API_KEY=sk-your-openai-key \
+litellm --config litellm-config.yaml --host 127.0.0.1 --port 4000
+```
+
+In this example, claude-mem asks the SDK for `claude-haiku-4-5-20251001`, LiteLLM accepts that model alias, and LiteLLM forwards the request to `openai/gpt-4o-mini`.
+
+<Note>
+The alias in `model_name` must match `CLAUDE_MEM_MODEL`, or `CLAUDE_MEM_MODEL` must be changed to match your LiteLLM alias. claude-mem does not translate model names.
+</Note>
+
+## Configure claude-mem
+
+### Option 1: Installer
+
+Run the installer:
+
+```bash
+npx claude-mem install
+```
+
+Choose:
+
+1. `Claude Agent SDK`
+2. `API key or gateway`
+3. `LiteLLM or custom gateway`
+4. Your LiteLLM URL, for example `http://127.0.0.1:4000`
+5. Your LiteLLM key/token if the proxy requires one
+6. The model alias LiteLLM should receive
+
+The installer stores provider settings in `~/.claude-mem/settings.json` and gateway credentials in `~/.claude-mem/.env`.
+
+### Option 2: Manual Files
+
+Edit `~/.claude-mem/settings.json`:
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "claude",
+  "CLAUDE_MEM_CLAUDE_AUTH_METHOD": "gateway",
+  "CLAUDE_MEM_MODEL": "claude-haiku-4-5-20251001"
+}
+```
+
+Edit `~/.claude-mem/.env`:
+
+```bash
+# ~/.claude-mem/.env
+ANTHROPIC_BASE_URL=http://127.0.0.1:4000
+ANTHROPIC_AUTH_TOKEN=sk-litellm-local
+```
+
+If your LiteLLM proxy does not require authentication, omit `ANTHROPIC_AUTH_TOKEN`.
+
+Restart the worker after manual edits:
+
+```bash
+npm run worker:restart
+```
+
+## Environment Isolation
+
+claude-mem deliberately does not trust whatever Anthropic credentials happen to be exported in your shell or project `.env` file.
+
+The worker blocks inherited `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, and stale `CLAUDE_CODE_OAUTH_TOKEN` values. It then re-injects only the credentials stored in `~/.claude-mem/.env`.
+
+This avoids two common failure modes:
+
+- A project-level `ANTHROPIC_API_KEY` silently bypasses LiteLLM and bills the public Anthropic API.
+- An expired Claude Code OAuth token overrides a configured gateway token and causes confusing auth failures.
+
+If `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, or `ANTHROPIC_API_KEY` is present in `~/.claude-mem/.env`, the worker treats that as explicit gateway/API configuration and skips Claude OAuth lookup. This prevents a configured gateway from falling back to `api.anthropic.com`.
+
+## Model Names
+
+`CLAUDE_MEM_MODEL` is passed through to the Claude Agent SDK. In gateway mode, claude-mem allows any non-empty model string because the valid model list is owned by LiteLLM.
+
+Recommended pattern:
+
+```yaml
+model_list:
+  - model_name: claude-haiku-4-5-20251001
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+```
+
+Then keep:
+
+```json
+{
+  "CLAUDE_MEM_MODEL": "claude-haiku-4-5-20251001"
+}
+```
+
+Alternatively, use a descriptive custom alias:
+
+```yaml
+model_list:
+  - model_name: memory-compressor
+    litellm_params:
+      model: azure/gpt-4o-mini-memory
+      api_base: os.environ/AZURE_API_BASE
+      api_key: os.environ/AZURE_API_KEY
+      api_version: "2024-10-21"
+```
+
+```json
+{
+  "CLAUDE_MEM_MODEL": "memory-compressor"
+}
+```
+
+## Request Flow
+
+When a Claude Code session produces transcript events, claude-mem's worker queues them for observation extraction. In gateway mode the extraction flow is:
+
+1. The worker loads pending messages for a memory session.
+2. `ClaudeProvider` builds the observation prompt and selected model.
+3. `buildIsolatedEnvWithFreshOAuth()` loads `~/.claude-mem/.env`.
+4. The SDK subprocess starts with `ANTHROPIC_BASE_URL` pointing at LiteLLM.
+5. LiteLLM receives the Anthropic-format request.
+6. LiteLLM routes to the configured upstream model.
+7. The SDK streams the assistant response back to the worker.
+8. claude-mem parses observations, stores them in SQLite, and syncs searchable embeddings.
+
+The knowledge-agent APIs use the same gateway environment, so corpus priming and corpus Q&A route through LiteLLM too.
+
+## What LiteLLM Does and Does Not Replace
+
+LiteLLM replaces:
+
+- Upstream model selection
+- Provider credentials
+- Gateway-level budgets and rate limits
+- Gateway-level logging and auditing
+- Optional routing/fallback policies inside LiteLLM
+
+LiteLLM does not replace:
+
+- claude-mem's worker process
+- The Claude Agent SDK subprocess
+- claude-mem's observation XML format
+- SQLite storage
+- Chroma/vector sync
+- Hook installation
+- Session resume handling inside claude-mem
+
+## Verification
+
+Check claude-mem's worker logs:
+
+```bash
+npm run worker:logs
+```
+
+You should see SDK startup logs that report gateway auth, followed by normal observation processing.
+
+Check LiteLLM's logs for a corresponding request to the configured model alias. If LiteLLM never receives traffic, confirm:
+
+- `CLAUDE_MEM_PROVIDER` is `claude`
+- `CLAUDE_MEM_CLAUDE_AUTH_METHOD` is `gateway`
+- `ANTHROPIC_BASE_URL` is in `~/.claude-mem/.env`
+- The worker was restarted after manual edits
+- The LiteLLM URL does not include an extra `/v1` suffix for the unified Anthropic endpoint
+
+## Troubleshooting
+
+### LiteLLM returns "model not found"
+
+The model name sent by claude-mem does not match a LiteLLM `model_name`. Make `CLAUDE_MEM_MODEL` and the LiteLLM alias match exactly.
+
+### claude-mem still uses Anthropic directly
+
+Check `~/.claude-mem/.env`. Gateway settings must be stored there. Shell exports are not the reliable configuration source for the worker.
+
+Also make sure `ANTHROPIC_BASE_URL` is present. A token alone authenticates a gateway, but the base URL is what redirects traffic away from the default Anthropic endpoint.
+
+### Authentication fails
+
+If LiteLLM uses a master key or virtual key, store it as `ANTHROPIC_AUTH_TOKEN` in `~/.claude-mem/.env`. The Claude Agent SDK sends this value as gateway authorization.
+
+If you previously configured a direct Anthropic API key, remove `ANTHROPIC_API_KEY` from `~/.claude-mem/.env` for gateway mode unless your gateway explicitly expects that variable.
+
+### Requests fail after changing files
+
+Restart the worker:
+
+```bash
+npm run worker:restart
+```
+
+The SDK environment is built when SDK subprocesses are spawned. Restarting guarantees the next memory agent process sees the new gateway values.
+
+### Tool use behaves differently than full Claude Code
+
+claude-mem's memory worker disables file and shell tools for observation extraction. The LiteLLM gateway is only handling the model call used to compress and summarize memory; it is not a replacement for your interactive Claude Code tool loop.
+
+## Related
+
+- [Custom Anthropic-Compatible Backends](custom-anthropic-backends)
+- [Configuration](../configuration)
+- [Worker Service Architecture](../architecture/worker-service)
+- [Anthropic LLM gateway configuration](https://docs.anthropic.com/en/docs/claude-code/llm-gateway)
+- [LiteLLM documentation](https://docs.litellm.ai/)

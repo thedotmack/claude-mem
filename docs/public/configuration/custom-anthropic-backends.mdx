@@ -8,7 +8,7 @@ description: "Point claude-mem at bridged or self-hosted Anthropic-compatible AP
 When you use the `claude` provider, claude-mem talks to the Anthropic API through the Claude Agent SDK. By default, the SDK targets the official Anthropic endpoint, but it honors the standard `ANTHROPIC_BASE_URL` environment variable. That means you can route claude-mem at any Anthropic-protocol-compatible backend — for example a corporate gateway, a regional bridge, or a third-party provider that exposes an Anthropic-shaped API — without changing any claude-mem source code.
 
 <Note>
-This page documents how to **persist a custom base URL** so claude-mem's worker uses it consistently. It does **not** add an OpenAI-compatible provider, and it does **not** auto-detect the bridge configuration from your shell — both of those are tracked separately in [issue #2196](https://github.com/thedotmack/claude-mem/issues/2196). For now, configuration is manual.
+This page documents how to **persist a custom base URL** so claude-mem's worker uses it consistently. For OpenAI-compatible upstream providers, use a gateway such as LiteLLM and follow the [LiteLLM Gateway](litellm-gateway) guide.
 </Note>
 
 ## When to Use This
@@ -19,7 +19,7 @@ Use `ANTHROPIC_BASE_URL` if you need claude-mem's observation worker to talk to:
 - A **regional Anthropic deployment** (e.g. AWS Bedrock or GCP Vertex via an Anthropic-compatible shim)
 - A **third-party provider** that bridges its API to the Anthropic protocol
 
-If your provider only speaks the OpenAI chat-completions protocol (DeepSeek native, Ollama, vLLM, LiteLLM), use the [OpenRouter provider](../usage/openrouter-provider) instead — it speaks OpenAI-style chat completions and accepts a base URL via OpenRouter's gateway.
+If your provider only speaks the OpenAI chat-completions protocol, put a gateway such as LiteLLM in front of it and point claude-mem's Claude Agent SDK path at that gateway. See [LiteLLM Gateway](litellm-gateway) for the full routing model.
 
 ## How the Plumbing Works
 
@@ -27,7 +27,7 @@ The flow is intentionally simple:
 
 1. **You write the credential** to `~/.claude-mem/.env`.
 2. **`EnvManager.loadClaudeMemEnv()`** reads that file (`src/shared/EnvManager.ts:67`).
-3. **`buildIsolatedEnv()`** copies `ANTHROPIC_BASE_URL` into the worker's spawn environment alongside `ANTHROPIC_API_KEY` (`src/shared/EnvManager.ts:164`).
+3. **`buildIsolatedEnv()`** copies `ANTHROPIC_BASE_URL` into the worker's spawn environment alongside explicit gateway or API credentials (`src/shared/EnvManager.ts:164`).
 4. **`ClaudeProvider.startSession()`** spawns the Claude Agent SDK with that isolated env (`src/services/worker/ClaudeProvider.ts:115`). The SDK reads `ANTHROPIC_BASE_URL` natively — claude-mem does not parse or rewrite it.
 
 Because the variable is isolated to the worker process, your interactive Claude Code sessions are unaffected; only the background memory agent uses the override.
@@ -101,12 +101,13 @@ A successful request through your gateway shows the standard `SDK Starting SDK q
 ## Limitations and Gotchas
 
 - **No model-name translation.** If your bridge expects `glm-4.7` and `CLAUDE_MEM_MODEL` is `claude-haiku-4-5-20251001`, the request will fail. Pin `CLAUDE_MEM_MODEL` to a name your bridge recognizes.
-- **`ANTHROPIC_API_KEY` is required even if your gateway uses a different auth header.** The SDK refuses to spawn without it; many gateways either pass the value through or accept any non-empty placeholder. Check your gateway's docs.
+- **Gateway auth usually uses `ANTHROPIC_AUTH_TOKEN`.** For LiteLLM gateway mode, store the gateway key or virtual key as `ANTHROPIC_AUTH_TOKEN`. Use `ANTHROPIC_API_KEY` for direct Anthropic API-key mode or gateways that explicitly expect it.
 - **`ANTHROPIC_BASE_URL` from your shell is not inherited.** `ANTHROPIC_API_KEY` is in the BLOCKED_ENV_VARS list (`src/shared/EnvManager.ts:10`) to prevent accidental billing on a shell-leaked key — `ANTHROPIC_BASE_URL` is not blocked, but it must still be set in `~/.claude-mem/.env` for the worker to pick it up reliably across restarts. Do not rely on shell exports.
-- **No auto-detection.** If you have already configured `ANTHROPIC_BASE_URL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL`, etc. for Claude Code itself, claude-mem will **not** read those today. Mirror the relevant values into `~/.claude-mem/.env` and `~/.claude-mem/settings.json`. See [issue #2196](https://github.com/thedotmack/claude-mem/issues/2196) for the auto-detect feature request.
+- **No auto-detection.** If you have already configured `ANTHROPIC_BASE_URL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL`, etc. for Claude Code itself, claude-mem will **not** read those today. Mirror the relevant values into `~/.claude-mem/.env` and `~/.claude-mem/settings.json`.
 
 ## Related
 
 - [Configuration](../configuration) — All claude-mem settings
+- [LiteLLM Gateway](litellm-gateway): Route the Claude Agent SDK path through LiteLLM
 - [OpenRouter Provider](../usage/openrouter-provider) — OpenAI-compatible bridge for non-Anthropic protocols
 - [Gemini Provider](../usage/gemini-provider) — Native Gemini API alternative

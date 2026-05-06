@@ -15,6 +15,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 |-------------------------------|---------------------------------|---------------------------------------|
 | `CLAUDE_MEM_MODEL`            | `claude-haiku-4-5-20251001`     | Claude model used to compress observations (when using the Claude provider) |
 | `CLAUDE_MEM_PROVIDER`         | `claude`                        | AI provider: `claude`, `gemini`, or `openrouter` |
+| `CLAUDE_MEM_CLAUDE_AUTH_METHOD` | `subscription`                | Claude provider auth mode: `subscription`, `api-key`, or `gateway` |
 | `CLAUDE_MEM_MODE`             | `code`                          | Active mode profile (e.g., `code--es`, `email-investigation`) |
 | `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50`                        | Number of observations to inject      |
 | `CLAUDE_MEM_WORKER_PORT`      | `37700 + (uid % 100)`           | Worker service port (per-user default; override for fixed port) |
@@ -43,6 +44,18 @@ See [Gemini Provider](usage/gemini-provider) for detailed configuration and free
 | `CLAUDE_MEM_OPENROUTER_APP_NAME`             | `claude-mem`                | Optional: App name for analytics      |
 
 See [OpenRouter Provider](usage/openrouter-provider) for detailed configuration, free model list, and usage guide.
+
+### Claude Gateway Settings
+
+Gateway credentials live in `~/.claude-mem/.env`, not `settings.json`.
+
+| Env var | Default | Description |
+|---------|---------|-------------|
+| `ANTHROPIC_BASE_URL` | none | LiteLLM or Anthropic-compatible gateway URL for the Claude Agent SDK path |
+| `ANTHROPIC_AUTH_TOKEN` | none | Optional LiteLLM master key or virtual key |
+| `ANTHROPIC_API_KEY` | none | Direct Anthropic API key; normally omit this in LiteLLM gateway mode |
+
+Use [LiteLLM Gateway](configuration/litellm-gateway) when you want `CLAUDE_MEM_PROVIDER=claude` to route through LiteLLM while preserving the Claude Agent SDK worker path.
 
 ### System Configuration
 

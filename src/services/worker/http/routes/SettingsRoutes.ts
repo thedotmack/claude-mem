@@ -87,6 +87,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_WORKER_PORT',
       'CLAUDE_MEM_WORKER_HOST',
       'CLAUDE_MEM_PROVIDER',
+      'CLAUDE_MEM_CLAUDE_AUTH_METHOD',
       'CLAUDE_MEM_GEMINI_API_KEY',
       'CLAUDE_MEM_GEMINI_MODEL',
       'CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED',
@@ -191,6 +192,13 @@ export class SettingsRoutes extends BaseRouteHandler {
     const validProviders = ['claude', 'gemini', 'openrouter'];
     if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
       return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", or "openrouter"' };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_CLAUDE_AUTH_METHOD) {
+      const validClaudeAuthMethods = ['subscription', 'api-key', 'gateway', 'cli'];
+      if (!validClaudeAuthMethods.includes(settings.CLAUDE_MEM_CLAUDE_AUTH_METHOD)) {
+        return { valid: false, error: 'CLAUDE_MEM_CLAUDE_AUTH_METHOD must be "subscription", "api-key", "gateway", or "cli"' };
       }
     }
 
