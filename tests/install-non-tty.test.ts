@@ -76,6 +76,20 @@ describe('Install Non-TTY Support', () => {
     it('uses console.log for note/summary in non-interactive mode', () => {
       expect(installSource).toContain("console.log(`\\n  ${installStatus}`)");
     });
+
+    it('copies Codex marketplace metadata to the durable marketplace directory', () => {
+      const copyRegion = installSource.slice(
+        installSource.indexOf('const allowedTopLevelEntries = ['),
+        installSource.indexOf('function copyPluginToCache'),
+      );
+      expect(copyRegion).toContain("'.agents'");
+      expect(copyRegion).toContain("'.codex-plugin'");
+      expect(copyRegion).toContain("'.mcp.json'");
+    });
+
+    it('registers Codex against the durable marketplace directory', () => {
+      expect(installSource).toContain('installCodexCli(marketplaceDirectory())');
+    });
   });
 
   describe('TaskDescriptor interface', () => {

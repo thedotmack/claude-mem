@@ -8,6 +8,11 @@ import { logger } from '../../utils/logger.js';
 const CODEX_DIR = path.join(homedir(), '.codex');
 const CODEX_AGENTS_MD_PATH = path.join(CODEX_DIR, 'AGENTS.md');
 const MARKETPLACE_NAME = 'claude-mem-local';
+const REQUIRED_MARKETPLACE_FILES = [
+  path.join('.agents', 'plugins', 'marketplace.json'),
+  path.join('.codex-plugin', 'plugin.json'),
+  '.mcp.json',
+];
 
 function commandExists(command: string): boolean {
   try {
@@ -34,7 +39,24 @@ function findAncestorWithCodexPlugin(start: string): string | null {
   }
 }
 
-function resolvePluginMarketplaceRoot(): string {
+function missingMarketplaceFiles(root: string): string[] {
+  return REQUIRED_MARKETPLACE_FILES.filter((entry) => !existsSync(path.join(root, entry)));
+}
+
+function assertCodexMarketplaceRoot(root: string): string {
+  const resolved = path.resolve(root);
+  const missing = missingMarketplaceFiles(resolved);
+  if (missing.length > 0) {
+    throw new Error(`Codex marketplace root ${resolved} is missing required files: ${missing.join(', ')}`);
+  }
+  return resolved;
+}
+
+function resolvePluginMarketplaceRoot(preferredRoot?: string): string {
+  if (preferredRoot) {
+    return assertCodexMarketplaceRoot(preferredRoot);
+  }
+
   const candidates = [
     process.env.CLAUDE_PLUGIN_ROOT,
     process.env.PLUGIN_ROOT,
@@ -44,10 +66,10 @@ function resolvePluginMarketplaceRoot(): string {
 
   for (const candidate of candidates) {
     const resolved = findAncestorWithCodexPlugin(candidate);
-    if (resolved) return resolved;
+    if (resolved && missingMarketplaceFiles(resolved).length === 0) return resolved;
   }
 
-  throw new Error('Could not locate .codex-plugin/plugin.json. Run npx claude-mem@latest install from the package or repo root.');
+  throw new Error('Could not locate a Codex marketplace root with .agents/plugins/marketplace.json, .codex-plugin/plugin.json, and .mcp.json. Run npx claude-mem@latest install from the package or repo root.');
 }
 
 function runCodex(args: string[]): void {
@@ -93,7 +115,7 @@ function readAndStripContextTags(startTag: string, endTag: string): void {
 
 const cleanupLegacyCodexAgentsMdContext = removeCodexAgentsMdContext;
 
-export async function installCodexCli(): Promise<number> {
+export async function installCodexCli(marketplaceRootOverride?: string): Promise<number> {
   console.log('\nInstalling Claude-Mem for Codex CLI (native hooks)...\n');
 
   if (!commandExists('codex')) {
@@ -103,7 +125,7 @@ export async function installCodexCli(): Promise<number> {
   }
 
   try {
-    const marketplaceRoot = resolvePluginMarketplaceRoot();
+    const marketplaceRoot = resolvePluginMarketplaceRoot(marketplaceRootOverride);
     cleanupLegacyCodexAgentsMdContext();
 
     console.log(`  Registering Codex plugin marketplace: ${marketplaceRoot}`);

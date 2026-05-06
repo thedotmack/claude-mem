@@ -247,7 +247,7 @@ function makeIDETask(ideId: string, failedIDEs: string[], pendingErrors: string[
           message('Loading Codex CLI installer…');
           const { installCodexCli } = await import('../../services/integrations/CodexCliInstaller.js');
           message('Registering native Codex hooks…');
-          const { result, output } = await bufferConsole(() => installCodexCli());
+          const { result, output } = await bufferConsole(() => installCodexCli(marketplaceDirectory()));
           if (result !== 0) {
             recordFailure('Codex CLI: integration setup failed', output);
             return `Codex CLI: integration setup failed ${pc.red('FAIL')}`;
@@ -499,6 +499,9 @@ function copyPluginToMarketplace(): void {
   ensureDirectoryExists(marketplaceDir);
 
   const allowedTopLevelEntries = [
+    '.agents',
+    '.codex-plugin',
+    '.mcp.json',
     'plugin',
     'package.json',
     'package-lock.json',
