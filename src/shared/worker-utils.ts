@@ -464,6 +464,7 @@ export async function executeWithWorkerFallback<T = unknown>(
   const response = await workerHttpRequest(url, init);
   if (!response.ok) {
     const text = await response.text().catch(() => '');
+    resetWorkerFailureCounter();
     if (response.status === 429 || response.status >= 500) {
       logger.warn('SYSTEM', `Worker API ${method} ${url} returned ${response.status}; skipping hook API call`, {
         body: text.substring(0, 200),
@@ -475,7 +476,6 @@ export async function executeWithWorkerFallback<T = unknown>(
       };
     }
 
-    resetWorkerFailureCounter();
     let parsed: unknown = text;
     try { parsed = JSON.parse(text); } catch { /* keep raw text */ }
     return parsed as T;

@@ -1,9 +1,22 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
 describe('Hook Lifecycle - Event Handlers', () => {
+  describe('worker fallback failure counter', () => {
+    it('resets stale unreachable state before 429/5xx API fallbacks', () => {
+      const source = readFileSync('src/shared/worker-utils.ts', 'utf-8');
+      const nonOkRegion = source.slice(
+        source.indexOf('if (!response.ok)'),
+        source.indexOf('const text = await response.text();'),
+      );
+
+      expect(nonOkRegion.indexOf('resetWorkerFailureCounter()'))
+        .toBeLessThan(nonOkRegion.indexOf('response.status === 429 || response.status >= 500'));
+    });
+  });
+
   describe('getEventHandler', () => {
     it('should return handler for all recognized event types', async () => {
       const { getEventHandler } = await import('../src/cli/handlers/index.js');
