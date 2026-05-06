@@ -4,9 +4,9 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 
 ## Architecture
 
-**5 Lifecycle Hooks**: SessionStart → UserPromptSubmit → PostToolUse → Summary → SessionEnd
+**6 Lifecycle Hooks**: Setup → SessionStart → UserPromptSubmit → PreToolUse (Read) → PostToolUse → Stop
 
-**Hooks** (`src/hooks/*.ts`) - TypeScript hook logic compiled into the unified worker dispatcher (`plugin/scripts/worker-service.cjs`). Lifecycle hook entries in `plugin/hooks/hooks.json` invoke the worker via `bun-runner.js`. The Setup-phase `version-check.js` is the only standalone hook script.
+**Hooks** - Entries in `plugin/hooks/hooks.json` dispatch to the unified worker (`plugin/scripts/worker-service.cjs`, built from `src/services/worker-service.ts` via `scripts/build-hooks.js`) through `bun-runner.js`, invoking subcommands like `context`, `session-init`, `observation`, `file-context`, and `summarize`. The Setup-phase `version-check.js` is the only standalone hook script.
 
 **Worker Service** (`src/services/worker-service.ts`) - Express API on the per-user worker port (default `37700 + (uid % 100)`, configurable via `CLAUDE_MEM_WORKER_PORT`), Bun-managed, handles AI processing asynchronously
 
@@ -74,8 +74,6 @@ Claude-mem hooks use specific exit codes per Claude Code's hook contract:
 - **Exit 2**: Blocking error (stderr fed to Claude for processing)
 
 **Philosophy**: Worker/hook errors exit with code 0 to prevent Windows Terminal tab accumulation. The wrapper/plugin layer handles restart logic. ERROR-level logging is maintained for diagnostics.
-
-See `private/context/claude-code/exit-codes.md` for full hook behavior matrix.
 
 ## Requirements
 

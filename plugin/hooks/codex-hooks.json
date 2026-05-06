@@ -1,0 +1,74 @@
+{
+  "description": "claude-mem Codex CLI hook integration",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "_R=\"${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}\"; [ -d \"$_R/plugin/scripts\" ] && _P=\"$_R/plugin\" || _P=\"$_R\"; CLAUDE_MEM_CODEX_HOOK=1 node \"$_P/scripts/version-check.js\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "_R=\"${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}\"; [ -d \"$_R/plugin/scripts\" ] && _P=\"$_R/plugin\" || _P=\"$_R\"; node \"$_P/scripts/bun-runner.js\" \"$_P/scripts/worker-service.cjs\" start",
+            "timeout": 60
+          },
+          {
+            "type": "command",
+            "command": "_R=\"${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}\"; [ -d \"$_R/plugin/scripts\" ] && _P=\"$_R/plugin\" || _P=\"$_R\"; node \"$_P/scripts/bun-runner.js\" \"$_P/scripts/worker-service.cjs\" hook codex context",
+            "timeout": 60,
+            "statusMessage": "Loading claude-mem context"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "_R=\"${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}\"; [ -d \"$_R/plugin/scripts\" ] && _P=\"$_R/plugin\" || _P=\"$_R\"; node \"$_P/scripts/bun-runner.js\" \"$_P/scripts/worker-service.cjs\" hook codex session-init",
+            "timeout": 60
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "^Bash$|^mcp__.+__(read|view|cat)(_file|_files)?$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "_R=\"${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}\"; [ -d \"$_R/plugin/scripts\" ] && _P=\"$_R/plugin\" || _P=\"$_R\"; node \"$_P/scripts/bun-runner.js\" \"$_P/scripts/worker-service.cjs\" hook codex file-context",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "_R=\"${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}\"; [ -d \"$_R/plugin/scripts\" ] && _P=\"$_R/plugin\" || _P=\"$_R\"; node \"$_P/scripts/bun-runner.js\" \"$_P/scripts/worker-service.cjs\" hook codex observation",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "_R=\"${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}\"; [ -d \"$_R/plugin/scripts\" ] && _P=\"$_R/plugin\" || _P=\"$_R\"; node \"$_P/scripts/bun-runner.js\" \"$_P/scripts/worker-service.cjs\" hook codex summarize",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}

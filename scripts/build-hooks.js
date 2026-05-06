@@ -35,6 +35,7 @@ function stripHardcodedDirname(filePath) {
   }
 
   content = content.replace(/\bvar\s*;/g, '');
+  content = content.replace(/[ \t]+$/gm, '');
 
   const removed = before - content.length;
   if (removed > 0) {
@@ -97,6 +98,7 @@ async function buildHooks() {
         '@tree-sitter-grammars/tree-sitter-yaml': '^0.7.1',
         '@derekstride/tree-sitter-sql': '^0.3.11',
         '@tree-sitter-grammars/tree-sitter-markdown': '^0.3.2',
+        'shell-quote': '^1.8.3',
       },
       overrides: {
         'tree-sitter': '^0.25.0'
@@ -172,7 +174,6 @@ async function buildHooks() {
       logLevel: 'error',
       external: [
         'bun:sqlite',
-        'zod',
         'tree-sitter-cli',
         'tree-sitter-javascript',
         'tree-sitter-typescript',
@@ -219,6 +220,13 @@ async function buildHooks() {
     if (bunRequireMatch) {
       throw new Error(
         `mcp-server.cjs contains a Bun-only ${bunRequireMatch[0]} call. This means a transitive import in src/servers/mcp-server.ts pulled in code from worker-service.ts (or another module that touches DatabaseManager/ChromaSync). The MCP server runs under Node and cannot load bun:* modules. Audit recent imports in src/servers/mcp-server.ts and src/services/worker-spawner.ts — the spawner module is intentionally lightweight and MUST NOT import anything that touches SQLite or other Bun-only modules. See PR #1645 for context.`
+      );
+    }
+    const zodRequireRegex = /require\(\s*["']zod(?:\/[^"']*)?["']\s*\)/;
+    const zodRequireMatch = mcpBundleContent.match(zodRequireRegex);
+    if (zodRequireMatch) {
+      throw new Error(
+        `mcp-server.cjs contains external ${zodRequireMatch[0]}. Claude Desktop can launch this bundle without plugin node_modules available, so Zod must be bundled into the MCP server.`
       );
     }
 
@@ -342,17 +350,38 @@ async function buildHooks() {
     console.log(`✓ Copied ${onboardingExplainerSrc} → ${onboardingExplainerDst}`);
 
     console.log('\n📋 Verifying distribution files...');
+    const validCodexHookEvents = new Set([
+      'SessionStart',
+      'UserPromptSubmit',
+      'PreToolUse',
+      'PermissionRequest',
+      'PostToolUse',
+      'Stop',
+    ]);
     const requiredDistributionFiles = [
       'plugin/skills/mem-search/SKILL.md',
       'plugin/skills/smart-explore/SKILL.md',
       'plugin/skills/how-it-works/SKILL.md',
       'plugin/skills/how-it-works/onboarding-explainer.md',
       'plugin/hooks/hooks.json',
+      'plugin/hooks/codex-hooks.json',
+      'plugin/scripts/bun-runner.js',
       'plugin/.claude-plugin/plugin.json',
+      'plugin/.codex-plugin/plugin.json',
+      'plugin/.mcp.json',
+      '.codex-plugin/plugin.json',
+      '.mcp.json',
+      '.agents/plugins/marketplace.json',
     ];
     for (const filePath of requiredDistributionFiles) {
       if (!fs.existsSync(filePath)) {
         throw new Error(`Missing required distribution file: ${filePath}`);
+      }
+    }
+    const codexHooks = JSON.parse(fs.readFileSync('plugin/hooks/codex-hooks.json', 'utf-8'));
+    for (const eventName of Object.keys(codexHooks.hooks ?? {})) {
+      if (!validCodexHookEvents.has(eventName)) {
+        throw new Error(`plugin/hooks/codex-hooks.json contains unknown Codex hook event: ${eventName}`);
       }
     }
     console.log('✓ All required distribution files present');

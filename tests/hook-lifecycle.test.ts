@@ -1,12 +1,28 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 describe('Hook Lifecycle - Event Handlers', () => {
+  describe('worker fallback failure counter', () => {
+    it('resets stale unreachable state before 429/5xx API fallbacks', () => {
+      const source = readFileSync('src/shared/worker-utils.ts', 'utf-8');
+      const nonOkRegion = source.slice(
+        source.indexOf('if (!response.ok)'),
+        source.indexOf('const text = await response.text();'),
+      );
+
+      expect(nonOkRegion.indexOf('resetWorkerFailureCounter()'))
+        .toBeLessThan(nonOkRegion.indexOf('response.status === 429 || response.status >= 500'));
+    });
+  });
+
   describe('getEventHandler', () => {
     it('should return handler for all recognized event types', async () => {
       const { getEventHandler } = await import('../src/cli/handlers/index.js');
       const recognizedTypes = [
         'context', 'session-init', 'observation',
-        'summarize', 'user-message', 'file-edit'
+        'summarize', 'user-message', 'file-edit', 'file-context'
       ];
       for (const type of recognizedTypes) {
         const handler = getEventHandler(type);
@@ -35,10 +51,10 @@ describe('Hook Lifecycle - Event Handlers', () => {
 
 describe('Codex CLI Compatibility (#744)', () => {
   describe('getPlatformAdapter', () => {
-    it('should return rawAdapter for unknown platforms like codex', async () => {
-      const { getPlatformAdapter, rawAdapter } = await import('../src/cli/adapters/index.js');
+    it('should return codexAdapter for codex', async () => {
+      const { getPlatformAdapter, codexAdapter } = await import('../src/cli/adapters/index.js');
       const adapter = getPlatformAdapter('codex');
-      expect(adapter).toBe(rawAdapter);
+      expect(adapter).toBe(codexAdapter);
     });
 
     it('should return rawAdapter for any unrecognized platform string', async () => {
@@ -78,6 +94,120 @@ describe('Codex CLI Compatibility (#744)', () => {
       const input = claudeCodeAdapter.normalizeInput(undefined);
       expect(input.sessionId).toBeUndefined();
       expect(input.cwd).toBe(process.cwd());
+    });
+  });
+
+  describe('codexAdapter', () => {
+    it('normalizes snake_case Stop payloads with last assistant message', async () => {
+      const { codexAdapter } = await import('../src/cli/adapters/codex.js');
+      const input = codexAdapter.normalizeInput({
+        hook_event_name: 'Stop',
+        session_id: 'codex-session',
+        turn_id: 'turn-1',
+        cwd: '/tmp',
+        stop_hook_active: false,
+        last_assistant_message: 'done',
+      });
+
+      expect(input.sessionId).toBe('codex-session');
+      expect(input.turnId).toBe('turn-1');
+      expect(input.lastAssistantMessage).toBe('done');
+      expect(input.stopHookActive).toBe(false);
+    });
+
+    it('normalizes string stop_hook_active payloads', async () => {
+      const { codexAdapter } = await import('../src/cli/adapters/codex.js');
+      const active = codexAdapter.normalizeInput({
+        hook_event_name: 'Stop',
+        session_id: 'codex-session',
+        cwd: '/tmp',
+        stop_hook_active: 'true',
+      });
+      const inactive = codexAdapter.normalizeInput({
+        hook_event_name: 'Stop',
+        session_id: 'codex-session',
+        cwd: '/tmp',
+        stop_hook_active: 'false',
+      });
+
+      expect(active.stopHookActive).toBe(true);
+      expect(inactive.stopHookActive).toBe(false);
+    });
+
+    it('rejects payloads without a session_id', async () => {
+      const { codexAdapter } = await import('../src/cli/adapters/codex.js');
+      const { AdapterRejectedInput } = await import('../src/cli/adapters/errors.js');
+
+      expect(() => codexAdapter.normalizeInput({
+        hook_event_name: 'Stop',
+        cwd: '/tmp',
+      })).toThrow(AdapterRejectedInput);
+    });
+
+    it('adds filePaths without dropping the original object tool input', async () => {
+      const { codexAdapter } = await import('../src/cli/adapters/codex.js');
+      const tmpDir = mkdtempSync(join(tmpdir(), 'codex-adapter-'));
+      try {
+        writeFileSync(join(tmpDir, 'README.md'), 'readme');
+
+        const input = codexAdapter.normalizeInput({
+          hook_event_name: 'PreToolUse',
+          session_id: 'codex-session',
+          cwd: tmpDir,
+          tool_name: 'Bash',
+          tool_input: { command: 'cat README.md' },
+        });
+
+        expect(input.toolInput).toEqual({
+          command: 'cat README.md',
+          filePaths: ['README.md'],
+        });
+      } finally {
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('preserves non-object tool input payloads', async () => {
+      const { codexAdapter } = await import('../src/cli/adapters/codex.js');
+      const input = codexAdapter.normalizeInput({
+        hook_event_name: 'PreToolUse',
+        session_id: 'codex-session',
+        cwd: '/tmp',
+        tool_name: 'Bash',
+        tool_input: 'cat README.md',
+      });
+
+      expect(input.toolInput).toBe('cat README.md');
+    });
+
+    it('drops PreToolUse allow decisions because Codex only accepts deny', async () => {
+      const { codexAdapter } = await import('../src/cli/adapters/codex.js');
+      const output = codexAdapter.formatOutput({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          additionalContext: 'file history',
+          permissionDecision: 'allow',
+        },
+      }) as any;
+
+      expect(output.hookSpecificOutput).toEqual({
+        hookEventName: 'PreToolUse',
+        additionalContext: 'file history',
+      });
+    });
+
+    it('does not emit hookSpecificOutput for Stop outputs', async () => {
+      const { codexAdapter } = await import('../src/cli/adapters/codex.js');
+      const output = codexAdapter.formatOutput({
+        continue: true,
+        suppressOutput: true,
+        hookSpecificOutput: {
+          hookEventName: 'Stop',
+          additionalContext: 'ignored',
+        },
+      }) as any;
+
+      expect(output).toEqual({ continue: true, suppressOutput: true });
     });
   });
 

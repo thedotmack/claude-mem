@@ -1,3 +1,12 @@
 {
-  "mcpServers": {}
+  "mcpServers": {
+    "mcp-search": {
+      "type": "stdio",
+      "command": "sh",
+      "args": [
+        "-c",
+        "_R=\"${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}\"; [ -d \"$_R/plugin/scripts\" ] && _P=\"$_R/plugin\" || _P=\"$_R\"; exec node \"$_P/scripts/mcp-server.cjs\""
+      ]
+    }
+  }
 }

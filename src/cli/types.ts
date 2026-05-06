@@ -7,6 +7,12 @@ export interface NormalizedHookInput {
   toolInput?: unknown;
   toolResponse?: unknown;
   transcriptPath?: string;
+  lastAssistantMessage?: string;
+  turnId?: string;
+  stopHookActive?: boolean;
+  permissionMode?: string;
+  model?: string;
+  sessionSource?: 'startup' | 'resume' | 'clear';
   filePath?: string;   
   edits?: unknown[];   
   metadata?: Record<string, unknown>;
@@ -21,9 +27,12 @@ export interface HookResult {
     hookEventName: string;
     additionalContext: string;
     permissionDecision?: 'allow' | 'deny';
+    permissionDecisionReason?: string;
     updatedInput?: Record<string, unknown>;
   };
   systemMessage?: string;
+  decision?: 'block' | 'approve';
+  reason?: string;
   exitCode?: number;
 }
 

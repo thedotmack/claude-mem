@@ -80,6 +80,7 @@
         "icon": "gear",
         "pages": [
           "configuration",
+          "configuration/litellm-gateway",
           "configuration/custom-anthropic-backends",
           "modes",
           "development",

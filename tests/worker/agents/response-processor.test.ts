@@ -84,6 +84,7 @@ describe('ResponseProcessor', () => {
         cleanupProcessed: mock(() => 0),
         resetStuckMessages: mock(() => 0),
       }),
+      clearPendingForSession: mock(() => {}),
     } as unknown as SessionManager;
 
     mockBroadcast = mock(() => {});
@@ -204,15 +205,16 @@ describe('ResponseProcessor', () => {
     });
   });
 
-  describe('non-XML observer responses (fail-fast — plan 03 phase 2)', () => {
-    it('warns and marks messages failed when the observer returns non-XML prose', async () => {
-      const markFailed = mock(() => {});
+  describe('non-XML observer responses', () => {
+    it('warns and clears pending work when the observer returns non-XML prose', async () => {
+      const clearPendingForSession = mock(() => {});
       mockSessionManager = {
         getMessageIterator: async function* () { yield* []; },
-        getPendingMessageStore: () => ({ markFailed, confirmProcessed: mock(() => {}) }),
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        clearPendingForSession,
       } as unknown as SessionManager;
 
-      const session = createMockSession({ processingMessageIds: [7] });
+      const session = createMockSession();
       const responseText = 'Skipping — repeated log scan with no new findings.';
 
       await processAgentResponse(
@@ -228,10 +230,11 @@ describe('ResponseProcessor', () => {
 
       expect(logger.warn).toHaveBeenCalledWith(
         'PARSER',
-        expect.stringMatching(/^TestAgent returned unparseable response:/),
+        expect.stringMatching(/^TestAgent returned non-XML\/empty response/),
         expect.objectContaining({ sessionId: 1 })
       );
-      expect(markFailed).toHaveBeenCalledWith(7);
+      expect(clearPendingForSession).toHaveBeenCalledWith(1);
+      expect(session.earliestPendingTimestamp).toBeNull();
       expect(mockStoreObservations).not.toHaveBeenCalled();
     });
   });
@@ -453,15 +456,16 @@ describe('ResponseProcessor', () => {
     });
   });
 
-  describe('handling empty / non-XML response (fail-fast — plan 03 phase 2)', () => {
-    it('marks in-flight messages failed and does NOT call storeObservations on empty response', async () => {
-      const markFailed = mock(() => {});
+  describe('handling empty / non-XML response', () => {
+    it('clears pending work and does NOT call storeObservations on empty response', async () => {
+      const clearPendingForSession = mock(() => {});
       mockSessionManager = {
         getMessageIterator: async function* () { yield* []; },
-        getPendingMessageStore: () => ({ markFailed, confirmProcessed: mock(() => {}) }),
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        clearPendingForSession,
       } as unknown as SessionManager;
 
-      const session = createMockSession({ processingMessageIds: [1, 2, 3] });
+      const session = createMockSession();
       const responseText = '';
 
       await processAgentResponse(
@@ -470,18 +474,19 @@ describe('ResponseProcessor', () => {
       );
 
       expect(mockStoreObservations).not.toHaveBeenCalled();
-      expect(markFailed).toHaveBeenCalledTimes(3);
-      expect(session.processingMessageIds).toEqual([]);
+      expect(clearPendingForSession).toHaveBeenCalledWith(1);
+      expect(session.earliestPendingTimestamp).toBeNull();
     });
 
-    it('marks in-flight messages failed and does NOT call storeObservations on plain-text response', async () => {
-      const markFailed = mock(() => {});
+    it('clears pending work and does NOT call storeObservations on plain-text response', async () => {
+      const clearPendingForSession = mock(() => {});
       mockSessionManager = {
         getMessageIterator: async function* () { yield* []; },
-        getPendingMessageStore: () => ({ markFailed, confirmProcessed: mock(() => {}) }),
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        clearPendingForSession,
       } as unknown as SessionManager;
 
-      const session = createMockSession({ processingMessageIds: [42] });
+      const session = createMockSession();
       const responseText = 'This is just plain text without any XML tags.';
 
       await processAgentResponse(
@@ -490,7 +495,8 @@ describe('ResponseProcessor', () => {
       );
 
       expect(mockStoreObservations).not.toHaveBeenCalled();
-      expect(markFailed).toHaveBeenCalledTimes(1);
+      expect(clearPendingForSession).toHaveBeenCalledWith(1);
+      expect(session.earliestPendingTimestamp).toBeNull();
     });
   });
 

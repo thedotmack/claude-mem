@@ -147,16 +147,16 @@ export class SessionRoutes extends BaseRouteHandler {
 
         const pendingStore = this.sessionManager.getPendingMessageStore();
         try {
-          const cleared = pendingStore.clearPendingForSession(session.sessionDbId);
-          if (cleared > 0) {
-            logger.error('SESSION', `Cleared pending messages after generator error`, {
+          const reset = pendingStore.resetProcessingToPending(session.sessionDbId);
+          if (reset > 0) {
+            logger.warn('SESSION', `Reset processing messages after generator error`, {
               sessionId: session.sessionDbId,
-              cleared
+              reset
             });
           }
         } catch (dbError) {
           const normalizedDbError = dbError instanceof Error ? dbError : new Error(String(dbError));
-          logger.error('HTTP', 'Failed to clear pending messages', {
+          logger.error('HTTP', 'Failed to reset processing messages after generator error', {
             sessionId: session.sessionDbId
           }, normalizedDbError);
         }

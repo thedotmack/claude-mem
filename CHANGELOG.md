@@ -4,6 +4,66 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [12.7.1] - 2026-05-06
+
+## Added
+- Package the new `babysit` skill for monitoring PR checks, review comments, and unresolved review threads until a PR is merge-ready.
+
+## Verification
+- `npm run build`
+- `npm publish` completed for `claude-mem@12.7.1`
+
+## [12.7.0] - 2026-05-06
+
+## Added
+- Add native Codex hooks integration through the Codex plugin marketplace.
+- Add Codex hook payload normalization, file-context extraction, and Stop hook observation support.
+- Add Codex installer support for `npx claude-mem@latest install` with Codex CLI version guidance.
+
+## Fixed
+- Avoid slow observation flow retries by replacing the worker-side initialization wait with hook-side readiness polling.
+- Keep Codex file-context extraction from consuming boolean flags like `cat -n`.
+- Include `bun-runner.js` in hook distribution verification.
+
+## [12.6.4] - 2026-05-05
+
+## Fixed
+- Drain invalid/non-XML observer responses so pending agent observations are cleared instead of retrying forever (PR #2316 / issue #2315).
+- Correct all plugin manifest versions so Claude, Codex, OpenClaw, bundled plugin, and npm metadata agree on 12.6.4.
+
+## [12.6.5] - 2026-05-05
+
+### Added
+- Installer now keeps the Claude Agent SDK as the single memory-agent path while supporting subscription auth, direct Anthropic API keys, and LiteLLM/custom gateway setup.
+- Added gateway env support for `ANTHROPIC_AUTH_TOKEN` alongside `ANTHROPIC_BASE_URL`.
+
+### Fixed
+- Removed the fixed agent-pool slot timeout so queued memory-agent work waits for process availability instead of dropping pending messages under load.
+- Reset generator failures back to pending messages instead of clearing queued work.
+
+## [12.6.2] - 2026-05-05
+
+## Fix: `npx claude-mem@latest install` no longer hangs on tree-sitter-swift
+
+### What broke in 12.6.1
+
+PR #2300 moved 21 tree-sitter grammar packages from root `devDependencies` → root `dependencies`. As a result, `npx claude-mem@12.6.1 install` started fetching all 21 grammars at npx time. `tree-sitter-swift`'s postinstall pulled a nested `tree-sitter-cli` that downloads a Rust binary from GitHub and SIGINT'd the install:
+
+```
+npm error path .../node_modules/claude-mem/node_modules/tree-sitter-swift/node_modules/tree-sitter-cli
+npm error command failed
+npm error signal SIGINT
+npm error Downloading https://github.com/tree-sitter/tree-sitter/releases/download/v0.23.2/tree-sitter-macos-arm64.gz
+```
+
+npm doesn't honor the bun-only `trustedDependencies` allowlist, so postinstalls always run on a bare `npx` fetch.
+
+### Fix (PR #2305)
+
+Move the 21 grammar packages back to root `devDependencies`. The marketplace plugin install path is untouched — `plugin/package.json` keeps them as runtime deps and `bun install` (in `installPluginDependencies`) honors `trustedDependencies: ["tree-sitter-cli"]` to skip the harmful postinstalls on every other grammar. Smart-search/smart-outline/smart-unfold continue to work end-to-end.
+
+PR #2300's `--legacy-peer-deps` and `--omit=dev` install.ts changes are kept — they fix a separate, valid marketplace ERESOLVE.
+
 ## [12.6.1] - 2026-05-05
 
 ## Patch release

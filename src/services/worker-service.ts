@@ -71,7 +71,7 @@ import { TimelineService } from './worker/TimelineService.js';
 import { SessionEventBroadcaster } from './worker/events/SessionEventBroadcaster.js';
 import { SessionCompletionHandler } from './worker/session/SessionCompletionHandler.js';
 import { setIngestContext, attachIngestGeneratorStarter } from './worker/http/shared.js';
-import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, loadTranscriptWatchConfig, writeSampleConfig } from './transcripts/config.js';
+import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, loadTranscriptWatchConfig } from './transcripts/config.js';
 import { TranscriptWatcher } from './transcripts/watcher.js';
 
 import { ViewerRoutes } from './worker/http/routes/ViewerRoutes.js';
@@ -128,9 +128,7 @@ export class WorkerService implements WorkerRef {
   private searchRoutes: SearchRoutes | null = null;
 
   private chromaMcpManager: ChromaMcpManager | null = null;
-
   private transcriptWatcher: TranscriptWatcher | null = null;
-
   private initializationComplete: Promise<void>;
   private resolveInitialization!: () => void;
 
@@ -237,26 +235,12 @@ export class WorkerService implements WorkerRef {
         return;
       }
 
-      const timeoutMs = 120000; 
-      const timeoutPromise = new Promise<void>((_, reject) =>
-        setTimeout(() => reject(new Error('Database initialization timeout')), timeoutMs)
-      );
-
-      try {
-        await Promise.race([this.initializationComplete, timeoutPromise]);
-        next();
-      } catch (error) {
-        if (error instanceof Error) {
-          logger.error('WORKER', `Request to ${req.method} ${req.path} rejected — DB not initialized`, {}, error);
-        } else {
-          logger.error('WORKER', `Request to ${req.method} ${req.path} rejected — DB not initialized with non-Error`, {}, new Error(String(error)));
-        }
-        res.status(503).json({
-          error: 'Service initializing',
-          message: 'Database is still initializing, please retry'
-        });
-        return;
-      }
+      logger.debug('WORKER', `Request to ${req.method} ${req.path} rejected — DB not initialized`);
+      res.status(503).json({
+        error: 'Service initializing',
+        message: 'Database is still initializing, please retry'
+      });
+      return;
     });
 
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
@@ -461,10 +445,10 @@ export class WorkerService implements WorkerRef {
     const resolvedConfigPath = expandHomePath(configPath);
 
     if (!existsSync(resolvedConfigPath)) {
-      writeSampleConfig(configPath);
-      logger.info('TRANSCRIPT', 'Created default transcript watch config', {
+      logger.info('TRANSCRIPT', 'Transcript watcher config not found; skipping automatic transcript capture', {
         configPath: resolvedConfigPath
       });
+      return;
     }
 
     const transcriptConfig = loadTranscriptWatchConfig(configPath);
@@ -477,11 +461,11 @@ export class WorkerService implements WorkerRef {
       this.transcriptWatcher?.stop();
       this.transcriptWatcher = null;
       if (error instanceof Error) {
-        logger.error('WORKER', 'Failed to start transcript watcher (continuing without Codex ingestion)', {
+        logger.error('WORKER', 'Failed to start transcript watcher (continuing without transcript ingestion)', {
           configPath: resolvedConfigPath
         }, error);
       } else {
-        logger.error('WORKER', 'Failed to start transcript watcher with non-Error (continuing without Codex ingestion)', {
+        logger.error('WORKER', 'Failed to start transcript watcher with non-Error (continuing without transcript ingestion)', {
           configPath: resolvedConfigPath
         }, new Error(String(error)));
       }
@@ -864,7 +848,7 @@ async function main() {
       const event = process.argv[4];
       if (!platform || !event) {
         console.error('Usage: claude-mem hook <platform> <event>');
-        console.error('Platforms: claude-code, cursor, gemini-cli, raw');
+        console.error('Platforms: claude-code, codex, cursor, gemini-cli, raw');
         console.error('Events: context, session-init, observation, summarize, user-message');
         process.exit(1);
       }

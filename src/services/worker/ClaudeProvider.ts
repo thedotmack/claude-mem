@@ -150,7 +150,7 @@ export class ClaudeProvider {
 
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const maxConcurrent = parseInt(settings.CLAUDE_MEM_MAX_CONCURRENT_AGENTS, 10) || 2;
-    await waitForSlot(maxConcurrent, 60_000);
+    await waitForSlot(maxConcurrent, session.abortController.signal);
 
     const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
     const authMethod = getAuthMethodDescription();

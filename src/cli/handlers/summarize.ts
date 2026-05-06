@@ -14,6 +14,13 @@ export const summarizeHandler: EventHandler = {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
+    if (input.stopHookActive === true) {
+      logger.debug('HOOK', 'Skipping summary: Codex Stop hook re-entry detected', {
+        sessionId: input.sessionId,
+      });
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
+
     if (input.agentId) {
       logger.debug('HOOK', 'Skipping summary: subagent context detected', {
         sessionId: input.sessionId,
@@ -29,22 +36,28 @@ export const summarizeHandler: EventHandler = {
       logger.warn('HOOK', 'summarize: No sessionId provided, skipping');
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
-    if (!transcriptPath) {
-      logger.debug('HOOK', `No transcriptPath in Stop hook input for session ${sessionId} - skipping summary`);
-      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
-    }
 
     let lastAssistantMessage = '';
-    try {
-      lastAssistantMessage = extractLastMessage(transcriptPath, 'assistant', true);
-      lastAssistantMessage = stripMemoryTagsFromPrompt(lastAssistantMessage);
-    } catch (err) {
-      logger.warn('HOOK', `Stop hook: failed to extract last assistant message for session ${sessionId}: ${err instanceof Error ? err.message : err}`);
-      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+
+    if (input.lastAssistantMessage !== undefined) {
+      lastAssistantMessage = stripMemoryTagsFromPrompt(input.lastAssistantMessage);
+    } else {
+      if (!transcriptPath) {
+        logger.debug('HOOK', `No transcriptPath in Stop hook input for session ${sessionId} - skipping summary`);
+        return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+      }
+
+      try {
+        lastAssistantMessage = extractLastMessage(transcriptPath, 'assistant', true);
+        lastAssistantMessage = stripMemoryTagsFromPrompt(lastAssistantMessage);
+      } catch (err) {
+        logger.warn('HOOK', `Stop hook: failed to extract last assistant message for session ${sessionId}: ${err instanceof Error ? err.message : err}`);
+        return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+      }
     }
 
     if (!lastAssistantMessage || !lastAssistantMessage.trim()) {
-      logger.debug('HOOK', 'No assistant message in transcript - skipping summary', {
+      logger.debug('HOOK', 'No assistant message available - skipping summary', {
         sessionId,
         transcriptPath
       });
@@ -71,6 +84,6 @@ export const summarizeHandler: EventHandler = {
     }
 
     logger.debug('HOOK', 'Summary request queued, exiting hook');
-    return { continue: true, suppressOutput: true };
+    return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
   },
 };

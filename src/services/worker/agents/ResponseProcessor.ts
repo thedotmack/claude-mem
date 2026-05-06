@@ -35,14 +35,14 @@ export async function processAgentResponse(
   const parsed = parseAgentXml(text, session.contentSessionId);
 
   if (!parsed.valid) {
-    logger.warn('PARSER', `${agentName} returned unparseable response — leaving queue intact`, {
+    logger.warn('PARSER', `${agentName} returned non-XML/empty response — ignoring queued batch`, {
       sessionId: session.sessionDbId,
     });
-    // Reset claimed messages back to pending so they're re-claimed on the
-    // next pass instead of leaving them in `processing` (which counts toward
-    // pendingCount, which triggers a respawn loop, which trips the restart
-    // guard, which deletes the message — silent data loss).
-    sessionManager.getPendingMessageStore().resetProcessingToPending(session.sessionDbId);
+    // Plain-text skip responses are intentionally ignored. Re-queueing them
+    // creates an observer loop where the same low-signal batch is retried
+    // until the restart guard fires or the provider quota is exhausted.
+    sessionManager.clearPendingForSession(session.sessionDbId);
+    session.earliestPendingTimestamp = null;
     return;
   }
 
