@@ -134,16 +134,30 @@ For a fresh setup, the supported entry point is:
 export function uninstallCodexCli(): number {
   console.log('\nUninstalling Claude-Mem Codex CLI integration...\n');
 
+  let failed = false;
+
   try {
     if (commandExists('codex')) {
       runCodex(['plugin', 'marketplace', 'remove', MARKETPLACE_NAME]);
     } else {
       console.log('  Codex CLI not found; skipping marketplace removal.');
     }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`\nCodex marketplace removal failed: ${message}`);
+    failed = true;
+  }
+
+  try {
     cleanupLegacyCodexAgentsMdContext();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error(`\nUninstallation failed: ${message}`);
+    console.error(`\nLegacy AGENTS.md cleanup failed: ${message}`);
+    failed = true;
+  }
+
+  if (failed) {
+    console.error('\nUninstallation completed with errors.');
     return 1;
   }
 

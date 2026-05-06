@@ -78,9 +78,13 @@ export const codexAdapter: PlatformAdapter = {
       source === 'startup' || source === 'resume' || source === 'clear'
         ? source
         : undefined;
+    const sessionId = stringOrUndefined(r.session_id);
+    if (!sessionId) {
+      throw new AdapterRejectedInput('missing_session_id');
+    }
 
     return {
-      sessionId: stringOrUndefined(r.session_id) as string,
+      sessionId,
       cwd,
       prompt: stringOrUndefined(r.prompt),
       toolName,

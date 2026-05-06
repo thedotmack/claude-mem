@@ -99,6 +99,16 @@ describe('Codex CLI Compatibility (#744)', () => {
       expect(input.stopHookActive).toBe(false);
     });
 
+    it('rejects payloads without a session_id', async () => {
+      const { codexAdapter } = await import('../src/cli/adapters/codex.js');
+      const { AdapterRejectedInput } = await import('../src/cli/adapters/errors.js');
+
+      expect(() => codexAdapter.normalizeInput({
+        hook_event_name: 'Stop',
+        cwd: '/tmp',
+      })).toThrow(AdapterRejectedInput);
+    });
+
     it('drops PreToolUse allow decisions because Codex only accepts deny', async () => {
       const { codexAdapter } = await import('../src/cli/adapters/codex.js');
       const output = codexAdapter.formatOutput({

@@ -151,14 +151,9 @@ export const fileContextHandler: EventHandler = {
       return { continue: true, suppressOutput: true };
     }
 
-    const timelines: string[] = [];
-
-    for (const candidatePath of candidatePaths) {
-      const timeline = await buildFileContextTimeline(input, candidatePath);
-      if (timeline) {
-        timelines.push(timeline);
-      }
-    }
+    const timelines = (
+      await Promise.all(candidatePaths.map(candidatePath => buildFileContextTimeline(input, candidatePath)))
+    ).filter((timeline): timeline is string => timeline !== null);
 
     if (timelines.length === 0) {
       return { continue: true, suppressOutput: true };
