@@ -20,6 +20,9 @@ interface MarkerSchema {
   installedAt?: string;
 }
 
+const LEGACY_VERSION_MARKER_RE =
+  /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+
 function markerPath(targetDir: string): string {
   return join(targetDir, '.install-version');
 }
@@ -238,11 +241,22 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
 export function readInstallMarker(targetDir: string): MarkerSchema | null {
   const path = markerPath(targetDir);
   if (!existsSync(path)) return null;
+  const content = readFileSync(path, 'utf-8');
   try {
-    return JSON.parse(readFileSync(path, 'utf-8')) as MarkerSchema;
+    const marker = JSON.parse(content);
+    if (marker && typeof marker === 'object' && typeof marker.version === 'string') {
+      return marker as MarkerSchema;
+    }
   } catch {
-    return null;
+    // Legacy installs wrote only the version string as plain text.
   }
+
+  const legacyVersion = content.trim();
+  if (LEGACY_VERSION_MARKER_RE.test(legacyVersion)) {
+    return { version: legacyVersion.replace(/^v/i, '') };
+  }
+
+  return null;
 }
 
 export function writeInstallMarker(
@@ -266,6 +280,8 @@ export function isInstallCurrent(targetDir: string, expectedVersion: string): bo
   if (!marker) return false;
   if (marker.version !== expectedVersion) return false;
   const currentBun = getBunVersion();
+  if (currentBun && !marker.bun) return false;
+  if (!currentBun && marker.bun) return false;
   if (currentBun && marker.bun && currentBun !== marker.bun) return false;
   return true;
 }

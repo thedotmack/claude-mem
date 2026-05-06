@@ -11,6 +11,14 @@ export interface GeneratorExitDependencies {
   restartGenerator: (session: ActiveSession, source: string) => void;
 }
 
+function isHardStopReason(reason: ActiveSession['abortReason']): boolean {
+  return reason === 'shutdown' ||
+    reason === 'restart-guard' ||
+    reason === 'overflow' ||
+    reason === 'quota' ||
+    (typeof reason === 'string' && reason.startsWith('quota:'));
+}
+
 /**
  * Post-generator-exit handler. Under the new model:
  *   - 'processing' rows reset to 'pending' on next generator start (handled by SessionManager.getMessageIterator).
@@ -18,8 +26,8 @@ export interface GeneratorExitDependencies {
  *
  * Behavior:
  *   1. Always: ensure SDK subprocess is dead.
- *   2. Hard-stop reasons (shutdown / restart-guard): clear pending rows for the session and finalize.
- *   3. Otherwise (idle / overflow / natural completion):
+ *   2. Hard-stop reasons (shutdown / restart-guard / overflow / quota): clear pending rows for the session and finalize.
+ *   3. Otherwise (idle / natural completion):
  *        - If 0 pending → finalize.
  *        - If pending > 0 and restart guard allows → respawn with backoff.
  *        - If guard tripped → clear pending and finalize.
@@ -42,14 +50,39 @@ export async function handleGeneratorExit(
 
   const pendingStore = sessionManager.getPendingMessageStore();
 
-  if (reason === 'shutdown' || reason === 'restart-guard') {
+  const terminateSession = (logPrefix: string, clearPending: boolean) => {
+    try {
+      if (clearPending) {
+        try {
+          pendingStore.clearPendingForSession(sessionDbId);
+        } catch (e) {
+          const normalized = e instanceof Error ? e : new Error(String(e));
+          logger.error('SESSION', `${logPrefix} pending cleanup failed; continuing finalization`, {
+            sessionId: sessionDbId,
+            reason
+          }, normalized);
+        }
+      }
+      try {
+        completionHandler.finalizeSession(sessionDbId);
+      } catch (e) {
+        const normalized = e instanceof Error ? e : new Error(String(e));
+        logger.error('SESSION', `${logPrefix} finalization failed; forcing in-memory session removal`, {
+          sessionId: sessionDbId,
+          reason
+        }, normalized);
+      }
+    } finally {
+      sessionManager.removeSessionImmediate(sessionDbId);
+    }
+  };
+
+  if (isHardStopReason(reason)) {
     logger.info('SESSION', `Generator exited with hard-stop reason — clearing pending and finalizing`, {
       sessionId: sessionDbId,
       reason
     });
-    pendingStore.clearPendingForSession(sessionDbId);
-    completionHandler.finalizeSession(sessionDbId);
-    sessionManager.removeSessionImmediate(sessionDbId);
+    terminateSession('Hard-stop', true);
     return;
   }
 
@@ -61,17 +94,14 @@ export async function handleGeneratorExit(
     logger.error('SESSION', 'Error during recovery pending-count check; aborting to prevent leaks', {
       sessionId: sessionDbId
     }, normalized);
-    pendingStore.clearPendingForSession(sessionDbId);
-    completionHandler.finalizeSession(sessionDbId);
-    sessionManager.removeSessionImmediate(sessionDbId);
+    terminateSession('Recovery abort', true);
     return;
   }
 
   if (pendingCount === 0) {
     session.restartGuard?.recordSuccess();
     session.consecutiveRestarts = 0;
-    completionHandler.finalizeSession(sessionDbId);
-    sessionManager.removeSessionImmediate(sessionDbId);
+    terminateSession('Natural completion', false);
     return;
   }
 
@@ -90,9 +120,7 @@ export async function handleGeneratorExit(
       maxConsecutiveFailures: session.restartGuard.maxConsecutiveFailures,
     });
     session.consecutiveRestarts = 0;
-    pendingStore.clearPendingForSession(sessionDbId);
-    completionHandler.finalizeSession(sessionDbId);
-    sessionManager.removeSessionImmediate(sessionDbId);
+    terminateSession('Restart guard', true);
     return;
   }
 

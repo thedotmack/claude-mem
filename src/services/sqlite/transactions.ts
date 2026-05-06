@@ -104,16 +104,15 @@ export function storeObservationsAndMarkComplete(
       summaryId = Number(result.lastInsertRowid);
     }
 
-    const updateStmt = db.prepare(`
-      UPDATE pending_messages
-      SET
-        status = 'processed',
-        completed_at_epoch = ?,
-        tool_input = NULL,
-        tool_response = NULL
+    // Current queue rows are live work only; completed work is removed, not retained as processed.
+    const deleteStmt = db.prepare(`
+      DELETE FROM pending_messages
       WHERE id = ? AND status = 'processing'
     `);
-    updateStmt.run(timestampEpoch, messageId);
+    const deleteResult = deleteStmt.run(messageId);
+    if (deleteResult.changes !== 1) {
+      throw new Error(`storeObservationsAndMarkComplete: failed to complete pending message ${messageId}`);
+    }
 
     return { observationIds, summaryId, createdAtEpoch: timestampEpoch };
   });

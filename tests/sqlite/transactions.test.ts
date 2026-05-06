@@ -215,9 +215,9 @@ describe('Transactions Module', () => {
       expect(result.observationIds).toHaveLength(1);
       expect(result.summaryId).not.toBeNull();
 
-      const msgStmt = db.prepare('SELECT status FROM pending_messages WHERE id = ?');
-      const msg = msgStmt.get(messageId) as { status: string } | undefined;
-      expect(msg?.status).toBe('processed');
+      const msgStmt = db.prepare('SELECT id FROM pending_messages WHERE id = ?');
+      const msg = msgStmt.get(messageId) as { id: number } | null;
+      expect(msg).toBeNull();
     });
 
     it('should maintain atomicity - all operations share same timestamp', () => {
@@ -283,6 +283,27 @@ describe('Transactions Module', () => {
 
       expect(result.observationIds).toHaveLength(1);
       expect(result.summaryId).toBeNull();
+    });
+
+    it('should roll back stored observations when the pending message is not completed', () => {
+      const { memorySessionId } = createSessionWithMemoryId('content-missing-pending', 'missing-pending-session');
+      const observations = [createObservationInput({ title: 'Rollback Obs' })];
+
+      expect(() => storeObservationsAndMarkComplete(
+        db,
+        memorySessionId,
+        'test-project',
+        observations,
+        null,
+        99999
+      )).toThrow('storeObservationsAndMarkComplete: failed to complete pending message 99999');
+
+      const count = db.prepare(`
+        SELECT COUNT(*) AS count
+        FROM observations
+        WHERE title = ?
+      `).get('Rollback Obs') as { count: number };
+      expect(count.count).toBe(0);
     });
   });
 });

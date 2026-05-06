@@ -58,6 +58,18 @@ describe('setup-runtime install marker', () => {
       expect(marker?.bun).toBe('1.0.0');
       expect(marker?.uv).toBe('0.5.0');
     });
+
+    it('returns parsed marker when file is a legacy plain-text version', () => {
+      writeFileSync(join(tempDir, '.install-version'), '12.4.4\n');
+      const marker = readInstallMarker(tempDir);
+      expect(marker).toEqual({ version: '12.4.4' });
+    });
+
+    it('normalizes a leading v in legacy plain-text versions', () => {
+      writeFileSync(join(tempDir, '.install-version'), 'v12.4.4\n');
+      const marker = readInstallMarker(tempDir);
+      expect(marker).toEqual({ version: '12.4.4' });
+    });
   });
 
   describe('writeInstallMarker', () => {
@@ -108,6 +120,16 @@ describe('setup-runtime install marker', () => {
       mkdirSync(join(tempDir, 'node_modules'));
       writeInstallMarker(tempDir, '1.0.0', bunVersion, '0.1.0');
       expect(isInstallCurrent(tempDir, '1.0.0')).toBe(true);
+    });
+
+    it('returns false for a matching legacy plain-text marker when bun is available', () => {
+      const bunVersion = probeBunVersion();
+      if (!bunVersion) {
+        return;
+      }
+      mkdirSync(join(tempDir, 'node_modules'));
+      writeFileSync(join(tempDir, '.install-version'), '1.0.0\n');
+      expect(isInstallCurrent(tempDir, '1.0.0')).toBe(false);
     });
   });
 });

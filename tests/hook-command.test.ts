@@ -1,5 +1,32 @@
 import { describe, it, expect } from 'bun:test';
-import { isWorkerUnavailableError } from '../src/cli/hook-command.js';
+import { isNonBlockingHookInputError, isWorkerUnavailableError } from '../src/cli/hook-command.js';
+
+describe('isNonBlockingHookInputError', () => {
+  it('classifies missing transcript paths as non-blocking hook input errors', () => {
+    const error = new Error(
+      'Transcript path missing or file does not exist: /tmp/missing-session.jsonl'
+    );
+
+    expect(isNonBlockingHookInputError(error)).toBe(true);
+  });
+
+  it('classifies missing transcript-path errors without file-existence text', () => {
+    expect(
+      isNonBlockingHookInputError(new Error('Transcript path missing: /tmp/missing-session.jsonl'))
+    ).toBe(true);
+  });
+
+  it('classifies nonexistent transcript-path errors without missing text', () => {
+    expect(
+      isNonBlockingHookInputError(new Error('Transcript path does not exist: /tmp/missing-session.jsonl'))
+    ).toBe(true);
+  });
+
+  it('does not classify unrelated hook errors as non-blocking input errors', () => {
+    expect(isNonBlockingHookInputError(new Error('Cannot read properties of undefined'))).toBe(false);
+    expect(isNonBlockingHookInputError(new Error('Request failed: 400'))).toBe(false);
+  });
+});
 
 describe('isWorkerUnavailableError', () => {
   describe('transport failures → true (graceful)', () => {

@@ -193,6 +193,25 @@ describe('DataRoutes Type Coercion', () => {
       expect(jsonSpy).toHaveBeenCalled();
     });
 
+    it('should accept legacy sdkSessionIds as a compatibility alias', () => {
+      const { req, res, jsonSpy } = createMockReqRes({ sdkSessionIds: ['abc', 'def'] });
+      handler(req as Request, res as Response);
+
+      expect(mockGetSdkSessionsBySessionIds).toHaveBeenCalledWith(['abc', 'def']);
+      expect(jsonSpy).toHaveBeenCalled();
+    });
+
+    it('should prefer canonical memorySessionIds when both fields are provided', () => {
+      const { req, res, jsonSpy } = createMockReqRes({
+        memorySessionIds: ['canonical'],
+        sdkSessionIds: ['legacy'],
+      });
+      handler(req as Request, res as Response);
+
+      expect(mockGetSdkSessionsBySessionIds).toHaveBeenCalledWith(['canonical']);
+      expect(jsonSpy).toHaveBeenCalled();
+    });
+
     it('should reject non-array, non-string values', () => {
       const { req, res, statusSpy } = createMockReqRes({ memorySessionIds: 42 });
       handler(req as Request, res as Response);

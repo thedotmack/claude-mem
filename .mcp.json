@@ -5,7 +5,7 @@
       "command": "sh",
       "args": [
         "-c",
-        "_R=\"${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}\"; [ -d \"$_R/plugin/scripts\" ] && _P=\"$_R/plugin\" || _P=\"$_R\"; exec node \"$_P/scripts/mcp-server.cjs\""
+        "_C=\"${CLAUDE_CONFIG_DIR:-$HOME/.claude}\"; _E=\"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}\"; _P=$({ [ -n \"$_E\" ] && printf '%s\\n' \"$_E\"; ls -dt \"$_C/plugins/cache/thedotmack/claude-mem\"/[0-9]*/ 2>/dev/null; printf '%s\\n' \"$_C/plugins/marketplaces/thedotmack/plugin\"; } | while IFS= read -r _R; do _R=\"${_R%/}\"; [ -d \"$_R/plugin/scripts\" ] && _Q=\"$_R/plugin\" || _Q=\"$_R\"; [ -f \"$_Q/scripts/mcp-server.cjs\" ] && { printf '%s\\n' \"$_Q\"; break; }; done); [ -n \"$_P\" ] || { echo \"claude-mem: mcp server not found\" >&2; exit 1; }; exec node \"$_P/scripts/mcp-server.cjs\""
       ]
     }
   }
