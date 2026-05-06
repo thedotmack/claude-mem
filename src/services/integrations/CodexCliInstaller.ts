@@ -93,17 +93,19 @@ function runCodex(args: string[]): void {
   }
 }
 
-function removeCodexAgentsMdContext(): void {
-  if (!existsSync(CODEX_AGENTS_MD_PATH)) return;
+function removeCodexAgentsMdContext(): boolean {
+  if (!existsSync(CODEX_AGENTS_MD_PATH)) return true;
 
   const startTag = '<claude-mem-context>';
   const endTag = '</claude-mem-context>';
 
   try {
     readAndStripContextTags(startTag, endTag);
+    return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.warn('WORKER', 'Failed to clean AGENTS.md context', { error: message });
+    return false;
   }
 }
 
@@ -144,7 +146,10 @@ export async function installCodexCli(marketplaceRootOverride?: string): Promise
 
     console.log(`  Registering Codex plugin marketplace: ${marketplaceRoot}`);
     runCodex(['plugin', 'marketplace', 'add', marketplaceRoot]);
-    cleanupLegacyCodexAgentsMdContext();
+    if (!cleanupLegacyCodexAgentsMdContext()) {
+      console.error(`  Native Codex hooks registered, but failed to remove legacy AGENTS.md context from ${CODEX_AGENTS_MD_PATH}.`);
+      return 1;
+    }
 
     console.log(`
 Installation complete!
@@ -186,7 +191,10 @@ export function uninstallCodexCli(): number {
   }
 
   try {
-    cleanupLegacyCodexAgentsMdContext();
+    if (!cleanupLegacyCodexAgentsMdContext()) {
+      console.error(`\nFailed to remove legacy AGENTS.md context from ${CODEX_AGENTS_MD_PATH}.`);
+      failed = true;
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`\nLegacy AGENTS.md cleanup failed: ${message}`);

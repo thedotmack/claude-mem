@@ -117,6 +117,11 @@ describe('Install Non-TTY Support', () => {
       expect(installRegion.indexOf("runCodex(['plugin', 'marketplace', 'add', marketplaceRoot])"))
         .toBeLessThan(installRegion.indexOf('cleanupLegacyCodexAgentsMdContext()'));
     });
+
+    it('reports legacy Codex AGENTS cleanup failures to callers', () => {
+      expect(codexInstallerSource).toContain('function removeCodexAgentsMdContext(): boolean');
+      expect(codexInstallerSource).toContain('if (!cleanupLegacyCodexAgentsMdContext())');
+    });
   });
 
   describe('TaskDescriptor interface', () => {
