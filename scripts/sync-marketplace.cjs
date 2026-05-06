@@ -34,10 +34,19 @@ function getGitignoreExcludes(basePath) {
   const gitignorePath = path.join(basePath, '.gitignore');
   if (!existsSync(gitignorePath)) return '';
 
+  const syncManagedFiles = new Set([
+    '.mcp.json',
+  ]);
+
   const lines = readFileSync(gitignorePath, 'utf-8').split('\n');
   return lines
     .map(line => line.trim())
-    .filter(line => line && !line.startsWith('#') && !line.startsWith('!'))
+    .filter(line =>
+      line &&
+      !line.startsWith('#') &&
+      !line.startsWith('!') &&
+      !syncManagedFiles.has(line)
+    )
     .map(pattern => `--exclude=${JSON.stringify(pattern)}`)
     .join(' ');
 }

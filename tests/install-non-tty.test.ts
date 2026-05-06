@@ -20,6 +20,13 @@ const codexInstallerSourcePath = join(
   'CodexCliInstaller.ts',
 );
 const codexInstallerSource = readFileSync(codexInstallerSourcePath, 'utf-8');
+const syncMarketplaceSourcePath = join(
+  __dirname,
+  '..',
+  'scripts',
+  'sync-marketplace.cjs',
+);
+const syncMarketplaceSource = readFileSync(syncMarketplaceSourcePath, 'utf-8');
 
 describe('Install Non-TTY Support', () => {
   describe('isInteractive flag', () => {
@@ -94,6 +101,15 @@ describe('Install Non-TTY Support', () => {
       expect(copyRegion).toContain("'.agents'");
       expect(copyRegion).toContain("'.codex-plugin'");
       expect(copyRegion).toContain("'.mcp.json'");
+    });
+
+    it('does not exclude MCP manifests during local marketplace sync', () => {
+      const gitignoreExcludeRegion = syncMarketplaceSource.slice(
+        syncMarketplaceSource.indexOf('function getGitignoreExcludes'),
+        syncMarketplaceSource.indexOf('const branch = getCurrentBranch'),
+      );
+      expect(gitignoreExcludeRegion).toContain("'.mcp.json'");
+      expect(gitignoreExcludeRegion).toContain('syncManagedFiles.has(line)');
     });
 
     it('registers Codex against the durable marketplace directory', () => {
