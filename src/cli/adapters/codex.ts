@@ -29,6 +29,13 @@ function stringOrUndefined(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
+function booleanOrUndefined(value: unknown): boolean | undefined {
+  if (typeof value === 'boolean') return value;
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  return undefined;
+}
+
 function cloneToolInput(toolInput: unknown): unknown {
   if (toolInput && typeof toolInput === 'object' && !Array.isArray(toolInput)) {
     return { ...(toolInput as Record<string, unknown>) };
@@ -89,7 +96,7 @@ export const codexAdapter: PlatformAdapter = {
       transcriptPath: stringOrUndefined(r.transcript_path),
       lastAssistantMessage: stringOrUndefined(r.last_assistant_message),
       turnId: stringOrUndefined(r.turn_id),
-      stopHookActive: typeof r.stop_hook_active === 'boolean' ? r.stop_hook_active : undefined,
+      stopHookActive: booleanOrUndefined(r.stop_hook_active),
       permissionMode: stringOrUndefined(r.permission_mode),
       model: stringOrUndefined(r.model),
       sessionSource,

@@ -9,7 +9,7 @@ describe('Hook Lifecycle - Event Handlers', () => {
       const { getEventHandler } = await import('../src/cli/handlers/index.js');
       const recognizedTypes = [
         'context', 'session-init', 'observation',
-        'summarize', 'user-message', 'file-edit'
+        'summarize', 'user-message', 'file-edit', 'file-context'
       ];
       for (const type of recognizedTypes) {
         const handler = getEventHandler(type);
@@ -100,6 +100,25 @@ describe('Codex CLI Compatibility (#744)', () => {
       expect(input.turnId).toBe('turn-1');
       expect(input.lastAssistantMessage).toBe('done');
       expect(input.stopHookActive).toBe(false);
+    });
+
+    it('normalizes string stop_hook_active payloads', async () => {
+      const { codexAdapter } = await import('../src/cli/adapters/codex.js');
+      const active = codexAdapter.normalizeInput({
+        hook_event_name: 'Stop',
+        session_id: 'codex-session',
+        cwd: '/tmp',
+        stop_hook_active: 'true',
+      });
+      const inactive = codexAdapter.normalizeInput({
+        hook_event_name: 'Stop',
+        session_id: 'codex-session',
+        cwd: '/tmp',
+        stop_hook_active: 'false',
+      });
+
+      expect(active.stopHookActive).toBe(true);
+      expect(inactive.stopHookActive).toBe(false);
     });
 
     it('rejects payloads without a session_id', async () => {
