@@ -26,12 +26,20 @@ gh pr view <number> --json \
   number,state,isDraft,mergeable,mergeStateStatus,reviewDecision,headRefOid,statusCheckRollup,url
 ```
 
-Use GraphQL for unresolved review threads:
+Resolve the repository owner/name before using GraphQL:
+
+```bash
+repo_json=$(gh repo view --json owner,name)
+owner=$(jq -r '.owner.login // .owner.name' <<<"$repo_json")
+repo=$(jq -r '.name' <<<"$repo_json")
+```
+
+Use GraphQL for unresolved review threads. Include `pageInfo`; if `hasNextPage` is `true`, repeat the query with `cursor` set to `endCursor` until all pages have been checked.
 
 ```bash
 gh api graphql \
-  -f query='query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewThreads(first:100){nodes{id,isResolved,isOutdated,path,line,comments(first:20){nodes{author{login},body,createdAt,url}}}}}}}' \
-  -f owner=<owner> -f repo=<repo> -F number=<number>
+  -f query='query($owner:String!,$repo:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewThreads(first:100,after:$cursor){pageInfo{hasNextPage endCursor}nodes{id,isResolved,isOutdated,path,line,comments(first:20){nodes{author{login},body,createdAt,url}}}}}}}' \
+  -f owner="$owner" -f repo="$repo" -F number=<number> -F cursor=null
 ```
 
 Filter unresolved threads with `jq`:
