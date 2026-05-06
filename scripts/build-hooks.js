@@ -174,7 +174,6 @@ async function buildHooks() {
       logLevel: 'error',
       external: [
         'bun:sqlite',
-        'zod',
         'tree-sitter-cli',
         'tree-sitter-javascript',
         'tree-sitter-typescript',
@@ -221,6 +220,13 @@ async function buildHooks() {
     if (bunRequireMatch) {
       throw new Error(
         `mcp-server.cjs contains a Bun-only ${bunRequireMatch[0]} call. This means a transitive import in src/servers/mcp-server.ts pulled in code from worker-service.ts (or another module that touches DatabaseManager/ChromaSync). The MCP server runs under Node and cannot load bun:* modules. Audit recent imports in src/servers/mcp-server.ts and src/services/worker-spawner.ts — the spawner module is intentionally lightweight and MUST NOT import anything that touches SQLite or other Bun-only modules. See PR #1645 for context.`
+      );
+    }
+    const zodRequireRegex = /require\(\s*["']zod(?:\/[^"']*)?["']\s*\)/;
+    const zodRequireMatch = mcpBundleContent.match(zodRequireRegex);
+    if (zodRequireMatch) {
+      throw new Error(
+        `mcp-server.cjs contains external ${zodRequireMatch[0]}. Claude Desktop can launch this bundle without plugin node_modules available, so Zod must be bundled into the MCP server.`
       );
     }
 
