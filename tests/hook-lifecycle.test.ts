@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 describe('Hook Lifecycle - Event Handlers', () => {
   describe('getEventHandler', () => {
@@ -107,6 +110,42 @@ describe('Codex CLI Compatibility (#744)', () => {
         hook_event_name: 'Stop',
         cwd: '/tmp',
       })).toThrow(AdapterRejectedInput);
+    });
+
+    it('adds filePaths without dropping the original object tool input', async () => {
+      const { codexAdapter } = await import('../src/cli/adapters/codex.js');
+      const tmpDir = mkdtempSync(join(tmpdir(), 'codex-adapter-'));
+      try {
+        writeFileSync(join(tmpDir, 'README.md'), 'readme');
+
+        const input = codexAdapter.normalizeInput({
+          hook_event_name: 'PreToolUse',
+          session_id: 'codex-session',
+          cwd: tmpDir,
+          tool_name: 'Bash',
+          tool_input: { command: 'cat README.md' },
+        });
+
+        expect(input.toolInput).toEqual({
+          command: 'cat README.md',
+          filePaths: ['README.md'],
+        });
+      } finally {
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('preserves non-object tool input payloads', async () => {
+      const { codexAdapter } = await import('../src/cli/adapters/codex.js');
+      const input = codexAdapter.normalizeInput({
+        hook_event_name: 'PreToolUse',
+        session_id: 'codex-session',
+        cwd: '/tmp',
+        tool_name: 'Bash',
+        tool_input: 'cat README.md',
+      });
+
+      expect(input.toolInput).toBe('cat README.md');
     });
 
     it('drops PreToolUse allow decisions because Codex only accepts deny', async () => {

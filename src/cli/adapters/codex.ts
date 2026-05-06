@@ -64,12 +64,8 @@ export const codexAdapter: PlatformAdapter = {
 
     if (hookEventName === 'PreToolUse' && toolName) {
       const filePaths = extractFilePaths(toolName, toolInput, cwd);
-      if (filePaths.length > 0) {
-        const objectInput =
-          toolInput && typeof toolInput === 'object' && !Array.isArray(toolInput)
-            ? toolInput as Record<string, unknown>
-            : {};
-        toolInput = { ...objectInput, filePaths };
+      if (filePaths.length > 0 && toolInput && typeof toolInput === 'object' && !Array.isArray(toolInput)) {
+        toolInput = { ...(toolInput as Record<string, unknown>), filePaths };
       }
     }
 

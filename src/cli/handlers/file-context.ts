@@ -151,9 +151,21 @@ export const fileContextHandler: EventHandler = {
       return { continue: true, suppressOutput: true };
     }
 
-    const timelines = (
-      await Promise.all(candidatePaths.map(candidatePath => buildFileContextTimeline(input, candidatePath)))
-    ).filter((timeline): timeline is string => timeline !== null);
+    const timelineResults = await Promise.allSettled(
+      candidatePaths.map(candidatePath => buildFileContextTimeline(input, candidatePath))
+    );
+    const timelines: string[] = [];
+
+    timelineResults.forEach((result, index) => {
+      if (result.status === 'fulfilled') {
+        if (result.value) timelines.push(result.value);
+        return;
+      }
+      logger.debug('HOOK', 'File context timeline lookup failed, skipping path', {
+        filePath: candidatePaths[index],
+        error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+      });
+    });
 
     if (timelines.length === 0) {
       return { continue: true, suppressOutput: true };
@@ -176,7 +188,7 @@ async function buildFileContextTimeline(input: NormalizedHookInput, filePath: st
       ? filePath
       : path.resolve(input.cwd || process.cwd(), filePath);
     const stat = statSync(statPath);
-    if (stat.size < FILE_READ_GATE_MIN_BYTES) {
+    if (!stat.isFile() || stat.size < FILE_READ_GATE_MIN_BYTES) {
       return null;
     }
     fileMtimeMs = stat.mtimeMs;
