@@ -125,6 +125,17 @@ describe('Install Non-TTY Support', () => {
       expect(runCodexRegion).not.toContain("stdio: 'inherit'");
     });
 
+    it('checks Codex CLI marketplace version before registration', () => {
+      const installRegion = codexInstallerSource.slice(
+        codexInstallerSource.indexOf('export async function installCodexCli'),
+        codexInstallerSource.indexOf('export function uninstallCodexCli'),
+      );
+      expect(codexInstallerSource).toContain("const MIN_CODEX_MARKETPLACE_VERSION = '0.128.0'");
+      expect(codexInstallerSource).toContain("spawnSync('codex', ['--version']");
+      expect(installRegion.indexOf('assertCodexMarketplaceSupported()'))
+        .toBeLessThan(installRegion.indexOf("runCodex(['plugin', 'marketplace', 'add', marketplaceRoot])"));
+    });
+
     it('removes legacy Codex AGENTS context only after marketplace registration succeeds', () => {
       const installRegion = codexInstallerSource.slice(
         codexInstallerSource.indexOf('export async function installCodexCli'),

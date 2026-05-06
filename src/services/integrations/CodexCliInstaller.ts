@@ -8,6 +8,7 @@ import { logger } from '../../utils/logger.js';
 const CODEX_DIR = path.join(homedir(), '.codex');
 const CODEX_AGENTS_MD_PATH = path.join(CODEX_DIR, 'AGENTS.md');
 const MARKETPLACE_NAME = 'claude-mem-local';
+const MIN_CODEX_MARKETPLACE_VERSION = '0.128.0';
 const REQUIRED_MARKETPLACE_FILES = [
   path.join('.agents', 'plugins', 'marketplace.json'),
   path.join('.codex-plugin', 'plugin.json'),
@@ -93,6 +94,45 @@ function runCodex(args: string[]): void {
   }
 }
 
+function parseSemver(value: string): [number, number, number] | null {
+  const match = value.match(/(\d+)\.(\d+)\.(\d+)/);
+  if (!match) return null;
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+function compareSemver(left: [number, number, number], right: [number, number, number]): number {
+  if (left[0] !== right[0]) return left[0] - right[0];
+  if (left[1] !== right[1]) return left[1] - right[1];
+  return left[2] - right[2];
+}
+
+function assertCodexMarketplaceSupported(): void {
+  const result = spawnSync('codex', ['--version'], {
+    encoding: 'utf-8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`.trim();
+
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    console.warn(`  Could not determine Codex CLI version. Continuing; plugin marketplace support requires ${MIN_CODEX_MARKETPLACE_VERSION} or newer.${output ? `\n${output}` : ''}`);
+    return;
+  }
+
+  const version = parseSemver(output);
+  if (!version) {
+    console.warn(`  Could not parse Codex CLI version from "${output || '<empty>'}". Continuing; plugin marketplace support requires ${MIN_CODEX_MARKETPLACE_VERSION} or newer.`);
+    return;
+  }
+
+  const minimumVersion = parseSemver(MIN_CODEX_MARKETPLACE_VERSION);
+  if (minimumVersion && compareSemver(version, minimumVersion) < 0) {
+    throw new Error(`Codex CLI ${version.join('.')} is too old for plugin marketplace support. Update Codex CLI to ${MIN_CODEX_MARKETPLACE_VERSION} or newer, then run: npx claude-mem@latest install`);
+  }
+}
+
 function removeCodexAgentsMdContext(): boolean {
   if (!existsSync(CODEX_AGENTS_MD_PATH)) return true;
 
@@ -142,6 +182,7 @@ export async function installCodexCli(marketplaceRootOverride?: string): Promise
   }
 
   try {
+    assertCodexMarketplaceSupported();
     const marketplaceRoot = resolvePluginMarketplaceRoot(marketplaceRootOverride);
 
     console.log(`  Registering Codex plugin marketplace: ${marketplaceRoot}`);

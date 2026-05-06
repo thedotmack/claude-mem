@@ -84,6 +84,6 @@ export const summarizeHandler: EventHandler = {
     }
 
     logger.debug('HOOK', 'Summary request queued, exiting hook');
-    return { continue: true, suppressOutput: true };
+    return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
   },
 };
