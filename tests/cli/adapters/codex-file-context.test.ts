@@ -42,4 +42,14 @@ describe('extractFilePaths', () => {
 
     expect(paths).toEqual(['README.md', 'notes.txt']);
   });
+
+  it('extracts MCP exact read/view/cat tool names', () => {
+    expect(extractFilePaths('mcp__fs__read', { path: 'README.md' }, tmpDir)).toEqual(['README.md']);
+    expect(extractFilePaths('mcp__fs__view_files', { paths: ['README.md'] }, tmpDir)).toEqual(['README.md']);
+  });
+
+  it('ignores MCP tool names that only contain read verbs as a prefix', () => {
+    expect(extractFilePaths('mcp__fs__read_write', { path: 'README.md' }, tmpDir)).toEqual([]);
+    expect(extractFilePaths('mcp__server__readonly', { path: 'README.md' }, tmpDir)).toEqual([]);
+  });
 });

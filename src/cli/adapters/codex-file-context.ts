@@ -106,7 +106,7 @@ function extractFromBash(toolInput: unknown, cwd: string): string[] {
 }
 
 function extractFromMcp(toolName: string, toolInput: unknown, cwd: string): string[] {
-  if (!/^mcp__.+__(read|view|cat)/.test(toolName)) return [];
+  if (!/^mcp__.+__(read|view|cat)(?:_file|_files)?$/.test(toolName)) return [];
 
   const input = (toolInput ?? {}) as { path?: unknown; paths?: unknown };
   const candidates: string[] = [];

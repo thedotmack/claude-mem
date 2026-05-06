@@ -37,7 +37,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash|mcp__.*__(read|view|cat).*",
+        "matcher": "^Bash$|^mcp__.*__(read|view|cat)(_file|_files)?$",
         "hooks": [
           {
             "type": "command",
