@@ -235,26 +235,12 @@ export class WorkerService implements WorkerRef {
         return;
       }
 
-      const timeoutMs = 120000; 
-      const timeoutPromise = new Promise<void>((_, reject) =>
-        setTimeout(() => reject(new Error('Database initialization timeout')), timeoutMs)
-      );
-
-      try {
-        await Promise.race([this.initializationComplete, timeoutPromise]);
-        next();
-      } catch (error) {
-        if (error instanceof Error) {
-          logger.error('WORKER', `Request to ${req.method} ${req.path} rejected — DB not initialized`, {}, error);
-        } else {
-          logger.error('WORKER', `Request to ${req.method} ${req.path} rejected — DB not initialized with non-Error`, {}, new Error(String(error)));
-        }
-        res.status(503).json({
-          error: 'Service initializing',
-          message: 'Database is still initializing, please retry'
-        });
-        return;
-      }
+      logger.debug('WORKER', `Request to ${req.method} ${req.path} rejected — DB not initialized`);
+      res.status(503).json({
+        error: 'Service initializing',
+        message: 'Database is still initializing, please retry'
+      });
+      return;
     });
 
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
