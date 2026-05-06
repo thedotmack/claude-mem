@@ -147,8 +147,7 @@ export async function installCodexCli(marketplaceRootOverride?: string): Promise
     console.log(`  Registering Codex plugin marketplace: ${marketplaceRoot}`);
     runCodex(['plugin', 'marketplace', 'add', marketplaceRoot]);
     if (!cleanupLegacyCodexAgentsMdContext()) {
-      console.error(`  Native Codex hooks registered, but failed to remove legacy AGENTS.md context from ${CODEX_AGENTS_MD_PATH}.`);
-      return 1;
+      console.warn(`  Native Codex hooks registered, but failed to remove legacy AGENTS.md context from ${CODEX_AGENTS_MD_PATH}.`);
     }
 
     console.log(`

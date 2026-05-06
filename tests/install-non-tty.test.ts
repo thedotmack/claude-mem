@@ -138,6 +138,19 @@ describe('Install Non-TTY Support', () => {
       expect(codexInstallerSource).toContain('function removeCodexAgentsMdContext(): boolean');
       expect(codexInstallerSource).toContain('if (!cleanupLegacyCodexAgentsMdContext())');
     });
+
+    it('does not fail Codex install after marketplace registration when only AGENTS cleanup fails', () => {
+      const installRegion = codexInstallerSource.slice(
+        codexInstallerSource.indexOf('export async function installCodexCli'),
+        codexInstallerSource.indexOf('export function uninstallCodexCli'),
+      );
+      const cleanupFailureRegion = installRegion.slice(
+        installRegion.indexOf('if (!cleanupLegacyCodexAgentsMdContext())'),
+        installRegion.indexOf('Installation complete!'),
+      );
+      expect(cleanupFailureRegion).toContain('console.warn');
+      expect(cleanupFailureRegion).not.toContain('return 1');
+    });
   });
 
   describe('TaskDescriptor interface', () => {
