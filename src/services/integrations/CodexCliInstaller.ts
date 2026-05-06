@@ -1,6 +1,6 @@
 import path from 'path';
 import { homedir } from 'os';
-import { execFileSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { logger } from '../../utils/logger.js';
@@ -73,9 +73,24 @@ function resolvePluginMarketplaceRoot(preferredRoot?: string): string {
 }
 
 function runCodex(args: string[]): void {
-  execFileSync('codex', args, {
-    stdio: 'inherit',
+  const result = spawnSync('codex', args, {
+    encoding: 'utf-8',
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
+  const output = console;
+  const stdout = result.stdout?.trimEnd();
+  const stderr = result.stderr?.trimEnd();
+
+  if (stdout) output.log(stdout);
+  if (stderr) output.error(stderr);
+
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    const exitCode = result.status ?? 'unknown';
+    throw new Error(`codex ${args.join(' ')} failed with exit code ${exitCode}${stderr ? `: ${stderr}` : ''}`);
+  }
 }
 
 function removeCodexAgentsMdContext(): void {
@@ -126,10 +141,10 @@ export async function installCodexCli(marketplaceRootOverride?: string): Promise
 
   try {
     const marketplaceRoot = resolvePluginMarketplaceRoot(marketplaceRootOverride);
-    cleanupLegacyCodexAgentsMdContext();
 
     console.log(`  Registering Codex plugin marketplace: ${marketplaceRoot}`);
     runCodex(['plugin', 'marketplace', 'add', marketplaceRoot]);
+    cleanupLegacyCodexAgentsMdContext();
 
     console.log(`
 Installation complete!

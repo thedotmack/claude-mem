@@ -11,6 +11,15 @@ const installSourcePath = join(
   'install.ts',
 );
 const installSource = readFileSync(installSourcePath, 'utf-8');
+const codexInstallerSourcePath = join(
+  __dirname,
+  '..',
+  'src',
+  'services',
+  'integrations',
+  'CodexCliInstaller.ts',
+);
+const codexInstallerSource = readFileSync(codexInstallerSourcePath, 'utf-8');
 
 describe('Install Non-TTY Support', () => {
   describe('isInteractive flag', () => {
@@ -89,6 +98,24 @@ describe('Install Non-TTY Support', () => {
 
     it('registers Codex against the durable marketplace directory', () => {
       expect(installSource).toContain('installCodexCli(marketplaceDirectory())');
+    });
+
+    it('captures Codex CLI output for install failure reporting', () => {
+      const runCodexRegion = codexInstallerSource.slice(
+        codexInstallerSource.indexOf('function runCodex'),
+        codexInstallerSource.indexOf('function removeCodexAgentsMdContext'),
+      );
+      expect(runCodexRegion).toContain('spawnSync');
+      expect(runCodexRegion).not.toContain("stdio: 'inherit'");
+    });
+
+    it('removes legacy Codex AGENTS context only after marketplace registration succeeds', () => {
+      const installRegion = codexInstallerSource.slice(
+        codexInstallerSource.indexOf('export async function installCodexCli'),
+        codexInstallerSource.indexOf('export function uninstallCodexCli'),
+      );
+      expect(installRegion.indexOf("runCodex(['plugin', 'marketplace', 'add', marketplaceRoot])"))
+        .toBeLessThan(installRegion.indexOf('cleanupLegacyCodexAgentsMdContext()'));
     });
   });
 
