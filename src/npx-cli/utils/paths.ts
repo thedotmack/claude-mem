@@ -6,6 +6,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
   renameSync,
   statSync,
@@ -13,7 +14,7 @@ import {
   writeSync,
 } from 'fs';
 import { homedir } from 'os';
-import { basename, dirname, join } from 'path';
+import { basename, dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { randomBytes } from 'crypto';
 
@@ -127,10 +128,19 @@ export function writeJsonFileAtomic(filepath: string, data: any): void {
   let resolved = filepath;
   try {
     if (lstatSync(filepath).isSymbolicLink()) {
-      resolved = realpathSync(filepath);
+      try {
+        resolved = realpathSync(filepath);
+      } catch {
+        const linkTarget = readlinkSync(filepath);
+        resolved = resolve(dirname(filepath), linkTarget);
+      }
     }
-  } catch {
-    // Destination doesn't exist yet — write directly to the literal path.
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+      throw err;
+    }
+    // Destination doesn't exist yet - write directly to the literal path.
   }
 
   ensureDirectoryExists(dirname(resolved));

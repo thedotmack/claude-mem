@@ -142,6 +142,30 @@ describe('writeJsonFileAtomic', () => {
     }
   });
 
+  it('writes through a dangling symlink destination instead of replacing the link', () => {
+    if (IS_WINDOWS) {
+      // Symlink creation requires elevated privileges on Windows; skip there.
+      return;
+    }
+
+    const linkTarget = join('dotfiles', 'settings.json');
+    const realTarget = join(tempDir, linkTarget);
+    const linkPath = join(tempDir, 'settings.json');
+    symlinkSync(linkTarget, linkPath);
+
+    writeJsonFileAtomic(linkPath, { env: { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' } });
+
+    expect(JSON.parse(readFileSync(realTarget, 'utf-8'))).toEqual({
+      env: { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' },
+    });
+    expect(lstatSync(linkPath).isSymbolicLink()).toBe(true);
+    expect(realpathSync(linkPath)).toBe(realpathSync(realTarget));
+    const tempDirLeftovers = readdirSync(tempDir).filter(name => name.endsWith('.tmp'));
+    expect(tempDirLeftovers).toEqual([]);
+    const realDirLeftovers = readdirSync(join(tempDir, 'dotfiles')).filter(name => name.endsWith('.tmp'));
+    expect(realDirLeftovers).toEqual([]);
+  });
+
   it('cleans up the temp file when the rename step fails', () => {
     // Force the catch-block cleanup path: pre-create a directory at the
     // destination so renameSync(tmpPath, filepath) fails (EISDIR/ENOTDIR).
