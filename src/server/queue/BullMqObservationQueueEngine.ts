@@ -220,21 +220,32 @@ export class BullMqObservationQueueEngine
 
   async resetProcessingToPending(sessionDbId: number): Promise<number> {
     let reset = 0;
+    let resetError: Error | null = null;
     for (const [claimId, claimed] of Array.from(this.activeClaims.entries())) {
       if (claimed.sessionDbId !== sessionDbId) {
         continue;
       }
       try {
         await claimed.job.moveToWait(claimed.token);
-        this.finishClaim(claimId, claimed);
-        reset++;
       } catch (error) {
-        throw this.toRedisUnavailableError(error);
+        const normalized = this.toRedisUnavailableError(error);
+        resetError ??= normalized;
+        logger.warn('QUEUE', 'BullMQ active claim reset failed', {
+          sessionDbId,
+          jobId: claimed.job.id,
+          error: normalized.message,
+        });
+        continue;
       }
+      this.finishClaim(claimId, claimed);
+      reset++;
     }
     if (reset > 0) {
       this.getSessionRuntime(sessionDbId).events.emit('message');
       this.options.onMutate?.();
+    }
+    if (resetError) {
+      throw resetError;
     }
     return reset;
   }

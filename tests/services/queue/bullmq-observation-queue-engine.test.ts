@@ -328,6 +328,47 @@ describe('BullMqObservationQueueEngine', () => {
     await iterator.return?.();
   });
 
+  test('resetProcessingToPending attempts every active claim before throwing', async () => {
+    const result = createEngine();
+    engine = result.engine;
+
+    await engine.enqueue(1, 'content-session', {
+      type: 'observation',
+      tool_name: 'Read',
+      toolUseId: 'tool-a',
+    });
+    await engine.enqueue(1, 'content-session', {
+      type: 'observation',
+      tool_name: 'Write',
+      toolUseId: 'tool-b',
+    });
+
+    const controller = new AbortController();
+    const iterator = engine.createIterator({
+      sessionDbId: 1,
+      signal: controller.signal,
+      idleTimeoutMs: 100,
+    });
+    await iterator.next();
+    await iterator.next();
+
+    const queue = result.queues.get('claude_mem_session_1')!;
+    const failedJob = queue.jobs[0];
+    const releasedJob = queue.jobs[1];
+    failedJob.failMoveToWait = true;
+
+    await expect(engine.resetProcessingToPending(1)).rejects.toThrow('moveToWait failed');
+
+    expect(failedJob.state).toBe('active');
+    expect(releasedJob.state).toBe('waiting');
+
+    failedJob.failMoveToWait = false;
+    expect(await engine.resetProcessingToPending(1)).toBe(1);
+
+    controller.abort();
+    await iterator.return?.();
+  });
+
   test('close moves local active claims back to wait before dropping state', async () => {
     const result = createEngine();
     engine = result.engine;
