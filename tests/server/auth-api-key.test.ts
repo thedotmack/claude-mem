@@ -69,6 +69,35 @@ describe('server API key auth', () => {
     expect(req.authContext).toMatchObject({ mode: 'local-dev', scopes: ['*'] });
   });
 
+  it('middleware defaults to API-key auth when auth mode is not explicitly set', () => {
+    const middleware = requireServerAuth(() => db);
+    const req: any = {
+      ip: '127.0.0.1',
+      socket: { remoteAddress: '127.0.0.1' },
+      header: () => undefined,
+    };
+    const res: any = {
+      statusCode: 200,
+      body: null,
+      status(code: number) {
+        this.statusCode = code;
+        return this;
+      },
+      json(body: unknown) {
+        this.body = body;
+      },
+    };
+    let calledNext = false;
+
+    middleware(req, res, () => {
+      calledNext = true;
+    });
+
+    expect(calledNext).toBe(false);
+    expect(res.statusCode).toBe(401);
+    expect(res.body).toMatchObject({ error: 'Unauthorized' });
+  });
+
   it('middleware requires a scoped bearer API key outside local-dev fallback', () => {
     const team = new TeamsRepository(db).create({ name: 'Core' });
     const project = new ProjectsRepository(db).create({ name: 'Project' });

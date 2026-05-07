@@ -16,7 +16,11 @@ export const SERVER_OWNED_TABLES = [
   'audit_log'
 ] as const;
 
+const initializedDatabases = new WeakSet<Database>();
+
 export function ensureServerStorageSchema(db: Database): void {
+  if (initializedDatabases.has(db)) return;
+
   db.run(`
     CREATE TABLE IF NOT EXISTS projects (
       id TEXT PRIMARY KEY,
@@ -163,6 +167,27 @@ export function ensureServerStorageSchema(db: Database): void {
     WHERE legacy_observation_id IS NOT NULL
   `);
   db.run('CREATE INDEX IF NOT EXISTS idx_memory_items_kind_type ON memory_items(kind, type)');
+  db.run(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS memory_items_fts USING fts5(
+      memory_item_id UNINDEXED,
+      project_id UNINDEXED,
+      title,
+      subtitle,
+      text,
+      narrative,
+      facts,
+      concepts,
+      tokenize='porter unicode61'
+    )
+  `);
+  db.run('DELETE FROM memory_items_fts');
+  db.run(`
+    INSERT INTO memory_items_fts (
+      memory_item_id, project_id, title, subtitle, text, narrative, facts, concepts
+    )
+    SELECT id, project_id, title, subtitle, text, narrative, facts, concepts
+    FROM memory_items
+  `);
   db.run('CREATE INDEX IF NOT EXISTS idx_memory_sources_item ON memory_sources(memory_item_id)');
   db.run('CREATE INDEX IF NOT EXISTS idx_memory_sources_legacy ON memory_sources(legacy_table, legacy_id)');
   db.run(`
@@ -223,4 +248,37 @@ export function ensureServerStorageSchema(db: Database): void {
       SELECT RAISE(ABORT, 'memory_items server_session_id must belong to project_id');
     END;
   `);
+
+  db.run(`
+    CREATE TRIGGER IF NOT EXISTS trg_memory_items_fts_insert
+    AFTER INSERT ON memory_items
+    BEGIN
+      INSERT INTO memory_items_fts (
+        memory_item_id, project_id, title, subtitle, text, narrative, facts, concepts
+      )
+      VALUES (
+        new.id, new.project_id, new.title, new.subtitle, new.text, new.narrative, new.facts, new.concepts
+      );
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_memory_items_fts_update
+    AFTER UPDATE ON memory_items
+    BEGIN
+      DELETE FROM memory_items_fts WHERE memory_item_id = old.id;
+      INSERT INTO memory_items_fts (
+        memory_item_id, project_id, title, subtitle, text, narrative, facts, concepts
+      )
+      VALUES (
+        new.id, new.project_id, new.title, new.subtitle, new.text, new.narrative, new.facts, new.concepts
+      );
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_memory_items_fts_delete
+    AFTER DELETE ON memory_items
+    BEGIN
+      DELETE FROM memory_items_fts WHERE memory_item_id = old.id;
+    END;
+  `);
+
+  initializedDatabases.add(db);
 }

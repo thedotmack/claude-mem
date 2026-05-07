@@ -142,7 +142,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_REDIS_PORT: '6379',
     CLAUDE_MEM_REDIS_MODE: 'external',
     CLAUDE_MEM_QUEUE_REDIS_PREFIX: 'claude_mem',
-    CLAUDE_MEM_AUTH_MODE: 'local-dev',
+    CLAUDE_MEM_AUTH_MODE: 'api-key',
     CLAUDE_MEM_RUNTIME: 'worker',
   };
 

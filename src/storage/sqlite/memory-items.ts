@@ -83,6 +83,15 @@ function mapMemorySourceRow(row: MemorySourceRow): MemorySource {
   });
 }
 
+function buildFtsQuery(query: string): string {
+  return query
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(token => `"${token.replace(/"/g, '""')}"`)
+    .join(' ');
+}
+
 export class MemoryItemsRepository {
   constructor(private db: Database) {
     ensureServerStorageSchema(this.db);
@@ -238,21 +247,18 @@ export class MemoryItemsRepository {
   }
 
   search(projectId: string, query: string, limit = 20): MemoryItem[] {
-    const pattern = `%${query}%`;
+    const ftsQuery = buildFtsQuery(query);
+    if (!ftsQuery) return [];
+
     const rows = this.db.prepare(`
-      SELECT * FROM memory_items
-      WHERE project_id = ?
-        AND (
-          title LIKE ?
-          OR subtitle LIKE ?
-          OR text LIKE ?
-          OR narrative LIKE ?
-          OR facts LIKE ?
-          OR concepts LIKE ?
-        )
-      ORDER BY updated_at_epoch DESC
+      SELECT memory_items.*
+      FROM memory_items
+      JOIN memory_items_fts ON memory_items_fts.memory_item_id = memory_items.id
+      WHERE memory_items_fts.project_id = ?
+        AND memory_items_fts MATCH ?
+      ORDER BY memory_items.updated_at_epoch DESC
       LIMIT ?
-    `).all(projectId, pattern, pattern, pattern, pattern, pattern, pattern, limit) as MemoryItemRow[];
+    `).all(projectId, ftsQuery, limit) as MemoryItemRow[];
     return rows.map(mapMemoryItemRow);
   }
 

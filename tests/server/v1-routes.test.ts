@@ -131,6 +131,48 @@ describe('server REST API v1 routes', () => {
     expect(response.status).toBe(403);
   });
 
+  it('rejects mixed-project event batches without partial writes', async () => {
+    const projectAResponse = await post('/v1/projects', { name: 'Project A' });
+    const projectBResponse = await post('/v1/projects', { name: 'Project B' });
+    expect(projectAResponse.status).toBe(201);
+    expect(projectBResponse.status).toBe(201);
+    const { project: projectA } = await projectAResponse.json();
+    const { project: projectB } = await projectBResponse.json();
+    const key = createServerApiKey(db, {
+      name: 'project A writer',
+      projectId: projectA.id,
+      scopes: ['memories:write'],
+    });
+
+    const response = await fetch(`http://127.0.0.1:${port}/v1/events/batch`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${key.rawKey}`,
+      },
+      body: JSON.stringify([
+        {
+          projectId: projectA.id,
+          sourceType: 'api',
+          eventType: 'observation.created',
+          payload: { index: 1 },
+          occurredAtEpoch: Date.now(),
+        },
+        {
+          projectId: projectB.id,
+          sourceType: 'api',
+          eventType: 'observation.created',
+          payload: { index: 2 },
+          occurredAtEpoch: Date.now(),
+        },
+      ]),
+    });
+
+    expect(response.status).toBe(403);
+    const row = db.prepare('SELECT COUNT(*) AS count FROM agent_events').get() as { count: number };
+    expect(row.count).toBe(0);
+  });
+
   async function post(path: string, body: unknown): Promise<Response> {
     return fetch(`http://127.0.0.1:${port}${path}`, {
       method: 'POST',

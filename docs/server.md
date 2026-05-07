@@ -2,7 +2,7 @@
 
 Claude-Mem Server is the beta server runtime for Claude-Mem 13. The existing worker remains available for compatibility; server beta adds API-key auth, team/project-aware storage contracts, REST V1 routes, and an optional BullMQ queue backend.
 
-Local default mode uses SQLite queues and `CLAUDE_MEM_AUTH_MODE=local-dev`, bound to localhost. Deployable mode should use:
+Local development can use SQLite queues and the explicit `CLAUDE_MEM_AUTH_MODE=local-dev` loopback bypass. Deployable mode should use:
 
 ```sh
 CLAUDE_MEM_QUEUE_ENGINE=bullmq

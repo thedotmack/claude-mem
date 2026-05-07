@@ -1,6 +1,6 @@
 # Security
 
-Server beta defaults to localhost development mode. Do not bind it to a public interface without `CLAUDE_MEM_AUTH_MODE=api-key` and a bearer API key.
+Server beta defaults to API-key auth. `CLAUDE_MEM_AUTH_MODE=local-dev` is an explicit local-only bypass for direct loopback development; do not use it behind a reverse proxy or on a publicly reachable bind address.
 
 API keys are generated with the `cmem_` prefix and displayed once. Claude-Mem stores only a SHA-256 hash, prefix metadata, scopes, status, and timestamps in SQLite.
 

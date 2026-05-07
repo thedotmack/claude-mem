@@ -48,7 +48,7 @@ export class ServerV1Routes implements RouteHandler {
       res.json({
         name: 'claude-mem-server',
         version: BUILT_IN_VERSION,
-        authMode: this.options.authMode ?? process.env.CLAUDE_MEM_AUTH_MODE ?? 'local-dev',
+        authMode: this.options.authMode ?? process.env.CLAUDE_MEM_AUTH_MODE ?? 'api-key',
       });
     });
 
@@ -116,12 +116,15 @@ export class ServerV1Routes implements RouteHandler {
     }));
 
     app.post('/v1/events/batch', writeAuth, this.handleCreate(z.array(CreateAgentEventSchema).min(1), (req, res, body) => {
-      const repo = new AgentEventsRepository(this.options.getDatabase());
-      const events = body.map(event => {
-        if (!this.ensureProjectAllowed(req, res, event.projectId)) return null;
-        return repo.create(event);
+      for (const event of body) {
+        if (!this.ensureProjectAllowed(req, res, event.projectId)) return;
+      }
+      const db = this.options.getDatabase();
+      const repo = new AgentEventsRepository(db);
+      const insertEvents = db.transaction((eventsToCreate: typeof body) => {
+        return eventsToCreate.map(event => repo.create(event));
       });
-      if (events.some(event => event === null)) return;
+      const events = insertEvents(body);
       this.audit(req, 'event.batch_write');
       res.status(201).json({ events });
     }));
