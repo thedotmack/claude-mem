@@ -91,6 +91,28 @@ describe('shutdownWorkerAndWait', () => {
     expect(waitForPortFreeMock).not.toHaveBeenCalled();
   });
 
+  it('does not treat timed-out health checks as stopped health', async () => {
+    const timeoutError = new Error('The operation timed out');
+    timeoutError.name = 'TimeoutError';
+    const fetchMock = mock((url: string) => {
+      if (url.endsWith('/api/admin/shutdown')) {
+        return Promise.resolve({ ok: true } as Response);
+      }
+      return Promise.reject(timeoutError);
+    });
+    global.fetch = fetchMock as typeof fetch;
+
+    const result = await shutdownWorkerAndWait(37777, 1, {
+      pollIntervalMs: 1,
+      portSettleMs: 0,
+      waitForPortFree: waitForPortFreeMock,
+    });
+
+    expect(result.shutdownConfirmed).toBe(false);
+    expect(result.healthStoppedResponding).toBe(false);
+    expect(waitForPortFreeMock).not.toHaveBeenCalled();
+  });
+
   it('can confirm a failed shutdown POST only when an observed worker is gone afterward', async () => {
     const fetchMock = mock((url: string) => {
       if (url.endsWith('/api/admin/shutdown')) {

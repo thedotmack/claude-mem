@@ -14,8 +14,7 @@ export function assertImportableExportData(exportData: { metadata?: { partial?: 
 
 export async function importMemories(inputFile: string) {
   if (!existsSync(inputFile)) {
-    console.error(`❌ Input file not found: ${inputFile}`);
-    process.exit(1);
+    throw new Error(`Input file not found: ${inputFile}`);
   }
 
   const exportData = JSON.parse(readFileSync(inputFile, 'utf-8'));
@@ -37,9 +36,7 @@ export async function importMemories(inputFile: string) {
       throw new Error('Worker not responding');
     }
   } catch (error) {
-    console.error(`❌ Worker not running at ${WORKER_URL}`);
-    console.error('   Please ensure the claude-mem worker is running.');
-    process.exit(1);
+    throw new Error(`Worker not running at ${WORKER_URL}. Please ensure the claude-mem worker is running.`);
   }
 
   console.log('🔄 Importing via worker API...');
@@ -59,9 +56,7 @@ export async function importMemories(inputFile: string) {
 
   if (!response.ok) {
     const errorText = await response.text();
-    console.error(`❌ Import failed: ${response.status} ${response.statusText}`);
-    console.error(`   ${errorText}`);
-    process.exit(1);
+    throw new Error(`Import failed: ${response.status} ${response.statusText}\n${errorText}`);
   }
 
   const result = await response.json();

@@ -32,7 +32,7 @@ async function waitForHealthToStopResponding(
         signal: AbortSignal.timeout(1000),
       });
     } catch (err) {
-      if (err instanceof Error && err.name === 'AbortError') continue;
+      if (err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError')) continue;
       return true;
     }
   }

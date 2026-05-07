@@ -24,4 +24,14 @@ describe('import-memories script', () => {
       'Partial exports are not importable because SDK session metadata is missing. Re-run export without --allow-partial before importing.',
     );
   });
+
+  it('throws instead of exiting when used as an imported function', async () => {
+    process.env.CLAUDE_MEM_IMPORT_MEMORIES_NO_MAIN = '1';
+
+    const { importMemories } = await import('../../scripts/import-memories.ts');
+
+    await expect(importMemories('/tmp/claude-mem-missing-import-file.json')).rejects.toThrow(
+      'Input file not found: /tmp/claude-mem-missing-import-file.json',
+    );
+  });
 });
