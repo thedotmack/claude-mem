@@ -180,17 +180,21 @@ export function ensureServerStorageSchema(db: Database): void {
       tokenize='porter unicode61'
     )
   `);
-  const rebuildMemoryItemsFts = db.transaction(() => {
-    db.run('DELETE FROM memory_items_fts');
-    db.run(`
-      INSERT INTO memory_items_fts (
-        memory_item_id, project_id, title, subtitle, text, narrative, facts, concepts
-      )
-      SELECT id, project_id, title, subtitle, text, narrative, facts, concepts
-      FROM memory_items
-    `);
-  });
-  rebuildMemoryItemsFts();
+  const memoryItemCount = db.prepare('SELECT COUNT(*) AS count FROM memory_items').get() as { count: number };
+  const ftsItemCount = db.prepare('SELECT COUNT(*) AS count FROM memory_items_fts').get() as { count: number };
+  if (memoryItemCount.count !== ftsItemCount.count) {
+    const rebuildMemoryItemsFts = db.transaction(() => {
+      db.run('DELETE FROM memory_items_fts');
+      db.run(`
+        INSERT INTO memory_items_fts (
+          memory_item_id, project_id, title, subtitle, text, narrative, facts, concepts
+        )
+        SELECT id, project_id, title, subtitle, text, narrative, facts, concepts
+        FROM memory_items
+      `);
+    });
+    rebuildMemoryItemsFts();
+  }
   db.run('CREATE INDEX IF NOT EXISTS idx_memory_sources_item ON memory_sources(memory_item_id)');
   db.run('CREATE INDEX IF NOT EXISTS idx_memory_sources_legacy ON memory_sources(legacy_table, legacy_id)');
   db.run(`

@@ -142,6 +142,8 @@ describe('server REST API v1 routes', () => {
   it('limits project listing to the API key project scope', async () => {
     const projectAResponse = await post('/v1/projects', { name: 'Scoped Project A' });
     const projectBResponse = await post('/v1/projects', { name: 'Scoped Project B' });
+    expect(projectAResponse.status).toBe(201);
+    expect(projectBResponse.status).toBe(201);
     const { project: projectA } = await projectAResponse.json();
     await projectBResponse.json();
     const key = createServerApiKey(db, {
@@ -206,6 +208,8 @@ describe('server REST API v1 routes', () => {
   it('rejects memory updates that move records across projects', async () => {
     const projectAResponse = await post('/v1/projects', { name: 'Memory Project A' });
     const projectBResponse = await post('/v1/projects', { name: 'Memory Project B' });
+    expect(projectAResponse.status).toBe(201);
+    expect(projectBResponse.status).toBe(201);
     const { project: projectA } = await projectAResponse.json();
     const { project: projectB } = await projectBResponse.json();
     const memoryResponse = await post('/v1/memories', {

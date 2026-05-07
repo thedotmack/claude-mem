@@ -10482,13 +10482,13 @@ ${a}`}(0,ki.writeFileSync)(i,c),(0,ki.renameSync)(i,n)}function OCt(t,e,r,n,i,s,
       concepts,
       tokenize='porter unicode61'
     )
-  `),t.transaction(()=>{t.run("DELETE FROM memory_items_fts"),t.run(`
-      INSERT INTO memory_items_fts (
-        memory_item_id, project_id, title, subtitle, text, narrative, facts, concepts
-      )
-      SELECT id, project_id, title, subtitle, text, narrative, facts, concepts
-      FROM memory_items
-    `)})(),t.run("CREATE INDEX IF NOT EXISTS idx_memory_sources_item ON memory_sources(memory_item_id)"),t.run("CREATE INDEX IF NOT EXISTS idx_memory_sources_legacy ON memory_sources(legacy_table, legacy_id)"),t.run(`
+  `);let e=t.prepare("SELECT COUNT(*) AS count FROM memory_items").get(),r=t.prepare("SELECT COUNT(*) AS count FROM memory_items_fts").get();e.count!==r.count&&t.transaction(()=>{t.run("DELETE FROM memory_items_fts"),t.run(`
+        INSERT INTO memory_items_fts (
+          memory_item_id, project_id, title, subtitle, text, narrative, facts, concepts
+        )
+        SELECT id, project_id, title, subtitle, text, narrative, facts, concepts
+        FROM memory_items
+      `)})(),t.run("CREATE INDEX IF NOT EXISTS idx_memory_sources_item ON memory_sources(memory_item_id)"),t.run("CREATE INDEX IF NOT EXISTS idx_memory_sources_legacy ON memory_sources(legacy_table, legacy_id)"),t.run(`
     CREATE UNIQUE INDEX IF NOT EXISTS ux_memory_sources_legacy_source
     ON memory_sources(source_type, legacy_table, legacy_id)
     WHERE legacy_table IS NOT NULL AND legacy_id IS NOT NULL
