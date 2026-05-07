@@ -440,11 +440,19 @@ export class BullMqObservationQueueEngine
 
   private async releaseActiveClaimsToWait(): Promise<number> {
     let released = 0;
+    let releaseError: Error | null = null;
     for (const [claimId, claimed] of Array.from(this.activeClaims.entries())) {
       try {
         await claimed.job.moveToWait(claimed.token);
       } catch (error) {
-        throw this.toRedisUnavailableError(error);
+        const normalized = this.toRedisUnavailableError(error);
+        releaseError ??= normalized;
+        logger.warn('QUEUE', 'BullMQ active claim release failed during close', {
+          sessionDbId: claimed.sessionDbId,
+          jobId: claimed.job.id,
+          error: normalized.message,
+        });
+        continue;
       }
       this.finishClaim(claimId, claimed);
       released++;
@@ -452,6 +460,9 @@ export class BullMqObservationQueueEngine
     }
     if (released > 0) {
       this.options.onMutate?.();
+    }
+    if (releaseError) {
+      throw releaseError;
     }
     return released;
   }

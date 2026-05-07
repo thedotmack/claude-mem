@@ -367,6 +367,11 @@ describe('BullMqObservationQueueEngine', () => {
       tool_name: 'Read',
       toolUseId: 'tool-a',
     });
+    await engine.enqueue(1, 'content-session', {
+      type: 'observation',
+      tool_name: 'Write',
+      toolUseId: 'tool-b',
+    });
 
     const controller = new AbortController();
     const iterator = engine.createIterator({
@@ -375,14 +380,18 @@ describe('BullMqObservationQueueEngine', () => {
       idleTimeoutMs: 100,
     });
     await iterator.next();
+    await iterator.next();
 
-    const job = result.queues.get('claude_mem_session_1')!.jobs[0];
-    job.failMoveToWait = true;
+    const queue = result.queues.get('claude_mem_session_1')!;
+    const failedJob = queue.jobs[0];
+    const releasedJob = queue.jobs[1];
+    failedJob.failMoveToWait = true;
     await expect(engine.close()).rejects.toThrow('moveToWait failed');
     engine = null;
 
-    expect(job.state).toBe('active');
-    expect(result.queues.get('claude_mem_session_1')!.closed).toBe(true);
+    expect(failedJob.state).toBe('active');
+    expect(releasedJob.state).toBe('waiting');
+    expect(queue.closed).toBe(true);
     expect(result.redis.status).toBe('end');
 
     controller.abort();
