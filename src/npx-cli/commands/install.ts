@@ -645,6 +645,7 @@ function resolveClaudeAuthMethod(): 'subscription' | 'api-key' | 'gateway' {
 
 async function promptRuntime(): Promise<RuntimeId> {
   if (!isInteractive) {
+    mergeSettings({ CLAUDE_MEM_RUNTIME: 'worker' });
     return 'worker';
   }
 

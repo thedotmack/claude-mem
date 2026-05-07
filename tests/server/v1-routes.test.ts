@@ -173,6 +173,37 @@ describe('server REST API v1 routes', () => {
     expect(row.count).toBe(0);
   });
 
+  it('rejects memory updates that move records across projects', async () => {
+    const projectAResponse = await post('/v1/projects', { name: 'Memory Project A' });
+    const projectBResponse = await post('/v1/projects', { name: 'Memory Project B' });
+    const { project: projectA } = await projectAResponse.json();
+    const { project: projectB } = await projectBResponse.json();
+    const memoryResponse = await post('/v1/memories', {
+      projectId: projectA.id,
+      kind: 'manual',
+      type: 'note',
+      title: 'Pinned project',
+    });
+    expect(memoryResponse.status).toBe(201);
+    const { memory } = await memoryResponse.json();
+
+    const response = await fetch(`http://127.0.0.1:${port}/v1/memories/${memory.id}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        projectId: projectB.id,
+        kind: 'manual',
+        type: 'note',
+      }),
+    });
+
+    expect(response.status).toBe(400);
+    const stored = db.prepare('SELECT project_id FROM memory_items WHERE id = ?').get(memory.id) as { project_id: string };
+    expect(stored.project_id).toBe(projectA.id);
+  });
+
   async function post(path: string, body: unknown): Promise<Response> {
     return fetch(`http://127.0.0.1:${port}${path}`, {
       method: 'POST',

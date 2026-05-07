@@ -22,7 +22,7 @@ export class BetterAuthRoutes implements RouteHandler {
   setupRoutes(app: Application): void {
     app.all('/api/auth/*splat', async (req, res) => {
       const handler = await getBetterAuthHandler();
-      handler(req, res);
+      await handler(req, res);
     });
   }
 }

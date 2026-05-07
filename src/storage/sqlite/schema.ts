@@ -204,6 +204,20 @@ export function ensureServerStorageSchema(db: Database): void {
   db.run('CREATE INDEX IF NOT EXISTS idx_audit_log_actor ON audit_log(actor_type, actor_id)');
 
   db.run(`
+    CREATE TRIGGER IF NOT EXISTS trg_server_sessions_project_update
+    BEFORE UPDATE OF project_id ON server_sessions
+    WHEN EXISTS (
+      SELECT 1 FROM agent_events
+      WHERE server_session_id = OLD.id AND project_id <> NEW.project_id
+    )
+    OR EXISTS (
+      SELECT 1 FROM memory_items
+      WHERE server_session_id = OLD.id AND project_id <> NEW.project_id
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'server_sessions project_id cannot change while children belong to the previous project');
+    END;
+
     CREATE TRIGGER IF NOT EXISTS trg_agent_events_session_project_insert
     BEFORE INSERT ON agent_events
     WHEN NEW.server_session_id IS NOT NULL

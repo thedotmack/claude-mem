@@ -141,7 +141,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_REDIS_HOST: '127.0.0.1',
     CLAUDE_MEM_REDIS_PORT: '6379',
     CLAUDE_MEM_REDIS_MODE: 'external',
-    CLAUDE_MEM_QUEUE_REDIS_PREFIX: 'claude_mem',
+    CLAUDE_MEM_QUEUE_REDIS_PREFIX: `claude_mem_${process.env.CLAUDE_MEM_WORKER_PORT ?? String(37700 + ((process.getuid?.() ?? 77) % 100))}`,
     CLAUDE_MEM_AUTH_MODE: 'api-key',
     CLAUDE_MEM_RUNTIME: 'worker',
   };

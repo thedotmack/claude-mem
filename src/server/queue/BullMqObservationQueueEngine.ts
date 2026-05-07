@@ -24,6 +24,7 @@ interface BullMqPendingPayload {
 type BullMqJob = Pick<
   Job<BullMqPendingPayload>,
   'id' | 'data' | 'moveToCompleted' | 'moveToWait' | 'extendLock' | 'getState'
+  | 'remove'
 >;
 
 type BullMqQueue = Pick<
@@ -104,6 +105,13 @@ export class BullMqObservationQueueEngine
     const existing = await runtime.queue.getJob(jobId);
     if (existing && !await this.isTerminal(existing)) {
       return 0;
+    }
+    if (existing) {
+      try {
+        await existing.remove();
+      } catch (error) {
+        throw this.toRedisUnavailableError(error);
+      }
     }
 
     try {

@@ -169,6 +169,10 @@ export class ServerV1Routes implements RouteHandler {
         return;
       }
       if (!this.ensureProjectAllowed(req, res, existing.projectId)) return;
+      if (body.projectId && body.projectId !== existing.projectId) {
+        res.status(400).json({ error: 'ValidationError', message: 'projectId cannot be changed' });
+        return;
+      }
       const memory = repo.update(id, body);
       this.audit(req, 'memory.update', id, existing.projectId);
       res.json({ memory });

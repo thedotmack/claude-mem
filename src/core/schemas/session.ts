@@ -21,15 +21,15 @@ export const ServerSessionSchema = z.object({
 export const CreateServerSessionSchema = ServerSessionSchema.omit({
   id: true,
   startedAtEpoch: true,
+  status: true,
+  completedAtEpoch: true,
   updatedAtEpoch: true
 }).partial({
   contentSessionId: true,
   memorySessionId: true,
   platformSource: true,
   title: true,
-  status: true,
-  metadata: true,
-  completedAtEpoch: true
+  metadata: true
 });
 
 export type ServerSessionStatus = z.infer<typeof ServerSessionStatusSchema>;

@@ -59,10 +59,10 @@ export class ServerSessionsRepository {
       session.memorySessionId ?? null,
       session.platformSource ?? 'claude',
       session.title ?? null,
-      session.status ?? 'active',
+      'active',
       stringifyJson(session.metadata),
       now,
-      session.completedAtEpoch ?? null,
+      null,
       now
     );
 

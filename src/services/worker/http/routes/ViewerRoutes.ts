@@ -98,13 +98,19 @@ export class ViewerRoutes extends BaseRouteHandler {
     });
 
     void (async () => {
-      const isProcessing = await this.sessionManager.isAnySessionProcessing();
-      const queueDepth = await this.sessionManager.getTotalActiveWork(); 
-      this.sseBroadcaster.broadcast({
-        type: 'processing_status',
-        isProcessing,
-        queueDepth
-      });
+      try {
+        const isProcessing = await this.sessionManager.isAnySessionProcessing();
+        const queueDepth = await this.sessionManager.getTotalActiveWork();
+        this.sseBroadcaster.broadcast({
+          type: 'processing_status',
+          isProcessing,
+          queueDepth
+        });
+      } catch (error) {
+        logger.warn('HTTP', 'Failed to broadcast initial processing status', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     })();
   });
 }

@@ -10,6 +10,7 @@ import {
   TeamsRepository,
   ensureServerStorageSchema
 } from '../../../src/storage/sqlite/index.js';
+import { parseJsonArray, parseJsonObject } from '../../../src/storage/sqlite/serde.js';
 
 interface TableNameRow {
   name: string;
@@ -183,5 +184,39 @@ describe('server-owned sqlite storage boundary', () => {
         type: 'note',
       })).toThrow(/server_session_id must belong to project_id/);
     });
+  });
+
+  it('rejects moving a server session across projects after child records exist', () => {
+    withDb(db => {
+      const projects = new ProjectsRepository(db);
+      const sessions = new ServerSessionsRepository(db);
+      const events = new AgentEventsRepository(db);
+      const memories = new MemoryItemsRepository(db);
+
+      const projectA = projects.create({ name: 'Project A' });
+      const projectB = projects.create({ name: 'Project B' });
+      const sessionA = sessions.create({ projectId: projectA.id });
+      events.create({
+        projectId: projectA.id,
+        serverSessionId: sessionA.id,
+        sourceType: 'hook',
+        eventType: 'observation.created',
+        occurredAtEpoch: Date.now(),
+      });
+      memories.create({
+        projectId: projectA.id,
+        serverSessionId: sessionA.id,
+        kind: 'manual',
+        type: 'note',
+      });
+
+      expect(() => db.prepare('UPDATE server_sessions SET project_id = ? WHERE id = ?').run(projectB.id, sessionA.id))
+        .toThrow(/project_id cannot change/);
+    });
+  });
+
+  it('degrades malformed JSON fields to empty values', () => {
+    expect(parseJsonObject('{not-json')).toEqual({});
+    expect(parseJsonArray('{not-json')).toEqual([]);
   });
 });

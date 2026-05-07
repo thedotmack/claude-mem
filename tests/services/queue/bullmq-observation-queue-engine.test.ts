@@ -25,6 +25,10 @@ class FakeJob {
     this.state = 'completed';
   }
 
+  async remove(): Promise<void> {
+    this.state = 'removed';
+  }
+
   async moveToWait(): Promise<number> {
     if (this.failMoveToWait) {
       throw new Error('moveToWait failed');
@@ -45,7 +49,7 @@ class FakeQueue {
 
   async add(name: string, data: any, opts: { jobId?: string } = {}): Promise<FakeJob> {
     const id = opts.jobId ?? String(this.jobs.length + 1);
-    const existing = this.jobs.find(job => job.id === id && job.state !== 'completed' && job.state !== 'failed');
+    const existing = this.jobs.find(job => job.id === id && job.state !== 'removed');
     if (existing) {
       return existing;
     }
@@ -55,7 +59,7 @@ class FakeQueue {
   }
 
   async getJob(jobId: string): Promise<FakeJob | undefined> {
-    return this.jobs.find(job => job.id === jobId);
+    return this.jobs.find(job => job.id === jobId && job.state !== 'removed');
   }
 
   async getJobCounts(...types: string[]): Promise<Record<string, number>> {
@@ -219,6 +223,29 @@ describe('BullMqObservationQueueEngine', () => {
 
     expect(first).toBeGreaterThan(0);
     expect(duplicate).toBe(0);
+    expect(await engine.getPendingCount(1)).toBe(1);
+  });
+
+  test('replaces terminal jobs before reusing a deterministic BullMQ job id', async () => {
+    const result = createEngine();
+    engine = result.engine;
+
+    await engine.enqueue(1, 'content-session', {
+      type: 'observation',
+      tool_name: 'Read',
+      toolUseId: 'tool-1',
+    });
+    const queue = result.queues.get('claude_mem_session_1')!;
+    queue.jobs[0].state = 'failed';
+
+    const replacement = await engine.enqueue(1, 'content-session', {
+      type: 'observation',
+      tool_name: 'Read',
+      toolUseId: 'tool-1',
+    });
+
+    expect(replacement).toBeGreaterThan(0);
+    expect(queue.jobs.map(job => job.state)).toEqual(['removed', 'waiting']);
     expect(await engine.getPendingCount(1)).toBe(1);
   });
 
