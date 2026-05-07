@@ -219,4 +219,41 @@ describe('server-owned sqlite storage boundary', () => {
     expect(parseJsonObject('{not-json')).toEqual({});
     expect(parseJsonArray('{not-json')).toEqual([]);
   });
+
+  it('treats FTS5 operator words as literal search terms', () => {
+    withDb(db => {
+      const projects = new ProjectsRepository(db);
+      const memories = new MemoryItemsRepository(db);
+      const project = projects.create({ name: 'Search operators' });
+      const memory = memories.create({
+        projectId: project.id,
+        kind: 'manual',
+        type: 'note',
+        text: 'OR NOT AND are literal notes from a shell transcript',
+      });
+
+      expect(memories.search(project.id, 'OR').map(item => item.id)).toContain(memory.id);
+      expect(memories.search(project.id, 'AND shell').map(item => item.id)).toContain(memory.id);
+      expect(memories.search(project.id, 'server-beta')).toEqual([]);
+      expect(memories.search(project.id, 'foo OR')).toEqual([]);
+    });
+  });
+
+  it('splits punctuation the same way as the FTS tokenizer', () => {
+    withDb(db => {
+      const projects = new ProjectsRepository(db);
+      const memories = new MemoryItemsRepository(db);
+      const project = projects.create({ name: 'Search punctuation' });
+      const memory = memories.create({
+        projectId: project.id,
+        kind: 'manual',
+        type: 'note',
+        facts: ['run:1778147273-16934'],
+        concepts: ['server-beta'],
+      });
+
+      expect(memories.search(project.id, '1778147273-16934').map(item => item.id)).toContain(memory.id);
+      expect(memories.search(project.id, 'server-beta').map(item => item.id)).toContain(memory.id);
+    });
+  });
 });

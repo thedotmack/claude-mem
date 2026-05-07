@@ -49,7 +49,7 @@ describe('server API key auth', () => {
   });
 
   it('middleware allows localhost local-dev without a bearer token', () => {
-    const middleware = requireServerAuth(() => db, { authMode: 'local-dev' });
+    const middleware = requireServerAuth(() => db, { authMode: 'local-dev', allowLocalDevBypass: true });
     const req: any = {
       ip: '127.0.0.1',
       socket: {},
@@ -66,11 +66,36 @@ describe('server API key auth', () => {
     });
 
     expect(calledNext).toBe(true);
-    expect(req.authContext).toMatchObject({ mode: 'local-dev', scopes: ['*'] });
+    expect(req.authContext).toMatchObject({ mode: 'local-dev', scopes: ['local-dev'] });
+  });
+
+  it('middleware requires explicit opt-in before local-dev bypass is honored', () => {
+    const middleware = requireServerAuth(() => db, { authMode: 'local-dev' });
+    const req: any = {
+      ip: '127.0.0.1',
+      socket: { remoteAddress: '127.0.0.1' },
+      header: (name: string) => name.toLowerCase() === 'host' ? 'localhost:37777' : undefined,
+    };
+    const res: any = {
+      statusCode: 200,
+      status(code: number) {
+        this.statusCode = code;
+        return this;
+      },
+      json: () => {},
+    };
+    let calledNext = false;
+
+    middleware(req, res, () => {
+      calledNext = true;
+    });
+
+    expect(calledNext).toBe(false);
+    expect(res.statusCode).toBe(401);
   });
 
   it('middleware blocks local-dev bypass when forwarded proxy headers are present', () => {
-    const middleware = requireServerAuth(() => db, { authMode: 'local-dev' });
+    const middleware = requireServerAuth(() => db, { authMode: 'local-dev', allowLocalDevBypass: true });
     const req: any = {
       ip: '127.0.0.1',
       socket: { remoteAddress: '127.0.0.1' },
@@ -99,23 +124,16 @@ describe('server API key auth', () => {
     expect(res.statusCode).toBe(401);
   });
 
-  it('middleware defaults to API-key auth when auth mode is not explicitly set', () => {
-    const middleware = requireServerAuth(() => db);
+  it('middleware accepts bracketed IPv6 loopback host headers in explicit local-dev mode', () => {
+    const middleware = requireServerAuth(() => db, { authMode: 'local-dev', allowLocalDevBypass: true });
     const req: any = {
-      ip: '127.0.0.1',
-      socket: { remoteAddress: '127.0.0.1' },
-      header: () => undefined,
+      ip: '::1',
+      socket: { remoteAddress: '::1' },
+      header: (name: string) => name.toLowerCase() === 'host' ? '[::1]:37777' : undefined,
     };
     const res: any = {
-      statusCode: 200,
-      body: null,
-      status(code: number) {
-        this.statusCode = code;
-        return this;
-      },
-      json(body: unknown) {
-        this.body = body;
-      },
+      status: () => res,
+      json: () => {},
     };
     let calledNext = false;
 
@@ -123,9 +141,47 @@ describe('server API key auth', () => {
       calledNext = true;
     });
 
-    expect(calledNext).toBe(false);
-    expect(res.statusCode).toBe(401);
-    expect(res.body).toMatchObject({ error: 'Unauthorized' });
+    expect(calledNext).toBe(true);
+    expect(req.authContext).toMatchObject({ mode: 'local-dev', scopes: ['local-dev'] });
+  });
+
+  it('middleware defaults to API-key auth when auth mode is not explicitly set', () => {
+    const originalAuthMode = process.env.CLAUDE_MEM_AUTH_MODE;
+    delete process.env.CLAUDE_MEM_AUTH_MODE;
+    try {
+      const middleware = requireServerAuth(() => db);
+      const req: any = {
+        ip: '127.0.0.1',
+        socket: { remoteAddress: '127.0.0.1' },
+        header: (name: string) => name.toLowerCase() === 'host' ? 'localhost:37777' : undefined,
+      };
+      const res: any = {
+        statusCode: 200,
+        body: null,
+        status(code: number) {
+          this.statusCode = code;
+          return this;
+        },
+        json(body: unknown) {
+          this.body = body;
+        },
+      };
+      let calledNext = false;
+
+      middleware(req, res, () => {
+        calledNext = true;
+      });
+
+      expect(calledNext).toBe(false);
+      expect(res.statusCode).toBe(401);
+      expect(res.body).toMatchObject({ error: 'Unauthorized' });
+    } finally {
+      if (originalAuthMode === undefined) {
+        delete process.env.CLAUDE_MEM_AUTH_MODE;
+      } else {
+        process.env.CLAUDE_MEM_AUTH_MODE = originalAuthMode;
+      }
+    }
   });
 
   it('middleware requires a scoped bearer API key outside local-dev fallback', () => {

@@ -23,6 +23,7 @@ declare module 'express-serve-static-core' {
 export interface RequireAuthOptions {
   requiredScopes?: string[];
   authMode?: string;
+  allowLocalDevBypass?: boolean;
 }
 
 export function requireServerAuth(
@@ -34,13 +35,21 @@ export function requireServerAuth(
     const authorization = req.header('authorization') ?? '';
     const rawKey = parseBearerToken(authorization);
 
-    if (!rawKey && authMode === 'local-dev' && isLocalhost(req) && hasLoopbackHostHeader(req) && !hasForwardedClientHeaders(req)) {
+    const allowLocalDevBypass = options.allowLocalDevBypass ?? process.env.CLAUDE_MEM_ALLOW_LOCAL_DEV_BYPASS === '1';
+    if (
+      !rawKey
+      && authMode === 'local-dev'
+      && allowLocalDevBypass
+      && isLocalhost(req)
+      && hasLoopbackHostHeader(req)
+      && !hasForwardedClientHeaders(req)
+    ) {
       req.authContext = {
         userId: null,
         organizationId: null,
         teamId: null,
         projectId: null,
-        scopes: ['*'],
+        scopes: ['local-dev'],
         apiKeyId: null,
         mode: 'local-dev',
       };
@@ -86,11 +95,24 @@ function isLocalhost(req: Request): boolean {
 }
 
 function hasLoopbackHostHeader(req: Request): boolean {
-  const host = (req.header('host') ?? '').toLowerCase().split(':')[0];
+  const host = parseHostWithoutPort(req.header('host') ?? '');
   return host === '127.0.0.1'
     || host === 'localhost'
-    || host === '[::1]'
     || host === '::1';
+}
+
+function parseHostWithoutPort(rawHost: string): string {
+  const host = rawHost.trim().toLowerCase();
+  if (host.startsWith('[')) {
+    const closeBracketIndex = host.indexOf(']');
+    return closeBracketIndex === -1 ? host : host.slice(1, closeBracketIndex);
+  }
+
+  const lastColonIndex = host.lastIndexOf(':');
+  if (lastColonIndex > -1 && /^\d+$/.test(host.slice(lastColonIndex + 1))) {
+    return host.slice(0, lastColonIndex);
+  }
+  return host;
 }
 
 function hasForwardedClientHeaders(req: Request): boolean {

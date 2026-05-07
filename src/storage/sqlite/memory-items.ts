@@ -88,8 +88,9 @@ function buildFtsQuery(query: string): string {
     .normalize('NFKC')
     .trim()
     .split(/\s+/)
-    .map(token => token.replace(/[^\p{L}\p{N}_]/gu, ''))
+    .flatMap(token => token.split(/[^\p{L}\p{N}_]+/gu))
     .filter(Boolean)
+    .map(token => `"${token}"`)
     .join(' ');
 }
 

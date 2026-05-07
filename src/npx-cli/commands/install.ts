@@ -665,7 +665,6 @@ async function promptRuntime(): Promise<RuntimeId> {
 
   mergeSettings({
     CLAUDE_MEM_RUNTIME: selected,
-    ...(selected === 'server-beta' ? { CLAUDE_MEM_AUTH_MODE: 'local-dev' } : {}),
   });
   return selected;
 }

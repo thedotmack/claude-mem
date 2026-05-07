@@ -37,10 +37,15 @@ describe('server REST API v1 routes', () => {
     server.registerRoutes(new ServerV1Routes({
       getDatabase: () => db,
       authMode: 'local-dev',
+      allowLocalDevBypass: true,
     }));
     server.finalizeRoutes();
-    port = 41000 + Math.floor(Math.random() * 10000);
-    await server.listen(port, '127.0.0.1');
+    await server.listen(0, '127.0.0.1');
+    const address = server.getHttpServer()?.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('Expected server to bind to an ephemeral TCP port');
+    }
+    port = address.port;
   });
 
   afterEach(async () => {

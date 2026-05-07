@@ -25,6 +25,7 @@ const BUILT_IN_VERSION = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined'
 export interface ServerV1RoutesOptions {
   getDatabase: () => Database;
   authMode?: string;
+  allowLocalDevBypass?: boolean;
 }
 
 export class ServerV1Routes implements RouteHandler {
@@ -33,10 +34,12 @@ export class ServerV1Routes implements RouteHandler {
   setupRoutes(app: Application): void {
     const readAuth = requireServerAuth(this.options.getDatabase, {
       authMode: this.options.authMode,
+      allowLocalDevBypass: this.options.allowLocalDevBypass,
       requiredScopes: ['memories:read'],
     });
     const writeAuth = requireServerAuth(this.options.getDatabase, {
       authMode: this.options.authMode,
+      allowLocalDevBypass: this.options.allowLocalDevBypass,
       requiredScopes: ['memories:write'],
     });
 

@@ -209,7 +209,7 @@ export class WorkerService implements WorkerRef {
         ? this.sessionManager.getQueueHealth()
         : null,
       preBodyParserRoutes: [
-        new BetterAuthRoutes(),
+        new BetterAuthRoutes(() => this.dbManager.getConnection()),
       ],
     });
 
