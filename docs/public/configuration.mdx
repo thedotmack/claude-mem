@@ -14,7 +14,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | Setting                       | Default                         | Description                           |
 |-------------------------------|---------------------------------|---------------------------------------|
 | `CLAUDE_MEM_MODEL`            | `claude-haiku-4-5-20251001`     | Claude model used to compress observations (when using the Claude provider) |
-| `CLAUDE_MEM_PROVIDER`         | `claude`                        | AI provider: `claude`, `gemini`, or `openrouter` |
+| `CLAUDE_MEM_PROVIDER`         | `claude`                        | Runtime AI provider. Keep `claude` for Claude, LiteLLM, Gemini via LiteLLM, OpenRouter via LiteLLM, and Rapid-MLX via LiteLLM. `gemini` / `openrouter` are legacy Classic REST providers. |
 | `CLAUDE_MEM_CLAUDE_AUTH_METHOD` | `subscription`                | Claude provider auth mode: `subscription`, `api-key`, or `gateway` |
 | `CLAUDE_MEM_MODE`             | `code`                          | Active mode profile (e.g., `code--es`, `email-investigation`) |
 | `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50`                        | Number of observations to inject      |
@@ -23,16 +23,16 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | `CLAUDE_MEM_DATA_DIR`         | `~/.claude-mem`                 | Data root — every other path (database, chroma, logs, settings.json, worker.pid) derives from this |
 | `CLAUDE_MEM_SKIP_TOOLS`       | `ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion` | Comma-separated tools to exclude from observations |
 
-### Gemini Provider Settings
+### Gemini Classic Provider Settings
 
 | Setting                       | Default                         | Description                           |
 |-------------------------------|---------------------------------|---------------------------------------|
 | `CLAUDE_MEM_GEMINI_API_KEY`   | —                               | Gemini API key ([get free key](https://aistudio.google.com/app/apikey)) |
 | `CLAUDE_MEM_GEMINI_MODEL`     | `gemini-2.5-flash-lite`          | Gemini model: `gemini-2.5-flash-lite`, `gemini-2.5-flash`, `gemini-3-flash-preview` |
 
-See [Gemini Provider](usage/gemini-provider) for detailed configuration and free tier information.
+New installs should prefer Gemini via [LiteLLM Gateway](configuration/litellm-gateway), which keeps the Claude Agent SDK path. Use [Gemini Provider](usage/gemini-provider) only for the deprecated Classic REST path.
 
-### OpenRouter Provider Settings
+### OpenRouter Classic Provider Settings
 
 | Setting                                      | Default                     | Description                           |
 |----------------------------------------------|-----------------------------|---------------------------------------|
@@ -43,7 +43,7 @@ See [Gemini Provider](usage/gemini-provider) for detailed configuration and free
 | `CLAUDE_MEM_OPENROUTER_SITE_URL`             | —                           | Optional: URL for analytics           |
 | `CLAUDE_MEM_OPENROUTER_APP_NAME`             | `claude-mem`                | Optional: App name for analytics      |
 
-See [OpenRouter Provider](usage/openrouter-provider) for detailed configuration, free model list, and usage guide.
+New installs should prefer OpenRouter via [LiteLLM Gateway](configuration/litellm-gateway), which keeps the Claude Agent SDK path. Use [OpenRouter Provider](usage/openrouter-provider) only for the deprecated Classic REST path.
 
 ### Claude Gateway Settings
 

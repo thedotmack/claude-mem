@@ -224,6 +224,13 @@ describe('Install Non-TTY Support', () => {
       expect(installSource).toContain('export interface InstallOptions');
       expect(installSource).toContain('ide?: string');
     });
+
+    it('keeps deprecated REST providers behind Classic labels', () => {
+      expect(installSource).toContain('OpenRouter Classic (deprecated)');
+      expect(installSource).toContain('Gemini Classic (deprecated)');
+      expect(installSource).toContain('openrouter-classic');
+      expect(installSource).toContain('gemini-classic');
+    });
   });
 
   describe('post-install Next Steps copy', () => {

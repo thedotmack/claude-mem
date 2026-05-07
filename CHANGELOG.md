@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## Unreleased
+
+### Changed
+- Installer Gemini, OpenRouter, Rapid-MLX, and custom LiteLLM choices now configure the Claude Agent SDK gateway path (`CLAUDE_MEM_PROVIDER=claude`, `CLAUDE_MEM_CLAUDE_AUTH_METHOD=gateway`) instead of selecting custom REST providers.
+- Renamed old direct REST choices to OpenRouter Classic (deprecated) and Gemini Classic (deprecated).
+
 ## [12.7.3] - 2026-05-07
 
 Patch release for the reliability fixes merged in PR #2344.

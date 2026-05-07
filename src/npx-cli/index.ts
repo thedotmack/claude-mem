@@ -23,8 +23,10 @@ ${pc.bold('Install Commands')} (no Bun required):
   ${pc.cyan('npx claude-mem')}                     Interactive install
   ${pc.cyan('npx claude-mem install')}              Interactive install
   ${pc.cyan('npx claude-mem install --ide <id>')}   Install for specific IDE
-  ${pc.cyan('npx claude-mem install --provider claude|gemini|openrouter')}   Set LLM provider non-interactively
-  ${pc.cyan('npx claude-mem install --model <id>')}   Set Claude model (when provider=claude)
+  ${pc.cyan('npx claude-mem install --provider claude|gemini|openrouter|rapidmlx|litellm')}   Set memory backend
+  ${pc.cyan('npx claude-mem install --provider gemini-classic|openrouter-classic')}   Use deprecated REST providers
+  ${pc.cyan('npx claude-mem install --gateway-url <url>')}   Set LiteLLM gateway URL for gateway providers
+  ${pc.cyan('npx claude-mem install --model <id>')}   Set Claude model or LiteLLM model alias
   ${pc.cyan('npx claude-mem install --no-auto-start')}   Skip worker auto-start at the end
   ${pc.cyan('npx claude-mem repair')}                Repair runtime (re-runs Bun/uv setup and bun install in plugin cache)
   ${pc.cyan('npx claude-mem update')}               Update to latest version
@@ -63,14 +65,17 @@ function readFlag(argv: string[], name: string): string | undefined {
 
 function parseInstallOptions(argv: string[]): InstallOptions {
   const provider = readFlag(argv, '--provider');
-  if (provider !== undefined && provider !== 'claude' && provider !== 'gemini' && provider !== 'openrouter') {
-    console.error(`Unknown --provider: ${provider}. Allowed: claude, gemini, openrouter`);
+  const allowedProviders = ['claude', 'gemini', 'openrouter', 'rapidmlx', 'litellm', 'gemini-classic', 'openrouter-classic'];
+  if (provider !== undefined && !allowedProviders.includes(provider)) {
+    console.error(`Unknown --provider: ${provider}. Allowed: ${allowedProviders.join(', ')}`);
     process.exit(1);
   }
   return {
     ide: readFlag(argv, '--ide'),
     provider: provider as InstallOptions['provider'],
     model: readFlag(argv, '--model'),
+    gatewayUrl: readFlag(argv, '--gateway-url'),
+    gatewayToken: readFlag(argv, '--gateway-token'),
     noAutoStart: argv.includes('--no-auto-start'),
   };
 }

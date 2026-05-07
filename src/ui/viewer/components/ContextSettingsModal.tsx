@@ -331,15 +331,15 @@ export function ContextSettingsModal({
             >
               <FormField
                 label="AI Provider"
-                tooltip="Choose between Claude (via Agent SDK) or Gemini (via REST API)"
+                tooltip="Runtime provider. New Gemini/OpenRouter installs use Claude gateway mode through LiteLLM."
               >
                 <select
                   value={formState.CLAUDE_MEM_PROVIDER || 'claude'}
                   onChange={(e) => updateSetting('CLAUDE_MEM_PROVIDER', e.target.value)}
                 >
-                  <option value="claude">Claude (uses your Claude account)</option>
-                  <option value="gemini">Gemini (uses API key)</option>
-                  <option value="openrouter">OpenRouter (multi-model)</option>
+                  <option value="claude">Claude / LiteLLM Gateway</option>
+                  <option value="openrouter">OpenRouter Classic (deprecated)</option>
+                  <option value="gemini">Gemini Classic (deprecated)</option>
                 </select>
               </FormField>
 

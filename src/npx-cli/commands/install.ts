@@ -10,6 +10,16 @@ import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { loadClaudeMemEnv, saveClaudeMemEnv } from '../../shared/EnvManager.js';
 import { ensureWorkerStarted, type WorkerStartResult } from '../../services/worker-spawner.js';
 import {
+  buildGatewaySettings,
+  getGatewayProfile,
+  isClassicProvider,
+  isGatewayProvider,
+  litellmExampleForProfile,
+  type ClassicProviderId,
+  type GatewayProviderId,
+  type ProviderId,
+} from './gateway-profiles.js';
+import {
   ensureBun,
   ensureUv,
   installPluginDependencies,
@@ -616,7 +626,6 @@ function mergeSettings(updates: Record<string, string>): boolean {
   }
 }
 
-type ProviderId = 'claude' | 'gemini' | 'openrouter';
 type ClaudeAccessMode = 'subscription' | 'api-key';
 type ClaudeApiMode = 'direct' | 'gateway';
 
@@ -643,7 +652,14 @@ function resolveClaudeAuthMethod(): 'subscription' | 'api-key' | 'gateway' {
 }
 
 async function promptProvider(options: InstallOptions): Promise<ProviderId> {
-  const initialProvider = (getSetting('CLAUDE_MEM_PROVIDER') as ProviderId) || 'claude';
+  const storedProvider = getSetting('CLAUDE_MEM_PROVIDER') as ProviderId;
+  const initialStoredProvider: ProviderId =
+    storedProvider === 'gemini' ? 'gemini-classic' :
+    storedProvider === 'openrouter' ? 'openrouter-classic' :
+    storedProvider;
+  const initialProvider: ProviderId = options.provider
+    ?? (resolveClaudeAuthMethod() === 'gateway' && storedProvider === 'claude' ? 'litellm' : initialStoredProvider)
+    ?? 'claude';
 
   const persistClaudeProvider = (authMethod?: 'subscription' | 'api-key' | 'gateway') => {
     const resolvedAuthMethod = authMethod ?? resolveClaudeAuthMethod();
@@ -756,15 +772,152 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
     }
   };
 
+  const configureGatewayProvider = async (provider: GatewayProviderId): Promise<void> => {
+    const profile = getGatewayProfile(provider);
+    const existingEnv = loadClaudeMemEnv();
+    const defaultGatewayUrl = options.gatewayUrl || existingEnv.ANTHROPIC_BASE_URL || profile.defaultGatewayUrl;
+    const shouldReuseExistingGatewayModel = provider === 'litellm' && !!existingEnv.ANTHROPIC_BASE_URL;
+    const defaultModelAlias = options.model
+      || (shouldReuseExistingGatewayModel ? getSetting('CLAUDE_MEM_MODEL') : profile.defaultModelAlias)
+      || profile.defaultModelAlias;
+
+    let gatewayUrl = defaultGatewayUrl;
+    let authToken: string | undefined = options.gatewayToken;
+    let modelAlias = defaultModelAlias;
+
+    if (isInteractive && !options.gatewayUrl) {
+      const gatewayUrlResult = await p.text({
+        message: `${profile.label} LiteLLM gateway URL:`,
+        placeholder: profile.defaultGatewayUrl,
+        defaultValue: defaultGatewayUrl,
+        validate: (v?: string) => {
+          const value = v?.trim() ?? '';
+          if (!value) return 'Gateway URL required';
+          try {
+            new URL(value);
+            return undefined;
+          } catch {
+            return 'Enter a valid URL, for example http://127.0.0.1:4000';
+          }
+        },
+      });
+      if (p.isCancel(gatewayUrlResult)) {
+        p.cancel('Installation cancelled.');
+        process.exit(0);
+      }
+      gatewayUrl = String(gatewayUrlResult).trim();
+    }
+
+    if (isInteractive && options.gatewayToken === undefined) {
+      const tokenResult = await p.password({
+        message: 'LiteLLM key/token (leave blank if the gateway is local or unauthenticated):',
+        mask: '*',
+      });
+      if (!p.isCancel(tokenResult)) {
+        authToken = String(tokenResult).trim();
+      }
+    }
+
+    if (isInteractive && !options.model) {
+      const modelResult = await p.text({
+        message: 'Model alias claude-mem should request from LiteLLM:',
+        placeholder: profile.defaultModelAlias,
+        defaultValue: defaultModelAlias,
+        validate: (v?: string) => (!v || v.trim().length === 0) ? 'Model alias required' : undefined,
+      });
+      if (p.isCancel(modelResult)) {
+        p.cancel('Installation cancelled.');
+        process.exit(0);
+      }
+      modelAlias = String(modelResult).trim();
+    }
+
+    saveClaudeMemEnv({
+      ANTHROPIC_API_KEY: '',
+      ANTHROPIC_BASE_URL: gatewayUrl,
+      ...(authToken !== undefined ? { ANTHROPIC_AUTH_TOKEN: authToken } : {}),
+    });
+    const wrote = mergeSettings(buildGatewaySettings(modelAlias));
+    if (wrote) {
+      log.info(`Saved ${profile.label} through Claude Agent SDK gateway mode.`);
+    }
+
+    if (!isInteractive) {
+      log.info(`${profile.label} will use LiteLLM at ${gatewayUrl} with model alias ${modelAlias}.`);
+      log.info('Runtime provider saved as claude so observations use the Claude Agent SDK path.');
+      return;
+    }
+
+    p.note(
+      [
+        `${profile.setupHint}`,
+        '',
+        'LiteLLM config shape:',
+        litellmExampleForProfile(profile, modelAlias),
+        '',
+        `claude-mem will call ${gatewayUrl} using model alias ${modelAlias}.`,
+      ].join('\n'),
+      `${profile.label} via LiteLLM`,
+    );
+  };
+
+  const configureClassicProvider = async (provider: ClassicProviderId): Promise<void> => {
+    const runtimeProvider = provider === 'gemini-classic' ? 'gemini' : 'openrouter';
+    const providerLabel = provider === 'gemini-classic' ? 'Gemini Classic' : 'OpenRouter Classic';
+    const keyEnvName = provider === 'gemini-classic'
+      ? 'CLAUDE_MEM_GEMINI_API_KEY'
+      : 'CLAUDE_MEM_OPENROUTER_API_KEY';
+
+    const existingKey = getSetting(keyEnvName as keyof SettingsDefaults) as string | undefined;
+    if (existingKey && existingKey.trim().length > 0) {
+      const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: runtimeProvider });
+      if (wrote) log.info(`Saved provider=${runtimeProvider} (${providerLabel}) to ~/.claude-mem/settings.json`);
+      return;
+    }
+
+    if (!isInteractive) {
+      const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: runtimeProvider });
+      if (wrote) log.info(`Saved provider=${runtimeProvider} (${providerLabel}) to ~/.claude-mem/settings.json`);
+      log.warn(`${providerLabel} requested non-interactively. API key prompt skipped — set ${keyEnvName} in settings.json or env manually.`);
+      return;
+    }
+
+    const apiKeyResult = await p.password({
+      message: `Paste your ${providerLabel} API key:`,
+      mask: '*',
+      validate: (v?: string) => (!v || v.trim().length === 0) ? 'API key required' : undefined,
+    });
+
+    if (p.isCancel(apiKeyResult)) {
+      log.warn(`API key prompt cancelled — falling back to Claude provider.`);
+      persistClaudeProvider();
+      return;
+    }
+
+    const apiKey = String(apiKeyResult).trim();
+    const wrote = mergeSettings({
+      CLAUDE_MEM_PROVIDER: runtimeProvider,
+      [keyEnvName]: apiKey,
+    });
+    if (wrote) {
+      log.info(`Saved provider=${runtimeProvider} (${providerLabel}) to ~/.claude-mem/settings.json`);
+    }
+  };
+
   if (!isInteractive) {
     if (options.provider) {
       if (options.provider === 'claude') {
         persistClaudeProvider();
         return 'claude';
       }
-      const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: options.provider });
-      if (wrote) log.info(`Saved provider=${options.provider} to ~/.claude-mem/settings.json`);
-      log.warn(`Provider=${options.provider} requested non-interactively. API key prompt skipped — set CLAUDE_MEM_${options.provider.toUpperCase()}_API_KEY and CLAUDE_MEM_PROVIDER in settings.json or env manually if not already set.`);
+      if (isGatewayProvider(options.provider)) {
+        await configureGatewayProvider(options.provider);
+        return options.provider;
+      }
+      if (isClassicProvider(options.provider)) {
+        await configureClassicProvider(options.provider);
+        return options.provider;
+      }
       return options.provider;
     }
     return initialProvider;
@@ -822,8 +975,12 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
       message: 'Which memory provider do you want to use?',
       options: [
         { value: 'claude', label: 'Claude Agent SDK (recommended)' },
-        { value: 'gemini', label: 'Gemini' },
-        { value: 'openrouter', label: 'OpenRouter' },
+        { value: 'gemini', label: getGatewayProfile('gemini').optionLabel },
+        { value: 'openrouter', label: getGatewayProfile('openrouter').optionLabel },
+        { value: 'rapidmlx', label: getGatewayProfile('rapidmlx').optionLabel },
+        { value: 'litellm', label: getGatewayProfile('litellm').optionLabel },
+        { value: 'openrouter-classic', label: 'OpenRouter Classic (deprecated)' },
+        { value: 'gemini-classic', label: 'Gemini Classic (deprecated)' },
       ],
       initialValue: initialProvider,
     });
@@ -839,37 +996,10 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
     return 'claude';
   }
 
-  const providerLabel = selectedProvider === 'gemini' ? 'Gemini' : 'OpenRouter';
-  const keyEnvName = selectedProvider === 'gemini'
-    ? 'CLAUDE_MEM_GEMINI_API_KEY'
-    : 'CLAUDE_MEM_OPENROUTER_API_KEY';
-
-  const existingKey = getSetting(keyEnvName as keyof SettingsDefaults) as string | undefined;
-  if (existingKey && existingKey.trim().length > 0) {
-    const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: selectedProvider });
-    if (wrote) log.info(`Saved provider=${selectedProvider} to ~/.claude-mem/settings.json`);
-    return selectedProvider;
-  }
-
-  const apiKeyResult = await p.password({
-    message: `Paste your ${providerLabel} API key:`,
-    mask: '*',
-    validate: (v?: string) => (!v || v.trim().length === 0) ? 'API key required' : undefined,
-  });
-
-  if (p.isCancel(apiKeyResult)) {
-    log.warn(`API key prompt cancelled — falling back to Claude provider.`);
-    persistClaudeProvider();
-    return 'claude';
-  }
-
-  const apiKey = String(apiKeyResult).trim();
-  const wrote = mergeSettings({
-    CLAUDE_MEM_PROVIDER: selectedProvider,
-    [keyEnvName]: apiKey,
-  });
-  if (wrote) {
-    log.info(`Saved provider=${selectedProvider} to ~/.claude-mem/settings.json`);
+  if (isGatewayProvider(selectedProvider)) {
+    await configureGatewayProvider(selectedProvider);
+  } else if (isClassicProvider(selectedProvider)) {
+    await configureClassicProvider(selectedProvider);
   }
   return selectedProvider;
 }
@@ -953,8 +1083,10 @@ async function promptClaudeModel(options: InstallOptions): Promise<void> {
 
 export interface InstallOptions {
   ide?: string;
-  provider?: 'claude' | 'gemini' | 'openrouter';
+  provider?: ProviderId;
   model?: string;
+  gatewayUrl?: string;
+  gatewayToken?: string;
   noAutoStart?: boolean;
 }
 

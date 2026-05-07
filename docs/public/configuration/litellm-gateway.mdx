@@ -31,7 +31,7 @@ Use LiteLLM gateway mode when you want:
 - LiteLLM budgets, rate limits, logging, fallback routing, or virtual keys
 - A non-Anthropic upstream model while preserving the Claude Agent SDK execution path used by claude-mem
 
-Use the native [OpenRouter Provider](../usage/openrouter-provider) or [Gemini Provider](../usage/gemini-provider) instead if you want claude-mem's REST providers directly and do not need the Claude Agent SDK path.
+Use **OpenRouter Classic (deprecated)** or **Gemini Classic (deprecated)** only if you explicitly need claude-mem's old direct REST providers and do not need the Claude Agent SDK path.
 
 ## Architecture
 
@@ -132,6 +132,18 @@ Choose:
 
 The installer stores provider settings in `~/.claude-mem/settings.json` and gateway credentials in `~/.claude-mem/.env`.
 
+For OpenRouter, Gemini, and Rapid-MLX, the installer presents friendly backend names but still saves the same runtime shape:
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "claude",
+  "CLAUDE_MEM_CLAUDE_AUTH_METHOD": "gateway",
+  "CLAUDE_MEM_MODEL": "claude-mem-rapidmlx"
+}
+```
+
+The unqualified `Gemini` and `OpenRouter` installer choices mean "via LiteLLM gateway". The old direct REST implementations are still available as `Gemini Classic (deprecated)` and `OpenRouter Classic (deprecated)`.
+
 ### Option 2: Manual Files
 
 Edit `~/.claude-mem/settings.json`:
@@ -212,6 +224,21 @@ model_list:
   "CLAUDE_MEM_MODEL": "memory-compressor"
 }
 ```
+
+### Rapid-MLX Example
+
+Rapid-MLX exposes an OpenAI-compatible server on `http://localhost:8000/v1` with model `default`. Put LiteLLM in front of that endpoint and expose an Anthropic-facing alias for claude-mem:
+
+```yaml
+model_list:
+  - model_name: claude-mem-rapidmlx
+    litellm_params:
+      model: openai/default
+      api_base: http://127.0.0.1:8000/v1
+      api_key: not-needed
+```
+
+Then set `CLAUDE_MEM_MODEL=claude-mem-rapidmlx` and keep `CLAUDE_MEM_PROVIDER=claude`.
 
 ## Request Flow
 
