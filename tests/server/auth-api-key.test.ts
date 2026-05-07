@@ -53,7 +53,7 @@ describe('server API key auth', () => {
     const req: any = {
       ip: '127.0.0.1',
       socket: {},
-      header: () => undefined,
+      header: (name: string) => name.toLowerCase() === 'host' ? '127.0.0.1:37777' : undefined,
     };
     const res: any = {
       status: () => res,
@@ -67,6 +67,36 @@ describe('server API key auth', () => {
 
     expect(calledNext).toBe(true);
     expect(req.authContext).toMatchObject({ mode: 'local-dev', scopes: ['*'] });
+  });
+
+  it('middleware blocks local-dev bypass when forwarded proxy headers are present', () => {
+    const middleware = requireServerAuth(() => db, { authMode: 'local-dev' });
+    const req: any = {
+      ip: '127.0.0.1',
+      socket: { remoteAddress: '127.0.0.1' },
+      header: (name: string) => {
+        const normalized = name.toLowerCase();
+        if (normalized === 'host') return 'claude-mem.example.com';
+        if (normalized === 'x-forwarded-for') return '203.0.113.10';
+        return undefined;
+      },
+    };
+    const res: any = {
+      statusCode: 200,
+      status(code: number) {
+        this.statusCode = code;
+        return this;
+      },
+      json: () => {},
+    };
+    let calledNext = false;
+
+    middleware(req, res, () => {
+      calledNext = true;
+    });
+
+    expect(calledNext).toBe(false);
+    expect(res.statusCode).toBe(401);
   });
 
   it('middleware defaults to API-key auth when auth mode is not explicitly set', () => {

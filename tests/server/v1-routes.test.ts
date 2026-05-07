@@ -101,6 +101,14 @@ describe('server REST API v1 routes', () => {
     const search = await searchResponse.json();
     expect(search.memories.map((item: any) => item.id)).toContain(memory.id);
 
+    const stemmedSearchResponse = await post('/v1/search', {
+      projectId: project.id,
+      query: 'queue',
+    });
+    expect(stemmedSearchResponse.status).toBe(200);
+    const stemmedSearch = await stemmedSearchResponse.json();
+    expect(stemmedSearch.memories.map((item: any) => item.id)).toContain(memory.id);
+
     const contextResponse = await post('/v1/context', {
       projectId: project.id,
       query: 'Valkey',

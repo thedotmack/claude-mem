@@ -85,10 +85,11 @@ function mapMemorySourceRow(row: MemorySourceRow): MemorySource {
 
 function buildFtsQuery(query: string): string {
   return query
+    .normalize('NFKC')
     .trim()
     .split(/\s+/)
+    .map(token => token.replace(/[^\p{L}\p{N}_]/gu, ''))
     .filter(Boolean)
-    .map(token => `"${token.replace(/"/g, '""')}"`)
     .join(' ');
 }
 

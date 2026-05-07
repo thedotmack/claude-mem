@@ -34,7 +34,7 @@ export function requireServerAuth(
     const authorization = req.header('authorization') ?? '';
     const rawKey = parseBearerToken(authorization);
 
-    if (!rawKey && authMode === 'local-dev' && isLocalhost(req)) {
+    if (!rawKey && authMode === 'local-dev' && isLocalhost(req) && hasLoopbackHostHeader(req) && !hasForwardedClientHeaders(req)) {
       req.authContext = {
         userId: null,
         organizationId: null,
@@ -83,4 +83,21 @@ function isLocalhost(req: Request): boolean {
     || clientIp === '::1'
     || clientIp === '::ffff:127.0.0.1'
     || clientIp === 'localhost';
+}
+
+function hasLoopbackHostHeader(req: Request): boolean {
+  const host = (req.header('host') ?? '').toLowerCase().split(':')[0];
+  return host === '127.0.0.1'
+    || host === 'localhost'
+    || host === '[::1]'
+    || host === '::1';
+}
+
+function hasForwardedClientHeaders(req: Request): boolean {
+  return Boolean(
+    req.header('forwarded')
+      || req.header('x-forwarded-for')
+      || req.header('x-forwarded-host')
+      || req.header('x-real-ip')
+  );
 }
