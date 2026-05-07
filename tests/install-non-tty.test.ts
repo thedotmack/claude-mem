@@ -37,6 +37,12 @@ const transcriptConfigSourcePath = join(
 );
 const transcriptConfigSource = readFileSync(transcriptConfigSourcePath, 'utf-8');
 
+function indexOfRequired(haystack: string, needle: string): number {
+  const index = haystack.indexOf(needle);
+  expect(index, `Expected source to contain: ${needle}`).toBeGreaterThanOrEqual(0);
+  return index;
+}
+
 describe('Install Non-TTY Support', () => {
   describe('isInteractive flag', () => {
     it('defines isInteractive based on process.stdin.isTTY', () => {
@@ -92,6 +98,31 @@ describe('Install Non-TTY Support', () => {
   describe('non-interactive install path', () => {
     it('defaults to claude-code when not interactive and no IDE specified', () => {
       expect(installSource).toContain("selectedIDEs = ['claude-code']");
+    });
+
+    it('runs mixed-version worker safety before install dependency repair', () => {
+      const installRegionStart = indexOfRequired(installSource, 'export async function runInstallCommand');
+      const installRegionEnd = indexOfRequired(installSource, 'const failedIDEs = await setupIDEs');
+      const installRegion = installSource.slice(installRegionStart, installRegionEnd);
+      const shutdownIndex = indexOfRequired(installRegion, 'shutdownWorkerBeforeInstallOverwrite(installPort, version, 10000)');
+
+      expect(installSource).toContain('shutdownWorkerBeforeInstallOverwrite');
+      expect(shutdownIndex).toBeLessThan(indexOfRequired(installRegion, 'const tasks: TaskDescriptor[]'));
+      expect(shutdownIndex).toBeLessThan(indexOfRequired(installRegion, 'installPluginDependencies(cacheDir, bunPath)'));
+      expect(installRegion).toContain('error instanceof WorkerUpgradeSafetyError');
+      expect(installRegion).toContain('throw error');
+    });
+
+    it('runs mixed-version worker safety before repair dependency reinstall', () => {
+      const repairRegionStart = indexOfRequired(installSource, 'export async function runRepairCommand');
+      const repairRegionEnd = indexOfRequired(installSource, "p.outro(pc.green('claude-mem repair complete.'))");
+      const repairRegion = installSource.slice(repairRegionStart, repairRegionEnd);
+      const shutdownIndex = indexOfRequired(
+        repairRegion,
+        'shutdownIncompatibleWorkerIfRunning(repairPort, 10000, { expectedVersion: version })',
+      );
+
+      expect(shutdownIndex).toBeLessThan(indexOfRequired(repairRegion, 'installPluginDependencies(cacheDir, bunPath)'));
     });
 
     it('uses console.log for intro in non-interactive mode', () => {

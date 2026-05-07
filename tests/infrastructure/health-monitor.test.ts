@@ -5,6 +5,7 @@ import {
   waitForHealth,
   waitForPortFree,
   getInstalledPluginVersion,
+  getRunningWorkerVersion,
   checkVersionMatch
 } from '../../src/services/infrastructure/index.js';
 
@@ -171,6 +172,32 @@ describe('HealthMonitor', () => {
   });
 
   describe('checkVersionMatch', () => {
+    it('fetches the worker version endpoint directly', async () => {
+      const fetchMock = mock(() => Promise.resolve({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve(JSON.stringify({ version: '12.7.5' }))
+      } as unknown as Response));
+      global.fetch = fetchMock;
+
+      const result = await getRunningWorkerVersion(37777);
+
+      expect(result).toBe('12.7.5');
+      expect(fetchMock.mock.calls[0][0]).toBe('http://127.0.0.1:37777/api/version');
+    });
+
+    it('returns null when the worker version endpoint is unavailable', async () => {
+      global.fetch = mock(() => Promise.resolve({
+        ok: false,
+        status: 404,
+        text: () => Promise.resolve('')
+      } as unknown as Response));
+
+      const result = await getRunningWorkerVersion(37777);
+
+      expect(result).toBeNull();
+    });
+
     it('should assume match when worker version is unavailable', async () => {
       global.fetch = mock(() => Promise.reject(new Error('ECONNREFUSED')));
 

@@ -109,6 +109,28 @@ export async function httpShutdown(port: number): Promise<boolean> {
   }
 }
 
+export interface WorkerHealthStatus {
+  status?: string;
+  version?: string;
+  workerPath?: string;
+  pid?: number;
+  managed?: boolean;
+  hasIpc?: boolean;
+}
+
+export async function getRunningWorkerHealth(port: number): Promise<WorkerHealthStatus | null> {
+  try {
+    const result = await httpRequestToWorker(port, '/api/health');
+    if (!result.ok) return null;
+    const data = JSON.parse(result.body) as unknown;
+    if (!data || typeof data !== 'object') return null;
+    return data as WorkerHealthStatus;
+  } catch {
+    logger.debug('SYSTEM', 'Could not fetch worker health details', {});
+    return null;
+  }
+}
+
 export function getInstalledPluginVersion(): string {
   try {
     const packageJsonPath = path.join(MARKETPLACE_ROOT, 'package.json');
@@ -145,8 +167,8 @@ export interface VersionCheckResult {
   workerVersion: string | null;
 }
 
-export async function checkVersionMatch(port: number): Promise<VersionCheckResult> {
-  const pluginVersion = getInstalledPluginVersion();
+export async function checkVersionMatch(port: number, expectedPluginVersion?: string): Promise<VersionCheckResult> {
+  const pluginVersion = expectedPluginVersion ?? getInstalledPluginVersion();
   const workerVersion = await getRunningWorkerVersion(port);
 
   if (!workerVersion || pluginVersion === 'unknown') {
