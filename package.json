@@ -1,6 +1,6 @@
 {
   "name": "claude-mem",
-  "version": "12.6.5",
+  "version": "12.7.5",
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "keywords": [
     "claude",
@@ -42,7 +42,12 @@
   },
   "files": [
     "dist",
+    ".agents/plugins/marketplace.json",
+    ".codex-plugin",
+    ".mcp.json",
     "plugin/.claude-plugin",
+    "plugin/.codex-plugin",
+    "plugin/.mcp.json",
     "plugin/CLAUDE.md",
     "plugin/package.json",
     "plugin/hooks",
@@ -77,6 +82,7 @@
     "queue": "bun scripts/check-pending-queue.ts",
     "queue:process": "bun scripts/check-pending-queue.ts --process",
     "queue:clear": "bun scripts/clear-pending-queue.ts --all --force",
+    "pr:status": "bun scripts/pr-babysit-status.ts",
     "claude-md:regenerate": "bun scripts/regenerate-claude-md.ts",
     "claude-md:dry-run": "bun scripts/regenerate-claude-md.ts --dry-run",
     "strip-comments": "bun scripts/strip-comments.ts",
@@ -133,6 +139,7 @@
     "picocolors": "^1.1.1",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
+    "shell-quote": "^1.8.3",
     "yaml": "^2.8.3",
     "zod": "^4.3.6",
     "zod-to-json-schema": "^3.25.2"

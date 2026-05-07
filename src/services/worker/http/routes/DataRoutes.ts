@@ -53,9 +53,18 @@ const observationsBatchSchema = z.object({
   project: z.string().optional(),
 }).passthrough();
 
-const sdkSessionsBatchSchema = z.object({
+const sdkSessionsBatchSchema = z.preprocess((value) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+
+  const body = value as Record<string, unknown>;
+  if (body.memorySessionIds === undefined && body.sdkSessionIds !== undefined) {
+    return { ...body, memorySessionIds: body.sdkSessionIds };
+  }
+
+  return value;
+}, z.object({
   memorySessionIds: stringArrayLike,
-}).passthrough();
+}).passthrough());
 
 const setProcessingSchema = z.object({}).passthrough();
 

@@ -18,8 +18,12 @@ mock.module('../../../src/shared/hook-settings.js', () => ({
 }));
 
 let mockExtractedMessage: string = '';
+let extractCallCount = 0;
 mock.module('../../../src/shared/transcript-parser.js', () => ({
-  extractLastMessage: () => mockExtractedMessage,
+  extractLastMessage: () => {
+    extractCallCount += 1;
+    return mockExtractedMessage;
+  },
 }));
 
 const workerCallLog: Array<{ path: string; method: string; body: any }> = [];
@@ -44,6 +48,7 @@ let loggerSpies: ReturnType<typeof spyOn>[] = [];
 beforeEach(() => {
   workerCallLog.length = 0;
   mockExtractedMessage = '';
+  extractCallCount = 0;
   loggerSpies = [
     spyOn(logger, 'info').mockImplementation(() => {}),
     spyOn(logger, 'debug').mockImplementation(() => {}),
@@ -72,6 +77,39 @@ function postedBody(): any {
 }
 
 describe('summarizeHandler — privacy tag stripping', () => {
+  it('uses Codex lastAssistantMessage directly without reading a transcript', async () => {
+    const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
+    const result = await summarizeHandler.execute({
+      sessionId: 'sess-codex',
+      cwd: '/tmp',
+      platform: 'codex',
+      lastAssistantMessage: 'Codex answer <private>SECRET</private>',
+    });
+
+    expect(result.continue).toBe(true);
+    expect(extractCallCount).toBe(0);
+    const body = postedBody();
+    expect(body.last_assistant_message).toBe('Codex answer');
+    expect(body.platformSource).toBe('codex');
+  });
+
+  it('short-circuits Codex stop hook re-entry', async () => {
+    const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
+    const result = await summarizeHandler.execute({
+      sessionId: 'sess-codex',
+      cwd: '/tmp',
+      platform: 'codex',
+      stopHookActive: true,
+      lastAssistantMessage: 'ignored',
+    });
+
+    expect(result.continue).toBe(true);
+    expect(result.suppressOutput).toBe(true);
+    expect(result.exitCode).toBe(0);
+    expect(extractCallCount).toBe(0);
+    expect(workerCallLog).toHaveLength(0);
+  });
+
   it('strips <private> tags and their content from last_assistant_message', async () => {
     mockExtractedMessage = 'Hello <private>SECRET-VALUE-42</private> world';
 

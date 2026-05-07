@@ -1,6 +1,6 @@
 {
   "name": "claude-mem",
-  "version": "12.6.5",
+  "version": "12.7.5",
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "author": {
     "name": "Alex Newman",
@@ -22,6 +22,9 @@
     "typescript",
     "nodejs"
   ],
+  "skills": "./plugin/skills/",
+  "mcpServers": "./.mcp.json",
+  "hooks": "./plugin/hooks/codex-hooks.json",
   "interface": {
     "displayName": "claude-mem",
     "shortDescription": "Persistent memory and context compression across coding sessions.",

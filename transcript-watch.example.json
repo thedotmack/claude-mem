@@ -3,7 +3,7 @@
   "schemas": {
     "codex": {
       "name": "codex",
-      "version": "0.2",
+      "version": "0.3",
       "description": "Schema for Codex session JSONL files under ~/.codex/sessions.",
       "events": [
         {
@@ -48,14 +48,38 @@
             "toolName": {
               "coalesce": [
                 "payload.name",
-                { "value": "web_search" }
+                "payload.type"
               ]
             },
             "toolInput": {
               "coalesce": [
                 "payload.arguments",
                 "payload.input",
+                "payload.command",
                 "payload.action"
+              ]
+            }
+          }
+        },
+        {
+          "name": "exec-command-end",
+          "match": { "path": "payload.type", "in": ["exec_command_end", "exec_command_output"] },
+          "action": "observation",
+          "fields": {
+            "toolUseId": "payload.call_id",
+            "toolName": { "value": "exec_command" },
+            "toolInput": {
+              "coalesce": [
+                "payload.command",
+                "payload.input"
+              ]
+            },
+            "toolResponse": {
+              "coalesce": [
+                "payload.aggregated_output",
+                "payload.output",
+                "payload.stdout",
+                "payload.stderr"
               ]
             }
           }
@@ -71,7 +95,7 @@
         },
         {
           "name": "session-end",
-          "match": { "path": "payload.type", "equals": "turn_aborted" },
+          "match": { "path": "payload.type", "in": ["turn_aborted", "turn_completed", "task_complete"] },
           "action": "session_end"
         }
       ]
@@ -82,12 +106,7 @@
       "name": "codex",
       "path": "~/.codex/sessions/**/*.jsonl",
       "schema": "codex",
-      "startAtEnd": true,
-      "context": {
-        "mode": "agents",
-        "path": "~/.codex/AGENTS.md",
-        "updateOn": ["session_start", "session_end"]
-      }
+      "startAtEnd": true
     }
   ],
   "stateFile": "~/.claude-mem/transcript-watch-state.json"

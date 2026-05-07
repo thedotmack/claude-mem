@@ -1,6 +1,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
-import { mkdtempSync, writeFileSync, utimesSync, rmSync } from 'fs';
+import { mkdirSync, mkdtempSync, writeFileSync, utimesSync, rmSync } from 'fs';
 import { tmpdir, homedir } from 'os';
 import { join } from 'path';
 
@@ -180,5 +180,75 @@ describe('fileContextHandler — #2094 (no Read mutation)', () => {
     const ctx = result.hookSpecificOutput!.additionalContext as string;
     expect(ctx).not.toContain('Only line 1 was read');
     expect(ctx).toContain('full requested section');
+  });
+
+  it('accepts a Codex filePaths array and joins per-file context blocks', async () => {
+    const otherFile = join(tmpDir, 'other.md');
+    writeFileSync(otherFile, PADDING);
+
+    const future = Date.now() + 60_000;
+    fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((url: string | URL | Request) => {
+      const text = String(url);
+      if (text.includes('other.md')) {
+        return Promise.resolve(makeObservationsResponse([{ id: 2, created_at_epoch: future, title: 'Other file context' }]));
+      }
+      return Promise.resolve(makeObservationsResponse([{ id: 1, created_at_epoch: future, title: 'Main file context' }]));
+    });
+
+    const result = await fileContextHandler.execute({
+      sessionId: 'sess',
+      cwd: tmpDir,
+      toolName: 'Bash',
+      toolInput: { filePaths: [testFile, otherFile] },
+    });
+
+    const ctx = result.hookSpecificOutput!.additionalContext as string;
+    expect(ctx).toContain('Main file context');
+    expect(ctx).toContain('Other file context');
+    expect(ctx).toContain('\n\n---\n\n');
+  });
+
+  it('keeps successful timelines when one file lookup fails', async () => {
+    const otherFile = join(tmpDir, 'other.md');
+    writeFileSync(otherFile, PADDING);
+
+    const future = Date.now() + 60_000;
+    fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((url: string | URL | Request) => {
+      const text = String(url);
+      if (text.includes('other.md')) {
+        return Promise.reject(new Error('worker unavailable'));
+      }
+      return Promise.resolve(makeObservationsResponse([{ id: 1, created_at_epoch: future, title: 'Main file context' }]));
+    });
+
+    const result = await fileContextHandler.execute({
+      sessionId: 'sess',
+      cwd: tmpDir,
+      toolName: 'Bash',
+      toolInput: { filePaths: [testFile, otherFile] },
+    });
+
+    const ctx = result.hookSpecificOutput!.additionalContext as string;
+    expect(ctx).toContain('Main file context');
+    expect(ctx).not.toContain('worker unavailable');
+  });
+
+  it('skips directories before querying file history', async () => {
+    const directoryPath = join(tmpDir, 'large-dir');
+    mkdirSync(directoryPath);
+    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
+      makeObservationsResponse([{ id: 1, created_at_epoch: Date.now() + 60_000 }])
+    );
+
+    const result = await fileContextHandler.execute({
+      sessionId: 'sess',
+      cwd: tmpDir,
+      toolName: 'Bash',
+      toolInput: { filePaths: [directoryPath] },
+    });
+
+    expect(result.continue).toBe(true);
+    expect(result.hookSpecificOutput).toBeUndefined();
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

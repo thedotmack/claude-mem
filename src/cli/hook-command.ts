@@ -43,6 +43,14 @@ export function isWorkerUnavailableError(error: unknown): boolean {
   return false;
 }
 
+export function isNonBlockingHookInputError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  const lower = message.toLowerCase();
+
+  return lower.includes('transcript path') &&
+    (lower.includes('missing') || lower.includes('does not exist'));
+}
+
 async function executeHookPipeline(
   adapter: ReturnType<typeof getPlatformAdapter>,
   handler: ReturnType<typeof getEventHandler>,
@@ -75,6 +83,14 @@ export async function hookCommand(platform: string, event: string, options: Hook
   } catch (error) {
     if (error instanceof AdapterRejectedInput) {
       logger.warn('HOOK', `Adapter rejected input (${error.reason}), skipping hook`);
+      console.log(JSON.stringify({ continue: true, suppressOutput: true }));
+      if (!options.skipExit) {
+        process.exit(HOOK_EXIT_CODES.SUCCESS);
+      }
+      return HOOK_EXIT_CODES.SUCCESS;
+    }
+    if (isNonBlockingHookInputError(error)) {
+      logger.warn('HOOK', `Hook input unavailable, skipping hook: ${error instanceof Error ? error.message : error}`);
       console.log(JSON.stringify({ continue: true, suppressOutput: true }));
       if (!options.skipExit) {
         process.exit(HOOK_EXIT_CODES.SUCCESS);

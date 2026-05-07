@@ -9,19 +9,41 @@ import { MARKETPLACE_ROOT, DATA_DIR } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
 import { validateWorkerPidFile } from "../supervisor/index.js";
 
-const HEALTH_CHECK_TIMEOUT_MS = (() => {
-  const envVal = process.env.CLAUDE_MEM_HEALTH_TIMEOUT_MS;
+function readTimeoutEnv(
+  envName: string,
+  defaultValue: number,
+  bounds: { min: number; max: number }
+): number {
+  const envVal = process.env[envName];
   if (envVal) {
     const parsed = parseInt(envVal, 10);
-    if (Number.isFinite(parsed) && parsed >= 500 && parsed <= 300000) {
+    if (Number.isFinite(parsed) && parsed >= bounds.min && parsed <= bounds.max) {
       return parsed;
     }
-    logger.warn('SYSTEM', 'Invalid CLAUDE_MEM_HEALTH_TIMEOUT_MS, using default', {
-      value: envVal, min: 500, max: 300000
+    logger.warn('SYSTEM', `Invalid ${envName}, using default`, {
+      value: envVal, min: bounds.min, max: bounds.max
     });
   }
-  return getTimeout(HOOK_TIMEOUTS.HEALTH_CHECK);
-})();
+  return defaultValue;
+}
+
+const HEALTH_CHECK_TIMEOUT_MS = readTimeoutEnv(
+  'CLAUDE_MEM_HEALTH_TIMEOUT_MS',
+  getTimeout(HOOK_TIMEOUTS.HEALTH_CHECK),
+  { min: 500, max: 300000 }
+);
+
+const API_REQUEST_TIMEOUT_MS = readTimeoutEnv(
+  'CLAUDE_MEM_API_TIMEOUT_MS',
+  getTimeout(HOOK_TIMEOUTS.API_REQUEST),
+  { min: 500, max: 300000 }
+);
+
+const HOOK_READINESS_TIMEOUT_MS = readTimeoutEnv(
+  'CLAUDE_MEM_HOOK_READINESS_TIMEOUT_MS',
+  getTimeout(HOOK_TIMEOUTS.HOOK_READINESS_WAIT),
+  { min: 0, max: 300000 }
+);
 
 export function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs: number): Promise<Response> {
   return new Promise((resolve, reject) => {
@@ -80,7 +102,7 @@ export function workerHttpRequest(
   } = {}
 ): Promise<Response> {
   const method = options.method ?? 'GET';
-  const timeoutMs = options.timeoutMs ?? HEALTH_CHECK_TIMEOUT_MS;
+  const timeoutMs = options.timeoutMs ?? API_REQUEST_TIMEOUT_MS;
 
   const url = buildWorkerUrl(apiPath);
   const init: RequestInit = { method };
@@ -99,6 +121,11 @@ export function workerHttpRequest(
 
 async function isWorkerHealthy(): Promise<boolean> {
   const response = await workerHttpRequest('/api/health', { timeoutMs: HEALTH_CHECK_TIMEOUT_MS });
+  return response.ok;
+}
+
+async function isWorkerReady(): Promise<boolean> {
+  const response = await workerHttpRequest('/api/readiness', { timeoutMs: HEALTH_CHECK_TIMEOUT_MS });
   return response.ok;
 }
 
@@ -203,6 +230,32 @@ async function waitForWorkerPort(options: { attempts: number; backoffMs: number 
   return false;
 }
 
+async function waitForWorkerReadiness(timeoutMs: number = HOOK_READINESS_TIMEOUT_MS): Promise<boolean> {
+  if (timeoutMs <= 0) {
+    try {
+      return await isWorkerReady();
+    } catch {
+      return false;
+    }
+  }
+
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      if (await isWorkerReady()) return true;
+    } catch (error: unknown) {
+      logger.debug('SYSTEM', 'Worker readiness check threw', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    const remainingMs = timeoutMs - (Date.now() - start);
+    if (remainingMs <= 0) break;
+    await new Promise<void>(resolve => setTimeout(resolve, Math.min(250, remainingMs)));
+  }
+  return false;
+}
+
 async function isWorkerPortAlive(): Promise<boolean> {
   let healthy: boolean;
   try {
@@ -224,6 +277,11 @@ async function isWorkerPortAlive(): Promise<boolean> {
 export async function ensureWorkerRunning(): Promise<boolean> {
   if (await isWorkerPortAlive()) {
     await checkWorkerVersion();
+    const ready = await waitForWorkerReadiness();
+    if (!ready) {
+      logger.warn('SYSTEM', 'Worker is healthy but not ready; skipping hook API call');
+      return false;
+    }
     return true;
   }
 
@@ -261,6 +319,11 @@ export async function ensureWorkerRunning(): Promise<boolean> {
   const alive = await waitForWorkerPort({ attempts: 3, backoffMs: 250 });
   if (!alive) {
     logger.warn('SYSTEM', 'Worker port did not open after lazy-spawn within 3 attempts');
+    return false;
+  }
+  const ready = await waitForWorkerReadiness();
+  if (!ready) {
+    logger.warn('SYSTEM', 'Worker lazy-spawned but did not become ready before hook readiness timeout');
     return false;
   }
   return true;
@@ -400,8 +463,19 @@ export async function executeWithWorkerFallback<T = unknown>(
 
   const response = await workerHttpRequest(url, init);
   if (!response.ok) {
-    resetWorkerFailureCounter();
     const text = await response.text().catch(() => '');
+    resetWorkerFailureCounter();
+    if (response.status === 429 || response.status >= 500) {
+      logger.warn('SYSTEM', `Worker API ${method} ${url} returned ${response.status}; skipping hook API call`, {
+        body: text.substring(0, 200),
+      });
+      return {
+        continue: true,
+        reason: `worker_api_${response.status}`,
+        [WORKER_FALLBACK_BRAND]: true,
+      };
+    }
+
     let parsed: unknown = text;
     try { parsed = JSON.parse(text); } catch { /* keep raw text */ }
     return parsed as T;

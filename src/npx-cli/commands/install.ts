@@ -135,6 +135,31 @@ function enablePluginInClaudeSettings(): void {
   writeJsonFileAtomic(claudeSettingsPath(), settings);
 }
 
+/**
+ * Disable Claude Code's built-in auto-memory by setting CLAUDE_CODE_DISABLE_AUTO_MEMORY=1
+ * in ~/.claude/settings.json `env` block. claude-mem provides its own persistent memory
+ * via plugin hooks; the built-in MEMORY.md system creates shadow state outside the user's
+ * control and competes with claude-mem for context window tokens.
+ *
+ * Per anthropics/claude-code#23544, the env var is the only supported toggle.
+ *
+ * Idempotent: only writes when not already set, preserves existing env vars and other
+ * settings keys, and merges atomically. Returns true when a write happened (for the
+ * caller to surface in the install summary).
+ */
+export function disableClaudeAutoMemory(): boolean {
+  const settings = readJsonSafe<Record<string, any>>(claudeSettingsPath(), {});
+  const env = (settings.env && typeof settings.env === 'object') ? settings.env : {};
+
+  if (env.CLAUDE_CODE_DISABLE_AUTO_MEMORY === '1') {
+    return false;
+  }
+
+  settings.env = { ...env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' };
+  writeJsonFileAtomic(claudeSettingsPath(), settings);
+  return true;
+}
+
 function makeIDETask(ideId: string, failedIDEs: string[], pendingErrors: string[]): TaskDescriptor | null {
   const recordFailure = (label: string, output: string) => {
     failedIDEs.push(ideId);
@@ -243,17 +268,17 @@ function makeIDETask(ideId: string, failedIDEs: string[], pendingErrors: string[
 
     case 'codex-cli': {
       return {
-        title: 'Codex CLI: configuring transcript watching',
+        title: 'Codex CLI: registering hooks marketplace',
         task: async (message) => {
           message('Loading Codex CLI installer…');
           const { installCodexCli } = await import('../../services/integrations/CodexCliInstaller.js');
-          message('Configuring transcript watching…');
-          const { result, output } = await bufferConsole(() => installCodexCli());
+          message('Registering native Codex hooks…');
+          const { result, output } = await bufferConsole(() => installCodexCli(marketplaceDirectory()));
           if (result !== 0) {
             recordFailure('Codex CLI: integration setup failed', output);
             return `Codex CLI: integration setup failed ${pc.red('FAIL')}`;
           }
-          return `Codex CLI: transcript watching configured ${pc.green('OK')}`;
+          return `Codex CLI: hooks marketplace registered ${pc.green('OK')}`;
         },
       };
     }
@@ -500,6 +525,9 @@ function copyPluginToMarketplace(): void {
   ensureDirectoryExists(marketplaceDir);
 
   const allowedTopLevelEntries = [
+    '.agents',
+    '.codex-plugin',
+    '.mcp.json',
     'plugin',
     'package.json',
     'package-lock.json',
@@ -1141,6 +1169,30 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
 
   const failedIDEs = await setupIDEs(selectedIDEs);
 
+  // Disable Claude Code's built-in auto-memory (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1)
+  // for any install that targets claude-code. claude-mem's hook-based memory is the
+  // intended source of cross-session context; the built-in MEMORY.md system creates
+  // shadow state and competes for context-window tokens.
+  // Tri-state so the summary can distinguish "wrote", "already set", and "failed".
+  // A boolean would conflate the error path with "already set", which is misleading
+  // when a write fails mid-install (the warn would say one thing, the summary another).
+  let autoMemoryStatus: 'disabled' | 'already-disabled' | 'failed' | null = null;
+  if (selectedIDEs.includes('claude-code')) {
+    try {
+      const wrote = disableClaudeAutoMemory();
+      autoMemoryStatus = wrote ? 'disabled' : 'already-disabled';
+      if (wrote) {
+        log.success('Claude Code: auto-memory disabled (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1).');
+      } else {
+        log.info('Claude Code: auto-memory already disabled, leaving settings.json untouched.');
+      }
+    } catch (error: unknown) {
+      // Don't fail the install over this — surface the warning and continue.
+      autoMemoryStatus = 'failed';
+      log.warn(`Could not disable Claude Code auto-memory: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   const autoStartSkipped = !isInteractive || options.noAutoStart;
 
   await runTasks([
@@ -1176,6 +1228,13 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
     `Plugin dir:  ${pc.cyan(marketplaceDir)}`,
     `IDEs:        ${pc.cyan(selectedIDEs.join(', '))}`,
   ];
+  if (autoMemoryStatus === 'disabled') {
+    summaryLines.push(`Auto-memory: ${pc.cyan('disabled')} (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1)`);
+  } else if (autoMemoryStatus === 'already-disabled') {
+    summaryLines.push(`Auto-memory: ${pc.cyan('already disabled')} (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1)`);
+  } else if (autoMemoryStatus === 'failed') {
+    summaryLines.push(`Auto-memory: ${pc.red('write failed')} (see warning above)`);
+  }
   if (failedIDEs.length > 0) {
     summaryLines.push(`Failed:      ${pc.red(failedIDEs.join(', '))}`);
   }

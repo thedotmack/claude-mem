@@ -11,6 +11,8 @@
 -- Invariants enforced here (Plan 01):
 --   * pending_messages.UNIQUE(content_session_id, tool_use_id) — replaces
 --     in-memory pendingTools Map for ingestion pairing (Plan 03 also depends).
+--   * pending_messages only needs pending/processing status for current
+--     claim handling; worker_pid and stale-reset epoch columns are legacy.
 --   * observations.UNIQUE(memory_session_id, content_hash) — replaces the
 --     legacy dedup window; ON CONFLICT DO NOTHING absorbs duplicates.
 
@@ -118,7 +120,8 @@ CREATE INDEX IF NOT EXISTS idx_summaries_merged_into          ON session_summari
 
 -- ─────────────────────────────────────────────────────────────────────
 -- pending_messages: persistent work queue for SDK messages.
--- UNIQUE(content_session_id, tool_use_id) preserves hook-side dedupe.
+-- UNIQUE(content_session_id, tool_use_id) preserves ingestion pairing without
+-- any legacy worker_pid or stale-reset epoch column.
 -- ─────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS pending_messages (
   id                       INTEGER PRIMARY KEY AUTOINCREMENT,

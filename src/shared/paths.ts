@@ -15,7 +15,7 @@ function getDirname(): string {
 
 const _dirname = getDirname();
 
-function resolveDataDir(): string {
+export function resolveDataDir(): string {
   if (process.env.CLAUDE_MEM_DATA_DIR) {
     return process.env.CLAUDE_MEM_DATA_DIR;
   }

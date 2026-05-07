@@ -4,6 +4,82 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [12.7.5] - 2026-05-07
+
+Patch release for npx installs that hit an existing Codex marketplace registration.
+
+Fixes:
+- If Codex already has claude-mem-local registered from a different source, the installer now removes that stale registration and re-adds the local npx marketplace instead of failing.
+- Keeps Codex plugin_hooks enablement and legacy AGENTS cleanup after the marketplace registration succeeds.
+- Updates the release workflow instructions to use npm run build-and-sync instead of plain npm run build so the local marketplace and worker are synced during releases.
+
+Validation:
+- npm run build-and-sync
+- bun test tests/install-non-tty.test.ts tests/infrastructure/plugin-distribution.test.ts tests/servers/mcp-tool-schemas.test.ts tests/setup-runtime.test.ts tests/hook-command.test.ts
+- Docker smoke with codex-cli 0.128.0 reproducing the remote-to-local marketplace source conflict and verifying install completion.
+- npx --yes claude-mem@12.7.5 --version
+
+## [12.7.4] - 2026-05-07
+
+Patch release for the Codex mem-search marketplace fix.
+
+Highlights:
+- Restores Codex access to the claude-mem MCP/search plugin by pointing the Codex marketplace at the bundled plugin root.
+- Adds resilient MCP launcher fallbacks for local installs, Codex plugin cache installs, Claude plugin cache installs, and remote marketplace clones.
+- Registers Codex plugin marketplaces during install, enables plugin_hooks, and cleans up legacy AGENTS-based Codex context injection.
+- Includes the Codex session-start hook migration and Codex version-mismatch investigation plan.
+
+Validation:
+- npm run build
+- bun test tests/install-non-tty.test.ts tests/infrastructure/plugin-distribution.test.ts tests/servers/mcp-tool-schemas.test.ts tests/setup-runtime.test.ts tests/hook-command.test.ts
+- Docker smoke with codex-cli 0.128.0 for local install, remote marketplace add/upgrade, and MCP initialize.
+
+## [12.7.3] - 2026-05-07
+
+Patch release for the reliability fixes merged in PR #2344.
+
+- Stops context-overflow and quota hard-stop failures from restarting observer generators and burning subscription quota.
+- Makes Stop hook transcript lookup failures non-blocking, so missing worktree transcript paths do not re-wake Claude Code in a loop.
+- Hardens MCP/plugin startup path resolution when host plugin-root environment variables are absent.
+- Accepts legacy install markers while keeping new marker writes on the JSON format.
+- Fixes export-memories to honor isolated data dirs, validate worker ports, and send the worker route's canonical session-id field.
+- Makes pending_messages repair safer and removes stale worker_pid assumptions from the current queue/schema path.
+- Adds a focused PR babysit status helper for low-noise review/check monitoring.
+
+## [12.7.2] - 2026-05-06
+
+### Fixed
+- Disable Claude Code built-in auto-memory during claude-code installs by setting `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` in Claude settings.
+- Make JSON config writes crash-safe, durable, symlink-safe, and safe for dangling symlink destinations.
+- Add regression coverage for atomic JSON writes through symlinked and dangling-symlink settings paths.
+
+## [12.7.1] - 2026-05-06
+
+## Added
+- Package the new `babysit` skill for monitoring PR checks, review comments, and unresolved review threads until a PR is merge-ready.
+
+## Verification
+- `npm run build`
+- `npm publish` completed for `claude-mem@12.7.1`
+
+## [12.7.0] - 2026-05-06
+
+## Added
+- Add native Codex hooks integration through the Codex plugin marketplace.
+- Add Codex hook payload normalization, file-context extraction, and Stop hook observation support.
+- Add Codex installer support for `npx claude-mem@latest install` with Codex CLI version guidance.
+
+## Fixed
+- Avoid slow observation flow retries by replacing the worker-side initialization wait with hook-side readiness polling.
+- Keep Codex file-context extraction from consuming boolean flags like `cat -n`.
+- Include `bun-runner.js` in hook distribution verification.
+
+## [12.6.4] - 2026-05-05
+
+## Fixed
+- Drain invalid/non-XML observer responses so pending agent observations are cleared instead of retrying forever (PR #2316 / issue #2315).
+- Correct all plugin manifest versions so Claude, Codex, OpenClaw, bundled plugin, and npm metadata agree on 12.6.4.
+
 ## [12.6.5] - 2026-05-05
 
 ### Added

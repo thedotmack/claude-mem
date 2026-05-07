@@ -13,6 +13,7 @@ const FILE_READ_GATE_MIN_BYTES = 1_500;
 const FETCH_LOOKAHEAD_LIMIT = 40;
 
 const DISPLAY_LIMIT = 15;
+const MAX_FILE_CONTEXT_PATHS = 10;
 
 const TYPE_ICONS: Record<string, string> = {
   decision: '\u2696\uFE0F',
@@ -135,27 +136,14 @@ function formatFileTimeline(
 export const fileContextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
     const toolInput = input.toolInput as Record<string, unknown> | undefined;
+    const filePaths = Array.isArray(toolInput?.filePaths)
+      ? (toolInput.filePaths as unknown[]).filter((p): p is string => typeof p === 'string').slice(0, MAX_FILE_CONTEXT_PATHS)
+      : [];
     const filePath = toolInput?.file_path as string | undefined;
+    const candidatePaths = filePaths.length > 0 ? filePaths : (filePath ? [filePath] : []);
 
-    if (!filePath) {
+    if (candidatePaths.length === 0) {
       return { continue: true, suppressOutput: true };
-    }
-
-    let fileMtimeMs = 0;
-    try {
-      const statPath = path.isAbsolute(filePath)
-        ? filePath
-        : path.resolve(input.cwd || process.cwd(), filePath);
-      const stat = statSync(statPath);
-      if (stat.size < FILE_READ_GATE_MIN_BYTES) {
-        return { continue: true, suppressOutput: true };
-      }
-      fileMtimeMs = stat.mtimeMs;
-    } catch (err) {
-      if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
-        return { continue: true, suppressOutput: true };
-      }
-      logger.debug('HOOK', 'File stat failed, proceeding with gate', { error: err instanceof Error ? err.message : String(err) });
     }
 
     if (input.cwd && !shouldTrackProject(input.cwd)) {
@@ -163,58 +151,97 @@ export const fileContextHandler: EventHandler = {
       return { continue: true, suppressOutput: true };
     }
 
-    const context = getProjectContext(input.cwd);
-    const cwd = input.cwd || process.cwd();
-    const absolutePath = path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath);
-    const relativePath = path.relative(cwd, absolutePath).split(path.sep).join("/");
-    const queryParams = new URLSearchParams({ path: relativePath });
-    if (context.allProjects.length > 0) {
-      queryParams.set('projects', context.allProjects.join(','));
-    }
-    queryParams.set('limit', String(FETCH_LOOKAHEAD_LIMIT));
-
-    const result = await executeWithWorkerFallback<{ observations: ObservationRow[]; count: number }>(
-      `/api/observations/by-file?${queryParams.toString()}`,
-      'GET',
+    const timelineResults = await Promise.allSettled(
+      candidatePaths.map(candidatePath => buildFileContextTimeline(input, candidatePath))
     );
-    if (isWorkerFallback(result)) {
-      return { continue: true, suppressOutput: true };
-    }
-    if (!result || !Array.isArray((result as any).observations)) {
-      logger.warn('HOOK', 'File context query returned malformed body, skipping', { filePath });
-      return { continue: true, suppressOutput: true };
-    }
-    const data = result;
+    const timelines: string[] = [];
 
-    if (!data.observations || data.observations.length === 0) {
-      return { continue: true, suppressOutput: true };
-    }
-
-    if (fileMtimeMs > 0) {
-      const newestObservationMs = Math.max(...data.observations.map(o => o.created_at_epoch));
-      if (fileMtimeMs >= newestObservationMs) {
-        logger.debug('HOOK', 'File modified since last observation, skipping context injection', {
-          filePath: relativePath,
-          fileMtimeMs,
-          newestObservationMs,
-        });
-        return { continue: true, suppressOutput: true };
+    timelineResults.forEach((result, index) => {
+      if (result.status === 'fulfilled') {
+        if (result.value) timelines.push(result.value);
+        return;
       }
-    }
+      logger.debug('HOOK', 'File context timeline lookup failed, skipping path', {
+        filePath: candidatePaths[index],
+        error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+      });
+    });
 
-    const dedupedObservations = deduplicateObservations(data.observations, relativePath, DISPLAY_LIMIT);
-    if (dedupedObservations.length === 0) {
+    if (timelines.length === 0) {
       return { continue: true, suppressOutput: true };
     }
-
-    const timeline = formatFileTimeline(dedupedObservations, filePath);
 
     return {
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
-        additionalContext: timeline,
+        additionalContext: timelines.join('\n\n---\n\n'),
         permissionDecision: 'allow',
       },
     };
   },
 };
+
+async function buildFileContextTimeline(input: NormalizedHookInput, filePath: string): Promise<string | null> {
+  let fileMtimeMs = 0;
+  try {
+    const statPath = path.isAbsolute(filePath)
+      ? filePath
+      : path.resolve(input.cwd || process.cwd(), filePath);
+    const stat = statSync(statPath);
+    if (!stat.isFile() || stat.size < FILE_READ_GATE_MIN_BYTES) {
+      return null;
+    }
+    fileMtimeMs = stat.mtimeMs;
+  } catch (err) {
+    if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return null;
+    }
+    logger.debug('HOOK', 'File stat failed, proceeding with gate', { error: err instanceof Error ? err.message : String(err) });
+  }
+
+  const context = getProjectContext(input.cwd);
+  const cwd = input.cwd || process.cwd();
+  const absolutePath = path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath);
+  const relativePath = path.relative(cwd, absolutePath).split(path.sep).join("/");
+  const queryParams = new URLSearchParams({ path: relativePath });
+  if (context.allProjects.length > 0) {
+    queryParams.set('projects', context.allProjects.join(','));
+  }
+  queryParams.set('limit', String(FETCH_LOOKAHEAD_LIMIT));
+
+  const result = await executeWithWorkerFallback<{ observations: ObservationRow[]; count: number }>(
+    `/api/observations/by-file?${queryParams.toString()}`,
+    'GET',
+  );
+  if (isWorkerFallback(result)) {
+    return null;
+  }
+  if (!result || !Array.isArray((result as any).observations)) {
+    logger.warn('HOOK', 'File context query returned malformed body, skipping', { filePath });
+    return null;
+  }
+  const data = result;
+
+  if (!data.observations || data.observations.length === 0) {
+    return null;
+  }
+
+  if (fileMtimeMs > 0) {
+    const newestObservationMs = Math.max(...data.observations.map(o => o.created_at_epoch));
+    if (fileMtimeMs >= newestObservationMs) {
+      logger.debug('HOOK', 'File modified since last observation, skipping context injection', {
+        filePath: relativePath,
+        fileMtimeMs,
+        newestObservationMs,
+      });
+      return null;
+    }
+  }
+
+  const dedupedObservations = deduplicateObservations(data.observations, relativePath, DISPLAY_LIMIT);
+  if (dedupedObservations.length === 0) {
+    return null;
+  }
+
+  return formatFileTimeline(dedupedObservations, filePath);
+}

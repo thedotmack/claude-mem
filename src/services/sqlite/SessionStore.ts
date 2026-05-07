@@ -66,19 +66,19 @@ export class SessionStore {
     this.addObservationModelColumns();
     this.ensureMergedIntoProjectColumns();
     this.addObservationSubagentColumns();
-    this.addPendingMessagesToolUseIdAndWorkerPidColumns();
     this.addObservationsUniqueContentHashIndex();
     this.addObservationsMetadataColumn();
     this.dropDeadPendingMessagesColumns();
+    this.ensurePendingMessagesToolUseIdColumn();
     this.dropWorkerPidColumn();
   }
 
   private dropWorkerPidColumn(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(32) as SchemaVersion | undefined;
-    if (applied) return;
 
     const cols = this.db.query('PRAGMA table_info(pending_messages)').all() as TableColumnInfo[];
     const hasColumn = cols.some(c => c.name === 'worker_pid');
+    if (applied && !hasColumn) return;
 
     if (hasColumn) {
       try {
@@ -87,39 +87,47 @@ export class SessionStore {
         logger.debug('DB', 'Dropped worker_pid column and its index from pending_messages');
       } catch (error) {
         logger.warn('DB', 'Failed to drop worker_pid column from pending_messages', {}, error instanceof Error ? error : new Error(String(error)));
+        return;
       }
     }
 
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(32, new Date().toISOString());
+    if (!applied) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(32, new Date().toISOString());
+    }
   }
 
   private dropDeadPendingMessagesColumns(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(31) as SchemaVersion | undefined;
-    if (applied) return;
 
     const cols = this.db.query('PRAGMA table_info(pending_messages)').all() as TableColumnInfo[];
     const colNames = new Set(cols.map(c => c.name));
-    const deadColumns = ['retry_count', 'failed_at_epoch', 'completed_at_epoch', 'worker_pid'];
+    const deadColumns = ['retry_count', 'failed_at_epoch', 'completed_at_epoch'];
     const toDrop = deadColumns.filter(name => colNames.has(name));
+    if (applied && toDrop.length === 0) return;
 
     if (toDrop.length > 0) {
-      this.db.run(`DELETE FROM pending_messages WHERE status NOT IN ('pending', 'processing')`);
-
-      if (toDrop.includes('worker_pid')) {
-        this.db.run('DROP INDEX IF EXISTS idx_pending_messages_worker_pid');
-      }
-
-      for (const colName of toDrop) {
-        try {
+      this.db.run('BEGIN TRANSACTION');
+      try {
+        this.db.run(`DELETE FROM pending_messages WHERE status NOT IN ('pending', 'processing')`);
+        for (const colName of toDrop) {
           this.db.run(`ALTER TABLE pending_messages DROP COLUMN ${colName}`);
           logger.debug('DB', `Dropped dead column ${colName} from pending_messages`);
-        } catch (error) {
-          logger.warn('DB', `Failed to drop column ${colName} from pending_messages`, {}, error instanceof Error ? error : new Error(String(error)));
         }
+        if (!applied) {
+          this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(31, new Date().toISOString());
+        }
+        this.db.run('COMMIT');
+      } catch (error) {
+        this.db.run('ROLLBACK');
+        logger.warn('DB', 'Failed to drop dead columns from pending_messages', {}, error instanceof Error ? error : new Error(String(error)));
+        return;
       }
+      return;
     }
 
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(31, new Date().toISOString());
+    if (!applied) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(31, new Date().toISOString());
+    }
   }
 
   private initializeSchema(): void {
@@ -903,7 +911,7 @@ export class SessionStore {
     }
   }
 
-  private addPendingMessagesToolUseIdAndWorkerPidColumns(): void {
+  private ensurePendingMessagesToolUseIdColumn(): void {
     const tables = this.db.query(
       "SELECT name FROM sqlite_master WHERE type='table' AND name='pending_messages'"
     ).all() as TableNameRow[];
@@ -923,14 +931,27 @@ export class SessionStore {
     try {
       this.db.run(`
         DELETE FROM pending_messages
-         WHERE tool_use_id IS NOT NULL
-           AND id NOT IN (
-             SELECT MIN(id) FROM pending_messages
-              WHERE tool_use_id IS NOT NULL
-              GROUP BY content_session_id, tool_use_id
+         WHERE id IN (
+           SELECT id
+             FROM (
+               SELECT id,
+                      ROW_NUMBER() OVER (
+                        PARTITION BY content_session_id, tool_use_id
+                        ORDER BY CASE status
+                          WHEN 'processing' THEN 0
+                          WHEN 'pending' THEN 1
+                          ELSE 2
+                        END, id
+                      ) AS duplicate_rank
+                 FROM pending_messages
+                WHERE tool_use_id IS NOT NULL
+             )
+            WHERE duplicate_rank > 1
            )
       `);
       this.db.run(`
+        -- tool_use_id is optional for summaries and legacy rows; enforce de-dupe
+        -- only for rows that came from a concrete tool-use event.
         CREATE UNIQUE INDEX IF NOT EXISTS ux_pending_session_tool
         ON pending_messages(content_session_id, tool_use_id)
         WHERE tool_use_id IS NOT NULL
@@ -2059,11 +2080,15 @@ export class SessionStore {
         summaryId = Number(result.lastInsertRowid);
       }
 
+      // Current queue rows are live work only; completed work is removed, not retained as processed.
       const deleteStmt = this.db.prepare(`
         DELETE FROM pending_messages
         WHERE id = ? AND status = 'processing'
       `);
-      deleteStmt.run(messageId);
+      const deleteResult = deleteStmt.run(messageId);
+      if (deleteResult.changes !== 1) {
+        throw new Error(`storeObservationsAndMarkComplete: failed to complete pending message ${messageId}`);
+      }
 
       return { observationIds, summaryId, createdAtEpoch: timestampEpoch };
     });
