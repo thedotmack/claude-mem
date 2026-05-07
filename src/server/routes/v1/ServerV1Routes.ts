@@ -62,6 +62,10 @@ export class ServerV1Routes implements RouteHandler {
     });
 
     app.post('/v1/projects', writeAuth, this.handleCreate(CreateProjectSchema, (req, res, body) => {
+      if (req.authContext?.projectId) {
+        res.status(403).json({ error: 'Forbidden', message: 'Project-scoped API keys cannot create projects' });
+        return;
+      }
       const project = new ProjectsRepository(this.options.getDatabase()).create(body);
       this.audit(req, 'project.create', project.id);
       res.status(201).json({ project });

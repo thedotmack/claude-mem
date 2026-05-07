@@ -139,6 +139,30 @@ describe('server REST API v1 routes', () => {
     expect(response.status).toBe(403);
   });
 
+  it('denies project creation when an API key is scoped to an existing project', async () => {
+    const projectResponse = await post('/v1/projects', { name: 'Owner Project' });
+    expect(projectResponse.status).toBe(201);
+    const { project } = await projectResponse.json();
+    const key = createServerApiKey(db, {
+      name: 'project scoped writer',
+      projectId: project.id,
+      scopes: ['memories:write'],
+    });
+
+    const response = await fetch(`http://127.0.0.1:${port}/v1/projects`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${key.rawKey}`,
+      },
+      body: JSON.stringify({ name: 'Forbidden Project' }),
+    });
+
+    expect(response.status).toBe(403);
+    const row = db.prepare('SELECT COUNT(*) AS count FROM projects').get() as { count: number };
+    expect(row.count).toBe(1);
+  });
+
   it('limits project listing to the API key project scope', async () => {
     const projectAResponse = await post('/v1/projects', { name: 'Scoped Project A' });
     const projectBResponse = await post('/v1/projects', { name: 'Scoped Project B' });
