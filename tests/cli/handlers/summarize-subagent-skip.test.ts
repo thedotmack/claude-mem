@@ -9,7 +9,7 @@ mock.module('../../../src/shared/SettingsDefaultsManager.js', () => ({
       return '';
     },
     getInt: () => 0,
-    loadFromFile: () => ({ CLAUDE_MEM_EXCLUDED_PROJECTS: [] }),
+    loadFromFile: () => ({ CLAUDE_MEM_EXCLUDED_PROJECTS: '' }),
   },
 }));
 
@@ -23,6 +23,13 @@ mock.module('../../../src/shared/worker-utils.js', () => ({
       `workerHttpRequest MUST NOT be called in subagent context (called with ${apiPath})`
     );
   },
+  executeWithWorkerFallback: async (apiPath: string, _method: string, options?: any) => {
+    workerCallLog.push({ path: apiPath, options });
+    throw new Error(
+      `executeWithWorkerFallback MUST NOT be called in subagent context (called with ${apiPath})`
+    );
+  },
+  isWorkerFallback: (_result: unknown) => false,
 }));
 
 import { logger } from '../../../src/utils/logger.js';
@@ -61,6 +68,18 @@ describe('summarizeHandler — subagent short-circuit', () => {
     expect(result.suppressOutput).toBe(true);
     expect(result.exitCode).toBe(0);
     expect(workerCallLog.length).toBe(0);
+    expect(logger.debug).toHaveBeenCalledWith(
+      'HOOK',
+      'Skipping summary',
+      expect.objectContaining({
+        reason: 'subagent_context',
+        sessionId: 'session-abc',
+        transcriptPath: '/tmp/does-not-matter.jsonl',
+        platform: 'claude-code',
+        source: 'claude',
+        agentId: 'agent-abc',
+      })
+    );
   });
 
   it('does NOT skip when only agentType is set (--agent main session still owns its summary)', async () => {
@@ -95,6 +114,16 @@ describe('summarizeHandler — subagent short-circuit', () => {
     expect(result.suppressOutput).toBe(true);
     expect(result.exitCode).toBe(0);
     expect(workerCallLog.length).toBe(0);
+    expect(logger.debug).toHaveBeenCalledWith(
+      'HOOK',
+      'Skipping summary',
+      expect.objectContaining({
+        reason: 'subagent_context',
+        sessionId: 'session-both',
+        agentId: 'agent-xyz',
+        agentType: 'Plan',
+      })
+    );
   });
 
   it('falls through to existing no-transcriptPath guard in main-session context', async () => {

@@ -18,10 +18,14 @@ mock.module('../../../src/shared/hook-settings.js', () => ({
 }));
 
 let mockExtractedMessage: string = '';
+let mockExtractError: Error | null = null;
 let extractCallCount = 0;
 mock.module('../../../src/shared/transcript-parser.js', () => ({
   extractLastMessage: () => {
     extractCallCount += 1;
+    if (mockExtractError) {
+      throw mockExtractError;
+    }
     return mockExtractedMessage;
   },
 }));
@@ -44,11 +48,14 @@ mock.module('../../../src/shared/worker-utils.js', () => ({
 import { logger } from '../../../src/utils/logger.js';
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
+const originalClaudeMemInternal = process.env.CLAUDE_MEM_INTERNAL;
 
 beforeEach(() => {
   workerCallLog.length = 0;
   mockExtractedMessage = '';
+  mockExtractError = null;
   extractCallCount = 0;
+  delete process.env.CLAUDE_MEM_INTERNAL;
   loggerSpies = [
     spyOn(logger, 'info').mockImplementation(() => {}),
     spyOn(logger, 'debug').mockImplementation(() => {}),
@@ -61,6 +68,11 @@ beforeEach(() => {
 
 afterEach(() => {
   loggerSpies.forEach(spy => spy.mockRestore());
+  if (originalClaudeMemInternal === undefined) {
+    delete process.env.CLAUDE_MEM_INTERNAL;
+  } else {
+    process.env.CLAUDE_MEM_INTERNAL = originalClaudeMemInternal;
+  }
 });
 
 const baseInput = {
@@ -108,6 +120,139 @@ describe('summarizeHandler — privacy tag stripping', () => {
     expect(result.exitCode).toBe(0);
     expect(extractCallCount).toBe(0);
     expect(workerCallLog).toHaveLength(0);
+    expect(logger.debug).toHaveBeenCalledWith(
+      'HOOK',
+      'Skipping summary',
+      expect.objectContaining({
+        reason: 'stop_hook_reentry',
+        sessionId: 'sess-codex',
+        platform: 'codex',
+        source: 'codex',
+      })
+    );
+  });
+
+  it('logs structured skip metadata and does not queue when sessionId is missing', async () => {
+    const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
+    const result = await summarizeHandler.execute({
+      sessionId: '',
+      cwd: '/tmp',
+      platform: 'claude-code',
+      transcriptPath: '/tmp/fake.jsonl',
+    });
+
+    expect(result.continue).toBe(true);
+    expect(result.suppressOutput).toBe(true);
+    expect(result.exitCode).toBe(0);
+    expect(extractCallCount).toBe(0);
+    expect(workerCallLog).toHaveLength(0);
+    expect(logger.warn).toHaveBeenCalledWith(
+      'HOOK',
+      'Skipping summary',
+      expect.objectContaining({
+        reason: 'missing_session_id',
+        sessionId: '',
+        transcriptPath: '/tmp/fake.jsonl',
+        platform: 'claude-code',
+        source: 'claude',
+      })
+    );
+  });
+
+  it('logs structured skip metadata and does not queue when transcriptPath is missing', async () => {
+    const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
+    const result = await summarizeHandler.execute({
+      sessionId: 'sess-no-transcript',
+      cwd: '/tmp',
+      platform: 'claude-code',
+    } as any);
+
+    expect(result.continue).toBe(true);
+    expect(result.suppressOutput).toBe(true);
+    expect(result.exitCode).toBe(0);
+    expect(extractCallCount).toBe(0);
+    expect(workerCallLog).toHaveLength(0);
+    expect(logger.debug).toHaveBeenCalledWith(
+      'HOOK',
+      'Skipping summary',
+      expect.objectContaining({
+        reason: 'missing_transcript',
+        sessionId: 'sess-no-transcript',
+        platform: 'claude-code',
+        source: 'claude',
+      })
+    );
+  });
+
+  it('logs structured skip metadata and does not queue when transcript extraction fails', async () => {
+    mockExtractError = new Error('cannot parse transcript');
+
+    const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
+    const result = await summarizeHandler.execute(baseInput as any);
+
+    expect(result.continue).toBe(true);
+    expect(result.suppressOutput).toBe(true);
+    expect(result.exitCode).toBe(0);
+    expect(extractCallCount).toBe(1);
+    expect(workerCallLog).toHaveLength(0);
+    expect(logger.warn).toHaveBeenCalledWith(
+      'HOOK',
+      'Skipping summary',
+      expect.objectContaining({
+        reason: 'extraction_failure',
+        sessionId: 'sess-tag-strip',
+        transcriptPath: '/tmp/fake.jsonl',
+        error: 'cannot parse transcript',
+      })
+    );
+  });
+
+  it('logs structured skip metadata and does not queue when no assistant message remains', async () => {
+    mockExtractedMessage = '   ';
+
+    const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
+    const result = await summarizeHandler.execute(baseInput as any);
+
+    expect(result.continue).toBe(true);
+    expect(result.suppressOutput).toBe(true);
+    expect(result.exitCode).toBe(0);
+    expect(workerCallLog).toHaveLength(0);
+    expect(logger.debug).toHaveBeenCalledWith(
+      'HOOK',
+      'Skipping summary',
+      expect.objectContaining({
+        reason: 'no_assistant_message',
+        sessionId: 'sess-tag-strip',
+        transcriptPath: '/tmp/fake.jsonl',
+        platform: 'claude-code',
+        source: 'claude',
+      })
+    );
+  });
+
+  it('logs structured skip metadata and does not queue for excluded projects', async () => {
+    process.env.CLAUDE_MEM_INTERNAL = '1';
+
+    const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
+    const result = await summarizeHandler.execute({
+      ...baseInput,
+      lastAssistantMessage: 'ignored',
+    } as any);
+
+    expect(result.continue).toBe(true);
+    expect(result.suppressOutput).toBe(true);
+    expect(result.exitCode).toBe(0);
+    expect(extractCallCount).toBe(0);
+    expect(workerCallLog).toHaveLength(0);
+    expect(logger.debug).toHaveBeenCalledWith(
+      'HOOK',
+      'Skipping summary',
+      expect.objectContaining({
+        reason: 'excluded_project',
+        sessionId: 'sess-tag-strip',
+        cwd: '/tmp',
+      })
+    );
   });
 
   it('strips <private> tags and their content from last_assistant_message', async () => {
