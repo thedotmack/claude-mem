@@ -1,4 +1,4 @@
-import { describe, expect, it, mock } from 'bun:test';
+import { afterEach, describe, expect, it, jest, mock } from 'bun:test';
 import type { ActiveSession } from '../../../src/services/worker-types.js';
 import { handleGeneratorExit } from '../../../src/services/worker/session/GeneratorExitHandler.js';
 
@@ -25,13 +25,14 @@ function createSession(): ActiveSession {
   };
 }
 
-function createDeps(pendingCount = 3) {
+function createDeps(pendingCount = 3, sessionToReturn: ActiveSession | null = null) {
   const pendingStore = {
     clearPendingForSession: mock(() => undefined),
     getPendingCount: mock(() => pendingCount),
   };
   const sessionManager = {
     getPendingMessageStore: mock(() => pendingStore),
+    getSession: mock(() => sessionToReturn),
     removeSessionImmediate: mock(() => undefined),
   };
   const completionHandler = {
@@ -51,6 +52,13 @@ function createDeps(pendingCount = 3) {
     },
   };
 }
+
+afterEach(() => {
+  if (jest.isFakeTimers()) {
+    jest.clearAllTimers();
+    jest.useRealTimers();
+  }
+});
 
 describe('handleGeneratorExit hard-stop reasons', () => {
   it('does not restart pending work after context overflow', async () => {
@@ -124,5 +132,67 @@ describe('handleGeneratorExit hard-stop reasons', () => {
     expect(completionHandler.finalizeSession).toHaveBeenCalledWith(42);
     expect(sessionManager.removeSessionImmediate).toHaveBeenCalledWith(42);
     expect(restartGenerator).not.toHaveBeenCalled();
+  });
+});
+
+describe('handleGeneratorExit recoverable exits', () => {
+  it('restarts pending work for non-hard-stop reasons', async () => {
+    jest.useFakeTimers();
+    const session = createSession();
+    const { deps, pendingStore, completionHandler, sessionManager, restartGenerator } = createDeps(2, session);
+
+    await handleGeneratorExit(session, 'idle', deps);
+
+    expect(pendingStore.getPendingCount).toHaveBeenCalledWith(42);
+    expect(pendingStore.clearPendingForSession).not.toHaveBeenCalled();
+    expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
+    expect(sessionManager.removeSessionImmediate).not.toHaveBeenCalled();
+    expect(restartGenerator).not.toHaveBeenCalled();
+    expect(session.generatorPromise).toBeNull();
+    expect(session.currentProvider).toBeNull();
+
+    jest.advanceTimersByTime(1000);
+
+    expect(sessionManager.getSession).toHaveBeenCalledWith(42);
+    expect(restartGenerator).toHaveBeenCalledWith(session, 'pending-work-restart');
+  });
+
+  it('does not treat unknown abortReason strings as hard stops', async () => {
+    jest.useFakeTimers();
+    const session = createSession();
+    const { deps, pendingStore, completionHandler, sessionManager, restartGenerator } = createDeps(1, session);
+
+    await handleGeneratorExit(session, 'provider-rate-limit', deps);
+
+    expect(pendingStore.getPendingCount).toHaveBeenCalledWith(42);
+    expect(pendingStore.clearPendingForSession).not.toHaveBeenCalled();
+    expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
+    expect(sessionManager.removeSessionImmediate).not.toHaveBeenCalled();
+
+    jest.advanceTimersByTime(1000);
+
+    expect(sessionManager.getSession).toHaveBeenCalledWith(42);
+    expect(restartGenerator).toHaveBeenCalledWith(session, 'pending-work-restart');
+  });
+
+  it('restarts pending work when the generator exits with no abort reason', async () => {
+    jest.useFakeTimers();
+    const session = createSession();
+    const { deps, pendingStore, completionHandler, sessionManager, restartGenerator } = createDeps(1, session);
+
+    await handleGeneratorExit(session, null, deps);
+
+    expect(pendingStore.getPendingCount).toHaveBeenCalledWith(42);
+    expect(pendingStore.clearPendingForSession).not.toHaveBeenCalled();
+    expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
+    expect(sessionManager.removeSessionImmediate).not.toHaveBeenCalled();
+    expect(restartGenerator).not.toHaveBeenCalled();
+    expect(session.generatorPromise).toBeNull();
+    expect(session.currentProvider).toBeNull();
+
+    jest.advanceTimersByTime(1000);
+
+    expect(sessionManager.getSession).toHaveBeenCalledWith(42);
+    expect(restartGenerator).toHaveBeenCalledWith(session, 'pending-work-restart');
   });
 });

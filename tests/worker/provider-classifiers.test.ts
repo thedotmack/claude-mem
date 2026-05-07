@@ -22,6 +22,7 @@ describe('classifyGeminiError', () => {
     });
     expect(isClassified(err)).toBe(true);
     expect(err.kind).toBe('rate_limit');
+    expect(err.kind).not.toBe('quota_exhausted');
     expect(err.retryAfterMs).toBeUndefined();
     expect(err.cause).toBe(cause);
   });
@@ -75,6 +76,16 @@ describe('classifyGeminiError', () => {
     expect(err.kind).toBe('transient');
   });
 
+  it('classifies 5xx with no quota wording as transient, not quota_exhausted', () => {
+    const err = classifyGeminiError({
+      status: 500,
+      bodyText: 'internal server error',
+      cause: new Error('500'),
+    });
+    expect(err.kind).toBe('transient');
+    expect(err.kind).not.toBe('quota_exhausted');
+  });
+
   it('classifies network error (no status) as transient', () => {
     const cause = new Error('fetch failed: ECONNREFUSED');
     const err = classifyGeminiError({ cause });
@@ -102,6 +113,7 @@ describe('classifyOpenRouterError', () => {
       cause: new Error('429'),
     });
     expect(err.kind).toBe('rate_limit');
+    expect(err.kind).not.toBe('quota_exhausted');
     expect(err.retryAfterMs).toBeUndefined();
   });
 
@@ -151,6 +163,16 @@ describe('classifyOpenRouterError', () => {
       cause: new Error('502'),
     });
     expect(err.kind).toBe('transient');
+  });
+
+  it('classifies 5xx with no quota wording as transient, not quota_exhausted', () => {
+    const err = classifyOpenRouterError({
+      status: 500,
+      bodyText: 'internal server error',
+      cause: new Error('500'),
+    });
+    expect(err.kind).toBe('transient');
+    expect(err.kind).not.toBe('quota_exhausted');
   });
 
   it('classifies network error (no status) as transient', () => {
@@ -218,6 +240,7 @@ describe('classifyClaudeError', () => {
     const sdkErr = Object.assign(new Error('rate limited'), { status: 429 });
     const err = classifyClaudeError(sdkErr);
     expect(err.kind).toBe('rate_limit');
+    expect(err.kind).not.toBe('quota_exhausted');
   });
 
   it('classifies "quota exceeded" message as quota_exhausted', () => {
@@ -229,6 +252,30 @@ describe('classifyClaudeError', () => {
     const sdkErr = Object.assign(new Error('service unavailable'), { status: 503 });
     const err = classifyClaudeError(sdkErr);
     expect(err.kind).toBe('transient');
+  });
+
+  it('classifies 5xx, 529, and overload errors as transient, not quota_exhausted', () => {
+    class OverloadedError extends Error {
+      constructor() {
+        super('Overloaded');
+        this.name = 'OverloadedError';
+      }
+    }
+
+    const cases = [
+      Object.assign(new Error('internal server error'), { status: 500 }),
+      Object.assign(new Error('bad gateway'), { status: 502 }),
+      Object.assign(new Error('service unavailable'), { status: 503 }),
+      Object.assign(new Error('overloaded'), { status: 529 }),
+      Object.assign(new Error('upstream'), { error: { type: 'overloaded_error' } }),
+      new OverloadedError(),
+    ];
+
+    for (const sdkErr of cases) {
+      const err = classifyClaudeError(sdkErr);
+      expect(err.kind).toBe('transient');
+      expect(err.kind).not.toBe('quota_exhausted');
+    }
   });
 
   it('classifies unknown error as transient (preserve old default)', () => {
