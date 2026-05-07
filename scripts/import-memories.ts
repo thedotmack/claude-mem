@@ -1,17 +1,25 @@
 #!/usr/bin/env node
 
 import { existsSync, readFileSync } from 'fs';
+import { pathToFileURL } from 'url';
 
 const WORKER_PORT = process.env.CLAUDE_MEM_WORKER_PORT || 37777;
 const WORKER_URL = `http://127.0.0.1:${WORKER_PORT}`;
 
-async function importMemories(inputFile: string) {
+export function assertImportableExportData(exportData: { metadata?: { partial?: unknown } }) {
+  if (exportData.metadata?.partial === true) {
+    throw new Error('Partial exports are not importable because SDK session metadata is missing. Re-run export without --allow-partial before importing.');
+  }
+}
+
+export async function importMemories(inputFile: string) {
   if (!existsSync(inputFile)) {
     console.error(`❌ Input file not found: ${inputFile}`);
     process.exit(1);
   }
 
   const exportData = JSON.parse(readFileSync(inputFile, 'utf-8'));
+  assertImportableExportData(exportData);
 
   console.log(`📦 Import file: ${inputFile}`);
   console.log(`📅 Exported: ${exportData.exportedAt}`);
@@ -67,12 +75,24 @@ async function importMemories(inputFile: string) {
   console.log(`   Prompts:      ${stats.promptsImported} imported, ${stats.promptsSkipped} skipped`);
 }
 
-const args = process.argv.slice(2);
-if (args.length < 1) {
-  console.error('Usage: npx tsx scripts/import-memories.ts <input-file>');
-  console.error('Example: npx tsx scripts/import-memories.ts windows-memories.json');
-  process.exit(1);
+function isDirectRun(): boolean {
+  if (process.env.CLAUDE_MEM_IMPORT_MEMORIES_NO_MAIN === '1') {
+    return false;
+  }
+  return Boolean(process.argv[1]) && import.meta.url === pathToFileURL(process.argv[1]).href;
 }
 
-const [inputFile] = args;
-importMemories(inputFile);
+if (isDirectRun()) {
+  const args = process.argv.slice(2);
+  if (args.length < 1) {
+    console.error('Usage: npx tsx scripts/import-memories.ts <input-file>');
+    console.error('Example: npx tsx scripts/import-memories.ts windows-memories.json');
+    process.exit(1);
+  }
+
+  const [inputFile] = args;
+  importMemories(inputFile).catch((error) => {
+    console.error('❌ Import failed:', error);
+    process.exit(1);
+  });
+}

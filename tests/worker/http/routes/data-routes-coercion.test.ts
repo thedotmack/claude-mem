@@ -54,6 +54,10 @@ describe('DataRoutes Type Coercion', () => {
   let routes: DataRoutes;
   let mockGetObservationsByIds: ReturnType<typeof mock>;
   let mockGetSdkSessionsBySessionIds: ReturnType<typeof mock>;
+  let mockImportSdkSession: ReturnType<typeof mock>;
+  let mockImportSessionSummary: ReturnType<typeof mock>;
+  let mockImportObservation: ReturnType<typeof mock>;
+  let mockImportUserPrompt: ReturnType<typeof mock>;
 
   beforeEach(() => {
     loggerSpies = [
@@ -66,12 +70,22 @@ describe('DataRoutes Type Coercion', () => {
 
     mockGetObservationsByIds = mock(() => [{ id: 1 }, { id: 2 }]);
     mockGetSdkSessionsBySessionIds = mock(() => [{ id: 'abc' }]);
+    mockImportSdkSession = mock(() => ({ imported: true, id: 1 }));
+    mockImportSessionSummary = mock(() => ({ imported: true, id: 2 }));
+    mockImportObservation = mock(() => ({ imported: true, id: 3 }));
+    mockImportUserPrompt = mock(() => ({ imported: true, id: 4 }));
 
     const mockDbManager = {
       getSessionStore: () => ({
         getObservationsByIds: mockGetObservationsByIds,
         getSdkSessionsBySessionIds: mockGetSdkSessionsBySessionIds,
+        importSdkSession: mockImportSdkSession,
+        importSessionSummary: mockImportSessionSummary,
+        importObservation: mockImportObservation,
+        importUserPrompt: mockImportUserPrompt,
+        rebuildObservationsFTSIndex: mock(() => {}),
       }),
+      getChromaSync: () => undefined,
     };
 
     routes = new DataRoutes(
@@ -217,6 +231,44 @@ describe('DataRoutes Type Coercion', () => {
       handler(req as Request, res as Response);
 
       expect(statusSpy).toHaveBeenCalledWith(400);
+    });
+  });
+
+  describe('handleImport — partial export rejection', () => {
+    let handler: (req: Request, res: Response) => void;
+
+    beforeEach(() => {
+      const mockApp: any = {
+        get: mock(() => {}),
+        delete: mock(() => {}),
+        use: mock(() => {}),
+      };
+      handler = captureChain(mockApp, '/api/import');
+      routes.setupRoutes(mockApp as any);
+    });
+
+    it('rejects partial export payloads before any import writes', () => {
+      const { req, res, statusSpy, jsonSpy } = createMockReqRes({
+        metadata: {
+          partial: true,
+          importable: false,
+          warnings: [{ code: 'SDK_SESSIONS_METADATA_UNAVAILABLE', message: 'missing sessions' }],
+        },
+        sessions: [],
+        summaries: [{ memory_session_id: 'memory-a' }],
+        observations: [{ memory_session_id: 'memory-a' }],
+        prompts: [],
+      });
+      handler(req as Request, res as Response);
+
+      expect(statusSpy).toHaveBeenCalledWith(400);
+      expect(jsonSpy).toHaveBeenCalledWith({
+        error: 'Partial exports are not importable because SDK session metadata is missing. Re-run export without --allow-partial before importing.',
+      });
+      expect(mockImportSdkSession).not.toHaveBeenCalled();
+      expect(mockImportSessionSummary).not.toHaveBeenCalled();
+      expect(mockImportObservation).not.toHaveBeenCalled();
+      expect(mockImportUserPrompt).not.toHaveBeenCalled();
     });
   });
 });

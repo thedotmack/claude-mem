@@ -69,6 +69,9 @@ const sdkSessionsBatchSchema = z.preprocess((value) => {
 const setProcessingSchema = z.object({}).passthrough();
 
 const importSchema = z.object({
+  metadata: z.object({
+    partial: z.boolean().optional(),
+  }).passthrough().optional(),
   sessions: z.array(z.unknown()).optional(),
   summaries: z.array(z.unknown()).optional(),
   observations: z.array(z.unknown()).optional(),
@@ -296,7 +299,12 @@ export class DataRoutes extends BaseRouteHandler {
   }
 
   private handleImport = this.wrapHandler((req: Request, res: Response): void => {
-    const { sessions, summaries, observations, prompts } = req.body;
+    const { metadata, sessions, summaries, observations, prompts } = req.body;
+
+    if (metadata?.partial === true) {
+      this.badRequest(res, 'Partial exports are not importable because SDK session metadata is missing. Re-run export without --allow-partial before importing.');
+      return;
+    }
 
     const stats = {
       sessionsImported: 0,

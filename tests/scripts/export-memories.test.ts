@@ -97,6 +97,7 @@ describe('export-memories script', () => {
     expect(exported.query).toBe('needle');
     expect(exported.project).toBe('project-a');
     expect(exported.totalSessions).toBe(2);
+    expect(exported.metadata).toBeUndefined();
   });
 
   it('rejects an invalid worker port before fetching', async () => {
@@ -198,6 +199,143 @@ describe('export-memories script', () => {
       'Failed to fetch SDK sessions: 503 Service Unavailable worker unavailable',
     );
     expect(existsSync(outputFile)).toBe(false);
+  });
+
+  it('writes a partial export with warning metadata when SDK session metadata fails and allowPartial is explicit', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-export-'));
+    process.env.CLAUDE_MEM_DATA_DIR = tempDir;
+    process.env.CLAUDE_MEM_EXPORT_MEMORIES_NO_MAIN = '1';
+    writeFileSync(join(tempDir, 'settings.json'), JSON.stringify({
+      CLAUDE_MEM_WORKER_PORT: '45678',
+    }));
+
+    consoleSpies.push(
+      spyOn(console, 'log').mockImplementation(() => {}),
+      spyOn(console, 'warn').mockImplementation(() => {}),
+      spyOn(console, 'error').mockImplementation(() => {}),
+    );
+
+    const fetchMock = mock(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith('http://localhost:45678/api/search?')) {
+        return new Response(JSON.stringify({
+          observations: [{ memory_session_id: 'memory-a', title: 'observation-a' }],
+          sessions: [{ memory_session_id: 'memory-a', request: 'summary-a' }],
+          prompts: [{ prompt_text: 'prompt-a' }],
+        }), { status: 200 });
+      }
+
+      if (url === 'http://localhost:45678/api/sdk-sessions/batch') {
+        return new Response('worker unavailable', {
+          status: 503,
+          statusText: 'Service Unavailable',
+        });
+      }
+
+      return new Response('unexpected url', { status: 500 });
+    });
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const { exportMemories } = await import('../../scripts/export-memories.ts');
+    const outputFile = join(tempDir, 'export.json');
+
+    await exportMemories('needle', outputFile, undefined, { allowPartial: true });
+
+    expect(existsSync(outputFile)).toBe(true);
+    const exported = JSON.parse(readFileSync(outputFile, 'utf-8'));
+    expect(exported.totalObservations).toBe(1);
+    expect(exported.totalSummaries).toBe(1);
+    expect(exported.totalPrompts).toBe(1);
+    expect(exported.sessions).toEqual([]);
+    expect(exported.totalSessions).toBe(0);
+    expect(exported.metadata).toEqual({
+      partial: true,
+      importable: false,
+      warnings: [{
+        code: 'SDK_SESSIONS_METADATA_UNAVAILABLE',
+        message: 'Failed to fetch SDK sessions: 503 Service Unavailable worker unavailable',
+      }],
+    });
+    expect(console.warn).toHaveBeenCalledWith(
+      '⚠️ SDK session metadata unavailable; writing partial export because --allow-partial was set.',
+    );
+  });
+
+  it('parses --allow-partial as an explicit CLI option', async () => {
+    process.env.CLAUDE_MEM_EXPORT_MEMORIES_NO_MAIN = '1';
+
+    const { parseExportMemoriesCliArgs } = await import('../../scripts/export-memories.ts');
+
+    expect(parseExportMemoriesCliArgs([
+      'needle',
+      'export.json',
+      '--project=project-a',
+      '--allow-partial',
+    ])).toEqual({
+      query: 'needle',
+      outputFile: 'export.json',
+      project: 'project-a',
+      options: { allowPartial: true },
+    });
+
+    expect(parseExportMemoriesCliArgs(['needle', 'export.json'])).toEqual({
+      query: 'needle',
+      outputFile: 'export.json',
+      project: undefined,
+      options: { allowPartial: false },
+    });
+  });
+
+  it('rejects unknown flags and malformed positional usage', async () => {
+    process.env.CLAUDE_MEM_EXPORT_MEMORIES_NO_MAIN = '1';
+
+    const { parseExportMemoriesCliArgs } = await import('../../scripts/export-memories.ts');
+
+    expect(() => parseExportMemoriesCliArgs([
+      'needle',
+      'export.json',
+      '--unknown',
+    ])).toThrow('Unknown option: --unknown');
+
+    expect(() => parseExportMemoriesCliArgs([
+      '--allow-partial',
+      'needle',
+      'export.json',
+    ])).toThrow('Flag "--allow-partial" must appear after <query> and <output-file>');
+
+    expect(() => parseExportMemoriesCliArgs([
+      'needle',
+      '--project=project-a',
+      'export.json',
+    ])).toThrow('Flag "--project=project-a" must appear after <query> and <output-file>');
+
+    expect(() => parseExportMemoriesCliArgs([
+      'needle',
+      'export.json',
+      '--allow-partial',
+      'extra',
+    ])).toThrow('Unexpected positional argument after options: extra');
+
+    expect(() => parseExportMemoriesCliArgs([
+      'needle',
+      'export.json',
+      '--project=',
+    ])).toThrow('--project requires a non-empty value');
+  });
+
+  it('rejects positional boolean options', async () => {
+    process.env.CLAUDE_MEM_EXPORT_MEMORIES_NO_MAIN = '1';
+
+    const { exportMemories } = await import('../../scripts/export-memories.ts');
+    const booleanProject = true as unknown as Parameters<typeof exportMemories>[2];
+    const booleanOptions = true as unknown as Parameters<typeof exportMemories>[3];
+
+    await expect(
+      exportMemories('needle', join(tmpdir(), 'export.json'), booleanProject),
+    ).rejects.toThrow('exportMemories project must be a string when provided');
+    await expect(
+      exportMemories('needle', join(tmpdir(), 'export.json'), undefined, booleanOptions),
+    ).rejects.toThrow('exportMemories options must be an object');
   });
 
   it('fails deterministically when a worker request times out', async () => {

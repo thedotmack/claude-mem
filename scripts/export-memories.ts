@@ -5,15 +5,51 @@ import { join } from 'path';
 import { pathToFileURL } from 'url';
 import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager.js';
 import { resolveDataDir } from '../src/shared/paths.js';
-import type {
-  ObservationRecord,
-  SdkSessionRecord,
-  SessionSummaryRecord,
-  UserPromptRecord,
-  ExportData
-} from './types/export.js';
 
 const WORKER_FETCH_TIMEOUT_MS = 30_000;
+
+export interface ExportMemoriesOptions {
+  allowPartial?: boolean;
+}
+
+type ExportObservationRecord = Record<string, unknown> & {
+  memory_session_id?: string | null;
+};
+
+type ExportSdkSessionRecord = Record<string, unknown> & {
+  memory_session_id?: string | null;
+};
+
+type ExportSessionSummaryRecord = Record<string, unknown> & {
+  memory_session_id?: string | null;
+};
+
+type ExportUserPromptRecord = Record<string, unknown>;
+
+interface ExportWarning {
+  code: 'SDK_SESSIONS_METADATA_UNAVAILABLE';
+  message: string;
+}
+
+interface ExportData {
+  exportedAt: string;
+  exportedAtEpoch: number;
+  query: string;
+  project?: string;
+  totalObservations: number;
+  totalSessions: number;
+  totalSummaries: number;
+  totalPrompts: number;
+  observations: ExportObservationRecord[];
+  sessions: ExportSdkSessionRecord[];
+  summaries: ExportSessionSummaryRecord[];
+  prompts: ExportUserPromptRecord[];
+  metadata?: {
+    partial: true;
+    importable: false;
+    warnings: ExportWarning[];
+  };
+}
 
 function parseWorkerPort(rawPort: unknown): number {
   if (typeof rawPort !== 'string' || rawPort.trim() === '') {
@@ -26,6 +62,10 @@ function parseWorkerPort(rawPort: unknown): number {
     throw new Error(`Invalid CLAUDE_MEM_WORKER_PORT in settings.json: ${rawPort}`);
   }
   return port;
+}
+
+function buildSdkSessionsError(response: Response, body: string): Error {
+  return new Error(`Failed to fetch SDK sessions: ${response.status} ${response.statusText} ${body}`.trim());
 }
 
 async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
@@ -47,7 +87,20 @@ async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Respon
   }
 }
 
-export async function exportMemories(query: string, outputFile: string, project?: string) {
+export async function exportMemories(
+  query: string,
+  outputFile: string,
+  project?: string,
+  options: ExportMemoriesOptions = {},
+) {
+  if (project !== undefined && typeof project !== 'string') {
+    throw new TypeError('exportMemories project must be a string when provided');
+  }
+  if (typeof options !== 'object' || options === null || Array.isArray(options)) {
+    throw new TypeError('exportMemories options must be an object');
+  }
+
+  const allowPartial = options.allowPartial === true;
   const settings = SettingsDefaultsManager.loadFromFile(join(resolveDataDir(), 'settings.json'));
   const port = parseWorkerPort(settings.CLAUDE_MEM_WORKER_PORT);
   const baseUrl = `http://localhost:${port}`;
@@ -68,9 +121,9 @@ export async function exportMemories(query: string, outputFile: string, project?
   }
   const searchData = await searchResponse.json();
 
-  const observations: ObservationRecord[] = searchData.observations || [];
-  const summaries: SessionSummaryRecord[] = searchData.sessions || [];
-  const prompts: UserPromptRecord[] = searchData.prompts || [];
+  const observations: ExportObservationRecord[] = searchData.observations || [];
+  const summaries: ExportSessionSummaryRecord[] = searchData.sessions || [];
+  const prompts: ExportUserPromptRecord[] = searchData.prompts || [];
 
   console.log(`✅ Found ${observations.length} observations`);
   console.log(`✅ Found ${summaries.length} session summaries`);
@@ -85,7 +138,8 @@ export async function exportMemories(query: string, outputFile: string, project?
   });
 
   console.log('📡 Fetching SDK sessions metadata...');
-  let sessions: SdkSessionRecord[] = [];
+  let sessions: ExportSdkSessionRecord[] = [];
+  let warnings: ExportWarning[] | undefined;
   if (memorySessionIds.size > 0) {
     const sessionsResponse = await fetchWithTimeout(`${baseUrl}/api/sdk-sessions/batch`, {
       method: 'POST',
@@ -96,7 +150,18 @@ export async function exportMemories(query: string, outputFile: string, project?
       sessions = await sessionsResponse.json();
     } else {
       const body = await sessionsResponse.text();
-      throw new Error(`Failed to fetch SDK sessions: ${sessionsResponse.status} ${sessionsResponse.statusText} ${body}`.trim());
+      const error = buildSdkSessionsError(sessionsResponse, body);
+      if (!allowPartial) {
+        throw error;
+      }
+
+      warnings = [{
+        code: 'SDK_SESSIONS_METADATA_UNAVAILABLE',
+        message: error.message,
+      }];
+      sessions = [];
+      console.warn('⚠️ SDK session metadata unavailable; writing partial export because --allow-partial was set.');
+      console.warn(`⚠️ ${error.message}`);
     }
   }
   console.log(`✅ Found ${sessions.length} SDK sessions`);
@@ -116,6 +181,14 @@ export async function exportMemories(query: string, outputFile: string, project?
     prompts
   };
 
+  if (warnings) {
+    exportData.metadata = {
+      partial: true,
+      importable: false,
+      warnings,
+    };
+  }
+
   writeFileSync(outputFile, JSON.stringify(exportData, null, 2));
 
   console.log(`\n📦 Export complete!`);
@@ -125,6 +198,64 @@ export async function exportMemories(query: string, outputFile: string, project?
   console.log(`   • ${exportData.totalSessions} sessions`);
   console.log(`   • ${exportData.totalSummaries} summaries`);
   console.log(`   • ${exportData.totalPrompts} prompts`);
+  if (exportData.metadata?.partial) {
+    console.warn('⚠️ Partial export: SDK session metadata was omitted.');
+  }
+}
+
+export function parseExportMemoriesCliArgs(args: string[]): {
+  query: string;
+  outputFile: string;
+  project?: string;
+  options: ExportMemoriesOptions;
+} {
+  const positionals: string[] = [];
+  let project: string | undefined;
+  let allowPartial = false;
+  let sawFlag = false;
+
+  for (const arg of args) {
+    if (arg.startsWith('--')) {
+      sawFlag = true;
+
+      if (positionals.length < 2) {
+        throw new Error(`Flag "${arg}" must appear after <query> and <output-file>`);
+      }
+
+      if (arg === '--allow-partial') {
+        allowPartial = true;
+        continue;
+      }
+
+      if (arg.startsWith('--project=')) {
+        const value = arg.slice('--project='.length);
+        if (!value) {
+          throw new Error('--project requires a non-empty value');
+        }
+        project = value;
+        continue;
+      }
+
+      throw new Error(`Unknown option: ${arg}`);
+    }
+
+    if (sawFlag) {
+      throw new Error(`Unexpected positional argument after options: ${arg}`);
+    }
+
+    positionals.push(arg);
+  }
+
+  if (positionals.length !== 2) {
+    throw new Error('Usage: npx tsx scripts/export-memories.ts <query> <output-file> [--project=name] [--allow-partial]');
+  }
+
+  const [query, outputFile] = positionals;
+  const options: ExportMemoriesOptions = {
+    allowPartial,
+  };
+
+  return { query, outputFile, project, options };
 }
 
 function isDirectRun(): boolean {
@@ -137,16 +268,23 @@ function isDirectRun(): boolean {
 if (isDirectRun()) {
   const args = process.argv.slice(2);
   if (args.length < 2) {
-    console.error('Usage: npx tsx scripts/export-memories.ts <query> <output-file> [--project=name]');
+    console.error('Usage: npx tsx scripts/export-memories.ts <query> <output-file> [--project=name] [--allow-partial]');
     console.error('Example: npx tsx scripts/export-memories.ts "windows" windows-memories.json --project=claude-mem');
     console.error('         npx tsx scripts/export-memories.ts "authentication" auth.json');
     process.exit(1);
   }
 
-  const [query, outputFile, ...flags] = args;
-  const project = flags.find(f => f.startsWith('--project='))?.split('=')[1];
+  let parsed: ReturnType<typeof parseExportMemoriesCliArgs>;
+  try {
+    parsed = parseExportMemoriesCliArgs(args);
+  } catch (error) {
+    console.error('❌ Invalid arguments:', error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
 
-  exportMemories(query, outputFile, project).catch((error) => {
+  const { query, outputFile, project, options } = parsed;
+
+  exportMemories(query, outputFile, project, options).catch((error) => {
     console.error('❌ Export failed:', error);
     process.exit(1);
   });
