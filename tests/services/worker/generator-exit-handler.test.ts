@@ -196,3 +196,180 @@ describe('handleGeneratorExit recoverable exits', () => {
     expect(restartGenerator).toHaveBeenCalledWith(session, 'pending-work-restart');
   });
 });
+
+describe('handleGeneratorExit recovery count failures', () => {
+  it('preserves pending rows when pending count fails with temporary SQLite busy/locked pressure', async () => {
+    jest.useFakeTimers();
+    const session = createSession();
+    const { deps, pendingStore, completionHandler, sessionManager, restartGenerator } = createDeps(3, session);
+    const busyError = Object.assign(new Error('SQLITE_BUSY: database is locked'), {
+      code: 'SQLITE_BUSY',
+    });
+    pendingStore.getPendingCount.mockImplementation(() => {
+      throw busyError;
+    });
+
+    await handleGeneratorExit(session, 'idle', deps);
+
+    expect(pendingStore.getPendingCount).toHaveBeenCalledWith(42);
+    expect(pendingStore.clearPendingForSession).not.toHaveBeenCalled();
+    expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
+    expect(sessionManager.removeSessionImmediate).not.toHaveBeenCalled();
+    expect(restartGenerator).not.toHaveBeenCalled();
+    expect(session.generatorPromise).toBeNull();
+    expect(session.currentProvider).toBeNull();
+
+    jest.advanceTimersByTime(1000);
+
+    expect(sessionManager.getSession).toHaveBeenCalledWith(42);
+    expect(restartGenerator).toHaveBeenCalledWith(session, 'pending-work-restart');
+  });
+
+  it('trips RestartGuard on repeated temporary SQLite busy count failures without clearing pending rows', async () => {
+    jest.useFakeTimers();
+    const session = createSession();
+    const { deps, pendingStore, completionHandler, sessionManager, restartGenerator } = createDeps(3, session);
+    const busyError = Object.assign(new Error('SQLITE_BUSY: database is locked'), {
+      code: 'SQLITE_BUSY',
+    });
+    pendingStore.getPendingCount.mockImplementation(() => {
+      throw busyError;
+    });
+
+    for (let i = 0; i < 6; i += 1) {
+      await handleGeneratorExit(session, 'idle', deps);
+    }
+
+    expect(pendingStore.getPendingCount).toHaveBeenCalledTimes(6);
+    expect(pendingStore.clearPendingForSession).not.toHaveBeenCalled();
+    expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
+    expect(sessionManager.removeSessionImmediate).toHaveBeenCalledWith(42);
+    expect(sessionManager.removeSessionImmediate).toHaveBeenCalledTimes(1);
+    expect(restartGenerator).not.toHaveBeenCalled();
+    expect(session.consecutiveRestarts).toBe(0);
+    expect(session.respawnTimer).toBeUndefined();
+  });
+
+  it('keeps explicit cleanup when pending count fails with a non-temporary error', async () => {
+    const session = createSession();
+    const { deps, pendingStore, completionHandler, sessionManager, restartGenerator } = createDeps();
+    pendingStore.getPendingCount.mockImplementation(() => {
+      throw new Error('no such table: pending_messages');
+    });
+
+    await handleGeneratorExit(session, 'idle', deps);
+
+    expect(pendingStore.getPendingCount).toHaveBeenCalledWith(42);
+    expect(pendingStore.clearPendingForSession).toHaveBeenCalledWith(42);
+    expect(completionHandler.finalizeSession).toHaveBeenCalledWith(42);
+    expect(sessionManager.removeSessionImmediate).toHaveBeenCalledWith(42);
+    expect(restartGenerator).not.toHaveBeenCalled();
+    expect(session.generatorPromise).toBeNull();
+    expect(session.currentProvider).toBeNull();
+  });
+});
+
+describe('handleGeneratorExit respawn timer failures', () => {
+  it('catches synchronous restartGenerator throws from the timer and terminates normal pending work under RestartGuard', async () => {
+    jest.useFakeTimers();
+    const session = createSession();
+    const { deps, pendingStore, completionHandler, sessionManager, restartGenerator } = createDeps(2, session);
+    restartGenerator.mockImplementation(() => {
+      throw new Error('simulated synchronous restart failure');
+    });
+
+    await handleGeneratorExit(session, 'idle', deps);
+
+    expect(pendingStore.clearPendingForSession).not.toHaveBeenCalled();
+    expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
+    expect(sessionManager.removeSessionImmediate).not.toHaveBeenCalled();
+
+    expect(() => jest.advanceTimersByTime(1000)).not.toThrow();
+
+    expect(restartGenerator).toHaveBeenCalledTimes(1);
+    expect(pendingStore.clearPendingForSession).not.toHaveBeenCalled();
+    expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
+    expect(sessionManager.removeSessionImmediate).not.toHaveBeenCalled();
+
+    expect(() => jest.advanceTimersByTime(2000)).not.toThrow();
+
+    expect(restartGenerator).toHaveBeenCalledTimes(2);
+    expect(pendingStore.clearPendingForSession).not.toHaveBeenCalled();
+    expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
+    expect(sessionManager.removeSessionImmediate).not.toHaveBeenCalled();
+
+    expect(() => jest.advanceTimersByTime(4000)).not.toThrow();
+    expect(() => jest.advanceTimersByTime(8000)).not.toThrow();
+    expect(() => jest.advanceTimersByTime(8000)).not.toThrow();
+
+    expect(restartGenerator).toHaveBeenCalledTimes(5);
+    expect(pendingStore.clearPendingForSession).toHaveBeenCalledWith(42);
+    expect(completionHandler.finalizeSession).toHaveBeenCalledWith(42);
+    expect(sessionManager.removeSessionImmediate).toHaveBeenCalledWith(42);
+    expect(sessionManager.removeSessionImmediate).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves pending rows when temporary SQLite respawn retries trip RestartGuard after restartGenerator throws', async () => {
+    jest.useFakeTimers();
+    const session = createSession();
+    const { deps, pendingStore, completionHandler, sessionManager, restartGenerator } = createDeps(3, session);
+    const busyError = Object.assign(new Error('SQLITE_LOCKED: database table is locked'), {
+      code: 'SQLITE_LOCKED',
+    });
+    pendingStore.getPendingCount.mockImplementation(() => {
+      throw busyError;
+    });
+    restartGenerator.mockImplementation(() => {
+      throw new Error('simulated synchronous restart failure');
+    });
+
+    await handleGeneratorExit(session, 'idle', deps);
+
+    expect(() => jest.advanceTimersByTime(1000)).not.toThrow();
+    expect(() => jest.advanceTimersByTime(2000)).not.toThrow();
+    expect(() => jest.advanceTimersByTime(4000)).not.toThrow();
+    expect(() => jest.advanceTimersByTime(8000)).not.toThrow();
+    expect(() => jest.advanceTimersByTime(8000)).not.toThrow();
+
+    expect(restartGenerator).toHaveBeenCalledTimes(5);
+    expect(pendingStore.clearPendingForSession).not.toHaveBeenCalled();
+    expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
+    expect(sessionManager.removeSessionImmediate).toHaveBeenCalledWith(42);
+    expect(sessionManager.removeSessionImmediate).toHaveBeenCalledTimes(1);
+    expect(session.consecutiveRestarts).toBe(0);
+    expect(session.respawnTimer).toBeUndefined();
+  });
+
+  it('preserves pending rows when restartGenerator hits SQLite pressure after pending count succeeds', async () => {
+    jest.useFakeTimers();
+    const session = createSession();
+    const { deps, pendingStore, completionHandler, sessionManager, restartGenerator } = createDeps(3, session);
+    const busyError = Object.assign(new Error('SQLITE_BUSY: database is busy'), {
+      code: 'SQLITE_BUSY',
+    });
+    restartGenerator.mockImplementation(() => {
+      throw busyError;
+    });
+
+    await handleGeneratorExit(session, 'idle', deps);
+
+    expect(pendingStore.getPendingCount).toHaveBeenCalledWith(42);
+    expect(pendingStore.clearPendingForSession).not.toHaveBeenCalled();
+    expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
+    expect(sessionManager.removeSessionImmediate).not.toHaveBeenCalled();
+
+    expect(() => jest.advanceTimersByTime(1000)).not.toThrow();
+    expect(() => jest.advanceTimersByTime(2000)).not.toThrow();
+    expect(() => jest.advanceTimersByTime(4000)).not.toThrow();
+    expect(() => jest.advanceTimersByTime(8000)).not.toThrow();
+    expect(() => jest.advanceTimersByTime(8000)).not.toThrow();
+
+    expect(restartGenerator).toHaveBeenCalledTimes(5);
+    expect(pendingStore.clearPendingForSession).not.toHaveBeenCalled();
+    expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
+    expect(sessionManager.removeSessionImmediate).toHaveBeenCalledWith(42);
+    expect(sessionManager.removeSessionImmediate).toHaveBeenCalledTimes(1);
+    expect(session.consecutiveRestarts).toBe(0);
+    expect(session.respawnTimer).toBeUndefined();
+  });
+});
