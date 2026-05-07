@@ -74,7 +74,7 @@ Hook/install/export behavior:
 
 ## Phase 1: Provider Guard Boundary Tests
 
-### What To Implement
+### Provider Guard Implementation
 
 Add focused tests proving recoverable provider errors remain recoverable after v12.7.3.
 
@@ -89,7 +89,7 @@ Cover:
 - `handleGeneratorExit` restarts pending work for non-hard-stop reasons.
 - Unknown `abortReason` strings are not treated as hard stops.
 
-### Documentation References
+### Provider Guard Documentation References
 
 - `src/services/worker/provider-errors.ts:2-31`
 - `src/services/worker/retry.ts:37-44`
@@ -97,13 +97,13 @@ Cover:
 - `tests/worker/provider-classifiers.test.ts:13-238`
 - `tests/services/worker/generator-exit-handler.test.ts:55-128`
 
-### Verification Checklist
+### Provider Guard Verification Checklist
 
 - Run `bun test tests/worker/provider-classifiers.test.ts tests/services/worker/generator-exit-handler.test.ts`.
 - Confirm tests fail if `rate_limit` or `transient` starts mapping to a hard-stop path.
 - Confirm existing hard-stop tests for `overflow`, `quota`, and `quota:*` still pass.
 
-### Anti-Pattern Guards
+### Provider Guard Anti-Pattern Guards
 
 - Do not map generic 429s to `quota:*`.
 - Do not add new pending-message retry counters.
@@ -111,7 +111,7 @@ Cover:
 
 ## Phase 2: Recovery Count Failure Safety
 
-### What To Implement
+### Recovery Count Implementation
 
 Make `handleGeneratorExit` less destructive when `pendingStore.getPendingCount(sessionDbId)` fails for a temporary SQLite condition.
 
@@ -122,20 +122,20 @@ Copy the guarded finalization pattern from `src/services/worker/session/Generato
 
 Add tests beside `tests/services/worker/generator-exit-handler.test.ts` using the existing `createDeps` mock scaffold.
 
-### Documentation References
+### Recovery Count Documentation References
 
 - `src/services/worker/session/GeneratorExitHandler.ts:89-99`
 - `src/services/sqlite/PendingMessageStore.ts:116-123`
 - `tests/services/worker/generator-exit-handler.test.ts:1-128`
 - `src/services/sqlite/SessionStore.ts:99-131` as the local pattern for no-stamp/no-destructive-progress-on-failure.
 
-### Verification Checklist
+### Recovery Count Verification Checklist
 
 - Run `bun test tests/services/worker/generator-exit-handler.test.ts`.
 - Add one test where `getPendingCount` throws a simulated busy/locked SQLite error and `clearPendingForSession` is not called.
 - Add one test where `getPendingCount` throws a non-temporary error and current cleanup behavior remains explicit.
 
-### Anti-Pattern Guards
+### Recovery Count Anti-Pattern Guards
 
 - Do not silently swallow all count failures.
 - Do not leave `generatorPromise` set after an exit.
@@ -143,7 +143,7 @@ Add tests beside `tests/services/worker/generator-exit-handler.test.ts` using th
 
 ## Phase 3: Mixed-Version Worker Upgrade Safety
 
-### What To Implement
+### Worker Upgrade Implementation
 
 Prevent destructive schema cleanup from running while an old worker can still write old `pending_messages` columns.
 
@@ -156,7 +156,7 @@ Use the existing worker version/shutdown APIs rather than inventing process disc
 
 Plan the implementation so worker startup or install startup detects a live but mismatched worker and shuts it down before schema cleanup can drop legacy columns.
 
-### Documentation References
+### Worker Upgrade Documentation References
 
 - `src/services/worker-service.ts:334-347`
 - `src/services/infrastructure/HealthMonitor.ts:130-156`
@@ -165,13 +165,13 @@ Plan the implementation so worker startup or install startup detects a live but 
 - `src/services/sqlite/SessionStore.ts:76-131`
 - `tests/supervisor/index.test.ts:15-87`
 
-### Verification Checklist
+### Worker Upgrade Verification Checklist
 
 - Add tests for version mismatch detection around the existing health/version helpers.
 - Add a startup/install test proving mismatched live worker is asked to shut down before dependency/schema repair proceeds.
 - Run `bun test tests/infrastructure/health-monitor.test.ts tests/supervisor/index.test.ts` plus the new focused test.
 
-### Anti-Pattern Guards
+### Worker Upgrade Anti-Pattern Guards
 
 - Do not assume PID alive means compatible.
 - Do not stamp schema versions after a failed drop.
@@ -179,7 +179,7 @@ Plan the implementation so worker startup or install startup detects a live but 
 
 ## Phase 4: Summary Skip Visibility
 
-### What To Implement
+### Summary Skip Implementation
 
 Keep missing transcript and skipped-summary behavior non-blocking, but make repeated skips visible.
 
@@ -190,7 +190,7 @@ Add lightweight observability:
 - log structured skip reasons for missing transcript/no assistant message/extraction failure.
 - optionally expose skip reason through existing `ingestSummary` event flow for parsed `<skip_summary/>`, without storing skipped summaries as normal `session_summaries`.
 
-### Documentation References
+### Summary Skip Documentation References
 
 - `src/cli/hook-command.ts:46-99`
 - `src/cli/handlers/summarize.ts:13-65`
@@ -199,13 +199,13 @@ Add lightweight observability:
 - `src/services/worker/agents/ResponseProcessor.ts:145-155`, `255-267`
 - `tests/cli/handlers/summarize-subagent-skip.test.ts:48-114`
 
-### Verification Checklist
+### Summary Skip Verification Checklist
 
 - Run `bun test tests/hook-command.test.ts tests/cli/handlers/summarize-subagent-skip.test.ts tests/cli/handlers/summarize-tag-stripping.test.ts`.
 - Confirm Stop hooks still exit success when transcript data is unavailable.
 - Confirm skipped summaries do not create normal summary rows.
 
-### Anti-Pattern Guards
+### Summary Skip Anti-Pattern Guards
 
 - Do not make Stop hook transcript failures blocking again.
 - Do not assume `extractLastMessage` throws on missing path.
@@ -213,7 +213,7 @@ Add lightweight observability:
 
 ## Phase 5: Install Marker Currentness
 
-### What To Implement
+### Install Marker Implementation
 
 Reduce false stale installs without weakening real dependency freshness.
 
@@ -221,20 +221,20 @@ Use `readInstallMarker` legacy compatibility and `version-check.js` behavior as 
 
 Copy tests from `tests/setup-runtime.test.ts:43-133`.
 
-### Documentation References
+### Install Marker Documentation References
 
 - `src/npx-cli/install/setup-runtime.ts:241-287`
 - `plugin/scripts/version-check.js:35-68`
 - `tests/setup-runtime.test.ts:43-133`
 - `tests/plugin-version-check.test.ts:35-64`
 
-### Verification Checklist
+### Install Marker Verification Checklist
 
 - Run `bun test tests/setup-runtime.test.ts tests/plugin-version-check.test.ts`.
 - Add/adjust a test for matching legacy marker with `node_modules` and Bun available.
 - Keep tests proving wrong version and missing `node_modules` are stale.
 
-### Anti-Pattern Guards
+### Install Marker Anti-Pattern Guards
 
 - Do not treat malformed markers as valid.
 - Do not skip dependency checks when `node_modules` is missing.
@@ -242,7 +242,7 @@ Copy tests from `tests/setup-runtime.test.ts:43-133`.
 
 ## Phase 6: Explicit Partial Export Mode
 
-### What To Implement
+### Partial Export Implementation
 
 Keep strict export as the default, but add an explicit partial mode for salvage/debug workflows.
 
@@ -253,21 +253,21 @@ Target shape:
 - strict default: SDK metadata failure throws and writes no output.
 - `--allow-partial`: SDK metadata failure records warning metadata in the export and writes observations/summaries/prompts with `sessions: []`.
 
-### Documentation References
+### Partial Export Documentation References
 
 - `scripts/export-memories.ts:50-153`
 - `tests/scripts/export-memories.test.ts:39-227`
 - `src/services/worker/http/routes/DataRoutes.ts:56-67`, `191-197`
 - `tests/worker/http/routes/data-routes-coercion.test.ts:151-221`
 
-### Verification Checklist
+### Partial Export Verification Checklist
 
 - Run `bun test tests/scripts/export-memories.test.ts tests/worker/http/routes/data-routes-coercion.test.ts`.
 - Preserve existing strict failure tests.
 - Add tests for `--allow-partial` writing output and marking metadata incomplete.
 - Confirm export still sends canonical `memorySessionIds`.
 
-### Anti-Pattern Guards
+### Partial Export Anti-Pattern Guards
 
 - Do not send `sdkSessionIds` from export code.
 - Do not make partial mode the default.
