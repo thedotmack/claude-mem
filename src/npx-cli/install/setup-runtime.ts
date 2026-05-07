@@ -280,7 +280,6 @@ export function isInstallCurrent(targetDir: string, expectedVersion: string): bo
   if (!marker) return false;
   if (marker.version !== expectedVersion) return false;
   const currentBun = getBunVersion();
-  if (currentBun && !marker.bun) return false;
   if (!currentBun && marker.bun) return false;
   if (currentBun && marker.bun && currentBun !== marker.bun) return false;
   return true;

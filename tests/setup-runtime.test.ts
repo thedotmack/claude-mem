@@ -100,6 +100,11 @@ describe('setup-runtime install marker', () => {
       expect(isInstallCurrent(tempDir, '1.0.0')).toBe(false);
     });
 
+    it('returns false for a matching legacy plain-text marker when node_modules is missing', () => {
+      writeFileSync(join(tempDir, '.install-version'), '1.0.0\n');
+      expect(isInstallCurrent(tempDir, '1.0.0')).toBe(false);
+    });
+
     it('returns false when marker is missing (but node_modules exists)', () => {
       mkdirSync(join(tempDir, 'node_modules'));
       expect(isInstallCurrent(tempDir, '1.0.0')).toBe(false);
@@ -112,6 +117,18 @@ describe('setup-runtime install marker', () => {
       expect(isInstallCurrent(tempDir, '2.0.0')).toBe(false);
     });
 
+    it('returns false when legacy plain-text marker version does not match expected', () => {
+      mkdirSync(join(tempDir, 'node_modules'));
+      writeFileSync(join(tempDir, '.install-version'), '1.0.0\n');
+      expect(isInstallCurrent(tempDir, '2.0.0')).toBe(false);
+    });
+
+    it('returns false when marker is malformed', () => {
+      mkdirSync(join(tempDir, 'node_modules'));
+      writeFileSync(join(tempDir, '.install-version'), 'not valid json');
+      expect(isInstallCurrent(tempDir, '1.0.0')).toBe(false);
+    });
+
     it('returns true when marker matches version and bun version matches', () => {
       const bunVersion = probeBunVersion();
       if (!bunVersion) {
@@ -122,14 +139,16 @@ describe('setup-runtime install marker', () => {
       expect(isInstallCurrent(tempDir, '1.0.0')).toBe(true);
     });
 
-    it('returns false for a matching legacy plain-text marker when bun is available', () => {
-      const bunVersion = probeBunVersion();
-      if (!bunVersion) {
-        return;
-      }
+    it('returns true for a matching legacy plain-text marker when node_modules exists', () => {
       mkdirSync(join(tempDir, 'node_modules'));
       writeFileSync(join(tempDir, '.install-version'), '1.0.0\n');
-      expect(isInstallCurrent(tempDir, '1.0.0')).toBe(false);
+      expect(isInstallCurrent(tempDir, '1.0.0')).toBe(true);
+    });
+
+    it('returns true for a matching version-only JSON marker when node_modules exists', () => {
+      mkdirSync(join(tempDir, 'node_modules'));
+      writeFileSync(join(tempDir, '.install-version'), JSON.stringify({ version: '1.0.0' }));
+      expect(isInstallCurrent(tempDir, '1.0.0')).toBe(true);
     });
   });
 });
