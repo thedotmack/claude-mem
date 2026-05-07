@@ -39,6 +39,7 @@ interface RedisHealthClient {
   connect(): Promise<void>;
   ping(): Promise<unknown>;
   sadd(key: string, ...members: string[]): Promise<number>;
+  srem(key: string, ...members: string[]): Promise<number>;
   smembers(key: string): Promise<string[]>;
   quit(): Promise<unknown>;
   disconnect(): void;
@@ -191,6 +192,7 @@ export class BullMqObservationQueueEngine
       throw this.toRedisUnavailableError(error);
     }
     this.finishClaim(messageId, claimed);
+    await this.unregisterSessionIfEmpty(claimed.sessionDbId);
     this.options.onMutate?.();
     return 1;
   }
@@ -208,6 +210,7 @@ export class BullMqObservationQueueEngine
         this.finishClaim(claimId, claimed);
       }
     }
+    await this.unregisterSessionIfEmpty(sessionDbId);
     if (count > 0) {
       runtime.events.emit('message');
       this.options.onMutate?.();
@@ -380,6 +383,17 @@ export class BullMqObservationQueueEngine
   private async registerSession(sessionDbId: number): Promise<void> {
     try {
       await this.getHealthClient().sadd(this.registryKey, String(sessionDbId));
+    } catch (error) {
+      throw this.toRedisUnavailableError(error);
+    }
+  }
+
+  private async unregisterSessionIfEmpty(sessionDbId: number): Promise<void> {
+    if (await this.getPendingCount(sessionDbId) > 0) {
+      return;
+    }
+    try {
+      await this.getHealthClient().srem(this.registryKey, String(sessionDbId));
     } catch (error) {
       throw this.toRedisUnavailableError(error);
     }

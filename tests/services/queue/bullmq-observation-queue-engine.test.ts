@@ -117,6 +117,19 @@ class FakeRedis {
     return set.size - before;
   }
 
+  async srem(key: string, ...members: string[]): Promise<number> {
+    if (this.failSets) {
+      throw new Error('srem failed');
+    }
+    const set = this.sets.get(key);
+    if (!set) return 0;
+    let removed = 0;
+    for (const member of members) {
+      if (set.delete(member)) removed++;
+    }
+    return removed;
+  }
+
   async smembers(key: string): Promise<string[]> {
     if (this.failSets) {
       throw new Error('smembers failed');
@@ -250,7 +263,8 @@ describe('BullMqObservationQueueEngine', () => {
   });
 
   test('yields per-session FIFO messages and confirms exact claimed jobs', async () => {
-    ({ engine } = createEngine());
+    const result = createEngine();
+    engine = result.engine;
 
     await engine.enqueue(1, 'content-session', {
       type: 'observation',
@@ -281,6 +295,7 @@ describe('BullMqObservationQueueEngine', () => {
     expect(await engine.getPendingCount(1)).toBe(1);
     expect(await engine.confirmProcessed(second.value._persistentId)).toBe(1);
     expect(await engine.getPendingCount(1)).toBe(0);
+    expect(await result.redis.smembers('test_prefix:queue_registry:sessions')).toEqual([]);
 
     controller.abort();
     await iterator.return?.();
@@ -426,7 +441,7 @@ describe('BullMqObservationQueueEngine', () => {
     expect(secondProcess.queues.get('claude_mem_session_7')).toBeDefined();
   });
 
-  test('clearPendingForSession keeps registry entries discoverable for concurrent jobs', async () => {
+  test('clearPendingForSession prunes empty sessions from the Redis registry', async () => {
     const queues = new Map<string, FakeQueue>();
     const redis = new FakeRedis();
     const firstProcess = createEngine({ queues, redis });
@@ -440,24 +455,7 @@ describe('BullMqObservationQueueEngine', () => {
 
     expect(await redis.smembers('test_prefix:queue_registry:sessions')).toEqual(['7']);
     expect(await engine.clearPendingForSession(7)).toBe(1);
-    expect(await redis.smembers('test_prefix:queue_registry:sessions')).toEqual(['7']);
-
-    await queues.get('claude_mem_session_7')!.add('observation', {
-      sessionDbId: 7,
-      contentSessionId: 'content-session',
-      createdAtEpoch: Date.now(),
-      message: {
-        type: 'observation',
-        tool_name: 'Write',
-        toolUseId: 'tool-b',
-      },
-    }, { jobId: 'obs_manual_concurrent_job' });
-
-    await engine.close();
-    const secondProcess = createEngine({ queues, redis });
-    engine = secondProcess.engine;
-
-    expect(await engine.getTotalQueueDepth()).toBe(1);
+    expect(await redis.smembers('test_prefix:queue_registry:sessions')).toEqual([]);
   });
 
   test('reports Redis health without creating sqlite fallback', async () => {
@@ -479,6 +477,7 @@ describe('BullMqObservationQueueEngine', () => {
           throw new Error('connection refused');
         },
         sadd: async () => 0,
+        srem: async () => 0,
         smembers: async () => [],
         quit: async () => {},
         disconnect: () => {},

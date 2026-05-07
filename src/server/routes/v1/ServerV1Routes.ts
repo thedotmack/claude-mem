@@ -53,7 +53,11 @@ export class ServerV1Routes implements RouteHandler {
     });
 
     app.get('/v1/projects', readAuth, (req, res) => {
-      res.json({ projects: new ProjectsRepository(this.options.getDatabase()).list() });
+      const repo = new ProjectsRepository(this.options.getDatabase());
+      const projects = req.authContext?.projectId
+        ? [repo.getById(req.authContext.projectId)].filter(project => project !== null)
+        : repo.list();
+      res.json({ projects });
       this.audit(req, 'projects.list');
     });
 

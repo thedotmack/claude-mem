@@ -131,6 +131,28 @@ describe('server REST API v1 routes', () => {
     expect(response.status).toBe(403);
   });
 
+  it('limits project listing to the API key project scope', async () => {
+    const projectAResponse = await post('/v1/projects', { name: 'Scoped Project A' });
+    const projectBResponse = await post('/v1/projects', { name: 'Scoped Project B' });
+    const { project: projectA } = await projectAResponse.json();
+    await projectBResponse.json();
+    const key = createServerApiKey(db, {
+      name: 'project A reader',
+      projectId: projectA.id,
+      scopes: ['memories:read'],
+    });
+
+    const response = await fetch(`http://127.0.0.1:${port}/v1/projects`, {
+      headers: {
+        Authorization: `Bearer ${key.rawKey}`,
+      },
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.projects.map((project: any) => project.id)).toEqual([projectA.id]);
+  });
+
   it('rejects mixed-project event batches without partial writes', async () => {
     const projectAResponse = await post('/v1/projects', { name: 'Project A' });
     const projectBResponse = await post('/v1/projects', { name: 'Project B' });
