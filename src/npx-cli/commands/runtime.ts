@@ -74,6 +74,10 @@ export function runStatusCommand(): void {
   spawnBunWorkerCommand('status');
 }
 
+export function runServerApiKeyCommand(extraArgs: string[] = []): void {
+  spawnBunWorkerCommand('server', ['api-key', ...extraArgs]);
+}
+
 export function runAdoptCommand(extraArgs: string[] = []): void {
   ensureInstalledOrExit();
   const bunPath = resolveBunOrExit();

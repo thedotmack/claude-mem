@@ -8,7 +8,7 @@
   },
   "homepage": "https://github.com/thedotmack/claude-mem#readme",
   "repository": "https://github.com/thedotmack/claude-mem",
-  "license": "AGPL-3.0",
+  "license": "Apache-2.0",
   "keywords": [
     "claude",
     "claude-code",

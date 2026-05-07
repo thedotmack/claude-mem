@@ -50,7 +50,7 @@
 
 <p align="center">
   <a href="LICENSE">
-    <img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License">
+    <img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/version-6.5.0-green.svg" alt="Version">
@@ -273,24 +273,20 @@ Consultați [Ghidul de Dezvoltare](https://docs.claude-mem.ai/development) pentr
 
 ---
 
-## Licență
+## License
 
-Acest proiect este licențiat sub **GNU Affero General Public License v3.0** (AGPL-3.0).
+This project is licensed under the **Apache License 2.0** (Apache-2.0).
 
-Copyright (C) 2025 Alex Newman (@thedotmack). Toate drepturile rezervate.
+Copyright (C) 2025 Alex Newman (@thedotmack). All rights reserved.
 
-Consultați fișierul [LICENSE](LICENSE) pentru detalii complete.
+See the [LICENSE](LICENSE) file for full details.
 
-**Ce Înseamnă Asta:**
+Apache-2.0 allows broad use, modification, distribution, and commercial use, subject to its terms.
 
-- Puteți folosi, modifica și distribui acest software liber
-- Dacă modificați și implementați pe un server de rețea, trebuie să faceți disponibil codul sursă
-- Lucrările derivate trebuie să fie licențiate și ele sub AGPL-3.0
-- NU EXISTĂ NICIO GARANȚIE pentru acest software
-
-**Notă despre Ragtime**: Directorul `ragtime/` este licențiat separat sub **PolyForm Noncommercial License 1.0.0**. Consultați [ragtime/LICENSE](ragtime/LICENSE) pentru detalii.
+**Ragtime note**: The ragtime/ directory is licensed under the **Apache License 2.0**. See [ragtime/LICENSE](ragtime/LICENSE) for details.
 
 ---
+
 
 ## Suport
 

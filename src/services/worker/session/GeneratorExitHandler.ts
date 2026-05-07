@@ -8,7 +8,7 @@ import { RestartGuard } from '../RestartGuard.js';
 export interface GeneratorExitDependencies {
   sessionManager: SessionManager;
   completionHandler: SessionCompletionHandler;
-  restartGenerator: (session: ActiveSession, source: string) => void;
+  restartGenerator: (session: ActiveSession, source: string) => void | Promise<void>;
 }
 
 /**
@@ -47,22 +47,22 @@ export async function handleGeneratorExit(
       sessionId: sessionDbId,
       reason
     });
-    pendingStore.clearPendingForSession(sessionDbId);
-    completionHandler.finalizeSession(sessionDbId);
+    await pendingStore.clearPendingForSession(sessionDbId);
+    await completionHandler.finalizeSession(sessionDbId);
     sessionManager.removeSessionImmediate(sessionDbId);
     return;
   }
 
   let pendingCount: number;
   try {
-    pendingCount = pendingStore.getPendingCount(sessionDbId);
+    pendingCount = await pendingStore.getPendingCount(sessionDbId);
   } catch (e) {
     const normalized = e instanceof Error ? e : new Error(String(e));
     logger.error('SESSION', 'Error during recovery pending-count check; aborting to prevent leaks', {
       sessionId: sessionDbId
     }, normalized);
-    pendingStore.clearPendingForSession(sessionDbId);
-    completionHandler.finalizeSession(sessionDbId);
+    await pendingStore.clearPendingForSession(sessionDbId);
+    await completionHandler.finalizeSession(sessionDbId);
     sessionManager.removeSessionImmediate(sessionDbId);
     return;
   }
@@ -70,7 +70,7 @@ export async function handleGeneratorExit(
   if (pendingCount === 0) {
     session.restartGuard?.recordSuccess();
     session.consecutiveRestarts = 0;
-    completionHandler.finalizeSession(sessionDbId);
+    await completionHandler.finalizeSession(sessionDbId);
     sessionManager.removeSessionImmediate(sessionDbId);
     return;
   }
@@ -90,8 +90,8 @@ export async function handleGeneratorExit(
       maxConsecutiveFailures: session.restartGuard.maxConsecutiveFailures,
     });
     session.consecutiveRestarts = 0;
-    pendingStore.clearPendingForSession(sessionDbId);
-    completionHandler.finalizeSession(sessionDbId);
+    await pendingStore.clearPendingForSession(sessionDbId);
+    await completionHandler.finalizeSession(sessionDbId);
     sessionManager.removeSessionImmediate(sessionDbId);
     return;
   }
@@ -117,7 +117,7 @@ export async function handleGeneratorExit(
     session.respawnTimer = undefined;
     const stillExists = deps.sessionManager.getSession(sessionDbId);
     if (stillExists && !stillExists.generatorPromise) {
-      restartGenerator(stillExists, 'pending-work-restart');
+      void restartGenerator(stillExists, 'pending-work-restart');
     }
   }, backoffMs);
 }

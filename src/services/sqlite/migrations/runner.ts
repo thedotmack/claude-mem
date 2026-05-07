@@ -7,6 +7,7 @@ import {
   SchemaVersion
 } from '../../../types/database.js';
 import { DEFAULT_PLATFORM_SOURCE } from '../../../shared/platform-source.js';
+import { ensureServerStorageSchema, SERVER_STORAGE_SCHEMA_VERSION } from '../../../storage/sqlite/schema.js';
 
 export class MigrationRunner {
   constructor(private db: Database) {}
@@ -34,6 +35,9 @@ export class MigrationRunner {
     this.addObservationsUniqueContentHashIndex();
     this.addObservationsMetadataColumn();
     this.dropDeadPendingMessagesColumns();
+    this.dropWorkerPidColumn();
+    this.createServerOwnedTables();
+    this.rebuildPendingMessagesForFinalQueueSchema();
   }
 
   private initializeSchema(): void {
@@ -422,10 +426,8 @@ export class MigrationRunner {
         last_user_message TEXT,
         last_assistant_message TEXT,
         prompt_number INTEGER,
-        status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'processing', 'processed', 'failed')),
-        retry_count INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'processing')),
         created_at_epoch INTEGER NOT NULL,
-        completed_at_epoch INTEGER,
         FOREIGN KEY (session_db_id) REFERENCES sdk_sessions(id) ON DELETE CASCADE
       )
     `);
@@ -844,12 +846,8 @@ export class MigrationRunner {
           last_assistant_message   TEXT,
           prompt_number            INTEGER,
           status                   TEXT    NOT NULL DEFAULT 'pending'
-                                           CHECK(status IN ('pending', 'processing', 'processed', 'failed')),
-          retry_count              INTEGER NOT NULL DEFAULT 0,
+                                           CHECK(status IN ('pending', 'processing')),
           created_at_epoch         INTEGER NOT NULL,
-          failed_at_epoch          INTEGER,
-          completed_at_epoch       INTEGER,
-          worker_pid               INTEGER,
           agent_type               TEXT,
           agent_id                 TEXT,
           FOREIGN KEY (session_db_id) REFERENCES sdk_sessions(id) ON DELETE CASCADE
@@ -860,8 +858,7 @@ export class MigrationRunner {
         INSERT INTO pending_messages_new (
           id, session_db_id, content_session_id, tool_use_id, message_type,
           tool_name, tool_input, tool_response, cwd, last_user_message,
-          last_assistant_message, prompt_number, status, retry_count,
-          created_at_epoch, failed_at_epoch, completed_at_epoch, worker_pid,
+          last_assistant_message, prompt_number, status, created_at_epoch,
           agent_type, agent_id
         )
         SELECT
@@ -870,22 +867,19 @@ export class MigrationRunner {
           content_session_id,
           ${has('tool_use_id') ? 'tool_use_id' : 'NULL'},
           message_type,
-          tool_name,
-          tool_input,
-          tool_response,
-          cwd,
+          ${has('tool_name') ? 'tool_name' : 'NULL'},
+          ${has('tool_input') ? 'tool_input' : 'NULL'},
+          ${has('tool_response') ? 'tool_response' : 'NULL'},
+          ${has('cwd') ? 'cwd' : 'NULL'},
           ${has('last_user_message') ? 'last_user_message' : 'NULL'},
           ${has('last_assistant_message') ? 'last_assistant_message' : 'NULL'},
           ${has('prompt_number') ? 'prompt_number' : 'NULL'},
-          status,
-          retry_count,
+          CASE WHEN status = 'processing' THEN 'processing' ELSE 'pending' END,
           created_at_epoch,
-          ${has('failed_at_epoch') ? 'failed_at_epoch' : 'NULL'},
-          ${has('completed_at_epoch') ? 'completed_at_epoch' : 'NULL'},
-          NULL,
           ${has('agent_type') ? 'agent_type' : 'NULL'},
           ${has('agent_id') ? 'agent_id' : 'NULL'}
         FROM pending_messages
+        WHERE status IN ('pending', 'processing')
       `);
 
       this.db.run('DROP TABLE pending_messages');
@@ -894,7 +888,6 @@ export class MigrationRunner {
       this.db.run('CREATE INDEX IF NOT EXISTS idx_pending_messages_session        ON pending_messages(session_db_id)');
       this.db.run('CREATE INDEX IF NOT EXISTS idx_pending_messages_status         ON pending_messages(status)');
       this.db.run('CREATE INDEX IF NOT EXISTS idx_pending_messages_claude_session ON pending_messages(content_session_id)');
-      this.db.run('CREATE INDEX IF NOT EXISTS idx_pending_messages_worker_pid     ON pending_messages(worker_pid)');
 
       this.db.run(`
         DELETE FROM pending_messages
@@ -991,6 +984,10 @@ export class MigrationRunner {
 
     this.db.run(`DELETE FROM pending_messages WHERE status NOT IN ('pending', 'processing')`);
 
+    if (toDrop.includes('worker_pid')) {
+      this.db.run('DROP INDEX IF EXISTS idx_pending_messages_worker_pid');
+    }
+
     for (const colName of toDrop) {
       try {
         this.db.run(`ALTER TABLE pending_messages DROP COLUMN ${colName}`);
@@ -1001,5 +998,131 @@ export class MigrationRunner {
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(31, new Date().toISOString());
+  }
+
+  private dropWorkerPidColumn(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(32) as SchemaVersion | undefined;
+    if (applied) return;
+
+    const cols = this.db.query('PRAGMA table_info(pending_messages)').all() as TableColumnInfo[];
+    const hasColumn = cols.some(c => c.name === 'worker_pid');
+
+    if (hasColumn) {
+      try {
+        this.db.run('DROP INDEX IF EXISTS idx_pending_messages_worker_pid');
+        this.db.run('ALTER TABLE pending_messages DROP COLUMN worker_pid');
+        logger.debug('DB', 'Dropped worker_pid column and its index from pending_messages');
+      } catch (error) {
+        logger.warn('DB', 'Failed to drop worker_pid column from pending_messages', {}, error instanceof Error ? error : new Error(String(error)));
+      }
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(32, new Date().toISOString());
+  }
+
+  private createServerOwnedTables(): void {
+    ensureServerStorageSchema(this.db);
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(
+      SERVER_STORAGE_SCHEMA_VERSION,
+      new Date().toISOString()
+    );
+  }
+
+  private rebuildPendingMessagesForFinalQueueSchema(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(34) as SchemaVersion | undefined;
+    if (applied) return;
+
+    const table = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='pending_messages'").get() as { sql: string } | null;
+    if (!table) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(34, new Date().toISOString());
+      return;
+    }
+
+    const hasStaleStatusCheck = table.sql.includes("'processed'") || table.sql.includes("'failed'");
+    const cols = this.db.query('PRAGMA table_info(pending_messages)').all() as TableColumnInfo[];
+    const colNames = new Set(cols.map(c => c.name));
+    const hasDeadColumns = ['retry_count', 'failed_at_epoch', 'completed_at_epoch', 'worker_pid'].some(name => colNames.has(name));
+    if (!hasStaleStatusCheck && !hasDeadColumns) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(34, new Date().toISOString());
+      return;
+    }
+
+    const has = (name: string) => colNames.has(name);
+    this.db.run('PRAGMA foreign_keys = OFF');
+    this.db.run('BEGIN TRANSACTION');
+    try {
+      this.db.run('DROP TABLE IF EXISTS pending_messages_final');
+      this.db.run(`
+        CREATE TABLE pending_messages_final (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_db_id INTEGER NOT NULL,
+          content_session_id TEXT NOT NULL,
+          tool_use_id TEXT,
+          message_type TEXT NOT NULL CHECK(message_type IN ('observation', 'summarize')),
+          tool_name TEXT,
+          tool_input TEXT,
+          tool_response TEXT,
+          cwd TEXT,
+          last_user_message TEXT,
+          last_assistant_message TEXT,
+          prompt_number INTEGER,
+          status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'processing')),
+          created_at_epoch INTEGER NOT NULL,
+          agent_type TEXT,
+          agent_id TEXT,
+          FOREIGN KEY (session_db_id) REFERENCES sdk_sessions(id) ON DELETE CASCADE
+        )
+      `);
+
+      this.db.run(`
+        INSERT INTO pending_messages_final (
+          id, session_db_id, content_session_id, tool_use_id, message_type,
+          tool_name, tool_input, tool_response, cwd, last_user_message,
+          last_assistant_message, prompt_number, status, created_at_epoch,
+          agent_type, agent_id
+        )
+        SELECT
+          id,
+          session_db_id,
+          content_session_id,
+          ${has('tool_use_id') ? 'tool_use_id' : 'NULL'},
+          message_type,
+          ${has('tool_name') ? 'tool_name' : 'NULL'},
+          ${has('tool_input') ? 'tool_input' : 'NULL'},
+          ${has('tool_response') ? 'tool_response' : 'NULL'},
+          ${has('cwd') ? 'cwd' : 'NULL'},
+          ${has('last_user_message') ? 'last_user_message' : 'NULL'},
+          ${has('last_assistant_message') ? 'last_assistant_message' : 'NULL'},
+          ${has('prompt_number') ? 'prompt_number' : 'NULL'},
+          CASE WHEN status = 'processing' THEN 'processing' ELSE 'pending' END,
+          created_at_epoch,
+          ${has('agent_type') ? 'agent_type' : 'NULL'},
+          ${has('agent_id') ? 'agent_id' : 'NULL'}
+        FROM pending_messages
+        WHERE status IN ('pending', 'processing')
+      `);
+
+      this.db.run('DROP TABLE pending_messages');
+      this.db.run('ALTER TABLE pending_messages_final RENAME TO pending_messages');
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_pending_messages_session ON pending_messages(session_db_id)');
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_pending_messages_status ON pending_messages(status)');
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_pending_messages_claude_session ON pending_messages(content_session_id)');
+      this.db.run(`
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_pending_session_tool
+        ON pending_messages(content_session_id, tool_use_id)
+        WHERE tool_use_id IS NOT NULL
+      `);
+
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(34, new Date().toISOString());
+      this.db.run('COMMIT');
+      this.db.run('PRAGMA foreign_keys = ON');
+    } catch (error) {
+      this.db.run('ROLLBACK');
+      this.db.run('PRAGMA foreign_keys = ON');
+      if (error instanceof Error) {
+        throw error;
+      }
+      throw new Error(`Migration 34 failed: ${String(error)}`);
+    }
   }
 }

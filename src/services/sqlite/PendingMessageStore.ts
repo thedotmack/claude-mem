@@ -57,8 +57,11 @@ export class PendingMessageStore {
       message.agentId ?? null
     );
 
-    this.onMutate?.();
-    return result.lastInsertRowid as number;
+    if (result.changes > 0) {
+      this.onMutate?.();
+      return result.lastInsertRowid as number;
+    }
+    return 0;
   }
 
   claimNextMessage(sessionDbId: number): PersistentPendingMessage | null {
@@ -79,7 +82,9 @@ export class PendingMessageStore {
         sessionId: sessionDbId
       });
     }
-    this.onMutate?.();
+    if (claimed) {
+      this.onMutate?.();
+    }
     return claimed;
   }
 
@@ -120,6 +125,40 @@ export class PendingMessageStore {
     `);
     const result = stmt.get(sessionDbId) as { count: number };
     return result.count;
+  }
+
+  getTotalQueueDepth(): number {
+    const stmt = this.db.prepare(`
+      SELECT COUNT(*) as count FROM pending_messages
+      WHERE status IN ('pending', 'processing')
+    `);
+    const result = stmt.get() as { count: number };
+    return result.count;
+  }
+
+  hasAnyPendingWork(): boolean {
+    return this.getTotalQueueDepth() > 0;
+  }
+
+  getSessionsWithPendingMessages(): number[] {
+    const stmt = this.db.prepare(`
+      SELECT DISTINCT session_db_id FROM pending_messages
+      WHERE status IN ('pending', 'processing')
+      ORDER BY session_db_id ASC
+    `);
+    return (stmt.all() as Array<{ session_db_id: number }>).map(row => row.session_db_id);
+  }
+
+  confirmProcessed(messageId: number): number {
+    const stmt = this.db.prepare(`
+      DELETE FROM pending_messages
+      WHERE id = ? AND status = 'processing'
+    `);
+    const changes = stmt.run(messageId).changes;
+    if (changes > 0) {
+      this.onMutate?.();
+    }
+    return changes;
   }
 
   peekPendingTypes(sessionDbId: number): Array<{ message_type: string; tool_name: string | null }> {

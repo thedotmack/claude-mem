@@ -1,7 +1,7 @@
 -- claude-mem SQLite schema
 --
 -- Authoritative shape of the database after all migrations through
--- runner.ts have been applied (current tip = migration 29). Fresh
+-- runner.ts have been applied (current tip = migration 34). Fresh
 -- databases boot directly into this shape; existing databases reach
 -- it via the migration runner.
 --
@@ -11,8 +11,6 @@
 -- Invariants enforced here (Plan 01):
 --   * pending_messages.UNIQUE(content_session_id, tool_use_id) — replaces
 --     in-memory pendingTools Map for ingestion pairing (Plan 03 also depends).
---   * pending_messages.worker_pid INTEGER — populated by self-healing
---     claim query; replaces the legacy stale-reset epoch column.
 --   * observations.UNIQUE(memory_session_id, content_hash) — replaces the
 --     legacy dedup window; ON CONFLICT DO NOTHING absorbs duplicates.
 
@@ -120,8 +118,7 @@ CREATE INDEX IF NOT EXISTS idx_summaries_merged_into          ON session_summari
 
 -- ─────────────────────────────────────────────────────────────────────
 -- pending_messages: persistent work queue for SDK messages.
--- worker_pid + UNIQUE(content_session_id, tool_use_id) make the claim
--- query self-healing without any legacy stale-reset epoch column.
+-- UNIQUE(content_session_id, tool_use_id) preserves hook-side dedupe.
 -- ─────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS pending_messages (
   id                       INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -147,7 +144,6 @@ CREATE TABLE IF NOT EXISTS pending_messages (
 CREATE INDEX IF NOT EXISTS idx_pending_messages_session        ON pending_messages(session_db_id);
 CREATE INDEX IF NOT EXISTS idx_pending_messages_status         ON pending_messages(status);
 CREATE INDEX IF NOT EXISTS idx_pending_messages_claude_session ON pending_messages(content_session_id);
-CREATE INDEX IF NOT EXISTS idx_pending_messages_worker_pid     ON pending_messages(worker_pid);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_pending_session_tool
   ON pending_messages(content_session_id, tool_use_id)
   WHERE tool_use_id IS NOT NULL;

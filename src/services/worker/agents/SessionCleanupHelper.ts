@@ -8,4 +8,5 @@ export function cleanupProcessedMessages(
   worker: WorkerRef | undefined
 ): void {
   session.earliestPendingTimestamp = null;
+  worker?.broadcastProcessingStatus?.();
 }

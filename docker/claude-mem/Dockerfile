@@ -41,14 +41,19 @@ USER root
 COPY plugin/ /opt/claude-mem/
 RUN chown -R node:node /opt/claude-mem
 
-RUN mkdir -p /home/node/.claude /home/node/.claude-mem \
- && chown -R node:node /home/node/.claude /home/node/.claude-mem
-
 USER node
-WORKDIR /home/node
+RUN cd /opt/claude-mem \
+ && npm install --omit=dev --legacy-peer-deps
+
+USER root
+RUN mkdir -p /home/node/.claude /home/node/.claude-mem /data/claude-mem \
+ && chown -R node:node /home/node/.claude /home/node/.claude-mem /data/claude-mem
 
 COPY --chown=node:node docker/claude-mem/entrypoint.sh /usr/local/bin/claude-mem-entrypoint
 RUN chmod +x /usr/local/bin/claude-mem-entrypoint
+
+USER node
+WORKDIR /home/node
 
 ENTRYPOINT ["/usr/local/bin/claude-mem-entrypoint"]
 CMD ["bash"]

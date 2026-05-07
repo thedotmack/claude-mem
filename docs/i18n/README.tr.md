@@ -49,7 +49,7 @@
 
 <p align="center">
   <a href="LICENSE">
-    <img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License">
+    <img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/version-6.5.0-green.svg" alt="Version">
@@ -272,24 +272,20 @@ Katkı iş akışı için [Geliştirme Kılavuzu](https://docs.claude-mem.ai/dev
 
 ---
 
-## Lisans
+## License
 
-Bu proje **GNU Affero General Public License v3.0** (AGPL-3.0) altında lisanslanmıştır.
+This project is licensed under the **Apache License 2.0** (Apache-2.0).
 
-Telif Hakkı (C) 2025 Alex Newman (@thedotmack). Tüm hakları saklıdır.
+Copyright (C) 2025 Alex Newman (@thedotmack). All rights reserved.
 
-Tam detaylar için [LICENSE](LICENSE) dosyasına bakın.
+See the [LICENSE](LICENSE) file for full details.
 
-**Bu Ne Anlama Gelir:**
+Apache-2.0 allows broad use, modification, distribution, and commercial use, subject to its terms.
 
-- Bu yazılımı özgürce kullanabilir, değiştirebilir ve dağıtabilirsiniz
-- Değiştirip bir ağ sunucusunda dağıtırsanız, kaynak kodunuzu kullanılabilir hale getirmelisiniz
-- Türev çalışmalar da AGPL-3.0 altında lisanslanmalıdır
-- Bu yazılım için HİÇBİR GARANTİ yoktur
-
-**Ragtime Hakkında Not**: `ragtime/` dizini ayrı olarak **PolyForm Noncommercial License 1.0.0** altında lisanslanmıştır. Detaylar için [ragtime/LICENSE](ragtime/LICENSE) dosyasına bakın.
+**Ragtime note**: The ragtime/ directory is licensed under the **Apache License 2.0**. See [ragtime/LICENSE](ragtime/LICENSE) for details.
 
 ---
+
 
 ## Destek
 

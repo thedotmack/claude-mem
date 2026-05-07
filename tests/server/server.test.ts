@@ -1,12 +1,6 @@
 import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
 import { logger } from '../../src/utils/logger.js';
 
-mock.module('../../src/services/worker/http/middleware.js', () => ({
-  createMiddleware: () => [],
-  requireLocalhost: (_req: any, _res: any, next: any) => next(),
-  summarizeRequestBody: () => 'test body',
-}));
-
 import { Server } from '../../src/services/server/Server.js';
 import type { RouteHandler, ServerOptions } from '../../src/services/server/Server.js';
 
@@ -66,6 +60,40 @@ describe('Server', () => {
       expect(server.app).toBeDefined();
 
       expect(typeof server.app.listen).toBe('function');
+    });
+
+    it('should register pre-body-parser routes before normal middleware', async () => {
+      server = new Server({
+        ...mockOptions,
+        preBodyParserRoutes: [{
+          setupRoutes(app) {
+            app.post('/api/auth/*splat', (req, res) => {
+              res.json({
+                bodyParsed: req.body !== undefined,
+              });
+            });
+          },
+        }],
+      });
+
+      const testPort = 40000 + Math.floor(Math.random() * 10000);
+
+      await server.listen(testPort, '127.0.0.1');
+
+      const response = await fetch(`http://127.0.0.1:${testPort}/api/auth/session`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Origin: 'http://localhost:37777',
+        },
+        body: JSON.stringify({ ok: true }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get('access-control-allow-origin')).toBe('http://localhost:37777');
+
+      const body = await response.json();
+      expect(body.bodyParsed).toBe(false);
     });
   });
 
@@ -285,6 +313,33 @@ describe('Server', () => {
       expect(body.platform).toBeDefined();
       expect(body.pid).toBeDefined();
       expect(typeof body.pid).toBe('number');
+    });
+
+    it('should return degraded health when BullMQ Redis health is errored', async () => {
+      server = new Server({
+        ...mockOptions,
+        getQueueHealth: () => ({
+          engine: 'bullmq',
+          redis: {
+            status: 'error',
+            mode: 'external',
+            host: '127.0.0.1',
+            port: 6379,
+            prefix: 'test_prefix',
+            error: 'connection refused',
+          },
+        }),
+      });
+      const testPort = 40000 + Math.floor(Math.random() * 10000);
+
+      await server.listen(testPort, '127.0.0.1');
+
+      const response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
+      const body = await response.json();
+
+      expect(response.status).toBe(503);
+      expect(body.status).toBe('degraded');
+      expect(body.queue.redis.status).toBe('error');
     });
   });
 

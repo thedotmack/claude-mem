@@ -49,7 +49,7 @@
 
 <p align="center">
   <a href="LICENSE">
-    <img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License">
+    <img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/version-6.5.0-green.svg" alt="Version">
@@ -272,24 +272,20 @@ npm run bug-report
 
 ---
 
-## ใบอนุญาต
+## License
 
-โปรเจกต์นี้ได้รับอนุญาตภายใต้ **GNU Affero General Public License v3.0** (AGPL-3.0)
+This project is licensed under the **Apache License 2.0** (Apache-2.0).
 
-Copyright (C) 2025 Alex Newman (@thedotmack) สงวนลิขสิทธิ์ทั้งหมด
+Copyright (C) 2025 Alex Newman (@thedotmack). All rights reserved.
 
-ดูไฟล์ [LICENSE](LICENSE) สำหรับรายละเอียดทั้งหมด
+See the [LICENSE](LICENSE) file for full details.
 
-**ความหมาย:**
+Apache-2.0 allows broad use, modification, distribution, and commercial use, subject to its terms.
 
-- คุณสามารถใช้ ดัดแปลง และแจกจ่ายซอฟต์แวร์นี้ได้อย่างอิสระ
-- หากคุณดัดแปลงและปรับใช้บนเซิร์ฟเวอร์เครือข่าย คุณต้องทำให้ซอร์สโค้ดของคุณพร้อมใช้งาน
-- งานที่เป็นอนุพันธ์ต้องได้รับอนุญาตภายใต้ AGPL-3.0 ด้วย
-- ไม่มีการรับประกันสำหรับซอฟต์แวร์นี้
-
-**หมายเหตุเกี่ยวกับ Ragtime**: ไดเรกทอรี `ragtime/` ได้รับอนุญาตแยกต่างหากภายใต้ **PolyForm Noncommercial License 1.0.0** ดู [ragtime/LICENSE](ragtime/LICENSE) สำหรับรายละเอียด
+**Ragtime note**: The ragtime/ directory is licensed under the **Apache License 2.0**. See [ragtime/LICENSE](ragtime/LICENSE) for details.
 
 ---
+
 
 ## การสนับสนุน
 

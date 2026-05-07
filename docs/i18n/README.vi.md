@@ -50,7 +50,7 @@
 
 <p align="center">
   <a href="LICENSE">
-    <img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License">
+    <img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/version-6.5.0-green.svg" alt="Version">
@@ -273,24 +273,20 @@ Xem [Hướng Dẫn Phát Triển](https://docs.claude-mem.ai/development) để
 
 ---
 
-## Giấy Phép
+## License
 
-Dự án này được cấp phép theo **GNU Affero General Public License v3.0** (AGPL-3.0).
+This project is licensed under the **Apache License 2.0** (Apache-2.0).
 
-Copyright (C) 2025 Alex Newman (@thedotmack). Bảo lưu mọi quyền.
+Copyright (C) 2025 Alex Newman (@thedotmack). All rights reserved.
 
-Xem tệp [LICENSE](LICENSE) để biết chi tiết đầy đủ.
+See the [LICENSE](LICENSE) file for full details.
 
-**Điều Này Có Nghĩa Là:**
+Apache-2.0 allows broad use, modification, distribution, and commercial use, subject to its terms.
 
-- Bạn có thể sử dụng, sửa đổi và phân phối phần mềm này tự do
-- Nếu bạn sửa đổi và triển khai trên máy chủ mạng, bạn phải cung cấp mã nguồn của mình
-- Các tác phẩm phái sinh cũng phải được cấp phép theo AGPL-3.0
-- KHÔNG CÓ BẢO HÀNH cho phần mềm này
-
-**Lưu Ý Về Ragtime**: Thư mục `ragtime/` được cấp phép riêng theo **PolyForm Noncommercial License 1.0.0**. Xem [ragtime/LICENSE](ragtime/LICENSE) để biết chi tiết.
+**Ragtime note**: The ragtime/ directory is licensed under the **Apache License 2.0**. See [ragtime/LICENSE](ragtime/LICENSE) for details.
 
 ---
+
 
 ## Hỗ Trợ
 

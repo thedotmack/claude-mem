@@ -58,7 +58,7 @@ function seedDatabase(dbPath: string, opts: { observerSessions: number; stuckCou
 
   const insertPending = db.prepare(
     `INSERT INTO pending_messages (session_db_id, content_session_id, message_type, status, created_at_epoch)
-     VALUES (?, 'keep-content', 'observation', 'failed', ?)`
+     VALUES (?, 'keep-content', 'observation', 'processing', ?)`
   );
   for (let i = 0; i < opts.stuckCount; i++) {
     insertPending.run(keepSessionDbId, epoch);

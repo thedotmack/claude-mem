@@ -55,7 +55,7 @@ interface IngestContext {
   sessionManager: SessionManager;
   dbManager: DatabaseManager;
   eventBroadcaster: SessionEventBroadcaster;
-  ensureGeneratorRunning?: (sessionDbId: number, source: string) => void;
+  ensureGeneratorRunning?: (sessionDbId: number, source: string) => void | Promise<void>;
 }
 
 let ctx: IngestContext | null = null;
@@ -65,7 +65,7 @@ export function setIngestContext(next: IngestContext): void {
 }
 
 export function attachIngestGeneratorStarter(
-  ensureGeneratorRunning: (sessionDbId: number, source: string) => void,
+  ensureGeneratorRunning: (sessionDbId: number, source: string) => void | Promise<void>,
 ): void {
   requireContext().ensureGeneratorRunning = ensureGeneratorRunning;
 }
@@ -94,7 +94,7 @@ export interface ObservationPayload {
   toolUseId?: string;
 }
 
-export function ingestObservation(payload: ObservationPayload): IngestResult {
+export async function ingestObservation(payload: ObservationPayload): Promise<IngestResult> {
   const { sessionManager, dbManager, eventBroadcaster, ensureGeneratorRunning } = requireContext();
 
   const platformSource = normalizePlatformSource(payload.platformSource);
@@ -158,7 +158,7 @@ export function ingestObservation(payload: ObservationPayload): IngestResult {
     ? stripMemoryTagsFromJson(JSON.stringify(payload.toolResponse))
     : '{}';
 
-  sessionManager.queueObservation(sessionDbId, {
+  await sessionManager.queueObservation(sessionDbId, {
     tool_name: payload.toolName,
     tool_input: cleanedToolInput,
     tool_response: cleanedToolResponse,
@@ -175,7 +175,7 @@ export function ingestObservation(payload: ObservationPayload): IngestResult {
     toolUseId: typeof payload.toolUseId === 'string' ? payload.toolUseId : undefined,
   });
 
-  ensureGeneratorRunning?.(sessionDbId, 'observation');
+  await ensureGeneratorRunning?.(sessionDbId, 'observation');
   eventBroadcaster.broadcastObservationQueued(sessionDbId);
 
   return { ok: true, sessionDbId };
@@ -229,7 +229,7 @@ export type SummaryPayload =
       parsed: ParsedSummary;
     };
 
-export function ingestSummary(payload: SummaryPayload): IngestResult {
+export async function ingestSummary(payload: SummaryPayload): Promise<IngestResult> {
   if (payload.kind === 'queue') {
     const { sessionManager, dbManager, ensureGeneratorRunning } = requireContext();
 
@@ -249,8 +249,8 @@ export function ingestSummary(payload: SummaryPayload): IngestResult {
       return { ok: false, reason: message, status: 500 };
     }
 
-    sessionManager.queueSummarize(sessionDbId, payload.lastAssistantMessage);
-    ensureGeneratorRunning?.(sessionDbId, 'summarize');
+    await sessionManager.queueSummarize(sessionDbId, payload.lastAssistantMessage);
+    await ensureGeneratorRunning?.(sessionDbId, 'summarize');
 
     return { ok: true, sessionDbId };
   }

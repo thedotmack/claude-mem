@@ -189,7 +189,7 @@ describe('Transactions Module', () => {
 
   describe('storeObservationsAndMarkComplete', () => {
 
-    it('should store observations, summary, and mark message complete', () => {
+    it('should store observations, summary, and remove completed queue message', () => {
       const { memorySessionId, sessionDbId } = createSessionWithMemoryId('content-complete', 'complete-session');
       const project = 'test-project';
       const observations = [createObservationInput({ title: 'Complete Obs' })];
@@ -215,9 +215,9 @@ describe('Transactions Module', () => {
       expect(result.observationIds).toHaveLength(1);
       expect(result.summaryId).not.toBeNull();
 
-      const msgStmt = db.prepare('SELECT status FROM pending_messages WHERE id = ?');
-      const msg = msgStmt.get(messageId) as { status: string } | undefined;
-      expect(msg?.status).toBe('processed');
+      const msgStmt = db.prepare('SELECT id FROM pending_messages WHERE id = ?');
+      const msg = msgStmt.get(messageId) as { id: number } | null;
+      expect(msg).toBeNull();
     });
 
     it('should maintain atomicity - all operations share same timestamp', () => {

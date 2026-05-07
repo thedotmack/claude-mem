@@ -9,6 +9,9 @@ export interface CreateIteratorOptions {
   sessionDbId: number;
   signal: AbortSignal;
   onIdleTimeout?: () => void;
+  idleTimeoutMs?: number;
+  claimRetryDelayMs?: number;
+  maxClaimFailures?: number;
 }
 
 export class SessionQueueProcessor {
@@ -18,8 +21,16 @@ export class SessionQueueProcessor {
   ) {}
 
   async *createIterator(options: CreateIteratorOptions): AsyncIterableIterator<PendingMessageWithId> {
-    const { sessionDbId, signal, onIdleTimeout } = options;
+    const {
+      sessionDbId,
+      signal,
+      onIdleTimeout,
+      idleTimeoutMs = IDLE_TIMEOUT_MS,
+      claimRetryDelayMs = 250,
+      maxClaimFailures = 3
+    } = options;
     let lastActivityTime = Date.now();
+    let claimFailures = 0;
 
     while (!signal.aborted) {
       let persistentMessage: PersistentPendingMessage | null = null;
@@ -28,18 +39,25 @@ export class SessionQueueProcessor {
       } catch (error) {
         if (signal.aborted) return;
         const normalizedError = error instanceof Error ? error : new Error(String(error));
-        logger.error('QUEUE', 'Failed to claim next message; ending iterator', { sessionDbId }, normalizedError);
-        return;
+        claimFailures++;
+        logger.error('QUEUE', 'Failed to claim next message', { sessionDbId, claimFailures, maxClaimFailures }, normalizedError);
+        if (claimFailures >= maxClaimFailures) {
+          logger.error('QUEUE', 'Claim failure limit reached; ending iterator', { sessionDbId, claimFailures }, normalizedError);
+          return;
+        }
+        await this.waitForDelay(signal, claimRetryDelayMs);
+        continue;
       }
 
       if (persistentMessage) {
+        claimFailures = 0;
         lastActivityTime = Date.now();
         yield this.toPendingMessageWithId(persistentMessage);
         continue;
       }
 
       try {
-        const idleTimedOut = await this.handleWaitPhase(signal, lastActivityTime, sessionDbId, onIdleTimeout);
+        const idleTimedOut = await this.handleWaitPhase(signal, lastActivityTime, sessionDbId, idleTimeoutMs, onIdleTimeout);
         if (idleTimedOut) return;
         lastActivityTime = Date.now();
       } catch (error) {
@@ -64,17 +82,18 @@ export class SessionQueueProcessor {
     signal: AbortSignal,
     lastActivityTime: number,
     sessionDbId: number,
+    idleTimeoutMs: number,
     onIdleTimeout?: () => void
   ): Promise<boolean> {
-    const receivedMessage = await this.waitForMessage(signal, IDLE_TIMEOUT_MS);
+    const receivedMessage = await this.waitForMessage(signal, idleTimeoutMs);
 
     if (!receivedMessage && !signal.aborted) {
       const idleDuration = Date.now() - lastActivityTime;
-      if (idleDuration >= IDLE_TIMEOUT_MS) {
+      if (idleDuration >= idleTimeoutMs) {
         logger.info('SESSION', 'Idle timeout reached, triggering abort to kill subprocess', {
           sessionDbId,
           idleDurationMs: idleDuration,
-          thresholdMs: IDLE_TIMEOUT_MS
+          thresholdMs: idleTimeoutMs
         });
         onIdleTimeout?.();
         return true;
@@ -113,6 +132,27 @@ export class SessionQueueProcessor {
       this.events.once('message', onMessage);
       signal.addEventListener('abort', onAbort, { once: true });
       timeoutId = setTimeout(onTimeout, timeoutMs);
+    });
+  }
+
+  private waitForDelay(signal: AbortSignal, delayMs: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
+      const cleanup = () => {
+        if (timeoutId !== undefined) {
+          clearTimeout(timeoutId);
+        }
+        signal.removeEventListener('abort', onAbort);
+      };
+      const onAbort = () => {
+        cleanup();
+        resolve();
+      };
+      timeoutId = setTimeout(() => {
+        cleanup();
+        resolve();
+      }, delayMs);
+      signal.addEventListener('abort', onAbort, { once: true });
     });
   }
 }

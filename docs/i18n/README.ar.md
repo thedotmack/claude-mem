@@ -49,7 +49,7 @@
 
 <p align="center">
   <a href="LICENSE">
-    <img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License">
+    <img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/version-6.5.0-green.svg" alt="Version">
@@ -275,24 +275,20 @@ npm run bug-report
 
 ---
 
-## الترخيص (License)
+## License
 
-هذا المشروع مرخص بموجب **ترخيص GNU Affero العام الإصدار 3.0** (AGPL-3.0).
+This project is licensed under the **Apache License 2.0** (Apache-2.0).
 
-حقوق النشر (C) 2025 Alex Newman (@thedotmack). جميع الحقوق محفوظة.
+Copyright (C) 2025 Alex Newman (@thedotmack). All rights reserved.
 
-انظر ملف [LICENSE](LICENSE) للتفاصيل الكاملة.
+See the [LICENSE](LICENSE) file for full details.
 
-**ماذا يعني هذا:**
+Apache-2.0 allows broad use, modification, distribution, and commercial use, subject to its terms.
 
-- يمكنك استخدام وتعديل وتوزيع هذا البرنامج بحرية
-- إذا قمت بتعديل ونشر على خادم شبكة، يجب أن تتيح كود المصدر الخاص بك
-- الأعمال المشتقة يجب أن تكون مرخصة أيضًا تحت AGPL-3.0
-- لا يوجد ضمان لهذا البرنامج
-
-**ملاحظة حول Ragtime**: دليل `ragtime/` مرخص بشكل منفصل تحت **ترخيص PolyForm Noncommercial 1.0.0**. انظر [ragtime/LICENSE](ragtime/LICENSE) للتفاصيل.
+**Ragtime note**: The ragtime/ directory is licensed under the **Apache License 2.0**. See [ragtime/LICENSE](ragtime/LICENSE) for details.
 
 ---
+
 
 ## الدعم
 

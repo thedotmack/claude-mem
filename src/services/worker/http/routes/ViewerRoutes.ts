@@ -97,12 +97,14 @@ export class ViewerRoutes extends BaseRouteHandler {
       timestamp: Date.now()
     });
 
-    const isProcessing = this.sessionManager.isAnySessionProcessing();
-    const queueDepth = this.sessionManager.getTotalActiveWork(); 
-    this.sseBroadcaster.broadcast({
-      type: 'processing_status',
-      isProcessing,
-      queueDepth
-    });
+    void (async () => {
+      const isProcessing = await this.sessionManager.isAnySessionProcessing();
+      const queueDepth = await this.sessionManager.getTotalActiveWork(); 
+      this.sseBroadcaster.broadcast({
+        type: 'processing_status',
+        isProcessing,
+        queueDepth
+      });
+    })();
   });
 }

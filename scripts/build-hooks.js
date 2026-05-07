@@ -137,6 +137,7 @@ async function buildHooks() {
       logLevel: 'error', // Suppress warnings (import.meta warning is benign)
       external: [
         'bun:sqlite',
+        'zod',
         'cohere-ai',
         'ollama',
         '@chroma-core/default-embed',

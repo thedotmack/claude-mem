@@ -49,7 +49,7 @@
 
 <p align="center">
   <a href="LICENSE">
-    <img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License">
+    <img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/version-6.5.0-green.svg" alt="Version">
@@ -272,24 +272,20 @@ Zie [Ontwikkelingsgids](https://docs.claude-mem.ai/development) voor bijdragewor
 
 ---
 
-## Licentie
+## License
 
-Dit project is gelicentieerd onder de **GNU Affero General Public License v3.0** (AGPL-3.0).
+This project is licensed under the **Apache License 2.0** (Apache-2.0).
 
-Copyright (C) 2025 Alex Newman (@thedotmack). Alle rechten voorbehouden.
+Copyright (C) 2025 Alex Newman (@thedotmack). All rights reserved.
 
-Zie het [LICENSE](LICENSE) bestand voor volledige details.
+See the [LICENSE](LICENSE) file for full details.
 
-**Wat Dit Betekent:**
+Apache-2.0 allows broad use, modification, distribution, and commercial use, subject to its terms.
 
-- Je kunt deze software vrijelijk gebruiken, aanpassen en distribueren
-- Als je aanpast en implementeert op een netwerkserver, moet je je broncode beschikbaar maken
-- Afgeleide werken moeten ook gelicentieerd zijn onder AGPL-3.0
-- Er is GEEN GARANTIE voor deze software
-
-**Opmerking over Ragtime**: De `ragtime/` directory is afzonderlijk gelicentieerd onder de **PolyForm Noncommercial License 1.0.0**. Zie [ragtime/LICENSE](ragtime/LICENSE) voor details.
+**Ragtime note**: The ragtime/ directory is licensed under the **Apache License 2.0**. See [ragtime/LICENSE](ragtime/LICENSE) for details.
 
 ---
+
 
 ## Ondersteuning
 

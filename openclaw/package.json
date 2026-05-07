@@ -2,6 +2,7 @@
   "name": "@openclaw/claude-mem",
   "version": "1.0.0",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {

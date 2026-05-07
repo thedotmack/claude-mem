@@ -15,14 +15,6 @@ interface AffectedObservation {
   title: string;
 }
 
-interface ProcessedMessage {
-  id: number;
-  session_db_id: number;
-  tool_name: string;
-  created_at_epoch: number;
-  completed_at_epoch: number;
-}
-
 interface SessionMapping {
   session_db_id: number;
   memory_session_id: string;
@@ -78,19 +70,7 @@ function main() {
       return;
     }
 
-    console.log('Step 2: Finding pending messages processed during bad window...');
-    const processedMessages = db.query<ProcessedMessage, []>(`
-      SELECT id, session_db_id, tool_name, created_at_epoch, completed_at_epoch
-      FROM pending_messages
-      WHERE status = 'processed'
-        AND completed_at_epoch >= ${BAD_WINDOW_START}
-        AND completed_at_epoch <= ${BAD_WINDOW_END}
-      ORDER BY completed_at_epoch
-    `).all();
-
-    console.log(`Found ${processedMessages.length} processed messages\n`);
-
-    console.log('Step 3: Matching observations to session start times...');
+    console.log('Step 2: Matching observations to session start times...');
     const fixes: TimestampFix[] = [];
 
     interface ObsWithSession {

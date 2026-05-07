@@ -104,16 +104,11 @@ export function storeObservationsAndMarkComplete(
       summaryId = Number(result.lastInsertRowid);
     }
 
-    const updateStmt = db.prepare(`
-      UPDATE pending_messages
-      SET
-        status = 'processed',
-        completed_at_epoch = ?,
-        tool_input = NULL,
-        tool_response = NULL
+    const deleteStmt = db.prepare(`
+      DELETE FROM pending_messages
       WHERE id = ? AND status = 'processing'
     `);
-    updateStmt.run(timestampEpoch, messageId);
+    deleteStmt.run(messageId);
 
     return { observationIds, summaryId, createdAtEpoch: timestampEpoch };
   });

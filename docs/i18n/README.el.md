@@ -50,7 +50,7 @@
 
 <p align="center">
   <a href="LICENSE">
-    <img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License">
+    <img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/version-6.5.0-green.svg" alt="Version">
@@ -273,24 +273,20 @@ npm run bug-report
 
 ---
 
-## Άδεια Χρήσης
+## License
 
-Αυτό το έργο διατίθεται με άδεια **GNU Affero General Public License v3.0** (AGPL-3.0).
+This project is licensed under the **Apache License 2.0** (Apache-2.0).
 
-Copyright (C) 2025 Alex Newman (@thedotmack). Με επιφύλαξη παντός δικαιώματος.
+Copyright (C) 2025 Alex Newman (@thedotmack). All rights reserved.
 
-Δείτε το αρχείο [LICENSE](LICENSE) για πλήρεις λεπτομέρειες.
+See the [LICENSE](LICENSE) file for full details.
 
-**Τι Σημαίνει Αυτό:**
+Apache-2.0 allows broad use, modification, distribution, and commercial use, subject to its terms.
 
-- Μπορείτε να χρησιμοποιήσετε, να τροποποιήσετε και να διανείμετε ελεύθερα αυτό το λογισμικό
-- Εάν τροποποιήσετε και αναπτύξετε σε διακομιστή δικτύου, πρέπει να καταστήσετε διαθέσιμο τον πηγαίο κώδικά σας
-- Τα παράγωγα έργα πρέπει επίσης να διατίθενται με άδεια AGPL-3.0
-- ΔΕΝ υπάρχει ΕΓΓΥΗΣΗ για αυτό το λογισμικό
-
-**Σημείωση για το Ragtime**: Ο κατάλογος `ragtime/` διατίθεται χωριστά με άδεια **PolyForm Noncommercial License 1.0.0**. Δείτε το [ragtime/LICENSE](ragtime/LICENSE) για λεπτομέρειες.
+**Ragtime note**: The ragtime/ directory is licensed under the **Apache License 2.0**. See [ragtime/LICENSE](ragtime/LICENSE) for details.
 
 ---
+
 
 ## Υποστήριξη
 

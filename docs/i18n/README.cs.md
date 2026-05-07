@@ -50,7 +50,7 @@
 
 <p align="center">
   <a href="LICENSE">
-    <img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License">
+    <img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/version-6.5.0-green.svg" alt="Version">
@@ -273,24 +273,20 @@ Pracovní postup pro přispívání najdete v [Průvodci vývojem](https://docs.
 
 ---
 
-## Licence
+## License
 
-Tento projekt je licencován pod **GNU Affero General Public License v3.0** (AGPL-3.0).
+This project is licensed under the **Apache License 2.0** (Apache-2.0).
 
-Copyright (C) 2025 Alex Newman (@thedotmack). Všechna práva vyhrazena.
+Copyright (C) 2025 Alex Newman (@thedotmack). All rights reserved.
 
-Úplné podrobnosti najdete v souboru [LICENSE](LICENSE).
+See the [LICENSE](LICENSE) file for full details.
 
-**Co to znamená:**
+Apache-2.0 allows broad use, modification, distribution, and commercial use, subject to its terms.
 
-- Software můžete volně používat, upravovat a distribuovat
-- Pokud jej upravíte a nasadíte na síťovém serveru, musíte zpřístupnit svůj zdrojový kód
-- Odvozená díla musí být také licencována pod AGPL-3.0
-- Pro tento software neexistuje ŽÁDNÁ ZÁRUKA
-
-**Poznámka k Ragtime**: Adresář `ragtime/` je licencován samostatně pod **PolyForm Noncommercial License 1.0.0**. Podrobnosti najdete v [ragtime/LICENSE](ragtime/LICENSE).
+**Ragtime note**: The ragtime/ directory is licensed under the **Apache License 2.0**. See [ragtime/LICENSE](ragtime/LICENSE) for details.
 
 ---
+
 
 ## Podpora
 

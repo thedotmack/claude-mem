@@ -1,0 +1,109 @@
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { Database } from 'bun:sqlite';
+import {
+  createServerApiKey,
+  hashServerApiKey,
+  revokeServerApiKey,
+  verifyServerApiKey,
+} from '../../src/server/auth/api-key-service.js';
+import { requireServerAuth } from '../../src/server/middleware/auth.js';
+import { ProjectsRepository, TeamsRepository } from '../../src/storage/sqlite/index.js';
+
+describe('server API key auth', () => {
+  let db: Database;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    db.run('PRAGMA foreign_keys = ON');
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it('creates raw keys once while storing only a hash', () => {
+    const created = createServerApiKey(db, {
+      name: 'Team key',
+      teamId: null,
+      projectId: null,
+      scopes: ['memories:read'],
+    });
+
+    expect(created.rawKey).toStartWith('cmem_');
+    expect(created.record.keyHash).toBe(hashServerApiKey(created.rawKey));
+    expect(created.record.keyHash).not.toContain(created.rawKey);
+    expect(created.record.prefix).toBe(created.rawKey.slice(0, 10));
+  });
+
+  it('verifies required scopes and rejects revoked keys', () => {
+    const created = createServerApiKey(db, {
+      name: 'Scoped key',
+      scopes: ['memories:read'],
+    });
+
+    expect(verifyServerApiKey(db, created.rawKey, ['memories:read'])?.record.id).toBe(created.record.id);
+    expect(verifyServerApiKey(db, created.rawKey, ['memories:write'])).toBeNull();
+
+    revokeServerApiKey(db, created.record.id);
+    expect(verifyServerApiKey(db, created.rawKey, ['memories:read'])).toBeNull();
+  });
+
+  it('middleware allows localhost local-dev without a bearer token', () => {
+    const middleware = requireServerAuth(() => db, { authMode: 'local-dev' });
+    const req: any = {
+      ip: '127.0.0.1',
+      socket: {},
+      header: () => undefined,
+    };
+    const res: any = {
+      status: () => res,
+      json: () => {},
+    };
+    let calledNext = false;
+
+    middleware(req, res, () => {
+      calledNext = true;
+    });
+
+    expect(calledNext).toBe(true);
+    expect(req.authContext).toMatchObject({ mode: 'local-dev', scopes: ['*'] });
+  });
+
+  it('middleware requires a scoped bearer API key outside local-dev fallback', () => {
+    const team = new TeamsRepository(db).create({ name: 'Core' });
+    const project = new ProjectsRepository(db).create({ name: 'Project' });
+    const created = createServerApiKey(db, {
+      name: 'Write key',
+      teamId: team.id,
+      projectId: project.id,
+      scopes: ['memories:write'],
+    });
+    const middleware = requireServerAuth(() => db, {
+      authMode: 'api-key',
+      requiredScopes: ['memories:write'],
+    });
+    const req: any = {
+      ip: '10.0.0.5',
+      socket: {},
+      header: (name: string) => name.toLowerCase() === 'authorization' ? `Bearer ${created.rawKey}` : undefined,
+    };
+    const res: any = {
+      status: () => res,
+      json: () => {},
+    };
+    let calledNext = false;
+
+    middleware(req, res, () => {
+      calledNext = true;
+    });
+
+    expect(calledNext).toBe(true);
+    expect(req.authContext).toMatchObject({
+      mode: 'api-key',
+      apiKeyId: created.record.id,
+      teamId: team.id,
+      projectId: project.id,
+      scopes: ['memories:write'],
+    });
+  });
+});

@@ -1,0 +1,16 @@
+services:
+  server-beta-e2e:
+    image: node:20-alpine
+    depends_on:
+      claude-mem-server:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    environment:
+      E2E_BASE_URL: http://claude-mem-server:37777
+      E2E_REDIS_HOST: valkey
+      E2E_REDIS_PORT: 6379
+    volumes:
+      - ./docker/e2e:/e2e:ro
+    working_dir: /e2e
+    command: ["node", "/e2e/server-beta-e2e.mjs"]

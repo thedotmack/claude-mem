@@ -105,6 +105,10 @@ export class SessionStore {
     if (toDrop.length > 0) {
       this.db.run(`DELETE FROM pending_messages WHERE status NOT IN ('pending', 'processing')`);
 
+      if (toDrop.includes('worker_pid')) {
+        this.db.run('DROP INDEX IF EXISTS idx_pending_messages_worker_pid');
+      }
+
       for (const colName of toDrop) {
         try {
           this.db.run(`ALTER TABLE pending_messages DROP COLUMN ${colName}`);
@@ -910,19 +914,13 @@ export class SessionStore {
 
     const cols = this.db.query('PRAGMA table_info(pending_messages)').all() as TableColumnInfo[];
     const hasToolUseId = cols.some(c => c.name === 'tool_use_id');
-    const hasWorkerPid = cols.some(c => c.name === 'worker_pid');
 
     if (!hasToolUseId) {
       this.db.run('ALTER TABLE pending_messages ADD COLUMN tool_use_id TEXT');
     }
-    if (!hasWorkerPid) {
-      this.db.run('ALTER TABLE pending_messages ADD COLUMN worker_pid INTEGER');
-    }
 
     this.db.run('BEGIN TRANSACTION');
     try {
-      this.db.run('CREATE INDEX IF NOT EXISTS idx_pending_messages_worker_pid ON pending_messages(worker_pid)');
-
       this.db.run(`
         DELETE FROM pending_messages
          WHERE tool_use_id IS NOT NULL
@@ -2061,16 +2059,11 @@ export class SessionStore {
         summaryId = Number(result.lastInsertRowid);
       }
 
-      const updateStmt = this.db.prepare(`
-        UPDATE pending_messages
-        SET
-          status = 'processed',
-          completed_at_epoch = ?,
-          tool_input = NULL,
-          tool_response = NULL
+      const deleteStmt = this.db.prepare(`
+        DELETE FROM pending_messages
         WHERE id = ? AND status = 'processing'
       `);
-      updateStmt.run(timestampEpoch, messageId);
+      deleteStmt.run(messageId);
 
       return { observationIds, summaryId, createdAtEpoch: timestampEpoch };
     });

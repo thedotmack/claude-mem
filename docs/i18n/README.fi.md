@@ -49,7 +49,7 @@
 
 <p align="center">
   <a href="LICENSE">
-    <img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License">
+    <img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/version-6.5.0-green.svg" alt="Version">
@@ -272,24 +272,20 @@ Katso [Kehitysopas](https://docs.claude-mem.ai/development) osallistumisen työn
 
 ---
 
-## Lisenssi
+## License
 
-Tämä projekti on lisensoitu **GNU Affero General Public License v3.0** (AGPL-3.0) -lisenssillä.
+This project is licensed under the **Apache License 2.0** (Apache-2.0).
 
-Copyright (C) 2025 Alex Newman (@thedotmack). Kaikki oikeudet pidätetään.
+Copyright (C) 2025 Alex Newman (@thedotmack). All rights reserved.
 
-Katso [LICENSE](LICENSE)-tiedosto täydellisistä yksityiskohdista.
+See the [LICENSE](LICENSE) file for full details.
 
-**Mitä tämä tarkoittaa:**
+Apache-2.0 allows broad use, modification, distribution, and commercial use, subject to its terms.
 
-- Voit käyttää, muokata ja jakaa tätä ohjelmistoa vapaasti
-- Jos muokkaat ja otat käyttöön verkkopalvelimella, sinun on asetettava lähdekoodisi saataville
-- Johdannaisten teosten on myös oltava AGPL-3.0-lisensoituja
-- Tälle ohjelmistolle EI OLE TAKUUTA
-
-**Huomautus Ragtimesta**: `ragtime/`-hakemisto on erikseen lisensoitu **PolyForm Noncommercial License 1.0.0** -lisenssillä. Katso [ragtime/LICENSE](ragtime/LICENSE) yksityiskohdista.
+**Ragtime note**: The ragtime/ directory is licensed under the **Apache License 2.0**. See [ragtime/LICENSE](ragtime/LICENSE) for details.
 
 ---
+
 
 ## Tuki
 
