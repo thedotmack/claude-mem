@@ -23,6 +23,21 @@ import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import {
+  ServerBetaClient,
+  ServerBetaClientError,
+  isServerBetaClientError,
+  type ServerBetaAddObservationRequest,
+  type ServerBetaContextObservationsRequest,
+  type ServerBetaRecordEventRequest,
+  type ServerBetaSearchObservationsRequest,
+} from '../services/hooks/server-beta-client.js';
+import {
+  selectRuntime,
+  buildServerBetaContext,
+  type SelectedRuntime,
+  type ServerBetaRuntimeContext,
+} from '../services/hooks/runtime-selector.js';
 
 let mcpServerDirResolutionFailed = false;
 const mcpServerDir = (() => {
@@ -147,6 +162,235 @@ async function verifyWorkerConnection(): Promise<boolean> {
   } catch (error: unknown) {
     logger.debug('SYSTEM', 'Worker health check failed', {}, error instanceof Error ? error : new Error(String(error)));
     return false;
+  }
+}
+
+// Phase 8 — runtime selection for MCP tools.
+// In server-beta mode, observation_* tools talk to the server-beta `/v1`
+// endpoints via the SAME ServerBetaClient hooks use. This guarantees we
+// share the REST core for writes and searches; we never duplicate the
+// event-insert + outbox + enqueue logic on the MCP side.
+//
+// We deliberately resolve the runtime per-call (cheap; reads cached
+// settings) so the user can flip CLAUDE_MEM_RUNTIME without restarting
+// the MCP server.
+type ServerBetaToolContext = ServerBetaRuntimeContext;
+
+interface ServerBetaUnavailable {
+  runtime: 'server-beta';
+  available: false;
+  reason: string;
+}
+
+interface ServerBetaAvailable extends ServerBetaToolContext {
+  available: true;
+}
+
+type ServerBetaResolution = ServerBetaAvailable | ServerBetaUnavailable;
+
+function resolveServerBetaToolContext(): ServerBetaResolution | null {
+  const runtime: SelectedRuntime = selectRuntime();
+  if (runtime !== 'server-beta') {
+    return null;
+  }
+  const ctx = buildServerBetaContext();
+  if (!ctx) {
+    return {
+      runtime: 'server-beta',
+      available: false,
+      reason: 'server-beta is selected but configuration is incomplete (missing url, api key, or project id)',
+    };
+  }
+  return { ...ctx, available: true };
+}
+
+function formatToolError(error: unknown): { content: Array<{ type: 'text'; text: string }>; isError: true } {
+  if (isServerBetaClientError(error)) {
+    return {
+      content: [{
+        type: 'text' as const,
+        text: `Server beta error (${error.kind}${error.status ? ` ${error.status}` : ''}): ${error.message}`,
+      }],
+      isError: true as const,
+    };
+  }
+  return {
+    content: [{
+      type: 'text' as const,
+      text: `Tool error: ${error instanceof Error ? error.message : String(error)}`,
+    }],
+    isError: true as const,
+  };
+}
+
+function formatJsonResult(payload: unknown): { content: Array<{ type: 'text'; text: string }> } {
+  return {
+    content: [{
+      type: 'text' as const,
+      text: JSON.stringify(payload, null, 2),
+    }],
+  };
+}
+
+function requireServerBetaForObservationTool(toolName: string): ServerBetaAvailable {
+  const resolution = resolveServerBetaToolContext();
+  if (!resolution) {
+    throw new ServerBetaClientError(
+      'transport',
+      `${toolName} requires CLAUDE_MEM_RUNTIME=server-beta. Current runtime is "worker"; use the existing search/timeline/get_observations tools for worker-mode memory access.`,
+    );
+  }
+  if (!resolution.available) {
+    throw new ServerBetaClientError('missing_api_key', `${toolName}: ${resolution.reason}`);
+  }
+  return resolution;
+}
+
+interface ObservationAddArgs {
+  projectId?: string;
+  serverSessionId?: string | null;
+  kind?: string;
+  content: string;
+  metadata?: Record<string, unknown>;
+}
+
+async function handleObservationAdd(
+  args: ObservationAddArgs,
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+  try {
+    const ctx = requireServerBetaForObservationTool('observation_add');
+    if (typeof args?.content !== 'string' || args.content.trim().length === 0) {
+      throw new Error('observation_add: "content" is required');
+    }
+    const projectId = args.projectId && args.projectId.trim().length > 0 ? args.projectId : ctx.projectId;
+    const request: ServerBetaAddObservationRequest = {
+      projectId,
+      content: args.content,
+      ...(args.serverSessionId !== undefined ? { serverSessionId: args.serverSessionId } : {}),
+      ...(args.kind !== undefined ? { kind: args.kind } : {}),
+      ...(args.metadata !== undefined ? { metadata: args.metadata } : {}),
+    };
+    const response = await ctx.client.addObservation(request);
+    return formatJsonResult(response);
+  } catch (error) {
+    return formatToolError(error);
+  }
+}
+
+interface ObservationRecordEventArgs {
+  projectId?: string;
+  serverSessionId?: string | null;
+  contentSessionId?: string | null;
+  memorySessionId?: string | null;
+  sourceType?: 'hook' | 'worker' | 'provider' | 'server' | 'api';
+  eventType: string;
+  payload?: unknown;
+  occurredAtEpoch?: number;
+  generate?: boolean;
+}
+
+async function handleObservationRecordEvent(
+  args: ObservationRecordEventArgs,
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+  try {
+    const ctx = requireServerBetaForObservationTool('observation_record_event');
+    if (typeof args?.eventType !== 'string' || args.eventType.trim().length === 0) {
+      throw new Error('observation_record_event: "eventType" is required');
+    }
+    const projectId = args.projectId && args.projectId.trim().length > 0 ? args.projectId : ctx.projectId;
+    const request: ServerBetaRecordEventRequest = {
+      projectId,
+      sourceType: args.sourceType ?? 'api',
+      eventType: args.eventType,
+      occurredAtEpoch: typeof args.occurredAtEpoch === 'number' ? args.occurredAtEpoch : Date.now(),
+      ...(args.serverSessionId !== undefined ? { serverSessionId: args.serverSessionId } : {}),
+      ...(args.contentSessionId !== undefined ? { contentSessionId: args.contentSessionId } : {}),
+      ...(args.memorySessionId !== undefined ? { memorySessionId: args.memorySessionId } : {}),
+      ...(args.payload !== undefined ? { payload: args.payload } : {}),
+    };
+    const response = await ctx.client.recordEvent(request);
+    // The `?generate=false` query is honored by the REST core; if a caller
+    // wants to suppress generation we forward the flag rather than re-build
+    // the outbox decision in MCP.
+    void args.generate;
+    return formatJsonResult(response);
+  } catch (error) {
+    return formatToolError(error);
+  }
+}
+
+interface ObservationSearchArgs {
+  projectId?: string;
+  query: string;
+  limit?: number;
+}
+
+async function handleObservationSearch(
+  args: ObservationSearchArgs,
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+  try {
+    const ctx = requireServerBetaForObservationTool('observation_search');
+    if (typeof args?.query !== 'string' || args.query.trim().length === 0) {
+      throw new Error('observation_search: "query" is required');
+    }
+    const projectId = args.projectId && args.projectId.trim().length > 0 ? args.projectId : ctx.projectId;
+    const request: ServerBetaSearchObservationsRequest = {
+      projectId,
+      query: args.query,
+      ...(args.limit !== undefined ? { limit: args.limit } : {}),
+    };
+    const response = await ctx.client.searchObservations(request);
+    return formatJsonResult(response);
+  } catch (error) {
+    return formatToolError(error);
+  }
+}
+
+interface ObservationContextArgs {
+  projectId?: string;
+  query: string;
+  limit?: number;
+}
+
+async function handleObservationContext(
+  args: ObservationContextArgs,
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+  try {
+    const ctx = requireServerBetaForObservationTool('observation_context');
+    if (typeof args?.query !== 'string' || args.query.trim().length === 0) {
+      throw new Error('observation_context: "query" is required');
+    }
+    const projectId = args.projectId && args.projectId.trim().length > 0 ? args.projectId : ctx.projectId;
+    const request: ServerBetaContextObservationsRequest = {
+      projectId,
+      query: args.query,
+      ...(args.limit !== undefined ? { limit: args.limit } : {}),
+    };
+    const response = await ctx.client.contextObservations(request);
+    return formatJsonResult(response);
+  } catch (error) {
+    return formatToolError(error);
+  }
+}
+
+interface ObservationGenerationStatusArgs {
+  jobId?: string;
+  job_id?: string;
+}
+
+async function handleObservationGenerationStatus(
+  args: ObservationGenerationStatusArgs,
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+  try {
+    const ctx = requireServerBetaForObservationTool('observation_generation_status');
+    const jobId = (args?.jobId ?? args?.job_id ?? '').trim();
+    if (!jobId) {
+      throw new Error('observation_generation_status: "jobId" is required');
+    }
+    const response = await ctx.client.getJobStatus(jobId);
+    return formatJsonResult(response);
+  } catch (error) {
+    return formatToolError(error);
   }
 }
 
@@ -275,6 +519,156 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     handler: async (args: any) => {
       return await callWorkerAPIPost('/api/observations/batch', args);
     }
+  },
+  // Phase 8 — observation_* tools backed by server-beta REST core.
+  // These are the canonical names. memory_* tools below are kept as
+  // compatibility aliases that delegate to these handlers, so existing
+  // MCP clients keep working without rewrites. (Plan line 753.)
+  {
+    name: 'observation_add',
+    description: 'Insert a manual observation directly into server-beta storage. Calls /v1/memories — does NOT enqueue generation. Server-beta runtime only. Params: content (required), projectId (optional, falls back to settings), serverSessionId, kind, metadata.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string', description: 'Project id (falls back to CLAUDE_MEM_SERVER_BETA_PROJECT_ID)' },
+        serverSessionId: { type: 'string', description: 'Optional server_session_id to attach the observation to' },
+        kind: { type: 'string', description: 'Observation kind (default: manual)' },
+        content: { type: 'string', description: 'Observation content (required)' },
+        metadata: { type: 'object', description: 'Free-form metadata object', additionalProperties: true },
+      },
+      required: ['content'],
+      additionalProperties: false,
+    },
+    handler: async (args: any) => handleObservationAdd(args ?? {}),
+  },
+  {
+    name: 'observation_record_event',
+    description: 'Record an agent event into server-beta. Calls /v1/events — server inserts the event row, the outbox row, and enqueues a generation job atomically. Server-beta runtime only.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string' },
+        eventType: { type: 'string', description: 'Event type (required), e.g. PostToolUse, UserPromptSubmit' },
+        sourceType: { type: 'string', enum: ['hook', 'worker', 'provider', 'server', 'api'] },
+        serverSessionId: { type: 'string' },
+        contentSessionId: { type: 'string' },
+        memorySessionId: { type: 'string' },
+        payload: { description: 'Event payload (any JSON value)' },
+        occurredAtEpoch: { type: 'number', description: 'Unix epoch millis (defaults to now)' },
+        generate: { type: 'boolean', description: 'If false, skip generation job (default: true)' },
+      },
+      required: ['eventType'],
+      additionalProperties: false,
+    },
+    handler: async (args: any) => handleObservationRecordEvent(args ?? {}),
+  },
+  {
+    name: 'observation_search',
+    description: 'Full-text search across generated observations using server-beta\'s GIN tsvector index (Phase 1). Calls /v1/search. Server-beta runtime only. Params: query (required), projectId (optional), limit (default 20, max 100).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string' },
+        query: { type: 'string', description: 'Search query (required)' },
+        limit: { type: 'number', description: 'Max results (default 20, max 100)' },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
+    handler: async (args: any) => handleObservationSearch(args ?? {}),
+  },
+  {
+    name: 'observation_context',
+    description: 'Get top-N relevant observations for context injection. Returns matched observations AND a pre-joined context string suitable for prompt injection. Calls /v1/context. Server-beta runtime only.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string' },
+        query: { type: 'string', description: 'Search query (required)' },
+        limit: { type: 'number', description: 'Max observations (default 10, max 50)' },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
+    handler: async (args: any) => handleObservationContext(args ?? {}),
+  },
+  {
+    name: 'observation_generation_status',
+    description: 'Look up the status of an observation generation job by id. Calls /v1/jobs/:id. Server-beta runtime only. Returns the same payload as REST.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        jobId: { type: 'string', description: 'Generation job id (required)' },
+      },
+      required: ['jobId'],
+      additionalProperties: false,
+    },
+    handler: async (args: any) => handleObservationGenerationStatus(args ?? {}),
+  },
+  // Compatibility aliases — keep `memory_*` tool names that pre-existed in
+  // src/server/mcp/tools.ts working for any client that bound to them.
+  // These intentionally delegate to the same observation_* handlers so
+  // there is one code path for MCP write/read against server-beta.
+  {
+    name: 'memory_add',
+    description: 'Compatibility alias for observation_add. Same behavior; same schema modulo the legacy field names.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string' },
+        kind: { type: 'string' },
+        content: { type: 'string' },
+        narrative: { type: 'string', description: 'Legacy alias for content; mapped to content if content is missing' },
+        title: { type: 'string', description: 'Legacy field; appended to metadata.title' },
+        metadata: { type: 'object', additionalProperties: true },
+      },
+      required: ['projectId'],
+      additionalProperties: true,
+    },
+    handler: async (args: any) => {
+      // Map legacy fields onto observation_add. `narrative` was the v1
+      // SQLite payload; it is normalized to `content` before forwarding.
+      const merged: ObservationAddArgs = {
+        projectId: args?.projectId,
+        content: args?.content ?? args?.narrative ?? '',
+        kind: args?.kind,
+        metadata: {
+          ...(args?.metadata ?? {}),
+          ...(args?.title ? { title: args.title } : {}),
+        },
+      };
+      return handleObservationAdd(merged);
+    },
+  },
+  {
+    name: 'memory_search',
+    description: 'Compatibility alias for observation_search. Same FTS path; same /v1/search REST endpoint.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string' },
+        query: { type: 'string' },
+        limit: { type: 'number' },
+      },
+      required: ['projectId', 'query'],
+      additionalProperties: true,
+    },
+    handler: async (args: any) => handleObservationSearch(args ?? {}),
+  },
+  {
+    name: 'memory_context',
+    description: 'Compatibility alias for observation_context. Same /v1/context REST endpoint.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string' },
+        query: { type: 'string' },
+        limit: { type: 'number' },
+      },
+      required: ['projectId', 'query'],
+      additionalProperties: true,
+    },
+    handler: async (args: any) => handleObservationContext(args ?? {}),
   },
   {
     name: 'smart_search',
@@ -631,6 +1025,14 @@ async function main() {
   startParentHeartbeat();
 
   setTimeout(async () => {
+    // Phase 8 — when CLAUDE_MEM_RUNTIME=server-beta, MCP must NOT auto-start
+    // the worker. observation_* tools talk to server-beta directly; the
+    // legacy worker-backed tools (search/timeline/get_observations) will
+    // simply error with a helpful message until the user switches runtime.
+    if (selectRuntime() === 'server-beta') {
+      logger.info('SYSTEM', 'MCP runtime=server-beta — skipping worker auto-start', undefined, {});
+      return;
+    }
     const workerAvailable = await ensureWorkerConnection();
     if (!workerAvailable) {
       logger.error('SYSTEM', 'Worker not available', undefined, {});

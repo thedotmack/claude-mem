@@ -580,6 +580,90 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         }
       },
     ));
+
+    // Phase 8 — full-text search over generated observations using the GIN
+    // tsvector index. Results are ranked by ts_rank desc, then updated_at desc.
+    // The MCP `observation_search` tool calls this endpoint via HTTP so the
+    // single source of truth for the read path is the REST core.
+    app.post('/v1/search', readAuth, this.handleCreate(
+      z.object({
+        projectId: z.string().min(1),
+        query: z.string().min(1),
+        limit: z.number().int().positive().max(100).optional(),
+      }),
+      async (req, res, body) => {
+        const teamId = this.requireTeamId(req, res);
+        if (!teamId) return;
+        if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
+        try {
+          const { PostgresObservationRepository } = await import(
+            '../../../storage/postgres/observations.js'
+          );
+          const repo = new PostgresObservationRepository(this.options.pool);
+          const results = await repo.search({
+            projectId: body.projectId,
+            teamId,
+            query: body.query,
+            limit: body.limit ?? 20,
+          });
+          await this.auditRead(req, 'observation.search', null, body.projectId);
+          res.status(200).json({
+            observations: results.map(serializeObservation),
+          });
+        } catch (error) {
+          this.handleDbError(error, res, 'observation.search');
+        }
+      },
+    ));
+
+    // Phase 8 — context pack: same FTS path as `/v1/search`, but also returns
+    // a concatenated context string for direct prompt injection. The MCP
+    // `observation_context` tool calls this so MCP and any future REST
+    // consumer share the exact same context-packing rule.
+    app.post('/v1/context', readAuth, this.handleCreate(
+      z.object({
+        projectId: z.string().min(1),
+        query: z.string().min(1),
+        limit: z.number().int().positive().max(50).optional(),
+      }),
+      async (req, res, body) => {
+        const teamId = this.requireTeamId(req, res);
+        if (!teamId) return;
+        if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
+        try {
+          const { PostgresObservationRepository } = await import(
+            '../../../storage/postgres/observations.js'
+          );
+          const repo = new PostgresObservationRepository(this.options.pool);
+          const results = await repo.search({
+            projectId: body.projectId,
+            teamId,
+            query: body.query,
+            limit: body.limit ?? 10,
+          });
+          const context = results
+            .map(observation => observation.content)
+            .filter(text => typeof text === 'string' && text.length > 0)
+            .join('\n\n');
+          await this.auditRead(req, 'observation.context', null, body.projectId);
+          res.status(200).json({
+            observations: results.map(serializeObservation),
+            context,
+          });
+        } catch (error) {
+          this.handleDbError(error, res, 'observation.context');
+        }
+      },
+    ));
+  }
+
+  private async auditRead(
+    req: Request,
+    action: string,
+    targetId: string | null,
+    projectId: string | null,
+  ): Promise<void> {
+    return this.auditWrite(req, action, targetId, projectId);
   }
 
   private async enqueueEventJob(

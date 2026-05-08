@@ -192,4 +192,98 @@ describe('ServerBetaClient', () => {
     await client.endSession({ sessionId: 's' });
     expect(captured[0]?.url).toBe('http://localhost:9999/v1/sessions/s/end');
   });
+
+  // ----- Phase 8 — MCP-backing methods. These exercise the same /v1/* paths
+  // the REST core exposes, so MCP tools never have a private write path. -----
+
+  it('addObservation sends POST /v1/memories with content', async () => {
+    installFetch(async () => new Response(
+      JSON.stringify({ memory: { id: 'o1', projectId: 'p1', teamId: 't1', serverSessionId: null, kind: 'manual', content: 'hello', metadata: {} } }),
+      { status: 201 },
+    ));
+    const client = new ServerBetaClient({ serverBaseUrl: 'http://localhost:9999', apiKey: 'cmem_test' });
+    const result = await client.addObservation({
+      projectId: 'p1',
+      content: 'hello',
+      kind: 'manual',
+      metadata: { source: 'mcp' },
+    });
+    expect(captured[0]?.url).toBe('http://localhost:9999/v1/memories');
+    expect(captured[0]?.method).toBe('POST');
+    expect((captured[0]?.body as Record<string, unknown>).content).toBe('hello');
+    expect((captured[0]?.body as Record<string, unknown>).kind).toBe('manual');
+    expect(result.memory.id).toBe('o1');
+  });
+
+  it('searchObservations sends POST /v1/search with query', async () => {
+    installFetch(async () => new Response(
+      JSON.stringify({ observations: [{ id: 'o1', projectId: 'p1', content: 'matched' }] }),
+      { status: 200 },
+    ));
+    const client = new ServerBetaClient({ serverBaseUrl: 'http://localhost:9999', apiKey: 'cmem_test' });
+    const result = await client.searchObservations({
+      projectId: 'p1',
+      query: 'login bug',
+      limit: 5,
+    });
+    expect(captured[0]?.url).toBe('http://localhost:9999/v1/search');
+    expect((captured[0]?.body as Record<string, unknown>).query).toBe('login bug');
+    expect((captured[0]?.body as Record<string, unknown>).limit).toBe(5);
+    expect(result.observations[0]?.id).toBe('o1');
+  });
+
+  it('contextObservations sends POST /v1/context and returns context string', async () => {
+    installFetch(async () => new Response(
+      JSON.stringify({
+        observations: [{ id: 'o1', projectId: 'p1', content: 'a' }, { id: 'o2', projectId: 'p1', content: 'b' }],
+        context: 'a\n\nb',
+      }),
+      { status: 200 },
+    ));
+    const client = new ServerBetaClient({ serverBaseUrl: 'http://localhost:9999', apiKey: 'cmem_test' });
+    const result = await client.contextObservations({ projectId: 'p1', query: 'q' });
+    expect(captured[0]?.url).toBe('http://localhost:9999/v1/context');
+    expect(result.context).toBe('a\n\nb');
+    expect(result.observations).toHaveLength(2);
+  });
+
+  it('getJobStatus sends GET /v1/jobs/:id', async () => {
+    installFetch(async () => new Response(
+      JSON.stringify({ generationJob: { id: 'j1', status: 'queued' } }),
+      { status: 200 },
+    ));
+    const client = new ServerBetaClient({ serverBaseUrl: 'http://localhost:9999', apiKey: 'cmem_test' });
+    const result = await client.getJobStatus('j1');
+    expect(captured[0]?.url).toBe('http://localhost:9999/v1/jobs/j1');
+    expect(captured[0]?.method).toBe('GET');
+    expect(result.generationJob.status).toBe('queued');
+  });
+
+  it('getJobStatus rejects empty jobId', async () => {
+    const client = new ServerBetaClient({ serverBaseUrl: 'http://x', apiKey: 'cmem_test' });
+    let caught: unknown;
+    try {
+      await client.getJobStatus('');
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ServerBetaClientError);
+  });
+
+  it('payload builders omit absent fields', () => {
+    const client = new ServerBetaClient({ serverBaseUrl: 'http://x', apiKey: 'k' });
+    expect(client.buildAddObservationPayload({ projectId: 'p', content: 'c' })).toEqual({
+      projectId: 'p',
+      content: 'c',
+    });
+    expect(client.buildSearchPayload({ projectId: 'p', query: 'q' })).toEqual({
+      projectId: 'p',
+      query: 'q',
+    });
+    expect(client.buildSearchPayload({ projectId: 'p', query: 'q', limit: 7 })).toEqual({
+      projectId: 'p',
+      query: 'q',
+      limit: 7,
+    });
+  });
 });

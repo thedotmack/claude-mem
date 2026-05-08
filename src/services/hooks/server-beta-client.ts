@@ -121,6 +121,73 @@ export interface ServerBetaEndSessionResponse {
   };
 }
 
+// Phase 8 — direct/manual observation insertion through `/v1/memories`.
+// This calls the same Postgres repository path as the REST core, so MCP
+// and REST never diverge on what counts as a valid observation insert.
+export interface ServerBetaAddObservationRequest {
+  projectId: string;
+  serverSessionId?: string | null;
+  kind?: string;
+  content: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ServerBetaAddObservationResponse {
+  memory: {
+    id: string;
+    projectId: string;
+    teamId: string;
+    serverSessionId: string | null;
+    kind: string;
+    content: string;
+    metadata: Record<string, unknown>;
+    [key: string]: unknown;
+  };
+}
+
+// Phase 8 — full-text search over generated observations.
+export interface ServerBetaSearchObservationsRequest {
+  projectId: string;
+  query: string;
+  limit?: number;
+}
+
+export interface ServerBetaSearchObservationsResponse {
+  observations: Array<{
+    id: string;
+    projectId: string;
+    content: string;
+    [key: string]: unknown;
+  }>;
+}
+
+// Phase 8 — context pack for prompt injection. Server returns both the
+// matched observations AND a pre-joined `context` string.
+export interface ServerBetaContextObservationsRequest {
+  projectId: string;
+  query: string;
+  limit?: number;
+}
+
+export interface ServerBetaContextObservationsResponse {
+  observations: Array<{
+    id: string;
+    projectId: string;
+    content: string;
+    [key: string]: unknown;
+  }>;
+  context: string;
+}
+
+// Phase 8 — generation job status, scoped by api-key team/project.
+export interface ServerBetaJobStatusResponse {
+  generationJob: {
+    id: string;
+    status: string;
+    [key: string]: unknown;
+  };
+}
+
 export class ServerBetaClient {
   private readonly baseUrl: string;
   private readonly apiKey: string;
@@ -151,6 +218,79 @@ export class ServerBetaClient {
       `/v1/sessions/${encodeURIComponent(input.sessionId)}/end`,
       {},
     );
+  }
+
+  // Phase 8 — direct observation insert (MCP `observation_add`). Calls
+  // `/v1/memories`, which is the canonical write path that MUST NOT enqueue
+  // a generation job. Anti-pattern guard for plan line 770: never duplicate
+  // generation logic in MCP tools.
+  async addObservation(
+    input: ServerBetaAddObservationRequest,
+  ): Promise<ServerBetaAddObservationResponse> {
+    return this.request<ServerBetaAddObservationResponse>(
+      'POST',
+      '/v1/memories',
+      this.buildAddObservationPayload(input),
+    );
+  }
+
+  // Phase 8 — MCP `observation_search`. Routes to the FTS-backed REST
+  // endpoint so search ranking and tenant scoping are owned by one place.
+  async searchObservations(
+    input: ServerBetaSearchObservationsRequest,
+  ): Promise<ServerBetaSearchObservationsResponse> {
+    return this.request<ServerBetaSearchObservationsResponse>(
+      'POST',
+      '/v1/search',
+      this.buildSearchPayload(input),
+    );
+  }
+
+  // Phase 8 — MCP `observation_context`. Same FTS surface as search, but
+  // returns a pre-joined context string suitable for direct prompt injection.
+  async contextObservations(
+    input: ServerBetaContextObservationsRequest,
+  ): Promise<ServerBetaContextObservationsResponse> {
+    return this.request<ServerBetaContextObservationsResponse>(
+      'POST',
+      '/v1/context',
+      this.buildSearchPayload(input),
+    );
+  }
+
+  // Phase 8 — MCP `observation_generation_status`. Server returns the same
+  // payload as `/v1/jobs/:id` so MCP clients and REST clients see identical
+  // job status (including transport state).
+  async getJobStatus(jobId: string): Promise<ServerBetaJobStatusResponse> {
+    if (!jobId) {
+      throw new ServerBetaClientError('invalid_response', 'jobId is required for getJobStatus');
+    }
+    return this.request<ServerBetaJobStatusResponse>(
+      'GET',
+      `/v1/jobs/${encodeURIComponent(jobId)}`,
+    );
+  }
+
+  buildAddObservationPayload(
+    input: ServerBetaAddObservationRequest,
+  ): Record<string, unknown> {
+    return {
+      projectId: input.projectId,
+      content: input.content,
+      ...(input.serverSessionId !== undefined ? { serverSessionId: input.serverSessionId } : {}),
+      ...(input.kind !== undefined ? { kind: input.kind } : {}),
+      ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
+    };
+  }
+
+  buildSearchPayload(
+    input: { projectId: string; query: string; limit?: number },
+  ): Record<string, unknown> {
+    return {
+      projectId: input.projectId,
+      query: input.query,
+      ...(input.limit !== undefined ? { limit: input.limit } : {}),
+    };
   }
 
   buildStartSessionPayload(input: ServerBetaStartSessionRequest): Record<string, unknown> {
