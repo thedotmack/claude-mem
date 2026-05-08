@@ -70,6 +70,10 @@ export class ProviderObservationGenerator {
     job: Job<ServerGenerationJobPayload>,
   ): Promise<{ jobId: string; status: 'completed'; observationCount: number }> {
     const correlationId = `bullmq:${job.id ?? '?'}`;
+    // Phase 12 — pivot id captured up front so every log line in this
+    // dispatch carries the same identifier whether or not we manage to
+    // load the canonical row. requestId comes from payload (HTTP middleware).
+    const payloadRequestId = (job.data as { request_id?: string | null } | undefined)?.request_id ?? null;
 
     // Phase 11 — validate the BullMQ payload against the discriminated-union
     // schema BEFORE doing anything else. A malformed payload (missing
@@ -162,6 +166,16 @@ export class ProviderObservationGenerator {
 
     // Phase 11 — emit "processing started" audit so we have a row even if
     // the provider crashes before completion.
+    // Phase 12 — log+audit carry the same job_id / request_id so support
+    // can pivot from BullMQ id -> outbox id -> originating HTTP request.
+    logger.info('SYSTEM', `[generation] job locked for processing`, {
+      correlationId,
+      jobId: fresh.id,
+      bullmqJobId: job.id ?? null,
+      requestId: payloadRequestId,
+      sourceType: fresh.sourceType,
+      attempt: fresh.attempts,
+    });
     await this.auditEvent({
       teamId: fresh.teamId,
       projectId: fresh.projectId,
@@ -175,6 +189,7 @@ export class ProviderObservationGenerator {
         sourceAdapter: payload.source_adapter,
         attempt: fresh.attempts,
         correlationId,
+        requestId: payloadRequestId,
       },
     });
 
@@ -226,6 +241,8 @@ export class ProviderObservationGenerator {
       logger.info('SYSTEM', 'generation completed', {
         correlationId,
         jobId: outcome.jobId,
+        bullmqJobId: job.id ?? null,
+        requestId: payloadRequestId,
         observationCount: outcome.observations.length,
         privateContentDetected: outcome.privateContentDetected,
       });

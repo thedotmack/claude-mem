@@ -68,6 +68,8 @@ export interface EnqueueEventDecisionInput {
   apiKeyId?: string | null;
   actorId?: string | null;
   sourceAdapter?: string | null;
+  // Phase 12 — request correlation id minted at the HTTP boundary.
+  requestId?: string | null;
 }
 
 export interface EnqueueEventDecision {
@@ -101,6 +103,7 @@ export function buildEnqueueEventDecision(
     api_key_id: input.apiKeyId ?? null,
     actor_id: input.actorId ?? null,
     source_adapter: input.sourceAdapter ?? input.event.sourceAdapter ?? 'api',
+    request_id: input.requestId ?? null,
   };
 
   if (resolved.policy === 'end-of-session') {
@@ -168,6 +171,8 @@ export interface BuildSummaryJobInput {
   apiKeyId?: string | null;
   actorId?: string | null;
   sourceAdapter?: string | null;
+  // Phase 12 — request correlation id flows into the summary lane too.
+  requestId?: string | null;
 }
 
 export function buildSummaryJobId(input: {
@@ -196,5 +201,6 @@ export function buildSummaryJobPayload(input: BuildSummaryJobInput): GenerateSes
     api_key_id: input.apiKeyId ?? null,
     actor_id: input.actorId ?? null,
     source_adapter: input.sourceAdapter ?? 'api',
+    request_id: input.requestId ?? null,
   };
 }

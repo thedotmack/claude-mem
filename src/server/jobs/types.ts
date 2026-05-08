@@ -32,6 +32,9 @@ export interface ServerGenerationJob {
   // Legacy adapter or surface that produced the source row, for routing
   // and audit (e.g. 'api', 'hooks', 'mcp', 'compat:sessions-observations').
   source_adapter: string;
+  // Phase 12 — request correlation id, optional but always serialized as a
+  // nullable field so downstream consumers can rely on shape stability.
+  request_id?: string | null;
 }
 
 export interface GenerateObservationsForEventJob extends ServerGenerationJob {
@@ -92,6 +95,10 @@ const baseFieldsSchema = z.object({
   api_key_id: z.string().min(1).nullable(),
   actor_id: z.string().min(1).nullable(),
   source_adapter: z.string().min(1, 'source_adapter is required'),
+  // Phase 12 — request_id is optional in the schema (older jobs predating
+  // this phase have nullable/missing values) but always passes through to
+  // logs and audit when present.
+  request_id: z.string().min(1).nullable().optional(),
 });
 
 export const GenerateObservationsForEventJobSchema = baseFieldsSchema.extend({

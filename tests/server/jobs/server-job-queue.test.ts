@@ -25,6 +25,7 @@ interface FakeWorkerState {
   errorHandlers: Array<(error: unknown) => void>;
   ranWith: 'autorun-false' | 'autorun-true' | null;
   closed: boolean;
+  eventHandlers?: Map<string, (...args: unknown[]) => void>;
 }
 
 function buildFakeQueue(state: FakeQueueState) {
@@ -55,10 +56,14 @@ function buildFakeWorker(state: FakeWorkerState) {
     state.processor = processor;
     state.options = options;
     return {
-      on: (event: string, handler: (error: unknown) => void) => {
+      on: (event: string, handler: (...args: unknown[]) => void) => {
         if (event === 'error') {
-          state.errorHandlers.push(handler);
+          state.errorHandlers.push(handler as (error: unknown) => void);
         }
+        // Phase 12 — capture all lifecycle handlers on the fake worker so
+        // tests can fire completed/failed/stalled events synchronously.
+        const ev = state.eventHandlers ?? (state.eventHandlers = new Map());
+        ev.set(event, handler);
       },
       run: () => {
         state.ranWith = options.autorun === false ? 'autorun-false' : 'autorun-true';
@@ -163,6 +168,43 @@ describe('ServerJobQueue', () => {
     expect(() =>
       workerState.errorHandlers[0]!(new Error('worker crashed'))
     ).not.toThrow();
+  });
+
+  it('Phase 12 — emits completed/failed/stalled lifecycle events through observe()', () => {
+    const queueState: FakeQueueState = { added: [], removed: [], closed: false };
+    const workerState: FakeWorkerState = {
+      processor: null, options: null, errorHandlers: [], ranWith: null, closed: false,
+    };
+    const sjq = new ServerJobQueue<{ x: number }>({
+      name: 'q', config: fakeConfig,
+      queueFactory: buildFakeQueue(queueState),
+      workerFactory: buildFakeWorker(workerState),
+    });
+
+    const events: { kind: string; jobId?: string; arg?: unknown }[] = [];
+    sjq.observe({
+      onCompleted: (jobId, durationMs) => { events.push({ kind: 'completed', jobId, arg: durationMs }); },
+      onFailed: (jobId, attempts, reason) => { events.push({ kind: 'failed', jobId: jobId ?? '?', arg: { attempts, reason } }); },
+      onStalled: (jobId) => { events.push({ kind: 'stalled', jobId }); },
+      onError: (err) => { events.push({ kind: 'error', arg: err }); },
+    });
+    sjq.start(async () => {});
+
+    // Fire a fake "active" then "completed" so duration is positive.
+    workerState.eventHandlers?.get('active')?.({ id: 'job1' });
+    workerState.eventHandlers?.get('completed')?.({ id: 'job1', data: { source_type: 'agent_event' } }, { ok: true });
+    workerState.eventHandlers?.get('failed')?.({ id: 'job2', data: { source_type: 'agent_event' }, attemptsMade: 2 }, new Error('boom'));
+    workerState.eventHandlers?.get('stalled')?.('job3');
+    workerState.errorHandlers[0]!(new Error('worker err'));
+
+    expect(events.find(e => e.kind === 'completed')?.jobId).toBe('job1');
+    expect(events.find(e => e.kind === 'failed')?.jobId).toBe('job2');
+    expect(events.find(e => e.kind === 'stalled')?.jobId).toBe('job3');
+    expect(events.some(e => e.kind === 'error')).toBe(true);
+
+    const counters = sjq.getLifecycleCounters();
+    expect(counters.stalled).toBe(1);
+    expect(counters.errored).toBe(1);
   });
 
   it('closes worker and queue on close()', async () => {

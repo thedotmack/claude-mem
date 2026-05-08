@@ -11,6 +11,7 @@ import type { RedisQueueConfig } from '../queue/redis-config.js';
 import { logger } from '../../utils/logger.js';
 import type {
   ServerBetaBoundaryHealth,
+  ServerBetaQueueLaneMetric,
   ServerBetaQueueManager,
 } from './types.js';
 
@@ -73,6 +74,49 @@ export class ActiveServerBetaQueueManager implements ServerBetaQueueManager {
         lanes,
       },
     };
+  }
+
+  /**
+   * Phase 12 — per-lane counts. Returns BullMQ getJobCounts plus the
+   * per-process stalled counter. If Redis is unreachable, the lane is
+   * reported with an `unavailable` flag rather than throwing so /api/health
+   * remains responsive even in partial-failure modes.
+   */
+  async getLaneMetrics(): Promise<ServerBetaQueueLaneMetric[]> {
+    const out: ServerBetaQueueLaneMetric[] = [];
+    for (const kind of QUEUE_KINDS) {
+      const queue = this.queues.get(kind);
+      if (!queue) continue;
+      const lifecycle = queue.getLifecycleCounters();
+      try {
+        const counts = await queue.getCounts();
+        out.push({
+          kind,
+          name: SERVER_JOB_QUEUE_NAMES[kind],
+          waiting: counts.waiting,
+          active: counts.active,
+          completed: counts.completed,
+          failed: counts.failed,
+          delayed: counts.delayed,
+          stalled: lifecycle.stalled,
+          unavailable: false,
+        });
+      } catch (error) {
+        out.push({
+          kind,
+          name: SERVER_JOB_QUEUE_NAMES[kind],
+          waiting: 0,
+          active: 0,
+          completed: 0,
+          failed: 0,
+          delayed: 0,
+          stalled: lifecycle.stalled,
+          unavailable: true,
+          unavailableReason: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return out;
   }
 
   async close(): Promise<void> {

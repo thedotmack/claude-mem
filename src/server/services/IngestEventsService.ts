@@ -60,6 +60,9 @@ export interface IngestEventOptions {
   apiKeyId?: string | null;
   actorId?: string | null;
   sourceAdapter?: string | null;
+  // Phase 12 — opaque correlation id minted at the HTTP middleware so
+  // generator logs and audit rows can pivot back to the originating request.
+  requestId?: string | null;
 }
 
 export class IngestEventsService {
@@ -196,6 +199,9 @@ export class IngestEventsService {
         apiKeyId: opts.apiKeyId ?? null,
         actorId: opts.actorId ?? null,
         sourceAdapter: opts.sourceAdapter ?? event.sourceAdapter ?? null,
+        // Phase 12 — flow request_id into the BullMQ payload so the worker
+        // can emit it in [generation] logs and the audit row.
+        requestId: opts.requestId ?? null,
       },
       policyOptions,
     );

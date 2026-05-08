@@ -17,7 +17,8 @@ import {
 import { ServerV1PostgresRoutes } from '../routes/v1/ServerV1PostgresRoutes.js';
 import { SessionsObservationsAdapter } from '../compat/SessionsObservationsAdapter.js';
 import { SessionsSummarizeAdapter } from '../compat/SessionsSummarizeAdapter.js';
-import type { ServerBetaServiceGraph } from './types.js';
+import { ActiveServerBetaQueueManager } from './ActiveServerBetaQueueManager.js';
+import type { ServerBetaServiceGraph, ServerBetaQueueLaneMetric } from './types.js';
 
 const SERVER_BETA_RUNTIME = 'server-beta';
 const DEFAULT_SERVER_BETA_HOST = '127.0.0.1';
@@ -53,7 +54,12 @@ class ServerBetaRuntimeInfoRoutes implements RouteHandler {
       res.json({ status: 'ok', runtime: SERVER_BETA_RUNTIME });
     });
 
-    app.get('/v1/info', (_req, res) => {
+    // Phase 12 — `/v1/info` includes per-lane queue metrics so deploy probes
+    // can read waiting/active/completed/failed/delayed/stalled without
+    // hitting `/api/health`. Sampling is best-effort: a Redis blip surfaces
+    // the lane with `unavailable: true` rather than crashing the route.
+    app.get('/v1/info', async (_req, res) => {
+      const queueLanes = await collectQueueLaneMetrics(this.graph);
       res.json({
         name: 'claude-mem-server',
         runtime: SERVER_BETA_RUNTIME,
@@ -68,8 +74,25 @@ class ServerBetaRuntimeInfoRoutes implements RouteHandler {
           providerRegistry: this.graph.providerRegistry.getHealth(),
           eventBroadcaster: this.graph.eventBroadcaster.getHealth(),
         },
+        queueLanes,
       });
     });
+  }
+}
+
+async function collectQueueLaneMetrics(
+  graph: ServerBetaServiceGraph,
+): Promise<ServerBetaQueueLaneMetric[]> {
+  const manager = graph.queueManager;
+  if (!(manager instanceof ActiveServerBetaQueueManager)) {
+    return [];
+  }
+  try {
+    return await manager.getLaneMetrics();
+  } catch {
+    // /api/health and /v1/info MUST never throw on a queue blip — surface
+    // empty lanes so the rest of the payload still renders.
+    return [];
   }
 }
 
@@ -114,12 +137,15 @@ export class ServerBetaService {
       // peeking at /v1/info. The queue manager's getHealth() returns its
       // boundary descriptor; we shape it into the worker-compatible
       // ObservationQueueHealth schema the Server class expects.
-      getQueueHealth: () => {
+      // Phase 12 — also include per-lane counts (waiting/active/completed/
+      // failed/delayed/stalled) so deploy probes can monitor saturation.
+      getQueueHealth: async () => {
         const health = this.graph.queueManager.getHealth();
         const details = (health.details ?? {}) as Record<string, unknown>;
         if (health.status !== 'active' || details.engine !== 'bullmq') {
           return null;
         }
+        const lanes = await collectQueueLaneMetrics(this.graph);
         return {
           engine: 'bullmq' as const,
           redis: {
@@ -129,6 +155,18 @@ export class ServerBetaService {
             port: typeof details.port === 'number' ? details.port : 6379,
             prefix: String(details.prefix ?? 'claude_mem'),
           },
+          lanes: lanes.map(lane => ({
+            kind: lane.kind,
+            name: lane.name,
+            waiting: lane.waiting,
+            active: lane.active,
+            completed: lane.completed,
+            failed: lane.failed,
+            delayed: lane.delayed,
+            stalled: lane.stalled,
+            unavailable: lane.unavailable,
+            ...(lane.unavailableReason ? { unavailableReason: lane.unavailableReason } : {}),
+          })),
         };
       },
     });

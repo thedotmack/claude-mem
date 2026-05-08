@@ -11,12 +11,14 @@ import {
   type PostgresAgentEvent,
 } from '../../../storage/postgres/agent-events.js';
 import {
+  PostgresObservationGenerationJobEventsRepository,
   PostgresObservationGenerationJobRepository,
   type PostgresObservationGenerationJob,
 } from '../../../storage/postgres/generation-jobs.js';
 import { PostgresAuthRepository } from '../../../storage/postgres/auth.js';
 import { logger } from '../../../utils/logger.js';
 import { requirePostgresServerAuth } from '../../middleware/postgres-auth.js';
+import { requestIdMiddleware } from '../../middleware/request-id.js';
 import type { ActiveServerBetaQueueManager } from '../../runtime/ActiveServerBetaQueueManager.js';
 import type { ServerBetaQueueManager } from '../../runtime/types.js';
 import { PostgresServerSessionsRepository } from '../../../storage/postgres/server-sessions.js';
@@ -88,6 +90,12 @@ export class ServerV1PostgresRoutes implements RouteHandler {
   }
 
   setupRoutes(app: Application): void {
+    // Phase 12 — request_id middleware MUST run before auth so the audit log
+    // can carry a stable correlation id across "rejected at auth" and
+    // "ingested" code paths. requestIdMiddleware is idempotent (it honors
+    // an inbound X-Request-Id header) so registering it multiple times for
+    // overlapping route trees would still produce one canonical id per req.
+    app.use('/v1', requestIdMiddleware());
     const writeAuth = requirePostgresServerAuth(this.options.pool, {
       authMode: this.options.authMode,
       allowLocalDevBypass: this.options.allowLocalDevBypass,
@@ -130,6 +138,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
           apiKeyId: req.authContext?.apiKeyId ?? null,
           actorId: await this.resolveActorId(req),
           sourceAdapter: insertInput.sourceAdapter,
+          requestId: req.requestId ?? null,
         });
         event = result.event;
         outbox = result.outbox;
@@ -198,6 +207,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
           apiKeyId: req.authContext?.apiKeyId ?? null,
           actorId: await this.resolveActorId(req),
           sourceAdapter: inputs[0]?.sourceAdapter ?? SOURCE_ADAPTER_DEFAULT,
+          requestId: req.requestId ?? null,
         });
         inserted = ingested.map(({ event, outbox }) => ({ event, outbox }));
         enqueueResults = ingested.map(({ enqueueState }) => enqueueState);
@@ -365,7 +375,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
           resultCount: jobs.length,
         });
         res.status(200).json({
-          jobs: jobs.map(serializeJobListEntry),
+          jobs: jobs.map(row => serializeJobListEntry(row)),
           total,
           limit,
           offset,
@@ -424,13 +434,74 @@ export class ServerV1PostgresRoutes implements RouteHandler {
           resultCount: jobs.length,
         });
         res.status(200).json({
-          jobs: jobs.map(serializeJobListEntry),
+          jobs: jobs.map(row => serializeJobListEntry(row)),
           total,
           limit,
           offset,
         });
       } catch (error) {
         this.handleDbError(error, res, 'project.jobs.list');
+      }
+    }));
+
+    // Phase 12 — GET /v1/jobs (generic, scoped). Project-scoped key sees its
+    // project's jobs; team-scoped key sees the team's jobs. Filters: status,
+    // source_type, limit, offset, since (ISO timestamp on created_at). The
+    // BullMQ payload column is NEVER returned by default — even with admin
+    // scope, the caller MUST opt in via `?include=payload`. This anti-pattern
+    // guard prevents accidental exfil of sensitive event payloads.
+    app.get('/v1/jobs', readAuth, this.asyncHandler(async (req, res) => {
+      const teamId = this.requireTeamId(req, res);
+      if (!teamId) return;
+      const callerProjectId = req.authContext?.projectId ?? null;
+      const includeRaw = typeof req.query.include === 'string' ? req.query.include : '';
+      const includePayload = includeRaw.split(',').map(p => p.trim()).includes('payload');
+      const callerScopes = req.authContext?.scopes ?? [];
+      const isAdmin = callerScopes.includes('*') || callerScopes.includes('admin')
+        || callerScopes.includes('memories:admin');
+      if (includePayload && !isAdmin) {
+        // Anti-pattern guard: refuse the include=payload elevation without
+        // admin scope. Returning 403 (not silently stripping) makes the
+        // attempted privilege escalation visible in the audit chain.
+        res.status(403).json({
+          error: 'Forbidden',
+          message: '`include=payload` requires admin scope',
+        });
+        return;
+      }
+      const { status, sourceType, limit, offset, since } = parseGenericJobListingQuery(req);
+      try {
+        const { jobs, total } = await this.listJobsForScope({
+          teamId,
+          projectId: callerProjectId,
+          status,
+          sourceType,
+          limit,
+          offset,
+          since,
+        });
+        await this.auditRead(req, 'observation.read', null, callerProjectId, {
+          mode: 'jobs_list',
+          teamId,
+          projectId: callerProjectId,
+          status,
+          sourceType,
+          limit,
+          offset,
+          since: since ? since.toISOString() : null,
+          resultCount: jobs.length,
+          includePayload,
+          requestId: req.requestId ?? null,
+        });
+        res.status(200).json({
+          jobs: jobs.map(row => serializeJobListEntry(row, { includePayload })),
+          total,
+          limit,
+          offset,
+          requestId: req.requestId ?? null,
+        });
+      } catch (error) {
+        this.handleDbError(error, res, 'jobs.list');
       }
     }));
 
@@ -463,6 +534,45 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         return;
       }
       res.json({ generationJob: serializeGenerationJobStatus(job) });
+    }));
+
+    // Phase 12 — POST /v1/jobs/:id/retry. Idempotent operator action: if the
+    // job is already queued the call is a no-op (no second BullMQ job is
+    // enqueued). On failed/cancelled rows, transition back to queued, clear
+    // locked_at/locked_by/failed_at/cancelled_at/last_error, increment a
+    // retried_count metadata field for audit, and re-enqueue. The Phase 11
+    // outbox idempotency key (team_id, project_id, source_type, source_id,
+    // job_type) prevents observation duplication on the generator side.
+    app.post('/v1/jobs/:id/retry', writeAuth, this.asyncHandler(async (req, res) => {
+      const teamId = this.requireTeamId(req, res);
+      if (!teamId) return;
+      const id = this.routeParam(req.params.id);
+      const result = await this.retryGenerationJob(req, res, id, teamId);
+      if (!result) return;
+      res.status(200).json({
+        generationJob: serializeGenerationJobStatus(result.job),
+        retriedCount: result.retriedCount,
+        alreadyQueued: result.alreadyQueued,
+        requestId: req.requestId ?? null,
+      });
+    }));
+
+    // Phase 12 — POST /v1/jobs/:id/cancel. Operator action: set status to
+    // cancelled, set cancelled_at, append a lifecycle event, attempt to
+    // remove the BullMQ job if still in flight. Future generator runs check
+    // the Postgres status FIRST (Phase 11 lockOutbox guard) so a cancelled
+    // job will never produce side effects even if BullMQ delivered it.
+    app.post('/v1/jobs/:id/cancel', writeAuth, this.asyncHandler(async (req, res) => {
+      const teamId = this.requireTeamId(req, res);
+      if (!teamId) return;
+      const id = this.routeParam(req.params.id);
+      const result = await this.cancelGenerationJob(req, res, id, teamId);
+      if (!result) return;
+      res.status(200).json({
+        generationJob: serializeGenerationJobStatus(result.job),
+        alreadyCancelled: result.alreadyCancelled,
+        requestId: req.requestId ?? null,
+      });
     }));
 
     // POST /v1/sessions/start — create-or-find a server_session, idempotent
@@ -840,6 +950,14 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     try {
       const repo = new PostgresAuthRepository(this.options.pool);
       const actorId = await this.resolveActorId(req);
+      // Phase 12 — every audit row carries request_id when one was minted
+      // so dashboards and incident triage can pivot from a single HTTP
+      // request to every ingest/job/audit row it produced. Caller-supplied
+      // details win on key conflict so explicit overrides still work.
+      const detailsWithRequestId: Record<string, unknown> = {
+        ...(req.requestId ? { requestId: req.requestId } : {}),
+        ...(details ?? {}),
+      };
       await repo.createAuditLog({
         teamId: req.authContext?.teamId ?? null,
         projectId: projectId ?? req.authContext?.projectId ?? null,
@@ -848,27 +966,32 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         action,
         resourceType: resolveAuditResourceType(action),
         resourceId: targetId,
-        details: details ?? {},
+        details: detailsWithRequestId,
       });
     } catch (error) {
       logger.warn('SYSTEM', 'audit log insert failed', {
         action,
+        requestId: req.requestId ?? null,
         error: error instanceof Error ? error.message : String(error),
       });
     }
   }
 
   // Phase 11 — paginated job listing for team/project queue endpoints.
-  // Filtering is enforced in SQL (WHERE team_id [, project_id, status]).
-  // We never trust application-layer filtering alone for tenant scope.
+  // Phase 12 — extended with `sourceType`, `since`, and (optional) payload
+  // selection. Filtering is enforced in SQL (WHERE team_id [, project_id,
+  // status, source_type, created_at]). Application-layer filtering is never
+  // trusted alone for tenant scope.
   private async listJobsForScope(input: {
     teamId: string;
     projectId: string | null;
     status: string | null;
+    sourceType?: string | null;
     limit: number;
     offset: number;
+    since?: Date | null;
   }): Promise<{ jobs: JobListRow[]; total: number }> {
-    const params: Array<string | number> = [input.teamId];
+    const params: Array<string | number | Date> = [input.teamId];
     let where = 'WHERE team_id = $1';
     if (input.projectId) {
       params.push(input.projectId);
@@ -877,6 +1000,14 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     if (input.status) {
       params.push(input.status);
       where += ` AND status = $${params.length}`;
+    }
+    if (input.sourceType) {
+      params.push(input.sourceType);
+      where += ` AND source_type = $${params.length}`;
+    }
+    if (input.since) {
+      params.push(input.since);
+      where += ` AND created_at >= $${params.length}`;
     }
     const totalResult = await this.options.pool.query<{ total: string }>(
       `SELECT COUNT(*)::text AS total FROM observation_generation_jobs ${where}`,
@@ -889,7 +1020,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     const result = await this.options.pool.query<JobListRow>(
       `
         SELECT id, project_id, team_id, source_type, source_id, status, attempts,
-               max_attempts, created_at, completed_at, failed_at, last_error
+               max_attempts, created_at, completed_at, failed_at, last_error, payload
         FROM observation_generation_jobs
         ${where}
         ORDER BY created_at DESC
@@ -898,6 +1029,275 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       params,
     );
     return { jobs: result.rows, total };
+  }
+
+  // Phase 12 — operator retry. Idempotent: a job already in `queued` status
+  // is a no-op (no double enqueue). Cancelled/completed/failed are reset to
+  // queued, locks are cleared, retried_count is bumped in payload metadata
+  // for audit, then re-enqueued. The deterministic BullMQ jobId means a
+  // duplicate transport publish collapses on the queue side too.
+  private async retryGenerationJob(
+    req: Request,
+    res: Response,
+    id: string,
+    teamId: string,
+  ): Promise<{ job: PostgresObservationGenerationJob; retriedCount: number; alreadyQueued: boolean } | null> {
+    if (!id) {
+      res.status(400).json({ error: 'ValidationError', message: 'job id required' });
+      return null;
+    }
+    // Scope check first — same NotFound disclosure as the rest of the routes.
+    const lookup = await this.options.pool.query(
+      `SELECT * FROM observation_generation_jobs WHERE id = $1 AND team_id = $2`,
+      [id, teamId],
+    );
+    const row = lookup.rows[0] as undefined | { project_id: string };
+    if (!row) {
+      res.status(404).json({ error: 'NotFound', message: 'Generation job not found' });
+      return null;
+    }
+    if (req.authContext?.projectId && req.authContext.projectId !== row.project_id) {
+      res.status(404).json({ error: 'NotFound', message: 'Generation job not found' });
+      return null;
+    }
+
+    const repo = new PostgresObservationGenerationJobRepository(this.options.pool);
+    const current = await repo.getByIdForScope({ id, projectId: row.project_id, teamId });
+    if (!current) {
+      res.status(404).json({ error: 'NotFound', message: 'Generation job not found' });
+      return null;
+    }
+
+    // Idempotent fast-path: already queued -> emit audit only, no DB writes.
+    if (current.status === 'queued') {
+      await this.auditWrite(req, 'generation_job.retried_by_operator', current.id, current.projectId, {
+        outcome: 'noop_already_queued',
+        currentAttempts: current.attempts,
+        requestId: req.requestId ?? null,
+      });
+      return { job: current, retriedCount: extractRetriedCount(current.payload), alreadyQueued: true };
+    }
+
+    if (current.status === 'processing') {
+      // Refuse retry on in-flight jobs — the running worker MUST be allowed
+      // to finish or fail through its normal lifecycle. Operator can wait
+      // or cancel, then retry.
+      res.status(409).json({
+        error: 'Conflict',
+        message: 'Generation job is currently processing; cancel or wait for completion before retrying',
+      });
+      return null;
+    }
+
+    // Reset to queued, clear lock + lifecycle timestamps, increment
+    // retried_count for audit. attempts is intentionally preserved so the
+    // BullMQ attempt cap is not bypassed; if the job hit max_attempts the
+    // operator must lift the cap explicitly via a separate flow.
+    const retriedCount = extractRetriedCount(current.payload) + 1;
+    const newPayload = {
+      ...current.payload,
+      retried_count: retriedCount,
+      last_retried_by_actor: req.authContext?.apiKeyId ?? null,
+      last_retried_request_id: req.requestId ?? null,
+    };
+    const updated = await this.options.pool.query(
+      `
+        UPDATE observation_generation_jobs
+        SET status = 'queued',
+            locked_at = NULL,
+            locked_by = NULL,
+            failed_at = NULL,
+            cancelled_at = NULL,
+            completed_at = NULL,
+            last_error = NULL,
+            attempts = LEAST(attempts, max_attempts - 1),
+            payload = $4::jsonb,
+            updated_at = now()
+        WHERE id = $1 AND project_id = $2 AND team_id = $3
+        RETURNING *
+      `,
+      [id, row.project_id, teamId, JSON.stringify(newPayload)],
+    );
+    const updatedRow = updated.rows[0];
+    if (!updatedRow) {
+      res.status(404).json({ error: 'NotFound', message: 'Generation job not found' });
+      return null;
+    }
+
+    // Append lifecycle event so the audit chain mirrors the lifecycle tracker.
+    const eventsRepo = new PostgresObservationGenerationJobEventsRepository(this.options.pool);
+    await eventsRepo.append({
+      generationJobId: id,
+      projectId: row.project_id,
+      teamId,
+      eventType: 'queued',
+      statusAfter: 'queued',
+      attempt: (updatedRow as { attempts: number }).attempts,
+      details: {
+        source: 'operator_retry',
+        requestId: req.requestId ?? null,
+        retriedCount,
+      },
+    });
+
+    // Re-enqueue to BullMQ. If the queue is unavailable we leave the row in
+    // queued state and reconciliation will publish it on next startup —
+    // never lie about "enqueued" when we couldn't publish.
+    const queue = this.resolveEventQueueForRetry(updatedRow as { source_type: string });
+    if (queue && updatedRow) {
+      try {
+        const payload = (newPayload && typeof newPayload === 'object' ? newPayload : {}) as Record<string, unknown>;
+        const bullmqJobId = (updatedRow as { bullmq_job_id: string | null }).bullmq_job_id;
+        if (bullmqJobId) {
+          // Best effort remove first so a terminal-state slot doesn't block.
+          try { await queue.remove(bullmqJobId); } catch { /* terminal slot may be missing — ok */ }
+          await queue.add(bullmqJobId, payload as never);
+        }
+      } catch (error) {
+        logger.warn('SYSTEM', 'failed to re-enqueue generation job on operator retry', {
+          jobId: id,
+          requestId: req.requestId ?? null,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    const refreshed = await repo.getByIdForScope({ id, projectId: row.project_id, teamId });
+    if (!refreshed) {
+      res.status(404).json({ error: 'NotFound', message: 'Generation job not found' });
+      return null;
+    }
+
+    await this.auditWrite(req, 'generation_job.retried_by_operator', refreshed.id, refreshed.projectId, {
+      previousStatus: current.status,
+      currentStatus: refreshed.status,
+      retriedCount,
+      requestId: req.requestId ?? null,
+    });
+
+    return { job: refreshed, retriedCount, alreadyQueued: false };
+  }
+
+  // Phase 12 — operator cancel. Idempotent: a job already in `cancelled`
+  // status is a no-op. Active processing rows are still cancelled but the
+  // running worker is allowed to finish; Phase 11's lockOutbox guard
+  // re-checks Postgres status before any side effect, so a cancelled job
+  // will not produce observations even if the BullMQ delivery raced.
+  private async cancelGenerationJob(
+    req: Request,
+    res: Response,
+    id: string,
+    teamId: string,
+  ): Promise<{ job: PostgresObservationGenerationJob; alreadyCancelled: boolean } | null> {
+    if (!id) {
+      res.status(400).json({ error: 'ValidationError', message: 'job id required' });
+      return null;
+    }
+    const lookup = await this.options.pool.query(
+      `SELECT * FROM observation_generation_jobs WHERE id = $1 AND team_id = $2`,
+      [id, teamId],
+    );
+    const row = lookup.rows[0] as undefined | { project_id: string };
+    if (!row) {
+      res.status(404).json({ error: 'NotFound', message: 'Generation job not found' });
+      return null;
+    }
+    if (req.authContext?.projectId && req.authContext.projectId !== row.project_id) {
+      res.status(404).json({ error: 'NotFound', message: 'Generation job not found' });
+      return null;
+    }
+    const repo = new PostgresObservationGenerationJobRepository(this.options.pool);
+    const current = await repo.getByIdForScope({ id, projectId: row.project_id, teamId });
+    if (!current) {
+      res.status(404).json({ error: 'NotFound', message: 'Generation job not found' });
+      return null;
+    }
+    if (current.status === 'cancelled') {
+      await this.auditWrite(req, 'generation_job.cancelled_by_operator', current.id, current.projectId, {
+        outcome: 'noop_already_cancelled',
+        requestId: req.requestId ?? null,
+      });
+      return { job: current, alreadyCancelled: true };
+    }
+    if (current.status === 'completed') {
+      res.status(409).json({
+        error: 'Conflict',
+        message: 'Generation job already completed; cannot cancel',
+      });
+      return null;
+    }
+
+    const updateResult = await this.options.pool.query(
+      `
+        UPDATE observation_generation_jobs
+        SET status = 'cancelled',
+            cancelled_at = now(),
+            updated_at = now()
+        WHERE id = $1 AND project_id = $2 AND team_id = $3
+        RETURNING *
+      `,
+      [id, row.project_id, teamId],
+    );
+    const updatedRow = updateResult.rows[0];
+    if (!updatedRow) {
+      res.status(404).json({ error: 'NotFound', message: 'Generation job not found' });
+      return null;
+    }
+
+    const eventsRepo = new PostgresObservationGenerationJobEventsRepository(this.options.pool);
+    await eventsRepo.append({
+      generationJobId: id,
+      projectId: row.project_id,
+      teamId,
+      eventType: 'cancelled',
+      statusAfter: 'cancelled',
+      attempt: (updatedRow as { attempts: number }).attempts,
+      details: {
+        source: 'operator_cancel',
+        requestId: req.requestId ?? null,
+      },
+    });
+
+    // Best-effort BullMQ removal so a delayed/waiting job stops occupying
+    // the slot. Active jobs cannot be removed; the lockOutbox status check
+    // (Phase 11) is the authoritative side-effect guard.
+    const queue = this.resolveEventQueueForRetry(updatedRow as { source_type: string });
+    if (queue) {
+      const bullmqJobId = (updatedRow as { bullmq_job_id: string | null }).bullmq_job_id;
+      if (bullmqJobId) {
+        try { await queue.remove(bullmqJobId); } catch {
+          // Active jobs can't be removed; that's fine — Postgres status is canonical.
+        }
+      }
+    }
+
+    const refreshed = await repo.getByIdForScope({ id, projectId: row.project_id, teamId });
+    if (!refreshed) {
+      res.status(404).json({ error: 'NotFound', message: 'Generation job not found' });
+      return null;
+    }
+
+    await this.auditWrite(req, 'generation_job.cancelled_by_operator', refreshed.id, refreshed.projectId, {
+      previousStatus: current.status,
+      currentStatus: refreshed.status,
+      requestId: req.requestId ?? null,
+    });
+
+    return { job: refreshed, alreadyCancelled: false };
+  }
+
+  // Phase 12 — pick the right queue lane for a given source_type so retries
+  // and cancels can publish to the same lane the original ingest used.
+  private resolveEventQueueForRetry(row: { source_type: string }):
+    { add: (jobId: string, payload: unknown, options?: unknown) => Promise<unknown>; remove: (jobId: string) => Promise<void> } | null {
+    if (row.source_type === 'session_summary') {
+      const queue = this.resolveSummaryQueue();
+      if (!queue) return null;
+      return queue as never;
+    }
+    const queue = this.resolveEventQueue();
+    if (!queue) return null;
+    return queue as never;
   }
 
   private routeParam(value: string | string[] | undefined): string {
@@ -941,6 +1341,42 @@ interface JobListRow {
   completed_at: Date | null;
   failed_at: Date | null;
   last_error: unknown;
+  // Phase 12 — payload is OPTIONAL because the SELECT may omit it, and
+  // serializers strip it unless the caller explicitly opted in.
+  payload?: unknown;
+}
+
+const SOURCE_TYPE_VALUES = new Set(['agent_event', 'session_summary', 'observation_reindex']);
+
+function parseGenericJobListingQuery(req: Request): {
+  status: string | null;
+  sourceType: string | null;
+  limit: number;
+  offset: number;
+  since: Date | null;
+} {
+  const statusRaw = typeof req.query.status === 'string' ? req.query.status.trim() : '';
+  const status = statusRaw && JOB_LIST_STATUS_VALUES.has(statusRaw) ? statusRaw : null;
+  const sourceTypeRaw = typeof req.query.source_type === 'string' ? req.query.source_type.trim() : '';
+  const sourceType = sourceTypeRaw && SOURCE_TYPE_VALUES.has(sourceTypeRaw) ? sourceTypeRaw : null;
+  const limit = clampInt(req.query.limit, JOB_LIST_DEFAULT_LIMIT, 1, JOB_LIST_MAX_LIMIT);
+  const offset = clampInt(req.query.offset, 0, 0, Number.MAX_SAFE_INTEGER);
+  const sinceRaw = typeof req.query.since === 'string' ? req.query.since.trim() : '';
+  let since: Date | null = null;
+  if (sinceRaw) {
+    const parsed = new Date(sinceRaw);
+    if (!Number.isNaN(parsed.getTime())) since = parsed;
+  }
+  return { status, sourceType, limit, offset, since };
+}
+
+function extractRetriedCount(payload: Record<string, unknown> | null | undefined): number {
+  if (!payload || typeof payload !== 'object') return 0;
+  const value = (payload as { retried_count?: unknown }).retried_count;
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+    return Math.floor(value);
+  }
+  return 0;
 }
 
 const JOB_LIST_STATUS_VALUES = new Set(['queued', 'processing', 'completed', 'failed', 'cancelled']);
@@ -966,8 +1402,11 @@ function clampInt(value: unknown, fallback: number, min: number, max: number): n
   return Math.max(min, Math.min(max, parsed));
 }
 
-function serializeJobListEntry(row: JobListRow): Record<string, unknown> {
-  return {
+function serializeJobListEntry(
+  row: JobListRow,
+  options: { includePayload?: boolean } = {},
+): Record<string, unknown> {
+  const base: Record<string, unknown> = {
     id: row.id,
     projectId: row.project_id,
     teamId: row.team_id,
@@ -981,6 +1420,14 @@ function serializeJobListEntry(row: JobListRow): Record<string, unknown> {
     failedAtEpoch: row.failed_at ? new Date(row.failed_at).getTime() : null,
     lastError: row.last_error && typeof row.last_error === 'object' ? row.last_error : null,
   };
+  // Phase 12 — payload is sensitive (it may carry full event payloads
+  // under `agent_events.payload`). Strip by default; only include when the
+  // caller explicitly opted in via `?include=payload`. The route handler
+  // gates that flag on admin scope BEFORE reaching here.
+  if (options.includePayload && row.payload && typeof row.payload === 'object') {
+    base.payload = row.payload;
+  }
+  return base;
 }
 
 // Phase 11 — every audit `action` carries a stable resource_type so dashboards
@@ -1008,6 +1455,9 @@ function resolveAuditResourceType(action: string): string {
     'generation_job.failed': 'observation_generation_job',
     'generation_job.scope_violation': 'observation_generation_job',
     'generation_job.revoked_key': 'observation_generation_job',
+    'generation_job.retried_by_operator': 'observation_generation_job',
+    'generation_job.cancelled_by_operator': 'observation_generation_job',
+    'generation_job.stalled': 'observation_generation_job',
   };
   if (map[action]) return map[action]!;
   return action.split('.')[0] ?? 'unknown';

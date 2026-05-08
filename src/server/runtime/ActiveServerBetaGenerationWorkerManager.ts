@@ -2,6 +2,7 @@
 
 import type { Job } from 'bullmq';
 import { logger } from '../../utils/logger.js';
+import { PostgresAuthRepository } from '../../storage/postgres/auth.js';
 import type { PostgresPool } from '../../storage/postgres/pool.js';
 import { ProviderObservationGenerator } from '../generation/ProviderObservationGenerator.js';
 import type { ServerGenerationProvider } from '../generation/providers/shared/types.js';
@@ -79,7 +80,62 @@ export class ActiveServerBetaGenerationWorkerManager implements ServerBetaGenera
     // ProviderObservationGenerator dispatches on job.data.source_type via the
     // outbox row reload inside lockOutbox+process.
     this.options.queueManager.start('summary', dispatcher);
+
+    // Phase 12 — audit stalled events directly. Phase 11's audit chain now
+    // covers the operator and provider lifecycle; stalled jobs come from
+    // BullMQ runtime not the HTTP boundary, so we wire them in here. Best-
+    // effort: a missing/unscoped audit MUST NOT crash the worker.
+    for (const lane of ['event', 'summary'] as const) {
+      try {
+        const queue = this.options.queueManager.getQueue(lane);
+        queue.observe({
+          onStalled: (jobId) => {
+            void this.auditStalledJob(jobId, lane);
+          },
+        });
+      } catch (error) {
+        logger.warn('SYSTEM', `failed to wire stalled observer for ${lane} lane`, {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
     this.started = true;
+  }
+
+  // Phase 12 — write a `generation_job.stalled` audit row. We look up the
+  // outbox row by BullMQ jobId (== bullmq_job_id column) so team/project
+  // scope is correct on the audit row even when the original API key
+  // metadata is unavailable (BullMQ retries can outlive a session).
+  private async auditStalledJob(bullmqJobId: string, lane: 'event' | 'summary'): Promise<void> {
+    try {
+      const result = await this.options.pool.query<{
+        id: string;
+        team_id: string | null;
+        project_id: string | null;
+      }>(
+        'SELECT id, team_id, project_id FROM observation_generation_jobs WHERE bullmq_job_id = $1 LIMIT 1',
+        [bullmqJobId],
+      );
+      const row = result.rows[0];
+      if (!row) return;
+      const repo = new PostgresAuthRepository(this.options.pool);
+      await repo.createAuditLog({
+        teamId: row.team_id,
+        projectId: row.project_id,
+        actorId: null,
+        apiKeyId: null,
+        action: 'generation_job.stalled',
+        resourceType: 'observation_generation_job',
+        resourceId: row.id,
+        details: { lane, bullmqJobId },
+      });
+    } catch (error) {
+      logger.warn('SYSTEM', 'failed to audit stalled generation_job', {
+        bullmqJobId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   getHealth(): ServerBetaBoundaryHealth {

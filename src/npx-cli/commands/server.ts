@@ -22,7 +22,7 @@ const UNSUPPORTED_SERVER_COMMANDS = new Set([
 
 function printServerUsage(): void {
   console.error(`Usage: ${pc.bold('npx claude-mem server <command>')}`);
-  console.error('Commands: start, stop, restart, status, logs, doctor, migrate, export, import, api-key create|list|revoke, keys rotate, worker start');
+  console.error('Commands: start, stop, restart, status, logs, doctor, migrate, export, import, api-key create|list|revoke, keys rotate, worker start, jobs status|failed|retry|cancel');
 }
 
 function failUnsupported(command: string): never {
@@ -116,6 +116,14 @@ export async function runServerCommand(argv: string[] = []): Promise<void> {
     console.error(pc.red(`Unknown server keys subcommand: ${keysCommand ?? '(none)'}`));
     console.error('Usage: npx claude-mem server keys rotate');
     process.exit(1);
+  }
+
+  if (subCommand === 'jobs') {
+    // Phase 12 — operator queue console. Uses Postgres (canonical) +
+    // BullMQ (transport) directly. See src/npx-cli/commands/server-jobs.ts.
+    const { runServerJobsCommand } = await import('./server-jobs.js');
+    await runServerJobsCommand(argv.slice(1));
+    return;
   }
 
   console.error(pc.red(`Unknown server command: ${subCommand}`));
