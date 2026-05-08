@@ -6,6 +6,7 @@ import {
   isClassicProvider,
   isGatewayProvider,
   litellmExampleForProfile,
+  litellmStartHintForProfile,
 } from '../src/npx-cli/commands/gateway-profiles.js';
 
 describe('gateway provider profiles', () => {
@@ -79,5 +80,14 @@ describe('gateway provider profiles', () => {
     expect(litellmExampleForProfile(getGatewayProfile('ollama'))).toContain('model: ollama_chat/qwen2.5:3b');
     expect(litellmExampleForProfile(getGatewayProfile('ollama'))).toContain('api_base: http://127.0.0.1:11434');
     expect(litellmExampleForProfile(getGatewayProfile('lmstudio'))).toContain('api_base: http://127.0.0.1:1234/v1');
+  });
+
+  it('tells OpenAI-compatible local upstreams to route Anthropic messages through chat completions', () => {
+    const envFlag = 'LITELLM_USE_CHAT_COMPLETIONS_URL_FOR_ANTHROPIC_MESSAGES=true';
+
+    expect(litellmStartHintForProfile(getGatewayProfile('rapidmlx'))).toContain(envFlag);
+    expect(litellmStartHintForProfile(getGatewayProfile('apple'))).toContain(envFlag);
+    expect(litellmStartHintForProfile(getGatewayProfile('lmstudio'))).toContain(envFlag);
+    expect(litellmStartHintForProfile(getGatewayProfile('ollama'))).not.toContain(envFlag);
   });
 });

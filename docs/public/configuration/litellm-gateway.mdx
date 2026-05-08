@@ -107,6 +107,15 @@ litellm --config litellm-config.yaml --host 127.0.0.1 --port 4000
 
 In this example, claude-mem asks the SDK for `claude-haiku-4-5-20251001`, LiteLLM accepts that model alias, and LiteLLM forwards the request to `openai/gpt-4o-mini`.
 
+For OpenAI-compatible local upstreams such as Rapid-MLX, Apple Foundation Models proxies, or LM Studio, start LiteLLM with Anthropic messages routed through chat completions:
+
+```bash
+LITELLM_USE_CHAT_COMPLETIONS_URL_FOR_ANTHROPIC_MESSAGES=true \
+litellm --config litellm-config.yaml --host 127.0.0.1 --port 4000
+```
+
+Without that setting, current LiteLLM versions may translate Anthropic `/v1/messages` traffic to OpenAI `/v1/responses`. Many local OpenAI-compatible servers only expose `/v1/chat/completions`.
+
 <Note>
 The alias in `model_name` must match `CLAUDE_MEM_MODEL`, or `CLAUDE_MEM_MODEL` must be changed to match your LiteLLM alias. claude-mem does not translate model names.
 </Note>

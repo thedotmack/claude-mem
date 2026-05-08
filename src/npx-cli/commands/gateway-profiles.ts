@@ -19,6 +19,8 @@ export interface GatewayProfile {
 }
 
 export const DEFAULT_LITELLM_GATEWAY_URL = 'http://127.0.0.1:4000';
+export const LITELLM_CHAT_COMPLETIONS_FOR_ANTHROPIC_MESSAGES_ENV =
+  'LITELLM_USE_CHAT_COMPLETIONS_URL_FOR_ANTHROPIC_MESSAGES=true';
 
 export const GATEWAY_PROFILES: Record<GatewayProviderId, GatewayProfile> = {
   gemini: {
@@ -178,5 +180,21 @@ export function litellmExampleForProfile(
         '      model: openai/gpt-4o-mini',
         '      api_key: os.environ/OPENAI_API_KEY',
       ].join('\n');
+  }
+}
+
+export function litellmStartHintForProfile(profile: GatewayProfile): string {
+  const baseCommand = 'litellm --config litellm-config.yaml --host 127.0.0.1 --port 4000';
+
+  switch (profile.id) {
+    case 'rapidmlx':
+    case 'apple':
+    case 'lmstudio':
+      return [
+        'Start LiteLLM with Anthropic messages routed through OpenAI chat completions:',
+        `${LITELLM_CHAT_COMPLETIONS_FOR_ANTHROPIC_MESSAGES_ENV} ${baseCommand}`,
+      ].join('\n');
+    default:
+      return `Start LiteLLM: ${baseCommand}`;
   }
 }
