@@ -13,6 +13,7 @@ import { existsSync } from 'fs';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from './paths.js';
 import { logger } from '../utils/logger.js';
+import type { Component } from '../utils/logger.js';
 
 /** How long to wait for `claude --version` before giving up (ms). */
 const VERSION_CHECK_TIMEOUT_MS = 3_000;
@@ -69,7 +70,7 @@ function verifyClaudeVersion(candidate: string): string | null {
  * @param logComponent  Logger component tag (e.g. 'SDK', 'WORKER')
  * @throws {Error} when no valid Claude CLI can be found
  */
-export function findClaudeExecutable(logComponent: string = 'SDK'): string {
+export function findClaudeExecutable(logComponent: Component = 'SDK'): string {
   const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
 
   // --- 1. Explicit configured path ----------------------------------------
