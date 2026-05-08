@@ -5,6 +5,7 @@ import type { PostgresPool, PostgresStorageRepositories } from '../../storage/po
 export type ServerBetaRuntimeName = 'server-beta';
 export type ServerBetaAuthMode = 'api-key' | 'local-dev' | 'disabled';
 export type DisabledBoundaryStatus = 'disabled';
+export type ServerBetaBoundaryStatus = 'disabled' | 'active' | 'errored';
 
 export interface ServerBetaBootstrapStatus {
   initialized: boolean;
@@ -14,8 +15,9 @@ export interface ServerBetaBootstrapStatus {
 }
 
 export interface ServerBetaBoundaryHealth {
-  status: DisabledBoundaryStatus;
+  status: ServerBetaBoundaryStatus;
   reason: string;
+  details?: Record<string, unknown>;
 }
 
 export interface ServerBetaQueueManager {
@@ -65,7 +67,7 @@ abstract class DisabledServerBetaBoundary {
   constructor(private readonly reason: string) {}
 
   getHealth(): ServerBetaBoundaryHealth {
-    return { status: 'disabled', reason: this.reason };
+    return { status: 'disabled' as const, reason: this.reason };
   }
 
   async close(): Promise<void> {}

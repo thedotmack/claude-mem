@@ -3,6 +3,8 @@
 import { createPostgresStorageRepositories, getSharedPostgresPool, SERVER_BETA_POSTGRES_SCHEMA_VERSION } from '../../storage/postgres/index.js';
 import { bootstrapServerBetaPostgresSchema } from '../../storage/postgres/schema.js';
 import type { PostgresPool } from '../../storage/postgres/pool.js';
+import { getRedisQueueConfig } from '../queue/redis-config.js';
+import { ActiveServerBetaQueueManager } from './ActiveServerBetaQueueManager.js';
 import { ServerBetaService } from './ServerBetaService.js';
 import {
   DisabledServerBetaEventBroadcaster,
@@ -11,6 +13,7 @@ import {
   DisabledServerBetaQueueManager,
   type ServerBetaAuthMode,
   type ServerBetaBootstrapStatus,
+  type ServerBetaQueueManager,
   type ServerBetaServiceGraph,
 } from './types.js';
 
@@ -18,6 +21,7 @@ export interface CreateServerBetaServiceOptions {
   pool?: PostgresPool;
   authMode?: ServerBetaAuthMode;
   bootstrapSchema?: boolean;
+  queueManager?: ServerBetaQueueManager;
 }
 
 export async function createServerBetaService(
@@ -32,7 +36,7 @@ export async function createServerBetaService(
       bootstrap,
     },
     authMode: options.authMode ?? parseAuthMode(process.env.CLAUDE_MEM_AUTH_MODE),
-    queueManager: new DisabledServerBetaQueueManager('Phase 2 boundary only; BullMQ queue processing is not wired.'),
+    queueManager: options.queueManager ?? buildQueueManager(),
     generationWorkerManager: new DisabledServerBetaGenerationWorkerManager('Phase 2 boundary only; generation workers are not wired.'),
     providerRegistry: new DisabledServerBetaProviderRegistry('Phase 2 boundary only; provider-backed generation is not wired.'),
     eventBroadcaster: new DisabledServerBetaEventBroadcaster('Phase 2 boundary only; SSE/event broadcasting is not wired.'),
@@ -40,6 +44,22 @@ export async function createServerBetaService(
   };
 
   return new ServerBetaService({ graph });
+}
+
+// Queue manager selection is fail-fast on misconfiguration. If the user
+// explicitly opts into BullMQ via CLAUDE_MEM_QUEUE_ENGINE=bullmq we build
+// the active manager; any error there throws so the runtime does not
+// silently fall back to a disabled queue. Default behavior (sqlite engine
+// or no opt-in) keeps the disabled boundary so worker-era runtimes stay
+// compatible.
+function buildQueueManager(): ServerBetaQueueManager {
+  const config = getRedisQueueConfig();
+  if (config.engine !== 'bullmq') {
+    return new DisabledServerBetaQueueManager(
+      `Queue engine is "${config.engine}"; set CLAUDE_MEM_QUEUE_ENGINE=bullmq to activate the server-beta queue manager.`,
+    );
+  }
+  return new ActiveServerBetaQueueManager(config);
 }
 
 async function initializePostgres(pool: PostgresPool, bootstrapSchema: boolean): Promise<ServerBetaBootstrapStatus> {
