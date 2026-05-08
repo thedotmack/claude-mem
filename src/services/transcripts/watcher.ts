@@ -122,7 +122,7 @@ export class TranscriptWatcher {
     const files = this.resolveWatchFiles(resolvedPath);
 
     for (const filePath of files) {
-      await this.addTailer(filePath, watch, schema, true);
+      await this.addTailer(filePath, watch, schema);
     }
 
     const watchRoot = this.deepestNonGlobAncestor(resolvedPath);
@@ -143,7 +143,7 @@ export class TranscriptWatcher {
         const matches = this.resolveWatchFiles(resolvedPath);
         for (const filePath of matches) {
           if (!this.tailers.has(filePath)) {
-            void this.addTailer(filePath, watch, schema, false);
+            void this.addTailer(filePath, watch, schema);
           }
         }
       });
@@ -223,15 +223,14 @@ export class TranscriptWatcher {
   private async addTailer(
     filePath: string,
     watch: WatchTarget,
-    schema: TranscriptSchema,
-    initialDiscovery: boolean
+    schema: TranscriptSchema
   ): Promise<void> {
     if (this.tailers.has(filePath)) return;
 
     const sessionIdOverride = this.extractSessionIdFromPath(filePath);
 
     let offset = this.state.offsets[filePath] ?? 0;
-    if (offset === 0 && watch.startAtEnd && initialDiscovery) {
+    if (offset === 0 && watch.startAtEnd) {
       try {
         offset = statSync(filePath).size;
       } catch (error: unknown) {
