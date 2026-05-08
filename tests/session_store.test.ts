@@ -29,6 +29,20 @@ describe('SessionStore', () => {
     expect(store.getPromptNumberFromUserPrompts(claudeId)).toBe(2);
   });
 
+  it('should use source event id as the prompt idempotency key', () => {
+    const contentSessionId = 'claude-session-source-event';
+    store.createSDKSession(contentSessionId, 'test-project', 'initial prompt');
+
+    const id1 = store.saveUserPrompt(contentSessionId, 1, 'First prompt', 'turn-123');
+    const id2 = store.saveUserPrompt(contentSessionId, 2, 'Replay prompt', 'turn-123');
+    const stored = store.getUserPromptBySourceEventId(contentSessionId, 'turn-123');
+
+    expect(id2).toBe(id1);
+    expect(stored?.id).toBe(id1);
+    expect(stored?.prompt_number).toBe(1);
+    expect(store.getPromptNumberFromUserPrompts(contentSessionId)).toBe(1);
+  });
+
   it('should store observation with timestamp override', () => {
     const claudeId = 'claude-sess-obs';
     const memoryId = 'memory-sess-obs';

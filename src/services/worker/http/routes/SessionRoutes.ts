@@ -198,6 +198,9 @@ export class SessionRoutes extends BaseRouteHandler {
     contentSessionId: z.string().min(1),
     project: z.string().optional(),
     prompt: z.string().optional(),
+    promptId: z.string().min(1).optional(),
+    sourceEventId: z.string().min(1).optional(),
+    promptNumber: z.number().int().positive().optional(),
     platformSource: z.string().optional(),
     customTitle: z.string().optional(),
   }).passthrough();
@@ -332,6 +335,9 @@ export class SessionRoutes extends BaseRouteHandler {
 
     const project = req.body.project || 'unknown';
     const rawPrompt = typeof req.body.prompt === 'string' ? req.body.prompt : undefined;
+    const promptId = typeof req.body.promptId === 'string'
+      ? req.body.promptId
+      : (typeof req.body.sourceEventId === 'string' ? req.body.sourceEventId : undefined);
     const platformSource = normalizePlatformSource(req.body.platformSource);
     const customTitle = req.body.customTitle || undefined;
 
@@ -377,7 +383,26 @@ export class SessionRoutes extends BaseRouteHandler {
     });
 
     const currentCount = store.getPromptNumberFromUserPrompts(contentSessionId);
-    const promptNumber = currentCount + 1;
+    const existingPrompt = promptId ? store.getUserPromptBySourceEventId(contentSessionId, promptId) : null;
+    if (existingPrompt) {
+      logger.debug('HTTP', 'session-init: duplicate prompt id ignored', {
+        contentSessionId,
+        promptId,
+        promptNumber: existingPrompt.prompt_number,
+      });
+      res.json({
+        sessionDbId,
+        promptNumber: existingPrompt.prompt_number,
+        skipped: true,
+        reason: 'duplicate_prompt',
+        contextInjected: this.sessionManager.getSession(sessionDbId) !== undefined,
+        status: 'duplicate'
+      });
+      return;
+    }
+
+    const requestPromptNumber = typeof req.body.promptNumber === 'number' ? req.body.promptNumber : undefined;
+    const promptNumber = requestPromptNumber ?? (currentCount + 1);
 
     const memorySessionId = dbSession?.memory_session_id || null;
     if (promptNumber > 1) {
@@ -404,13 +429,14 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
-    store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt);
+    store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt, promptId);
 
     const contextInjected = this.sessionManager.getSession(sessionDbId) !== undefined;
 
     logger.debug('SESSION', 'User prompt saved', {
       sessionId: sessionDbId,
       promptNumber,
+      promptId,
       contextInjected
     });
 

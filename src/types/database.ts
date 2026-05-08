@@ -55,6 +55,7 @@ export interface UserPromptRecord {
   id: number;
   content_session_id: string;
   prompt_number: number;
+  source_event_id?: string | null;
   prompt_text: string;
   project?: string;  
   platform_source?: string;
@@ -72,4 +73,3 @@ export interface LatestPromptResult {
   prompt_text: string;
   created_at_epoch: number;
 }
-

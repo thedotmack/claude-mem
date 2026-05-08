@@ -70,7 +70,36 @@ export class SessionStore {
     this.addObservationsMetadataColumn();
     this.dropDeadPendingMessagesColumns();
     this.ensurePendingMessagesToolUseIdColumn();
+    this.ensureUserPromptSourceEventIdColumn();
     this.dropWorkerPidColumn();
+  }
+
+  private ensureUserPromptSourceEventIdColumn(): void {
+    const tables = this.db.query(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='user_prompts'"
+    ).all() as TableNameRow[];
+    if (tables.length === 0) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(33, new Date().toISOString());
+      return;
+    }
+
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(33) as SchemaVersion | undefined;
+    const cols = this.db.query('PRAGMA table_info(user_prompts)').all() as TableColumnInfo[];
+    const hasSourceEventId = cols.some(c => c.name === 'source_event_id');
+
+    if (!hasSourceEventId) {
+      this.db.run('ALTER TABLE user_prompts ADD COLUMN source_event_id TEXT');
+    }
+
+    this.db.run(`
+      CREATE UNIQUE INDEX IF NOT EXISTS ux_user_prompts_session_source_event
+      ON user_prompts(content_session_id, source_event_id)
+      WHERE source_event_id IS NOT NULL
+    `);
+
+    if (!applied) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(33, new Date().toISOString());
+    }
   }
 
   private dropWorkerPidColumn(): void {
@@ -414,6 +443,7 @@ export class SessionStore {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         content_session_id TEXT NOT NULL,
         prompt_number INTEGER NOT NULL,
+        source_event_id TEXT,
         prompt_text TEXT NOT NULL,
         created_at TEXT NOT NULL,
         created_at_epoch INTEGER NOT NULL,
@@ -424,6 +454,9 @@ export class SessionStore {
       CREATE INDEX idx_user_prompts_created ON user_prompts(created_at_epoch DESC);
       CREATE INDEX idx_user_prompts_prompt_number ON user_prompts(prompt_number);
       CREATE INDEX idx_user_prompts_lookup ON user_prompts(content_session_id, prompt_number);
+      CREATE UNIQUE INDEX ux_user_prompts_session_source_event
+        ON user_prompts(content_session_id, source_event_id)
+        WHERE source_event_id IS NOT NULL;
     `);
 
     const ftsCreateSQL = `
@@ -1706,18 +1739,47 @@ export class SessionStore {
     return row.id;
   }
 
-  saveUserPrompt(contentSessionId: string, promptNumber: number, promptText: string): number {
+  saveUserPrompt(contentSessionId: string, promptNumber: number, promptText: string, sourceEventId?: string): number {
+    const normalizedSourceEventId = sourceEventId?.trim() || null;
+    if (normalizedSourceEventId) {
+      const existing = this.db.prepare(`
+        SELECT id FROM user_prompts
+        WHERE content_session_id = ? AND source_event_id = ?
+      `).get(contentSessionId, normalizedSourceEventId) as { id: number } | undefined;
+      if (existing) return existing.id;
+    }
+
+    const existingByNumber = this.db.prepare(`
+      SELECT id FROM user_prompts
+      WHERE content_session_id = ? AND prompt_number = ?
+    `).get(contentSessionId, promptNumber) as { id: number } | undefined;
+    if (existingByNumber) return existingByNumber.id;
+
     const now = new Date();
     const nowEpoch = now.getTime();
 
     const stmt = this.db.prepare(`
       INSERT INTO user_prompts
-      (content_session_id, prompt_number, prompt_text, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?)
+      (content_session_id, prompt_number, source_event_id, prompt_text, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?)
     `);
 
-    const result = stmt.run(contentSessionId, promptNumber, promptText, now.toISOString(), nowEpoch);
+    const result = stmt.run(contentSessionId, promptNumber, normalizedSourceEventId, promptText, now.toISOString(), nowEpoch);
     return result.lastInsertRowid as number;
+  }
+
+  getUserPromptBySourceEventId(contentSessionId: string, sourceEventId: string): { id: number; prompt_number: number; prompt_text: string } | null {
+    const normalizedSourceEventId = sourceEventId.trim();
+    if (!normalizedSourceEventId) return null;
+
+    const stmt = this.db.prepare(`
+      SELECT id, prompt_number, prompt_text
+      FROM user_prompts
+      WHERE content_session_id = ? AND source_event_id = ?
+      LIMIT 1
+    `);
+
+    return (stmt.get(contentSessionId, normalizedSourceEventId) as { id: number; prompt_number: number; prompt_text: string } | undefined) ?? null;
   }
 
   getUserPrompt(contentSessionId: string, promptNumber: number): string | null {
@@ -2626,10 +2688,23 @@ export class SessionStore {
   importUserPrompt(prompt: {
     content_session_id: string;
     prompt_number: number;
+    source_event_id?: string | null;
     prompt_text: string;
     created_at: string;
     created_at_epoch: number;
   }): { imported: boolean; id: number } {
+    const sourceEventId = prompt.source_event_id?.trim() || null;
+    if (sourceEventId) {
+      const existingBySourceEvent = this.db.prepare(`
+        SELECT id FROM user_prompts
+        WHERE content_session_id = ? AND source_event_id = ?
+      `).get(prompt.content_session_id, sourceEventId) as { id: number } | undefined;
+
+      if (existingBySourceEvent) {
+        return { imported: false, id: existingBySourceEvent.id };
+      }
+    }
+
     const existing = this.db.prepare(`
       SELECT id FROM user_prompts
       WHERE content_session_id = ? AND prompt_number = ?
@@ -2641,14 +2716,15 @@ export class SessionStore {
 
     const stmt = this.db.prepare(`
       INSERT INTO user_prompts (
-        content_session_id, prompt_number, prompt_text,
+        content_session_id, prompt_number, source_event_id, prompt_text,
         created_at, created_at_epoch
-      ) VALUES (?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
       prompt.content_session_id,
       prompt.prompt_number,
+      sourceEventId,
       prompt.prompt_text,
       prompt.created_at,
       prompt.created_at_epoch

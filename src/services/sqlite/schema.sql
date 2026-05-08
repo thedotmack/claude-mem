@@ -159,6 +159,7 @@ CREATE TABLE IF NOT EXISTS user_prompts (
   id                 INTEGER PRIMARY KEY AUTOINCREMENT,
   content_session_id TEXT    NOT NULL,
   prompt_number      INTEGER NOT NULL,
+  source_event_id    TEXT,
   prompt_text        TEXT    NOT NULL,
   created_at         TEXT    NOT NULL,
   created_at_epoch   INTEGER NOT NULL,
@@ -168,6 +169,9 @@ CREATE INDEX IF NOT EXISTS idx_user_prompts_claude_session ON user_prompts(conte
 CREATE INDEX IF NOT EXISTS idx_user_prompts_created        ON user_prompts(created_at_epoch DESC);
 CREATE INDEX IF NOT EXISTS idx_user_prompts_prompt_number  ON user_prompts(prompt_number);
 CREATE INDEX IF NOT EXISTS idx_user_prompts_lookup         ON user_prompts(content_session_id, prompt_number);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_user_prompts_session_source_event
+  ON user_prompts(content_session_id, source_event_id)
+  WHERE source_event_id IS NOT NULL;
 
 -- ─────────────────────────────────────────────────────────────────────
 -- observation_feedback: usage-signal tracking for tier routing.

@@ -34,6 +34,7 @@ export class MigrationRunner {
     this.addObservationsUniqueContentHashIndex();
     this.addObservationsMetadataColumn();
     this.dropDeadPendingMessagesColumns();
+    this.ensureUserPromptSourceEventIdColumn();
   }
 
   private initializeSchema(): void {
@@ -320,6 +321,7 @@ export class MigrationRunner {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         content_session_id TEXT NOT NULL,
         prompt_number INTEGER NOT NULL,
+        source_event_id TEXT,
         prompt_text TEXT NOT NULL,
         created_at TEXT NOT NULL,
         created_at_epoch INTEGER NOT NULL,
@@ -330,6 +332,9 @@ export class MigrationRunner {
       CREATE INDEX idx_user_prompts_created ON user_prompts(created_at_epoch DESC);
       CREATE INDEX idx_user_prompts_prompt_number ON user_prompts(prompt_number);
       CREATE INDEX idx_user_prompts_lookup ON user_prompts(content_session_id, prompt_number);
+      CREATE UNIQUE INDEX ux_user_prompts_session_source_event
+        ON user_prompts(content_session_id, source_event_id)
+        WHERE source_event_id IS NOT NULL;
     `);
 
     try {
@@ -1001,5 +1006,33 @@ export class MigrationRunner {
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(31, new Date().toISOString());
+  }
+
+  private ensureUserPromptSourceEventIdColumn(): void {
+    const tables = this.db.query(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='user_prompts'"
+    ).all() as TableNameRow[];
+    if (tables.length === 0) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(33, new Date().toISOString());
+      return;
+    }
+
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(33) as SchemaVersion | undefined;
+    const cols = this.db.query('PRAGMA table_info(user_prompts)').all() as TableColumnInfo[];
+    const hasSourceEventId = cols.some(c => c.name === 'source_event_id');
+
+    if (!hasSourceEventId) {
+      this.db.run('ALTER TABLE user_prompts ADD COLUMN source_event_id TEXT');
+    }
+
+    this.db.run(`
+      CREATE UNIQUE INDEX IF NOT EXISTS ux_user_prompts_session_source_event
+      ON user_prompts(content_session_id, source_event_id)
+      WHERE source_event_id IS NOT NULL
+    `);
+
+    if (!applied) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(33, new Date().toISOString());
+    }
   }
 }

@@ -180,11 +180,28 @@ export function importUserPrompt(
   prompt: {
     content_session_id: string;
     prompt_number: number;
+    source_event_id?: string | null;
     prompt_text: string;
     created_at: string;
     created_at_epoch: number;
   }
 ): ImportResult {
+  const sourceEventId = prompt.source_event_id?.trim() || null;
+  if (sourceEventId) {
+    const existingBySourceEvent = db
+      .prepare(
+        `
+        SELECT id FROM user_prompts
+        WHERE content_session_id = ? AND source_event_id = ?
+      `
+      )
+      .get(prompt.content_session_id, sourceEventId) as { id: number } | undefined;
+
+    if (existingBySourceEvent) {
+      return { imported: false, id: existingBySourceEvent.id };
+    }
+  }
+
   const existing = db
     .prepare(
       `
@@ -202,14 +219,15 @@ export function importUserPrompt(
 
   const stmt = db.prepare(`
     INSERT INTO user_prompts (
-      content_session_id, prompt_number, prompt_text,
+      content_session_id, prompt_number, source_event_id, prompt_text,
       created_at, created_at_epoch
-    ) VALUES (?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?)
   `);
 
   const result = stmt.run(
     prompt.content_session_id,
     prompt.prompt_number,
+    sourceEventId,
     prompt.prompt_text,
     prompt.created_at,
     prompt.created_at_epoch

@@ -30,6 +30,14 @@ const CODEX_SAMPLE_SCHEMA: TranscriptSchema = {
       }
     },
     {
+      name: 'task-started',
+      match: { path: 'payload.type', equals: 'task_started' },
+      action: 'session_context',
+      fields: {
+        turnId: 'payload.turn_id'
+      }
+    },
+    {
       name: 'user-message',
       match: { path: 'payload.type', equals: 'user_message' },
       action: 'session_init',

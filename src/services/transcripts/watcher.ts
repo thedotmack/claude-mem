@@ -231,7 +231,7 @@ export class TranscriptWatcher {
     const sessionIdOverride = this.extractSessionIdFromPath(filePath);
 
     let offset = this.state.offsets[filePath] ?? 0;
-    if (offset === 0 && watch.startAtEnd && initialDiscovery) {
+    if (offset === 0 && watch.startAtEnd) {
       try {
         offset = statSync(filePath).size;
       } catch (error: unknown) {

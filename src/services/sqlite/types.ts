@@ -224,6 +224,7 @@ export interface UserPromptRow {
   id: number;
   content_session_id: string;
   prompt_number: number;
+  source_event_id?: string | null;
   prompt_text: string;
   created_at: string;
   created_at_epoch: number;

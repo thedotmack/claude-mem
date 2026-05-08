@@ -15,6 +15,7 @@ import { ingestObservation } from '../worker/http/shared.js';
 interface SessionState {
   sessionId: string;
   platformSource: string;
+  currentTurnId?: string;
   cwd?: string;
   project?: string;
   lastUserMessage?: string;
@@ -31,10 +32,34 @@ export class TranscriptEventProcessor {
     schema: TranscriptSchema,
     sessionIdOverride?: string | null
   ): Promise<void> {
+    this.captureCodexTurnId(entry, watch, schema, sessionIdOverride ?? undefined);
     for (const event of schema.events) {
       if (!matchesRule(entry, event.match, schema)) continue;
       await this.handleEvent(entry, watch, schema, event, sessionIdOverride ?? undefined);
     }
+  }
+
+  private captureCodexTurnId(
+    entry: unknown,
+    watch: WatchTarget,
+    schema: TranscriptSchema,
+    sessionIdOverride?: string
+  ): void {
+    if (watch.name !== 'codex' && schema.name !== 'codex') return;
+    if (!entry || typeof entry !== 'object') return;
+
+    const payload = (entry as { payload?: unknown }).payload;
+    if (!payload || typeof payload !== 'object') return;
+
+    const type = (payload as { type?: unknown }).type;
+    const turnId = (payload as { turn_id?: unknown }).turn_id;
+    if (type !== 'task_started' || typeof turnId !== 'string' || !turnId.trim()) return;
+
+    const sessionId = sessionIdOverride?.trim();
+    if (!sessionId) return;
+
+    const session = this.getOrCreateSession(watch, sessionId);
+    session.currentTurnId = turnId;
   }
 
   private getSessionKey(watch: WatchTarget, sessionId: string): string {
@@ -162,8 +187,10 @@ export class TranscriptEventProcessor {
   private applySessionContext(session: SessionState, fields: Record<string, unknown>): void {
     const cwd = typeof fields.cwd === 'string' ? fields.cwd : undefined;
     const project = typeof fields.project === 'string' ? fields.project : undefined;
+    const turnId = typeof fields.turnId === 'string' ? fields.turnId : undefined;
     if (cwd) session.cwd = cwd;
     if (project) session.project = project;
+    if (turnId) session.currentTurnId = turnId;
   }
 
   private async handleSessionInit(session: SessionState, fields: Record<string, unknown>): Promise<void> {
@@ -177,6 +204,8 @@ export class TranscriptEventProcessor {
       sessionId: session.sessionId,
       cwd,
       prompt,
+      promptId: session.currentTurnId,
+      turnId: session.currentTurnId,
       platform: session.platformSource
     });
   }

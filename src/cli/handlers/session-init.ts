@@ -58,6 +58,7 @@ export const sessionInitHandler: EventHandler = {
         contentSessionId: sessionId,
         project,
         prompt,
+        promptId: input.promptId ?? input.turnId,
         platformSource,
       },
     );

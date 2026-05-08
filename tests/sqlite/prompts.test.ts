@@ -57,6 +57,26 @@ describe('Prompts Module', () => {
 
       expect(id1).not.toBe(id2);
     });
+
+    it('should ignore duplicate prompt source event IDs', () => {
+      const contentSessionId = createSession('content-session-prompt-id');
+
+      const id1 = saveUserPrompt(db, contentSessionId, 1, 'First prompt', 'turn-abc');
+      const id2 = saveUserPrompt(db, contentSessionId, 2, 'Replay of first prompt', 'turn-abc');
+
+      expect(id2).toBe(id1);
+      expect(getPromptNumberFromUserPrompts(db, contentSessionId)).toBe(1);
+    });
+
+    it('should ignore duplicate prompt numbers when no source event ID is available', () => {
+      const contentSessionId = createSession('content-session-prompt-number-key');
+
+      const id1 = saveUserPrompt(db, contentSessionId, 1, 'First prompt');
+      const id2 = saveUserPrompt(db, contentSessionId, 1, 'Replay of first prompt');
+
+      expect(id2).toBe(id1);
+      expect(getPromptNumberFromUserPrompts(db, contentSessionId)).toBe(1);
+    });
   });
 
   describe('getPromptNumberFromUserPrompts', () => {
