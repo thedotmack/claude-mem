@@ -1,6 +1,7 @@
 
 import path from 'path';
 import { existsSync } from 'fs';
+import { spawn } from 'child_process';
 import { Database } from 'bun:sqlite';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -788,7 +789,7 @@ function parseWorkerServiceCommand(argv: string[]): ParsedWorkerCommand {
   if (rawCommand === 'server') {
     const lifecycleCommands = new Set(['start', 'stop', 'restart', 'status']);
     if (maybeSubCommand && lifecycleCommands.has(maybeSubCommand)) {
-      return { command: maybeSubCommand, args: rest };
+      return { command: `server-${maybeSubCommand}`, args: rest };
     }
     const serverCommands = new Set(['logs', 'doctor', 'migrate', 'export', 'import', 'api-key']);
     return {
@@ -826,6 +827,27 @@ function printServerCommandHelp(): never {
 function printWorkerAliasHelp(): never {
   console.error('Usage: worker-service worker start|stop|restart|status');
   process.exit(1);
+}
+
+function runServerBetaServiceCli(command: string): void {
+  const serverBetaScript = path.join(__dirname, 'server-beta-service.cjs');
+  if (!existsSync(serverBetaScript)) {
+    console.error(`Server beta script not found at: ${serverBetaScript}`);
+    console.error('Rebuild or reinstall claude-mem so server-beta-service.cjs is available.');
+    process.exit(1);
+  }
+
+  const child = spawn(process.execPath, [serverBetaScript, command], {
+    stdio: 'inherit',
+    env: process.env,
+  });
+  child.on('error', (error) => {
+    console.error(`Failed to start server beta command: ${error.message}`);
+    process.exit(1);
+  });
+  child.on('close', (exitCode) => {
+    process.exit(exitCode ?? 0);
+  });
 }
 
 function parseServerApiKeyOptions(args: string[]): Record<string, string> {
@@ -990,6 +1012,14 @@ async function main() {
         console.log('Worker is not running');
       }
       process.exit(0);
+      break;
+    }
+
+    case 'server-start':
+    case 'server-stop':
+    case 'server-restart':
+    case 'server-status': {
+      runServerBetaServiceCli(command.slice('server-'.length));
       break;
     }
 

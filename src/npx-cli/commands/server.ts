@@ -1,5 +1,9 @@
 import pc from 'picocolors';
 import {
+  runServerBetaRestartCommand,
+  runServerBetaStartCommand,
+  runServerBetaStatusCommand,
+  runServerBetaStopCommand,
   runRestartCommand,
   runServerApiKeyCommand,
   runStartCommand,
@@ -45,6 +49,25 @@ function runWorkerLifecycleCommand(command: string): boolean {
   }
 }
 
+function runServerBetaLifecycleCommand(command: string): boolean {
+  switch (command) {
+    case 'start':
+      runServerBetaStartCommand();
+      return true;
+    case 'stop':
+      runServerBetaStopCommand();
+      return true;
+    case 'restart':
+      runServerBetaRestartCommand();
+      return true;
+    case 'status':
+      runServerBetaStatusCommand();
+      return true;
+    default:
+      return false;
+  }
+}
+
 export async function runServerCommand(argv: string[] = []): Promise<void> {
   const subCommand = argv[0]?.toLowerCase();
 
@@ -57,7 +80,7 @@ export async function runServerCommand(argv: string[] = []): Promise<void> {
     failUnsupported(`server ${subCommand}`);
   }
 
-  if (runWorkerLifecycleCommand(subCommand)) {
+  if (runServerBetaLifecycleCommand(subCommand)) {
     return;
   }
 
