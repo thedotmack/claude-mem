@@ -157,6 +157,12 @@ export class SessionsObservationsAdapter implements RouteHandler {
  * Look up an existing server_session by (project, team, externalSessionId)
  * or create one if missing. Idempotent: re-issuing for the same content
  * session returns the existing row.
+ *
+ * Concurrent compat callers can race here — both observe `existing===null`
+ * and both call `repo.create`, where the second will hit one of two unique
+ * constraints (`(project_id, idempotency_key)` covered by ON CONFLICT, or
+ * `(project_id, external_session_id)` which is NOT covered). Catch the
+ * unique-violation and re-fetch so the caller never sees a 500.
  */
 export async function resolveServerSession(input: {
   pool: PostgresPool;
@@ -176,14 +182,31 @@ export async function resolveServerSession(input: {
   if (existing) {
     return { id: existing.id, projectId: existing.projectId, teamId: existing.teamId };
   }
-  const created = await repo.create({
-    projectId: input.projectId,
-    teamId: input.teamId,
-    externalSessionId: input.contentSessionId,
-    contentSessionId: input.contentSessionId,
-    agentId: input.agentId,
-    agentType: input.agentType,
-    platformSource: input.platformSource,
-  });
-  return { id: created.id, projectId: created.projectId, teamId: created.teamId };
+  try {
+    const created = await repo.create({
+      projectId: input.projectId,
+      teamId: input.teamId,
+      externalSessionId: input.contentSessionId,
+      contentSessionId: input.contentSessionId,
+      agentId: input.agentId,
+      agentType: input.agentType,
+      platformSource: input.platformSource,
+    });
+    return { id: created.id, projectId: created.projectId, teamId: created.teamId };
+  } catch (error) {
+    // Postgres unique_violation. A concurrent compat call inserted the row
+    // for this (project, external_session_id) before we could; re-fetch
+    // and return that row instead of bubbling a 500 to the legacy client.
+    if ((error as { code?: string } | null)?.code === '23505') {
+      const racedRow = await repo.findByExternalIdForScope({
+        externalSessionId: input.contentSessionId,
+        projectId: input.projectId,
+        teamId: input.teamId,
+      });
+      if (racedRow) {
+        return { id: racedRow.id, projectId: racedRow.projectId, teamId: racedRow.teamId };
+      }
+    }
+    throw error;
+  }
 }

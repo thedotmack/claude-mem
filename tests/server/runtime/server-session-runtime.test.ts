@@ -110,8 +110,12 @@ describe('ServerSessionRuntimeRepository + Postgres', () => {
   });
 
   afterEach(async () => {
-    if (client) {
-      await client.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(schemaName)} CASCADE`);
+    if (!client) return;
+    try {
+      if (schemaName) {
+        await client.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(schemaName)} CASCADE`);
+      }
+    } finally {
       client.release();
     }
   });

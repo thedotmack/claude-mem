@@ -256,7 +256,12 @@ export class ServerV1PostgresRoutes implements RouteHandler {
           source: 'http_post_v1_events_batch',
           apiKeyId: req.authContext?.apiKeyId ?? null,
           actorId: await this.resolveActorId(req),
-          sourceAdapter: inputs[0]?.sourceAdapter ?? SOURCE_ADAPTER_DEFAULT,
+          // Do not pick a single adapter for the whole batch. ingestBatch
+          // builds each event's BullMQ payload via buildEventBullmqPayload,
+          // which falls back to event.sourceAdapter when this opt is null —
+          // so a mixed batch (e.g. 'mcp' + 'api') keeps per-event metadata
+          // accurate in both the persisted outbox payload and the audit row.
+          sourceAdapter: null,
           requestId: req.requestId ?? null,
         });
         inserted = ingested.map(({ event, outbox }) => ({ event, outbox }));
