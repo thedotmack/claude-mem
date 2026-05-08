@@ -128,7 +128,7 @@ export class ServerV1Routes implements RouteHandler {
       res.status(201).json({ event });
     }));
 
-    app.post('/v1/events/batch', writeAuth, this.handleCreate(z.array(CreateAgentEventSchema).min(1), (req, res, body) => {
+    app.post('/v1/events/batch', writeAuth, this.handleCreate(z.array(CreateAgentEventSchema).min(1).max(500), (req, res, body) => {
       for (const event of body) {
         if (!this.ensureProjectAllowed(req, res, event.projectId)) return;
       }
