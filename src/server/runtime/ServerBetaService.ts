@@ -14,6 +14,7 @@ import {
   verifyPidFileOwnership,
   type PidInfo,
 } from '../../supervisor/process-registry.js';
+import { ServerV1PostgresRoutes } from '../routes/v1/ServerV1PostgresRoutes.js';
 import type { ServerBetaServiceGraph } from './types.js';
 
 const SERVER_BETA_RUNTIME = 'server-beta';
@@ -108,6 +109,12 @@ export class ServerBetaService {
       }),
     });
     server.registerRoutes(new ServerBetaRuntimeInfoRoutes(this.graph));
+    server.registerRoutes(new ServerV1PostgresRoutes({
+      pool: this.graph.postgres.pool,
+      queueManager: this.graph.queueManager,
+      authMode: this.graph.authMode === 'disabled' ? 'api-key' : this.graph.authMode,
+      runtime: SERVER_BETA_RUNTIME,
+    }));
     server.finalizeRoutes();
 
     await server.listen(this.requestedPort, this.host);
