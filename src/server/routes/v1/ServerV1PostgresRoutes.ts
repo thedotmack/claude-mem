@@ -5,7 +5,6 @@ import { z, type ZodTypeAny } from 'zod';
 import type { RouteHandler } from '../../../services/server/Server.js';
 import { CreateAgentEventSchema } from '../../../core/schemas/agent-event.js';
 import type { PostgresPool } from '../../../storage/postgres/pool.js';
-import { withPostgresTransaction } from '../../../storage/postgres/pool.js';
 import {
   PostgresAgentEventsRepository,
   type CreatePostgresAgentEventInput,
@@ -13,7 +12,6 @@ import {
 } from '../../../storage/postgres/agent-events.js';
 import {
   PostgresObservationGenerationJobRepository,
-  PostgresObservationGenerationJobEventsRepository,
   type PostgresObservationGenerationJob,
 } from '../../../storage/postgres/generation-jobs.js';
 import { PostgresAuthRepository } from '../../../storage/postgres/auth.js';
@@ -21,20 +19,11 @@ import { logger } from '../../../utils/logger.js';
 import { requirePostgresServerAuth } from '../../middleware/postgres-auth.js';
 import type { ActiveServerBetaQueueManager } from '../../runtime/ActiveServerBetaQueueManager.js';
 import type { ServerBetaQueueManager } from '../../runtime/types.js';
-import { buildServerJobId } from '../../jobs/job-id.js';
-import type { GenerateSessionSummaryJob } from '../../jobs/types.js';
 import { PostgresServerSessionsRepository } from '../../../storage/postgres/server-sessions.js';
-import {
-  buildEnqueueEventDecision,
-  buildSummaryJobId,
-  buildSummaryJobPayload,
-  resolveSessionGenerationPolicy,
-  scheduleDebouncedEventJob,
-  type ServerSessionGenerationPolicy,
-} from '../../runtime/SessionGenerationPolicy.js';
+import type { ServerSessionGenerationPolicy } from '../../runtime/SessionGenerationPolicy.js';
+import { IngestEventsService, type EnqueueOutcome } from '../../services/IngestEventsService.js';
+import { EndSessionService } from '../../services/EndSessionService.js';
 
-const EVENT_JOB_TYPE = 'observation_generate_for_event';
-const SUMMARY_JOB_TYPE = 'observation_generate_session_summary';
 const SOURCE_ADAPTER_DEFAULT = 'api';
 
 export interface ServerV1PostgresRoutesOptions {
@@ -64,7 +53,39 @@ const EVENT_QUERY_SCHEMA = z.object({
 });
 
 export class ServerV1PostgresRoutes implements RouteHandler {
-  constructor(private readonly options: ServerV1PostgresRoutesOptions) {}
+  private readonly ingestEvents: IngestEventsService;
+  private readonly endSession: EndSessionService;
+
+  constructor(private readonly options: ServerV1PostgresRoutesOptions) {
+    const ingestOpts: ConstructorParameters<typeof IngestEventsService>[0] = {
+      pool: options.pool,
+      resolveEventQueue: () => this.resolveEventQueue() as never,
+    };
+    if (options.sessionPolicy !== undefined) {
+      ingestOpts.sessionPolicy = options.sessionPolicy;
+    }
+    if (options.sessionDebounceWindowMs !== undefined) {
+      ingestOpts.sessionDebounceWindowMs = options.sessionDebounceWindowMs;
+    }
+    this.ingestEvents = new IngestEventsService(ingestOpts);
+    this.endSession = new EndSessionService({
+      pool: options.pool,
+      resolveSummaryQueue: () => this.resolveSummaryQueue() as never,
+    });
+  }
+
+  /**
+   * Expose the shared services so other route handlers (e.g. the legacy
+   * compat adapters in src/server/compat) can call the EXACT same code path
+   * — never duplicate ingest/end logic across routes.
+   */
+  getIngestEventsService(): IngestEventsService {
+    return this.ingestEvents;
+  }
+
+  getEndSessionService(): EndSessionService {
+    return this.endSession;
+  }
 
   setupRoutes(app: Application): void {
     const writeAuth = requirePostgresServerAuth(this.options.pool, {
@@ -101,53 +122,21 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       const insertInput = this.toAgentEventInput(body, teamId);
       let event: PostgresAgentEvent;
       let outbox: PostgresObservationGenerationJob | null = null;
+      let enqueueState: EnqueueOutcome = 'skipped';
       try {
-        const txResult = await withPostgresTransaction(this.options.pool, async (client) => {
-          const eventsRepo = new PostgresAgentEventsRepository(client);
-          const insertedEvent = await eventsRepo.create(insertInput);
-
-          if (!generate) {
-            return { insertedEvent, insertedOutbox: null as PostgresObservationGenerationJob | null };
-          }
-
-          const jobsRepo = new PostgresObservationGenerationJobRepository(client);
-          const eventsLogRepo = new PostgresObservationGenerationJobEventsRepository(client);
-          const insertedOutbox = await jobsRepo.create({
-            projectId: insertedEvent.projectId,
-            teamId: insertedEvent.teamId,
-            sourceType: 'agent_event',
-            sourceId: insertedEvent.id,
-            agentEventId: insertedEvent.id,
-            serverSessionId: insertedEvent.serverSessionId,
-            jobType: EVENT_JOB_TYPE,
-            bullmqJobId: buildEventBullmqJobId(insertedEvent),
-          });
-          await eventsLogRepo.append({
-            generationJobId: insertedOutbox.id,
-            projectId: insertedOutbox.projectId,
-            teamId: insertedOutbox.teamId,
-            eventType: 'queued',
-            statusAfter: insertedOutbox.status,
-            attempt: insertedOutbox.attempts,
-            details: { source: 'http_post_v1_events' },
-          });
-          return { insertedEvent, insertedOutbox };
+        const result = await this.ingestEvents.ingestOne(insertInput, {
+          generate,
+          source: 'http_post_v1_events',
         });
-        event = txResult.insertedEvent;
-        outbox = txResult.insertedOutbox;
+        event = result.event;
+        outbox = result.outbox;
+        enqueueState = result.enqueueState;
       } catch (error) {
         this.handleDbError(error, res, 'event.write');
         return;
       }
 
       await this.auditWrite(req, 'event.write', event.id, event.projectId);
-
-      // Enqueue AFTER commit. Failure to enqueue leaves the outbox row in
-      // `queued` state and Phase 3 startup reconciliation re-publishes it.
-      let enqueueState: 'enqueued' | 'queued_only' | 'skipped' = 'skipped';
-      if (outbox) {
-        enqueueState = await this.enqueueEventJob(event, outbox);
-      }
 
       if (wait) {
         res.status(201).json({
@@ -192,57 +181,20 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       const inputs = result.data.map(item => this.toAgentEventInput(item, teamId));
 
       let inserted: { event: PostgresAgentEvent; outbox: PostgresObservationGenerationJob | null }[] = [];
+      let enqueueResults: EnqueueOutcome[] = [];
       try {
-        inserted = await withPostgresTransaction(this.options.pool, async (client) => {
-          const eventsRepo = new PostgresAgentEventsRepository(client);
-          const jobsRepo = new PostgresObservationGenerationJobRepository(client);
-          const eventsLogRepo = new PostgresObservationGenerationJobEventsRepository(client);
-          const acc: { event: PostgresAgentEvent; outbox: PostgresObservationGenerationJob | null }[] = [];
-          for (const input of inputs) {
-            const event = await eventsRepo.create(input);
-            if (!generate) {
-              acc.push({ event, outbox: null });
-              continue;
-            }
-            const outbox = await jobsRepo.create({
-              projectId: event.projectId,
-              teamId: event.teamId,
-              sourceType: 'agent_event',
-              sourceId: event.id,
-              agentEventId: event.id,
-              serverSessionId: event.serverSessionId,
-              jobType: EVENT_JOB_TYPE,
-              bullmqJobId: buildEventBullmqJobId(event),
-            });
-            await eventsLogRepo.append({
-              generationJobId: outbox.id,
-              projectId: outbox.projectId,
-              teamId: outbox.teamId,
-              eventType: 'queued',
-              statusAfter: outbox.status,
-              attempt: outbox.attempts,
-              details: { source: 'http_post_v1_events_batch' },
-            });
-            acc.push({ event, outbox });
-          }
-          return acc;
+        const ingested = await this.ingestEvents.ingestBatch(inputs, {
+          generate,
+          source: 'http_post_v1_events_batch',
         });
+        inserted = ingested.map(({ event, outbox }) => ({ event, outbox }));
+        enqueueResults = ingested.map(({ enqueueState }) => enqueueState);
       } catch (error) {
         this.handleDbError(error, res, 'event.batch_write');
         return;
       }
 
       await this.auditWrite(req, 'event.batch_write', null, null);
-
-      // Per-item enqueue after commit. Each failed enqueue leaves its row in
-      // `queued` state for startup reconciliation; we never roll back the
-      // committed batch on a transport error.
-      const enqueueResults: ('enqueued' | 'queued_only' | 'skipped')[] = await Promise.all(
-        inserted.map(async ({ event, outbox }) => {
-          if (!outbox) return 'skipped';
-          return this.enqueueEventJob(event, outbox);
-        }),
-      );
 
       if (wait) {
         res.status(201).json({
@@ -476,51 +428,19 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       }
       if (!this.ensureProjectAllowed(req, res, row.project_id)) return;
 
-      let endedSession: Awaited<ReturnType<PostgresServerSessionsRepository['endSession']>>;
+      let endedSession: Awaited<ReturnType<PostgresServerSessionsRepository['endSession']>> = null;
       let summaryOutbox: PostgresObservationGenerationJob | null = null;
+      let enqueueState: EnqueueOutcome = 'skipped';
       try {
-        const txResult = await withPostgresTransaction(this.options.pool, async (client) => {
-          const sessionsRepo = new PostgresServerSessionsRepository(client);
-          const ended = await sessionsRepo.endSession({
-            id,
-            projectId: row.project_id,
-            teamId,
-          });
-          if (!ended) {
-            return { ended: null as Awaited<ReturnType<PostgresServerSessionsRepository['endSession']>>, outbox: null as PostgresObservationGenerationJob | null };
-          }
-          const jobsRepo = new PostgresObservationGenerationJobRepository(client);
-          const eventsLogRepo = new PostgresObservationGenerationJobEventsRepository(client);
-          const outbox = await jobsRepo.create({
-            projectId: ended.projectId,
-            teamId: ended.teamId,
-            sourceType: 'session_summary',
-            sourceId: ended.id,
-            serverSessionId: ended.id,
-            jobType: SUMMARY_JOB_TYPE,
-            bullmqJobId: buildSummaryJobId({
-              serverSessionId: ended.id,
-              teamId: ended.teamId,
-              projectId: ended.projectId,
-            }),
-          });
-          // Append a 'queued' lifecycle event only when this is the first time
-          // the outbox row is observed. ON CONFLICT in jobs.create already
-          // collapses re-ends to the same row id, but a duplicate lifecycle
-          // event is harmless and observable.
-          await eventsLogRepo.append({
-            generationJobId: outbox.id,
-            projectId: outbox.projectId,
-            teamId: outbox.teamId,
-            eventType: 'queued',
-            statusAfter: outbox.status,
-            attempt: outbox.attempts,
-            details: { source: 'http_post_v1_sessions_end' },
-          });
-          return { ended, outbox };
+        const result = await this.endSession.end({
+          sessionId: id,
+          projectId: row.project_id,
+          teamId,
+          source: 'http_post_v1_sessions_end',
         });
-        endedSession = txResult.ended;
-        summaryOutbox = txResult.outbox;
+        endedSession = result.session;
+        summaryOutbox = result.outbox;
+        enqueueState = result.enqueueState;
       } catch (error) {
         this.handleDbError(error, res, 'session.end');
         return;
@@ -532,11 +452,6 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       }
 
       await this.auditWrite(req, 'session.end', endedSession.id, endedSession.projectId);
-
-      let enqueueState: 'enqueued' | 'queued_only' | 'skipped' = 'skipped';
-      if (summaryOutbox) {
-        enqueueState = await this.enqueueSummaryJob(endedSession.id, summaryOutbox);
-      }
 
       res.status(200).json({
         session: serializeSession(endedSession),
@@ -664,77 +579,6 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     projectId: string | null,
   ): Promise<void> {
     return this.auditWrite(req, action, targetId, projectId);
-  }
-
-  private async enqueueEventJob(
-    event: PostgresAgentEvent,
-    outbox: PostgresObservationGenerationJob,
-  ): Promise<'enqueued' | 'queued_only'> {
-    const queue = this.resolveEventQueue();
-    if (!queue) {
-      return 'queued_only';
-    }
-    const policyOptions: { policy?: ServerSessionGenerationPolicy; debounceWindowMs?: number } = {};
-    if (this.options.sessionPolicy !== undefined) {
-      policyOptions.policy = this.options.sessionPolicy;
-    }
-    if (this.options.sessionDebounceWindowMs !== undefined) {
-      policyOptions.debounceWindowMs = this.options.sessionDebounceWindowMs;
-    }
-    const decision = buildEnqueueEventDecision({ event, outbox }, policyOptions);
-    if (!decision.shouldEnqueue) {
-      // end-of-session policy: outbox row stays `queued`; summary path will
-      // fan out generation when /v1/sessions/:id/end fires.
-      return 'queued_only';
-    }
-    try {
-      await scheduleDebouncedEventJob(queue, decision);
-      // We intentionally do NOT append a second 'enqueued' job event row here
-      // to avoid a second DB round-trip on the hot path. The Phase 3 worker
-      // surface treats absence of a transport-side echo as expected when the
-      // outbox row is transitioned by the consumer side.
-      return 'enqueued';
-    } catch (error) {
-      logger.warn('SYSTEM', 'failed to publish event generation job to BullMQ', {
-        outboxId: outbox.id,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return 'queued_only';
-    }
-  }
-
-  private async enqueueSummaryJob(
-    serverSessionId: string,
-    outbox: PostgresObservationGenerationJob,
-  ): Promise<'enqueued' | 'queued_only'> {
-    const queue = this.resolveSummaryQueue();
-    if (!queue) {
-      return 'queued_only';
-    }
-    const jobId = outbox.bullmqJobId ?? buildSummaryJobId({
-      serverSessionId,
-      teamId: outbox.teamId,
-      projectId: outbox.projectId,
-    });
-    const payload: GenerateSessionSummaryJob = buildSummaryJobPayload({
-      serverSessionId,
-      teamId: outbox.teamId,
-      projectId: outbox.projectId,
-      generationJobId: outbox.id,
-    });
-    try {
-      // Re-ending an already-summarized session collapses to the same
-      // deterministic jobId. BullMQ add(jobId, ...) is idempotent — the
-      // existing job is returned without duplicate work.
-      await queue.add(jobId, payload);
-      return 'enqueued';
-    } catch (error) {
-      logger.warn('SYSTEM', 'failed to publish summary generation job to BullMQ', {
-        outboxId: outbox.id,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return 'queued_only';
-    }
   }
 
   private resolveSummaryQueue(): ReturnType<ActiveServerBetaQueueManager['getQueue']> | null {
@@ -902,16 +746,6 @@ function preValidateBatch(
     }
   }
   return null;
-}
-
-function buildEventBullmqJobId(event: PostgresAgentEvent): string {
-  return buildServerJobId({
-    kind: 'event',
-    team_id: event.teamId,
-    project_id: event.projectId,
-    source_type: 'agent_event',
-    source_id: event.id,
-  });
 }
 
 function serializeSession(session: {

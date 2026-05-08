@@ -15,6 +15,8 @@ import {
   type PidInfo,
 } from '../../supervisor/process-registry.js';
 import { ServerV1PostgresRoutes } from '../routes/v1/ServerV1PostgresRoutes.js';
+import { SessionsObservationsAdapter } from '../compat/SessionsObservationsAdapter.js';
+import { SessionsSummarizeAdapter } from '../compat/SessionsSummarizeAdapter.js';
 import type { ServerBetaServiceGraph } from './types.js';
 
 const SERVER_BETA_RUNTIME = 'server-beta';
@@ -109,7 +111,7 @@ export class ServerBetaService {
       }),
     });
     server.registerRoutes(new ServerBetaRuntimeInfoRoutes(this.graph));
-    server.registerRoutes(new ServerV1PostgresRoutes({
+    const v1Routes = new ServerV1PostgresRoutes({
       pool: this.graph.postgres.pool,
       queueManager: this.graph.queueManager,
       authMode: this.graph.authMode === 'disabled' ? 'api-key' : this.graph.authMode,
@@ -117,7 +119,26 @@ export class ServerBetaService {
       // Session policy is read inside the routes (default 'per-event' from
       // resolveSessionGenerationPolicy(), env-overridable via
       // CLAUDE_MEM_SERVER_SESSION_POLICY). We do not duplicate it here.
+    });
+    server.registerRoutes(v1Routes);
+
+    // Phase 9 — legacy compatibility adapters. These translate the old
+    // `/api/sessions/observations` and `/api/sessions/summarize` worker
+    // routes to the canonical Server beta event/job model. They share the
+    // SAME shared services with /v1/* routes — never duplicate ingest or
+    // session-end logic. New clients should hit /v1/* directly.
+    const compatAuthMode = this.graph.authMode === 'disabled' ? 'api-key' : this.graph.authMode;
+    server.registerRoutes(new SessionsObservationsAdapter({
+      pool: this.graph.postgres.pool,
+      ingestEvents: v1Routes.getIngestEventsService(),
+      authMode: compatAuthMode,
     }));
+    server.registerRoutes(new SessionsSummarizeAdapter({
+      pool: this.graph.postgres.pool,
+      endSession: v1Routes.getEndSessionService(),
+      authMode: compatAuthMode,
+    }));
+
     server.finalizeRoutes();
 
     await server.listen(this.requestedPort, this.host);
