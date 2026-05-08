@@ -54,6 +54,12 @@ export interface IngestEventResult {
 export interface IngestEventOptions {
   generate?: boolean;
   source?: string;
+  // Phase 11 — identity context that flows from the HTTP auth boundary into
+  // the BullMQ payload and audit log. None of these are auth gates: the
+  // worker reloads and re-validates from Postgres before any side effect.
+  apiKeyId?: string | null;
+  actorId?: string | null;
+  sourceAdapter?: string | null;
 }
 
 export class IngestEventsService {
@@ -106,7 +112,7 @@ export class IngestEventsService {
 
     let enqueueState: EnqueueOutcome = 'skipped';
     if (txResult.outbox) {
-      enqueueState = await this.publishEventJob(txResult.event, txResult.outbox);
+      enqueueState = await this.publishEventJob(txResult.event, txResult.outbox, opts);
     }
     return { event: txResult.event, outbox: txResult.outbox, enqueueState };
   }
@@ -161,7 +167,7 @@ export class IngestEventsService {
 
     return Promise.all(txResults.map(async ({ event, outbox }) => {
       const enqueueState: EnqueueOutcome = outbox
-        ? await this.publishEventJob(event, outbox)
+        ? await this.publishEventJob(event, outbox, opts)
         : 'skipped';
       return { event, outbox, enqueueState };
     }));
@@ -170,6 +176,7 @@ export class IngestEventsService {
   private async publishEventJob(
     event: PostgresAgentEvent,
     outbox: PostgresObservationGenerationJob,
+    opts: IngestEventOptions = {},
   ): Promise<'enqueued' | 'queued_only'> {
     const queue = this.options.resolveEventQueue();
     if (!queue) {
@@ -182,7 +189,16 @@ export class IngestEventsService {
     if (this.options.sessionDebounceWindowMs !== undefined) {
       policyOptions.debounceWindowMs = this.options.sessionDebounceWindowMs;
     }
-    const decision = buildEnqueueEventDecision({ event, outbox }, policyOptions);
+    const decision = buildEnqueueEventDecision(
+      {
+        event,
+        outbox,
+        apiKeyId: opts.apiKeyId ?? null,
+        actorId: opts.actorId ?? null,
+        sourceAdapter: opts.sourceAdapter ?? event.sourceAdapter ?? null,
+      },
+      policyOptions,
+    );
     if (!decision.shouldEnqueue) {
       return 'queued_only';
     }

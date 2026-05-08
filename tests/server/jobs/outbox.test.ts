@@ -179,7 +179,10 @@ const eventPayload: SingleSourceJobPayload = {
   source_type: 'agent_event',
   source_id: 'evt_1',
   generation_job_id: 'gen_1',
-  agent_event_id: 'evt_1'
+  agent_event_id: 'evt_1',
+  api_key_id: 'apk_1',
+  actor_id: 'system:test',
+  source_adapter: 'api'
 };
 
 describe('outbox.enqueueOutbox', () => {

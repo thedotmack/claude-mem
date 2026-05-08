@@ -90,6 +90,9 @@ export class SessionsSummarizeAdapter implements RouteHandler {
           projectId,
           teamId,
           source: 'http_post_api_sessions_summarize',
+          apiKeyId: req.authContext?.apiKeyId ?? null,
+          actorId: null,
+          sourceAdapter: 'claude-code-compat',
         });
         if (!result.session) {
           res.status(404).json({ status: 'not_found', reason: 'session_not_found' });

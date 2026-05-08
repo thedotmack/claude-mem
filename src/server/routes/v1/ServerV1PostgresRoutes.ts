@@ -127,6 +127,9 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         const result = await this.ingestEvents.ingestOne(insertInput, {
           generate,
           source: 'http_post_v1_events',
+          apiKeyId: req.authContext?.apiKeyId ?? null,
+          actorId: await this.resolveActorId(req),
+          sourceAdapter: insertInput.sourceAdapter,
         });
         event = result.event;
         outbox = result.outbox;
@@ -136,7 +139,13 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         return;
       }
 
-      await this.auditWrite(req, 'event.write', event.id, event.projectId);
+      await this.auditWrite(req, 'event.received', event.id, event.projectId, {
+        sourceAdapter: event.sourceAdapter,
+        sourceEventId: event.sourceEventId,
+        eventType: event.eventType,
+        serverSessionId: event.serverSessionId,
+        generationJobId: outbox?.id ?? null,
+      });
 
       if (wait) {
         res.status(201).json({
@@ -186,6 +195,9 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         const ingested = await this.ingestEvents.ingestBatch(inputs, {
           generate,
           source: 'http_post_v1_events_batch',
+          apiKeyId: req.authContext?.apiKeyId ?? null,
+          actorId: await this.resolveActorId(req),
+          sourceAdapter: inputs[0]?.sourceAdapter ?? SOURCE_ADAPTER_DEFAULT,
         });
         inserted = ingested.map(({ event, outbox }) => ({ event, outbox }));
         enqueueResults = ingested.map(({ enqueueState }) => enqueueState);
@@ -194,7 +206,10 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         return;
       }
 
-      await this.auditWrite(req, 'event.batch_write', null, null);
+      await this.auditWrite(req, 'event.batch_received', null, null, {
+        eventCount: inserted.length,
+        generationJobIds: inserted.map(({ outbox }) => outbox?.id ?? null).filter(Boolean),
+      });
 
       if (wait) {
         res.status(201).json({
@@ -299,10 +314,124 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         [eventRow.id, teamId, eventRow.project_id],
       );
 
+      await this.auditRead(req, 'observation.read', eventRow.id, eventRow.project_id, {
+        mode: 'event_observations',
+        eventId: eventRow.id,
+        resultCount: obsResult.rows.length,
+        observationIds: obsResult.rows.map(r => r.id),
+      });
+
       res.json({
         eventId: eventRow.id,
         observations: obsResult.rows.map(serializeObservationWithSource),
       });
+    }));
+
+    // Phase 11 — team-scoped queue listing. The api key MUST be bound to this
+    // team OR a project owned by this team. We never let a project-scoped key
+    // read a sibling project's jobs even if it has team-level read scope, so
+    // we fall through to a project-only filter when projectId is set on the
+    // key. Cross-team requests return 404 to avoid leaking team existence.
+    app.get('/v1/teams/:teamId/jobs', readAuth, this.asyncHandler(async (req, res) => {
+      const callerTeamId = this.requireTeamId(req, res);
+      if (!callerTeamId) return;
+      const targetTeamId = this.routeParam(req.params.teamId);
+      if (!targetTeamId) {
+        res.status(400).json({ error: 'ValidationError', message: 'teamId required' });
+        return;
+      }
+      if (targetTeamId !== callerTeamId) {
+        // Don't leak existence — return 404 not 403.
+        res.status(404).json({ error: 'NotFound', message: 'Team not found' });
+        return;
+      }
+      const callerProjectId = req.authContext?.projectId ?? null;
+      const { status, limit, offset } = parseJobListingQuery(req);
+      try {
+        const { jobs, total } = await this.listJobsForScope({
+          teamId: callerTeamId,
+          projectId: callerProjectId,
+          status,
+          limit,
+          offset,
+        });
+        await this.auditRead(req, 'observation.read', null, callerProjectId, {
+          mode: 'team_jobs',
+          teamId: callerTeamId,
+          projectId: callerProjectId,
+          status,
+          limit,
+          offset,
+          resultCount: jobs.length,
+        });
+        res.status(200).json({
+          jobs: jobs.map(serializeJobListEntry),
+          total,
+          limit,
+          offset,
+        });
+      } catch (error) {
+        this.handleDbError(error, res, 'team.jobs.list');
+      }
+    }));
+
+    // Phase 11 — project-scoped queue listing. Project-scoped api keys MAY
+    // read this; team-scoped keys MAY read any project under their team.
+    // Cross-tenant requests are reported as 404, matching the rest of the
+    // routes so existence is never inferable from response status.
+    app.get('/v1/projects/:projectId/jobs', readAuth, this.asyncHandler(async (req, res) => {
+      const teamId = this.requireTeamId(req, res);
+      if (!teamId) return;
+      const projectId = this.routeParam(req.params.projectId);
+      if (!projectId) {
+        res.status(400).json({ error: 'ValidationError', message: 'projectId required' });
+        return;
+      }
+      // Verify the project actually belongs to this team. Cross-team
+      // requests must look identical to "no such project" responses.
+      const projectResult = await this.options.pool.query<{ id: string }>(
+        'SELECT id FROM projects WHERE id = $1 AND team_id = $2',
+        [projectId, teamId],
+      );
+      if (projectResult.rows.length === 0) {
+        res.status(404).json({ error: 'NotFound', message: 'Project not found' });
+        return;
+      }
+      // Project-scoped key must match the requested project; team-scoped key
+      // (no projectId on the key) is allowed.
+      const callerProjectId = req.authContext?.projectId ?? null;
+      if (callerProjectId && callerProjectId !== projectId) {
+        res.status(404).json({ error: 'NotFound', message: 'Project not found' });
+        return;
+      }
+
+      const { status, limit, offset } = parseJobListingQuery(req);
+      try {
+        const { jobs, total } = await this.listJobsForScope({
+          teamId,
+          projectId,
+          status,
+          limit,
+          offset,
+        });
+        await this.auditRead(req, 'observation.read', null, projectId, {
+          mode: 'project_jobs',
+          teamId,
+          projectId,
+          status,
+          limit,
+          offset,
+          resultCount: jobs.length,
+        });
+        res.status(200).json({
+          jobs: jobs.map(serializeJobListEntry),
+          total,
+          limit,
+          offset,
+        });
+      } catch (error) {
+        this.handleDbError(error, res, 'project.jobs.list');
+      }
     }));
 
     // GET /v1/jobs/:id — generation job status, scoped to team/project
@@ -437,6 +566,9 @@ export class ServerV1PostgresRoutes implements RouteHandler {
           projectId: row.project_id,
           teamId,
           source: 'http_post_v1_sessions_end',
+          apiKeyId: req.authContext?.apiKeyId ?? null,
+          actorId: await this.resolveActorId(req),
+          sourceAdapter: 'api',
         });
         endedSession = result.session;
         summaryOutbox = result.outbox;
@@ -521,7 +653,13 @@ export class ServerV1PostgresRoutes implements RouteHandler {
             query: body.query,
             limit: body.limit ?? 20,
           });
-          await this.auditRead(req, 'observation.search', null, body.projectId);
+          await this.auditRead(req, 'observation.read', null, body.projectId, {
+            mode: 'search',
+            query: body.query,
+            limit: body.limit ?? 20,
+            resultCount: results.length,
+            observationIds: results.map(o => o.id),
+          });
           res.status(200).json({
             observations: results.map(serializeObservation),
           });
@@ -560,7 +698,13 @@ export class ServerV1PostgresRoutes implements RouteHandler {
             .map(observation => observation.content)
             .filter(text => typeof text === 'string' && text.length > 0)
             .join('\n\n');
-          await this.auditRead(req, 'observation.context', null, body.projectId);
+          await this.auditRead(req, 'observation.read', null, body.projectId, {
+            mode: 'context',
+            query: body.query,
+            limit: body.limit ?? 10,
+            resultCount: results.length,
+            observationIds: results.map(o => o.id),
+          });
           res.status(200).json({
             observations: results.map(serializeObservation),
             context,
@@ -577,8 +721,31 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     action: string,
     targetId: string | null,
     projectId: string | null,
+    details?: Record<string, unknown>,
   ): Promise<void> {
-    return this.auditWrite(req, action, targetId, projectId);
+    return this.auditWrite(req, action, targetId, projectId, details);
+  }
+
+  // Phase 11 — resolve actor identity for audit. We look up the api_keys row
+  // by id and read its actor_id column. This MUST NOT be used for auth — it
+  // is purely a denormalization for audit trails. If the lookup fails for
+  // any reason we return null and let the audit row carry a missing actor.
+  private async resolveActorId(req: Request): Promise<string | null> {
+    const apiKeyId = req.authContext?.apiKeyId ?? null;
+    if (!apiKeyId) return null;
+    try {
+      const result = await this.options.pool.query<{ actor_id: string | null }>(
+        'SELECT actor_id FROM api_keys WHERE id = $1',
+        [apiKeyId],
+      );
+      return result.rows[0]?.actor_id ?? null;
+    } catch (error) {
+      logger.warn('SYSTEM', 'failed to resolve actor_id for audit', {
+        apiKeyId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
   }
 
   private resolveSummaryQueue(): ReturnType<ActiveServerBetaQueueManager['getQueue']> | null {
@@ -668,17 +835,20 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     action: string,
     targetId: string | null,
     projectId: string | null,
+    details?: Record<string, unknown>,
   ): Promise<void> {
     try {
       const repo = new PostgresAuthRepository(this.options.pool);
+      const actorId = await this.resolveActorId(req);
       await repo.createAuditLog({
         teamId: req.authContext?.teamId ?? null,
         projectId: projectId ?? req.authContext?.projectId ?? null,
-        actorId: null,
+        actorId,
         apiKeyId: req.authContext?.apiKeyId ?? null,
         action,
-        resourceType: action.split('.')[0] ?? 'unknown',
+        resourceType: resolveAuditResourceType(action),
         resourceId: targetId,
+        details: details ?? {},
       });
     } catch (error) {
       logger.warn('SYSTEM', 'audit log insert failed', {
@@ -686,6 +856,48 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  // Phase 11 — paginated job listing for team/project queue endpoints.
+  // Filtering is enforced in SQL (WHERE team_id [, project_id, status]).
+  // We never trust application-layer filtering alone for tenant scope.
+  private async listJobsForScope(input: {
+    teamId: string;
+    projectId: string | null;
+    status: string | null;
+    limit: number;
+    offset: number;
+  }): Promise<{ jobs: JobListRow[]; total: number }> {
+    const params: Array<string | number> = [input.teamId];
+    let where = 'WHERE team_id = $1';
+    if (input.projectId) {
+      params.push(input.projectId);
+      where += ` AND project_id = $${params.length}`;
+    }
+    if (input.status) {
+      params.push(input.status);
+      where += ` AND status = $${params.length}`;
+    }
+    const totalResult = await this.options.pool.query<{ total: string }>(
+      `SELECT COUNT(*)::text AS total FROM observation_generation_jobs ${where}`,
+      params,
+    );
+    const total = Number.parseInt(totalResult.rows[0]?.total ?? '0', 10);
+    params.push(input.limit, input.offset);
+    const limitParamIndex = params.length - 1;
+    const offsetParamIndex = params.length;
+    const result = await this.options.pool.query<JobListRow>(
+      `
+        SELECT id, project_id, team_id, source_type, source_id, status, attempts,
+               max_attempts, created_at, completed_at, failed_at, last_error
+        FROM observation_generation_jobs
+        ${where}
+        ORDER BY created_at DESC
+        LIMIT $${limitParamIndex} OFFSET $${offsetParamIndex}
+      `,
+      params,
+    );
+    return { jobs: result.rows, total };
   }
 
   private routeParam(value: string | string[] | undefined): string {
@@ -714,6 +926,91 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       Promise.resolve(fn(req, res)).catch(next);
     };
   }
+}
+
+interface JobListRow {
+  id: string;
+  project_id: string;
+  team_id: string;
+  source_type: string;
+  source_id: string;
+  status: string;
+  attempts: number;
+  max_attempts: number;
+  created_at: Date;
+  completed_at: Date | null;
+  failed_at: Date | null;
+  last_error: unknown;
+}
+
+const JOB_LIST_STATUS_VALUES = new Set(['queued', 'processing', 'completed', 'failed', 'cancelled']);
+const JOB_LIST_DEFAULT_LIMIT = 50;
+const JOB_LIST_MAX_LIMIT = 200;
+
+function parseJobListingQuery(req: Request): {
+  status: string | null;
+  limit: number;
+  offset: number;
+} {
+  const statusRaw = typeof req.query.status === 'string' ? req.query.status.trim() : '';
+  const status = statusRaw && JOB_LIST_STATUS_VALUES.has(statusRaw) ? statusRaw : null;
+  const limit = clampInt(req.query.limit, JOB_LIST_DEFAULT_LIMIT, 1, JOB_LIST_MAX_LIMIT);
+  const offset = clampInt(req.query.offset, 0, 0, Number.MAX_SAFE_INTEGER);
+  return { status, limit, offset };
+}
+
+function clampInt(value: unknown, fallback: number, min: number, max: number): number {
+  if (typeof value !== 'string') return fallback;
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, parsed));
+}
+
+function serializeJobListEntry(row: JobListRow): Record<string, unknown> {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    teamId: row.team_id,
+    sourceType: row.source_type,
+    sourceId: row.source_id,
+    status: row.status,
+    attempts: row.attempts,
+    maxAttempts: row.max_attempts,
+    createdAtEpoch: new Date(row.created_at).getTime(),
+    completedAtEpoch: row.completed_at ? new Date(row.completed_at).getTime() : null,
+    failedAtEpoch: row.failed_at ? new Date(row.failed_at).getTime() : null,
+    lastError: row.last_error && typeof row.last_error === 'object' ? row.last_error : null,
+  };
+}
+
+// Phase 11 — every audit `action` carries a stable resource_type so dashboards
+// can group/filter consistently. We map the dotted action name to a canonical
+// resource_type keyword. Unknown actions fall back to the prefix (matches the
+// previous behavior for backward compatibility).
+function resolveAuditResourceType(action: string): string {
+  const map: Record<string, string> = {
+    'event.received': 'agent_event',
+    'event.batch_received': 'agent_event',
+    'event.write': 'agent_event',
+    'event.batch_write': 'agent_event',
+    'session.write': 'server_session',
+    'session.end': 'server_session',
+    'memory.write': 'observation',
+    'observation.read': 'observation',
+    'observation.search': 'observation',
+    'observation.context': 'observation',
+    'observation.generated': 'observation',
+    'session_summary.generated': 'observation',
+    'generation_job.queued': 'observation_generation_job',
+    'generation_job.enqueued': 'observation_generation_job',
+    'generation_job.processing': 'observation_generation_job',
+    'generation_job.completed': 'observation_generation_job',
+    'generation_job.failed': 'observation_generation_job',
+    'generation_job.scope_violation': 'observation_generation_job',
+    'generation_job.revoked_key': 'observation_generation_job',
+  };
+  if (map[action]) return map[action]!;
+  return action.split('.')[0] ?? 'unknown';
 }
 
 function preValidateBatch(

@@ -43,6 +43,10 @@ export interface EndSessionInput {
   projectId: string;
   teamId: string;
   source?: string;
+  // Phase 11 — identity context propagated into the BullMQ summary payload.
+  apiKeyId?: string | null;
+  actorId?: string | null;
+  sourceAdapter?: string | null;
 }
 
 export class EndSessionService {
@@ -94,13 +98,14 @@ export class EndSessionService {
     if (!txResult.session || !txResult.outbox) {
       return { session: txResult.session, outbox: null, enqueueState: 'skipped' };
     }
-    const enqueueState = await this.publishSummaryJob(txResult.session.id, txResult.outbox);
+    const enqueueState = await this.publishSummaryJob(txResult.session.id, txResult.outbox, input);
     return { session: txResult.session, outbox: txResult.outbox, enqueueState };
   }
 
   private async publishSummaryJob(
     serverSessionId: string,
     outbox: PostgresObservationGenerationJob,
+    input: EndSessionInput,
   ): Promise<'enqueued' | 'queued_only'> {
     const queue = this.options.resolveSummaryQueue();
     if (!queue) {
@@ -116,6 +121,9 @@ export class EndSessionService {
       teamId: outbox.teamId,
       projectId: outbox.projectId,
       generationJobId: outbox.id,
+      apiKeyId: input.apiKeyId ?? null,
+      actorId: input.actorId ?? null,
+      sourceAdapter: input.sourceAdapter ?? null,
     });
     try {
       await queue.add(jobId, payload);

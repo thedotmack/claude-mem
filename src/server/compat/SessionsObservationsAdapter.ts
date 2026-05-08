@@ -122,6 +122,9 @@ export class SessionsObservationsAdapter implements RouteHandler {
       try {
         const result = await this.options.ingestEvents.ingestOne(input, {
           source: 'http_post_api_sessions_observations',
+          apiKeyId: req.authContext?.apiKeyId ?? null,
+          actorId: null,
+          sourceAdapter: COMPAT_SOURCE_ADAPTER,
         });
         // Legacy response shape — older clients only check `status`.
         res.json({

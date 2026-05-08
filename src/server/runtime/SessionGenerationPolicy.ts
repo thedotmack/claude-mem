@@ -62,6 +62,12 @@ export function resolveSessionGenerationPolicy(
 export interface EnqueueEventDecisionInput {
   event: PostgresAgentEvent;
   outbox: PostgresObservationGenerationJob;
+  // Phase 11 — identity context captured at HTTP ingest time so the BullMQ
+  // payload carries every audit field. apiKeyId may be null for local-dev
+  // enqueues and `actorId` follows the api key's `actor_id` column.
+  apiKeyId?: string | null;
+  actorId?: string | null;
+  sourceAdapter?: string | null;
 }
 
 export interface EnqueueEventDecision {
@@ -92,6 +98,9 @@ export function buildEnqueueEventDecision(
     source_id: input.event.id,
     generation_job_id: input.outbox.id,
     agent_event_id: input.event.id,
+    api_key_id: input.apiKeyId ?? null,
+    actor_id: input.actorId ?? null,
+    source_adapter: input.sourceAdapter ?? input.event.sourceAdapter ?? 'api',
   };
 
   if (resolved.policy === 'end-of-session') {
@@ -155,6 +164,10 @@ export interface BuildSummaryJobInput {
   teamId: string;
   projectId: string;
   generationJobId: string;
+  // Phase 11 — same identity context the event-payload builder receives.
+  apiKeyId?: string | null;
+  actorId?: string | null;
+  sourceAdapter?: string | null;
 }
 
 export function buildSummaryJobId(input: {
@@ -180,5 +193,8 @@ export function buildSummaryJobPayload(input: BuildSummaryJobInput): GenerateSes
     source_id: input.serverSessionId,
     generation_job_id: input.generationJobId,
     server_session_id: input.serverSessionId,
+    api_key_id: input.apiKeyId ?? null,
+    actor_id: input.actorId ?? null,
+    source_adapter: input.sourceAdapter ?? 'api',
   };
 }

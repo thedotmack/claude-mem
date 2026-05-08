@@ -104,6 +104,9 @@ describe('ProviderObservationGenerator', () => {
         source_id: eventId,
         generation_job_id: jobId,
         agent_event_id: eventId,
+        api_key_id: null,
+        actor_id: null,
+        source_adapter: 'api',
       },
     } as unknown as Job<GenerateObservationsForEventJob>;
   }

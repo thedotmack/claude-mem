@@ -50,6 +50,13 @@ export interface ProcessGeneratedResponseInput {
   modelId?: string;
   providerLabel: string;
   workerId?: string;
+  // Phase 11 — identity context propagated from the BullMQ payload (and
+  // ultimately the API-key that ingested the source row). Persisted on
+  // observation_sources.metadata for traceability and re-emitted in the
+  // observation.created audit row.
+  apiKeyId?: string | null;
+  actorId?: string | null;
+  sourceAdapter?: string | null;
 }
 
 export async function processGeneratedResponse(
@@ -153,8 +160,44 @@ export async function processGeneratedResponse(
         metadata: {
           provider: input.providerLabel,
           parsedObservationIndex: index,
+          // Phase 11 — denormalize identity context for traceability so an
+          // operator can answer "which api key produced this observation?"
+          // without joining back through generation_job → outbox → key.
+          source_adapter: input.sourceAdapter ?? null,
+          actor_id: input.actorId ?? null,
+          api_key_id: input.apiKeyId ?? null,
         },
       });
+
+      // Phase 11 — audit each generated observation. Using the SAME
+      // generation_job_id reference so the audit chain (event_received →
+      // generation_job.queued → generation_job.processing → observation.
+      // created → observation.read) can be reconstructed.
+      try {
+        await auditRepo.createAuditLog({
+          teamId: fresh.teamId,
+          projectId: fresh.projectId,
+          actorId: input.actorId ?? null,
+          apiKeyId: input.apiKeyId ?? null,
+          action: 'observation.created',
+          resourceType: 'observation',
+          resourceId: observation.id,
+          details: {
+            generationJobId: fresh.id,
+            sourceType: fresh.sourceType,
+            sourceId: fresh.sourceId,
+            provider: input.providerLabel,
+            model: input.modelId ?? null,
+            sourceAdapter: input.sourceAdapter ?? null,
+            parsedObservationIndex: index,
+          },
+        });
+      } catch (auditError) {
+        logger.warn('SYSTEM', 'audit_log observation.created insert failed', {
+          observationId: observation.id,
+          error: auditError instanceof Error ? auditError.message : String(auditError),
+        });
+      }
     }
 
     // Advance outbox status. Phase 1 transitionStatus enforces legal
@@ -188,15 +231,18 @@ export async function processGeneratedResponse(
       await auditRepo.createAuditLog({
         teamId: fresh.teamId,
         projectId: fresh.projectId,
-        actorId: null,
-        apiKeyId: null,
-        action: 'observation.generated',
+        actorId: input.actorId ?? null,
+        apiKeyId: input.apiKeyId ?? null,
+        action: 'generation_job.completed',
         resourceType: 'observation_generation_job',
         resourceId: fresh.id,
         details: {
+          generationJobId: fresh.id,
           provider: input.providerLabel,
           model: input.modelId ?? null,
           observationCount: persisted.length,
+          observationIds: persisted.map(o => o.id),
+          sourceAdapter: input.sourceAdapter ?? null,
         },
       });
     } catch (auditError) {
@@ -371,8 +417,38 @@ export async function processSessionSummaryResponse(
           metadata: {
             provider: input.providerLabel,
             parsedObservationIndex: 0,
+            source_adapter: input.sourceAdapter ?? null,
+            actor_id: input.actorId ?? null,
+            api_key_id: input.apiKeyId ?? null,
           },
         });
+
+        // Phase 11 — observation.created audit for the summary observation.
+        try {
+          await auditRepo.createAuditLog({
+            teamId: fresh.teamId,
+            projectId: fresh.projectId,
+            actorId: input.actorId ?? null,
+            apiKeyId: input.apiKeyId ?? null,
+            action: 'observation.created',
+            resourceType: 'observation',
+            resourceId: observation.id,
+            details: {
+              generationJobId: fresh.id,
+              sourceType: 'session_summary',
+              sourceId: fresh.sourceId,
+              provider: input.providerLabel,
+              model: input.modelId ?? null,
+              sourceAdapter: input.sourceAdapter ?? null,
+              kind: 'summary',
+            },
+          });
+        } catch (auditError) {
+          logger.warn('SYSTEM', 'audit_log observation.created (summary) insert failed', {
+            observationId: observation.id,
+            error: auditError instanceof Error ? auditError.message : String(auditError),
+          });
+        }
       }
     }
 
@@ -403,15 +479,19 @@ export async function processSessionSummaryResponse(
       await auditRepo.createAuditLog({
         teamId: fresh.teamId,
         projectId: fresh.projectId,
-        actorId: null,
-        apiKeyId: null,
-        action: 'session_summary.generated',
+        actorId: input.actorId ?? null,
+        apiKeyId: input.apiKeyId ?? null,
+        action: 'generation_job.completed',
         resourceType: 'observation_generation_job',
         resourceId: fresh.id,
         details: {
+          generationJobId: fresh.id,
           provider: input.providerLabel,
           model: input.modelId ?? null,
           observationCount: persisted.length,
+          observationIds: persisted.map(o => o.id),
+          sourceAdapter: input.sourceAdapter ?? null,
+          sourceType: 'session_summary',
         },
       });
     } catch (auditError) {

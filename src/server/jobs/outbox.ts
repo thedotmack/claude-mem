@@ -9,11 +9,12 @@ import type { JsonObject } from '../../storage/postgres/utils.js';
 import { logger } from '../../utils/logger.js';
 import { buildServerJobId } from './job-id.js';
 import type { ServerJobQueue } from './ServerJobQueue.js';
-import type {
-  GenerateObservationsForEventJob,
-  GenerateSessionSummaryJob,
-  ReindexObservationJob,
-  ServerGenerationJobKind
+import {
+  assertServerGenerationJobPayload,
+  type GenerateObservationsForEventJob,
+  type GenerateSessionSummaryJob,
+  type ReindexObservationJob,
+  type ServerGenerationJobKind,
 } from './types.js';
 
 // Postgres outbox is canonical history; BullMQ is the execution transport.
@@ -86,6 +87,10 @@ export async function enqueueOutbox(
   });
 
   try {
+    // Phase 11 — defense in depth. Validate the payload shape at the queue
+    // boundary so a malformed enqueue is rejected synchronously and never
+    // produces a job whose audit trail is missing fields.
+    assertServerGenerationJobPayload(payload);
     await queue.add(bullmqJobId, payload);
     await eventsRepo.append({
       generationJobId: row.id,
