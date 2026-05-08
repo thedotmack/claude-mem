@@ -25,6 +25,7 @@ const BUILT_IN_VERSION = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined'
 export interface ServerV1RoutesOptions {
   getDatabase: () => Database;
   authMode?: string;
+  runtime?: string;
   allowLocalDevBypass?: boolean;
 }
 
@@ -51,6 +52,7 @@ export class ServerV1Routes implements RouteHandler {
       res.json({
         name: 'claude-mem-server',
         version: BUILT_IN_VERSION,
+        ...(this.options.runtime ? { runtime: this.options.runtime } : {}),
         authMode: this.options.authMode ?? process.env.CLAUDE_MEM_AUTH_MODE ?? 'api-key',
       });
     });

@@ -83,6 +83,7 @@ export interface ServerOptions {
   onShutdown: () => Promise<void>;
   onRestart: () => Promise<void>;
   workerPath: string;
+  runtime?: string;
   getAiStatus: () => AiStatus;
   preBodyParserRoutes?: RouteHandler[];
   getQueueHealth?: () => ObservationQueueHealth | null | Promise<ObservationQueueHealth | null>;
@@ -178,6 +179,7 @@ export class Server {
       const queueDegraded = queueHealth?.engine === 'bullmq' && queueHealth.redis.status === 'error';
       res.status(queueDegraded ? 503 : 200).json({
         status: queueDegraded ? 'degraded' : 'ok',
+        ...(this.options.runtime ? { runtime: this.options.runtime } : {}),
         version: BUILT_IN_VERSION,
         workerPath: this.options.workerPath,
         uptime: getUptimeSeconds(this.startTime),
