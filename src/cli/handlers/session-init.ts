@@ -8,6 +8,8 @@ import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { isInternalProtocolPayload } from '../../utils/tag-stripping.js';
+import { resolveRuntimeContext, logServerBetaFallback } from '../../services/hooks/runtime-selector.js';
+import { isServerBetaClientError } from '../../services/hooks/server-beta-client.js';
 
 interface SessionInitResponse {
   sessionDbId: number;
@@ -48,6 +50,43 @@ export const sessionInitHandler: EventHandler = {
 
     const project = getProjectContext(cwd).primary;
     const platformSource = normalizePlatformSource(input.platform);
+
+    const runtime = resolveRuntimeContext();
+    if (runtime.runtime === 'server-beta') {
+      try {
+        await runtime.client.startSession({
+          projectId: runtime.projectId,
+          externalSessionId: sessionId,
+          contentSessionId: sessionId,
+          agentId: input.agentId ?? null,
+          agentType: input.agentType ?? null,
+          platformSource,
+          metadata: { project, prompt },
+        });
+        logger.info('HOOK', 'session-init: server-beta session started', {
+          contentSessionId: sessionId,
+          project,
+        });
+        // Server-beta does not currently support the same context-injection
+        // protocol as the worker. Skip semantic injection in server-beta mode
+        // until the server-beta context endpoint exists.
+        return { continue: true, suppressOutput: true };
+      } catch (error: unknown) {
+        if (isServerBetaClientError(error) && error.isFallbackEligible()) {
+          logServerBetaFallback(error.kind, {
+            status: error.status,
+            message: error.message,
+            route: '/v1/sessions/start',
+          });
+          // fall through to worker fallback
+        } else {
+          logger.error('HOOK', 'Server beta session-start failed (non-recoverable)', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+        }
+      }
+    }
 
     logger.debug('HOOK', 'session-init: Calling /api/sessions/init', { contentSessionId: sessionId, project });
 

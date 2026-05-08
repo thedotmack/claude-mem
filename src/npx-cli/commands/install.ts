@@ -666,7 +666,43 @@ async function promptRuntime(): Promise<RuntimeId> {
   mergeSettings({
     CLAUDE_MEM_RUNTIME: selected,
   });
+
+  if (selected === 'server-beta') {
+    await maybeBootstrapServerBetaApiKey();
+  }
   return selected;
+}
+
+async function maybeBootstrapServerBetaApiKey(): Promise<void> {
+  // Only attempt if Postgres is configured. Without DATABASE_URL we cannot
+  // reach the api_keys table — the operator must configure the server first
+  // and rerun `claude-mem server keys rotate`.
+  if (!process.env.CLAUDE_MEM_SERVER_DATABASE_URL) {
+    log.warn(
+      'Skipping local hook API key bootstrap: CLAUDE_MEM_SERVER_DATABASE_URL is not set. '
+        + 'Run `npx claude-mem server keys rotate` after configuring Postgres to provision a key.',
+    );
+    return;
+  }
+  try {
+    const { bootstrapServerBetaApiKey, persistServerBetaSettings } = await import(
+      '../../services/hooks/server-beta-bootstrap.js'
+    );
+    const result = await bootstrapServerBetaApiKey();
+    persistServerBetaSettings(USER_SETTINGS_PATH, {
+      apiKey: result.rawKey,
+      projectId: result.projectId,
+    });
+    log.info(
+      `Provisioned local hook API key (project=${result.projectId.slice(0, 8)}…). `
+        + 'Settings saved with mode 0600.',
+    );
+  } catch (error: unknown) {
+    log.warn(
+      `Failed to bootstrap server-beta API key: ${error instanceof Error ? error.message : String(error)}. `
+        + 'Hooks will fall back to the worker until you run `npx claude-mem server keys rotate`.',
+    );
+  }
 }
 
 async function promptProvider(options: InstallOptions): Promise<ProviderId> {
