@@ -86,6 +86,13 @@ export class ServerJobQueue<TPayload extends object = object> {
   private readonly counters: ServerJobLifecycleCounters = { stalled: 0, errored: 0 };
   private readonly listeners: ServerJobObservedListener[] = [];
   private readonly jobStartTimes = new Map<string, number>();
+  // worker.on('stalled') and the QueueEvents 'stalled' subscriber both fire
+  // for the same job — BullMQ's docs explicitly recommend listening on both
+  // for production reliability. To avoid double-counting and double-callback
+  // we record each stalled jobId here for a short TTL and treat the second
+  // signal as an idempotent no-op.
+  private readonly recentlyStalled = new Map<string, NodeJS.Timeout>();
+  private static readonly STALLED_DEDUPE_WINDOW_MS = 30_000;
 
   constructor(options: ServerJobQueueOptions<TPayload>) {
     this.name = options.name;
@@ -181,6 +188,48 @@ export class ServerJobQueue<TPayload extends object = object> {
   // QueueEvents `stalled` listener. Stalled events go through QueueEvents
   // because BullMQ's docs note rare stalls don't always reach the local
   // worker.on('stalled') listener; QueueEvents publishes from Redis.
+  // Deduped stalled handler. Counts the stall once even though BullMQ may
+  // surface it via both worker.on('stalled') and QueueEvents 'stalled'.
+  private notifyStalled(jobId: string, source: 'worker' | 'queue-events'): void {
+    if (this.recentlyStalled.has(jobId)) {
+      logger.debug?.('QUEUE', `[generation] job=${jobId} stalled (suppressed duplicate from ${source})`, {
+        queue: this.name,
+        jobId,
+        source,
+      });
+      return;
+    }
+    const timer = setTimeout(() => {
+      this.recentlyStalled.delete(jobId);
+    }, ServerJobQueue.STALLED_DEDUPE_WINDOW_MS);
+    if (typeof (timer as { unref?: () => void }).unref === 'function') {
+      (timer as { unref: () => void }).unref();
+    }
+    this.recentlyStalled.set(jobId, timer);
+    this.counters.stalled += 1;
+    logger.warn('QUEUE', `[generation] job=${jobId} stalled${source === 'queue-events' ? ' (queue-events)' : ''}`, {
+      queue: this.name,
+      jobId,
+      source,
+    });
+    for (const l of this.listeners) {
+      try { l.onStalled?.(jobId); } catch { /* listener errors must not propagate */ }
+    }
+  }
+
+  // Single source of truth for queue-side error accounting. worker errors and
+  // QueueEvents errors both increment counters.errored and notify listeners,
+  // so per-process metrics aren't asymmetric across the two sources.
+  private notifyQueueError(error: unknown, source: 'worker' | 'queue-events'): void {
+    this.counters.errored += 1;
+    logger.warn('QUEUE', `${this.name} ${source} error`, {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    for (const l of this.listeners) {
+      try { l.onError?.(error); } catch { /* listener errors must not propagate */ }
+    }
+  }
+
   start(processor: Processor<TPayload>): void {
     if (this.started) {
       throw new Error(`ServerJobQueue ${this.name} is already started`);
@@ -195,15 +244,7 @@ export class ServerJobQueue<TPayload extends object = object> {
     const worker = this.workerFactory
       ? this.workerFactory(this.name, processor, workerOptions)
       : new Worker<TPayload>(this.name, processor, workerOptions);
-    worker.on('error', (error: unknown) => {
-      this.counters.errored += 1;
-      logger.warn('QUEUE', `${this.name} worker error`, {
-        error: error instanceof Error ? error.message : String(error)
-      });
-      for (const l of this.listeners) {
-        try { l.onError?.(error); } catch { /* listener errors must not crash worker */ }
-      }
-    });
+    worker.on('error', (error: unknown) => this.notifyQueueError(error, 'worker'));
     // BullMQ Worker exposes `active`, `completed`, `failed`, `progress`, and
     // `stalled` events. We attach to all five because the runtime relies on
     // them for observability (Phase 12).
@@ -249,16 +290,7 @@ export class ServerJobQueue<TPayload extends object = object> {
           progress,
         });
       });
-      w.on('stalled', (jobId: string) => {
-        this.counters.stalled += 1;
-        logger.warn('QUEUE', `[generation] job=${jobId} stalled`, {
-          queue: this.name,
-          jobId,
-        });
-        for (const l of this.listeners) {
-          try { l.onStalled?.(jobId); } catch { /* swallow */ }
-        }
-      });
+      w.on('stalled', (jobId: string) => this.notifyStalled(jobId, 'worker'));
     }
     worker.run();
     this.worker = worker;
@@ -273,22 +305,10 @@ export class ServerJobQueue<TPayload extends object = object> {
           connection: this.config.connection,
           prefix: this.config.prefix,
         } as QueueEventsOptions);
-        events.on('stalled', ({ jobId }: { jobId: string }) => {
-          this.counters.stalled += 1;
-          logger.warn('QUEUE', `[generation] job=${jobId} stalled (queue-events)`, {
-            queue: this.name,
-            jobId,
-          });
-          for (const l of this.listeners) {
-            try { l.onStalled?.(jobId); } catch { /* swallow */ }
-          }
-        });
-        // QueueEvents emits its own 'error' too — surface it but don't crash.
-        events.on('error', (error: Error) => {
-          logger.warn('QUEUE', `${this.name} queue-events error`, {
-            error: error.message,
-          });
-        });
+        events.on('stalled', ({ jobId }: { jobId: string }) => this.notifyStalled(jobId, 'queue-events'));
+        // QueueEvents emits its own 'error' too — surface through the same
+        // counter+listener path as worker errors so observability stays symmetric.
+        events.on('error', (error: Error) => this.notifyQueueError(error, 'queue-events'));
         this.queueEvents = events;
       } catch (error) {
         logger.warn('QUEUE', `${this.name} failed to start QueueEvents listener`, {
@@ -350,6 +370,10 @@ export class ServerJobQueue<TPayload extends object = object> {
       }
       this.queue = null;
     }
+    for (const timer of this.recentlyStalled.values()) {
+      clearTimeout(timer);
+    }
+    this.recentlyStalled.clear();
     if (errors.length > 0) {
       throw errors[0];
     }

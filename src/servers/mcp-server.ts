@@ -307,12 +307,9 @@ async function handleObservationRecordEvent(
       ...(args.contentSessionId !== undefined ? { contentSessionId: args.contentSessionId } : {}),
       ...(args.memorySessionId !== undefined ? { memorySessionId: args.memorySessionId } : {}),
       ...(args.payload !== undefined ? { payload: args.payload } : {}),
+      ...(args.generate !== undefined ? { generate: args.generate } : {}),
     };
     const response = await ctx.client.recordEvent(request);
-    // The `?generate=false` query is honored by the REST core; if a caller
-    // wants to suppress generation we forward the flag rather than re-build
-    // the outbox decision in MCP.
-    void args.generate;
     return formatJsonResult(response);
   } catch (error) {
     return formatToolError(error);

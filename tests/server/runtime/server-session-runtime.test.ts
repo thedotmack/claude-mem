@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import pg from 'pg';
 import {
   bootstrapServerBetaPostgresSchema,
@@ -114,6 +114,10 @@ describe('ServerSessionRuntimeRepository + Postgres', () => {
       await client.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(schemaName)} CASCADE`);
       client.release();
     }
+  });
+
+  afterAll(async () => {
+    await pool.end();
   });
 
   it('getActiveSession is idempotent on (project_id, external_session_id)', async () => {

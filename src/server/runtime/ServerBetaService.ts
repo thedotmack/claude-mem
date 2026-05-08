@@ -570,7 +570,13 @@ export async function runServerBetaGenerationWorker(): Promise<void> {
 
 function getServerBetaPort(): number {
   const parsed = Number.parseInt(process.env.CLAUDE_MEM_SERVER_PORT ?? '', 10);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_SERVER_BETA_PORT;
+  if (Number.isInteger(parsed) && parsed > 0) {
+    return parsed;
+  }
+  // UID-derived default for multi-account isolation: two users on the same
+  // host get distinct ports without explicit configuration. Containerized
+  // deployments always pass CLAUDE_MEM_SERVER_PORT so this branch is local-only.
+  return DEFAULT_SERVER_BETA_PORT + ((process.getuid?.() ?? 77) % 100);
 }
 
 function spawnServerBetaDaemon(port: number): number | undefined {

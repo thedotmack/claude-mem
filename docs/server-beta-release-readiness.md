@@ -61,10 +61,10 @@ All 45 remaining branch failures are present on `main` and therefore **pre-exist
 
 | # | Grep                                                                                | Expected             | Result |
 | - | ----------------------------------------------------------------------------------- | -------------------- | ------ |
-| 1 | `rg -n "new WorkerService|services/worker-service|services/worker/http/routes" src/server` | no matches           | **PASS** — empty output |
-| 2 | `rg -n "PendingMessageStore|SessionQueueProcessor" src/server`                      | no server-beta runtime imports | **PASS (with annotation)** — 6 matches all in `src/server/queue/{ObservationQueueEngine,BullMqObservationQueueEngine}.ts`. These files implement the SQLite engine class that the **legacy worker** consumes via `src/services/worker/SessionManager.ts`. Verified via `rg -n "PendingMessageStore|SessionQueueProcessor|SqliteObservationQueueEngine" src/server/runtime src/server/jobs src/server/routes src/server/generation src/server/compat src/server/mcp src/server/services src/server/middleware src/server/auth` → empty. The server-beta runtime path does not pull these. |
-| 3 | `rg -n "CLAUDE_MEM_AUTH_MODE=local-dev|ALLOW_LOCAL_DEV_BYPASS" docker docs/server.md` | no recommendations   | **PASS** — only matches are explicit *rejection* statements: `docs/server.md:59` lists it as a value that must NOT be set in Docker; `:122` has a "Do not enable …" warning; `:162` says local-dev is rejected inside Docker. |
-| 4 | `rg -n "POST /v1/events|generationJob|wait=true" docs README.md`                    | docs mention generation semantics | **PASS** — `docs/api.md` documents `POST /v1/events`, `POST /v1/events/batch`, the `wait=true` query flag, and the `generationJob` response field; `docs/server.md:157` documents `POST /v1/events?wait=true` returns a `generationJob` descriptor; `docs/server-beta-parity-map.md` maps the legacy route to `/v1/events`. |
+| 1 | `rg -n "new WorkerService\|services/worker-service\|services/worker/http/routes" src/server` | no matches           | **PASS** — empty output |
+| 2 | `rg -n "PendingMessageStore\|SessionQueueProcessor" src/server`                      | no server-beta runtime imports | **PASS (with annotation)** — 6 matches all in `src/server/queue/{ObservationQueueEngine,BullMqObservationQueueEngine}.ts`. These files implement the SQLite engine class that the **legacy worker** consumes via `src/services/worker/SessionManager.ts`. Verified via `rg -n "PendingMessageStore\|SessionQueueProcessor\|SqliteObservationQueueEngine" src/server/runtime src/server/jobs src/server/routes src/server/generation src/server/compat src/server/mcp src/server/services src/server/middleware src/server/auth` → empty. The server-beta runtime path does not pull these. |
+| 3 | `rg -n "CLAUDE_MEM_AUTH_MODE=local-dev\|ALLOW_LOCAL_DEV_BYPASS" docker docs/server.md` | no recommendations   | **PASS** — only matches are explicit *rejection* statements: `docs/server.md:59` lists it as a value that must NOT be set in Docker; `:122` has a "Do not enable …" warning; `:162` says local-dev is rejected inside Docker. |
+| 4 | `rg -n "POST /v1/events\|generationJob\|wait=true" docs README.md`                    | docs mention generation semantics | **PASS** — `docs/api.md` documents `POST /v1/events`, `POST /v1/events/batch`, the `wait=true` query flag, and the `generationJob` response field; `docs/server.md:157` documents `POST /v1/events?wait=true` returns a `generationJob` descriptor; `docs/server-beta-parity-map.md` maps the legacy route to `/v1/events`. |
 
 ---
 
@@ -74,7 +74,7 @@ All 45 remaining branch failures are present on `main` and therefore **pre-exist
 
 Last 20 lines:
 
-```
+```text
 [e2e] phase1 starting (1778273299-31577)
 [e2e] phase1 passed session=dcef676a-... event=2239a1ad-... job=629abbe8-...
 [e2e] revoking read-only key inside server container

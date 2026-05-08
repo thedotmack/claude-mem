@@ -63,7 +63,7 @@ export function buildServerGenerationPrompt(
   const skippedAll = context.events.length > 0 && allEventsScrubbedToEmpty;
 
   const sessionTag = context.project.serverSessionId
-    ? `\n  <server_session_id>${context.project.serverSessionId}</server_session_id>`
+    ? `\n  <server_session_id>${escapeXml(context.project.serverSessionId)}</server_session_id>`
     : '';
   const projectTag = context.project.projectName
     ? `\n  <project_name>${escapeXml(context.project.projectName)}</project_name>`

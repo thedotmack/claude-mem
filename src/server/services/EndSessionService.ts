@@ -24,6 +24,7 @@ import { logger } from '../../utils/logger.js';
 import { buildSummaryJobId, buildSummaryJobPayload } from '../runtime/SessionGenerationPolicy.js';
 import type { GenerateSessionSummaryJob } from '../jobs/types.js';
 import type { EnqueueOutcome, EventQueueLike } from './IngestEventsService.js';
+import { newId } from '../../storage/postgres/utils.js';
 
 const SUMMARY_JOB_TYPE = 'observation_generate_session_summary';
 
@@ -70,7 +71,21 @@ export class EndSessionService {
       }
       const jobsRepo = new PostgresObservationGenerationJobRepository(client);
       const eventsLogRepo = new PostgresObservationGenerationJobEventsRepository(client);
+      // Persist the BullMQ payload at create-time so reconciliation and
+      // operator retry can re-enqueue a payload that passes the worker's
+      // assertServerGenerationJobPayload validation.
+      const outboxId = newId();
+      const summaryPayload = buildSummaryJobPayload({
+        serverSessionId: ended.id,
+        teamId: ended.teamId,
+        projectId: ended.projectId,
+        generationJobId: outboxId,
+        apiKeyId: input.apiKeyId ?? null,
+        actorId: input.actorId ?? null,
+        sourceAdapter: input.sourceAdapter ?? null,
+      });
       const outbox = await jobsRepo.create({
+        id: outboxId,
         projectId: ended.projectId,
         teamId: ended.teamId,
         sourceType: 'session_summary',
@@ -82,6 +97,7 @@ export class EndSessionService {
           teamId: ended.teamId,
           projectId: ended.projectId,
         }),
+        payload: summaryPayload as unknown as Record<string, unknown>,
       });
       await eventsLogRepo.append({
         generationJobId: outbox.id,

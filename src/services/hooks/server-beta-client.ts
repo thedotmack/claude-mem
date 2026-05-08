@@ -89,6 +89,9 @@ export interface ServerBetaRecordEventRequest {
   eventType: string;
   payload?: unknown;
   occurredAtEpoch: number;
+  // When false, the event is recorded but no generation job is enqueued.
+  // Maps to the REST endpoint's `?generate=false` query flag.
+  generate?: boolean;
 }
 
 export interface ServerBetaRecordEventResponse {
@@ -206,7 +209,8 @@ export class ServerBetaClient {
 
   async recordEvent(input: ServerBetaRecordEventRequest): Promise<ServerBetaRecordEventResponse> {
     const body = this.buildEventPayload(input);
-    return this.request<ServerBetaRecordEventResponse>('POST', '/v1/events', body);
+    const path = input.generate === false ? '/v1/events?generate=false' : '/v1/events';
+    return this.request<ServerBetaRecordEventResponse>('POST', path, body);
   }
 
   async endSession(input: ServerBetaEndSessionRequest): Promise<ServerBetaEndSessionResponse> {

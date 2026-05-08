@@ -21,11 +21,36 @@ import type { PostgresPool } from '../../storage/postgres/pool.js';
 import { withPostgresTransaction } from '../../storage/postgres/pool.js';
 import { logger } from '../../utils/logger.js';
 import { buildServerJobId } from '../jobs/job-id.js';
+import type { GenerateObservationsForEventJob } from '../jobs/types.js';
 import {
   buildEnqueueEventDecision,
   scheduleDebouncedEventJob,
   type ServerSessionGenerationPolicy,
 } from '../runtime/SessionGenerationPolicy.js';
+import { newId } from '../../storage/postgres/utils.js';
+
+function buildEventBullmqPayload(input: {
+  outboxId: string;
+  event: PostgresAgentEvent;
+  apiKeyId: string | null;
+  actorId: string | null;
+  sourceAdapter: string | null;
+  requestId: string | null;
+}): GenerateObservationsForEventJob {
+  return {
+    kind: 'event',
+    team_id: input.event.teamId,
+    project_id: input.event.projectId,
+    source_type: 'agent_event',
+    source_id: input.event.id,
+    generation_job_id: input.outboxId,
+    agent_event_id: input.event.id,
+    api_key_id: input.apiKeyId,
+    actor_id: input.actorId,
+    source_adapter: input.sourceAdapter ?? input.event.sourceAdapter ?? 'api',
+    request_id: input.requestId,
+  };
+}
 
 const EVENT_JOB_TYPE = 'observation_generate_for_event';
 
@@ -85,7 +110,21 @@ export class IngestEventsService {
 
       const jobsRepo = new PostgresObservationGenerationJobRepository(client);
       const eventsLogRepo = new PostgresObservationGenerationJobEventsRepository(client);
+      // Pre-generate the outbox id so we can build the BullMQ payload (which
+      // references generation_job_id) and persist it on the row. Reconciliation
+      // and operator retry rely on this persisted payload to re-enqueue a
+      // payload that passes assertServerGenerationJobPayload at the worker.
+      const outboxId = newId();
+      const bullmqPayload = buildEventBullmqPayload({
+        outboxId,
+        event: inserted,
+        apiKeyId: opts.apiKeyId ?? null,
+        actorId: opts.actorId ?? null,
+        sourceAdapter: opts.sourceAdapter ?? null,
+        requestId: opts.requestId ?? null,
+      });
       const outbox = await jobsRepo.create({
+        id: outboxId,
         projectId: inserted.projectId,
         teamId: inserted.teamId,
         sourceType: 'agent_event',
@@ -100,6 +139,7 @@ export class IngestEventsService {
           source_type: 'agent_event',
           source_id: inserted.id,
         }),
+        payload: bullmqPayload as unknown as Record<string, unknown>,
       });
       await eventsLogRepo.append({
         generationJobId: outbox.id,
@@ -138,7 +178,17 @@ export class IngestEventsService {
           acc.push({ event, outbox: null });
           continue;
         }
+        const outboxId = newId();
+        const bullmqPayload = buildEventBullmqPayload({
+          outboxId,
+          event,
+          apiKeyId: opts.apiKeyId ?? null,
+          actorId: opts.actorId ?? null,
+          sourceAdapter: opts.sourceAdapter ?? null,
+          requestId: opts.requestId ?? null,
+        });
         const outbox = await jobsRepo.create({
+          id: outboxId,
           projectId: event.projectId,
           teamId: event.teamId,
           sourceType: 'agent_event',
@@ -153,6 +203,7 @@ export class IngestEventsService {
             source_type: 'agent_event',
             source_id: event.id,
           }),
+          payload: bullmqPayload as unknown as Record<string, unknown>,
         });
         await eventsLogRepo.append({
           generationJobId: outbox.id,

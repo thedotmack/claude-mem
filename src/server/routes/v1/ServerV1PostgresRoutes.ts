@@ -16,6 +16,7 @@ import {
   type PostgresObservationGenerationJob,
 } from '../../../storage/postgres/generation-jobs.js';
 import { PostgresAuthRepository } from '../../../storage/postgres/auth.js';
+import { PostgresObservationRepository } from '../../../storage/postgres/observations.js';
 import { logger } from '../../../utils/logger.js';
 import { requirePostgresServerAuth } from '../../middleware/postgres-auth.js';
 import { requestIdMiddleware } from '../../middleware/request-id.js';
@@ -782,9 +783,6 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         if (!teamId) return;
         if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
         try {
-          const { PostgresObservationRepository } = await import(
-            '../../../storage/postgres/observations.js'
-          );
           const repo = new PostgresObservationRepository(this.options.pool);
           const observation = await repo.create({
             projectId: body.projectId,
@@ -817,9 +815,6 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         if (!teamId) return;
         if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
         try {
-          const { PostgresObservationRepository } = await import(
-            '../../../storage/postgres/observations.js'
-          );
           const repo = new PostgresObservationRepository(this.options.pool);
           const results = await repo.search({
             projectId: body.projectId,
@@ -858,9 +853,6 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         if (!teamId) return;
         if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
         try {
-          const { PostgresObservationRepository } = await import(
-            '../../../storage/postgres/observations.js'
-          );
           const repo = new PostgresObservationRepository(this.options.pool);
           const results = await repo.search({
             projectId: body.projectId,
@@ -1157,12 +1149,30 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     // retried_count for audit. attempts is intentionally preserved so the
     // BullMQ attempt cap is not bypassed; if the job hit max_attempts the
     // operator must lift the cap explicitly via a separate flow.
+    //
+    // current.payload is the canonical BullMQ payload persisted at outbox
+    // create time (kind/team_id/project_id/source_type/source_id/
+    // generation_job_id/api_key_id/actor_id/source_adapter/request_id).
+    // The retry adds operator metadata to the persisted row but enqueues
+    // ONLY the BullMQ payload — the worker calls
+    // assertServerGenerationJobPayload(job.data) on receipt and would reject
+    // the metadata-only object the previous implementation handed it.
     const retriedCount = extractRetriedCount(current.payload) + 1;
+    const persistedBullmqPayload = (current.payload && typeof current.payload === 'object'
+      ? current.payload
+      : {}) as Record<string, unknown>;
     const newPayload = {
-      ...current.payload,
+      ...persistedBullmqPayload,
       retried_count: retriedCount,
       last_retried_by_actor: req.authContext?.apiKeyId ?? null,
       last_retried_request_id: req.requestId ?? null,
+    };
+    // The payload we re-publish to BullMQ on retry: refresh request_id (so
+    // the worker logs/audit attribute this run to the operator's request)
+    // but keep all canonical job context that the worker validates against.
+    const retryBullmqPayload = {
+      ...persistedBullmqPayload,
+      request_id: req.requestId ?? (persistedBullmqPayload as { request_id?: unknown }).request_id ?? null,
     };
     const updated = await this.options.pool.query(
       `
@@ -1210,12 +1220,11 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     const queue = this.resolveEventQueueForRetry(updatedRow as { source_type: string });
     if (queue && updatedRow) {
       try {
-        const payload = (newPayload && typeof newPayload === 'object' ? newPayload : {}) as Record<string, unknown>;
         const bullmqJobId = (updatedRow as { bullmq_job_id: string | null }).bullmq_job_id;
         if (bullmqJobId) {
           // Best effort remove first so a terminal-state slot doesn't block.
           try { await queue.remove(bullmqJobId); } catch { /* terminal slot may be missing — ok */ }
-          await queue.add(bullmqJobId, payload as never);
+          await queue.add(bullmqJobId, retryBullmqPayload as never);
         }
       } catch (error) {
         logger.warn('SYSTEM', 'failed to re-enqueue generation job on operator retry', {

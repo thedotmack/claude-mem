@@ -151,7 +151,8 @@ export class PostgresServerSessionsRepository {
       this.client,
       `
         UPDATE server_sessions
-        SET ended_at = COALESCE(ended_at, now()), updated_at = now()
+        SET ended_at = COALESCE(ended_at, now()),
+            updated_at = CASE WHEN ended_at IS NULL THEN now() ELSE updated_at END
         WHERE id = $1 AND project_id = $2 AND team_id = $3
         RETURNING *
       `,
@@ -212,7 +213,8 @@ export class PostgresServerSessionsRepository {
             metadata = jsonb_set(
               COALESCE(metadata, '{}'::jsonb),
               '{lastGenerationError}',
-              to_jsonb($4::text)
+              COALESCE(to_jsonb($4::text), 'null'::jsonb),
+              true
             ),
             updated_at = now()
         WHERE id = $1 AND project_id = $2 AND team_id = $3
