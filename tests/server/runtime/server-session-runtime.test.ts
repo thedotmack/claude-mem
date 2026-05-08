@@ -281,7 +281,7 @@ describe('ServerSessionRuntimeRepository + Postgres', () => {
     </summary>`;
 
     const outcome1 = await processSessionSummaryResponse({
-      pool: pool as never,
+      pool,
       job,
       rawText: summaryXml,
       providerLabel: 'claude',
@@ -295,7 +295,7 @@ describe('ServerSessionRuntimeRepository + Postgres', () => {
     // Idempotent: replaying does not produce new observations because the
     // job is already in completed state.
     const outcome2 = await processSessionSummaryResponse({
-      pool: pool as never,
+      pool,
       job,
       rawText: summaryXml,
       providerLabel: 'claude',
