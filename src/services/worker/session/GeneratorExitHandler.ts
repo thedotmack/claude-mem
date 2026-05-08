@@ -86,6 +86,15 @@ export async function handleGeneratorExit(
       consecutiveFailures: session.restartGuard?.consecutiveFailuresSinceSuccess,
       maxConsecutiveFailures: session.restartGuard?.maxConsecutiveFailures,
     });
+    try {
+      completionHandler.finalizeSession(sessionDbId);
+    } catch (e) {
+      const normalized = e instanceof Error ? e : new Error(String(e));
+      logger.error('SESSION', `${logPrefix} finalization failed while preserving pending rows`, {
+        sessionId: sessionDbId,
+        reason
+      }, normalized);
+    }
     sessionManager.removeSessionImmediate(sessionDbId);
   };
 

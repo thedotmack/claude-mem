@@ -242,7 +242,7 @@ describe('handleGeneratorExit recovery count failures', () => {
 
     expect(pendingStore.getPendingCount).toHaveBeenCalledTimes(6);
     expect(pendingStore.clearPendingForSession).not.toHaveBeenCalled();
-    expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
+    expect(completionHandler.finalizeSession).toHaveBeenCalledWith(42);
     expect(sessionManager.removeSessionImmediate).toHaveBeenCalledWith(42);
     expect(sessionManager.removeSessionImmediate).toHaveBeenCalledTimes(1);
     expect(restartGenerator).not.toHaveBeenCalled();
@@ -333,7 +333,7 @@ describe('handleGeneratorExit respawn timer failures', () => {
 
     expect(restartGenerator).toHaveBeenCalledTimes(5);
     expect(pendingStore.clearPendingForSession).not.toHaveBeenCalled();
-    expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
+    expect(completionHandler.finalizeSession).toHaveBeenCalledWith(42);
     expect(sessionManager.removeSessionImmediate).toHaveBeenCalledWith(42);
     expect(sessionManager.removeSessionImmediate).toHaveBeenCalledTimes(1);
     expect(session.consecutiveRestarts).toBe(0);
@@ -366,7 +366,7 @@ describe('handleGeneratorExit respawn timer failures', () => {
 
     expect(restartGenerator).toHaveBeenCalledTimes(5);
     expect(pendingStore.clearPendingForSession).not.toHaveBeenCalled();
-    expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
+    expect(completionHandler.finalizeSession).toHaveBeenCalledWith(42);
     expect(sessionManager.removeSessionImmediate).toHaveBeenCalledWith(42);
     expect(sessionManager.removeSessionImmediate).toHaveBeenCalledTimes(1);
     expect(session.consecutiveRestarts).toBe(0);
