@@ -61,17 +61,24 @@ export class ActiveServerBetaGenerationWorkerManager implements ServerBetaGenera
    */
   start(): void {
     if (this.started) return;
-    this.options.queueManager.start('event', async (job: Job<ServerGenerationJobPayload>) => {
+    const dispatcher = async (job: Job<ServerGenerationJobPayload>) => {
       try {
         return await this.generator.process(job);
       } catch (error) {
         logger.warn('SYSTEM', 'observation generator failed', {
           jobId: job.id,
+          kind: job.data.kind,
           error: error instanceof Error ? error.message : String(error),
         });
         throw error;
       }
-    });
+    };
+    this.options.queueManager.start('event', dispatcher);
+    // Phase 6: wire the summary lane alongside the event lane. Concurrency
+    // defaults to 1 per ServerJobQueue config (per the plan), and the same
+    // ProviderObservationGenerator dispatches on job.data.source_type via the
+    // outbox row reload inside lockOutbox+process.
+    this.options.queueManager.start('summary', dispatcher);
     this.started = true;
   }
 

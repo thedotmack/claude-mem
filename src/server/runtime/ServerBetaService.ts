@@ -114,6 +114,9 @@ export class ServerBetaService {
       queueManager: this.graph.queueManager,
       authMode: this.graph.authMode === 'disabled' ? 'api-key' : this.graph.authMode,
       runtime: SERVER_BETA_RUNTIME,
+      // Session policy is read inside the routes (default 'per-event' from
+      // resolveSessionGenerationPolicy(), env-overridable via
+      // CLAUDE_MEM_SERVER_SESSION_POLICY). We do not duplicate it here.
     }));
     server.finalizeRoutes();
 

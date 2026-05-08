@@ -2,6 +2,7 @@
 
 import type { JsonObject, PostgresQueryable } from './utils.js';
 import { assertProjectOwnership, deterministicKey, newId, queryOne, toDate, toEpoch, toJsonObject } from './utils.js';
+import type { PostgresAgentEvent } from './agent-events.js';
 
 export interface PostgresServerSession {
   id: string;
@@ -119,6 +120,177 @@ export class PostgresServerSessionsRepository {
     );
     return result.rows.map(mapServerSessionRow);
   }
+
+  async findByExternalIdForScope(input: {
+    externalSessionId: string;
+    projectId: string;
+    teamId: string;
+  }): Promise<PostgresServerSession | null> {
+    const row = await queryOne<ServerSessionRow>(
+      this.client,
+      `
+        SELECT * FROM server_sessions
+        WHERE external_session_id = $1 AND project_id = $2 AND team_id = $3
+      `,
+      [input.externalSessionId, input.projectId, input.teamId]
+    );
+    return row ? mapServerSessionRow(row) : null;
+  }
+
+  /**
+   * End a server session by setting `ended_at = now()` if not already set.
+   * Idempotent: if `ended_at` is already populated, returns the row unchanged.
+   * Returns null if no row matches the (id, project_id, team_id) tuple.
+   */
+  async endSession(input: {
+    id: string;
+    projectId: string;
+    teamId: string;
+  }): Promise<PostgresServerSession | null> {
+    const updated = await queryOne<ServerSessionRow>(
+      this.client,
+      `
+        UPDATE server_sessions
+        SET ended_at = COALESCE(ended_at, now()), updated_at = now()
+        WHERE id = $1 AND project_id = $2 AND team_id = $3
+        RETURNING *
+      `,
+      [input.id, input.projectId, input.teamId]
+    );
+    return updated ? mapServerSessionRow(updated) : null;
+  }
+
+  async markGenerationStarted(input: {
+    id: string;
+    projectId: string;
+    teamId: string;
+  }): Promise<PostgresServerSession | null> {
+    const updated = await queryOne<ServerSessionRow>(
+      this.client,
+      `
+        UPDATE server_sessions
+        SET generation_status = 'processing', updated_at = now()
+        WHERE id = $1 AND project_id = $2 AND team_id = $3
+        RETURNING *
+      `,
+      [input.id, input.projectId, input.teamId]
+    );
+    return updated ? mapServerSessionRow(updated) : null;
+  }
+
+  async markGenerationCompleted(input: {
+    id: string;
+    projectId: string;
+    teamId: string;
+  }): Promise<PostgresServerSession | null> {
+    const updated = await queryOne<ServerSessionRow>(
+      this.client,
+      `
+        UPDATE server_sessions
+        SET generation_status = 'completed',
+            last_generated_at = now(),
+            updated_at = now()
+        WHERE id = $1 AND project_id = $2 AND team_id = $3
+        RETURNING *
+      `,
+      [input.id, input.projectId, input.teamId]
+    );
+    return updated ? mapServerSessionRow(updated) : null;
+  }
+
+  async markGenerationFailed(input: {
+    id: string;
+    projectId: string;
+    teamId: string;
+    error?: string | null;
+  }): Promise<PostgresServerSession | null> {
+    const updated = await queryOne<ServerSessionRow>(
+      this.client,
+      `
+        UPDATE server_sessions
+        SET generation_status = 'failed',
+            metadata = jsonb_set(
+              COALESCE(metadata, '{}'::jsonb),
+              '{lastGenerationError}',
+              to_jsonb($4::text)
+            ),
+            updated_at = now()
+        WHERE id = $1 AND project_id = $2 AND team_id = $3
+        RETURNING *
+      `,
+      [input.id, input.projectId, input.teamId, input.error ?? null]
+    );
+    return updated ? mapServerSessionRow(updated) : null;
+  }
+
+  /**
+   * List events tied to this server_session that do NOT yet have a completed
+   * observation_generation_jobs row. Tenant-scoped: rows are filtered by
+   * (project_id, team_id) before any join.
+   */
+  async listUnprocessedEvents(input: {
+    serverSessionId: string;
+    projectId: string;
+    teamId: string;
+    limit?: number;
+  }): Promise<PostgresAgentEvent[]> {
+    const limit = input.limit ?? 500;
+    const result = await this.client.query<UnprocessedEventRow>(
+      `
+        SELECT e.*
+        FROM agent_events e
+        WHERE e.server_session_id = $1
+          AND e.project_id = $2
+          AND e.team_id = $3
+          AND NOT EXISTS (
+            SELECT 1 FROM observation_generation_jobs j
+            WHERE j.agent_event_id = e.id
+              AND j.project_id = e.project_id
+              AND j.team_id = e.team_id
+              AND j.source_type = 'agent_event'
+              AND j.status = 'completed'
+          )
+        ORDER BY e.occurred_at ASC
+        LIMIT $4
+      `,
+      [input.serverSessionId, input.projectId, input.teamId, limit]
+    );
+    return result.rows.map(mapUnprocessedEventRow);
+  }
+}
+
+interface UnprocessedEventRow {
+  id: string;
+  project_id: string;
+  team_id: string;
+  server_session_id: string | null;
+  source_adapter: string;
+  source_event_id: string | null;
+  idempotency_key: string;
+  event_type: string;
+  payload: unknown;
+  metadata: unknown;
+  occurred_at: Date;
+  received_at: Date;
+  created_at: Date;
+}
+
+function mapUnprocessedEventRow(row: UnprocessedEventRow): PostgresAgentEvent {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    teamId: row.team_id,
+    serverSessionId: row.server_session_id,
+    sourceAdapter: row.source_adapter,
+    sourceEventId: row.source_event_id,
+    idempotencyKey: row.idempotency_key,
+    eventType: row.event_type,
+    payload: toJsonObject(row.payload),
+    metadata: toJsonObject(row.metadata),
+    occurredAtEpoch: row.occurred_at.getTime(),
+    receivedAtEpoch: row.received_at.getTime(),
+    createdAtEpoch: row.created_at.getTime()
+  };
 }
 
 export function buildServerSessionIdempotencyKey(input: {

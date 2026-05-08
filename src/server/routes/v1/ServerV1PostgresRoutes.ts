@@ -22,9 +22,19 @@ import { requirePostgresServerAuth } from '../../middleware/postgres-auth.js';
 import type { ActiveServerBetaQueueManager } from '../../runtime/ActiveServerBetaQueueManager.js';
 import type { ServerBetaQueueManager } from '../../runtime/types.js';
 import { buildServerJobId } from '../../jobs/job-id.js';
-import type { GenerateObservationsForEventJob } from '../../jobs/types.js';
+import type { GenerateSessionSummaryJob } from '../../jobs/types.js';
+import { PostgresServerSessionsRepository } from '../../../storage/postgres/server-sessions.js';
+import {
+  buildEnqueueEventDecision,
+  buildSummaryJobId,
+  buildSummaryJobPayload,
+  resolveSessionGenerationPolicy,
+  scheduleDebouncedEventJob,
+  type ServerSessionGenerationPolicy,
+} from '../../runtime/SessionGenerationPolicy.js';
 
 const EVENT_JOB_TYPE = 'observation_generate_for_event';
+const SUMMARY_JOB_TYPE = 'observation_generate_session_summary';
 const SOURCE_ADAPTER_DEFAULT = 'api';
 
 export interface ServerV1PostgresRoutesOptions {
@@ -38,6 +48,9 @@ export interface ServerV1PostgresRoutesOptions {
   // the outbox row stays in `queued` state for startup reconciliation to
   // pick up — never claim observations were generated.
   getEventQueue?: () => ReturnType<ActiveServerBetaQueueManager['getQueue']> | null;
+  getSummaryQueue?: () => ReturnType<ActiveServerBetaQueueManager['getQueue']> | null;
+  sessionPolicy?: ServerSessionGenerationPolicy;
+  sessionDebounceWindowMs?: number;
 }
 
 interface BatchPreValidationFailure {
@@ -371,6 +384,168 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       res.json({ generationJob: serializeGenerationJobStatus(job) });
     }));
 
+    // POST /v1/sessions/start — create-or-find a server_session, idempotent
+    // on (project_id, external_session_id). Body matches the worker
+    // /v1/sessions/start payload but stores into Postgres server_sessions.
+    app.post('/v1/sessions/start', writeAuth, this.handleCreate(
+      z.object({
+        projectId: z.string().min(1),
+        externalSessionId: z.string().min(1).optional(),
+        contentSessionId: z.string().min(1).nullable().optional(),
+        agentId: z.string().min(1).nullable().optional(),
+        agentType: z.string().min(1).nullable().optional(),
+        platformSource: z.string().min(1).nullable().optional(),
+        metadata: z.record(z.string(), z.unknown()).optional(),
+      }),
+      async (req, res, body) => {
+        const teamId = this.requireTeamId(req, res);
+        if (!teamId) return;
+        if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
+        const repo = new PostgresServerSessionsRepository(this.options.pool);
+        try {
+          if (body.externalSessionId) {
+            const existing = await repo.findByExternalIdForScope({
+              externalSessionId: body.externalSessionId,
+              projectId: body.projectId,
+              teamId,
+            });
+            if (existing) {
+              res.status(200).json({ session: serializeSession(existing) });
+              return;
+            }
+          }
+          const session = await repo.create({
+            projectId: body.projectId,
+            teamId,
+            externalSessionId: body.externalSessionId ?? null,
+            contentSessionId: body.contentSessionId ?? null,
+            agentId: body.agentId ?? null,
+            agentType: body.agentType ?? null,
+            platformSource: body.platformSource ?? null,
+            metadata: (body.metadata ?? {}) as Record<string, unknown>,
+          });
+          await this.auditWrite(req, 'session.write', session.id, session.projectId);
+          res.status(201).json({ session: serializeSession(session) });
+        } catch (error) {
+          this.handleDbError(error, res, 'session.write');
+        }
+      },
+    ));
+
+    // GET /v1/sessions/:id — scoped read, 404 cross-tenant.
+    app.get('/v1/sessions/:id', readAuth, this.asyncHandler(async (req, res) => {
+      const teamId = this.requireTeamId(req, res);
+      if (!teamId) return;
+      const id = this.routeParam(req.params.id);
+      const result = await this.options.pool.query(
+        `SELECT id, project_id FROM server_sessions WHERE id = $1 AND team_id = $2`,
+        [id, teamId],
+      );
+      const row = result.rows[0] as undefined | { id: string; project_id: string };
+      if (!row) {
+        res.status(404).json({ error: 'NotFound', message: 'Session not found' });
+        return;
+      }
+      if (!this.ensureProjectAllowed(req, res, row.project_id)) return;
+      const repo = new PostgresServerSessionsRepository(this.options.pool);
+      const session = await repo.getByIdForScope({ id, projectId: row.project_id, teamId });
+      if (!session) {
+        res.status(404).json({ error: 'NotFound', message: 'Session not found' });
+        return;
+      }
+      res.json({ session: serializeSession(session) });
+    }));
+
+    // POST /v1/sessions/:id/end — set ended_at (idempotent), enqueue a
+    // session-summary generation job. Re-ending the same session is a no-op
+    // because the (team_id, project_id, source_type='session_summary',
+    // source_id) UNIQUE constraint on observation_generation_jobs prevents
+    // duplicate rows; the existing row is returned.
+    app.post('/v1/sessions/:id/end', writeAuth, this.asyncHandler(async (req, res) => {
+      const teamId = this.requireTeamId(req, res);
+      if (!teamId) return;
+      const id = this.routeParam(req.params.id);
+      const result = await this.options.pool.query(
+        `SELECT id, project_id FROM server_sessions WHERE id = $1 AND team_id = $2`,
+        [id, teamId],
+      );
+      const row = result.rows[0] as undefined | { id: string; project_id: string };
+      if (!row) {
+        res.status(404).json({ error: 'NotFound', message: 'Session not found' });
+        return;
+      }
+      if (!this.ensureProjectAllowed(req, res, row.project_id)) return;
+
+      let endedSession: Awaited<ReturnType<PostgresServerSessionsRepository['endSession']>>;
+      let summaryOutbox: PostgresObservationGenerationJob | null = null;
+      try {
+        const txResult = await withPostgresTransaction(this.options.pool, async (client) => {
+          const sessionsRepo = new PostgresServerSessionsRepository(client);
+          const ended = await sessionsRepo.endSession({
+            id,
+            projectId: row.project_id,
+            teamId,
+          });
+          if (!ended) {
+            return { ended: null as Awaited<ReturnType<PostgresServerSessionsRepository['endSession']>>, outbox: null as PostgresObservationGenerationJob | null };
+          }
+          const jobsRepo = new PostgresObservationGenerationJobRepository(client);
+          const eventsLogRepo = new PostgresObservationGenerationJobEventsRepository(client);
+          const outbox = await jobsRepo.create({
+            projectId: ended.projectId,
+            teamId: ended.teamId,
+            sourceType: 'session_summary',
+            sourceId: ended.id,
+            serverSessionId: ended.id,
+            jobType: SUMMARY_JOB_TYPE,
+            bullmqJobId: buildSummaryJobId({
+              serverSessionId: ended.id,
+              teamId: ended.teamId,
+              projectId: ended.projectId,
+            }),
+          });
+          // Append a 'queued' lifecycle event only when this is the first time
+          // the outbox row is observed. ON CONFLICT in jobs.create already
+          // collapses re-ends to the same row id, but a duplicate lifecycle
+          // event is harmless and observable.
+          await eventsLogRepo.append({
+            generationJobId: outbox.id,
+            projectId: outbox.projectId,
+            teamId: outbox.teamId,
+            eventType: 'queued',
+            statusAfter: outbox.status,
+            attempt: outbox.attempts,
+            details: { source: 'http_post_v1_sessions_end' },
+          });
+          return { ended, outbox };
+        });
+        endedSession = txResult.ended;
+        summaryOutbox = txResult.outbox;
+      } catch (error) {
+        this.handleDbError(error, res, 'session.end');
+        return;
+      }
+
+      if (!endedSession) {
+        res.status(404).json({ error: 'NotFound', message: 'Session not found' });
+        return;
+      }
+
+      await this.auditWrite(req, 'session.end', endedSession.id, endedSession.projectId);
+
+      let enqueueState: 'enqueued' | 'queued_only' | 'skipped' = 'skipped';
+      if (summaryOutbox) {
+        enqueueState = await this.enqueueSummaryJob(endedSession.id, summaryOutbox);
+      }
+
+      res.status(200).json({
+        session: serializeSession(endedSession),
+        ...(summaryOutbox
+          ? { generationJob: serializeGenerationJob(summaryOutbox, enqueueState) }
+          : {}),
+      });
+    }));
+
     // POST /v1/memories — direct/manual observation insertion (compat alias).
     // MUST NOT call generator and MUST NOT create outbox rows.
     app.post('/v1/memories', writeAuth, this.handleCreate(
@@ -415,18 +590,21 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     if (!queue) {
       return 'queued_only';
     }
-    const bullmqJobId = outbox.bullmqJobId ?? buildEventBullmqJobId(event);
-    const payload: GenerateObservationsForEventJob = {
-      kind: 'event',
-      team_id: outbox.teamId,
-      project_id: outbox.projectId,
-      source_type: 'agent_event',
-      source_id: event.id,
-      generation_job_id: outbox.id,
-      agent_event_id: event.id,
-    };
+    const policyOptions: { policy?: ServerSessionGenerationPolicy; debounceWindowMs?: number } = {};
+    if (this.options.sessionPolicy !== undefined) {
+      policyOptions.policy = this.options.sessionPolicy;
+    }
+    if (this.options.sessionDebounceWindowMs !== undefined) {
+      policyOptions.debounceWindowMs = this.options.sessionDebounceWindowMs;
+    }
+    const decision = buildEnqueueEventDecision({ event, outbox }, policyOptions);
+    if (!decision.shouldEnqueue) {
+      // end-of-session policy: outbox row stays `queued`; summary path will
+      // fan out generation when /v1/sessions/:id/end fires.
+      return 'queued_only';
+    }
     try {
-      await queue.add(bullmqJobId, payload);
+      await scheduleDebouncedEventJob(queue, decision);
       // We intentionally do NOT append a second 'enqueued' job event row here
       // to avoid a second DB round-trip on the hot path. The Phase 3 worker
       // surface treats absence of a transport-side echo as expected when the
@@ -439,6 +617,55 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       });
       return 'queued_only';
     }
+  }
+
+  private async enqueueSummaryJob(
+    serverSessionId: string,
+    outbox: PostgresObservationGenerationJob,
+  ): Promise<'enqueued' | 'queued_only'> {
+    const queue = this.resolveSummaryQueue();
+    if (!queue) {
+      return 'queued_only';
+    }
+    const jobId = outbox.bullmqJobId ?? buildSummaryJobId({
+      serverSessionId,
+      teamId: outbox.teamId,
+      projectId: outbox.projectId,
+    });
+    const payload: GenerateSessionSummaryJob = buildSummaryJobPayload({
+      serverSessionId,
+      teamId: outbox.teamId,
+      projectId: outbox.projectId,
+      generationJobId: outbox.id,
+    });
+    try {
+      // Re-ending an already-summarized session collapses to the same
+      // deterministic jobId. BullMQ add(jobId, ...) is idempotent — the
+      // existing job is returned without duplicate work.
+      await queue.add(jobId, payload);
+      return 'enqueued';
+    } catch (error) {
+      logger.warn('SYSTEM', 'failed to publish summary generation job to BullMQ', {
+        outboxId: outbox.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return 'queued_only';
+    }
+  }
+
+  private resolveSummaryQueue(): ReturnType<ActiveServerBetaQueueManager['getQueue']> | null {
+    if (this.options.getSummaryQueue) {
+      return this.options.getSummaryQueue();
+    }
+    const manager = this.options.queueManager as Partial<ActiveServerBetaQueueManager>;
+    if (typeof manager.getQueue === 'function') {
+      try {
+        return manager.getQueue('summary');
+      } catch {
+        return null;
+      }
+    }
+    return null;
   }
 
   private resolveEventQueue(): ReturnType<ActiveServerBetaQueueManager['getQueue']> | null {
@@ -601,6 +828,42 @@ function buildEventBullmqJobId(event: PostgresAgentEvent): string {
     source_type: 'agent_event',
     source_id: event.id,
   });
+}
+
+function serializeSession(session: {
+  id: string;
+  projectId: string;
+  teamId: string;
+  externalSessionId: string | null;
+  contentSessionId: string | null;
+  agentId: string | null;
+  agentType: string | null;
+  platformSource: string | null;
+  generationStatus: string;
+  metadata: Record<string, unknown>;
+  startedAtEpoch: number;
+  endedAtEpoch: number | null;
+  lastGeneratedAtEpoch: number | null;
+  createdAtEpoch: number;
+  updatedAtEpoch: number;
+}): Record<string, unknown> {
+  return {
+    id: session.id,
+    projectId: session.projectId,
+    teamId: session.teamId,
+    externalSessionId: session.externalSessionId,
+    contentSessionId: session.contentSessionId,
+    agentId: session.agentId,
+    agentType: session.agentType,
+    platformSource: session.platformSource,
+    generationStatus: session.generationStatus,
+    metadata: session.metadata,
+    startedAtEpoch: session.startedAtEpoch,
+    endedAtEpoch: session.endedAtEpoch,
+    lastGeneratedAtEpoch: session.lastGeneratedAtEpoch,
+    createdAtEpoch: session.createdAtEpoch,
+    updatedAtEpoch: session.updatedAtEpoch,
+  };
 }
 
 function serializeEvent(event: PostgresAgentEvent): Record<string, unknown> {

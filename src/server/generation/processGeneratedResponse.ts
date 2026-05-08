@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import { parseAgentXml, type ParsedObservation } from '../../sdk/parser.js';
+import { parseAgentXml, type ParsedObservation, type ParsedSummary } from '../../sdk/parser.js';
 import { logger } from '../../utils/logger.js';
 import {
   PostgresObservationRepository,
@@ -272,6 +272,173 @@ export async function markGenerationFailed(input: MarkGenerationFailedInput): Pr
       },
     });
   });
+}
+
+/**
+ * Persist a parsed session summary as an observations row with kind='summary'.
+ *
+ * Wraps the same outbox transition / source-link / audit pipeline as
+ * processGeneratedResponse but emits a single 'summary'-kind observation
+ * derived from the summary fields. Idempotency is enforced through the same
+ * `observations.generation_key` UNIQUE index — re-running the summary job
+ * after a restart will collapse to one row.
+ */
+export async function processSessionSummaryResponse(
+  input: ProcessGeneratedResponseInput,
+): Promise<ProcessGeneratedResponseOutcome> {
+  const { job, rawText } = input;
+
+  if (job.sourceType !== 'session_summary') {
+    return { kind: 'parse_error', jobId: job.id, reason: 'session summary processor invoked on non-summary job' };
+  }
+
+  const parsed = parseAgentXml(rawText, job.id);
+  if (!parsed.valid) {
+    return { kind: 'parse_error', jobId: job.id, reason: 'parser rejected summary response' };
+  }
+
+  const summary = parsed.summary ?? null;
+  const skipped = summary?.skipped === true;
+  const summaryContent = summary ? renderSummaryContent(summary) : '';
+  const privateContentDetected = skipped || summaryContent.trim().length === 0;
+
+  return await withPostgresTransaction(input.pool, async (client) => {
+    const obsRepo = new PostgresObservationRepository(client);
+    const sourcesRepo = new PostgresObservationSourcesRepository(client);
+    const jobsRepo = new PostgresObservationGenerationJobRepository(client);
+    const eventsLogRepo = new PostgresObservationGenerationJobEventsRepository(client);
+    const auditRepo = new PostgresAuthRepository(client);
+
+    const fresh = await jobsRepo.getByIdForScope({
+      id: job.id,
+      projectId: job.projectId,
+      teamId: job.teamId,
+    });
+    if (!fresh) {
+      throw new Error(`session summary generation job ${job.id} not found in scope`);
+    }
+    if (fresh.status === 'completed' || fresh.status === 'cancelled' || fresh.status === 'failed') {
+      logger.info('SYSTEM', 'session summary job already in terminal status; skipping persistence', {
+        jobId: fresh.id,
+        status: fresh.status,
+      });
+      return {
+        kind: 'completed' as const,
+        jobId: fresh.id,
+        observations: [],
+        privateContentDetected,
+      };
+    }
+
+    const persisted: PostgresObservation[] = [];
+    if (!privateContentDetected) {
+      const scrubbed = stripTags(summaryContent);
+      const scrubbedContent = scrubbed.stripped ?? '';
+      if (scrubbedContent.trim().length > 0) {
+        const generationKey = buildObservationGenerationKey({
+          generationJobId: fresh.id,
+          parsedObservationIndex: 0,
+          content: scrubbedContent,
+        });
+        const observation = await obsRepo.create({
+          projectId: fresh.projectId,
+          teamId: fresh.teamId,
+          serverSessionId: fresh.serverSessionId,
+          kind: 'summary',
+          content: scrubbedContent,
+          generationKey,
+          metadata: {
+            request: summary?.request ?? null,
+            investigated: summary?.investigated ?? null,
+            learned: summary?.learned ?? null,
+            completed: summary?.completed ?? null,
+            next_steps: summary?.next_steps ?? null,
+            notes: summary?.notes ?? null,
+            provider: input.providerLabel,
+            model: input.modelId ?? null,
+          },
+          createdByJobId: fresh.id,
+        });
+        persisted.push(observation);
+
+        await sourcesRepo.addSource({
+          observationId: observation.id,
+          projectId: fresh.projectId,
+          teamId: fresh.teamId,
+          sourceType: 'session_summary',
+          sourceId: fresh.sourceId,
+          generationJobId: fresh.id,
+          metadata: {
+            provider: input.providerLabel,
+            parsedObservationIndex: 0,
+          },
+        });
+      }
+    }
+
+    await jobsRepo.transitionStatus({
+      id: fresh.id,
+      projectId: fresh.projectId,
+      teamId: fresh.teamId,
+      status: 'completed',
+    });
+    await eventsLogRepo.append({
+      generationJobId: fresh.id,
+      projectId: fresh.projectId,
+      teamId: fresh.teamId,
+      eventType: 'completed',
+      statusAfter: 'completed',
+      attempt: fresh.attempts,
+      details: {
+        provider: input.providerLabel,
+        model: input.modelId ?? null,
+        observationCount: persisted.length,
+        privateContentDetected,
+        workerId: input.workerId ?? null,
+        sourceType: 'session_summary',
+      },
+    });
+
+    try {
+      await auditRepo.createAuditLog({
+        teamId: fresh.teamId,
+        projectId: fresh.projectId,
+        actorId: null,
+        apiKeyId: null,
+        action: 'session_summary.generated',
+        resourceType: 'observation_generation_job',
+        resourceId: fresh.id,
+        details: {
+          provider: input.providerLabel,
+          model: input.modelId ?? null,
+          observationCount: persisted.length,
+        },
+      });
+    } catch (auditError) {
+      logger.warn('SYSTEM', 'audit log insert failed during summary generation', {
+        jobId: fresh.id,
+        error: auditError instanceof Error ? auditError.message : String(auditError),
+      });
+    }
+
+    return {
+      kind: 'completed' as const,
+      jobId: fresh.id,
+      observations: persisted,
+      privateContentDetected,
+    };
+  });
+}
+
+function renderSummaryContent(summary: ParsedSummary): string {
+  const parts: string[] = [];
+  if (summary.request) parts.push(`Request: ${summary.request}`);
+  if (summary.investigated) parts.push(`Investigated: ${summary.investigated}`);
+  if (summary.learned) parts.push(`Learned: ${summary.learned}`);
+  if (summary.completed) parts.push(`Completed: ${summary.completed}`);
+  if (summary.next_steps) parts.push(`Next steps: ${summary.next_steps}`);
+  if (summary.notes) parts.push(`Notes: ${summary.notes}`);
+  return parts.join('\n\n').trim();
 }
 
 function renderObservationContent(observation: ParsedObservation): string {

@@ -13,8 +13,10 @@ import type { ServerGenerationProvider } from './providers/shared/types.js';
 import {
   markGenerationFailed,
   processGeneratedResponse,
+  processSessionSummaryResponse,
   type ProcessGeneratedResponseOutcome,
 } from './processGeneratedResponse.js';
+import { PostgresServerSessionsRepository } from '../../storage/postgres/server-sessions.js';
 
 // ProviderObservationGenerator is the BullMQ Worker processor for server-beta
 // observation generation. It does the following on every job invocation:
@@ -53,7 +55,7 @@ export class ProviderObservationGenerator {
     const payload = job.data;
     const correlationId = `bullmq:${job.id ?? '?'}`;
 
-    if (payload.kind !== 'event' && payload.kind !== 'event-batch') {
+    if (payload.kind !== 'event' && payload.kind !== 'event-batch' && payload.kind !== 'summary') {
       logger.warn('SYSTEM', 'unsupported job kind for ProviderObservationGenerator', {
         correlationId,
         kind: payload.kind,
@@ -85,14 +87,17 @@ export class ProviderObservationGenerator {
         },
       });
 
-      const outcome: ProcessGeneratedResponseOutcome = await processGeneratedResponse({
+      const persistInput = {
         pool: this.options.pool,
         job: fresh,
         rawText: result.rawText,
         modelId: result.modelId,
         providerLabel: result.providerLabel,
         ...(this.options.workerId !== undefined ? { workerId: this.options.workerId } : {}),
-      });
+      };
+      const outcome: ProcessGeneratedResponseOutcome = fresh.sourceType === 'session_summary'
+        ? await processSessionSummaryResponse(persistInput)
+        : await processGeneratedResponse(persistInput);
 
       if (outcome.kind === 'parse_error') {
         await markGenerationFailed({
@@ -170,11 +175,26 @@ export class ProviderObservationGenerator {
     payload: ServerGenerationJobPayload,
   ): Promise<NonNullable<Awaited<ReturnType<PostgresAgentEventsRepository['getByIdForScope']>>>[]> {
     const repo = new PostgresAgentEventsRepository(this.options.pool);
+
+    type Event = NonNullable<Awaited<ReturnType<PostgresAgentEventsRepository['getByIdForScope']>>>;
+
+    if (job.sourceType === 'session_summary') {
+      // Summary jobs feed the provider every event tied to the server_session
+      // that hasn't already been collapsed into a completed event-generation
+      // job. The session repo enforces tenant scope inside its WHERE clause.
+      if (!job.serverSessionId) return [];
+      const sessions = new PostgresServerSessionsRepository(this.options.pool);
+      const events = await sessions.listUnprocessedEvents({
+        serverSessionId: job.serverSessionId,
+        projectId: job.projectId,
+        teamId: job.teamId,
+      });
+      return events;
+    }
+
     if (job.sourceType !== 'agent_event') {
       return [];
     }
-
-    type Event = NonNullable<Awaited<ReturnType<PostgresAgentEventsRepository['getByIdForScope']>>>;
 
     if (payload.kind === 'event') {
       const event = await repo.getByIdForScope({
