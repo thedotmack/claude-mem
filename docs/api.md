@@ -23,3 +23,18 @@ Available beta endpoints:
 - `GET /v1/audit?projectId=<id>`
 
 When `CLAUDE_MEM_AUTH_MODE=api-key`, send `Authorization: Bearer <key>`. Read endpoints require `memories:read`; write endpoints require `memories:write`.
+
+## Event generation semantics
+
+`POST /v1/events` accepts two query flags that control observation generation:
+
+- `generate=false` — write the event but do not enqueue a generation job.
+- `wait=true` — return the `generationJob` descriptor in the response, so
+  callers can poll `GET /v1/jobs/:id` for completion.
+
+Without `wait=true`, the response includes the new event row and a best-
+effort `generationJob` field. With `wait=true`, the `generationJob` field is
+always populated (or `null` only when generation was explicitly disabled).
+The actual provider call happens in a separate BullMQ worker process
+(`claude-mem server worker start`); the HTTP path never blocks on a
+provider response.

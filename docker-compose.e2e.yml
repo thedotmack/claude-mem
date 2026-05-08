@@ -1,3 +1,6 @@
+# Phase 10 — E2E driver overlay. Adds a one-shot Node container that hits
+# the server-beta HTTP service across the compose network. Pairs with
+# scripts/e2e-server-beta-docker.sh.
 services:
   server-beta-e2e:
     image: node:20-alpine
@@ -6,10 +9,14 @@ services:
         condition: service_healthy
       valkey:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
     environment:
-      E2E_BASE_URL: http://claude-mem-server:37777
+      E2E_BASE_URL: http://claude-mem-server:37877
       E2E_REDIS_HOST: valkey
       E2E_REDIS_PORT: 6379
+      E2E_POSTGRES_HOST: postgres
+      E2E_POSTGRES_PORT: 5432
     volumes:
       - ./docker/e2e:/e2e:ro
     working_dir: /e2e

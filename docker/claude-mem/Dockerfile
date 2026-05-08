@@ -55,5 +55,13 @@ RUN chmod +x /usr/local/bin/claude-mem-entrypoint
 USER node
 WORKDIR /home/node
 
+# Phase 10 — server-beta runtime is the only foregrounded process. The legacy
+# worker binaries remain available for tooling but are NEVER spawned by the
+# entrypoint. Mode selection happens via CLAUDE_MEM_CONTAINER_MODE
+# (server | worker | shell). `docker run ... bash` works because shell mode
+# falls through to "$@".
+ENV CLAUDE_MEM_CONTAINER_MODE=server
+ENV CLAUDE_MEM_RUNTIME=server-beta
+
 ENTRYPOINT ["/usr/local/bin/claude-mem-entrypoint"]
-CMD ["bash"]
+CMD []

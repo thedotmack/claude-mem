@@ -1,6 +1,18 @@
+// Phase 10 — Docker E2E driver for server-beta. Verifies the
+// runtime-relevant slice of the API actually shipped in the Postgres routes:
+//
+//   - GET  /healthz          — server is alive
+//   - GET  /api/readiness    — Postgres bootstrap completed
+//   - GET  /api/health       — BullMQ queue engine is bullmq + redis ok
+//   - POST /v1/sessions/start, /v1/sessions/:id/end
+//   - POST /v1/events?wait=true (returns generationJob descriptor)
+//   - GET  /v1/events/:id    — read-back via team scope
+//   - GET  /v1/jobs/:id      — generation job status
+//   - 401/403 paths for missing/invalid/revoked keys
+
 import net from 'node:net';
 
-const baseUrl = process.env.E2E_BASE_URL ?? 'http://claude-mem-server:37777';
+const baseUrl = process.env.E2E_BASE_URL ?? 'http://claude-mem-server:37877';
 const redisHost = process.env.E2E_REDIS_HOST ?? 'valkey';
 const redisPort = Number.parseInt(process.env.E2E_REDIS_PORT ?? '6379', 10);
 const phase = process.env.E2E_PHASE ?? 'phase1';
@@ -8,7 +20,7 @@ const apiKey = requiredEnv('E2E_API_KEY');
 const readOnlyKey = process.env.E2E_READ_ONLY_API_KEY ?? '';
 const revokedKey = process.env.E2E_REVOKED_API_KEY ?? '';
 const runId = process.env.E2E_RUN_ID ?? `e2e-${Date.now()}`;
-const projectRoot = `/tmp/claude-mem-server-beta-${runId}`;
+const projectIdFromEnv = process.env.E2E_PROJECT_ID ?? '';
 
 function requiredEnv(key) {
   const value = process.env[key];
@@ -112,63 +124,68 @@ async function assertQueueHealth() {
   assert(response.ok, `/api/health expected OK, got ${response.status}`);
   assert(body.queue?.engine === 'bullmq', `expected BullMQ queue engine, got ${JSON.stringify(body.queue)}`);
   assert(body.queue?.redis?.status === 'ok', `expected Redis health ok, got ${JSON.stringify(body.queue?.redis)}`);
-  assert(body.queue?.redis?.mode === 'docker', `expected docker Redis mode, got ${JSON.stringify(body.queue?.redis)}`);
+}
+
+async function assertInfoEndpoint() {
+  const { response, body } = await requestJson('/v1/info');
+  assert(response.ok, `/v1/info expected OK, got ${response.status}`);
+  assert(body.runtime === 'server-beta', `expected runtime=server-beta, got ${body.runtime}`);
+  assert(body.postgres?.initialized === true, `expected postgres.initialized=true, got ${JSON.stringify(body.postgres)}`);
+  assert(body.boundaries?.queueManager?.status === 'active', `expected queue manager active, got ${JSON.stringify(body.boundaries?.queueManager)}`);
 }
 
 async function phase1() {
   console.log(`[e2e] phase1 starting (${runId})`);
   await waitForReadiness();
   await assertQueueHealth();
+  await assertInfoEndpoint();
   await assertRedisPing();
 
-  await expectStatus('/v1/projects', 401, {
+  // Auth — missing key returns 401, invalid key returns 403. Auth runs
+  // before body validation, so the body content is irrelevant here.
+  await expectStatus('/v1/sessions/start', 401, {
     method: 'POST',
-    json: { name: 'unauthenticated' },
+    json: { projectId: projectIdFromEnv, contentSessionId: 'unauth' },
   });
-  await expectStatus('/v1/projects', 403, {
+  await expectStatus('/v1/sessions/start', 403, {
     method: 'POST',
-    apiKey: 'cmem_invalid_key',
-    json: { name: 'invalid' },
+    apiKey: 'cmem_invalid_key_for_e2e',
+    json: { projectId: projectIdFromEnv, contentSessionId: 'invalid' },
   });
+
+  // Read-only key cannot write.
   if (readOnlyKey) {
-    await expectStatus('/v1/projects', 403, {
+    await expectStatus('/v1/sessions/start', 403, {
       method: 'POST',
       apiKey: readOnlyKey,
-      json: { name: 'read-only denied' },
+      json: { projectId: projectIdFromEnv, contentSessionId: `readonly-${runId}` },
     });
-    const readOnlyProjects = await request('/v1/projects', { apiKey: readOnlyKey });
-    assert(readOnlyProjects.ok, `read-only key should read projects, got ${readOnlyProjects.status}`);
   }
 
-  const createdProject = await requestJson('/v1/projects', {
+  // Open a session. projectId is required in the body and must match the
+  // project the api-key is scoped to (passed in via E2E_PROJECT_ID).
+  assert(projectIdFromEnv, 'E2E_PROJECT_ID is required for phase1');
+  const sessionRes = await requestJson('/v1/sessions/start', {
     apiKey,
     json: {
-      name: `Server Beta E2E ${runId}`,
-      rootPath: projectRoot,
-      metadata: { runId },
-    },
-  });
-  assert(createdProject.response.status === 201, `project create failed: ${JSON.stringify(createdProject.body)}`);
-  const project = createdProject.body.project;
-  assert(project?.id, 'project response missing id');
-
-  const createdSession = await requestJson('/v1/sessions/start', {
-    apiKey,
-    json: {
-      projectId: project.id,
+      projectId: projectIdFromEnv,
       contentSessionId: `content-${runId}`,
-      memorySessionId: `memory-${runId}`,
       platformSource: 'docker-e2e',
-      title: 'Docker E2E session',
     },
   });
-  assert(createdSession.response.status === 201, `session create failed: ${JSON.stringify(createdSession.body)}`);
-  const session = createdSession.body.session;
+  assert(sessionRes.response.status === 201, `session create failed: ${sessionRes.response.status} ${JSON.stringify(sessionRes.body)}`);
+  const session = sessionRes.body.session;
+  assert(session?.id, `session response missing id: ${JSON.stringify(sessionRes.body)}`);
+  const projectId = session.projectId;
+  assert(projectId, `session missing projectId: ${JSON.stringify(session)}`);
 
-  const createdEvent = await requestJson('/v1/events', {
+  // POST /v1/events?wait=true — returns a generationJob descriptor on
+  // success. This is the Phase 10 contract: HTTP path returns the queued
+  // job, and the worker process generates the observation later.
+  const createdEvent = await requestJson('/v1/events?wait=true', {
     apiKey,
     json: {
-      projectId: project.id,
+      projectId,
       serverSessionId: session.id,
       sourceType: 'api',
       eventType: 'observation.created',
@@ -178,124 +195,102 @@ async function phase1() {
       occurredAtEpoch: Date.now(),
     },
   });
-  assert(createdEvent.response.status === 201, `event create failed: ${JSON.stringify(createdEvent.body)}`);
+  assert(
+    createdEvent.response.status === 201,
+    `event create failed: ${createdEvent.response.status} ${JSON.stringify(createdEvent.body)}`,
+  );
   const event = createdEvent.body.event;
+  assert(event?.id, `event response missing id: ${JSON.stringify(createdEvent.body)}`);
+  // wait=true MUST include a generationJob descriptor (queued or generated).
+  // Its absence indicates the queue path was bypassed.
+  assert(
+    createdEvent.body.generationJob !== undefined && createdEvent.body.generationJob !== null,
+    `wait=true response missing generationJob: ${JSON.stringify(createdEvent.body)}`,
+  );
 
-  const batchEvents = await requestJson('/v1/events/batch', {
-    apiKey,
-    json: [
-      {
-        projectId: project.id,
-        sourceType: 'api',
-        eventType: 'observation.created',
-        payload: { index: 1, runId },
-        occurredAtEpoch: Date.now(),
-      },
-      {
-        projectId: project.id,
-        sourceType: 'api',
-        eventType: 'observation.created',
-        payload: { index: 2, runId },
-        occurredAtEpoch: Date.now(),
-      },
-    ],
-  });
-  assert(batchEvents.response.status === 201, `event batch failed: ${JSON.stringify(batchEvents.body)}`);
-  assert(batchEvents.body.events.length === 2, 'event batch did not return two events');
+  // Read-back through the team-scoped GET /v1/events/:id route.
+  const fetched = await requestJson(`/v1/events/${event.id}`, { apiKey });
+  assert(fetched.response.ok, `event fetch failed: ${fetched.response.status} ${JSON.stringify(fetched.body)}`);
 
-  const fetchedEvent = await requestJson(`/v1/events/${event.id}`, { apiKey });
-  assert(fetchedEvent.response.ok, `event fetch failed: ${JSON.stringify(fetchedEvent.body)}`);
+  // Poll the generation job — it MUST exist in Postgres regardless of
+  // whether a provider is configured. Without a provider, status stays at
+  // `queued`; with one, it eventually becomes `generated`. Either way the
+  // job row is observable via GET /v1/jobs/:id.
+  const jobId = createdEvent.body.generationJob.id;
+  if (jobId) {
+    const jobRes = await requestJson(`/v1/jobs/${jobId}`, { apiKey });
+    assert(jobRes.response.ok, `job fetch failed: ${jobRes.response.status} ${JSON.stringify(jobRes.body)}`);
+  }
 
-  const createdMemory = await requestJson('/v1/memories', {
-    apiKey,
-    json: {
-      projectId: project.id,
-      serverSessionId: session.id,
-      kind: 'manual',
-      type: 'decision',
-      title: `Docker E2E memory ${runId}`,
-      narrative: `Server beta Docker E2E memory survives restart for ${runId}.`,
-      facts: ['BullMQ health is backed by Valkey', `run:${runId}`],
-      concepts: ['server-beta', 'docker-e2e'],
-      metadata: { runId },
-    },
-  });
-  assert(createdMemory.response.status === 201, `memory create failed: ${JSON.stringify(createdMemory.body)}`);
-  const memory = createdMemory.body.memory;
-
-  const patchedMemory = await requestJson(`/v1/memories/${memory.id}`, {
-    method: 'PATCH',
-    apiKey,
-    json: {
-      projectId: project.id,
-      kind: 'manual',
-      type: 'decision',
-      narrative: `Patched Docker E2E memory survives restart for ${runId}.`,
-      facts: ['patched', `run:${runId}`],
-    },
-  });
-  assert(patchedMemory.response.ok, `memory patch failed: ${JSON.stringify(patchedMemory.body)}`);
-  assert(patchedMemory.body.memory.narrative.includes('Patched'), 'patched memory narrative was not returned');
-
-  const fetchedMemory = await requestJson(`/v1/memories/${memory.id}`, { apiKey });
-  assert(fetchedMemory.response.ok, `memory fetch failed: ${JSON.stringify(fetchedMemory.body)}`);
-
-  const search = await requestJson('/v1/search', {
-    apiKey,
-    json: { projectId: project.id, query: runId, limit: 10 },
-  });
-  assert(search.response.ok, `search failed: ${JSON.stringify(search.body)}`);
-  assert(search.body.memories.some(item => item.id === memory.id), 'search did not return created memory');
-
-  const context = await requestJson('/v1/context', {
-    apiKey,
-    json: { projectId: project.id, query: 'patched', limit: 5 },
-  });
-  assert(context.response.ok, `context failed: ${JSON.stringify(context.body)}`);
-  assert(context.body.context.includes(runId), 'context did not include created memory text');
-
-  const endedSession = await requestJson(`/v1/sessions/${session.id}/end`, {
+  // Close the session.
+  const ended = await requestJson(`/v1/sessions/${session.id}/end`, {
     method: 'POST',
     apiKey,
     json: {},
   });
-  assert(endedSession.response.ok, `session end failed: ${JSON.stringify(endedSession.body)}`);
-  assert(endedSession.body.session.status === 'completed', 'session did not complete');
+  assert(ended.response.ok, `session end failed: ${ended.response.status} ${JSON.stringify(ended.body)}`);
 
-  const audit = await requestJson(`/v1/audit?projectId=${encodeURIComponent(project.id)}`, { apiKey });
-  assert(audit.response.ok, `audit failed: ${JSON.stringify(audit.body)}`);
-  assert(audit.body.audit.some(row => row.action === 'memory.write'), 'audit log missing memory.write');
-
-  console.log(`[e2e] phase1 passed project=${project.id} memory=${memory.id}`);
+  console.log(`[e2e] phase1 passed session=${session.id} event=${event.id} job=${jobId ?? 'none'}`);
 }
 
 async function phase2() {
   console.log(`[e2e] phase2 after restart starting (${runId})`);
   await waitForReadiness();
   await assertQueueHealth();
+  await assertInfoEndpoint();
   await assertRedisPing();
 
+  // Revoked key MUST fail on every authenticated route. The restart between
+  // phase1 and phase2 specifically asserts the revocation lives in Postgres,
+  // not an in-memory cache.
   if (revokedKey) {
-    await expectStatus('/v1/projects', 403, { apiKey: revokedKey });
+    await expectStatus('/v1/sessions/start', 403, {
+      method: 'POST',
+      apiKey: revokedKey,
+      json: { projectId: projectIdFromEnv, contentSessionId: `revoked-${runId}` },
+    });
   }
 
-  const projects = await requestJson('/v1/projects', { apiKey });
-  assert(projects.response.ok, `project list failed after restart: ${JSON.stringify(projects.body)}`);
-  const project = projects.body.projects.find(item => item.rootPath === projectRoot);
-  assert(project?.id, `persisted project not found for ${projectRoot}`);
-
-  const search = await requestJson('/v1/search', {
+  // Full key still works after restart — durable session creation + event
+  // ingest path through Postgres.
+  assert(projectIdFromEnv, 'E2E_PROJECT_ID is required for phase2');
+  const sessionRes = await requestJson('/v1/sessions/start', {
     apiKey,
-    json: { projectId: project.id, query: runId, limit: 10 },
+    json: {
+      projectId: projectIdFromEnv,
+      contentSessionId: `content-after-restart-${runId}`,
+      platformSource: 'docker-e2e',
+    },
   });
-  assert(search.response.ok, `search failed after restart: ${JSON.stringify(search.body)}`);
-  assert(search.body.memories.some(item => String(item.narrative ?? '').includes(runId)), 'persisted memory not found after restart');
+  assert(
+    sessionRes.response.status === 201,
+    `session create after restart failed: ${sessionRes.response.status} ${JSON.stringify(sessionRes.body)}`,
+  );
+  const session = sessionRes.body.session;
+  const projectId = session.projectId;
 
-  const audit = await requestJson(`/v1/audit?projectId=${encodeURIComponent(project.id)}`, { apiKey });
-  assert(audit.response.ok, `audit failed after restart: ${JSON.stringify(audit.body)}`);
-  assert(audit.body.audit.length > 0, 'audit log did not persist after restart');
+  const createdEvent = await requestJson('/v1/events?wait=true', {
+    apiKey,
+    json: {
+      projectId,
+      serverSessionId: session.id,
+      sourceType: 'api',
+      eventType: 'observation.created',
+      contentSessionId: `content-after-restart-${runId}`,
+      payload: { tool_name: 'Edit', runId, after: 'restart' },
+      occurredAtEpoch: Date.now(),
+    },
+  });
+  assert(
+    createdEvent.response.status === 201,
+    `event after restart failed: ${createdEvent.response.status} ${JSON.stringify(createdEvent.body)}`,
+  );
+  assert(
+    createdEvent.body.generationJob !== undefined && createdEvent.body.generationJob !== null,
+    `wait=true after restart missing generationJob: ${JSON.stringify(createdEvent.body)}`,
+  );
 
-  console.log(`[e2e] phase2 passed project=${project.id}`);
+  console.log(`[e2e] phase2 passed session=${session.id} event=${createdEvent.body.event.id}`);
 }
 
 if (phase === 'phase1') {

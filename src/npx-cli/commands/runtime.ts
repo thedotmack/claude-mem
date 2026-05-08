@@ -62,7 +62,7 @@ function spawnBunWorkerCommand(command: string, extraArgs: string[] = []): void 
   });
 }
 
-function spawnBunServerBetaCommand(command: string): void {
+function spawnBunServerBetaCommand(command: string, extraArgs: string[] = []): void {
   ensureInstalledOrExit();
   const bunPath = resolveBunOrExit();
   const serverScript = serverBetaServiceScriptPath();
@@ -73,7 +73,7 @@ function spawnBunServerBetaCommand(command: string): void {
     process.exit(1);
   }
 
-  const child = spawnHidden(bunPath, [serverScript, command], {
+  const child = spawnHidden(bunPath, [serverScript, command, ...extraArgs], {
     stdio: 'inherit',
     cwd: marketplaceDirectory(),
     env: process.env,
@@ -103,6 +103,13 @@ export function runServerBetaRestartCommand(): void {
 
 export function runServerBetaStatusCommand(): void {
   spawnBunServerBetaCommand('status');
+}
+
+// Phase 10 — start the BullMQ generation worker (no HTTP). Use this in
+// Compose to scale generation horizontally while a single (or multiple)
+// HTTP-only server-beta replicas serve writes/reads.
+export function runServerBetaWorkerStartCommand(): void {
+  spawnBunServerBetaCommand('worker', ['start']);
 }
 
 export function runStartCommand(): void {

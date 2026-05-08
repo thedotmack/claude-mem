@@ -4,6 +4,7 @@ import {
   runServerBetaStartCommand,
   runServerBetaStatusCommand,
   runServerBetaStopCommand,
+  runServerBetaWorkerStartCommand,
   runRestartCommand,
   runServerApiKeyCommand,
   runStartCommand,
@@ -21,7 +22,7 @@ const UNSUPPORTED_SERVER_COMMANDS = new Set([
 
 function printServerUsage(): void {
   console.error(`Usage: ${pc.bold('npx claude-mem server <command>')}`);
-  console.error('Commands: start, stop, restart, status, logs, doctor, migrate, export, import, api-key create|list|revoke, keys rotate');
+  console.error('Commands: start, stop, restart, status, logs, doctor, migrate, export, import, api-key create|list|revoke, keys rotate, worker start');
 }
 
 function failUnsupported(command: string): never {
@@ -92,6 +93,17 @@ export async function runServerCommand(argv: string[] = []): Promise<void> {
     }
     console.error(pc.red(`Unknown server api-key subcommand: ${apiKeyCommand ?? '(none)'}`));
     console.error('Usage: npx claude-mem server api-key create|list|revoke');
+    process.exit(1);
+  }
+
+  if (subCommand === 'worker') {
+    const workerCommand = argv[1]?.toLowerCase();
+    if (workerCommand === 'start') {
+      runServerBetaWorkerStartCommand();
+      return;
+    }
+    console.error(pc.red(`Unknown server worker subcommand: ${workerCommand ?? '(none)'}`));
+    console.error('Usage: npx claude-mem server worker start');
     process.exit(1);
   }
 
