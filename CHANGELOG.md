@@ -7,7 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## Unreleased
 
 ### Changed
-- Installer Gemini, OpenRouter, Rapid-MLX, and custom LiteLLM choices now configure the Claude Agent SDK gateway path (`CLAUDE_MEM_PROVIDER=claude`, `CLAUDE_MEM_CLAUDE_AUTH_METHOD=gateway`) instead of selecting custom REST providers.
+- Installer Gemini, OpenRouter, Rapid-MLX, Apple Intelligence, Ollama, LM Studio, and custom LiteLLM choices now configure the Claude Agent SDK gateway path (`CLAUDE_MEM_PROVIDER=claude`, `CLAUDE_MEM_CLAUDE_AUTH_METHOD=gateway`) instead of selecting custom REST providers.
+- Installer local-model choices are platform-aware: macOS prioritizes Rapid-MLX and Apple Intelligence, while Linux and Windows prioritize Ollama and LM Studio.
 - Renamed old direct REST choices to OpenRouter Classic (deprecated) and Gemini Classic (deprecated).
 
 ## [12.7.3] - 2026-05-07

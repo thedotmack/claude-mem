@@ -231,6 +231,11 @@ describe('Install Non-TTY Support', () => {
       expect(installSource).toContain('openrouter-classic');
       expect(installSource).toContain('gemini-classic');
     });
+
+    it('builds platform-aware local model provider choices from gateway profiles', () => {
+      expect(installSource).toContain('gatewayProvidersForPlatform');
+      expect(installSource).toContain('getGatewayProfile(provider).optionLabel');
+    });
   });
 
   describe('post-install Next Steps copy', () => {

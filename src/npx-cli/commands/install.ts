@@ -11,6 +11,7 @@ import { loadClaudeMemEnv, saveClaudeMemEnv } from '../../shared/EnvManager.js';
 import { ensureWorkerStarted, type WorkerStartResult } from '../../services/worker-spawner.js';
 import {
   buildGatewaySettings,
+  gatewayProvidersForPlatform,
   getGatewayProfile,
   isClassicProvider,
   isGatewayProvider,
@@ -975,10 +976,10 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
       message: 'Which memory provider do you want to use?',
       options: [
         { value: 'claude', label: 'Claude Agent SDK (recommended)' },
-        { value: 'gemini', label: getGatewayProfile('gemini').optionLabel },
-        { value: 'openrouter', label: getGatewayProfile('openrouter').optionLabel },
-        { value: 'rapidmlx', label: getGatewayProfile('rapidmlx').optionLabel },
-        { value: 'litellm', label: getGatewayProfile('litellm').optionLabel },
+        ...gatewayProvidersForPlatform().map((provider) => ({
+          value: provider,
+          label: getGatewayProfile(provider).optionLabel,
+        })),
         { value: 'openrouter-classic', label: 'OpenRouter Classic (deprecated)' },
         { value: 'gemini-classic', label: 'Gemini Classic (deprecated)' },
       ],

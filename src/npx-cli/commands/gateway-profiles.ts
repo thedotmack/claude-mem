@@ -1,4 +1,11 @@
-export type GatewayProviderId = 'gemini' | 'openrouter' | 'rapidmlx' | 'litellm';
+export type GatewayProviderId =
+  | 'gemini'
+  | 'openrouter'
+  | 'rapidmlx'
+  | 'apple'
+  | 'ollama'
+  | 'lmstudio'
+  | 'litellm';
 export type ClassicProviderId = 'gemini-classic' | 'openrouter-classic';
 export type ProviderId = 'claude' | GatewayProviderId | ClassicProviderId;
 
@@ -33,10 +40,34 @@ export const GATEWAY_PROFILES: Record<GatewayProviderId, GatewayProfile> = {
   rapidmlx: {
     id: 'rapidmlx',
     label: 'Rapid-MLX',
-    optionLabel: 'Rapid-MLX local model via LiteLLM gateway',
+    optionLabel: 'Rapid-MLX local model (Apple Silicon, fastest path)',
     defaultGatewayUrl: DEFAULT_LITELLM_GATEWAY_URL,
     defaultModelAlias: 'claude-mem-rapidmlx',
     setupHint: 'Run Rapid-MLX on http://127.0.0.1:8000/v1, then point LiteLLM at it.',
+  },
+  apple: {
+    id: 'apple',
+    label: 'Apple Intelligence',
+    optionLabel: 'Apple Intelligence local model (macOS 26+, experimental)',
+    defaultGatewayUrl: DEFAULT_LITELLM_GATEWAY_URL,
+    defaultModelAlias: 'claude-mem-apple',
+    setupHint: 'Run an Apple Foundation Models OpenAI-compatible proxy on http://127.0.0.1:11435/v1, then point LiteLLM at it.',
+  },
+  ollama: {
+    id: 'ollama',
+    label: 'Ollama',
+    optionLabel: 'Ollama local model via LiteLLM gateway',
+    defaultGatewayUrl: DEFAULT_LITELLM_GATEWAY_URL,
+    defaultModelAlias: 'claude-mem-ollama',
+    setupHint: 'Run Ollama on http://127.0.0.1:11434, pull a small instruct model, then expose it through LiteLLM.',
+  },
+  lmstudio: {
+    id: 'lmstudio',
+    label: 'LM Studio',
+    optionLabel: 'LM Studio local model via LiteLLM gateway',
+    defaultGatewayUrl: DEFAULT_LITELLM_GATEWAY_URL,
+    defaultModelAlias: 'claude-mem-lmstudio',
+    setupHint: 'Start the LM Studio local server on http://127.0.0.1:1234/v1, then point LiteLLM at it.',
   },
   litellm: {
     id: 'litellm',
@@ -47,6 +78,21 @@ export const GATEWAY_PROFILES: Record<GatewayProviderId, GatewayProfile> = {
     setupHint: 'Use any LiteLLM model alias your gateway exposes.',
   },
 };
+
+const REMOTE_GATEWAY_PROVIDERS: GatewayProviderId[] = ['gemini', 'openrouter'];
+const CUSTOM_GATEWAY_PROVIDERS: GatewayProviderId[] = ['litellm'];
+
+export function gatewayProvidersForPlatform(platform: string = process.platform): GatewayProviderId[] {
+  const localProviders: GatewayProviderId[] = platform === 'darwin'
+    ? ['rapidmlx', 'apple', 'ollama', 'lmstudio']
+    : ['ollama', 'lmstudio'];
+
+  return [
+    ...localProviders,
+    ...REMOTE_GATEWAY_PROVIDERS,
+    ...CUSTOM_GATEWAY_PROVIDERS,
+  ];
+}
 
 export function isGatewayProvider(provider: ProviderId): provider is GatewayProviderId {
   return provider in GATEWAY_PROFILES;
@@ -96,6 +142,32 @@ export function litellmExampleForProfile(
         '    litellm_params:',
         '      model: openai/default',
         '      api_base: http://127.0.0.1:8000/v1',
+        '      api_key: not-needed',
+      ].join('\n');
+    case 'apple':
+      return [
+        'model_list:',
+        `  - model_name: ${modelAlias}`,
+        '    litellm_params:',
+        '      model: openai/apple_local',
+        '      api_base: http://127.0.0.1:11435/v1',
+        '      api_key: not-needed',
+      ].join('\n');
+    case 'ollama':
+      return [
+        'model_list:',
+        `  - model_name: ${modelAlias}`,
+        '    litellm_params:',
+        '      model: ollama_chat/qwen2.5:3b',
+        '      api_base: http://127.0.0.1:11434',
+      ].join('\n');
+    case 'lmstudio':
+      return [
+        'model_list:',
+        `  - model_name: ${modelAlias}`,
+        '    litellm_params:',
+        '      model: openai/local-model',
+        '      api_base: http://127.0.0.1:1234/v1',
         '      api_key: not-needed',
       ].join('\n');
     case 'litellm':

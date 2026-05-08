@@ -23,7 +23,7 @@ ${pc.bold('Install Commands')} (no Bun required):
   ${pc.cyan('npx claude-mem')}                     Interactive install
   ${pc.cyan('npx claude-mem install')}              Interactive install
   ${pc.cyan('npx claude-mem install --ide <id>')}   Install for specific IDE
-  ${pc.cyan('npx claude-mem install --provider claude|gemini|openrouter|rapidmlx|litellm')}   Set memory backend
+  ${pc.cyan('npx claude-mem install --provider claude|rapidmlx|apple|ollama|lmstudio|gemini|openrouter|litellm')}   Set memory backend
   ${pc.cyan('npx claude-mem install --provider gemini-classic|openrouter-classic')}   Use deprecated REST providers
   ${pc.cyan('npx claude-mem install --gateway-url <url>')}   Set LiteLLM gateway URL for gateway providers
   ${pc.cyan('npx claude-mem install --model <id>')}   Set Claude model or LiteLLM model alias
@@ -65,7 +65,18 @@ function readFlag(argv: string[], name: string): string | undefined {
 
 function parseInstallOptions(argv: string[]): InstallOptions {
   const provider = readFlag(argv, '--provider');
-  const allowedProviders = ['claude', 'gemini', 'openrouter', 'rapidmlx', 'litellm', 'gemini-classic', 'openrouter-classic'];
+  const allowedProviders = [
+    'claude',
+    'gemini',
+    'openrouter',
+    'rapidmlx',
+    'apple',
+    'ollama',
+    'lmstudio',
+    'litellm',
+    'gemini-classic',
+    'openrouter-classic',
+  ];
   if (provider !== undefined && !allowedProviders.includes(provider)) {
     console.error(`Unknown --provider: ${provider}. Allowed: ${allowedProviders.join(', ')}`);
     process.exit(1);

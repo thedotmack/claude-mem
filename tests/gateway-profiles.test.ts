@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import {
   buildGatewaySettings,
+  gatewayProvidersForPlatform,
   getGatewayProfile,
   isClassicProvider,
   isGatewayProvider,
@@ -8,10 +9,13 @@ import {
 } from '../src/npx-cli/commands/gateway-profiles.js';
 
 describe('gateway provider profiles', () => {
-  it('routes Gemini, OpenRouter, Rapid-MLX, and custom LiteLLM through gateway mode', () => {
+  it('routes hosted, local, and custom choices through gateway mode', () => {
     expect(isGatewayProvider('gemini')).toBe(true);
     expect(isGatewayProvider('openrouter')).toBe(true);
     expect(isGatewayProvider('rapidmlx')).toBe(true);
+    expect(isGatewayProvider('apple')).toBe(true);
+    expect(isGatewayProvider('ollama')).toBe(true);
+    expect(isGatewayProvider('lmstudio')).toBe(true);
     expect(isGatewayProvider('litellm')).toBe(true);
   });
 
@@ -38,5 +42,42 @@ describe('gateway provider profiles', () => {
     expect(example).toContain('model: openai/default');
     expect(example).toContain('api_base: http://127.0.0.1:8000/v1');
     expect(example).toContain('api_key: not-needed');
+  });
+
+  it('puts Mac-native local runtimes first on macOS', () => {
+    expect(gatewayProvidersForPlatform('darwin')).toEqual([
+      'rapidmlx',
+      'apple',
+      'ollama',
+      'lmstudio',
+      'gemini',
+      'openrouter',
+      'litellm',
+    ]);
+  });
+
+  it('puts cross-platform local runtimes first off macOS', () => {
+    expect(gatewayProvidersForPlatform('linux')).toEqual([
+      'ollama',
+      'lmstudio',
+      'gemini',
+      'openrouter',
+      'litellm',
+    ]);
+    expect(gatewayProvidersForPlatform('win32')).toEqual([
+      'ollama',
+      'lmstudio',
+      'gemini',
+      'openrouter',
+      'litellm',
+    ]);
+  });
+
+  it('documents Apple Intelligence, Ollama, and LM Studio local gateway shapes', () => {
+    expect(litellmExampleForProfile(getGatewayProfile('apple'))).toContain('model: openai/apple_local');
+    expect(litellmExampleForProfile(getGatewayProfile('apple'))).toContain('api_base: http://127.0.0.1:11435/v1');
+    expect(litellmExampleForProfile(getGatewayProfile('ollama'))).toContain('model: ollama_chat/qwen2.5:3b');
+    expect(litellmExampleForProfile(getGatewayProfile('ollama'))).toContain('api_base: http://127.0.0.1:11434');
+    expect(litellmExampleForProfile(getGatewayProfile('lmstudio'))).toContain('api_base: http://127.0.0.1:1234/v1');
   });
 });
