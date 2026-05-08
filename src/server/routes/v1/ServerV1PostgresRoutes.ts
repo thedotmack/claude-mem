@@ -1092,11 +1092,17 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     return { jobs: result.rows, total };
   }
 
-  // Phase 12 — operator retry. Idempotent: a job already in `queued` status
-  // is a no-op (no double enqueue). Cancelled/completed/failed are reset to
-  // queued, locks are cleared, retried_count is bumped in payload metadata
-  // for audit, then re-enqueued. The deterministic BullMQ jobId means a
-  // duplicate transport publish collapses on the queue side too.
+  // Phase 12 — operator retry. Status handling:
+  //   - queued: no-op (idempotent; no double enqueue)
+  //   - processing: 409 — running worker MUST finish or fail naturally
+  //   - completed: 409 — observations index dedupes on (job_id, index,
+  //     content) but LLM output is non-deterministic, so a second run
+  //     would persist a parallel set of observations. Operator must
+  //     create a new generation request instead of retrying.
+  //   - failed/cancelled: reset to queued, clear locks, bump retried_count
+  //     in payload metadata for audit, then re-enqueue. The deterministic
+  //     BullMQ jobId means a duplicate transport publish collapses on the
+  //     queue side too.
   private async retryGenerationJob(
     req: Request,
     res: Response,
@@ -1146,6 +1152,21 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       res.status(409).json({
         error: 'Conflict',
         message: 'Generation job is currently processing; cancel or wait for completion before retrying',
+      });
+      return null;
+    }
+
+    if (current.status === 'completed') {
+      // Refuse retry on already-completed jobs. The deduplication index on
+      // observations (generation_key = job_id + index + content) does NOT
+      // protect against re-running the provider, because LLM output is
+      // non-deterministic and the second run almost always produces a
+      // different content string. Replaying would persist a parallel set
+      // of observations attributed to the same generation_job_id.
+      // cancelGenerationJob applies the same 409 guard for the same reason.
+      res.status(409).json({
+        error: 'Conflict',
+        message: 'Generation job already completed; retrying would duplicate observations',
       });
       return null;
     }
