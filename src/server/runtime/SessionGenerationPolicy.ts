@@ -49,8 +49,8 @@ export function resolveSessionGenerationPolicy(
       ? envPolicy
       : 'per-event');
   const debounceWindowMs = options.debounceWindowMs
-    ?? Number.parseInt(process.env.CLAUDE_MEM_SERVER_SESSION_DEBOUNCE_MS ?? '', 10)
-    ?? DEFAULT_DEBOUNCE_MS;
+    ?? (Number.parseInt(process.env.CLAUDE_MEM_SERVER_SESSION_DEBOUNCE_MS ?? '', 10)
+      || DEFAULT_DEBOUNCE_MS);
   return {
     policy,
     debounceWindowMs: Number.isFinite(debounceWindowMs) && debounceWindowMs > 0

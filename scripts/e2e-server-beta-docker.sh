@@ -17,6 +17,12 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT_NAME="${COMPOSE_PROJECT_NAME:-claude-mem-server-beta-e2e-$(date +%s)}"
 RUN_ID="${E2E_RUN_ID:-$(date +%s)-$RANDOM}"
 COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.e2e.yml)
+# Test-only credentials. docker-compose.yml requires these to be set; the
+# stack will refuse to start without them. The values here are scoped to the
+# ephemeral E2E project namespace and are torn down by the cleanup trap.
+export POSTGRES_USER="${POSTGRES_USER:-claudemem_e2e}"
+export POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-claudemem_e2e}"
+export POSTGRES_DB="${POSTGRES_DB:-claudemem_e2e}"
 COMPOSE=(docker compose -p "$PROJECT_NAME" "${COMPOSE_FILES[@]}")
 SERVER_SCRIPT="/opt/claude-mem/scripts/server-beta-service.cjs"
 # server-beta-service.cjs has its own `server api-key create|list|revoke`

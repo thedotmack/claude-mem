@@ -454,11 +454,21 @@ export class ProviderObservationGenerator {
       return null;
     }
     if (current.status === 'processing') {
-      // Another worker likely picked this up. Stale-lock recovery is a
-      // separate concern (Phase 3 reconciliation owns it). Here we just
-      // proceed and let processGeneratedResponse's terminal-status guard
-      // collapse the duplicate.
-      return current;
+      // Another worker holds the lock — most commonly this fires when BullMQ
+      // redelivers a stalled job to a second worker while the first is still
+      // mid-`provider.generate()`. Returning the row here would cause both
+      // workers to issue the (paid, rate-limited) external provider call,
+      // and the persistence-level terminal-status guard only collapses the
+      // duplicate after the call has already happened. Skip instead. If the
+      // first worker truly died, `reconcileOnStartup` (and the next BullMQ
+      // retry) will resurrect the row.
+      logger.info('SYSTEM', 'generation job already in processing; skipping duplicate worker run', {
+        jobId: current.id,
+        lockedBy: current.lockedBy,
+        lockedAtEpoch: current.lockedAtEpoch,
+        attempts: current.attempts,
+      });
+      return null;
     }
     const transitioned = await repo.transitionStatus({
       id: current.id,

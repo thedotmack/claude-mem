@@ -4,6 +4,13 @@
 #        claude-mem-server (HTTP, no generation) +
 #        claude-mem-worker (BullMQ generation consumer).
 #
+# SECURITY: This file MUST NOT be deployed unmodified to any environment
+# that is reachable from the public internet, including staging behind a
+# VPN where lateral movement is possible. The Postgres credentials are
+# required env vars (no defaults) — start the stack with a `.env` file or
+# inline `POSTGRES_USER=... POSTGRES_PASSWORD=... docker compose up`. The
+# stack will refuse to start if any required secret is missing.
+#
 # The legacy `worker-service.cjs` runtime is NEVER spawned in this stack.
 # `claude-mem-server` runs `server-beta-service.cjs --daemon`; the
 # `claude-mem-worker` service runs `server-beta-service.cjs worker start`
@@ -16,18 +23,23 @@
 #   CLAUDE_MEM_SERVER_DATABASE_URL=postgres://...
 #   CLAUDE_MEM_REDIS_URL=redis://valkey:6379
 #   CLAUDE_MEM_AUTH_MODE=api-key   (local-dev is REJECTED inside Docker)
+#
+# Required secrets (no defaults — must be supplied in env or .env):
+#   POSTGRES_USER
+#   POSTGRES_PASSWORD
+#   POSTGRES_DB
 
 services:
   postgres:
     image: postgres:17-alpine
     environment:
-      POSTGRES_USER: claudemem
-      POSTGRES_PASSWORD: claudemem
-      POSTGRES_DB: claudemem
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U claudemem -d claudemem"]
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 5s
       timeout: 3s
       retries: 12
@@ -76,7 +88,7 @@ services:
       CLAUDE_MEM_QUEUE_ENGINE: bullmq
       CLAUDE_MEM_REDIS_URL: redis://valkey:6379
       CLAUDE_MEM_REDIS_MODE: docker
-      CLAUDE_MEM_SERVER_DATABASE_URL: postgres://claudemem:claudemem@postgres:5432/claudemem
+      CLAUDE_MEM_SERVER_DATABASE_URL: postgres://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:?POSTGRES_DB is required}
       CLAUDE_MEM_AUTH_MODE: api-key
       CLAUDE_MEM_CHROMA_ENABLED: "false"
       # The HTTP service does not consume BullMQ jobs; the worker container
@@ -112,7 +124,7 @@ services:
       CLAUDE_MEM_QUEUE_ENGINE: bullmq
       CLAUDE_MEM_REDIS_URL: redis://valkey:6379
       CLAUDE_MEM_REDIS_MODE: docker
-      CLAUDE_MEM_SERVER_DATABASE_URL: postgres://claudemem:claudemem@postgres:5432/claudemem
+      CLAUDE_MEM_SERVER_DATABASE_URL: postgres://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:?POSTGRES_DB is required}
       CLAUDE_MEM_AUTH_MODE: api-key
       CLAUDE_MEM_CHROMA_ENABLED: "false"
       # Provider configuration. ANTHROPIC_API_KEY (or

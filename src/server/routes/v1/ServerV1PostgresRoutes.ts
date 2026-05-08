@@ -54,6 +54,46 @@ const EVENT_QUERY_SCHEMA = z.object({
   wait: z.union([z.literal('true'), z.literal('false')]).optional(),
 });
 
+// `?wait=true` polls the outbox row until it reaches a terminal status
+// (`completed` / `failed` / `cancelled`). Hard-capped so a stuck provider can
+// never block an HTTP worker indefinitely; callers always get a response.
+const WAIT_TIMEOUT_MS = 30_000;
+const WAIT_POLL_INTERVAL_MS = 100;
+const TERMINAL_JOB_STATUSES: readonly PostgresObservationGenerationJob['status'][] = [
+  'completed',
+  'failed',
+  'cancelled',
+];
+
+async function waitForTerminalJob(
+  jobRepo: PostgresObservationGenerationJobRepository,
+  job: PostgresObservationGenerationJob,
+  timeoutMs: number = WAIT_TIMEOUT_MS,
+  intervalMs: number = WAIT_POLL_INTERVAL_MS,
+): Promise<{ job: PostgresObservationGenerationJob; timedOut: boolean }> {
+  if (TERMINAL_JOB_STATUSES.includes(job.status)) {
+    return { job, timedOut: false };
+  }
+  const deadline = Date.now() + timeoutMs;
+  let current = job;
+  while (Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, intervalMs));
+    const refreshed = await jobRepo.getByIdForScope({
+      id: job.id,
+      projectId: job.projectId,
+      teamId: job.teamId,
+    });
+    if (!refreshed) {
+      return { job: current, timedOut: false };
+    }
+    current = refreshed;
+    if (TERMINAL_JOB_STATUSES.includes(refreshed.status)) {
+      return { job: refreshed, timedOut: false };
+    }
+  }
+  return { job: current, timedOut: true };
+}
+
 export class ServerV1PostgresRoutes implements RouteHandler {
   private readonly ingestEvents: IngestEventsService;
   private readonly endSession: EndSessionService;
@@ -157,9 +197,18 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       });
 
       if (wait) {
+        let resolved = outbox;
+        let waitTimedOut = false;
+        if (outbox) {
+          const jobRepo = new PostgresObservationGenerationJobRepository(this.options.pool);
+          const result = await waitForTerminalJob(jobRepo, outbox);
+          resolved = result.job;
+          waitTimedOut = result.timedOut;
+        }
         res.status(201).json({
           event: serializeEvent(event),
-          generationJob: outbox ? serializeJobStatusResponse(outbox, enqueueState) : null,
+          generationJob: resolved ? serializeJobStatusResponse(resolved, enqueueState) : null,
+          ...(waitTimedOut ? { waitTimedOut: true } : {}),
         });
         return;
       }
@@ -222,13 +271,28 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       });
 
       if (wait) {
+        const jobRepo = new PostgresObservationGenerationJobRepository(this.options.pool);
+        const waitDeadline = Date.now() + WAIT_TIMEOUT_MS;
+        const resolved: { event: PostgresAgentEvent; outbox: PostgresObservationGenerationJob | null; timedOut: boolean }[] = [];
+        for (const item of inserted) {
+          if (!item.outbox) {
+            resolved.push({ event: item.event, outbox: null, timedOut: false });
+            continue;
+          }
+          const remaining = Math.max(0, waitDeadline - Date.now());
+          const result = await waitForTerminalJob(jobRepo, item.outbox, remaining);
+          resolved.push({ event: item.event, outbox: result.job, timedOut: result.timedOut });
+        }
+        const anyTimedOut = resolved.some(r => r.timedOut);
         res.status(201).json({
-          events: inserted.map(({ event, outbox }, index) => ({
+          events: resolved.map(({ event, outbox, timedOut }, index) => ({
             event: serializeEvent(event),
             generationJob: outbox
               ? serializeJobStatusResponse(outbox, enqueueResults[index]!)
               : null,
+            ...(timedOut ? { waitTimedOut: true } : {}),
           })),
+          ...(anyTimedOut ? { waitTimedOut: true } : {}),
         });
         return;
       }
@@ -1630,9 +1694,10 @@ function serializeGenerationJob(
   };
 }
 
-// `?wait=true` returns ONLY queue-acceptance / job-status. It MUST NOT include
-// observation IDs or claim provider generation succeeded — generation is
-// asynchronous and Phase 4 does not run providers.
+// `?wait=true` polls the outbox row until it reaches a terminal status
+// (or hits WAIT_TIMEOUT_MS). The serialized payload reports `status`,
+// `attempts`, and `lastError`-equivalents on the outbox row itself; the
+// caller queries the observations endpoints to fetch the actual content.
 function serializeJobStatusResponse(
   job: PostgresObservationGenerationJob,
   enqueueState: 'enqueued' | 'queued_only' | 'skipped',

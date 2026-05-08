@@ -430,6 +430,20 @@ export async function runServerBetaApiKeyCli(argv: string[]): Promise<void> {
     }
 
     if (sub === 'list') {
+      // Bound the result set to prevent unintentional cross-tenant key
+      // metadata disclosure when an admin runs `api-key list` on a shared
+      // host. Default page is 100; --team filters to a single tenant.
+      const teamFilter = options.team ?? null;
+      const limitArg = Number.parseInt(options.limit ?? '100', 10);
+      const offsetArg = Number.parseInt(options.offset ?? '0', 10);
+      const limit = Number.isFinite(limitArg) && limitArg > 0 && limitArg <= 500
+        ? limitArg
+        : 100;
+      const offset = Number.isFinite(offsetArg) && offsetArg >= 0 ? offsetArg : 0;
+      const where = teamFilter ? 'WHERE team_id = $1' : '';
+      const params: unknown[] = teamFilter ? [teamFilter, limit, offset] : [limit, offset];
+      const limitIdx = teamFilter ? 2 : 1;
+      const offsetIdx = teamFilter ? 3 : 2;
       const result = await pool.query<{
         id: string;
         team_id: string | null;
@@ -442,18 +456,27 @@ export async function runServerBetaApiKeyCli(argv: string[]): Promise<void> {
       }>(
         `SELECT id, team_id, project_id, scopes, revoked_at, expires_at, last_used_at, created_at
          FROM api_keys
-         ORDER BY created_at DESC`,
+         ${where}
+         ORDER BY created_at DESC
+         LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
+        params,
       );
-      console.log(JSON.stringify(result.rows.map(row => ({
-        id: row.id,
-        teamId: row.team_id,
-        projectId: row.project_id,
-        scopes: row.scopes,
-        status: row.revoked_at ? 'revoked' : 'active',
-        lastUsedAt: row.last_used_at?.toISOString() ?? null,
-        expiresAt: row.expires_at?.toISOString() ?? null,
-        createdAt: row.created_at.toISOString(),
-      })), null, 2));
+      console.log(JSON.stringify({
+        teamId: teamFilter,
+        limit,
+        offset,
+        count: result.rows.length,
+        keys: result.rows.map(row => ({
+          id: row.id,
+          teamId: row.team_id,
+          projectId: row.project_id,
+          scopes: row.scopes,
+          status: row.revoked_at ? 'revoked' : 'active',
+          lastUsedAt: row.last_used_at?.toISOString() ?? null,
+          expiresAt: row.expires_at?.toISOString() ?? null,
+          createdAt: row.created_at.toISOString(),
+        })),
+      }, null, 2));
       return;
     }
 
