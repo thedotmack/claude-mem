@@ -195,6 +195,26 @@ describe('handleGeneratorExit recoverable exits', () => {
     expect(sessionManager.getSession).toHaveBeenCalledWith(42);
     expect(restartGenerator).toHaveBeenCalledWith(session, 'pending-work-restart');
   });
+
+  it('ignores stale respawn timers after the session object has been replaced', async () => {
+    jest.useFakeTimers();
+    const session = createSession();
+    const replacementSession = createSession();
+    replacementSession.generatorPromise = null;
+    const { deps, pendingStore, completionHandler, sessionManager, restartGenerator } = createDeps(1, replacementSession);
+
+    await handleGeneratorExit(session, 'idle', deps);
+
+    expect(pendingStore.getPendingCount).toHaveBeenCalledWith(42);
+    expect(pendingStore.clearPendingForSession).not.toHaveBeenCalled();
+    expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
+    expect(sessionManager.removeSessionImmediate).not.toHaveBeenCalled();
+
+    jest.advanceTimersByTime(1000);
+
+    expect(sessionManager.getSession).toHaveBeenCalledWith(42);
+    expect(restartGenerator).not.toHaveBeenCalled();
+  });
 });
 
 describe('handleGeneratorExit recovery count failures', () => {

@@ -111,6 +111,13 @@ export async function handleGeneratorExit(
     session.respawnTimer = setTimeout(() => {
       session.respawnTimer = undefined;
       const stillExists = deps.sessionManager.getSession(sessionDbId);
+      if (stillExists && stillExists !== session) {
+        logger.info('SESSION', 'Skipping stale respawn timer for replaced session object', {
+          sessionId: sessionDbId,
+          reason
+        });
+        return;
+      }
       if (stillExists && !stillExists.generatorPromise) {
         try {
           restartGenerator(stillExists, 'pending-work-restart');
