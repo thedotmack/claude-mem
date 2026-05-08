@@ -298,6 +298,48 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       res.json({ event: serializeEvent(fullEvent) });
     }));
 
+    // GET /v1/events/:id/observations — list observations linked to event via observation_sources.
+    // Scope is enforced by joining observations.team_id = $teamId and the
+    // event ownership check before any rows are returned. Cross-tenant
+    // requests are reported as 404 to avoid revealing existence.
+    app.get('/v1/events/:id/observations', readAuth, this.asyncHandler(async (req, res) => {
+      const teamId = this.requireTeamId(req, res);
+      if (!teamId) return;
+      const id = this.routeParam(req.params.id);
+
+      const eventResult = await this.options.pool.query(
+        `SELECT id, project_id FROM agent_events WHERE id = $1 AND team_id = $2`,
+        [id, teamId],
+      );
+      const eventRow = eventResult.rows[0] as undefined | { id: string; project_id: string };
+      if (!eventRow) {
+        res.status(404).json({ error: 'NotFound', message: 'Event not found' });
+        return;
+      }
+      if (!this.ensureProjectAllowed(req, res, eventRow.project_id)) return;
+
+      const obsResult = await this.options.pool.query(
+        `
+          SELECT o.id, o.project_id, o.team_id, o.server_session_id, o.kind, o.content,
+                 o.metadata, o.generation_key, o.created_by_job_id, o.created_at, o.updated_at,
+                 os.id AS source_id_pk, os.source_type, os.source_id, os.generation_job_id, os.created_at AS source_created_at
+          FROM observation_sources os
+          INNER JOIN observations o ON o.id = os.observation_id
+          WHERE os.source_type = 'agent_event'
+            AND os.source_id = $1
+            AND o.team_id = $2
+            AND o.project_id = $3
+          ORDER BY o.created_at ASC
+        `,
+        [eventRow.id, teamId, eventRow.project_id],
+      );
+
+      res.json({
+        eventId: eventRow.id,
+        observations: obsResult.rows.map(serializeObservationWithSource),
+      });
+    }));
+
     // GET /v1/jobs/:id — generation job status, scoped to team/project
     app.get('/v1/jobs/:id', readAuth, this.asyncHandler(async (req, res) => {
       const teamId = this.requireTeamId(req, res);
@@ -599,6 +641,48 @@ function serializeObservation(observation: {
     metadata: observation.metadata,
     createdAtEpoch: observation.createdAtEpoch,
     updatedAtEpoch: observation.updatedAtEpoch,
+  };
+}
+
+interface ObservationWithSourceRow {
+  id: string;
+  project_id: string;
+  team_id: string;
+  server_session_id: string | null;
+  kind: string;
+  content: string;
+  metadata: unknown;
+  generation_key: string | null;
+  created_by_job_id: string | null;
+  created_at: Date;
+  updated_at: Date;
+  source_id_pk: string;
+  source_type: string;
+  source_id: string;
+  generation_job_id: string | null;
+  source_created_at: Date;
+}
+
+function serializeObservationWithSource(row: ObservationWithSourceRow): Record<string, unknown> {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    teamId: row.team_id,
+    serverSessionId: row.server_session_id,
+    kind: row.kind,
+    content: row.content,
+    metadata: row.metadata && typeof row.metadata === 'object' ? row.metadata : {},
+    generationKey: row.generation_key,
+    createdByJobId: row.created_by_job_id,
+    createdAtEpoch: new Date(row.created_at).getTime(),
+    updatedAtEpoch: new Date(row.updated_at).getTime(),
+    source: {
+      id: row.source_id_pk,
+      sourceType: row.source_type,
+      sourceId: row.source_id,
+      generationJobId: row.generation_job_id,
+      createdAtEpoch: new Date(row.source_created_at).getTime(),
+    },
   };
 }
 

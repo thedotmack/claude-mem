@@ -5,6 +5,11 @@ import { bootstrapServerBetaPostgresSchema } from '../../storage/postgres/schema
 import type { PostgresPool } from '../../storage/postgres/pool.js';
 import { getRedisQueueConfig } from '../queue/redis-config.js';
 import { ActiveServerBetaQueueManager } from './ActiveServerBetaQueueManager.js';
+import { ActiveServerBetaGenerationWorkerManager } from './ActiveServerBetaGenerationWorkerManager.js';
+import { ClaudeObservationProvider } from '../generation/providers/ClaudeObservationProvider.js';
+import { GeminiObservationProvider } from '../generation/providers/GeminiObservationProvider.js';
+import { OpenRouterObservationProvider } from '../generation/providers/OpenRouterObservationProvider.js';
+import type { ServerGenerationProvider } from '../generation/providers/shared/types.js';
 import { ServerBetaService } from './ServerBetaService.js';
 import {
   DisabledServerBetaEventBroadcaster,
@@ -13,6 +18,7 @@ import {
   DisabledServerBetaQueueManager,
   type ServerBetaAuthMode,
   type ServerBetaBootstrapStatus,
+  type ServerBetaGenerationWorkerManager,
   type ServerBetaQueueManager,
   type ServerBetaServiceGraph,
 } from './types.js';
@@ -22,6 +28,9 @@ export interface CreateServerBetaServiceOptions {
   authMode?: ServerBetaAuthMode;
   bootstrapSchema?: boolean;
   queueManager?: ServerBetaQueueManager;
+  // Phase 5 seam: tests can inject a fake provider without env config.
+  generationProvider?: ServerGenerationProvider;
+  generationWorkerManager?: ServerBetaGenerationWorkerManager;
 }
 
 export async function createServerBetaService(
@@ -29,6 +38,9 @@ export async function createServerBetaService(
 ): Promise<ServerBetaService> {
   const pool = options.pool ?? getSharedPostgresPool({ requireDatabaseUrl: true });
   const bootstrap = await initializePostgres(pool, options.bootstrapSchema ?? true);
+  const queueManager = options.queueManager ?? buildQueueManager();
+  const generationWorkerManager = options.generationWorkerManager
+    ?? buildGenerationWorkerManager(pool, queueManager, options.generationProvider);
   const graph: ServerBetaServiceGraph = {
     runtime: 'server-beta',
     postgres: {
@@ -36,14 +48,72 @@ export async function createServerBetaService(
       bootstrap,
     },
     authMode: options.authMode ?? parseAuthMode(process.env.CLAUDE_MEM_AUTH_MODE),
-    queueManager: options.queueManager ?? buildQueueManager(),
-    generationWorkerManager: new DisabledServerBetaGenerationWorkerManager('Phase 2 boundary only; generation workers are not wired.'),
-    providerRegistry: new DisabledServerBetaProviderRegistry('Phase 2 boundary only; provider-backed generation is not wired.'),
+    queueManager,
+    generationWorkerManager,
+    providerRegistry: new DisabledServerBetaProviderRegistry('Phase 5 keeps the provider registry boundary as inert; per-call providers are owned by the generation worker manager.'),
     eventBroadcaster: new DisabledServerBetaEventBroadcaster('Phase 2 boundary only; SSE/event broadcasting is not wired.'),
     storage: createPostgresStorageRepositories(pool),
   };
 
+  if (generationWorkerManager instanceof ActiveServerBetaGenerationWorkerManager) {
+    generationWorkerManager.start();
+  }
+
   return new ServerBetaService({ graph });
+}
+
+function buildGenerationWorkerManager(
+  pool: PostgresPool,
+  queueManager: ServerBetaQueueManager,
+  injectedProvider?: ServerGenerationProvider,
+): ServerBetaGenerationWorkerManager {
+  if (!(queueManager instanceof ActiveServerBetaQueueManager)) {
+    return new DisabledServerBetaGenerationWorkerManager(
+      'queue manager is disabled; set CLAUDE_MEM_QUEUE_ENGINE=bullmq to enable provider generation.',
+    );
+  }
+  const provider = injectedProvider ?? buildServerGenerationProviderFromEnv();
+  if (!provider) {
+    return new DisabledServerBetaGenerationWorkerManager(
+      'no server generation provider configured; set CLAUDE_MEM_SERVER_PROVIDER and the matching API key to enable.',
+    );
+  }
+  return new ActiveServerBetaGenerationWorkerManager({
+    pool,
+    queueManager,
+    provider,
+  });
+}
+
+function buildServerGenerationProviderFromEnv(): ServerGenerationProvider | null {
+  const provider = (process.env.CLAUDE_MEM_SERVER_PROVIDER ?? '').trim().toLowerCase();
+  if (!provider) return null;
+  try {
+    if (provider === 'claude' || provider === 'anthropic') {
+      const apiKey = process.env.ANTHROPIC_API_KEY ?? process.env.CLAUDE_MEM_ANTHROPIC_API_KEY ?? '';
+      if (!apiKey) return null;
+      const opts: { apiKey: string; model?: string } = { apiKey };
+      if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
+      return new ClaudeObservationProvider(opts);
+    }
+    if (provider === 'gemini') {
+      const apiKey = process.env.GEMINI_API_KEY ?? process.env.CLAUDE_MEM_GEMINI_API_KEY ?? '';
+      if (!apiKey) return null;
+      const opts: { apiKey: string; model?: string } = { apiKey };
+      if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
+      return new GeminiObservationProvider(opts);
+    }
+    if (provider === 'openrouter') {
+      const apiKey = process.env.OPENROUTER_API_KEY ?? process.env.CLAUDE_MEM_OPENROUTER_API_KEY ?? '';
+      if (!apiKey) return null;
+      const opts: { apiKey: string; model?: string } = { apiKey };
+      if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
+      return new OpenRouterObservationProvider(opts);
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 // Queue manager selection is fail-fast on misconfiguration. If the user
