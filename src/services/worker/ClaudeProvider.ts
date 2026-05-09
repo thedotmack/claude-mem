@@ -28,6 +28,19 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { ClassifiedProviderError } from './provider-errors.js';
 
 /**
+ * Module-scoped guard so the "effort parameter" hint only fires once per
+ * worker process. The underlying cause (a leaked CLAUDE_CODE_EFFORT_LEVEL in
+ * ~/.claude-mem/.env, see #2357) is environmental — re-logging it on every
+ * SDK call would spam the logs without adding signal.
+ *
+ * Exported solely for tests to reset the latch between cases.
+ */
+let effortHintLogged = false;
+export function __resetEffortHintLatchForTesting(): void {
+  effortHintLogged = false;
+}
+
+/**
  * Classify a ClaudeProvider error (executable spawn failures, SDK errors,
  * Anthropic API errors). Provider-specific because it relies on:
  *   - SDK error class names (e.g. OverloadedError) when present
@@ -36,7 +49,7 @@ import { ClassifiedProviderError } from './provider-errors.js';
  */
 export function classifyClaudeError(err: unknown): ClassifiedProviderError {
   const message = err instanceof Error ? err.message : String(err);
-  const errAny = err as { name?: string; status?: number; error?: { type?: string } };
+  const errAny = err as { name?: string; status?: number; error?: { type?: string }; body?: unknown };
 
   // Executable / spawn issues — unrecoverable, no point retrying.
   if (
@@ -86,6 +99,39 @@ export function classifyClaudeError(err: unknown): ClassifiedProviderError {
     message.includes('context window')
   ) {
     return new ClassifiedProviderError(message, { kind: 'unrecoverable', cause: err });
+  }
+
+  // HTTP 400 from the Anthropic SDK — bad request, never recoverable. Mirrors
+  // the pattern in GeminiProvider.classifyGeminiError / classifyOpenRouterError
+  // (see #2357: the SDK forwards `effort` to the Messages API when
+  // CLAUDE_CODE_EFFORT_LEVEL leaks into the subprocess env, and models like
+  // Haiku/Sonnet 4.5 reject with 400 — without this branch the default
+  // `transient` classification retried indefinitely).
+  if (errAny.status === 400) {
+    // Inspect both the message and any structured body for the effort marker.
+    const bodyText = (() => {
+      const body = errAny.body;
+      if (typeof body === 'string') return body;
+      if (body && typeof body === 'object') {
+        try { return JSON.stringify(body); } catch { return ''; }
+      }
+      return '';
+    })();
+    const haystack = `${message}\n${bodyText}`;
+    if (/effort parameter/i.test(haystack) && !effortHintLogged) {
+      effortHintLogged = true;
+      logger.warn(
+        'SDK',
+        'Anthropic API rejected request with HTTP 400: this model does not support the `effort` parameter. ' +
+          'CLAUDE_CODE_EFFORT_LEVEL is likely leaking into the SDK subprocess env via ~/.claude-mem/.env — ' +
+          'remove it or scope it to models that support effort. See https://github.com/thedotmack/claude-mem/issues/2357.',
+        { status: 400 }
+      );
+    }
+    return new ClassifiedProviderError(
+      message || 'Anthropic bad request (status 400)',
+      { kind: 'unrecoverable', cause: err },
+    );
   }
 
   // Server errors → transient.
