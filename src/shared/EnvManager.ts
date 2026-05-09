@@ -17,6 +17,10 @@ const BLOCKED_ENV_VARS = [
                              // shell would otherwise short-circuit OAuth lookup at spawn time.
                              // The fresh token from ~/.claude-mem/.env is re-injected below
                              // when explicit gateway credentials are configured.
+  'ANTHROPIC_BASE_URL',      // Issue #2375: same leak class as AUTH_TOKEN. A leaked BASE_URL
+                             // alone (no token) was enough to trigger the OAuth-skip path,
+                             // sending the subprocess to a proxy with no credentials.
+                             // Re-injected from ~/.claude-mem/.env when configured.
   'CLAUDECODE',              // Prevent "cannot be launched inside another Claude Code session" error
   'CLAUDE_CODE_OAUTH_TOKEN', // Issue #2215: prevent stale parent-process token from leaking into
                              // isolated env. The fresh token is read from the keychain at spawn
@@ -230,15 +234,17 @@ export async function buildIsolatedEnvWithFreshOAuth(
 
   if (!includeCredentials) return isolatedEnv;
 
-  // If the user already configured explicit Anthropic/gateway credentials in
-  // ~/.claude-mem/.env, honor those and skip OAuth lookup entirely. A bare
-  // ANTHROPIC_BASE_URL counts because gateways may be tokenless, and falling
-  // back to OAuth would silently route requests to api.anthropic.com.
-  if (
-    isolatedEnv.ANTHROPIC_API_KEY ||
-    isolatedEnv.ANTHROPIC_BASE_URL ||
-    isolatedEnv.ANTHROPIC_AUTH_TOKEN
-  ) {
+  // Custom gateway: never inject OAuth (would leak the user's Anthropic OAuth
+  // token to a third-party gateway). The user must explicitly configure a
+  // gateway-appropriate token in ~/.claude-mem/.env if their gateway requires
+  // one. A bare BASE_URL with no token = tokenless gateway (e.g. mTLS at the
+  // network boundary).
+  if (isolatedEnv.ANTHROPIC_BASE_URL) {
+    clearStaleMarker();
+    return isolatedEnv;
+  }
+  // Direct API with explicit credentials: skip OAuth lookup.
+  if (isolatedEnv.ANTHROPIC_API_KEY || isolatedEnv.ANTHROPIC_AUTH_TOKEN) {
     clearStaleMarker();
     return isolatedEnv;
   }
