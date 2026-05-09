@@ -1,11 +1,13 @@
 ---
 name: weekly-digests
-description: Generate a serial week-by-week narrative digest of a project's full claude-mem timeline. Splits the timeline into per-ISO-week files, then runs one consecutive subagent per week — each receiving the prior week's carry-forward block — to produce a 30-ish-chapter narrative arc. Use when asked for "weekly digests", "week-by-week story", "serial timeline", or "narrative chapters" of a project's history.
+description: Generate a serial week-by-week narrative digest of a project's full claude-mem timeline. Splits the timeline into per-ISO-week files, then runs one consecutive subagent per week — each receiving the prior week's carry-forward block — to produce one chapter per ISO week of data. Use when asked for "weekly digests", "week-by-week story", "serial timeline", or "narrative chapters" of a project's history.
 ---
 
 # Weekly Digests
 
-Produce a serial, multi-chapter narrative digest of a project's complete claude-mem history. Differs from `timeline-report` (one long report) — this generates one digest *per ISO week*, with each subagent reading the prior week's carry-forward block so the story stays coherent across all 30+ chapters.
+Produce a serial, multi-chapter narrative digest of a project's complete claude-mem history. Differs from `timeline-report` (one long report) — this generates one digest *per ISO week*, with each subagent reading the prior week's carry-forward block so the story stays coherent.
+
+**The chapter count equals the number of ISO weeks the timeline covers.** A project with 2 weeks of data produces 2 chapters; one with 30 weeks produces 30. There is no fixed length — count the weeks first, then drive the pipeline off that count.
 
 ## When to Use
 
@@ -23,7 +25,7 @@ If the user wants a single sweeping report, use `timeline-report` instead. This 
 ## Prerequisites
 
 - claude-mem worker running
-- Project has at least a few weeks of observations
+- Project has at least one ISO week of observations (the pipeline degenerates gracefully — even N=1 works)
 - A clean output directory the user is comfortable writing into
 
 **Resolve the worker port** (do this once, reuse `$WORKER_PORT`):
@@ -69,18 +71,18 @@ Write a Python script to `.scratch/split-timeline.py` that:
 3. Emits one file per week to `docs/timeline-weeks/<YYYY>-W<NN>-<MonDD>-to-<MonDD>.md`, preserving each day's section verbatim.
 4. Runs a dual-pass sanity check: total observations distributed must equal the count in the source file.
 
-Output structure:
+Output structure (filenames illustrative):
 
 ```
 docs/timeline-weeks/
-  README.md                                   # weekly index table
-  2025-W42-Oct-13-to-Oct-19.md
-  2025-W43-Oct-20-to-Oct-26.md
+  README.md                       # weekly index table
+  YYYY-W<NN>-MonDD-to-MonDD.md    # one per ISO week the timeline covers
   ...
-  2026-W19-May-04-to-May-10.md
 ```
 
 Each weekly file should preserve the original daily sections verbatim. Do not paraphrase at this stage — the digest agents need raw fidelity.
+
+**Count the resulting files** before launching the pipeline. That count is `TOTAL` and drives every subsequent step. Empty weeks (zero observations between active weeks) should be skipped — the pipeline only operates on weeks that have content.
 
 ### Step 4: Build the Weekly Index README
 
@@ -88,7 +90,7 @@ Write `docs/timeline-weeks/README.md` with a markdown table: Week | Dates | Obse
 
 ### Step 5: Run the Consecutive Subagent Pipeline
 
-**Critical: subagents run sequentially, NOT in parallel.** Each agent receives the prior agent's carry-forward block. This is the entire point of the skill — without it you have 30 disjoint summaries; with it you have a 30-chapter serial narrative.
+**Critical: subagents run sequentially, NOT in parallel.** Each agent receives the prior agent's carry-forward block. This is the entire point of the skill — without it you have N disjoint summaries; with it you have an N-chapter serial narrative.
 
 Create the output directory:
 
@@ -101,7 +103,7 @@ For each week, in chronological order, dispatch a Task subagent (general-purpose
 #### Subagent Prompt Template
 
 ```
-You are writing Week {N} of a {TOTAL}-part serial narrative digest of the {PROJECT} project's development history. Weeks 1 through {N-1} are written. {SPECIAL_NOTE: e.g. "This is the LARGEST week", "This is the TROUGH", "This is the FINAL week"}.
+You are writing chapter {N} of {TOTAL} in a serial week-by-week digest of the {PROJECT} project's development history. Chapters 1 through {N-1} are written. {SPECIAL_NOTE: e.g. "This is the LARGEST week", "This is the TROUGH", "This is the FINAL chapter", "This is the ONLY chapter — both first AND final week"}.
 
 **Source file (read in full):**
 {ABSOLUTE_PATH_TO_WEEK_FILE}
@@ -141,10 +143,10 @@ Required carry-forward sub-sections:
 **Tone rules:**
 - Third-person narrator, sharp, observational. Not twee.
 - AI is "Claude"; human is "{USER_FIRST_NAME}".
-- Treat codebase components as characters (the worker, PM2, the parser, the project filter, etc.).
+- Treat codebase components as characters — whatever the project's recurring named systems are (e.g. a worker, a queue, a process manager, a recurring bug, a flaky migration). Don't import names from another project; use what shows up in this project's observations.
 - Don't manufacture drama. Name what's there.
 - Track the user's prompt-register evolution week by week (frustration markers, escalation language, shifts in tone).
-- Note meta-recursion (memory tool failing to remember, documenting itself, fabricating its own work).
+- Note meta-recursion if the project is reflexive about its own behavior (e.g. a tool that documents its own work, an AI agent debugging itself, a system that catches its own regressions).
 - Watch for new villains or co-stars and name them.
 - For trough/silent weeks: silence IS the story. Don't pad. Name what didn't happen.
 - For surge weeks (>2,000 obs): pick 4-7 spine arcs and tell them well. Don't catalog.
@@ -179,32 +181,39 @@ For Week 1, pass an empty `STORY_SO_FAR_BLOCK` and an instruction noting it's th
 
 The final week gets a different ending: **no carry-forward block**. Instead, instruct the agent to write a `## Where We Are` section (~250 words) naming what's still open at the moment of writing. Tell the agent the project is ongoing — the digest stops; the story doesn't. Don't give the story a false ending.
 
+#### When N = 1 (single-week project)
+
+Apply BOTH treatments to the same chapter: empty `STORY_SO_FAR_BLOCK` AND `## Where We Are` instead of a carry-forward block. The agent is writing both the origin and the close in one pass. Don't reference prior or future chapters that don't exist.
+
 ### Step 6: Rename Files for Sortable Order
 
-The agents write digests with names like `2025-W42-digest.md` through `2026-W19-digest.md`. These already sort chronologically by ISO week, but **add a zero-padded numeric prefix** so the order is unambiguous to humans browsing or scripting against the directory:
+The agents write digests with names like `YYYY-W<NN>-digest.md`. These already sort chronologically by ISO week (until a project crosses a year boundary inside one project name), but **add a zero-padded numeric prefix** so the order is unambiguous to humans browsing or scripting against the directory:
 
 ```bash
 cd docs/timeline-weeks/digests
+total=$(ls *.md | wc -l | tr -d ' ')
+width=${#total}                  # 1 for N<10, 2 for N<100, 3 for N<1000
+[ "$width" -lt 2 ] && width=2    # always pad to at least 2 for readability
 i=0
 for f in *.md; do
-  printf -v prefix "%02d" $i
+  printf -v prefix "%0${width}d" $i
   mv "$f" "${prefix}-$f"
   i=$((i+1))
 done
 ```
 
-Result: `00-2025-W42-digest.md` through `29-2026-W19-digest.md`. **Always zero-pad** — `1-...md` and `10-...md` sort wrong without it.
+Result for N=30: `00-...md` through `29-...md`. For N=4: `00-...md` through `03-...md`. For N=120: `000-...md` through `119-...md`. **Always zero-pad** — `1-...md` and `10-...md` sort wrong without it.
 
 Do NOT also prepend the order number to the digest title line inside each file. The filename prefix is for sorting; the title stays clean: `# Week N (W##): Date — Subtitle`.
 
 ### Step 7: Report Completion
 
 Tell the user:
-- Total weeks digested
+- Total weeks digested (N)
 - Output directory path
 - Date range covered
 - Any silent/trough weeks worth flagging
-- A one-sentence capstone summarizing the 30-chapter arc (e.g. "From an empty save hook on Oct 18 to a multi-tenant server on May 9, the project compressed N observations of its own work into the very memory it was built to keep.")
+- A one-sentence capstone summarizing the arc — written by the final-chapter agent, or composed by the operator from the final agent's `## Where We Are` section.
 
 ## Pipeline Discipline
 
@@ -212,10 +221,10 @@ These rules emerged from running the pipeline end-to-end. Encode them every time
 
 1. **Sequential, not parallel.** The whole point is the carry-forward chain. Parallelism breaks it.
 2. **Carry-forward is bounded.** It will bloat without active pruning. Tell every agent: cap ~350 words, drop dormant arcs, drop absent cast.
-3. **Track register evolution explicitly.** The user's prompt-style across weeks is a story arc. Frustration markers ("did you receive context?", "stupidity score", "ultrathink", raw profanity) shift over time. Name the shifts.
-4. **Treat components as characters.** The Project Filter, the Activity Indicator, the Reaper, the Try-Catch — these are villains and co-stars. Stable cast across weeks builds narrative coherence.
+3. **Track register evolution explicitly.** The user's prompt-style across weeks is a story arc. Frustration markers shift over time (whatever they happen to be in this project's data). Name the shifts.
+4. **Treat components as characters.** Whatever recurring named systems show up in the observations are this project's villains and co-stars. Stable cast across weeks builds narrative coherence.
 5. **Honor silence.** Trough weeks (10–100 obs) are real chapters. Name what didn't happen. Don't pad.
-6. **Don't manufacture drama.** Just observe the data. The recursion (a memory tool documenting its own forgetting) IS the drama; you don't need to add more.
+6. **Don't manufacture drama.** Just observe the data. If the project is reflexive, the recursion is the drama; you don't need to add more.
 7. **Final week: no false ending.** The digest stops; the project doesn't. Write `## Where We Are`, not "the end."
 
 ## Error Handling
@@ -226,14 +235,28 @@ These rules emerged from running the pipeline end-to-end. Encode them every time
 - **One agent fails mid-pipeline**: retry that week with the same carry-forward. Don't skip — the chain breaks.
 - **Carry-forward growing past ~500 words**: tighten the discipline instruction in subsequent prompts. Force pruning explicitly.
 
-## Example
+## Examples
 
-User: "Make weekly digests for claude-mem from beginning to end"
+### Long-running project (~30 weeks)
 
-1. Resolve worker port, detect parent project = `claude-mem`.
-2. Fetch full timeline → `.scratch/cm-timeline.md` (~44,685 obs, ~3.5 MB).
-3. Run `.scratch/split-timeline.py` → 30 weekly files in `docs/timeline-weeks/`.
+User: "Make weekly digests for [project] from beginning to end"
+
+1. Resolve worker port, detect project name.
+2. Fetch full timeline → `.scratch/cm-timeline.md`.
+3. Run `.scratch/split-timeline.py` → N weekly files in `docs/timeline-weeks/` (e.g. 30).
 4. Generate `docs/timeline-weeks/README.md` index.
-5. Launch 30 subagents consecutively, one per week. Each gets the prior week's carry-forward.
-6. Rename digests to `00-...` through `29-...` for sortability.
-7. Report: "30 weekly digests written to `docs/timeline-weeks/digests/`. Date range Oct 13 2025 – May 10 2026. Trough at week 14 (40 obs); peak at week 8 (5,009 obs). Capstone: …"
+5. Launch N subagents consecutively, one per week. Each gets the prior week's carry-forward. The first chapter starts with empty carry-forward; the final chapter writes `## Where We Are` instead of a carry-forward block.
+6. Rename digests with zero-padded order prefix (`00-...md` through `29-...md`).
+7. Report total chapters, date range, any troughs/peaks, and the one-line capstone the final agent produced.
+
+### Short-lived project (~3 weeks)
+
+Same flow, just smaller. N=3, so:
+- Chapter 1: empty carry-forward, establish cast/tone/arcs.
+- Chapter 2: receives chapter 1's carry-forward, builds on it.
+- Chapter 3: receives chapter 2's carry-forward, BUT gets the final-chapter treatment (`## Where We Are` instead of carry-forward block).
+- Filenames: `00-...md`, `01-...md`, `02-...md`.
+
+### Single-week project (N=1)
+
+Apply both first-and-final-chapter treatment to the only chapter: empty carry-forward, `## Where We Are` close, no inter-chapter references. Filename: `00-...md`.
