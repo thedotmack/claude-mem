@@ -9,7 +9,16 @@ import {
   type OAuthTokenResult,
 } from './oauth-token.js';
 
-export const ENV_FILE_PATH = paths.envFile();
+// Resolved lazily so tests (and any rare runtime path-overrides) can target a
+// temp file via CLAUDE_MEM_ENV_FILE without depending on module-load order.
+// Production callers see the canonical ~/.claude-mem/.env path through
+// paths.envFile() unchanged.
+export function envFilePath(): string {
+  return process.env.CLAUDE_MEM_ENV_FILE ?? paths.envFile();
+}
+
+/** @deprecated Prefer envFilePath(); kept as a snapshot for back-compat. */
+export const ENV_FILE_PATH = envFilePath();
 
 const BLOCKED_ENV_VARS = [
   'ANTHROPIC_API_KEY',       // Issue #733: Prevent auto-discovery from project .env files
@@ -81,12 +90,13 @@ function serializeEnvFile(env: Record<string, string>): string {
 }
 
 export function loadClaudeMemEnv(): ClaudeMemEnv {
-  if (!existsSync(ENV_FILE_PATH)) {
+  const envFile = envFilePath();
+  if (!existsSync(envFile)) {
     return {};
   }
 
   try {
-    const content = readFileSync(ENV_FILE_PATH, 'utf-8');
+    const content = readFileSync(envFile, 'utf-8');
     const parsed = parseEnvFile(content);
 
     const result: ClaudeMemEnv = {};
@@ -98,12 +108,13 @@ export function loadClaudeMemEnv(): ClaudeMemEnv {
 
     return result;
   } catch (error: unknown) {
-    logger.warn('ENV', 'Failed to load .env file', { path: ENV_FILE_PATH }, error instanceof Error ? error : new Error(String(error)));
+    logger.warn('ENV', 'Failed to load .env file', { path: envFile }, error instanceof Error ? error : new Error(String(error)));
     return {};
   }
 }
 
 export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
+  const envFile = envFilePath();
   let existing: Record<string, string> = {};
   try {
     if (!existsSync(paths.dataDir())) {
@@ -111,8 +122,8 @@ export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
     }
     chmodSync(paths.dataDir(), 0o700);
 
-    existing = existsSync(ENV_FILE_PATH)
-      ? parseEnvFile(readFileSync(ENV_FILE_PATH, 'utf-8'))
+    existing = existsSync(envFile)
+      ? parseEnvFile(readFileSync(envFile, 'utf-8'))
       : {};
   } catch (error) {
     const normalizedError = error instanceof Error ? error : new Error(String(error));
@@ -159,10 +170,10 @@ export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
   }
 
   try {
-    writeFileSync(ENV_FILE_PATH, serializeEnvFile(updated), { encoding: 'utf-8', mode: 0o600 });
-    chmodSync(ENV_FILE_PATH, 0o600);
+    writeFileSync(envFile, serializeEnvFile(updated), { encoding: 'utf-8', mode: 0o600 });
+    chmodSync(envFile, 0o600);
   } catch (error: unknown) {
-    logger.error('ENV', 'Failed to save .env file', { path: ENV_FILE_PATH }, error instanceof Error ? error : new Error(String(error)));
+    logger.error('ENV', 'Failed to save .env file', { path: envFile }, error instanceof Error ? error : new Error(String(error)));
     throw error;
   }
 }

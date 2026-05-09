@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, spyOn } from 'bun:test';
 import * as fs from 'fs';
-import { dirname } from 'path';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import {
-  ENV_FILE_PATH,
+  envFilePath,
   buildIsolatedEnv,
   buildIsolatedEnvWithFreshOAuth,
 } from '../src/shared/EnvManager.js';
@@ -14,38 +15,24 @@ import * as oauthToken from '../src/shared/oauth-token.js';
  * must not inject the user's Anthropic OAuth token onto a custom gateway URL
  * (which would be a token leak to a third party).
  *
- * ENV_FILE_PATH is captured at module load time, so we cannot easily redirect
- * the env file by mocking paths.envFile() after the fact. Instead, we
- * back up the user's real ~/.claude-mem/.env (if any), write a temp file at
- * the canonical ENV_FILE_PATH for each test, and restore afterwards.
+ * Redirect EnvManager to a per-suite temp file via CLAUDE_MEM_ENV_FILE so
+ * the user's real ~/.claude-mem/.env is never read or mutated even if a test
+ * fails mid-flight. envFilePath() resolves the override on every call, so
+ * this works regardless of the order other tests imported the module.
  */
+
+const TEST_DATA_DIR = fs.mkdtempSync(join(tmpdir(), 'claude-mem-env-isolation-'));
+const TEST_ENV_FILE = join(TEST_DATA_DIR, '.env');
+const ORIGINAL_ENV_FILE = process.env.CLAUDE_MEM_ENV_FILE;
 
 const ORIGINAL_BASE_URL = process.env.ANTHROPIC_BASE_URL;
 const ORIGINAL_API_KEY = process.env.ANTHROPIC_API_KEY;
 const ORIGINAL_AUTH_TOKEN = process.env.ANTHROPIC_AUTH_TOKEN;
 const ORIGINAL_OAUTH_TOKEN = process.env.CLAUDE_CODE_OAUTH_TOKEN;
 
-const ENV_FILE_BACKUP_PATH = `${ENV_FILE_PATH}.test-backup`;
-
-function backupEnvFile(): void {
-  if (fs.existsSync(ENV_FILE_PATH)) {
-    fs.renameSync(ENV_FILE_PATH, ENV_FILE_BACKUP_PATH);
-  }
-}
-
-function restoreEnvFile(): void {
-  if (fs.existsSync(ENV_FILE_PATH)) {
-    fs.unlinkSync(ENV_FILE_PATH);
-  }
-  if (fs.existsSync(ENV_FILE_BACKUP_PATH)) {
-    fs.renameSync(ENV_FILE_BACKUP_PATH, ENV_FILE_PATH);
-  }
-}
-
-function ensureEnvDir(): void {
-  const dir = dirname(ENV_FILE_PATH);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+function clearEnvFile(): void {
+  if (fs.existsSync(TEST_ENV_FILE)) {
+    fs.unlinkSync(TEST_ENV_FILE);
   }
 }
 
@@ -80,22 +67,36 @@ function restoreOriginalEnv(): void {
 }
 
 describe('Issue #2375: ANTHROPIC_BASE_URL env-var isolation', () => {
+  beforeAll(() => {
+    fs.mkdirSync(TEST_DATA_DIR, { recursive: true, mode: 0o700 });
+    process.env.CLAUDE_MEM_ENV_FILE = TEST_ENV_FILE;
+    expect(envFilePath()).toBe(TEST_ENV_FILE);
+  });
+
+  afterAll(() => {
+    fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+    if (ORIGINAL_ENV_FILE === undefined) {
+      delete process.env.CLAUDE_MEM_ENV_FILE;
+    } else {
+      process.env.CLAUDE_MEM_ENV_FILE = ORIGINAL_ENV_FILE;
+    }
+  });
+
   beforeEach(() => {
-    backupEnvFile();
-    ensureEnvDir();
+    clearEnvFile();
     clearAnthropicEnv();
   });
 
   afterEach(() => {
-    restoreEnvFile();
+    clearEnvFile();
     restoreOriginalEnv();
   });
 
   it('leaked ANTHROPIC_BASE_URL is stripped from isolatedEnv', () => {
-    // No ~/.claude-mem/.env file exists (backed up above). The parent shell
-    // sets a stray ANTHROPIC_BASE_URL — this MUST NOT propagate into the
-    // subprocess isolatedEnv, because doing so used to trigger the
-    // OAuth-skip path and leave the worker with no credentials at all.
+    // No .env file exists. The parent shell sets a stray ANTHROPIC_BASE_URL —
+    // this MUST NOT propagate into the subprocess isolatedEnv, because doing
+    // so used to trigger the OAuth-skip path and leave the worker with no
+    // credentials at all.
     process.env.ANTHROPIC_BASE_URL = 'https://shouldnotleak.example';
 
     const result = buildIsolatedEnv();
@@ -107,7 +108,7 @@ describe('Issue #2375: ANTHROPIC_BASE_URL env-var isolation', () => {
     // User intentionally configured a gateway with a gateway-appropriate
     // auth token. Both must be re-injected into isolatedEnv.
     fs.writeFileSync(
-      ENV_FILE_PATH,
+      TEST_ENV_FILE,
       'ANTHROPIC_BASE_URL=https://gateway.example\nANTHROPIC_AUTH_TOKEN=test-token\n',
       { mode: 0o600 },
     );
@@ -133,20 +134,22 @@ describe('Issue #2375: ANTHROPIC_BASE_URL env-var isolation', () => {
     // outcome, the only execution path that produces this combination is
     // the new BASE_URL-first branch returning early.
     fs.writeFileSync(
-      ENV_FILE_PATH,
+      TEST_ENV_FILE,
       'ANTHROPIC_BASE_URL=https://gateway.example\n',
       { mode: 0o600 },
     );
 
     const oauthSpy = spyOn(oauthToken, 'readClaudeOAuthToken');
 
-    const result = await buildIsolatedEnvWithFreshOAuth();
+    try {
+      const result = await buildIsolatedEnvWithFreshOAuth();
 
-    expect(result.ANTHROPIC_BASE_URL).toBe('https://gateway.example');
-    expect(result.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
-    // Best-effort sanity check; see note above.
-    expect(oauthSpy).not.toHaveBeenCalled();
-
-    oauthSpy.mockRestore();
+      expect(result.ANTHROPIC_BASE_URL).toBe('https://gateway.example');
+      expect(result.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+      // Best-effort sanity check; see note above.
+      expect(oauthSpy).not.toHaveBeenCalled();
+    } finally {
+      oauthSpy.mockRestore();
+    }
   });
 });
