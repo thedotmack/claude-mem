@@ -145,7 +145,14 @@ async function buildHooks() {
         'onnxruntime-node'
       ],
       define: {
-        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
+        // Polyfill import.meta.url for ESM deps bundled into CJS output.
+        // @anthropic-ai/claude-agent-sdk's *.mjs files use createRequire(import.meta.url);
+        // without this define esbuild leaves it as `ute.url` (where ute is the {} import.meta polyfill),
+        // which evaluates to undefined at runtime and crashes module-load with
+        // "ERR_INVALID_ARG_VALUE: filename must be a file URL ... Received undefined".
+        // The CJS prelude (banner below) ensures __filename is a real absolute path at runtime.
+        'import.meta.url': '__filename'
       },
       banner: {
         js: [
