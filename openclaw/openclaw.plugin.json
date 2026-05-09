@@ -1,11 +1,12 @@
 {
   "id": "claude-mem",
   "name": "Claude-Mem (Persistent Memory)",
-  "description": "Official OpenClaw plugin for Claude-Mem. Records observations from embedded runner sessions and streams them to messaging channels.",
+  "description": "OpenClaw plugin for Claude-Mem. Records observations from embedded runner sessions and streams them to messaging channels.",
   "kind": "memory",
-  "version": "12.7.5",
+  "version": "13.0.0",
+  "license": "Apache-2.0",
   "author": "thedotmack",
-  "homepage": "https://claude-mem.com",
+  "homepage": "https://claude-mem.ai",
   "skills": ["skills/make-plan", "skills/do"],
   "configSchema": {
     "type": "object",

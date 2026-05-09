@@ -49,7 +49,7 @@
 
 <p align="center">
   <a href="LICENSE">
-    <img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License">
+    <img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/version-6.5.0-green.svg" alt="Version">
@@ -278,24 +278,20 @@ npm run bug-report
 
 ---
 
-## 授權條款
+## License
 
-本專案採用 **GNU Affero 通用公共授權條款 v3.0**（AGPL-3.0）授權。
+This project is licensed under the **Apache License 2.0** (Apache-2.0).
 
 Copyright (C) 2025 Alex Newman (@thedotmack). All rights reserved.
 
-完整詳情請參閱 [LICENSE](LICENSE) 檔案。
+See the [LICENSE](LICENSE) file for full details.
 
-**這代表什麼：**
+Apache-2.0 allows broad use, modification, distribution, and commercial use, subject to its terms.
 
-- 您可以自由使用、修改與散佈此軟體
-- 如果您修改並部署於網路伺服器上，您必須公開您的原始碼
-- 衍生作品也必須採用 AGPL-3.0 授權
-- 本軟體不提供任何擔保
-
-**關於 Ragtime 的說明**：`ragtime/` 目錄採用 **PolyForm Noncommercial License 1.0.0** 另行授權。詳情請參閱 [ragtime/LICENSE](ragtime/LICENSE)。
+**Ragtime note**: The ragtime/ directory is licensed under the **Apache License 2.0**. See [ragtime/LICENSE](ragtime/LICENSE) for details.
 
 ---
+
 
 ## 支援
 

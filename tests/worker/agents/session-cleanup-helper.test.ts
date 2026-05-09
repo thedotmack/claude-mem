@@ -22,9 +22,9 @@ describe('SessionCleanupHelper', () => {
       cumulativeInputTokens: 100,
       cumulativeOutputTokens: 50,
       earliestPendingTimestamp: Date.now() - 10000, // 10 seconds ago
+      claimedMessageIds: [],
       conversationHistory: [],
       currentProvider: 'claude',
-      processingMessageIds: [],  // CLAIM-CONFIRM pattern: track message IDs being processed
       ...overrides,
     };
   }

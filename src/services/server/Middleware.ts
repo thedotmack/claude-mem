@@ -1,5 +1,6 @@
 
 export {
+  createCorsMiddleware,
   createMiddleware,
   requireLocalhost,
   summarizeRequestBody

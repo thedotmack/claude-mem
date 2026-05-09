@@ -127,7 +127,7 @@
         "header": "Legal",
         "items": [
           {
-            "label": "License (AGPL-3.0)",
+            "label": "License (Apache-2.0)",
             "href": "https://github.com/thedotmack/claude-mem/blob/main/LICENSE"
           }
         ]

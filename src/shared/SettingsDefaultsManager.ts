@@ -64,6 +64,14 @@ export interface SettingsDefaults {
   CLAUDE_MEM_TELEGRAM_CHAT_ID: string;
   CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: string;
   CLAUDE_MEM_TELEGRAM_TRIGGER_CONCEPTS: string;
+  CLAUDE_MEM_QUEUE_ENGINE: string;
+  CLAUDE_MEM_REDIS_URL: string;
+  CLAUDE_MEM_REDIS_HOST: string;
+  CLAUDE_MEM_REDIS_PORT: string;
+  CLAUDE_MEM_REDIS_MODE: string;
+  CLAUDE_MEM_QUEUE_REDIS_PREFIX: string;
+  CLAUDE_MEM_AUTH_MODE: string;
+  CLAUDE_MEM_RUNTIME: string;
 }
 
 export class SettingsDefaultsManager {
@@ -128,6 +136,14 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_TELEGRAM_CHAT_ID: '',
     CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: 'security_alert',
     CLAUDE_MEM_TELEGRAM_TRIGGER_CONCEPTS: '',
+    CLAUDE_MEM_QUEUE_ENGINE: 'sqlite',
+    CLAUDE_MEM_REDIS_URL: '',
+    CLAUDE_MEM_REDIS_HOST: '127.0.0.1',
+    CLAUDE_MEM_REDIS_PORT: '6379',
+    CLAUDE_MEM_REDIS_MODE: 'external',
+    CLAUDE_MEM_QUEUE_REDIS_PREFIX: `claude_mem_${process.env.CLAUDE_MEM_WORKER_PORT ?? String(37700 + ((process.getuid?.() ?? 77) % 100))}`,
+    CLAUDE_MEM_AUTH_MODE: 'api-key',
+    CLAUDE_MEM_RUNTIME: 'worker',
   };
 
   static getAllDefaults(): SettingsDefaults {

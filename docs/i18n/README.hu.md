@@ -50,7 +50,7 @@
 
 <p align="center">
   <a href="LICENSE">
-    <img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License">
+    <img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/version-6.5.0-green.svg" alt="Version">
@@ -273,24 +273,20 @@ A hozzájárulási munkafolyamatért lásd a [Fejlesztési útmutatót](https://
 
 ---
 
-## Licenc
+## License
 
-Ez a projekt a **GNU Affero General Public License v3.0** (AGPL-3.0) alatt licencelt.
+This project is licensed under the **Apache License 2.0** (Apache-2.0).
 
-Copyright (C) 2025 Alex Newman (@thedotmack). Minden jog fenntartva.
+Copyright (C) 2025 Alex Newman (@thedotmack). All rights reserved.
 
-A teljes részletekért lásd a [LICENSE](LICENSE) fájlt.
+See the [LICENSE](LICENSE) file for full details.
 
-**Mit jelent ez:**
+Apache-2.0 allows broad use, modification, distribution, and commercial use, subject to its terms.
 
-- Szabadon használhatja, módosíthatja és terjesztheti ezt a szoftvert
-- Ha módosítja és hálózati szerveren telepíti, elérhetővé kell tennie a forráskódot
-- A származékos munkáknak szintén AGPL-3.0 alatt kell licencelve lenniük
-- Ehhez a szoftverhez NINCS GARANCIA
-
-**Megjegyzés a Ragtime-ról**: A `ragtime/` könyvtár külön licencelt a **PolyForm Noncommercial License 1.0.0** alatt. Részletekért lásd a [ragtime/LICENSE](ragtime/LICENSE) fájlt.
+**Ragtime note**: The ragtime/ directory is licensed under the **Apache License 2.0**. See [ragtime/LICENSE](ragtime/LICENSE) for details.
 
 ---
+
 
 ## Támogatás
 

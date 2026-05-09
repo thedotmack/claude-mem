@@ -12,7 +12,7 @@ describe('Zombie Agent Prevention', () => {
 
   beforeEach(() => {
     db = new ClaudeMemDatabase(':memory:').db;
-    pendingStore = new PendingMessageStore(db, 3);
+    pendingStore = new PendingMessageStore(db);
   });
 
   afterEach(() => {
@@ -37,9 +37,9 @@ describe('Zombie Agent Prevention', () => {
       cumulativeInputTokens: 0,
       cumulativeOutputTokens: 0,
       earliestPendingTimestamp: null,
+      claimedMessageIds: [],
       conversationHistory: [],
       currentProvider: null,
-      processingMessageIds: [],  // CLAIM-CONFIRM pattern: track message IDs being processed
       ...overrides,
     };
   }
@@ -198,22 +198,18 @@ describe('Zombie Agent Prevention', () => {
     expect(session.abortController.signal.aborted).toBe(false);
   });
 
-  test('should recover stuck processing messages via claimNextMessage self-healing', async () => {
-    const sessionId = createDbSession('content-stuck-recovery');
+  test('should recover processing messages through explicit restart reset', async () => {
+    const sessionId = createDbSession('content-restart-reset');
 
-    const msgId = enqueueTestMessage(sessionId, 'content-stuck-recovery');
+    const msgId = enqueueTestMessage(sessionId, 'content-restart-reset');
     const claimed = pendingStore.claimNextMessage(sessionId);
     expect(claimed).not.toBeNull();
     expect(claimed!.id).toBe(msgId);
 
-    const staleTimestamp = Date.now() - 120_000; 
-    db.run(
-      `UPDATE pending_messages SET started_processing_at_epoch = ? WHERE id = ?`,
-      [staleTimestamp, msgId]
-    );
-
     expect(pendingStore.getPendingCount(sessionId)).toBe(1); 
+    expect(pendingStore.claimNextMessage(sessionId)).toBeNull();
 
+    expect(pendingStore.resetProcessingToPending(sessionId)).toBe(1);
     const recovered = pendingStore.claimNextMessage(sessionId);
     expect(recovered).not.toBeNull();
     expect(recovered!.id).toBe(msgId);
@@ -248,7 +244,7 @@ describe('Zombie Agent Prevention', () => {
 
   describe('Session Termination Invariant', () => {
 
-    test('should mark messages abandoned when session is terminated', () => {
+    test('should clear messages when session is terminated', () => {
       const sessionId = createDbSession('content-terminate-1');
       enqueueTestMessage(sessionId, 'content-terminate-1');
       enqueueTestMessage(sessionId, 'content-terminate-1');
@@ -256,8 +252,8 @@ describe('Zombie Agent Prevention', () => {
       expect(pendingStore.getPendingCount(sessionId)).toBe(2);
       expect(pendingStore.hasAnyPendingWork()).toBe(true);
 
-      const abandoned = pendingStore.transitionMessagesTo('abandoned', { sessionDbId: sessionId });
-      expect(abandoned).toBe(2);
+      const cleared = pendingStore.clearPendingForSession(sessionId);
+      expect(cleared).toBe(2);
 
       expect(pendingStore.hasAnyPendingWork()).toBe(false);
       expect(pendingStore.getPendingCount(sessionId)).toBe(0);
@@ -268,20 +264,20 @@ describe('Zombie Agent Prevention', () => {
 
       expect(pendingStore.getPendingCount(sessionId)).toBe(0);
 
-      const abandoned = pendingStore.transitionMessagesTo('abandoned', { sessionDbId: sessionId });
-      expect(abandoned).toBe(0);
+      const cleared = pendingStore.clearPendingForSession(sessionId);
+      expect(cleared).toBe(0);
 
       expect(pendingStore.hasAnyPendingWork()).toBe(false);
     });
 
-    test('should be idempotent — double terminate marks zero on second call', () => {
+    test('should be idempotent — double terminate clears zero on second call', () => {
       const sessionId = createDbSession('content-terminate-idempotent');
       enqueueTestMessage(sessionId, 'content-terminate-idempotent');
 
-      const first = pendingStore.transitionMessagesTo('abandoned', { sessionDbId: sessionId });
+      const first = pendingStore.clearPendingForSession(sessionId);
       expect(first).toBe(1);
 
-      const second = pendingStore.transitionMessagesTo('abandoned', { sessionDbId: sessionId });
+      const second = pendingStore.clearPendingForSession(sessionId);
       expect(second).toBe(0);
 
       expect(pendingStore.hasAnyPendingWork()).toBe(false);
@@ -313,9 +309,9 @@ describe('Zombie Agent Prevention', () => {
 
       expect(pendingStore.hasAnyPendingWork()).toBe(true);
 
-      pendingStore.transitionMessagesTo('abandoned', { sessionDbId: sid1 });
-      pendingStore.transitionMessagesTo('abandoned', { sessionDbId: sid2 });
-      pendingStore.transitionMessagesTo('abandoned', { sessionDbId: sid3 });
+      pendingStore.clearPendingForSession(sid1);
+      pendingStore.clearPendingForSession(sid2);
+      pendingStore.clearPendingForSession(sid3);
 
       expect(pendingStore.hasAnyPendingWork()).toBe(false);
     });
@@ -327,14 +323,14 @@ describe('Zombie Agent Prevention', () => {
       enqueueTestMessage(sid1, 'content-isolate-1');
       enqueueTestMessage(sid2, 'content-isolate-2');
 
-      pendingStore.transitionMessagesTo('abandoned', { sessionDbId: sid1 });
+      pendingStore.clearPendingForSession(sid1);
 
       expect(pendingStore.getPendingCount(sid1)).toBe(0);
       expect(pendingStore.getPendingCount(sid2)).toBe(1);
       expect(pendingStore.hasAnyPendingWork()).toBe(true);
     });
 
-    test('should mark both pending and processing messages as abandoned', () => {
+    test('should clear both pending and processing messages', () => {
       const sessionId = createDbSession('content-mixed-status');
 
       const msgId1 = enqueueTestMessage(sessionId, 'content-mixed-status');
@@ -346,8 +342,8 @@ describe('Zombie Agent Prevention', () => {
 
       expect(pendingStore.getPendingCount(sessionId)).toBe(2);
 
-      const abandoned = pendingStore.transitionMessagesTo('abandoned', { sessionDbId: sessionId });
-      expect(abandoned).toBe(2);
+      const cleared = pendingStore.clearPendingForSession(sessionId);
+      expect(cleared).toBe(2);
       expect(pendingStore.hasAnyPendingWork()).toBe(false);
     });
 
@@ -362,7 +358,7 @@ describe('Zombie Agent Prevention', () => {
 
       expect(pendingStore.getPendingCount(sessionId)).toBe(3);
 
-      pendingStore.transitionMessagesTo('abandoned', { sessionDbId: sessionId });
+      pendingStore.clearPendingForSession(sessionId);
       expect(pendingStore.hasAnyPendingWork()).toBe(false);
       expect(pendingStore.getPendingCount(sessionId)).toBe(0);
     });

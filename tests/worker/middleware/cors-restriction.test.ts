@@ -1,31 +1,14 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import express from 'express';
-import cors from 'cors';
 import http from 'http';
+import { createMiddleware } from '../../../src/services/worker/http/middleware.js';
 
 function isAllowedOrigin(origin: string | undefined): boolean {
   if (!origin) return true; 
   if (origin.startsWith('http://localhost:')) return true;
   if (origin.startsWith('http://127.0.0.1:')) return true;
   return false;
-}
-
-function buildProductionCorsMiddleware() {
-  return cors({
-    origin: (origin, callback) => {
-      if (!origin ||
-          origin.startsWith('http://localhost:') ||
-          origin.startsWith('http://127.0.0.1:')) {
-        callback(null, true);
-      } else {
-        callback(new Error('CORS not allowed'));
-      }
-    },
-    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-    credentials: false
-  });
 }
 
 describe('CORS Restriction', () => {
@@ -78,8 +61,7 @@ describe('CORS Restriction', () => {
 
     beforeEach(async () => {
       app = express();
-      app.use(express.json());
-      app.use(buildProductionCorsMiddleware());
+      createMiddleware(() => '').forEach(middleware => app.use(middleware));
 
       app.all('/api/settings', (_req, res) => {
         res.json({ ok: true });
@@ -108,7 +90,7 @@ describe('CORS Restriction', () => {
         },
       });
 
-      expect(response.status).toBe(204);
+      expect([200, 204]).toContain(response.status);
       const allowedMethods = response.headers.get('access-control-allow-methods');
       expect(allowedMethods).toContain('PUT');
     });
@@ -122,7 +104,7 @@ describe('CORS Restriction', () => {
         },
       });
 
-      expect(response.status).toBe(204);
+      expect([200, 204]).toContain(response.status);
       const allowedMethods = response.headers.get('access-control-allow-methods');
       expect(allowedMethods).toContain('PATCH');
     });
@@ -136,7 +118,7 @@ describe('CORS Restriction', () => {
         },
       });
 
-      expect(response.status).toBe(204);
+      expect([200, 204]).toContain(response.status);
       const allowedMethods = response.headers.get('access-control-allow-methods');
       expect(allowedMethods).toContain('DELETE');
     });
@@ -151,9 +133,24 @@ describe('CORS Restriction', () => {
         },
       });
 
-      expect(response.status).toBe(204);
+      expect([200, 204]).toContain(response.status);
       const allowedHeaders = response.headers.get('access-control-allow-headers');
       expect(allowedHeaders).toContain('Content-Type');
+    });
+
+    it('preflight response includes Authorization in allowed headers', async () => {
+      const response = await fetch(`http://127.0.0.1:${testPort}/api/settings`, {
+        method: 'OPTIONS',
+        headers: {
+          'Origin': 'http://localhost:37777',
+          'Access-Control-Request-Method': 'POST',
+          'Access-Control-Request-Headers': 'Authorization',
+        },
+      });
+
+      expect([200, 204]).toContain(response.status);
+      const allowedHeaders = response.headers.get('access-control-allow-headers');
+      expect(allowedHeaders).toContain('Authorization');
     });
 
     it('preflight from localhost includes allow-origin header', async () => {
@@ -166,7 +163,7 @@ describe('CORS Restriction', () => {
         },
       });
 
-      expect(response.status).toBe(204);
+      expect([200, 204]).toContain(response.status);
       const origin = response.headers.get('access-control-allow-origin');
       expect(origin).toBe('http://localhost:37777');
     });

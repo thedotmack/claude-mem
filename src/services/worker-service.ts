@@ -1,9 +1,12 @@
 
 import path from 'path';
 import { existsSync } from 'fs';
+import { spawn } from 'child_process';
+import { Database } from 'bun:sqlite';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
+import { DATA_DIR, DB_PATH, ensureDir } from '../shared/paths.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { getAuthMethodDescription } from '../shared/EnvManager.js';
@@ -46,6 +49,13 @@ import { performGracefulShutdown } from './infrastructure/GracefulShutdown.js';
 import { adoptMergedWorktrees, adoptMergedWorktreesForAllKnownRepos } from './infrastructure/WorktreeAdoption.js';
 
 import { Server } from './server/Server.js';
+import { BetterAuthRoutes } from '../server/auth/BetterAuthRoutes.js';
+import {
+  createServerApiKey,
+  listServerApiKeys,
+  revokeServerApiKey,
+} from '../server/auth/api-key-service.js';
+import { ServerV1Routes } from '../server/routes/v1/ServerV1Routes.js';
 
 import {
   updateCursorContextForProject,
@@ -196,6 +206,12 @@ export class WorkerService implements WorkerRef {
             : null,
         };
       },
+      getQueueHealth: () => this.sessionManager.isBullMqQueueEnabled()
+        ? this.sessionManager.getQueueHealth()
+        : null,
+      preBodyParserRoutes: [
+        new BetterAuthRoutes(() => this.dbManager.getConnection()),
+      ],
     });
 
     this.registerRoutes();
@@ -224,7 +240,7 @@ export class WorkerService implements WorkerRef {
       next(); 
     });
 
-    this.server.app.use('/api', async (req, res, next) => {
+    this.server.app.use(['/api', '/v1'], async (req, res, next) => {
       if (req.path === '/chroma/status' || req.path === '/health' || req.path === '/readiness' || req.path === '/version') {
         next();
         return;
@@ -253,6 +269,9 @@ export class WorkerService implements WorkerRef {
     this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
     this.server.registerRoutes(new LogsRoutes());
     this.server.registerRoutes(new MemoryRoutes(this.dbManager, 'claude-mem'));
+    this.server.registerRoutes(new ServerV1Routes({
+      getDatabase: () => this.dbManager.getConnection(),
+    }));
   }
 
   async start(): Promise<void> {
@@ -260,6 +279,7 @@ export class WorkerService implements WorkerRef {
     const host = getWorkerHost();
 
     await startSupervisor();
+    await this.sessionManager.initializeQueueEngine();
 
     await this.server.listen(port, host);
 
@@ -705,14 +725,14 @@ export class WorkerService implements WorkerRef {
       }
     }
 
-    this.completionHandler.finalizeSession(sessionDbId);
+    await this.completionHandler.finalizeSession(sessionDbId);
     this.sessionManager.removeSessionImmediate(sessionDbId);
   }
 
-  private terminateSession(sessionDbId: number, reason: string): void {
+  private async terminateSession(sessionDbId: number, reason: string): Promise<void> {
     logger.info('SYSTEM', 'Session terminated', { sessionId: sessionDbId, reason });
 
-    this.completionHandler.finalizeSession(sessionDbId);
+    await this.completionHandler.finalizeSession(sessionDbId);
 
     this.sessionManager.removeSessionImmediate(sessionDbId);
   }
@@ -734,21 +754,23 @@ export class WorkerService implements WorkerRef {
   }
 
   broadcastProcessingStatus(): void {
-    const queueDepth = this.sessionManager.getTotalActiveWork();
-    const isProcessing = queueDepth > 0;
-    const activeSessions = this.sessionManager.getActiveSessionCount();
+    void (async () => {
+      const queueDepth = await this.sessionManager.getTotalActiveWork();
+      const isProcessing = queueDepth > 0;
+      const activeSessions = this.sessionManager.getActiveSessionCount();
 
-    logger.info('WORKER', 'Broadcasting processing status', {
-      isProcessing,
-      queueDepth,
-      activeSessions
-    });
+      logger.info('WORKER', 'Broadcasting processing status', {
+        isProcessing,
+        queueDepth,
+        activeSessions
+      });
 
-    this.sseBroadcaster.broadcast({
-      type: 'processing_status',
-      isProcessing,
-      queueDepth
-    });
+      this.sseBroadcaster.broadcast({
+        type: 'processing_status',
+        isProcessing,
+        queueDepth
+      });
+    })();
   }
 }
 
@@ -756,11 +778,174 @@ export async function ensureWorkerStarted(port: number): Promise<WorkerStartResu
   return ensureWorkerStartedShared(port, __filename);
 }
 
+type ParsedWorkerCommand = {
+  command: string | undefined;
+  args: string[];
+};
+
+function parseWorkerServiceCommand(argv: string[]): ParsedWorkerCommand {
+  const [rawCommand, maybeSubCommand, ...rest] = argv;
+
+  if (rawCommand === 'server') {
+    const lifecycleCommands = new Set(['start', 'stop', 'restart', 'status']);
+    if (maybeSubCommand && lifecycleCommands.has(maybeSubCommand)) {
+      return { command: `server-${maybeSubCommand}`, args: rest };
+    }
+    const serverCommands = new Set(['logs', 'doctor', 'migrate', 'export', 'import', 'api-key']);
+    return {
+      command: maybeSubCommand && serverCommands.has(maybeSubCommand) ? `server-${maybeSubCommand}` : 'server-help',
+      args: rest,
+    };
+  }
+
+  if (rawCommand === 'worker') {
+    const workerAliases = new Set(['start', 'stop', 'restart', 'status']);
+    return {
+      command: maybeSubCommand && workerAliases.has(maybeSubCommand) ? maybeSubCommand : 'worker-help',
+      args: rest,
+    };
+  }
+
+  return {
+    command: rawCommand,
+    args: maybeSubCommand === undefined ? [] : [maybeSubCommand, ...rest],
+  };
+}
+
+function printServerCommandUnsupported(command: string): never {
+  console.error(`Server command not implemented yet: ${command}`);
+  console.error('This worker bundle accepts the CLI route, but no backend API exists for it yet.');
+  process.exit(1);
+}
+
+function printServerCommandHelp(): never {
+  console.error('Usage: worker-service server <command>');
+  console.error('Commands: start, stop, restart, status, logs, doctor, migrate, export, import, api-key create|list|revoke');
+  process.exit(1);
+}
+
+function printWorkerAliasHelp(): never {
+  console.error('Usage: worker-service worker start|stop|restart|status');
+  process.exit(1);
+}
+
+function runServerBetaServiceCli(command: string): void {
+  const serverBetaScript = path.join(__dirname, 'server-beta-service.cjs');
+  if (!existsSync(serverBetaScript)) {
+    console.error(`Server beta script not found at: ${serverBetaScript}`);
+    console.error('Rebuild or reinstall claude-mem so server-beta-service.cjs is available.');
+    process.exit(1);
+  }
+
+  const child = spawn(process.execPath, [serverBetaScript, command], {
+    stdio: 'inherit',
+    env: process.env,
+  });
+  child.on('error', (error) => {
+    console.error(`Failed to start server beta command: ${error.message}`);
+    process.exit(1);
+  });
+  child.on('close', (exitCode) => {
+    process.exit(exitCode ?? 0);
+  });
+}
+
+function parseServerApiKeyOptions(args: string[]): Record<string, string> {
+  const options: Record<string, string> = {};
+  for (let i = 0; i < args.length; i++) {
+    const item = args[i];
+    if (!item.startsWith('--')) {
+      continue;
+    }
+    const key = item.slice(2);
+    const next = args[i + 1];
+    if (!next || next.startsWith('--')) {
+      options[key] = 'true';
+      continue;
+    }
+    options[key] = next;
+    i++;
+  }
+  return options;
+}
+
+function openServerCommandDatabase(): Database {
+  ensureDir(DATA_DIR);
+  return new Database(DB_PATH, { create: true, readwrite: true });
+}
+
+function runServerApiKeyCli(args: string[]): never {
+  const subCommand = args[0];
+  const options = parseServerApiKeyOptions(args.slice(1));
+  const db = openServerCommandDatabase();
+
+  try {
+    if (subCommand === 'create') {
+      const scopes = (options.scope ?? options.scopes ?? 'memories:read')
+        .split(',')
+        .map(scope => scope.trim())
+        .filter(Boolean);
+      const created = createServerApiKey(db, {
+        name: options.name ?? 'server-api-key',
+        teamId: options.team ?? null,
+        projectId: options.project ?? null,
+        scopes,
+      });
+      console.log(JSON.stringify({
+        id: created.record.id,
+        key: created.rawKey,
+        name: created.record.name,
+        teamId: created.record.teamId,
+        projectId: created.record.projectId,
+        scopes: created.record.scopes,
+      }, null, 2));
+      process.exit(0);
+    }
+
+    if (subCommand === 'list') {
+      console.log(JSON.stringify(listServerApiKeys(db).map(key => ({
+        id: key.id,
+        name: key.name,
+        prefix: key.prefix,
+        teamId: key.teamId,
+        projectId: key.projectId,
+        scopes: key.scopes,
+        status: key.status,
+        lastUsedAtEpoch: key.lastUsedAtEpoch,
+        expiresAtEpoch: key.expiresAtEpoch,
+        createdAtEpoch: key.createdAtEpoch,
+      })), null, 2));
+      process.exit(0);
+    }
+
+    if (subCommand === 'revoke') {
+      const id = args[1];
+      if (!id) {
+        console.error('Usage: worker-service server api-key revoke <id>');
+        process.exit(1);
+      }
+      const revoked = revokeServerApiKey(db, id);
+      if (!revoked) {
+        console.error(`API key not found: ${id}`);
+        process.exit(1);
+      }
+      console.log(JSON.stringify({ id: revoked.id, status: revoked.status }, null, 2));
+      process.exit(0);
+    }
+
+    console.error(`Unknown server api-key subcommand: ${subCommand ?? '(none)'}`);
+    console.error('Usage: worker-service server api-key create|list|revoke');
+    process.exit(1);
+  } finally {
+    db.close();
+  }
+}
+
 async function main() {
-  const command = process.argv[2];
+  const { command, args: commandArgs } = parseWorkerServiceCommand(process.argv.slice(2));
 
   const hookInitiatedCommands = ['start', 'hook', 'restart', '--daemon'];
-  if ((hookInitiatedCommands.includes(command) || command === undefined) && isPluginDisabledInClaudeSettings()) {
+  if ((command === undefined || hookInitiatedCommands.includes(command)) && isPluginDisabledInClaudeSettings()) {
     process.exit(0);
   }
 
@@ -822,10 +1007,49 @@ async function main() {
         console.log(`  PID: ${pidInfo.pid}`);
         console.log(`  Port: ${pidInfo.port}`);
         console.log(`  Started: ${pidInfo.startedAt}`);
+        await printQueueStatusIfBullMq(port);
       } else {
         console.log('Worker is not running');
       }
       process.exit(0);
+      break;
+    }
+
+    case 'server-start':
+    case 'server-stop':
+    case 'server-restart':
+    case 'server-status': {
+      runServerBetaServiceCli(command.slice('server-'.length));
+      break;
+    }
+
+    case 'server-logs':
+    case 'server-doctor':
+    case 'server-migrate':
+    case 'server-export':
+    case 'server-import': {
+      printServerCommandUnsupported(command.replace('-', ' '));
+      break;
+    }
+
+    case 'server-api-key': {
+      const apiKeyCommand = commandArgs[0];
+      if (apiKeyCommand === 'create' || apiKeyCommand === 'list' || apiKeyCommand === 'revoke') {
+        runServerApiKeyCli(commandArgs);
+      }
+      console.error(`Unknown server api-key subcommand: ${apiKeyCommand ?? '(none)'}`);
+      console.error('Usage: worker-service server api-key create|list|revoke');
+      process.exit(1);
+      break;
+    }
+
+    case 'server-help': {
+      printServerCommandHelp();
+      break;
+    }
+
+    case 'worker-help': {
+      printWorkerAliasHelp();
       break;
     }
 
@@ -975,6 +1199,40 @@ async function main() {
         process.exit(0);
       });
     }
+  }
+}
+
+async function printQueueStatusIfBullMq(port: number): Promise<void> {
+  if (SettingsDefaultsManager.get('CLAUDE_MEM_QUEUE_ENGINE').trim().toLowerCase() !== 'bullmq') {
+    return;
+  }
+  try {
+    const response = await fetch(`http://${getWorkerHost()}:${port}/api/health`);
+    if (!response.ok) {
+      console.log(`  Queue: BullMQ health unavailable (HTTP ${response.status})`);
+      return;
+    }
+    const body = await response.json() as {
+      queue?: {
+        redis?: {
+          status?: string;
+          host?: string;
+          port?: number;
+          mode?: string;
+          prefix?: string;
+          error?: string;
+        };
+      };
+    };
+    const redis = body.queue?.redis;
+    if (!redis) {
+      return;
+    }
+    const target = `${redis.host ?? 'unknown'}:${redis.port ?? 'unknown'}`;
+    const suffix = redis.status === 'ok' ? '' : ` (${redis.error ?? 'unhealthy'})`;
+    console.log(`  Queue: BullMQ Redis ${redis.status ?? 'unknown'} at ${target} [${redis.mode ?? 'external'}, prefix=${redis.prefix ?? 'claude_mem'}]${suffix}`);
+  } catch (error) {
+    console.log(`  Queue: BullMQ health unavailable (${error instanceof Error ? error.message : String(error)})`);
   }
 }
 

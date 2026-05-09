@@ -65,6 +65,13 @@ export class DatabaseManager {
     return this.chromaSync;
   }
 
+  getConnection(): Database {
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
+    return this.db;
+  }
+
   getSessionById(sessionDbId: number): {
     id: number;
     content_session_id: string;

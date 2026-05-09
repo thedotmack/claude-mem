@@ -1,0 +1,45 @@
+services:
+  valkey:
+    image: valkey/valkey:8-alpine
+    command: ["valkey-server", "--appendonly", "yes"]
+    volumes:
+      - valkey-data:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  claude-mem-server:
+    build:
+      context: .
+      dockerfile: docker/claude-mem/Dockerfile
+    depends_on:
+      valkey:
+        condition: service_healthy
+    environment:
+      CLAUDE_MEM_HOST: 0.0.0.0
+      CLAUDE_MEM_WORKER_HOST: 0.0.0.0
+      CLAUDE_MEM_WORKER_PORT: 37777
+      CLAUDE_MEM_DATA_DIR: /data/claude-mem
+      CLAUDE_MEM_QUEUE_ENGINE: bullmq
+      CLAUDE_MEM_REDIS_URL: redis://valkey:6379
+      CLAUDE_MEM_REDIS_MODE: docker
+      CLAUDE_MEM_AUTH_MODE: api-key
+      CLAUDE_MEM_CHROMA_ENABLED: "false"
+    ports:
+      - "37777:37777"
+    volumes:
+      - claude-mem-data:/data/claude-mem
+      - ${HOME}/.claude:/home/node/.claude:ro
+    command: ["bun", "/opt/claude-mem/scripts/worker-service.cjs", "--daemon"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:37777/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+
+volumes:
+  claude-mem-data:
+  valkey-data:

@@ -64,20 +64,20 @@ Each markdown file should contain a single email or document to analyze.
 
 ## License
 
-This directory is licensed under the **PolyForm Noncommercial License 1.0.0**.
+This directory is licensed under the **Apache License 2.0**.
 
 See [LICENSE](./LICENSE) for full terms.
 
 ### What this means:
 
-- You can use ragtime for noncommercial purposes
+- You can use ragtime for personal, research, and commercial purposes
 - You can modify and distribute it
-- You cannot use it for commercial purposes without permission
+- You must preserve the license and required notices
 
-### Why a different license?
+### License alignment
 
-The main claude-mem repository is licensed under AGPL 3.0, but ragtime uses the more restrictive PolyForm Noncommercial license to ensure it remains freely available for personal and educational use while preventing commercial exploitation.
+The main claude-mem repository is licensed under Apache-2.0, and ragtime now uses the same license for this migration.
 
 ---
 
-For questions about commercial licensing, please contact the project maintainer.
+For licensing questions, please contact the project maintainer.

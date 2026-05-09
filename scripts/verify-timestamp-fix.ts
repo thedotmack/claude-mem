@@ -89,17 +89,6 @@ function main() {
       console.log();
     }
 
-    console.log('Check 4: Verifying processed pending_messages...');
-    const processedCount = db.query<{ count: number }, []>(`
-      SELECT COUNT(*) as count
-      FROM pending_messages
-      WHERE status = 'processed'
-        AND completed_at_epoch >= ${BAD_WINDOW_START}
-        AND completed_at_epoch <= ${BAD_WINDOW_END}
-    `).get();
-
-    console.log(`${processedCount?.count || 0} pending messages were processed during bad window\n`);
-
     console.log('═══════════════════════════════════════════════════════════════════════');
     console.log('VERIFICATION SUMMARY:');
     console.log('═══════════════════════════════════════════════════════════════════════\n');
@@ -108,7 +97,6 @@ function main() {
       console.log('✅ SUCCESS: Timestamp fix appears to be working correctly!');
       console.log(`   - No observations remain in bad window (Dec 24 19:45-20:31)`);
       console.log(`   - ${originalWindowObs?.count} observations restored to Dec 17-20`);
-      console.log(`   - Processed ${processedCount?.count} pending messages`);
       console.log('\n💡 Safe to re-enable orphan processing in worker-service.ts\n');
     } else if (badWindowObs.length > 0) {
       console.log('⚠️  WARNING: Some observations still have incorrect timestamps!');

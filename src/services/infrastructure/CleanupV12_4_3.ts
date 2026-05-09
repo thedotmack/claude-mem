@@ -87,10 +87,10 @@ function scanCleanupCounts(dbPath: string): CleanupCounts {
       + (db.prepare(`SELECT COUNT(*) AS n FROM session_summaries WHERE memory_session_id IN (SELECT memory_session_id FROM sdk_sessions WHERE project = ? AND memory_session_id IS NOT NULL)`).get(OBSERVER_SESSIONS_PROJECT) as { n: number }).n;
     counts.stuckPendingMessages = (db.prepare(
       `SELECT COUNT(*) AS n FROM pending_messages
-         WHERE status IN ('failed', 'processing')
+         WHERE status = 'processing'
            AND session_db_id IN (
              SELECT session_db_id FROM pending_messages
-              WHERE status IN ('failed', 'processing')
+              WHERE status = 'processing'
               GROUP BY session_db_id
               HAVING COUNT(*) >= ?
            )`
@@ -222,10 +222,10 @@ function runStuckPendingPurge(db: Database, counts: CleanupCounts): void {
   try {
     const stuckCount = (db.prepare(
       `SELECT COUNT(*) AS n FROM pending_messages
-         WHERE status IN ('failed', 'processing')
+         WHERE status = 'processing'
            AND session_db_id IN (
              SELECT session_db_id FROM pending_messages
-              WHERE status IN ('failed', 'processing')
+              WHERE status = 'processing'
               GROUP BY session_db_id
               HAVING COUNT(*) >= ?
            )`
@@ -233,10 +233,10 @@ function runStuckPendingPurge(db: Database, counts: CleanupCounts): void {
 
     db.run(
       `DELETE FROM pending_messages
-         WHERE status IN ('failed', 'processing')
+         WHERE status = 'processing'
            AND session_db_id IN (
              SELECT session_db_id FROM pending_messages
-              WHERE status IN ('failed', 'processing')
+              WHERE status = 'processing'
               GROUP BY session_db_id
               HAVING COUNT(*) >= ?
            )`,

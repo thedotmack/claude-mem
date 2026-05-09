@@ -1,8 +1,7 @@
 -- claude-mem SQLite schema
 --
 -- Authoritative shape of the database after all migrations through
--- runner.ts have been applied (current runner tip = migration 31;
--- SessionStore boot repair records migration 32). Fresh
+-- runner.ts have been applied (current tip = migration 34). Fresh
 -- databases boot directly into this shape; existing databases reach
 -- it via the migration runner.
 --

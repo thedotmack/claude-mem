@@ -22,6 +22,7 @@ export interface ActiveSession {
   cumulativeInputTokens: number;   
   cumulativeOutputTokens: number;  
   earliestPendingTimestamp: number | null;  
+  claimedMessageIds: number[];
   conversationHistory: ConversationMessage[];  
   currentProvider: 'claude' | 'gemini' | 'openrouter' | null;  
   consecutiveRestarts: number;  

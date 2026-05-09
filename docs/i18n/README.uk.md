@@ -50,7 +50,7 @@
 
 <p align="center">
   <a href="LICENSE">
-    <img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License">
+    <img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/version-6.5.0-green.svg" alt="Version">
@@ -273,24 +273,20 @@ npm run bug-report
 
 ---
 
-## Ліцензія
+## License
 
-Цей проєкт ліцензовано під **GNU Affero General Public License v3.0** (AGPL-3.0).
+This project is licensed under the **Apache License 2.0** (Apache-2.0).
 
-Авторське право (C) 2025 Alex Newman (@thedotmack). Всі права захищені.
+Copyright (C) 2025 Alex Newman (@thedotmack). All rights reserved.
 
-Дивіться файл [LICENSE](LICENSE) для повних деталей.
+See the [LICENSE](LICENSE) file for full details.
 
-**Що це означає:**
+Apache-2.0 allows broad use, modification, distribution, and commercial use, subject to its terms.
 
-- Ви можете використовувати, модифікувати та поширювати це програмне забезпечення вільно
-- Якщо ви модифікуєте та розгортаєте на мережевому сервері, ви повинні зробити свій вихідний код доступним
-- Похідні роботи також повинні бути ліцензовані під AGPL-3.0
-- Для цього програмного забезпечення НЕМАЄ ГАРАНТІЇ
-
-**Примітка про Ragtime**: Каталог `ragtime/` ліцензовано окремо під **PolyForm Noncommercial License 1.0.0**. Дивіться [ragtime/LICENSE](ragtime/LICENSE) для деталей.
+**Ragtime note**: The ragtime/ directory is licensed under the **Apache License 2.0**. See [ragtime/LICENSE](ragtime/LICENSE) for details.
 
 ---
+
 
 ## Підтримка
 

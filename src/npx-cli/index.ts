@@ -36,6 +36,17 @@ ${pc.bold('Runtime Commands')} (requires Bun, delegates to installed plugin):
   ${pc.cyan('npx claude-mem stop')}                 Stop worker service
   ${pc.cyan('npx claude-mem restart')}              Restart worker service
   ${pc.cyan('npx claude-mem status')}               Show worker status
+  ${pc.cyan('npx claude-mem server start')}         Start server service
+  ${pc.cyan('npx claude-mem server stop')}          Stop server service
+  ${pc.cyan('npx claude-mem server restart')}       Restart server service
+  ${pc.cyan('npx claude-mem server status')}        Show server status
+  ${pc.cyan('npx claude-mem server logs')}          Show recent server logs
+  ${pc.cyan('npx claude-mem server doctor')}        Check server configuration (not yet implemented)
+  ${pc.cyan('npx claude-mem server migrate')}       Run server migrations (not yet implemented)
+  ${pc.cyan('npx claude-mem server export')}        Export server data (not yet implemented)
+  ${pc.cyan('npx claude-mem server import')}        Import server data (not yet implemented)
+  ${pc.cyan('npx claude-mem server api-key create|list|revoke')}   Manage API keys (not yet implemented)
+  ${pc.cyan('npx claude-mem worker start|stop|restart|status')}    Worker compatibility aliases
   ${pc.cyan('npx claude-mem search <query>')}       Search observations
   ${pc.cyan('npx claude-mem adopt [--dry-run] [--branch <name>]')}    Stamp merged worktrees into parent project
   ${pc.cyan('npx claude-mem cleanup [--dry-run]')}    Run one-time v12.4.3 pollution cleanup (or preview counts)
@@ -136,6 +147,18 @@ async function main(): Promise<void> {
     case 'status': {
       const { runStatusCommand } = await import('./commands/runtime.js');
       runStatusCommand();
+      break;
+    }
+
+    case 'server': {
+      const { runServerCommand } = await import('./commands/server.js');
+      await runServerCommand(args.slice(1));
+      break;
+    }
+
+    case 'worker': {
+      const { runWorkerAliasCommand } = await import('./commands/server.js');
+      runWorkerAliasCommand(args.slice(1));
       break;
     }
 

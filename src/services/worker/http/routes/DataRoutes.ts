@@ -271,15 +271,15 @@ export class DataRoutes extends BaseRouteHandler {
     res.json(store.getProjectCatalog());
   });
 
-  private handleGetProcessingStatus = this.wrapHandler((req: Request, res: Response): void => {
-    const isProcessing = this.sessionManager.isAnySessionProcessing();
-    const queueDepth = this.sessionManager.getTotalActiveWork(); 
+  private handleGetProcessingStatus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const isProcessing = await this.sessionManager.isAnySessionProcessing();
+    const queueDepth = await this.sessionManager.getTotalActiveWork(); 
     res.json({ isProcessing, queueDepth });
   });
 
-  private handleSetProcessing = this.wrapHandler((req: Request, res: Response): void => {
-    const isProcessing = this.sessionManager.isAnySessionProcessing();
-    const queueDepth = this.sessionManager.getTotalQueueDepth();
+  private handleSetProcessing = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const isProcessing = await this.sessionManager.isAnySessionProcessing();
+    const queueDepth = await this.sessionManager.getTotalQueueDepth();
     const activeSessions = this.sessionManager.getActiveSessionCount();
 
     res.json({ status: 'ok', isProcessing, queueDepth, activeSessions });

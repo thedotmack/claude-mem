@@ -39,19 +39,19 @@ Claude-Mem Queue Clearer
 Clear orphaned messages from the pending_messages SQLite table.
 
 Usage:
-  bun scripts/clear-failed-queue.ts [options]
+  bun scripts/clear-pending-queue.ts [options]
 
 Options:
   --help, -h     Show this help message
-  --all          Clear ALL messages (pending, processing, processed, failed)
+  --all          Clear ALL messages (pending and processing)
   --force        Clear without prompting for confirmation
 
 Examples:
-  # Clear failed messages interactively
-  bun scripts/clear-failed-queue.ts
+  # Clear processing messages interactively
+  bun scripts/clear-pending-queue.ts
 
   # Clear ALL messages without confirmation
-  bun scripts/clear-failed-queue.ts --all --force
+  bun scripts/clear-pending-queue.ts --all --force
 
 Notes:
   Operates directly on ~/.claude-mem/claude-mem.db (or \$CLAUDE_MEM_DATA_DIR).
@@ -65,7 +65,7 @@ Notes:
 
   console.log(clearAll
     ? '\n=== Claude-Mem Queue Clearer (ALL) ===\n'
-    : '\n=== Claude-Mem Queue Clearer (Failed) ===\n');
+    : '\n=== Claude-Mem Queue Clearer (Processing) ===\n');
 
   const dbPath = resolveDbPath();
   if (!existsSync(dbPath)) {
@@ -81,20 +81,20 @@ Notes:
   ).all() as StatusRow[];
 
   const total = counts.reduce((sum, row) => sum + row.count, 0);
-  const failed = counts.find(r => r.status === 'failed')?.count ?? 0;
+  const processing = counts.find(r => r.status === 'processing')?.count ?? 0;
 
   console.log('Queue Summary:');
-  for (const status of ['pending', 'processing', 'processed', 'failed'] as const) {
+  for (const status of ['pending', 'processing'] as const) {
     const row = counts.find(r => r.status === status);
     console.log(`  ${status.padEnd(11)} ${row?.count ?? 0}`);
   }
   console.log('');
 
-  const willClear = clearAll ? total : failed;
+  const willClear = clearAll ? total : processing;
   if (willClear === 0) {
     console.log(clearAll
       ? 'No messages in queue. Nothing to clear.\n'
-      : 'No failed messages in queue. Nothing to clear.\n');
+      : 'No processing messages in queue. Nothing to clear.\n');
     db.close();
     process.exit(0);
   }
@@ -102,8 +102,8 @@ Notes:
   if (!force) {
     const answer = await prompt(
       clearAll
-        ? `Clear ${willClear} messages (all statuses)? [y/N]: `
-        : `Clear ${willClear} failed messages? [y/N]: `
+        ? `Clear ${willClear} messages (pending and processing)? [y/N]: `
+        : `Clear ${willClear} processing messages? [y/N]: `
     );
     if (answer.toLowerCase() !== 'y') {
       console.log('\nCancelled. Run with --force to skip confirmation.\n');
@@ -114,8 +114,8 @@ Notes:
   }
 
   const stmt = clearAll
-    ? db.prepare('DELETE FROM pending_messages')
-    : db.prepare("DELETE FROM pending_messages WHERE status = 'failed'");
+    ? db.prepare("DELETE FROM pending_messages WHERE status IN ('pending', 'processing')")
+    : db.prepare("DELETE FROM pending_messages WHERE status = 'processing'");
   const cleared = stmt.run().changes;
 
   const remaining = (db.prepare(

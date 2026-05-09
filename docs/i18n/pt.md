@@ -51,7 +51,7 @@
 
 <p align="center">
   <a href="LICENSE">
-    <img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License">
+    <img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/version-6.5.0-green.svg" alt="Version">
@@ -274,24 +274,20 @@ Veja [Guia de Desenvolvimento](https://docs.claude-mem.ai/development) para o fl
 
 ---
 
-## Licença
+## License
 
-Este projeto está licenciado sob a **GNU Affero General Public License v3.0** (AGPL-3.0).
+This project is licensed under the **Apache License 2.0** (Apache-2.0).
 
-Copyright (C) 2025 Alex Newman (@thedotmack). Todos os direitos reservados.
+Copyright (C) 2025 Alex Newman (@thedotmack). All rights reserved.
 
-Veja o arquivo [LICENSE](LICENSE) para detalhes completos.
+See the [LICENSE](LICENSE) file for full details.
 
-**O Que Isso Significa:**
+Apache-2.0 allows broad use, modification, distribution, and commercial use, subject to its terms.
 
-- Você pode usar, modificar e distribuir este software livremente
-- Se você modificar e implantar em um servidor de rede, você deve disponibilizar seu código-fonte
-- Trabalhos derivados também devem ser licenciados sob AGPL-3.0
-- NÃO HÁ GARANTIA para este software
-
-**Nota sobre Ragtime**: O diretório `ragtime/` é licenciado separadamente sob a **PolyForm Noncommercial License 1.0.0**. Veja [ragtime/LICENSE](ragtime/LICENSE) para detalhes.
+**Ragtime note**: The ragtime/ directory is licensed under the **Apache License 2.0**. See [ragtime/LICENSE](ragtime/LICENSE) for details.
 
 ---
+
 
 ## Suporte
 

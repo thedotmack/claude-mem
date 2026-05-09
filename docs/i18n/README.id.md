@@ -50,7 +50,7 @@
 
 <p align="center">
   <a href="LICENSE">
-    <img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License">
+    <img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/version-6.5.0-green.svg" alt="Version">
@@ -273,24 +273,20 @@ Lihat [Panduan Pengembangan](https://docs.claude-mem.ai/development) untuk alur 
 
 ---
 
-## Lisensi
+## License
 
-Proyek ini dilisensikan di bawah **GNU Affero General Public License v3.0** (AGPL-3.0).
+This project is licensed under the **Apache License 2.0** (Apache-2.0).
 
 Copyright (C) 2025 Alex Newman (@thedotmack). All rights reserved.
 
-Lihat file [LICENSE](LICENSE) untuk detail lengkap.
+See the [LICENSE](LICENSE) file for full details.
 
-**Apa Artinya:**
+Apache-2.0 allows broad use, modification, distribution, and commercial use, subject to its terms.
 
-- Anda dapat menggunakan, memodifikasi, dan mendistribusikan perangkat lunak ini dengan bebas
-- Jika Anda memodifikasi dan men-deploy di server jaringan, Anda harus membuat kode sumber Anda tersedia
-- Karya turunan juga harus dilisensikan di bawah AGPL-3.0
-- TIDAK ADA JAMINAN untuk perangkat lunak ini
-
-**Catatan tentang Ragtime**: Direktori `ragtime/` dilisensikan secara terpisah di bawah **PolyForm Noncommercial License 1.0.0**. Lihat [ragtime/LICENSE](ragtime/LICENSE) untuk detail.
+**Ragtime note**: The ragtime/ directory is licensed under the **Apache License 2.0**. See [ragtime/LICENSE](ragtime/LICENSE) for details.
 
 ---
+
 
 ## Dukungan
 
@@ -301,6 +297,6 @@ Lihat file [LICENSE](LICENSE) untuk detail lengkap.
 
 ---
 
-**Built with Claude Agent SDK** | **Powered by Claude Code** | **Made with TypeScript**
+**Built with Claude Agent SDK** | **Works with Claude Code** | **Made with TypeScript**
 
 ---

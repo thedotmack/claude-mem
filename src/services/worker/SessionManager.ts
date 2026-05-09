@@ -1,10 +1,14 @@
-
-import { EventEmitter } from 'events';
 import { DatabaseManager } from './DatabaseManager.js';
 import { logger } from '../../utils/logger.js';
 import type { ActiveSession, PendingMessage, PendingMessageWithId, ObservationData } from '../worker-types.js';
-import { PendingMessageStore } from '../sqlite/PendingMessageStore.js';
-import { SessionQueueProcessor } from '../queue/SessionQueueProcessor.js';
+import {
+  SqliteObservationQueueEngine,
+  type HealthCheckedObservationQueueEngine,
+  type InspectableObservationQueueEngine,
+  type ObservationQueueHealth
+} from '../../server/queue/ObservationQueueEngine.js';
+import { BullMqObservationQueueEngine } from '../../server/queue/BullMqObservationQueueEngine.js';
+import { getObservationQueueEngineName } from '../../server/queue/redis-config.js';
 import { getSdkProcessForSession, ensureSdkProcessExit } from '../../supervisor/process-registry.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { RestartGuard } from './RestartGuard.js';
@@ -12,24 +16,55 @@ import { RestartGuard } from './RestartGuard.js';
 export class SessionManager {
   private dbManager: DatabaseManager;
   private sessions: Map<number, ActiveSession> = new Map();
-  private sessionQueues: Map<number, EventEmitter> = new Map();
   private onSessionDeletedCallback?: () => void;
-  private pendingStore: PendingMessageStore | null = null;
+  private queueEngine: InspectableObservationQueueEngine | null = null;
+  private queueEngineName: 'sqlite' | 'bullmq' | null = null;
   private onPendingMutate?: () => void;
 
   constructor(dbManager: DatabaseManager) {
     this.dbManager = dbManager;
   }
 
-  private getPendingStore(): PendingMessageStore {
-    if (!this.pendingStore) {
-      const sessionStore = this.dbManager.getSessionStore();
-      this.pendingStore = new PendingMessageStore(
-        sessionStore.db,
-        () => this.onPendingMutate?.()
-      );
+  private getQueueEngine(): InspectableObservationQueueEngine {
+    if (!this.queueEngine) {
+      this.queueEngineName = getObservationQueueEngineName();
+      if (this.queueEngineName === 'bullmq') {
+        this.queueEngine = new BullMqObservationQueueEngine({
+          onMutate: () => this.onPendingMutate?.()
+        });
+      } else {
+        const sessionStore = this.dbManager.getSessionStore();
+        this.queueEngine = new SqliteObservationQueueEngine(
+          sessionStore.db,
+          () => this.onPendingMutate?.()
+        );
+      }
     }
-    return this.pendingStore;
+    return this.queueEngine;
+  }
+
+  async initializeQueueEngine(): Promise<void> {
+    this.queueEngineName = getObservationQueueEngineName();
+    if (this.queueEngineName === 'sqlite') {
+      return;
+    }
+    const queue = this.getQueueEngine();
+    if (isHealthCheckedQueue(queue)) {
+      await queue.assertHealthy();
+      await queue.getTotalQueueDepth();
+    }
+  }
+
+  isBullMqQueueEnabled(): boolean {
+    return (this.queueEngineName ?? getObservationQueueEngineName()) === 'bullmq';
+  }
+
+  async getQueueHealth(): Promise<ObservationQueueHealth | null> {
+    const queue = this.getQueueEngine();
+    if (isHealthCheckedQueue(queue)) {
+      return queue.getHealth();
+    }
+    return null;
   }
 
   setOnSessionDeleted(callback: () => void): void {
@@ -134,6 +169,7 @@ export class SessionManager {
       cumulativeInputTokens: 0,
       cumulativeOutputTokens: 0,
       earliestPendingTimestamp: null,
+      claimedMessageIds: [],
       conversationHistory: [],  // Initialize empty - will be populated by agents
       currentProvider: null,  // Will be set when generator starts
       consecutiveRestarts: 0,  // DEPRECATED: use restartGuard. Kept for logging compat.
@@ -153,9 +189,6 @@ export class SessionManager {
 
     this.sessions.set(sessionDbId, session);
 
-    const emitter = new EventEmitter();
-    this.sessionQueues.set(sessionDbId, emitter);
-
     logger.info('SESSION', 'Session initialized', {
       sessionId: sessionDbId,
       project: session.project,
@@ -171,7 +204,7 @@ export class SessionManager {
     return this.sessions.get(sessionDbId);
   }
 
-  queueObservation(sessionDbId: number, data: ObservationData): void {
+  async queueObservation(sessionDbId: number, data: ObservationData): Promise<void> {
     let session = this.sessions.get(sessionDbId);
     if (!session) {
       session = this.initializeSession(sessionDbId);
@@ -190,8 +223,9 @@ export class SessionManager {
     };
 
     try {
-      const messageId = this.getPendingStore().enqueue(sessionDbId, session.contentSessionId, message);
-      const queueDepth = this.getPendingStore().getPendingCount(sessionDbId);
+      const queue = this.getQueueEngine();
+      const messageId = await queue.enqueue(sessionDbId, session.contentSessionId, message);
+      const queueDepth = await queue.getPendingCount(sessionDbId);
       const toolSummary = logger.formatTool(data.tool_name, data.tool_input);
       if (messageId === 0) {
         logger.debug('QUEUE', `DUP_SUPPRESSED | sessionDbId=${sessionDbId} | type=observation | tool=${toolSummary} | toolUseId=${data.toolUseId ?? 'null'} | depth=${queueDepth}`, {
@@ -212,11 +246,9 @@ export class SessionManager {
       throw normalized;
     }
 
-    const emitter = this.sessionQueues.get(sessionDbId);
-    emitter?.emit('message');
   }
 
-  queueSummarize(sessionDbId: number, lastAssistantMessage?: string): void {
+  async queueSummarize(sessionDbId: number, lastAssistantMessage?: string): Promise<void> {
     let session = this.sessions.get(sessionDbId);
     if (!session) {
       session = this.initializeSession(sessionDbId);
@@ -228,8 +260,9 @@ export class SessionManager {
     };
 
     try {
-      const messageId = this.getPendingStore().enqueue(sessionDbId, session.contentSessionId, message);
-      const queueDepth = this.getPendingStore().getPendingCount(sessionDbId);
+      const queue = this.getQueueEngine();
+      const messageId = await queue.enqueue(sessionDbId, session.contentSessionId, message);
+      const queueDepth = await queue.getPendingCount(sessionDbId);
       if (messageId === 0) {
         logger.debug('QUEUE', `DUP_SUPPRESSED | sessionDbId=${sessionDbId} | type=summarize | depth=${queueDepth}`, {
           sessionId: sessionDbId
@@ -252,13 +285,32 @@ export class SessionManager {
       throw error; 
     }
 
-    const emitter = this.sessionQueues.get(sessionDbId);
-    emitter?.emit('message');
   }
 
-  clearPendingForSession(sessionDbId: number): void {
-    this.getPendingStore().clearPendingForSession(sessionDbId);
-    this.sessionQueues.get(sessionDbId)?.emit('message');
+  async clearPendingForSession(sessionDbId: number): Promise<number> {
+    return await this.getQueueEngine().clearPendingForSession(sessionDbId);
+  }
+
+  async resetProcessingToPending(sessionDbId: number): Promise<number> {
+    const session = this.sessions.get(sessionDbId);
+    if (session) {
+      session.claimedMessageIds = [];
+    }
+    return await this.getQueueEngine().resetProcessingToPending(sessionDbId);
+  }
+
+  async confirmClaimedMessages(sessionDbId: number): Promise<number> {
+    const session = this.sessions.get(sessionDbId);
+    const claimedIds = session?.claimedMessageIds ?? [];
+    let confirmed = 0;
+    for (const messageId of claimedIds) {
+      confirmed += await this.getQueueEngine().confirmProcessed(messageId);
+    }
+    if (session) {
+      session.claimedMessageIds = [];
+      session.earliestPendingTimestamp = null;
+    }
+    return confirmed;
   }
 
   async deleteSession(sessionDbId: number): Promise<void> {
@@ -314,8 +366,6 @@ export class SessionManager {
     }
 
     this.sessions.delete(sessionDbId);
-    this.sessionQueues.delete(sessionDbId);
-
     logger.info('SESSION', 'Session deleted', {
       sessionId: sessionDbId,
       duration: `${(sessionDuration / 1000).toFixed(1)}s`,
@@ -337,8 +387,6 @@ export class SessionManager {
     }
 
     this.sessions.delete(sessionDbId);
-    this.sessionQueues.delete(sessionDbId);
-
     logger.info('SESSION', 'Session removed from active sessions', {
       sessionId: sessionDbId,
       project: session.project
@@ -352,31 +400,28 @@ export class SessionManager {
   async shutdownAll(): Promise<void> {
     const sessionIds = Array.from(this.sessions.keys());
     await Promise.all(sessionIds.map(id => this.deleteSession(id)));
+    await this.queueEngine?.close();
+    this.queueEngine = null;
   }
 
-  hasPendingMessages(): boolean {
-    return this.getTotalQueueDepth() > 0;
+  async hasPendingMessages(): Promise<boolean> {
+    return (await this.getTotalQueueDepth()) > 0;
   }
 
   getActiveSessionCount(): number {
     return this.sessions.size;
   }
 
-  getTotalQueueDepth(): number {
-    const stmt = this.dbManager.getSessionStore().db.prepare(`
-      SELECT COUNT(*) as count FROM pending_messages
-      WHERE status IN ('pending', 'processing')
-    `);
-    const result = stmt.get() as { count: number };
-    return result.count;
+  async getTotalQueueDepth(): Promise<number> {
+    return await this.getQueueEngine().getTotalQueueDepth();
   }
 
-  getTotalActiveWork(): number {
-    return this.getTotalQueueDepth();
+  async getTotalActiveWork(): Promise<number> {
+    return await this.getTotalQueueDepth();
   }
 
-  isAnySessionProcessing(): boolean {
-    return this.getTotalQueueDepth() > 0;
+  async isAnySessionProcessing(): Promise<boolean> {
+    return (await this.getTotalQueueDepth()) > 0;
   }
 
   async *getMessageIterator(sessionDbId: number): AsyncIterableIterator<PendingMessageWithId> {
@@ -385,16 +430,10 @@ export class SessionManager {
       session = this.initializeSession(sessionDbId);
     }
 
-    const emitter = this.sessionQueues.get(sessionDbId);
-    if (!emitter) {
-      throw new Error(`No emitter for session ${sessionDbId}`);
-    }
+    const queue = this.getQueueEngine();
+    await this.resetProcessingToPending(sessionDbId);
 
-    this.getPendingStore().resetProcessingToPending(sessionDbId);
-
-    const processor = new SessionQueueProcessor(this.getPendingStore(), emitter);
-
-    for await (const message of processor.createIterator({
+    for await (const message of queue.createIterator({
       sessionDbId,
       signal: session.abortController.signal,
       onIdleTimeout: () => {
@@ -404,6 +443,7 @@ export class SessionManager {
         session.abortController.abort();
       }
     })) {
+      session.claimedMessageIds.push(message._persistentId);
       if (session.earliestPendingTimestamp === null) {
         session.earliestPendingTimestamp = message._originalTimestamp;
       } else {
@@ -416,7 +456,11 @@ export class SessionManager {
     }
   }
 
-  getPendingMessageStore(): PendingMessageStore {
-    return this.getPendingStore();
+  getPendingMessageStore(): InspectableObservationQueueEngine {
+    return this.getQueueEngine();
   }
+}
+
+function isHealthCheckedQueue(queue: InspectableObservationQueueEngine): queue is HealthCheckedObservationQueueEngine {
+  return 'getHealth' in queue && 'assertHealthy' in queue;
 }

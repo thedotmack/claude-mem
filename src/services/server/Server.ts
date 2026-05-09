@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import path from 'path';
 import { ALLOWED_OPERATIONS, ALLOWED_TOPICS } from './allowed-constants.js';
 import { logger } from '../../utils/logger.js';
-import { createMiddleware, summarizeRequestBody, requireLocalhost } from './Middleware.js';
+import { createCorsMiddleware, createMiddleware, summarizeRequestBody, requireLocalhost } from './Middleware.js';
 import { errorHandler, notFoundHandler } from './ErrorHandler.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { isPidAlive } from '../../supervisor/process-registry.js';
@@ -13,6 +13,7 @@ import { ENV_PREFIXES, ENV_EXACT_MATCHES } from '../../supervisor/env-sanitizer.
 import { flushResponseThen } from './flushResponseThen.js';
 import { getUptimeSeconds } from '../../shared/uptime.js';
 import { globalRateLimitStore } from '../worker/RateLimitStore.js';
+import type { ObservationQueueHealth } from '../../server/queue/ObservationQueueEngine.js';
 
 const INSTRUCTIONS_BASE_DIR: string = path.resolve(__dirname, '../skills/mem-search');
 const INSTRUCTIONS_OPERATIONS_DIR: string = path.join(INSTRUCTIONS_BASE_DIR, 'operations');
@@ -82,7 +83,10 @@ export interface ServerOptions {
   onShutdown: () => Promise<void>;
   onRestart: () => Promise<void>;
   workerPath: string;
+  runtime?: string;
   getAiStatus: () => AiStatus;
+  preBodyParserRoutes?: RouteHandler[];
+  getQueueHealth?: () => ObservationQueueHealth | null | Promise<ObservationQueueHealth | null>;
 }
 
 export class Server {
@@ -94,6 +98,8 @@ export class Server {
   constructor(options: ServerOptions) {
     this.options = options;
     this.app = express();
+    this.setupCors();
+    this.setupPreBodyParserRoutes();
     this.setupMiddleware();
     this.setupCoreRoutes();
   }
@@ -153,14 +159,27 @@ export class Server {
   }
 
   private setupMiddleware(): void {
-    const middlewares = createMiddleware(summarizeRequestBody);
+    const middlewares = createMiddleware(summarizeRequestBody, { includeCors: false });
     middlewares.forEach(mw => this.app.use(mw));
   }
 
+  private setupCors(): void {
+    this.app.use(createCorsMiddleware());
+  }
+
+  private setupPreBodyParserRoutes(): void {
+    this.options.preBodyParserRoutes?.forEach(handler => handler.setupRoutes(this.app));
+  }
+
   private setupCoreRoutes(): void {
-    this.app.get('/api/health', (_req: Request, res: Response) => {
-      res.status(200).json({
-        status: 'ok',
+    this.app.get('/api/health', async (_req: Request, res: Response) => {
+      const queueHealth = this.options.getQueueHealth
+        ? await this.options.getQueueHealth()
+        : null;
+      const queueDegraded = queueHealth?.engine === 'bullmq' && queueHealth.redis.status === 'error';
+      res.status(queueDegraded ? 503 : 200).json({
+        status: queueDegraded ? 'degraded' : 'ok',
+        ...(this.options.runtime ? { runtime: this.options.runtime } : {}),
         version: BUILT_IN_VERSION,
         workerPath: this.options.workerPath,
         uptime: getUptimeSeconds(this.startTime),
@@ -172,6 +191,7 @@ export class Server {
         mcpReady: this.options.getMcpReady(),
         ai: this.options.getAiStatus(),
         rateLimits: globalRateLimitStore.getMostRecentByWindow(),
+        ...(queueHealth ? { queue: queueHealth } : {}),
       });
     });
 

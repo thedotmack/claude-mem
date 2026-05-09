@@ -70,6 +70,15 @@ describe('MigrationRunner', () => {
       expect(tables).toContain('session_summaries');
       expect(tables).toContain('user_prompts');
       expect(tables).toContain('pending_messages');
+      expect(tables).toContain('projects');
+      expect(tables).toContain('server_sessions');
+      expect(tables).toContain('agent_events');
+      expect(tables).toContain('memory_items');
+      expect(tables).toContain('memory_sources');
+      expect(tables).toContain('teams');
+      expect(tables).toContain('team_members');
+      expect(tables).toContain('api_keys');
+      expect(tables).toContain('audit_log');
     });
 
     it('should create sdk_sessions with all expected columns', () => {
@@ -125,6 +134,104 @@ describe('MigrationRunner', () => {
       expect(versions).toContain(21);  
       expect(versions).toContain(22);  
       expect(versions).toContain(30);  
+      expect(versions).toContain(33);
+      expect(versions).toContain(34);
+    });
+
+    it('should create server-owned storage tables without changing legacy readability', () => {
+      const runner = new MigrationRunner(db);
+      runner.runAllMigrations();
+
+      const now = new Date().toISOString();
+      const epoch = Date.now();
+
+      db.prepare(`
+        INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run('content-readable', 'memory-readable', 'legacy-project', now, epoch, 'active');
+
+      db.prepare(`
+        INSERT INTO observations (memory_session_id, project, type, title, narrative, created_at, created_at_epoch)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run('memory-readable', 'legacy-project', 'learned', 'Legacy observation', 'Still queryable', now, epoch);
+
+      const observation = db.prepare('SELECT title, narrative FROM observations WHERE memory_session_id = ?').get('memory-readable') as { title: string; narrative: string };
+      expect(observation.title).toBe('Legacy observation');
+      expect(observation.narrative).toBe('Still queryable');
+
+      const memoryItems = db.prepare('SELECT COUNT(*) as count FROM memory_items').get() as { count: number };
+      expect(memoryItems.count).toBe(0);
+    });
+
+    it('should tighten legacy pending_messages status checks from old migration 28 databases', () => {
+      db.run(`
+        CREATE TABLE IF NOT EXISTS schema_versions (
+          id INTEGER PRIMARY KEY,
+          version INTEGER UNIQUE NOT NULL,
+          applied_at TEXT NOT NULL
+        )
+      `);
+
+      db.run(`
+        CREATE TABLE sdk_sessions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          content_session_id TEXT UNIQUE NOT NULL,
+          memory_session_id TEXT UNIQUE,
+          project TEXT NOT NULL,
+          platform_source TEXT NOT NULL DEFAULT 'claude',
+          user_prompt TEXT,
+          started_at TEXT NOT NULL,
+          started_at_epoch INTEGER NOT NULL,
+          completed_at TEXT,
+          completed_at_epoch INTEGER,
+          status TEXT CHECK(status IN ('active', 'completed', 'failed')) NOT NULL DEFAULT 'active'
+        )
+      `);
+
+      db.run(`
+        CREATE TABLE pending_messages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_db_id INTEGER NOT NULL,
+          content_session_id TEXT NOT NULL,
+          tool_use_id TEXT,
+          message_type TEXT NOT NULL CHECK(message_type IN ('observation', 'summarize')),
+          status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'processing', 'processed', 'failed')),
+          retry_count INTEGER NOT NULL DEFAULT 0,
+          created_at_epoch INTEGER NOT NULL,
+          completed_at_epoch INTEGER,
+          worker_pid INTEGER
+        )
+      `);
+
+      const now = new Date().toISOString();
+      db.prepare('INSERT INTO schema_versions (version, applied_at) VALUES (?, ?)').run(28, now);
+      const sessionId = Number(db.prepare(`
+        INSERT INTO sdk_sessions (content_session_id, project, started_at, started_at_epoch)
+        VALUES ('legacy-content', 'legacy-project', ?, ?)
+      `).run(now, Date.now()).lastInsertRowid);
+      db.prepare(`
+        INSERT INTO pending_messages (session_db_id, content_session_id, message_type, status, created_at_epoch)
+        VALUES (?, 'legacy-content', 'observation', 'pending', ?)
+      `).run(sessionId, Date.now());
+      db.prepare(`
+        INSERT INTO pending_messages (session_db_id, content_session_id, message_type, status, created_at_epoch)
+        VALUES (?, 'legacy-content', 'observation', 'failed', ?)
+      `).run(sessionId, Date.now());
+
+      const runner = new MigrationRunner(db);
+      runner.runAllMigrations();
+
+      const pendingRows = db.prepare('SELECT COUNT(*) AS count FROM pending_messages').get() as { count: number };
+      expect(pendingRows.count).toBe(1);
+      const columns = getColumns(db, 'pending_messages').map(column => column.name);
+      expect(columns).not.toContain('retry_count');
+      expect(columns).not.toContain('completed_at_epoch');
+      expect(columns).not.toContain('worker_pid');
+
+      expect(() => db.prepare(`
+        INSERT INTO pending_messages (session_db_id, content_session_id, message_type, status, created_at_epoch)
+        VALUES (?, 'legacy-content', 'observation', 'failed', ?)
+      `).run(sessionId, Date.now())).toThrow();
     });
   });
 

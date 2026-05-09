@@ -236,6 +236,15 @@ describe('Install Non-TTY Support', () => {
     });
   });
 
+  describe('runtime selection', () => {
+    it('offers Server (beta) while keeping worker as the default runtime', () => {
+      expect(installSource).toContain("'server-beta'");
+      expect(installSource).toContain('Server (beta)');
+      expect(installSource).toContain("initialValue: 'worker'");
+      expect(installSource).toContain('CLAUDE_MEM_RUNTIME');
+    });
+  });
+
   describe('post-install Next Steps copy', () => {
     it('frames the choice as two paths', () => {
       expect(installSource).toContain('Two paths from here:');

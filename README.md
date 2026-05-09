@@ -49,7 +49,7 @@
 
 <p align="center">
   <a href="LICENSE">
-    <img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License">
+    <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/version-6.5.0-green.svg" alt="Version">
@@ -385,20 +385,17 @@ See [Development Guide](https://docs.claude-mem.ai/development) for contribution
 
 ## License
 
-This project is licensed under the **GNU Affero General Public License v3.0** (AGPL-3.0).
+Claude-Mem is licensed under the Apache License 2.0.
 
-Copyright (C) 2025 Alex Newman (@thedotmack). All rights reserved.
+We chose Apache-2.0 because durable agentic memory should be easy to embed in
+developer tools, local agents, MCP servers, enterprise systems, robotics stacks,
+and production agent harnesses.
 
-See the [LICENSE](LICENSE) file for full details.
+See the [LICENSE](LICENSE) file for full details. See [docs/license.md](docs/license.md)
+and [docs/ip-boundary.md](docs/ip-boundary.md) for licensing scope and the
+open/commercial boundary.
 
-**What This Means:**
-
-- You can use, modify, and distribute this software freely
-- If you modify and deploy on a network server, you must make your source code available
-- Derivative works must also be licensed under AGPL-3.0
-- There is NO WARRANTY for this software
-
-**Note on Ragtime**: The `ragtime/` directory is licensed separately under the **PolyForm Noncommercial License 1.0.0**. See [ragtime/LICENSE](ragtime/LICENSE) for details.
+**Note on Ragtime**: The `ragtime/` directory is licensed under the **Apache License 2.0**. See [ragtime/LICENSE](ragtime/LICENSE) for details.
 
 ---
 
@@ -413,7 +410,7 @@ See the [LICENSE](LICENSE) file for full details.
 
 ---
 
-**Built with Claude Agent SDK** | **Powered by Claude Code** | **Made with TypeScript**
+**Built with Claude Agent SDK** | **Works with Claude Code** | **Made with TypeScript**
 
 ---
 

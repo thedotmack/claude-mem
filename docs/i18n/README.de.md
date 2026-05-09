@@ -50,7 +50,7 @@
 
 <p align="center">
   <a href="LICENSE">
-    <img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License">
+    <img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/version-6.5.0-green.svg" alt="Version">
@@ -273,24 +273,20 @@ Siehe [Entwicklungsanleitung](https://docs.claude-mem.ai/development) für den B
 
 ---
 
-## Lizenz
+## License
 
-Dieses Projekt ist unter der **GNU Affero General Public License v3.0** (AGPL-3.0) lizenziert.
+This project is licensed under the **Apache License 2.0** (Apache-2.0).
 
-Copyright (C) 2025 Alex Newman (@thedotmack). Alle Rechte vorbehalten.
+Copyright (C) 2025 Alex Newman (@thedotmack). All rights reserved.
 
-Siehe die [LICENSE](LICENSE)-Datei für vollständige Details.
+See the [LICENSE](LICENSE) file for full details.
 
-**Was das bedeutet:**
+Apache-2.0 allows broad use, modification, distribution, and commercial use, subject to its terms.
 
-- Sie können diese Software frei verwenden, modifizieren und verteilen
-- Wenn Sie sie modifizieren und auf einem Netzwerkserver bereitstellen, müssen Sie Ihren Quellcode verfügbar machen
-- Abgeleitete Werke müssen ebenfalls unter AGPL-3.0 lizenziert werden
-- Es gibt KEINE GARANTIE für diese Software
-
-**Hinweis zu Ragtime**: Das `ragtime/`-Verzeichnis ist separat unter der **PolyForm Noncommercial License 1.0.0** lizenziert. Siehe [ragtime/LICENSE](ragtime/LICENSE) für Details.
+**Ragtime note**: The ragtime/ directory is licensed under the **Apache License 2.0**. See [ragtime/LICENSE](ragtime/LICENSE) for details.
 
 ---
+
 
 ## Support
 
@@ -301,4 +297,4 @@ Siehe die [LICENSE](LICENSE)-Datei für vollständige Details.
 
 ---
 
-**Erstellt mit Claude Agent SDK** | **Powered by Claude Code** | **Made with TypeScript**
+**Erstellt mit Claude Agent SDK** | **Works with Claude Code** | **Made with TypeScript**

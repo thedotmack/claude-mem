@@ -31,8 +31,7 @@ describe('Codex transcript ingestion on Windows (#2192)', () => {
   });
 
   it('requeues in-flight processing rows when the generator aborts (queue self-deadlock fix)', () => {
-    expect(sessionRoutesSource).toMatch(/Generator aborted/);
-    expect(sessionRoutesSource).toMatch(/processingMessageIds\.slice\(\)/);
-    expect(sessionRoutesSource).toMatch(/inflightStore\.markFailed\(messageId\)/);
+    expect(sessionRoutesSource).toMatch(/resetProcessingToPending/);
+    expect(sessionRoutesSource).toMatch(/Reset processing messages after generator error/);
   });
 });

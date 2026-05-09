@@ -244,7 +244,7 @@ export class TranscriptEventProcessor {
     const toolName = typeof fields.toolName === 'string' ? fields.toolName : undefined;
     if (!toolName) return;
 
-    const result = ingestObservation({
+    const result = await ingestObservation({
       contentSessionId: session.sessionId,
       cwd: session.cwd ?? process.cwd(),
       toolName,

@@ -29,6 +29,10 @@ function workerServiceScriptPath(): string {
   return join(marketplaceDirectory(), 'plugin', 'scripts', 'worker-service.cjs');
 }
 
+function serverBetaServiceScriptPath(): string {
+  return join(marketplaceDirectory(), 'plugin', 'scripts', 'server-beta-service.cjs');
+}
+
 function spawnBunWorkerCommand(command: string, extraArgs: string[] = []): void {
   ensureInstalledOrExit();
   const bunPath = resolveBunOrExit();
@@ -58,6 +62,49 @@ function spawnBunWorkerCommand(command: string, extraArgs: string[] = []): void 
   });
 }
 
+function spawnBunServerBetaCommand(command: string): void {
+  ensureInstalledOrExit();
+  const bunPath = resolveBunOrExit();
+  const serverScript = serverBetaServiceScriptPath();
+
+  if (!existsSync(serverScript)) {
+    console.error(pc.red(`Server beta script not found at: ${serverScript}`));
+    console.error('The installation may be corrupted. Try: npx claude-mem install');
+    process.exit(1);
+  }
+
+  const child = spawnHidden(bunPath, [serverScript, command], {
+    stdio: 'inherit',
+    cwd: marketplaceDirectory(),
+    env: process.env,
+  });
+
+  child.on('error', (error) => {
+    console.error(pc.red(`Failed to start Bun: ${error.message}`));
+    process.exit(1);
+  });
+
+  child.on('close', (exitCode) => {
+    process.exit(exitCode ?? 0);
+  });
+}
+
+export function runServerBetaStartCommand(): void {
+  spawnBunServerBetaCommand('start');
+}
+
+export function runServerBetaStopCommand(): void {
+  spawnBunServerBetaCommand('stop');
+}
+
+export function runServerBetaRestartCommand(): void {
+  spawnBunServerBetaCommand('restart');
+}
+
+export function runServerBetaStatusCommand(): void {
+  spawnBunServerBetaCommand('status');
+}
+
 export function runStartCommand(): void {
   spawnBunWorkerCommand('start');
 }
@@ -72,6 +119,10 @@ export function runRestartCommand(): void {
 
 export function runStatusCommand(): void {
   spawnBunWorkerCommand('status');
+}
+
+export function runServerApiKeyCommand(extraArgs: string[] = []): void {
+  spawnBunWorkerCommand('server', ['api-key', ...extraArgs]);
 }
 
 export function runAdoptCommand(extraArgs: string[] = []): void {

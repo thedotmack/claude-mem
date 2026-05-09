@@ -8,7 +8,7 @@ import { RestartGuard } from '../RestartGuard.js';
 export interface GeneratorExitDependencies {
   sessionManager: SessionManager;
   completionHandler: SessionCompletionHandler;
-  restartGenerator: (session: ActiveSession, source: string) => void;
+  restartGenerator: (session: ActiveSession, source: string) => void | Promise<void>;
 }
 
 function isHardStopReason(reason: ActiveSession['abortReason']): boolean {
@@ -50,11 +50,11 @@ export async function handleGeneratorExit(
 
   const pendingStore = sessionManager.getPendingMessageStore();
 
-  const terminateSession = (logPrefix: string, clearPending: boolean) => {
+  const terminateSession = async (logPrefix: string, clearPending: boolean) => {
     try {
       if (clearPending) {
         try {
-          pendingStore.clearPendingForSession(sessionDbId);
+          await pendingStore.clearPendingForSession(sessionDbId);
         } catch (e) {
           const normalized = e instanceof Error ? e : new Error(String(e));
           logger.error('SESSION', `${logPrefix} pending cleanup failed; continuing finalization`, {
@@ -64,7 +64,7 @@ export async function handleGeneratorExit(
         }
       }
       try {
-        completionHandler.finalizeSession(sessionDbId);
+        await completionHandler.finalizeSession(sessionDbId);
       } catch (e) {
         const normalized = e instanceof Error ? e : new Error(String(e));
         logger.error('SESSION', `${logPrefix} finalization failed; forcing in-memory session removal`, {
@@ -82,26 +82,26 @@ export async function handleGeneratorExit(
       sessionId: sessionDbId,
       reason
     });
-    terminateSession('Hard-stop', true);
+    await terminateSession('Hard-stop', true);
     return;
   }
 
   let pendingCount: number;
   try {
-    pendingCount = pendingStore.getPendingCount(sessionDbId);
+    pendingCount = await pendingStore.getPendingCount(sessionDbId);
   } catch (e) {
     const normalized = e instanceof Error ? e : new Error(String(e));
     logger.error('SESSION', 'Error during recovery pending-count check; aborting to prevent leaks', {
       sessionId: sessionDbId
     }, normalized);
-    terminateSession('Recovery abort', true);
+    await terminateSession('Recovery abort', true);
     return;
   }
 
   if (pendingCount === 0) {
     session.restartGuard?.recordSuccess();
     session.consecutiveRestarts = 0;
-    terminateSession('Natural completion', false);
+    await terminateSession('Natural completion', false);
     return;
   }
 
@@ -120,7 +120,7 @@ export async function handleGeneratorExit(
       maxConsecutiveFailures: session.restartGuard.maxConsecutiveFailures,
     });
     session.consecutiveRestarts = 0;
-    terminateSession('Restart guard', true);
+    await terminateSession('Restart guard', true);
     return;
   }
 
@@ -145,7 +145,7 @@ export async function handleGeneratorExit(
     session.respawnTimer = undefined;
     const stillExists = deps.sessionManager.getSession(sessionDbId);
     if (stillExists && !stillExists.generatorPromise) {
-      restartGenerator(stillExists, 'pending-work-restart');
+      void restartGenerator(stillExists, 'pending-work-restart');
     }
   }, backoffMs);
 }

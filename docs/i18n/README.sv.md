@@ -50,7 +50,7 @@
 
 <p align="center">
   <a href="LICENSE">
-    <img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License">
+    <img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/version-6.5.0-green.svg" alt="Version">
@@ -273,24 +273,20 @@ Se [Utvecklingsguide](https://docs.claude-mem.ai/development) för bidragsarbets
 
 ---
 
-## Licens
+## License
 
-Detta projekt är licensierat under **GNU Affero General Public License v3.0** (AGPL-3.0).
+This project is licensed under the **Apache License 2.0** (Apache-2.0).
 
-Copyright (C) 2025 Alex Newman (@thedotmack). Alla rättigheter förbehållna.
+Copyright (C) 2025 Alex Newman (@thedotmack). All rights reserved.
 
-Se [LICENSE](LICENSE)-filen för fullständiga detaljer.
+See the [LICENSE](LICENSE) file for full details.
 
-**Vad detta betyder:**
+Apache-2.0 allows broad use, modification, distribution, and commercial use, subject to its terms.
 
-- Du kan använda, modifiera och distribuera denna programvara fritt
-- Om du modifierar och distribuerar på en nätverksserver måste du göra din källkod tillgänglig
-- Härledda verk måste också licensieras under AGPL-3.0
-- Det finns INGEN GARANTI för denna programvara
-
-**Notering om Ragtime**: Katalogen `ragtime/` är licensierad separat under **PolyForm Noncommercial License 1.0.0**. Se [ragtime/LICENSE](ragtime/LICENSE) för detaljer.
+**Ragtime note**: The ragtime/ directory is licensed under the **Apache License 2.0**. See [ragtime/LICENSE](ragtime/LICENSE) for details.
 
 ---
+
 
 ## Support
 
