@@ -83,7 +83,7 @@ If you cannot write a one-line architectural scope, the cluster is wrong.
 
 Use this exact phrasing on every child closure. Consistency lets contributors recognize the pattern at a glance and keeps the audit trail searchable.
 
-```
+```text
 Consolidating into #<MASTER> (plan-XX). The root cause and fix sequencing are tracked there alongside the rest of the cluster — please follow that issue for progress.
 ```
 
@@ -104,8 +104,11 @@ List all open issues (the read-everything pass). Two gotchas:
 - Any explicit `--limit` silently truncates if the backlog is larger. Always check the total open count first.
 
 ```bash
-# 1. Confirm total — never trust an arbitrary --limit
-total=$(gh api "repos/$owner/$repo" --jq '.open_issues_count')
+# 1. Confirm total — never trust an arbitrary --limit.
+# Note: GitHub's REST API treats PRs as issues, so .open_issues_count
+# from /repos/{owner}/{repo} is actually issues + PRs. Use the search
+# API to get the issue-only count.
+total=$(gh api "search/issues?q=repo:$owner/$repo+is:issue+is:open" --jq '.total_count')
 echo "Open issues: $total"
 
 # 2. List bodies (set --limit at or above the true total)
