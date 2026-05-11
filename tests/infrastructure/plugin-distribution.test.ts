@@ -90,13 +90,6 @@ describe('Plugin Distribution - Codex Marketplace', () => {
     expect(command).toContain('plugins/cache/thedotmack/claude-mem');
     expect(command).toContain('claude-mem: mcp server not found');
   });
-
-  it('keeps root and bundled MCP launchers in sync', () => {
-    const rootMcp = JSON.parse(readFileSync(path.join(projectRoot, '.mcp.json'), 'utf-8'));
-    const bundledMcp = JSON.parse(readFileSync(path.join(projectRoot, 'plugin/.mcp.json'), 'utf-8'));
-
-    expect(rootMcp.mcpServers['mcp-search']).toEqual(bundledMcp.mcpServers['mcp-search']);
-  });
 });
 
 describe('Plugin Distribution - hooks.json Integrity', () => {
@@ -134,7 +127,7 @@ describe('Plugin Distribution - hooks.json Integrity', () => {
 
 describe('Plugin Distribution - Startup Root Resolution', () => {
   it('MCP startup commands should have config-dir based non-empty fallbacks', () => {
-    for (const relativePath of ['.mcp.json', 'plugin/.mcp.json']) {
+    for (const relativePath of ['plugin/.mcp.json']) {
       const command = mcpStartupCommandFrom(relativePath);
 
       expect(command).toContain('${CLAUDE_CONFIG_DIR:-$HOME/.claude}');

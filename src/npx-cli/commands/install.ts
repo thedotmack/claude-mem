@@ -527,7 +527,6 @@ function copyPluginToMarketplace(): void {
   const allowedTopLevelEntries = [
     '.agents',
     '.codex-plugin',
-    '.mcp.json',
     'plugin',
     'package.json',
     'package-lock.json',
