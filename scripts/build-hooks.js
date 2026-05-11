@@ -4,6 +4,7 @@ import { build } from 'esbuild';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { execSync } from 'child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -119,6 +120,10 @@ async function buildHooks() {
     fs.writeFileSync('plugin/package.json', JSON.stringify(pluginPackageJson, null, 2) + '\n');
     console.log('✓ plugin/package.json generated');
 
+    console.log('\n📦 Installing plugin dependencies...');
+    execSync('npm install --production', { cwd: 'plugin', stdio: 'inherit' });
+    console.log('✓ Plugin dependencies installed');
+    
     console.log('\n📋 Building React viewer...');
     const { spawn } = await import('child_process');
     const viewerBuild = spawn('node', ['scripts/build-viewer.js'], { stdio: 'inherit' });
