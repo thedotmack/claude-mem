@@ -74,17 +74,17 @@ export class SessionsSummarizeAdapter implements RouteHandler {
         return;
       }
 
-      const session = await resolveServerSession({
-        pool: this.options.pool,
-        teamId,
-        projectId,
-        contentSessionId: parsed.data.contentSessionId,
-        platformSource: typeof parsed.data.platformSource === 'string' ? parsed.data.platformSource : null,
-        agentId: null,
-        agentType: null,
-      });
-
       try {
+        const session = await resolveServerSession({
+          pool: this.options.pool,
+          teamId,
+          projectId,
+          contentSessionId: parsed.data.contentSessionId,
+          platformSource: typeof parsed.data.platformSource === 'string' ? parsed.data.platformSource : null,
+          agentId: null,
+          agentType: null,
+        });
+
         const result = await this.options.endSession.end({
           sessionId: session.id,
           projectId,

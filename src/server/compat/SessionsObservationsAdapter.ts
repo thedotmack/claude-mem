@@ -83,43 +83,43 @@ export class SessionsObservationsAdapter implements RouteHandler {
         return;
       }
 
-      const session = await resolveServerSession({
-        pool: this.options.pool,
-        teamId,
-        projectId,
-        contentSessionId: parsed.data.contentSessionId,
-        platformSource: typeof parsed.data.platformSource === 'string' ? parsed.data.platformSource : null,
-        agentId: typeof parsed.data.agentId === 'string' ? parsed.data.agentId : null,
-        agentType: typeof parsed.data.agentType === 'string' ? parsed.data.agentType : null,
-      });
-
-      const toolUseId = typeof parsed.data.tool_use_id === 'string'
-        ? parsed.data.tool_use_id
-        : (typeof parsed.data.toolUseId === 'string' ? parsed.data.toolUseId : null);
-
-      const input: CreatePostgresAgentEventInput = {
-        projectId,
-        teamId,
-        serverSessionId: session.id,
-        sourceAdapter: COMPAT_SOURCE_ADAPTER,
-        sourceEventId: toolUseId,
-        eventType: COMPAT_EVENT_TYPE,
-        payload: {
-          contentSessionId: parsed.data.contentSessionId,
-          tool_name: parsed.data.tool_name,
-          tool_input: parsed.data.tool_input ?? null,
-          tool_response: parsed.data.tool_response ?? null,
-          cwd: parsed.data.cwd ?? null,
-          platformSource: parsed.data.platformSource ?? null,
-          agentId: parsed.data.agentId ?? null,
-          agentType: parsed.data.agentType ?? null,
-          toolUseId,
-        },
-        metadata: { compat: 'sessions/observations' },
-        occurredAt: new Date(),
-      };
-
       try {
+        const session = await resolveServerSession({
+          pool: this.options.pool,
+          teamId,
+          projectId,
+          contentSessionId: parsed.data.contentSessionId,
+          platformSource: typeof parsed.data.platformSource === 'string' ? parsed.data.platformSource : null,
+          agentId: typeof parsed.data.agentId === 'string' ? parsed.data.agentId : null,
+          agentType: typeof parsed.data.agentType === 'string' ? parsed.data.agentType : null,
+        });
+
+        const toolUseId = typeof parsed.data.tool_use_id === 'string'
+          ? parsed.data.tool_use_id
+          : (typeof parsed.data.toolUseId === 'string' ? parsed.data.toolUseId : null);
+
+        const input: CreatePostgresAgentEventInput = {
+          projectId,
+          teamId,
+          serverSessionId: session.id,
+          sourceAdapter: COMPAT_SOURCE_ADAPTER,
+          sourceEventId: toolUseId,
+          eventType: COMPAT_EVENT_TYPE,
+          payload: {
+            contentSessionId: parsed.data.contentSessionId,
+            tool_name: parsed.data.tool_name,
+            tool_input: parsed.data.tool_input ?? null,
+            tool_response: parsed.data.tool_response ?? null,
+            cwd: parsed.data.cwd ?? null,
+            platformSource: parsed.data.platformSource ?? null,
+            agentId: parsed.data.agentId ?? null,
+            agentType: parsed.data.agentType ?? null,
+            toolUseId,
+          },
+          metadata: { compat: 'sessions/observations' },
+          occurredAt: new Date(),
+        };
+
         const result = await this.options.ingestEvents.ingestOne(input, {
           source: 'http_post_api_sessions_observations',
           apiKeyId: req.authContext?.apiKeyId ?? null,
