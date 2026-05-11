@@ -675,16 +675,40 @@ export class ServerV1PostgresRoutes implements RouteHandler {
               return;
             }
           }
-          const session = await repo.create({
-            projectId: body.projectId,
-            teamId,
-            externalSessionId: body.externalSessionId ?? null,
-            contentSessionId: body.contentSessionId ?? null,
-            agentId: body.agentId ?? null,
-            agentType: body.agentType ?? null,
-            platformSource: body.platformSource ?? null,
-            metadata: (body.metadata ?? {}) as Record<string, unknown>,
-          });
+          let session;
+          try {
+            session = await repo.create({
+              projectId: body.projectId,
+              teamId,
+              externalSessionId: body.externalSessionId ?? null,
+              contentSessionId: body.contentSessionId ?? null,
+              agentId: body.agentId ?? null,
+              agentType: body.agentType ?? null,
+              platformSource: body.platformSource ?? null,
+              metadata: (body.metadata ?? {}) as Record<string, unknown>,
+            });
+          } catch (error) {
+            // Concurrent /v1/sessions/start with the same externalSessionId
+            // can race past the findByExternalIdForScope check; the second
+            // insert hits the (project_id, external_session_id) unique
+            // constraint. Refetch and return the row inserted by the winner
+            // so legacy clients never see a spurious 500.
+            if (
+              body.externalSessionId &&
+              (error as { code?: string } | null)?.code === '23505'
+            ) {
+              const racedRow = await repo.findByExternalIdForScope({
+                externalSessionId: body.externalSessionId,
+                projectId: body.projectId,
+                teamId,
+              });
+              if (racedRow) {
+                res.status(200).json({ session: serializeSession(racedRow) });
+                return;
+              }
+            }
+            throw error;
+          }
           await this.auditWrite(req, 'session.write', session.id, session.projectId);
           res.status(201).json({ session: serializeSession(session) });
         } catch (error) {
