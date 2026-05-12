@@ -16,12 +16,14 @@ One doc in, one PDF out. Slide-deck only — videos and podcasts from the same e
 
 ## Setup (one-time per machine)
 
-If `notebooklm auth check` returns 0, skip.
+If `notebooklm auth check` returns 0 and `command -v jq` resolves, skip.
 
 ```bash
 uv tool install --with playwright --force notebooklm-py
 $(uv tool dir)/notebooklm-py/bin/playwright install chromium
 ```
+
+`jq` is required by the workflow's JSON parsing; install if missing (`brew install jq` on macOS, or your distro's package manager).
 
 Then the user authenticates interactively — do not script. Tell them to type `! notebooklm login` so the OAuth ENTER lands in their terminal.
 
@@ -58,7 +60,7 @@ Generation takes ~10 minutes; never block on it. Use the template below with `ru
 
 Print the notebook URL so the user can watch live:
 
-```
+```text
 https://notebooklm.google.com/notebook/<NOTEBOOK_ID>
 ```
 
@@ -68,7 +70,7 @@ The subagent's completion notification fires when the file is on disk.
 
 Adjacent to the source, parallel filename:
 
-```
+```text
 <source-dir>/<source-stem>-slides.pdf
 ```
 
@@ -78,7 +80,7 @@ If the source isn't somewhere that makes sense as an output location, default to
 
 One sentence. Default:
 
-```
+```text
 Use kawaii characters to tell the story of <subject>. Keep it warm and clear.
 ```
 
