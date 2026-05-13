@@ -108,7 +108,7 @@ if [ -n "$WOWERPOINT_API_BASE" ] && [ -n "$WOWERPOINT_UPLOAD_TOKEN" ] && [ -n "$
 fi
 ```
 
-The returned `id` is a 3-word slug like `quirky-compass-hawk`. The share URL is:
+The returned `id` is a kebab-case slug derived from the title with a random creature suffix (e.g. `tokenrouter-quest-hawk`, or `velvet-comet-tiger` if the title is empty or non-ASCII). The share URL is:
 
 ```text
 $WOWERPOINT_VIEWER_BASE/d/<id>
