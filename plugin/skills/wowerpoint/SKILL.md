@@ -94,7 +94,7 @@ Upload pattern (run AFTER the subagent confirms the PDF exists on disk). Capture
 
 ```bash
 if [ -n "$WOWERPOINT_API_BASE" ] && [ -n "$WOWERPOINT_UPLOAD_TOKEN" ] && [ -n "$WOWERPOINT_VIEWER_BASE" ]; then
-  UPLOAD_JSON=$(curl -sS -X POST "$WOWERPOINT_API_BASE/api/decks" \
+  UPLOAD_JSON=$(curl -sS --connect-timeout 10 --max-time 30 -X POST "$WOWERPOINT_API_BASE/api/decks" \
     -H "Authorization: Bearer $WOWERPOINT_UPLOAD_TOKEN" \
     -F "file=@<OUTPUT_PATH>" \
     -F "title=<TITLE>")
@@ -161,7 +161,7 @@ Steps:
 
    ```bash
    if [ -n "$WOWERPOINT_API_BASE" ] && [ -n "$WOWERPOINT_UPLOAD_TOKEN" ] && [ -n "$WOWERPOINT_VIEWER_BASE" ]; then
-     UPLOAD_JSON=$(curl -sS -X POST "$WOWERPOINT_API_BASE/api/decks" \
+     UPLOAD_JSON=$(curl -sS --connect-timeout 10 --max-time 30 -X POST "$WOWERPOINT_API_BASE/api/decks" \
        -H "Authorization: Bearer $WOWERPOINT_UPLOAD_TOKEN" \
        -F "file=@<OUTPUT_PATH>" \
        -F "title=<TITLE>")
