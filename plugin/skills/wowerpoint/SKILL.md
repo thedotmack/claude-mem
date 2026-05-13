@@ -108,7 +108,7 @@ if [ -n "$WOWERPOINT_API_BASE" ] && [ -n "$WOWERPOINT_UPLOAD_TOKEN" ] && [ -n "$
 fi
 ```
 
-The returned `id` is an 8-char base64url string. The share URL is:
+The returned `id` is a 3-word slug like `quirky-compass-hawk`. The share URL is:
 
 ```text
 $WOWERPOINT_VIEWER_BASE/d/<id>
