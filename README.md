@@ -178,6 +178,7 @@ The installer handles dependencies, plugin setup, AI provider configuration, wor
 - 🤖 **Automatic Operation** - No manual intervention required
 - 🔗 **Citations** - Reference past observations with IDs (access via http://localhost:37777/api/observation/{id} or view all in the web viewer at http://localhost:37777)
 - 🧪 **Beta Channel** - Try experimental features like Endless Mode via version switching
+- 🤝 **Session Handoff** - Run `/handoff` to generate a `HANDOFF.md` that captures goal, current state, failed attempts, and next steps — hand a fresh Claude session exactly where you left off instead of dragging degraded context forward
 
 ---
 
