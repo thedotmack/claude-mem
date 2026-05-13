@@ -93,16 +93,18 @@ If any var is missing, skip the share-link step and just hand the PDF over.
 Upload pattern (run AFTER the subagent confirms the PDF exists on disk). Capture the full response so empty `id` and `error` payloads are handled — `jq -r '.id'` returns the literal string `null` on a missing key, so always pipe through `.id // empty`:
 
 ```bash
-UPLOAD_JSON=$(curl -sS -X POST "$WOWERPOINT_API_BASE/api/decks" \
-  -H "Authorization: Bearer $WOWERPOINT_UPLOAD_TOKEN" \
-  -F "file=@<OUTPUT_PATH>" \
-  -F "title=<TITLE>")
-DECK_ID=$(printf '%s' "$UPLOAD_JSON" | jq -r '.id // empty')
-API_ERROR=$(printf '%s' "$UPLOAD_JSON" | jq -r '.error // empty')
-if [ -n "$API_ERROR" ] || [ -z "$DECK_ID" ]; then
-  echo "WOWerpoint upload warning: ${API_ERROR:-missing id}"
-else
-  echo "Share URL: $WOWERPOINT_VIEWER_BASE/d/$DECK_ID"
+if [ -n "$WOWERPOINT_API_BASE" ] && [ -n "$WOWERPOINT_UPLOAD_TOKEN" ] && [ -n "$WOWERPOINT_VIEWER_BASE" ]; then
+  UPLOAD_JSON=$(curl -sS -X POST "$WOWERPOINT_API_BASE/api/decks" \
+    -H "Authorization: Bearer $WOWERPOINT_UPLOAD_TOKEN" \
+    -F "file=@<OUTPUT_PATH>" \
+    -F "title=<TITLE>")
+  DECK_ID=$(printf '%s' "$UPLOAD_JSON" | jq -r '.id // empty')
+  API_ERROR=$(printf '%s' "$UPLOAD_JSON" | jq -r '.error // empty')
+  if [ -n "$API_ERROR" ] || [ -z "$DECK_ID" ]; then
+    echo "WOWerpoint upload warning: ${API_ERROR:-missing id}"
+  else
+    echo "Share URL: $WOWERPOINT_VIEWER_BASE/d/$DECK_ID"
+  fi
 fi
 ```
 
