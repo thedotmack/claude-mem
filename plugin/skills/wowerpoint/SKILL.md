@@ -80,7 +80,7 @@ If the source isn't somewhere that makes sense as an output location, default to
 
 After the PDF lands on disk, the subagent also POSTs it to the WOWerpoint Server, which converts the 16:9 deck into a 9:16 mobile twin and returns a share URL. The share URL is the primary deliverable to the user; the PDF on disk is the backup.
 
-Required env (set in the user's shell or via `~/.wowerpoint.env`):
+Required env (exported in the user's shell — the subagent inherits the parent's environment, so plain `export` is enough; no dotenv loader runs):
 
 ```bash
 WOWERPOINT_API_BASE=https://wowerpoint-api.<subdomain>.workers.dev
@@ -90,14 +90,20 @@ WOWERPOINT_UPLOAD_TOKEN=<token>
 
 If any var is missing, skip the share-link step and just hand the PDF over.
 
-Upload one-liner (run AFTER the subagent confirms the PDF exists on disk):
+Upload pattern (run AFTER the subagent confirms the PDF exists on disk). Capture the full response so empty `id` and `error` payloads are handled — `jq -r '.id'` returns the literal string `null` on a missing key, so always pipe through `.id // empty`:
 
 ```bash
-curl -sS -X POST "$WOWERPOINT_API_BASE/api/decks" \
+UPLOAD_JSON=$(curl -sS -X POST "$WOWERPOINT_API_BASE/api/decks" \
   -H "Authorization: Bearer $WOWERPOINT_UPLOAD_TOKEN" \
   -F "file=@<OUTPUT_PATH>" \
-  -F "title=<TITLE>" \
-| jq -r '.id'
+  -F "title=<TITLE>")
+DECK_ID=$(printf '%s' "$UPLOAD_JSON" | jq -r '.id // empty')
+API_ERROR=$(printf '%s' "$UPLOAD_JSON" | jq -r '.error // empty')
+if [ -n "$API_ERROR" ] || [ -z "$DECK_ID" ]; then
+  echo "WOWerpoint upload warning: ${API_ERROR:-missing id}"
+else
+  echo "Share URL: $WOWERPOINT_VIEWER_BASE/d/$DECK_ID"
+fi
 ```
 
 The returned `id` is an 8-char base64url string. The share URL is:
@@ -132,6 +138,7 @@ Inputs:
 - Source ID: `<SOURCE_ID>`
 - Generation prompt: `<PROMPT>`
 - Output path: `<OUTPUT_PATH>`
+- Deck title: `<TITLE>` (the notebook title, used by the share-link step)
 
 Steps:
 
@@ -148,18 +155,25 @@ Steps:
 
 5. Verify: `ls -la <OUTPUT_PATH>` confirms the file exists.
 
-6. Upload to WOWerpoint Server for a mobile share link. If `WOWERPOINT_API_BASE`, `WOWERPOINT_UPLOAD_TOKEN`, and `WOWERPOINT_VIEWER_BASE` are all set:
+6. Upload to WOWerpoint Server for a mobile share link. Skip silently if any of `WOWERPOINT_API_BASE`, `WOWERPOINT_UPLOAD_TOKEN`, or `WOWERPOINT_VIEWER_BASE` is unset. Otherwise:
 
    ```bash
-   DECK_ID=$(curl -sS -X POST "$WOWERPOINT_API_BASE/api/decks" \
-     -H "Authorization: Bearer $WOWERPOINT_UPLOAD_TOKEN" \
-     -F "file=@<OUTPUT_PATH>" \
-     -F "title=<TITLE>" \
-     | jq -r '.id')
-   echo "Share URL: $WOWERPOINT_VIEWER_BASE/d/$DECK_ID"
+   if [ -n "$WOWERPOINT_API_BASE" ] && [ -n "$WOWERPOINT_UPLOAD_TOKEN" ] && [ -n "$WOWERPOINT_VIEWER_BASE" ]; then
+     UPLOAD_JSON=$(curl -sS -X POST "$WOWERPOINT_API_BASE/api/decks" \
+       -H "Authorization: Bearer $WOWERPOINT_UPLOAD_TOKEN" \
+       -F "file=@<OUTPUT_PATH>" \
+       -F "title=<TITLE>")
+     DECK_ID=$(printf '%s' "$UPLOAD_JSON" | jq -r '.id // empty')
+     API_ERROR=$(printf '%s' "$UPLOAD_JSON" | jq -r '.error // empty')
+     if [ -n "$API_ERROR" ] || [ -z "$DECK_ID" ]; then
+       echo "WOWerpoint upload warning: ${API_ERROR:-missing id}"
+     else
+       echo "Share URL: $WOWERPOINT_VIEWER_BASE/d/$DECK_ID"
+     fi
+   fi
    ```
 
-   If any var is missing, skip this step silently. If the curl returns a non-empty `error` field or empty `id`, note the error but do not retry — the PDF on disk is still a valid deliverable.
+   On warning, the PDF on disk is still a valid deliverable — do not retry the upload.
 
 Report briefly (under 200 words):
 - Final artifact ID
