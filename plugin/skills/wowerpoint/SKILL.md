@@ -76,6 +76,38 @@ Adjacent to the source, parallel filename:
 
 If the source isn't somewhere that makes sense as an output location, default to `reports/<stem>-slides.pdf`.
 
+## Share link (WOWerpoint Server)
+
+After the PDF lands on disk, the subagent also POSTs it to the WOWerpoint Server, which converts the 16:9 deck into a 9:16 mobile twin and returns a share URL. The share URL is the primary deliverable to the user; the PDF on disk is the backup.
+
+Required env (set in the user's shell or via `~/.wowerpoint.env`):
+
+```bash
+WOWERPOINT_API_BASE=https://wowerpoint-api.<subdomain>.workers.dev
+WOWERPOINT_VIEWER_BASE=https://wowerpoint-viewer.<subdomain>.workers.dev
+WOWERPOINT_UPLOAD_TOKEN=<token>
+```
+
+If any var is missing, skip the share-link step and just hand the PDF over.
+
+Upload one-liner (run AFTER the subagent confirms the PDF exists on disk):
+
+```bash
+curl -sS -X POST "$WOWERPOINT_API_BASE/api/decks" \
+  -H "Authorization: Bearer $WOWERPOINT_UPLOAD_TOKEN" \
+  -F "file=@<OUTPUT_PATH>" \
+  -F "title=<TITLE>" \
+| jq -r '.id'
+```
+
+The returned `id` is an 8-char base64url string. The share URL is:
+
+```text
+$WOWERPOINT_VIEWER_BASE/d/<id>
+```
+
+It works immediately (shows a "still converting…" page that auto-reloads when ready). Conversion takes ~1–2 min per slide. Print the share URL in your final response.
+
 ## The prompt
 
 One sentence. Default:
@@ -116,10 +148,24 @@ Steps:
 
 5. Verify: `ls -la <OUTPUT_PATH>` confirms the file exists.
 
+6. Upload to WOWerpoint Server for a mobile share link. If `WOWERPOINT_API_BASE`, `WOWERPOINT_UPLOAD_TOKEN`, and `WOWERPOINT_VIEWER_BASE` are all set:
+
+   ```bash
+   DECK_ID=$(curl -sS -X POST "$WOWERPOINT_API_BASE/api/decks" \
+     -H "Authorization: Bearer $WOWERPOINT_UPLOAD_TOKEN" \
+     -F "file=@<OUTPUT_PATH>" \
+     -F "title=<TITLE>" \
+     | jq -r '.id')
+   echo "Share URL: $WOWERPOINT_VIEWER_BASE/d/$DECK_ID"
+   ```
+
+   If any var is missing, skip this step silently. If the curl returns a non-empty `error` field or empty `id`, note the error but do not retry — the PDF on disk is still a valid deliverable.
+
 Report briefly (under 200 words):
 - Final artifact ID
 - Time per phase (source wait, generation, render wait, download)
 - Output file path + size
+- Share URL (if produced)
 - Any retries or warnings
 - Exact error message if any step failed
 
