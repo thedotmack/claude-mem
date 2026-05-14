@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "mcp-search": {
+    "claude-mem": {
       "type": "stdio",
       "command": "sh",
       "args": [

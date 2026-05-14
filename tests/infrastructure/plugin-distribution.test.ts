@@ -23,7 +23,7 @@ function commandHooksFrom(relativePath: string): string[] {
 
 function mcpStartupCommandFrom(relativePath: string): string {
   const parsed = readJson(relativePath);
-  return parsed.mcpServers['mcp-search'].args[1];
+  return parsed.mcpServers['claude-mem'].args[1];
 }
 
 describe('Plugin Distribution - Skills', () => {
@@ -84,7 +84,7 @@ describe('Plugin Distribution - Codex Marketplace', () => {
   it('MCP launcher can recover without plugin root environment variables', () => {
     const mcpPath = path.join(projectRoot, 'plugin/.mcp.json');
     const mcp = JSON.parse(readFileSync(mcpPath, 'utf-8'));
-    const command = mcp.mcpServers['mcp-search'].args.join(' ');
+    const command = mcp.mcpServers['claude-mem'].args.join(' ');
 
     expect(command).toContain('.codex/plugins/cache/claude-mem-local/claude-mem');
     expect(command).toContain('plugins/cache/thedotmack/claude-mem');
@@ -95,7 +95,7 @@ describe('Plugin Distribution - Codex Marketplace', () => {
     const rootMcp = JSON.parse(readFileSync(path.join(projectRoot, '.mcp.json'), 'utf-8'));
     const bundledMcp = JSON.parse(readFileSync(path.join(projectRoot, 'plugin/.mcp.json'), 'utf-8'));
 
-    expect(rootMcp.mcpServers['mcp-search']).toEqual(bundledMcp.mcpServers['mcp-search']);
+    expect(rootMcp.mcpServers['claude-mem']).toEqual(bundledMcp.mcpServers['claude-mem']);
   });
 });
 
