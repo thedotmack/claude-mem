@@ -141,8 +141,13 @@ describe('Plugin Distribution - hooks.json Integrity', () => {
     );
 
     expect(commandHooks.length).toBeGreaterThan(0);
-    expect(commandHooks[0].command).toContain('hook claude-code summarize > /dev/null 2>&1');
-    expect(commandHooks[0].command).toContain(`echo '{"continue":true}'`);
+    const summarizeStopHook = commandHooks.find((h: any) =>
+      h.command?.includes('hook claude-code summarize')
+    );
+
+    expect(summarizeStopHook).toBeDefined();
+    expect(summarizeStopHook.command).toContain('hook claude-code summarize > /dev/null 2>&1');
+    expect(summarizeStopHook.command).toContain(`echo '{"continue":true}'`);
   });
 });
 
