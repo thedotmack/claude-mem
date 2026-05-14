@@ -130,6 +130,20 @@ describe('Plugin Distribution - hooks.json Integrity', () => {
       expect(command.indexOf(cachePath)).toBeLessThan(command.indexOf(marketplacesPath));
     }
   });
+
+  it('should have a Stop hook command that always returns valid JSON (#2446)', () => {
+    const hooksPath = path.join(projectRoot, 'plugin/hooks/hooks.json');
+    const parsed = JSON.parse(readFileSync(hooksPath, 'utf-8'));
+    const stopHooks: any[] = parsed.hooks['Stop'] ?? [];
+
+    const commandHooks = stopHooks.flatMap((matcher: any) =>
+      (matcher.hooks ?? []).filter((h: any) => h.type === 'command')
+    );
+
+    expect(commandHooks.length).toBeGreaterThan(0);
+    expect(commandHooks[0].command).toContain('hook claude-code summarize > /dev/null 2>&1');
+    expect(commandHooks[0].command).toContain(`echo '{"continue":true}'`);
+  });
 });
 
 describe('Plugin Distribution - Startup Root Resolution', () => {
