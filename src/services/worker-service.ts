@@ -274,12 +274,15 @@ export class WorkerService implements WorkerRef {
       getDatabase: () => this.dbManager.getConnection(),
     }));
 
-    // Admin: circuit-breaker reset (localhost-only guard)
-    this.server.app.post('/api/admin/breaker/reset', (req, res) => {
+    // Admin: circuit-breaker endpoints (localhost-only)
+    const isLocalRequest = (req: import('express').Request): boolean => {
       const remoteAddr = req.socket.remoteAddress ?? '';
-      const isLocal = remoteAddr === '127.0.0.1' || remoteAddr === '::1' || remoteAddr === '::ffff:127.0.0.1';
-      if (!isLocal) {
-        logger.warn('SYSTEM', 'BreakerReset rejected: non-local caller', { remoteAddr });
+      return remoteAddr === '127.0.0.1' || remoteAddr === '::1' || remoteAddr === '::ffff:127.0.0.1';
+    };
+
+    this.server.app.post('/api/admin/breaker/reset', (req, res) => {
+      if (!isLocalRequest(req)) {
+        logger.warn('SYSTEM', 'BreakerReset rejected: non-local caller', { remoteAddr: req.socket.remoteAddress });
         res.status(403).json({ error: 'Forbidden' });
         return;
       }
@@ -287,11 +290,8 @@ export class WorkerService implements WorkerRef {
       res.json({ success: true, message: 'Circuit breaker reset to CLOSED' });
     });
 
-    // Admin: circuit-breaker status
     this.server.app.get('/api/admin/breaker/status', (req, res) => {
-      const remoteAddr = req.socket.remoteAddress ?? '';
-      const isLocal = remoteAddr === '127.0.0.1' || remoteAddr === '::1' || remoteAddr === '::ffff:127.0.0.1';
-      if (!isLocal) {
+      if (!isLocalRequest(req)) {
         res.status(403).json({ error: 'Forbidden' });
         return;
       }

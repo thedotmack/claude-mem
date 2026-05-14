@@ -373,7 +373,9 @@ export async function executeWithWorkerFallback<T = unknown>(
 
   // Circuit breaker: short-circuit immediately when OPEN or OPEN_PERMANENT
   if (!breaker.canAttempt()) {
-    return { continue: true, reason: 'circuit_breaker_open', [WORKER_FALLBACK_BRAND]: true };
+    const breakerState = breaker.getState().state;
+    const reason = breakerState === 'OPEN_PERMANENT' ? 'circuit_breaker_permanent' : 'circuit_breaker_open';
+    return { continue: true, reason, [WORKER_FALLBACK_BRAND]: true };
   }
 
   const alive = await ensureWorkerAliveOnce();

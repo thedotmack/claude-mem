@@ -243,7 +243,7 @@ export class CircuitBreaker {
         reason,
       });
       process.stderr.write(
-        `claude-mem: ${newLifetime} lifetime worker failures detected. Disabling memory hooks until reset. Run: claude-mem worker doctor\n`
+        `claude-mem: ${newLifetime} lifetime worker failures detected. Memory hooks suspended until reset. POST http://127.0.0.1:${process.env.CLAUDE_MEM_WORKER_PORT ?? '37777'}/api/admin/breaker/reset to resume.\n`
       );
       return;
     }
