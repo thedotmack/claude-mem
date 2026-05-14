@@ -33,7 +33,7 @@ function truncateObservationPayload(value: unknown, maxChars: number, section: '
 }
 
 function normalizeMaxObservationChars(maxChars?: number): number {
-  if (!Number.isFinite(maxChars) || (maxChars ?? 0) <= 0) {
+  if (!Number.isFinite(maxChars) || maxChars! <= 0) {
     return DEFAULT_MAX_OBSERVATION_CHARS;
   }
   return Math.floor(maxChars!);

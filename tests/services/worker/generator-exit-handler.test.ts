@@ -55,7 +55,7 @@ function createDeps(pendingCount = 3) {
 }
 
 describe('handleGeneratorExit hard-stop reasons', () => {
-  it('preserves queue and restarts pending work after context overflow', async () => {
+  it('preserves queue and resets state after context overflow', async () => {
     const session = createSession();
     const { deps, pendingStore, completionHandler, sessionManager, restartGenerator } = createDeps();
 
