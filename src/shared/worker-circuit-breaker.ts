@@ -194,7 +194,11 @@ export class CircuitBreaker {
     }
 
     if (s.state === 'OPEN') {
-      const elapsed = Date.now() - (s.openedAt ?? 0);
+      if (s.openedAt === null) {
+        // openedAt missing — stay open until a valid timestamp is available
+        return false;
+      }
+      const elapsed = Date.now() - s.openedAt;
       if (elapsed >= this.resetTimeoutMs) {
         // Transition to HALF_OPEN — write the new state so next call sees it
         const next: BreakerPersistentState = { ...s, state: 'HALF_OPEN' };
@@ -249,10 +253,14 @@ export class CircuitBreaker {
     let openedAt = s.openedAt;
     let lastTrippedAt = s.lastTrippedAt;
 
-    const shouldOpen =
+    // Determine whether this failure should open (or re-open) the breaker:
+    //   - CLOSED: open once consecutive failures reach the threshold
+    //   - HALF_OPEN: a probe failure immediately re-opens
+    //   - OPEN: already open; counter increments but state stays OPEN
+    const triggersOpen =
       (s.state === 'CLOSED' && newConsecutive >= threshold) || s.state === 'HALF_OPEN';
 
-    if (shouldOpen && s.state !== 'OPEN') {
+    if (triggersOpen) {
       newState = 'OPEN';
       openedAt = now;
       lastTrippedAt = now;

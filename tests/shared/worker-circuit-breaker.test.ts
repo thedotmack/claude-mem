@@ -1,7 +1,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from 'fs';
-import { dirname } from 'path';
+import { dirname, join } from 'path';
 
 import { CircuitBreaker, getBreakerStatePathForTesting } from '../../src/shared/worker-circuit-breaker.js';
 
@@ -9,29 +9,35 @@ function getStatePath(): string {
   return getBreakerStatePathForTesting();
 }
 
+function getStateDir(): string {
+  return dirname(getStatePath());
+}
+
 function readState(): Record<string, unknown> {
   return JSON.parse(readFileSync(getStatePath(), 'utf-8')) as Record<string, unknown>;
 }
 
-function clearStateFile(): void {
+function clearStateFiles(): void {
+  // Remove both the breaker state file and the legacy hook-failures.json
+  // so migration doesn't pollute tests
   try { rmSync(getStatePath(), { force: true }); } catch { /* ignore */ }
+  try { rmSync(join(getStateDir(), 'hook-failures.json'), { force: true }); } catch { /* ignore */ }
 }
 
 function writeStateFile(state: Record<string, unknown>): void {
-  const stateDir = dirname(getStatePath());
-  mkdirSync(stateDir, { recursive: true });
+  mkdirSync(getStateDir(), { recursive: true });
   writeFileSync(getStatePath(), JSON.stringify(state), 'utf-8');
 }
 
 describe('CircuitBreaker', () => {
   beforeEach(() => {
     CircuitBreaker.resetInstance();
-    clearStateFile();
+    clearStateFiles();
   });
 
   afterEach(() => {
     CircuitBreaker.resetInstance();
-    clearStateFile();
+    clearStateFiles();
     delete process.env.CLAUDE_MEM_BREAKER_FAILURE_THRESHOLD;
     delete process.env.CLAUDE_MEM_BREAKER_RESET_TIMEOUT_MS;
     delete process.env.CLAUDE_MEM_BREAKER_LIFETIME_CAP;
@@ -245,10 +251,9 @@ describe('CircuitBreaker', () => {
     });
 
     it('should migrate from legacy hook-failures.json', () => {
-      const stateDir = dirname(getStatePath());
-      mkdirSync(stateDir, { recursive: true });
+      mkdirSync(getStateDir(), { recursive: true });
       writeFileSync(
-        stateDir + '/hook-failures.json',
+        join(getStateDir(), 'hook-failures.json'),
         JSON.stringify({ consecutiveFailures: 2, lastFailureAt: Date.now() - 5000 })
       );
 
