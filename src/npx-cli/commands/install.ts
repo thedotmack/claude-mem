@@ -86,6 +86,7 @@ import {
 import { readJsonSafe } from '../../utils/json-utils.js';
 import { shutdownWorkerAndWait } from '../../services/install/shutdown-helper.js';
 import { detectInstalledIDEs } from './ide-detection.js';
+import { writeWindowsHooksJson } from '../../services/integrations/ClaudeCodeHooksInstaller.js';
 
 function registerMarketplace(): void {
   const knownMarketplaces = readJsonSafe<Record<string, any>>(knownMarketplacesPath(), {});
@@ -551,6 +552,14 @@ function copyPluginToMarketplace(): void {
       force: true,
     });
   }
+
+  // On Windows, replace the bash-based hooks with PowerShell equivalents.
+  // bash.exe causes a visible console window to be spawned for every hook
+  // invocation when Claude Code (a GUI process) is the parent. PowerShell
+  // does not have this problem.
+  if (IS_WINDOWS) {
+    writeWindowsHooksJson(join(marketplaceDir, 'plugin', 'hooks', 'hooks.json'));
+  }
 }
 
 function copyPluginToCache(version: string): void {
@@ -560,6 +569,13 @@ function copyPluginToCache(version: string): void {
   rmSync(cachePath, { recursive: true, force: true });
   ensureDirectoryExists(cachePath);
   cpSync(sourcePluginDirectory, cachePath, { recursive: true, force: true });
+
+  // On Windows, replace the bash-based hooks with PowerShell equivalents.
+  // Claude Code reads hooks.json from the registered installPath (cachePath).
+  // See ClaudeCodeHooksInstaller.ts for the rationale.
+  if (IS_WINDOWS) {
+    writeWindowsHooksJson(join(cachePath, 'hooks', 'hooks.json'));
+  }
 }
 
 function runNpmInstallInMarketplace(): void {
