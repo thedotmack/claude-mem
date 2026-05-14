@@ -142,12 +142,15 @@ describe('Plugin Distribution - hooks.json Integrity', () => {
 
     expect(commandHooks.length).toBeGreaterThan(0);
     const summarizeStopHook = commandHooks.find((h: any) =>
-      h.command?.includes('hook claude-code summarize')
+      h.command?.includes('scripts/bun-runner.js') &&
+      h.command?.includes('hook claude-code summarize > /dev/null 2>&1; echo ')
     );
 
     expect(summarizeStopHook).toBeDefined();
     expect(summarizeStopHook.command).toContain('hook claude-code summarize > /dev/null 2>&1');
-    expect(summarizeStopHook.command).toContain(`echo '{"continue":true}'`);
+    const echoedJsonMatch = summarizeStopHook.command.match(/echo '(\{.+\})'$/);
+    expect(echoedJsonMatch).toBeTruthy();
+    expect(JSON.parse(echoedJsonMatch![1])).toEqual({ continue: true });
   });
 });
 
