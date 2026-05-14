@@ -21,6 +21,24 @@ export interface SDKSession {
   last_assistant_message?: string;
 }
 
+const DEFAULT_MAX_OBSERVATION_CHARS = 30_000;
+
+function truncateObservationPayload(value: unknown, maxChars: number, section: 'parameters' | 'outcome'): string {
+  const serialized = JSON.stringify(value, null, 2) ?? 'null';
+  if (serialized.length <= maxChars) {
+    return serialized;
+  }
+
+  return `${serialized.substring(0, maxChars)}\n<!-- TRUNCATED ${section}: ${serialized.length} chars total -->`;
+}
+
+function normalizeMaxObservationChars(maxChars?: number): number {
+  if (!Number.isFinite(maxChars) || (maxChars ?? 0) <= 0) {
+    return DEFAULT_MAX_OBSERVATION_CHARS;
+  }
+  return Math.floor(maxChars!);
+}
+
 export function buildInitPrompt(project: string, sessionId: string, userPrompt: string, mode: ModeConfig): string {
   return `${mode.prompts.system_identity}
 
@@ -78,9 +96,10 @@ ${mode.prompts.footer}
 ${mode.prompts.header_memory_start}`;
 }
 
-export function buildObservationPrompt(obs: Observation): string {
+export function buildObservationPrompt(obs: Observation, options?: { maxObservationChars?: number }): string {
   let toolInput: any;
   let toolOutput: any;
+  const maxObservationChars = normalizeMaxObservationChars(options?.maxObservationChars);
 
   try {
     toolInput = typeof obs.tool_input === 'string' ? JSON.parse(obs.tool_input) : obs.tool_input;
@@ -103,8 +122,8 @@ export function buildObservationPrompt(obs: Observation): string {
   return `<observed_from_primary_session>
   <what_happened>${obs.tool_name}</what_happened>
   <occurred_at>${new Date(obs.created_at_epoch).toISOString()}</occurred_at>${obs.cwd ? `\n  <working_directory>${obs.cwd}</working_directory>` : ''}
-  <parameters>${JSON.stringify(toolInput, null, 2)}</parameters>
-  <outcome>${JSON.stringify(toolOutput, null, 2)}</outcome>
+  <parameters>${truncateObservationPayload(toolInput, maxObservationChars, 'parameters')}</parameters>
+  <outcome>${truncateObservationPayload(toolOutput, maxObservationChars, 'outcome')}</outcome>
 </observed_from_primary_session>
 
 Return either one or more <observation>...</observation> blocks, or an empty response if this tool use should be skipped.

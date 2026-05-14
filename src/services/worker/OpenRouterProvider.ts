@@ -145,7 +145,7 @@ export class OpenRouterProvider {
   }
 
   async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
-    const { apiKey, model, siteUrl, appName } = this.getOpenRouterConfig();
+    const { apiKey, model, siteUrl, appName, maxObservationChars } = this.getOpenRouterConfig();
 
     if (!apiKey) {
       throw new Error('OpenRouter API key not configured. Set CLAUDE_MEM_OPENROUTER_API_KEY in settings or OPENROUTER_API_KEY environment variable.');
@@ -183,7 +183,7 @@ export class OpenRouterProvider {
 
     try {
       for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
-        lastCwd = await this.processOneMessage(session, message, lastCwd, apiKey, model, siteUrl, appName, worker, mode);
+        lastCwd = await this.processOneMessage(session, message, lastCwd, apiKey, model, siteUrl, appName, worker, mode, maxObservationChars);
       }
     } catch (error: unknown) {
       if (error instanceof Error) {
@@ -241,7 +241,8 @@ export class OpenRouterProvider {
     siteUrl: string | undefined,
     appName: string | undefined,
     worker: WorkerRef | undefined,
-    mode: ModeConfig
+    mode: ModeConfig,
+    maxObservationChars: number
   ): Promise<string | undefined> {
     this.prepareMessageMetadata(session, message);
 
@@ -253,7 +254,7 @@ export class OpenRouterProvider {
     if (message.type === 'observation') {
       await this.processObservationMessage(
         session, message, originalTimestamp, lastCwd,
-        apiKey, model, siteUrl, appName, worker, mode
+        apiKey, model, siteUrl, appName, worker, mode, maxObservationChars
       );
     } else if (message.type === 'summarize') {
       await this.processSummaryMessage(
@@ -275,7 +276,8 @@ export class OpenRouterProvider {
     siteUrl: string | undefined,
     appName: string | undefined,
     worker: WorkerRef | undefined,
-    _mode: ModeConfig
+    _mode: ModeConfig,
+    maxObservationChars: number
   ): Promise<void> {
     if (message.prompt_number !== undefined) {
       session.lastPromptNumber = message.prompt_number;
@@ -292,7 +294,7 @@ export class OpenRouterProvider {
       tool_output: JSON.stringify(message.tool_response),
       created_at_epoch: originalTimestamp ?? Date.now(),
       cwd: message.cwd
-    });
+    }, { maxObservationChars });
 
     session.conversationHistory.push({ role: 'user', content: obsPrompt });
     const obsResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName);
@@ -521,7 +523,7 @@ export class OpenRouterProvider {
     return { content, tokensUsed };
   }
 
-  private getOpenRouterConfig(): { apiKey: string; model: string; siteUrl?: string; appName?: string } {
+  private getOpenRouterConfig(): { apiKey: string; model: string; siteUrl?: string; appName?: string; maxObservationChars: number } {
     const settingsPath = USER_SETTINGS_PATH;
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
 
@@ -531,8 +533,9 @@ export class OpenRouterProvider {
 
     const siteUrl = settings.CLAUDE_MEM_OPENROUTER_SITE_URL || '';
     const appName = settings.CLAUDE_MEM_OPENROUTER_APP_NAME || 'claude-mem';
+    const maxObservationChars = parseInt(settings.CLAUDE_MEM_MAX_OBSERVATION_CHARS, 10) || 30000;
 
-    return { apiKey, model, siteUrl, appName };
+    return { apiKey, model, siteUrl, appName, maxObservationChars };
   }
 }
 

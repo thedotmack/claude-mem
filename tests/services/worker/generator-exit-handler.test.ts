@@ -22,6 +22,7 @@ function createSession(): ActiveSession {
     currentProvider: 'claude',
     consecutiveRestarts: 0,
     lastGeneratorActivity: Date.now(),
+    forceInit: false,
   };
 }
 
@@ -32,6 +33,7 @@ function createDeps(pendingCount = 3) {
   };
   const sessionManager = {
     getPendingMessageStore: mock(() => pendingStore),
+    resetProcessingToPending: mock(() => pendingCount),
     removeSessionImmediate: mock(() => undefined),
   };
   const completionHandler = {
@@ -53,16 +55,18 @@ function createDeps(pendingCount = 3) {
 }
 
 describe('handleGeneratorExit hard-stop reasons', () => {
-  it('does not restart pending work after context overflow', async () => {
+  it('preserves queue and restarts pending work after context overflow', async () => {
     const session = createSession();
     const { deps, pendingStore, completionHandler, sessionManager, restartGenerator } = createDeps();
 
     await handleGeneratorExit(session, 'overflow', deps);
 
-    expect(pendingStore.clearPendingForSession).toHaveBeenCalledWith(42);
-    expect(completionHandler.finalizeSession).toHaveBeenCalledWith(42);
-    expect(sessionManager.removeSessionImmediate).toHaveBeenCalledWith(42);
-    expect(pendingStore.getPendingCount).not.toHaveBeenCalled();
+    expect(sessionManager.resetProcessingToPending).toHaveBeenCalledWith(42);
+    expect(pendingStore.clearPendingForSession).not.toHaveBeenCalled();
+    expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
+    expect(sessionManager.removeSessionImmediate).not.toHaveBeenCalled();
+    expect(session.memorySessionId).toBeNull();
+    expect(session.forceInit).toBe(true);
     expect(restartGenerator).not.toHaveBeenCalled();
   });
 
@@ -86,7 +90,7 @@ describe('handleGeneratorExit hard-stop reasons', () => {
       throw new Error('simulated pending cleanup failure');
     });
 
-    await handleGeneratorExit(session, 'overflow', deps);
+    await handleGeneratorExit(session, 'quota', deps);
 
     expect(pendingStore.clearPendingForSession).toHaveBeenCalledWith(42);
     expect(completionHandler.finalizeSession).toHaveBeenCalledWith(42);
@@ -108,6 +112,22 @@ describe('handleGeneratorExit hard-stop reasons', () => {
     expect(completionHandler.finalizeSession).toHaveBeenCalledWith(42);
     expect(sessionManager.removeSessionImmediate).toHaveBeenCalledWith(42);
     expect(pendingStore.getPendingCount).not.toHaveBeenCalled();
+    expect(restartGenerator).not.toHaveBeenCalled();
+  });
+
+  it('clears pending and finalizes when overflow recovery reset fails', async () => {
+    const session = createSession();
+    const { deps, pendingStore, completionHandler, sessionManager, restartGenerator } = createDeps();
+    sessionManager.resetProcessingToPending.mockImplementation(() => {
+      throw new Error('simulated reset failure');
+    });
+
+    await handleGeneratorExit(session, 'overflow', deps);
+
+    expect(sessionManager.resetProcessingToPending).toHaveBeenCalledWith(42);
+    expect(pendingStore.clearPendingForSession).toHaveBeenCalledWith(42);
+    expect(completionHandler.finalizeSession).toHaveBeenCalledWith(42);
+    expect(sessionManager.removeSessionImmediate).toHaveBeenCalledWith(42);
     expect(restartGenerator).not.toHaveBeenCalled();
   });
 

@@ -17,4 +17,20 @@ describe('buildObservationPrompt', () => {
     expect(prompt).toContain('Concrete debugging findings from logs, queue state, database rows, session routing, or code-path inspection');
     expect(prompt).toContain('Never reply with prose such as "Skipping", "No substantive tool executions"');
   });
+
+  it('truncates oversized observation payloads', () => {
+    const largeValue = 'x'.repeat(120);
+    const prompt = buildObservationPrompt({
+      id: 2,
+      tool_name: 'Read',
+      tool_input: JSON.stringify({ path: '/repo/large.txt' }),
+      tool_output: JSON.stringify({ content: largeValue }),
+      created_at_epoch: Date.now(),
+      cwd: '/repo',
+    }, { maxObservationChars: 40 });
+
+    expect(prompt).toContain('<!-- TRUNCATED outcome:');
+    expect(prompt).toContain('<outcome>{');
+    expect(prompt).not.toContain(largeValue);
+  });
 });

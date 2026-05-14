@@ -157,6 +157,9 @@ export class ClaudeProvider {
     this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, null);
     session.memorySessionId = null;
     session.forceInit = true;
+    session.conversationHistory = [];
+    session.cumulativeInputTokens = 0;
+    session.cumulativeOutputTokens = 0;
   }
 
   async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
@@ -181,8 +184,6 @@ export class ClaudeProvider {
       'TodoWrite'       
     ];
 
-    const messageGenerator = this.createMessageGenerator(session, cwdTracker);
-
     const hasRealMemorySessionId = !!session.memorySessionId;
     const shouldResume = hasRealMemorySessionId && session.lastPromptNumber > 1 && !session.forceInit;
 
@@ -195,8 +196,11 @@ export class ClaudeProvider {
     }
 
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const maxObservationChars = parseInt(settings.CLAUDE_MEM_MAX_OBSERVATION_CHARS, 10) || 30000;
     const maxConcurrent = parseInt(settings.CLAUDE_MEM_MAX_CONCURRENT_AGENTS, 10) || 2;
     await waitForSlot(maxConcurrent, session.abortController.signal);
+
+    const messageGenerator = this.createMessageGenerator(session, cwdTracker, maxObservationChars);
 
     const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
     const authMethod = getAuthMethodDescription();
@@ -396,7 +400,8 @@ export class ClaudeProvider {
 
   private async *createMessageGenerator(
     session: ActiveSession,
-    cwdTracker: { lastCwd: string | undefined }
+    cwdTracker: { lastCwd: string | undefined },
+    maxObservationChars: number
   ): AsyncIterableIterator<SDKUserMessage> {
     const mode = ModeManager.getInstance().getActiveMode();
 
@@ -446,7 +451,7 @@ export class ClaudeProvider {
           tool_output: JSON.stringify(message.tool_response),
           created_at_epoch: Date.now(),
           cwd: message.cwd
-        });
+        }, { maxObservationChars });
 
         session.conversationHistory.push({ role: 'user', content: obsPrompt });
 

@@ -188,7 +188,7 @@ export class GeminiProvider {
   }
 
   async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
-    const { apiKey, model, rateLimitingEnabled } = this.getGeminiConfig();
+    const { apiKey, model, rateLimitingEnabled, maxObservationChars } = this.getGeminiConfig();
 
     if (!apiKey) {
       throw new Error('Gemini API key not configured. Set CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.');
@@ -230,7 +230,7 @@ export class GeminiProvider {
     }
 
     try {
-      await this.processMessageLoop(session, worker, apiKey, model, rateLimitingEnabled, mode);
+      await this.processMessageLoop(session, worker, apiKey, model, rateLimitingEnabled, mode, maxObservationChars);
     } catch (error: unknown) {
       if (error instanceof Error) {
         logger.error('SDK', 'Gemini message loop failed', { sessionId: session.sessionDbId, model }, error);
@@ -254,7 +254,8 @@ export class GeminiProvider {
     apiKey: string,
     model: GeminiModel,
     rateLimitingEnabled: boolean,
-    mode: ModeConfig
+    mode: ModeConfig,
+    maxObservationChars: number
   ): Promise<void> {
     let lastCwd: string | undefined;
 
@@ -268,7 +269,7 @@ export class GeminiProvider {
       const originalTimestamp = session.earliestPendingTimestamp;
 
       if (message.type === 'observation') {
-        await this.processObservationMessage(session, message, worker, apiKey, model, rateLimitingEnabled, originalTimestamp, lastCwd);
+        await this.processObservationMessage(session, message, worker, apiKey, model, rateLimitingEnabled, originalTimestamp, lastCwd, maxObservationChars);
       } else if (message.type === 'summarize') {
         await this.processSummaryMessage(session, message, worker, apiKey, model, rateLimitingEnabled, mode, originalTimestamp, lastCwd);
       }
@@ -283,7 +284,8 @@ export class GeminiProvider {
     model: GeminiModel,
     rateLimitingEnabled: boolean,
     originalTimestamp: number | null,
-    lastCwd: string | undefined
+    lastCwd: string | undefined,
+    maxObservationChars: number
   ): Promise<void> {
     if (message.prompt_number !== undefined) {
       session.lastPromptNumber = message.prompt_number;
@@ -300,7 +302,7 @@ export class GeminiProvider {
       tool_output: JSON.stringify(message.tool_response),
       created_at_epoch: originalTimestamp ?? Date.now(),
       cwd: message.cwd
-    });
+    }, { maxObservationChars });
 
     session.conversationHistory.push({ role: 'user', content: obsPrompt });
     const obsResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
@@ -500,7 +502,7 @@ export class GeminiProvider {
     return { content, tokensUsed };
   }
 
-  private getGeminiConfig(): { apiKey: string; model: GeminiModel; rateLimitingEnabled: boolean } {
+  private getGeminiConfig(): { apiKey: string; model: GeminiModel; rateLimitingEnabled: boolean; maxObservationChars: number } {
     const settingsPath = paths.settings();
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
 
@@ -530,8 +532,9 @@ export class GeminiProvider {
     }
 
     const rateLimitingEnabled = settings.CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED !== 'false';
+    const maxObservationChars = parseInt(settings.CLAUDE_MEM_MAX_OBSERVATION_CHARS, 10) || 30000;
 
-    return { apiKey, model, rateLimitingEnabled };
+    return { apiKey, model, rateLimitingEnabled, maxObservationChars };
   }
 }
 

@@ -14,7 +14,6 @@ export interface GeneratorExitDependencies {
 function isHardStopReason(reason: ActiveSession['abortReason']): boolean {
   return reason === 'shutdown' ||
     reason === 'restart-guard' ||
-    reason === 'overflow' ||
     reason === 'quota' ||
     (typeof reason === 'string' && reason.startsWith('quota:'));
 }
@@ -26,8 +25,9 @@ function isHardStopReason(reason: ActiveSession['abortReason']): boolean {
  *
  * Behavior:
  *   1. Always: ensure SDK subprocess is dead.
- *   2. Hard-stop reasons (shutdown / restart-guard / overflow / quota): clear pending rows for the session and finalize.
- *   3. Otherwise (idle / natural completion):
+ *   2. Hard-stop reasons (shutdown / restart-guard / quota): clear pending rows for the session and finalize.
+ *   3. Overflow: preserve pending rows, reset context, and restart.
+ *   4. Otherwise (idle / natural completion):
  *        - If 0 pending → finalize.
  *        - If pending > 0 and restart guard allows → respawn with backoff.
  *        - If guard tripped → clear pending and finalize.
@@ -84,6 +84,25 @@ export async function handleGeneratorExit(
     });
     await terminateSession('Hard-stop', true);
     return;
+  }
+
+  if (reason === 'overflow') {
+    try {
+      await sessionManager.resetProcessingToPending(sessionDbId);
+    } catch (e) {
+      const normalized = e instanceof Error ? e : new Error(String(e));
+      logger.error('SESSION', 'Overflow recovery failed during processing reset; aborting to prevent queue leaks', {
+        sessionId: sessionDbId,
+      }, normalized);
+      await terminateSession('Overflow recovery abort', true);
+      return;
+    }
+
+    session.conversationHistory = [];
+    session.memorySessionId = null;
+    session.forceInit = true;
+    session.cumulativeInputTokens = 0;
+    session.cumulativeOutputTokens = 0;
   }
 
   let pendingCount: number;

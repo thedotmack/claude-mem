@@ -84,6 +84,7 @@ export class SettingsRoutes extends BaseRouteHandler {
     const settingKeys = [
       'CLAUDE_MEM_MODEL',
       'CLAUDE_MEM_CONTEXT_OBSERVATIONS',
+      'CLAUDE_MEM_MAX_OBSERVATION_CHARS',
       'CLAUDE_MEM_WORKER_PORT',
       'CLAUDE_MEM_WORKER_HOST',
       'CLAUDE_MEM_PROVIDER',
@@ -227,6 +228,13 @@ export class SettingsRoutes extends BaseRouteHandler {
       const obsCount = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10);
       if (isNaN(obsCount) || obsCount < 1 || obsCount > 200) {
         return { valid: false, error: 'CLAUDE_MEM_CONTEXT_OBSERVATIONS must be between 1 and 200' };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_MAX_OBSERVATION_CHARS) {
+      const maxChars = parseInt(settings.CLAUDE_MEM_MAX_OBSERVATION_CHARS, 10);
+      if (isNaN(maxChars) || maxChars < 1000 || maxChars > 500000) {
+        return { valid: false, error: 'CLAUDE_MEM_MAX_OBSERVATION_CHARS must be between 1000 and 500000' };
       }
     }
 
