@@ -1,13 +1,13 @@
 import path from "path";
-import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync } from "fs";
+import { readFileSync, existsSync } from "fs";
 import { execSync } from "child_process";
 import { spawnHidden } from "./spawn.js";
 import { logger } from "../utils/logger.js";
-import { HOOK_TIMEOUTS, HOOK_EXIT_CODES, getTimeout } from "./hook-constants.js";
+import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
 import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
-import { MARKETPLACE_ROOT, DATA_DIR } from "./paths.js";
-import { loadFromFileOnce } from "./hook-settings.js";
+import { MARKETPLACE_ROOT } from "./paths.js";
 import { validateWorkerPidFile } from "../supervisor/index.js";
+import { CircuitBreaker } from "./worker-circuit-breaker.js";
 
 function readTimeoutEnv(
   envName: string,
@@ -337,89 +337,12 @@ export async function ensureWorkerAliveOnce(): Promise<boolean> {
   return aliveCache;
 }
 
-interface HookFailureState {
-  consecutiveFailures: number;
-  lastFailureAt: number;
-}
-
-const FAIL_LOUD_DEFAULT_THRESHOLD = 3;
-
-function getStateDir(): string {
-  return path.join(DATA_DIR, 'state');
-}
-
-function getHookFailuresPath(): string {
-  return path.join(getStateDir(), 'hook-failures.json');
-}
-
-function readHookFailureState(): HookFailureState {
-  try {
-    const raw = readFileSync(getHookFailuresPath(), 'utf-8');
-    const parsed = JSON.parse(raw) as Partial<HookFailureState>;
-    return {
-      consecutiveFailures: typeof parsed.consecutiveFailures === 'number' && Number.isFinite(parsed.consecutiveFailures)
-        ? Math.max(0, Math.floor(parsed.consecutiveFailures))
-        : 0,
-      lastFailureAt: typeof parsed.lastFailureAt === 'number' && Number.isFinite(parsed.lastFailureAt)
-        ? parsed.lastFailureAt
-        : 0,
-    };
-  } catch {
-    return { consecutiveFailures: 0, lastFailureAt: 0 };
-  }
-}
-
-function writeHookFailureStateAtomic(state: HookFailureState): void {
-  const stateDir = getStateDir();
-  const dest = getHookFailuresPath();
-  const tmp = `${dest}.tmp`;
-  try {
-    if (!existsSync(stateDir)) {
-      mkdirSync(stateDir, { recursive: true });
-    }
-    writeFileSync(tmp, JSON.stringify(state), 'utf-8');
-    renameSync(tmp, dest);
-  } catch (error: unknown) {
-    logger.debug('SYSTEM', 'Failed to persist hook-failure counter', {
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-}
-
-function getFailLoudThreshold(): number {
-  try {
-    const settings = loadFromFileOnce();
-    const raw = settings.CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD;
-    const parsed = parseInt(raw, 10);
-    if (Number.isFinite(parsed) && parsed >= 1) return parsed;
-  } catch {
-    // settings unreadable — fall through to default
-  }
-  return FAIL_LOUD_DEFAULT_THRESHOLD;
-}
-
-function recordWorkerUnreachable(): number {
-  const state = readHookFailureState();
-  const next: HookFailureState = {
-    consecutiveFailures: state.consecutiveFailures + 1,
-    lastFailureAt: Date.now(),
-  };
-  writeHookFailureStateAtomic(next);
-
-  const threshold = getFailLoudThreshold();
-  if (next.consecutiveFailures >= threshold) {
-    process.stderr.write(
-      `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks.\n`
-    );
-    process.exit(HOOK_EXIT_CODES.BLOCKING_ERROR);
-  }
-  return next.consecutiveFailures;
+function recordWorkerUnreachable(): void {
+  CircuitBreaker.getInstance().recordFailure('unreachable');
 }
 
 function resetWorkerFailureCounter(): void {
-  const state = readHookFailureState();
-  if (state.consecutiveFailures === 0) return;       
-  writeHookFailureStateAtomic({ consecutiveFailures: 0, lastFailureAt: 0 });
+  CircuitBreaker.getInstance().recordSuccess();
 }
 
 const WORKER_FALLBACK_BRAND: unique symbol = Symbol.for('claude-mem/worker-fallback');
@@ -446,6 +369,13 @@ export async function executeWithWorkerFallback<T = unknown>(
   body?: unknown,
   options: WorkerFallbackOptions = {},
 ): Promise<WorkerCallResult<T>> {
+  const breaker = CircuitBreaker.getInstance();
+
+  // Circuit breaker: short-circuit immediately when OPEN or OPEN_PERMANENT
+  if (!breaker.canAttempt()) {
+    return { continue: true, reason: 'circuit_breaker_open', [WORKER_FALLBACK_BRAND]: true };
+  }
+
   const alive = await ensureWorkerAliveOnce();
   if (!alive) {
     recordWorkerUnreachable();

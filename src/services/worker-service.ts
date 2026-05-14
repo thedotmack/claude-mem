@@ -93,6 +93,7 @@ import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
 import { MemoryRoutes } from './worker/http/routes/MemoryRoutes.js';
 import { CorpusRoutes } from './worker/http/routes/CorpusRoutes.js';
 import { ChromaRoutes } from './worker/http/routes/ChromaRoutes.js';
+import { CircuitBreaker } from '../shared/worker-circuit-breaker.js';
 
 import { CorpusStore } from './worker/knowledge/CorpusStore.js';
 import { CorpusBuilder } from './worker/knowledge/CorpusBuilder.js';
@@ -272,6 +273,30 @@ export class WorkerService implements WorkerRef {
     this.server.registerRoutes(new ServerV1Routes({
       getDatabase: () => this.dbManager.getConnection(),
     }));
+
+    // Admin: circuit-breaker reset (localhost-only guard)
+    this.server.app.post('/api/admin/breaker/reset', (req, res) => {
+      const remoteAddr = req.socket.remoteAddress ?? '';
+      const isLocal = remoteAddr === '127.0.0.1' || remoteAddr === '::1' || remoteAddr === '::ffff:127.0.0.1';
+      if (!isLocal) {
+        logger.warn('SYSTEM', 'BreakerReset rejected: non-local caller', { remoteAddr });
+        res.status(403).json({ error: 'Forbidden' });
+        return;
+      }
+      CircuitBreaker.getInstance().forceReset();
+      res.json({ success: true, message: 'Circuit breaker reset to CLOSED' });
+    });
+
+    // Admin: circuit-breaker status
+    this.server.app.get('/api/admin/breaker/status', (req, res) => {
+      const remoteAddr = req.socket.remoteAddress ?? '';
+      const isLocal = remoteAddr === '127.0.0.1' || remoteAddr === '::1' || remoteAddr === '::ffff:127.0.0.1';
+      if (!isLocal) {
+        res.status(403).json({ error: 'Forbidden' });
+        return;
+      }
+      res.json(CircuitBreaker.getInstance().getState());
+    });
   }
 
   async start(): Promise<void> {
