@@ -14,6 +14,7 @@ export class ModeManager {
     const packageRoot = getPackageRoot();
     
     const possiblePaths = [
+      ...(process.env.CLAUDE_MEM_MODES_DIR ? [process.env.CLAUDE_MEM_MODES_DIR] : []),
       join(packageRoot, 'modes'),           // Production (plugin/modes)
       join(packageRoot, '..', 'plugin', 'modes'), // Development (src/../plugin/modes)
     ];

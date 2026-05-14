@@ -13,6 +13,7 @@ import { GeminiObservationProvider } from '../generation/providers/GeminiObserva
 import { OpenRouterObservationProvider } from '../generation/providers/OpenRouterObservationProvider.js';
 import type { ServerGenerationProvider } from '../generation/providers/shared/types.js';
 import { ServerBetaService } from './ServerBetaService.js';
+import { ModeManager } from '../../services/domain/ModeManager.js';
 import {
   DisabledServerBetaEventBroadcaster,
   DisabledServerBetaGenerationWorkerManager,
@@ -156,6 +157,10 @@ export function validateServerBetaEnv(
 export async function createServerBetaService(
   options: CreateServerBetaServiceOptions = {},
 ): Promise<ServerBetaService> {
+  // Generation prompt-builder requires an active mode; server-beta never went
+  // through the plugin setup path that loads one, so we do it here explicitly.
+  try { ModeManager.getInstance().loadMode('code'); } catch { /* mode files optional */ }
+
   if (!options.skipEnvValidation) {
     validateServerBetaEnv();
   }
