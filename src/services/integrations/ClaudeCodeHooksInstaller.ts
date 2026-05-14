@@ -90,6 +90,8 @@ export function buildWindowsHooksJson(): HooksJson {
     hooks: {
       Setup: [
         {
+          // matcher '*' mirrors the static plugin/hooks/hooks.json shipped for Unix.
+          // Claude Code accepts (and ignores) the matcher on Setup hooks.
           matcher: '*',
           hooks: [
             {

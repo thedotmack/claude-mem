@@ -7,7 +7,7 @@
  * the correct path-discovery logic, and carry the right hook sub-commands.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -232,7 +232,7 @@ describe('ClaudeCodeHooksInstaller: readHooksShells', () => {
 
   it('returns empty array for malformed JSON', () => {
     const hooksPath = join(tmpDir, 'bad.json');
-    require('fs').writeFileSync(hooksPath, 'not json', 'utf-8');
+    writeFileSync(hooksPath, 'not json', 'utf-8');
     const shells = readHooksShells(hooksPath);
     expect(shells).toEqual([]);
   });
