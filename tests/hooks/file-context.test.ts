@@ -180,6 +180,9 @@ describe('fileContextHandler — #2094 (no Read mutation)', () => {
     const ctx = result.hookSpecificOutput!.additionalContext as string;
     expect(ctx).not.toContain('Only line 1 was read');
     expect(ctx).toContain('full requested section');
+    expect(ctx).toContain('continue with it');
+    expect(ctx).not.toContain('Need details on a past observation?');
+    expect(ctx).not.toContain('Need a structural map first?');
   });
 
   it('accepts a Codex filePaths array and joins per-file context blocks', async () => {
