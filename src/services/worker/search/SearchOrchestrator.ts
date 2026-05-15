@@ -6,6 +6,7 @@ import { ChromaSync } from '../../sync/ChromaSync.js';
 import { ChromaSearchStrategy } from './strategies/ChromaSearchStrategy.js';
 import { SQLiteSearchStrategy } from './strategies/SQLiteSearchStrategy.js';
 import { HybridSearchStrategy } from './strategies/HybridSearchStrategy.js';
+import { EnhancedSearchStrategy } from './strategies/EnhancedSearchStrategy.js';
 
 import { ResultFormatter } from './ResultFormatter.js';
 import { TimelineBuilder } from './TimelineBuilder.js';
@@ -33,6 +34,7 @@ export class SearchOrchestrator {
   private chromaStrategy: ChromaSearchStrategy | null = null;
   private sqliteStrategy: SQLiteSearchStrategy;
   private hybridStrategy: HybridSearchStrategy | null = null;
+  private enhancedStrategy: EnhancedSearchStrategy | null = null;
   private resultFormatter: ResultFormatter;
   private timelineBuilder: TimelineBuilder;
 
@@ -46,6 +48,7 @@ export class SearchOrchestrator {
     if (chromaSync) {
       this.chromaStrategy = new ChromaSearchStrategy(chromaSync, sessionStore);
       this.hybridStrategy = new HybridSearchStrategy(chromaSync, sessionStore, sessionSearch);
+      this.enhancedStrategy = new EnhancedSearchStrategy(chromaSync, sessionStore, sessionSearch);
     }
 
     this.resultFormatter = new ResultFormatter();
@@ -56,6 +59,29 @@ export class SearchOrchestrator {
     const options = this.normalizeParams(args);
 
     return await this.executeWithFallback(options);
+  }
+
+  async enhancedSearch(args: any): Promise<StrategySearchResult> {
+    const options = this.normalizeParams(args);
+
+    if (this.enhancedStrategy && options.query) {
+      return await this.enhancedStrategy.search(options);
+    }
+
+    // No Chroma configured (or filter-only query) — fall back to plain FTS5.
+    const observations = this.sessionSearch.searchObservations(options.query, {
+      limit: options.limit,
+      offset: options.offset,
+      project: options.project,
+      dateRange: options.dateRange,
+      orderBy: options.orderBy,
+      type: options.obsType as any,
+    });
+    return {
+      results: { observations, sessions: [], prompts: [] },
+      usedChroma: false,
+      strategy: 'enhanced',
+    };
   }
 
   private async executeWithFallback(
