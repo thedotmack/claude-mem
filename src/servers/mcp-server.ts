@@ -64,6 +64,7 @@ function errorIfWorkerScriptMissing(): void {
 
 const TOOL_ENDPOINT_MAP: Record<string, string> = {
   'search': '/api/search',
+  'enhanced_search': '/api/search/enhanced',
   'timeline': '/api/timeline'
 };
 
@@ -476,6 +477,27 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     },
     handler: async (args: any) => {
       const endpoint = TOOL_ENDPOINT_MAP['search'];
+      return await callWorkerAPI(endpoint, args);
+    }
+  },
+  {
+    name: 'enhanced_search',
+    description: 'Adaptive hybrid memory search: FTS5 keyword + Chroma semantic + RRF fusion + reranking. Keyword-direct queries route to fast FTS5-only; indirect/multi-hop queries engage the full hybrid path. Returns an index with IDs, same format as search. Params: query (required), limit, project, obs_type, dateStart, dateEnd.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search query (required)' },
+        limit: { type: 'number', description: 'Max results (default 20)' },
+        project: { type: 'string', description: 'Filter by project name' },
+        obs_type: { type: 'string', description: 'Filter by observation type' },
+        dateStart: { type: 'string', description: 'Start date filter (ISO)' },
+        dateEnd: { type: 'string', description: 'End date filter (ISO)' }
+      },
+      required: ['query'],
+      additionalProperties: true
+    },
+    handler: async (args: any) => {
+      const endpoint = TOOL_ENDPOINT_MAP['enhanced_search'];
       return await callWorkerAPI(endpoint, args);
     }
   },
