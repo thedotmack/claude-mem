@@ -112,6 +112,7 @@ export class SearchRoutes extends BaseRouteHandler {
     app.get('/api/search/by-concept', this.handleSearchByConcept.bind(this));
     app.get('/api/search/by-file', this.handleSearchByFile.bind(this));
     app.get('/api/search/by-type', this.handleSearchByType.bind(this));
+    app.get('/api/search/enhanced', this.handleEnhancedSearch.bind(this));
 
     app.get('/api/context/recent', this.handleGetRecentContext.bind(this));
     app.get('/api/context/timeline', this.handleGetContextTimeline.bind(this));
@@ -290,6 +291,38 @@ export class SearchRoutes extends BaseRouteHandler {
     }
 
     const header = `Found ${observations.length} observation(s) with type "${typeStr}"\n\n${formatter.formatTableHeader()}`;
+    const rows = observations.map((obs: ObservationSearchResult, i: number) => formatter.formatObservationIndex(obs, i));
+    res.json({
+      content: [{
+        type: 'text' as const,
+        text: header + '\n' + rows.join('\n')
+      }]
+    });
+  });
+
+  private handleEnhancedSearch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const orchestrator = this.searchManager.getOrchestrator();
+    const formatter = this.searchManager.getFormatter();
+    const query = req.query as Record<string, any>;
+    const rawQuery = query.query;
+    const queryText = Array.isArray(rawQuery) ? rawQuery[0] : (rawQuery ?? '');
+
+    const strategyResult = await orchestrator.enhancedSearch(query);
+    const observations = strategyResult.results.observations;
+
+    if (observations.length === 0) {
+      res.json({
+        content: [{
+          type: 'text' as const,
+          text: `No results found for "${queryText}"`
+        }]
+      });
+      return;
+    }
+
+    const header = `Found ${observations.length} result(s) for "${queryText}" `
+      + `(strategy: ${strategyResult.strategy}, chroma: ${strategyResult.usedChroma})`
+      + `\n\n${formatter.formatTableHeader()}`;
     const rows = observations.map((obs: ObservationSearchResult, i: number) => formatter.formatObservationIndex(obs, i));
     res.json({
       content: [{
