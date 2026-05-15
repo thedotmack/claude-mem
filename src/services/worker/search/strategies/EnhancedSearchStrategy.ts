@@ -95,17 +95,42 @@ export class EnhancedSearchStrategy extends BaseSearchStrategy implements Search
 
     // Stage 4 — hydrate + rerank. getObservationsByIds does not preserve the
     // requested order, so reorder to the RRF order before reranking.
+    // Apply the obs-type filter at hydration (mirrors ChromaSearchStrategy) and
+    // the date-range filter in-strategy, so the hybrid path honors obs_type /
+    // dateStart / dateEnd exactly as the FTS5-only path does.
     const hydrated = this.sessionStore.getObservationsByIds(mergedIds, {
       limit: CANDIDATE_LIMIT,
       project,
+      type: obsType,
     });
     hydrated.sort((a, b) => mergedIds.indexOf(a.id) - mergedIds.indexOf(b.id));
-    const reranked = rerank(hydrated, query);
+    const filtered = this.filterByDateRange(hydrated, dateRange);
+    const reranked = rerank(filtered, query);
 
     return {
       results: { observations: reranked.slice(0, limit), sessions: [], prompts: [] },
       usedChroma: true,
       strategy: 'enhanced',
     };
+  }
+
+  private filterByDateRange<T extends { created_at_epoch: number }>(
+    observations: T[],
+    dateRange: { start?: string | number; end?: string | number } | undefined,
+  ): T[] {
+    if (!dateRange || (dateRange.start == null && dateRange.end == null)) {
+      return observations;
+    }
+    const toEpoch = (v: string | number | undefined): number | undefined => {
+      if (v == null) return undefined;
+      return typeof v === 'number' ? v : new Date(v).getTime();
+    };
+    const start = toEpoch(dateRange.start);
+    const end = toEpoch(dateRange.end);
+    return observations.filter(o => {
+      if (start != null && !Number.isNaN(start) && o.created_at_epoch < start) return false;
+      if (end != null && !Number.isNaN(end) && o.created_at_epoch > end) return false;
+      return true;
+    });
   }
 }

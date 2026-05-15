@@ -17,7 +17,14 @@ function makeSessionSearch(ftsResults: any[]) {
 }
 function makeSessionStore(byId: Record<number, any>) {
   return {
-    getObservationsByIds: (ids: number[]) => ids.map(i => byId[i]).filter(Boolean),
+    getObservationsByIds: (ids: number[], options: any = {}) => {
+      let rows = ids.map(i => byId[i]).filter(Boolean);
+      if (options.type) {
+        const types = Array.isArray(options.type) ? options.type : [options.type];
+        rows = rows.filter((r: any) => types.includes(r.type));
+      }
+      return rows;
+    },
   } as any;
 }
 function makeChroma(ids: number[], fail = false) {
@@ -73,5 +80,33 @@ describe('EnhancedSearchStrategy', () => {
     const strategy = new EnhancedSearchStrategy(makeChroma([]), makeSessionStore({}), makeSessionSearch([]));
     const result = await strategy.search({ query: '' });
     expect(result.results.observations).toEqual([]);
+  });
+
+  test('hybrid path applies obs_type filter', async () => {
+    const fts = [obs(1, { title: 'partial', type: 'bugfix' })];
+    const byId = { 1: fts[0], 2: obs(2, { type: 'feature' }), 3: obs(3, { type: 'bugfix' }) };
+    const strategy = new EnhancedSearchStrategy(
+      makeChroma([2, 3]), makeSessionStore(byId), makeSessionSearch(fts),
+    );
+
+    const result = await strategy.search({ query: 'worker restart migration rollback audit', obsType: 'bugfix' });
+
+    expect(result.usedChroma).toBe(true);
+    const ids = result.results.observations.map((o: any) => o.id).sort();
+    expect(ids).toEqual([1, 3]); // obs 2 (feature) filtered out
+  });
+
+  test('hybrid path applies date range filter', async () => {
+    const fts = [obs(1, { title: 'partial', created_at_epoch: 5000 })];
+    const byId = { 1: fts[0], 2: obs(2, { created_at_epoch: 1000 }), 3: obs(3, { created_at_epoch: 9000 }) };
+    const strategy = new EnhancedSearchStrategy(
+      makeChroma([2, 3]), makeSessionStore(byId), makeSessionSearch(fts),
+    );
+
+    const result = await strategy.search({ query: 'worker restart migration rollback audit', dateRange: { start: 4000, end: 8000 } });
+
+    expect(result.usedChroma).toBe(true);
+    const ids = result.results.observations.map((o: any) => o.id).sort();
+    expect(ids).toEqual([1]); // obs 2 (epoch 1000) and obs 3 (epoch 9000) outside [4000, 8000]
   });
 });
