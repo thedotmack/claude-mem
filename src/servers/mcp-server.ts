@@ -489,7 +489,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
         query: { type: 'string', description: 'Search query (required)' },
         limit: { type: 'number', description: 'Max results (default 20)' },
         project: { type: 'string', description: 'Filter by project name' },
-        obs_type: { type: 'string', description: 'Filter by observation type' },
+        obs_type: { type: 'string', description: 'Filter by observation type: decision, bugfix, feature, refactor, discovery, change' },
         dateStart: { type: 'string', description: 'Start date filter (ISO)' },
         dateEnd: { type: 'string', description: 'End date filter (ISO)' }
       },
