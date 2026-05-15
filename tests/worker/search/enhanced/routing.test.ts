@@ -27,6 +27,8 @@ describe('shouldUseHybrid', () => {
     ]);
     expect(d.useHybrid).toBe(true);
     expect(d.reason).toBe('fts-flat');
+    // 1 of 4 query tokens ('worker') present in the top hit
+    expect(d.topCoverage).toBe(0.25);
   });
 
   test('query with no significant tokens => FTS5-only (nothing to fuse on)', () => {

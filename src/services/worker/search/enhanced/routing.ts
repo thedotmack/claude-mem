@@ -44,6 +44,9 @@ export function shouldUseHybrid(
     return { useHybrid: false, reason: 'no-significant-tokens', topCoverage: 1 };
   }
 
+  // Coverage is measured on the top FTS5 hit only: if the best keyword match
+  // already misses query tokens, hybrid provides the semantic net. Cheap and
+  // deterministic vs. averaging over top-N.
   const top = ftsResults[0];
   const topText = [top.title, top.subtitle, top.narrative, top.facts]
     .filter(Boolean)
