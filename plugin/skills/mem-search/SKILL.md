@@ -48,6 +48,8 @@ search(query="authentication", limit=20, project="my-project")
 - `offset` (number, optional) - Skip N results
 - `orderBy` (string, optional) - "date_desc" (default), "date_asc", "relevance"
 
+**Alternative: `enhanced_search` for ambiguous or conversational queries.** When exact keywords are unknown — e.g. "how did we handle that tricky caching issue?" or multi-hop questions — use `enhanced_search` instead of `search`. It fuses FTS5 keyword + Chroma semantic search, reranks results with RRF, and automatically routes keyword-direct queries to fast FTS5-only. Same parameters and same result format as `search`; plain `search` remains the better choice for precise keyword lookups.
+
 ### Step 2: Timeline - Get Context Around Interesting Results
 
 Use the `timeline` MCP tool:

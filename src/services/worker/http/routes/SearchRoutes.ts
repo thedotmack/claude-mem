@@ -538,6 +538,19 @@ export class SearchRoutes extends BaseRouteHandler {
           }
         },
         {
+          path: '/api/search/enhanced',
+          method: 'GET',
+          description: 'Adaptive hybrid search: FTS5 keyword + Chroma semantic + RRF fusion + reranking. Keyword-direct queries route to fast FTS5-only; indirect/multi-hop queries engage the full hybrid path.',
+          parameters: {
+            query: 'Search query (required)',
+            limit: 'Number of results (default: 20)',
+            project: 'Filter by project name (optional)',
+            obs_type: 'Filter by observation type: decision, bugfix, feature, refactor, discovery, change (optional)',
+            dateStart: 'Start date filter, ISO (optional)',
+            dateEnd: 'End date filter, ISO (optional)'
+          }
+        },
+        {
           path: '/api/context/recent',
           method: 'GET',
           description: 'Get recent session context including summaries and observations',
@@ -578,6 +591,7 @@ export class SearchRoutes extends BaseRouteHandler {
       examples: [
         `curl "${baseUrl}/api/search/observations?query=authentication&limit=5"`,
         `curl "${baseUrl}/api/search/by-type?type=bugfix&limit=10"`,
+        `curl "${baseUrl}/api/search/enhanced?query=adaptive%20hybrid%20retrieval&limit=5"`,
         `curl "${baseUrl}/api/context/recent?project=claude-mem&limit=3"`,
         `curl "${baseUrl}/api/context/timeline?anchor=123&depth_before=5&depth_after=5"`
       ]
