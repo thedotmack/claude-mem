@@ -37,16 +37,16 @@ export function rerank<T extends RerankableObservation>(
   const entityWeight = options.entityWeight ?? 0.15;
   const usageWeight = options.usageWeight ?? 0.05;
 
-  const epochs = candidates.map(c => c.created_at_epoch ?? 0);
-  const minEpoch = Math.min(...epochs);
-  const maxEpoch = Math.max(...epochs);
+  const epochs = candidates.map(c => c.created_at_epoch);
+  const minEpoch = epochs.reduce((a, b) => Math.min(a, b), epochs[0]);
+  const maxEpoch = epochs.reduce((a, b) => Math.max(a, b), epochs[0]);
   const span = maxEpoch - minEpoch;
 
   const queryTokens = significantTokens(query);
 
   const scored = candidates.map((candidate, index) => {
     const base = 1 / (index + 1);
-    const recency = span > 0 ? ((candidate.created_at_epoch ?? 0) - minEpoch) / span : 0;
+    const recency = span > 0 ? (candidate.created_at_epoch - minEpoch) / span : 0;
 
     const text = [candidate.title, candidate.subtitle, candidate.narrative, candidate.facts]
       .filter(Boolean)
@@ -54,9 +54,9 @@ export function rerank<T extends RerankableObservation>(
     const entity = jaccard(queryTokens, significantTokens(text));
 
     const usage = Math.log1p(candidate.relevance_count ?? 0);
-    const usageNorm = usage / (usage + 1); // saturating 0..1
+    const usageSaturated = usage / (usage + 1); // pointwise saturation 0..1
 
-    const total = base + recencyWeight * recency + entityWeight * entity + usageWeight * usageNorm;
+    const total = base + recencyWeight * recency + entityWeight * entity + usageWeight * usageSaturated;
     return { candidate, total };
   });
 

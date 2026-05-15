@@ -37,4 +37,13 @@ describe('rerank', () => {
     const out = rerank(input, 'query', { recencyWeight: 1.0 });
     expect(out[0].id).toBe(2);
   });
+
+  test('higher relevance_count lifts a candidate when usage weight is high', () => {
+    const input = [
+      obs({ id: 1, relevance_count: 0 }),
+      obs({ id: 2, relevance_count: 50 }),
+    ];
+    const out = rerank(input, 'query', { usageWeight: 1.0 });
+    expect(out[0].id).toBe(2);
+  });
 });
