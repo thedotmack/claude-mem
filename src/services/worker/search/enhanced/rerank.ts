@@ -16,7 +16,11 @@ export interface RerankOptions {
   recencyWeight?: number;
   /** Weight of Jaccard entity-match between query and observation text. */
   entityWeight?: number;
-  /** Weight of saturating usage signal derived from relevance_count. */
+  /**
+   * Weight of the saturating usage signal derived from relevance_count.
+   * Note: no code path increments relevance_count yet, so this term is
+   * currently inert (always 0) and activates once a writer is added.
+   */
   usageWeight?: number;
 }
 
