@@ -412,6 +412,10 @@ export class SessionManager {
     return this.sessions.size;
   }
 
+  getActiveSessionIds(): number[] {
+    return Array.from(this.sessions.keys());
+  }
+
   async getTotalQueueDepth(): Promise<number> {
     return await this.getQueueEngine().getTotalQueueDepth();
   }

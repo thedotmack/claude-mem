@@ -95,4 +95,13 @@ describe('SessionManager queue integration', () => {
       }
     }
   });
+
+  test('getActiveSessionIds returns the db ids of all initialized sessions', () => {
+    const a = store.createSDKSession('content-a', 'test-project', 'A');
+    const b = store.createSDKSession('content-b', 'test-project', 'B');
+    manager.initializeSession(a);
+    manager.initializeSession(b);
+
+    expect(manager.getActiveSessionIds().sort()).toEqual([a, b].sort());
+  });
 });

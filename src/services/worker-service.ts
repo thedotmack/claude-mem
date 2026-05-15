@@ -38,6 +38,7 @@ import {
   touchPidFile
 } from './infrastructure/ProcessManager.js';
 import { runOneTimeV12_4_3Cleanup } from './infrastructure/CleanupV12_4_3.js';
+import { sweepStalePendingMessages } from './infrastructure/StalePendingSweep.js';
 import {
   isPortInUse,
   waitForHealth,
@@ -139,6 +140,7 @@ export class WorkerService implements WorkerRef {
 
   private chromaMcpManager: ChromaMcpManager | null = null;
   private transcriptWatcher: TranscriptWatcher | null = null;
+  private stalePendingSweepTimer: ReturnType<typeof setInterval> | null = null;
   private initializationComplete: Promise<void>;
   private resolveInitialization!: () => void;
 
@@ -398,6 +400,8 @@ export class WorkerService implements WorkerRef {
       this.initializationCompleteFlag = true;
       this.resolveInitialization();
       logger.info('SYSTEM', 'Core initialization complete (DB + search ready)');
+
+      this.startStalePendingSweep();
 
       await this.startTranscriptWatcher(settings);
 
@@ -737,7 +741,29 @@ export class WorkerService implements WorkerRef {
     this.sessionManager.removeSessionImmediate(sessionDbId);
   }
 
+  private startStalePendingSweep(): void {
+    const SWEEP_INTERVAL_MS = 30 * 60 * 1000;
+    this.stalePendingSweepTimer = setInterval(() => {
+      try {
+        const result = sweepStalePendingMessages(
+          this.dbManager.getSessionStore().db,
+          this.sessionManager.getActiveSessionIds(),
+        );
+        if (result.staleSessions > 0) {
+          this.broadcastProcessingStatus();
+        }
+      } catch (err: unknown) {
+        logger.error('SYSTEM', 'Stale pending_messages sweep failed', {}, err instanceof Error ? err : new Error(String(err)));
+      }
+    }, SWEEP_INTERVAL_MS);
+    this.stalePendingSweepTimer.unref();
+  }
+
   async shutdown(): Promise<void> {
+    if (this.stalePendingSweepTimer) {
+      clearInterval(this.stalePendingSweepTimer);
+      this.stalePendingSweepTimer = null;
+    }
     if (this.transcriptWatcher) {
       this.transcriptWatcher.stop();
       this.transcriptWatcher = null;
