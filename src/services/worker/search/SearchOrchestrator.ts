@@ -68,7 +68,10 @@ export class SearchOrchestrator {
       return await this.enhancedStrategy.search(options);
     }
 
-    // No Chroma configured (or filter-only query) — fall back to plain FTS5.
+    // No Chroma configured (or filter-only query) — fall back to plain FTS5
+    // keyword search. Calls sessionSearch directly (not sqliteStrategy):
+    // SQLiteSearchStrategy is filter-only — it passes `undefined` as the query
+    // and would ignore the query text. There is no FTS5-keyword strategy class.
     const observations = this.sessionSearch.searchObservations(options.query, {
       limit: options.limit,
       offset: options.offset,
