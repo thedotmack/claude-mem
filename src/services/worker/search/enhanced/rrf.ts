@@ -9,6 +9,9 @@ export interface RrfOptions {
  * Reciprocal Rank Fusion: score(d) = sum_i 1 / (k + rank_i(d)).
  * Each input list is a ranked array of observation ids (best first).
  * Returns merged ids, best first. Ported from lib_baseline.rrf_merge.
+ *
+ * Ties are broken by first-seen insertion order, so ids from earlier
+ * `rankedLists` entries win equal-score ties.
  */
 export function rrfMerge(rankedLists: number[][], options: RrfOptions = {}): number[] {
   const k = options.k ?? 60;
