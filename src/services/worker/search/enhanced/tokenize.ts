@@ -15,7 +15,7 @@ const STOPWORDS = new Set<string>([
  * Used for both rerank entity-match and routing coverage — keep them consistent.
  */
 export function significantTokens(text: string): Set<string> {
-  const words = text.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+  const words = text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
   return new Set(words.filter(w => w.length > 2 && !STOPWORDS.has(w)));
 }
 

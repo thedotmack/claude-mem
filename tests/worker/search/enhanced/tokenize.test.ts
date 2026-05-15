@@ -14,6 +14,13 @@ describe('significantTokens', () => {
   test('empty / punctuation-only string yields empty set', () => {
     expect(significantTokens('   ... !!! ').size).toBe(0);
   });
+
+  test('keeps non-ASCII tokens (German umlauts)', () => {
+    const t = significantTokens('Worker löschen für Änderung');
+    expect(t.has('löschen')).toBe(true);
+    expect(t.has('änderung')).toBe(true);
+    expect(t.has('für')).toBe(true);
+  });
 });
 
 describe('jaccard', () => {
