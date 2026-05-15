@@ -50,7 +50,7 @@ export interface ExtendedSearchOptions extends SearchOptions {
   format?: 'text' | 'json';
 }
 
-export type SearchStrategyHint = 'chroma' | 'sqlite' | 'hybrid' | 'auto';
+export type SearchStrategyHint = 'chroma' | 'sqlite' | 'hybrid' | 'enhanced' | 'auto';
 
 export interface StrategySearchOptions extends ExtendedSearchOptions {
   query?: string;

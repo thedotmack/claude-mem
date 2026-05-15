@@ -16,7 +16,7 @@ export abstract class BaseSearchStrategy implements SearchStrategy {
   abstract search(options: StrategySearchOptions): Promise<StrategySearchResult>;
   abstract canHandle(options: StrategySearchOptions): boolean;
 
-  protected emptyResult(strategy: 'chroma' | 'sqlite' | 'hybrid'): StrategySearchResult {
+  protected emptyResult(strategy: 'chroma' | 'sqlite' | 'hybrid' | 'enhanced'): StrategySearchResult {
     return {
       results: {
         observations: [],
