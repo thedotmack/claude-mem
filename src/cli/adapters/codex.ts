@@ -46,7 +46,10 @@ function cloneToolInput(toolInput: unknown): unknown {
 function buildBaseOutput(result: HookResult): Record<string, unknown> {
   const output: Record<string, unknown> = {};
   if (result.continue !== undefined) output.continue = result.continue;
-  if (result.suppressOutput !== undefined) output.suppressOutput = result.suppressOutput;
+  // Codex CLI rejects `suppressOutput` in hook stdout (see thedotmack/claude-mem 2486).
+  // Shared HookResults from hook handlers (observation, summarize, …) set
+  // `suppressOutput: true`, but it is a Claude-Code-only field. Stripping it
+  // unconditionally keeps the Codex adapter contract narrow.
   if (result.systemMessage) output.systemMessage = result.systemMessage;
   if (result.decision === 'block') output.decision = 'block';
   if (result.reason) output.reason = result.reason;
