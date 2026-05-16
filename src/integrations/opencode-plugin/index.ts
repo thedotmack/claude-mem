@@ -11,7 +11,7 @@ interface OpenCodePluginContext {
   directory: string;
   worktree: string;
   serverUrl: URL;
-  $: unknown; 
+  $: unknown;
 }
 
 interface ToolExecuteAfterInput {
@@ -27,47 +27,33 @@ interface ToolExecuteAfterOutput {
   metadata: Record<string, unknown>;
 }
 
+interface ChatMessageInput {
+  sessionID: string;
+  agent?: string;
+  model?: { providerID: string; modelID: string };
+  messageID?: string;
+  variant?: string;
+}
+
+interface SessionCompactingInput {
+  sessionID: string;
+}
+
+interface SessionCompactingOutput {
+  context: string[];
+  prompt?: string;
+}
+
 interface ToolDefinition {
   description: string;
   args: Record<string, unknown>;
   execute: (args: Record<string, unknown>, context: unknown) => Promise<string>;
 }
 
-interface SessionCreatedEvent {
+interface OpenCodeEventInput {
   event: {
-    sessionID: string;
-    directory?: string;
-    project?: string;
-  };
-}
-
-interface MessageUpdatedEvent {
-  event: {
-    sessionID: string;
-    role: string;
-    content: string;
-  };
-}
-
-interface SessionCompactedEvent {
-  event: {
-    sessionID: string;
-    summary?: string;
-    messageCount?: number;
-  };
-}
-
-interface FileEditedEvent {
-  event: {
-    sessionID: string;
-    path: string;
-    diff?: string;
-  };
-}
-
-interface SessionDeletedEvent {
-  event: {
-    sessionID: string;
+    type: string;
+    properties: Record<string, unknown>;
   };
 }
 
@@ -83,7 +69,7 @@ function resolveWorkerPort(): string {
 
 const WORKER_BASE_URL = `http://127.0.0.1:${resolveWorkerPort()}`;
 const MAX_TOOL_RESPONSE_LENGTH = 1000;
-
+const MAX_SESSION_MAP_ENTRIES = 1000;
 const JSON_HEADERS: Record<string, string> = { "Content-Type": "application/json" };
 
 function workerPostFireAndForget(
@@ -120,8 +106,7 @@ async function workerGetText(path: string): Promise<string | null> {
 }
 
 const contentSessionIdsByOpenCodeSessionId = new Map<string, string>();
-
-const MAX_SESSION_MAP_ENTRIES = 1000;
+const initializedSessions = new Set<string>();
 
 function getOrCreateContentSessionId(openCodeSessionId: string): string {
   if (!contentSessionIdsByOpenCodeSessionId.has(openCodeSessionId)) {
@@ -129,6 +114,7 @@ function getOrCreateContentSessionId(openCodeSessionId: string): string {
       const oldestKey = contentSessionIdsByOpenCodeSessionId.keys().next().value;
       if (oldestKey !== undefined) {
         contentSessionIdsByOpenCodeSessionId.delete(oldestKey);
+        initializedSessions.delete(oldestKey);
       } else {
         break;
       }
@@ -141,104 +127,108 @@ function getOrCreateContentSessionId(openCodeSessionId: string): string {
   return contentSessionIdsByOpenCodeSessionId.get(openCodeSessionId)!;
 }
 
+function truncate(text: string): string {
+  return text.length > MAX_TOOL_RESPONSE_LENGTH
+    ? text.slice(0, MAX_TOOL_RESPONSE_LENGTH)
+    : text;
+}
+
 export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
   const projectName = ctx.project?.name || "opencode";
 
   console.log(`[claude-mem] OpenCode plugin loading (project: ${projectName})`);
 
+  function ensureSessionInitialized(openCodeSessionId: string): string {
+    const contentSessionId = getOrCreateContentSessionId(openCodeSessionId);
+    if (!initializedSessions.has(openCodeSessionId)) {
+      initializedSessions.add(openCodeSessionId);
+      workerPostFireAndForget("/api/sessions/init", {
+        contentSessionId,
+        project: projectName,
+        prompt: "",
+      });
+    }
+    return contentSessionId;
+  }
+
   return {
-    hooks: {
-      tool: {
-        execute: {
-          after: (
-            input: ToolExecuteAfterInput,
-            output: ToolExecuteAfterOutput,
-          ) => {
-            const contentSessionId = getOrCreateContentSessionId(input.sessionID);
-
-            let toolResponseText = output.output || "";
-            if (toolResponseText.length > MAX_TOOL_RESPONSE_LENGTH) {
-              toolResponseText = toolResponseText.slice(0, MAX_TOOL_RESPONSE_LENGTH);
-            }
-
-            workerPostFireAndForget("/api/sessions/observations", {
-              contentSessionId,
-              tool_name: input.tool,
-              tool_input: input.args || {},
-              tool_response: toolResponseText,
-              cwd: ctx.directory,
-            });
-          },
-        },
-      },
+    "tool.execute.after": async (
+      input: ToolExecuteAfterInput,
+      output: ToolExecuteAfterOutput,
+    ): Promise<void> => {
+      const contentSessionId = ensureSessionInitialized(input.sessionID);
+      workerPostFireAndForget("/api/sessions/observations", {
+        contentSessionId,
+        tool_name: input.tool,
+        tool_input: input.args || {},
+        tool_response: truncate(output.output || ""),
+        cwd: ctx.directory,
+      });
     },
 
-    event: (eventName: string, payload: unknown) => {
-      switch (eventName) {
-        case "session.created": {
-          const { event } = payload as SessionCreatedEvent;
-          const contentSessionId = getOrCreateContentSessionId(event.sessionID);
+    "chat.message": async (input: ChatMessageInput): Promise<void> => {
+      if (!input?.sessionID) return;
+      ensureSessionInitialized(input.sessionID);
+    },
 
-          workerPostFireAndForget("/api/sessions/init", {
-            contentSessionId,
-            project: projectName,
-            prompt: "",
-          });
+    "experimental.session.compacting": async (
+      input: SessionCompactingInput,
+      _output: SessionCompactingOutput,
+    ): Promise<void> => {
+      if (!input?.sessionID) return;
+      const contentSessionId = ensureSessionInitialized(input.sessionID);
+      workerPostFireAndForget("/api/sessions/summarize", {
+        contentSessionId,
+        last_assistant_message: "",
+      });
+    },
+
+    event: async (eventInput: OpenCodeEventInput): Promise<void> => {
+      const e = eventInput?.event;
+      if (!e || typeof e.type !== "string") return;
+      const props = (e.properties || {}) as Record<string, unknown>;
+
+      switch (e.type) {
+        case "session.created": {
+          const sid = (props.info as { id?: string } | undefined)?.id;
+          if (sid) ensureSessionInitialized(sid);
           break;
         }
 
         case "message.updated": {
-          const { event } = payload as MessageUpdatedEvent;
-
-          if (event.role !== "assistant") break;
-
-          const contentSessionId = getOrCreateContentSessionId(event.sessionID);
-
-          let messageText = event.content || "";
-          if (messageText.length > MAX_TOOL_RESPONSE_LENGTH) {
-            messageText = messageText.slice(0, MAX_TOOL_RESPONSE_LENGTH);
-          }
-
+          const info = props.info as
+            | { role?: string; sessionID?: string; content?: unknown }
+            | undefined;
+          if (!info || info.role !== "assistant" || !info.sessionID) break;
+          const contentSessionId = ensureSessionInitialized(info.sessionID);
+          const text = typeof info.content === "string" ? info.content : "";
           workerPostFireAndForget("/api/sessions/observations", {
             contentSessionId,
             tool_name: "assistant_message",
             tool_input: {},
-            tool_response: messageText,
+            tool_response: truncate(text),
             cwd: ctx.directory,
           });
           break;
         }
 
         case "session.compacted": {
-          const { event } = payload as SessionCompactedEvent;
-          const contentSessionId = getOrCreateContentSessionId(event.sessionID);
-
+          const sid = props.sessionID as string | undefined;
+          if (!sid) break;
+          const contentSessionId = ensureSessionInitialized(sid);
           workerPostFireAndForget("/api/sessions/summarize", {
             contentSessionId,
-            last_assistant_message: event.summary || "",
-          });
-          break;
-        }
-
-        case "file.edited": {
-          const { event } = payload as FileEditedEvent;
-          const contentSessionId = getOrCreateContentSessionId(event.sessionID);
-
-          workerPostFireAndForget("/api/sessions/observations", {
-            contentSessionId,
-            tool_name: "file_edit",
-            tool_input: { path: event.path },
-            tool_response: event.diff
-              ? event.diff.slice(0, MAX_TOOL_RESPONSE_LENGTH)
-              : `File edited: ${event.path}`,
-            cwd: ctx.directory,
+            last_assistant_message: "",
           });
           break;
         }
 
         case "session.deleted": {
-          const { event } = payload as SessionDeletedEvent;
-          contentSessionIdsByOpenCodeSessionId.delete(event.sessionID);
+          const sid = (props.info as { id?: string } | undefined)?.id;
+          if (sid) {
+            contentSessionIdsByOpenCodeSessionId.delete(sid);
+            initializedSessions.delete(sid);
+          }
           break;
         }
       }
