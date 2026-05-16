@@ -331,7 +331,7 @@ export function ContextSettingsModal({
             >
               <FormField
                 label="AI Provider"
-                tooltip="Choose between Claude (via Agent SDK) or Gemini (via REST API)"
+                tooltip="Choose which provider generates memory observations"
               >
                 <select
                   value={formState.CLAUDE_MEM_PROVIDER || 'claude'}
@@ -340,6 +340,7 @@ export function ContextSettingsModal({
                   <option value="claude">Claude (uses your Claude account)</option>
                   <option value="gemini">Gemini (uses API key)</option>
                   <option value="openrouter">OpenRouter (multi-model)</option>
+                  <option value="openai-codex">OpenAI Codex (uses OAuth)</option>
                 </select>
               </FormField>
 
@@ -444,6 +445,20 @@ export function ContextSettingsModal({
                     />
                   </FormField>
                 </>
+              )}
+
+              {formState.CLAUDE_MEM_PROVIDER === 'openai-codex' && (
+                <FormField
+                  label="OpenAI Codex Model"
+                  tooltip="Model identifier from the OpenAI Codex OAuth provider"
+                >
+                  <input
+                    type="text"
+                    value={formState.CLAUDE_MEM_OPENAI_CODEX_MODEL || 'gpt-5.4-mini'}
+                    onChange={(e) => updateSetting('CLAUDE_MEM_OPENAI_CODEX_MODEL', e.target.value)}
+                    placeholder="e.g., gpt-5.4-mini"
+                  />
+                </FormField>
               )}
 
               <FormField

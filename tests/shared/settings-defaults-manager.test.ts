@@ -324,6 +324,9 @@ describe('SettingsDefaultsManager', () => {
       expect(defaults.CLAUDE_MEM_PROVIDER).toBeDefined();
       expect(defaults.CLAUDE_MEM_GEMINI_API_KEY).toBeDefined();
       expect(defaults.CLAUDE_MEM_OPENROUTER_API_KEY).toBeDefined();
+      expect(defaults.CLAUDE_MEM_OPENAI_CODEX_MODEL).toBe('gpt-5.4-mini');
+      expect(defaults.CLAUDE_MEM_OPENAI_CODEX_MAX_CONTEXT_MESSAGES).toBe('20');
+      expect(defaults.CLAUDE_MEM_OPENAI_CODEX_MAX_TOKENS).toBe('100000');
 
       expect(defaults.CLAUDE_MEM_DATA_DIR).toBeDefined();
       expect(defaults.CLAUDE_MEM_LOG_LEVEL).toBeDefined();

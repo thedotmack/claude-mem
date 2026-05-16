@@ -851,6 +851,35 @@ mask_api_key() {
   fi
 }
 
+check_codex_oauth() {
+  node -e "
+    const fs = require('fs');
+    const path = require('path');
+    const os = require('os');
+    const expandHome = value => value === '~'
+      ? os.homedir()
+      : value.startsWith('~/') || value.startsWith('~\\\\')
+        ? path.join(os.homedir(), value.slice(2))
+        : value;
+    const codexHome = process.env.CODEX_HOME
+      ? expandHome(process.env.CODEX_HOME)
+      : path.join(os.homedir(), '.codex');
+    const authPath = path.join(codexHome, 'auth.json');
+    try {
+      const auth = JSON.parse(fs.readFileSync(authPath, 'utf8'));
+      process.exit(auth && auth.tokens && auth.tokens.refresh_token ? 0 : 1);
+    } catch {
+      process.exit(1);
+    }
+  " >/dev/null 2>&1
+}
+
+warn_if_codex_oauth_missing() {
+  if [[ "$AI_PROVIDER" == "openai-codex" ]] && ! check_codex_oauth; then
+    warn "OpenAI Codex OAuth not found. Run 'codex login' before using OpenAI Codex memory generation."
+  fi
+}
+
 setup_ai_provider() {
   echo ""
   info "AI Provider Configuration"
@@ -880,9 +909,14 @@ setup_ai_provider() {
           warn "Selected via --provider: OpenRouter (no API key — add later in ~/.claude-mem/settings.json)"
         fi
         ;;
+      openai-codex)
+        AI_PROVIDER="openai-codex"
+        success "Selected via --provider: OpenAI Codex OAuth"
+        warn_if_codex_oauth_missing
+        ;;
       *)
         error "Unknown provider: ${CLI_PROVIDER}"
-        error "Valid providers: claude, gemini, openrouter"
+        error "Valid providers: claude, gemini, openrouter, openai-codex"
         exit 1
         ;;
     esac
@@ -906,10 +940,13 @@ setup_ai_provider() {
   echo -e "  ${COLOR_BOLD}3)${COLOR_RESET} OpenRouter"
   echo -e "     Pay-per-use — requires API key from openrouter.ai"
   echo ""
+  echo -e "  ${COLOR_BOLD}4)${COLOR_RESET} OpenAI Codex OAuth"
+  echo -e "     Uses your Codex CLI OAuth session"
+  echo ""
 
   local choice
   while true; do
-    prompt_user "Enter choice [1/2/3] (default: 1):"
+    prompt_user "Enter choice [1/2/3/4] (default: 1):"
     read_tty -r choice
     choice="${choice:-1}"
 
@@ -945,8 +982,14 @@ setup_ai_provider() {
         fi
         break
         ;;
+      4)
+        AI_PROVIDER="openai-codex"
+        success "Selected: OpenAI Codex OAuth"
+        warn_if_codex_oauth_missing
+        break
+        ;;
       *)
-        warn "Invalid choice. Please enter 1, 2, or 3."
+        warn "Invalid choice. Please enter 1, 2, 3, or 4."
         ;;
     esac
   done
@@ -987,6 +1030,9 @@ write_settings() {
       CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',
       CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: '20',
       CLAUDE_MEM_OPENROUTER_MAX_TOKENS: '100000',
+      CLAUDE_MEM_OPENAI_CODEX_MODEL: 'gpt-5.4-mini',
+      CLAUDE_MEM_OPENAI_CODEX_MAX_CONTEXT_MESSAGES: '20',
+      CLAUDE_MEM_OPENAI_CODEX_MAX_TOKENS: '100000',
       CLAUDE_MEM_DATA_DIR: path.join(homedir, '.claude-mem'),
       CLAUDE_MEM_LOG_LEVEL: 'INFO',
       CLAUDE_MEM_PYTHON_VERSION: '3.13',
@@ -1018,6 +1064,8 @@ write_settings() {
     } else if (provider === 'openrouter') {
       overrides.CLAUDE_MEM_OPENROUTER_API_KEY = apiKey;
       overrides.CLAUDE_MEM_OPENROUTER_MODEL = 'xiaomi/mimo-v2-flash:free';
+    } else if (provider === 'openai-codex') {
+      overrides.CLAUDE_MEM_OPENAI_CODEX_MODEL = 'gpt-5.4-mini';
     }
 
     const settings = Object.assign(defaults, overrides);
@@ -1428,6 +1476,7 @@ print_completion_summary() {
     claude)    provider_display="Claude Max Plan (CLI authentication)" ;;
     gemini)    provider_display="Gemini (gemini-2.5-flash-lite)" ;;
     openrouter) provider_display="OpenRouter (xiaomi/mimo-v2-flash:free)" ;;
+    openai-codex) provider_display="OpenAI Codex OAuth (gpt-5.4-mini)" ;;
     *)         provider_display="$AI_PROVIDER" ;;
   esac
 
@@ -1450,9 +1499,17 @@ print_completion_summary() {
   echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  Memory slot configured"
 
   if [[ -n "$WORKER_AI_AUTH_METHOD" ]]; then
-    echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  AI provider: ${COLOR_BOLD}${WORKER_AI_PROVIDER} (${WORKER_AI_AUTH_METHOD})${COLOR_RESET}"
+    if [[ "$WORKER_AI_PROVIDER" == "openai-codex" && "$WORKER_AI_AUTH_METHOD" == *"missing"* ]]; then
+      echo -e "  ${COLOR_YELLOW}⚠${COLOR_RESET}  AI provider: ${COLOR_BOLD}${WORKER_AI_PROVIDER} (${WORKER_AI_AUTH_METHOD})${COLOR_RESET}"
+    else
+      echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  AI provider: ${COLOR_BOLD}${WORKER_AI_PROVIDER} (${WORKER_AI_AUTH_METHOD})${COLOR_RESET}"
+    fi
   else
-    echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  AI provider: ${COLOR_BOLD}${provider_display}${COLOR_RESET}"
+    if [[ "$AI_PROVIDER" == "openai-codex" ]] && ! check_codex_oauth; then
+      echo -e "  ${COLOR_YELLOW}⚠${COLOR_RESET}  AI provider: ${COLOR_BOLD}${provider_display} (run codex login)${COLOR_RESET}"
+    else
+      echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  AI provider: ${COLOR_BOLD}${provider_display}${COLOR_RESET}"
+    fi
   fi
 
   echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  Settings written to ~/.claude-mem/settings.json"

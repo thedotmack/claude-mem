@@ -10,6 +10,8 @@ import { DatabaseManager } from '../../DatabaseManager.js';
 import { ClaudeProvider } from '../../ClaudeProvider.js';
 import { GeminiProvider, isGeminiSelected, isGeminiAvailable } from '../../GeminiProvider.js';
 import { OpenRouterProvider, isOpenRouterSelected, isOpenRouterAvailable } from '../../OpenRouterProvider.js';
+import { OpenAICodexProvider, isOpenAICodexSelected } from '../../OpenAICodexProvider.js';
+import { isClassified } from '../../provider-errors.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
@@ -25,6 +27,8 @@ import { getUptimeSeconds } from '../../../../shared/uptime.js';
 import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../../../shared/user-prompts.js';
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
+
+export type SessionProviderId = 'claude' | 'gemini' | 'openrouter' | 'openai-codex';
 
 /**
  * Collapse session.abortReason onto a closed telemetry enum. The raw value can
@@ -45,6 +49,16 @@ function normalizeAbortReason(
   }
 }
 
+export function getSelectedProviderId(): SessionProviderId {
+  if (isOpenAICodexSelected()) {
+    return 'openai-codex';
+  }
+  if (isOpenRouterSelected() && isOpenRouterAvailable()) {
+    return 'openrouter';
+  }
+  return (isGeminiSelected() && isGeminiAvailable()) ? 'gemini' : 'claude';
+}
+
 export class SessionRoutes extends BaseRouteHandler {
   constructor(
     private sessionManager: SessionManager,
@@ -52,6 +66,7 @@ export class SessionRoutes extends BaseRouteHandler {
     private sdkAgent: ClaudeProvider,
     private geminiAgent: GeminiProvider,
     private openRouterAgent: OpenRouterProvider,
+    private openAICodexAgent: OpenAICodexProvider,
     private eventBroadcaster: SessionEventBroadcaster,
     private workerService: WorkerService,
     private completionHandler: SessionCompletionHandler,
@@ -59,31 +74,8 @@ export class SessionRoutes extends BaseRouteHandler {
     super();
   }
 
-  private getActiveAgent(): ClaudeProvider | GeminiProvider | OpenRouterProvider {
-    if (isOpenRouterSelected()) {
-      if (isOpenRouterAvailable()) {
-        logger.debug('SESSION', 'Using OpenRouter agent');
-        return this.openRouterAgent;
-      } else {
-        throw new Error('OpenRouter provider selected but no API key configured. Set CLAUDE_MEM_OPENROUTER_API_KEY in settings or OPENROUTER_API_KEY environment variable.');
-      }
-    }
-    if (isGeminiSelected()) {
-      if (isGeminiAvailable()) {
-        logger.debug('SESSION', 'Using Gemini agent');
-        return this.geminiAgent;
-      } else {
-        throw new Error('Gemini provider selected but no API key configured. Set CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.');
-      }
-    }
-    return this.sdkAgent;
-  }
-
-  private getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' {
-    if (isOpenRouterSelected() && isOpenRouterAvailable()) {
-      return 'openrouter';
-    }
-    return (isGeminiSelected() && isGeminiAvailable()) ? 'gemini' : 'claude';
+  private getSelectedProvider(): SessionProviderId {
+    return getSelectedProviderId();
   }
 
   public async ensureGeneratorRunning(sessionDbId: number, source: string): Promise<void> {
@@ -112,7 +104,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
   private async startGeneratorWithProvider(
     session: ReturnType<typeof this.sessionManager.getSession>,
-    provider: 'claude' | 'gemini' | 'openrouter',
+    provider: SessionProviderId,
     source: string
   ): Promise<void> {
     if (!session) return;
@@ -124,8 +116,12 @@ export class SessionRoutes extends BaseRouteHandler {
       session.abortController = new AbortController();
     }
 
-    const agent = provider === 'openrouter' ? this.openRouterAgent : (provider === 'gemini' ? this.geminiAgent : this.sdkAgent);
-    const agentName = provider === 'openrouter' ? 'OpenRouter' : (provider === 'gemini' ? 'Gemini' : 'Claude SDK');
+    const agent = provider === 'openai-codex'
+      ? this.openAICodexAgent
+      : (provider === 'openrouter' ? this.openRouterAgent : (provider === 'gemini' ? this.geminiAgent : this.sdkAgent));
+    const agentName = provider === 'openai-codex'
+      ? 'OpenAI Codex'
+      : (provider === 'openrouter' ? 'OpenRouter' : (provider === 'gemini' ? 'Gemini' : 'Claude SDK'));
 
     const actualQueueDepth = this.sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId);
 
@@ -151,6 +147,18 @@ export class SessionRoutes extends BaseRouteHandler {
         }
 
         const errorMsg = error instanceof Error ? error.message : String(error);
+        const classifiedKind = isClassified(error) ? error.kind : null;
+
+        if (classifiedKind === 'auth_invalid' || classifiedKind === 'quota_exhausted' || classifiedKind === 'unrecoverable') {
+          session.abortReason = classifiedKind === 'quota_exhausted' ? 'quota' : 'restart-guard';
+          logger.error('SESSION', 'Generator failed with non-retryable provider error — will not respawn', {
+            sessionId: session.sessionDbId,
+            provider,
+            errorKind: classifiedKind,
+            error: errorMsg,
+          }, error);
+          return;
+        }
 
         if (errorMsg.includes('code 143') || errorMsg.includes('signal SIGTERM')) {
           logger.warn('SESSION', 'Generator killed by external signal', {

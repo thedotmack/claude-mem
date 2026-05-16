@@ -5,6 +5,7 @@
   "description": "Runtime dependencies for claude-mem bundled hooks",
   "type": "module",
   "dependencies": {
+    "@earendil-works/pi-ai": "^0.74.0",
     "zod": "^4.4.3",
     "tree-sitter-cli": "^0.26.5",
     "tree-sitter-c": "^0.24.1",

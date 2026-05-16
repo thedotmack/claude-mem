@@ -776,7 +776,7 @@ function mergeSettings(updates: Record<string, string>): boolean {
   }
 }
 
-type ProviderId = 'claude' | 'gemini' | 'openrouter';
+type ProviderId = 'claude' | 'gemini' | 'openrouter' | 'openai-codex';
 type ClaudeAccessMode = 'subscription' | 'api-key';
 type ClaudeApiMode = 'direct' | 'gateway';
 type RuntimeId = 'worker' | 'server-beta';
@@ -1041,6 +1041,10 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
       }
       const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: options.provider });
       if (wrote) log.info(`Saved provider=${options.provider} to ~/.claude-mem/settings.json`);
+      if (options.provider === 'openai-codex') {
+        log.warn('Provider=openai-codex requested non-interactively. OAuth prompt skipped — run `codex login` before using OpenAI Codex memory generation.');
+        return options.provider;
+      }
       log.warn(`Provider=${options.provider} requested non-interactively. API key prompt skipped — set CLAUDE_MEM_${options.provider.toUpperCase()}_API_KEY and CLAUDE_MEM_PROVIDER in settings.json or env manually if not already set.`);
       return options.provider;
     }
@@ -1101,6 +1105,7 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
         { value: 'claude', label: 'Claude Agent SDK (recommended)' },
         { value: 'gemini', label: 'Gemini' },
         { value: 'openrouter', label: 'OpenRouter' },
+        { value: 'openai-codex', label: 'OpenAI Codex OAuth' },
       ],
       initialValue: initialProvider,
     });
@@ -1114,6 +1119,15 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
   if (selectedProvider === 'claude') {
     await runClaudeAuthFlow();
     return 'claude';
+  }
+
+  if (selectedProvider === 'openai-codex') {
+    const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: selectedProvider });
+    if (wrote) {
+      log.info('Saved provider=openai-codex to ~/.claude-mem/settings.json');
+      log.info('Run `codex login` before using OpenAI Codex memory generation.');
+    }
+    return selectedProvider;
   }
 
   const providerLabel = selectedProvider === 'gemini' ? 'Gemini' : 'OpenRouter';
@@ -1392,7 +1406,7 @@ async function promptCmemOnlineOptIn(version: string): Promise<void> {
 
 export interface InstallOptions {
   ide?: string;
-  provider?: 'claude' | 'gemini' | 'openrouter';
+  provider?: 'claude' | 'gemini' | 'openrouter' | 'openai-codex';
   model?: string;
   noAutoStart?: boolean;
   disableAutoMemory?: boolean;
