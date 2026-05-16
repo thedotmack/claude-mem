@@ -1103,6 +1103,18 @@ async function main() {
       break;
     }
 
+    case 'transcript': {
+      // npx-cli falls back to `worker-service.cjs transcript <sub>` when the
+      // standalone `transcript-watcher.cjs` is not present in the bundle
+      // (see thedotmack/claude-mem 2450). Dispatch to the shared
+      // implementation so `init`, `watch`, and `validate` all work
+      // regardless of which entry point the user invokes.
+      const { runTranscriptCommand } = await import('./transcripts/cli.js');
+      const exitCode = await runTranscriptCommand(commandArgs[0], commandArgs.slice(1));
+      process.exit(exitCode);
+      break;
+    }
+
     case 'adopt': {
       const dryRun = process.argv.includes('--dry-run');
       const branchIndex = process.argv.indexOf('--branch');
