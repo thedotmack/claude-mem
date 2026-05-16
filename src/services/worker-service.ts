@@ -778,12 +778,12 @@ export async function ensureWorkerStarted(port: number): Promise<WorkerStartResu
   return ensureWorkerStartedShared(port, __filename);
 }
 
-type ParsedWorkerCommand = {
+export type ParsedWorkerCommand = {
   command: string | undefined;
   args: string[];
 };
 
-function parseWorkerServiceCommand(argv: string[]): ParsedWorkerCommand {
+export function parseWorkerServiceCommand(argv: string[]): ParsedWorkerCommand {
   const [rawCommand, maybeSubCommand, ...rest] = argv;
 
   if (rawCommand === 'server') {
