@@ -130,6 +130,24 @@ describe('Plugin Distribution - hooks.json Integrity', () => {
       expect(command.indexOf(cachePath)).toBeLessThan(command.indexOf(marketplacesPath));
     }
   });
+
+  it('path-finding subshells must not use printf %s\\n (breaks Windows Git Bash, #2439)', () => {
+    const fileGroups: Array<{ path: string; commands: string[] }> = [
+      { path: 'plugin/hooks/hooks.json',       commands: commandHooksFrom('plugin/hooks/hooks.json') },
+      { path: 'plugin/hooks/codex-hooks.json', commands: commandHooksFrom('plugin/hooks/codex-hooks.json') },
+      { path: '.mcp.json',                     commands: [mcpStartupCommandFrom('.mcp.json')] },
+      { path: 'plugin/.mcp.json',              commands: [mcpStartupCommandFrom('plugin/.mcp.json')] },
+    ];
+
+    for (const { path: filePath, commands } of fileGroups) {
+      for (const command of commands) {
+        const pathFindingMatch = command.match(/_P=\$\(\{[\s\S]*?while IFS= read -r _R[\s\S]*?done\)/);
+        expect(pathFindingMatch, `${filePath}: missing path-finding subshell`).toBeTruthy();
+        const subshell = pathFindingMatch![0];
+        expect(subshell, `${filePath}: path-finding subshell uses printf '%s\\n' which fails on Windows Git Bash (#2439)`).not.toContain("printf '%s\\n'");
+      }
+    }
+  });
 });
 
 describe('Plugin Distribution - Startup Root Resolution', () => {
