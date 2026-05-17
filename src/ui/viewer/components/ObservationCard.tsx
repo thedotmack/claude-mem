@@ -25,15 +25,25 @@ function stripProjectRoot(filePath: string): string {
   return parts.length > 3 ? parts.slice(-3).join('/') : filePath;
 }
 
+function parseStringArray(value: string | null): string[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
 export function ObservationCard({ observation }: ObservationCardProps) {
-  const [showFacts, setShowFacts] = useState(false);
-  const [showNarrative, setShowNarrative] = useState(false);
+  const [showFacts, setShowFacts] = useState(true);
+  const [showNarrative, setShowNarrative] = useState(true);
   const date = formatDate(observation.created_at_epoch);
 
-  const facts = observation.facts ? JSON.parse(observation.facts) : [];
-  const concepts = observation.concepts ? JSON.parse(observation.concepts) : [];
-  const filesRead = observation.files_read ? JSON.parse(observation.files_read).map(stripProjectRoot) : [];
-  const filesModified = observation.files_modified ? JSON.parse(observation.files_modified).map(stripProjectRoot) : [];
+  const facts = parseStringArray(observation.facts);
+  const concepts = parseStringArray(observation.concepts);
+  const filesRead = parseStringArray(observation.files_read).map(stripProjectRoot);
+  const filesModified = parseStringArray(observation.files_modified).map(stripProjectRoot);
 
   const hasFactsContent = facts.length > 0 || concepts.length > 0 || filesRead.length > 0 || filesModified.length > 0;
 
@@ -59,10 +69,7 @@ export function ObservationCard({ observation }: ObservationCardProps) {
           {hasFactsContent && (
             <button
               className={`view-mode-toggle ${showFacts ? 'active' : ''}`}
-              onClick={() => {
-                setShowFacts(!showFacts);
-                if (!showFacts) setShowNarrative(false); 
-              }}
+              onClick={() => setShowFacts(!showFacts)}
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <polyline points="9 11 12 14 22 4"></polyline>
@@ -74,10 +81,7 @@ export function ObservationCard({ observation }: ObservationCardProps) {
           {observation.narrative && (
             <button
               className={`view-mode-toggle ${showNarrative ? 'active' : ''}`}
-              onClick={() => {
-                setShowNarrative(!showNarrative);
-                if (!showNarrative) setShowFacts(false); 
-              }}
+              onClick={() => setShowNarrative(!showNarrative)}
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
@@ -96,8 +100,13 @@ export function ObservationCard({ observation }: ObservationCardProps) {
 
       {/* Content based on toggle state */}
       <div className="view-mode-content">
-        {!showFacts && !showNarrative && observation.subtitle && (
+        {observation.subtitle && (
           <div className="card-subtitle">{observation.subtitle}</div>
+        )}
+        {showNarrative && observation.narrative && (
+          <div className="narrative">
+            {observation.narrative}
+          </div>
         )}
         {showFacts && facts.length > 0 && (
           <ul className="facts-list">
@@ -105,11 +114,6 @@ export function ObservationCard({ observation }: ObservationCardProps) {
               <li key={i}>{fact}</li>
             ))}
           </ul>
-        )}
-        {showNarrative && observation.narrative && (
-          <div className="narrative">
-            {observation.narrative}
-          </div>
         )}
       </div>
 
