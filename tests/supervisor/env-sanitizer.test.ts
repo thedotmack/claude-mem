@@ -130,31 +130,31 @@ describe('sanitizeEnv', () => {
     expect(result.HOME).toBe('/home/user');
   });
 
-  it('strips proxy env vars (uppercase and lowercase) so the worker subprocess is not routed through the user proxy', () => {
+  it('preserves proxy env vars (uppercase and lowercase) so the worker subprocess can use the configured proxy', () => {
     const result = sanitizeEnv({
-      HTTP_PROXY: 'http://bad-proxy:1234',
-      HTTPS_PROXY: 'http://bad-proxy:1234',
-      ALL_PROXY: 'socks5://bad-proxy:1080',
+      HTTP_PROXY: 'http://proxy.internal:1234',
+      HTTPS_PROXY: 'http://proxy.internal:1234',
+      ALL_PROXY: 'socks5://proxy.internal:1080',
       NO_PROXY: 'localhost,127.0.0.1',
-      http_proxy: 'http://bad-proxy:1234',
-      https_proxy: 'http://bad-proxy:1234',
-      all_proxy: 'socks5://bad-proxy:1080',
+      http_proxy: 'http://proxy.internal:1234',
+      https_proxy: 'http://proxy.internal:1234',
+      all_proxy: 'socks5://proxy.internal:1080',
       no_proxy: 'localhost,127.0.0.1',
-      npm_config_proxy: 'http://bad-proxy:1234',
-      npm_config_https_proxy: 'http://bad-proxy:1234',
+      npm_config_proxy: 'http://proxy.internal:1234',
+      npm_config_https_proxy: 'http://proxy.internal:1234',
       PATH: '/usr/bin'
     });
 
-    expect(result.HTTP_PROXY).toBeUndefined();
-    expect(result.HTTPS_PROXY).toBeUndefined();
-    expect(result.ALL_PROXY).toBeUndefined();
-    expect(result.NO_PROXY).toBeUndefined();
-    expect(result.http_proxy).toBeUndefined();
-    expect(result.https_proxy).toBeUndefined();
-    expect(result.all_proxy).toBeUndefined();
-    expect(result.no_proxy).toBeUndefined();
-    expect(result.npm_config_proxy).toBeUndefined();
-    expect(result.npm_config_https_proxy).toBeUndefined();
+    expect(result.HTTP_PROXY).toBe('http://proxy.internal:1234');
+    expect(result.HTTPS_PROXY).toBe('http://proxy.internal:1234');
+    expect(result.ALL_PROXY).toBe('socks5://proxy.internal:1080');
+    expect(result.NO_PROXY).toBe('localhost,127.0.0.1');
+    expect(result.http_proxy).toBe('http://proxy.internal:1234');
+    expect(result.https_proxy).toBe('http://proxy.internal:1234');
+    expect(result.all_proxy).toBe('socks5://proxy.internal:1080');
+    expect(result.no_proxy).toBe('localhost,127.0.0.1');
+    expect(result.npm_config_proxy).toBe('http://proxy.internal:1234');
+    expect(result.npm_config_https_proxy).toBe('http://proxy.internal:1234');
     expect(result.PATH).toBe('/usr/bin');
   });
 

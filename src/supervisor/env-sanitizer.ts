@@ -20,6 +20,7 @@ export const ENV_PROXY_VARS = new Set([
 ]);
 
 export const ENV_PRESERVE = new Set([
+  ...ENV_PROXY_VARS,
   'CLAUDE_CODE_OAUTH_TOKEN',
   'CLAUDE_CODE_GIT_BASH_PATH',
   'CLAUDE_CODE_USE_BEDROCK',
@@ -42,7 +43,6 @@ export function sanitizeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.Proces
     if (value === undefined) continue;
     if (ENV_PRESERVE.has(key)) { sanitized[key] = value; continue; }
     if (ENV_EXACT_MATCHES.has(key)) continue;
-    if (ENV_PROXY_VARS.has(key)) continue;
     if (ENV_PREFIXES.some(prefix => key.startsWith(prefix))) continue;
     sanitized[key] = value;
   }
