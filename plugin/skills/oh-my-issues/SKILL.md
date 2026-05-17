@@ -32,7 +32,7 @@ This compounds three ways: architectural fixes retire whole symptom families, th
 
 Use when the backlog has never been consolidated. Goal: go from N issues to N_plans masters in one operation.
 
-1. **Read everything in full.** Fetch every open issue's body, not just titles. Surface-level grouping fails without full text. Use `gh issue list --state open --limit 200 --json number,title,body,labels,comments` and load `body` for each.
+1. **Read everything in full.** Fetch every open issue's body *and* its comment thread — not just titles. Surface-level grouping fails without full text, and reproduction steps, linked duplicates, and diagnostic output often live in comments rather than the original body. See "GitHub CLI primitives" below for the correct paginated listing + per-issue comment fetch (a single `gh issue list` call does **not** return comment bodies).
 2. **Cluster by root cause, not by surface.** The clustering question is *would one architectural change retire all of these?* — not *do these mention the same word?*. "Windows" is a surface; "spawn contract violated by host shells" is a root cause. Two issues with different surfaces can share a cluster (e.g. an env-var leak in two different code paths sharing one missing env-isolation boundary).
 3. **Name each cluster as an architectural problem.** Title format: `[plan-XX] <Architectural Defect> — <one-line scope>`. Example: `[plan-02] Spawn-Contract Templating — canonical ${CLAUDE_PLUGIN_ROOT} resolution across all hosts`. The title must imply a fix, not a topic.
 4. **Open one master issue per cluster** with a body that lists: the architectural defect, the children (by issue number), the fix sequence, and a required test matrix (host × IDE × shell, etc.) that prevents regression.
@@ -99,12 +99,28 @@ owner=$(jq -r '.owner.login // .owner.name' <<<"$repo_json")
 repo=$(jq -r '.name' <<<"$repo_json")
 ```
 
-List all open issues with bodies (the read-everything pass):
+List all open issues (the read-everything pass). Two gotchas:
+- `gh issue list --json comments` returns only a count placeholder, not the comment bodies. You must fetch comments per issue with `gh issue view <N> --json comments`.
+- Any explicit `--limit` silently truncates if the backlog is larger. Always check the total open count first.
 
 ```bash
-gh issue list --state open --limit 200 \
-  --json number,title,body,labels,author,createdAt,comments
+# 1. Confirm total — never trust an arbitrary --limit
+total=$(gh api "repos/$owner/$repo" --jq '.open_issues_count')
+echo "Open issues: $total"
+
+# 2. List bodies (set --limit at or above the true total)
+gh issue list --state open --limit "$total" \
+  --json number,title,body,labels,author,createdAt
+
+# 3. For each issue, fetch its full comment thread
+for n in $(gh issue list --state open --limit "$total" --json number --jq '.[].number'); do
+  echo "=== Issue #$n ==="
+  gh issue view "$n" --json comments \
+    --jq '.comments[] | "\(.author.login) (\(.createdAt)): \(.body)"'
+done
 ```
+
+If `total > 1000`, paginate via the REST API: `gh api "repos/$owner/$repo/issues?state=open&per_page=100&page=N"` looped until the result array is empty (note this includes PRs, so filter `select(.pull_request|not)`).
 
 Open a plan master:
 
