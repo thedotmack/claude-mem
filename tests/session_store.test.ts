@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { SessionStore } from '../src/services/sqlite/SessionStore.js';
+import { PaginationHelper } from '../src/services/worker/PaginationHelper.js';
 
 describe('SessionStore', () => {
   let store: SessionStore;
@@ -27,6 +28,73 @@ describe('SessionStore', () => {
     store.createSDKSession('claude-session-2', 'test-project', 'initial prompt');
     store.saveUserPrompt('claude-session-2', 1, 'Other prompt');
     expect(store.getPromptNumberFromUserPrompts(claudeId)).toBe(2);
+  });
+
+  it('should find recent duplicate user prompts', () => {
+    const contentSessionId = 'duplicate-session-store';
+    store.createSDKSession(contentSessionId, 'test-project', 'initial prompt');
+    const promptId = store.saveUserPrompt(contentSessionId, 1, 'Repeated prompt');
+
+    const duplicate = store.findRecentDuplicateUserPrompt(contentSessionId, 'Repeated prompt', 10_000);
+
+    expect(duplicate?.id).toBe(promptId);
+    expect(duplicate?.prompt_number).toBe(1);
+    expect(duplicate?.prompt_text).toBe('Repeated prompt');
+  });
+
+  it('should not find duplicate user prompts outside the dedupe window', () => {
+    const contentSessionId = 'old-duplicate-session-store';
+    store.createSDKSession(contentSessionId, 'test-project', 'initial prompt');
+    const promptId = store.saveUserPrompt(contentSessionId, 1, 'Repeated prompt');
+    store.db.prepare('UPDATE user_prompts SET created_at_epoch = ? WHERE id = ?')
+      .run(Date.now() - 20_000, promptId);
+
+    const duplicate = store.findRecentDuplicateUserPrompt(contentSessionId, 'Repeated prompt', 10_000);
+
+    expect(duplicate).toBeUndefined();
+  });
+
+  it('should hide only older duplicate prompts from paginated prompt results', () => {
+    const contentSessionId = 'paginated-duplicate-session-store';
+    store.createSDKSession(contentSessionId, 'test-project', 'initial prompt');
+    const olderDuplicateId = store.saveUserPrompt(contentSessionId, 1, 'Repeated prompt');
+    const newerDuplicateId = store.saveUserPrompt(contentSessionId, 2, 'Repeated prompt');
+    const uniquePromptId = store.saveUserPrompt(contentSessionId, 3, 'Unique prompt');
+
+    const now = Date.now();
+    store.db.prepare('UPDATE user_prompts SET created_at_epoch = ? WHERE id = ?').run(now, olderDuplicateId);
+    store.db.prepare('UPDATE user_prompts SET created_at_epoch = ? WHERE id = ?').run(now + 5000, newerDuplicateId);
+    store.db.prepare('UPDATE user_prompts SET created_at_epoch = ? WHERE id = ?').run(now + 6000, uniquePromptId);
+
+    const helper = new PaginationHelper({
+      getSessionStore: () => store,
+    } as any);
+
+    const ids = helper.getPrompts(0, 10).items.map(prompt => prompt.id);
+
+    expect(ids).toContain(newerDuplicateId);
+    expect(ids).toContain(uniquePromptId);
+    expect(ids).not.toContain(olderDuplicateId);
+  });
+
+  it('should hide older duplicate prompts when timestamps are identical', () => {
+    const contentSessionId = 'same-ms-duplicate-session-store';
+    store.createSDKSession(contentSessionId, 'test-project', 'initial prompt');
+    const olderDuplicateId = store.saveUserPrompt(contentSessionId, 1, 'Repeated prompt');
+    const newerDuplicateId = store.saveUserPrompt(contentSessionId, 2, 'Repeated prompt');
+
+    const sameTimestamp = Date.now();
+    store.db.prepare('UPDATE user_prompts SET created_at_epoch = ? WHERE id IN (?, ?)')
+      .run(sameTimestamp, olderDuplicateId, newerDuplicateId);
+
+    const helper = new PaginationHelper({
+      getSessionStore: () => store,
+    } as any);
+
+    const ids = helper.getPrompts(0, 10).items.map(prompt => prompt.id);
+
+    expect(ids).toContain(newerDuplicateId);
+    expect(ids).not.toContain(olderDuplicateId);
   });
 
   it('should store observation with timestamp override', () => {
