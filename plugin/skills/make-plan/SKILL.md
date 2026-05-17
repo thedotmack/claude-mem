@@ -7,6 +7,16 @@ description: Create a detailed, phased implementation plan with documentation di
 
 You are an ORCHESTRATOR. Create an LLM-friendly plan in phases that can be executed consecutively in new chat contexts.
 
+## Output: ALWAYS a plan file
+
+The plan MUST be written to disk — never delivered inline only. Default location:
+
+```
+plans/inbox/<YYYY-MM-DD>-<short-slug>.md
+```
+
+If `plans/` doesn't exist at the repo root, create it with the kanban subfolders (`inbox/`, `doing/`, `done/`) before writing. The plan starts in `inbox/`; it moves to `doing/` when execution starts and `done/` when complete. End your run by telling the user the exact path of the file you wrote so they can review and invoke `/do`.
+
 ## Delegation Model
 
 Use subagents for *fact gathering and extraction* (docs, examples, signatures, grep results). Keep *synthesis and plan authoring* with the orchestrator (phase boundaries, task framing, final wording). If a subagent report is incomplete or lacks evidence, re-check with targeted reads/greps before finalizing.
