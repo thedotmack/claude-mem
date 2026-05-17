@@ -29,8 +29,8 @@ export function createSDKSession(
   const storedUserPrompt = normalizeStoredPromptText(userPrompt);
 
   const existing = db.prepare(`
-    SELECT id, platform_source FROM sdk_sessions WHERE content_session_id = ?
-  `).get(contentSessionId) as { id: number; platform_source: string | null } | undefined;
+    SELECT id, platform_source, status FROM sdk_sessions WHERE content_session_id = ?
+  `).get(contentSessionId) as { id: number; platform_source: string | null; status: string } | undefined;
 
   if (existing) {
     if (project) {
@@ -63,6 +63,23 @@ export function createSDKSession(
         );
       }
     }
+    if (existing.status === 'completed') {
+      const reactivateNow = new Date();
+      db.prepare(`
+        UPDATE sdk_sessions
+        SET status = 'active',
+            completed_at = NULL,
+            completed_at_epoch = NULL,
+            started_at = ?,
+            started_at_epoch = ?
+        WHERE id = ?
+      `).run(reactivateNow.toISOString(), reactivateNow.getTime(), existing.id);
+      logger.debug('DB', 'Reactivated completed SDK session for resumed content session', {
+        sessionId: existing.id,
+        contentSessionId
+      });
+    }
+
     logger.debug('DB', 'Reused existing SDK session row', {
       contentSessionId,
       sessionDbId: existing.id,

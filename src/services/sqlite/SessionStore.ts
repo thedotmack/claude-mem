@@ -1703,8 +1703,8 @@ export class SessionStore {
     const storedUserPrompt = normalizeStoredPromptText(userPrompt);
 
     const existing = this.db.prepare(`
-      SELECT id, platform_source FROM sdk_sessions WHERE content_session_id = ?
-    `).get(contentSessionId) as { id: number; platform_source: string | null } | undefined;
+      SELECT id, platform_source, status FROM sdk_sessions WHERE content_session_id = ?
+    `).get(contentSessionId) as { id: number; platform_source: string | null; status: string } | undefined;
 
     if (existing) {
       if (project) {
@@ -1736,6 +1736,22 @@ export class SessionStore {
             `Platform source conflict for session ${contentSessionId}: existing=${storedPlatformSource}, received=${resolved.platformSource}`
           );
         }
+      }
+      if (existing.status === 'completed') {
+        const reactivateNow = new Date();
+        this.db.prepare(`
+          UPDATE sdk_sessions
+          SET status = 'active',
+              completed_at = NULL,
+              completed_at_epoch = NULL,
+              started_at = ?,
+              started_at_epoch = ?
+          WHERE id = ?
+        `).run(reactivateNow.toISOString(), reactivateNow.getTime(), existing.id);
+        logger.debug('DB', 'Reactivated completed SDK session for resumed content session', {
+          sessionId: existing.id,
+          contentSessionId
+        });
       }
       return existing.id;
     }
