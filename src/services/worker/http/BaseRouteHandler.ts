@@ -22,28 +22,26 @@ export abstract class BaseRouteHandler {
     };
   }
 
-  /**
-   * Coerce an Express route/query param to a single string.
-   *
-   * Express 5 types params and query values as `string | string[]` (repeated
-   * keys produce an array). This returns the first element of an array, the
-   * string as-is, or '' when the value is absent — giving callers a plain
-   * `string` to work with.
-   */
-  protected toStringParam(value: string | string[] | undefined): string {
-    if (Array.isArray(value)) {
-      return value[0] ?? '';
-    }
-    return value ?? '';
-  }
-
   protected parseIntParam(req: Request, res: Response, paramName: string): number | null {
-    const value = parseInt(this.toStringParam(req.params[paramName]), 10);
+    const rawValue = this.getStringParam(req, res, paramName);
+    if (rawValue === null) return null;
+
+    const value = parseInt(rawValue, 10);
     if (isNaN(value)) {
       this.badRequest(res, `Invalid ${paramName}`);
       return null;
     }
     return value;
+  }
+
+  protected getStringParam(req: Request, res: Response, paramName: string): string | null {
+    const value = req.params[paramName];
+    const normalized = Array.isArray(value) ? value[0] : value;
+    if (typeof normalized !== 'string' || normalized.length === 0) {
+      this.badRequest(res, `Invalid ${paramName}`);
+      return null;
+    }
+    return normalized;
   }
 
   protected badRequest(res: Response, message: string): void {

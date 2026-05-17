@@ -12,7 +12,7 @@ export function useSSE() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [queueDepth, setQueueDepth] = useState(0);
   const eventSourceRef = useRef<EventSource | null>(null);
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const addProjectIfNew = (project: string) => {
     setProjects(prev => prev.includes(project) ? prev : [...prev, project]);
@@ -41,7 +41,7 @@ export function useSSE() {
         eventSource.close();
 
         reconnectTimeoutRef.current = setTimeout(() => {
-          reconnectTimeoutRef.current = undefined;
+          reconnectTimeoutRef.current = null;
           console.log('[SSE] Attempting to reconnect...');
           connect();
         }, TIMING.SSE_RECONNECT_DELAY_MS);
