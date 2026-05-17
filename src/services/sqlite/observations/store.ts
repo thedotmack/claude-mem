@@ -28,7 +28,7 @@ export function storeObservation(
   const timestampEpoch = overrideTimestampEpoch ?? Date.now();
   const timestampIso = new Date(timestampEpoch).toISOString();
 
-  const resolvedProject = project || getProjectContext(process.cwd()).primary;
+  const resolvedProject = project || getProjectContext(process.cwd()).primary || 'unknown-project';
 
   const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
 

@@ -679,6 +679,7 @@ export class MigrationRunner {
     const hasColumn = tableInfo.some(col => col.name === 'content_hash');
 
     if (hasColumn) {
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_content_hash ON observations(content_hash, created_at_epoch)');
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(22, new Date().toISOString());
       return;
     }
@@ -927,7 +928,8 @@ export class MigrationRunner {
 
   private addObservationsUniqueContentHashIndex(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(29) as SchemaVersion | undefined;
-    if (applied) return;
+    const indexExists = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='ux_observations_session_hash'").get();
+    if (applied && indexExists) return;
 
     const obsCols = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
     const hasMem = obsCols.some(c => c.name === 'memory_session_id');
@@ -966,7 +968,9 @@ export class MigrationRunner {
         ON observations(memory_session_id, content_hash)
       `);
 
-      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(29, new Date().toISOString());
+      if (!applied) {
+        this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(29, new Date().toISOString());
+      }
       this.db.run('COMMIT');
       logger.debug('DB', 'Added UNIQUE(memory_session_id, content_hash) on observations');
     } catch (error) {

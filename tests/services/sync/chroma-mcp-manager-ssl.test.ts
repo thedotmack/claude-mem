@@ -11,6 +11,16 @@ const realPathsSnapshot = { ...realPaths };
 const realLoggerSnapshot = { ...realLogger };
 
 let currentSettings: Record<string, string> = {};
+const defaultSettings: Record<string, string> = {
+  CLAUDE_MEM_QUEUE_ENGINE: 'sqlite',
+  CLAUDE_MEM_REDIS_MODE: 'external',
+  CLAUDE_MEM_REDIS_URL: '',
+  CLAUDE_MEM_REDIS_HOST: '127.0.0.1',
+  CLAUDE_MEM_REDIS_PORT: '6379',
+  CLAUDE_MEM_QUEUE_REDIS_PREFIX: 'claude_mem',
+  CLAUDE_MEM_WELCOME_HINT_ENABLED: 'true',
+  CLAUDE_MEM_WORKER_PORT: '37777',
+};
 
 let capturedTransportOpts: { command: string; args: string[] } | null = null;
 
@@ -37,9 +47,9 @@ mock.module('@modelcontextprotocol/sdk/client/index.js', () => ({
 
 mock.module('../../../src/shared/SettingsDefaultsManager.js', () => ({
   SettingsDefaultsManager: {
-    get: (key: string) => currentSettings[key] ?? '',
+    get: (key: string) => currentSettings[key] ?? defaultSettings[key] ?? '',
     getInt: () => 0,
-    loadFromFile: () => currentSettings,
+    loadFromFile: () => ({ ...defaultSettings, ...currentSettings }),
   },
 }));
 
@@ -54,6 +64,9 @@ mock.module('../../../src/utils/logger.js', () => ({
     warn: () => {},
     error: () => {},
     failure: () => {},
+    dataIn: () => {},
+    dataOut: () => {},
+    success: () => {},
   },
 }));
 

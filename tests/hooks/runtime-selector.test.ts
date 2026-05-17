@@ -27,6 +27,8 @@ mock.module('../../src/utils/logger.js', () => ({
     error: () => {},
     failure: () => {},
     dataIn: () => {},
+    dataOut: () => {},
+    success: () => {},
     formatTool: () => '',
   },
 }));

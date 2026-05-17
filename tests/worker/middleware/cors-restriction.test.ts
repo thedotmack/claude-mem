@@ -1,8 +1,7 @@
 
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import express from 'express';
 import http from 'http';
-import { createMiddleware } from '../../../src/services/worker/http/middleware.js';
 
 function isAllowedOrigin(origin: string | undefined): boolean {
   if (!origin) return true; 
@@ -59,7 +58,40 @@ describe('CORS Restriction', () => {
     let server: http.Server;
     let testPort: number;
 
+    function requestOptions(headers: Record<string, string>): Promise<{
+      status: number;
+      headers: { get: (name: string) => string | null };
+    }> {
+      return new Promise((resolve, reject) => {
+        const req = http.request({
+          host: '127.0.0.1',
+          port: testPort,
+          path: '/api/settings',
+          method: 'OPTIONS',
+          headers,
+        }, (res) => {
+          res.resume();
+          res.on('end', () => {
+            resolve({
+              status: res.statusCode ?? 0,
+              headers: {
+                get: (name: string) => {
+                  const value = res.headers[name.toLowerCase()];
+                  if (Array.isArray(value)) return value.join(', ');
+                  return value ?? null;
+                },
+              },
+            });
+          });
+        });
+        req.on('error', reject);
+        req.end();
+      });
+    }
+
     beforeEach(async () => {
+      mock.restore();
+      const { createMiddleware } = await import('../../../src/services/worker/http/middleware.js');
       app = express();
       createMiddleware(() => '').forEach(middleware => app.use(middleware));
 
@@ -82,12 +114,9 @@ describe('CORS Restriction', () => {
     });
 
     it('preflight response includes PUT in allowed methods', async () => {
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/settings`, {
-        method: 'OPTIONS',
-        headers: {
-          'Origin': 'http://localhost:37777',
-          'Access-Control-Request-Method': 'PUT',
-        },
+      const response = await requestOptions({
+        'Origin': 'http://localhost:37777',
+        'Access-Control-Request-Method': 'PUT',
       });
 
       expect([200, 204]).toContain(response.status);
@@ -96,12 +125,9 @@ describe('CORS Restriction', () => {
     });
 
     it('preflight response includes PATCH in allowed methods', async () => {
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/settings`, {
-        method: 'OPTIONS',
-        headers: {
-          'Origin': 'http://localhost:37777',
-          'Access-Control-Request-Method': 'PATCH',
-        },
+      const response = await requestOptions({
+        'Origin': 'http://localhost:37777',
+        'Access-Control-Request-Method': 'PATCH',
       });
 
       expect([200, 204]).toContain(response.status);
@@ -110,12 +136,9 @@ describe('CORS Restriction', () => {
     });
 
     it('preflight response includes DELETE in allowed methods', async () => {
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/settings`, {
-        method: 'OPTIONS',
-        headers: {
-          'Origin': 'http://localhost:37777',
-          'Access-Control-Request-Method': 'DELETE',
-        },
+      const response = await requestOptions({
+        'Origin': 'http://localhost:37777',
+        'Access-Control-Request-Method': 'DELETE',
       });
 
       expect([200, 204]).toContain(response.status);
@@ -124,13 +147,10 @@ describe('CORS Restriction', () => {
     });
 
     it('preflight response includes Content-Type in allowed headers', async () => {
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/settings`, {
-        method: 'OPTIONS',
-        headers: {
-          'Origin': 'http://localhost:37777',
-          'Access-Control-Request-Method': 'POST',
-          'Access-Control-Request-Headers': 'Content-Type',
-        },
+      const response = await requestOptions({
+        'Origin': 'http://localhost:37777',
+        'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers': 'Content-Type',
       });
 
       expect([200, 204]).toContain(response.status);
@@ -139,13 +159,10 @@ describe('CORS Restriction', () => {
     });
 
     it('preflight response includes Authorization in allowed headers', async () => {
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/settings`, {
-        method: 'OPTIONS',
-        headers: {
-          'Origin': 'http://localhost:37777',
-          'Access-Control-Request-Method': 'POST',
-          'Access-Control-Request-Headers': 'Authorization',
-        },
+      const response = await requestOptions({
+        'Origin': 'http://localhost:37777',
+        'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers': 'Authorization',
       });
 
       expect([200, 204]).toContain(response.status);
@@ -154,13 +171,10 @@ describe('CORS Restriction', () => {
     });
 
     it('preflight from localhost includes allow-origin header', async () => {
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/settings`, {
-        method: 'OPTIONS',
-        headers: {
-          'Origin': 'http://localhost:37777',
-          'Access-Control-Request-Method': 'POST',
-          'Access-Control-Request-Headers': 'Content-Type',
-        },
+      const response = await requestOptions({
+        'Origin': 'http://localhost:37777',
+        'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers': 'Content-Type',
       });
 
       expect([200, 204]).toContain(response.status);
@@ -169,12 +183,9 @@ describe('CORS Restriction', () => {
     });
 
     it('preflight from external origin omits allow-origin header', async () => {
-      const response = await fetch(`http://127.0.0.1:${testPort}/api/settings`, {
-        method: 'OPTIONS',
-        headers: {
-          'Origin': 'http://evil.com',
-          'Access-Control-Request-Method': 'POST',
-        },
+      const response = await requestOptions({
+        'Origin': 'http://evil.com',
+        'Access-Control-Request-Method': 'POST',
       });
 
       const origin = response.headers.get('access-control-allow-origin');

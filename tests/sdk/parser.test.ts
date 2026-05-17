@@ -6,8 +6,8 @@ import { parseAgentXml } from '../../src/sdk/parser.js';
 
 function expectObservation(raw: string) {
   const result = parseAgentXml(raw);
-  if (!result.valid) throw new Error('expected valid observation, got invalid result');
-  if (result.summary !== null) throw new Error('expected observation result, got a summary');
+  if (!result.valid) throw new Error('expected valid observation');
+  if (result.observations.length === 0) throw new Error('expected observation, got none');
   return result.observations;
 }
 

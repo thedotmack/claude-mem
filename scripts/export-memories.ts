@@ -49,7 +49,11 @@ async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Respon
 
 export async function exportMemories(query: string, outputFile: string, project?: string) {
   const settings = SettingsDefaultsManager.loadFromFile(join(resolveDataDir(), 'settings.json'));
-  const port = parseWorkerPort(settings.CLAUDE_MEM_WORKER_PORT);
+  const port = parseWorkerPort(
+    process.env.CLAUDE_MEM_WORKER_PORT !== undefined
+      ? process.env.CLAUDE_MEM_WORKER_PORT
+      : settings.CLAUDE_MEM_WORKER_PORT
+  );
   const baseUrl = `http://localhost:${port}`;
 
   console.log(`🔍 Searching for: "${query}"${project ? ` (project: ${project})` : ' (all projects)'}`);

@@ -1,19 +1,4 @@
-import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
-
-// Capture real exports before mock.module mutates the live namespace, then
-// re-register the snapshots in afterAll so these mocks do not leak into later
-// test files (bun's mock.module is process-global; mock.restore() does NOT undo it).
-import * as realSettingsDefaultsManager from '../../../src/shared/SettingsDefaultsManager.js';
-import * as realPaths from '../../../src/shared/paths.js';
-import * as realLogger from '../../../src/utils/logger.js';
-import * as realSupervisor from '../../../src/supervisor/index.ts';
-import * as realEnvSanitizer from '../../../src/supervisor/env-sanitizer.js';
-const realSettingsSnapshot = { ...realSettingsDefaultsManager };
-const realPathsSnapshot = { ...realPaths };
-const realLoggerSnapshot = { ...realLogger };
-const realSupervisorSnapshot = { ...realSupervisor };
-const realEnvSanitizerSnapshot = { ...realEnvSanitizer };
-const realChildProcess = require('node:child_process');
+import { describe, it, expect, beforeEach, mock } from 'bun:test';
 
 // Singleton enforcement regression coverage for issue #2313.
 //
@@ -86,9 +71,28 @@ mock.module('@modelcontextprotocol/sdk/client/index.js', () => ({
 
 mock.module('../../../src/shared/SettingsDefaultsManager.js', () => ({
   SettingsDefaultsManager: {
-    get: () => '',
+    get: (key: string) => {
+      if (key === 'CLAUDE_MEM_QUEUE_ENGINE') return 'sqlite';
+      if (key === 'CLAUDE_MEM_REDIS_MODE') return 'external';
+      if (key === 'CLAUDE_MEM_REDIS_URL') return '';
+      if (key === 'CLAUDE_MEM_REDIS_HOST') return '127.0.0.1';
+      if (key === 'CLAUDE_MEM_REDIS_PORT') return '6379';
+      if (key === 'CLAUDE_MEM_QUEUE_REDIS_PREFIX') return 'claude_mem';
+      if (key === 'CLAUDE_MEM_WELCOME_HINT_ENABLED') return 'true';
+      if (key === 'CLAUDE_MEM_WORKER_PORT') return '37777';
+      return '';
+    },
     getInt: () => 0,
-    loadFromFile: () => ({}),
+    loadFromFile: () => ({
+      CLAUDE_MEM_QUEUE_ENGINE: 'sqlite',
+      CLAUDE_MEM_REDIS_MODE: 'external',
+      CLAUDE_MEM_REDIS_URL: '',
+      CLAUDE_MEM_REDIS_HOST: '127.0.0.1',
+      CLAUDE_MEM_REDIS_PORT: '6379',
+      CLAUDE_MEM_QUEUE_REDIS_PREFIX: 'claude_mem',
+      CLAUDE_MEM_WELCOME_HINT_ENABLED: 'true',
+      CLAUDE_MEM_WORKER_PORT: '37777',
+    }),
   },
 }));
 
@@ -107,11 +111,15 @@ mock.module('../../../src/utils/logger.js', () => ({
     warn: () => {},
     error: () => {},
     failure: () => {},
+    dataIn: () => {},
+    dataOut: () => {},
+    success: () => {},
   },
 }));
 
 // Track tree-kill invocations and the transport whose subprocess was killed.
 const killTreeCalls: number[] = [];
+const execFileCalls: Array<{ cmd: string; args: string[] }> = [];
 
 mock.module('../../../src/supervisor/index.ts', () => ({
   getSupervisor: () => ({
@@ -138,6 +146,7 @@ mock.module('child_process', () => {
       _opts: unknown,
       cb: (err: Error | null, stdout: { stdout: string; stderr: string }) => void
     ) => {
+      execFileCalls.push({ cmd, args });
       // Bun's promisify path will call this as if it were a Node-style callback.
       if (cmd === 'pgrep') {
         cb(null, { stdout: '', stderr: '' } as any);
@@ -160,22 +169,25 @@ process.kill = stubbedProcessKill;
 
 import { ChromaMcpManager } from '../../../src/services/sync/ChromaMcpManager.js';
 
-afterAll(() => {
-  process.kill = realProcessKill;
-  mock.module('../../../src/shared/SettingsDefaultsManager.js', () => realSettingsSnapshot);
-  mock.module('../../../src/shared/paths.js', () => realPathsSnapshot);
-  mock.module('../../../src/utils/logger.js', () => realLoggerSnapshot);
-  mock.module('../../../src/supervisor/index.ts', () => realSupervisorSnapshot);
-  mock.module('../../../src/supervisor/env-sanitizer.js', () => realEnvSanitizerSnapshot);
-  mock.module('child_process', () => realChildProcess);
-});
+const originalKillProcessTree = (ChromaMcpManager as any).killProcessTree;
+(ChromaMcpManager as any).killProcessTree = async (pid: number) => {
+  killTreeCalls.push(pid);
+};
 
 function resetState(): void {
   transportCount = 0;
   transportInstances.length = 0;
   killTreeCalls.length = 0;
+  execFileCalls.length = 0;
   connectImpl = async () => {};
   callToolImpl = async () => ({ content: [{ type: 'text', text: '{}' }] });
+}
+
+function expectTreeKillFor(pid: number): void {
+  const taskkillCalled = execFileCalls.some(call =>
+    call.cmd === 'taskkill' && call.args.includes(String(pid))
+  );
+  expect(killTreeCalls.includes(pid) || taskkillCalled).toBe(true);
 }
 
 describe('ChromaMcpManager singleton enforcement (#2313)', () => {
@@ -223,7 +235,7 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(transportInstances.length).toBe(2);
     // The first transport's pid must have been signaled by killProcessTree
     // before the second transport spawned.
-    expect(killTreeCalls).toContain(firstPid);
+    expectTreeKillFor(firstPid);
   });
 
   it('stop() disposes state including any pending connecting promise', async () => {
@@ -237,7 +249,7 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
 
     // After stop(), every internal handle should be cleared and the prior
     // subprocess tree must have been signaled.
-    expect(killTreeCalls).toContain(subprocessPid);
+    expectTreeKillFor(subprocessPid);
 
     // A subsequent ensureConnected must spawn a fresh transport (not reuse
     // a stale one).
@@ -250,4 +262,5 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
 // late-arriving microtasks.
 process.on('exit', () => {
   process.kill = realProcessKill;
+  (ChromaMcpManager as any).killProcessTree = originalKillProcessTree;
 });

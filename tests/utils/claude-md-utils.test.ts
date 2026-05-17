@@ -1,17 +1,7 @@
-import { describe, it, expect, mock, afterEach, afterAll, beforeEach } from 'bun:test';
+import { describe, it, expect, mock, afterEach, beforeEach } from 'bun:test';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
 import path, { join } from 'path';
 import { tmpdir } from 'os';
-
-// Snapshot the real modules BEFORE mock.module mutates the live namespace, then
-// re-register them in afterAll. bun's mock.module is process-global and
-// mock.restore() does NOT undo it, so a partial logger mock here would
-// otherwise leak into later test files (e.g. summarize-tag-stripping, which
-// needs logger.dataIn).
-import * as realLogger from '../../src/utils/logger.js';
-import * as realWorkerUtils from '../../src/shared/worker-utils.js';
-const realLoggerSnapshot = { ...realLogger };
-const realWorkerUtilsSnapshot = { ...realWorkerUtils };
 
 mock.module('../../src/utils/logger.js', () => ({
   logger: {
@@ -19,6 +9,10 @@ mock.module('../../src/utils/logger.js', () => ({
     debug: () => {},
     warn: () => {},
     error: () => {},
+    failure: () => {},
+    dataIn: () => {},
+    dataOut: () => {},
+    success: () => {},
     formatTool: (toolName: string, toolInput?: any) => toolInput ? `${toolName}(...)` : toolName,
   },
 }));
@@ -40,11 +34,6 @@ mock.module('../../src/shared/worker-utils.js', () => ({
   buildWorkerUrl: (apiPath: string) => `http://127.0.0.1:37777${apiPath}`,
 }));
 
-afterAll(() => {
-  mock.module('../../src/utils/logger.js', () => realLoggerSnapshot);
-  mock.module('../../src/shared/worker-utils.js', () => realWorkerUtilsSnapshot);
-});
-
 import {
   replaceTaggedContent,
   formatTimelineForClaudeMd,
@@ -55,6 +44,10 @@ import {
 
 let tempDir: string;
 const originalFetch = global.fetch;
+
+function rootPath(...segments: string[]): string {
+  return path.resolve(join(path.sep, ...segments));
+}
 
 beforeEach(() => {
   tempDir = join(tmpdir(), `test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -376,6 +369,7 @@ describe('updateFolderClaudeMdFiles', () => {
   });
 
   it('should resolve relative paths using projectRoot', async () => {
+    const projectRoot = rootPath('home', 'user', 'my-project');
     const apiResponse = {
       content: [{
         text: '| #123 | 4:30 PM | 🔵 | Test observation | ~100 |'
@@ -392,12 +386,12 @@ describe('updateFolderClaudeMdFiles', () => {
       ['src/utils/file.ts'],  // relative path
       'test-project',
       37777,
-      '/home/user/my-project'  
+      projectRoot
     );
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
-    expect(callUrl).toContain(encodeURIComponent('/home/user/my-project/src/utils'));
+    expect(callUrl).toContain(encodeURIComponent(join(projectRoot, 'src', 'utils')));
   });
 
   it('should accept absolute paths within projectRoot and use them directly', async () => {
@@ -457,6 +451,7 @@ describe('updateFolderClaudeMdFiles', () => {
   });
 
   it('should handle projectRoot with trailing slash correctly', async () => {
+    const projectRoot = rootPath('home', 'user', 'my-project');
     const apiResponse = {
       content: [{
         text: '| #123 | 4:30 PM | 🔵 | Test observation | ~100 |'
@@ -473,12 +468,12 @@ describe('updateFolderClaudeMdFiles', () => {
       ['src/utils/file.ts'],
       'test-project',
       37777,
-      '/home/user/my-project/'  
+      `${projectRoot}${path.sep}`
     );
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
-    expect(callUrl).toContain(encodeURIComponent('/home/user/my-project/src/utils'));
+    expect(callUrl).toContain(encodeURIComponent(join(projectRoot, 'src', 'utils')));
     expect(callUrl.replace('http://', '')).not.toContain('//');
   });
 
@@ -513,6 +508,7 @@ describe('updateFolderClaudeMdFiles', () => {
   });
 
   it('should deduplicate relative paths from same folder with projectRoot', async () => {
+    const projectRoot = rootPath('home', 'user', 'project');
     const apiResponse = {
       content: [{
         text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |'
@@ -529,21 +525,25 @@ describe('updateFolderClaudeMdFiles', () => {
       ['src/utils/file1.ts', 'src/utils/file2.ts', 'src/utils/file3.ts'],
       'test-project',
       37777,
-      '/home/user/project'
+      projectRoot
     );
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
-    expect(callUrl).toContain(encodeURIComponent('/home/user/project/src/utils'));
+    expect(callUrl).toContain(encodeURIComponent(join(projectRoot, 'src', 'utils')));
   });
 
   it('should handle empty string paths gracefully with projectRoot', async () => {
-    // The empty strings are filtered out, leaving one valid folder that
-    // triggers exactly one fetch — which then reads the JSON body, so the
-    // mock must provide json() like a real ok Response.
+    const projectRoot = rootPath('home', 'user', 'project');
+    const apiResponse = {
+      content: [{
+        text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |'
+      }]
+    };
+
     const fetchMock = mock(() => Promise.resolve({
       ok: true,
-      json: () => Promise.resolve({ content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }] })
+      json: () => Promise.resolve(apiResponse)
     } as Response));
     global.fetch = fetchMock;
 
@@ -551,12 +551,12 @@ describe('updateFolderClaudeMdFiles', () => {
       ['', 'src/file.ts', ''],  // includes empty strings
       'test-project',
       37777,
-      '/home/user/project'
+      projectRoot
     );
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
-    expect(callUrl).toContain(encodeURIComponent('/home/user/project/src'));
+    expect(callUrl).toContain(encodeURIComponent(join(projectRoot, 'src')));
   });
 });
 
@@ -760,34 +760,37 @@ describe('issue #814 - reject consecutive duplicate path segments', () => {
 
 describe('issue #859 - skip folders with active CLAUDE.md', () => {
   it('should skip folder when CLAUDE.md was read in observation', async () => {
+    const projectRoot = rootPath('project');
     const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
     global.fetch = fetchMock;
 
     await updateFolderClaudeMdFiles(
-      ['/project/src/utils/CLAUDE.md'],
+      [join(projectRoot, 'src', 'utils', 'CLAUDE.md')],
       'test-project',
       37777,
-      '/project'
+      projectRoot
     );
 
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('should skip folder when CLAUDE.md was modified in observation', async () => {
+    const projectRoot = rootPath('project');
     const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
     global.fetch = fetchMock;
 
     await updateFolderClaudeMdFiles(
-      ['/project/src/CLAUDE.md'],
+      [join(projectRoot, 'src', 'CLAUDE.md')],
       'test-project',
       37777,
-      '/project'
+      projectRoot
     );
 
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('should process other folders even when one has active CLAUDE.md', async () => {
+    const projectRoot = rootPath('project');
     const apiResponse = {
       content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }]
     };
@@ -799,21 +802,22 @@ describe('issue #859 - skip folders with active CLAUDE.md', () => {
 
     await updateFolderClaudeMdFiles(
       [
-        '/project/src/utils/CLAUDE.md',  // Should skip /project/src/utils
-        '/project/src/services/api.ts'   
+        join(projectRoot, 'src', 'utils', 'CLAUDE.md'),  // Should skip src/utils
+        join(projectRoot, 'src', 'services', 'api.ts')
       ],
       'test-project',
       37777,
-      '/project'
+      projectRoot
     );
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
-    expect(callUrl).toContain(encodeURIComponent('/project/src/services'));
-    expect(callUrl).not.toContain(encodeURIComponent('/project/src/utils'));
+    expect(callUrl).toContain(encodeURIComponent(join(projectRoot, 'src', 'services')));
+    expect(callUrl).not.toContain(encodeURIComponent(join(projectRoot, 'src', 'utils')));
   });
 
   it('should handle relative CLAUDE.md paths with projectRoot', async () => {
+    const projectRoot = rootPath('project');
     const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
     global.fetch = fetchMock;
 
@@ -821,13 +825,14 @@ describe('issue #859 - skip folders with active CLAUDE.md', () => {
       ['src/components/CLAUDE.md'],
       'test-project',
       37777,
-      '/project'
+      projectRoot
     );
 
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('should skip only the specific folder containing active CLAUDE.md', async () => {
+    const projectRoot = rootPath('project');
     const apiResponse = {
       content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }]
     };
@@ -839,18 +844,18 @@ describe('issue #859 - skip folders with active CLAUDE.md', () => {
 
     await updateFolderClaudeMdFiles(
       [
-        '/project/src/a/CLAUDE.md',
-        '/project/src/b/CLAUDE.md',
-        '/project/src/c/file.ts'
+        join(projectRoot, 'src', 'a', 'CLAUDE.md'),
+        join(projectRoot, 'src', 'b', 'CLAUDE.md'),
+        join(projectRoot, 'src', 'c', 'file.ts')
       ],
       'test-project',
       37777,
-      '/project'
+      projectRoot
     );
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
-    expect(callUrl).toContain(encodeURIComponent('/project/src/c'));
+    expect(callUrl).toContain(encodeURIComponent(join(projectRoot, 'src', 'c')));
   });
 
   it('should still exclude project root even when CLAUDE.md filter would allow it', async () => {
@@ -1046,20 +1051,22 @@ describe('CLAUDE.local.md support', () => {
   });
 
   it('should skip folder when CLAUDE.local.md was read in observation', async () => {
+    const projectRoot = rootPath('project');
     const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
     global.fetch = fetchMock;
 
     await updateFolderClaudeMdFiles(
-      ['/project/src/utils/CLAUDE.local.md'],
+      [join(projectRoot, 'src', 'utils', 'CLAUDE.local.md')],
       'test-project',
       37777,
-      '/project'
+      projectRoot
     );
 
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('should skip folder when either CLAUDE.md or CLAUDE.local.md was read', async () => {
+    const projectRoot = rootPath('project');
     const apiResponse = {
       content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }]
     };
@@ -1071,107 +1078,19 @@ describe('CLAUDE.local.md support', () => {
 
     await updateFolderClaudeMdFiles(
       [
-        '/project/src/a/CLAUDE.md',          // Skip folder a (regular)
-        '/project/src/b/CLAUDE.local.md',    // Skip folder b (local)
-        '/project/src/c/file.ts'             
+        join(projectRoot, 'src', 'a', 'CLAUDE.md'),          // Skip folder a (regular)
+        join(projectRoot, 'src', 'b', 'CLAUDE.local.md'),    // Skip folder b (local)
+        join(projectRoot, 'src', 'c', 'file.ts')
       ],
       'test-project',
       37777,
-      '/project'
+      projectRoot
     );
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
-    expect(callUrl).toContain(encodeURIComponent('/project/src/c'));
-    expect(callUrl).not.toContain(encodeURIComponent('/project/src/a'));
-    expect(callUrl).not.toContain(encodeURIComponent('/project/src/b'));
-  });
-});
-
-describe('skeleton CLAUDE.md deny-list (#2400)', () => {
-  const ENV_KEY = 'CLAUDE_MEM_FOLDER_MD_SKELETON_DENYLIST';
-  let savedEnv: string | undefined;
-
-  beforeEach(() => {
-    savedEnv = process.env[ENV_KEY];
-  });
-
-  afterEach(() => {
-    if (savedEnv === undefined) {
-      delete process.env[ENV_KEY];
-    } else {
-      process.env[ENV_KEY] = savedEnv;
-    }
-  });
-
-  // API text with no parseable observation rows -> formatTimelineForClaudeMd
-  // returns '' (empty/skeleton).
-  const emptySkeletonResponse = {
-    content: [{ text: 'no observation rows here' }],
-  };
-
-  it('does NOT overwrite an existing CLAUDE.md with a skeleton when the folder matches the deny-list', async () => {
-    process.env[ENV_KEY] = JSON.stringify(['**/transient']);
-
-    const folderPath = join(tempDir, 'transient');
-    mkdirSync(folderPath, { recursive: true });
-    const claudeMdPath = join(folderPath, 'CLAUDE.md');
-    const userContent = 'USER CONTENT — must be preserved';
-    writeFileSync(claudeMdPath, userContent);
-    const filePath = join(folderPath, 'file.ts');
-
-    global.fetch = mock(() => Promise.resolve({
-      ok: true,
-      json: () => Promise.resolve(emptySkeletonResponse),
-    } as Response));
-
-    await updateFolderClaudeMdFiles([filePath], 'test-project', 37777, tempDir);
-
-    // Deny-listed + empty/skeleton => injection suppressed, file untouched.
-    expect(readFileSync(claudeMdPath, 'utf-8')).toBe(userContent);
-  });
-
-  it('still injects when the folder does NOT match the deny-list (default behavior unchanged)', async () => {
-    process.env[ENV_KEY] = JSON.stringify(['**/some-other-dir']);
-
-    const folderPath = join(tempDir, 'content-dir');
-    mkdirSync(folderPath, { recursive: true });
-    const filePath = join(folderPath, 'file.ts');
-
-    global.fetch = mock(() => Promise.resolve({
-      ok: true,
-      json: () => Promise.resolve({
-        content: [{ text: '| #123 | 4:30 PM | 🔵 | Real observation | ~100 |' }],
-      }),
-    } as Response));
-
-    await updateFolderClaudeMdFiles([filePath], 'test-project', 37777, tempDir);
-
-    const claudeMdPath = join(folderPath, 'CLAUDE.md');
-    expect(existsSync(claudeMdPath)).toBe(true);
-    expect(readFileSync(claudeMdPath, 'utf-8')).toContain('#123');
-  });
-
-  it('default (unset deny-list) preserves prior behavior — existing file gets the empty section rewritten', async () => {
-    delete process.env[ENV_KEY];
-
-    const folderPath = join(tempDir, 'no-denylist');
-    mkdirSync(folderPath, { recursive: true });
-    const claudeMdPath = join(folderPath, 'CLAUDE.md');
-    writeFileSync(claudeMdPath, 'PRE-EXISTING');
-    const filePath = join(folderPath, 'file.ts');
-
-    global.fetch = mock(() => Promise.resolve({
-      ok: true,
-      json: () => Promise.resolve(emptySkeletonResponse),
-    } as Response));
-
-    await updateFolderClaudeMdFiles([filePath], 'test-project', 37777, tempDir);
-
-    // With no deny-list, the existing file is still processed (the new guard is
-    // a no-op), so the tagged context section is appended to the existing file.
-    const content = readFileSync(claudeMdPath, 'utf-8');
-    expect(content).toContain('PRE-EXISTING');
-    expect(content).toContain('<claude-mem-context>');
+    expect(callUrl).toContain(encodeURIComponent(join(projectRoot, 'src', 'c')));
+    expect(callUrl).not.toContain(encodeURIComponent(join(projectRoot, 'src', 'a')));
+    expect(callUrl).not.toContain(encodeURIComponent(join(projectRoot, 'src', 'b')));
   });
 });

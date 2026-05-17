@@ -1,12 +1,4 @@
-import { describe, it, expect, mock, afterEach, afterAll } from 'bun:test';
-
-// Snapshot the real logger BEFORE mock.module mutates the live namespace, then
-// re-register it in afterAll. bun's mock.module is process-global and
-// mock.restore() does NOT undo it, so a partial logger mock here would
-// otherwise leak into later test files (e.g. summarize-tag-stripping, which
-// needs logger.dataIn).
-import * as realLogger from '../../src/utils/logger.js';
-const realLoggerSnapshot = { ...realLogger };
+import { describe, it, expect, mock, afterEach } from 'bun:test';
 
 mock.module('../../src/utils/logger.js', () => ({
   logger: {
@@ -14,6 +6,10 @@ mock.module('../../src/utils/logger.js', () => ({
     debug: () => {},
     warn: () => {},
     error: () => {},
+    failure: () => {},
+    dataIn: () => {},
+    dataOut: () => {},
+    success: () => {},
     formatTool: (toolName: string, toolInput?: any) => toolInput ? `${toolName}(...)` : toolName,
   },
 }));
@@ -24,9 +20,9 @@ afterEach(() => {
   mock.restore();
 });
 
-afterAll(() => {
-  mock.module('../../src/utils/logger.js', () => realLoggerSnapshot);
-});
+function toPosixPath(filePath: string): string {
+  return filePath.replace(/\\/g, '/');
+}
 
 describe('extractFirstFile', () => {
   const cwd = '/Users/test/project';
@@ -36,7 +32,7 @@ describe('extractFirstFile', () => {
 
     const result = extractFirstFile(filesModified, cwd);
 
-    expect(result).toBe('src/app.ts');
+    expect(toPosixPath(result)).toBe('src/app.ts');
   });
 
   it('should fall back to files_read when modified is empty', () => {
@@ -77,7 +73,7 @@ describe('extractFirstFile', () => {
 
     const result = extractFirstFile(filesModified, cwd);
 
-    expect(result).toBe('deeply/nested/file.ts');
+    expect(toPosixPath(result)).toBe('deeply/nested/file.ts');
     expect(result).not.toContain('/Users/test/project');
   });
 

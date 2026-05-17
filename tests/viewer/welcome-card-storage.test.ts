@@ -26,7 +26,7 @@ const memStore = new MemoryStorage();
 (globalThis as unknown as { localStorage: MemoryStorage }).localStorage = memStore;
 
 const STORAGE_KEY = 'claude-mem-welcome-dismissed-v3';
-const LEGACY_KEY = 'claude-mem-welcome-dismissed-v2';
+const LEGACY_KEY = 'claude-mem-welcome-dismissed-v1';
 
 import {
   getStoredWelcomeDismissed,
@@ -55,7 +55,7 @@ describe('WelcomeCard storage helpers (v3 key)', () => {
     expect(getStoredWelcomeDismissed()).toBe(false);
   });
 
-  it('does not consult the v2 legacy key', () => {
+  it('does not consult the v1 legacy key', () => {
     memStore.setItem(LEGACY_KEY, 'true');
     expect(getStoredWelcomeDismissed()).toBe(false);
   });

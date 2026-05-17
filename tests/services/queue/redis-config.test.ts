@@ -49,6 +49,9 @@ describe('redis queue config', () => {
     }));
 
     setEnv('CLAUDE_MEM_REDIS_HOST', 'env-host');
+    setEnv('CLAUDE_MEM_REDIS_PORT', '6381');
+    setEnv('CLAUDE_MEM_REDIS_URL', '');
+    setEnv('CLAUDE_MEM_QUEUE_REDIS_PREFIX', 'settings-prefix');
 
     const { getRedisQueueConfig, getObservationQueueEngineName } = await import('../../../src/server/queue/redis-config.js');
 
