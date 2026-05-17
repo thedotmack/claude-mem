@@ -187,6 +187,8 @@ interface ClaudeMemPluginConfig {
 const MAX_SSE_BUFFER_SIZE = 1024 * 1024; 
 const DEFAULT_WORKER_PORT = 37777;
 const DEFAULT_WORKER_HOST = "127.0.0.1";
+const OPENCLAW_PLATFORM_SOURCE = "openclaw";
+const DUPLICATE_PROMPT_INIT_WINDOW_MS = 30_000;
 
 const EMOJI_POOL = [
   "🔧","📐","🔍","💻","🧪","🐛","🛡️","☁️","📦","🎯",
@@ -471,7 +473,6 @@ async function sendDirectTelegram(
       body: JSON.stringify({
         chat_id: chatId,
         text,
-        parse_mode: "Markdown",
       }),
     });
     if (!response.ok) {
@@ -484,17 +485,13 @@ async function sendDirectTelegram(
   }
 }
 
-function sendToChannel(
+async function sendToChannel(
   api: OpenClawPluginApi,
   channel: string,
   to: string,
   text: string,
   botToken?: string
 ): Promise<void> {
-  if (botToken && channel === "telegram") {
-    return sendDirectTelegram(botToken, to, text, api.logger);
-  }
-
   const mapping = CHANNEL_SEND_MAP[channel];
   if (!mapping) {
     api.logger.warn(`[claude-mem] Unsupported channel type: ${channel}`);
@@ -502,25 +499,27 @@ function sendToChannel(
   }
 
   const channelApi = api.runtime.channel[mapping.namespace];
-  if (!channelApi) {
-    api.logger.warn(`[claude-mem] Channel "${channel}" not available in runtime`);
-    return Promise.resolve();
+  const senderFunction = channelApi?.[mapping.functionName];
+  if (typeof senderFunction === "function") {
+    const args: unknown[] = channel === "whatsapp"
+      ? [to, text, { verbose: false }]
+      : [to, text];
+
+    try {
+      await senderFunction.call(channelApi, ...args);
+      return;
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      api.logger.error(`[claude-mem] Failed to send to ${channel}: ${message}`);
+    }
   }
 
-  const senderFunction = channelApi[mapping.functionName];
-  if (!senderFunction) {
-    api.logger.warn(`[claude-mem] Channel "${channel}" has no ${mapping.functionName} function`);
-    return Promise.resolve();
+  if (botToken && channel === "telegram") {
+    return sendDirectTelegram(botToken, to, text, api.logger);
   }
 
-  const args: unknown[] = channel === "whatsapp"
-    ? [to, text, { verbose: false }]
-    : [to, text];
-
-  return senderFunction(...args).catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
-    api.logger.error(`[claude-mem] Failed to send to ${channel}: ${message}`);
-  });
+  api.logger.warn(`[claude-mem] Channel "${channel}" not available in runtime`);
+  return Promise.resolve();
 }
 
 async function connectToSSEStream(
@@ -631,6 +630,11 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     return baseProjectName;
   }
 
+  function getObservationCwd(ctx: EventContext, projectName: string): string {
+    if (ctx.workspaceDir) return ctx.workspaceDir;
+    return `/openclaw/${projectName}`;
+  }
+
   const sessionIds = new Map<string, string>();
   const canonicalSessionKeys = new Map<string, string>();
   const sessionAliasesByCanonicalKey = new Map<string, Set<string>>();
@@ -693,12 +697,49 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   function shouldSkipDuplicatePromptInit(contentSessionId: string, project: string, prompt: string): boolean {
     const now = Date.now();
     for (const [key, timestamp] of recentPromptInits) {
-      if (now - timestamp > 2000) recentPromptInits.delete(key);
+      if (now - timestamp > DUPLICATE_PROMPT_INIT_WINDOW_MS) {
+        recentPromptInits.delete(key);
+      }
     }
+
     const cacheKey = `${contentSessionId}::${project}::${prompt}`;
     const lastSeenAt = recentPromptInits.get(cacheKey);
     recentPromptInits.set(cacheKey, now);
-    return typeof lastSeenAt === "number" && now - lastSeenAt <= 2000;
+    return typeof lastSeenAt === "number" && now - lastSeenAt <= DUPLICATE_PROMPT_INIT_WINDOW_MS;
+  }
+
+  function shouldSkipInternalPromptInit(prompt: string): boolean {
+    const normalized = prompt.trim();
+    if (normalized.includes("OpenClaw's internal commitment extractor")
+      && normalized.includes("hidden background classification run")
+      && normalized.includes('{"candidates"')) {
+      return true;
+    }
+    if (normalized.startsWith("Read HEARTBEAT.md if it exists")
+      && normalized.includes("heartbeat_respond")) {
+      return true;
+    }
+    if (normalized.startsWith("An async command completion event was triggered")
+      && normalized.includes("reply HEARTBEAT_OK")) {
+      return true;
+    }
+    if (normalized.startsWith("[Inter-session message]")
+      && normalized.includes("isUser=false")) {
+      return true;
+    }
+    if (normalized.includes("[Subagent Context]")
+      && normalized.includes("You are running as a subagent")) {
+      return true;
+    }
+    return false;
+  }
+
+  function stripOpenClawMetadataPrefix(prompt: string): string {
+    const stripped = prompt.trimStart().replace(
+      /^(?:[^\n]+ \(untrusted metadata\):\s*\n```json\s*\n[\s\S]*?\n```\s*)+/,
+      ""
+    ).trimStart();
+    return stripped.trim().length > 0 ? stripped : prompt;
   }
 
   function clearSessionContext(ctx: SessionTrackingContext): void {
@@ -706,10 +747,16 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     const canonicalKey = aliases
       .map((alias) => canonicalSessionKeys.get(alias))
       .find(Boolean) || aliases[0];
+    const contentSessionId = sessionIds.get(canonicalKey);
     const knownAliases = sessionAliasesByCanonicalKey.get(canonicalKey) || new Set([canonicalKey, ...aliases]);
     for (const alias of knownAliases) {
       canonicalSessionKeys.delete(alias);
       sessionIds.delete(alias);
+    }
+    for (const cacheKey of recentPromptInits.keys()) {
+      if (cacheKey.startsWith(`${contentSessionId}::`)) {
+        recentPromptInits.delete(cacheKey);
+      }
     }
     sessionAliasesByCanonicalKey.delete(canonicalKey);
     sessionIds.delete(canonicalKey);
@@ -762,6 +809,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       contentSessionId,
       project: projectName,
       prompt: promptText,
+      platformSource: OPENCLAW_PLATFORM_SOURCE,
     }, api.logger);
 
     api.logger.info(`[claude-mem] Session initialized via ${via}: contentSessionId=${contentSessionId} project=${projectName}`);
@@ -781,7 +829,16 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   });
 
   api.on("before_agent_start", async (event, ctx) => {
-    await initSessionOnce(ctx, event.prompt || "agent run", "before_agent_start");
+    const rawPromptText = event.prompt || "agent run";
+    const projectName = getProjectName(ctx);
+    const { contentSessionId } = rememberSessionContext(ctx);
+
+    if (shouldSkipInternalPromptInit(rawPromptText)) {
+      api.logger.info(`[claude-mem] Skipping internal OpenClaw prompt init: contentSessionId=${contentSessionId} project=${projectName}`);
+      return;
+    }
+
+    await initSessionOnce(ctx, stripOpenClawMetadataPrefix(rawPromptText), "before_agent_start");
   });
 
   api.on("before_prompt_build", async (_event, ctx) => {
@@ -817,11 +874,10 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       toolResponseText = toolResponseText.slice(0, MAX_TOOL_RESPONSE_LENGTH);
     }
 
-    // Fall back to the process cwd when the event carries no workspaceDir, so a
-    // missing ctx field never silently drops a captured observation.
-    const workspaceDir = ctx.workspaceDir || process.cwd();
+    const projectName = getProjectName(ctx);
+    const workspaceDir = getObservationCwd(ctx, projectName);
     if (!ctx.workspaceDir) {
-      api.logger.info(`[claude-mem] tool_result_persist missing workspaceDir; using process.cwd(): session=${canonicalKey} tool=${toolName}`);
+      api.logger.info(`[claude-mem] Using project fallback cwd for observation: session=${canonicalKey} tool=${toolName} project=${projectName}`);
     }
 
     workerPostFireAndForget(workerPort, "/api/sessions/observations", {
@@ -830,6 +886,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       tool_input: event.params || {},
       tool_response: toolResponseText,
       cwd: workspaceDir,
+      platformSource: OPENCLAW_PLATFORM_SOURCE,
     }, api.logger);
   });
 
@@ -857,6 +914,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     await workerPost(workerPort, "/api/sessions/summarize", {
       contentSessionId,
       last_assistant_message: lastAssistantMessage,
+      platformSource: OPENCLAW_PLATFORM_SOURCE,
     }, api.logger);
   });
 

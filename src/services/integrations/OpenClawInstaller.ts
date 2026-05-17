@@ -121,6 +121,9 @@ function registerPluginInOpenClawConfig(
   if (!config.plugins.entries['claude-mem']) {
     config.plugins.entries['claude-mem'] = {
       enabled: true,
+      hooks: {
+        allowConversationAccess: true,
+      },
       config: {
         workerPort,
         project,
@@ -129,6 +132,10 @@ function registerPluginInOpenClawConfig(
     };
   } else {
     config.plugins.entries['claude-mem'].enabled = true;
+    if (!config.plugins.entries['claude-mem'].hooks) {
+      config.plugins.entries['claude-mem'].hooks = {};
+    }
+    config.plugins.entries['claude-mem'].hooks.allowConversationAccess = true;
     if (!config.plugins.entries['claude-mem'].config) {
       config.plugins.entries['claude-mem'].config = {};
     }
