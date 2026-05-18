@@ -1,4 +1,5 @@
 
+import { GoogleAuth } from 'google-auth-library';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
@@ -19,6 +20,10 @@ import { ClassifiedProviderError } from './provider-errors.js';
 import { withRetry } from './retry.js';
 
 const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1/models';
+
+const googleAuth = new GoogleAuth({
+  scopes: ['https://www.googleapis.com/auth/cloud-platform'],
+});
 
 /**
  * Parse Retry-After header (seconds or HTTP-date).
@@ -121,7 +126,8 @@ export type GeminiModel =
   | 'gemini-2.0-flash'
   | 'gemini-2.0-flash-lite'
   | 'gemini-3-flash'
-  | 'gemini-3-flash-preview';
+  | 'gemini-3-flash-preview'
+  | 'gemini-3.1-flash-lite';
 
 const GEMINI_RPM_LIMITS: Record<GeminiModel, number> = {
   'gemini-2.5-flash-lite': 10,
@@ -131,6 +137,7 @@ const GEMINI_RPM_LIMITS: Record<GeminiModel, number> = {
   'gemini-2.0-flash-lite': 30,
   'gemini-3-flash': 10,
   'gemini-3-flash-preview': 5,
+  'gemini-3.1-flash-lite': 10,
 };
 
 let lastRequestTime = 0;
@@ -188,9 +195,13 @@ export class GeminiProvider {
   }
 
   async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
-    const { apiKey, model, rateLimitingEnabled } = this.getGeminiConfig();
+    const { apiKey, model, rateLimitingEnabled, useVertex, vertexProject, vertexLocation } = this.getGeminiConfig();
 
-    if (!apiKey) {
+    if (useVertex) {
+      if (!vertexProject) {
+        throw new Error('Vertex AI mode requires a GCP project. Set CLAUDE_MEM_GEMINI_VERTEX_PROJECT in settings or GOOGLE_CLOUD_PROJECT environment variable.');
+      }
+    } else if (!apiKey) {
       throw new Error('Gemini API key not configured. Set CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.');
     }
 
@@ -206,10 +217,12 @@ export class GeminiProvider {
       ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode)
       : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
 
+    const vertexConfig = useVertex ? { project: vertexProject, location: vertexLocation } : undefined;
+
     session.conversationHistory.push({ role: 'user', content: initPrompt });
     let initResponse: { content: string; tokensUsed?: number };
     try {
-      initResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
+      initResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled, vertexConfig);
     } catch (error: unknown) {
       if (error instanceof Error) {
         logger.error('SDK', 'Gemini init query failed', { sessionId: session.sessionDbId, model }, error);
@@ -222,7 +235,7 @@ export class GeminiProvider {
     if (initResponse.content) {
       session.conversationHistory.push({ role: 'assistant', content: initResponse.content });
       const tokensUsed = initResponse.tokensUsed || 0;
-      session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);  
+      session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
       session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
       await processAgentResponse(initResponse.content, session, this.dbManager, this.sessionManager, worker, tokensUsed, null, 'Gemini', undefined, model);
     } else {
@@ -230,7 +243,7 @@ export class GeminiProvider {
     }
 
     try {
-      await this.processMessageLoop(session, worker, apiKey, model, rateLimitingEnabled, mode);
+      await this.processMessageLoop(session, worker, apiKey, model, rateLimitingEnabled, mode, vertexConfig);
     } catch (error: unknown) {
       if (error instanceof Error) {
         logger.error('SDK', 'Gemini message loop failed', { sessionId: session.sessionDbId, model }, error);
@@ -254,7 +267,8 @@ export class GeminiProvider {
     apiKey: string,
     model: GeminiModel,
     rateLimitingEnabled: boolean,
-    mode: ModeConfig
+    mode: ModeConfig,
+    vertexConfig?: { project: string; location: string }
   ): Promise<void> {
     let lastCwd: string | undefined;
 
@@ -268,9 +282,9 @@ export class GeminiProvider {
       const originalTimestamp = session.earliestPendingTimestamp;
 
       if (message.type === 'observation') {
-        await this.processObservationMessage(session, message, worker, apiKey, model, rateLimitingEnabled, originalTimestamp, lastCwd);
+        await this.processObservationMessage(session, message, worker, apiKey, model, rateLimitingEnabled, originalTimestamp, lastCwd, vertexConfig);
       } else if (message.type === 'summarize') {
-        await this.processSummaryMessage(session, message, worker, apiKey, model, rateLimitingEnabled, mode, originalTimestamp, lastCwd);
+        await this.processSummaryMessage(session, message, worker, apiKey, model, rateLimitingEnabled, mode, originalTimestamp, lastCwd, vertexConfig);
       }
     }
   }
@@ -283,7 +297,8 @@ export class GeminiProvider {
     model: GeminiModel,
     rateLimitingEnabled: boolean,
     originalTimestamp: number | null,
-    lastCwd: string | undefined
+    lastCwd: string | undefined,
+    vertexConfig?: { project: string; location: string }
   ): Promise<void> {
     if (message.prompt_number !== undefined) {
       session.lastPromptNumber = message.prompt_number;
@@ -303,7 +318,7 @@ export class GeminiProvider {
     });
 
     session.conversationHistory.push({ role: 'user', content: obsPrompt });
-    const obsResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
+    const obsResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled, vertexConfig);
 
     let tokensUsed = 0;
     if (obsResponse.content) {
@@ -331,7 +346,8 @@ export class GeminiProvider {
     rateLimitingEnabled: boolean,
     mode: ModeConfig,
     originalTimestamp: number | null,
-    lastCwd: string | undefined
+    lastCwd: string | undefined,
+    vertexConfig?: { project: string; location: string }
   ): Promise<void> {
     if (!session.memorySessionId) {
       throw new Error('Cannot process summary: memorySessionId not yet captured. This session may need to be reinitialized.');
@@ -346,7 +362,7 @@ export class GeminiProvider {
     }, mode);
 
     session.conversationHistory.push({ role: 'user', content: summaryPrompt });
-    const summaryResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
+    const summaryResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled, vertexConfig);
 
     let tokensUsed = 0;
     if (summaryResponse.content) {
@@ -424,19 +440,36 @@ export class GeminiProvider {
     history: ConversationMessage[],
     apiKey: string,
     model: GeminiModel,
-    rateLimitingEnabled: boolean
+    rateLimitingEnabled: boolean,
+    vertexConfig?: { project: string; location: string }
   ): Promise<{ content: string; tokensUsed?: number }> {
     const truncatedHistory = this.truncateHistory(history);
     const contents = this.conversationToGeminiContents(truncatedHistory);
     const totalChars = truncatedHistory.reduce((sum, m) => sum + m.content.length, 0);
 
-    logger.debug('SDK', `Querying Gemini multi-turn (${model})`, {
+    const backend = vertexConfig ? 'Vertex AI' : 'Gemini API';
+    logger.debug('SDK', `Querying ${backend} multi-turn (${model})`, {
       turns: truncatedHistory.length,
       totalTurns: history.length,
       totalChars
     });
 
-    const url = `${GEMINI_API_URL}/${model}:generateContent?key=${apiKey}`;
+    let url: string;
+    let authHeaders: Record<string, string>;
+
+    if (vertexConfig) {
+      const { project, location } = vertexConfig;
+      url = `https://${location}-aiplatform.googleapis.com/v1/projects/${project}/locations/${location}/publishers/google/models/${model}:generateContent`;
+      const client = await googleAuth.getClient();
+      const token = await client.getAccessToken();
+      if (!token.token) {
+        throw new Error('Failed to obtain Google Cloud access token. Ensure Application Default Credentials are configured (run `gcloud auth application-default login`).');
+      }
+      authHeaders = { 'Authorization': `Bearer ${token.token}` };
+    } else {
+      url = `${GEMINI_API_URL}/${model}:generateContent?key=${apiKey}`;
+      authHeaders = {};
+    }
 
     await enforceRateLimitForModel(model, rateLimitingEnabled);
 
@@ -444,18 +477,28 @@ export class GeminiProvider {
     let priorRequestId: string | null = null;
 
     const data = await withRetry<GeminiResponse>(async (attemptSignal) => {
+      // Refresh token on each attempt for Vertex (tokens expire after 1h).
+      if (vertexConfig) {
+        const client = await googleAuth.getClient();
+        const token = await client.getAccessToken();
+        if (token.token) {
+          authHeaders['Authorization'] = `Bearer ${token.token}`;
+        }
+      }
+
       let response: Response;
       try {
         response = await fetch(url, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
+            ...authHeaders,
             ...(priorRequestId ? { 'x-claude-mem-prior-request-id': priorRequestId } : {}),
           },
           body: JSON.stringify({
             contents,
             generationConfig: {
-              temperature: 0.3,  // Lower temperature for structured extraction
+              temperature: 0.3,
               maxOutputTokens: 4096,
             },
           }),
@@ -481,7 +524,7 @@ export class GeminiProvider {
           status: response.status,
           bodyText: errorBody,
           headers: response.headers,
-          cause: new Error(`Gemini API error: ${response.status} - ${errorBody}`),
+          cause: new Error(`${backend} error: ${response.status} - ${errorBody}`),
           ...(requestId ? { requestId } : {}),
         });
       }
@@ -500,13 +543,24 @@ export class GeminiProvider {
     return { content, tokensUsed };
   }
 
-  private getGeminiConfig(): { apiKey: string; model: GeminiModel; rateLimitingEnabled: boolean } {
+  private getGeminiConfig(): {
+    apiKey: string;
+    model: GeminiModel;
+    rateLimitingEnabled: boolean;
+    useVertex: boolean;
+    vertexProject: string;
+    vertexLocation: string;
+  } {
     const settingsPath = paths.settings();
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
 
     const apiKey = settings.CLAUDE_MEM_GEMINI_API_KEY || getCredential('GEMINI_API_KEY') || '';
 
-    const defaultModel: GeminiModel = 'gemini-2.5-flash';
+    const useVertex = settings.CLAUDE_MEM_GEMINI_USE_VERTEX === 'true';
+    const vertexProject = settings.CLAUDE_MEM_GEMINI_VERTEX_PROJECT || process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT || '';
+    const vertexLocation = settings.CLAUDE_MEM_GEMINI_VERTEX_LOCATION || 'us-central1';
+
+    const defaultModel: GeminiModel = useVertex ? 'gemini-3.1-flash-lite' : 'gemini-2.5-flash';
     const configuredModel = settings.CLAUDE_MEM_GEMINI_MODEL || defaultModel;
     const validModels: GeminiModel[] = [
       'gemini-2.5-flash-lite',
@@ -516,6 +570,7 @@ export class GeminiProvider {
       'gemini-2.0-flash-lite',
       'gemini-3-flash',
       'gemini-3-flash-preview',
+      'gemini-3.1-flash-lite',
     ];
 
     let model: GeminiModel;
@@ -531,13 +586,16 @@ export class GeminiProvider {
 
     const rateLimitingEnabled = settings.CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED !== 'false';
 
-    return { apiKey, model, rateLimitingEnabled };
+    return { apiKey, model, rateLimitingEnabled, useVertex, vertexProject, vertexLocation };
   }
 }
 
 export function isGeminiAvailable(): boolean {
   const settingsPath = paths.settings();
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+  if (settings.CLAUDE_MEM_GEMINI_USE_VERTEX === 'true') {
+    return !!(settings.CLAUDE_MEM_GEMINI_VERTEX_PROJECT || process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT);
+  }
   return !!(settings.CLAUDE_MEM_GEMINI_API_KEY || getCredential('GEMINI_API_KEY'));
 }
 

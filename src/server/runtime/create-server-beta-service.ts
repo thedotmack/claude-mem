@@ -227,6 +227,15 @@ function buildServerGenerationProviderFromEnv(): ServerGenerationProvider | null
       return new ClaudeObservationProvider(opts);
     }
     if (provider === 'gemini') {
+      const useVertex = (process.env.CLAUDE_MEM_GEMINI_USE_VERTEX ?? '').toLowerCase() === 'true';
+      if (useVertex) {
+        const project = process.env.CLAUDE_MEM_GEMINI_VERTEX_PROJECT ?? process.env.GOOGLE_CLOUD_PROJECT ?? process.env.GCLOUD_PROJECT ?? '';
+        if (!project) return null;
+        const location = process.env.CLAUDE_MEM_GEMINI_VERTEX_LOCATION ?? 'us-central1';
+        const opts: { vertex: { project: string; location: string }; model?: string } = { vertex: { project, location } };
+        if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
+        return new GeminiObservationProvider(opts);
+      }
       const apiKey = process.env.GEMINI_API_KEY ?? process.env.CLAUDE_MEM_GEMINI_API_KEY ?? '';
       if (!apiKey) return null;
       const opts: { apiKey: string; model?: string } = { apiKey };

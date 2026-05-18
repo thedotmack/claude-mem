@@ -134,6 +134,7 @@
     "dompurify": "^3.4.2",
     "express": "^5.2.1",
     "glob": "^13.0.6",
+    "google-auth-library": "^10.6.2",
     "handlebars": "^4.7.9",
     "ioredis": "^5.10.1",
     "pg": "^8.20.0",

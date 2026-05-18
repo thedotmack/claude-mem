@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+import { GoogleAuth } from 'google-auth-library';
 import { logger } from '../../../utils/logger.js';
 import {
   ServerClassifiedProviderError,
@@ -15,12 +16,19 @@ import type {
 
 const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1/models';
 const DEFAULT_MODEL = 'gemini-2.5-flash';
+const DEFAULT_VERTEX_MODEL = 'gemini-3.1-flash-lite';
+
+export interface VertexConfig {
+  project: string;
+  location: string;
+}
 
 export interface GeminiObservationProviderOptions {
-  apiKey: string;
+  apiKey?: string;
   model?: string;
   maxOutputTokens?: number;
   fetchImpl?: typeof fetch;
+  vertex?: VertexConfig;
 }
 
 interface GeminiResponse {
@@ -37,16 +45,32 @@ export class GeminiObservationProvider implements ServerGenerationProvider {
   private readonly model: string;
   private readonly maxOutputTokens: number;
   private readonly fetchImpl: typeof fetch;
+  private readonly vertex?: VertexConfig;
+  private readonly googleAuth?: GoogleAuth;
 
   constructor(options: GeminiObservationProviderOptions) {
-    if (!options.apiKey) {
-      throw new ServerClassifiedProviderError('Gemini API key not configured', {
-        kind: 'auth_invalid',
-        cause: new Error('apiKey is required'),
+    if (options.vertex) {
+      if (!options.vertex.project) {
+        throw new ServerClassifiedProviderError('Vertex AI mode requires a GCP project ID', {
+          kind: 'auth_invalid',
+          cause: new Error('vertex.project is required'),
+        });
+      }
+      this.vertex = options.vertex;
+      this.googleAuth = new GoogleAuth({
+        scopes: ['https://www.googleapis.com/auth/cloud-platform'],
       });
+      this.apiKey = '';
+    } else {
+      if (!options.apiKey) {
+        throw new ServerClassifiedProviderError('Gemini API key not configured', {
+          kind: 'auth_invalid',
+          cause: new Error('apiKey is required when not using Vertex AI'),
+        });
+      }
+      this.apiKey = options.apiKey;
     }
-    this.apiKey = options.apiKey;
-    this.model = options.model ?? DEFAULT_MODEL;
+    this.model = options.model ?? (options.vertex ? DEFAULT_VERTEX_MODEL : DEFAULT_MODEL);
     this.maxOutputTokens = options.maxOutputTokens ?? 4096;
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
@@ -64,13 +88,31 @@ export class GeminiObservationProvider implements ServerGenerationProvider {
       };
     }
 
-    const url = `${GEMINI_API_URL}/${encodeURIComponent(this.model)}:generateContent?key=${encodeURIComponent(this.apiKey)}`;
+    let url: string;
+    let authHeaders: Record<string, string>;
+
+    if (this.vertex && this.googleAuth) {
+      const { project, location } = this.vertex;
+      url = `https://${location}-aiplatform.googleapis.com/v1/projects/${project}/locations/${location}/publishers/google/models/${encodeURIComponent(this.model)}:generateContent`;
+      const client = await this.googleAuth.getClient();
+      const token = await client.getAccessToken();
+      if (!token.token) {
+        throw new ServerClassifiedProviderError(
+          'Failed to obtain Google Cloud access token. Ensure Application Default Credentials are configured.',
+          { kind: 'auth_invalid', cause: new Error('No access token returned') },
+        );
+      }
+      authHeaders = { 'Authorization': `Bearer ${token.token}` };
+    } else {
+      url = `${GEMINI_API_URL}/${encodeURIComponent(this.model)}:generateContent?key=${encodeURIComponent(this.apiKey)}`;
+      authHeaders = {};
+    }
 
     let response: Response;
     try {
       response = await this.fetchImpl(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify({
           contents: [{ role: 'user', parts: [{ text: prompt }] }],
           generationConfig: {
