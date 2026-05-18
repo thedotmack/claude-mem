@@ -3,6 +3,7 @@ import { claudeCodeAdapter } from './claude-code.js';
 import { codexAdapter } from './codex.js';
 import { cursorAdapter } from './cursor.js';
 import { geminiCliAdapter } from './gemini-cli.js';
+import { piAdapter } from './pi.js';
 import { rawAdapter } from './raw.js';
 import { windsurfAdapter } from './windsurf.js';
 
@@ -13,10 +14,20 @@ export function getPlatformAdapter(platform: string): PlatformAdapter {
     case 'cursor': return cursorAdapter;
     case 'gemini':
     case 'gemini-cli': return geminiCliAdapter;
+    case 'pi':
+    case 'pi-mono': return piAdapter;
     case 'windsurf': return windsurfAdapter;
     case 'raw': return rawAdapter;
     default: return rawAdapter;
   }
 }
 
-export { claudeCodeAdapter, codexAdapter, cursorAdapter, geminiCliAdapter, rawAdapter, windsurfAdapter };
+export {
+  claudeCodeAdapter,
+  codexAdapter,
+  cursorAdapter,
+  geminiCliAdapter,
+  piAdapter,
+  rawAdapter,
+  windsurfAdapter,
+};

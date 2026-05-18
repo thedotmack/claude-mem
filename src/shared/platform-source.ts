@@ -14,6 +14,7 @@ export function normalizePlatformSource(value?: string | null): string {
   if (source.includes('codex')) return 'codex';
   if (source.includes('cursor')) return 'cursor';
   if (source.includes('claude')) return 'claude';
+  if (source === 'pi-mono') return 'pi';
 
   return source;
 }
