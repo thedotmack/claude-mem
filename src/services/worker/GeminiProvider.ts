@@ -459,13 +459,8 @@ export class GeminiProvider {
 
     if (vertexConfig) {
       const { project, location } = vertexConfig;
-      url = `https://${location}-aiplatform.googleapis.com/v1/projects/${project}/locations/${location}/publishers/google/models/${model}:generateContent`;
-      const client = await googleAuth.getClient();
-      const token = await client.getAccessToken();
-      if (!token.token) {
-        throw new Error('Failed to obtain Google Cloud access token. Ensure Application Default Credentials are configured (run `gcloud auth application-default login`).');
-      }
-      authHeaders = { 'Authorization': `Bearer ${token.token}` };
+      url = `https://${location}-aiplatform.googleapis.com/v1/projects/${project}/locations/${location}/publishers/google/models/${encodeURIComponent(model)}:generateContent`;
+      authHeaders = {};
     } else {
       url = `${GEMINI_API_URL}/${model}:generateContent?key=${apiKey}`;
       authHeaders = {};
@@ -481,9 +476,10 @@ export class GeminiProvider {
       if (vertexConfig) {
         const client = await googleAuth.getClient();
         const token = await client.getAccessToken();
-        if (token.token) {
-          authHeaders['Authorization'] = `Bearer ${token.token}`;
+        if (!token.token) {
+          throw new Error('Failed to refresh Google Cloud access token. Ensure Application Default Credentials are still valid.');
         }
+        authHeaders['Authorization'] = `Bearer ${token.token}`;
       }
 
       let response: Response;
