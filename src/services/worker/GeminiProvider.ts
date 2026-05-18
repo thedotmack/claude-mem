@@ -127,7 +127,8 @@ export type GeminiModel =
   | 'gemini-2.0-flash-lite'
   | 'gemini-3-flash'
   | 'gemini-3-flash-preview'
-  | 'gemini-3.1-flash-lite';
+  | 'gemini-3.1-flash-lite'
+  | 'gemini-3.1-flash-lite-preview';
 
 const GEMINI_RPM_LIMITS: Record<GeminiModel, number> = {
   'gemini-2.5-flash-lite': 10,
@@ -138,6 +139,7 @@ const GEMINI_RPM_LIMITS: Record<GeminiModel, number> = {
   'gemini-3-flash': 10,
   'gemini-3-flash-preview': 5,
   'gemini-3.1-flash-lite': 10,
+  'gemini-3.1-flash-lite-preview': 10,
 };
 
 let lastRequestTime = 0;
@@ -459,7 +461,7 @@ export class GeminiProvider {
 
     if (vertexConfig) {
       const { project, location } = vertexConfig;
-      url = `https://${location}-aiplatform.googleapis.com/v1/projects/${project}/locations/${location}/publishers/google/models/${encodeURIComponent(model)}:generateContent`;
+      url = `https://aiplatform.googleapis.com/v1/projects/${project}/locations/${location}/publishers/google/models/${encodeURIComponent(model)}:generateContent`;
       authHeaders = {};
     } else {
       url = `${GEMINI_API_URL}/${model}:generateContent?key=${apiKey}`;
@@ -567,6 +569,7 @@ export class GeminiProvider {
       'gemini-3-flash',
       'gemini-3-flash-preview',
       'gemini-3.1-flash-lite',
+      'gemini-3.1-flash-lite-preview',
     ];
 
     let model: GeminiModel;
