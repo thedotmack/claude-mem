@@ -422,6 +422,17 @@ export function ContextSettingsModal({
                     />
                   </FormField>
                   <FormField
+                    label="Base URL (Optional)"
+                    tooltip="Custom OpenAI-compatible API base URL. Leave empty to use OpenRouter."
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_OPENROUTER_BASE_URL || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_BASE_URL', e.target.value)}
+                      placeholder="https://openrouter.ai/api/v1"
+                    />
+                  </FormField>
+                  <FormField
                     label="Site URL (Optional)"
                     tooltip="Your site URL for OpenRouter analytics (optional)"
                   >
