@@ -40,7 +40,7 @@ The Pi-side extension lives outside this repo because Pi extensions are TypeScri
 │                                        │
 │  getPlatformAdapter('pi')              │
 │    → piAdapter.normalizeInput(stdin)   │
-│    → handler.execute(NormalizedHookIn) │
+│    → execute(NormalizedHookInput)      │
 │    → piAdapter.formatOutput(result)    │
 │                                        │
 │  stdout = HookResult (JSON)            │

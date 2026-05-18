@@ -42,6 +42,28 @@ const pickAgentField = (v: unknown): string | undefined =>
   typeof v === 'string' && v.length > 0 && v.length <= MAX_AGENT_FIELD_LEN ? v : undefined;
 
 /**
+ * Coerce arbitrary stdin input into a safe session-id string or `undefined`.
+ *
+ * - `string` → trimmed; empty string collapses to undefined.
+ * - `number` (Pi has historically passed numeric session ids in some
+ *   forks) → stringified.
+ * - anything else (objects, arrays, null, booleans) → undefined.
+ *
+ * This keeps downstream storage and lookup paths from seeing arbitrary
+ * runtime values when a malformed extension forwards an unexpected shape.
+ */
+function normalizeSessionId(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value);
+  }
+  return undefined;
+}
+
+/**
  * Resolve the on-disk path to a Pi session JSONL by UUID prefix. Pi launches
  * sessions from arbitrary cwds, so the encoded-cwd directory is not stable
  * across invocations. The UUID prefix is unique enough to identify the
@@ -76,8 +98,9 @@ export const piAdapter: PlatformAdapter = {
       throw new AdapterRejectedInput('invalid_cwd');
     }
 
-    const sessionId =
-      r.sessionId ?? r.session_id ?? r.sessionUuid ?? r.session_uuid;
+    const sessionId = normalizeSessionId(
+      r.sessionId ?? r.session_id ?? r.sessionUuid ?? r.session_uuid,
+    );
 
     const toolName = r.toolName ?? r.tool_name ?? r.toolType ?? r.tool_type;
     const toolInput = r.toolInput ?? r.tool_input ?? r.input;

@@ -61,6 +61,32 @@ describe('piAdapter.normalizeInput', () => {
     expect(input.toolResponse).toEqual({ output: 'a b c' });
     expect(input.filePath).toBe('/tmp/x');
     expect(input.agentId).toBe('A');
+    expect(input.agentType).toBe('pi');
+  });
+
+  it('normalizes sessionId via the safe-coercion helper', () => {
+    // Empty / whitespace-only strings collapse to undefined so downstream
+    // storage and lookup paths never see a degenerate identifier.
+    expect(piAdapter.normalizeInput({ cwd: tmpDir, sessionId: '   ' }).sessionId).toBeUndefined();
+    expect(piAdapter.normalizeInput({ cwd: tmpDir, sessionId: '' }).sessionId).toBeUndefined();
+
+    // Whitespace around a valid id is trimmed.
+    expect(
+      piAdapter.normalizeInput({ cwd: tmpDir, sessionId: '  019e28db  ' }).sessionId,
+    ).toBe('019e28db');
+
+    // Numeric session ids (some Pi forks pass these) are coerced to string.
+    expect(
+      piAdapter.normalizeInput({ cwd: tmpDir, sessionId: 42 as unknown as string }).sessionId,
+    ).toBe('42');
+
+    // Non-string / non-number shapes are rejected outright.
+    expect(
+      piAdapter.normalizeInput({ cwd: tmpDir, sessionId: { id: 'x' } as unknown as string }).sessionId,
+    ).toBeUndefined();
+    expect(
+      piAdapter.normalizeInput({ cwd: tmpDir, sessionId: true as unknown as string }).sessionId,
+    ).toBeUndefined();
   });
 
   it('also accepts alternate Pi event keys (input/output/path)', () => {
