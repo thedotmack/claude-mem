@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { piAdapter, derivePiTranscriptPath } from '../../../src/cli/adapters/pi.js';
+import { piAdapter } from '../../../src/cli/adapters/pi.js';
 import { AdapterRejectedInput } from '../../../src/cli/adapters/errors.js';
 
 let tmpDir: string;
@@ -65,10 +65,11 @@ describe('piAdapter.normalizeInput', () => {
   });
 
   it('normalizes sessionId via the safe-coercion helper', () => {
-    // Empty / whitespace-only strings collapse to undefined so downstream
-    // storage and lookup paths never see a degenerate identifier.
-    expect(piAdapter.normalizeInput({ cwd: tmpDir, sessionId: '   ' }).sessionId).toBeUndefined();
-    expect(piAdapter.normalizeInput({ cwd: tmpDir, sessionId: '' }).sessionId).toBeUndefined();
+    // Empty / whitespace-only strings collapse to the 'unknown' sentinel
+    // (matches rawAdapter precedent) so the non-optional sessionId
+    // contract on NormalizedHookInput is always satisfied.
+    expect(piAdapter.normalizeInput({ cwd: tmpDir, sessionId: '   ' }).sessionId).toBe('unknown');
+    expect(piAdapter.normalizeInput({ cwd: tmpDir, sessionId: '' }).sessionId).toBe('unknown');
 
     // Whitespace around a valid id is trimmed.
     expect(
@@ -80,13 +81,13 @@ describe('piAdapter.normalizeInput', () => {
       piAdapter.normalizeInput({ cwd: tmpDir, sessionId: 42 as unknown as string }).sessionId,
     ).toBe('42');
 
-    // Non-string / non-number shapes are rejected outright.
+    // Non-string / non-number shapes collapse to 'unknown'.
     expect(
       piAdapter.normalizeInput({ cwd: tmpDir, sessionId: { id: 'x' } as unknown as string }).sessionId,
-    ).toBeUndefined();
+    ).toBe('unknown');
     expect(
       piAdapter.normalizeInput({ cwd: tmpDir, sessionId: true as unknown as string }).sessionId,
-    ).toBeUndefined();
+    ).toBe('unknown');
   });
 
   it('also accepts alternate Pi event keys (input/output/path)', () => {
@@ -212,23 +213,5 @@ describe('piAdapter.formatOutput', () => {
   it('omits suppressOutput when undefined', () => {
     const out = piAdapter.formatOutput({}) as Record<string, unknown>;
     expect('suppressOutput' in out).toBe(false);
-  });
-});
-
-describe('derivePiTranscriptPath', () => {
-  it('returns undefined for missing sessionId', () => {
-    expect(derivePiTranscriptPath(undefined)).toBeUndefined();
-  });
-
-  it('returns undefined for sessionId with path-traversal chars', () => {
-    expect(derivePiTranscriptPath('../etc/passwd')).toBeUndefined();
-    expect(derivePiTranscriptPath('a/b')).toBeUndefined();
-    expect(derivePiTranscriptPath('with spaces')).toBeUndefined();
-  });
-
-  it('accepts UUID-shaped session ids without crashing', () => {
-    // Returns undefined intentionally — adapter never invents a transcript
-    // path. The Pi extension is the authoritative source.
-    expect(derivePiTranscriptPath('019e28db-1234-5678-9abc')).toBeUndefined();
   });
 });
