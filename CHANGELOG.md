@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Added
+
+- **Pi (`badlogic/pi-mono`) platform adapter** ([#2532](https://github.com/thedotmack/claude-mem/pull/2532)) — new `PlatformAdapter` for the [Pi](https://github.com/badlogic/pi-mono) coding agent, registered under the `pi` and `pi-mono` slugs. `normalizePlatformSource()` maps `pi-mono → pi` so legacy slugs collapse cleanly. Adapter accepts both camelCase (`NormalizedHookInput`) and Pi-native snake_case event keys, defaults `agentType` to `pi`, and preserves Claude Code–style `hookSpecificOutput` / `systemMessage` / `suppressOutput` plumbing in `formatOutput`. Scoped to the worker-side wiring only; the Pi-side extension that subscribes to Pi lifecycle hooks and spawns the worker ships as a separate npm package (see `pi-hooks/README.md` for the integration contract).
+
 ## [13.2.0] - 2026-05-12
 
 ## What's new
