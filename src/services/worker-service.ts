@@ -54,7 +54,7 @@ import {
   createServerApiKey,
   listServerApiKeys,
   revokeServerApiKey,
-} from '../server/auth/api-key-service.js';
+} from '../server/auth/api-key-service-sqlite.js';
 import { ServerV1Routes } from '../server/routes/v1/ServerV1Routes.js';
 
 import {
@@ -875,6 +875,22 @@ function openServerCommandDatabase(): Database {
 }
 
 function runServerApiKeyCli(args: string[]): never {
+  // guard rail — worker-service.cjs writes to the LOCAL SQLite DB.
+  // When CLAUDE_MEM_RUNTIME=server-beta the running server reads from
+  // Postgres, so any key created here would be invisible and every
+  // authenticated call would return 403. Refuse loudly so the operator
+  // sees the misconfiguration immediately. The npx-cli already branches
+  // before invoking us; this is defense in depth for direct callers.
+  if ((process.env.CLAUDE_MEM_RUNTIME ?? '').trim().toLowerCase() === 'server-beta') {
+    console.error(
+      'worker-service: refusing to write api_keys to SQLite when CLAUDE_MEM_RUNTIME=server-beta.',
+    );
+    console.error(
+      'Use `npx claude-mem server api-key` (which routes to Postgres),',
+      'or unset CLAUDE_MEM_RUNTIME first.',
+    );
+    process.exit(2);
+  }
   const subCommand = args[0];
   const options = parseServerApiKeyOptions(args.slice(1));
   const db = openServerCommandDatabase();

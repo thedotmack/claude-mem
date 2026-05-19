@@ -1,5 +1,8 @@
 
 import express, { Request, Response, Application } from 'express';
+import helmet from 'helmet';
+import cors from 'cors';
+import rateLimit from 'express-rate-limit';
 import http from 'http';
 import * as fs from 'fs';
 import path from 'path';
@@ -98,10 +101,26 @@ export class Server {
   constructor(options: ServerOptions) {
     this.options = options;
     this.app = express();
+    this.setupSecurityHeaders();
     this.setupCors();
     this.setupPreBodyParserRoutes();
     this.setupMiddleware();
+    this.setupGlobalRateLimit();
     this.setupCoreRoutes();
+  }
+
+  /**
+   * Returns true when this Server instance is running inside the server-beta
+   * runtime (Postgres + Valkey, internet-exposable). Worker mode runs the same
+   * Server class on a localhost-only port for the viewer UI and is intentionally
+   * exempted from the strict security middleware below — the viewer needs
+   * inline scripts/styles and CORS from arbitrary localhost ports.
+   */
+  private isServerBetaRuntime(): boolean {
+    return (
+      this.options.runtime === 'server-beta' ||
+      process.env.CLAUDE_MEM_RUNTIME === 'server-beta'
+    );
   }
 
   getHttpServer(): http.Server | null {
@@ -159,11 +178,85 @@ export class Server {
   }
 
   private setupMiddleware(): void {
-    const middlewares = createMiddleware(summarizeRequestBody, { includeCors: false });
+    // fix — cap JSON body size on server-beta to defeat trivial
+    // disk-exhaustion via large POST bodies. Worker keeps the legacy 5mb
+    // limit so existing viewer flows keep working.
+    const bodyLimit = this.isServerBetaRuntime()
+      ? (process.env.CLAUDE_MEM_BODY_LIMIT ?? '1mb')
+      : '5mb';
+    // Body parser registered explicitly here so the limit is visible at
+    // a single, audit-friendly call site (cf. contract test for ).
+    this.app.use(express.json({ limit: bodyLimit }));
+    const middlewares = createMiddleware(summarizeRequestBody, {
+      includeCors: false,
+      skipJson: true,
+    });
     middlewares.forEach(mw => this.app.use(mw));
   }
 
+  /**
+   *  fix — helmet security headers on the server-beta /v1/* surface.
+   * Adds X-Content-Type-Options, X-Frame-Options, Strict-Transport-Security,
+   * Content-Security-Policy, and friends. No-op on worker mode (the local
+   * viewer at 127.0.0.1 ships inline scripts and would break under default CSP).
+   */
+  private setupSecurityHeaders(): void {
+    if (!this.isServerBetaRuntime()) return;
+    this.app.use(helmet());
+    logger.info('SECURITY', 'helmet middleware enabled for server-beta runtime');
+  }
+
+  /**
+   *  defence-in-depth — a coarse global IP-based rate limit on
+   * server-beta /v1/* paths. The per-route limiters in
+   * ServerV1PostgresRoutes (10/min auth, 30/min write, 100/min read) remain
+   * the source of truth for fine-grained policy. This global cap exists so
+   * that paths NOT mounted by ServerV1PostgresRoutes (mistakes, future
+   * additions) still inherit a reasonable floor. Configurable via
+   * CLAUDE_MEM_GLOBAL_RATE_LIMIT_PER_MIN (default 300).
+   */
+  private setupGlobalRateLimit(): void {
+    if (!this.isServerBetaRuntime()) return;
+    const maxPerMin =
+      Number.parseInt(process.env.CLAUDE_MEM_GLOBAL_RATE_LIMIT_PER_MIN ?? '', 10) || 300;
+    const limiter = rateLimit({
+      windowMs: 60_000,
+      max: maxPerMin,
+      standardHeaders: true,
+      legacyHeaders: false,
+      message: {
+        error: 'TooManyRequests',
+        message: 'Global rate limit exceeded; retry after window expires.',
+      },
+    });
+    this.app.use('/v1', limiter);
+    logger.info('SECURITY', 'global /v1 rate limit enabled for server-beta runtime', {
+      maxPerMin,
+    });
+  }
+
   private setupCors(): void {
+    if (this.isServerBetaRuntime()) {
+      // fix — server-beta defaults to CORS denied. Operators opt in
+      // by listing comma-separated origins in CLAUDE_MEM_ALLOWED_ORIGINS.
+      const originsRaw = process.env.CLAUDE_MEM_ALLOWED_ORIGINS;
+      const allowedOrigins = originsRaw
+        ? originsRaw.split(',').map(o => o.trim()).filter(Boolean)
+        : false;
+      this.app.use(
+        cors({
+          origin: allowedOrigins,
+          methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'],
+          allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+          credentials: false,
+        })
+      );
+      logger.info('SECURITY', 'server-beta CORS configured', {
+        allowedOrigins:
+          allowedOrigins === false ? '(none — CORS denied)' : allowedOrigins,
+      });
+      return;
+    }
     this.app.use(createCorsMiddleware());
   }
 
