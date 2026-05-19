@@ -156,7 +156,40 @@ function removeStrayClaudeMemPaths(): number {
   return removedCount;
 }
 
-export async function runUninstallCommand(): Promise<void> {
+export interface UninstallOptions {
+  runtime?: 'worker' | 'server-beta';
+  purgeData?: boolean;
+  dryRun?: boolean;
+}
+
+export async function runUninstallCommand(options: UninstallOptions = {}): Promise<void> {
+  p.intro(pc.bgRed(pc.white(' claude-mem uninstall ')));
+
+  if (options.runtime === 'server-beta') {
+    const { rollbackServerBeta } = await import('../../services/install/server-beta-rollback.js');
+    const { marketplaceDirectory } = await import('../utils/paths.js');
+    const log = {
+      info: (msg: string) => p.log.info(msg),
+      warn: (msg: string) => p.log.warn(msg),
+      error: (msg: string) => p.log.error(msg),
+      success: (msg: string) => p.log.success(msg),
+    };
+    const result = await rollbackServerBeta({
+      marketplaceDir: marketplaceDirectory(),
+      purgeData: options.purgeData === true,
+      dryRun: options.dryRun === true,
+      logger: log,
+    });
+    if (result.ok) {
+      p.outro(pc.green('claude-mem server-beta runtime torn down.'));
+    } else {
+      const failed = result.steps.find(s => s.status === 'failed');
+      p.outro(pc.red(`Rollback failed at step '${failed?.step ?? 'unknown'}': ${failed?.message ?? '(no detail)'}`));
+      process.exitCode = 1;
+    }
+    return;
+  }
+
   p.intro(pc.bgRed(pc.white(' claude-mem uninstall ')));
 
   if (!isPluginInstalled()) {
