@@ -318,9 +318,22 @@ deadline=$(( $(date +%s) + JOB_TIMEOUT ))
 job_status=""
 job_error=""
 while (( $(date +%s) < deadline )); do
-  curl -sS -o /tmp/claude-mem-validate-job.json -w '' \
+  job_http=$(curl -sS -o /tmp/claude-mem-validate-job.json -w '%{http_code}' \
     "${BASE_URL}/v1/jobs/${JOB_ID}" \
-    -H "Authorization: Bearer ${API_KEY}" || true
+    -H "Authorization: Bearer ${API_KEY}" || echo "000")
+  # Fail fast on auth/routing problems instead of spinning the full timeout:
+  #   401  bearer token mismatch
+  #   403  scope missing  → distinct from worker-idle
+  #   404  route missing  → build/deploy regression
+  if [[ "${job_http}" == "401" || "${job_http}" == "403" || "${job_http}" == "404" ]]; then
+    fail "GET /v1/jobs/${JOB_ID} returned HTTP ${job_http} (not a job-status response; abort poll)"
+    cat /tmp/claude-mem-validate-job.json | head -c 400 | sed 's/^/    /'
+    echo
+    hint "401 → bearer token mismatch (rotate or re-bootstrap the API key)."
+    hint "403 → API key lacks jobs:read scope (re-bootstrap with default scopes superset)."
+    hint "404 → /v1/jobs/:id route missing on this build of server-beta."
+    die
+  fi
   job_status=$(jq -r '.status // empty' /tmp/claude-mem-validate-job.json 2>/dev/null || true)
   if [[ "${job_status}" == "completed" || "${job_status}" == "succeeded" || "${job_status}" == "success" ]]; then
     break
