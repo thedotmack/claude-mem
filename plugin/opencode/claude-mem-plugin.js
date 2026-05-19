@@ -106,8 +106,10 @@ export const ClaudeMemPlugin = async ({ project, directory, worktree }) => {
   // surfaces args in the 'before' callback (the 'after' callback receives
   // { title, output, metadata }); without this cache, PostToolUse events
   // would always carry tool_input: undefined.
-  // Keyed by sessionID + tool name; capacity-bounded to prevent unbounded
-  // growth if a session triggers more 'before' than 'after' callbacks.
+  // Keyed by sessionID + tool name; capacity-bounded (FIFO eviction) to
+  // prevent unbounded growth if a session triggers more 'before' than
+  // 'after' callbacks. FIFO is fine here because matched pairs drain
+  // promptly and orphaned 'before' entries age out naturally.
   const pendingArgs = new Map();
   const PENDING_CAP = 256;
   const cachePut = (key, value) => {
@@ -130,16 +132,11 @@ export const ClaudeMemPlugin = async ({ project, directory, worktree }) => {
     if (existing) clearTimeout(existing);
     const t = setTimeout(() => {
       idleTimers.delete(key);
-      postEvent('Stop', { session_id: sessionID }).catch(() => {});
+      postEvent('Stop', { session_id: sessionID });
     }, STOP_DEBOUNCE_MS);
     if (typeof t.unref === 'function') t.unref();
     idleTimers.set(key, t);
   };
-  if (!ENDPOINT) {
-    // Settings missing — keep plugin silent. The user might be running
-    // OpenCode without claude-mem installed yet.
-    return {};
-  }
 
   return {
     // SessionStart equivalent
@@ -172,13 +169,18 @@ export const ClaudeMemPlugin = async ({ project, directory, worktree }) => {
 
     // PreToolUse equivalent — would block on privacy violations; for now just
     // surface the event so the server can audit it.
-    'tool.execute.before': async (input, output) => {
+    // Note: the OpenCode plugin API uses the same (input, output) parameter
+    // shape for every tool.execute.* callback even though 'output' carries
+    // different content per phase. In 'before' it's the tool's argument
+    // object (what we call tool_input downstream); in 'after' it's the
+    // result envelope { title, output, metadata }. We rename to 'args'
+    // locally for readability.
+    'tool.execute.before': async (input, args) => {
       // Cache args for the matching tool.execute.after callback.
-      // The 'output' arg of 'before' is the tool args object.
-      cachePut(argsKey(input?.sessionID, input?.tool), output);
+      cachePut(argsKey(input?.sessionID, input?.tool), args);
       await postEvent('PreToolUse', {
         tool_name: input?.tool,
-        tool_input: output,
+        tool_input: args,
         session_id: input?.sessionID,
       });
     },
