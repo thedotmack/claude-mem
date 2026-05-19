@@ -36,6 +36,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  unlinkSync,
   writeFileSync,
 } from 'fs';
 import { homedir } from 'os';
@@ -189,10 +190,7 @@ export function stopClaudeHostBridge(): { ok: boolean; message: string; removedF
       if (existsSync(plistPath)) {
         spawnSync('launchctl', ['unload', plistPath], { stdio: 'ignore' });
         try {
-          // unlinkSync via require avoided — use writeFileSync to /dev/null is
-          // not portable; just rely on fs.unlinkSync via dynamic require if
-          // unavailable as a top-level import here.
-          require('fs').unlinkSync(plistPath);
+          unlinkSync(plistPath);
           removedFiles.push(plistPath);
         } catch { /* already gone */ }
       }
@@ -203,7 +201,7 @@ export function stopClaudeHostBridge(): { ok: boolean; message: string; removedF
         spawnSync('systemctl', ['--user', 'stop', SYSTEMD_UNIT_NAME], { stdio: 'ignore' });
         spawnSync('systemctl', ['--user', 'disable', SYSTEMD_UNIT_NAME], { stdio: 'ignore' });
         try {
-          require('fs').unlinkSync(unitPath);
+          unlinkSync(unitPath);
           removedFiles.push(unitPath);
         } catch { /* already gone */ }
         spawnSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'ignore' });
@@ -215,7 +213,7 @@ export function stopClaudeHostBridge(): { ok: boolean; message: string; removedF
     const portPath = join(paths.dataDir(), 'host-bridge-port');
     for (const f of [tokenPath, portPath]) {
       if (existsSync(f)) {
-        try { require('fs').unlinkSync(f); removedFiles.push(f); } catch { /* */ }
+        try { unlinkSync(f); removedFiles.push(f); } catch { /* */ }
       }
     }
     return {
