@@ -390,6 +390,179 @@ export function buildMcpEntry(mcpServerPath: string, childEnv?: Record<string, s
   };
 }
 
+// OpenCode uses a different MCP config schema than Claude Desktop:
+//   - Top-level key is 'mcp', not 'mcpServers'
+//   - Each entry has shape { type: 'local', command: [exec, ...args], enabled: true }
+//     instead of { command: exec, args: [...] }
+//   - Env vars live under 'environment', not 'env'
+// See https://opencode.ai/docs/mcp-servers/
+// Mixing these formats silently produces an opencode.json that OpenCode
+// rejects on load with "Unrecognized key: mcpServers".
+interface OpenCodeMcpEntry {
+  type: 'local';
+  command: string[];
+  enabled: boolean;
+  environment?: Record<string, string>;
+}
+
+function buildOpenCodeMcpEntry(
+  mcpServerPath: string,
+  childEnv?: Record<string, string>,
+): OpenCodeMcpEntry {
+  return {
+    type: 'local',
+    command: [process.execPath, mcpServerPath],
+    enabled: true,
+    ...(childEnv && Object.keys(childEnv).length > 0 ? { environment: childEnv } : {}),
+  };
+}
+
+function openCodeEntriesEqual(a: OpenCodeMcpEntry, b: OpenCodeMcpEntry): boolean {
+  if (a.type !== b.type) return false;
+  if (a.enabled !== b.enabled) return false;
+  if (a.command.length !== b.command.length) return false;
+  for (let i = 0; i < a.command.length; i++) {
+    if (a.command[i] !== b.command[i]) return false;
+  }
+  const aEnv = a.environment ?? {};
+  const bEnv = b.environment ?? {};
+  const aKeys = Object.keys(aEnv).sort();
+  const bKeys = Object.keys(bEnv).sort();
+  if (aKeys.length !== bKeys.length) return false;
+  for (const k of aKeys) {
+    if (aEnv[k] !== bEnv[k]) return false;
+  }
+  return true;
+}
+
+export function injectOpenCodeMcpEntry(args: {
+  configPath: string;
+  entry: OpenCodeMcpEntry;
+}): InjectionResult {
+  const ide = 'opencode';
+  const { configPath, entry } = args;
+  try {
+    const parentDir = dirname(configPath);
+    mkdirSync(parentDir, { recursive: true });
+
+    let existing: Record<string, unknown> = {};
+    if (existsSync(configPath)) {
+      try {
+        const raw = readFileSync(configPath, 'utf-8');
+        const parsed = raw.trim() ? JSON.parse(raw) : {};
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          existing = parsed as Record<string, unknown>;
+        }
+      } catch (err) {
+        return {
+          ide,
+          configPath,
+          status: 'failed',
+          message: `Could not parse existing config: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
+    }
+
+    // OpenCode's loader requires `$schema` on every config file. Adding it
+    // here means a fresh-install config is immediately valid; never overwrite
+    // when already present.
+    if (typeof existing.$schema !== 'string' || existing.$schema.length === 0) {
+      existing.$schema = 'https://opencode.ai/config.json';
+    }
+
+    const mcpRaw = existing.mcp;
+    const mcp: Record<string, OpenCodeMcpEntry> =
+      mcpRaw && typeof mcpRaw === 'object' && !Array.isArray(mcpRaw)
+        ? (mcpRaw as Record<string, OpenCodeMcpEntry>)
+        : {};
+
+    const current = mcp['claude-mem'];
+    // Idempotency: identical entry already present → no write, no new backup.
+    // Without this every re-install accumulated a .pre-claude-mem-N.bak even
+    // when nothing changed (operators were seeing 7+ backup files).
+    if (current && openCodeEntriesEqual(current, entry)) {
+      return { ide, configPath, status: 'already-current' };
+    }
+
+    // Self-heal: if the file currently has the wrong-key `mcpServers` from a
+    // pre-fix install, strip it out so OpenCode stops rejecting the whole
+    // config. The plugin file at ~/.config/opencode/plugins/claude-mem.js
+    // carries our actual capture path; dropping a stale mcpServers entry
+    // never loses functional state.
+    if ('mcpServers' in existing) {
+      delete (existing as Record<string, unknown>).mcpServers;
+    }
+
+    const backupPath = backupFile(configPath);
+    mcp['claude-mem'] = entry;
+    existing.mcp = mcp;
+    writeFileSync(configPath, JSON.stringify(existing, null, 2) + '\n', 'utf-8');
+    return { ide, configPath, status: 'written', backupPath };
+  } catch (err) {
+    return {
+      ide,
+      configPath,
+      status: 'failed',
+      message: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+export function rollbackOpenCodeMcpEntry(configPath: string): RollbackResult {
+  const ide = 'opencode';
+  try {
+    if (!existsSync(configPath)) {
+      return { ide, configPath, action: 'absent' };
+    }
+    const backup = findNewestBackup(configPath);
+    if (backup) {
+      const contents = readFileSync(backup);
+      writeFileSync(configPath, contents);
+      return { ide, configPath, action: 'restored', backupRestored: backup };
+    }
+    const raw = readFileSync(configPath, 'utf-8');
+    const parsed = raw.trim() ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    let removed = false;
+    // Drop claude-mem from `mcp` (the canonical OpenCode key).
+    const mcp = parsed.mcp;
+    if (mcp && typeof mcp === 'object' && !Array.isArray(mcp)) {
+      const map = mcp as Record<string, unknown>;
+      if ('claude-mem' in map) {
+        delete map['claude-mem'];
+        parsed.mcp = map;
+        removed = true;
+      }
+    }
+    // Also clean up the broken `mcpServers` key if a pre-fix install left
+    // one behind. Mirrors the self-heal in the inject path.
+    const broken = parsed.mcpServers;
+    if (broken && typeof broken === 'object' && !Array.isArray(broken)) {
+      const map = broken as Record<string, unknown>;
+      if ('claude-mem' in map) {
+        delete map['claude-mem'];
+        parsed.mcpServers = map;
+        removed = true;
+      }
+      if (Object.keys(map).length === 0) {
+        delete (parsed as Record<string, unknown>).mcpServers;
+        removed = true;
+      }
+    }
+    if (removed) {
+      writeFileSync(configPath, JSON.stringify(parsed, null, 2) + '\n', 'utf-8');
+      return { ide, configPath, action: 'removed-entry' };
+    }
+    return { ide, configPath, action: 'no-backup', message: 'No backup found and no claude-mem entry to remove' };
+  } catch (err) {
+    return {
+      ide,
+      configPath,
+      action: 'failed',
+      message: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 export function injectAllIdes(options: InjectAllOptions): InjectionResult[] {
   const entry = buildMcpEntry(options.mcpServerPath, options.childEnv);
   const optIn = new Set(options.optInIdes ?? []);
@@ -431,11 +604,9 @@ export function injectAllIdes(options: InjectAllOptions): InjectionResult[] {
     if (!detected && !required) {
       results.push({ ide: 'opencode', configPath: openCodeConfigPath(), status: 'skipped', message: 'OpenCode not detected' });
     } else {
-      results.push(injectMcpEntryIntoJsonConfig({
-        ide: 'opencode',
+      results.push(injectOpenCodeMcpEntry({
         configPath: openCodeConfigPath(),
-        serversKey: 'mcpServers',
-        entry,
+        entry: buildOpenCodeMcpEntry(options.mcpServerPath, options.childEnv),
       }));
       // fix — OpenCode supports plugins via its own API (not MCP).
       // Copy our claude-mem plugin into ~/.config/opencode/plugins/ so
@@ -553,11 +724,7 @@ export function rollbackAllIdes(): RollbackResult[] {
   // the next OpenCode session doesn't try to POST to a dead server. Result
   // is folded into the OpenCode rollback row so the uninstall UI stays tidy.
   const opencodePluginRemoved = rollbackOpenCodePlugin();
-  const opencodeMcp = rollbackJsonConfig({
-    ide: 'opencode',
-    configPath: openCodeConfigPath(),
-    serversKey: 'mcpServers',
-  });
+  const opencodeMcp = rollbackOpenCodeMcpEntry(openCodeConfigPath());
   if (opencodePluginRemoved.removed) {
     opencodeMcp.message = `${opencodeMcp.message ?? ''} (also removed plugin at ${opencodePluginRemoved.path})`.trim();
   }
