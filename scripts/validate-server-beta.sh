@@ -317,6 +317,7 @@ step_begin 6 "poll /v1/jobs/${JOB_ID} (expect completed within ${JOB_TIMEOUT}s)"
 deadline=$(( $(date +%s) + JOB_TIMEOUT ))
 job_status=""
 job_error=""
+consecutive_5xx=0
 while (( $(date +%s) < deadline )); do
   job_http=$(curl -sS -o /tmp/claude-mem-validate-job.json -w '%{http_code}' \
     "${BASE_URL}/v1/jobs/${JOB_ID}" \
@@ -333,6 +334,21 @@ while (( $(date +%s) < deadline )); do
     hint "403 → API key lacks jobs:read scope (re-bootstrap with default scopes superset)."
     hint "404 → /v1/jobs/:id route missing on this build of server-beta."
     die
+  fi
+  # 5xx: tolerate up to 3 consecutive server errors (covers warmup races),
+  # then fail-fast with the compose-logs hint. Persistent 5xx no longer
+  # waits the full JOB_TIMEOUT before surfacing.
+  if [[ "${job_http}" =~ ^5 ]]; then
+    consecutive_5xx=$(( consecutive_5xx + 1 ))
+    if (( consecutive_5xx >= 3 )); then
+      fail "GET /v1/jobs/${JOB_ID} returned HTTP ${job_http} (3 consecutive server errors; abort poll)"
+      cat /tmp/claude-mem-validate-job.json | head -c 400 | sed 's/^/    /'
+      echo
+      hint "5xx → check 'docker compose logs claude-mem-server --tail=80'."
+      die
+    fi
+  else
+    consecutive_5xx=0
   fi
   job_status=$(jq -r '.status // empty' /tmp/claude-mem-validate-job.json 2>/dev/null || true)
   if [[ "${job_status}" == "completed" || "${job_status}" == "succeeded" || "${job_status}" == "success" ]]; then
