@@ -432,7 +432,7 @@ async function installClaudeCode(): Promise<boolean> {
     child.stderr?.on('data', (chunk: Buffer) => { captured += chunk.toString(); });
 
     child.on('error', (error: Error) => {
-      spinner?.stop('Claude Code install failed', 1);
+      spinner?.stop('Claude Code install failed');
       if (captured) process.stderr.write(captured);
       log.error(`Claude Code install failed: ${error.message}`);
       log.info('You can install it manually later: https://claude.ai/install.sh');
@@ -441,7 +441,7 @@ async function installClaudeCode(): Promise<boolean> {
 
     child.on('exit', (code) => {
       if (code !== 0) {
-        spinner?.stop('Claude Code install failed', 1);
+        spinner?.stop('Claude Code install failed');
         if (captured) process.stderr.write(captured);
         log.error(`Claude Code install failed (exit ${code ?? 'unknown'})`);
         log.info('You can install it manually later: https://claude.ai/install.sh');
@@ -1120,7 +1120,7 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
         if (shutdownSpinner) {
-          shutdownSpinner.stop(`Pre-overwrite worker shutdown failed: ${message}`, 1);
+          shutdownSpinner.stop(`Pre-overwrite worker shutdown failed: ${message}`);
         } else {
           console.warn('[install] Pre-overwrite worker shutdown failed:', message);
         }
