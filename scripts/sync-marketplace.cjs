@@ -47,6 +47,15 @@ function deleteFlag() {
   return '';
 }
 
+function dryRunFlag() {
+  // --dry-run / -n on the CLI propagates to every rsync invocation via
+  // buildDryRunCommand(); the wrapper also short-circuits any post-sync
+  // side-effects (worker restart, post-message). Useful for previewing
+  // what a sync would do without touching the marketplace cache.
+  const argv = process.argv.slice(2);
+  return argv.includes('--dry-run') || argv.includes('-n');
+}
+
 function shouldShowPreview() {
   const argv = process.argv.slice(2);
   if (argv.includes('--force') || argv.includes('--non-interactive') || argv.includes('--no-preview')) {
@@ -181,6 +190,11 @@ if (installedMismatch) {
 }
 
 console.log('Syncing to marketplace...');
+const DRY_RUN = dryRunFlag();
+if (DRY_RUN) {
+  console.log('\x1b[33m%s\x1b[0m', '--dry-run: previewing all rsync invocations; no marketplace writes will happen.');
+}
+
 try {
   const rootDir = path.join(__dirname, '..');
   const gitignoreExcludes = getGitignoreExcludes(rootDir);
@@ -191,14 +205,16 @@ try {
       console.log('\x1b[36m%s\x1b[0m', 'Preview (would-delete items below). Pass --force / --non-interactive to skip:');
       execSync(buildDryRunCommand(cmdBase), { stdio: 'inherit' });
     }
-    execSync(cmdBase, { stdio: 'inherit' });
+    if (!DRY_RUN) execSync(cmdBase, { stdio: 'inherit' });
   }
 
   console.log('Running bun install in marketplace...');
-  execSync(
-    'cd ~/.claude/plugins/marketplaces/thedotmack/ && bun install',
-    { stdio: 'inherit' }
-  );
+  if (!DRY_RUN) {
+    execSync(
+      'cd ~/.claude/plugins/marketplaces/thedotmack/ && bun install',
+      { stdio: 'inherit' }
+    );
+  }
 
   const version = getPluginVersion();
   const CACHE_VERSION_PATH = path.join(CACHE_BASE_PATH, version);
@@ -213,11 +229,11 @@ try {
       console.log('\x1b[36m%s\x1b[0m', `Preview (cache ${version} would-delete):`);
       execSync(buildDryRunCommand(cmdBase), { stdio: 'inherit' });
     }
-    execSync(cmdBase, { stdio: 'inherit' });
+    if (!DRY_RUN) execSync(cmdBase, { stdio: 'inherit' });
   }
 
   console.log(`Running bun install in cache folder (version ${version})...`);
-  execSync(`bun install`, { cwd: CACHE_VERSION_PATH, stdio: 'inherit' });
+  if (!DRY_RUN) execSync(`bun install`, { cwd: CACHE_VERSION_PATH, stdio: 'inherit' });
 
   if (installedMismatch && installedMismatch.installedVersion !== version) {
     const INSTALLED_CACHE_PATH = path.join(CACHE_BASE_PATH, installedMismatch.installedVersion);
@@ -228,12 +244,16 @@ try {
         console.log('\x1b[36m%s\x1b[0m', `Preview (installed-version cache ${installedMismatch.installedVersion} would-delete):`);
         execSync(buildDryRunCommand(cmdBase), { stdio: 'inherit' });
       }
-      execSync(cmdBase, { stdio: 'inherit' });
+      if (!DRY_RUN) execSync(cmdBase, { stdio: 'inherit' });
     }
     console.log(`Running bun install in installed-version cache (${installedMismatch.installedVersion})...`);
-    execSync(`bun install`, { cwd: INSTALLED_CACHE_PATH, stdio: 'inherit' });
+    if (!DRY_RUN) execSync(`bun install`, { cwd: INSTALLED_CACHE_PATH, stdio: 'inherit' });
   }
 
+  if (DRY_RUN) {
+    console.log('\x1b[33m%s\x1b[0m', '--dry-run: skipping worker restart and bun installs. No marketplace writes happened.');
+    process.exit(0);
+  }
   console.log('\x1b[32m%s\x1b[0m', 'Sync complete!');
 
   console.log('\n🔄 Triggering worker restart...');

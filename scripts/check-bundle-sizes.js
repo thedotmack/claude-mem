@@ -28,6 +28,7 @@ const BUNDLES = [
   { path: 'plugin/scripts/worker-service.cjs',      soft:   4 * MB, hard:   5 * MB },
   { path: 'plugin/scripts/server-beta-service.cjs', soft: 2.5 * MB, hard:   3 * MB },
   { path: 'plugin/scripts/context-generator.cjs',   soft: 150 * KB, hard: 200 * KB },
+  { path: 'plugin/ui/viewer-bundle.js',             soft: 400 * KB, hard: 500 * KB },
 ];
 
 function format(bytes) {
@@ -41,7 +42,7 @@ function pad(str, width) {
 }
 
 let exitCode = 0;
-const rows = [];
+
 
 console.log('=== Bundle Size Canary ===\n');
 console.log('| Bundle                              | Size      | Soft      | Hard      | Headroom  | Status   |');
@@ -58,7 +59,10 @@ for (const { path: relPath, soft, hard } of BUNDLES) {
   }
 
   const size = statSync(absPath).size;
-  const headroom = hard - size;
+  // Headroom: bytes remaining before hitting the hard cap. Negative when the
+  // bundle is already over; show '—' instead of '-100 KB' so the table column
+  // stays aligned and the FAIL status carries the signal.
+  const headroomFmt = size <= hard ? format(hard - size) : '—';
 
   let status;
   if (size > hard) {
@@ -70,7 +74,7 @@ for (const { path: relPath, soft, hard } of BUNDLES) {
     status = 'OK';
   }
 
-  console.log(`| ${pad(name, 35)} | ${pad(format(size), 9)} | ${pad(format(soft), 9)} | ${pad(format(hard), 9)} | ${pad(format(headroom), 9)} | ${pad(status, 8)} |`);
+  console.log(`| ${pad(name, 35)} | ${pad(format(size), 9)} | ${pad(format(soft), 9)} | ${pad(format(hard), 9)} | ${pad(headroomFmt, 9)} | ${pad(status, 8)} |`);
 }
 
 console.log();
