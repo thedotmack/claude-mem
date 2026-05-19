@@ -17,7 +17,15 @@ import {
 import { getWorkerPort, workerHttpRequest } from '../shared/worker-utils.js';
 import { ensureWorkerStarted } from '../services/worker-spawner.js';
 import { searchCodebase, formatSearchResults } from '../services/smart-file-read/search.js';
-import { parseFile, formatFoldedView, unfoldSymbol } from '../services/smart-file-read/parser.js';
+import {
+  parseFile,
+  formatFoldedView,
+  unfoldSymbol,
+  // (Branch 3, Agent C) — lazy grammar availability check.
+  enumerateAvailableGrammars,
+  getGrammarStatus,
+  detectFileLanguage,
+} from '../services/smart-file-read/parser.js';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -67,10 +75,135 @@ const TOOL_ENDPOINT_MAP: Record<string, string> = {
   'timeline': '/api/timeline'
 };
 
+// runtime routing for the legacy worker-shaped tools (search,
+// timeline, get_observations, corpus). Before this fix callWorkerAPI and
+// callWorkerAPIPost ALWAYS hit the worker port regardless of
+// CLAUDE_MEM_RUNTIME, so server-beta users got "Unable to connect" on every
+// search call. Per the master plan (Oracle review): use PROCESS-LEVEL env-var
+// routing — two if-branches selecting baseUrl + auth — NOT a new
+// MemoryBackendClient interface. The branch is taken inside callWorkerAPI /
+// callWorkerAPIPost so individual tool handlers do not need to know about
+// the runtime split.
+//
+// Endpoints that have a direct server-beta equivalent route through the
+// ServerBetaClient (same path hooks use). Endpoints that do NOT yet have a
+// server-beta equivalent (timeline, get_observations, *_corpus until the
+// matching /v1/* routes ship) return a typed EndpointNotImplemented error.
+type ServerBetaRouteDescriptor =
+  | { kind: 'search' }
+  | { kind: 'timeline' }
+  | { kind: 'observations-batch' }
+  | { kind: 'observation-get'; id: string }
+  | { kind: 'not-implemented'; reason: string };
+
+function describeServerBetaRoute(
+  method: 'GET' | 'POST',
+  endpoint: string,
+): ServerBetaRouteDescriptor {
+  // /api/observations/:id (single get) — only POST batch and GET single are
+  // exposed via MCP today; we map both to server-beta endpoints when they exist.
+  if (endpoint === '/api/search') return { kind: 'search' };
+  if (endpoint === '/api/timeline') return { kind: 'timeline' };
+  if (endpoint === '/api/observations/batch') return { kind: 'observations-batch' };
+  const singleObsMatch = endpoint.match(/^\/api\/observations\/([^\/?]+)$/);
+  if (singleObsMatch) return { kind: 'observation-get', id: singleObsMatch[1] };
+  // Anything else (corpus, context-preview, etc.) is worker-only for now.
+  return {
+    kind: 'not-implemented',
+    reason: `Tool endpoint ${method} ${endpoint} is not available in server-beta runtime. This tool is currently worker-only. To use it, set CLAUDE_MEM_RUNTIME=worker in ~/.claude-mem/settings.json and ensure the worker is running.`,
+  };
+}
+
+function endpointNotImplementedResult(
+  reason: string,
+): { content: Array<{ type: 'text'; text: string }>; isError: true } {
+  return {
+    content: [{
+      type: 'text' as const,
+      text: `EndpointNotImplemented: ${reason}`,
+    }],
+    isError: true,
+  };
+}
+
+async function callServerBetaForLegacyEndpoint(
+  method: 'GET' | 'POST',
+  endpoint: string,
+  paramsOrBody: Record<string, any>,
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+  const resolution = resolveServerBetaToolContext();
+  if (!resolution || !resolution.available) {
+    const reason = !resolution
+      ? 'server-beta runtime requested but selectRuntime() returned worker'
+      : resolution.reason;
+    return endpointNotImplementedResult(reason);
+  }
+  const descriptor = describeServerBetaRoute(method, endpoint);
+  try {
+    if (descriptor.kind === 'not-implemented') {
+      return endpointNotImplementedResult(descriptor.reason);
+    }
+    if (descriptor.kind === 'search') {
+      const projectId =
+        typeof paramsOrBody.projectId === 'string' && paramsOrBody.projectId.trim().length > 0
+          ? paramsOrBody.projectId
+          : resolution.projectId;
+      const query =
+        typeof paramsOrBody.query === 'string'
+          ? paramsOrBody.query
+          : '';
+      const limit =
+        typeof paramsOrBody.limit === 'number'
+          ? paramsOrBody.limit
+          : typeof paramsOrBody.limit === 'string'
+            ? Number(paramsOrBody.limit)
+            : undefined;
+      const request: ServerBetaSearchObservationsRequest = {
+        projectId,
+        query,
+        ...(typeof limit === 'number' && Number.isFinite(limit) ? { limit } : {}),
+      };
+      const response = await resolution.client.searchObservations(request);
+      return formatJsonResult(response);
+    }
+    // timeline + observations-batch + observation-get await Branch 2
+    // (POST /v1/timeline + POST /v1/memories/batch + GET /v1/memories/:id).
+    // Until then, surface a clear, actionable error rather than crashing.
+    if (descriptor.kind === 'timeline') {
+      return endpointNotImplementedResult(
+        'Tool "timeline" requires server-beta endpoint POST /v1/timeline which is not yet deployed in this runtime. Track progress in the master plan (Branch 2 of Agent C).',
+      );
+    }
+    if (descriptor.kind === 'observations-batch') {
+      return endpointNotImplementedResult(
+        'Tool "get_observations" requires server-beta endpoint POST /v1/memories/batch which is not yet deployed in this runtime. Track progress in the master plan (Branch 2 of Agent C).',
+      );
+    }
+    if (descriptor.kind === 'observation-get') {
+      return endpointNotImplementedResult(
+        `Tool requires server-beta endpoint GET /v1/memories/${descriptor.id} which is not yet deployed in this runtime. Track progress in the master plan (Branch 2 of Agent C).`,
+      );
+    }
+    const _exhaustive: never = descriptor;
+    void _exhaustive;
+    return endpointNotImplementedResult('unknown server-beta route kind');
+  } catch (error: unknown) {
+    return formatToolError(error);
+  }
+}
+
 async function callWorkerAPI(
   endpoint: string,
   params: Record<string, any>
 ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+  // process-level runtime routing. Before this, callWorkerAPI
+  // unconditionally hit the worker port even when CLAUDE_MEM_RUNTIME=server-beta,
+  // producing "Unable to connect" errors. We branch on selectRuntime() so the
+  // worker mode is byte-identical to the old behavior and server-beta mode is
+  // dispatched through ServerBetaClient (the same client hooks already use).
+  if (selectRuntime() === 'server-beta') {
+    return callServerBetaForLegacyEndpoint('GET', endpoint, params);
+  }
   logger.debug('SYSTEM', '→ Worker API', undefined, { endpoint, params });
 
   const searchParams = new URLSearchParams();
@@ -139,6 +272,12 @@ async function callWorkerAPIPost(
   endpoint: string,
   body: Record<string, any>
 ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+  // same runtime gate as callWorkerAPI. We resolve once per call so
+  // flipping CLAUDE_MEM_RUNTIME via settings.json does not require restarting
+  // the MCP server. selectRuntime() is cheap (reads cached settings).
+  if (selectRuntime() === 'server-beta') {
+    return callServerBetaForLegacyEndpoint('POST', endpoint, body);
+  }
   logger.debug('HTTP', 'Worker API request (POST)', undefined, { endpoint });
 
   try {
@@ -165,7 +304,7 @@ async function verifyWorkerConnection(): Promise<boolean> {
   }
 }
 
-// Phase 8 — runtime selection for MCP tools.
+// runtime selection for MCP tools.
 // In server-beta mode, observation_* tools talk to the server-beta `/v1`
 // endpoints via the SAME ServerBetaClient hooks use. This guarantees we
 // share the REST core for writes and searches; we never duplicate the
@@ -421,6 +560,31 @@ async function ensureWorkerConnection(): Promise<boolean> {
   }
 }
 
+// (Branch 3, Agent C) — grammar guard for smart_outline / smart_unfold.
+// These two tools operate on a SINGLE file, so when their target language's
+// tree-sitter grammar is missing they MUST return a clear, actionable error
+// instead of silently returning 'no symbols found' (which is what parseFile
+// does today — see resolveGrammarPath catching the missing-module error).
+// smart_search scans many files in many languages so it stays best-effort:
+// missing grammars there just produce zero hits for that subset.
+function checkGrammarOrFail(filePath: string): { content: Array<{ type: 'text'; text: string }>; isError: true } | null {
+  const language = detectFileLanguage(filePath);
+  if (language === 'unknown') {
+    // Not a tree-sitter target at all — let parseFile's empty result flow
+    // through (the existing 'unsupported language' error path is fine).
+    return null;
+  }
+  const status = getGrammarStatus(language);
+  if (status.installed) return null;
+  return {
+    content: [{
+      type: 'text' as const,
+      text: `tree-sitter grammar for "${language}" is not installed in this runtime. The npm package "${status.packageName ?? '<unknown>'}" must be present in node_modules for smart_outline / smart_unfold to parse "${filePath}". To enable: cd ~/.claude/plugins/marketplaces/thedotmack && npm install (or install ${status.packageName ?? '<unknown>'} in your project's node_modules). This tool is disabled for ${language} until the grammar is available.`,
+    }],
+    isError: true,
+  };
+}
+
 const tools = [
   {
     name: '__IMPORTANT',
@@ -517,7 +681,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       return await callWorkerAPIPost('/api/observations/batch', args);
     }
   },
-  // Phase 8 — observation_* tools backed by server-beta REST core.
+  // observation_* tools backed by server-beta REST core.
   // These are the canonical names. memory_* tools below are kept as
   // compatibility aliases that delegate to these handlers, so existing
   // MCP clients keep working without rewrites. (Plan line 753.)
@@ -723,6 +887,11 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     },
     handler: async (args: any) => {
       const filePath = resolve(args.file_path);
+      // short-circuit with a clear error when the language's
+      // tree-sitter grammar is not installed; otherwise unfoldSymbol returns
+      // null and the user sees a confusing 'Could not parse' message.
+      const grammarError = checkGrammarOrFail(filePath);
+      if (grammarError) return grammarError;
       const content = await readFile(filePath, 'utf-8');
       const unfolded = unfoldSymbol(content, filePath, args.symbol_name);
       if (unfolded) {
@@ -763,6 +932,9 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     },
     handler: async (args: any) => {
       const filePath = resolve(args.file_path);
+      // same grammar gate as smart_unfold.
+      const grammarError = checkGrammarOrFail(filePath);
+      if (grammarError) return grammarError;
       const content = await readFile(filePath, 'utf-8');
       const parsed = parseFile(content, filePath);
       if (parsed.symbols.length > 0) {
@@ -1019,10 +1191,33 @@ async function main() {
 
   checkMarketplaceMarker();
 
+  // (Branch 3, Agent C) — tree-sitter grammar self-check. Logs which
+  // grammars are available at boot so users can diagnose the 'smart_search
+  // returns nothing' class of bug without digging through stderr. Wrapped in
+  // a try/catch because enumerateAvailableGrammars itself catches per-package
+  // resolve errors — but defence in depth is cheap here, and we MUST NOT
+  // crash the MCP server if a grammar package is corrupted.
+  try {
+    const { available, missing } = enumerateAvailableGrammars();
+    logger.info('SYSTEM', `tree-sitter grammars available: [${available.join(', ')}]`, undefined, {
+      availableCount: available.length,
+      missingCount: missing.length,
+      missing,
+    });
+    if (available.length === 0) {
+      logger.warn(
+        'SYSTEM',
+        'No tree-sitter grammars resolved. smart_search/smart_outline/smart_unfold will be disabled until plugin/node_modules is installed. To fix: cd ~/.claude/plugins/marketplaces/thedotmack && npm install',
+      );
+    }
+  } catch (error: unknown) {
+    logger.warn('SYSTEM', 'tree-sitter grammar self-check threw — smart_* tools may not function', undefined, error instanceof Error ? { error: error.message } : { error: String(error) });
+  }
+
   startParentHeartbeat();
 
   setTimeout(async () => {
-    // Phase 8 — when CLAUDE_MEM_RUNTIME=server-beta, MCP must NOT auto-start
+    // when CLAUDE_MEM_RUNTIME=server-beta, MCP must NOT auto-start
     // the worker. observation_* tools talk to server-beta directly; the
     // legacy worker-backed tools (search/timeline/get_observations) will
     // simply error with a helpful message until the user switches runtime.

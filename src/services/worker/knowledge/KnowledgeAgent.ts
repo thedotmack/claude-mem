@@ -8,6 +8,7 @@ import { USER_SETTINGS_PATH, OBSERVER_SESSIONS_DIR, ensureDir } from '../../../s
 import { buildIsolatedEnvWithFreshOAuth } from '../../../shared/EnvManager.js';
 import { findClaudeExecutable } from '../../../shared/find-claude-executable.js';
 import { sanitizeEnv } from '../../../supervisor/env-sanitizer.js';
+import { logObserverToolAttempt } from '../../../shared/ObserverToolAuditLog.js';
 
 // @ts-ignore - Agent SDK types may not be available
 import { query } from '@anthropic-ai/claude-agent-sdk';
@@ -58,7 +59,25 @@ export class KnowledgeAgent {
       options: {
         model: this.getModelId(),
         cwd: OBSERVER_SESSIONS_DIR,
+        // fix — Knowledge Agent SDK Tool Enforcement (#2380).
+        allowedTools: [],
         disallowedTools: KNOWLEDGE_AGENT_DISALLOWED_TOOLS,
+        permissionMode: 'plan',
+        canUseTool: async (toolName: string, input: Record<string, unknown>) => {
+          logObserverToolAttempt({
+            source: 'knowledge_prime',
+            corpusName: corpus.name,
+            toolName,
+            decision: 'deny',
+            reason: 'Knowledge agent SDK has no tools ',
+            input,
+          });
+          return {
+            behavior: 'deny',
+            message: 'Knowledge agent SDK has no tools ( enforcement)',
+            interrupt: true,
+          };
+        },
         pathToClaudeCodeExecutable: claudePath,
         env: isolatedEnv,
         mcpServers: {},
@@ -154,7 +173,25 @@ export class KnowledgeAgent {
         model: this.getModelId(),
         resume: corpus.session_id!,
         cwd: OBSERVER_SESSIONS_DIR,
+        // fix — Knowledge Agent SDK Tool Enforcement (#2380).
+        allowedTools: [],
         disallowedTools: KNOWLEDGE_AGENT_DISALLOWED_TOOLS,
+        permissionMode: 'plan',
+        canUseTool: async (toolName: string, input: Record<string, unknown>) => {
+          logObserverToolAttempt({
+            source: 'knowledge_query',
+            corpusName: corpus.name,
+            toolName,
+            decision: 'deny',
+            reason: 'Knowledge agent SDK has no tools ',
+            input,
+          });
+          return {
+            behavior: 'deny',
+            message: 'Knowledge agent SDK has no tools ( enforcement)',
+            interrupt: true,
+          };
+        },
         pathToClaudeCodeExecutable: claudePath,
         env: isolatedEnv,
         mcpServers: {},

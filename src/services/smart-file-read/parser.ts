@@ -82,6 +82,15 @@ function detectLanguageWithUserGrammars(filePath: string, userConfig: UserGramma
   return "unknown";
 }
 
+// (Branch 3, Agent C) — exposed for MCP smart_* tool handlers so they
+// can check grammar availability before invoking parseFile. We use only the
+// built-in LANG_MAP here so the helper works without a projectRoot (most
+// smart_* invocations pass an absolute file path with no project context).
+export function detectFileLanguage(filePath: string): string {
+  const ext = filePath.slice(filePath.lastIndexOf("."));
+  return LANG_MAP[ext] ?? "unknown";
+}
+
 function getUserAwareQueryKey(language: string, userConfig: UserGrammarConfig): string {
   if (userConfig.languageToQueryKey[language]) {
     return userConfig.languageToQueryKey[language];
@@ -258,6 +267,64 @@ export function resolveGrammarPathWithFallback(language: string, projectRoot?: s
 
   console.error(`[smart-file-read] Grammar package not found for "${language}": ${entry.package} (install it in your project's node_modules)`);
   return null;
+}
+
+// (Branch 3, Agent C) — grammar availability self-check.
+// Returns the subset of GRAMMAR_PACKAGES whose underlying npm package can be
+// resolved from the current node_modules tree. Used at MCP startup to log
+// which tree-sitter grammars are actually present (the plugin bundle does
+// NOT ship plugin/node_modules, so on fresh installs the smart_* tools are
+// effectively disabled until `npm install` runs in the marketplace dir).
+//
+// IMPORTANT: this function does NOT crash if any grammar is missing — it
+// catches every resolve() and aggregates the result. That guarantee is the
+// whole point of : the MCP server boots even when zero grammars are
+// installed, instead of throwing 'Cannot find module tree-sitter-typescript'
+// the way it did before this fix.
+export function enumerateAvailableGrammars(): {
+  available: string[];
+  missing: string[];
+} {
+  const available: string[] = [];
+  const missing: string[] = [];
+  for (const language of Object.keys(GRAMMAR_PACKAGES)) {
+    try {
+      const path = resolveGrammarPath(language);
+      if (path) {
+        available.push(language);
+      } else {
+        missing.push(language);
+      }
+    } catch {
+      missing.push(language);
+    }
+  }
+  return { available, missing };
+}
+
+// query a single language's grammar availability. Used by the
+// smart_* tool handlers to short-circuit with a clear, actionable error
+// message when the file's language is detected but the grammar is missing.
+// Returning the npm package name allows the error to suggest the exact
+// `npm install` command.
+export function getGrammarStatus(language: string): {
+  language: string;
+  packageName: string | null;
+  installed: boolean;
+} {
+  const packageName = GRAMMAR_PACKAGES[language] ?? null;
+  if (!packageName) {
+    return { language, packageName: null, installed: false };
+  }
+  try {
+    return {
+      language,
+      packageName,
+      installed: resolveGrammarPath(language) !== null,
+    };
+  } catch {
+    return { language, packageName, installed: false };
+  }
 }
 
 const QUERIES: Record<string, string> = {
