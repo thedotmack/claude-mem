@@ -162,7 +162,8 @@ export const ClaudeMemPlugin = async ({ project, directory, worktree }) => {
         .trim();
       if (!text) return;
       await postEvent('UserPromptSubmit', {
-        session_id: msg.sessionID,
+        // sessionID lives on the event envelope, not on the message info.
+        session_id: event?.properties?.sessionID ?? event?.id ?? msg.sessionID,
         prompt: text,
       });
     },
