@@ -111,7 +111,6 @@ export class ClaudeHostBridgeProvider implements ServerGenerationProvider {
         signal: controller.signal,
       });
     } catch (networkError) {
-      clearTimeout(timer);
       const reason = networkError instanceof Error ? networkError.message : String(networkError);
       logger.warn('SYSTEM', 'host-bridge request failed', { bridgeUrl: this.bridgeUrl, reason });
       throw new ServerClassifiedProviderError(`host-bridge unreachable: ${reason}`, {

@@ -185,7 +185,7 @@ function detectLoopbackHost(rawUrl: string | undefined): string | null {
   try {
     const parsed = new URL(value);
     const host = parsed.hostname.toLowerCase();
-    if (host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]') {
+    if (host === '127.0.0.1' || host === 'localhost' || host === '::1') {
       return host;
     }
     return null;
