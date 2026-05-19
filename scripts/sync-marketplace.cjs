@@ -8,6 +8,54 @@ const os = require('os');
 const INSTALLED_PATH = path.join(os.homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
 const CACHE_BASE_PATH = path.join(os.homedir(), '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem');
 
+// fix --- user-config allowlist preserved from rsync --delete.
+// rsync's semantics: any path matched by --exclude is BOTH skipped on the
+// source side AND retained on the destination side (i.e. not deleted by
+// --delete). So injecting these patterns as --exclude tokens makes them
+// safe even when the destination ends up out of sync with the source.
+const PRESERVE_PATTERNS = [
+  '.env',
+  '.env.local',
+  '.env.*',
+  'docker-compose.override.yml',
+  'docker-compose.override.*.yml',
+  'secrets/',
+  'secrets/***',
+  'data/',
+  'data/***',
+  '.user-config/',
+  '.user-config/***',
+];
+
+function preserveExcludes() {
+  return PRESERVE_PATTERNS.map(p => `--exclude=${JSON.stringify(p)}`).join(' ');
+}
+
+function buildDryRunCommand(rsyncCommand) {
+  // Insert --dry-run right after `rsync` token.
+  return rsyncCommand.replace(/^rsync\s+-/, 'rsync --dry-run -');
+}
+
+function deleteFlag() {
+  // default: --force-delete must be opt-in. Without it, --delete is
+  // dropped from rsync entirely (safer, may leave stale files but cannot
+  // remove user-owned config).
+  const argv = process.argv.slice(2);
+  if (argv.includes('--force-delete') || process.env.CLAUDE_MEM_SYNC_FORCE_DELETE === '1') {
+    return '--delete';
+  }
+  return '';
+}
+
+function shouldShowPreview() {
+  const argv = process.argv.slice(2);
+  if (argv.includes('--force') || argv.includes('--non-interactive') || argv.includes('--no-preview')) {
+    return false;
+  }
+  return process.env.CLAUDE_MEM_SYNC_NO_PREVIEW !== '1';
+}
+
+
 // Reject obviously invalid ports before they reach http.request, which would
 // throw with a confusing error like "RangeError: Port should be > 0 and < 65536".
 function parseWorkerPort(value) {
@@ -137,10 +185,14 @@ try {
   const rootDir = path.join(__dirname, '..');
   const gitignoreExcludes = getGitignoreExcludes(rootDir);
 
-  execSync(
-    `rsync -av --delete --exclude=.git --exclude=bun.lock --exclude=package-lock.json --exclude=scripts/package.json --exclude=scripts/node_modules ${gitignoreExcludes} ./ ~/.claude/plugins/marketplaces/thedotmack/`,
-    { stdio: 'inherit' }
-  );
+  {
+    const cmdBase = `rsync -av ${deleteFlag()} --exclude=.git --exclude=bun.lock --exclude=package-lock.json --exclude=scripts/package.json --exclude=scripts/node_modules ${gitignoreExcludes} ${preserveExcludes()} ./ ~/.claude/plugins/marketplaces/thedotmack/`;
+    if (shouldShowPreview() && deleteFlag()) {
+      console.log('\x1b[36m%s\x1b[0m', 'Preview (would-delete items below). Pass --force / --non-interactive to skip:');
+      execSync(buildDryRunCommand(cmdBase), { stdio: 'inherit' });
+    }
+    execSync(cmdBase, { stdio: 'inherit' });
+  }
 
   console.log('Running bun install in marketplace...');
   execSync(
@@ -155,10 +207,14 @@ try {
   const pluginGitignoreExcludes = getGitignoreExcludes(pluginDir);
 
   console.log(`Syncing to cache folder (version ${version})...`);
-  execSync(
-    `rsync -av --delete --exclude=.git ${pluginGitignoreExcludes} plugin/ "${CACHE_VERSION_PATH}/"`,
-    { stdio: 'inherit' }
-  );
+  {
+    const cmdBase = `rsync -av ${deleteFlag()} --exclude=.git ${pluginGitignoreExcludes} ${preserveExcludes()} plugin/ "${CACHE_VERSION_PATH}/"`;
+    if (shouldShowPreview() && deleteFlag()) {
+      console.log('\x1b[36m%s\x1b[0m', `Preview (cache ${version} would-delete):`);
+      execSync(buildDryRunCommand(cmdBase), { stdio: 'inherit' });
+    }
+    execSync(cmdBase, { stdio: 'inherit' });
+  }
 
   console.log(`Running bun install in cache folder (version ${version})...`);
   execSync(`bun install`, { cwd: CACHE_VERSION_PATH, stdio: 'inherit' });
@@ -166,10 +222,14 @@ try {
   if (installedMismatch && installedMismatch.installedVersion !== version) {
     const INSTALLED_CACHE_PATH = path.join(CACHE_BASE_PATH, installedMismatch.installedVersion);
     console.log(`Mirroring to installed-version cache (${installedMismatch.installedVersion}) for hot reload...`);
-    execSync(
-      `rsync -av --delete --exclude=.git ${pluginGitignoreExcludes} plugin/ "${INSTALLED_CACHE_PATH}/"`,
-      { stdio: 'inherit' }
-    );
+    {
+      const cmdBase = `rsync -av ${deleteFlag()} --exclude=.git ${pluginGitignoreExcludes} ${preserveExcludes()} plugin/ "${INSTALLED_CACHE_PATH}/"`;
+      if (shouldShowPreview() && deleteFlag()) {
+        console.log('\x1b[36m%s\x1b[0m', `Preview (installed-version cache ${installedMismatch.installedVersion} would-delete):`);
+        execSync(buildDryRunCommand(cmdBase), { stdio: 'inherit' });
+      }
+      execSync(cmdBase, { stdio: 'inherit' });
+    }
     console.log(`Running bun install in installed-version cache (${installedMismatch.installedVersion})...`);
     execSync(`bun install`, { cwd: INSTALLED_CACHE_PATH, stdio: 'inherit' });
   }
