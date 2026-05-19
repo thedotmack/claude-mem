@@ -354,6 +354,15 @@ export class ServerBetaClient {
   async getTimelineWindow(
     input: ServerBetaTimelineRequest,
   ): Promise<ServerBetaTimelineResponse> {
+    // Server rejects requests without anchor or query as 400. Surface that
+    // as the structured 'invalid_response' kind here so callers get an
+    // actionable error instead of a generic http_error wrapping a 400.
+    if (!input.anchor && !input.query) {
+      throw new ServerBetaClientError(
+        'invalid_response',
+        'getTimelineWindow requires either anchor or query',
+      );
+    }
     return this.request<ServerBetaTimelineResponse>(
       'POST',
       '/v1/timeline',

@@ -10,10 +10,10 @@
 //   1. Connect to Postgres (CLAUDE_MEM_SERVER_DATABASE_URL).
 //   2. Find or create a "local-hook" team and project so the api_key has
 //      proper tenant scope.
-//   3. Generate a `cmem_<random>` key, hash with SHA-256, insert into
-//      `api_keys` with scopes that match the gates declared on /v1/memories.
-//      See routes/v1/ServerV1PostgresRoutes.ts which gates reads on
-//      'memories:read' and writes on 'memories:write'.
+//   3. Generate a `cmem_<random>` key, hash via hashApiKeyForStorage()
+//      (argon2id), insert into `api_keys` with scopes that match the gates
+//      declared on /v1/memories. See routes/v1/ServerV1PostgresRoutes.ts
+//      which gates reads on 'memories:read' and writes on 'memories:write'.
 //
 //      Bug 3 fix: previously this list shipped events:write / sessions:write /
 //      observations:read / jobs:read — none of which intersect the memory
