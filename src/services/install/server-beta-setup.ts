@@ -278,13 +278,18 @@ function ensurePostgresEnv(dryRun: boolean): SetupStepResult {
   try {
     const envFile = paths.envFile();
     const dir = paths.dataDir();
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true, mode: 0o700 });
-    }
-    try {
-      chmodSync(dir, 0o700);
-    } catch {
-      // best-effort
+    // Honour --dry-run by skipping the mkdir + chmod side-effects. Without
+    // this guard a dry-run silently created ~/.claude-mem/ on first use,
+    // breaking the dry-run contract operators rely on for previewing.
+    if (!dryRun) {
+      if (!existsSync(dir)) {
+        mkdirSync(dir, { recursive: true, mode: 0o700 });
+      }
+      try {
+        chmodSync(dir, 0o700);
+      } catch {
+        // best-effort
+      }
     }
     const existing = parseEnvFile(existsSync(envFile) ? readFileSync(envFile, 'utf-8') : '');
     const needsUser = !existing.POSTGRES_USER;

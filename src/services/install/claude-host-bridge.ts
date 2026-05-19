@@ -30,7 +30,7 @@
 //     CLAUDE_MEM_CLAUDE_BRIDGE_TOKEN and signs every request. Prevents other
 //     processes on the host from accidentally using the bridge.
 
-import { execSync, spawnSync } from 'child_process';
+import { spawnSync } from 'child_process';
 import {
   chmodSync,
   existsSync,
@@ -375,18 +375,35 @@ function waitForBridge(port: number, timeoutMs: number): { ok: boolean; message:
   const deadline = Date.now() + timeoutMs;
   let lastError = 'timeout';
   while (Date.now() < deadline) {
-    try {
-      const result = execSync(`curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:${port}/healthz`, {
-        encoding: 'utf-8',
-        timeout: 1500,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      }).trim();
-      if (result === '200') {
-        return { ok: true, message: 'healthz returned 200' };
-      }
+    // Probe /healthz via a worker thread that uses Node's built-in http
+    // module. Avoids depending on `curl`, which is absent by default on
+    // Debian/Ubuntu minimal, Alpine, and many WSL images — those installs
+    // previously failed silently here even when the bridge process started
+    // successfully.
+    const probeScript = `
+      const http = require('http');
+      const req = http.get('http://127.0.0.1:${port}/healthz', { timeout: 1500 }, (res) => {
+        const code = res.statusCode || 0;
+        res.resume();
+        process.stdout.write(String(code));
+        process.exit(0);
+      });
+      req.on('timeout', () => { req.destroy(); process.stdout.write('timeout'); process.exit(0); });
+      req.on('error', (err) => { process.stdout.write('error:' + err.message); process.exit(0); });
+    `;
+    const probe = spawnSync(process.execPath, ['-e', probeScript], {
+      encoding: 'utf-8',
+      timeout: 2000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const result = (probe.stdout ?? '').trim();
+    if (result === '200') {
+      return { ok: true, message: 'healthz returned 200' };
+    }
+    if (result.startsWith('error:') || result === '' || result === 'timeout') {
+      lastError = result || 'timeout';
+    } else {
       lastError = `healthz returned ${result}`;
-    } catch (err) {
-      lastError = err instanceof Error ? err.message : String(err);
     }
     // Poll loop without `await`: install code runs synchronously.
     spawnSync(process.execPath, ['-e', 'setTimeout(()=>process.exit(0),200)'], {
