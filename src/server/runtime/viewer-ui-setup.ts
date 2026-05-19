@@ -35,7 +35,7 @@
 
 import type { Application, Request, Response } from 'express';
 import express from 'express';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync, truncateSync } from 'fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, statSync, truncateSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { logger } from '../../utils/logger.js';
 import type { ServerBetaServiceGraph } from './types.js';
@@ -56,18 +56,21 @@ function locatePluginUiDir(): string | null {
   return null;
 }
 
-const VIEWER_UI_DIR = locatePluginUiDir();
+// Resolved lazily by setupViewerUi() so the module has no side effects at
+// import time — makes test setup, conditional mounting, and SSR scenarios
+// cleaner. Cached after first resolution to keep subsequent setup* calls fast.
+let VIEWER_UI_DIR: string | null = null;
+let viewerUiResolved = false;
+function getViewerUiDir(): string | null {
+  if (!viewerUiResolved) {
+    VIEWER_UI_DIR = locatePluginUiDir();
+    viewerUiResolved = true;
+  }
+  return VIEWER_UI_DIR;
+}
 const SETTINGS_PATH = join(process.env.HOME ?? '/root', '.claude-mem', 'settings.json');
 // In Docker the worker writes logs to /data/claude-mem/logs (CLAUDE_MEM_DATA_DIR).
 const LOGS_DIR = join(process.env.CLAUDE_MEM_DATA_DIR ?? join(process.env.HOME ?? '/root', '.claude-mem'), 'logs');
-
-if (VIEWER_UI_DIR) {
-  logger.info('SYSTEM', 'Viewer UI mounted on server-beta', { dir: VIEWER_UI_DIR });
-} else {
-  logger.warn('SYSTEM', 'Viewer UI not found at any expected location; GET / will 404', {
-    hint: 'set CLAUDE_MEM_UI_DIR or copy plugin/ui/ to one of the standard paths',
-  });
-}
 
 // ─── Shared helpers ─────────────────────────────────────────────────────────
 
@@ -151,11 +154,18 @@ function viewerObservationFromRow(row: {
 // ─── 1. Static file serving + index ─────────────────────────────────────────
 
 export function setupViewerUi(app: Application): void {
-  if (!VIEWER_UI_DIR) return;
-  app.use(express.static(VIEWER_UI_DIR));
+  const dir = getViewerUiDir();
+  if (!dir) {
+    logger.warn('SYSTEM', 'Viewer UI not found at any expected location; GET / will 404', {
+      hint: 'set CLAUDE_MEM_UI_DIR or copy plugin/ui/ to one of the standard paths',
+    });
+    return;
+  }
+  logger.info('SYSTEM', 'Viewer UI mounted on server-beta', { dir });
+  app.use(express.static(dir));
 
   // Cache the index HTML at boot.
-  const indexBytes = readFileSync(join(VIEWER_UI_DIR, 'viewer.html'));
+  const indexBytes = readFileSync(join(dir, 'viewer.html'));
   app.get('/', (_req, res) => {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.send(indexBytes);
@@ -164,8 +174,36 @@ export function setupViewerUi(app: Application): void {
 
 // ─── 2. API compatibility shims — /api/* → Postgres ─────────────────────────
 
+// Loopback-only guard for the viewer compat shims. The /api/* and /stream
+// routes ship without bearer-token enforcement so the bundled React app can
+// load without baking the server API key into the page. To keep that safe,
+// we restrict the routes to loopback addresses; any non-loopback request
+// is rejected with 403. Operators who want to expose the viewer remotely
+// should front it with their own authenticated reverse-proxy.
+function requireLoopback(req: Request, res: Response, next: () => void): void {
+  const ip = req.ip ?? '';
+  const isLoopback =
+    ip === '127.0.0.1' ||
+    ip === '::1' ||
+    ip === '::ffff:127.0.0.1' ||
+    ip.startsWith('127.');
+  if (!isLoopback) {
+    res.status(403).json({
+      error: 'Forbidden',
+      message: 'Viewer compat routes (/api/*, /stream) are loopback-only. Front with an authenticated reverse-proxy for remote access.',
+    });
+    return;
+  }
+  next();
+}
+
 export function setupViewerApiCompat(app: Application, graph: ServerBetaServiceGraph): void {
   const pool = graph.postgres.pool;
+
+  // Gate every /api/* route behind the loopback check so unauthenticated
+  // remote callers can't bypass the server's main auth middleware via these
+  // viewer-only compat shims.
+  app.use('/api', requireLoopback);
 
   // JSON body parser for POST /api/settings + POST /api/logs/clear.
   // Server-beta's main routes use their own parser; mount a separate one
@@ -361,8 +399,16 @@ export function setupViewerApiCompat(app: Application, graph: ServerBetaServiceG
         return;
       }
       const raw = JSON.parse(readFileSync(SETTINGS_PATH, 'utf-8')) as Record<string, unknown>;
-      const redacted = { ...raw };
-      delete redacted.CLAUDE_MEM_SERVER_BETA_API_KEY;
+      // Redact any value that LOOKS like a credential. The viewer never needs
+      // the actual secret — it only renders metadata + non-sensitive options.
+      const redacted: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(raw)) {
+        if (/_API_KEY$|_KEY$|_TOKEN$|_SECRET$|PASSWORD/i.test(k)) {
+          redacted[k] = typeof v === 'string' && v.length > 0 ? '***redacted***' : v;
+        } else {
+          redacted[k] = v;
+        }
+      }
       res.json(redacted);
     } catch (err) {
       logger.warn('HTTP', '/api/settings GET failed', {
@@ -443,7 +489,29 @@ export function setupViewerApiCompat(app: Application, graph: ServerBetaServiceG
         return;
       }
       const latest = files[0]!;
-      const raw = readFileSync(join(LOGS_DIR, latest.name), 'utf-8');
+      const latestPath = join(LOGS_DIR, latest.name);
+      // Bounded tail: budget ~600 bytes per line so a 5000-line request reads
+      // at most ~3 MiB instead of the full file (which can grow to hundreds
+      // of MB over time). We seek from the end and fall back to a full read
+      // only when the file is smaller than the budget.
+      const stat = statSync(latestPath);
+      const budget = Math.min(stat.size, limit * 600 + 16 * 1024);
+      let raw: string;
+      if (budget >= stat.size) {
+        raw = readFileSync(latestPath, 'utf-8');
+      } else {
+        const fd = openSync(latestPath, 'r');
+        try {
+          const buf = Buffer.alloc(budget);
+          readSync(fd, buf, 0, budget, stat.size - budget);
+          raw = buf.toString('utf-8');
+          // Drop the partial first line so we don't show truncated content.
+          const firstNewline = raw.indexOf('\n');
+          if (firstNewline >= 0) raw = raw.slice(firstNewline + 1);
+        } finally {
+          closeSync(fd);
+        }
+      }
       const lines = raw.split('\n').filter((l) => l.length > 0);
       const tail = lines.slice(-limit);
 
@@ -521,7 +589,7 @@ export function setupViewerApiCompat(app: Application, graph: ServerBetaServiceG
 export function setupViewerSseStream(app: Application, graph: ServerBetaServiceGraph): void {
   const pool = graph.postgres.pool;
 
-  app.get('/stream', async (req: Request, res: Response) => {
+  app.get('/stream', requireLoopback, async (req: Request, res: Response) => {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
@@ -545,7 +613,12 @@ export function setupViewerSseStream(app: Application, graph: ServerBetaServiceG
       res.write(`data: ${JSON.stringify({ type: 'initial_load', projects: [] })}\n\n`);
     }
 
+    // Composite cursor (created_at, id) so we don't drop rows that share a
+    // created_at boundary when a batch insert produces >LIMIT rows at the
+    // same NOW() timestamp. We start lastSeenId empty and use it as a
+    // tiebreaker in the WHERE clause once a real id has been observed.
     let lastSeenEpoch = Date.now();
+    let lastSeenId: string | null = null;
     let closed = false;
 
     const interval = setInterval(async () => {
@@ -561,16 +634,26 @@ export function setupViewerSseStream(app: Application, graph: ServerBetaServiceG
           created_at: Date;
           updated_at: Date;
         }>(
-          `SELECT id, project_id, team_id, kind, content, metadata, created_at, updated_at
-           FROM observations
-           WHERE created_at > to_timestamp($1 / 1000.0)
-           ORDER BY created_at ASC
-           LIMIT 25`,
-          [lastSeenEpoch],
+          lastSeenId === null
+            ? `SELECT id, project_id, team_id, kind, content, metadata, created_at, updated_at
+                 FROM observations
+                 WHERE created_at > to_timestamp($1 / 1000.0)
+                 ORDER BY created_at ASC, id ASC
+                 LIMIT 25`
+            : `SELECT id, project_id, team_id, kind, content, metadata, created_at, updated_at
+                 FROM observations
+                 WHERE (created_at > to_timestamp($1 / 1000.0))
+                    OR (created_at = to_timestamp($1 / 1000.0) AND id > $2)
+                 ORDER BY created_at ASC, id ASC
+                 LIMIT 25`,
+          lastSeenId === null ? [lastSeenEpoch] : [lastSeenEpoch, lastSeenId],
         );
         for (const row of result.rows) {
           const epoch = row.created_at.getTime();
-          if (epoch > lastSeenEpoch) lastSeenEpoch = epoch;
+          if (epoch >= lastSeenEpoch) {
+            lastSeenEpoch = epoch;
+            lastSeenId = row.id;
+          }
           const observation = viewerObservationFromRow(row);
           res.write(
             `data: ${JSON.stringify({ type: 'new_observation', observation })}\n\n`,
