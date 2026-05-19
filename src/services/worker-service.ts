@@ -54,7 +54,7 @@ import {
   createServerApiKey,
   listServerApiKeys,
   revokeServerApiKey,
-} from '../server/auth/api-key-service.js';
+} from '../server/auth/api-key-service-sqlite.js';
 import { ServerV1Routes } from '../server/routes/v1/ServerV1Routes.js';
 
 import {
