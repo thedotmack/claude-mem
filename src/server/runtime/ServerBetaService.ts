@@ -19,6 +19,7 @@ import { SessionsObservationsAdapter } from '../compat/SessionsObservationsAdapt
 import { SessionsSummarizeAdapter } from '../compat/SessionsSummarizeAdapter.js';
 import { ActiveServerBetaQueueManager } from './ActiveServerBetaQueueManager.js';
 import type { ServerBetaServiceGraph, ServerBetaQueueLaneMetric } from './types.js';
+import { setupViewerUi, setupViewerApiCompat, setupViewerSseStream } from './viewer-ui-setup.js';
 
 const SERVER_BETA_RUNTIME = 'server-beta';
 const DEFAULT_SERVER_BETA_HOST = '127.0.0.1';
@@ -50,6 +51,13 @@ class ServerBetaRuntimeInfoRoutes implements RouteHandler {
   constructor(private readonly graph: ServerBetaServiceGraph) {}
 
   setupRoutes(app: Application): void {
+    // Mount the viewer UI (HTML + JS + CSS bundle). The same bundle works in
+    // worker mode; here we map /api/* → /v1/* and expose /stream for SSE so the
+    // React app can run unchanged on the server-beta runtime.
+    setupViewerUi(app);
+    setupViewerApiCompat(app, this.graph);
+    setupViewerSseStream(app, this.graph);
+
     app.get('/healthz', (_req, res) => {
       res.json({ status: 'ok', runtime: SERVER_BETA_RUNTIME });
     });
