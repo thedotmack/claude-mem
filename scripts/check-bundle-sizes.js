@@ -7,11 +7,12 @@
 //
 // Run AFTER `npm run build` (the bundles must exist).
 //
-// Thresholds (see Master Plan Section 9 + Appendix B.5):
-//   mcp-server.cjs            580 KB soft / 600 KB hard (PR #1645)
-//   worker-service.cjs        4 MB soft / 5 MB hard
-//   server-beta-service.cjs   2.5 MB soft / 3 MB hard
+// Thresholds:
+//   mcp-server.cjs            580 KB soft / 600 KB hard  (Claude Desktop MCP cap)
+//   worker-service.cjs          4 MB soft /   5 MB hard
+//   server-beta-service.cjs   2.5 MB soft /   3 MB hard
 //   context-generator.cjs     150 KB soft / 200 KB hard
+//   viewer-bundle.js          400 KB soft / 500 KB hard
 
 import { statSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
