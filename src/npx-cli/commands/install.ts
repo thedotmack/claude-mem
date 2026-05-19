@@ -432,7 +432,7 @@ async function installClaudeCode(): Promise<boolean> {
     child.stderr?.on('data', (chunk: Buffer) => { captured += chunk.toString(); });
 
     child.on('error', (error: Error) => {
-      spinner?.stop('Claude Code install failed', 1);
+      spinner?.stop('Claude Code install failed');
       if (captured) process.stderr.write(captured);
       log.error(`Claude Code install failed: ${error.message}`);
       log.info('You can install it manually later: https://claude.ai/install.sh');
@@ -441,7 +441,7 @@ async function installClaudeCode(): Promise<boolean> {
 
     child.on('exit', (code) => {
       if (code !== 0) {
-        spinner?.stop('Claude Code install failed', 1);
+        spinner?.stop('Claude Code install failed');
         if (captured) process.stderr.write(captured);
         log.error(`Claude Code install failed (exit ${code ?? 'unknown'})`);
         log.info('You can install it manually later: https://claude.ai/install.sh');
@@ -536,6 +536,9 @@ function copyPluginToMarketplace(): void {
     'LICENSE',
     'README.md',
     'CHANGELOG.md',
+    'docker',
+    'docker-compose.yml',
+    'docker-compose.override.yml.example',
   ];
 
   for (const entry of allowedTopLevelEntries) {
@@ -643,9 +646,11 @@ function resolveClaudeAuthMethod(): 'subscription' | 'api-key' | 'gateway' {
   return 'subscription';
 }
 
-async function promptRuntime(): Promise<RuntimeId> {
+async function promptRuntime(options: InstallOptions): Promise<RuntimeId> {
+  if (options.runtime) {
+    return options.runtime;
+  }
   if (!isInteractive) {
-    mergeSettings({ CLAUDE_MEM_RUNTIME: 'worker' });
     return 'worker';
   }
 
@@ -653,7 +658,7 @@ async function promptRuntime(): Promise<RuntimeId> {
     message: 'Which runtime should claude-mem start after install?',
     options: [
       { value: 'worker', label: 'Worker', hint: 'stable compatibility path' },
-      { value: 'server-beta', label: 'Server (beta)', hint: 'REST V1, API keys, team-ready storage' },
+      { value: 'server-beta', label: 'Server (beta)', hint: 'REST V1, API keys, team-ready storage (requires Docker)' },
     ],
     initialValue: 'worker',
   });
@@ -663,46 +668,26 @@ async function promptRuntime(): Promise<RuntimeId> {
     process.exit(0);
   }
 
-  mergeSettings({
-    CLAUDE_MEM_RUNTIME: selected,
-  });
-
-  if (selected === 'server-beta') {
-    await maybeBootstrapServerBetaApiKey();
-  }
   return selected;
 }
 
-async function maybeBootstrapServerBetaApiKey(): Promise<void> {
-  // Only attempt if Postgres is configured. Without DATABASE_URL we cannot
-  // reach the api_keys table — the operator must configure the server first
-  // and rerun `claude-mem server keys rotate`.
-  if (!process.env.CLAUDE_MEM_SERVER_DATABASE_URL) {
-    log.warn(
-      'Skipping local hook API key bootstrap: CLAUDE_MEM_SERVER_DATABASE_URL is not set. '
-        + 'Run `npx claude-mem server keys rotate` after configuring Postgres to provision a key.',
-    );
-    return;
-  }
-  try {
-    const { bootstrapServerBetaApiKey, persistServerBetaSettings } = await import(
-      '../../services/hooks/server-beta-bootstrap.js'
-    );
-    const result = await bootstrapServerBetaApiKey();
-    persistServerBetaSettings(USER_SETTINGS_PATH, {
-      apiKey: result.rawKey,
-      projectId: result.projectId,
-    });
-    log.info(
-      `Provisioned local hook API key (project=${result.projectId.slice(0, 8)}…). `
-        + 'Settings saved with mode 0600.',
-    );
-  } catch (error: unknown) {
-    log.warn(
-      `Failed to bootstrap server-beta API key: ${error instanceof Error ? error.message : String(error)}. `
-        + 'Hooks will fall back to the worker until you run `npx claude-mem server keys rotate`.',
-    );
-  }
+function commitRuntimeSetting(runtime: RuntimeId): void {
+  mergeSettings({ CLAUDE_MEM_RUNTIME: runtime });
+}
+
+async function setupServerBeta(args: {
+  marketplaceDir: string;
+  dryRun: boolean;
+  optInIdes?: string[];
+  logger: typeof log;
+}): Promise<import('../../services/install/server-beta-setup.js').SetupResult> {
+  const { setupServerBeta: impl } = await import('../../services/install/server-beta-setup.js');
+  return impl({
+    marketplaceDir: args.marketplaceDir,
+    dryRun: args.dryRun,
+    optInIdes: args.optInIdes,
+    logger: args.logger,
+  });
 }
 
 async function promptProvider(options: InstallOptions): Promise<ProviderId> {
@@ -1019,6 +1004,9 @@ export interface InstallOptions {
   provider?: 'claude' | 'gemini' | 'openrouter';
   model?: string;
   noAutoStart?: boolean;
+  runtime?: 'worker' | 'server-beta';
+  dryRun?: boolean;
+  optInIdes?: string[];
 }
 
 export async function runInstallCommand(options: InstallOptions = {}): Promise<void> {
@@ -1088,7 +1076,7 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
     selectedIDEs = ['claude-code'];
   }
 
-  const selectedRuntime = await promptRuntime();
+  const selectedRuntime = await promptRuntime(options);
   const selectedProvider = await promptProvider(options);
   if (selectedProvider === 'claude') {
     await promptClaudeModel(options);
@@ -1120,7 +1108,7 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
         if (shutdownSpinner) {
-          shutdownSpinner.stop(`Pre-overwrite worker shutdown failed: ${message}`, 1);
+          shutdownSpinner.stop(`Pre-overwrite worker shutdown failed: ${message}`);
         } else {
           console.warn('[install] Pre-overwrite worker shutdown failed:', message);
         }
@@ -1203,6 +1191,42 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
     await runTasks(tasks);
   }
 
+  let serverBetaSetupOk = false;
+  if (selectedRuntime === 'server-beta') {
+
+    if (isInteractive) {
+      p.log.info('Setting up server-beta runtime (Docker + Postgres + Valkey + worker)…');
+    } else {
+      console.log('Setting up server-beta runtime (Docker + Postgres + Valkey + worker)…');
+    }
+    const setupResult = await setupServerBeta({
+      marketplaceDir,
+      dryRun: options.dryRun === true,
+      optInIdes: options.optInIdes,
+      logger: log,
+    });
+    serverBetaSetupOk = setupResult.ok;
+    if (!serverBetaSetupOk) {
+      const failed = setupResult.steps.find(s => s.status === 'failed');
+      log.error(`Server-beta setup failed at step '${failed?.step ?? 'unknown'}': ${failed?.message ?? '(no detail)'}`);
+      log.warn('CLAUDE_MEM_RUNTIME was NOT committed. Re-run `npx claude-mem install --runtime server-beta` after fixing the issue, or fall back to `--runtime worker`.');
+      if (isInteractive) {
+        p.outro(pc.red('claude-mem install --runtime server-beta failed.'));
+      }
+      process.exit(1);
+    }
+    commitRuntimeSetting('server-beta');
+    if (setupResult.apiKey && setupResult.projectId) {
+      log.success(`Server-beta runtime active. Project ID: ${setupResult.projectId.slice(0, 8)}…`);
+    } else if (setupResult.dryRun) {
+      log.info('[dry-run] setupServerBeta completed all preview steps.');
+    } else {
+      log.info('Server-beta runtime active (reused existing API key).');
+    }
+  } else {
+    commitRuntimeSetting('worker');
+  }
+
   const failedIDEs = await setupIDEs(selectedIDEs);
 
   // Disable Claude Code's built-in auto-memory (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1)
@@ -1235,6 +1259,10 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
     {
       title: selectedRuntime === 'server-beta' ? 'Starting server beta daemon' : 'Starting worker daemon',
       task: async (message) => {
+        if (selectedRuntime === 'server-beta') {
+          workerStartResult = 'ready';
+          return `Server beta managed by docker compose ${pc.green('OK')}`;
+        }
         if (autoStartSkipped) {
           return isInteractive
             ? `Skipped (--no-auto-start)`
@@ -1244,15 +1272,15 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
         const marketplaceScriptPath = join(marketplaceDirectory(), 'plugin', 'scripts', 'worker-service.cjs');
         const cacheScriptPath = join(pluginCacheDirectory(version), 'scripts', 'worker-service.cjs');
         const scriptPath = existsSync(marketplaceScriptPath) ? marketplaceScriptPath : cacheScriptPath;
-        message(`Spawning ${selectedRuntime === 'server-beta' ? 'server beta' : 'worker'} on port ${port}...`);
+        message(`Spawning worker on port ${port}...`);
         workerStartResult = await ensureWorkerStarted(port, scriptPath);
         switch (workerStartResult) {
           case 'ready':
-            return `${selectedRuntime === 'server-beta' ? 'Server beta' : 'Worker'} ready at http://localhost:${port} ${pc.green('OK')}`;
+            return `Worker ready at http://localhost:${port} ${pc.green('OK')}`;
           case 'warming':
-            return `${selectedRuntime === 'server-beta' ? 'Server beta' : 'Worker'} starting on port ${port} — finishing in background ${pc.yellow('⏳')}`;
+            return `Worker starting on port ${port} — finishing in background ${pc.yellow('⏳')}`;
           case 'dead':
-            return `${selectedRuntime === 'server-beta' ? 'Server beta' : 'Worker'} did not start — try \`${selectedRuntime === 'server-beta' ? 'npx claude-mem server start' : 'npx claude-mem start'}\` manually ${pc.yellow('!')}`;
+            return `Worker did not start — try \`npx claude-mem start\` manually ${pc.yellow('!')}`;
         }
       },
     },
@@ -1262,7 +1290,13 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
   const summaryLines = [
     `Version:     ${pc.cyan(version)}`,
     `Plugin dir:  ${pc.cyan(marketplaceDir)}`,
-    `IDEs:        ${pc.cyan(selectedIDEs.join(', '))}`,
+    // BUG B fix — the summary previously showed only `selectedIDEs` (the
+    // interactive/default selection), so `--opt-in-ide a,b,c` installs
+    // listed just `claude-code` even though four IDEs got the MCP entry.
+    // Merge the opt-in list so the summary reflects what was actually wired.
+    `IDEs:        ${pc.cyan(
+      Array.from(new Set([...selectedIDEs, ...(options.optInIdes ?? [])])).join(', '),
+    )}`,
   ];
   if (autoMemoryStatus === 'disabled') {
     summaryLines.push(`Auto-memory: ${pc.cyan('disabled')} (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1)`);
@@ -1282,7 +1316,12 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
     summaryLines.forEach(l => console.log(`  ${l}`));
   }
 
-  const workerPort = getSetting('CLAUDE_MEM_WORKER_PORT');
+  // BUG C fix — use the port that matches the active runtime. Worker runs
+  // on the UID-derived CLAUDE_MEM_WORKER_PORT (e.g. 37703); server-beta runs
+  // on the fixed Docker-published 37877. Picking the worker port for a
+  // server-beta install pointed users at a dead URL.
+  const rawWorkerPort = getSetting('CLAUDE_MEM_WORKER_PORT');
+  const workerPort = selectedRuntime === 'server-beta' ? '37877' : rawWorkerPort;
 
   let actualPort: number | string = workerPort;
   let workerReady = false;
@@ -1322,12 +1361,18 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
   const workerAlive = finalWorkerState !== 'dead' || workerReady;
   const runtimeLabel = selectedRuntime === 'server-beta' ? 'Server beta' : 'Worker';
   const runtimeStartCommand = selectedRuntime === 'server-beta' ? 'npx claude-mem server start' : 'npx claude-mem start';
-  const workerHeadline = autoStartSkipped
+  // BUG D fix — server-beta installs run the Docker stack as part of
+  // setupServerBeta() before we reach this code; calling that 'autostart
+  // skipped' is wrong because the stack IS running. Override the headline
+  // when the stack came up healthy.
+  const serverBetaRunning = selectedRuntime === 'server-beta' && serverBetaSetupOk;
+  const effectiveAutoStartSkipped = autoStartSkipped && !serverBetaRunning;
+  const workerHeadline = effectiveAutoStartSkipped
     ? `${pc.yellow('!')} ${runtimeLabel} autostart skipped — start it manually with ${pc.bold(runtimeStartCommand)}`
-    : workerReady || finalWorkerState === 'ready'
+    : serverBetaRunning || workerReady || finalWorkerState === 'ready'
       ? `${pc.green('✓')} ${runtimeLabel} running at ${pc.underline(`http://localhost:${actualPort}`)}`
       : `${pc.yellow('⏳')} ${runtimeLabel} starting at ${pc.underline(`http://localhost:${actualPort}`)} — give it ~30s, then refresh`;
-  const nextSteps = autoStartSkipped
+  const nextSteps = effectiveAutoStartSkipped
     ? [
         workerHeadline,
         ``,
