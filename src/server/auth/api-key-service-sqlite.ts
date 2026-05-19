@@ -5,10 +5,14 @@
 // src/server/middleware/postgres-auth.ts + src/storage/postgres/auth.ts
 // for tenant-scoped key verification against Postgres.
 //
-// Do NOT import this module from src/server/* runtime code — the server-beta
-// runtime is firewalled from bun:sqlite. Consumers are limited to the worker
-// HTTP path (src/services/worker-service.ts) and the auth middleware that
-// the worker mounts (src/server/middleware/auth.ts).
+// Allowed consumers (worker runtime only):
+//   - src/services/worker-service.ts          (worker HTTP boot path)
+//   - src/server/middleware/auth.ts           (worker-mounted auth middleware)
+// Forbidden consumers (server-beta runtime):
+//   - any other file under src/server/* outside the two allowed paths above.
+//     server-beta is firewalled from bun:sqlite; use
+//     src/server/middleware/postgres-auth.ts + src/storage/postgres/auth.ts
+//     for tenant-scoped key verification against Postgres.
 import { createHash, randomBytes } from 'crypto';
 import { Database } from 'bun:sqlite';
 import { AuthRepository, ensureServerStorageSchema } from '../../storage/sqlite/index.js';
