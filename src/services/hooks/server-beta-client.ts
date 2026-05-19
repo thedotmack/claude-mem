@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// Phase 7 — Server beta HTTP client used by hook subcommands when the
+// Server beta HTTP client used by hook subcommands when the
 // installer/setting selects the server-beta runtime. This client speaks
 // directly to the server-beta runtime's `/v1/*` endpoints. It MUST NOT
 // import or transitively depend on the worker runtime: the whole point
@@ -124,7 +124,7 @@ export interface ServerBetaEndSessionResponse {
   };
 }
 
-// Phase 8 — direct/manual observation insertion through `/v1/memories`.
+// direct/manual observation insertion through `/v1/memories`.
 // This calls the same Postgres repository path as the REST core, so MCP
 // and REST never diverge on what counts as a valid observation insert.
 export interface ServerBetaAddObservationRequest {
@@ -148,7 +148,7 @@ export interface ServerBetaAddObservationResponse {
   };
 }
 
-// Phase 8 — full-text search over generated observations.
+// full-text search over generated observations.
 export interface ServerBetaSearchObservationsRequest {
   projectId: string;
   query: string;
@@ -164,7 +164,7 @@ export interface ServerBetaSearchObservationsResponse {
   }>;
 }
 
-// Phase 8 — context pack for prompt injection. Server returns both the
+// context pack for prompt injection. Server returns both the
 // matched observations AND a pre-joined `context` string.
 export interface ServerBetaContextObservationsRequest {
   projectId: string;
@@ -182,13 +182,55 @@ export interface ServerBetaContextObservationsResponse {
   context: string;
 }
 
-// Phase 8 — generation job status, scoped by api-key team/project.
+// generation job status, scoped by api-key team/project.
 export interface ServerBetaJobStatusResponse {
   generationJob: {
     id: string;
     status: string;
     [key: string]: unknown;
   };
+}
+
+// Branch 2 (Agent C) — batch read of observations by id list. Server returns
+// only rows the caller is allowed to see; missing ids are omitted from the
+// response (never 404) to prevent existence probing.
+export interface ServerBetaMemoryRecord {
+  id: string;
+  projectId: string;
+  teamId: string;
+  serverSessionId: string | null;
+  kind: string;
+  content: string;
+  metadata: Record<string, unknown>;
+  createdAtEpoch: number;
+  updatedAtEpoch: number;
+  [key: string]: unknown;
+}
+
+export interface ServerBetaMemoriesBatchResponse {
+  memories: ServerBetaMemoryRecord[];
+}
+
+// Branch 2 — single observation lookup by id (GET /v1/memories/:id).
+export interface ServerBetaMemoryGetResponse {
+  memory: ServerBetaMemoryRecord;
+}
+
+// Branch 2 — timeline window (POST /v1/timeline). Either `anchor` (an
+// observation id) OR `query` (resolved server-side to the top FTS hit) is
+// required; the route refuses requests that pass neither.
+export interface ServerBetaTimelineRequest {
+  projectId: string;
+  anchor?: string;
+  query?: string;
+  depthBefore?: number;
+  depthAfter?: number;
+}
+
+export interface ServerBetaTimelineResponse {
+  anchor: ServerBetaMemoryRecord | null;
+  before: ServerBetaMemoryRecord[];
+  after: ServerBetaMemoryRecord[];
 }
 
 export class ServerBetaClient {
@@ -224,7 +266,7 @@ export class ServerBetaClient {
     );
   }
 
-  // Phase 8 — direct observation insert (MCP `observation_add`). Calls
+  // direct observation insert (MCP `observation_add`). Calls
   // `/v1/memories`, which is the canonical write path that MUST NOT enqueue
   // a generation job. Anti-pattern guard for plan line 770: never duplicate
   // generation logic in MCP tools.
@@ -238,7 +280,7 @@ export class ServerBetaClient {
     );
   }
 
-  // Phase 8 — MCP `observation_search`. Routes to the FTS-backed REST
+  // MCP `observation_search`. Routes to the FTS-backed REST
   // endpoint so search ranking and tenant scoping are owned by one place.
   async searchObservations(
     input: ServerBetaSearchObservationsRequest,
@@ -250,7 +292,7 @@ export class ServerBetaClient {
     );
   }
 
-  // Phase 8 — MCP `observation_context`. Same FTS surface as search, but
+  // MCP `observation_context`. Same FTS surface as search, but
   // returns a pre-joined context string suitable for direct prompt injection.
   async contextObservations(
     input: ServerBetaContextObservationsRequest,
@@ -262,7 +304,7 @@ export class ServerBetaClient {
     );
   }
 
-  // Phase 8 — MCP `observation_generation_status`. Server returns the same
+  // MCP `observation_generation_status`. Server returns the same
   // payload as `/v1/jobs/:id` so MCP clients and REST clients see identical
   // job status (including transport state).
   async getJobStatus(jobId: string): Promise<ServerBetaJobStatusResponse> {
@@ -272,6 +314,56 @@ export class ServerBetaClient {
     return this.request<ServerBetaJobStatusResponse>(
       'GET',
       `/v1/jobs/${encodeURIComponent(jobId)}`,
+    );
+  }
+
+  // Branch 2 (Agent C) — batch get observations by id. Server returns only
+  // rows the caller is allowed to see (team-scoped, optionally project-scoped).
+  // Missing ids are simply omitted (never 404) to avoid existence probing.
+  async getMemoriesBatch(input: {
+    projectId?: string;
+    ids: string[];
+  }): Promise<ServerBetaMemoriesBatchResponse> {
+    return this.request<ServerBetaMemoriesBatchResponse>(
+      'POST',
+      '/v1/memories/batch',
+      {
+        ...(input.projectId ? { projectId: input.projectId } : {}),
+        ids: input.ids,
+      },
+    );
+  }
+
+  // Branch 2 — single observation lookup by id. 404 maps to a typed
+  // ServerBetaClientError so the MCP handler can surface the missing-id case
+  // distinctly from transport errors.
+  async getMemoryById(input: { id: string }): Promise<ServerBetaMemoryGetResponse> {
+    if (!input.id) {
+      throw new ServerBetaClientError('invalid_response', 'id is required for getMemoryById');
+    }
+    return this.request<ServerBetaMemoryGetResponse>(
+      'GET',
+      `/v1/memories/${encodeURIComponent(input.id)}`,
+    );
+  }
+
+  // Branch 2 — timeline window around an anchor observation (or top FTS hit).
+  // Mirrors the worker's /api/timeline contract: caller passes anchor or query
+  // plus depthBefore/depthAfter, server resolves the anchor and returns the
+  // before/after windows ordered by created_at.
+  async getTimelineWindow(
+    input: ServerBetaTimelineRequest,
+  ): Promise<ServerBetaTimelineResponse> {
+    return this.request<ServerBetaTimelineResponse>(
+      'POST',
+      '/v1/timeline',
+      {
+        projectId: input.projectId,
+        ...(input.anchor ? { anchor: input.anchor } : {}),
+        ...(input.query ? { query: input.query } : {}),
+        ...(input.depthBefore !== undefined ? { depthBefore: input.depthBefore } : {}),
+        ...(input.depthAfter !== undefined ? { depthAfter: input.depthAfter } : {}),
+      },
     );
   }
 

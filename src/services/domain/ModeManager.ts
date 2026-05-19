@@ -12,14 +12,24 @@ export class ModeManager {
 
   private constructor() {
     const packageRoot = getPackageRoot();
-    
-    const possiblePaths = [
-      join(packageRoot, 'modes'),           // Production (plugin/modes)
-      join(packageRoot, '..', 'plugin', 'modes'), // Development (src/../plugin/modes)
-    ];
+
+    // Search order (first match wins):
+    //   1. CLAUDE_MEM_MODES_DIR env var — explicit override, used inside Docker
+    //      where the bundled marketplace path is not on disk ( fix).
+    //   2. {packageRoot}/modes — production (plugin/modes after install).
+    //   3. {packageRoot}/../plugin/modes — development (src/../plugin/modes).
+    const envOverride = (process.env.CLAUDE_MEM_MODES_DIR ?? '').trim();
+    const possiblePaths: string[] = [];
+    if (envOverride) {
+      possiblePaths.push(envOverride);
+    }
+    possiblePaths.push(
+      join(packageRoot, 'modes'),
+      join(packageRoot, '..', 'plugin', 'modes'),
+    );
 
     const foundPath = possiblePaths.find(p => existsSync(p));
-    this.modesDir = foundPath || possiblePaths[0];
+    this.modesDir = foundPath ?? possiblePaths[0];
   }
 
   static getInstance(): ModeManager {
