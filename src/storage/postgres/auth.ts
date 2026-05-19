@@ -135,6 +135,57 @@ export class PostgresAuthRepository {
     const row = await queryOne<ApiKeyRow>(this.client, 'SELECT * FROM api_keys WHERE key_hash = $1', [keyHash]);
     return row ? mapApiKeyRow(row) : null;
   }
+
+  async getApiKeyById(id: string): Promise<PostgresApiKey | null> {
+    const row = await queryOne<ApiKeyRow>(
+      this.client,
+      'SELECT * FROM api_keys WHERE id = $1',
+      [id],
+    );
+    return row ? mapApiKeyRow(row) : null;
+  }
+
+  // fix — list and revoke helpers used by the CLI when
+  // CLAUDE_MEM_RUNTIME=server-beta. Pre-fix the CLI routed through the
+  // worker SQLite path which is invisible to the Postgres-backed server.
+  async listApiKeys(input: {
+    teamId?: string | null;
+    limit?: number;
+    offset?: number;
+  } = {}): Promise<PostgresApiKey[]> {
+    const teamFilter = input.teamId ?? null;
+    const limit = Math.max(1, Math.min(500, Math.trunc(input.limit ?? 100)));
+    const offset = Math.max(0, Math.trunc(input.offset ?? 0));
+    const where = teamFilter ? 'WHERE team_id = $1' : '';
+    const params: unknown[] = teamFilter
+      ? [teamFilter, limit, offset]
+      : [limit, offset];
+    const limitIdx = teamFilter ? 2 : 1;
+    const offsetIdx = teamFilter ? 3 : 2;
+    const result = await this.client.query<ApiKeyRow>(
+      `SELECT * FROM api_keys
+       ${where}
+       ORDER BY created_at DESC
+       LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
+      params,
+    );
+    return result.rows.map(row => mapApiKeyRow(row));
+  }
+
+  // Revoke by id; returns the updated row, or null if no live key matched.
+  // Already-revoked rows are a no-op (return null) so the caller can detect
+  // double-revoke attempts and surface a clear error.
+  async revokeApiKey(id: string): Promise<PostgresApiKey | null> {
+    const result = await this.client.query<ApiKeyRow>(
+      `UPDATE api_keys
+       SET revoked_at = now(), updated_at = now()
+       WHERE id = $1 AND revoked_at IS NULL
+       RETURNING *`,
+      [id],
+    );
+    const row = result.rows[0];
+    return row ? mapApiKeyRow(row) : null;
+  }
 }
 
 function mapApiKeyRow(row: ApiKeyRow): PostgresApiKey {
