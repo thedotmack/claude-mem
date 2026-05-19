@@ -13,8 +13,14 @@
 //   1. Compute SHA-256 of the raw key.
 //   2. Fast path: `WHERE key_hash = $sha256` matches legacy rows in O(1).
 //   3. Fallback: `WHERE key_hash LIKE '$argon2%'` scans argon2 rows, then
-//      argon2.verify each. Acceptable up to a few hundred keys per tenant;
-//      a future iteration should add a lookup-prefix indexed column.
+//      argon2.verify each. The scan is GLOBAL across tenants (the bearer
+//      token alone doesn't reveal which tenant owns the key — only a match
+//      reveals it), so the cap is shared across the whole deployment, not
+//      per-tenant. ARGON2_SCAN_LIMIT bounds the per-request CPU; combined
+//      with the RAW_API_KEY_SHAPE pre-filter, a single unauthenticated
+//      probe spends at most ARGON2_SCAN_LIMIT × ~50ms of CPU.
+//      Production deployments with many argon2 keys should add an indexed
+//      lookup-prefix column to reduce the candidate set to O(1).
 //   4. On hit via the legacy path, emit a deprecation warning so operators
 //      can rotate to argon2 before SHA-256 is removed.
 //
@@ -151,11 +157,26 @@ interface ApiKeyLookupRow {
   expires_at: Date | null;
 }
 
+// Raw API key shape: project-issued keys carry a stable prefix and a bounded
+// length. Rejecting non-matching tokens before any hash work caps the DoS
+// amplification factor of the argon2 fallback scan: a single argon2.verify
+// is ~50ms, so without this filter an attacker could burn ~5s of server CPU
+// per unauthenticated probe by sending plausibly-formatted garbage.
+const RAW_API_KEY_SHAPE = /^[A-Za-z0-9_.~-]{32,128}$/;
+
+
 export async function verifyPostgresApiKey(
   pool: PostgresPool,
   rawKey: string,
   requiredScopes: string[],
 ): Promise<VerifiedPostgresApiKey | null> {
+  // Pre-filter on shape — reject obviously-malformed tokens BEFORE any hash
+  // work. This is the cheapest defence against the global argon2-scan DoS
+  // amplifier (~50ms × ARGON2_SCAN_LIMIT per request).
+  if (!RAW_API_KEY_SHAPE.test(rawKey)) {
+    return null;
+  }
+
   // 1. Fast path — SHA-256 hex lookup for legacy keys.
   const sha256Hex = sha256HexOf(rawKey);
   const legacyRow = await selectByExactKeyHash(pool, sha256Hex);
@@ -224,12 +245,14 @@ async function selectByExactKeyHash(
   return result.rows[0] ?? null;
 }
 
-// Per-request scan cap. argon2.verify costs ~50ms; verifying 100 candidates
-// is a ~5s tail latency, which is the upper bound we accept before requiring
-// operators to migrate to the indexed-prefix optimization (add a deterministic
-// key_prefix column derived from raw_key, index it, and replace this scan
-// with `WHERE key_prefix = $prefix AND key_hash LIKE '$argon2%'`).
-const ARGON2_SCAN_LIMIT = 100;
+// Per-request scan cap. argon2.verify costs ~50ms; capping at 20 keeps the
+// worst-case unauthenticated-probe latency under 1s of server CPU even when
+// the RAW_API_KEY_SHAPE pre-filter passes. Production deployments with more
+// than 20 active argon2 keys per process should migrate to the indexed
+// key_prefix optimization (add a deterministic prefix column derived from
+// raw_key, index it, and replace this scan with
+// `WHERE key_prefix = $prefix AND key_hash LIKE '$argon2%'`).
+const ARGON2_SCAN_LIMIT = 20;
 
 async function selectArgon2Candidates(pool: PostgresPool): Promise<ApiKeyLookupRow[]> {
   const result = await pool.query<ApiKeyLookupRow>(
