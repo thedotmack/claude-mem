@@ -69,12 +69,12 @@ export class KnowledgeAgent {
             corpusName: corpus.name,
             toolName,
             decision: 'deny',
-            reason: 'Knowledge agent SDK has no tools ',
+            reason: 'Knowledge agent SDK has no tools enabled',
             input,
           });
           return {
             behavior: 'deny',
-            message: 'Knowledge agent SDK has no tools ( enforcement)',
+            message: 'Knowledge agent SDK has no tools enabled (tool-call enforcement)',
             interrupt: true,
           };
         },
@@ -183,12 +183,12 @@ export class KnowledgeAgent {
             corpusName: corpus.name,
             toolName,
             decision: 'deny',
-            reason: 'Knowledge agent SDK has no tools ',
+            reason: 'Knowledge agent SDK has no tools enabled',
             input,
           });
           return {
             behavior: 'deny',
-            message: 'Knowledge agent SDK has no tools ( enforcement)',
+            message: 'Knowledge agent SDK has no tools enabled (tool-call enforcement)',
             interrupt: true,
           };
         },

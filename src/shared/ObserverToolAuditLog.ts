@@ -46,9 +46,16 @@ export interface ObserverToolAttempt {
  * (file contents from a hypothetical future Edit/Write/Bash) never reach
  * disk.
  */
+let _auditDirEnsured = false;
+
 export function logObserverToolAttempt(entry: ObserverToolAttempt): void {
   try {
-    mkdirSync(dirname(AUDIT_PATH), { recursive: true });
+    // Avoid the mkdirSync syscall on every audit-log write — once the
+    // dir exists for the process lifetime, the flag stays true.
+    if (!_auditDirEnsured) {
+      mkdirSync(dirname(AUDIT_PATH), { recursive: true });
+      _auditDirEnsured = true;
+    }
     const inputSummary = entry.input
       ? { keys: Object.keys(entry.input).slice(0, 16) }
       : undefined;

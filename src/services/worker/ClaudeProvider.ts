@@ -267,12 +267,12 @@ export class ClaudeProvider {
             contentSessionId: session.contentSessionId,
             toolName,
             decision: 'deny',
-            reason: 'Observer SDK has no tools ',
+            reason: 'Observer SDK has no tools enabled',
             input,
           });
           return {
             behavior: 'deny',
-            message: 'Observer SDK has no tools ( enforcement)',
+            message: 'Observer SDK has no tools enabled (tool-call enforcement)',
             interrupt: true,
           };
         },

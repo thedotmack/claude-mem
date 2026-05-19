@@ -570,8 +570,15 @@ async function ensureWorkerConnection(): Promise<boolean> {
 function checkGrammarOrFail(filePath: string): { content: Array<{ type: 'text'; text: string }>; isError: true } | null {
   const language = detectFileLanguage(filePath);
   if (language === 'unknown') {
-    // Not a tree-sitter target at all — let parseFile's empty result flow
-    // through (the existing 'unsupported language' error path is fine).
+    // detectFileLanguage covers only the built-in LANG_MAP; extensions that
+    // belong exclusively to a user-configured grammar (.claude-mem.json) are
+    // not resolved here, so checkGrammarOrFail returns null and the call
+    // falls through to parseFile's existing 'unsupported language' path.
+    // Result: a missing user-grammar package still produces the legacy
+    // silent 'no symbols found' behaviour, not the new actionable error.
+    // Plumbing user grammars through here would need a project-root param
+    // (and the same .claude-mem.json loader detectLanguageWithUserGrammars
+    // uses) — deferred to a follow-up that touches both call sites.
     return null;
   }
   const status = getGrammarStatus(language);
