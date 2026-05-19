@@ -50,7 +50,15 @@ function parseFlags(argv: readonly string[]): CliFlags {
     const arg = argv[i];
     if (arg === '--apply') flags.apply = true;
     else if (arg === '--json') flags.json = true;
-    else if (arg === '--team-id') flags.teamId = argv[++i];
+    else if (arg === '--team-id') {
+      const val = argv[++i];
+      if (!val || val.startsWith('--')) {
+        console.error('--team-id requires a UUID value');
+        printHelp();
+        process.exit(2);
+      }
+      flags.teamId = val;
+    }
     else if (arg === '--help' || arg === '-h') {
       printHelp();
       process.exit(0);
@@ -133,30 +141,39 @@ async function applyUpdate(
   row: ApiKeyRow,
   next: string[],
 ): Promise<void> {
-  await pool.query(
-    `UPDATE api_keys SET scopes = $1::jsonb, updated_at = now() WHERE id = $2`,
-    [JSON.stringify(next), row.id],
-  );
-  // Audit-log the migration so operators can correlate the source of
-  // newly-granted scopes during a later forensic review.
-  await pool.query(
-    `INSERT INTO audit_log (id, team_id, project_id, actor_id, api_key_id,
-                             action, resource_type, resource_id, details, created_at)
-     VALUES (gen_random_uuid(), $1, $2, $3, $4,
-             'api_key.scopes.migrate', 'api_key', $4,
-             $5::jsonb, now())`,
-    [
-      row.team_id,
-      row.project_id,
-      'system:migrate-key-scopes',
-      row.id,
-      JSON.stringify({
-        source: 'scripts/migrate-key-scopes.ts',
-        previous: asStringArray(row.scopes),
-        next,
-      }),
-    ],
-  );
+  // Wrap UPDATE + INSERT in a single transaction so a mid-migration
+  // connection drop or an audit_log constraint failure rolls BOTH back.
+  // Without this, a successful scope update could be left without a matching
+  // audit entry and the row would silently fall out of the next run's filter.
+  await pool.query('BEGIN');
+  try {
+    await pool.query(
+      `UPDATE api_keys SET scopes = $1::jsonb, updated_at = now() WHERE id = $2`,
+      [JSON.stringify(next), row.id],
+    );
+    await pool.query(
+      `INSERT INTO audit_log (id, team_id, project_id, actor_id, api_key_id,
+                               action, resource_type, resource_id, details, created_at)
+       VALUES (gen_random_uuid(), $1, $2, $3, $4,
+               'api_key.scopes.migrate', 'api_key', $4,
+               $5::jsonb, now())`,
+      [
+        row.team_id,
+        row.project_id,
+        'system:migrate-key-scopes',
+        row.id,
+        JSON.stringify({
+          source: 'scripts/migrate-key-scopes.ts',
+          previous: asStringArray(row.scopes),
+          next,
+        }),
+      ],
+    );
+    await pool.query('COMMIT');
+  } catch (err) {
+    await pool.query('ROLLBACK').catch(() => { /* best-effort */ });
+    throw err;
+  }
 }
 
 interface Report {

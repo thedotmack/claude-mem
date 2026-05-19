@@ -295,7 +295,7 @@ export class PostgresObservationRepository {
         WHERE project_id = $1
           AND team_id = $2
           AND id <> $3
-          AND created_at <= $4::timestamptz
+          AND created_at < $4::timestamptz
         ORDER BY created_at DESC
         LIMIT $5
       `,
@@ -307,7 +307,7 @@ export class PostgresObservationRepository {
         WHERE project_id = $1
           AND team_id = $2
           AND id <> $3
-          AND created_at >= $4::timestamptz
+          AND created_at > $4::timestamptz
         ORDER BY created_at ASC
         LIMIT $5
       `,
