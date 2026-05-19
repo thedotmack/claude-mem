@@ -209,7 +209,12 @@ export async function setupServerBeta(options: SetupOptions): Promise<SetupResul
     }
   }
 
-  return { ok: true, dryRun, steps, apiKey, projectId, ideResults };
+  // Honor the fail-fast contract: if any IDE injection failed, the overall
+  // install is not 'ok' and the caller should NOT commit the runtime
+  // selector. Without this, install.ts saw ok:true even when Claude
+  // Desktop's config write failed.
+  const finalOk = steps.every(s => s.status !== 'failed');
+  return { ok: finalOk, dryRun, steps, apiKey, projectId, ideResults };
 }
 
 interface DockerCheckResult {
@@ -417,6 +422,16 @@ function ensureClaudeSubscriptionCreds(dryRun: boolean): SetupStepResult {
           throw new Error('claudeAiOauth.accessToken missing');
         }
       } catch (parseErr) {
+        // Clear any stale CLAUDE_CREDS_FILE / CLAUDE_MEM_CLAUDE_BRIDGE_URL
+        // from a previous successful install so the next compose-up doesn't
+        // bind-mount a now-invalid credentials file silently.
+        if (existing.CLAUDE_CREDS_FILE || existing.CLAUDE_MEM_CLAUDE_BRIDGE_URL) {
+          delete existing.CLAUDE_CREDS_FILE;
+          delete existing.CLAUDE_MEM_CLAUDE_BRIDGE_URL;
+          if (!dryRun) {
+            writeFileSync(envFile, serializeEnvFile(existing), { encoding: 'utf-8', mode: 0o600 });
+          }
+        }
         return {
           step: 'ensure-claude-creds',
           status: 'failed',
@@ -824,7 +839,7 @@ export function parseEnvFile(content: string): Record<string, string> {
   return result;
 }
 
-function serializeEnvFile(env: Record<string, string>): string {
+export function serializeEnvFile(env: Record<string, string>): string {
   const lines: string[] = [
     '# claude-mem credentials and runtime config',
     '# This file is managed by `claude-mem install`. Hand-edit at your own risk.',

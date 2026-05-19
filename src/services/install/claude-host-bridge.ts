@@ -175,6 +175,65 @@ export function ensureClaudeHostBridge(): HostBridgeResult {
   }
 }
 
+// Tear down the host-bridge so uninstall doesn't leave a running service
+// pointing at a stale token. Idempotent — safe to call when nothing is
+// installed. Returns ok:true even when nothing was removed so the caller's
+// rollback flow doesn't fail on first-time uninstalls.
+export function stopClaudeHostBridge(): { ok: boolean; message: string; removedFiles: string[] } {
+  const removedFiles: string[] = [];
+  const home = homedir();
+
+  try {
+    if (process.platform === 'darwin') {
+      const plistPath = join(home, 'Library', 'LaunchAgents', `${LAUNCHD_LABEL}.plist`);
+      if (existsSync(plistPath)) {
+        spawnSync('launchctl', ['unload', plistPath], { stdio: 'ignore' });
+        try {
+          // unlinkSync via require avoided — use writeFileSync to /dev/null is
+          // not portable; just rely on fs.unlinkSync via dynamic require if
+          // unavailable as a top-level import here.
+          require('fs').unlinkSync(plistPath);
+          removedFiles.push(plistPath);
+        } catch { /* already gone */ }
+      }
+    } else if (process.platform === 'linux') {
+      const unitDir = join(home, '.config', 'systemd', 'user');
+      const unitPath = join(unitDir, SYSTEMD_UNIT_NAME);
+      if (existsSync(unitPath)) {
+        spawnSync('systemctl', ['--user', 'stop', SYSTEMD_UNIT_NAME], { stdio: 'ignore' });
+        spawnSync('systemctl', ['--user', 'disable', SYSTEMD_UNIT_NAME], { stdio: 'ignore' });
+        try {
+          require('fs').unlinkSync(unitPath);
+          removedFiles.push(unitPath);
+        } catch { /* already gone */ }
+        spawnSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'ignore' });
+      }
+    }
+    // Token + port files live in paths.dataDir(); remove them too so a
+    // future install starts from a clean state.
+    const tokenPath = join(paths.dataDir(), 'host-bridge-token');
+    const portPath = join(paths.dataDir(), 'host-bridge-port');
+    for (const f of [tokenPath, portPath]) {
+      if (existsSync(f)) {
+        try { require('fs').unlinkSync(f); removedFiles.push(f); } catch { /* */ }
+      }
+    }
+    return {
+      ok: true,
+      message: removedFiles.length
+        ? `host-bridge stopped; removed ${removedFiles.length} file(s)`
+        : 'host-bridge was not installed',
+      removedFiles,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      message: err instanceof Error ? err.message : String(err),
+      removedFiles,
+    };
+  }
+}
+
 function claudeCliReachable(): boolean {
   return resolveClaudeCliPath() !== null;
 }

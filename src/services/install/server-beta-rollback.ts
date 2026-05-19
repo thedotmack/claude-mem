@@ -15,7 +15,9 @@ import { join } from 'path';
 import { paths } from '../../shared/paths.js';
 import {
   parseEnvFile,
+  serializeEnvFile,
 } from './server-beta-setup.js';
+import { stopClaudeHostBridge } from './claude-host-bridge.js';
 import {
   rollbackAllIdes,
   type RollbackResult,
@@ -167,13 +169,7 @@ export async function rollbackServerBeta(options: RollbackOptions): Promise<Roll
           rmSync(envFile, { force: true });
           steps.push({ step: 'purge-env', status: 'ok', message: `Removed ${envFile}` });
         } else {
-          const lines = [
-            '# claude-mem credentials',
-            '# (PG credentials removed by uninstall --purge-data)',
-            '',
-            ...Object.entries(remaining).map(([k, v]) => /[\s#=]/.test(v) ? `${k}="${v}"` : `${k}=${v}`),
-          ];
-          writeFileSync(envFile, lines.join('\n') + '\n', { encoding: 'utf-8', mode: 0o600 });
+        writeFileSync(envFile, serializeEnvFile(remaining), { encoding: 'utf-8', mode: 0o600 });
           steps.push({
             step: 'purge-env',
             status: 'ok',
@@ -188,6 +184,31 @@ export async function rollbackServerBeta(options: RollbackOptions): Promise<Roll
         });
       }
     }
+  }
+
+  // Stop the host-bridge launchd agent / systemd unit, if installed. Without
+  // this the bridge keeps restarting and finds its token/port files gone.
+  if (!dryRun) {
+    try {
+      const bridgeResult = stopClaudeHostBridge();
+      steps.push({
+        step: 'stop-host-bridge',
+        status: bridgeResult.ok ? 'ok' : 'failed',
+        message: bridgeResult.message,
+      });
+    } catch (err) {
+      steps.push({
+        step: 'stop-host-bridge',
+        status: 'failed',
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  } else {
+    steps.push({
+      step: 'stop-host-bridge',
+      status: 'skipped',
+      message: '[dry-run] would stop launchd agent / systemd unit + remove token/port files',
+    });
   }
 
   const ok = steps.every(s => s.status !== 'failed');
