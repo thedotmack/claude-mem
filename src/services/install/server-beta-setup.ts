@@ -388,6 +388,7 @@ function ensureClaudeSubscriptionCreds(dryRun: boolean): SetupStepResult {
           }
           delete existing.CLAUDE_CREDS_FILE;
           delete existing.CLAUDE_MEM_CLAUDE_BRIDGE_URL;
+          delete existing.CLAUDE_HOST_BRIDGE_TOKEN_FILE;
           writeFileSync(envFile, serializeEnvFile(existing), { encoding: 'utf-8', mode: 0o600 });
         }
       }
@@ -428,6 +429,7 @@ function ensureClaudeSubscriptionCreds(dryRun: boolean): SetupStepResult {
         if (existing.CLAUDE_CREDS_FILE || existing.CLAUDE_MEM_CLAUDE_BRIDGE_URL) {
           delete existing.CLAUDE_CREDS_FILE;
           delete existing.CLAUDE_MEM_CLAUDE_BRIDGE_URL;
+          delete existing.CLAUDE_HOST_BRIDGE_TOKEN_FILE;
           if (!dryRun) {
             writeFileSync(envFile, serializeEnvFile(existing), { encoding: 'utf-8', mode: 0o600 });
           }
@@ -441,6 +443,7 @@ function ensureClaudeSubscriptionCreds(dryRun: boolean): SetupStepResult {
 
       existing.CLAUDE_CREDS_FILE = hostCredsPath;
       delete existing.CLAUDE_MEM_CLAUDE_BRIDGE_URL;
+          delete existing.CLAUDE_HOST_BRIDGE_TOKEN_FILE;
       writeFileSync(envFile, serializeEnvFile(existing), { encoding: 'utf-8', mode: 0o600 });
       return {
         step: 'ensure-claude-creds',
@@ -470,6 +473,7 @@ function ensureClaudeSubscriptionCreds(dryRun: boolean): SetupStepResult {
     // Bridge couldn't start — graceful fallback to api-key.
     delete existing.CLAUDE_CREDS_FILE;
     delete existing.CLAUDE_MEM_CLAUDE_BRIDGE_URL;
+    delete existing.CLAUDE_HOST_BRIDGE_TOKEN_FILE;
     writeFileSync(envFile, serializeEnvFile(existing), { encoding: 'utf-8', mode: 0o600 });
     return {
       step: 'ensure-claude-creds',
