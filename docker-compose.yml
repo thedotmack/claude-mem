@@ -31,6 +31,10 @@
 
 services:
   postgres:
+    # restart on host reboot / runtime failure so the stack
+    # self-heals without manual intervention. 'unless-stopped' respects an
+    # operator's explicit `docker compose stop` while restarting on crashes.
+    restart: unless-stopped
     image: postgres:17-alpine
     environment:
       POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
@@ -44,8 +48,24 @@ services:
       timeout: 3s
       retries: 12
       start_period: 5s
+    # the postgres service is intentionally NOT published to the
+    # host in prod. For local development (psql, pgcli, the `claude-mem
+    # server api-key list` CLI hitting Postgres directly, etc.) drop a
+    # docker-compose.override.yml in this directory that adds:
+    #
+    #   services:
+    #     postgres:
+    #       ports:
+    #         - "127.0.0.1:55432:5432"
+    #
+    # See docker-compose.override.yml.example for the full template. The
+    # override is gitignored / auto-loaded by `docker compose` and is the
+    # canonical way to enable the dev port mapping without leaking it into
+    # production deployments.
 
   valkey:
+    # see postgres service above.
+    restart: unless-stopped
     image: valkey/valkey:8-alpine
     # BullMQ requires noeviction; AOF gives durability across restarts.
     command:
@@ -65,6 +85,8 @@ services:
       retries: 12
 
   claude-mem-server:
+    # see postgres service above.
+    restart: unless-stopped
     build:
       context: .
       dockerfile: docker/claude-mem/Dockerfile
@@ -85,6 +107,11 @@ services:
       CLAUDE_MEM_WORKER_HOST: 0.0.0.0
       CLAUDE_MEM_WORKER_PORT: "37877"
       CLAUDE_MEM_DATA_DIR: /data/claude-mem
+      # explicit modes directory for the in-container layout.
+      # plugin/ is copied to /opt/claude-mem/ by the Dockerfile, so modes live
+      # under /opt/claude-mem/modes. Without this var the singleton ModeManager
+      # falls back to the marketplace path and fails to load any mode.
+      CLAUDE_MEM_MODES_DIR: /opt/claude-mem/modes
       CLAUDE_MEM_QUEUE_ENGINE: bullmq
       CLAUDE_MEM_REDIS_URL: redis://valkey:6379
       CLAUDE_MEM_REDIS_MODE: docker
@@ -94,10 +121,24 @@ services:
       # The HTTP service does not consume BullMQ jobs; the worker container
       # does. This split keeps HTTP latency unaffected by provider calls.
       CLAUDE_MEM_GENERATION_DISABLED: "true"
+      # explicit pool sizing per container role. The HTTP server
+      # is the bigger pool because every request acquires a connection; the
+      # worker only needs enough for the BullMQ generation loop + outbox.
+      # Budget rule: 1 server × 10 + N workers × 5 < Postgres max_connections.
+      CLAUDE_MEM_POSTGRES_POOL_MAX: ${CLAUDE_MEM_POSTGRES_POOL_MAX_SERVER:-10}
     ports:
       - "37877:37877"
     volumes:
       - claude-mem-data:/data/claude-mem
+      # same subscription-credentials mount as the worker container.
+      # The HTTP server itself doesn't generate observations (that's the
+      # worker's job) but mounts the file too so doctor + diagnostics can
+      # report the active auth method without needing to exec into the worker.
+      - ${CLAUDE_CREDS_FILE:-/dev/null}:/run/secrets/claude-credentials.json:ro
+      # Phase 2 — same host-bridge token mount as the worker container.
+      # The server itself never reads it, but mounting symmetrically keeps
+      # diagnostics from getting confused.
+      - ${CLAUDE_HOST_BRIDGE_TOKEN_FILE:-/dev/null}:/run/secrets/claude-host-bridge-token:ro
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:37877/healthz"]
       interval: 10s
@@ -106,6 +147,8 @@ services:
       start_period: 20s
 
   claude-mem-worker:
+    # see postgres service above.
+    restart: unless-stopped
     build:
       context: .
       dockerfile: docker/claude-mem/Dockerfile
@@ -121,12 +164,24 @@ services:
       CLAUDE_MEM_DOCKER: "1"
       CLAUDE_MEM_RUNTIME: server-beta
       CLAUDE_MEM_DATA_DIR: /data/claude-mem
+      # align Redis queue prefix with the server container.
+      # The default prefix is derived from CLAUDE_MEM_WORKER_PORT (or
+      # 37700+UID%100 when unset). Without this, the worker subscribes to a
+      # different namespace than the server enqueues into, so BullMQ jobs
+      # sit in :wait forever even though the worker process is healthy.
+      CLAUDE_MEM_WORKER_PORT: "37877"
+      # generation worker must load a mode (worker is the actual
+      # consumer of ModeManager.getActiveMode() during observation generation).
+      CLAUDE_MEM_MODES_DIR: /opt/claude-mem/modes
       CLAUDE_MEM_QUEUE_ENGINE: bullmq
       CLAUDE_MEM_REDIS_URL: redis://valkey:6379
       CLAUDE_MEM_REDIS_MODE: docker
       CLAUDE_MEM_SERVER_DATABASE_URL: postgres://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:?POSTGRES_DB is required}
       CLAUDE_MEM_AUTH_MODE: api-key
       CLAUDE_MEM_CHROMA_ENABLED: "false"
+      # worker pool sized smaller than the server pool. See the
+      # claude-mem-server block above for the connection budget rule.
+      CLAUDE_MEM_POSTGRES_POOL_MAX: ${CLAUDE_MEM_POSTGRES_POOL_MAX_WORKER:-5}
       # Provider configuration. ANTHROPIC_API_KEY (or
       # CLAUDE_MEM_ANTHROPIC_API_KEY) is required for real generation; the
       # worker stays running but never produces observations without one.
@@ -135,8 +190,47 @@ services:
       CLAUDE_MEM_ANTHROPIC_API_KEY: ${CLAUDE_MEM_ANTHROPIC_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      # subscription auth path. When the install script writes the
+      # host's Claude Code OAuth credentials to ~/.claude-mem/.claude-credentials.json,
+      # we mount that file into the container at this fixed path and the
+      # provider factory reads the access token from it. Without the mount
+      # the file simply doesn't exist inside the container and the provider
+      # falls back to ANTHROPIC_API_KEY (api-key auth). Operators on API-key
+      # auth see no behaviour change.
+      CLAUDE_MEM_CLAUDE_CREDS_FILE: /run/secrets/claude-credentials.json
+      # Phase 2 — host-bridge URL + token mount.
+      # CLAUDE_MEM_CLAUDE_BRIDGE_URL is set by install when the host-bridge
+      # service is active (macOS Keychain-only installs); unset otherwise.
+      # The container reads the Bearer token from a bind-mounted file so it
+      # never appears in `docker inspect` output.
+      CLAUDE_MEM_CLAUDE_BRIDGE_URL: ${CLAUDE_MEM_CLAUDE_BRIDGE_URL:-}
+      CLAUDE_MEM_CLAUDE_BRIDGE_TOKEN_FILE: /run/secrets/claude-host-bridge-token
     volumes:
       - claude-mem-data:/data/claude-mem
+      # mount host's Claude Code subscription credentials read-only
+      # so the worker container can authenticate with subscription pricing
+      # instead of forcing the user onto pay-per-token ANTHROPIC_API_KEY auth.
+      # CLAUDE_CREDS_FILE points at the host file path (default ~/.claude-mem/
+      # .claude-credentials.json, written by `claude-mem install --runtime
+      # server-beta` when auth method is 'subscription'). When the env var is
+      # unset the YAML still parses but no file is mounted — provider falls
+      # back to API-key auth. To opt out, set CLAUDE_CREDS_FILE=/dev/null.
+      - ${CLAUDE_CREDS_FILE:-/dev/null}:/run/secrets/claude-credentials.json:ro
+      # Phase 2 — host-bridge token mount. Same /dev/null fallback so
+      # the YAML always parses cleanly even when the bridge isn't installed.
+      - ${CLAUDE_HOST_BRIDGE_TOKEN_FILE:-/dev/null}:/run/secrets/claude-host-bridge-token:ro
+    # worker container healthcheck. Without this the compose
+    # stack reports the worker as healthy purely because the entrypoint did
+    # not exit, even when the BullMQ consumer is wedged. `pgrep -f` matches
+    # the foregrounded `server-beta-service.cjs worker` process and fails
+    # the container so it gets restarted by the `restart: unless-stopped`
+    # policy  before the queue silently backs up.
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'server-beta-service.cjs worker' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
 volumes:
   claude-mem-data:
