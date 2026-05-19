@@ -144,7 +144,7 @@ async function buildHooks() {
       logLevel: 'error', // Suppress warnings (import.meta warning is benign)
       external: [
         'bun:sqlite',
-        'zod',
+        // 'zod', removed: bundled inline; plugin/node_modules not shipped
         'cohere-ai',
         'ollama',
         '@chroma-core/default-embed',
@@ -186,7 +186,7 @@ async function buildHooks() {
       logLevel: 'error',
       external: [
         'bun:sqlite',
-        'zod',
+        // 'zod', removed: bundled inline; plugin/node_modules not shipped
       ],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
@@ -291,7 +291,7 @@ async function buildHooks() {
       outfile: `${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`,
       minify: true,
       logLevel: 'error',
-      external: ['bun:sqlite', 'zod'],
+      external: ['bun:sqlite'],  // zod bundled inline (plugin/node_modules not shipped)
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
       },
@@ -315,7 +315,19 @@ async function buildHooks() {
       target: 'node18',
       format: 'esm',
       outfile: `${npxCliOutDir}/index.js`,
-      banner: { js: '#!/usr/bin/env node' },
+      // Node 22+ rejects esbuild's dynamic require() shim when format=esm.
+      // Inject createRequire so transitive `require('events')` etc. resolve at runtime.
+      // ESM bundles lack __dirname / __filename — provide them too so
+      // transitive deps that resolve script-relative paths don't crash at runtime.
+      banner: { js: [
+        '#!/usr/bin/env node',
+        'import { createRequire as __cr } from "node:module";',
+        'import { fileURLToPath as __ftu } from "node:url";',
+        'import { dirname as __dn } from "node:path";',
+        'const require = __cr(import.meta.url);',
+        'const __filename = __ftu(import.meta.url);',
+        'const __dirname = __dn(__filename);',
+      ].join('\n') },
       minify: true,
       logLevel: 'error',
       external: [
@@ -323,6 +335,10 @@ async function buildHooks() {
         'crypto', 'http', 'https', 'net', 'stream', 'util', 'events',
         'buffer', 'querystring', 'readline', 'tty', 'assert',
         'bun:sqlite',
+        // native module — must NOT be bundled, otherwise its
+        // `__dirname`-based prebuild resolution breaks. Resolved at runtime
+        // from the host's node_modules/argon2.
+        'argon2',
       ],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
@@ -446,6 +462,34 @@ async function buildHooks() {
       throw new Error('plugin/.mcp.json mcp-search launcher must include Claude cache fallback for hosts that do not inject PLUGIN_ROOT');
     }
     console.log('✓ All required distribution files present');
+
+    // fix — Claude Code's plugin loader expects 'hooks' INLINE in
+    // plugin.json (see e.g. astronomer-data plugin). Our source of truth is
+    // plugin/hooks/hooks.json (cleanest to hand-edit because the shell
+    // commands are huge). At build time we merge that file into
+    // plugin/.claude-plugin/plugin.json so the published manifest contains
+    // the hooks block and Claude Code wires SessionStart / PostToolUse /
+    // UserPromptSubmit / Stop / PreToolUse / Setup automatically.
+    //
+    // Without this merge the install completed but Claude never captured
+    // observations passively — users had to invoke MCP search manually.
+    {
+      const manifestPath = 'plugin/.claude-plugin/plugin.json';
+      const hooksSourcePath = 'plugin/hooks/hooks.json';
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+      const hooksConfig = JSON.parse(fs.readFileSync(hooksSourcePath, 'utf-8'));
+      if (!hooksConfig.hooks || typeof hooksConfig.hooks !== 'object') {
+        throw new Error('plugin/hooks/hooks.json must contain a top-level "hooks" object');
+      }
+      const previousHooks = JSON.stringify(manifest.hooks ?? null);
+      manifest.hooks = hooksConfig.hooks;
+      if (previousHooks !== JSON.stringify(manifest.hooks)) {
+        fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n', 'utf-8');
+        console.log(`✓ Merged ${Object.keys(hooksConfig.hooks).length} hook event handlers into ${manifestPath}`);
+      } else {
+        console.log(`✓ plugin.json hooks already in sync with ${hooksSourcePath}`);
+      }
+    }
 
     console.log('\n✅ All build targets compiled successfully!');
     console.log(`   Output: ${hooksDir}/`);
