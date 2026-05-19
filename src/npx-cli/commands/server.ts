@@ -200,11 +200,15 @@ async function lookupApiKeyIdByPlaintext(rawKey: string): Promise<string | null>
     );
     if (legacy.rows[0]) return legacy.rows[0].id;
     // fallback: argon2id rows cannot be looked up by equality.
-    // Scan candidate rows and verify each against the raw key.
+    // Scan candidate rows and verify each against the raw key. Capped at
+    // CLI_ARGON2_SCAN_LIMIT to bound worst-case latency (~50ms per verify);
+    // operators with more active argon2 keys per tenant should rotate using
+    // the key id directly rather than the plaintext.
     const argonRows = await pool.query<{ id: string; key_hash: string }>(
       `SELECT id, key_hash FROM api_keys
          WHERE key_hash LIKE '$argon2%'
-           AND revoked_at IS NULL`,
+           AND revoked_at IS NULL
+         LIMIT 50`,
     );
     for (const row of argonRows.rows) {
       if (await verifyKeyHash(rawKey, row.key_hash)) {
@@ -263,6 +267,12 @@ async function runServerBetaApiKeyCommand(
         teamId = bootstrap.teamId;
         projectId = bootstrap.projectId;
       }
+      // Resolve --expires-in (e.g. '30d', '12h', '90m') to a Date for the
+      // repo call. Without this the flag was silently dropped and every
+      // CLI-issued key was effectively non-expiring.
+      const expiresInRaw = options['expires-in'] ?? options.expiresIn ?? null;
+      const expiresAt = expiresInRaw ? parseExpiresIn(expiresInRaw) : undefined;
+      const keyName = options.name ?? 'server-api-key';
       const rawKey = createRawApiKey();
       // fix: hash via argon2id, not legacy SHA-256.
       const keyHash = await hashApiKeyForStorage(rawKey);
@@ -271,6 +281,8 @@ async function runServerBetaApiKeyCommand(
         teamId,
         projectId,
         scopes,
+        name: keyName,
+        ...(expiresAt ? { expiresAt } : {}),
         actorId: 'system:server-beta-cli',
       });
       await repo.createAuditLog({
@@ -286,7 +298,7 @@ async function runServerBetaApiKeyCommand(
       console.log(JSON.stringify({
         id: created.id,
         key: rawKey,
-        name: options.name ?? 'server-api-key',
+        name: keyName,
         teamId,
         projectId,
         scopes,
@@ -321,13 +333,15 @@ async function runServerBetaApiKeyCommand(
     if (subCommand === 'revoke') {
       const id = extraArgs.find(arg => arg && !arg.startsWith('--'));
       if (!id) {
+        // Throw — not process.exit — so the finally block below cleanly
+        // closes the postgres pool. process.exit() short-circuits finally.
         console.error(pc.red('Usage: claude-mem server api-key revoke <id>'));
-        process.exit(1);
+        throw new CliExitError(1);
       }
       const revoked = await repo.revokeApiKey(id);
       if (!revoked) {
         console.error(pc.red(`API key not found or already revoked: ${id}`));
-        process.exit(1);
+        throw new CliExitError(1);
       }
       await repo.createAuditLog({
         teamId: revoked.teamId,
@@ -342,9 +356,47 @@ async function runServerBetaApiKeyCommand(
       console.log(JSON.stringify({ id: revoked.id, status: 'revoked' }, null, 2));
       return;
     }
+  } catch (err) {
+    if (err instanceof CliExitError) {
+      await pool.end().catch(() => undefined);
+      process.exit(err.code);
+    }
+    throw err;
   } finally {
     await pool.end().catch(() => undefined);
   }
+}
+
+// Internal marker exception so a CLI exit signal can travel up through
+// try/finally cleanly, letting the pool.end() in the finally block run
+// before the process actually exits. process.exit() in raw form would
+// skip the finally and leave the pool's connections in an abrupt-close
+// state on the Postgres side.
+class CliExitError extends Error {
+  constructor(public readonly code: number) { super(`CLI exit ${code}`); }
+}
+
+// Parse --expires-in flag values like '30d', '12h', '45m', '900s' into a
+// future Date. Throws on unrecognised units so a typo doesn't silently turn
+// into a non-expiring key (which would defeat the operator's intent).
+function parseExpiresIn(raw: string): Date {
+  const match = /^(\d+)\s*([smhdwy])$/i.exec(raw.trim());
+  if (!match) {
+    throw new Error(`Invalid --expires-in value '${raw}'. Expected e.g. '30d', '12h', '45m', '900s'.`);
+  }
+  const n = Number.parseInt(match[1]!, 10);
+  const unit = match[2]!.toLowerCase();
+  const seconds = unit === 's' ? n
+    : unit === 'm' ? n * 60
+    : unit === 'h' ? n * 3600
+    : unit === 'd' ? n * 86400
+    : unit === 'w' ? n * 86400 * 7
+    : unit === 'y' ? n * 86400 * 365
+    : 0;
+  if (!seconds) {
+    throw new Error(`Invalid --expires-in unit '${unit}'. Use one of s|m|h|d|w|y.`);
+  }
+  return new Date(Date.now() + seconds * 1000);
 }
 
 // Lightweight flag parser shared by runServerBetaApiKeyCommand. Mirrors the

@@ -202,6 +202,14 @@ export class Server {
    */
   private setupSecurityHeaders(): void {
     if (!this.isServerBetaRuntime()) return;
+    // Default-on for server-beta. Operators fronting the server with their
+    // own reverse-proxy (nginx, Cloudflare, etc.) that already sets these
+    // headers can opt out via CLAUDE_MEM_HELMET_DISABLED=1 to prevent
+    // double-emission of e.g. Strict-Transport-Security.
+    if (process.env.CLAUDE_MEM_HELMET_DISABLED === '1') {
+      logger.info('SECURITY', 'helmet middleware disabled via CLAUDE_MEM_HELMET_DISABLED=1');
+      return;
+    }
     this.app.use(helmet());
     logger.info('SECURITY', 'helmet middleware enabled for server-beta runtime');
   }
