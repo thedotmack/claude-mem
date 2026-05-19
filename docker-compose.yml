@@ -126,6 +126,11 @@ services:
       # worker only needs enough for the BullMQ generation loop + outbox.
       # Budget rule: 1 server × 10 + N workers × 5 < Postgres max_connections.
       CLAUDE_MEM_POSTGRES_POOL_MAX: ${CLAUDE_MEM_POSTGRES_POOL_MAX_SERVER:-10}
+      # mirror the worker's CLAUDE_MEM_CLAUDE_CREDS_FILE / token-file so the
+      # doctor CLI and /v1/health responses can report 'auth=subscription'
+      # without having to exec into the worker container.
+      CLAUDE_MEM_CLAUDE_CREDS_FILE: /run/secrets/claude-credentials.json
+      CLAUDE_MEM_CLAUDE_BRIDGE_TOKEN_FILE: /run/secrets/claude-host-bridge-token
     ports:
       - "37877:37877"
     volumes:
@@ -219,12 +224,20 @@ services:
       # Phase 2 — host-bridge token mount. Same /dev/null fallback so
       # the YAML always parses cleanly even when the bridge isn't installed.
       - ${CLAUDE_HOST_BRIDGE_TOKEN_FILE:-/dev/null}:/run/secrets/claude-host-bridge-token:ro
-    # worker container healthcheck. Without this the compose
-    # stack reports the worker as healthy purely because the entrypoint did
-    # not exit, even when the BullMQ consumer is wedged. `pgrep -f` matches
-    # the foregrounded `server-beta-service.cjs worker` process and fails
-    # the container so it gets restarted by the `restart: unless-stopped`
-    # policy  before the queue silently backs up.
+    # Worker container healthcheck. Without this the compose stack reports
+    # the worker as healthy purely because the entrypoint did not exit, even
+    # when the BullMQ consumer is wedged. `pgrep -f` matches the foregrounded
+    # `server-beta-service.cjs worker` process and fails the container.
+    #
+    # Caveat: Docker's `restart: unless-stopped` policy only restarts on
+    # main-process EXIT, not on healthcheck failure. A wedged-but-still-running
+    # worker (process alive, jobs not draining) will be marked `unhealthy`
+    # in `docker compose ps` but won't auto-restart. Two production patterns:
+    #   (a) run autoheal/willfarrell-autoheal sidecar that watches
+    #       healthcheck state and restarts unhealthy containers
+    #   (b) put the stack under systemd/k8s where the orchestrator does the
+    #       observe-and-restart loop itself
+    # Either is out of scope for the default compose file.
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f 'server-beta-service.cjs worker' || exit 1"]
       interval: 30s
