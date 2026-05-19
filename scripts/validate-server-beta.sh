@@ -257,6 +257,31 @@ if [[ "${mem_http}" != "201" && "${mem_http}" != "200" ]]; then
   die
 fi
 MEMORY_ID=$(jq -r '.id // .memoryId // empty' /tmp/claude-mem-validate-mem.json 2>/dev/null || true)
+
+# Round-trip read verification within step 4: before declaring it passed,
+# fetch the row we just wrote. memories:read is granted to the bootstrapped
+# key but never exercised otherwise (steps 7+8 use search/context which go
+# through a different code path). A broken read route, missing scope, or
+# wrong WHERE clause would slip through without this.
+if [[ -n "${MEMORY_ID}" ]]; then
+  read_http=$(curl -sS -o /tmp/claude-mem-validate-mem-read.json -w '%{http_code}' \
+    "${BASE_URL}/v1/memories/${MEMORY_ID}" \
+    -H "Authorization: Bearer ${API_KEY}" || echo "000")
+  if [[ "${read_http}" != "200" ]]; then
+    fail "GET /v1/memories/${MEMORY_ID} returned HTTP ${read_http}"
+    cat /tmp/claude-mem-validate-mem-read.json | head -c 400 | sed 's/^/    /'
+    echo
+    hint "403 → bootstrapped key missing memories:read scope."
+    hint "404 → GET /v1/memories/:id route not mounted."
+    hint "500 → check 'docker compose logs claude-mem-server --tail=80'."
+    die
+  fi
+  read_id=$(jq -r '.id // empty' /tmp/claude-mem-validate-mem-read.json 2>/dev/null || true)
+  if [[ "${read_id}" != "${MEMORY_ID}" ]]; then
+    fail "GET /v1/memories/${MEMORY_ID} returned id=${read_id} (expected ${MEMORY_ID})"
+    die
+  fi
+fi
 pass
 [[ -n "${MEMORY_ID}" ]] && printf '  memoryId: %s\n' "${MEMORY_ID}"
 
