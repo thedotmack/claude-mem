@@ -324,6 +324,15 @@ export class ServerBetaClient {
     projectId?: string;
     ids: string[];
   }): Promise<ServerBetaMemoriesBatchResponse> {
+    // Empty ids array is almost certainly a caller bug. Reject client-side
+    // with the structured 'invalid_response' kind to keep the failure mode
+    // consistent with getTimelineWindow's anchor/query guard.
+    if (!input.ids?.length) {
+      throw new ServerBetaClientError(
+        'invalid_response',
+        'getMemoriesBatch requires at least one id',
+      );
+    }
     return this.request<ServerBetaMemoriesBatchResponse>(
       'POST',
       '/v1/memories/batch',
