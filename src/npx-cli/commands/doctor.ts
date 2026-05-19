@@ -29,7 +29,7 @@
 
 import pc from 'picocolors';
 import { execSync } from 'child_process';
-import { existsSync, readFileSync, statSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
@@ -63,6 +63,13 @@ function printResult(r: CheckResult): void {
   if (r.status !== 'pass' && r.hint) {
     console.log(`      ${pc.dim('hint:')} ${r.hint}`);
   }
+}
+
+// Shell-quote a path so spaces and metacharacters don't break command parsing.
+// Wraps in single quotes and escapes any embedded single quote via the
+// standard '"'"' trick.
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
 function safeExec(cmd: string, timeoutMs = 5000): { ok: boolean; out: string; err?: string } {
@@ -106,7 +113,7 @@ function checkPluginNodeModules(): CheckResult {
   const nm = join(MARKETPLACE_ROOT, 'plugin', 'node_modules');
   if (existsSync(nm)) {
     try {
-      const entries = require('fs').readdirSync(nm);
+      const entries = readdirSync(nm);
       if (entries.length > 0) {
         return { name: 'plugin/node_modules populated ', status: 'pass', detail: `${entries.length} packages` };
       }
@@ -293,8 +300,10 @@ function checkComposeStack(): CheckResult {
   // compose YAML's `${POSTGRES_USER:?required}` interpolation aborts with a
   // 'variable missing' error before `ps` even runs.
   const envFile = join(homedir(), '.claude-mem', '.env');
-  const envFlag = existsSync(envFile) ? `--env-file ${envFile}` : '';
-  const res = safeExec(`docker compose --project-directory ${MARKETPLACE_ROOT} ${envFlag} ps --format json`);
+  const quotedRoot = shellQuote(MARKETPLACE_ROOT);
+  const envFlag = existsSync(envFile) ? `--env-file ${shellQuote(envFile)}` : '';
+  const res = safeExec(`docker compose --project-directory ${quotedRoot} ${envFlag} ps --format json`);
+
   if (!res.ok) {
     return {
       name: 'docker compose stack',
@@ -420,6 +429,11 @@ async function checkServerBetaHttp(): Promise<CheckResult[]> {
           hint: `Server not reachable at ${url}. Check \`docker compose logs claude-mem-server\`.`,
         },
   );
+  // Skip the batch probe when the server isn't reachable — a second
+  // ECONNREFUSED produces a duplicate failure that masks the root cause.
+  if (!health.ok) {
+    return results;
+  }
   // /v1/memories/batch — Express collapses GET /v1/memories/batch to the
   // GET /v1/memories/:id route (batch becomes the id), so a GET probe matches
   // the wrong handler. POST with an empty body triggers the batch route's

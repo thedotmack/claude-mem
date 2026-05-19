@@ -173,6 +173,7 @@ async function main(): Promise<void> {
       const { runDoctor } = await import('./commands/doctor.js');
       const exitCode = await runDoctor();
       process.exit(exitCode);
+      break;
     }
     case 'adopt': {
       const { runAdoptCommand } = await import('./commands/runtime.js');
