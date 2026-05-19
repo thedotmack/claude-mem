@@ -60,6 +60,7 @@ export async function hashApiKeyForStorage(rawKey: string, opts: Argon2HashOptio
       algorithm: 'argon2id',
       memoryCost: merged.memoryCost,
       timeCost: merged.timeCost,
+      parallelism: merged.parallelism,
     });
   }
   const a2 = loadNativeArgon2();

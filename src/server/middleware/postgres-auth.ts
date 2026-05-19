@@ -33,9 +33,6 @@ import type { AuthContext } from './auth.js';
 // argon2id params chosen per OWASP 2024 minimums (m=19MiB, t=2, p=1).
 // Tuned for ~50ms hash on a 2024-class server CPU; lift via env var only
 // after measuring on the target hardware.
-// argon2id params chosen per OWASP 2024 minimums (m=19MiB, t=2, p=1).
-// Tuned for ~50ms hash on a 2024-class server CPU; lift via env var only
-// after measuring on the target hardware.
 const ARGON2_PARAMS = Object.freeze({
   memoryCost: 19456, // 19 MiB
   timeCost: 2,
@@ -47,12 +44,11 @@ const ARGON2_PARAMS = Object.freeze({
 // the slow argon2 verify so timing analysis can't enumerate the keyspace.
 const MIN_AUTH_RESPONSE_MS = 75;
 
-// Deprecation logging is rate-limited to one warning per 30 days per
-// api_key_id to keep log noise tolerable on a hot path while still
-// reminding operators to rotate.
-const SHA256_DEPRECATION_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
-const sha256DeprecationLastLogged = new Map<string, number>();
-
+// Deprecation logging fires once per process lifetime per api_key_id so
+// rotating operators get a single warning per key rather than one per
+// request. A Set is bounded by the number of distinct keys that auth
+// during the process lifetime — acceptable for a long-running server.
+const sha256DeprecationLogged = new Set<string>();
 // Postgres-backed auth middleware for the server-beta runtime.
 //
 // Mirrors src/server/middleware/auth.ts but reads API keys from the Postgres
@@ -177,8 +173,12 @@ export async function verifyPostgresApiKey(
 
   // 2. Fallback — argon2id keys, scan candidates.
   // We deliberately scope this to non-revoked, non-expired rows to keep
-  // the per-request scan small. For very large tenants this should be
-  // replaced by an indexed lookup-prefix column (tracked as TODO).
+  // the per-request scan small. The query is GLOBAL across tenants because
+  // the bearer token alone doesn't reveal which tenant owns the key — the
+  // tenant_id only becomes known after a key matches. For deployments with
+  // many active argon2 keys this becomes a per-request hot spot; see the
+  // ARGON2_SCAN_LIMIT cap below and the indexed-prefix optimization noted
+  // in selectArgon2Candidates() for the production path.
   const argonCandidates = await selectArgon2Candidates(pool);
   for (const row of argonCandidates) {
     const ok = await verifyKeyHash(rawKey, row.key_hash);
@@ -224,14 +224,30 @@ async function selectByExactKeyHash(
   return result.rows[0] ?? null;
 }
 
+// Per-request scan cap. argon2.verify costs ~50ms; verifying 100 candidates
+// is a ~5s tail latency, which is the upper bound we accept before requiring
+// operators to migrate to the indexed-prefix optimization (add a deterministic
+// key_prefix column derived from raw_key, index it, and replace this scan
+// with `WHERE key_prefix = $prefix AND key_hash LIKE '$argon2%'`).
+const ARGON2_SCAN_LIMIT = 100;
+
 async function selectArgon2Candidates(pool: PostgresPool): Promise<ApiKeyLookupRow[]> {
   const result = await pool.query<ApiKeyLookupRow>(
     `SELECT id, key_hash, team_id, project_id, scopes, revoked_at, expires_at
        FROM api_keys
       WHERE key_hash LIKE '$argon2%'
         AND revoked_at IS NULL
-        AND (expires_at IS NULL OR expires_at > now())`,
+        AND (expires_at IS NULL OR expires_at > now())
+      LIMIT ${ARGON2_SCAN_LIMIT + 1}`,
   );
+  if (result.rows.length > ARGON2_SCAN_LIMIT) {
+    process.stderr.write(
+      `[postgres-auth] WARN: argon2 candidate scan exceeded ${ARGON2_SCAN_LIMIT} ` +
+      `rows; falling back to first ${ARGON2_SCAN_LIMIT}. Add an indexed key_prefix ` +
+      `column to keep per-request latency bounded.\n`,
+    );
+    return result.rows.slice(0, ARGON2_SCAN_LIMIT);
+  }
   return result.rows;
 }
 
@@ -291,19 +307,17 @@ function constantTimeStringEq(a: string, b: string): boolean {
 }
 
 function logSha256DeprecationOnce(apiKeyId: string): void {
-  const now = Date.now();
-  const last = sha256DeprecationLastLogged.get(apiKeyId) ?? 0;
-  if (now - last < SHA256_DEPRECATION_WINDOW_MS) {
+  if (sha256DeprecationLogged.has(apiKeyId)) {
     return;
   }
-  sha256DeprecationLastLogged.set(apiKeyId, now);
+  sha256DeprecationLogged.add(apiKeyId);
   // Use stderr — postgres-auth.ts is intentionally library code with no
   // direct logger import (firewall: server-beta must not pull worker logger).
   // Operators capture stderr via the systemd/Docker unit log.
   process.stderr.write(
     `[postgres-auth] DEPRECATION: api_key ${apiKeyId.slice(0, 8)}… still using SHA-256 storage. ` +
     `Rotate via \`claude-mem server api-key rotate\`. ` +
-    `This warning re-fires at most once per 30 days per key.\n`,
+    `This warning fires once per process lifetime per key; restart resets.\n`,
   );
 }
 
