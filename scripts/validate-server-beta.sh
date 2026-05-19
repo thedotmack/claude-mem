@@ -59,6 +59,7 @@ fi
 
 CURRENT_STEP=0
 LAST_FAIL_STEP=0
+STEPS_PASSED=0
 
 # -----------------------------------------------------------------------------
 # Logging helpers
@@ -71,6 +72,7 @@ step_begin() {
 
 pass() {
   printf '%sPASS%s\n' "${C_GREEN}" "${C_RESET}"
+  STEPS_PASSED=$(( STEPS_PASSED + 1 ))
 }
 
 fail() {
@@ -133,7 +135,7 @@ fi
 
 echo "${C_BOLD}=== claude-mem server-beta E2E validator ===${C_RESET}"
 echo "  port:        ${PORT}"
-echo "  db-url:      ${DB_URL}"
+echo "  db-url:      ${DB_URL//:${PG_PASSWORD}@/:****@}"
 echo "  cli:         ${CLI_CMD[*]}"
 echo "  provider:    ${PROVIDER}"
 echo "  api-key:     ${API_KEY_NAME}"
@@ -142,7 +144,7 @@ echo
 # -----------------------------------------------------------------------------
 # Step 1 — clean slate
 # -----------------------------------------------------------------------------
-step_begin 1 "BUG-N/A: docker compose down -v (clean slate)"
+step_begin 1 "docker compose down -v (clean slate)"
 if docker compose down -v --remove-orphans >/dev/null 2>&1; then
   pass
 else
@@ -311,7 +313,7 @@ printf '  jobId: %s\n' "${JOB_ID}"
 # -----------------------------------------------------------------------------
 # Step 6 — poll /v1/jobs/{id} until completed
 # -----------------------------------------------------------------------------
-step_begin 6 "+11+25: poll /v1/jobs/${JOB_ID} (expect completed within ${JOB_TIMEOUT}s)"
+step_begin 6 "poll /v1/jobs/${JOB_ID} (expect completed within ${JOB_TIMEOUT}s)"
 deadline=$(( $(date +%s) + JOB_TIMEOUT ))
 job_status=""
 job_error=""
@@ -352,29 +354,39 @@ fi
 # -----------------------------------------------------------------------------
 # Step 7 — POST /v1/search and find the generated observation
 # -----------------------------------------------------------------------------
-step_begin 7 "POST /v1/search with platformSource filter (expect at least one hit)"
+step_begin 7 "POST /v1/search with platformSource filter (retry up to 10s for index lag)"
 search_body='{"query": "validator", "limit": 20, "platformSource": "hook"}'
-search_http=$(curl -sS -o /tmp/claude-mem-validate-search.json -w '%{http_code}' \
-  -X POST "${BASE_URL}/v1/search" \
-  -H "Authorization: Bearer ${API_KEY}" \
-  -H "Content-Type: application/json" \
-  -d "${search_body}" || true)
+hit_count=0
+search_http=""
+search_deadline=$(( $(date +%s) + 10 ))
+while (( $(date +%s) < search_deadline )); do
+  search_http=$(curl -sS -o /tmp/claude-mem-validate-search.json -w '%{http_code}' \
+    -X POST "${BASE_URL}/v1/search" \
+    -H "Authorization: Bearer ${API_KEY}" \
+    -H "Content-Type: application/json" \
+    -d "${search_body}" || true)
+  if [[ "${search_http}" == "200" ]]; then
+    hit_count=$(jq -r '(.observations // .results // .matches // []) | length' /tmp/claude-mem-validate-search.json 2>/dev/null || echo 0)
+    if [[ "${hit_count}" =~ ^[0-9]+$ ]] && (( hit_count > 0 )); then
+      break
+    fi
+  fi
+  sleep 1
+done
 if [[ "${search_http}" != "200" ]]; then
   fail "POST /v1/search returned HTTP ${search_http}"
   cat /tmp/claude-mem-validate-search.json | head -c 600 | sed 's/^/    /'
   echo
-  hint "HTTP 403 →  (observations:read scope missing)."
-  hint "HTTP 404 →  (server-beta /v1/search route missing — MCP routes through wrong backend)."
-  hint "zero hits while observation exists may indicate platformSource filter ignored."
+  hint "HTTP 403 → observations:read scope missing."
+  hint "HTTP 404 → server-beta /v1/search route missing."
   die
 fi
-hit_count=$(jq -r '(.observations // .results // .matches // []) | length' /tmp/claude-mem-validate-search.json 2>/dev/null || echo 0)
 if [[ "${hit_count}" =~ ^[0-9]+$ ]] && (( hit_count > 0 )); then
   pass
   printf '  hits: %d\n' "${hit_count}"
 else
-  fail "search returned 0 hits"
-  hint "The generated observation should be findable. Did Step 6 actually produce content?"
+  fail "search returned 0 hits after 10s of retries"
+  hint "Indexing may take longer than expected, or the platformSource filter is ignored."
   hint "Inspect: curl -sS '${BASE_URL}/v1/search' ... | jq ."
   die
 fi
@@ -414,11 +426,17 @@ fi
 # -----------------------------------------------------------------------------
 # Step 9 — final aggregate
 # -----------------------------------------------------------------------------
-step_begin 9 "GET /healthz (server still up — daemon did not exit immediately)"
+step_begin 9 "GET /healthz + GET /v1/health (server still up; both routes mounted)"
 health_http=$(curl -sS -o /tmp/claude-mem-validate-healthz.txt -w '%{http_code}' "${BASE_URL}/healthz" || echo "000")
 if [[ "${health_http}" != "200" ]]; then
   fail "GET /healthz returned HTTP ${health_http}"
   hint "server-beta-service.cjs may have exited immediately after spawning daemon child."
+  die
+fi
+v1health_http=$(curl -sS -o /tmp/claude-mem-validate-v1-health.txt -w '%{http_code}' "${BASE_URL}/v1/health" || echo "000")
+if [[ "${v1health_http}" != "200" ]]; then
+  fail "GET /v1/health returned HTTP ${v1health_http}"
+  hint "Both /healthz and /v1/health should be mounted by the runtime info routes."
   die
 fi
 pass
@@ -426,7 +444,11 @@ pass
 # -----------------------------------------------------------------------------
 # Step 10 — exit cleanly
 # -----------------------------------------------------------------------------
-step_begin 10 "PASS/FAIL summary + exit 0"
+step_begin 10 "final aggregate — verify step accounting"
+if (( STEPS_PASSED != TOTAL_STEPS - 1 )); then
+  fail "step accounting mismatch: ${STEPS_PASSED} passed, expected $(( TOTAL_STEPS - 1 ))"
+  die
+fi
 pass
 
 echo
