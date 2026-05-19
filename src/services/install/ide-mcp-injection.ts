@@ -23,7 +23,7 @@
 // SAFETY: every mutator backs up the target file to <file>.pre-claude-mem-N.bak
 // where N is the smallest unused integer. Rollback uses the newest backup.
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'fs';
 import { homedir, platform } from 'os';
 import { dirname, join } from 'path';
 
@@ -203,8 +203,6 @@ export function findCodexBlockRange(toml: string, table: string): { start: numbe
 
   const start = match.index;
   // The block ends just before the next [...table...] header or EOF.
-  const nextHeaderRegex = /^\[/m;
-  nextHeaderRegex.lastIndex = start + match[0].length + 1;
   let end = toml.length;
   const tail = toml.slice(start + match[0].length);
   const next = /\n\[/.exec(tail);
@@ -603,13 +601,10 @@ export function installOpenCodePlugin(marketplaceDir: string): void {
     }
     const targetDir = openCodePluginsDir();
     if (!existsSync(targetDir)) {
-      // mkdir + recursive — node's fs.mkdirSync is available via fs import below.
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      require('fs').mkdirSync(targetDir, { recursive: true });
+      mkdirSync(targetDir, { recursive: true });
     }
     const target = openCodePluginInstallPath();
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    require('fs').copyFileSync(source, target);
+    copyFileSync(source, target);
   } catch {
     // Best effort — never block install on OpenCode plugin install failure.
   }
@@ -619,8 +614,7 @@ export function rollbackOpenCodePlugin(): { path: string; removed: boolean } {
   const target = openCodePluginInstallPath();
   if (!existsSync(target)) return { path: target, removed: false };
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    require('fs').unlinkSync(target);
+    unlinkSync(target);
     return { path: target, removed: true };
   } catch {
     return { path: target, removed: false };

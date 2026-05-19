@@ -39,7 +39,7 @@ import {
   writeFileSync,
 } from 'fs';
 import { homedir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { randomBytes } from 'crypto';
 import { paths } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
@@ -120,7 +120,7 @@ export function ensureClaudeHostBridge(): HostBridgeResult {
 
     // 5. Register the service definition + start it.
     if (process.platform === 'darwin') {
-      const launchResult = installLaunchdAgent(scriptPath, port, bridgeToken, claudePath);
+      const launchResult = installLaunchdAgent(scriptPath, port, tokenPath, claudePath);
       if (!launchResult.ok) {
         return {
           ok: false,
@@ -130,7 +130,7 @@ export function ensureClaudeHostBridge(): HostBridgeResult {
         };
       }
     } else if (process.platform === 'linux') {
-      const systemdResult = installSystemdUnit(scriptPath, port, bridgeToken, claudePath);
+      const systemdResult = installSystemdUnit(scriptPath, port, tokenPath, claudePath);
       if (!systemdResult.ok) {
         return {
           ok: false,
@@ -201,7 +201,7 @@ function resolveClaudeCliPath(): string | null {
 function installLaunchdAgent(
   scriptPath: string,
   port: number,
-  token: string,
+  tokenPath: string,
   claudePath: string,
 ): { ok: boolean; message: string } {
   const home = homedir();
@@ -227,8 +227,8 @@ function installLaunchdAgent(
     <string>${scriptPath}</string>
     <string>--port</string>
     <string>${port}</string>
-    <string>--token</string>
-    <string>${token}</string>
+    <string>--token-file</string>
+    <string>${tokenPath}</string>
     <string>--claude-path</string>
     <string>${claudePath}</string>
   </array>
@@ -243,13 +243,13 @@ function installLaunchdAgent(
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>${require('path').dirname(claudePath)}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <string>${dirname(claudePath)}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
   </dict>
 </dict>
 </plist>
 `;
   try {
-    writeFileSync(plistPath, plist, { encoding: 'utf-8', mode: 0o644 });
+    writeFileSync(plistPath, plist, { encoding: 'utf-8', mode: 0o600 });
     // Unload first so changes to the plist (script path, port) take effect.
     spawnSync('launchctl', ['unload', plistPath], { stdio: 'ignore' });
     const load = spawnSync('launchctl', ['load', plistPath], {
@@ -271,7 +271,7 @@ function installLaunchdAgent(
 function installSystemdUnit(
   scriptPath: string,
   port: number,
-  token: string,
+  tokenPath: string,
   claudePath: string,
 ): { ok: boolean; message: string } {
   const home = homedir();
@@ -287,7 +287,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=${process.execPath} ${scriptPath} --port ${port} --token ${token} --claude-path ${claudePath}
+ExecStart=${process.execPath} ${scriptPath} --port ${port} --token-file ${tokenPath} --claude-path ${claudePath}
 Restart=always
 RestartSec=5
 
@@ -295,7 +295,7 @@ RestartSec=5
 WantedBy=default.target
 `;
   try {
-    writeFileSync(unitPath, unit, { encoding: 'utf-8', mode: 0o644 });
+    writeFileSync(unitPath, unit, { encoding: 'utf-8', mode: 0o600 });
     spawnSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'ignore' });
     spawnSync('systemctl', ['--user', 'enable', SYSTEMD_UNIT_NAME], { stdio: 'ignore' });
     const start = spawnSync('systemctl', ['--user', 'restart', SYSTEMD_UNIT_NAME], {
@@ -337,10 +337,6 @@ function waitForBridge(port: number, timeoutMs: number): { ok: boolean; message:
     });
   }
   return { ok: false, message: lastError };
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  function _logRef() {
-    logger.debug('SYSTEM', 'waitForBridge done', { port });
-  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -365,13 +361,30 @@ function flag(name) {
   return idx >= 0 ? args[idx + 1] : undefined;
 }
 const PORT = Number.parseInt(flag('port') || '37990', 10);
-const TOKEN = flag('token') || '';
+// Token is read from a file rather than passed as a CLI argument so it
+// doesn't show up in 'ps' / /proc/<pid>/cmdline for any local user.
+// --token <value> still works for back-compat but logs a warning.
+const TOKEN_FILE = flag('token-file') || '';
+let TOKEN = '';
+if (TOKEN_FILE) {
+  try {
+    TOKEN = require('fs').readFileSync(TOKEN_FILE, 'utf-8').trim();
+  } catch (err) {
+    console.error('[host-bridge] failed to read --token-file:', err && err.message);
+    process.exit(2);
+  }
+} else {
+  TOKEN = flag('token') || '';
+  if (TOKEN) {
+    console.error('[host-bridge] WARN: --token via CLI arg is visible in ps; prefer --token-file');
+  }
+}
 // Resolved at install time so the daemon doesn't have to figure out PATH.
 // Defaults to 'claude' if not provided — will work when on PATH, otherwise
 // returns a clear ENOENT.
 const CLAUDE_BIN = flag('claude-path') || 'claude';
 if (!TOKEN) {
-  console.error('[host-bridge] --token is required');
+  console.error('[host-bridge] --token-file or --token is required');
   process.exit(2);
 }
 

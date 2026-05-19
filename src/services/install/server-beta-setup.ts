@@ -374,6 +374,13 @@ function ensureClaudeSubscriptionCreds(dryRun: boolean): SetupStepResult {
       if (existsSync(envFile)) {
         const existing = parseEnvFile(readFileSync(envFile, 'utf-8'));
         if (existing.CLAUDE_CREDS_FILE || existing.CLAUDE_MEM_CLAUDE_BRIDGE_URL) {
+          if (dryRun) {
+            return {
+              step: 'ensure-claude-creds',
+              status: 'skipped',
+              message: `[dry-run] would clear CLAUDE_CREDS_FILE and CLAUDE_MEM_CLAUDE_BRIDGE_URL from ${envFile}`,
+            };
+          }
           delete existing.CLAUDE_CREDS_FILE;
           delete existing.CLAUDE_MEM_CLAUDE_BRIDGE_URL;
           writeFileSync(envFile, serializeEnvFile(existing), { encoding: 'utf-8', mode: 0o600 });
@@ -824,9 +831,14 @@ function serializeEnvFile(env: Record<string, string>): string {
     '',
   ];
   for (const [key, value] of Object.entries(env)) {
-    if (!value) continue;
-    const needsQuotes = /[\s#=]/.test(value);
-    lines.push(`${key}=${needsQuotes ? `"${value}"` : value}`);
+    if (value === undefined || value === null) continue;
+    const str = String(value);
+    // Quote whenever the value contains whitespace, '#', '=', or a literal
+    // double-quote so the round-trip via parseEnvFile is lossless. Embedded
+    // double-quotes are backslash-escaped inside the quoted form.
+    const needsQuotes = /[\s#="]/.test(str) || str === '';
+    const escaped = str.replace(/"/g, '\\"');
+    lines.push(`${key}=${needsQuotes ? `"${escaped}"` : str}`);
   }
   return lines.join('\n') + '\n';
 }
