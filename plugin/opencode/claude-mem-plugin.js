@@ -101,6 +101,46 @@ export const ClaudeMemPlugin = async ({ project, directory, worktree }) => {
     return {};
   }
 
+  // Cache tool args from tool.execute.before so tool.execute.after can
+  // include them in the PostToolUse event. OpenCode's plugin API only
+  // surfaces args in the 'before' callback (the 'after' callback receives
+  // { title, output, metadata }); without this cache, PostToolUse events
+  // would always carry tool_input: undefined.
+  // Keyed by sessionID + tool name; capacity-bounded to prevent unbounded
+  // growth if a session triggers more 'before' than 'after' callbacks.
+  const pendingArgs = new Map();
+  const PENDING_CAP = 256;
+  const cachePut = (key, value) => {
+    if (pendingArgs.size >= PENDING_CAP) {
+      const firstKey = pendingArgs.keys().next().value;
+      if (firstKey !== undefined) pendingArgs.delete(firstKey);
+    }
+    pendingArgs.set(key, value);
+  };
+  const argsKey = (sessionID, tool) => `${sessionID ?? ''}::${tool ?? ''}`;
+
+  // session.idle fires after every assistant turn, not just at session end.
+  // We debounce so the server only sees one 'Stop' per N seconds of true
+  // inactivity, preventing summarize-storms on multi-turn conversations.
+  const STOP_DEBOUNCE_MS = 30_000;
+  const idleTimers = new Map();
+  const scheduleStop = (sessionID) => {
+    const key = sessionID ?? 'unknown';
+    const existing = idleTimers.get(key);
+    if (existing) clearTimeout(existing);
+    const t = setTimeout(() => {
+      idleTimers.delete(key);
+      postEvent('Stop', { session_id: sessionID }).catch(() => {});
+    }, STOP_DEBOUNCE_MS);
+    if (typeof t.unref === 'function') t.unref();
+    idleTimers.set(key, t);
+  };
+  if (!ENDPOINT) {
+    // Settings missing — keep plugin silent. The user might be running
+    // OpenCode without claude-mem installed yet.
+    return {};
+  }
+
   return {
     // SessionStart equivalent
     'session.created': async ({ event }) => {
@@ -133,18 +173,28 @@ export const ClaudeMemPlugin = async ({ project, directory, worktree }) => {
     // PreToolUse equivalent — would block on privacy violations; for now just
     // surface the event so the server can audit it.
     'tool.execute.before': async (input, output) => {
+      // Cache args for the matching tool.execute.after callback.
+      // The 'output' arg of 'before' is the tool args object.
+      cachePut(argsKey(input?.sessionID, input?.tool), output);
       await postEvent('PreToolUse', {
         tool_name: input?.tool,
-        tool_input: output?.args,
+        tool_input: output,
         session_id: input?.sessionID,
       });
     },
 
     // PostToolUse equivalent — this is the main observation-capture event.
     'tool.execute.after': async (input, output) => {
+      // OpenCode's 'after' callback receives { title, output, metadata } —
+      // no args. Look up the args cached by 'before' for the same
+      // sessionID + tool. Falls back to undefined if no matching 'before'
+      // was seen (rare, e.g. plugin loaded mid-execution).
+      const key = argsKey(input?.sessionID, input?.tool);
+      const tool_input = pendingArgs.get(key);
+      pendingArgs.delete(key);
       await postEvent('PostToolUse', {
         tool_name: input?.tool,
-        tool_input: output?.args,
+        tool_input,
         tool_response: output?.output,
         tool_metadata: output?.metadata,
         tool_title: output?.title,
@@ -156,9 +206,11 @@ export const ClaudeMemPlugin = async ({ project, directory, worktree }) => {
     // responding, the user is reading). We use it to flush any pending session
     // summarization on the claude-mem server side.
     'session.idle': async ({ event }) => {
-      await postEvent('Stop', {
-        session_id: event?.properties?.sessionID ?? event?.id,
-      });
+      // session.idle fires after every assistant turn. Debounce so the
+      // Stop event only reaches the server after N seconds of true
+      // inactivity — prevents summarize-storms on multi-turn chats.
+      const sessionID = event?.properties?.sessionID ?? event?.id;
+      scheduleStop(sessionID);
     },
   };
 };
