@@ -410,6 +410,7 @@ async function buildHooks() {
       'plugin/hooks/hooks.json',
       'plugin/hooks/codex-hooks.json',
       'plugin/scripts/bun-runner.js',
+      'plugin/scripts/codex-sessionstart-wrapper.cjs',
       'plugin/.claude-plugin/plugin.json',
       'plugin/.codex-plugin/plugin.json',
       'plugin/.mcp.json',

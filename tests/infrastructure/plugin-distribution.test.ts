@@ -21,6 +21,15 @@ function commandHooksFrom(relativePath: string): string[] {
   );
 }
 
+function commandHooksForEvent(relativePath: string, eventName: string): string[] {
+  const parsed = readJson(relativePath);
+  return (parsed.hooks?.[eventName] ?? []).flatMap((matcher: any) =>
+    (matcher.hooks ?? [])
+      .filter((hook: any) => hook.type === 'command')
+      .map((hook: any) => String(hook.command ?? ''))
+  );
+}
+
 function mcpStartupCommandFrom(relativePath: string): string {
   const parsed = readJson(relativePath);
   return parsed.mcpServers['mcp-search'].args[1];
@@ -62,6 +71,7 @@ describe('Plugin Distribution - Required Files', () => {
     'plugin/.codex-plugin/plugin.json',
     'plugin/.mcp.json',
     'plugin/skills/mem-search/SKILL.md',
+    'plugin/scripts/codex-sessionstart-wrapper.cjs',
     '.agents/plugins/marketplace.json',
   ];
 
@@ -163,6 +173,14 @@ describe('Plugin Distribution - Startup Root Resolution', () => {
         command.indexOf('$_C/plugins/marketplaces/thedotmack/plugin')
       );
     }
+  });
+
+  it('Codex SessionStart should use a single stdout-normalizing wrapper', () => {
+    const commands = commandHooksForEvent('plugin/hooks/codex-hooks.json', 'SessionStart');
+
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toContain('codex-sessionstart-wrapper.cjs');
+    expect(commands[0]).not.toContain('worker-service.cjs" start');
   });
 
   it('Claude hook commands should have config-dir based non-empty fallbacks', () => {
