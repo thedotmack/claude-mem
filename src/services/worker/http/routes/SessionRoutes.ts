@@ -230,6 +230,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
   private static readonly preCompactByClaudeIdSchema = z.object({
     contentSessionId: z.string().min(1),
+    agentId: z.string().optional(),
     platformSource: z.string().optional(),
     cwd: z.string().optional(),
   }).passthrough();

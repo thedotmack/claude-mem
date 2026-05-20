@@ -9,8 +9,8 @@ import { normalizePlatformSource } from '../../shared/platform-source.js';
 export const preCompactHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
     const enabled = process.env.CLAUDE_MEM_PRECOMPACT_ENABLED;
-    if (enabled === 'false' || enabled === '0') {
-      logger.debug('HOOK', 'PreCompact hook disabled by CLAUDE_MEM_PRECOMPACT_ENABLED');
+    if (enabled !== 'true' && enabled !== '1') {
+      logger.debug('HOOK', 'PreCompact hook disabled by default. Set CLAUDE_MEM_PRECOMPACT_ENABLED=true to enable');
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
