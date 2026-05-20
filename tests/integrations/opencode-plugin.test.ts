@@ -110,7 +110,7 @@ describe("opencode-plugin — OpenCode Hooks contract", () => {
     expect(inits[0]?.body.project).toBe("demo");
   });
 
-  it("'experimental.session.compacting' POSTs a summarize request", async () => {
+  it("'experimental.session.compacting' lazy-inits the session but does NOT POST summarize (owned by session.compacted event)", async () => {
     const hooks = await loadHooks();
     const compacting = hooks["experimental.session.compacting"] as (
       input: unknown,
@@ -120,9 +120,31 @@ describe("opencode-plugin — OpenCode Hooks contract", () => {
     await compacting({ sessionID: "s-comp" }, { context: [] });
     await flushFireAndForget();
 
-    const summarize = captured.find((c) => c.path === "/api/sessions/summarize");
-    expect(summarize).toBeDefined();
-    expect(typeof summarize?.body.contentSessionId).toBe("string");
+    // Init MUST fire (defensive lazy init for compact-only sessions).
+    expect(captured.find((c) => c.path === "/api/sessions/init")).toBeDefined();
+    // Summarize MUST NOT fire from this hook — it is owned by the
+    // `session.compacted` event branch to avoid a duplicate POST per cycle.
+    expect(captured.find((c) => c.path === "/api/sessions/summarize")).toBeUndefined();
+  });
+
+  it("compacting hook + session.compacted event for the SAME session produces exactly one summarize POST (claude-mem#2503 P1)", async () => {
+    const hooks = await loadHooks();
+    const compacting = hooks["experimental.session.compacting"] as (
+      input: unknown,
+      output: unknown,
+    ) => Promise<void>;
+    const eventFn = hooks.event as (input: unknown) => Promise<void>;
+
+    // OpenCode fires the hook DURING compaction, then the event AFTER. Replay
+    // that exact sequence and assert the summarize endpoint is hit only once.
+    await compacting({ sessionID: "s-cycle" }, { context: [] });
+    await eventFn({
+      event: { type: "session.compacted", properties: { sessionID: "s-cycle" } },
+    });
+    await flushFireAndForget();
+
+    const summarizes = captured.filter((c) => c.path === "/api/sessions/summarize");
+    expect(summarizes.length).toBe(1);
   });
 
   it("event(session.created) initializes the session and uses properties.info.id", async () => {

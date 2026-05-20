@@ -105,28 +105,6 @@ async function workerGetText(path: string): Promise<string | null> {
   }
 }
 
-const contentSessionIdsByOpenCodeSessionId = new Map<string, string>();
-const initializedSessions = new Set<string>();
-
-function getOrCreateContentSessionId(openCodeSessionId: string): string {
-  if (!contentSessionIdsByOpenCodeSessionId.has(openCodeSessionId)) {
-    while (contentSessionIdsByOpenCodeSessionId.size >= MAX_SESSION_MAP_ENTRIES) {
-      const oldestKey = contentSessionIdsByOpenCodeSessionId.keys().next().value;
-      if (oldestKey !== undefined) {
-        contentSessionIdsByOpenCodeSessionId.delete(oldestKey);
-        initializedSessions.delete(oldestKey);
-      } else {
-        break;
-      }
-    }
-    contentSessionIdsByOpenCodeSessionId.set(
-      openCodeSessionId,
-      `opencode-${openCodeSessionId}-${Date.now()}`,
-    );
-  }
-  return contentSessionIdsByOpenCodeSessionId.get(openCodeSessionId)!;
-}
-
 function truncate(text: string): string {
   return text.length > MAX_TOOL_RESPONSE_LENGTH
     ? text.slice(0, MAX_TOOL_RESPONSE_LENGTH)
@@ -137,6 +115,33 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
   const projectName = ctx.project?.name || "opencode";
 
   console.log(`[claude-mem] OpenCode plugin loading (project: ${projectName})`);
+
+  // Per-plugin-instance state. Keeping these inside the factory closure (rather
+  // than at module scope) gives each `ClaudeMemPlugin(ctx)` call a fresh map/set,
+  // which keeps the idempotency guards (no double `/api/sessions/init`, no double
+  // `/api/sessions/summarize`) provable from unit tests that re-instantiate the
+  // plugin in `beforeEach` instead of having to hand-clear module globals.
+  const contentSessionIdsByOpenCodeSessionId = new Map<string, string>();
+  const initializedSessions = new Set<string>();
+
+  function getOrCreateContentSessionId(openCodeSessionId: string): string {
+    if (!contentSessionIdsByOpenCodeSessionId.has(openCodeSessionId)) {
+      while (contentSessionIdsByOpenCodeSessionId.size >= MAX_SESSION_MAP_ENTRIES) {
+        const oldestKey = contentSessionIdsByOpenCodeSessionId.keys().next().value;
+        if (oldestKey !== undefined) {
+          contentSessionIdsByOpenCodeSessionId.delete(oldestKey);
+          initializedSessions.delete(oldestKey);
+        } else {
+          break;
+        }
+      }
+      contentSessionIdsByOpenCodeSessionId.set(
+        openCodeSessionId,
+        `opencode-${openCodeSessionId}-${Date.now()}`,
+      );
+    }
+    return contentSessionIdsByOpenCodeSessionId.get(openCodeSessionId)!;
+  }
 
   function ensureSessionInitialized(openCodeSessionId: string): string {
     const contentSessionId = getOrCreateContentSessionId(openCodeSessionId);
@@ -176,11 +181,12 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       _output: SessionCompactingOutput,
     ): Promise<void> => {
       if (!input?.sessionID) return;
-      const contentSessionId = ensureSessionInitialized(input.sessionID);
-      workerPostFireAndForget("/api/sessions/summarize", {
-        contentSessionId,
-        last_assistant_message: "",
-      });
+      // Lazy-init only. The summarize POST is intentionally NOT fired here —
+      // OpenCode emits the matching `session.compacted` event after compaction
+      // completes, and that branch (below) owns the single summarize call.
+      // Posting from both signals would double-write the summary row per
+      // compaction cycle (claude-mem#2503 P1 review).
+      ensureSessionInitialized(input.sessionID);
     },
 
     event: async (eventInput: OpenCodeEventInput): Promise<void> => {
