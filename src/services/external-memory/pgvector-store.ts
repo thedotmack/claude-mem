@@ -147,7 +147,8 @@ export class PgvectorMemoryStore {
         )
         ON CONFLICT (memory_session_id, kind, content_hash) DO UPDATE SET
           updated_at = now(),
-          metadata = EXCLUDED.metadata
+          metadata = EXCLUDED.metadata,
+          embedding = COALESCE(EXCLUDED.embedding, claude_mem_external_memory_items.embedding)
         RETURNING id, created_at_epoch
       `,
       [

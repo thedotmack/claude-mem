@@ -49,6 +49,7 @@ describe('PgvectorMemoryStore', () => {
     expect(insert.text).toContain('INSERT INTO claude_mem_external_memory_items');
     expect(insert.text).toContain('$19::vector');
     expect(insert.text).toContain('ON CONFLICT (memory_session_id, kind, content_hash) DO UPDATE');
+    expect(insert.text).toContain('embedding = COALESCE(EXCLUDED.embedding, claude_mem_external_memory_items.embedding)');
     expect(insert.values).toContain('observation');
     expect(insert.values).toContain('memory-session-1');
     expect(insert.values).toContain('claude-mem');

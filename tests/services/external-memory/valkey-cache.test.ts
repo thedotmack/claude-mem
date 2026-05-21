@@ -86,4 +86,16 @@ describe('ExternalMemoryValkeyCache', () => {
     });
     await expect(cache.getRecentIds('claude-mem', 2)).resolves.toEqual([42, 41]);
   });
+
+  test('does not query Valkey for non-positive recent ID limits', async () => {
+    const valkey = new FakeValkey();
+    const cache = new ExternalMemoryValkeyCache(valkey, {
+      prefix: 'team-memory',
+      ttlSeconds: 60,
+    });
+
+    await expect(cache.getRecentIds('claude-mem', 0)).resolves.toEqual([]);
+
+    expect(valkey.calls.some(call => call.command === 'zrevrange')).toBe(false);
+  });
 });
