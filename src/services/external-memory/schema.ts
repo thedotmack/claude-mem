@@ -12,11 +12,22 @@ export async function bootstrapExternalMemorySchema(
   client: PostgresQueryable,
   options: ExternalMemorySchemaOptions
 ): Promise<void> {
+  if (isPostgresPool(client)) {
+    const poolClient = await client.connect();
+    try {
+      await bootstrapExternalMemorySchema(poolClient, options);
+    } finally {
+      poolClient.release();
+    }
+    return;
+  }
+
   const vectorDimensions = assertVectorDimensions(options.vectorDimensions);
 
   await client.query('BEGIN');
   try {
     await client.query(buildExternalMemorySchemaSql(vectorDimensions));
+    await assertEmbeddingColumnDimensions(client, vectorDimensions);
     await client.query('COMMIT');
   } catch (error) {
     await client.query('ROLLBACK');
@@ -29,6 +40,53 @@ function assertVectorDimensions(value: number): number {
     throw new Error('pgvector dimensions must be an integer between 1 and 2000');
   }
   return value;
+}
+
+interface PostgresPoolLike extends PostgresQueryable {
+  connect(): Promise<PostgresQueryable & { release(): void }>;
+}
+
+function isPostgresPool(client: PostgresQueryable): client is PostgresPoolLike {
+  const candidate = client as {
+    connect?: unknown;
+    release?: unknown;
+    totalCount?: unknown;
+    idleCount?: unknown;
+    waitingCount?: unknown;
+  };
+  return (
+    typeof candidate.connect === 'function'
+    && typeof candidate.release !== 'function'
+    && typeof candidate.totalCount === 'number'
+    && typeof candidate.idleCount === 'number'
+    && typeof candidate.waitingCount === 'number'
+  );
+}
+
+async function assertEmbeddingColumnDimensions(client: PostgresQueryable, expectedDimensions: number): Promise<void> {
+  const result = await client.query<{ embedding_type: string | null }>(`
+    SELECT format_type(a.atttypid, a.atttypmod) AS embedding_type
+    FROM pg_attribute a
+    WHERE a.attrelid = 'claude_mem_external_memory_items'::regclass
+      AND a.attname = 'embedding'
+      AND NOT a.attisdropped
+  `);
+
+  const embeddingType = result.rows[0]?.embedding_type;
+  const actualDimensions = typeof embeddingType === 'string' ? parseVectorDimensions(embeddingType) : null;
+  if (actualDimensions === null) {
+    throw new Error('Unable to verify pgvector embedding column dimensions for external memory schema');
+  }
+  if (actualDimensions !== expectedDimensions) {
+    throw new Error(
+      `Existing external memory embedding column uses vector(${actualDimensions}); set CLAUDE_MEM_PGVECTOR_DIMENSIONS=${actualDimensions} or recreate the external memory schema before using vector(${expectedDimensions})`
+    );
+  }
+}
+
+function parseVectorDimensions(embeddingType: string): number | null {
+  const match = /^vector\((\d+)\)$/.exec(embeddingType.trim());
+  return match ? Number(match[1]) : null;
 }
 
 function buildExternalMemorySchemaSql(vectorDimensions: number): string {

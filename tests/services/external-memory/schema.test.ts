@@ -3,9 +3,13 @@ import { bootstrapExternalMemorySchema } from '../../../src/services/external-me
 
 class RecordingPgClient {
   queries: Array<{ text: string; values?: unknown[] }> = [];
+  embeddingType = 'vector(768)';
 
   async query(text: string, values?: unknown[]) {
     this.queries.push({ text, values });
+    if (text.includes('format_type(a.atttypid, a.atttypmod)')) {
+      return { rows: [{ embedding_type: this.embeddingType }], rowCount: 1 };
+    }
     return { rows: [], rowCount: 0 };
   }
 }
@@ -29,6 +33,33 @@ describe('external pgvector memory schema', () => {
     expect(sql).toContain('UNIQUE (memory_session_id, kind, content_hash)');
   });
 
+  test('uses a dedicated pool client so schema DDL is wrapped by one transaction', async () => {
+    const poolClient = new RecordingPgClient();
+    let released = false;
+    const pool = {
+      totalCount: 1,
+      idleCount: 1,
+      waitingCount: 0,
+      async query() {
+        throw new Error('pool.query should not be used for transactional schema bootstrap');
+      },
+      async connect() {
+        return {
+          query: poolClient.query.bind(poolClient),
+          release() {
+            released = true;
+          },
+        };
+      },
+    };
+
+    await bootstrapExternalMemorySchema(pool, { vectorDimensions: 768 });
+
+    expect(poolClient.queries[0]?.text).toBe('BEGIN');
+    expect(poolClient.queries.at(-1)?.text).toBe('COMMIT');
+    expect(released).toBe(true);
+  });
+
   test('rolls back if schema creation fails', async () => {
     const client = new RecordingPgClient();
     client.query = async (text: string, values?: unknown[]) => {
@@ -40,6 +71,16 @@ describe('external pgvector memory schema', () => {
     };
 
     await expect(bootstrapExternalMemorySchema(client, { vectorDimensions: 1536 })).rejects.toThrow('ddl failed');
+    expect(client.queries.map(q => q.text)).toContain('ROLLBACK');
+  });
+
+  test('rolls back with a clear error when an existing embedding column has different dimensions', async () => {
+    const client = new RecordingPgClient();
+    client.embeddingType = 'vector(1536)';
+
+    await expect(bootstrapExternalMemorySchema(client, { vectorDimensions: 768 })).rejects.toThrow(
+      'Existing external memory embedding column uses vector(1536)'
+    );
     expect(client.queries.map(q => q.text)).toContain('ROLLBACK');
   });
 

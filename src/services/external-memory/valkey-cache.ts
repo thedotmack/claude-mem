@@ -43,7 +43,10 @@ export class ExternalMemoryValkeyCache {
   }
 
   async getRecentIds(project: string, limit: number): Promise<number[]> {
-    const ids = await this.client.zrevrange(this.recentKey(project), 0, Math.max(0, limit - 1));
+    if (limit <= 0) {
+      return [];
+    }
+    const ids = await this.client.zrevrange(this.recentKey(project), 0, limit - 1);
     return ids.map(id => Number(id)).filter(id => Number.isFinite(id));
   }
 

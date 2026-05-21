@@ -53,6 +53,8 @@ services:
       - "yes"
       - --appendfsync
       - everysec
+      - --maxmemory
+      - ${VALKEY_MAXMEMORY:-256mb}
       - --maxmemory-policy
       - noeviction
     ports:

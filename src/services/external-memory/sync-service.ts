@@ -101,6 +101,14 @@ export class ExternalMemorySyncService {
     let summariesWritten = 0;
     let cacheWrites = 0;
 
+    if (input.observationIds.length !== input.observations.length) {
+      logger.warn('EXTERNAL_MEMORY', 'Observation ID count did not match observation count; unmatched observations will be skipped', {
+        project: input.project,
+        observationCount: input.observations.length,
+        observationIdCount: input.observationIds.length,
+      });
+    }
+
     for (let index = 0; index < input.observations.length; index++) {
       const observation = input.observations[index];
       const sqliteId = input.observationIds[index];
@@ -189,7 +197,6 @@ interface ExternalMemoryRuntime {
   pool: PgPoolLike;
   valkey: RedisRuntimeClient;
   service: ExternalMemorySyncService;
-  bootstrapped: boolean;
   config: Extract<ExternalMemoryConfig, { enabled: true }>;
 }
 
@@ -218,7 +225,11 @@ type RedisConstructor = new (
   }
 ) => RedisRuntimeClient;
 
+type ExternalMemoryDriverLoader = typeof loadExternalMemoryDrivers;
+
 let runtime: ExternalMemoryRuntime | null = null;
+let initPromise: Promise<ExternalMemoryRuntime> | null = null;
+let externalMemoryDriverLoader: ExternalMemoryDriverLoader = loadExternalMemoryDrivers;
 
 export async function syncExternalMemoryBatchIfEnabled(input: ExternalMemoryBatchInput): Promise<ExternalMemorySyncResult | null> {
   const service = await getExternalMemorySyncService();
@@ -235,42 +246,76 @@ export async function getExternalMemorySyncService(env: NodeJS.ProcessEnv = proc
   }
 
   const key = runtimeKey(config);
-  if (!runtime || runtime.key !== key) {
-    await closeExternalMemorySyncService();
-    const { Pool, Redis } = await loadExternalMemoryDrivers();
-    const pool = new Pool({
-      connectionString: config.pgvectorUrl,
-      max: 5,
-      idleTimeoutMillis: 30_000,
-      connectionTimeoutMillis: 5_000,
-    });
-    const valkey = new Redis(config.valkeyUrl, {
-      lazyConnect: true,
-      maxRetriesPerRequest: 1,
-      connectTimeout: 1_000,
-    });
-    runtime = {
-      key,
-      pool,
-      valkey,
-      service: new ExternalMemorySyncService(
-        new PgvectorMemoryStore(pool),
-        new ExternalMemoryValkeyCache(valkey as ValkeyLikeClient, {
-          prefix: config.valkeyPrefix,
-          ttlSeconds: config.cacheTtlSeconds,
-        })
-      ),
-      bootstrapped: false,
-      config,
-    };
+  if (runtime?.key === key) {
+    return runtime.service;
   }
 
-  if (!runtime.bootstrapped) {
-    await bootstrapExternalMemorySchema(runtime.pool, { vectorDimensions: runtime.config.vectorDimensions });
-    runtime.bootstrapped = true;
+  if (initPromise) {
+    const initialized = await initPromise;
+    if (initialized.key === key) {
+      return initialized.service;
+    }
   }
 
-  return runtime.service;
+  const initializing = initializeExternalMemoryRuntime(config, key);
+  initPromise = initializing;
+  try {
+    const initialized = await initializing;
+    return initialized.service;
+  } finally {
+    if (initPromise === initializing) {
+      initPromise = null;
+    }
+  }
+}
+
+async function initializeExternalMemoryRuntime(
+  config: Extract<ExternalMemoryConfig, { enabled: true }>,
+  key: string
+): Promise<ExternalMemoryRuntime> {
+  if (runtime?.key === key) {
+    return runtime;
+  }
+
+  await closeExternalMemorySyncService();
+  const { Pool, Redis } = await externalMemoryDriverLoader();
+  const pool = new Pool({
+    connectionString: config.pgvectorUrl,
+    max: 5,
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 5_000,
+  });
+  const valkey = new Redis(config.valkeyUrl, {
+    lazyConnect: true,
+    maxRetriesPerRequest: 1,
+    connectTimeout: 1_000,
+  });
+
+  try {
+    await bootstrapExternalMemorySchema(pool, { vectorDimensions: config.vectorDimensions });
+  } catch (error) {
+    await Promise.allSettled([
+      pool.end(),
+      valkey.quit().catch(() => valkey.disconnect()),
+    ]);
+    throw error;
+  }
+
+  const initialized: ExternalMemoryRuntime = {
+    key,
+    pool,
+    valkey,
+    service: new ExternalMemorySyncService(
+      new PgvectorMemoryStore(pool),
+      new ExternalMemoryValkeyCache(valkey as ValkeyLikeClient, {
+        prefix: config.valkeyPrefix,
+        ttlSeconds: config.cacheTtlSeconds,
+      })
+    ),
+    config,
+  };
+  runtime = initialized;
+  return initialized;
 }
 
 async function loadExternalMemoryDrivers(): Promise<{
@@ -312,6 +357,14 @@ export async function closeExternalMemorySyncService(): Promise<void> {
     current.pool.end(),
     current.valkey.quit().catch(() => current.valkey.disconnect()),
   ]);
+}
+
+export function __setExternalMemoryDriverLoaderForTesting(loader: ExternalMemoryDriverLoader): () => void {
+  const previous = externalMemoryDriverLoader;
+  externalMemoryDriverLoader = loader;
+  return () => {
+    externalMemoryDriverLoader = previous;
+  };
 }
 
 function runtimeKey(config: Extract<ExternalMemoryConfig, { enabled: true }>): string {
