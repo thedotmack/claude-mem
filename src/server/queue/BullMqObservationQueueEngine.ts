@@ -116,9 +116,20 @@ export class BullMqObservationQueueEngine
     }
 
     try {
+      // cap retries at 10 with exponential backoff. The previous
+      // attempts:1000000 produced a years-long retry storm against transient
+      // failures (Redis blips, lock-renewal hiccups) before a job moved to
+      // failed state. With attempts:10 and exponential backoff (5s, 10s, 20s,
+      // ... capped at ~85 min), permanently-broken jobs reach the dead-letter
+      // shelf within ~3 hours rather than ~years.
+      //
+      // Dead-letter retention: `removeOnFail` keeps the last 1000 failed jobs
+      // for 24 hours so operators can inspect/retry them via BullMQ tooling.
+      // This is the canonical BullMQ DLQ pattern.
       await runtime.queue.add(message.type, payload, {
         jobId,
-        attempts: 1000000,
+        attempts: 10,
+        backoff: { type: 'exponential', delay: 5000 },
         removeOnComplete: true,
         removeOnFail: { age: 24 * 60 * 60, count: 1000 },
       });

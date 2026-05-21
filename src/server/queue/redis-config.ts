@@ -82,7 +82,18 @@ function connectionFromHost(host: string, port: number): RedisOptions {
     host,
     port,
     maxRetriesPerRequest: null,
-    connectTimeout: 1000,
+    // 1s connectTimeout is too aggressive for cold-start Docker
+    // stacks where Valkey may take 5–10s to accept connections. 10s gives
+    // the queue engine room to come up gracefully without spamming errors.
+    connectTimeout: 10000,
+    // reconnect with exponential-ish backoff capped at 5s so a
+    // restarted Valkey container is reconnected within seconds instead of
+    // failing fast on first transient error.
+    retryStrategy: (times: number) => Math.min(times * 200, 5000),
+    // wait for Redis to send a READY response before sending
+    // commands. Prevents BullMQ from racing the boot sequence and getting
+    // 'LOADING' replies on a fresh Valkey.
+    enableReadyCheck: true,
     lazyConnect: true,
   };
 }
@@ -106,7 +117,12 @@ function connectionFromUrl(rawUrl: string): RedisOptions {
     db,
     tls: parsed.protocol === 'rediss:' ? {} : undefined,
     maxRetriesPerRequest: null,
-    connectTimeout: 1000,
+    // see connectionFromHost() above. 10s connectTimeout +
+    // exponential retryStrategy + enableReadyCheck make BullMQ resilient to
+    // Valkey cold start and transient connection loss.
+    connectTimeout: 10000,
+    retryStrategy: (times: number) => Math.min(times * 200, 5000),
+    enableReadyCheck: true,
     lazyConnect: true,
   };
 }
