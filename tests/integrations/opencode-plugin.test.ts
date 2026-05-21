@@ -97,6 +97,26 @@ describe("opencode-plugin — OpenCode Hooks contract", () => {
     expect(obs?.body.cwd).toBe("/tmp/demo");
   });
 
+  it("'tool.execute.after' skips POSTs when sessionID is missing (no phantom 'opencode-undefined-*' session, claude-mem#2503 follow-up)", async () => {
+    const hooks = await loadHooks();
+    const toolAfter = hooks["tool.execute.after"] as (
+      input: unknown,
+      output: unknown,
+    ) => Promise<void>;
+
+    await toolAfter(
+      { tool: "read", sessionID: undefined, callID: "c1", args: { path: "/a" } },
+      { title: "t", output: "OK", metadata: {} },
+    );
+    await toolAfter(
+      { tool: "read", callID: "c2", args: { path: "/b" } },
+      { title: "t", output: "OK", metadata: {} },
+    );
+    await flushFireAndForget();
+
+    expect(captured.length).toBe(0);
+  });
+
   it("'chat.message' triggers session init once per sessionID", async () => {
     const hooks = await loadHooks();
     const chatMessage = hooks["chat.message"] as (input: unknown) => Promise<void>;

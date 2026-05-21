@@ -161,6 +161,11 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       input: ToolExecuteAfterInput,
       output: ToolExecuteAfterOutput,
     ): Promise<void> => {
+      // Without this guard a sessionless tool call would key the session map
+      // on the literal string "undefined" and collapse every sessionless
+      // observation into one phantom `opencode-undefined-<ts>` session
+      // (claude-mem#2503 P1 follow-up review).
+      if (!input?.sessionID) return;
       const contentSessionId = ensureSessionInitialized(input.sessionID);
       workerPostFireAndForget("/api/sessions/observations", {
         contentSessionId,
