@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// Phase 7 — Local API key bootstrap for the server-beta runtime.
+// Local API key bootstrap for the server-beta runtime.
 //
 // When the operator selects `runtime: "server-beta"` during install (or via
 // the `claude-mem server keys rotate` command), we provision a local hook
@@ -10,9 +10,15 @@
 //   1. Connect to Postgres (CLAUDE_MEM_SERVER_DATABASE_URL).
 //   2. Find or create a "local-hook" team and project so the api_key has
 //      proper tenant scope.
-//   3. Generate a `cmem_<random>` key, hash with SHA-256, insert into
-//      `api_keys` with the scopes hooks need: events:write, sessions:write,
-//      observations:read, jobs:read.
+//   3. Generate a `cmem_<random>` key, hash via hashApiKeyForStorage()
+//      (argon2id), insert into `api_keys` with scopes that match the gates
+//      declared on /v1/memories. See routes/v1/ServerV1PostgresRoutes.ts
+//      which gates reads on 'memories:read' and writes on 'memories:write'.
+//
+//      Bug 3 fix: previously this list shipped events:write / sessions:write /
+//      observations:read / jobs:read — none of which intersect the memory
+//      gates, so every hook call to POST /v1/memories returned 403 until an
+//      operator ran a manual SQL UPDATE on the api_keys.scopes array.
 //   4. Persist the plaintext key to ~/.claude-mem/settings.json under
 //      `CLAUDE_MEM_SERVER_BETA_API_KEY`, then chmod that file to 0600 so
 //      only the owner can read it.
@@ -26,18 +32,20 @@ import { dirname } from 'path';
 import { createPostgresPool, type PostgresPool } from '../../storage/postgres/pool.js';
 import { parsePostgresConfig } from '../../storage/postgres/config.js';
 import { PostgresAuthRepository } from '../../storage/postgres/auth.js';
-import { PostgresProjectsRepository } from '../../storage/postgres/projects.js';
-import { PostgresTeamsRepository } from '../../storage/postgres/teams.js';
+import { newId } from '../../storage/postgres/utils.js';
+import { hashApiKeyForStorage } from '../../server/middleware/postgres-auth.js';
 
 const LOCAL_HOOK_TEAM_NAME = 'local-hook-team';
 const LOCAL_HOOK_PROJECT_NAME = 'local-hook-project';
 const LOCAL_HOOK_ACTOR_ID = 'system:local-hook-bootstrap';
 
+// fix: default scopes are the union of what /v1/memories actually
+// requires. The complementary unit test at tests/server-beta/
+// hook-scopes-vs-routes.test.ts greps the routes for `requiredScopes` and
+// asserts this set is a superset.
 export const HOOK_API_KEY_SCOPES: readonly string[] = Object.freeze([
-  'events:write',
-  'sessions:write',
-  'observations:read',
-  'jobs:read',
+  'memories:read',
+  'memories:write',
 ]);
 
 export interface BootstrapResult {
@@ -64,7 +72,10 @@ export async function bootstrapServerBetaApiKey(
     const projectId = await findOrCreateProject(pool, teamId);
 
     const rawKey = createRawApiKey();
-    const keyHash = hashApiKey(rawKey);
+    // fix: NEW keys hash via argon2id (per-key salt, expensive verify).
+    // Existing SHA-256 rows continue to verify through the legacy path in
+    // src/server/middleware/postgres-auth.ts until rotated.
+    const keyHash = await hashApiKeyForStorage(rawKey);
 
     const repo = new PostgresAuthRepository(pool);
     const created = await repo.createApiKey({
@@ -164,38 +175,80 @@ export function createRawApiKey(): string {
   return `cmem_${randomBytes(32).toString('base64url')}`;
 }
 
+// hashApiKey — legacy SHA-256 helper retained for tools that need to derive
+// a lookup hash against PRE-BUG-19 keys (e.g. `claude-mem server api-key`
+// existence checks issued by the CLI against legacy installs). NEW keys
+// MUST go through hashApiKeyForStorage (argon2id). See .
 export function hashApiKey(rawKey: string): string {
   return createHash('sha256').update(rawKey).digest('hex');
 }
 
+// hashApiKeyForStorage — argon2id hash used by every new key creation path.
+// Imported above from the canonical implementation in postgres-auth.ts;
+// re-exported here for external callers that consume the bootstrap surface.
+export { hashApiKeyForStorage };
+
+// findOrCreateTeam — race-free upsert against the local-hook team row.
+//
+// Pre-Phase-2 this was a SELECT-then-INSERT (TOCTOU), which could create
+// duplicate teams under concurrent first-run races and would then violate
+// the v2 UNIQUE(name) constraint on subsequent boots. We now rely on the
+// v2 UNIQUE index `idx_teams_name_unique` and use INSERT ... ON CONFLICT
+// DO UPDATE so that the RETURNING clause always yields the persisted row.
+// DO UPDATE with a no-op `name = EXCLUDED.name` is required because
+// DO NOTHING + RETURNING does NOT return rows for conflicting inserts.
 async function findOrCreateTeam(pool: PostgresPool): Promise<string> {
-  const existing = await pool.query<{ id: string }>(
-    `SELECT id FROM teams WHERE name = $1 LIMIT 1`,
-    [LOCAL_HOOK_TEAM_NAME],
+  const id = newId();
+  const row = await pool.query<{ id: string }>(
+    `
+      INSERT INTO teams (id, name, metadata)
+      VALUES ($1, $2, $3::jsonb)
+      ON CONFLICT (name) DO UPDATE
+        SET name = EXCLUDED.name
+      RETURNING id
+    `,
+    [id, LOCAL_HOOK_TEAM_NAME, JSON.stringify({ source: 'local-hook-bootstrap' })],
   );
-  if (existing.rows[0]) {
+  if (!row.rows[0]) {
+    // Should be unreachable: ON CONFLICT DO UPDATE always returns a row.
+    // Fallback select for hardening.
+    const existing = await pool.query<{ id: string }>(
+      `SELECT id FROM teams WHERE name = $1 LIMIT 1`,
+      [LOCAL_HOOK_TEAM_NAME],
+    );
+    if (!existing.rows[0]) {
+      throw new Error('findOrCreateTeam: upsert returned no row');
+    }
     return existing.rows[0].id;
   }
-  const repo = new PostgresTeamsRepository(pool);
-  const team = await repo.create({ name: LOCAL_HOOK_TEAM_NAME, metadata: { source: 'local-hook-bootstrap' } });
-  return team.id;
+  return row.rows[0].id;
 }
 
+// findOrCreateProject — race-free upsert scoped to the team.
+// Relies on the v2 UNIQUE(team_id, name) index `idx_projects_team_id_name_unique`.
 async function findOrCreateProject(pool: PostgresPool, teamId: string): Promise<string> {
-  const existing = await pool.query<{ id: string }>(
-    `SELECT id FROM projects WHERE team_id = $1 AND name = $2 LIMIT 1`,
-    [teamId, LOCAL_HOOK_PROJECT_NAME],
+  const id = newId();
+  const row = await pool.query<{ id: string }>(
+    `
+      INSERT INTO projects (id, team_id, name, metadata)
+      VALUES ($1, $2, $3, $4::jsonb)
+      ON CONFLICT (team_id, name) DO UPDATE
+        SET name = EXCLUDED.name
+      RETURNING id
+    `,
+    [id, teamId, LOCAL_HOOK_PROJECT_NAME, JSON.stringify({ source: 'local-hook-bootstrap' })],
   );
-  if (existing.rows[0]) {
+  if (!row.rows[0]) {
+    const existing = await pool.query<{ id: string }>(
+      `SELECT id FROM projects WHERE team_id = $1 AND name = $2 LIMIT 1`,
+      [teamId, LOCAL_HOOK_PROJECT_NAME],
+    );
+    if (!existing.rows[0]) {
+      throw new Error('findOrCreateProject: upsert returned no row');
+    }
     return existing.rows[0].id;
   }
-  const repo = new PostgresProjectsRepository(pool);
-  const project = await repo.create({
-    teamId,
-    name: LOCAL_HOOK_PROJECT_NAME,
-    metadata: { source: 'local-hook-bootstrap' },
-  });
-  return project.id;
+  return row.rows[0].id;
 }
 
 function buildPoolFromEnv(): PostgresPool {

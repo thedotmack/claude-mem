@@ -7,7 +7,7 @@ import { logger } from '../../../utils/logger.js';
 
 export function createMiddleware(
   summarizeRequestBody: (method: string, path: string, body: any) => string,
-  options: { includeCors?: boolean } = {}
+  options: { includeCors?: boolean; bodyLimit?: string; skipJson?: boolean } = {}
 ): RequestHandler[] {
   const middlewares: RequestHandler[] = [];
 
@@ -15,7 +15,9 @@ export function createMiddleware(
     middlewares.push(createCorsMiddleware());
   }
 
-  middlewares.push(express.json({ limit: '5mb' }));
+  if (options.skipJson !== true) {
+    middlewares.push(express.json({ limit: options.bodyLimit ?? '5mb' }));
+  }
 
   middlewares.push((req: Request, res: Response, next: NextFunction) => {
     const staticExtensions = ['.html', '.js', '.css', '.svg', '.png', '.jpg', '.jpeg', '.webp', '.woff', '.woff2', '.ttf', '.eot'];
