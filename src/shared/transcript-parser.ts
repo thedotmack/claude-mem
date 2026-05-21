@@ -34,6 +34,19 @@ export function extractLastMessage(
  * we find a turn with non-empty text content, instead of returning early on
  * the first matching role.
  */
+function synthesizeToolDescription(msgContent: any[]): string {
+  const toolUses = msgContent.filter((c: any) => c?.type === 'tool_use');
+  if (toolUses.length === 0) return '';
+  const labels = toolUses.map((t: any) => {
+    const name: string = t.name ?? 'unknown';
+    const input = t.input ?? {};
+    if (input.file_path) return `${name}(${input.file_path})`;
+    if (input.command) return `${name}(${String(input.command).slice(0, 60)})`;
+    return name;
+  });
+  return `[Session ended mid-task. Last tools used: ${labels.join(', ')}]`;
+}
+
 export function extractLastMessageFromJsonl(
   content: string,
   role: 'user' | 'assistant',
@@ -98,6 +111,12 @@ export function extractLastMessageFromJsonl(
     // tool-only turns" if every later turn is empty.
     if (lastEmptyText === null) {
       lastEmptyText = text;
+      // If this turn was tool-only, synthesize a description as a last resort
+      // so the summarizer has something rather than silently skipping the session.
+      if (!lastEmptyText.trim() && Array.isArray(msgContent)) {
+        const toolSummary = synthesizeToolDescription(msgContent);
+        if (toolSummary) lastEmptyText = toolSummary;
+      }
     }
   }
 

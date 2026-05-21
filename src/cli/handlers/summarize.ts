@@ -81,7 +81,7 @@ export const summarizeHandler: EventHandler = {
 
     let lastAssistantMessage = '';
 
-    if (input.lastAssistantMessage !== undefined) {
+    if (input.lastAssistantMessage) {
       lastAssistantMessage = stripMemoryTags(input.lastAssistantMessage);
     } else {
       if (!transcriptPath) {
