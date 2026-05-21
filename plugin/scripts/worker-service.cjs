@@ -11091,7 +11091,7 @@ ${n.prompts.format_examples}
 
 ${n.prompts.footer}
 
-${n.prompts.header_memory_start}`}var q_t=16e3,F_t=.6,z_t=.3;function XNe(t,e=q_t){let r=JSON.stringify(t,null,2);if(r.length<=e)return r;let n=Math.floor(e*F_t),i=Math.floor(e*z_t),s=r.slice(0,n),o=r.slice(-i),a=r.length-s.length-o.length;return`${s}
+${n.prompts.header_memory_start}`}var q_t=16e3,F_t=.6,z_t=.3;function XNe(t,e=q_t){let r=JSON.stringify(t,null,2)??"";if(r.length<=e)return r;let n=Math.floor(e*F_t),i=Math.floor(e*z_t),s=r.slice(0,n),o=r.slice(-i),a=r.length-s.length-o.length;return`${s}
 ... <elided chars="${a}" original_size_chars="${r.length}" reason="oversize" /> ...
 ${o}`}function w_(t){let e,r;try{e=typeof t.tool_input=="string"?JSON.parse(t.tool_input):t.tool_input}catch(n){_.debug("SDK","Tool input is plain string, using as-is",{toolName:t.tool_name},n instanceof Error?n:new Error(String(n))),e=t.tool_input}try{r=typeof t.tool_output=="string"?JSON.parse(t.tool_output):t.tool_output}catch(n){_.debug("SDK","Tool output is plain string, using as-is",{toolName:t.tool_name},n instanceof Error?n:new Error(String(n))),r=t.tool_output}return`<observed_from_primary_session>
   <what_happened>${t.tool_name}</what_happened>

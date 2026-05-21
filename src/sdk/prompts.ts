@@ -101,7 +101,10 @@ const OBS_PROMPT_FIELD_HEAD_RATIO = 0.6;
 const OBS_PROMPT_FIELD_TAIL_RATIO = 0.3;
 
 function truncateObservationField(value: unknown, maxChars: number = OBS_PROMPT_FIELD_MAX_CHARS): string {
-  const raw = JSON.stringify(value, null, 2);
+  // JSON.stringify returns undefined for undefined / functions / symbols;
+  // fall back to empty string so the call sites (template literal output)
+  // and the length check below stay well-defined.
+  const raw = JSON.stringify(value, null, 2) ?? '';
   if (raw.length <= maxChars) return raw;
   const headChars = Math.floor(maxChars * OBS_PROMPT_FIELD_HEAD_RATIO);
   const tailChars = Math.floor(maxChars * OBS_PROMPT_FIELD_TAIL_RATIO);
