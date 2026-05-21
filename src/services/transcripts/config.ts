@@ -7,10 +7,10 @@ import type { TranscriptSchema, TranscriptWatchConfig } from './types.js';
 export const DEFAULT_CONFIG_PATH = paths.transcriptsConfig();
 export const DEFAULT_STATE_PATH = paths.transcriptsState();
 
-const CODEX_SAMPLE_SCHEMA: TranscriptSchema = {
+export const CODEX_SAMPLE_SCHEMA: TranscriptSchema = {
   name: 'codex',
   version: '0.3',
-  description: 'Schema for Codex session JSONL files under ~/.codex/sessions.',
+  description: 'Legacy schema for Codex session JSONL files. Codex native hooks are preferred.',
   events: [
     {
       name: 'session-meta',
@@ -109,19 +109,38 @@ const CODEX_SAMPLE_SCHEMA: TranscriptSchema = {
 
 export const SAMPLE_CONFIG: TranscriptWatchConfig = {
   version: 1,
-  schemas: {
-    codex: CODEX_SAMPLE_SCHEMA
-  },
-  watches: [
-    {
-      name: 'codex',
-      path: '~/.codex/sessions/**/*.jsonl',
-      schema: 'codex',
-      startAtEnd: true
-    }
-  ],
+  schemas: {},
+  watches: [],
   stateFile: DEFAULT_STATE_PATH
 };
+
+export function isNativeHookBackedCodexWatch(watch: { name?: string; path?: string; schema?: string | TranscriptSchema }): boolean {
+  const schemaName = typeof watch.schema === 'string' ? watch.schema : watch.schema?.name;
+  const nameOrSchemaIsCodex = watch.name === 'codex' || schemaName === 'codex';
+  if (!nameOrSchemaIsCodex || !watch.path) return false;
+
+  const normalizedPath = expandHomePath(watch.path).replace(/\\/g, '/');
+  const codexSessionsRoot = join(homedir(), '.codex', 'sessions').replace(/\\/g, '/');
+  return normalizedPath === `${codexSessionsRoot}/**/*.jsonl`;
+}
+
+export function filterNativeHookBackedCodexWatches(
+  config: TranscriptWatchConfig,
+  allowCodexTranscriptIngestion: boolean
+): { config: TranscriptWatchConfig; removed: number } {
+  if (allowCodexTranscriptIngestion) {
+    return { config, removed: 0 };
+  }
+
+  const watches = config.watches.filter(watch => !isNativeHookBackedCodexWatch(watch));
+  return {
+    config: {
+      ...config,
+      watches,
+    },
+    removed: config.watches.length - watches.length,
+  };
+}
 
 export function expandHomePath(inputPath: string): string {
   if (!inputPath) return inputPath;

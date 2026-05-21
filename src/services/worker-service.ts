@@ -81,7 +81,7 @@ import { TimelineService } from './worker/TimelineService.js';
 import { SessionEventBroadcaster } from './worker/events/SessionEventBroadcaster.js';
 import { SessionCompletionHandler } from './worker/session/SessionCompletionHandler.js';
 import { setIngestContext, attachIngestGeneratorStarter } from './worker/http/shared.js';
-import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, loadTranscriptWatchConfig } from './transcripts/config.js';
+import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, filterNativeHookBackedCodexWatches, loadTranscriptWatchConfig } from './transcripts/config.js';
 import { TranscriptWatcher } from './transcripts/watcher.js';
 
 import { ViewerRoutes } from './worker/http/routes/ViewerRoutes.js';
@@ -471,8 +471,26 @@ export class WorkerService implements WorkerRef {
       return;
     }
 
-    const transcriptConfig = loadTranscriptWatchConfig(configPath);
+    const allowCodexTranscriptIngestion = settings.CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION === 'true';
+    const { config: transcriptConfig, removed } = filterNativeHookBackedCodexWatches(
+      loadTranscriptWatchConfig(configPath),
+      allowCodexTranscriptIngestion
+    );
     const statePath = expandHomePath(transcriptConfig.stateFile ?? DEFAULT_STATE_PATH);
+
+    if (removed > 0) {
+      logger.warn('TRANSCRIPT', 'Skipped Codex transcript watch because native Codex hooks are authoritative', {
+        removed,
+        optInSetting: 'CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION=true',
+      });
+    }
+
+    if (transcriptConfig.watches.length === 0) {
+      logger.info('TRANSCRIPT', 'Transcript watcher config has no active watches; skipping automatic transcript capture', {
+        configPath: resolvedConfigPath,
+      });
+      return;
+    }
 
     try {
       this.transcriptWatcher = new TranscriptWatcher(transcriptConfig, statePath);

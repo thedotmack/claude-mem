@@ -42,6 +42,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_FOLDER_USE_LOCAL_MD: string;  
   CLAUDE_MEM_TRANSCRIPTS_ENABLED: string;  
   CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH: string;  
+  CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION: string;
   CLAUDE_MEM_MAX_CONCURRENT_AGENTS: string;  
   CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: string;  
   CLAUDE_MEM_EXCLUDED_PROJECTS: string;  
@@ -117,6 +118,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_FOLDER_USE_LOCAL_MD: 'false',  // When true, writes to CLAUDE.local.md instead of CLAUDE.md
     CLAUDE_MEM_TRANSCRIPTS_ENABLED: 'true',
     CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH: join(homedir(), '.claude-mem', 'transcript-watch.json'),
+    CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION: 'false',
     CLAUDE_MEM_MAX_CONCURRENT_AGENTS: '2',  // Max concurrent Claude SDK agent subprocesses
     CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: '3',  // Plan 05 Phase 8 — escalate to exit code 2 after N consecutive worker-unreachable hook invocations
     CLAUDE_MEM_EXCLUDED_PROJECTS: '',  // Comma-separated glob patterns for excluded project paths

@@ -151,13 +151,15 @@ describe('Install Non-TTY Support', () => {
       expect(registerRegion).toContain("['plugin', 'marketplace', 'add', marketplaceRoot]");
     });
 
-    it('enables Codex plugin hooks during install', () => {
+    it('enables Codex hooks and claude-mem plugin config during install', () => {
       const installRegion = codexInstallerSource.slice(
         codexInstallerSource.indexOf('export async function installCodexCli'),
         codexInstallerSource.indexOf('export function uninstallCodexCli'),
       );
-      expect(installRegion).toContain("['features', 'enable', 'plugin_hooks']");
-      expect(installRegion).toContain('codex features enable plugin_hooks');
+      expect(codexInstallerSource).toContain("setTomlFeatureEnabled(next, 'hooks', true)");
+      expect(codexInstallerSource).toContain("const CODEX_PLUGIN_ID = `claude-mem@${MARKETPLACE_NAME}`");
+      expect(installRegion).toContain('enableCodexPluginConfig()');
+      expect(installRegion).not.toContain('plugin_hooks');
     });
 
     it('captures Codex CLI output for install failure reporting', () => {
@@ -211,13 +213,14 @@ describe('Install Non-TTY Support', () => {
 
     it('does not seed new Codex transcript watcher configs with AGENTS context injection', () => {
       expect(transcriptConfigSource).toContain("name: 'codex'");
-      const codexWatchRegion = transcriptConfigSource.slice(
-        transcriptConfigSource.indexOf("name: 'codex'"),
+      const sampleConfigRegion = transcriptConfigSource.slice(
+        transcriptConfigSource.indexOf('export const SAMPLE_CONFIG'),
         transcriptConfigSource.indexOf('stateFile: DEFAULT_STATE_PATH'),
       );
-      expect(codexWatchRegion).toContain("path: '~/.codex/sessions/**/*.jsonl'");
-      expect(codexWatchRegion).not.toContain("mode: 'agents'");
-      expect(codexWatchRegion).not.toContain('updateOn');
+      expect(sampleConfigRegion).toContain('watches: []');
+      expect(sampleConfigRegion).not.toContain("path: '~/.codex/sessions/**/*.jsonl'");
+      expect(sampleConfigRegion).not.toContain("mode: 'agents'");
+      expect(sampleConfigRegion).not.toContain('updateOn');
     });
   });
 
