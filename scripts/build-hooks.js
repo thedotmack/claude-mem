@@ -537,6 +537,57 @@ async function buildHooks() {
       console.log(`✓ opencode plugin built (${(opencodeStats.size / 1024).toFixed(2)} KB)`);
     }
 
+    console.log('\n📦 Installing plugin runtime dependencies into plugin/node_modules...');
+    // Why this exists: with better-auth externalized from the worker bundle
+    // (PR #2596 / issue #2584) and the existing zod + tree-sitter externals,
+    // the worker now relies on `plugin/node_modules` being populated at
+    // runtime. Marketplace installs already get this via `sync-marketplace.cjs`
+    // running `bun install` post-rsync, but:
+    //   1. Dev workflow (`bun plugin/scripts/worker-service.cjs start`) was
+    //      broken — repo-local plugin/ had no node_modules until you synced.
+    //   2. The npm tarball (`npm install -g claude-mem` → `npx claude-mem
+    //      install`) ships plugin/package.json but no plugin/node_modules
+    //      (issue #2407), so the worker fails with `Cannot find module 'zod/v3'`.
+    //
+    // Running install here fixes (1) outright and is a prerequisite for the
+    // npm tarball fix (which bundles plugin/node_modules into the published
+    // tarball — coming in a follow-up PR). We use `npm install` not `bun
+    // install` so this works on CI / publishers that may not have bun.
+    //
+    // We intentionally DO NOT pass --ignore-scripts: tree-sitter grammar
+    // packages rely on prebuild-install (a postinstall script) to download
+    // prebuilt .node bindings for the current arch. With --ignore-scripts
+    // the bindings never arrive and the MCP server fails to load any
+    // grammar. prebuild-install handles cross-platform via prebuilt
+    // binaries; only on niche archs (linux arm64 without prebuilt) does it
+    // fall back to node-gyp compilation. If the install fails entirely
+    // (e.g. node-gyp prerequisites missing on a publisher's machine), we
+    // log a warning but don't abort the build — the maintainer can resolve
+    // it before publishing.
+    try {
+      const { spawn: spawnInstall } = await import('child_process');
+      const installResult = spawnInstall('npm', ['install', '--omit=dev', '--no-audit', '--no-fund'], {
+        cwd: 'plugin',
+        stdio: 'inherit',
+      });
+      await new Promise((resolve) => {
+        installResult.on('exit', (code) => {
+          if (code === 0) {
+            console.log('✓ plugin/node_modules populated');
+          } else {
+            console.warn(`⚠️  npm install in plugin/ exited with code ${code}. The build artifact is still valid, but you'll need to run \`cd plugin && npm install\` manually before the worker can resolve external dependencies (zod, better-auth, tree-sitter grammars).`);
+          }
+          resolve();
+        });
+        installResult.on('error', (err) => {
+          console.warn(`⚠️  Could not invoke npm in plugin/: ${err.message}. The build artifact is still valid, but you'll need to run \`cd plugin && npm install\` manually.`);
+          resolve();
+        });
+      });
+    } catch (installError) {
+      console.warn(`⚠️  plugin/ install raised: ${installError.message}. Continuing — artifacts are still valid.`);
+    }
+
     console.log('\n📋 Copying onboarding explainer to plugin tree...');
     const onboardingExplainerSrc = 'src/services/worker/onboarding-explainer.md';
     const onboardingExplainerDst = 'plugin/skills/how-it-works/onboarding-explainer.md';
