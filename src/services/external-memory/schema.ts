@@ -37,7 +37,7 @@ export async function bootstrapExternalMemorySchema(
 
 function assertVectorDimensions(value: number): number {
   if (!Number.isInteger(value) || value <= 0 || value > 2_000) {
-    throw new Error('pgvector dimensions must be an integer between 1 and 2000');
+    throw new Error('Postgres vector dimensions must be an integer between 1 and 2000');
   }
   return value;
 }

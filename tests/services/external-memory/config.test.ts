@@ -40,16 +40,17 @@ describe('external memory config', () => {
     });
   });
 
-  test('accepts legacy pgvector, server-beta database, and Redis/Valkey env names as compatibility fallbacks', () => {
+  test('uses the explicit Postgres URL before the server-beta database fallback', () => {
     const config = parseExternalMemoryConfig({
       CLAUDE_MEM_EXTERNAL_MEMORY_ENABLED: 'true',
-      CLAUDE_MEM_PGVECTOR_URL: 'postgres://legacy-pgvector/db',
+      CLAUDE_MEM_PG_URL: 'postgres://external-memory/db',
+      CLAUDE_MEM_SERVER_DATABASE_URL: 'postgres://server-beta/db',
       CLAUDE_MEM_REDIS_URL: 'redis://valkey:6379/0',
     });
 
     expect(config.enabled).toBe(true);
     if (config.enabled) expect(config.mode).toBe('mirror');
-    expect(config.pgUrl).toBe('postgres://legacy-pgvector/db');
+    expect(config.pgUrl).toBe('postgres://external-memory/db');
     expect(config.valkeyUrl).toBe('redis://valkey:6379/0');
 
     const serverBetaFallback = parseExternalMemoryConfig({

@@ -191,8 +191,8 @@ The worker runtime can write memory to external Postgres (with the `pgvector` ex
 |---------|---------|-------------|
 | `CLAUDE_MEM_EXTERNAL_MEMORY_ENABLED` | `false` | Enables external memory storage. |
 | `CLAUDE_MEM_EXTERNAL_MEMORY_MODE` | `mirror` | `mirror` keeps SQLite authoritative; `primary` stores observations/summaries directly in Postgres. |
-| `CLAUDE_MEM_PG_URL` | — | Postgres connection string. Falls back to `CLAUDE_MEM_POSTGRES_URL`, legacy `CLAUDE_MEM_PGVECTOR_URL`, or `CLAUDE_MEM_SERVER_DATABASE_URL`. |
-| `CLAUDE_MEM_PG_VECTOR_DIMENSIONS` | `1536` | Vector dimension used when bootstrapping the pgvector column. Legacy alias: `CLAUDE_MEM_PGVECTOR_DIMENSIONS`. |
+| `CLAUDE_MEM_PG_URL` | — | Postgres connection string. Falls back to `CLAUDE_MEM_SERVER_DATABASE_URL`. |
+| `CLAUDE_MEM_PG_VECTOR_DIMENSIONS` | `1536` | Vector dimension used when bootstrapping the Postgres vector column. |
 | `CLAUDE_MEM_VALKEY_URL` | — | Valkey/Redis connection string for recent-item cache writes. Falls back to `CLAUDE_MEM_REDIS_URL`. |
 | `CLAUDE_MEM_EXTERNAL_MEMORY_PREFIX` | `claude_mem_external_<worker-port>` | Cache key prefix for profile isolation. |
 | `CLAUDE_MEM_EXTERNAL_MEMORY_CACHE_TTL_SECONDS` | `86400` | TTL for cached items and project recency indexes. |

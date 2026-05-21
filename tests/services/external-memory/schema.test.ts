@@ -14,7 +14,7 @@ class RecordingPgClient {
   }
 }
 
-describe('external pgvector memory schema', () => {
+describe('external Postgres memory schema', () => {
   test('bootstraps pgvector tables, FTS index, and vector index in one transaction', async () => {
     const client = new RecordingPgClient();
 
@@ -88,7 +88,7 @@ describe('external pgvector memory schema', () => {
     const client = new RecordingPgClient();
 
     await expect(bootstrapExternalMemorySchema(client, { vectorDimensions: 2001 })).rejects.toThrow(
-      'pgvector dimensions must be an integer between 1 and 2000'
+      'Postgres vector dimensions must be an integer between 1 and 2000'
     );
     expect(client.queries).toEqual([]);
   });

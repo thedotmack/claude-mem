@@ -18,13 +18,10 @@ export interface ExternalMemoryEnv {
   [key: string]: string | undefined;
   CLAUDE_MEM_EXTERNAL_MEMORY_ENABLED?: string;
   CLAUDE_MEM_PG_URL?: string;
-  CLAUDE_MEM_POSTGRES_URL?: string;
   CLAUDE_MEM_PG_VECTOR_DIMENSIONS?: string;
-  CLAUDE_MEM_PGVECTOR_URL?: string;
   CLAUDE_MEM_SERVER_DATABASE_URL?: string;
   CLAUDE_MEM_VALKEY_URL?: string;
   CLAUDE_MEM_REDIS_URL?: string;
-  CLAUDE_MEM_PGVECTOR_DIMENSIONS?: string;
   CLAUDE_MEM_EXTERNAL_MEMORY_PREFIX?: string;
   CLAUDE_MEM_EXTERNAL_MEMORY_CACHE_TTL_SECONDS?: string;
   CLAUDE_MEM_EXTERNAL_MEMORY_MODE?: string;
@@ -41,12 +38,10 @@ export function parseExternalMemoryConfig(env: ExternalMemoryEnv = process.env):
 
   const pgUrl = firstNonEmpty(
     env.CLAUDE_MEM_PG_URL,
-    env.CLAUDE_MEM_POSTGRES_URL,
-    env.CLAUDE_MEM_PGVECTOR_URL,
     env.CLAUDE_MEM_SERVER_DATABASE_URL
   );
   if (!pgUrl) {
-    throw new Error('CLAUDE_MEM_EXTERNAL_MEMORY_ENABLED=true requires CLAUDE_MEM_PG_URL, CLAUDE_MEM_POSTGRES_URL, CLAUDE_MEM_PGVECTOR_URL, or CLAUDE_MEM_SERVER_DATABASE_URL');
+    throw new Error('CLAUDE_MEM_EXTERNAL_MEMORY_ENABLED=true requires CLAUDE_MEM_PG_URL or CLAUDE_MEM_SERVER_DATABASE_URL');
   }
 
   const valkeyUrl = firstNonEmpty(env.CLAUDE_MEM_VALKEY_URL, env.CLAUDE_MEM_REDIS_URL);
@@ -60,9 +55,9 @@ export function parseExternalMemoryConfig(env: ExternalMemoryEnv = process.env):
     pgUrl,
     valkeyUrl,
     vectorDimensions: parsePositiveInt(
-      firstNonEmpty(env.CLAUDE_MEM_PG_VECTOR_DIMENSIONS, env.CLAUDE_MEM_PGVECTOR_DIMENSIONS) ?? undefined,
+      env.CLAUDE_MEM_PG_VECTOR_DIMENSIONS,
       DEFAULT_VECTOR_DIMENSIONS,
-      env.CLAUDE_MEM_PG_VECTOR_DIMENSIONS ? 'CLAUDE_MEM_PG_VECTOR_DIMENSIONS' : 'CLAUDE_MEM_PGVECTOR_DIMENSIONS'
+      'CLAUDE_MEM_PG_VECTOR_DIMENSIONS'
     ),
     valkeyPrefix: sanitizePrefix(env.CLAUDE_MEM_EXTERNAL_MEMORY_PREFIX || defaultPrefix(env)),
     cacheTtlSeconds: parsePositiveInt(env.CLAUDE_MEM_EXTERNAL_MEMORY_CACHE_TTL_SECONDS, DEFAULT_CACHE_TTL_SECONDS, 'CLAUDE_MEM_EXTERNAL_MEMORY_CACHE_TTL_SECONDS'),

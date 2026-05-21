@@ -38,11 +38,11 @@ class FakePgClient {
           kind: 'observation',
           type: 'decision',
           title: 'Use external store',
-          subtitle: 'pgvector + valkey',
+          subtitle: 'Postgres + Valkey',
           content: 'Use external store\n\nExternal memory is primary.',
           facts: ['Postgres is primary'],
           narrative: 'External memory is primary.',
-          concepts: ['storage', 'pgvector'],
+          concepts: ['storage', 'postgres'],
           files_read: ['CLAUDE.md'],
           files_modified: [],
           prompt_number: 3,
@@ -74,11 +74,11 @@ class FakePgClient {
         kind: 'observation',
         type: 'decision',
         title: 'Use external store',
-        subtitle: 'pgvector + valkey',
+        subtitle: 'Postgres + Valkey',
         content: 'Use external store\n\nExternal memory is primary.',
         facts: ['Postgres is primary'],
         narrative: 'External memory is primary.',
-        concepts: ['storage', 'pgvector'],
+        concepts: ['storage', 'postgres'],
         files_read: ['CLAUDE.md'],
         files_modified: [],
         prompt_number: 3,
@@ -104,10 +104,10 @@ const observation = {
   project: 'claude-mem',
   type: 'decision',
   title: 'Use external store',
-  subtitle: 'pgvector + valkey',
+  subtitle: 'Postgres + Valkey',
   facts: ['SQLite remains default'],
-  narrative: 'External memory is mirrored into pgvector for shared recall.',
-  concepts: ['storage', 'pgvector'],
+  narrative: 'External memory is mirrored into Postgres for shared recall.',
+  concepts: ['storage', 'postgres'],
   filesRead: ['CLAUDE.md'],
   filesModified: ['src/services/external-memory/pgvector-store.ts'],
   promptNumber: 3,
@@ -199,7 +199,7 @@ describe('PgvectorMemoryStore', () => {
     const rows = await store.searchObservations('external storage', {
       project: 'claude-mem',
       type: 'decision',
-      concepts: ['pgvector'],
+      concepts: ['postgres'],
       files: ['CLAUDE.md'],
       limit: 7,
     });
@@ -215,7 +215,7 @@ describe('PgvectorMemoryStore', () => {
     expect(query.values).toContain('external storage');
     expect(query.values).toContain('claude-mem');
     expect(query.values).toContainEqual(['decision']);
-    expect(query.values).toContainEqual(['pgvector']);
+    expect(query.values).toContainEqual(['postgres']);
   });
 
   test('builds primary-mode timeline windows without SQLite', async () => {

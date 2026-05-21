@@ -44,7 +44,7 @@ describe('ExternalMemoryValkeyCache', () => {
       id: 42,
       project: 'claude-mem',
       kind: 'observation',
-      content: 'External memory stored in pgvector',
+      content: 'External memory stored in Postgres',
       createdAtEpoch: 1_700_000_000_000,
     });
 
@@ -56,7 +56,7 @@ describe('ExternalMemoryValkeyCache', () => {
           id: 42,
           project: 'claude-mem',
           kind: 'observation',
-          content: 'External memory stored in pgvector',
+          content: 'External memory stored in Postgres',
           createdAtEpoch: 1_700_000_000_000,
         }),
         'EX',
