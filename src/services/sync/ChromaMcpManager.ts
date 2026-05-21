@@ -107,7 +107,21 @@ export class ChromaMcpManager {
 
     const isWindows = process.platform === 'win32';
     const uvxSpawnCommand = isWindows ? (process.env.ComSpec || 'cmd.exe') : 'uvx';
-    const uvxSpawnArgs = isWindows ? ['/c', 'uvx', ...commandArgs] : commandArgs;
+    // On Windows we spawn `cmd.exe /c uvx <args>`. cmd.exe parses unquoted
+    // `<`, `>`, `&`, `|`, `^` in the command line as redirection / pipe /
+    // escape metacharacters before launching uvx, so version pins like
+    // `protobuf<7` and `onnxruntime>=1.20` are treated as I/O redirects to
+    // files named `7` / `=1.20`, and the child dies in ~50ms before the MCP
+    // handshake — manifesting as "MCP error -32000: Connection closed" on
+    // every Chroma sync. Node's child_process auto-quoting only triggers on
+    // whitespace, so these metacharacters reach cmd.exe raw. Prefix each
+    // metacharacter with cmd.exe's own escape character `^` so cmd treats
+    // them as literal. See issues #2585, #2591, #2495, #2429, #2405.
+    const escapeForCmd = (arg: string): string =>
+      arg.replace(/([\^<>&|])/g, '^$1');
+    const uvxSpawnArgs = isWindows
+      ? ['/c', 'uvx', ...commandArgs.map(escapeForCmd)]
+      : commandArgs;
 
     logger.info('CHROMA_MCP', 'Connecting to chroma-mcp via MCP stdio', {
       command: uvxSpawnCommand,
