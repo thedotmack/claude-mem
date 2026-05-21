@@ -11,6 +11,15 @@ import type { CorpusFilter } from '../../knowledge/types.js';
 const ALLOWED_CORPUS_TYPES = ['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change', 'security_alert', 'security_note'] as const;
 const ALLOWED_CORPUS_TYPE_SET = new Set<string>(ALLOWED_CORPUS_TYPES);
 
+// Express 5 types `req.params[name]` as `string | string[]` to cover wildcard
+// routes; our routes use a single :name segment so the runtime value is
+// always a string. Narrow once here instead of casting at every callsite.
+function extractRouteName(value: string | string[] | undefined): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) return value[0] ?? '';
+  return '';
+}
+
 const stringArrayLike = z.preprocess((value) => {
   if (value === undefined || value === null || value === '') return undefined;
   if (Array.isArray(value)) return value;
@@ -105,7 +114,7 @@ export class CorpusRoutes extends BaseRouteHandler {
   });
 
   private handleGetCorpus = this.wrapHandler((req: Request, res: Response): void => {
-    const { name } = req.params;
+    const name = extractRouteName(req.params.name);
     const corpus = this.corpusStore.read(name);
 
     if (!corpus) {
@@ -122,7 +131,7 @@ export class CorpusRoutes extends BaseRouteHandler {
   });
 
   private handleDeleteCorpus = this.wrapHandler((req: Request, res: Response): void => {
-    const { name } = req.params;
+    const name = extractRouteName(req.params.name);
     const existed = this.corpusStore.delete(name);
 
     if (!existed) {
@@ -138,7 +147,7 @@ export class CorpusRoutes extends BaseRouteHandler {
   });
 
   private handleRebuildCorpus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { name } = req.params;
+    const name = extractRouteName(req.params.name);
     const existingCorpus = this.corpusStore.read(name);
 
     if (!existingCorpus) {
@@ -157,7 +166,7 @@ export class CorpusRoutes extends BaseRouteHandler {
   });
 
   private handlePrimeCorpus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { name } = req.params;
+    const name = extractRouteName(req.params.name);
     const corpus = this.corpusStore.read(name);
 
     if (!corpus) {
@@ -174,7 +183,7 @@ export class CorpusRoutes extends BaseRouteHandler {
   });
 
   private handleQueryCorpus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { name } = req.params;
+    const name = extractRouteName(req.params.name);
     const corpus = this.corpusStore.read(name);
 
     if (!corpus) {
@@ -192,7 +201,7 @@ export class CorpusRoutes extends BaseRouteHandler {
   });
 
   private handleReprimeCorpus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { name } = req.params;
+    const name = extractRouteName(req.params.name);
     const corpus = this.corpusStore.read(name);
 
     if (!corpus) {

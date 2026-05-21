@@ -21,3 +21,5 @@ export interface CursorHooksJson {
     stop?: Array<{ command: string }>;
   };
 }
+
+export type Platform = 'windows' | 'unix';
