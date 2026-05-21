@@ -2,7 +2,7 @@
 
 import type { Database } from 'bun:sqlite';
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
-import { verifyServerApiKey } from '../auth/api-key-service.js';
+import { verifyServerApiKey } from '../auth/api-key-service-sqlite.js';
 
 export interface AuthContext {
   userId: string | null;

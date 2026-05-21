@@ -1,5 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
-
+//
+// fix — renamed from api-key-service.ts to make the SQLite-only
+// scope explicit. WORKER MODE ONLY; server-beta uses
+// src/server/middleware/postgres-auth.ts + src/storage/postgres/auth.ts
+// for tenant-scoped key verification against Postgres.
+//
+// Allowed consumers (worker runtime only):
+//   - src/services/worker-service.ts          (worker HTTP boot path)
+//   - src/server/middleware/auth.ts           (worker-mounted auth middleware)
+// Forbidden consumers (server-beta runtime):
+//   - any other file under src/server/* outside the two allowed paths above.
+//     server-beta is firewalled from bun:sqlite; use
+//     src/server/middleware/postgres-auth.ts + src/storage/postgres/auth.ts
+//     for tenant-scoped key verification against Postgres.
 import { createHash, randomBytes } from 'crypto';
 import { Database } from 'bun:sqlite';
 import { AuthRepository, ensureServerStorageSchema } from '../../storage/sqlite/index.js';
