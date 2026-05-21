@@ -98,7 +98,14 @@ export function captureProcessStartToken(pid: number): string | null {
         timeout: 3000,
         windowsHide: true,
       });
-      if (result.status !== 0) return null;
+      // Idiomatic spawnSync guard: result.error is set on spawn-time
+      // failures (ENOENT, EACCES), result.status is null when the child
+      // never exited normally (timeout, signaled). We treat any of these
+      // as "no token available" and fall through to verifyPidFileOwnership
+      // trusting the live PID — the same behavior as before this branch
+      // existed, so no regression on Windows hosts where PowerShell is
+      // somehow unavailable.
+      if (result.error || result.status !== 0) return null;
       const token = result.stdout.trim();
       return token.length > 0 ? token : null;
     } catch (error: unknown) {
@@ -116,7 +123,10 @@ export function captureProcessStartToken(pid: number): string | null {
       timeout: 2000,
       env: { ...process.env, LC_ALL: 'C', LANG: 'C' }
     });
-    if (result.status !== 0) return null;
+    // Same idiomatic spawnSync guard as the Windows branch above —
+    // result.error covers spawn-time failures, result.status !== 0 covers
+    // non-zero exits and signal-killed children.
+    if (result.error || result.status !== 0) return null;
     const token = result.stdout.trim();
     return token.length > 0 ? token : null;
   } catch (error: unknown) {
