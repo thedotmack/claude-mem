@@ -6,6 +6,7 @@ dist/
 .DS_Store
 .env
 .env.local
+external-memory.env
 *.tmp
 *.temp
 .install-version

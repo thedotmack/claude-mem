@@ -13,6 +13,7 @@ import type { DatabaseManager } from '../DatabaseManager.js';
 import type { SessionManager } from '../SessionManager.js';
 import type { WorkerRef, StorageResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
+import { syncExternalMemoryBatchIfEnabled } from '../../external-memory/sync-service.js';
 
 export async function processAgentResponse(
   text: string,
@@ -112,6 +113,32 @@ export async function processAgentResponse(
   session.earliestPendingTimestamp = null;
   session.restartGuard?.recordSuccess();
   worker?.broadcastProcessingStatus?.();
+
+  void syncExternalMemoryBatchIfEnabled({
+    memorySessionId: session.memorySessionId,
+    project: session.project,
+    promptNumber: session.lastPromptNumber,
+    discoveryTokens,
+    createdAtEpoch: result.createdAtEpoch,
+    observationIds: result.observationIds,
+    observations: labeledObservations,
+    summaryId: result.summaryId,
+    summary: summaryForStore,
+  }).then(syncResult => {
+    if (syncResult) {
+      logger.info('EXTERNAL_MEMORY', 'Mirrored stored batch to pgvector/Valkey', {
+        sessionId: session.sessionDbId,
+        observationsWritten: syncResult.observationsWritten,
+        summariesWritten: syncResult.summariesWritten,
+        cacheWrites: syncResult.cacheWrites,
+      });
+    }
+  }).catch(error => {
+    logger.warn('EXTERNAL_MEMORY', 'External pgvector/Valkey mirror failed; local SQLite storage remains authoritative', {
+      sessionId: session.sessionDbId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
 
   void notifyTelegram({
     observations: labeledObservations,

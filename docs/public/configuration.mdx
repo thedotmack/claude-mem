@@ -183,6 +183,29 @@ Search operations are provided via:
 - **HTTP API**: 10 endpoints on the worker service port (per-user, default `37700 + (uid % 100)`; see `~/.claude-mem/settings.json`)
 - **Auto-Invocation**: Claude recognizes natural language queries about past work
 
+### External Memory Mirror (pgvector + Valkey)
+
+The worker runtime keeps SQLite as the authoritative local store. You can also enable an external mirror that writes stored observations and summaries to Postgres with the `pgvector` extension and caches recent item IDs in Valkey/Redis.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_EXTERNAL_MEMORY_ENABLED` | `false` | Enables the optional external mirror. SQLite remains authoritative. |
+| `CLAUDE_MEM_PGVECTOR_URL` | — | Postgres connection string for the pgvector-backed table. Falls back to `CLAUDE_MEM_SERVER_DATABASE_URL`. |
+| `CLAUDE_MEM_PGVECTOR_DIMENSIONS` | `1536` | Vector dimension used when bootstrapping the pgvector column. |
+| `CLAUDE_MEM_VALKEY_URL` | — | Valkey/Redis connection string for recent-item cache writes. Falls back to `CLAUDE_MEM_REDIS_URL`. |
+| `CLAUDE_MEM_EXTERNAL_MEMORY_PREFIX` | `claude_mem_external_<worker-port>` | Cache key prefix for profile isolation. |
+| `CLAUDE_MEM_EXTERNAL_MEMORY_CACHE_TTL_SECONDS` | `86400` | TTL for cached items and project recency indexes. |
+
+When enabled, the worker bootstraps `claude_mem_external_memory_items` with full-text and pgvector indexes, mirrors each successfully stored SQLite batch best-effort, and logs mirror failures without blocking local storage. The built-in mirror stores text rows immediately and leaves the nullable `embedding` column empty unless a caller supplies vectors through the external memory store API.
+
+For local infrastructure, `docker-compose.external-memory.yml` starts pinned pgvector and Valkey services. With the example ports, set:
+
+```sh
+CLAUDE_MEM_EXTERNAL_MEMORY_ENABLED=true
+CLAUDE_MEM_PGVECTOR_URL=postgres://claude_mem:<password>@127.0.0.1:15432/claude_mem
+CLAUDE_MEM_VALKEY_URL=redis://:<valkey-password>@127.0.0.1:16379
+```
+
 ## Version Channel
 
 Claude-Mem supports switching between stable and beta versions via the web viewer UI.

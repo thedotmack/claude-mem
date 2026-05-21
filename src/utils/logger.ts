@@ -24,6 +24,7 @@ export type Component =
   | 'DB'
   | 'DEDUP'
   | 'ENV'
+  | 'EXTERNAL_MEMORY'
   | 'FOLDER_INDEX'
   | 'HOOK'
   | 'HTTP'
