@@ -34,9 +34,7 @@ function getGitignoreExcludes(basePath) {
   const gitignorePath = path.join(basePath, '.gitignore');
   if (!existsSync(gitignorePath)) return '';
 
-  const syncManagedFiles = new Set([
-    '.mcp.json',
-  ]);
+  const syncManagedFiles = new Set();
 
   const lines = readFileSync(gitignorePath, 'utf-8').split('\n');
   return lines

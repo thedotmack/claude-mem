@@ -44,7 +44,6 @@
     "dist",
     ".agents/plugins/marketplace.json",
     ".codex-plugin",
-    ".mcp.json",
     "plugin/.claude-plugin",
     "plugin/.codex-plugin",
     "plugin/.mcp.json",
