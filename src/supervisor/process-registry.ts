@@ -74,7 +74,40 @@ export function captureProcessStartToken(pid: number): string | null {
   }
 
   if (process.platform === 'win32') {
-    return null;
+    // Until this branch existed, Windows always returned null, which made
+    // verifyPidFileOwnership() short-circuit at `currentToken === null →
+    // return true`. The net effect was that PID reuse went completely
+    // undetected — when claude-mem's worker died and Windows reassigned
+    // its PID to an unrelated process (issue #2578: SignalRgbLauncher.exe
+    // is the example reported), `claude-mem status` happily reported the
+    // worker as healthy and `start` refused to launch a fresh one, leaving
+    // the user with a permanent deadlock.
+    //
+    // Capture (StartTime.Ticks, ProcessName) via PowerShell. The combination
+    // is robust against both kinds of PID reuse:
+    //   - Same image restarted (e.g. `bun.exe` crashed and OS assigned
+    //     the PID to a fresh `bun.exe`): StartTime.Ticks differ.
+    //   - Different image inherits PID (#2578 scenario): ProcessName differs.
+    // Get-Process is faster than Get-CimInstance and works without elevation
+    // for processes owned by the current user (the common case for a
+    // user-installed CC plugin).
+    try {
+      const psScript = `try{$p=Get-Process -Id ${pid} -ErrorAction Stop; "$($p.StartTime.Ticks)|$($p.ProcessName)"}catch{}`;
+      const result = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', psScript], {
+        encoding: 'utf-8',
+        timeout: 3000,
+        windowsHide: true,
+      });
+      if (result.status !== 0) return null;
+      const token = result.stdout.trim();
+      return token.length > 0 ? token : null;
+    } catch (error: unknown) {
+      logger.debug('SYSTEM', 'captureProcessStartToken: PowerShell exec failed', {
+        pid,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
   }
 
   try {
