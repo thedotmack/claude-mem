@@ -134,6 +134,7 @@
     "express": "^5.2.1",
     "glob": "^13.0.6",
     "handlebars": "^4.7.9",
+    "helmet": "^8.1.0",
     "ioredis": "^5.10.1",
     "pg": "^8.20.0",
     "picocolors": "^1.1.1",
