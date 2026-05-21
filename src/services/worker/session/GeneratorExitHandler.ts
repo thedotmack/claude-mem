@@ -12,9 +12,19 @@ export interface GeneratorExitDependencies {
 }
 
 function isHardStopReason(reason: ActiveSession['abortReason']): boolean {
+  // `overflow` is intentionally NOT in this list any more. With
+  // prompt-field truncation in src/sdk/prompts.ts a 130k-char Read
+  // result no longer blows the context window, but if an oversized
+  // conversation history or some other residual cause still trips
+  // "prompt is too long" on the Claude side, falling through to the
+  // pending-work restart path keeps the queued observations alive
+  // (vs. the old behavior of clearing the entire pending batch).
+  // The RestartGuard caps the number of consecutive overflow → respawn
+  // cycles, so we can't end up in an infinite loop — if the offending
+  // observation keeps overflowing after restart, the guard trips and
+  // we clear pending then.
   return reason === 'shutdown' ||
     reason === 'restart-guard' ||
-    reason === 'overflow' ||
     reason === 'quota' ||
     (typeof reason === 'string' && reason.startsWith('quota:'));
 }
