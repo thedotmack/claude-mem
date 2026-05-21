@@ -16,7 +16,7 @@ export interface ExternalMemoryCacheItem {
 }
 
 export interface ExternalObservationInput {
-  sqliteId: number;
+  sqliteId?: number | null;
   memorySessionId: string;
   project: string;
   type: string;
@@ -35,7 +35,7 @@ export interface ExternalObservationInput {
 }
 
 export interface ExternalSummaryInput {
-  sqliteId: number;
+  sqliteId?: number | null;
   memorySessionId: string;
   project: string;
   request: string;

@@ -31,13 +31,13 @@ Local worker environment:
 
 ```sh
 export CLAUDE_MEM_EXTERNAL_MEMORY_ENABLED=true
-export CLAUDE_MEM_PGVECTOR_URL='postgres://claude_mem:<password>@127.0.0.1:15432/claude_mem'
+export CLAUDE_MEM_PG_URL='postgres://claude_mem:<password>@127.0.0.1:15432/claude_mem'
 export CLAUDE_MEM_VALKEY_URL='redis://:<valkey-password>@127.0.0.1:16379'
 ```
 
 The external compose file binds database/cache ports to `127.0.0.1` only:
 
-- pgvector/Postgres: `127.0.0.1:15432` → container `pgvector:5432`
+- Postgres: `127.0.0.1:15432` → service `pg:5432`
 - Valkey: `127.0.0.1:16379` → container `valkey:6379` with `requirepass`
 
 ## Cloudflare Tunnel service addresses
@@ -66,14 +66,14 @@ If `cloudflared` joins the same Docker network as `docker-compose.external-memor
 
 | Purpose | Tunnel service value |
 |---------|----------------------|
-| pgvector/Postgres | `tcp://pgvector:5432` |
+| Postgres | `tcp://pg:5432` |
 | Valkey | `tcp://valkey:6379` |
 
 If `cloudflared` runs on the Docker host:
 
 | Purpose | Tunnel service value |
 |---------|----------------------|
-| pgvector/Postgres | `tcp://127.0.0.1:15432` |
+| Postgres | `tcp://127.0.0.1:15432` |
 | Valkey | `tcp://127.0.0.1:16379` |
 
 Example locally managed tunnel ingress:
@@ -89,4 +89,4 @@ ingress:
   - service: http_status:404
 ```
 
-Cloudflare treats non-HTTP Tunnel services as TCP streams; clients need `cloudflared access tcp` or WARP/client-to-tunnel access. Protect pgvector and Valkey hostnames with Cloudflare Access and do not expose either service directly to the public internet.
+Cloudflare treats non-HTTP Tunnel services as TCP streams; clients need `cloudflared access tcp` or WARP/client-to-tunnel access. Protect Postgres and Valkey hostnames with Cloudflare Access and do not expose either service directly to the public internet.

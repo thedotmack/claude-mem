@@ -2,7 +2,7 @@
 #
 # This stack provides only the two services used by
 # CLAUDE_MEM_EXTERNAL_MEMORY_ENABLED=true:
-#   - pgvector-backed Postgres for durable mirrored memory rows
+#   - Postgres for durable external memory rows
 #   - Valkey for recent-item cache/index keys
 #
 # Image pins verified 2026-05-21:
@@ -14,26 +14,26 @@
 #
 # Worker env:
 #   CLAUDE_MEM_EXTERNAL_MEMORY_ENABLED=true
-#   CLAUDE_MEM_PGVECTOR_URL=postgres://$POSTGRES_USER:$POSTGRES_PASSWORD@127.0.0.1:${PGVECTOR_HOST_PORT:-15432}/$POSTGRES_DB
+#   CLAUDE_MEM_PG_URL=postgres://$POSTGRES_USER:$POSTGRES_PASSWORD@127.0.0.1:${PG_HOST_PORT:-15432}/$POSTGRES_DB
 #   CLAUDE_MEM_VALKEY_URL=redis://:$VALKEY_PASSWORD@127.0.0.1:${VALKEY_HOST_PORT:-16379}
 
 name: claude-mem-external-memory
 
 x-images:
-  pgvector: &pgvector_image pgvector/pgvector:0.8.2-pg18@sha256:42e7f6b4e1eceb02ff14e3e6bc6108bbe259abbe83879dc1845d0da1ddeb555d
+  postgres: &postgres_image pgvector/pgvector:0.8.2-pg18@sha256:42e7f6b4e1eceb02ff14e3e6bc6108bbe259abbe83879dc1845d0da1ddeb555d
   valkey: &valkey_image valkey/valkey:9.1.0-alpine@sha256:a35428eba9043cc0b79dbe54100f0c92784f2de00ad09b01182bfb1c5c83d1bd
 
 services:
-  pgvector:
-    image: *pgvector_image
+  pg:
+    image: *postgres_image
     environment:
       POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
     ports:
-      - "127.0.0.1:${PGVECTOR_HOST_PORT:-15432}:5432"
+      - "127.0.0.1:${PG_HOST_PORT:-15432}:5432"
     volumes:
-      - external-pgvector-data:/var/lib/postgresql
+      - external-pg-data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 5s
@@ -68,5 +68,5 @@ services:
       retries: 12
 
 volumes:
-  external-pgvector-data:
+  external-pg-data:
   external-valkey-data:

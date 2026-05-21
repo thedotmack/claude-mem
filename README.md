@@ -226,7 +226,7 @@ The installer handles dependencies, plugin setup, AI provider configuration, wor
 4. **SQLite Database** - Stores sessions, observations, summaries
 5. **mem-search Skill** - Natural language queries with progressive disclosure
 6. **Chroma Vector Database** - Hybrid semantic + keyword search for intelligent context retrieval
-7. **Optional External Mirror** - Best-effort pgvector + Valkey storage for teams that need external memory infrastructure
+7. **Optional External Memory** - Postgres + Valkey storage for teams that need external memory infrastructure
 
 See [Architecture Overview](https://docs.claude-mem.ai/architecture/overview) for details.
 

@@ -13,7 +13,10 @@ import type { DatabaseManager } from '../DatabaseManager.js';
 import type { SessionManager } from '../SessionManager.js';
 import type { WorkerRef, StorageResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
-import { syncExternalMemoryBatchIfEnabled } from '../../external-memory/sync-service.js';
+import {
+  storeExternalMemoryBatchAsPrimaryIfEnabled,
+  syncExternalMemoryBatchIfEnabled,
+} from '../../external-memory/sync-service.js';
 
 export async function processAgentResponse(
   text: string,
@@ -75,18 +78,35 @@ export async function processAgentResponse(
     agent_id: session.pendingAgentId ?? null
   }));
 
-  let result: ReturnType<typeof sessionStore.storeObservations>;
+  const createdAtEpoch = originalTimestamp ?? Date.now();
+  let storedInExternalPrimary = false;
+  let result: StorageResult;
   try {
-    result = sessionStore.storeObservations(
-      session.memorySessionId,
-      session.project,
-      labeledObservations,
-      summaryForStore,
-      session.lastPromptNumber,
+    const externalPrimaryResult = await storeExternalMemoryBatchAsPrimaryIfEnabled({
+      memorySessionId: session.memorySessionId,
+      project: session.project,
+      promptNumber: session.lastPromptNumber,
       discoveryTokens,
-      originalTimestamp ?? undefined,
-      modelId
-    );
+      createdAtEpoch,
+      observations: labeledObservations,
+      summary: summaryForStore,
+    });
+
+    if (externalPrimaryResult) {
+      storedInExternalPrimary = true;
+      result = externalPrimaryResult;
+    } else {
+      result = sessionStore.storeObservations(
+        session.memorySessionId,
+        session.project,
+        labeledObservations,
+        summaryForStore,
+        session.lastPromptNumber,
+        discoveryTokens,
+        createdAtEpoch,
+        modelId
+      );
+    }
   } finally {
     session.pendingAgentId = null;
     session.pendingAgentType = null;
@@ -114,31 +134,33 @@ export async function processAgentResponse(
   session.restartGuard?.recordSuccess();
   worker?.broadcastProcessingStatus?.();
 
-  void syncExternalMemoryBatchIfEnabled({
-    memorySessionId: session.memorySessionId,
-    project: session.project,
-    promptNumber: session.lastPromptNumber,
-    discoveryTokens,
-    createdAtEpoch: result.createdAtEpoch,
-    observationIds: result.observationIds,
-    observations: labeledObservations,
-    summaryId: result.summaryId,
-    summary: summaryForStore,
-  }).then(syncResult => {
-    if (syncResult) {
-      logger.info('EXTERNAL_MEMORY', 'Mirrored stored batch to pgvector/Valkey', {
+  if (!storedInExternalPrimary) {
+    void syncExternalMemoryBatchIfEnabled({
+      memorySessionId: session.memorySessionId,
+      project: session.project,
+      promptNumber: session.lastPromptNumber,
+      discoveryTokens,
+      createdAtEpoch: result.createdAtEpoch,
+      observationIds: result.observationIds,
+      observations: labeledObservations,
+      summaryId: result.summaryId,
+      summary: summaryForStore,
+    }).then(syncResult => {
+      if (syncResult) {
+        logger.info('EXTERNAL_MEMORY', 'Mirrored stored batch to Postgres/Valkey', {
+          sessionId: session.sessionDbId,
+          observationsWritten: syncResult.observationsWritten,
+          summariesWritten: syncResult.summariesWritten,
+          cacheWrites: syncResult.cacheWrites,
+        });
+      }
+    }).catch(error => {
+      logger.warn('EXTERNAL_MEMORY', 'External Postgres/Valkey mirror failed; local SQLite storage remains authoritative', {
         sessionId: session.sessionDbId,
-        observationsWritten: syncResult.observationsWritten,
-        summariesWritten: syncResult.summariesWritten,
-        cacheWrites: syncResult.cacheWrites,
+        error: error instanceof Error ? error.message : String(error),
       });
-    }
-  }).catch(error => {
-    logger.warn('EXTERNAL_MEMORY', 'External pgvector/Valkey mirror failed; local SQLite storage remains authoritative', {
-      sessionId: session.sessionDbId,
-      error: error instanceof Error ? error.message : String(error),
     });
-  });
+  }
 
   void notifyTelegram({
     observations: labeledObservations,
@@ -155,7 +177,8 @@ export async function processAgentResponse(
     worker,
     discoveryTokens,
     agentName,
-    projectRoot
+    projectRoot,
+    storedInExternalPrimary
   );
 
   await syncAndBroadcastSummary(
@@ -166,7 +189,8 @@ export async function processAgentResponse(
     dbManager,
     worker,
     discoveryTokens,
-    agentName
+    agentName,
+    storedInExternalPrimary
   );
 }
 
@@ -199,7 +223,8 @@ async function syncAndBroadcastObservations(
   worker: WorkerRef | undefined,
   discoveryTokens: number,
   agentName: string,
-  projectRoot?: string
+  projectRoot?: string,
+  skipChroma: boolean = false
 ): Promise<void> {
   // Dedupe observation IDs before sync/broadcast: storeObservations may collapse
   // multiple parsed observations onto the same row via content_hash, producing
@@ -220,7 +245,8 @@ async function syncAndBroadcastObservations(
     }
     const chromaStart = Date.now();
 
-    dbManager.getChromaSync()?.syncObservation(
+    if (!skipChroma) {
+      dbManager.getChromaSync()?.syncObservation(
       obsId,
       session.contentSessionId,
       session.project,
@@ -243,6 +269,7 @@ async function syncAndBroadcastObservations(
         title: obs.title || '(untitled)'
       }, error);
     });
+    }
 
     broadcastObservation(worker, {
       id: obsId,
@@ -296,7 +323,8 @@ async function syncAndBroadcastSummary(
   dbManager: DatabaseManager,
   worker: WorkerRef | undefined,
   discoveryTokens: number,
-  agentName: string
+  agentName: string,
+  skipChroma: boolean = false
 ): Promise<void> {
   if (!summaryForStore || !result.summaryId) {
     return;
@@ -304,7 +332,8 @@ async function syncAndBroadcastSummary(
 
   const chromaStart = Date.now();
 
-  dbManager.getChromaSync()?.syncSummary(
+  if (!skipChroma) {
+    dbManager.getChromaSync()?.syncSummary(
     result.summaryId,
     session.contentSessionId,
     session.project,
@@ -325,6 +354,7 @@ async function syncAndBroadcastSummary(
       request: summaryForStore.request || '(no request)'
     }, error);
   });
+  }
 
   broadcastSummary(worker, {
     id: result.summaryId,

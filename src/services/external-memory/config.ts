@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
+export type ExternalMemoryMode = 'mirror' | 'primary';
+
 export type ExternalMemoryConfig =
   | { enabled: false }
   | {
       enabled: true;
-      pgvectorUrl: string;
+      mode: ExternalMemoryMode;
+      pgUrl: string;
       valkeyUrl: string;
       vectorDimensions: number;
       valkeyPrefix: string;
@@ -14,6 +17,9 @@ export type ExternalMemoryConfig =
 export interface ExternalMemoryEnv {
   [key: string]: string | undefined;
   CLAUDE_MEM_EXTERNAL_MEMORY_ENABLED?: string;
+  CLAUDE_MEM_PG_URL?: string;
+  CLAUDE_MEM_POSTGRES_URL?: string;
+  CLAUDE_MEM_PG_VECTOR_DIMENSIONS?: string;
   CLAUDE_MEM_PGVECTOR_URL?: string;
   CLAUDE_MEM_SERVER_DATABASE_URL?: string;
   CLAUDE_MEM_VALKEY_URL?: string;
@@ -21,6 +27,7 @@ export interface ExternalMemoryEnv {
   CLAUDE_MEM_PGVECTOR_DIMENSIONS?: string;
   CLAUDE_MEM_EXTERNAL_MEMORY_PREFIX?: string;
   CLAUDE_MEM_EXTERNAL_MEMORY_CACHE_TTL_SECONDS?: string;
+  CLAUDE_MEM_EXTERNAL_MEMORY_MODE?: string;
   CLAUDE_MEM_WORKER_PORT?: string;
 }
 
@@ -32,9 +39,14 @@ export function parseExternalMemoryConfig(env: ExternalMemoryEnv = process.env):
     return { enabled: false };
   }
 
-  const pgvectorUrl = firstNonEmpty(env.CLAUDE_MEM_PGVECTOR_URL, env.CLAUDE_MEM_SERVER_DATABASE_URL);
-  if (!pgvectorUrl) {
-    throw new Error('CLAUDE_MEM_EXTERNAL_MEMORY_ENABLED=true requires CLAUDE_MEM_PGVECTOR_URL or CLAUDE_MEM_SERVER_DATABASE_URL');
+  const pgUrl = firstNonEmpty(
+    env.CLAUDE_MEM_PG_URL,
+    env.CLAUDE_MEM_POSTGRES_URL,
+    env.CLAUDE_MEM_PGVECTOR_URL,
+    env.CLAUDE_MEM_SERVER_DATABASE_URL
+  );
+  if (!pgUrl) {
+    throw new Error('CLAUDE_MEM_EXTERNAL_MEMORY_ENABLED=true requires CLAUDE_MEM_PG_URL, CLAUDE_MEM_POSTGRES_URL, CLAUDE_MEM_PGVECTOR_URL, or CLAUDE_MEM_SERVER_DATABASE_URL');
   }
 
   const valkeyUrl = firstNonEmpty(env.CLAUDE_MEM_VALKEY_URL, env.CLAUDE_MEM_REDIS_URL);
@@ -44,9 +56,14 @@ export function parseExternalMemoryConfig(env: ExternalMemoryEnv = process.env):
 
   return {
     enabled: true,
-    pgvectorUrl,
+    mode: parseMode(env.CLAUDE_MEM_EXTERNAL_MEMORY_MODE),
+    pgUrl,
     valkeyUrl,
-    vectorDimensions: parsePositiveInt(env.CLAUDE_MEM_PGVECTOR_DIMENSIONS, DEFAULT_VECTOR_DIMENSIONS, 'CLAUDE_MEM_PGVECTOR_DIMENSIONS'),
+    vectorDimensions: parsePositiveInt(
+      firstNonEmpty(env.CLAUDE_MEM_PG_VECTOR_DIMENSIONS, env.CLAUDE_MEM_PGVECTOR_DIMENSIONS) ?? undefined,
+      DEFAULT_VECTOR_DIMENSIONS,
+      env.CLAUDE_MEM_PG_VECTOR_DIMENSIONS ? 'CLAUDE_MEM_PG_VECTOR_DIMENSIONS' : 'CLAUDE_MEM_PGVECTOR_DIMENSIONS'
+    ),
     valkeyPrefix: sanitizePrefix(env.CLAUDE_MEM_EXTERNAL_MEMORY_PREFIX || defaultPrefix(env)),
     cacheTtlSeconds: parsePositiveInt(env.CLAUDE_MEM_EXTERNAL_MEMORY_CACHE_TTL_SECONDS, DEFAULT_CACHE_TTL_SECONDS, 'CLAUDE_MEM_EXTERNAL_MEMORY_CACHE_TTL_SECONDS'),
   };
@@ -55,6 +72,14 @@ export function parseExternalMemoryConfig(env: ExternalMemoryEnv = process.env):
 function isEnabled(value: string | undefined): boolean {
   const normalized = (value ?? '').trim().toLowerCase();
   return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+}
+
+function parseMode(value: string | undefined): ExternalMemoryMode {
+  const normalized = (value ?? 'mirror').trim().toLowerCase();
+  if (normalized === 'mirror' || normalized === 'primary') {
+    return normalized;
+  }
+  throw new Error('CLAUDE_MEM_EXTERNAL_MEMORY_MODE must be mirror or primary');
 }
 
 function firstNonEmpty(...values: Array<string | undefined>): string | null {

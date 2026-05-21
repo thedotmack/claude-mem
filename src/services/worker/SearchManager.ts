@@ -19,6 +19,7 @@ import {
 import type { TimelineData } from './search/index.js';
 import { ResultFormatter } from './search/ResultFormatter.js';
 import { ChromaUnavailableError } from './search/errors.js';
+import { getExternalMemoryPrimaryStore } from '../external-memory/sync-service.js';
 
 export class SearchManager {
   private orchestrator: SearchOrchestrator;
@@ -150,7 +151,19 @@ export class SearchManager {
     const searchSessions = !type || type === 'sessions';
     const searchPrompts = !type || type === 'prompts';
 
-    if (!query) {
+    const externalStore = await getExternalMemoryPrimaryStore();
+    if (externalStore) {
+      logger.debug('SEARCH', 'Using external Postgres primary search', { typeFilter: type || 'all' });
+      if (searchObservations) {
+        observations = await externalStore.searchObservations(query, { ...options, type: obs_type, concepts, files });
+      }
+      if (searchSessions) {
+        sessions = await externalStore.searchSummaries(query, options);
+      }
+      if (searchPrompts) {
+        prompts = [];
+      }
+    } else if (!query) {
       logger.debug('SEARCH', 'Filter-only query (no query text), using direct SQLite filtering', { enablesDateFilters: true });
       const obsOptions = { ...options, type: obs_type, concepts, files };
       if (searchObservations) {
@@ -427,6 +440,7 @@ export class SearchManager {
     const depthAfter = depth_after != null ? Number(depth_after) : 10;
     const anchorAsNumber = this.parseNumericAnchor(anchor);
     const cwd = process.cwd();
+    const externalStore = await getExternalMemoryPrimaryStore();
 
     if (!anchor && !query) {
       return {
@@ -455,7 +469,9 @@ export class SearchManager {
     if (query) {
       let results: ObservationSearchResult[] = [];
 
-      if (this.chromaSync) {
+      if (externalStore) {
+        results = await externalStore.searchObservations(query, { project, limit: 1 });
+      } else if (this.chromaSync) {
         logger.debug('SEARCH', 'Using hybrid semantic search for timeline query', {});
         const ninetyDaysAgo = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
         try {
@@ -466,7 +482,7 @@ export class SearchManager {
         }
       }
 
-      if (results.length === 0) {
+      if (!externalStore && results.length === 0) {
         try {
           const ftsResults = this.sessionSearch.searchObservations(query, { project, limit: 1 });
           if (ftsResults.length > 0) {
@@ -490,11 +506,15 @@ export class SearchManager {
       anchorId = topResult.id;
       anchorEpoch = topResult.created_at_epoch;
       logger.debug('SEARCH', 'Query mode: Using observation as timeline anchor', { observationId: topResult.id });
-      timelineData = this.sessionStore.getTimelineAroundObservation(topResult.id, topResult.created_at_epoch, depthBefore, depthAfter, project);
+      timelineData = externalStore
+        ? await externalStore.getTimelineAroundObservation(topResult.id, topResult.created_at_epoch, depthBefore, depthAfter, project)
+        : this.sessionStore.getTimelineAroundObservation(topResult.id, topResult.created_at_epoch, depthBefore, depthAfter, project);
     }
     // MODE 2: Anchor-based timeline
     else if (anchorAsNumber !== null) {
-      const obs = this.sessionStore.getObservationById(anchorAsNumber);
+      const obs = externalStore
+        ? await externalStore.getObservationById(anchorAsNumber)
+        : this.sessionStore.getObservationById(anchorAsNumber);
       if (!obs) {
         return {
           content: [{
@@ -506,12 +526,16 @@ export class SearchManager {
       }
       anchorId = anchorAsNumber;
       anchorEpoch = obs.created_at_epoch;
-      timelineData = this.sessionStore.getTimelineAroundObservation(anchorAsNumber, anchorEpoch, depthBefore, depthAfter, project);
+      timelineData = externalStore
+        ? await externalStore.getTimelineAroundObservation(anchorAsNumber, anchorEpoch, depthBefore, depthAfter, project)
+        : this.sessionStore.getTimelineAroundObservation(anchorAsNumber, anchorEpoch, depthBefore, depthAfter, project);
     } else if (typeof anchor === 'string') {
       if (anchor.startsWith('S') || anchor.startsWith('#S')) {
         const sessionId = anchor.replace(/^#?S/, '');
         const sessionNum = parseInt(sessionId, 10);
-        const sessions = this.sessionStore.getSessionSummariesByIds([sessionNum]);
+        const sessions = externalStore
+          ? await externalStore.getSessionSummariesByIds([sessionNum])
+          : this.sessionStore.getSessionSummariesByIds([sessionNum]);
         if (sessions.length === 0) {
           return {
             content: [{
@@ -523,7 +547,9 @@ export class SearchManager {
         }
         anchorEpoch = sessions[0].created_at_epoch;
         anchorId = `S${sessionNum}`;
-        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project);
+        timelineData = externalStore
+          ? await externalStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project)
+          : this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project);
       } else {
         const date = new Date(anchor);
         if (isNaN(date.getTime())) {
@@ -537,7 +563,9 @@ export class SearchManager {
         }
         anchorEpoch = date.getTime();
         anchorId = anchor;
-        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project);
+        timelineData = externalStore
+          ? await externalStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project)
+          : this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project);
       }
     } else {
       return {
@@ -689,8 +717,11 @@ export class SearchManager {
     const normalized = this.normalizeParams(args);
     const { query, ...filters } = normalized;
     let results: ObservationSearchResult[] = [];
+    const externalStore = await getExternalMemoryPrimaryStore();
 
-    if (this.chromaSync) {
+    if (externalStore) {
+      results = await externalStore.searchObservations(query, { ...filters, type: 'decision' });
+    } else if (this.chromaSync) {
       if (query) {
         logger.debug('SEARCH', 'Using Chroma semantic search with type=decision filter', {});
         try {
@@ -733,7 +764,7 @@ export class SearchManager {
       }
     }
 
-    if (results.length === 0) {
+    if (!externalStore && results.length === 0) {
       results = this.sessionSearch.findByType('decision', filters);
     }
 
@@ -759,10 +790,23 @@ export class SearchManager {
 
   async changes(args: any): Promise<any> {
     const normalized = this.normalizeParams(args);
-    const { ...filters } = normalized;
+    const { query, ...filters } = normalized;
     let results: ObservationSearchResult[] = [];
+    const externalStore = await getExternalMemoryPrimaryStore();
 
-    if (this.chromaSync) {
+    if (externalStore) {
+      const [typeResults, conceptResults] = await Promise.all([
+        externalStore.searchObservations(query, { ...filters, type: 'change' }),
+        externalStore.searchObservations(query, { ...filters, concepts: ['change', 'what-changed'] }),
+      ]);
+      const byId = new Map<number, ObservationSearchResult>();
+      for (const result of [...typeResults, ...conceptResults]) {
+        byId.set(result.id, result);
+      }
+      results = Array.from(byId.values())
+        .sort((a, b) => b.created_at_epoch - a.created_at_epoch)
+        .slice(0, filters.limit || 20);
+    } else if (this.chromaSync) {
       logger.debug('SEARCH', 'Using hybrid search for change-related observations', {});
 
       const typeResults = this.sessionSearch.findByType('change', filters);
@@ -795,7 +839,7 @@ export class SearchManager {
       }
     }
 
-    if (results.length === 0) {
+    if (!externalStore && results.length === 0) {
       const typeResults = this.sessionSearch.findByType('change', filters);
       const conceptResults = this.sessionSearch.findByConcept('change', filters);
       const whatChangedResults = this.sessionSearch.findByConcept('what-changed', filters);
@@ -835,10 +879,13 @@ export class SearchManager {
 
   async howItWorks(args: any): Promise<any> {
     const normalized = this.normalizeParams(args);
-    const { ...filters } = normalized;
+    const { query, ...filters } = normalized;
     let results: ObservationSearchResult[] = [];
+    const externalStore = await getExternalMemoryPrimaryStore();
 
-    if (this.chromaSync) {
+    if (externalStore) {
+      results = await externalStore.searchObservations(query, { ...filters, concepts: 'how-it-works' });
+    } else if (this.chromaSync) {
       logger.debug('SEARCH', 'Using metadata-first + semantic ranking for how-it-works', {});
       const metadataResults = this.sessionSearch.findByConcept('how-it-works', filters);
 
@@ -860,7 +907,7 @@ export class SearchManager {
       }
     }
 
-    if (results.length === 0) {
+    if (!externalStore && results.length === 0) {
       results = this.sessionSearch.findByConcept('how-it-works', filters);
     }
 
@@ -888,8 +935,11 @@ export class SearchManager {
     const normalized = this.normalizeParams(args);
     const { query, ...options } = normalized;
     let results: ObservationSearchResult[] = [];
+    const externalStore = await getExternalMemoryPrimaryStore();
 
-    if (this.chromaSync) {
+    if (externalStore) {
+      results = await externalStore.searchObservations(query, options);
+    } else if (this.chromaSync) {
       logger.debug('SEARCH', 'Using hybrid semantic search (Chroma + SQLite)', {});
 
       let whereFilter: Record<string, any> = { doc_type: 'observation' };
@@ -928,7 +978,7 @@ export class SearchManager {
       }
     }
 
-    if (results.length === 0) {
+    if (!externalStore && results.length === 0) {
       try {
         const ftsResults = this.sessionSearch.searchObservations(query, options);
         if (ftsResults.length > 0) {
@@ -963,8 +1013,11 @@ export class SearchManager {
     const normalized = this.normalizeParams(args);
     const { query, ...options } = normalized;
     let results: SessionSummarySearchResult[] = [];
+    const externalStore = await getExternalMemoryPrimaryStore();
 
-    if (this.chromaSync) {
+    if (externalStore) {
+      results = await externalStore.searchSummaries(query, options);
+    } else if (this.chromaSync) {
       logger.debug('SEARCH', 'Using hybrid semantic search for sessions', {});
 
       let whereFilter: Record<string, any> = { doc_type: 'session_summary' };
@@ -1003,7 +1056,7 @@ export class SearchManager {
       }
     }
 
-    if (results.length === 0) {
+    if (!externalStore && results.length === 0) {
       try {
         const ftsResults = this.sessionSearch.searchSessions(query, options);
         if (ftsResults.length > 0) {
@@ -1237,28 +1290,37 @@ export class SearchManager {
     const depthBefore = depth_before != null ? Number(depth_before) : 10;
     const depthAfter = depth_after != null ? Number(depth_after) : 10;
     const cwd = process.cwd();
+    const anchorAsNumber = this.parseNumericAnchor(anchor);
+    const externalStore = await getExternalMemoryPrimaryStore();
     let anchorEpoch: number;
     let anchorId: string | number = anchor;
 
     let timelineData;
-    if (typeof anchor === 'number') {
-      const obs = this.sessionStore.getObservationById(anchor);
+    if (anchorAsNumber !== null) {
+      const obs = externalStore
+        ? await externalStore.getObservationById(anchorAsNumber)
+        : this.sessionStore.getObservationById(anchorAsNumber);
       if (!obs) {
         return {
           content: [{
             type: 'text' as const,
-            text: `Observation #${anchor} not found`
+            text: `Observation #${anchorAsNumber} not found`
           }],
           isError: true
         };
       }
+      anchorId = anchorAsNumber;
       anchorEpoch = obs.created_at_epoch;
-      timelineData = this.sessionStore.getTimelineAroundObservation(anchor, anchorEpoch, depthBefore, depthAfter, project);
+      timelineData = externalStore
+        ? await externalStore.getTimelineAroundObservation(anchorAsNumber, anchorEpoch, depthBefore, depthAfter, project)
+        : this.sessionStore.getTimelineAroundObservation(anchorAsNumber, anchorEpoch, depthBefore, depthAfter, project);
     } else if (typeof anchor === 'string') {
       if (anchor.startsWith('S') || anchor.startsWith('#S')) {
         const sessionId = anchor.replace(/^#?S/, '');
         const sessionNum = parseInt(sessionId, 10);
-        const sessions = this.sessionStore.getSessionSummariesByIds([sessionNum]);
+        const sessions = externalStore
+          ? await externalStore.getSessionSummariesByIds([sessionNum])
+          : this.sessionStore.getSessionSummariesByIds([sessionNum]);
         if (sessions.length === 0) {
           return {
             content: [{
@@ -1270,7 +1332,9 @@ export class SearchManager {
         }
         anchorEpoch = sessions[0].created_at_epoch;
         anchorId = `S${sessionNum}`;
-        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project);
+        timelineData = externalStore
+          ? await externalStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project)
+          : this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project);
       } else {
         const date = new Date(anchor);
         if (isNaN(date.getTime())) {
@@ -1283,7 +1347,9 @@ export class SearchManager {
           };
         }
         anchorEpoch = date.getTime(); 
-        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project);
+        timelineData = externalStore
+          ? await externalStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project)
+          : this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project);
       }
     } else {
       return {
@@ -1429,8 +1495,14 @@ export class SearchManager {
     const cwd = process.cwd();
 
     let results: ObservationSearchResult[] = [];
+    const externalStore = await getExternalMemoryPrimaryStore();
 
-    if (this.chromaSync) {
+    if (externalStore) {
+      results = await externalStore.searchObservations(query, {
+        project,
+        limit: mode === 'auto' ? 1 : limit,
+      });
+    } else if (this.chromaSync) {
       logger.debug('SEARCH', 'Using hybrid semantic search for timeline query', {});
 
       let whereFilter: Record<string, any> = { doc_type: 'observation' };
@@ -1468,7 +1540,7 @@ export class SearchManager {
       }
     }
 
-    if (results.length === 0) {
+    if (!externalStore && results.length === 0) {
       try {
         const ftsResults = this.sessionSearch.searchObservations(query, { project, limit: mode === 'auto' ? 1 : limit });
         if (ftsResults.length > 0) {
@@ -1524,13 +1596,21 @@ export class SearchManager {
       const topResult = results[0];
       logger.debug('SEARCH', 'Auto mode: Using observation as timeline anchor', { observationId: topResult.id });
 
-      const timelineData = this.sessionStore.getTimelineAroundObservation(
-        topResult.id,
-        topResult.created_at_epoch,
-        depthBefore,
-        depthAfter,
-        project
-      );
+      const timelineData = externalStore
+        ? await externalStore.getTimelineAroundObservation(
+          topResult.id,
+          topResult.created_at_epoch,
+          depthBefore,
+          depthAfter,
+          project
+        )
+        : this.sessionStore.getTimelineAroundObservation(
+          topResult.id,
+          topResult.created_at_epoch,
+          depthBefore,
+          depthAfter,
+          project
+        );
 
       const items: TimelineItem[] = [
         ...(timelineData.observations || []).map(obs => ({ type: 'observation' as const, data: obs, epoch: obs.created_at_epoch })),
@@ -1538,7 +1618,7 @@ export class SearchManager {
         ...(timelineData.prompts || []).map(prompt => ({ type: 'prompt' as const, data: prompt, epoch: prompt.created_at_epoch }))
       ];
       items.sort((a, b) => a.epoch - b.epoch);
-      const filteredItems = this.timelineService.filterByDepth(items, topResult.id, 0, depthBefore, depthAfter);
+      const filteredItems = this.timelineService.filterByDepth(items, topResult.id, topResult.created_at_epoch, depthBefore, depthAfter);
 
       if (!filteredItems || filteredItems.length === 0) {
         return {

@@ -11,6 +11,7 @@ import { groupByDate } from '../../../../shared/timeline-formatting.js';
 import { countObservationsByProjects } from '../../../context/ObservationCompiler.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
+import { getExternalMemoryPrimaryStore } from '../../../external-memory/sync-service.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from '../../../sqlite/types.js';
 
 const ONBOARDING_EXPLAINER_PATH: string = path.resolve(__dirname, '../skills/how-it-works/onboarding-explainer.md');
@@ -170,8 +171,10 @@ export class SearchRoutes extends BaseRouteHandler {
     const query = req.query as Record<string, any>;
     const rawConcept = query.concepts ?? query.concept;
     const concept = Array.isArray(rawConcept) ? rawConcept[0] : rawConcept;
-    const strategyResult = await orchestrator.findByConcept(concept, query);
-    const observations = strategyResult.results.observations;
+    const externalStore = await getExternalMemoryPrimaryStore();
+    const observations = externalStore
+      ? await externalStore.searchObservations(undefined, { ...query, concepts: concept })
+      : (await orchestrator.findByConcept(concept, query)).results.observations;
 
     if (observations.length === 0) {
       res.json({
@@ -204,7 +207,10 @@ export class SearchRoutes extends BaseRouteHandler {
         ? rawFilePath.split(',')[0].trim()
         : rawFilePath;
 
-    const { observations, sessions } = await orchestrator.findByFile(filePath, query);
+    const externalStore = await getExternalMemoryPrimaryStore();
+    const { observations, sessions } = externalStore
+      ? { observations: await externalStore.searchObservations(undefined, { ...query, files: filePath }), sessions: [] }
+      : await orchestrator.findByFile(filePath, query);
     const totalResults = observations.length + sessions.length;
 
     if (totalResults === 0) {
@@ -276,8 +282,10 @@ export class SearchRoutes extends BaseRouteHandler {
       : rawType;
     const typeStr = Array.isArray(type) ? type.join(', ') : type;
 
-    const strategyResult = await orchestrator.findByType(type, query);
-    const observations = strategyResult.results.observations;
+    const externalStore = await getExternalMemoryPrimaryStore();
+    const observations = externalStore
+      ? await externalStore.searchObservations(undefined, { ...query, type })
+      : (await orchestrator.findByType(type, query)).results.observations;
 
     if (observations.length === 0) {
       res.json({

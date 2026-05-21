@@ -5,12 +5,13 @@ import type { PostgresQueryable } from '../../storage/postgres/utils.js';
 import { parseExternalMemoryConfig, type ExternalMemoryConfig } from './config.js';
 import { bootstrapExternalMemorySchema } from './schema.js';
 import { PgvectorMemoryStore } from './pgvector-store.js';
+import type { StorageResult } from '../worker/agents/types.js';
 import { ExternalMemoryValkeyCache, type ValkeyLikeClient } from './valkey-cache.js';
 import type { ExternalMemoryCacheItem, ExternalMemoryWriteResult } from './types.js';
 
 export interface ExternalMemoryWritableStore {
   upsertObservation(input: {
-    sqliteId: number;
+    sqliteId?: number | null;
     memorySessionId: string;
     project: string;
     type: string;
@@ -29,7 +30,7 @@ export interface ExternalMemoryWritableStore {
   }): Promise<ExternalMemoryWriteResult>;
 
   upsertSummary(input: {
-    sqliteId: number;
+    sqliteId?: number | null;
     memorySessionId: string;
     project: string;
     request: string;
@@ -61,6 +62,7 @@ export interface ExternalMemoryBatchObservation {
   files_modified: string[];
   agent_type?: string | null;
   agent_id?: string | null;
+  metadata?: Record<string, unknown>;
 }
 
 export interface ExternalMemoryBatchSummary {
@@ -84,6 +86,16 @@ export interface ExternalMemoryBatchInput {
   summary: ExternalMemoryBatchSummary | null;
 }
 
+export interface ExternalMemoryPrimaryBatchInput {
+  memorySessionId: string;
+  project: string;
+  promptNumber?: number | null;
+  discoveryTokens?: number;
+  createdAtEpoch: number;
+  observations: ExternalMemoryBatchObservation[];
+  summary: ExternalMemoryBatchSummary | null;
+}
+
 export interface ExternalMemorySyncResult {
   observationsWritten: number;
   summariesWritten: number;
@@ -95,6 +107,72 @@ export class ExternalMemorySyncService {
     private readonly store: ExternalMemoryWritableStore,
     private readonly cache: ExternalMemoryCache
   ) {}
+
+  async storePrimaryBatch(input: ExternalMemoryPrimaryBatchInput): Promise<StorageResult> {
+    const observationIds: number[] = [];
+
+    for (const observation of input.observations) {
+      const stored = await this.store.upsertObservation({
+        sqliteId: null,
+        memorySessionId: input.memorySessionId,
+        project: input.project,
+        type: observation.type,
+        title: observation.title,
+        subtitle: observation.subtitle,
+        facts: observation.facts,
+        narrative: observation.narrative,
+        concepts: observation.concepts,
+        filesRead: observation.files_read,
+        filesModified: observation.files_modified,
+        promptNumber: input.promptNumber ?? null,
+        discoveryTokens: input.discoveryTokens ?? 0,
+        createdAtEpoch: input.createdAtEpoch,
+        metadata: {
+          ...(observation.metadata ?? {}),
+          agent_type: observation.agent_type ?? null,
+          agent_id: observation.agent_id ?? null,
+          primary: true,
+        },
+      });
+      observationIds.push(stored.id);
+      await this.cache.cacheItem({
+        id: stored.id,
+        project: input.project,
+        kind: 'observation',
+        content: observation.narrative || observation.title || '',
+        createdAtEpoch: stored.createdAtEpoch,
+      });
+    }
+
+    let summaryId: number | null = null;
+    if (input.summary) {
+      const stored = await this.store.upsertSummary({
+        sqliteId: null,
+        memorySessionId: input.memorySessionId,
+        project: input.project,
+        request: input.summary.request,
+        investigated: input.summary.investigated,
+        learned: input.summary.learned,
+        completed: input.summary.completed,
+        nextSteps: input.summary.next_steps,
+        notes: input.summary.notes,
+        promptNumber: input.promptNumber ?? null,
+        discoveryTokens: input.discoveryTokens ?? 0,
+        createdAtEpoch: input.createdAtEpoch,
+        metadata: { primary: true },
+      });
+      summaryId = stored.id;
+      await this.cache.cacheItem({
+        id: stored.id,
+        project: input.project,
+        kind: 'summary',
+        content: input.summary.learned || input.summary.completed || input.summary.request,
+        createdAtEpoch: stored.createdAtEpoch,
+      });
+    }
+
+    return { observationIds, summaryId, createdAtEpoch: input.createdAtEpoch };
+  }
 
   async syncBatch(input: ExternalMemoryBatchInput): Promise<ExternalMemorySyncResult> {
     let observationsWritten = 0;
@@ -132,6 +210,7 @@ export class ExternalMemorySyncService {
           discoveryTokens: input.discoveryTokens ?? 0,
           createdAtEpoch: input.createdAtEpoch,
           metadata: {
+            ...(observation.metadata ?? {}),
             agent_type: observation.agent_type ?? null,
             agent_id: observation.agent_id ?? null,
           },
@@ -146,7 +225,7 @@ export class ExternalMemorySyncService {
         });
         cacheWrites++;
       } catch (error) {
-        logger.warn('EXTERNAL_MEMORY', 'Failed to mirror observation to pgvector/Valkey; continuing', {
+        logger.warn('EXTERNAL_MEMORY', 'Failed to mirror observation to Postgres/Valkey; continuing', {
           sqliteId,
           project: input.project,
           error: error instanceof Error ? error.message : String(error),
@@ -180,7 +259,7 @@ export class ExternalMemorySyncService {
         });
         cacheWrites++;
       } catch (error) {
-        logger.warn('EXTERNAL_MEMORY', 'Failed to mirror summary to pgvector/Valkey; continuing', {
+        logger.warn('EXTERNAL_MEMORY', 'Failed to mirror summary to Postgres/Valkey; continuing', {
           sqliteId: input.summaryId,
           project: input.project,
           error: error instanceof Error ? error.message : String(error),
@@ -197,6 +276,8 @@ interface ExternalMemoryRuntime {
   pool: PgPoolLike;
   valkey: RedisRuntimeClient;
   service: ExternalMemorySyncService;
+  store: PgvectorMemoryStore;
+  cache: ExternalMemoryValkeyCache;
   config: Extract<ExternalMemoryConfig, { enabled: true }>;
 }
 
@@ -240,6 +321,30 @@ export async function syncExternalMemoryBatchIfEnabled(input: ExternalMemoryBatc
 }
 
 export async function getExternalMemorySyncService(env: NodeJS.ProcessEnv = process.env): Promise<ExternalMemorySyncService | null> {
+  const runtime = await getExternalMemoryRuntime(env);
+  return runtime?.service ?? null;
+}
+
+export async function storeExternalMemoryBatchAsPrimaryIfEnabled(
+  input: ExternalMemoryPrimaryBatchInput,
+  env: NodeJS.ProcessEnv = process.env
+): Promise<StorageResult | null> {
+  const runtime = await getExternalMemoryRuntime(env);
+  if (!runtime || runtime.config.mode !== 'primary') {
+    return null;
+  }
+  return runtime.service.storePrimaryBatch(input);
+}
+
+export async function getExternalMemoryPrimaryStore(env: NodeJS.ProcessEnv = process.env): Promise<PgvectorMemoryStore | null> {
+  const runtime = await getExternalMemoryRuntime(env);
+  if (!runtime || runtime.config.mode !== 'primary') {
+    return null;
+  }
+  return runtime.store;
+}
+
+async function getExternalMemoryRuntime(env: NodeJS.ProcessEnv = process.env): Promise<ExternalMemoryRuntime | null> {
   const config = parseExternalMemoryConfig(env);
   if (!config.enabled) {
     return null;
@@ -247,21 +352,20 @@ export async function getExternalMemorySyncService(env: NodeJS.ProcessEnv = proc
 
   const key = runtimeKey(config);
   if (runtime?.key === key) {
-    return runtime.service;
+    return runtime;
   }
 
   if (initPromise) {
     const initialized = await initPromise;
     if (initialized.key === key) {
-      return initialized.service;
+      return initialized;
     }
   }
 
   const initializing = initializeExternalMemoryRuntime(config, key);
   initPromise = initializing;
   try {
-    const initialized = await initializing;
-    return initialized.service;
+    return await initializing;
   } finally {
     if (initPromise === initializing) {
       initPromise = null;
@@ -280,7 +384,7 @@ async function initializeExternalMemoryRuntime(
   await closeExternalMemorySyncService();
   const { Pool, Redis } = await externalMemoryDriverLoader();
   const pool = new Pool({
-    connectionString: config.pgvectorUrl,
+    connectionString: config.pgUrl,
     max: 5,
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 5_000,
@@ -301,17 +405,19 @@ async function initializeExternalMemoryRuntime(
     throw error;
   }
 
+  const store = new PgvectorMemoryStore(pool);
+  const cache = new ExternalMemoryValkeyCache(valkey as ValkeyLikeClient, {
+    prefix: config.valkeyPrefix,
+    ttlSeconds: config.cacheTtlSeconds,
+  });
+
   const initialized: ExternalMemoryRuntime = {
     key,
     pool,
     valkey,
-    service: new ExternalMemorySyncService(
-      new PgvectorMemoryStore(pool),
-      new ExternalMemoryValkeyCache(valkey as ValkeyLikeClient, {
-        prefix: config.valkeyPrefix,
-        ttlSeconds: config.cacheTtlSeconds,
-      })
-    ),
+    service: new ExternalMemorySyncService(store, cache),
+    store,
+    cache,
     config,
   };
   runtime = initialized;
@@ -369,10 +475,11 @@ export function __setExternalMemoryDriverLoaderForTesting(loader: ExternalMemory
 
 function runtimeKey(config: Extract<ExternalMemoryConfig, { enabled: true }>): string {
   return [
-    config.pgvectorUrl,
+    config.pgUrl,
     config.valkeyUrl,
     config.vectorDimensions,
     config.valkeyPrefix,
     config.cacheTtlSeconds,
+    config.mode,
   ].join('\x00');
 }

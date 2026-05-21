@@ -31,7 +31,7 @@ class FakeCache {
 }
 
 describe('ExternalMemorySyncService', () => {
-  test('mirrors stored observations and summaries into pgvector then Valkey cache', async () => {
+  test('mirrors stored observations and summaries into Postgres then Valkey cache', async () => {
     const store = new FakeStore();
     const cache = new FakeCache();
     const service = new ExternalMemorySyncService(store, cache);
@@ -48,9 +48,9 @@ describe('ExternalMemorySyncService', () => {
           type: 'decision',
           title: 'External storage',
           subtitle: null,
-          facts: ['pgvector stores searchable memory'],
+          facts: ['Postgres stores searchable memory'],
           narrative: 'Mirror observations externally.',
-          concepts: ['pgvector'],
+          concepts: ['postgres'],
           files_read: [],
           files_modified: [],
         },
@@ -83,12 +83,43 @@ describe('ExternalMemorySyncService', () => {
     expect(cache.items).toHaveLength(3);
   });
 
+
+  test('stores primary batches directly in Postgres and Valkey without SQLite ids', async () => {
+    const store = new FakeStore();
+    const cache = new FakeCache();
+    const service = new ExternalMemorySyncService(store, cache);
+
+    const result = await service.storePrimaryBatch({
+      memorySessionId: 'memory-session-primary',
+      project: 'claude-mem',
+      promptNumber: 5,
+      discoveryTokens: 111,
+      createdAtEpoch: 1_700_000_000_123,
+      observations: [
+        { type: 'decision', title: 'Primary Postgres', subtitle: null, facts: [], narrative: 'No SQLite observation row.', concepts: ['postgres'], files_read: [], files_modified: [] },
+      ],
+      summary: {
+        request: 'Use Postgres primary',
+        investigated: 'SQLite write path',
+        learned: 'Primary mode can write external ids directly',
+        completed: 'Stored primary batch',
+        next_steps: 'Verify worker retrieval',
+        notes: null,
+      },
+    });
+
+    expect(result).toEqual({ observationIds: [101], summaryId: 201, createdAtEpoch: 1_700_000_000_123 });
+    expect(store.observations[0]).toMatchObject({ sqliteId: null, memorySessionId: 'memory-session-primary' });
+    expect(store.summaries[0]).toMatchObject({ sqliteId: null, memorySessionId: 'memory-session-primary' });
+    expect(cache.items).toHaveLength(2);
+  });
+
   test('continues syncing later items when one external write fails', async () => {
     const store = new FakeStore();
     store.upsertObservation = async (input: unknown) => {
       store.observations.push(input);
       if ((input as { sqliteId: number }).sqliteId === 11) {
-        throw new Error('pgvector unavailable');
+        throw new Error('Postgres unavailable');
       }
       return { id: 112, createdAtEpoch: (input as { createdAtEpoch: number }).createdAtEpoch };
     };
@@ -157,7 +188,7 @@ describe('ExternalMemorySyncService', () => {
     }
   });
 
-  test('shares one pgvector/Valkey runtime across concurrent initialization calls', async () => {
+  test('shares one Postgres/Valkey runtime across concurrent initialization calls', async () => {
     let loaderCalls = 0;
     let poolConstructors = 0;
     let redisConstructors = 0;
@@ -226,7 +257,7 @@ describe('ExternalMemorySyncService', () => {
       await closeExternalMemorySyncService();
       const env = {
         CLAUDE_MEM_EXTERNAL_MEMORY_ENABLED: 'true',
-        CLAUDE_MEM_PGVECTOR_URL: 'postgres://claude_mem:test@127.0.0.1:15432/claude_mem',
+        CLAUDE_MEM_PG_URL: 'postgres://claude_mem:test@127.0.0.1:15432/claude_mem',
         CLAUDE_MEM_VALKEY_URL: 'redis://:test@127.0.0.1:16379',
       };
 

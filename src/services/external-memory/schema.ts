@@ -79,7 +79,7 @@ async function assertEmbeddingColumnDimensions(client: PostgresQueryable, expect
   }
   if (actualDimensions !== expectedDimensions) {
     throw new Error(
-      `Existing external memory embedding column uses vector(${actualDimensions}); set CLAUDE_MEM_PGVECTOR_DIMENSIONS=${actualDimensions} or recreate the external memory schema before using vector(${expectedDimensions})`
+      `Existing external memory embedding column uses vector(${actualDimensions}); set CLAUDE_MEM_PG_VECTOR_DIMENSIONS=${actualDimensions} or recreate the external memory schema before using vector(${expectedDimensions})`
     );
   }
 }
@@ -139,7 +139,7 @@ CREATE INDEX IF NOT EXISTS idx_external_memory_items_embedding_hnsw
   WHERE embedding IS NOT NULL;
 
 INSERT INTO claude_mem_external_schema_migrations (version, description)
-VALUES (${EXTERNAL_MEMORY_SCHEMA_VERSION}, 'external pgvector/valkey memory mirror')
+VALUES (${EXTERNAL_MEMORY_SCHEMA_VERSION}, 'external postgres/valkey memory')
 ON CONFLICT (version) DO NOTHING;
 `;
 }
