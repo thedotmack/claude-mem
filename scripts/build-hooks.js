@@ -78,6 +78,14 @@ async function buildHooks() {
       type: 'module',
       dependencies: {
         'zod': '^4.3.6',
+        // better-auth and @better-auth/api-key are externalized from the
+        // worker / server-beta esbuild bundles (see external lists below)
+        // so the worker artifact stays slim. They're loaded at runtime via
+        // the dynamic import() inside BetterAuthRoutes.ts (deferred until
+        // a /api/auth/* request hits — which most CC plugin sessions never
+        // make), so they need to be present in plugin/node_modules.
+        'better-auth': '^1.6.9',
+        '@better-auth/api-key': '^1.6.9',
         'tree-sitter-cli': '^0.26.5',
         'tree-sitter-c': '^0.24.1',
         'tree-sitter-cpp': '^0.23.4',
@@ -148,7 +156,19 @@ async function buildHooks() {
         'cohere-ai',
         'ollama',
         '@chroma-core/default-embed',
-        'onnxruntime-node'
+        'onnxruntime-node',
+        // better-auth is only invoked when an HTTP request hits
+        // /api/auth/* (see BetterAuthRoutes.ts). Most claude-mem
+        // sessions never touch that path, so we externalize the
+        // entire package family and load it via runtime require()
+        // when needed. This drops ~2.5MB and ~94 hard-coded OAuth
+        // provider URLs from the worker bundle (#2584). The plugin
+        // package.json declares both as dependencies, so they'll be
+        // resolvable in plugin/node_modules after install.
+        'better-auth',
+        'better-auth/node',
+        'better-auth/plugins',
+        '@better-auth/api-key',
       ],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
@@ -187,6 +207,13 @@ async function buildHooks() {
       external: [
         'bun:sqlite',
         'zod',
+        // Same rationale as worker-service: externalize the
+        // better-auth family so it's loaded at runtime from
+        // plugin/node_modules rather than inlined here (#2584).
+        'better-auth',
+        'better-auth/node',
+        'better-auth/plugins',
+        '@better-auth/api-key',
       ],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
