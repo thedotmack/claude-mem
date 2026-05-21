@@ -117,8 +117,14 @@ export class ChromaMcpManager {
     // whitespace, so these metacharacters reach cmd.exe raw. Prefix each
     // metacharacter with cmd.exe's own escape character `^` so cmd treats
     // them as literal. See issues #2585, #2591, #2495, #2429, #2405.
+    //
+    // We also double `%` to `%%` so cmd.exe does not expand user-supplied
+    // values like `chromaApiKey` against the process environment (`%VAR%`
+    // is the canonical env-var reference syntax in cmd.exe and is honored
+    // even inside `cmd /c`). Order matters: `%` must be doubled BEFORE the
+    // caret pass — escaping `^` first would corrupt the doubled `%%`.
     const escapeForCmd = (arg: string): string =>
-      arg.replace(/([\^<>&|])/g, '^$1');
+      arg.replace(/%/g, '%%').replace(/([\^<>&|])/g, '^$1');
     const uvxSpawnArgs = isWindows
       ? ['/c', 'uvx', ...commandArgs.map(escapeForCmd)]
       : commandArgs;
