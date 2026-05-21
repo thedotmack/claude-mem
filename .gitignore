@@ -49,3 +49,7 @@ logs/run_evaluation/
 .docker-blowout-data/
 .scratch/
 docker/install-test/
+
+.omx
+AGENTS.md
+agent_docs
