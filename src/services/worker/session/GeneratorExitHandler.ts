@@ -36,7 +36,8 @@ function isHardStopReason(reason: ActiveSession['abortReason']): boolean {
  *
  * Behavior:
  *   1. Always: ensure SDK subprocess is dead.
- *   2. Hard-stop reasons (shutdown / restart-guard / overflow / quota): clear pending rows for the session and finalize.
+ *   2. Hard-stop reasons (shutdown / restart-guard / quota): clear pending rows for the session and finalize.
+ *      Note: 'overflow' is intentionally NOT a hard stop — see isHardStopReason for rationale.
  *   3. Otherwise (idle / natural completion):
  *        - If 0 pending → finalize.
  *        - If pending > 0 and restart guard allows → respawn with backoff.
