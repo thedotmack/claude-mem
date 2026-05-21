@@ -14,10 +14,33 @@ import type {
 
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
-const DEFAULT_MODEL = 'claude-3-5-sonnet-latest';
+// fix — 'claude-3-5-sonnet-latest' was removed from the Anthropic API.
+// Use the current Sonnet 4.5 model id. Operators can override per-deployment
+// via the CLAUDE_MEM_SERVER_MODEL env var (resolved in create-server-beta-service).
+const DEFAULT_MODEL = 'claude-sonnet-4-5';
 
 export interface ClaudeObservationProviderOptions {
-  apiKey: string;
+  /**
+   * Either set `apiKey` (legacy x-api-key auth, billed via Anthropic API), OR
+   * an oauth resolver (Bearer token from the user's Claude Code subscription).
+   * Setting both prefers OAuth because subscription usage is what most users
+   * want when they're already paying for a Claude Code subscription.
+   *
+   * server-beta previously hard-required apiKey. The Docker worker
+   * now also accepts the host's subscription credentials when they're mounted
+   * into the container (see docker-compose CLAUDE_CREDS_FILE mount).
+   *
+   * oauthToken can be a string (snapshot, fixed at provider build)
+   * OR a resolver (() => string | undefined, called fresh per generate()).
+   * The resolver path is REQUIRED for live-mount of the host's credentials
+   * file: when Claude CLI refreshes the OAuth token (~hourly) or the user
+   * switches accounts, the next generate() call picks up the new token
+   * automatically because we re-read the file each time.
+   */
+  apiKey?: string;
+  oauthToken?: string;
+  /** Called once per generate() request. Return undefined for api-key fallback. */
+  oauthResolver?: () => string | undefined;
   model?: string;
   maxOutputTokens?: number;
   fetchImpl?: typeof fetch;
@@ -31,19 +54,23 @@ interface AnthropicMessagesResponse {
 
 export class ClaudeObservationProvider implements ServerGenerationProvider {
   readonly providerLabel = 'claude' as const;
-  private readonly apiKey: string;
+  private readonly apiKey: string | undefined;
+  private readonly oauthToken: string | undefined;
+  private readonly oauthResolver: (() => string | undefined) | undefined;
   private readonly model: string;
   private readonly maxOutputTokens: number;
   private readonly fetchImpl: typeof fetch;
 
   constructor(options: ClaudeObservationProviderOptions) {
-    if (!options.apiKey) {
-      throw new ServerClassifiedProviderError('Anthropic API key not configured', {
+    if (!options.apiKey && !options.oauthToken && !options.oauthResolver) {
+      throw new ServerClassifiedProviderError('Claude credentials not configured', {
         kind: 'auth_invalid',
-        cause: new Error('apiKey is required'),
+        cause: new Error('Either apiKey, oauthToken, or oauthResolver must be set'),
       });
     }
     this.apiKey = options.apiKey;
+    this.oauthToken = options.oauthToken;
+    this.oauthResolver = options.oauthResolver;
     this.model = options.model ?? DEFAULT_MODEL;
     this.maxOutputTokens = options.maxOutputTokens ?? 4096;
     this.fetchImpl = options.fetchImpl ?? fetch;
@@ -66,13 +93,32 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
 
     let response: Response;
     try {
+      // prefer OAuth (subscription) when both are configured.
+      // Anthropic API accepts the subscription OAuth bearer with the same
+      // request shape; only the auth header differs.
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'anthropic-version': ANTHROPIC_VERSION,
+      };
+      // resolve the OAuth token FRESH per request. When the install
+      // bind-mounts the host's ~/.claude/.credentials.json, Claude CLI atomic-
+      // renames a new file in on token refresh; reading it per generate()
+      // means we pick up the new token (and any account switch) without
+      // restarting the container.
+      const liveToken = this.oauthResolver?.() ?? this.oauthToken;
+      if (liveToken) {
+        headers['Authorization'] = `Bearer ${liveToken}`;
+      } else if (this.apiKey) {
+        headers['x-api-key'] = this.apiKey;
+      } else {
+        throw new ServerClassifiedProviderError('No Claude credentials available at request time', {
+          kind: 'auth_invalid',
+          cause: new Error('OAuth resolver returned undefined and no apiKey fallback configured'),
+        });
+      }
       response = await this.fetchImpl(ANTHROPIC_API_URL, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': this.apiKey,
-          'anthropic-version': ANTHROPIC_VERSION,
-        },
+        headers,
         body: JSON.stringify({
           model: this.model,
           max_tokens: this.maxOutputTokens,
