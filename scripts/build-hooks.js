@@ -57,6 +57,20 @@ async function buildHooks() {
     const version = packageJson.version;
     console.log(`📌 Version: ${version}`);
 
+    // Pin generated plugin/package.json entries to the same version range
+    // the root package.json declares, so the worker always loads the
+    // better-auth build it was tested against. Throw (not fallback to a
+    // hardcoded literal) if the root no longer declares the dep — that
+    // would mean a maintainer intentionally removed it, and silently
+    // shipping a stale plugin spec would be a footgun.
+    function requireRootDep(name) {
+      const v = packageJson.dependencies?.[name] ?? packageJson.devDependencies?.[name];
+      if (!v) {
+        throw new Error(`Root package.json must declare "${name}" so plugin/package.json can pin to the same range. Either add it back or remove it from build-hooks.js plugin deps.`);
+      }
+      return v;
+    }
+
     console.log('\n📦 Preparing output directories...');
     const hooksDir = 'plugin/scripts';
     const uiDir = 'plugin/ui';
@@ -84,8 +98,8 @@ async function buildHooks() {
         // the dynamic import() inside BetterAuthRoutes.ts (deferred until
         // a /api/auth/* request hits — which most CC plugin sessions never
         // make), so they need to be present in plugin/node_modules.
-        'better-auth': '^1.6.9',
-        '@better-auth/api-key': '^1.6.9',
+        'better-auth': requireRootDep('better-auth'),
+        '@better-auth/api-key': requireRootDep('@better-auth/api-key'),
         'tree-sitter-cli': '^0.26.5',
         'tree-sitter-c': '^0.24.1',
         'tree-sitter-cpp': '^0.23.4',
