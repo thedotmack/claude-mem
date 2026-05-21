@@ -565,10 +565,17 @@ async function buildHooks() {
     // log a warning but don't abort the build — the maintainer can resolve
     // it before publishing.
     try {
-      const { spawn: spawnInstall } = await import('child_process');
+      const { spawn: spawnInstall } = await import('node:child_process');
+      // shell: true on Windows is critical — npm there is a .cmd batch file,
+      // not a bare executable, so spawn('npm', ...) without shell hits ENOENT
+      // and the fail-soft handler below would silently leave Windows builds
+      // with an empty plugin/node_modules.
+      // cwd anchored to __dirname (not process.cwd()) so the step works even
+      // if the script is invoked from outside the repo root.
       const installResult = spawnInstall('npm', ['install', '--omit=dev', '--no-audit', '--no-fund'], {
-        cwd: 'plugin',
+        cwd: path.join(__dirname, '..', 'plugin'),
         stdio: 'inherit',
+        shell: process.platform === 'win32',
       });
       await new Promise((resolve) => {
         installResult.on('exit', (code) => {
