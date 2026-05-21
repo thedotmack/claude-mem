@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { Application, Request, Response } from 'express';
+import rateLimit, { type RateLimitRequestHandler } from 'express-rate-limit';
 import { z, type ZodTypeAny } from 'zod';
 import type { RouteHandler } from '../../../services/server/Server.js';
 import { CreateAgentEventSchema } from '../../../core/schemas/agent-event.js';
@@ -130,13 +131,52 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     return this.endSession;
   }
 
+  /**
+   * Build an express-rate-limit handler with a fixed 1-minute window. Kept
+   * as a method (not a free function) so a future override can subclass.
+   * Returns 429 with a JSON body on limit hit.
+   */
+  private buildRateLimit(maxPerMin: number): RateLimitRequestHandler {
+    return rateLimit({
+      windowMs: 60_000,
+      limit: maxPerMin,
+      standardHeaders: 'draft-7',
+      legacyHeaders: false,
+      message: { error: 'TooManyRequests', message: 'Rate limit exceeded; retry after window expires.' },
+    });
+  }
+
   setupRoutes(app: Application): void {
-    // Phase 12 — request_id middleware MUST run before auth so the audit log
+    // request_id middleware MUST run before auth so the audit log
     // can carry a stable correlation id across "rejected at auth" and
     // "ingested" code paths. requestIdMiddleware is idempotent (it honors
     // an inbound X-Request-Id header) so registering it multiple times for
     // overlapping route trees would still produce one canonical id per req.
     app.use('/v1', requestIdMiddleware());
+
+    // /  fix: per-IP rate limiters on /v1/* to throttle brute-force
+    // credential probing and accidental floods. Tiered limits:
+    //   - 100/min  per IP for GET (cheap reads)
+    //   - 30/min   per IP for write methods (POST/PUT/PATCH/DELETE)
+    //   - 10/min   per IP for /v1/auth/* (key issuance/rotation — highest risk)
+    // express-rate-limit defaults to an in-memory store; deployments behind a
+    // load balancer should set `app.set('trust proxy', ...)` upstream so the
+    // client IP is honored. Operators can override limits via env vars.
+    const readLimiter = this.buildRateLimit(
+      Number.parseInt(process.env.CLAUDE_MEM_RATE_LIMIT_READ_PER_MIN ?? '', 10) || 100,
+    );
+    const writeLimiter = this.buildRateLimit(
+      Number.parseInt(process.env.CLAUDE_MEM_RATE_LIMIT_WRITE_PER_MIN ?? '', 10) || 30,
+    );
+    const authLimiter = this.buildRateLimit(
+      Number.parseInt(process.env.CLAUDE_MEM_RATE_LIMIT_AUTH_PER_MIN ?? '', 10) || 10,
+    );
+    app.use('/v1/auth', authLimiter);
+    app.use('/v1', (req, res, next) => {
+      if (req.method === 'GET' || req.method === 'HEAD') return readLimiter(req, res, next);
+      return writeLimiter(req, res, next);
+    });
+
     const writeAuth = requirePostgresServerAuth(this.options.pool, {
       authMode: this.options.authMode,
       allowLocalDevBypass: this.options.allowLocalDevBypass,
@@ -158,7 +198,15 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       const generate = parsedQuery.data.generate !== 'false';
       const wait = parsedQuery.data.wait === 'true';
 
-      const result = CreateAgentEventSchema.safeParse(req.body);
+      // fix — defaults from auth context and clock for a cleaner client
+      // contract. Body wins when explicitly set.
+      const rawBody = (req.body ?? {}) as Record<string, unknown>;
+      const bodyWithDefaults = {
+        ...rawBody,
+        projectId: rawBody.projectId ?? req.authContext?.projectId,
+        occurredAtEpoch: rawBody.occurredAtEpoch ?? Date.now(),
+      };
+      const result = CreateAgentEventSchema.safeParse(bodyWithDefaults);
       if (!result.success) {
         res.status(400).json({ error: 'ValidationError', issues: result.error.issues });
         return;
@@ -209,6 +257,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         res.status(201).json({
           event: serializeEvent(event),
           generationJob: resolved ? serializeJobStatusResponse(resolved, enqueueState) : null,
+          jobId: resolved?.id ?? null,
           ...(waitTimedOut ? { waitTimedOut: true } : {}),
         });
         return;
@@ -217,8 +266,8 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       res.status(201).json({
         event: serializeEvent(event),
         ...(outbox
-          ? { generationJob: serializeGenerationJob(outbox, enqueueState) }
-          : {}),
+          ? { generationJob: serializeGenerationJob(outbox, enqueueState), jobId: outbox.id }
+          : { jobId: null }),
       });
     }));
 
@@ -407,7 +456,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       });
     }));
 
-    // Phase 11 — team-scoped queue listing. The api key MUST be bound to this
+    // team-scoped queue listing. The api key MUST be bound to this
     // team OR a project owned by this team. We never let a project-scoped key
     // read a sibling project's jobs even if it has team-level read scope, so
     // we fall through to a project-only filter when projectId is set on the
@@ -455,7 +504,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       }
     }));
 
-    // Phase 11 — project-scoped queue listing. Project-scoped api keys MAY
+    // project-scoped queue listing. Project-scoped api keys MAY
     // read this; team-scoped keys MAY read any project under their team.
     // Cross-tenant requests are reported as 404, matching the rest of the
     // routes so existence is never inferable from response status.
@@ -514,7 +563,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       }
     }));
 
-    // Phase 12 — GET /v1/jobs (generic, scoped). Project-scoped key sees its
+    // GET /v1/jobs (generic, scoped). Project-scoped key sees its
     // project's jobs; team-scoped key sees the team's jobs. Filters: status,
     // source_type, limit, offset, since (ISO timestamp on created_at). The
     // BullMQ payload column is NEVER returned by default — even with admin
@@ -603,10 +652,12 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         res.status(404).json({ error: 'NotFound', message: 'Generation job not found' });
         return;
       }
-      res.json({ generationJob: serializeGenerationJobStatus(job) });
+      // surface status at top level for simple .status consumers.
+      const serialized = serializeGenerationJobStatus(job);
+      res.json({ generationJob: serialized, status: serialized.status, id: serialized.id });
     }));
 
-    // Phase 12 — POST /v1/jobs/:id/retry. Idempotent operator action: if the
+    // POST /v1/jobs/:id/retry. Idempotent operator action: if the
     // job is already queued the call is a no-op (no second BullMQ job is
     // enqueued). On failed/cancelled rows, transition back to queued, clear
     // locked_at/locked_by/failed_at/cancelled_at/last_error, increment a
@@ -627,7 +678,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       });
     }));
 
-    // Phase 12 — POST /v1/jobs/:id/cancel. Operator action: set status to
+    // POST /v1/jobs/:id/cancel. Operator action: set status to
     // cancelled, set cancelled_at, append a lifecycle event, attempt to
     // remove the BullMQ job if still in flight. Future generator runs check
     // the Postgres status FIRST (Phase 11 lockOutbox guard) so a cancelled
@@ -801,7 +852,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     // MUST NOT call generator and MUST NOT create outbox rows.
     app.post('/v1/memories', writeAuth, this.handleCreate(
       z.object({
-        projectId: z.string().min(1),
+        projectId: z.string().min(1).optional(),
         serverSessionId: z.string().min(1).nullable().optional(),
         kind: z.string().min(1).optional(),
         content: z.string().min(1),
@@ -810,11 +861,22 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       async (req, res, body) => {
         const teamId = this.requireTeamId(req, res);
         if (!teamId) return;
-        if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
+        // fix — default projectId from api-key auth context.
+        // Real clients shouldn't have to know the projectId; the api-key
+        // already binds them to a project. Body field still wins when set.
+        const projectId = body.projectId ?? req.authContext?.projectId;
+        if (!projectId) {
+          res.status(400).json({
+            error: 'ValidationError',
+            message: 'projectId required (none in body, none on api-key)',
+          });
+          return;
+        }
+        if (!this.ensureProjectAllowed(req, res, projectId)) return;
         try {
           const repo = new PostgresObservationRepository(this.options.pool);
           const observation = await repo.create({
-            projectId: body.projectId,
+            projectId,
             teamId,
             serverSessionId: body.serverSessionId ?? null,
             kind: body.kind ?? 'manual',
@@ -829,15 +891,82 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       },
     ));
 
-    // Phase 8 — full-text search over generated observations using the GIN
-    // tsvector index. Results are ranked by ts_rank desc, then updated_at desc.
-    // The MCP `observation_search` tool calls this endpoint via HTTP so the
-    // single source of truth for the read path is the REST core.
-    app.post('/v1/search', readAuth, this.handleCreate(
+    // Branch 2 (Agent C) — POST /v1/memories/batch
+    // Returns full observation rows for the given ids. Required by the MCP
+    // `get_observations` tool when running in server-beta runtime. Without
+    // this endpoint the tool would have to issue N GETs and pay N round-trips
+    // for the same job /v1/memories/batch handles in one query. Scope is
+    // enforced by team_id (mandatory) and project_id (optional but recommended).
+    // Ids that do not belong to the caller's team/project are simply omitted
+    // from the response — never 403-d — so a caller cannot probe for the
+    // existence of foreign observations.
+    app.post('/v1/memories/batch', readAuth, this.handleCreate(
+      z.object({
+        projectId: z.string().min(1).optional(),
+        ids: z.array(z.string().min(1)).min(1).max(500),
+      }),
+      async (req, res, body) => {
+        const teamId = this.requireTeamId(req, res);
+        if (!teamId) return;
+        if (body.projectId && !this.ensureProjectAllowed(req, res, body.projectId)) return;
+        try {
+          const repo = new PostgresObservationRepository(this.options.pool);
+          const memories = await repo.findByIdsForScope({
+            teamId,
+            ...(body.projectId ? { projectId: body.projectId } : {}),
+            ids: body.ids,
+          });
+          await this.auditRead(req, 'observation.read', null, body.projectId ?? null, {
+            mode: 'batch',
+            requestedIds: body.ids,
+            returnedIds: memories.map(o => o.id),
+          });
+          res.status(200).json({
+            memories: memories.map(serializeObservation),
+          });
+        } catch (error) {
+          this.handleDbError(error, res, 'memory.batch');
+        }
+      },
+    ));
+
+    // Branch 2 (Agent C) — GET /v1/memories/:id
+    // Single observation lookup. The id is scanned within the caller's team
+    // first; project ownership is then validated via ensureProjectAllowed.
+    // Cross-tenant id leaks return 404 (not 403) to avoid revealing existence.
+    app.get('/v1/memories/:id', readAuth, this.asyncHandler(async (req, res) => {
+      const teamId = this.requireTeamId(req, res);
+      if (!teamId) return;
+      const id = this.routeParam(req.params.id);
+      const repo = new PostgresObservationRepository(this.options.pool);
+      const memory = await repo.getByIdForTeam({ teamId, id });
+      if (!memory) {
+        res.status(404).json({ error: 'NotFound', message: 'Memory not found' });
+        return;
+      }
+      if (!this.ensureProjectAllowed(req, res, memory.projectId)) return;
+      await this.auditRead(req, 'observation.read', memory.id, memory.projectId, {
+        mode: 'getById',
+      });
+      res.status(200).json({ memory: serializeObservation(memory) });
+    }));
+
+    // Branch 2 (Agent C) — POST /v1/timeline
+    // Chronological context window around an anchor observation. Anchor can
+    // be given explicitly (`anchor` = observation id) or resolved from a
+    // search query (`query` → top-ranked FTS hit). Returns the anchor plus
+    // depthBefore older and depthAfter newer observations, ordered by
+    // created_at. Designed for the MCP `timeline` tool: cheap context
+    // expansion without re-running a full search.
+    app.post('/v1/timeline', readAuth, this.handleCreate(
       z.object({
         projectId: z.string().min(1),
-        query: z.string().min(1),
-        limit: z.number().int().positive().max(100).optional(),
+        anchor: z.string().min(1).optional(),
+        query: z.string().min(1).optional(),
+        depthBefore: z.number().int().min(0).max(50).optional(),
+        depthAfter: z.number().int().min(0).max(50).optional(),
+      }).refine(b => Boolean(b.anchor) || Boolean(b.query), {
+        message: 'Either `anchor` or `query` must be provided',
       }),
       async (req, res, body) => {
         const teamId = this.requireTeamId(req, res);
@@ -845,16 +974,75 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
         try {
           const repo = new PostgresObservationRepository(this.options.pool);
-          const results = await repo.search({
+          const window = await repo.timelineWindow({
             projectId: body.projectId,
+            teamId,
+            ...(body.anchor ? { anchorObservationId: body.anchor } : {}),
+            ...(body.query ? { query: body.query } : {}),
+            depthBefore: body.depthBefore ?? 3,
+            depthAfter: body.depthAfter ?? 3,
+          });
+          await this.auditRead(req, 'observation.read', window.anchor?.id ?? null, body.projectId, {
+            mode: 'timeline',
+            anchorId: window.anchor?.id ?? null,
+            depthBefore: body.depthBefore ?? 3,
+            depthAfter: body.depthAfter ?? 3,
+            beforeIds: window.before.map(o => o.id),
+            afterIds: window.after.map(o => o.id),
+          });
+          res.status(200).json({
+            anchor: window.anchor ? serializeObservation(window.anchor) : null,
+            before: window.before.map(serializeObservation),
+            after: window.after.map(serializeObservation),
+          });
+        } catch (error) {
+          this.handleDbError(error, res, 'observation.timeline');
+        }
+      },
+    ));
+
+    // full-text search over generated observations using the GIN
+    // tsvector index. Results are ranked by ts_rank desc, then updated_at desc.
+    // The MCP `observation_search` tool calls this endpoint via HTTP so the
+    // single source of truth for the read path is the REST core.
+    app.post('/v1/search', readAuth, this.handleCreate(
+      z.object({
+        projectId: z.string().min(1).optional(),
+        query: z.string().min(1),
+        limit: z.number().int().positive().max(100).optional(),
+        // cross-client memory leak: /v1/search used to ignore
+        // platformSource entirely, so a 'hook'-scoped query returned memories
+        // from 'cursor' and vice versa. Plumb through to the repo so the
+        // SQL adds a `server_sessions.platform_source = $N` filter when set.
+        platformSource: z.string().min(1).optional(),
+      }),
+      async (req, res, body) => {
+        const teamId = this.requireTeamId(req, res);
+        if (!teamId) return;
+        // default projectId from api-key auth context.
+        const projectId = body.projectId ?? req.authContext?.projectId;
+        if (!projectId) {
+          res.status(400).json({
+            error: 'ValidationError',
+            message: 'projectId required (none in body, none on api-key)',
+          });
+          return;
+        }
+        if (!this.ensureProjectAllowed(req, res, projectId)) return;
+        try {
+          const repo = new PostgresObservationRepository(this.options.pool);
+          const results = await repo.search({
+            projectId,
             teamId,
             query: body.query,
             limit: body.limit ?? 20,
+            ...(body.platformSource ? { platformSource: body.platformSource } : {}),
           });
-          await this.auditRead(req, 'observation.read', null, body.projectId, {
+          await this.auditRead(req, 'observation.read', null, projectId, {
             mode: 'search',
             query: body.query,
             limit: body.limit ?? 20,
+            ...(body.platformSource ? { platformSource: body.platformSource } : {}),
             resultCount: results.length,
             observationIds: results.map(o => o.id),
           });
@@ -867,36 +1055,51 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       },
     ));
 
-    // Phase 8 — context pack: same FTS path as `/v1/search`, but also returns
+    // context pack: same FTS path as `/v1/search`, but also returns
     // a concatenated context string for direct prompt injection. The MCP
     // `observation_context` tool calls this so MCP and any future REST
     // consumer share the exact same context-packing rule.
     app.post('/v1/context', readAuth, this.handleCreate(
       z.object({
-        projectId: z.string().min(1),
+        projectId: z.string().min(1).optional(),
         query: z.string().min(1),
         limit: z.number().int().positive().max(50).optional(),
+        // same platformSource filter as /v1/search; otherwise the
+        // context pack injected into a 'hook' session would leak observations
+        // from other clients (cursor, opencode, etc.).
+        platformSource: z.string().min(1).optional(),
       }),
       async (req, res, body) => {
         const teamId = this.requireTeamId(req, res);
         if (!teamId) return;
-        if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
+        // default projectId from api-key auth context.
+        const projectId = body.projectId ?? req.authContext?.projectId;
+        if (!projectId) {
+          res.status(400).json({
+            error: 'ValidationError',
+            message: 'projectId required (none in body, none on api-key)',
+          });
+          return;
+        }
+        if (!this.ensureProjectAllowed(req, res, projectId)) return;
         try {
           const repo = new PostgresObservationRepository(this.options.pool);
           const results = await repo.search({
-            projectId: body.projectId,
+            projectId,
             teamId,
             query: body.query,
             limit: body.limit ?? 10,
+            ...(body.platformSource ? { platformSource: body.platformSource } : {}),
           });
           const context = results
             .map(observation => observation.content)
             .filter(text => typeof text === 'string' && text.length > 0)
             .join('\n\n');
-          await this.auditRead(req, 'observation.read', null, body.projectId, {
+          await this.auditRead(req, 'observation.read', null, projectId, {
             mode: 'context',
             query: body.query,
             limit: body.limit ?? 10,
+            ...(body.platformSource ? { platformSource: body.platformSource } : {}),
             resultCount: results.length,
             observationIds: results.map(o => o.id),
           });
@@ -921,7 +1124,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     return this.auditWrite(req, action, targetId, projectId, details);
   }
 
-  // Phase 11 — resolve actor identity for audit. We look up the api_keys row
+  // resolve actor identity for audit. We look up the api_keys row
   // by id and read its actor_id column. This MUST NOT be used for auth — it
   // is purely a denormalization for audit trails. If the lookup fails for
   // any reason we return null and let the audit row carry a missing actor.
@@ -1035,7 +1238,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     try {
       const repo = new PostgresAuthRepository(this.options.pool);
       const actorId = await this.resolveActorId(req);
-      // Phase 12 — every audit row carries request_id when one was minted
+      // every audit row carries request_id when one was minted
       // so dashboards and incident triage can pivot from a single HTTP
       // request to every ingest/job/audit row it produced. Caller-supplied
       // details win on key conflict so explicit overrides still work.
@@ -1062,8 +1265,8 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     }
   }
 
-  // Phase 11 — paginated job listing for team/project queue endpoints.
-  // Phase 12 — extended with `sourceType`, `since`, and (optional) payload
+  // paginated job listing for team/project queue endpoints.
+  // extended with `sourceType`, `since`, and (optional) payload
   // selection. Filtering is enforced in SQL (WHERE team_id [, project_id,
   // status, source_type, created_at]). Application-layer filtering is never
   // trusted alone for tenant scope.
@@ -1116,7 +1319,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     return { jobs: result.rows, total };
   }
 
-  // Phase 12 — operator retry. Status handling:
+  // operator retry. Status handling:
   //   - queued: no-op (idempotent; no double enqueue)
   //   - processing: 409 — running worker MUST finish or fail naturally
   //   - completed: 409 — observations index dedupes on (job_id, index,
@@ -1301,7 +1504,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     return { job: refreshed, retriedCount, alreadyQueued: false };
   }
 
-  // Phase 12 — operator cancel. Idempotent: a job already in `cancelled`
+  // operator cancel. Idempotent: a job already in `cancelled`
   // status is a no-op. Active processing rows are still cancelled but the
   // running worker is allowed to finish; Phase 11's lockOutbox guard
   // re-checks Postgres status before any side effect, so a cancelled job
@@ -1409,7 +1612,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     return { job: refreshed, alreadyCancelled: false };
   }
 
-  // Phase 12 — pick the right queue lane for a given source_type so retries
+  // pick the right queue lane for a given source_type so retries
   // and cancels can publish to the same lane the original ingest used.
   private resolveEventQueueForRetry(row: { source_type: string }):
     { add: (jobId: string, payload: unknown, options?: unknown) => Promise<unknown>; remove: (jobId: string) => Promise<void> } | null {
@@ -1464,7 +1667,7 @@ interface JobListRow {
   completed_at: Date | null;
   failed_at: Date | null;
   last_error: unknown;
-  // Phase 12 — payload is OPTIONAL because the SELECT may omit it, and
+  // payload is OPTIONAL because the SELECT may omit it, and
   // serializers strip it unless the caller explicitly opted in.
   payload?: unknown;
 }
@@ -1543,7 +1746,7 @@ function serializeJobListEntry(
     failedAtEpoch: row.failed_at ? new Date(row.failed_at).getTime() : null,
     lastError: row.last_error && typeof row.last_error === 'object' ? row.last_error : null,
   };
-  // Phase 12 — payload is sensitive (it may carry full event payloads
+  // payload is sensitive (it may carry full event payloads
   // under `agent_events.payload`). Strip by default; only include when the
   // caller explicitly opted in via `?include=payload`. The route handler
   // gates that flag on admin scope BEFORE reaching here.
@@ -1553,7 +1756,7 @@ function serializeJobListEntry(
   return base;
 }
 
-// Phase 11 — every audit `action` carries a stable resource_type so dashboards
+// every audit `action` carries a stable resource_type so dashboards
 // can group/filter consistently. We map the dotted action name to a canonical
 // resource_type keyword. Unknown actions fall back to the prefix (matches the
 // previous behavior for backward compatibility).

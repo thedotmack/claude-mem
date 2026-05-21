@@ -2,7 +2,24 @@
 
 import type { PostgresQueryable } from './utils.js';
 
-export const SERVER_BETA_POSTGRES_SCHEMA_VERSION = 1;
+// Schema version bumps:
+//   v1 — phase 1 postgres observation storage foundation
+//   v2 — phase 1 fork hardening:  (UNIQUE on teams.name / projects(team_id,name))
+//        +  (observations.merged_into_project column)
+//
+// Rollback for v2 (manual, requires SUPERUSER):
+//   BEGIN;
+//     DROP INDEX IF EXISTS idx_projects_team_id_name_unique;
+//     DROP INDEX IF EXISTS idx_teams_name_unique;
+//     ALTER TABLE observations DROP COLUMN IF EXISTS merged_into_project;
+//     DELETE FROM server_beta_schema_migrations WHERE version = 2;
+//   COMMIT;
+// The duplicate rows deleted by the v2 dedup step are not recoverable; restore
+// from backup if you need them. Fresh server-beta installs have zero dupes by
+// construction (the bootstrap helper only ever produces one local-hook-team /
+// one local-hook-project per database), so this is a safety net rather than a
+// data-rewriting migration in practice.
+export const SERVER_BETA_POSTGRES_SCHEMA_VERSION = 2;
 
 export const SERVER_BETA_POSTGRES_TABLES = [
   'server_beta_schema_migrations',
@@ -19,6 +36,12 @@ export const SERVER_BETA_POSTGRES_TABLES = [
   'observation_generation_job_events'
 ] as const;
 
+interface ServerBetaMigration {
+  version: number;
+  description: string;
+  sql: string;
+}
+
 export async function bootstrapServerBetaPostgresSchema(client: PostgresQueryable): Promise<void> {
   if (isPostgresPool(client)) {
     const poolClient = await client.connect();
@@ -30,21 +53,37 @@ export async function bootstrapServerBetaPostgresSchema(client: PostgresQueryabl
     return;
   }
 
-  await client.query('BEGIN');
-  try {
-    await client.query(PHASE_1_SCHEMA_SQL);
-    await client.query(
-      `
-        INSERT INTO server_beta_schema_migrations (version, description)
-        VALUES ($1, $2)
-        ON CONFLICT (version) DO NOTHING
-      `,
-      [SERVER_BETA_POSTGRES_SCHEMA_VERSION, 'phase 1 postgres observation storage foundation']
-    );
-    await client.query('COMMIT');
-  } catch (error) {
-    await client.query('ROLLBACK');
-    throw error;
+  // Bootstrap the migrations registry table first so subsequent INSERT/SELECTs
+  // can rely on it. Idempotent — safe to run on every boot.
+  await client.query(MIGRATIONS_TABLE_SQL);
+
+  // Determine which migrations have already been applied so we can skip them
+  // on subsequent boots. Fresh DB returns empty set; an upgraded DB returns {1}.
+  const appliedResult = await client.query<{ version: number }>(
+    'SELECT version FROM server_beta_schema_migrations ORDER BY version ASC'
+  );
+  const applied = new Set<number>(appliedResult.rows.map(row => Number(row.version)));
+
+  for (const migration of SERVER_BETA_MIGRATIONS) {
+    if (applied.has(migration.version)) {
+      continue;
+    }
+    await client.query('BEGIN');
+    try {
+      await client.query(migration.sql);
+      await client.query(
+        `
+          INSERT INTO server_beta_schema_migrations (version, description)
+          VALUES ($1, $2)
+          ON CONFLICT (version) DO NOTHING
+        `,
+        [migration.version, migration.description]
+      );
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    }
   }
 }
 
@@ -68,6 +107,14 @@ function isPostgresPool(client: PostgresQueryable): client is PostgresPoolLike {
     && typeof candidate.waitingCount === 'number'
   );
 }
+
+const MIGRATIONS_TABLE_SQL = `
+CREATE TABLE IF NOT EXISTS server_beta_schema_migrations (
+  version INTEGER PRIMARY KEY,
+  description TEXT NOT NULL,
+  applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+`;
 
 const PHASE_1_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS server_beta_schema_migrations (
@@ -281,3 +328,59 @@ CREATE INDEX IF NOT EXISTS idx_observation_jobs_source ON observation_generation
 CREATE INDEX IF NOT EXISTS idx_observation_job_events_job_created ON observation_generation_job_events(generation_job_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_audit_log_scope_created ON audit_log(project_id, team_id, created_at);
 `;
+
+// schema hardening for the server-beta fork.
+//
+// 1. : worker code (SearchManager, PaginationHelper, ObservationCompiler,
+//    viewer) references observations.merged_into_project. The Phase 1 schema
+//    never defined it, so every join silently fails on Postgres. Add the
+//    column idempotently. Worker SQLite already has this column.
+//
+// 2. : the local-hook bootstrap (and any future ON CONFLICT-based
+//    upserts) requires UNIQUE constraints on teams.name and
+//    projects(team_id, name). Without them, INSERT ... ON CONFLICT (name)
+//    raises "no unique or exclusion constraint matching the ON CONFLICT
+//    specification".
+//
+// Pre-flight dedup: pre-Phase-2 environments may have produced duplicate
+// teams/projects via TOCTOU races in findOrCreateTeam/Project. We delete the
+// duplicates (keeping the oldest row by created_at, then id) BEFORE creating
+// the UNIQUE index, otherwise the migration would fail on those DBs.
+// CASCADE deletes propagate to dependent tables. Fresh installs have zero
+// dupes by construction so this is a no-op there.
+const PHASE_2_SCHEMA_SQL = `
+ALTER TABLE observations ADD COLUMN IF NOT EXISTS merged_into_project TEXT;
+CREATE INDEX IF NOT EXISTS idx_observations_merged_into ON observations(merged_into_project);
+
+DELETE FROM teams t
+USING (
+  SELECT id, name,
+    ROW_NUMBER() OVER (PARTITION BY name ORDER BY created_at ASC, id ASC) AS rn
+  FROM teams
+) ranked
+WHERE t.id = ranked.id AND ranked.rn > 1;
+
+DELETE FROM projects p
+USING (
+  SELECT id, team_id, name,
+    ROW_NUMBER() OVER (PARTITION BY team_id, name ORDER BY created_at ASC, id ASC) AS rn
+  FROM projects
+) ranked
+WHERE p.id = ranked.id AND ranked.rn > 1;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_name_unique ON teams(name);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_team_id_name_unique ON projects(team_id, name);
+`;
+
+const SERVER_BETA_MIGRATIONS: ServerBetaMigration[] = [
+  {
+    version: 1,
+    description: 'phase 1 postgres observation storage foundation',
+    sql: PHASE_1_SCHEMA_SQL,
+  },
+  {
+    version: 2,
+    description: 'phase 1 fork hardening: unique constraints + merged_into_project',
+    sql: PHASE_2_SCHEMA_SQL,
+  },
+];

@@ -155,19 +155,169 @@ export class PostgresObservationRepository {
     teamId: string;
     query: string;
     limit?: number;
+    // optional platform_source filter (server_sessions.platform_source).
+    // When set, only return observations whose server_session was tagged with
+    // the matching platform_source. The platform_source column lives on
+    // server_sessions, not observations, so we LEFT JOIN to keep observations
+    // that have no session (kind='manual' inserts) visible — they are excluded
+    // only when a platform_source filter is explicitly requested.
+    platformSource?: string | null;
   }): Promise<PostgresObservation[]> {
+    const params: unknown[] = [input.projectId, input.teamId, input.query, input.limit ?? 20];
+    let platformClause = '';
+    if (typeof input.platformSource === 'string' && input.platformSource.trim().length > 0) {
+      params.push(input.platformSource);
+      // fix — platform_source filter must also match observations whose
+      // source agent_event has a matching source_adapter. Without this, events
+      // ingested without an explicit session (the common hook path) produce
+      // observations that are invisible to a platform-scoped search. We accept
+      // EITHER a session-level platform_source match OR an agent_event-level
+      // source_adapter match for the same value (semantically equivalent).
+      platformClause = `AND (
+        ss.platform_source = $${params.length}
+        OR EXISTS (
+          SELECT 1 FROM observation_sources os2
+          JOIN agent_events ae ON ae.id = os2.agent_event_id
+          WHERE os2.observation_id = o.id AND ae.source_adapter = $${params.length}
+        )
+      )`;
+    }
     const result = await this.client.query<ObservationRow>(
+      `
+        SELECT o.*
+        FROM observations o
+        LEFT JOIN server_sessions ss ON ss.id = o.server_session_id
+        WHERE o.project_id = $1
+          AND o.team_id = $2
+          AND o.content_search @@ websearch_to_tsquery('english', $3)
+          ${platformClause}
+        ORDER BY ts_rank(o.content_search, websearch_to_tsquery('english', $3)) DESC, o.updated_at DESC
+        LIMIT $4
+      `,
+      params
+    );
+    return result.rows.map(mapObservationRow);
+  }
+
+  // Branch 2 (Agent C, master plan) — batch get for MCP's `get_observations`
+  // tool. Scoped by team_id mandatorily; project_id is optional (when omitted
+  // the caller is implicitly trusting the api-key team scope to be enough).
+  // Both scopes are applied as SQL predicates so a leaked id cannot reveal
+  // a foreign tenant's observation.
+  async findByIdsForScope(input: {
+    teamId: string;
+    projectId?: string | null;
+    ids: string[];
+  }): Promise<PostgresObservation[]> {
+    if (input.ids.length === 0) return [];
+    const params: unknown[] = [input.teamId, input.ids];
+    let projectClause = '';
+    if (typeof input.projectId === 'string' && input.projectId.length > 0) {
+      params.push(input.projectId);
+      projectClause = `AND project_id = $${params.length}`;
+    }
+    const result = await this.client.query<ObservationRow>(
+      `
+        SELECT * FROM observations
+        WHERE team_id = $1
+          AND id = ANY($2::text[])
+          ${projectClause}
+        ORDER BY created_at DESC
+      `,
+      params,
+    );
+    return result.rows.map(mapObservationRow);
+  }
+
+  // Branch 2 — single get by id, team-scoped only. Mirrors /v1/events/:id
+  // pattern: scan by team + id, callers extract project_id and run
+  // ensureProjectAllowed for the api-key project gate.
+  async getByIdForTeam(input: {
+    teamId: string;
+    id: string;
+  }): Promise<PostgresObservation | null> {
+    const row = await queryOne<ObservationRow>(
+      this.client,
+      'SELECT * FROM observations WHERE id = $1 AND team_id = $2',
+      [input.id, input.teamId],
+    );
+    return row ? mapObservationRow(row) : null;
+  }
+
+  // Branch 2 — timeline window. Given an anchor observation id (or a query
+  // string that resolves to the top-ranked search hit), return N observations
+  // created BEFORE the anchor and N created AFTER. created_at is the ordering
+  // key (tsvector is irrelevant here). anchorId/query are mutually exclusive;
+  // if both are passed, anchorId wins.
+  async timelineWindow(input: {
+    projectId: string;
+    teamId: string;
+    anchorObservationId?: string;
+    query?: string;
+    depthBefore: number;
+    depthAfter: number;
+  }): Promise<{
+    anchor: PostgresObservation | null;
+    before: PostgresObservation[];
+    after: PostgresObservation[];
+  }> {
+    let anchor: PostgresObservation | null = null;
+    if (input.anchorObservationId) {
+      const row = await queryOne<ObservationRow>(
+        this.client,
+        'SELECT * FROM observations WHERE id = $1 AND project_id = $2 AND team_id = $3',
+        [input.anchorObservationId, input.projectId, input.teamId],
+      );
+      if (row) anchor = mapObservationRow(row);
+    } else if (input.query && input.query.length > 0) {
+      const top = await this.client.query<ObservationRow>(
+        `
+          SELECT * FROM observations
+          WHERE project_id = $1
+            AND team_id = $2
+            AND content_search @@ websearch_to_tsquery('english', $3)
+          ORDER BY ts_rank(content_search, websearch_to_tsquery('english', $3)) DESC, updated_at DESC
+          LIMIT 1
+        `,
+        [input.projectId, input.teamId, input.query],
+      );
+      if (top.rows[0]) anchor = mapObservationRow(top.rows[0]);
+    }
+
+    if (!anchor) {
+      return { anchor: null, before: [], after: [] };
+    }
+
+    const anchorTs = new Date(anchor.createdAtEpoch).toISOString();
+    const beforeResult = await this.client.query<ObservationRow>(
       `
         SELECT * FROM observations
         WHERE project_id = $1
           AND team_id = $2
-          AND content_search @@ websearch_to_tsquery('english', $3)
-        ORDER BY ts_rank(content_search, websearch_to_tsquery('english', $3)) DESC, updated_at DESC
-        LIMIT $4
+          AND id <> $3
+          AND created_at < $4::timestamptz
+        ORDER BY created_at DESC
+        LIMIT $5
       `,
-      [input.projectId, input.teamId, input.query, input.limit ?? 20]
+      [input.projectId, input.teamId, anchor.id, anchorTs, Math.max(0, input.depthBefore)],
     );
-    return result.rows.map(mapObservationRow);
+    const afterResult = await this.client.query<ObservationRow>(
+      `
+        SELECT * FROM observations
+        WHERE project_id = $1
+          AND team_id = $2
+          AND id <> $3
+          AND created_at > $4::timestamptz
+        ORDER BY created_at ASC
+        LIMIT $5
+      `,
+      [input.projectId, input.teamId, anchor.id, anchorTs, Math.max(0, input.depthAfter)],
+    );
+    return {
+      anchor,
+      before: beforeResult.rows.map(mapObservationRow),
+      after: afterResult.rows.map(mapObservationRow),
+    };
   }
 }
 
