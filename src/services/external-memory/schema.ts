@@ -12,6 +12,16 @@ export async function bootstrapExternalMemorySchema(
   client: PostgresQueryable,
   options: ExternalMemorySchemaOptions
 ): Promise<void> {
+  if (isPostgresPool(client)) {
+    const poolClient = await client.connect();
+    try {
+      await bootstrapExternalMemorySchema(poolClient, options);
+    } finally {
+      poolClient.release();
+    }
+    return;
+  }
+
   const vectorDimensions = assertVectorDimensions(options.vectorDimensions);
 
   await client.query('BEGIN');
@@ -30,6 +40,27 @@ function assertVectorDimensions(value: number): number {
     throw new Error('pgvector dimensions must be an integer between 1 and 2000');
   }
   return value;
+}
+
+interface PostgresPoolLike extends PostgresQueryable {
+  connect(): Promise<PostgresQueryable & { release(): void }>;
+}
+
+function isPostgresPool(client: PostgresQueryable): client is PostgresPoolLike {
+  const candidate = client as {
+    connect?: unknown;
+    release?: unknown;
+    totalCount?: unknown;
+    idleCount?: unknown;
+    waitingCount?: unknown;
+  };
+  return (
+    typeof candidate.connect === 'function'
+    && typeof candidate.release !== 'function'
+    && typeof candidate.totalCount === 'number'
+    && typeof candidate.idleCount === 'number'
+    && typeof candidate.waitingCount === 'number'
+  );
 }
 
 async function assertEmbeddingColumnDimensions(client: PostgresQueryable, expectedDimensions: number): Promise<void> {

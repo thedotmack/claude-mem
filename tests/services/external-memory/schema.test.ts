@@ -33,6 +33,33 @@ describe('external pgvector memory schema', () => {
     expect(sql).toContain('UNIQUE (memory_session_id, kind, content_hash)');
   });
 
+  test('uses a dedicated pool client so schema DDL is wrapped by one transaction', async () => {
+    const poolClient = new RecordingPgClient();
+    let released = false;
+    const pool = {
+      totalCount: 1,
+      idleCount: 1,
+      waitingCount: 0,
+      async query() {
+        throw new Error('pool.query should not be used for transactional schema bootstrap');
+      },
+      async connect() {
+        return {
+          query: poolClient.query.bind(poolClient),
+          release() {
+            released = true;
+          },
+        };
+      },
+    };
+
+    await bootstrapExternalMemorySchema(pool, { vectorDimensions: 768 });
+
+    expect(poolClient.queries[0]?.text).toBe('BEGIN');
+    expect(poolClient.queries.at(-1)?.text).toBe('COMMIT');
+    expect(released).toBe(true);
+  });
+
   test('rolls back if schema creation fails', async () => {
     const client = new RecordingPgClient();
     client.query = async (text: string, values?: unknown[]) => {
