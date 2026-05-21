@@ -27,6 +27,11 @@ const CONTEXT_GENERATOR = {
   source: 'src/services/context-generator.ts'
 };
 
+const TRANSCRIPT_WATCHER = {
+  name: 'transcript-watcher',
+  source: 'src/services/transcripts/transcript-watcher-entry.ts'
+};
+
 function stripHardcodedDirname(filePath) {
   let content = fs.readFileSync(filePath, 'utf-8');
   const before = content.length;
@@ -303,6 +308,31 @@ async function buildHooks() {
     const contextGenStats = fs.statSync(`${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`);
     console.log(`✓ context-generator built (${(contextGenStats.size / 1024).toFixed(2)} KB)`);
 
+    console.log(`\n🔧 Building transcript watcher...`);
+    await build({
+      entryPoints: [TRANSCRIPT_WATCHER.source],
+      bundle: true,
+      platform: 'node',
+      target: 'node18',
+      format: 'cjs',
+      outfile: `${hooksDir}/${TRANSCRIPT_WATCHER.name}.cjs`,
+      minify: true,
+      logLevel: 'error',
+      external: ['bun:sqlite'],
+      define: {
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
+      },
+      banner: {
+        js: '#!/usr/bin/env bun'
+      }
+    });
+
+    stripHardcodedDirname(`${hooksDir}/${TRANSCRIPT_WATCHER.name}.cjs`);
+
+    fs.chmodSync(`${hooksDir}/${TRANSCRIPT_WATCHER.name}.cjs`, 0o755);
+    const transcriptWatcherStats = fs.statSync(`${hooksDir}/${TRANSCRIPT_WATCHER.name}.cjs`);
+    console.log(`✓ transcript-watcher built (${(transcriptWatcherStats.size / 1024).toFixed(2)} KB)`);
+
     console.log(`\n🔧 Building NPX CLI...`);
     const npxCliOutDir = 'dist/npx-cli';
     if (!fs.existsSync(npxCliOutDir)) {
@@ -448,6 +478,7 @@ async function buildHooks() {
     console.log(`   - Server beta: server-beta-service.cjs`);
     console.log(`   - MCP Server: mcp-server.cjs`);
     console.log(`   - Context Generator: context-generator.cjs`);
+    console.log(`   - Transcript Watcher: transcript-watcher.cjs`);
     console.log(`   Output: ${npxCliOutDir}/`);
     console.log(`   - NPX CLI: index.js`);
     if (fs.existsSync('openclaw/dist/index.js')) {
