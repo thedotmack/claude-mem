@@ -318,7 +318,11 @@ async function buildHooks() {
       outfile: `${hooksDir}/${TRANSCRIPT_WATCHER.name}.cjs`,
       minify: true,
       logLevel: 'error',
-      external: ['bun:sqlite'],
+      // Externalize zod for consistency with worker-service / server-beta-service —
+      // any zod usage in the processor.ts import chain should resolve at runtime
+      // against plugin/node_modules instead of being inlined (avoids duplicate-
+      // instance hazards and keeps the bundle slim).
+      external: ['bun:sqlite', 'zod'],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
       },
@@ -332,6 +336,16 @@ async function buildHooks() {
     fs.chmodSync(`${hooksDir}/${TRANSCRIPT_WATCHER.name}.cjs`, 0o755);
     const transcriptWatcherStats = fs.statSync(`${hooksDir}/${TRANSCRIPT_WATCHER.name}.cjs`);
     console.log(`✓ transcript-watcher built (${(transcriptWatcherStats.size / 1024).toFixed(2)} KB)`);
+
+    // Guard against accidental imports of heavy modules (worker-service,
+    // SDK runtimes, etc.) into the watcher's processor.ts chain. The watcher
+    // is a thin file-tail loop and should stay well under 200 KB.
+    const TRANSCRIPT_WATCHER_MAX_BYTES = 200 * 1024;
+    if (transcriptWatcherStats.size > TRANSCRIPT_WATCHER_MAX_BYTES) {
+      throw new Error(
+        `transcript-watcher.cjs is ${(transcriptWatcherStats.size / 1024).toFixed(2)} KB, exceeding the ${(TRANSCRIPT_WATCHER_MAX_BYTES / 1024).toFixed(0)} KB budget. The watcher is meant to be a thin file-tail loop — audit recent imports in src/services/transcripts/processor.ts and watcher.ts for unintended heavy dependencies.`
+      );
+    }
 
     console.log(`\n🔧 Building NPX CLI...`);
     const npxCliOutDir = 'dist/npx-cli';
