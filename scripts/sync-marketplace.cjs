@@ -57,8 +57,15 @@ function dryRunFlag() {
 }
 
 function shouldShowPreview() {
+  // Only --non-interactive / --no-preview / CLAUDE_MEM_SYNC_NO_PREVIEW=1
+  // suppress the would-delete preview. We intentionally do NOT reuse
+  // --force here: --force already carries an unrelated semantic
+  // (bypass the non-main-branch exit at the bottom of this script),
+  // and overloading it with "also skip the delete preview" would be
+  // a silent side-effect that surprises maintainers who pass --force
+  // only to override the branch guard.
   const argv = process.argv.slice(2);
-  if (argv.includes('--force') || argv.includes('--non-interactive') || argv.includes('--no-preview')) {
+  if (argv.includes('--non-interactive') || argv.includes('--no-preview')) {
     return false;
   }
   return process.env.CLAUDE_MEM_SYNC_NO_PREVIEW !== '1';
@@ -201,15 +208,25 @@ try {
 
   {
     const cmdBase = `rsync -av ${deleteFlag()} --exclude=.git --exclude=bun.lock --exclude=package-lock.json --exclude=scripts/package.json --exclude=scripts/node_modules ${gitignoreExcludes} ${preserveExcludes()} ./ ~/.claude/plugins/marketplaces/thedotmack/`;
-    if (shouldShowPreview() && deleteFlag()) {
-      console.log('\x1b[36m%s\x1b[0m', 'Preview (would-delete items below). Pass --force / --non-interactive to skip:');
+    if (DRY_RUN) {
+      // --dry-run: run the rsync in --dry-run mode regardless of whether
+      // --force-delete is set, so the user always sees what the sync would
+      // do. Without this branch, DRY_RUN + missing --force-delete made
+      // both the preview AND the real rsync get skipped, producing zero
+      // rsync output.
+      console.log('\x1b[36m%s\x1b[0m', 'Marketplace sync preview:');
       execSync(buildDryRunCommand(cmdBase), { stdio: 'inherit' });
+    } else {
+      if (shouldShowPreview() && deleteFlag()) {
+        console.log('\x1b[36m%s\x1b[0m', 'Preview (would-delete items below). Pass --non-interactive to skip:');
+        execSync(buildDryRunCommand(cmdBase), { stdio: 'inherit' });
+      }
+      execSync(cmdBase, { stdio: 'inherit' });
     }
-    if (!DRY_RUN) execSync(cmdBase, { stdio: 'inherit' });
   }
 
-  console.log('Running bun install in marketplace...');
   if (!DRY_RUN) {
+    console.log('Running bun install in marketplace...');
     execSync(
       'cd ~/.claude/plugins/marketplaces/thedotmack/ && bun install',
       { stdio: 'inherit' }
@@ -225,29 +242,43 @@ try {
   console.log(`Syncing to cache folder (version ${version})...`);
   {
     const cmdBase = `rsync -av ${deleteFlag()} --exclude=.git ${pluginGitignoreExcludes} ${preserveExcludes()} plugin/ "${CACHE_VERSION_PATH}/"`;
-    if (shouldShowPreview() && deleteFlag()) {
-      console.log('\x1b[36m%s\x1b[0m', `Preview (cache ${version} would-delete):`);
+    if (DRY_RUN) {
+      console.log('\x1b[36m%s\x1b[0m', `Cache (version ${version}) sync preview:`);
       execSync(buildDryRunCommand(cmdBase), { stdio: 'inherit' });
+    } else {
+      if (shouldShowPreview() && deleteFlag()) {
+        console.log('\x1b[36m%s\x1b[0m', `Preview (cache ${version} would-delete):`);
+        execSync(buildDryRunCommand(cmdBase), { stdio: 'inherit' });
+      }
+      execSync(cmdBase, { stdio: 'inherit' });
     }
-    if (!DRY_RUN) execSync(cmdBase, { stdio: 'inherit' });
   }
 
-  console.log(`Running bun install in cache folder (version ${version})...`);
-  if (!DRY_RUN) execSync(`bun install`, { cwd: CACHE_VERSION_PATH, stdio: 'inherit' });
+  if (!DRY_RUN) {
+    console.log(`Running bun install in cache folder (version ${version})...`);
+    execSync(`bun install`, { cwd: CACHE_VERSION_PATH, stdio: 'inherit' });
+  }
 
   if (installedMismatch && installedMismatch.installedVersion !== version) {
     const INSTALLED_CACHE_PATH = path.join(CACHE_BASE_PATH, installedMismatch.installedVersion);
     console.log(`Mirroring to installed-version cache (${installedMismatch.installedVersion}) for hot reload...`);
     {
       const cmdBase = `rsync -av ${deleteFlag()} --exclude=.git ${pluginGitignoreExcludes} ${preserveExcludes()} plugin/ "${INSTALLED_CACHE_PATH}/"`;
-      if (shouldShowPreview() && deleteFlag()) {
-        console.log('\x1b[36m%s\x1b[0m', `Preview (installed-version cache ${installedMismatch.installedVersion} would-delete):`);
+      if (DRY_RUN) {
+        console.log('\x1b[36m%s\x1b[0m', `Installed-version cache (${installedMismatch.installedVersion}) sync preview:`);
         execSync(buildDryRunCommand(cmdBase), { stdio: 'inherit' });
+      } else {
+        if (shouldShowPreview() && deleteFlag()) {
+          console.log('\x1b[36m%s\x1b[0m', `Preview (installed-version cache ${installedMismatch.installedVersion} would-delete):`);
+          execSync(buildDryRunCommand(cmdBase), { stdio: 'inherit' });
+        }
+        execSync(cmdBase, { stdio: 'inherit' });
       }
-      if (!DRY_RUN) execSync(cmdBase, { stdio: 'inherit' });
     }
-    console.log(`Running bun install in installed-version cache (${installedMismatch.installedVersion})...`);
-    if (!DRY_RUN) execSync(`bun install`, { cwd: INSTALLED_CACHE_PATH, stdio: 'inherit' });
+    if (!DRY_RUN) {
+      console.log(`Running bun install in installed-version cache (${installedMismatch.installedVersion})...`);
+      execSync(`bun install`, { cwd: INSTALLED_CACHE_PATH, stdio: 'inherit' });
+    }
   }
 
   if (DRY_RUN) {
