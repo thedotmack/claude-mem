@@ -26,6 +26,7 @@ import {
 // @ts-ignore - Agent SDK types may not be available
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { ClassifiedProviderError } from './provider-errors.js';
+import { logObserverToolAttempt } from '../../shared/ObserverToolAuditLog.js';
 
 /**
  * Module-scoped guard so the "effort parameter" hint only fires once per
@@ -144,6 +145,26 @@ export function classifyClaudeError(err: unknown): ClassifiedProviderError {
   return new ClassifiedProviderError(message, { kind: 'transient', cause: err });
 }
 
+
+
+/**
+ * defence-in-depth token caps for the Observer SDK.
+ *
+ * Per-invocation cap (default 50_000) bounds a single startSession call;
+ * per-session cap (default 200_000) bounds the cumulative spend across the
+ * lifetime of an ActiveSession. Either cap, when crossed, aborts the
+ * AbortController so the next iteration of the SDK message loop breaks.
+ *
+ * Both caps are overridable via environment variables so operators with
+ * larger contexts can extend them without recompiling.
+ */
+function getObserverPerInvocationCap(): number {
+  return Number.parseInt(process.env.CLAUDE_MEM_OBSERVER_MAX_TOKENS ?? '', 10) || 50_000;
+}
+function getObserverPerSessionCap(): number {
+  return Number.parseInt(process.env.CLAUDE_MEM_OBSERVER_SESSION_MAX_TOKENS ?? '', 10) || 200_000;
+}
+
 export class ClaudeProvider {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
@@ -223,13 +244,38 @@ export class ClaudeProvider {
     }
 
     ensureDir(OBSERVER_SESSIONS_DIR);
+    // fix — Observer SDK Tool Enforcement (#2380).
+    // Pass allowedTools:[] (NO tools available), permissionMode:'plan' (no
+    // execution), and a canUseTool callback that audit-logs every attempt.
+    // disallowedTools is kept as belt-and-braces (a regression that drops
+    // one of allowedTools/permissionMode/canUseTool still hits the deny).
+    const perInvocationCap = getObserverPerInvocationCap();
+    const perSessionCap = getObserverPerSessionCap();
     const queryResult = query({
       prompt: messageGenerator,
       options: {
         model: modelId,
         cwd: OBSERVER_SESSIONS_DIR,
         ...(shouldResume && session.memorySessionId ? { resume: session.memorySessionId } : {}),
+        allowedTools: [],
         disallowedTools,
+        permissionMode: 'plan',
+        canUseTool: async (toolName: string, input: Record<string, unknown>) => {
+          logObserverToolAttempt({
+            source: 'observer',
+            sessionDbId: session.sessionDbId,
+            contentSessionId: session.contentSessionId,
+            toolName,
+            decision: 'deny',
+            reason: 'Observer SDK has no tools enabled',
+            input,
+          });
+          return {
+            behavior: 'deny',
+            message: 'Observer SDK has no tools enabled (tool-call enforcement)',
+            interrupt: true,
+          };
+        },
         abortController: session.abortController,
         pathToClaudeCodeExecutable: claudePath,
         spawnClaudeCodeProcess: createSdkSpawnFactory(session.sessionDbId),
@@ -241,7 +287,29 @@ export class ClaudeProvider {
     });
 
     try {
+      let invocationTokensConsumed = 0;
       for await (const message of queryResult) {
+        // token-cap guard.
+        const usageNow = (message as any)?.message?.usage;
+        if (usageNow) {
+          const delta = (usageNow.input_tokens ?? 0) + (usageNow.output_tokens ?? 0) + (usageNow.cache_creation_input_tokens ?? 0);
+          invocationTokensConsumed += delta;
+          const sessionCum = session.cumulativeInputTokens + session.cumulativeOutputTokens + delta;
+          if (invocationTokensConsumed >= perInvocationCap || sessionCum >= perSessionCap) {
+            logger.warn('SDK', 'Observer token cap reached, aborting session', {
+              sessionDbId: session.sessionDbId,
+              invocationTokensConsumed,
+              perInvocationCap,
+              sessionCumulative: sessionCum,
+              perSessionCap,
+            });
+            session.abortReason = invocationTokensConsumed >= perInvocationCap
+              ? 'observer_tokens_invocation'
+              : 'observer_tokens_session';
+            try { session.abortController.abort(); } catch {}
+            break;
+          }
+        }
         // Quota-aware wall-clock guard (#2234): the SDK pushes `system` events
         // with subtype `rate_limit` carrying live subscription quota state.
         // Capture the snapshot, then bail out of the loop before issuing
