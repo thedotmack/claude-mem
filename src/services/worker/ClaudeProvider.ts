@@ -491,3 +491,15 @@ export class ClaudeProvider {
     return settings.CLAUDE_MEM_MODEL;
   }
 }
+
+export function isDeepseekAvailable(): boolean {
+  const settingsPath = paths.settings();
+  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+  return !!(settings.CLAUDE_MEM_DEEPSEEK_API_KEY || process.env.ANTHROPIC_API_KEY);
+}
+
+export function isDeepseekSelected(): boolean {
+  const settingsPath = paths.settings();
+  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+  return settings.CLAUDE_MEM_PROVIDER === 'deepseek';
+}
