@@ -24,6 +24,27 @@ import { getUptimeSeconds } from '../../../../shared/uptime.js';
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
 
+// Dedup map: prevents duplicate UserPromptSubmit when both Codex and Claude hooks fire
+const recentPrompts = new Map<string, number>();
+const PROMPT_DEDUP_WINDOW_MS = 3000;
+
+function isDuplicatePrompt(contentSessionId: string, prompt: string): boolean {
+  const key = `${contentSessionId}:${prompt}`;
+  const now = Date.now();
+  const lastSeen = recentPrompts.get(key);
+  if (lastSeen && (now - lastSeen) < PROMPT_DEDUP_WINDOW_MS) {
+    return true;
+  }
+  recentPrompts.set(key, now);
+  // Cleanup old entries periodically
+  if (recentPrompts.size > 100) {
+    for (const [k, v] of recentPrompts) {
+      if (now - v > PROMPT_DEDUP_WINDOW_MS) recentPrompts.delete(k);
+    }
+  }
+  return false;
+}
+
 export class SessionRoutes extends BaseRouteHandler {
   constructor(
     private sessionManager: SessionManager,
@@ -417,6 +438,13 @@ export class SessionRoutes extends BaseRouteHandler {
         skipped: true,
         reason: 'private'
       });
+      return;
+    }
+
+    // Skip duplicate prompts (Codex + Claude Code double-hook guard)
+    if (isDuplicatePrompt(contentSessionId, cleanedPrompt)) {
+      logger.debug('HTTP', 'session-init: skipping duplicate prompt within dedup window', { contentSessionId, promptNumber });
+      res.json({ sessionDbId, promptNumber, skipped: true, reason: 'duplicate' });
       return;
     }
 
