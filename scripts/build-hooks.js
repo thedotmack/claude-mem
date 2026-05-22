@@ -49,6 +49,16 @@ function stripHardcodedDirname(filePath) {
   }
 }
 
+function assertNoExternalZodRequire(bundlePath, bundleName, contextNote) {
+  const content = fs.readFileSync(bundlePath, 'utf-8');
+  const match = content.match(/require\(\s*["']zod(?:\/[^"']*)?["']\s*\)/);
+  if (match) {
+    throw new Error(
+      `${bundleName} contains an unbundled ${match[0]} call. ${contextNote} See PR #2610 / issue #2437 for why zod must be inlined.`
+    );
+  }
+}
+
 async function buildHooks() {
   console.log('🔨 Building claude-mem hooks and worker service...\n');
 
@@ -142,11 +152,13 @@ async function buildHooks() {
       outfile: `${hooksDir}/${WORKER_SERVICE.name}.cjs`,
       minify: true,
       logLevel: 'error', // Suppress warnings (import.meta warning is benign)
-      // zod is inlined (~50KB pure JS, no native deps) so the worker bundle is
-      // self-contained even when the plugin cache ships without node_modules
-      // populated. See #2437 — every 13.x release regressed on this because the
-      // published cache could miss `node_modules/zod` and `require('zod/v3')`
-      // would die on every hook. The remaining externals all have legitimate
+      // zod is inlined (~330 KB minified — v3 + v4 + v4-mini subpaths all
+      // pulled in transitively) so the worker bundle is self-contained even
+      // when the plugin cache ships without node_modules populated. See
+      // #2437 — every 13.x release regressed on this because the published
+      // cache could miss `node_modules/zod` and `require('zod/v3')` would
+      // die on every hook. The post-build assertion below catches accidental
+      // re-externalization. The remaining externals all have legitimate
       // reasons to stay external (native bindings, large optional embedders).
       external: [
         'bun:sqlite',
@@ -179,6 +191,12 @@ async function buildHooks() {
     const workerStats = fs.statSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`);
     console.log(`✓ worker-service built (${(workerStats.size / 1024).toFixed(2)} KB)`);
 
+    assertNoExternalZodRequire(
+      `${hooksDir}/${WORKER_SERVICE.name}.cjs`,
+      `${WORKER_SERVICE.name}.cjs`,
+      `The published plugin cache is not guaranteed to ship a populated node_modules/zod (every 13.x release regressed on this), so the worker bundle must resolve zod from within itself.`
+    );
+
     console.log(`\n🔧 Building server beta service...`);
     await build({
       entryPoints: [SERVER_BETA_SERVICE.source],
@@ -210,6 +228,12 @@ async function buildHooks() {
     fs.chmodSync(`${hooksDir}/${SERVER_BETA_SERVICE.name}.cjs`, 0o755);
     const serverBetaStats = fs.statSync(`${hooksDir}/${SERVER_BETA_SERVICE.name}.cjs`);
     console.log(`✓ server-beta-service built (${(serverBetaStats.size / 1024).toFixed(2)} KB)`);
+
+    assertNoExternalZodRequire(
+      `${hooksDir}/${SERVER_BETA_SERVICE.name}.cjs`,
+      `${SERVER_BETA_SERVICE.name}.cjs`,
+      `server-beta runs from the same plugin cache as the worker and must stay self-contained for the same reason.`
+    );
 
     console.log(`\n🔧 Building MCP server...`);
     await build({
