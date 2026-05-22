@@ -43,6 +43,8 @@ export interface ExternalSummaryInput {
   learned: string;
   completed: string;
   nextSteps: string;
+  filesRead?: string[];
+  filesModified?: string[];
   notes: string | null;
   promptNumber?: number | null;
   discoveryTokens?: number;

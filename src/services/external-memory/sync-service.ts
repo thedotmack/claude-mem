@@ -40,6 +40,8 @@ export interface ExternalMemoryWritableStore {
     learned: string;
     completed: string;
     nextSteps: string;
+    filesRead?: string[];
+    filesModified?: string[];
     notes: string | null;
     promptNumber?: number | null;
     discoveryTokens?: number;
@@ -104,17 +106,51 @@ export interface ExternalMemorySyncResult {
   cacheWrites: number;
 }
 
+type ExternalMemoryStoreTransaction = <T>(
+  fn: (store: ExternalMemoryWritableStore) => Promise<T>
+) => Promise<T>;
+
+interface PrimaryStoreBatchResult {
+  result: StorageResult;
+  cacheItems: ExternalMemoryCacheItem[];
+}
+
 export class ExternalMemorySyncService {
   constructor(
     private readonly store: ExternalMemoryWritableStore,
-    private readonly cache: ExternalMemoryCache
+    private readonly cache: ExternalMemoryCache,
+    private readonly runStoreTransaction?: ExternalMemoryStoreTransaction
   ) {}
 
   async storePrimaryBatch(input: ExternalMemoryPrimaryBatchInput): Promise<StorageResult> {
+    const run = this.runStoreTransaction ?? ((fn: (store: ExternalMemoryWritableStore) => Promise<PrimaryStoreBatchResult>) => fn(this.store));
+    const { result, cacheItems } = await run(store => this.writePrimaryBatchToStore(store, input));
+
+    for (const item of cacheItems) {
+      try {
+        await this.cache.cacheItem(item);
+      } catch (error) {
+        logger.warn('EXTERNAL_MEMORY', 'Failed to cache primary external memory item; Postgres write remains authoritative', {
+          id: item.id,
+          project: item.project,
+          kind: item.kind,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    return result;
+  }
+
+  private async writePrimaryBatchToStore(
+    store: ExternalMemoryWritableStore,
+    input: ExternalMemoryPrimaryBatchInput
+  ): Promise<PrimaryStoreBatchResult> {
     const observationIds: number[] = [];
+    const cacheItems: ExternalMemoryCacheItem[] = [];
 
     for (const observation of input.observations) {
-      const stored = await this.store.upsertObservation({
+      const stored = await store.upsertObservation({
         sqliteId: null,
         memorySessionId: input.memorySessionId,
         project: input.project,
@@ -137,7 +173,7 @@ export class ExternalMemorySyncService {
         },
       });
       observationIds.push(stored.id);
-      await this.cache.cacheItem({
+      cacheItems.push({
         id: stored.id,
         project: input.project,
         kind: 'observation',
@@ -148,7 +184,8 @@ export class ExternalMemorySyncService {
 
     let summaryId: number | null = null;
     if (input.summary) {
-      const stored = await this.store.upsertSummary({
+      const summaryFiles = collectBatchFiles(input.observations);
+      const stored = await store.upsertSummary({
         sqliteId: null,
         memorySessionId: input.memorySessionId,
         project: input.project,
@@ -157,6 +194,8 @@ export class ExternalMemorySyncService {
         learned: input.summary.learned,
         completed: input.summary.completed,
         nextSteps: input.summary.next_steps,
+        filesRead: summaryFiles.filesRead,
+        filesModified: summaryFiles.filesModified,
         notes: input.summary.notes,
         promptNumber: input.promptNumber ?? null,
         discoveryTokens: input.discoveryTokens ?? 0,
@@ -164,7 +203,7 @@ export class ExternalMemorySyncService {
         metadata: { primary: true },
       });
       summaryId = stored.id;
-      await this.cache.cacheItem({
+      cacheItems.push({
         id: stored.id,
         project: input.project,
         kind: 'summary',
@@ -173,7 +212,10 @@ export class ExternalMemorySyncService {
       });
     }
 
-    return { observationIds, summaryId, createdAtEpoch: input.createdAtEpoch };
+    return {
+      result: { observationIds, summaryId, createdAtEpoch: input.createdAtEpoch },
+      cacheItems,
+    };
   }
 
   async syncBatch(input: ExternalMemoryBatchInput): Promise<ExternalMemorySyncResult> {
@@ -237,6 +279,7 @@ export class ExternalMemorySyncService {
 
     if (input.summary && input.summaryId !== null) {
       try {
+        const summaryFiles = collectBatchFiles(input.observations);
         const stored = await this.store.upsertSummary({
           sqliteId: input.summaryId,
           memorySessionId: input.memorySessionId,
@@ -246,6 +289,8 @@ export class ExternalMemorySyncService {
           learned: input.summary.learned,
           completed: input.summary.completed,
           nextSteps: input.summary.next_steps,
+          filesRead: summaryFiles.filesRead,
+          filesModified: summaryFiles.filesModified,
           notes: input.summary.notes,
           promptNumber: input.promptNumber ?? null,
           discoveryTokens: input.discoveryTokens ?? 0,
@@ -285,6 +330,7 @@ interface ExternalMemoryRuntime {
 
 interface PgPoolLike extends PostgresQueryable {
   end(): Promise<void>;
+  connect?: () => Promise<PostgresQueryable & { release(): void }>;
 }
 
 interface RedisRuntimeClient extends ValkeyLikeClient {
@@ -423,13 +469,54 @@ async function initializeExternalMemoryRuntime(
     key,
     pool,
     valkey,
-    service: new ExternalMemorySyncService(store, cache),
+    service: new ExternalMemorySyncService(store, cache, createPostgresStoreTransaction(pool)),
     store,
     cache,
     config,
   };
   runtime = initialized;
   return initialized;
+}
+
+function createPostgresStoreTransaction(pool: PgPoolLike): ExternalMemoryStoreTransaction | undefined {
+  if (typeof pool.connect !== 'function') {
+    return undefined;
+  }
+
+  return async fn => {
+    const client = await pool.connect!();
+    try {
+      await client.query('BEGIN');
+      const result = await fn(new PgvectorMemoryStore(client));
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  };
+}
+
+function collectBatchFiles(observations: ExternalMemoryBatchObservation[]): {
+  filesRead: string[];
+  filesModified: string[];
+} {
+  const filesRead = new Set<string>();
+  const filesModified = new Set<string>();
+  for (const observation of observations) {
+    for (const file of observation.files_read) {
+      filesRead.add(file);
+    }
+    for (const file of observation.files_modified) {
+      filesModified.add(file);
+    }
+  }
+  return {
+    filesRead: [...filesRead],
+    filesModified: [...filesModified],
+  };
 }
 
 async function loadExternalMemoryDrivers(): Promise<{

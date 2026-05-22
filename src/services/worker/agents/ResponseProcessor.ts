@@ -82,15 +82,35 @@ export async function processAgentResponse(
   let storedInExternalPrimary = false;
   let result: StorageResult;
   try {
-    const externalPrimaryResult = await storeExternalMemoryBatchAsPrimaryIfEnabled({
-      memorySessionId: session.memorySessionId,
-      project: session.project,
-      promptNumber: session.lastPromptNumber,
-      discoveryTokens,
-      createdAtEpoch,
-      observations: labeledObservations,
-      summary: summaryForStore,
-    });
+    let externalPrimaryResult: StorageResult | null;
+    try {
+      externalPrimaryResult = await storeExternalMemoryBatchAsPrimaryIfEnabled({
+        memorySessionId: session.memorySessionId,
+        project: session.project,
+        promptNumber: session.lastPromptNumber,
+        discoveryTokens,
+        createdAtEpoch,
+        observations: labeledObservations,
+        summary: summaryForStore,
+      });
+    } catch (error) {
+      let resetCount: number | null = null;
+      try {
+        resetCount = await sessionManager.resetProcessingToPending(session.sessionDbId);
+      } catch (resetError) {
+        logger.error('EXTERNAL_MEMORY', 'Failed to reset claimed messages after external primary storage failure', {
+          sessionId: session.sessionDbId,
+          memorySessionId: session.memorySessionId,
+        }, resetError instanceof Error ? resetError : new Error(String(resetError)));
+      }
+      worker?.broadcastProcessingStatus?.();
+      logger.warn('EXTERNAL_MEMORY', 'External Postgres primary storage failed; claimed messages were reset to pending for retry', {
+        sessionId: session.sessionDbId,
+        memorySessionId: session.memorySessionId,
+        resetCount,
+      }, error instanceof Error ? error : new Error(String(error)));
+      throw error;
+    }
 
     if (externalPrimaryResult) {
       storedInExternalPrimary = true;

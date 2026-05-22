@@ -136,6 +136,28 @@ describe('PgvectorMemoryStore', () => {
     expect(insert.values?.some(value => typeof value === 'string' && value.includes('SQLite remains default'))).toBe(true);
   });
 
+  test('uses formatted observation content in the primary content hash', async () => {
+    const client = new FakePgClient();
+    const store = new PgvectorMemoryStore(client);
+
+    await store.upsertObservation({
+      ...observation,
+      title: null,
+      subtitle: null,
+      narrative: null,
+      facts: ['First fact'],
+    });
+    await store.upsertObservation({
+      ...observation,
+      title: null,
+      subtitle: null,
+      narrative: null,
+      facts: ['Second fact'],
+    });
+
+    expect(client.queries[0]?.values?.[15]).not.toBe(client.queries[1]?.values?.[15]);
+  });
+
 
   test('supports primary writes without a source SQLite id', async () => {
     const client = new FakePgClient();
@@ -145,6 +167,30 @@ describe('PgvectorMemoryStore', () => {
 
     const insert = client.queries[0]!;
     expect(insert.values?.[14]).toBeNull();
+  });
+
+  test('stores summary file indexes for primary file search', async () => {
+    const client = new FakePgClient();
+    const store = new PgvectorMemoryStore(client);
+
+    await store.upsertSummary({
+      sqliteId: null,
+      memorySessionId: 'memory-session-1',
+      project: 'claude-mem',
+      request: 'Summarize file work',
+      investigated: 'Read SearchRoutes',
+      learned: 'Primary summaries need file indexes',
+      completed: 'Stored file metadata',
+      nextSteps: 'Verify search',
+      filesRead: ['src/services/worker/http/routes/SearchRoutes.ts'],
+      filesModified: ['src/services/external-memory/pgvector-store.ts'],
+      notes: null,
+      createdAtEpoch: 1_700_000_000_000,
+    });
+
+    const insert = client.queries[0]!;
+    expect(insert.values?.[10]).toBe(JSON.stringify(['src/services/worker/http/routes/SearchRoutes.ts']));
+    expect(insert.values?.[11]).toBe(JSON.stringify(['src/services/external-memory/pgvector-store.ts']));
   });
 
   test('hydrates observations by external ids for primary mode retrieval', async () => {
@@ -216,6 +262,25 @@ describe('PgvectorMemoryStore', () => {
     expect(query.values).toContain('claude-mem');
     expect(query.values).toContainEqual(['decision']);
     expect(query.values).toContainEqual(['postgres']);
+  });
+
+  test('searches primary summaries by file filters', async () => {
+    const client = new FakePgClient();
+    const store = new PgvectorMemoryStore(client);
+
+    await store.searchSummaries(undefined, {
+      project: 'claude-mem',
+      files: 'SearchRoutes.ts',
+      limit: 7,
+    });
+
+    const query = client.queries[0]!;
+    expect(query.text).toContain("kind = 'summary'");
+    expect(query.text).toContain('jsonb_array_elements_text(files_read)');
+    expect(query.text).toContain('jsonb_array_elements_text(files_modified)');
+    expect(query.values).toContain('claude-mem');
+    expect(query.values).toContain('%SearchRoutes.ts%');
+    expect(query.values).toContain(7);
   });
 
   test('builds primary-mode timeline windows without SQLite', async () => {

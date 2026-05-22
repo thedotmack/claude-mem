@@ -114,6 +114,84 @@ describe('ExternalMemorySyncService', () => {
     expect(cache.items).toHaveLength(2);
   });
 
+  test('rolls back primary batch transaction before cache writes when a Postgres write fails', async () => {
+    const store = new FakeStore();
+    store.upsertObservation = async (input: unknown) => {
+      store.observations.push(input);
+      if ((input as { title: string | null }).title === 'Second') {
+        throw new Error('Postgres unavailable');
+      }
+      return { id: 100 + store.observations.length, createdAtEpoch: (input as { createdAtEpoch: number }).createdAtEpoch };
+    };
+    const cache = new FakeCache();
+    const events: string[] = [];
+    const service = new ExternalMemorySyncService(new FakeStore(), cache, async fn => {
+      events.push('BEGIN');
+      try {
+        const result = await fn(store);
+        events.push('COMMIT');
+        return result;
+      } catch (error) {
+        events.push('ROLLBACK');
+        throw error;
+      }
+    });
+
+    await expect(service.storePrimaryBatch({
+      memorySessionId: 'memory-session-primary',
+      project: 'claude-mem',
+      promptNumber: 5,
+      discoveryTokens: 111,
+      createdAtEpoch: 1_700_000_000_123,
+      observations: [
+        { type: 'decision', title: 'First', subtitle: null, facts: [], narrative: 'first', concepts: [], files_read: [], files_modified: [] },
+        { type: 'decision', title: 'Second', subtitle: null, facts: [], narrative: 'second', concepts: [], files_read: [], files_modified: [] },
+      ],
+      summary: null,
+    })).rejects.toThrow('Postgres unavailable');
+
+    expect(events).toEqual(['BEGIN', 'ROLLBACK']);
+    expect(cache.items).toHaveLength(0);
+  });
+
+  test('keeps primary Postgres storage authoritative when Valkey cache write fails', async () => {
+    const store = new FakeStore();
+    const cache = new FakeCache();
+    cache.cacheItem = async (item: unknown) => {
+      cache.items.push(item);
+      throw new Error('Valkey unavailable');
+    };
+    const warnings: Array<{ component: string; message: string; context: unknown }> = [];
+    const originalWarn = logger.warn;
+    logger.warn = ((component, message, context) => {
+      warnings.push({ component, message, context });
+    }) as typeof logger.warn;
+
+    try {
+      const service = new ExternalMemorySyncService(store, cache);
+      const result = await service.storePrimaryBatch({
+        memorySessionId: 'memory-session-primary',
+        project: 'claude-mem',
+        promptNumber: 5,
+        discoveryTokens: 111,
+        createdAtEpoch: 1_700_000_000_123,
+        observations: [
+          { type: 'decision', title: 'Primary Postgres', subtitle: null, facts: [], narrative: 'No SQLite observation row.', concepts: ['postgres'], files_read: [], files_modified: [] },
+        ],
+        summary: null,
+      });
+
+      expect(result).toEqual({ observationIds: [101], summaryId: null, createdAtEpoch: 1_700_000_000_123 });
+      expect(store.observations).toHaveLength(1);
+      expect(warnings[0]).toMatchObject({
+        component: 'EXTERNAL_MEMORY',
+        message: 'Failed to cache primary external memory item; Postgres write remains authoritative',
+      });
+    } finally {
+      logger.warn = originalWarn;
+    }
+  });
+
   test('continues syncing later items when one external write fails', async () => {
     const store = new FakeStore();
     store.upsertObservation = async (input: unknown) => {

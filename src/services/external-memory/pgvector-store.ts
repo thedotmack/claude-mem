@@ -56,6 +56,16 @@ export interface ExternalTimelineData {
   prompts: [];
 }
 
+export interface ExternalSummaryQueryOptions {
+  orderBy?: 'date_desc' | 'date_asc' | 'relevance';
+  limit?: number;
+  offset?: number;
+  project?: string;
+  platformSource?: string;
+  files?: string | string[];
+  dateRange?: { start?: string | number; end?: string | number };
+}
+
 export interface ExternalMemoryStats {
   observations: number;
   summaries: number;
@@ -73,7 +83,7 @@ export class PgvectorMemoryStore {
 
   async upsertObservation(input: ExternalObservationInput): Promise<ExternalMemoryWriteResult> {
     const content = formatObservationContent(input);
-    const contentHash = computeExternalObservationContentHash(input.memorySessionId, input.title, input.narrative);
+    const contentHash = computeExternalObservationContentHash(input.memorySessionId, content);
     const row = await this.upsertItem({
       memorySessionId: input.memorySessionId,
       project: input.project,
@@ -112,8 +122,8 @@ export class PgvectorMemoryStore {
       facts: [],
       narrative: input.learned || input.completed || null,
       concepts: [],
-      filesRead: [],
-      filesModified: [],
+      filesRead: input.filesRead ?? [],
+      filesModified: input.filesModified ?? [],
       promptNumber: input.promptNumber ?? null,
       discoveryTokens: input.discoveryTokens ?? 0,
       sqliteId: input.sqliteId ?? null,
@@ -282,14 +292,7 @@ export class PgvectorMemoryStore {
 
   async searchSummaries(
     query: string | undefined,
-    options: {
-      orderBy?: 'date_desc' | 'date_asc' | 'relevance';
-      limit?: number;
-      offset?: number;
-      project?: string;
-      platformSource?: string;
-      dateRange?: { start?: string | number; end?: string | number };
-    } = {}
+    options: ExternalSummaryQueryOptions = {}
   ): Promise<SessionSummarySearchResult[]> {
     const limit = Math.max(1, Number(options.limit ?? 20));
     const offset = Math.max(0, Number(options.offset ?? 0));
@@ -302,6 +305,7 @@ export class PgvectorMemoryStore {
     if (options.project) {
       conditions.push(`project = $${pushParam(params, options.project)}`);
     }
+    appendFileFilters(conditions, params, options.files);
     appendDateRangeFilter(conditions, params, options.dateRange);
 
     const normalizedQuery = query?.trim();
@@ -626,13 +630,24 @@ function appendObservationFilters(
   }
 
   if (options.files) {
-    const values = Array.isArray(options.files) ? options.files : [options.files];
-    const clauses = values.map(value => {
-      const param = pushParam(params, `%${value}%`);
-      return `(EXISTS (SELECT 1 FROM jsonb_array_elements_text(files_read) AS f(value) WHERE f.value LIKE $${param}) OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(files_modified) AS f(value) WHERE f.value LIKE $${param}))`;
-    });
-    conditions.push(`(${clauses.join(' OR ')})`);
+    appendFileFilters(conditions, params, options.files);
   }
+}
+
+function appendFileFilters(
+  conditions: string[],
+  params: unknown[],
+  files: string | string[] | undefined
+): void {
+  if (!files) {
+    return;
+  }
+  const values = Array.isArray(files) ? files : [files];
+  const clauses = values.map(value => {
+    const param = pushParam(params, `%${value}%`);
+    return `(EXISTS (SELECT 1 FROM jsonb_array_elements_text(files_read) AS f(value) WHERE f.value LIKE $${param}) OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(files_modified) AS f(value) WHERE f.value LIKE $${param}))`;
+  });
+  conditions.push(`(${clauses.join(' OR ')})`);
 }
 
 function appendDateRangeFilter(
@@ -706,11 +721,10 @@ function computeSummaryContentHash(input: ExternalSummaryInput): string {
 
 function computeExternalObservationContentHash(
   memorySessionId: string,
-  title: string | null,
-  narrative: string | null
+  content: string
 ): string {
   return createHash('sha256')
-    .update([memorySessionId || '', title || '', narrative || ''].join('\x00'))
+    .update([memorySessionId || '', content || ''].join('\x00'))
     .digest('hex')
     .slice(0, 16);
 }
@@ -768,8 +782,8 @@ function mapSummaryRow(row: ExternalMemoryDetailRow): SessionSummarySearchResult
     learned: readString(metadata.learned, row.narrative),
     completed: readString(metadata.completed, null),
     next_steps: readString(metadata.next_steps, null),
-    files_read: null,
-    files_edited: null,
+    files_read: stringifyJson(row.files_read),
+    files_edited: stringifyJson(row.files_modified),
     notes: readString(metadata.notes, null),
     prompt_number: row.prompt_number,
     discovery_tokens: Number(row.discovery_tokens ?? 0),
