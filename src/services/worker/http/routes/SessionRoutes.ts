@@ -25,8 +25,10 @@ import { getUptimeSeconds } from '../../../../shared/uptime.js';
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
 
 // Prompt dedup: prevents duplicate UserPromptSubmit when both
-// Codex and Claude hooks fire for the same event.  Uses prompt prefix
-// + length as the key — bounded memory, no hash-collision risk.
+// Codex and Claude hooks fire for the same event.  Keys are
+// sessionId + first 100 chars + length (~150 bytes max), evicted
+// after 3 s.  At a single user's typing speed the map stays under
+// a handful of entries, so total memory is negligible.
 const recentPrompts = new Map<string, number>();
 const PROMPT_DEDUP_WINDOW_MS = 3000;
 const DEDUP_PREFIX_LEN = 100;
