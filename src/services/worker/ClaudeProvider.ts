@@ -497,6 +497,9 @@ export class ClaudeProvider {
   private getModelId(): string {
     const settingsPath = paths.settings();
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+    if (isDeepseekSelected() && settings.CLAUDE_MEM_DEEPSEEK_MODEL) {
+      return settings.CLAUDE_MEM_DEEPSEEK_MODEL;
+    }
     return settings.CLAUDE_MEM_MODEL;
   }
 }
