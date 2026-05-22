@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { logger } from '../../utils/logger.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import type { PostgresQueryable } from '../../storage/postgres/utils.js';
 import { parseExternalMemoryConfig, type ExternalMemoryConfig } from './config.js';
 import { bootstrapExternalMemorySchema } from './schema.js';
@@ -320,14 +322,14 @@ export async function syncExternalMemoryBatchIfEnabled(input: ExternalMemoryBatc
   return service.syncBatch(input);
 }
 
-export async function getExternalMemorySyncService(env: NodeJS.ProcessEnv = process.env): Promise<ExternalMemorySyncService | null> {
+export async function getExternalMemorySyncService(env: NodeJS.ProcessEnv = loadExternalMemoryEnv()): Promise<ExternalMemorySyncService | null> {
   const runtime = await getExternalMemoryRuntime(env);
   return runtime?.service ?? null;
 }
 
 export async function storeExternalMemoryBatchAsPrimaryIfEnabled(
   input: ExternalMemoryPrimaryBatchInput,
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = loadExternalMemoryEnv()
 ): Promise<StorageResult | null> {
   const runtime = await getExternalMemoryRuntime(env);
   if (!runtime || runtime.config.mode !== 'primary') {
@@ -336,7 +338,7 @@ export async function storeExternalMemoryBatchAsPrimaryIfEnabled(
   return runtime.service.storePrimaryBatch(input);
 }
 
-export async function getExternalMemoryPrimaryStore(env: NodeJS.ProcessEnv = process.env): Promise<PgvectorMemoryStore | null> {
+export async function getExternalMemoryPrimaryStore(env: NodeJS.ProcessEnv = loadExternalMemoryEnv()): Promise<PgvectorMemoryStore | null> {
   const runtime = await getExternalMemoryRuntime(env);
   if (!runtime || runtime.config.mode !== 'primary') {
     return null;
@@ -344,7 +346,7 @@ export async function getExternalMemoryPrimaryStore(env: NodeJS.ProcessEnv = pro
   return runtime.store;
 }
 
-async function getExternalMemoryRuntime(env: NodeJS.ProcessEnv = process.env): Promise<ExternalMemoryRuntime | null> {
+async function getExternalMemoryRuntime(env: NodeJS.ProcessEnv = loadExternalMemoryEnv()): Promise<ExternalMemoryRuntime | null> {
   const config = parseExternalMemoryConfig(env);
   if (!config.enabled) {
     return null;
@@ -371,6 +373,12 @@ async function getExternalMemoryRuntime(env: NodeJS.ProcessEnv = process.env): P
       initPromise = null;
     }
   }
+}
+
+
+function loadExternalMemoryEnv(): NodeJS.ProcessEnv {
+  const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH) as unknown as NodeJS.ProcessEnv;
+  return { ...settings, ...process.env };
 }
 
 async function initializeExternalMemoryRuntime(

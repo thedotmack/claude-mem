@@ -77,6 +77,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_SERVER_BETA_API_KEY: string;
   CLAUDE_MEM_SERVER_BETA_PROJECT_ID: string;
   CLAUDE_MEM_EXTERNAL_MEMORY_ENABLED: string;
+  CLAUDE_MEM_EXTERNAL_MEMORY_MODE: string;
   CLAUDE_MEM_PG_URL: string;
   CLAUDE_MEM_PG_VECTOR_DIMENSIONS: string;
   CLAUDE_MEM_VALKEY_URL: string;
@@ -159,6 +160,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_SERVER_BETA_API_KEY: '',                     // Local hook API key, populated by installer when runtime=server-beta
     CLAUDE_MEM_SERVER_BETA_PROJECT_ID: '',                  // Default Postgres project_id used by hooks when runtime=server-beta
     CLAUDE_MEM_EXTERNAL_MEMORY_ENABLED: 'false',             // Optional worker mirror/primary mode to external Postgres + Valkey storage
+    CLAUDE_MEM_EXTERNAL_MEMORY_MODE: 'mirror',               // External memory mode: mirror SQLite or make Postgres primary
     CLAUDE_MEM_PG_URL: '',                                   // External Postgres URL; falls back to CLAUDE_MEM_SERVER_DATABASE_URL when enabled
     CLAUDE_MEM_PG_VECTOR_DIMENSIONS: '1536',                 // Vector dimensions for the external Postgres pgvector column
     CLAUDE_MEM_VALKEY_URL: '',                               // External Valkey URL; falls back to CLAUDE_MEM_REDIS_URL when enabled

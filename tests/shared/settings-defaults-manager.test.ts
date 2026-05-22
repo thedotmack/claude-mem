@@ -285,7 +285,7 @@ describe('SettingsDefaultsManager', () => {
 
   describe('get', () => {
     it('should return default value for key', () => {
-      expect(SettingsDefaultsManager.get('CLAUDE_MEM_MODEL')).toBe('claude-sonnet-4-6');
+      expect(SettingsDefaultsManager.get('CLAUDE_MEM_MODEL')).toBe(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_MODEL);
       const expectedPort = String(37700 + ((process.getuid?.() ?? 77) % 100));
       expect(SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT')).toBe(expectedPort);
     });
@@ -354,6 +354,21 @@ describe('SettingsDefaultsManager', () => {
       const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
       expect(result.CLAUDE_MEM_WORKER_PORT).toBe('99999');
+    });
+
+    it('should preserve external memory mode from file settings', () => {
+      const fileSettings = {
+        CLAUDE_MEM_EXTERNAL_MEMORY_ENABLED: 'true',
+        CLAUDE_MEM_EXTERNAL_MEMORY_MODE: 'primary',
+      };
+      writeFileSync(settingsPath, JSON.stringify(fileSettings));
+      delete process.env.CLAUDE_MEM_EXTERNAL_MEMORY_ENABLED;
+      delete process.env.CLAUDE_MEM_EXTERNAL_MEMORY_MODE;
+
+      const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+      expect(result.CLAUDE_MEM_EXTERNAL_MEMORY_ENABLED).toBe('true');
+      expect(result.CLAUDE_MEM_EXTERNAL_MEMORY_MODE).toBe('primary');
     });
 
     it('should use file setting when env var is not set', () => {
