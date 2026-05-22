@@ -1,0 +1,99 @@
+---
+title: "Auto-Redaction"
+description: "Opt-in regex-based detection that replaces common secret patterns with <redacted/> placeholders before storage"
+---
+
+# Auto-Redaction
+
+claude-mem can automatically detect and redact common secrets before observations and summaries are stored. Unlike the manual [`<private>` tag](/usage/private-tags), this is a deterministic regex pipeline that catches secrets you never typed yourself — for example, an API key printed by a `curl` response or echoed by a `Bash` command.
+
+## How it works
+
+When enabled, every prompt or tool payload that flows through claude-mem's storage path is scanned for a curated set of high-confidence secret patterns. Matches are replaced inline with a self-closing `<redacted type="..."/>` placeholder, preserving the surrounding context so search and observation quality stay intact.
+
+```
+Before:  curl -H "Authorization: Bearer sk-abc123def456..." …
+After:   curl -H "Authorization: Bearer <redacted type=\"openai_key\"/>" …
+```
+
+The observer LLM is explicitly instructed not to infer the literal value of any `<redacted/>` marker.
+
+## Enable it
+
+Add to `~/.claude-mem/settings.json`:
+
+```json
+{
+  "CLAUDE_MEM_REDACT_ENABLED": "true"
+}
+```
+
+That is all you need for the 10 built-in patterns to kick in.
+
+## Built-in patterns
+
+| Name | Catches |
+|---|---|
+| `aws_access_key` | `AKIA…` (16 trailing alphanumerics) |
+| `aws_secret_key` | 40-char base64 anchored to `AWS_SECRET_ACCESS_KEY=…` (shell / yaml style — see [limitations](#limits)) |
+| `github_pat` | `ghp_…`, `ghs_…`, `github_pat_…` |
+| `openai_key` | `sk-…` (≥20 chars) |
+| `anthropic_key` | `sk-ant-…` (≥20 chars) |
+| `slack_token` | `xoxb-…`, `xoxp-…`, `xoxa-…`, `xoxr-…`, `xoxs-…` |
+| `jwt` | `eyJ…[.]eyJ…[.]…` three-segment tokens |
+| `private_key_pem` | `-----BEGIN [RSA\|DSA\|EC\|OPENSSH\|PGP\|]PRIVATE KEY-----` blocks |
+| `stripe_key` | `sk_live_…`, `pk_live_…`, `rk_test_…` |
+| `google_api_key` | `AIza…` (35 trailing chars) |
+
+## Disable a single built-in
+
+```json
+{
+  "CLAUDE_MEM_REDACT_ENABLED": "true",
+  "CLAUDE_MEM_REDACT_DISABLED_BUILTINS": "jwt,slack_token"
+}
+```
+
+CSV format. The other built-ins stay active.
+
+## Add a custom pattern
+
+```json
+{
+  "CLAUDE_MEM_REDACT_ENABLED": "true",
+  "CLAUDE_MEM_REDACT_CUSTOM_PATTERNS": "[{\"name\":\"company_internal_token\",\"regex\":\"INTERNAL-[A-Z0-9]{32}\"}]"
+}
+```
+
+`name` is required and surfaces in the `<redacted type="..."/>` marker. Custom patterns are evaluated **before** built-ins, so you can override the built-in detection for a specific token family.
+
+If your regex fails to compile or your JSON is malformed, claude-mem logs a warning at worker startup and skips the broken entry — the rest keep working.
+
+## Diagnostic logging
+
+```json
+{
+  "CLAUDE_MEM_REDACT_LOG_MATCHES": "true"
+}
+```
+
+Writes a `pattern,count` line per invocation to the worker log. The original matched bytes are never logged.
+
+## Limits
+
+- **Per-invocation caps**: up to 200 total matches and 1 MB input length. Above either cap, redaction short-circuits and surfaces a `truncated: true` flag (logged as a warning). The cap counts UTF-16 code units, not bytes — multi-byte inputs (emoji, CJK characters) hit the cap at fewer characters than the same count of ASCII.
+- **`aws_secret_key` shape**: the lookbehind only anchors `KEY=val` (shell) and `KEY: val` (yaml) styles. JSON-style `"AWS_SECRET_ACCESS_KEY": "value"` is **not** matched because the lookbehind expects `=` or `:` directly after the key name. If you commonly handle JSON config, write a custom pattern for it.
+- **Coverage gap**: Built-ins do not cover Azure / GCP service-account JSON / IBM Cloud / private IDC tokens — use custom patterns for those.
+- **Server-beta scope**: in multi-tenant `server-beta` deployments, the redaction config is currently read from the worker's local `~/.claude-mem/settings.json` rather than from tenant-scoped settings. For team deployments, configure redaction at the worker level. A future change will source tenant-scoped redaction config.
+- **Destructive**: this is destructive replacement, not encryption. Redacted bytes cannot be recovered. If you need reversible protection, use the `<private>` tag and keep the secrets out of the conversation entirely.
+
+## Comparison with `<private>` tags
+
+| | `<private>` (manual) | Auto-redaction |
+|---|---|---|
+| **Trigger** | User wraps `<private>...</private>` | Regex match anywhere in content |
+| **Granularity** | Whole block dropped | Inline placeholder, surroundings kept |
+| **Default** | Always on (no setting) | Off until you opt in |
+| **Use when** | You know up front the content is sensitive | You want a safety net for accidental token leaks |
+
+Both can be used together — the auto-redaction layer runs before `<private>` tag stripping, so a wrapped `<private>` block has its content removed entirely regardless of what's inside.
