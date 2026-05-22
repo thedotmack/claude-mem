@@ -1203,10 +1203,14 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
     await runTasks(tasks);
   }
 
-  writeMcpLauncher(
-    join(homedir(), '.claude-mem'),
-    join(marketplaceDirectory(), 'plugin', 'scripts', 'mcp-server.cjs'),
-  );
+  try {
+    writeMcpLauncher(
+      join(homedir(), '.claude-mem'),
+      join(marketplaceDirectory(), 'plugin', 'scripts', 'mcp-server.cjs'),
+    );
+  } catch (error: unknown) {
+    console.warn('[install] Could not write MCP launcher:', error instanceof Error ? error.message : String(error));
+  }
 
   const failedIDEs = await setupIDEs(selectedIDEs);
 
