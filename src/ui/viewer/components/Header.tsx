@@ -3,7 +3,9 @@ import { ThemeToggle } from './ThemeToggle';
 import { ThemePreference } from '../hooks/useTheme';
 import { GitHubStarsButton } from './GitHubStarsButton';
 import { useSpinningFavicon } from '../hooks/useSpinningFavicon';
-import { useI18n, Locale } from '../i18n/I18nContext';
+import { useI18n } from '../i18n/I18nContext';
+import { localeLabels } from '../i18n/translations';
+import type { Locale } from '../i18n/translations';
 
 interface HeaderProps {
   isConnected: boolean;
@@ -98,14 +100,17 @@ export function Header({
           preference={themePreference}
           onThemeChange={onThemeChange}
         />
-        <button
-          className="lang-toggle-btn"
-          onClick={() => setLocale(locale === 'en' ? 'zh' : 'en')}
-          title={locale === 'en' ? 'Switch to 中文' : 'Switch to English'}
-          style={{ background: 'var(--color-bg-button)', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', fontWeight: 600, padding: '4px 8px' }}
+        <select
+          className="lang-select"
+          value={locale}
+          onChange={(e) => setLocale(e.target.value as Locale)}
+          title="Language"
+          style={{ background: 'var(--color-bg-input)', color: 'var(--color-text-primary)', border: '1px solid var(--color-border-primary)', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', padding: '4px 6px' }}
         >
-          {locale === 'en' ? '中文' : 'EN'}
-        </button>
+          {(Object.keys(localeLabels) as Locale[]).map(l => (
+            <option key={l} value={l}>{localeLabels[l]}</option>
+          ))}
+        </select>
         <button
           className="settings-btn"
           onClick={() => onShowHelp?.()}

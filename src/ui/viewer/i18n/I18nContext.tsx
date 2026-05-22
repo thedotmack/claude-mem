@@ -1,19 +1,27 @@
 import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
-import { translations } from './translations';
+import { translations, localeLabels } from './translations';
 export type { Locale } from './translations';
 import type { Locale } from './translations';
 
 const STORAGE_KEY = 'claude-mem-locale';
+const VALID_LOCALES = new Set(Object.keys(localeLabels));
+
+// Quick-lookup: browser language prefix → locale
+const BROWSER_LOCALE_MAP: Record<string, Locale> = {
+  zh: 'zh', es: 'es', fr: 'fr', de: 'de',
+  ja: 'ja', ko: 'ko', pt: 'pt', ru: 'ru',
+};
 
 function detectLocale(): Locale {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored === 'en' || stored === 'zh') return stored;
+    if (stored && VALID_LOCALES.has(stored)) return stored as Locale;
   } catch { /* localStorage unavailable */ }
 
   try {
     const lang = navigator.language;
-    if (lang.startsWith('zh')) return 'zh';
+    const base = lang.split('-')[0];
+    if (BROWSER_LOCALE_MAP[base]) return BROWSER_LOCALE_MAP[base];
   } catch { /* navigator unavailable */ }
 
   return 'en';
