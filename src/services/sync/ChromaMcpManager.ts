@@ -105,9 +105,10 @@ export class ChromaMcpManager {
     const spawnEnvironment = this.getSpawnEnv();
     getSupervisor().assertCanSpawn('chroma mcp');
 
-    const isWindows = process.platform === 'win32';
-    const uvxSpawnCommand = isWindows ? (process.env.ComSpec || 'cmd.exe') : 'uvx';
-    const uvxSpawnArgs = isWindows ? ['/c', 'uvx', ...commandArgs] : commandArgs;
+    const uvxSpawnCommand = process.platform === 'win32'
+      ? ChromaMcpManager.resolveWindowsExecutable('uvx.exe')
+      : 'uvx';
+    const uvxSpawnArgs = commandArgs;
 
     logger.info('CHROMA_MCP', 'Connecting to chroma-mcp via MCP stdio', {
       command: uvxSpawnCommand,
@@ -183,6 +184,15 @@ export class ChromaMcpManager {
         });
       }
     };
+  }
+
+  private static resolveWindowsExecutable(command: string): string {
+    const pathEntries = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
+    for (const entry of pathEntries) {
+      const candidate = path.join(entry, command);
+      if (fs.existsSync(candidate)) return candidate;
+    }
+    return command;
   }
 
   private buildCommandArgs(): string[] {
