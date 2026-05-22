@@ -1,12 +1,14 @@
 
-import { relative, isAbsolute } from 'path';
+import { relative, isAbsolute, normalize } from 'path';
 import { isProjectExcluded } from '../utils/project-filter.js';
 import { loadFromFileOnce } from './hook-settings.js';
 import { OBSERVER_SESSIONS_DIR, OBSERVER_SESSIONS_PROJECT } from './paths.js';
 
 function isWithin(child: string, parent: string): boolean {
-  if (child === parent) return true;
-  const rel = relative(parent, child);
+  const normChild = normalize(child);
+  const normParent = normalize(parent);
+  if (normChild === normParent) return true;
+  const rel = relative(normParent, normChild);
   return rel.length > 0 && !rel.startsWith('..') && !isAbsolute(rel);
 }
 
