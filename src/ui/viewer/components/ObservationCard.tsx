@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Observation } from '../types';
 import { formatDate } from '../utils/formatters';
+import { useI18n } from '../i18n/I18nContext';
 
 interface ObservationCardProps {
   observation: Observation;
@@ -29,6 +30,7 @@ export function ObservationCard({ observation }: ObservationCardProps) {
   const [showFacts, setShowFacts] = useState(false);
   const [showNarrative, setShowNarrative] = useState(false);
   const date = formatDate(observation.created_at_epoch);
+  const { t } = useI18n();
 
   const facts = observation.facts ? JSON.parse(observation.facts) : [];
   const concepts = observation.concepts ? JSON.parse(observation.concepts) : [];
@@ -68,7 +70,7 @@ export function ObservationCard({ observation }: ObservationCardProps) {
                 <polyline points="9 11 12 14 22 4"></polyline>
                 <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path>
               </svg>
-              <span>facts</span>
+              <span>{t('obs.facts')}</span>
             </button>
           )}
           {observation.narrative && (
@@ -85,14 +87,14 @@ export function ObservationCard({ observation }: ObservationCardProps) {
                 <line x1="16" y1="13" x2="8" y2="13"></line>
                 <line x1="16" y1="17" x2="8" y2="17"></line>
               </svg>
-              <span>narrative</span>
+              <span>{t('obs.narrative')}</span>
             </button>
           )}
         </div>
       </div>
 
       {/* Title */}
-      <div className="card-title">{observation.title || 'Untitled'}</div>
+      <div className="card-title">{observation.title || t('card.untitled')}</div>
 
       {/* Content based on toggle state */}
       <div className="view-mode-content">
@@ -132,12 +134,12 @@ export function ObservationCard({ observation }: ObservationCardProps) {
             ))}
             {filesRead.length > 0 && (
               <span className="meta-files">
-                <span className="file-label">read:</span> {filesRead.join(', ')}
+                <span className="file-label">{t('obs.fileRead')}:</span> {filesRead.join(', ')}
               </span>
             )}
             {filesModified.length > 0 && (
               <span className="meta-files">
-                <span className="file-label">modified:</span> {filesModified.join(', ')}
+                <span className="file-label">{t('obs.fileModified')}:</span> {filesModified.join(', ')}
               </span>
             )}
           </div>

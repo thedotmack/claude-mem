@@ -1,4 +1,5 @@
 import React, { useMemo, useRef, useEffect } from 'react';
+import { useI18n } from '../i18n/I18nContext';
 import { Observation, Summary, UserPrompt, FeedItem } from '../types';
 import { ObservationCard } from './ObservationCard';
 import { SummaryCard } from './SummaryCard';
@@ -16,6 +17,7 @@ interface FeedProps {
 }
 
 export function Feed({ observations, summaries, prompts, onLoadMore, isLoading, hasMore }: FeedProps) {
+  const { t } = useI18n();
   const loadMoreRef = useRef<HTMLDivElement>(null);
   const feedRef = useRef<HTMLDivElement>(null);
   const onLoadMoreRef = useRef(onLoadMore);
@@ -74,13 +76,13 @@ export function Feed({ observations, summaries, prompts, onLoadMore, isLoading, 
         })}
         {items.length === 0 && !isLoading && (
           <div style={{ textAlign: 'center', padding: '40px', color: '#8b949e' }}>
-            No items to display
+            {t('feed.noItems')}
           </div>
         )}
         {isLoading && (
           <div style={{ textAlign: 'center', padding: '20px', color: '#8b949e' }}>
             <div className="spinner" style={{ display: 'inline-block', marginRight: '10px' }}></div>
-            Loading more...
+            {t('feed.loadingMore')}
           </div>
         )}
         {hasMore && !isLoading && items.length > 0 && (
@@ -88,7 +90,7 @@ export function Feed({ observations, summaries, prompts, onLoadMore, isLoading, 
         )}
         {!hasMore && items.length > 0 && (
           <div style={{ textAlign: 'center', padding: '20px', color: '#8b949e', fontSize: '14px' }}>
-            No more items to load
+            {t('feed.noMoreItems')}
           </div>
         )}
       </div>
