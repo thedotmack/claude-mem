@@ -16,6 +16,7 @@ import {
   writeInstallMarker,
   isInstallCurrent,
 } from '../install/setup-runtime.js';
+import { writeMcpLauncher } from '../install/write-mcp-launcher.js';
 import { playBanner } from '../banner.js';
 
 function getSetting<K extends keyof SettingsDefaults>(key: K): SettingsDefaults[K] {
@@ -1201,6 +1202,11 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
 
     await runTasks(tasks);
   }
+
+  writeMcpLauncher(
+    join(homedir(), '.claude-mem'),
+    join(marketplaceDirectory(), 'plugin', 'scripts', 'mcp-server.cjs'),
+  );
 
   const failedIDEs = await setupIDEs(selectedIDEs);
 
