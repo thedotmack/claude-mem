@@ -17,6 +17,7 @@ import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 import { getObservationsByFilePath } from '../../../sqlite/observations/get.js';
 import { getFirstObservationCreatedAt } from '../../../sqlite/observations/recent.js';
 import { getUptimeSeconds } from '../../../../shared/uptime.js';
+import { getExternalMemoryPrimaryStore } from '../../../external-memory/sync-service.js';
 
 const integerArrayLike = z.preprocess((value) => {
   if (Array.isArray(value)) return value;
@@ -108,14 +109,24 @@ export class DataRoutes extends BaseRouteHandler {
     app.post('/api/import', validateBody(importSchema), this.handleImport.bind(this));
   }
 
-  private handleGetObservations = this.wrapHandler((req: Request, res: Response): void => {
+  private handleGetObservations = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { offset, limit, project, platformSource } = this.parsePaginationParams(req);
+    const externalStore = await getExternalMemoryPrimaryStore();
+    if (externalStore) {
+      res.json(await externalStore.listObservations({ offset, limit, project, platformSource }));
+      return;
+    }
     const result = this.paginationHelper.getObservations(offset, limit, project, platformSource);
     res.json(result);
   });
 
-  private handleGetSummaries = this.wrapHandler((req: Request, res: Response): void => {
+  private handleGetSummaries = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { offset, limit, project, platformSource } = this.parsePaginationParams(req);
+    const externalStore = await getExternalMemoryPrimaryStore();
+    if (externalStore) {
+      res.json(await externalStore.listSummaries({ offset, limit, project, platformSource }));
+      return;
+    }
     const result = this.paginationHelper.getSummaries(offset, limit, project, platformSource);
     res.json(result);
   });
@@ -126,12 +137,14 @@ export class DataRoutes extends BaseRouteHandler {
     res.json(result);
   });
 
-  private handleGetObservationById = this.wrapHandler((req: Request, res: Response): void => {
+  private handleGetObservationById = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const id = this.parseIntParam(req, res, 'id');
     if (id === null) return;
 
-    const store = this.dbManager.getSessionStore();
-    const observation = store.getObservationById(id);
+    const externalStore = await getExternalMemoryPrimaryStore();
+    const observation = externalStore
+      ? await externalStore.getObservationById(id)
+      : this.dbManager.getSessionStore().getObservationById(id);
 
     if (!observation) {
       this.notFound(res, `Observation #${id} not found`);
@@ -141,7 +154,7 @@ export class DataRoutes extends BaseRouteHandler {
     res.json(observation);
   });
 
-  private handleGetObservationsByFile = this.wrapHandler((req: Request, res: Response): void => {
+  private handleGetObservationsByFile = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const filePath = req.query.path as string | undefined;
     if (!filePath) {
       this.badRequest(res, 'path query parameter is required');
@@ -153,13 +166,27 @@ export class DataRoutes extends BaseRouteHandler {
     const parsedLimit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
     const limit = Number.isFinite(parsedLimit) && parsedLimit! > 0 ? parsedLimit : undefined;
 
+    const externalStore = await getExternalMemoryPrimaryStore();
+    if (externalStore) {
+      const projectList = projects && projects.length > 0 ? projects : [undefined];
+      const batches = await Promise.all(projectList.map(project =>
+        externalStore.searchObservations(undefined, { files: filePath, project, limit })
+      ));
+      const observations = batches
+        .flat()
+        .sort((a, b) => b.created_at_epoch - a.created_at_epoch)
+        .slice(0, limit);
+      res.json({ observations, count: observations.length });
+      return;
+    }
+
     const db = this.dbManager.getSessionStore().db;
     const observations = getObservationsByFilePath(db, filePath, { projects, limit });
 
     res.json({ observations, count: observations.length });
   });
 
-  private handleGetObservationsByIds = this.wrapHandler((req: Request, res: Response): void => {
+  private handleGetObservationsByIds = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { ids, orderBy, limit, project } = req.body as z.infer<typeof observationsBatchSchema>;
 
     if (ids.length === 0) {
@@ -167,18 +194,22 @@ export class DataRoutes extends BaseRouteHandler {
       return;
     }
 
-    const store = this.dbManager.getSessionStore();
-    const observations = store.getObservationsByIds(ids, { orderBy, limit, project });
+    const externalStore = await getExternalMemoryPrimaryStore();
+    const observations = externalStore
+      ? await externalStore.getObservationsByIds(ids, { orderBy, limit, project })
+      : this.dbManager.getSessionStore().getObservationsByIds(ids, { orderBy, limit, project });
 
     res.json(observations);
   });
 
-  private handleGetSessionById = this.wrapHandler((req: Request, res: Response): void => {
+  private handleGetSessionById = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const id = this.parseIntParam(req, res, 'id');
     if (id === null) return;
 
-    const store = this.dbManager.getSessionStore();
-    const sessions = store.getSessionSummariesByIds([id]);
+    const externalStore = await getExternalMemoryPrimaryStore();
+    const sessions = externalStore
+      ? await externalStore.getSessionSummariesByIds([id])
+      : this.dbManager.getSessionStore().getSessionSummariesByIds([id]);
 
     if (sessions.length === 0) {
       this.notFound(res, `Session #${id} not found`);
@@ -211,7 +242,7 @@ export class DataRoutes extends BaseRouteHandler {
     res.json(prompts[0]);
   });
 
-  private handleGetStats = this.wrapHandler((req: Request, res: Response): void => {
+  private handleGetStats = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const db = this.dbManager.getSessionStore().db;
 
     const packageRoot = getPackageRoot();
@@ -219,10 +250,7 @@ export class DataRoutes extends BaseRouteHandler {
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
     const version = packageJson.version;
 
-    const totalObservations = db.prepare('SELECT COUNT(*) as count FROM observations').get() as { count: number };
     const totalSessions = db.prepare('SELECT COUNT(*) as count FROM sdk_sessions').get() as { count: number };
-    const totalSummaries = db.prepare('SELECT COUNT(*) as count FROM session_summaries').get() as { count: number };
-    const firstObservationAt = getFirstObservationCreatedAt(db);
 
     const dbPath = paths.database();
     let dbSize = 0;
@@ -233,6 +261,33 @@ export class DataRoutes extends BaseRouteHandler {
     const uptime = getUptimeSeconds(this.startTime);
     const activeSessions = this.sessionManager.getActiveSessionCount();
     const sseClients = this.sseBroadcaster.getClientCount();
+    const externalStore = await getExternalMemoryPrimaryStore();
+
+    if (externalStore) {
+      const externalStats = await externalStore.getStats();
+      res.json({
+        worker: {
+          version,
+          uptime,
+          activeSessions,
+          sseClients,
+          port: getWorkerPort()
+        },
+        database: {
+          path: 'postgres',
+          size: 0,
+          observations: externalStats.observations,
+          sessions: totalSessions.count,
+          summaries: externalStats.summaries,
+          firstObservationAt: externalStats.firstObservationAt
+        }
+      });
+      return;
+    }
+
+    const totalObservations = db.prepare('SELECT COUNT(*) as count FROM observations').get() as { count: number };
+    const totalSummaries = db.prepare('SELECT COUNT(*) as count FROM session_summaries').get() as { count: number };
+    const firstObservationAt = getFirstObservationCreatedAt(db);
 
     res.json({
       worker: {
@@ -253,10 +308,26 @@ export class DataRoutes extends BaseRouteHandler {
     });
   });
 
-  private handleGetProjects = this.wrapHandler((req: Request, res: Response): void => {
+  private handleGetProjects = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const store = this.dbManager.getSessionStore();
     const rawPlatformSource = req.query.platformSource as string | undefined;
     const platformSource = rawPlatformSource ? normalizePlatformSource(rawPlatformSource) : undefined;
+    const externalStore = await getExternalMemoryPrimaryStore();
+
+    if (externalStore) {
+      if (platformSource) {
+        const projects = await externalStore.getAllProjects(platformSource);
+        res.json({
+          projects,
+          sources: projects.length > 0 ? [platformSource] : [],
+          projectsBySource: projects.length > 0 ? { [platformSource]: projects } : {}
+        });
+        return;
+      }
+
+      res.json(await externalStore.getProjectCatalog());
+      return;
+    }
 
     if (platformSource) {
       const projects = store.getAllProjects(platformSource);

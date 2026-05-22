@@ -11,6 +11,8 @@ import { groupByDate } from '../../../../shared/timeline-formatting.js';
 import { countObservationsByProjects } from '../../../context/ObservationCompiler.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
+import { getExternalMemoryPrimaryStore } from '../../../external-memory/sync-service.js';
+import type { ExternalObservationQueryOptions } from '../../../external-memory/pgvector-store.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from '../../../sqlite/types.js';
 
 const ONBOARDING_EXPLAINER_PATH: string = path.resolve(__dirname, '../skills/how-it-works/onboarding-explainer.md');
@@ -85,6 +87,51 @@ How it works: \`/how-it-works\`
 
 This message disappears once the first observation lands.
 `;
+
+function firstQueryValue(value: unknown): string | undefined {
+  const raw = Array.isArray(value) ? value[0] : value;
+  return typeof raw === 'string' && raw.trim() ? raw.trim() : undefined;
+}
+
+function parseQueryNumber(value: unknown, min: number): number | undefined {
+  const raw = firstQueryValue(value);
+  if (!raw) return undefined;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= min ? parsed : undefined;
+}
+
+function parseQueryOrderBy(value: unknown): ExternalObservationQueryOptions['orderBy'] | undefined {
+  const raw = firstQueryValue(value);
+  return raw === 'date_desc' || raw === 'date_asc' || raw === 'relevance' ? raw : undefined;
+}
+
+function externalObservationOptions(
+  query: Record<string, any>,
+  overrides: Partial<ExternalObservationQueryOptions> = {}
+): ExternalObservationQueryOptions {
+  const options: ExternalObservationQueryOptions = {};
+  const project = firstQueryValue(query.project);
+  const platformSource = firstQueryValue(query.platformSource ?? query.platform_source);
+  const limit = parseQueryNumber(query.limit, 1);
+  const offset = parseQueryNumber(query.offset, 0);
+  const orderBy = parseQueryOrderBy(query.orderBy ?? query.order_by);
+  const dateStart = firstQueryValue(query.dateStart ?? query.date_start);
+  const dateEnd = firstQueryValue(query.dateEnd ?? query.date_end);
+
+  if (project) options.project = project;
+  if (platformSource) options.platformSource = platformSource;
+  if (limit !== undefined) options.limit = limit;
+  if (offset !== undefined) options.offset = offset;
+  if (orderBy) options.orderBy = orderBy;
+  if (dateStart || dateEnd) {
+    options.dateRange = {
+      ...(dateStart ? { start: dateStart } : {}),
+      ...(dateEnd ? { end: dateEnd } : {}),
+    };
+  }
+
+  return { ...options, ...overrides };
+}
 
 const semanticContextSchema = z.object({
   q: z.string().optional(),
@@ -170,8 +217,10 @@ export class SearchRoutes extends BaseRouteHandler {
     const query = req.query as Record<string, any>;
     const rawConcept = query.concepts ?? query.concept;
     const concept = Array.isArray(rawConcept) ? rawConcept[0] : rawConcept;
-    const strategyResult = await orchestrator.findByConcept(concept, query);
-    const observations = strategyResult.results.observations;
+    const externalStore = await getExternalMemoryPrimaryStore();
+    const observations = externalStore
+      ? await externalStore.searchObservations(undefined, externalObservationOptions(query, { concepts: concept }))
+      : (await orchestrator.findByConcept(concept, query)).results.observations;
 
     if (observations.length === 0) {
       res.json({
@@ -204,7 +253,13 @@ export class SearchRoutes extends BaseRouteHandler {
         ? rawFilePath.split(',')[0].trim()
         : rawFilePath;
 
-    const { observations, sessions } = await orchestrator.findByFile(filePath, query);
+    const externalStore = await getExternalMemoryPrimaryStore();
+    const { observations, sessions } = externalStore
+      ? {
+          observations: await externalStore.searchObservations(undefined, externalObservationOptions(query, { files: filePath })),
+          sessions: await externalStore.searchSummaries(undefined, externalObservationOptions(query, { files: filePath })),
+        }
+      : await orchestrator.findByFile(filePath, query);
     const totalResults = observations.length + sessions.length;
 
     if (totalResults === 0) {
@@ -276,8 +331,10 @@ export class SearchRoutes extends BaseRouteHandler {
       : rawType;
     const typeStr = Array.isArray(type) ? type.join(', ') : type;
 
-    const strategyResult = await orchestrator.findByType(type, query);
-    const observations = strategyResult.results.observations;
+    const externalStore = await getExternalMemoryPrimaryStore();
+    const observations = externalStore
+      ? await externalStore.searchObservations(undefined, externalObservationOptions(query, { type }))
+      : (await orchestrator.findByType(type, query)).results.observations;
 
     if (observations.length === 0) {
       res.json({

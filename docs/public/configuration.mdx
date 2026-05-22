@@ -183,6 +183,31 @@ Search operations are provided via:
 - **HTTP API**: 10 endpoints on the worker service port (per-user, default `37700 + (uid % 100)`; see `~/.claude-mem/settings.json`)
 - **Auto-Invocation**: Claude recognizes natural language queries about past work
 
+### External Memory (Postgres + Valkey)
+
+The worker runtime can write memory to external Postgres (with the `pgvector` extension) and cache recent item IDs in Valkey/Redis. In `mirror` mode SQLite remains authoritative; in `primary` mode observations and summaries are stored directly in Postgres.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_EXTERNAL_MEMORY_ENABLED` | `false` | Enables external memory storage. |
+| `CLAUDE_MEM_EXTERNAL_MEMORY_MODE` | `mirror` | `mirror` keeps SQLite authoritative; `primary` stores observations/summaries directly in Postgres. |
+| `CLAUDE_MEM_PG_URL` | — | Postgres connection string. Falls back to `CLAUDE_MEM_SERVER_DATABASE_URL`. |
+| `CLAUDE_MEM_PG_VECTOR_DIMENSIONS` | `1536` | Vector dimension used when bootstrapping the Postgres vector column. |
+| `CLAUDE_MEM_VALKEY_URL` | — | Valkey/Redis connection string for recent-item cache writes. Falls back to `CLAUDE_MEM_REDIS_URL`. |
+| `CLAUDE_MEM_EXTERNAL_MEMORY_PREFIX` | `claude_mem_external_<worker-port>` | Cache key prefix for profile isolation. |
+| `CLAUDE_MEM_EXTERNAL_MEMORY_CACHE_TTL_SECONDS` | `86400` | TTL for cached items and project recency indexes. |
+
+When enabled, the worker bootstraps `claude_mem_external_memory_items` with full-text and pgvector indexes. The built-in path stores text rows immediately and leaves the nullable `embedding` column empty unless a caller supplies vectors through the external memory store API.
+
+For local infrastructure, `docker-compose.external-memory.yml` starts pinned Postgres and Valkey services. The Postgres image includes the `pgvector` extension for optional vector columns/indexes. With the example ports, set:
+
+```sh
+CLAUDE_MEM_EXTERNAL_MEMORY_ENABLED=true
+CLAUDE_MEM_EXTERNAL_MEMORY_MODE=primary
+CLAUDE_MEM_PG_URL=postgres://claude_mem:<password>@127.0.0.1:15432/claude_mem
+CLAUDE_MEM_VALKEY_URL=redis://:<valkey-password>@127.0.0.1:16379
+```
+
 ## Version Channel
 
 Claude-Mem supports switching between stable and beta versions via the web viewer UI.

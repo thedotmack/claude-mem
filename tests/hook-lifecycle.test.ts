@@ -207,7 +207,21 @@ describe('Codex CLI Compatibility (#744)', () => {
         },
       }) as any;
 
-      expect(output).toEqual({ continue: true, suppressOutput: true });
+      expect(output).toEqual({ continue: true });
+    });
+
+    it('does not emit suppressOutput because Codex hook schemas reject it', async () => {
+      const { codexAdapter } = await import('../src/cli/adapters/codex.js');
+      const output = codexAdapter.formatOutput({
+        continue: true,
+        suppressOutput: true,
+        hookSpecificOutput: {
+          hookEventName: 'PostToolUse',
+          additionalContext: 'ignored',
+        },
+      }) as any;
+
+      expect(output).not.toHaveProperty('suppressOutput');
     });
   });
 

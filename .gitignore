@@ -6,6 +6,7 @@ dist/
 .DS_Store
 .env
 .env.local
+external-memory.env
 *.tmp
 *.temp
 .install-version
@@ -49,3 +50,8 @@ logs/run_evaluation/
 .docker-blowout-data/
 .scratch/
 docker/install-test/
+
+.omx
+AGENTS.md
+agent_docs
+/omx_wiki

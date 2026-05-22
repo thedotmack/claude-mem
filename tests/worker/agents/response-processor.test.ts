@@ -27,6 +27,10 @@ mock.module('../../../src/services/domain/ModeManager.js', () => ({
 }));
 
 import { processAgentResponse } from '../../../src/services/worker/agents/ResponseProcessor.js';
+import {
+  __setExternalMemoryDriverLoaderForTesting,
+  closeExternalMemorySyncService,
+} from '../../../src/services/external-memory/sync-service.js';
 import { SUMMARY_MODE_MARKER } from '../../../src/sdk/prompts.js';
 import type { WorkerRef, StorageResult } from '../../../src/services/worker/agents/types.js';
 import type { ActiveSession } from '../../../src/services/worker-types.js';
@@ -34,6 +38,20 @@ import type { DatabaseManager } from '../../../src/services/worker/DatabaseManag
 import type { SessionManager } from '../../../src/services/worker/SessionManager.js';
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
+
+function clearExternalMemoryEnv(): void {
+  delete process.env.CLAUDE_MEM_EXTERNAL_MEMORY_ENABLED;
+  delete process.env.CLAUDE_MEM_EXTERNAL_MEMORY_MODE;
+  delete process.env.CLAUDE_MEM_PG_URL;
+  delete process.env.CLAUDE_MEM_VALKEY_URL;
+}
+
+function disableExternalMemoryEnv(): void {
+  process.env.CLAUDE_MEM_EXTERNAL_MEMORY_ENABLED = 'false';
+  delete process.env.CLAUDE_MEM_EXTERNAL_MEMORY_MODE;
+  delete process.env.CLAUDE_MEM_PG_URL;
+  delete process.env.CLAUDE_MEM_VALKEY_URL;
+}
 
 describe('ResponseProcessor', () => {
   let mockStoreObservations: ReturnType<typeof mock>;
@@ -45,7 +63,9 @@ describe('ResponseProcessor', () => {
   let mockSessionManager: SessionManager;
   let mockWorker: WorkerRef;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    disableExternalMemoryEnv();
+    await closeExternalMemorySyncService();
     loggerSpies = [
       spyOn(logger, 'info').mockImplementation(() => {}),
       spyOn(logger, 'debug').mockImplementation(() => {}),
@@ -99,8 +119,10 @@ describe('ResponseProcessor', () => {
     };
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     loggerSpies.forEach(spy => spy.mockRestore());
+    clearExternalMemoryEnv();
+    await closeExternalMemorySyncService();
     mock.restore();
   });
 
@@ -654,6 +676,97 @@ describe('ResponseProcessor', () => {
 
       expect(resetProcessingToPending).toHaveBeenCalledWith(1);
       expect(mockStoreObservations).not.toHaveBeenCalled();
+    });
+
+    it('resets claimed work when external primary storage fails', async () => {
+      class FakePgClient {
+        async query(text: string) {
+          if (text.includes('format_type(a.atttypid, a.atttypmod)')) {
+            return { rows: [{ embedding_type: 'vector(1536)' }], rowCount: 1 };
+          }
+          if (text.includes('INSERT INTO claude_mem_external_memory_items')) {
+            throw new Error('Postgres unavailable');
+          }
+          return { rows: [], rowCount: 0 };
+        }
+
+        release() {}
+      }
+
+      class FakePgPool {
+        totalCount = 0;
+        idleCount = 0;
+        waitingCount = 0;
+
+        async connect() {
+          return new FakePgClient();
+        }
+
+        async query() {
+          throw new Error('pool query should not be used directly');
+        }
+
+        async end() {}
+      }
+
+      class FakeRedis {
+        async set() { return 'OK'; }
+        async get() { return null; }
+        async zadd() { return 1; }
+        async zrevrange() { return []; }
+        async expire() { return 1; }
+        async quit() { return 'OK'; }
+        disconnect() {}
+      }
+
+      const restoreLoader = __setExternalMemoryDriverLoaderForTesting(async () => ({
+        Pool: FakePgPool as any,
+        Redis: FakeRedis as any,
+      }));
+      process.env.CLAUDE_MEM_EXTERNAL_MEMORY_ENABLED = 'true';
+      process.env.CLAUDE_MEM_EXTERNAL_MEMORY_MODE = 'primary';
+      process.env.CLAUDE_MEM_PG_URL = 'postgres://example/claude_mem';
+      process.env.CLAUDE_MEM_VALKEY_URL = 'redis://example:6379';
+      const resetProcessingToPending = mock(() => Promise.resolve(1));
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+        resetProcessingToPending,
+      } as unknown as SessionManager;
+
+      try {
+        const session = createMockSession({
+          pendingAgentId: 'agent-1',
+          pendingAgentType: 'reviewer',
+        });
+        const responseText = `<observation>
+          <type>discovery</type>
+          <title>external primary failure</title>
+          <narrative>should reset claimed rows</narrative>
+        </observation>`;
+
+        await expect(processAgentResponse(
+          responseText,
+          session,
+          mockDbManager,
+          mockSessionManager,
+          mockWorker,
+          100,
+          null,
+          'TestAgent'
+        )).rejects.toThrow('Postgres unavailable');
+
+        expect(resetProcessingToPending).toHaveBeenCalledWith(1);
+        expect(confirmClaimedMessages).not.toHaveBeenCalled();
+        expect(mockStoreObservations).not.toHaveBeenCalled();
+        expect(session.pendingAgentId).toBeNull();
+        expect(session.pendingAgentType).toBeNull();
+        expect(mockBroadcastProcessingStatus).toHaveBeenCalled();
+      } finally {
+        restoreLoader();
+      }
     });
   });
 

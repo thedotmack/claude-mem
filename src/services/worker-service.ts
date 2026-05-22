@@ -83,6 +83,7 @@ import { SessionCompletionHandler } from './worker/session/SessionCompletionHand
 import { setIngestContext, attachIngestGeneratorStarter } from './worker/http/shared.js';
 import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, filterNativeHookBackedCodexWatches, loadTranscriptWatchConfig } from './transcripts/config.js';
 import { TranscriptWatcher } from './transcripts/watcher.js';
+import { closeExternalMemorySyncService } from './external-memory/sync-service.js';
 
 import { ViewerRoutes } from './worker/http/routes/ViewerRoutes.js';
 import { SessionRoutes } from './worker/http/routes/SessionRoutes.js';
@@ -762,13 +763,17 @@ export class WorkerService implements WorkerRef {
       logger.info('TRANSCRIPT', 'Transcript watcher stopped');
     }
 
-    await performGracefulShutdown({
-      server: this.server.getHttpServer(),
-      sessionManager: this.sessionManager,
-      mcpClient: this.mcpClient,
-      dbManager: this.dbManager,
-      chromaMcpManager: this.chromaMcpManager || undefined
-    });
+    try {
+      await performGracefulShutdown({
+        server: this.server.getHttpServer(),
+        sessionManager: this.sessionManager,
+        mcpClient: this.mcpClient,
+        dbManager: this.dbManager,
+        chromaMcpManager: this.chromaMcpManager || undefined
+      });
+    } finally {
+      await closeExternalMemorySyncService();
+    }
   }
 
   broadcastProcessingStatus(): void {

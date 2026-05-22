@@ -12,6 +12,8 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 
 **Database** (`src/services/sqlite/`) - SQLite3 at `~/.claude-mem/claude-mem.db`
 
+**External Memory Mirror** (`src/services/external-memory/`) - Optional best-effort mirror to pgvector + Valkey when `CLAUDE_MEM_EXTERNAL_MEMORY_ENABLED=true`; SQLite remains authoritative
+
 **Search Skill** (`plugin/skills/mem-search/SKILL.md`) - HTTP API for searching past work, auto-invoked when users ask about history
 
 **Planning Skill** (`plugin/skills/make-plan/SKILL.md`) - Orchestrator instructions for creating phased implementation plans with documentation discovery
