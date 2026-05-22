@@ -1,9 +1,9 @@
 import path from "path";
-import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync } from "fs";
+import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync, writeSync } from "fs";
 import { execSync } from "child_process";
 import { spawnHidden } from "./spawn.js";
 import { logger } from "../utils/logger.js";
-import { HOOK_TIMEOUTS, HOOK_EXIT_CODES, getTimeout } from "./hook-constants.js";
+import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
 import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
 import { MARKETPLACE_ROOT, DATA_DIR } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
@@ -408,10 +408,16 @@ function recordWorkerUnreachable(): number {
 
   const threshold = getFailLoudThreshold();
   if (next.consecutiveFailures >= threshold) {
-    process.stderr.write(
-      `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks.\n`
-    );
-    process.exit(HOOK_EXIT_CODES.BLOCKING_ERROR);
+    // writeSync(2, ...) goes straight to fd 2, bypassing hookCommand's
+    // process.stderr.write override that would otherwise swallow the warning.
+    // Do not process.exit — honors the exit-0 philosophy spelled out in CLAUDE.md
+    // ("Worker/hook errors exit with code 0 to prevent Windows Terminal tab
+    // accumulation") so hooks continue gracefully instead of blocking tool calls.
+    try {
+      writeSync(2, `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks.\n`);
+    } catch {
+      // stderr unwritable — nothing actionable
+    }
   }
   return next.consecutiveFailures;
 }
