@@ -9,11 +9,11 @@ claude-mem can automatically detect and redact common secrets before observation
 
 ## How it works
 
-When enabled, every prompt or tool payload that flows through claude-mem's storage path is scanned for a curated set of high-confidence secret patterns. Matches are replaced inline with a self-closing `<redacted type="..."/>` placeholder, preserving the surrounding context so search and observation quality stay intact.
+When enabled, every prompt or tool payload that flows through claude-mem's storage path is scanned for a curated set of high-confidence secret patterns. Matches are replaced inline with a self-closing `<redacted type='...'/>` placeholder, preserving the surrounding context so search and observation quality stay intact.
 
 ```
 Before:  curl -H "Authorization: Bearer sk-abc123def456..." …
-After:   curl -H "Authorization: Bearer <redacted type=\"openai_key\"/>" …
+After:   curl -H "Authorization: Bearer <redacted type='openai_key'/>" …
 ```
 
 The observer LLM is explicitly instructed not to infer the literal value of any `<redacted/>` marker.
@@ -65,7 +65,7 @@ CSV format. The other built-ins stay active.
 }
 ```
 
-`name` is required and surfaces in the `<redacted type="..."/>` marker. Custom patterns are evaluated **before** built-ins, so you can override the built-in detection for a specific token family.
+`name` is required and surfaces in the `<redacted type='...'/>` marker. Custom patterns are evaluated **before** built-ins, so you can override the built-in detection for a specific token family.
 
 If your regex fails to compile or your JSON is malformed, claude-mem logs a warning at worker startup and skips the broken entry — the rest keep working.
 

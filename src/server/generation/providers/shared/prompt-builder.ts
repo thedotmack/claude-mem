@@ -89,6 +89,8 @@ export function buildServerGenerationPrompt(
     'activity was trivial), return a single self-closing <skip_summary />',
     'tag and nothing else. Do not include any prose outside the XML.',
     '',
+    'If you see a "&lt;redacted type=&apos;...&apos;/&gt;" marker (XML-entity-encoded) or "<redacted type=\'...\'/>" (raw) anywhere in the event payload, that field was a recognized credential pattern and was removed before storage. Treat it as a placeholder; do not infer the literal value.',
+    '',
     'Schema for each <observation> block:',
     observationOutputSchema,
   ].join('\n');

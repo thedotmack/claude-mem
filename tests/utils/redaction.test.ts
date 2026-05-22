@@ -22,16 +22,18 @@ describe('redactSensitive built-in patterns', () => {
   const cfg = { enabled: true };
 
   it.each([
-    ['aws_access_key',  'export X=AKIAIOSFODNN7EXAMPLE done',                                          '<redacted type="aws_access_key"/>'],
-    ['github_pat',      'token: ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789 trailing',                  '<redacted type="github_pat"/>'],
-    ['openai_key',      'Authorization: Bearer sk-ABCDEFGHIJ1234567890abcdef',                        '<redacted type="openai_key"/>'],
-    ['anthropic_key',   'key=sk-ant-api03-abcdef1234567890ABCDEF',                                    '<redacted type="anthropic_key"/>'],
+    ['aws_access_key',  'export X=AKIAIOSFODNN7EXAMPLE done',                                          "<redacted type='aws_access_key'/>"],
+    ['github_pat',      'token: ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789 trailing',                  "<redacted type='github_pat'/>"],
+    ['github_pat',      'oauth: gho_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789 tail',                      "<redacted type='github_pat'/>"],
+    ['github_pat',      'refresh: ghr_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789 tail',                    "<redacted type='github_pat'/>"],
+    ['openai_key',      'Authorization: Bearer sk-ABCDEFGHIJ1234567890abcdef',                        "<redacted type='openai_key'/>"],
+    ['anthropic_key',   'key=sk-ant-api03-abcdef1234567890ABCDEF',                                    "<redacted type='anthropic_key'/>"],
     // Split string literals here and below so GitHub's secret-push-protection
     // scanner doesn't flag these fake test fixtures as real secrets.
-    ['slack_token',     'Slack: ' + 'xox' + 'b-1234567890-0987654321-abcdefghijklmnop',             '<redacted type="slack_token"/>'],
-    ['jwt',             'auth: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.AbCdEf0123456789',               '<redacted type="jwt"/>'],
-    ['stripe_key',      'Stripe ' + 'sk' + '_live_abcdefghijklmnopqrstuvwx',                         '<redacted type="stripe_key"/>'],
-    ['google_api_key',  'key=AIzaSyA-0123456789abcdefghijklmnopqrstu',                                '<redacted type="google_api_key"/>'],
+    ['slack_token',     'Slack: ' + 'xox' + 'b-1234567890-0987654321-abcdefghijklmnop',             "<redacted type='slack_token'/>"],
+    ['jwt',             'auth: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.AbCdEf0123456789',               "<redacted type='jwt'/>"],
+    ['stripe_key',      'Stripe ' + 'sk' + '_live_abcdefghijklmnopqrstuvwx',                         "<redacted type='stripe_key'/>"],
+    ['google_api_key',  'key=AIzaSyA-0123456789abcdefghijklmnopqrstu',                                "<redacted type='google_api_key'/>"],
   ])('redacts %s', (name, input, marker) => {
     const result = redactSensitive(input, cfg);
     expect(result.redacted).toContain(marker);
@@ -46,7 +48,7 @@ yyyy
 -----END RSA PRIVATE KEY-----
 text after`;
     const result = redactSensitive(input, cfg);
-    expect(result.redacted).toContain('<redacted type="private_key_pem"/>');
+    expect(result.redacted).toContain("<redacted type='private_key_pem'/>");
     expect(result.redacted).toContain('text before');
     expect(result.redacted).toContain('text after');
     expect(result.counts.private_key_pem).toBe(1);
@@ -88,7 +90,7 @@ describe('redactSensitive custom patterns', () => {
         ],
       },
     );
-    expect(result.redacted).toContain('<redacted type="company_token"/>');
+    expect(result.redacted).toContain("<redacted type='company_token'/>");
     expect(result.counts.company_token).toBe(1);
   });
 
@@ -101,7 +103,7 @@ describe('redactSensitive custom patterns', () => {
         customPatterns: [{ name: 'my_aws', regex: 'AKIA[0-9A-Z]{16}' }],
       },
     );
-    expect(result.redacted).toContain('<redacted type="my_aws"/>');
+    expect(result.redacted).toContain("<redacted type='my_aws'/>");
     expect(result.counts.my_aws).toBe(1);
     expect(result.counts.aws_access_key).toBeUndefined();
   });
@@ -117,8 +119,8 @@ describe('redactSensitive custom patterns', () => {
         ],
       },
     );
-    expect(result.redacted).toContain('<redacted type="ok"/>');
-    expect(result.redacted).toContain('<redacted type="aws_access_key"/>');
+    expect(result.redacted).toContain("<redacted type='ok'/>");
+    expect(result.redacted).toContain("<redacted type='aws_access_key'/>");
     expect(result.counts.broken).toBeUndefined();
   });
 
@@ -130,7 +132,7 @@ describe('redactSensitive custom patterns', () => {
         customPatterns: [{ name: '', regex: 'foo' }],
       },
     );
-    expect(result.redacted).toContain('<redacted type="aws_access_key"/>');
+    expect(result.redacted).toContain("<redacted type='aws_access_key'/>");
     expect(result.redacted).toContain('foo'); // unredacted because pattern was skipped
   });
 });
@@ -149,7 +151,7 @@ describe('redactSensitive robustness', () => {
     const input = oneKey.repeat(201);
     const result = redactSensitive(input, { enabled: true });
     expect(result.truncated).toBe(true);
-    const placeholderCount = (result.redacted.match(/<redacted type="aws_access_key"\/>/g) ?? []).length;
+    const placeholderCount = (result.redacted.match(/<redacted type='aws_access_key'\/>/g) ?? []).length;
     const leftoverCount = (result.redacted.match(/AKIAIOSFODNN7EXAMPLE/g) ?? []).length;
     expect(placeholderCount).toBe(200);
     expect(leftoverCount).toBe(1);
