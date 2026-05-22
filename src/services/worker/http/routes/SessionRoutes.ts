@@ -24,30 +24,29 @@ import { getUptimeSeconds } from '../../../../shared/uptime.js';
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
 
-// Lightweight prompt dedup: prevents duplicate UserPromptSubmit when both
-// Codex and Claude hooks fire for the same event.  Uses a hash of the prompt
-// so map entries stay small regardless of prompt size.
+// Prompt dedup: prevents duplicate UserPromptSubmit when both
+// Codex and Claude hooks fire for the same event.  Uses prompt prefix
+// + length as the key — bounded memory, no hash-collision risk.
 const recentPrompts = new Map<string, number>();
 const PROMPT_DEDUP_WINDOW_MS = 3000;
+const DEDUP_PREFIX_LEN = 100;
 
-function hashPrompt(s: string): number {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) {
-    h = ((h << 5) - h + s.charCodeAt(i)) | 0;
-  }
-  return h;
+function dedupKey(contentSessionId: string, prompt: string): string {
+  const prefix = prompt.length > DEDUP_PREFIX_LEN
+    ? prompt.slice(0, DEDUP_PREFIX_LEN)
+    : prompt;
+  return `${contentSessionId}:${prefix}:${prompt.length}`;
 }
 
 function isDuplicatePrompt(contentSessionId: string, prompt: string): boolean {
   const now = Date.now();
-  const key = `${contentSessionId}:${hashPrompt(prompt)}`;
+  const key = dedupKey(contentSessionId, prompt);
   const lastSeen = recentPrompts.get(key);
   if (lastSeen && (now - lastSeen) < PROMPT_DEDUP_WINDOW_MS) {
     return true;
   }
   recentPrompts.set(key, now);
-  // Periodic cleanup: evict expired entries regardless of map size
-  if (recentPrompts.size > 50 || (now % 10000) < 50) {
+  if (recentPrompts.size > 100) {
     for (const [k, v] of recentPrompts) {
       if (now - v > PROMPT_DEDUP_WINDOW_MS) recentPrompts.delete(k);
     }
