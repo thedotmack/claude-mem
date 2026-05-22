@@ -142,9 +142,14 @@ async function buildHooks() {
       outfile: `${hooksDir}/${WORKER_SERVICE.name}.cjs`,
       minify: true,
       logLevel: 'error', // Suppress warnings (import.meta warning is benign)
+      // zod is inlined (~50KB pure JS, no native deps) so the worker bundle is
+      // self-contained even when the plugin cache ships without node_modules
+      // populated. See #2437 — every 13.x release regressed on this because the
+      // published cache could miss `node_modules/zod` and `require('zod/v3')`
+      // would die on every hook. The remaining externals all have legitimate
+      // reasons to stay external (native bindings, large optional embedders).
       external: [
         'bun:sqlite',
-        'zod',
         'cohere-ai',
         'ollama',
         '@chroma-core/default-embed',
@@ -184,9 +189,9 @@ async function buildHooks() {
       outfile: `${hooksDir}/${SERVER_BETA_SERVICE.name}.cjs`,
       minify: true,
       logLevel: 'error',
+      // zod is inlined for the same reason as the worker bundle — see #2437.
       external: [
         'bun:sqlite',
-        'zod',
       ],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
@@ -291,7 +296,7 @@ async function buildHooks() {
       outfile: `${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`,
       minify: true,
       logLevel: 'error',
-      external: ['bun:sqlite', 'zod'],
+      external: ['bun:sqlite'],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
       },
