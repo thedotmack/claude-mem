@@ -104,7 +104,7 @@ export function Header({
           title={locale === 'en' ? 'Switch to 中文' : 'Switch to English'}
           style={{ background: 'var(--color-bg-button)', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', fontWeight: 600, padding: '4px 8px' }}
         >
-          {locale === 'en' ? 'EN' : '中文'}
+          {locale === 'en' ? '中文' : 'EN'}
         </button>
         <button
           className="settings-btn"

@@ -24,20 +24,30 @@ import { getUptimeSeconds } from '../../../../shared/uptime.js';
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
 
-// Dedup map: prevents duplicate UserPromptSubmit when both Codex and Claude hooks fire
+// Lightweight prompt dedup: prevents duplicate UserPromptSubmit when both
+// Codex and Claude hooks fire for the same event.  Uses a hash of the prompt
+// so map entries stay small regardless of prompt size.
 const recentPrompts = new Map<string, number>();
 const PROMPT_DEDUP_WINDOW_MS = 3000;
 
+function hashPrompt(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) {
+    h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  }
+  return h;
+}
+
 function isDuplicatePrompt(contentSessionId: string, prompt: string): boolean {
-  const key = `${contentSessionId}:${prompt}`;
   const now = Date.now();
+  const key = `${contentSessionId}:${hashPrompt(prompt)}`;
   const lastSeen = recentPrompts.get(key);
   if (lastSeen && (now - lastSeen) < PROMPT_DEDUP_WINDOW_MS) {
     return true;
   }
   recentPrompts.set(key, now);
-  // Cleanup old entries periodically
-  if (recentPrompts.size > 100) {
+  // Periodic cleanup: evict expired entries regardless of map size
+  if (recentPrompts.size > 50 || (now % 10000) < 50) {
     for (const [k, v] of recentPrompts) {
       if (now - v > PROMPT_DEDUP_WINDOW_MS) recentPrompts.delete(k);
     }
