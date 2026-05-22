@@ -156,7 +156,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [t]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();

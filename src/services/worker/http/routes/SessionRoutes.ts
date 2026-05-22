@@ -533,6 +533,14 @@ export class SessionRoutes extends BaseRouteHandler {
 
   private async applyTierRouting(session: NonNullable<ReturnType<typeof this.sessionManager.getSession>>): Promise<void> {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+
+    // Skip tier routing for DeepSeek — its endpoint doesn't understand
+    // Claude model aliases like "haiku"/"sonnet"/"opus"
+    if (isDeepseekSelected()) {
+      session.modelOverride = undefined;
+      return;
+    }
+
     if (settings.CLAUDE_MEM_TIER_ROUTING_ENABLED === 'false') {
       session.modelOverride = undefined;
       return;
