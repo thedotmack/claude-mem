@@ -134,12 +134,12 @@ export function ObservationCard({ observation }: ObservationCardProps) {
             ))}
             {filesRead.length > 0 && (
               <span className="meta-files">
-                <span className="file-label">{t('obs.fileRead')}:</span> {filesRead.join(', ')}
+                <span className="file-label">{t('obs.fileRead')}</span> {filesRead.join(', ')}
               </span>
             )}
             {filesModified.length > 0 && (
               <span className="meta-files">
-                <span className="file-label">{t('obs.fileModified')}:</span> {filesModified.join(', ')}
+                <span className="file-label">{t('obs.fileModified')}</span> {filesModified.join(', ')}
               </span>
             )}
           </div>

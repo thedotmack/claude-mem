@@ -11,7 +11,5 @@ if (!container) {
 
 const root = createRoot(container);
 root.render(
-  <ErrorBoundary>
-    <I18nProvider><App /></I18nProvider>
-  </ErrorBoundary>
+  <I18nProvider><ErrorBoundary><App /></ErrorBoundary></I18nProvider>
 );

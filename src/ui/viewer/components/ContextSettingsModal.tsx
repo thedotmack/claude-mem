@@ -180,7 +180,7 @@ export function ContextSettingsModal({
           <h2>{t('settings.title')}</h2>
           <div className="header-controls">
             <label className="preview-selector">
-              {t('settings.source')}:
+              {t('settings.source')}
               <select
                 value={selectedSource || ''}
                 onChange={(e) => setSelectedSource(e.target.value)}
@@ -192,7 +192,7 @@ export function ContextSettingsModal({
               </select>
             </label>
             <label className="preview-selector">
-              {t('settings.project')}:
+              {t('settings.project')}
               <select
                 value={selectedProject || ''}
                 onChange={(e) => setSelectedProject(e.target.value)}
@@ -223,7 +223,7 @@ export function ContextSettingsModal({
             <div className="preview-content">
               {error ? (
                 <div style={{ color: '#ff6b6b' }}>
-                  {t('settings.errorLoadingPreview')}: {error}
+                  {t('settings.errorLoadingPreview')}{error}
                 </div>
               ) : (
                 <TerminalPreview content={preview} isLoading={isLoading} />

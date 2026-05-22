@@ -395,9 +395,9 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
                 style={{
                   '--chip-color': level.color,
                 } as React.CSSProperties}
-                title={level.label}
+                title={t('console.' + level.key.toLowerCase())}
               >
-                {level.icon} {level.label}
+                {level.icon} {t('console.' + level.key.toLowerCase())}
               </button>
             ))}
             <button
@@ -420,9 +420,9 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
                 style={{
                   '--chip-color': comp.color,
                 } as React.CSSProperties}
-                title={comp.label}
+                title={t('console.' + comp.key.toLowerCase())}
               >
-                {comp.icon} {comp.label}
+                {comp.icon} {t('console.' + comp.key.toLowerCase())}
               </button>
             ))}
             <button
