@@ -199,7 +199,16 @@ export class ClaudeProvider {
     await waitForSlot(maxConcurrent, session.abortController.signal);
 
     const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
-    const authMethod = getAuthMethodDescription();
+
+    // DeepSeek: inject API key and base URL from settings (not .env)
+    if (isDeepseekSelected() && settings.CLAUDE_MEM_DEEPSEEK_API_KEY) {
+      isolatedEnv.ANTHROPIC_API_KEY = settings.CLAUDE_MEM_DEEPSEEK_API_KEY;
+      isolatedEnv.ANTHROPIC_BASE_URL = 'https://api.deepseek.com/anthropic';
+    }
+
+    const authMethod = isDeepseekSelected()
+      ? 'DeepSeek API key (from CLAUDE_MEM_DEEPSEEK_API_KEY in settings.json)'
+      : getAuthMethodDescription();
 
     logger.info('SDK', 'Starting SDK query', {
       sessionDbId: session.sessionDbId,
@@ -495,7 +504,7 @@ export class ClaudeProvider {
 export function isDeepseekAvailable(): boolean {
   const settingsPath = paths.settings();
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-  return !!(settings.CLAUDE_MEM_DEEPSEEK_API_KEY || process.env.ANTHROPIC_API_KEY);
+  return !!settings.CLAUDE_MEM_DEEPSEEK_API_KEY;
 }
 
 export function isDeepseekSelected(): boolean {

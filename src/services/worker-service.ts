@@ -197,7 +197,9 @@ export class WorkerService implements WorkerRef {
         else if (isDeepseekSelected() && isDeepseekAvailable()) provider = 'deepseek';
         return {
           provider,
-          authMethod: getAuthMethodDescription(),
+          authMethod: provider === 'deepseek'
+            ? 'DeepSeek API key (from CLAUDE_MEM_DEEPSEEK_API_KEY in settings.json)'
+            : getAuthMethodDescription(),
           lastInteraction: this.lastAiInteraction
             ? {
                 timestamp: this.lastAiInteraction.timestamp,
