@@ -49,6 +49,9 @@ export interface SettingsDefaults {
   CLAUDE_MEM_REDACT_DISABLED_BUILTINS: string;
   CLAUDE_MEM_REDACT_CUSTOM_PATTERNS: string;
   CLAUDE_MEM_REDACT_LOG_MATCHES: string;
+  CLAUDE_MEM_DEDUP_FOLD_ENABLED: string;
+  CLAUDE_MEM_DEDUP_FOLD_WINDOW_SECONDS: string;
+  CLAUDE_MEM_DEDUP_FOLD_DISABLED_TOOLS: string;
   CLAUDE_MEM_EXCLUDED_PROJECTS: string;
   CLAUDE_MEM_FOLDER_MD_EXCLUDE: string;  
   CLAUDE_MEM_SEMANTIC_INJECT: string;        
@@ -129,6 +132,9 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_REDACT_DISABLED_BUILTINS: '',              // CSV of built-in pattern names to disable, e.g. 'jwt,slack_token'
     CLAUDE_MEM_REDACT_CUSTOM_PATTERNS: '[]',              // JSON array of { name, regex } objects
     CLAUDE_MEM_REDACT_LOG_MATCHES: 'false',               // Log pattern,count per invocation (no payload)
+    CLAUDE_MEM_DEDUP_FOLD_ENABLED: 'false',
+    CLAUDE_MEM_DEDUP_FOLD_WINDOW_SECONDS: '30',
+    CLAUDE_MEM_DEDUP_FOLD_DISABLED_TOOLS: '',
     CLAUDE_MEM_EXCLUDED_PROJECTS: '',  // Comma-separated glob patterns for excluded project paths
     CLAUDE_MEM_FOLDER_MD_EXCLUDE: '[]',  // JSON array of folder paths to exclude from CLAUDE.md generation
     CLAUDE_MEM_SEMANTIC_INJECT: 'false',             // Inject relevant past observations on every UserPromptSubmit (experimental, disabled by default)
