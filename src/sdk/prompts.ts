@@ -1,6 +1,7 @@
 
 import { logger } from '../utils/logger.js';
 import type { ModeConfig } from '../services/domain/types.js';
+import { getDedupFoldConfig } from '../services/worker/dedup-fold.js';
 
 export const SUMMARY_MODE_MARKER = 'MODE SWITCH: PROGRESS SUMMARY';
 
@@ -11,6 +12,7 @@ export interface Observation {
   tool_output: string;
   created_at_epoch: number;
   cwd?: string;
+  fold_count?: number;
 }
 
 export interface SDKSession {
@@ -100,11 +102,18 @@ export function buildObservationPrompt(obs: Observation): string {
     toolOutput = obs.tool_output;
   }
 
+  const foldCount = obs.fold_count ?? 1;
+  let repetitionLine = '';
+  if (foldCount > 1) {
+    const windowSec = getDedupFoldConfig().windowSeconds;
+    repetitionLine = `\n  <repetition>This tool call was repeated ${foldCount} times in a ${windowSec}s window.</repetition>`;
+  }
+
   return `<observed_from_primary_session>
   <what_happened>${obs.tool_name}</what_happened>
   <occurred_at>${new Date(obs.created_at_epoch).toISOString()}</occurred_at>${obs.cwd ? `\n  <working_directory>${obs.cwd}</working_directory>` : ''}
   <parameters>${JSON.stringify(toolInput, null, 2)}</parameters>
-  <outcome>${JSON.stringify(toolOutput, null, 2)}</outcome>
+  <outcome>${JSON.stringify(toolOutput, null, 2)}</outcome>${repetitionLine}
 </observed_from_primary_session>
 
 Return either one or more <observation>...</observation> blocks, or an empty response if this tool use should be skipped.
