@@ -81,10 +81,33 @@ function stripLegacyClaudeMemAlias(): void {
   }
 }
 
-function removeFromClaudeSettings(): void {
+export function removeFromClaudeSettings(): void {
   const settings = readJsonSafe<Record<string, any>>(claudeSettingsPath(), {});
+  let dirty = false;
+
   if (settings.enabledPlugins?.['claude-mem@thedotmack'] !== undefined) {
     delete settings.enabledPlugins['claude-mem@thedotmack'];
+    dirty = true;
+  }
+
+  // Symmetric counterpart to disableClaudeAutoMemory() in install.ts. The
+  // installer sets env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = "1" to suppress
+  // Claude Code's built-in auto-memory; on uninstall we restore the host
+  // CLI's default behavior by removing that single key. Any other env
+  // entries the user added themselves (ANTHROPIC_AUTH_TOKEN, AWS_REGION,
+  // etc.) are preserved. If the env block becomes empty as a result, the
+  // block itself is dropped to keep settings.json tidy.
+  if (settings.env && typeof settings.env === 'object' && !Array.isArray(settings.env)) {
+    if (Object.prototype.hasOwnProperty.call(settings.env, 'CLAUDE_CODE_DISABLE_AUTO_MEMORY')) {
+      delete settings.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY;
+      dirty = true;
+      if (Object.keys(settings.env).length === 0) {
+        delete settings.env;
+      }
+    }
+  }
+
+  if (dirty) {
     writeJsonFileAtomic(claudeSettingsPath(), settings);
   }
 }
