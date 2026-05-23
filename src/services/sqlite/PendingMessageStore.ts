@@ -29,7 +29,12 @@ export class PendingMessageStore {
     this.db = db;
   }
 
-  enqueue(sessionDbId: number, contentSessionId: string, message: PendingMessage): number {
+  enqueue(
+    sessionDbId: number,
+    contentSessionId: string,
+    message: PendingMessage,
+    foldKey: string | null = null
+  ): number {
     const now = Date.now();
     const stmt = this.db.prepare(`
       INSERT OR IGNORE INTO pending_messages (
@@ -37,8 +42,8 @@ export class PendingMessageStore {
         tool_name, tool_input, tool_response, cwd,
         last_assistant_message,
         prompt_number, status, created_at_epoch,
-        agent_type, agent_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+        agent_type, agent_id, fold_key
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -54,7 +59,8 @@ export class PendingMessageStore {
       message.prompt_number || null,
       now,
       message.agentType ?? null,
-      message.agentId ?? null
+      message.agentId ?? null,
+      foldKey
     );
 
     if (result.changes > 0) {
@@ -62,6 +68,37 @@ export class PendingMessageStore {
       return result.lastInsertRowid as number;
     }
     return 0;
+  }
+
+  findFoldCandidate(
+    sessionDbId: number,
+    foldKey: string,
+    windowMs: number,
+    now: number
+  ): { id: number; createdAtEpoch: number } | null {
+    const minEpoch = now - windowMs;
+    const row = this.db
+      .prepare(
+        `SELECT id, created_at_epoch FROM pending_messages
+         WHERE session_db_id = ? AND fold_key = ? AND created_at_epoch >= ?
+         ORDER BY created_at_epoch DESC LIMIT 1`
+      )
+      .get(sessionDbId, foldKey, minEpoch) as { id: number; created_at_epoch: number } | undefined;
+    if (!row) return null;
+    return { id: row.id, createdAtEpoch: row.created_at_epoch };
+  }
+
+  bumpFoldCount(rowId: number): { newCount: number } {
+    this.db
+      .prepare('UPDATE pending_messages SET fold_count = fold_count + 1 WHERE id = ?')
+      .run(rowId);
+    const row = this.db
+      .prepare('SELECT fold_count FROM pending_messages WHERE id = ?')
+      .get(rowId) as { fold_count: number } | undefined;
+    if (!row) {
+      throw new Error(`bumpFoldCount: row ${rowId} not found after update`);
+    }
+    return { newCount: row.fold_count };
   }
 
   claimNextMessage(sessionDbId: number): PersistentPendingMessage | null {
