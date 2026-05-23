@@ -1,6 +1,7 @@
 import React from 'react';
 import { UserPrompt } from '../types';
 import { formatDate } from '../utils/formatters';
+import { useI18n } from '../i18n/I18nContext';
 
 interface PromptCardProps {
   prompt: UserPrompt;
@@ -8,12 +9,13 @@ interface PromptCardProps {
 
 export function PromptCard({ prompt }: PromptCardProps) {
   const date = formatDate(prompt.created_at_epoch);
+  const { t } = useI18n();
 
   return (
     <div className="card prompt-card">
       <div className="card-header">
         <div className="card-header-left">
-          <span className="card-type">Prompt</span>
+          <span className="card-type">{t('card.prompt')}</span>
           <span className={`card-source source-${prompt.platform_source || 'claude'}`}>
             {prompt.platform_source || 'claude'}
           </span>

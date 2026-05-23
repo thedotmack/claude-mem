@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react';
+import { useI18n } from '../i18n/I18nContext';
 
 interface WelcomeCardProps {
   onDismiss: () => void;
@@ -29,14 +30,14 @@ export function setStoredWelcomeDismissed(dismissed: boolean): void {
   }
 }
 
-function DismissButton({ onClick }: { onClick: () => void }) {
+function DismissButton({ onClick, ariaLabel, title }: { onClick: () => void; ariaLabel: string; title: string }) {
   return (
     <button
       type="button"
       className="welcome-modal-dismiss"
       onClick={onClick}
-      aria-label="Close welcome"
-      title="Close (Esc)"
+      aria-label={ariaLabel}
+      title={title}
     >
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -138,28 +139,29 @@ interface Feature {
   description: string;
 }
 
-const FEATURES: Feature[] = [
-  {
-    kind: 'stream',
-    illustration: <StreamIllustration />,
-    title: 'Live feed',
-    description: 'Observations, summaries, and prompts stream in live.',
-  },
-  {
-    kind: 'tune',
-    illustration: <TuneIllustration />,
-    title: 'Tune it',
-    description: 'The gear in the top-right tunes memory injection.',
-  },
-  {
-    kind: 'recall',
-    illustration: <RecallIllustration />,
-    title: 'Recall it',
-    description: 'Ask Claude or run /mem-search to find past work.',
-  },
-];
-
 export function WelcomeCard({ onDismiss }: WelcomeCardProps) {
+  const { t } = useI18n();
+
+  const FEATURES: Feature[] = [
+    {
+      kind: 'stream',
+      illustration: <StreamIllustration />,
+      title: t('welcome.liveFeed'),
+      description: t('welcome.liveFeedDesc'),
+    },
+    {
+      kind: 'tune',
+      illustration: <TuneIllustration />,
+      title: t('welcome.tuneIt'),
+      description: t('welcome.tuneItDesc'),
+    },
+    {
+      kind: 'recall',
+      illustration: <RecallIllustration />,
+      title: t('welcome.recallIt'),
+      description: t('welcome.recallItDesc'),
+    },
+  ];
   const handleDismiss = () => {
     setStoredWelcomeDismissed(true);
     onDismiss();
@@ -183,12 +185,12 @@ export function WelcomeCard({ onDismiss }: WelcomeCardProps) {
         aria-modal="true"
         aria-labelledby="welcome-modal-title"
       >
-        <DismissButton onClick={handleDismiss} />
+        <DismissButton onClick={handleDismiss} ariaLabel={t('welcome.close')} title={t('welcome.closeEsc')} />
 
         <header className="welcome-modal-header">
           <img className="welcome-modal-logo" src="claude-mem-logo-stylized.png" alt="" width="96" height="96" />
-          <h2 id="welcome-modal-title">Welcome to claude-mem</h2>
-          <p>Persistent memory for Claude Code.</p>
+          <h2 id="welcome-modal-title">{t('welcome.title')}</h2>
+          <p>{t('welcome.subtitle')}</p>
         </header>
 
         <div className="welcome-modal-grid">
@@ -205,11 +207,11 @@ export function WelcomeCard({ onDismiss }: WelcomeCardProps) {
 
         <footer className="welcome-modal-footer">
           <a href={EXPLAINER_URL} target="_blank" rel="noopener noreferrer">
-            How it works
+            {t('welcome.howItWorks')}
           </a>
           <span className="welcome-modal-footer-sep">{'·'}</span>
           <a href={DOCS_URL} target="_blank" rel="noopener noreferrer">
-            Read the docs
+            {t('welcome.readDocs')}
           </a>
         </footer>
       </article>

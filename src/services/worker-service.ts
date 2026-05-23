@@ -68,7 +68,7 @@ import {
 import { DatabaseManager } from './worker/DatabaseManager.js';
 import { SessionManager } from './worker/SessionManager.js';
 import { SSEBroadcaster } from './worker/SSEBroadcaster.js';
-import { ClaudeProvider, classifyClaudeError } from './worker/ClaudeProvider.js';
+import { ClaudeProvider, classifyClaudeError, isDeepseekSelected, isDeepseekAvailable } from './worker/ClaudeProvider.js';
 import type { WorkerRef } from './worker/agents/types.js';
 import { GeminiProvider, classifyGeminiError, isGeminiSelected, isGeminiAvailable } from './worker/GeminiProvider.js';
 import { OpenRouterProvider, classifyOpenRouterError, isOpenRouterSelected, isOpenRouterAvailable } from './worker/OpenRouterProvider.js';
@@ -194,9 +194,12 @@ export class WorkerService implements WorkerRef {
         let provider = 'claude';
         if (isOpenRouterSelected() && isOpenRouterAvailable()) provider = 'openrouter';
         else if (isGeminiSelected() && isGeminiAvailable()) provider = 'gemini';
+        else if (isDeepseekSelected() && isDeepseekAvailable()) provider = 'deepseek';
         return {
           provider,
-          authMethod: getAuthMethodDescription(),
+          authMethod: provider === 'deepseek'
+            ? 'DeepSeek API key (from CLAUDE_MEM_DEEPSEEK_API_KEY in settings.json)'
+            : getAuthMethodDescription(),
           lastInteraction: this.lastAiInteraction
             ? {
                 timestamp: this.lastAiInteraction.timestamp,
@@ -523,6 +526,8 @@ export class WorkerService implements WorkerRef {
     if (isGeminiSelected() && isGeminiAvailable()) {
       return this.geminiAgent;
     }
+    // DeepSeek reuses the Claude SDK agent; credentials are injected
+    // into the isolated env inside ClaudeProvider.query().
     return this.sdkAgent;
   }
 

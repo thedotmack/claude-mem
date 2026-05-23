@@ -7,7 +7,7 @@ import { logger } from '../../../../utils/logger.js';
 import { stripMemoryTagsFromPrompt, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
 import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
-import { ClaudeProvider } from '../../ClaudeProvider.js';
+import { ClaudeProvider, isDeepseekSelected, isDeepseekAvailable } from '../../ClaudeProvider.js';
 import { GeminiProvider, isGeminiSelected, isGeminiAvailable } from '../../GeminiProvider.js';
 import { OpenRouterProvider, isOpenRouterSelected, isOpenRouterAvailable } from '../../OpenRouterProvider.js';
 import type { WorkerService } from '../../../worker-service.js';
@@ -24,6 +24,43 @@ import { getUptimeSeconds } from '../../../../shared/uptime.js';
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
 
+// Prompt dedup: prevents duplicate UserPromptSubmit when both
+// Codex and Claude hooks fire for the same event.  Keys are
+// sessionId + first 100 chars + length (~150 bytes max), evicted
+// after 3 s.  At a single user's typing speed the map stays under
+// a handful of entries, so total memory is negligible.
+const recentPrompts = new Map<string, number>();
+const PROMPT_DEDUP_WINDOW_MS = 3000;
+const DEDUP_PREFIX_LEN = 100;
+
+function dedupKey(contentSessionId: string, prompt: string): string {
+  const prefix = prompt.length > DEDUP_PREFIX_LEN
+    ? prompt.slice(0, DEDUP_PREFIX_LEN)
+    : prompt;
+  return `${contentSessionId}:${prefix}:${prompt.length}`;
+}
+
+function isDuplicatePrompt(contentSessionId: string, prompt: string): boolean {
+  const now = Date.now();
+  const key = dedupKey(contentSessionId, prompt);
+  const lastSeen = recentPrompts.get(key);
+  if (lastSeen && (now - lastSeen) < PROMPT_DEDUP_WINDOW_MS) {
+    return true;
+  }
+  recentPrompts.set(key, now);
+  if (recentPrompts.size > 100) {
+    for (const [k, v] of recentPrompts) {
+      if (now - v > PROMPT_DEDUP_WINDOW_MS) recentPrompts.delete(k);
+    }
+    // Safety valve: if nothing was old enough to evict, drop the oldest entry
+    if (recentPrompts.size > 100) {
+      const oldest = recentPrompts.keys().next().value;
+      if (oldest !== undefined) recentPrompts.delete(oldest);
+    }
+  }
+  return false;
+}
+
 export class SessionRoutes extends BaseRouteHandler {
   constructor(
     private sessionManager: SessionManager,
@@ -38,36 +75,50 @@ export class SessionRoutes extends BaseRouteHandler {
     super();
   }
 
-  private getActiveAgent(): ClaudeProvider | GeminiProvider | OpenRouterProvider {
-    if (isOpenRouterSelected()) {
-      if (isOpenRouterAvailable()) {
-        logger.debug('SESSION', 'Using OpenRouter agent');
-        return this.openRouterAgent;
-      } else {
-        throw new Error('OpenRouter provider selected but no API key configured. Set CLAUDE_MEM_OPENROUTER_API_KEY in settings or OPENROUTER_API_KEY environment variable.');
-      }
-    }
-    if (isGeminiSelected()) {
-      if (isGeminiAvailable()) {
-        logger.debug('SESSION', 'Using Gemini agent');
-        return this.geminiAgent;
-      } else {
-        throw new Error('Gemini provider selected but no API key configured. Set CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.');
-      }
-    }
-    return this.sdkAgent;
-  }
-
-  private getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' {
+  private getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' | 'deepseek' {
     if (isOpenRouterSelected() && isOpenRouterAvailable()) {
       return 'openrouter';
     }
-    return (isGeminiSelected() && isGeminiAvailable()) ? 'gemini' : 'claude';
+    if (isGeminiSelected() && isGeminiAvailable()) {
+      return 'gemini';
+    }
+    if (isDeepseekSelected() && isDeepseekAvailable()) {
+      return 'deepseek';
+    }
+    return 'claude';
+  }
+
+  /**
+   * Throws a clear diagnostic when a provider is selected but its API key is missing.
+   * Called at the top of the session-start path so users see the error before the SDK
+   * sends a wrong-model request.
+   */
+  private validateProviderConfig(): void {
+    if (isDeepseekSelected() && !isDeepseekAvailable()) {
+      throw new Error(
+        'DeepSeek provider selected but no API key configured. ' +
+        'Set CLAUDE_MEM_DEEPSEEK_API_KEY in settings or configure ~/.claude-mem/.env.'
+      );
+    }
+    if (isOpenRouterSelected() && !isOpenRouterAvailable()) {
+      throw new Error(
+        'OpenRouter provider selected but no API key configured. ' +
+        'Set CLAUDE_MEM_OPENROUTER_API_KEY in settings or OPENROUTER_API_KEY environment variable.'
+      );
+    }
+    if (isGeminiSelected() && !isGeminiAvailable()) {
+      throw new Error(
+        'Gemini provider selected but no API key configured. ' +
+        'Set CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.'
+      );
+    }
   }
 
   public async ensureGeneratorRunning(sessionDbId: number, source: string): Promise<void> {
     const session = this.sessionManager.getSession(sessionDbId);
     if (!session) return;
+
+    this.validateProviderConfig();
 
     const selectedProvider = this.getSelectedProvider();
 
@@ -91,7 +142,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
   private async startGeneratorWithProvider(
     session: ReturnType<typeof this.sessionManager.getSession>,
-    provider: 'claude' | 'gemini' | 'openrouter',
+    provider: 'claude' | 'gemini' | 'openrouter' | 'deepseek',
     source: string
   ): Promise<void> {
     if (!session) return;
@@ -104,7 +155,7 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     const agent = provider === 'openrouter' ? this.openRouterAgent : (provider === 'gemini' ? this.geminiAgent : this.sdkAgent);
-    const agentName = provider === 'openrouter' ? 'OpenRouter' : (provider === 'gemini' ? 'Gemini' : 'Claude SDK');
+    const agentName = provider === 'openrouter' ? 'OpenRouter' : (provider === 'gemini' ? 'Gemini' : (provider === 'deepseek' ? 'DeepSeek (Claude SDK)' : 'Claude SDK'));
 
     const pendingStore = this.sessionManager.getPendingMessageStore();
     const actualQueueDepth = await pendingStore.getPendingCount(session.sessionDbId);
@@ -405,6 +456,13 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
+    // Skip duplicate prompts (Codex + Claude Code double-hook guard)
+    if (isDuplicatePrompt(contentSessionId, cleanedPrompt)) {
+      logger.debug('HTTP', 'session-init: skipping duplicate prompt within dedup window', { contentSessionId, promptNumber });
+      res.json({ sessionDbId, promptNumber, skipped: true, reason: 'duplicate' });
+      return;
+    }
+
     store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt);
 
     const contextInjected = this.sessionManager.getSession(sessionDbId) !== undefined;
@@ -481,6 +539,14 @@ export class SessionRoutes extends BaseRouteHandler {
 
   private async applyTierRouting(session: NonNullable<ReturnType<typeof this.sessionManager.getSession>>): Promise<void> {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+
+    // Skip tier routing for DeepSeek — its endpoint doesn't understand
+    // Claude model aliases like "haiku"/"sonnet"/"opus"
+    if (isDeepseekSelected()) {
+      session.modelOverride = undefined;
+      return;
+    }
+
     if (settings.CLAUDE_MEM_TIER_ROUTING_ENABLED === 'false') {
       session.modelOverride = undefined;
       return;
