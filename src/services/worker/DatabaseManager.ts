@@ -2,6 +2,7 @@
 import { Database } from 'bun:sqlite';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { SessionSearch } from '../sqlite/SessionSearch.js';
+import { MigrationRunner } from '../sqlite/migrations/runner.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, DB_PATH } from '../../shared/paths.js';
@@ -16,7 +17,9 @@ export class DatabaseManager {
 
   async initialize(): Promise<void> {
     this.db = new Database(DB_PATH);
-    
+
+    new MigrationRunner(this.db).runAllMigrations();
+
     this.sessionStore = new SessionStore(this.db);
     this.sessionSearch = new SessionSearch(this.db);
 

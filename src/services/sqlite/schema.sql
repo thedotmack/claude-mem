@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS observations (
   agent_id             TEXT,
   merged_into_project  TEXT,
   generated_by_model   TEXT,
+  relevance_count      INTEGER DEFAULT 0,
   metadata             TEXT,
   created_at           TEXT    NOT NULL,
   created_at_epoch     INTEGER NOT NULL,
