@@ -82,6 +82,7 @@ export class PendingMessageStore {
       .prepare(
         `SELECT id, created_at_epoch FROM pending_messages
          WHERE session_db_id = ? AND fold_key = ? AND created_at_epoch >= ?
+           AND status = 'pending'
          ORDER BY created_at_epoch DESC LIMIT 1`
       )
       .get(sessionDbId, foldKey, minEpoch) as { id: number; created_at_epoch: number } | undefined;

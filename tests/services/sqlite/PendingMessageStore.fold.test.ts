@@ -109,6 +109,48 @@ describe('PendingMessageStore.findFoldCandidate', () => {
     expect(hit).toBeNull();
   });
 
+  it('skips rows that are already in processing state', () => {
+    const { db, sessionDbId } = makeDb();
+    const store = new PendingMessageStore(db);
+    const now = Date.now();
+    insertPendingRow(db, {
+      sessionDbId,
+      contentSessionId: 'sess-1',
+      toolUseId: 'tu-1',
+      foldKey: 'foldkey-aaa',
+      createdAtEpoch: now - 5_000
+    });
+    db.prepare("UPDATE pending_messages SET status = 'processing' WHERE fold_key = ?").run('foldkey-aaa');
+
+    const hit = store.findFoldCandidate(sessionDbId, 'foldkey-aaa', 30_000, now);
+    expect(hit).toBeNull();
+  });
+
+  it('prefers a pending row over a more recent processing row', () => {
+    const { db, sessionDbId } = makeDb();
+    const store = new PendingMessageStore(db);
+    const now = Date.now();
+    insertPendingRow(db, {
+      sessionDbId,
+      contentSessionId: 'sess-1',
+      toolUseId: 'tu-pending',
+      foldKey: 'foldkey-aaa',
+      createdAtEpoch: now - 10_000
+    });
+    insertPendingRow(db, {
+      sessionDbId,
+      contentSessionId: 'sess-1',
+      toolUseId: 'tu-processing',
+      foldKey: 'foldkey-aaa',
+      createdAtEpoch: now - 2_000
+    });
+    db.prepare("UPDATE pending_messages SET status = 'processing' WHERE tool_use_id = ?").run('tu-processing');
+
+    const hit = store.findFoldCandidate(sessionDbId, 'foldkey-aaa', 30_000, now);
+    expect(hit).not.toBeNull();
+    expect(hit!.createdAtEpoch).toBe(now - 10_000);
+  });
+
   it('returns the newest row when multiple match within the window', () => {
     const { db, sessionDbId } = makeDb();
     const store = new PendingMessageStore(db);
