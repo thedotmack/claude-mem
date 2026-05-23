@@ -137,6 +137,24 @@ export class PostgresServerSessionsRepository {
     return row ? mapServerSessionRow(row) : null;
   }
 
+  async findByContentSessionId(input: {
+    contentSessionId: string;
+    projectId: string;
+    teamId: string;
+  }): Promise<PostgresServerSession | null> {
+    const row = await queryOne<ServerSessionRow>(
+      this.client,
+      `
+        SELECT * FROM server_sessions
+        WHERE content_session_id = $1 AND project_id = $2 AND team_id = $3
+        ORDER BY started_at DESC
+        LIMIT 1
+      `,
+      [input.contentSessionId, input.projectId, input.teamId]
+    );
+    return row ? mapServerSessionRow(row) : null;
+  }
+
   /**
    * End a server session by setting `ended_at = now()` if not already set.
    * Idempotent: if `ended_at` is already populated, returns the row unchanged.

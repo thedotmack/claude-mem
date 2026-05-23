@@ -169,6 +169,19 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
 
       const insertInput = this.toAgentEventInput(body, teamId);
+      // Link events to their session: clients send `contentSessionId` on /v1/events
+      // but not `serverSessionId`, leaving tool_use events unlinked. The session was
+      // already registered via /v1/sessions/start, so resolve it here (scoped by
+      // project+team — no cross-tenant linkage).
+      if (!insertInput.serverSessionId && body.contentSessionId) {
+        const linked = await new PostgresServerSessionsRepository(this.options.pool)
+          .findByContentSessionId({
+            contentSessionId: body.contentSessionId,
+            projectId: body.projectId,
+            teamId,
+          });
+        if (linked) insertInput.serverSessionId = linked.id;
+      }
       let event: PostgresAgentEvent;
       let outbox: PostgresObservationGenerationJob | null = null;
       let enqueueState: EnqueueOutcome = 'skipped';
