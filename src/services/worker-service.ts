@@ -526,9 +526,8 @@ export class WorkerService implements WorkerRef {
     if (isGeminiSelected() && isGeminiAvailable()) {
       return this.geminiAgent;
     }
-    if (isDeepseekSelected() && isDeepseekAvailable()) {
-      return this.sdkAgent;
-    }
+    // DeepSeek reuses the Claude SDK agent; credentials are injected
+    // into the isolated env inside ClaudeProvider.query().
     return this.sdkAgent;
   }
 
