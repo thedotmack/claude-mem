@@ -757,6 +757,9 @@ export class MigrationRunner {
   }
 
   private addObservationModelColumns(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(26) as SchemaVersion | undefined;
+    if (applied) return;
+
     const columns = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
     const hasGeneratedByModel = columns.some(col => col.name === 'generated_by_model');
     const hasRelevanceCount = columns.some(col => col.name === 'relevance_count');

@@ -431,10 +431,7 @@ describe('MigrationRunner', () => {
 
       const after = snapshotSchema(db);
       expect(after.tables).toEqual(before.tables);
-      expect(after.columnsByTable.observations).toEqual(before.columnsByTable.observations);
-      expect(after.columnsByTable.sdk_sessions).toEqual(before.columnsByTable.sdk_sessions);
-      expect(after.columnsByTable.pending_messages).toEqual(before.columnsByTable.pending_messages);
-      expect(after.columnsByTable.session_summaries).toEqual(before.columnsByTable.session_summaries);
+      expect(after.columnsByTable).toEqual(before.columnsByTable);
       expect(after.versions).toEqual(before.versions);
     });
 
