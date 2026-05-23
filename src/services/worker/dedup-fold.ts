@@ -88,3 +88,53 @@ export function getDedupFoldConfig(): DedupFoldConfig {
 export function _resetDedupFoldConfigCache(): void {
   cached = null;
 }
+
+export interface FoldStoreLike {
+  findFoldCandidate(
+    sessionDbId: number,
+    foldKey: string,
+    windowMs: number,
+    now: number,
+  ): { id: number; createdAtEpoch: number } | null;
+}
+
+export interface PendingObservationForFold {
+  tool_name: string;
+  tool_input: unknown;
+  cwd?: string;
+  agent_id?: string;
+  created_at_epoch: number;
+}
+
+export type DedupFoldDecision =
+  | { fold: true; foldOntoRowId: number }
+  | { fold: false; foldKey?: string };
+
+export function shouldFold(
+  obs: PendingObservationForFold,
+  sessionDbId: number,
+  config: DedupFoldConfig,
+  store: FoldStoreLike,
+): DedupFoldDecision {
+  if (!config.enabled) return { fold: false };
+  if (config.disabledTools.includes(obs.tool_name)) return { fold: false };
+
+  const foldKey = computeFoldKey({
+    tool_name: obs.tool_name,
+    tool_input: obs.tool_input,
+    cwd: obs.cwd,
+    agent_id: obs.agent_id,
+  });
+
+  const candidate = store.findFoldCandidate(
+    sessionDbId,
+    foldKey,
+    config.windowSeconds * 1000,
+    obs.created_at_epoch,
+  );
+
+  if (candidate) {
+    return { fold: true, foldOntoRowId: candidate.id };
+  }
+  return { fold: false, foldKey };
+}

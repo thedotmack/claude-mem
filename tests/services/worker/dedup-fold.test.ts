@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { computeFoldKey, loadDedupFoldConfig, getDedupFoldConfig, _resetDedupFoldConfigCache } from '../../../src/services/worker/dedup-fold.js';
+import { computeFoldKey, loadDedupFoldConfig, getDedupFoldConfig, _resetDedupFoldConfigCache, shouldFold } from '../../../src/services/worker/dedup-fold.js';
 
 describe('computeFoldKey', () => {
   it('returns a 16-char hex string', () => {
@@ -108,5 +108,47 @@ describe('getDedupFoldConfig cache', () => {
     _resetDedupFoldConfigCache();
     const b = getDedupFoldConfig();
     expect(a).not.toBe(b); // different object references after reset
+  });
+});
+
+describe('shouldFold decision', () => {
+  function makeStore(overrides: Partial<Record<string, any>> = {}) {
+    return {
+      findFoldCandidate: () => null,
+      ...overrides,
+    } as any;
+  }
+
+  const baseObs = {
+    tool_name: 'Bash',
+    tool_input: { command: 'ls' },
+    cwd: '/repo',
+    agent_id: 'main',
+    created_at_epoch: 1_000_000,
+  };
+
+  it('returns {fold:false} when feature disabled', () => {
+    const r = shouldFold(baseObs, 1, { enabled: false, windowSeconds: 30, disabledTools: [] }, makeStore());
+    expect(r.fold).toBe(false);
+  });
+
+  it('returns {fold:false} when tool is in disabledTools', () => {
+    const r = shouldFold(baseObs, 1, { enabled: true, windowSeconds: 30, disabledTools: ['Bash'] }, makeStore());
+    expect(r.fold).toBe(false);
+  });
+
+  it('returns {fold:false, foldKey} when no prior row exists', () => {
+    const r = shouldFold(baseObs, 1, { enabled: true, windowSeconds: 30, disabledTools: [] }, makeStore());
+    expect(r.fold).toBe(false);
+    expect((r as any).foldKey).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  it('returns {fold:true, foldOntoRowId} when a candidate exists', () => {
+    const store = makeStore({
+      findFoldCandidate: () => ({ id: 42, createdAtEpoch: 999_990 }),
+    });
+    const r = shouldFold(baseObs, 1, { enabled: true, windowSeconds: 30, disabledTools: [] }, store);
+    expect(r.fold).toBe(true);
+    expect((r as any).foldOntoRowId).toBe(42);
   });
 });
