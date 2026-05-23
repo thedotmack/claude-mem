@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { mkdirSync, writeFileSync, existsSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -146,6 +146,23 @@ describe('JSON Utils', () => {
     it('filters non-string elements out of arrays', () => {
       expect(parseJsonArrayColumn(['a', 1, null, 'b'])).toEqual(['a', 'b']);
       expect(parseJsonArrayColumn('["a",1,null,"b"]')).toEqual(['a', 'b']);
+    });
+
+    it('invokes onParseError with the raw value when JSON.parse throws', () => {
+      const errors: Array<{ error: unknown; rawValue: string }> = [];
+      const result = parseJsonArrayColumn('not json', (error, rawValue) => {
+        errors.push({ error, rawValue });
+      });
+      expect(result).toEqual([]);
+      expect(errors).toHaveLength(1);
+      expect(errors[0].rawValue).toBe('not json');
+      expect(errors[0].error).toBeInstanceOf(SyntaxError);
+    });
+
+    it('does not invoke onParseError on success', () => {
+      const onParseError = mock(() => {});
+      parseJsonArrayColumn('["a","b"]', onParseError);
+      expect(onParseError).not.toHaveBeenCalled();
     });
   });
 });

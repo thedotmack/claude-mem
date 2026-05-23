@@ -90,14 +90,25 @@ export class CorpusBuilder {
       title: row.title || '',
       subtitle: row.subtitle || null,
       narrative: row.narrative || null,
-      facts: parseJsonArrayColumn(row.facts),
-      concepts: parseJsonArrayColumn(row.concepts),
-      files_read: parseJsonArrayColumn(row.files_read),
-      files_modified: parseJsonArrayColumn(row.files_modified),
+      facts: this.parseCorpusColumn(row.facts, 'facts'),
+      concepts: this.parseCorpusColumn(row.concepts, 'concepts'),
+      files_read: this.parseCorpusColumn(row.files_read, 'files_read'),
+      files_modified: this.parseCorpusColumn(row.files_modified, 'files_modified'),
       project: row.project,
       created_at: row.created_at,
       created_at_epoch: row.created_at_epoch,
     };
+  }
+
+  private parseCorpusColumn(value: unknown, column: string): string[] {
+    return parseJsonArrayColumn(value, (error, rawValue) => {
+      logger.warn(
+        'WORKER',
+        `Malformed JSON in observation column "${column}"; defaulting to empty array`,
+        { column, rawPreview: rawValue.slice(0, 100) },
+        error instanceof Error ? error : new Error(String(error)),
+      );
+    });
   }
 
   private calculateStats(observations: CorpusObservation[]): CorpusStats {
