@@ -1,7 +1,6 @@
 
 import { logger } from '../utils/logger.js';
 import type { ModeConfig } from '../services/domain/types.js';
-import { getDedupFoldConfig } from '../services/worker/dedup-fold.js';
 
 export const SUMMARY_MODE_MARKER = 'MODE SWITCH: PROGRESS SUMMARY';
 
@@ -80,7 +79,10 @@ ${mode.prompts.footer}
 ${mode.prompts.header_memory_start}`;
 }
 
-export function buildObservationPrompt(obs: Observation): string {
+export function buildObservationPrompt(
+  obs: Observation,
+  opts?: { windowSeconds?: number },
+): string {
   let toolInput: any;
   let toolOutput: any;
 
@@ -105,7 +107,7 @@ export function buildObservationPrompt(obs: Observation): string {
   const foldCount = obs.fold_count ?? 1;
   let repetitionLine = '';
   if (foldCount > 1) {
-    const windowSec = getDedupFoldConfig().windowSeconds;
+    const windowSec = opts?.windowSeconds ?? 30;
     repetitionLine = `\n  <repetition>This tool call was repeated ${foldCount} times in a ${windowSec}s window.</repetition>`;
   }
 

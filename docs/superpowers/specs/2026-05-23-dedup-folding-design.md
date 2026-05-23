@@ -158,7 +158,7 @@ export interface Observation {
 }
 ```
 
-`buildObservationPrompt` reads `fold_count` from the observation and the current `windowSeconds` from `getDedupFoldConfig()` to build the `<repetition>` element. Emit only when `fold_count > 1`. The `getMessageIterator` SQL projection must include `fold_count` so it reaches the prompt builder.
+`buildObservationPrompt` reads `fold_count` from the observation and accepts an optional `opts: { windowSeconds?: number }` parameter for the window. Default 30 matches `DEFAULT_WINDOW_SECONDS`. The Task 8 wire-up (`SessionManager`/Provider call sites) passes `getDedupFoldConfig().windowSeconds`. Emit only when `fold_count > 1`. The `getMessageIterator` SQL projection must include `fold_count` so it reaches the prompt builder.
 
 ## 7. Configuration
 

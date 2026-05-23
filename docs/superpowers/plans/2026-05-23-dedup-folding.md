@@ -794,22 +794,27 @@ export interface Observation {
 
 - [ ] **Step 4: Emit `<repetition>` inside `buildObservationPrompt`**
 
-In `src/sdk/prompts.ts`, at the top of the file, add:
+In `src/sdk/prompts.ts`, change the `buildObservationPrompt` signature to accept an optional `opts` parameter — do NOT import from `services/worker/*` (that would create a reverse `sdk → worker` dependency; the worker layer already imports from `sdk`). The window is injected by the caller (`SessionManager` in Task 8).
 
 ```ts
-import { getDedupFoldConfig } from '../services/worker/dedup-fold.js';
+export function buildObservationPrompt(
+  obs: Observation,
+  opts?: { windowSeconds?: number },
+): string
 ```
 
-Inside `buildObservationPrompt`, after computing `toolInput` and `toolOutput`, build the optional repetition element:
+Inside `buildObservationPrompt`, after computing `toolInput` and `toolOutput`, build the optional repetition element using the injected window (default 30, matching `DEFAULT_WINDOW_SECONDS` in `dedup-fold.ts`):
 
 ```ts
 const foldCount = obs.fold_count ?? 1;
 let repetitionLine = '';
 if (foldCount > 1) {
-  const windowSec = getDedupFoldConfig().windowSeconds;
+  const windowSec = opts?.windowSeconds ?? 30;
   repetitionLine = `\n  <repetition>This tool call was repeated ${foldCount} times in a ${windowSec}s window.</repetition>`;
 }
 ```
+
+Task 8 will pass `{ windowSeconds: getDedupFoldConfig().windowSeconds }` at every call site (`SessionManager`/Provider).
 
 Then in the returned template, insert `${repetitionLine}` between the `<outcome>` element and the closing `</observed_from_primary_session>`:
 
