@@ -18,6 +18,7 @@ export interface PersistentPendingMessage {
   agent_type: string | null;
   agent_id: string | null;
   fold_count: number | null;
+  fold_window_seconds: number | null;
 }
 
 export class PendingMessageStore {
@@ -34,7 +35,8 @@ export class PendingMessageStore {
     sessionDbId: number,
     contentSessionId: string,
     message: PendingMessage,
-    foldKey: string | null = null
+    foldKey: string | null = null,
+    foldWindowSeconds: number | null = null
   ): number {
     const now = Date.now();
     const stmt = this.db.prepare(`
@@ -43,8 +45,8 @@ export class PendingMessageStore {
         tool_name, tool_input, tool_response, cwd,
         last_assistant_message,
         prompt_number, status, created_at_epoch,
-        agent_type, agent_id, fold_key
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+        agent_type, agent_id, fold_key, fold_window_seconds
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -61,7 +63,8 @@ export class PendingMessageStore {
       now,
       message.agentType ?? null,
       message.agentId ?? null,
-      foldKey
+      foldKey,
+      foldWindowSeconds
     );
 
     if (result.changes > 0) {
@@ -91,11 +94,8 @@ export class PendingMessageStore {
   }
 
   bumpFoldCount(rowId: number): { newCount: number } {
-    this.db
-      .prepare('UPDATE pending_messages SET fold_count = fold_count + 1 WHERE id = ?')
-      .run(rowId);
     const row = this.db
-      .prepare('SELECT fold_count FROM pending_messages WHERE id = ?')
+      .prepare('UPDATE pending_messages SET fold_count = fold_count + 1 WHERE id = ? RETURNING fold_count')
       .get(rowId) as { fold_count: number } | undefined;
     if (!row) {
       throw new Error(`bumpFoldCount: row ${rowId} not found after update`);
@@ -220,7 +220,8 @@ export class PendingMessageStore {
       last_assistant_message: persistent.last_assistant_message || undefined,
       agentId: persistent.agent_id ?? undefined,
       agentType: persistent.agent_type ?? undefined,
-      fold_count: persistent.fold_count ?? 1
+      fold_count: persistent.fold_count ?? 1,
+      fold_window_seconds: persistent.fold_window_seconds ?? undefined
     };
   }
 }

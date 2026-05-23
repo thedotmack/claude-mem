@@ -108,7 +108,7 @@ export function buildObservationPrompt(
   let repetitionLine = '';
   if (foldCount > 1) {
     const windowSec = opts?.windowSeconds ?? 30;
-    repetitionLine = `\n  <repetition>This tool call was repeated ${foldCount} times in a ${windowSec}s window.</repetition>`;
+    repetitionLine = `\n  <repetition>This tool call occurred ${foldCount} times in a ${windowSec}s window.</repetition>`;
   }
 
   return `<observed_from_primary_session>

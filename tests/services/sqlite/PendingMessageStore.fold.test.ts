@@ -234,4 +234,42 @@ describe('PendingMessageStore.enqueue with foldKey', () => {
       .get(messageId) as { fold_key: string | null };
     expect(row.fold_key).toBeNull();
   });
+
+  it('persists foldWindowSeconds and surfaces it on toPendingMessage', () => {
+    const { db, sessionDbId } = makeDb();
+    const store = new PendingMessageStore(db);
+    const messageId = store.enqueue(
+      sessionDbId,
+      'sess-1',
+      { type: 'observation', tool_name: 'Bash', toolUseId: 'tu-window' },
+      'foldkey-window',
+      45
+    );
+    expect(messageId).toBeGreaterThan(0);
+
+    const row = db
+      .prepare('SELECT fold_window_seconds FROM pending_messages WHERE id = ?')
+      .get(messageId) as { fold_window_seconds: number | null };
+    expect(row.fold_window_seconds).toBe(45);
+
+    const claimed = store.claimNextMessage(sessionDbId);
+    expect(claimed).not.toBeNull();
+    const projected = store.toPendingMessage(claimed!);
+    expect(projected.fold_window_seconds).toBe(45);
+  });
+
+  it('persists null foldWindowSeconds when omitted', () => {
+    const { db, sessionDbId } = makeDb();
+    const store = new PendingMessageStore(db);
+    const messageId = store.enqueue(
+      sessionDbId,
+      'sess-1',
+      { type: 'observation', tool_name: 'Bash', toolUseId: 'tu-no-window' }
+    );
+    expect(messageId).toBeGreaterThan(0);
+    const row = db
+      .prepare('SELECT fold_window_seconds FROM pending_messages WHERE id = ?')
+      .get(messageId) as { fold_window_seconds: number | null };
+    expect(row.fold_window_seconds).toBeNull();
+  });
 });

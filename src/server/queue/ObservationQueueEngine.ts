@@ -17,6 +17,7 @@ export interface ObservationQueueEngine {
     contentSessionId: string,
     message: PendingMessage,
     foldKey?: string | null,
+    foldWindowSeconds?: number | null,
   ): Promise<number>;
   createIterator(options: CreateIteratorOptions): AsyncIterableIterator<PendingMessageWithId>;
   confirmProcessed(messageId: number): Promise<number>;
@@ -87,8 +88,9 @@ export class SqliteObservationQueueEngine implements InspectableObservationQueue
     contentSessionId: string,
     message: PendingMessage,
     foldKey: string | null = null,
+    foldWindowSeconds: number | null = null,
   ): Promise<number> {
-    const id = this.store.enqueue(sessionDbId, contentSessionId, message, foldKey);
+    const id = this.store.enqueue(sessionDbId, contentSessionId, message, foldKey, foldWindowSeconds);
     if (id > 0) {
       this.emit(sessionDbId);
     }

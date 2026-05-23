@@ -26,7 +26,7 @@ describe('buildObservationPrompt repetition hint', () => {
       { windowSeconds: 30 },
     );
     expect(prompt).toContain('<repetition>');
-    expect(prompt).toMatch(/repeated 5 times/);
+    expect(prompt).toMatch(/occurred 5 times/);
     expect(prompt).toContain('30s window');
   });
 });

@@ -448,7 +448,7 @@ export class ClaudeProvider {
           created_at_epoch: Date.now(),
           cwd: message.cwd,
           fold_count: message.fold_count
-        }, { windowSeconds: getDedupFoldConfig().windowSeconds });
+        }, { windowSeconds: message.fold_window_seconds ?? getDedupFoldConfig().windowSeconds });
 
         session.conversationHistory.push({ role: 'user', content: obsPrompt });
 

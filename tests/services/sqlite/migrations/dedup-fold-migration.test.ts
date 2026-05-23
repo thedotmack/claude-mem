@@ -49,6 +49,23 @@ describe('migration v35: pending_messages fold columns', () => {
     expect(() => runner.runAllMigrations()).not.toThrow();
   });
 
+  it('migration v36 adds fold_window_seconds column and records the version', () => {
+    const db = new Database(':memory:');
+    new MigrationRunner(db).runAllMigrations();
+
+    const cols = db.prepare('PRAGMA table_info(pending_messages)').all() as ColumnInfo[];
+    const names = cols.map((c) => c.name);
+    expect(names).toContain('fold_window_seconds');
+
+    const col = cols.find((c) => c.name === 'fold_window_seconds')!;
+    expect(col.notnull).toBe(0); // nullable so pre-fold rows backfill as NULL
+
+    const recorded = db
+      .prepare('SELECT version FROM schema_versions WHERE version = ?')
+      .get(36) as SchemaVersionRow | undefined;
+    expect(recorded?.version).toBe(36);
+  });
+
   it('upgrades legacy databases that lack the fold columns', () => {
     const db = new Database(':memory:');
 

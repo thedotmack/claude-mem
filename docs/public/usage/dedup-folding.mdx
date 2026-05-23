@@ -38,7 +38,7 @@ It then looks up the most recent pending row with the same key inside the curren
 When the message iterator finally drains the row to the SDK, `buildObservationPrompt` appends:
 
 ```xml
-<repetition>This tool call was repeated 5 times in a 30s window.</repetition>
+<repetition>This tool call occurred 5 times in a 30s window.</repetition>
 ```
 
 The observer model decides whether to surface the repetition in its `<facts>` output.

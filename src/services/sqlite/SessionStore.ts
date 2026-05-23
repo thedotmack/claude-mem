@@ -72,6 +72,7 @@ export class SessionStore {
     this.ensurePendingMessagesToolUseIdColumn();
     this.dropWorkerPidColumn();
     this.ensurePendingMessagesFoldColumns();
+    this.ensurePendingMessagesFoldWindowSecondsColumn();
   }
 
   // Mirrors MigrationRunner.addPendingMessagesFoldColumns (v35). SessionStore
@@ -104,6 +105,24 @@ export class SessionStore {
 
     if (!applied) {
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(35, new Date().toISOString());
+    }
+  }
+
+  // Mirrors MigrationRunner.addPendingMessagesFoldWindowSecondsColumn (v36).
+  // Same boot-path rationale as ensurePendingMessagesFoldColumns above.
+  private ensurePendingMessagesFoldWindowSecondsColumn(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(36) as SchemaVersion | undefined;
+    const cols = this.db.query('PRAGMA table_info(pending_messages)').all() as TableColumnInfo[];
+    const hasColumn = cols.some(c => c.name === 'fold_window_seconds');
+    if (applied && hasColumn) return;
+
+    if (!hasColumn) {
+      this.db.run('ALTER TABLE pending_messages ADD COLUMN fold_window_seconds INTEGER');
+      logger.debug('DB', 'Added fold_window_seconds column to pending_messages table');
+    }
+
+    if (!applied) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(36, new Date().toISOString());
     }
   }
 

@@ -180,11 +180,12 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
     toolUseId: typeof payload.toolUseId === 'string' ? payload.toolUseId : undefined,
   });
 
+  await ensureGeneratorRunning?.(sessionDbId, 'observation');
+
   if (queueResult?.folded) {
     return { ok: true, status: 'skipped', reason: 'dedup_folded' };
   }
 
-  await ensureGeneratorRunning?.(sessionDbId, 'observation');
   eventBroadcaster.broadcastObservationQueued(sessionDbId);
 
   return { ok: true, sessionDbId };

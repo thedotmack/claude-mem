@@ -96,6 +96,7 @@ export class BullMqObservationQueueEngine
     contentSessionId: string,
     message: PendingMessage,
     _foldKey: string | null = null,
+    _foldWindowSeconds: number | null = null,
   ): Promise<number> {
     const runtime = this.getSessionRuntime(sessionDbId);
     await this.registerSession(sessionDbId);

@@ -273,8 +273,10 @@ export class SessionManager {
       foldKey = !decision.fold ? decision.foldKey ?? null : null;
     }
 
+    const foldWindowSeconds = foldStore ? dedupConfig.windowSeconds : null;
+
     try {
-      const messageId = await queue.enqueue(sessionDbId, session.contentSessionId, message, foldKey);
+      const messageId = await queue.enqueue(sessionDbId, session.contentSessionId, message, foldKey, foldWindowSeconds);
       const queueDepth = await queue.getPendingCount(sessionDbId);
       const toolSummary = logger.formatTool(data.tool_name, data.tool_input);
       if (messageId === 0) {

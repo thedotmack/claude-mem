@@ -278,7 +278,7 @@ export class GeminiProvider {
 
   private async processObservationMessage(
     session: ActiveSession,
-    message: { type: string; prompt_number?: number; tool_name?: string; tool_input?: unknown; tool_response?: unknown; cwd?: string; fold_count?: number },
+    message: { type: string; prompt_number?: number; tool_name?: string; tool_input?: unknown; tool_response?: unknown; cwd?: string; fold_count?: number; fold_window_seconds?: number },
     worker: WorkerRef | undefined,
     apiKey: string,
     model: GeminiModel,
@@ -302,7 +302,7 @@ export class GeminiProvider {
       created_at_epoch: originalTimestamp ?? Date.now(),
       cwd: message.cwd,
       fold_count: message.fold_count
-    }, { windowSeconds: getDedupFoldConfig().windowSeconds });
+    }, { windowSeconds: message.fold_window_seconds ?? getDedupFoldConfig().windowSeconds });
 
     session.conversationHistory.push({ role: 'user', content: obsPrompt });
     const obsResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);

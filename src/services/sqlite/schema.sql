@@ -1,7 +1,7 @@
 -- claude-mem SQLite schema
 --
 -- Authoritative shape of the database after all migrations through
--- runner.ts have been applied (current tip = migration 35). Fresh
+-- runner.ts have been applied (current tip = migration 36). Fresh
 -- databases boot directly into this shape; existing databases reach
 -- it via the migration runner.
 --
@@ -144,6 +144,7 @@ CREATE TABLE IF NOT EXISTS pending_messages (
   agent_id                 TEXT,
   fold_key                 TEXT,
   fold_count               INTEGER NOT NULL DEFAULT 1,
+  fold_window_seconds      INTEGER,
   FOREIGN KEY (session_db_id) REFERENCES sdk_sessions(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_pending_messages_session        ON pending_messages(session_db_id);
