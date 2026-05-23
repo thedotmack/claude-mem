@@ -4,8 +4,7 @@
     "name": "Alex Newman"
   },
   "metadata": {
-    "description": "Plugins by Alex Newman (thedotmack)",
-    "homepage": "https://github.com/thedotmack/claude-mem"
+    "description": "Plugins by Alex Newman (thedotmack)"
   },
   "plugins": [
     {
