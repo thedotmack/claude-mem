@@ -133,6 +133,7 @@ describe('MigrationRunner', () => {
       expect(versions).toContain(11);
       expect(versions).toContain(16);
       expect(versions).toContain(17);
+      expect(versions).toContain(19);
       expect(versions).toContain(20);
       expect(versions).toContain(21);
       expect(versions).toContain(22);
