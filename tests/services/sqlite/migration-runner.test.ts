@@ -430,6 +430,7 @@ describe('MigrationRunner', () => {
       expect(() => new SessionStore(db)).not.toThrow();
 
       const after = snapshotSchema(db);
+      expect(after.tables).toEqual(before.tables);
       expect(after.columnsByTable.observations).toEqual(before.columnsByTable.observations);
       expect(after.columnsByTable.sdk_sessions).toEqual(before.columnsByTable.sdk_sessions);
       expect(after.columnsByTable.pending_messages).toEqual(before.columnsByTable.pending_messages);
