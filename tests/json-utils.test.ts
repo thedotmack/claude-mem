@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdirSync, writeFileSync, existsSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { readJsonSafe } from '../src/utils/json-utils';
+import { readJsonSafe, parseJsonArrayColumn } from '../src/utils/json-utils';
 
 describe('JSON Utils', () => {
   let tempDir: string;
@@ -115,6 +115,37 @@ describe('JSON Utils', () => {
       const result = readJsonSafe(filePath, {});
 
       expect(result).toEqual({ ok: true });
+    });
+  });
+
+  describe('parseJsonArrayColumn', () => {
+    it('passes through string arrays unchanged', () => {
+      expect(parseJsonArrayColumn(['a', 'b'])).toEqual(['a', 'b']);
+    });
+
+    it('returns empty array for empty string', () => {
+      expect(parseJsonArrayColumn('')).toEqual([]);
+    });
+
+    it('returns empty array for null', () => {
+      expect(parseJsonArrayColumn(null)).toEqual([]);
+    });
+
+    it('parses a JSON-encoded array of strings', () => {
+      expect(parseJsonArrayColumn('["a","b"]')).toEqual(['a', 'b']);
+    });
+
+    it('returns empty array for invalid JSON', () => {
+      expect(parseJsonArrayColumn('not json')).toEqual([]);
+    });
+
+    it('returns empty array when JSON is not an array', () => {
+      expect(parseJsonArrayColumn('{"a":1}')).toEqual([]);
+    });
+
+    it('filters non-string elements out of arrays', () => {
+      expect(parseJsonArrayColumn(['a', 1, null, 'b'])).toEqual(['a', 'b']);
+      expect(parseJsonArrayColumn('["a",1,null,"b"]')).toEqual(['a', 'b']);
     });
   });
 });
