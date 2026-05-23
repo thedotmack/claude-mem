@@ -22,6 +22,8 @@ export interface QueueObservationResult {
   folded: boolean;
 }
 
+let bullmqFoldWarned = false;
+
 export class SessionManager {
   private dbManager: DatabaseManager;
   private sessions: Map<number, ActiveSession> = new Map();
@@ -235,6 +237,10 @@ export class SessionManager {
 
     const dedupConfig = getDedupFoldConfig();
     const foldStore = engineToFoldStore(queue);
+    if (dedupConfig.enabled && foldStore == null && !bullmqFoldWarned) {
+      bullmqFoldWarned = true;
+      logger.warn('DEDUP', 'fold is enabled but the queue engine does not support fold methods; fold will be skipped (likely bullmq backend)');
+    }
     let foldKey: string | null = null;
     if (foldStore) {
       const decision = shouldFold(
