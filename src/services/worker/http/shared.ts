@@ -12,6 +12,7 @@ import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
 import { getProjectContext } from '../../../utils/project-name.js';
 import { normalizePlatformSource } from '../../../shared/platform-source.js';
 import { PrivacyCheckValidator } from '../validation/PrivacyCheckValidator.js';
+import { computeFoldKey, getDedupFoldConfig } from '../dedup-fold.js';
 import { EventEmitter } from 'events';
 
 export interface SummaryStoredEvent {
@@ -152,6 +153,21 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
     return { ok: true, status: 'skipped', reason: 'private' };
   }
 
+  // Compute fold key over the RAW (pre-redaction) input so S2 + S3
+  // both-enabled doesn't collapse two distinct secret-bearing calls onto
+  // the same redacted placeholder. SessionManager will still gate on
+  // dedupConfig.enabled/disabledTools, so always computing here is safe
+  // (sha256 hash, never persisted as secret).
+  const dedupConfig = getDedupFoldConfig();
+  const preComputedFoldKey: string | null = dedupConfig.enabled
+    ? computeFoldKey({
+        tool_name: payload.toolName,
+        tool_input: payload.toolInput,
+        cwd,
+        agent_id: typeof payload.agentId === 'string' ? payload.agentId : undefined,
+      })
+    : null;
+
   const cleanedToolInput = payload.toolInput !== undefined
     ? stripMemoryTagsFromJson(
         redactSensitive(JSON.stringify(payload.toolInput), getRedactionConfig()).redacted,
@@ -178,6 +194,7 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
     agentId: typeof payload.agentId === 'string' ? payload.agentId : undefined,
     agentType: typeof payload.agentType === 'string' ? payload.agentType : undefined,
     toolUseId: typeof payload.toolUseId === 'string' ? payload.toolUseId : undefined,
+    foldKey: preComputedFoldKey,
   });
 
   await ensureGeneratorRunning?.(sessionDbId, 'observation');

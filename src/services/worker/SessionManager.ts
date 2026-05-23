@@ -258,6 +258,7 @@ export class SessionManager {
         sessionDbId,
         dedupConfig,
         foldStore,
+        data.foldKey ?? undefined,
       );
 
       if (decision.fold && queue.bumpFoldCount) {

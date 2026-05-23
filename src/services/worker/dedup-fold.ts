@@ -115,11 +115,15 @@ export function shouldFold(
   sessionDbId: number,
   config: DedupFoldConfig,
   store: FoldStoreLike,
+  // Pre-computed key (typically over the RAW pre-redaction tool input). When
+  // provided, skips the obs.tool_input hash so callers can ensure auto-
+  // redaction doesn't collapse distinct secret-bearing calls into one key.
+  preComputedFoldKey?: string,
 ): DedupFoldDecision {
   if (!config.enabled) return { fold: false };
   if (config.disabledTools.includes(obs.tool_name)) return { fold: false };
 
-  const foldKey = computeFoldKey({
+  const foldKey = preComputedFoldKey ?? computeFoldKey({
     tool_name: obs.tool_name,
     tool_input: obs.tool_input,
     cwd: obs.cwd,

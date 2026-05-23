@@ -151,4 +151,59 @@ describe('shouldFold decision', () => {
     expect(r.fold).toBe(true);
     expect((r as any).foldOntoRowId).toBe(42);
   });
+
+  it('uses preComputedFoldKey verbatim when provided (does not hash obs.tool_input)', () => {
+    let lookedUpKey = '';
+    const store = makeStore({
+      findFoldCandidate: (_sessionDbId: number, key: string) => {
+        lookedUpKey = key;
+        return null;
+      },
+    });
+    const r = shouldFold(
+      baseObs,
+      1,
+      { enabled: true, windowSeconds: 30, disabledTools: [] },
+      store,
+      'caller-supplied-key',
+    );
+    expect(r.fold).toBe(false);
+    expect((r as any).foldKey).toBe('caller-supplied-key');
+    expect(lookedUpKey).toBe('caller-supplied-key');
+  });
+
+  it('falls back to hashing obs.tool_input when preComputedFoldKey is omitted', () => {
+    let lookedUpKey = '';
+    const store = makeStore({
+      findFoldCandidate: (_sessionDbId: number, key: string) => {
+        lookedUpKey = key;
+        return null;
+      },
+    });
+    shouldFold(baseObs, 1, { enabled: true, windowSeconds: 30, disabledTools: [] }, store);
+    expect(lookedUpKey).toMatch(/^[0-9a-f]{16}$/);
+    expect(lookedUpKey).not.toBe('caller-supplied-key');
+  });
+
+  it('preComputedFoldKey enables S2+S3 coexistence: distinct raw inputs that redact to the same string get distinct keys', () => {
+    // Simulate what shared.ingestObservation does: hash the RAW input
+    // before redaction so distinct secrets don't collapse onto one key
+    // even when redaction normalizes them to the same placeholder.
+    const rawKeyA = computeFoldKey({ tool_name: 'curl', tool_input: { headers: 'Bearer tokenA' }, cwd: '/repo', agent_id: 'main' });
+    const rawKeyB = computeFoldKey({ tool_name: 'curl', tool_input: { headers: 'Bearer tokenB' }, cwd: '/repo', agent_id: 'main' });
+    expect(rawKeyA).not.toBe(rawKeyB);
+
+    // And shouldFold honors whichever raw key the caller passes in,
+    // regardless of the post-redaction obs.tool_input.
+    let observed = '';
+    const store = makeStore({
+      findFoldCandidate: (_sessionDbId: number, key: string) => {
+        observed = key;
+        return null;
+      },
+    });
+    const redactedObs = { ...baseObs, tool_input: { headers: 'Bearer <redacted/>' } };
+    shouldFold(redactedObs, 1, { enabled: true, windowSeconds: 30, disabledTools: [] }, store, rawKeyA);
+    expect(observed).toBe(rawKeyA);
+  });
 });
