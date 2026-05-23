@@ -52,6 +52,11 @@ function isDuplicatePrompt(contentSessionId: string, prompt: string): boolean {
     for (const [k, v] of recentPrompts) {
       if (now - v > PROMPT_DEDUP_WINDOW_MS) recentPrompts.delete(k);
     }
+    // Safety valve: if nothing was old enough to evict, drop the oldest entry
+    if (recentPrompts.size > 100) {
+      const oldest = recentPrompts.keys().next().value;
+      if (oldest !== undefined) recentPrompts.delete(oldest);
+    }
   }
   return false;
 }
