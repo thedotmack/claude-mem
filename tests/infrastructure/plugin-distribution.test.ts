@@ -126,19 +126,21 @@ describe('Plugin Distribution - hooks.json Integrity', () => {
 });
 
 describe('Plugin Distribution - Startup Root Resolution', () => {
-  it('MCP startup commands should have config-dir based non-empty fallbacks', () => {
+  // The MCP server is spawned by Claude Code WITHOUT a shell, so `command` must
+  // resolve against PATH directly. `sh` is not on PATH on Windows (Git Bash is
+  // not guaranteed to be there), so the bundled launcher uses `node` — which is
+  // always present as the runtime — and performs root resolution in JS.
+  it('MCP startup command resolves the plugin root in node (cross-platform)', () => {
     for (const relativePath of ['plugin/.mcp.json']) {
       const command = mcpStartupCommandFrom(relativePath);
 
-      expect(command).toContain('${CLAUDE_CONFIG_DIR:-$HOME/.claude}');
-      expect(command).toContain('_E="${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}"');
-      expect(command).toContain('while IFS= read -r _R');
-      expect(command).toContain('$_C/plugins/marketplaces/thedotmack/plugin');
-      expect(command).toContain('$_C/plugins/cache/thedotmack/claude-mem');
-      expect(command).toContain('[ -f "$_Q/scripts/mcp-server.cjs" ]');
-      expect(command).not.toContain('"/scripts/mcp-server.cjs"');
-      expect(command.indexOf('$_C/plugins/cache/thedotmack/claude-mem')).toBeLessThan(
-        command.indexOf('$_C/plugins/marketplaces/thedotmack/plugin')
+      expect(command).toContain('process.env.CLAUDE_CONFIG_DIR');
+      expect(command).toContain('process.env.CLAUDE_PLUGIN_ROOT||process.env.PLUGIN_ROOT');
+      expect(command).toContain('plugins/marketplaces/thedotmack/plugin');
+      expect(command).toContain('plugins/cache/thedotmack/claude-mem');
+      expect(command).toContain('mcp-server.cjs');
+      expect(command.indexOf('plugins/cache/thedotmack/claude-mem')).toBeLessThan(
+        command.indexOf('plugins/marketplaces/thedotmack/plugin')
       );
     }
   });
