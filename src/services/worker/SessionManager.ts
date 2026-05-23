@@ -12,6 +12,15 @@ import { getObservationQueueEngineName } from '../../server/queue/redis-config.j
 import { getSdkProcessForSession, ensureSdkProcessExit } from '../../supervisor/process-registry.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { RestartGuard } from './RestartGuard.js';
+import { shouldFold, getDedupFoldConfig, type FoldStoreLike } from './dedup-fold.js';
+
+function safeParseJson(s: string): unknown {
+  try { return JSON.parse(s); } catch { return s; }
+}
+
+export interface QueueObservationResult {
+  folded: boolean;
+}
 
 export class SessionManager {
   private dbManager: DatabaseManager;
@@ -204,7 +213,7 @@ export class SessionManager {
     return this.sessions.get(sessionDbId);
   }
 
-  async queueObservation(sessionDbId: number, data: ObservationData): Promise<void> {
+  async queueObservation(sessionDbId: number, data: ObservationData): Promise<QueueObservationResult> {
     let session = this.sessions.get(sessionDbId);
     if (!session) {
       session = this.initializeSession(sessionDbId);
@@ -222,9 +231,40 @@ export class SessionManager {
       toolUseId: data.toolUseId,
     };
 
+    const queue = this.getQueueEngine();
+
+    const dedupConfig = getDedupFoldConfig();
+    const foldStore = engineToFoldStore(queue);
+    let foldKey: string | null = null;
+    if (foldStore) {
+      const decision = shouldFold(
+        {
+          tool_name: data.tool_name,
+          tool_input: typeof data.tool_input === 'string' ? safeParseJson(data.tool_input) : data.tool_input,
+          cwd: data.cwd,
+          agent_id: data.agentId,
+          created_at_epoch: Date.now(),
+        },
+        sessionDbId,
+        dedupConfig,
+        foldStore,
+      );
+
+      if (decision.fold && queue.bumpFoldCount) {
+        const { newCount } = queue.bumpFoldCount(decision.foldOntoRowId);
+        logger.debug('DEDUP', 'folded duplicate observation', undefined, {
+          rowId: decision.foldOntoRowId,
+          newCount,
+          toolName: data.tool_name,
+        });
+        return { folded: true };
+      }
+
+      foldKey = !decision.fold ? decision.foldKey ?? null : null;
+    }
+
     try {
-      const queue = this.getQueueEngine();
-      const messageId = await queue.enqueue(sessionDbId, session.contentSessionId, message);
+      const messageId = await queue.enqueue(sessionDbId, session.contentSessionId, message, foldKey);
       const queueDepth = await queue.getPendingCount(sessionDbId);
       const toolSummary = logger.formatTool(data.tool_name, data.tool_input);
       if (messageId === 0) {
@@ -246,6 +286,7 @@ export class SessionManager {
       throw normalized;
     }
 
+    return { folded: false };
   }
 
   async queueSummarize(sessionDbId: number, lastAssistantMessage?: string): Promise<void> {
@@ -463,4 +504,13 @@ export class SessionManager {
 
 function isHealthCheckedQueue(queue: InspectableObservationQueueEngine): queue is HealthCheckedObservationQueueEngine {
   return 'getHealth' in queue && 'assertHealthy' in queue;
+}
+
+function engineToFoldStore(queue: InspectableObservationQueueEngine): FoldStoreLike | null {
+  if (typeof queue.findFoldCandidate !== 'function') return null;
+  const lookup = queue.findFoldCandidate.bind(queue);
+  return {
+    findFoldCandidate: (sessionDbId, foldKey, windowMs, now) =>
+      lookup(sessionDbId, foldKey, windowMs, now),
+  };
 }

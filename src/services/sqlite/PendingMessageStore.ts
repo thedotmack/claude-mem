@@ -17,6 +17,7 @@ export interface PersistentPendingMessage {
   created_at_epoch: number;
   agent_type: string | null;
   agent_id: string | null;
+  fold_count: number | null;
 }
 
 export class PendingMessageStore {
@@ -217,7 +218,8 @@ export class PendingMessageStore {
       cwd: persistent.cwd || undefined,
       last_assistant_message: persistent.last_assistant_message || undefined,
       agentId: persistent.agent_id ?? undefined,
-      agentType: persistent.agent_type ?? undefined
+      agentType: persistent.agent_type ?? undefined,
+      fold_count: persistent.fold_count ?? 1
     };
   }
 }

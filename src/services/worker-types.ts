@@ -49,6 +49,7 @@ export interface PendingMessage {
   agentId?: string;
   agentType?: string;
   toolUseId?: string;
+  fold_count?: number;
 }
 
 export interface PendingMessageWithId extends PendingMessage {

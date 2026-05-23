@@ -6,8 +6,18 @@ import { SessionQueueProcessor, type CreateIteratorOptions } from '../../service
 import { PendingMessageStore } from '../../services/sqlite/PendingMessageStore.js';
 import type { PendingMessage, PendingMessageWithId } from '../../services/worker-types.js';
 
+export interface FoldCandidate {
+  id: number;
+  createdAtEpoch: number;
+}
+
 export interface ObservationQueueEngine {
-  enqueue(sessionDbId: number, contentSessionId: string, message: PendingMessage): Promise<number>;
+  enqueue(
+    sessionDbId: number,
+    contentSessionId: string,
+    message: PendingMessage,
+    foldKey?: string | null,
+  ): Promise<number>;
   createIterator(options: CreateIteratorOptions): AsyncIterableIterator<PendingMessageWithId>;
   confirmProcessed(messageId: number): Promise<number>;
   clearPendingForSession(sessionDbId: number): Promise<number>;
@@ -15,6 +25,13 @@ export interface ObservationQueueEngine {
   getPendingCount(sessionDbId: number): Promise<number>;
   getTotalQueueDepth(): Promise<number>;
   close(): Promise<void>;
+  findFoldCandidate?(
+    sessionDbId: number,
+    foldKey: string,
+    windowMs: number,
+    now: number,
+  ): FoldCandidate | null;
+  bumpFoldCount?(rowId: number): { newCount: number };
 }
 
 // Phase 12 — `lanes` exposes per-queue counts (waiting/active/completed/
@@ -65,12 +82,30 @@ export class SqliteObservationQueueEngine implements InspectableObservationQueue
     this.store = new PendingMessageStore(db, onMutate);
   }
 
-  async enqueue(sessionDbId: number, contentSessionId: string, message: PendingMessage): Promise<number> {
-    const id = this.store.enqueue(sessionDbId, contentSessionId, message);
+  async enqueue(
+    sessionDbId: number,
+    contentSessionId: string,
+    message: PendingMessage,
+    foldKey: string | null = null,
+  ): Promise<number> {
+    const id = this.store.enqueue(sessionDbId, contentSessionId, message, foldKey);
     if (id > 0) {
       this.emit(sessionDbId);
     }
     return id;
+  }
+
+  findFoldCandidate(
+    sessionDbId: number,
+    foldKey: string,
+    windowMs: number,
+    now: number,
+  ): FoldCandidate | null {
+    return this.store.findFoldCandidate(sessionDbId, foldKey, windowMs, now);
+  }
+
+  bumpFoldCount(rowId: number): { newCount: number } {
+    return this.store.bumpFoldCount(rowId);
   }
 
   createIterator(options: CreateIteratorOptions): AsyncIterableIterator<PendingMessageWithId> {

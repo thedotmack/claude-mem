@@ -163,7 +163,7 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
       )
     : '{}';
 
-  await sessionManager.queueObservation(sessionDbId, {
+  const queueResult = await sessionManager.queueObservation(sessionDbId, {
     tool_name: payload.toolName,
     tool_input: cleanedToolInput,
     tool_response: cleanedToolResponse,
@@ -179,6 +179,10 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
     agentType: typeof payload.agentType === 'string' ? payload.agentType : undefined,
     toolUseId: typeof payload.toolUseId === 'string' ? payload.toolUseId : undefined,
   });
+
+  if (queueResult?.folded) {
+    return { ok: true, status: 'skipped', reason: 'dedup_folded' };
+  }
 
   await ensureGeneratorRunning?.(sessionDbId, 'observation');
   eventBroadcaster.broadcastObservationQueued(sessionDbId);
