@@ -164,5 +164,20 @@ describe('JSON Utils', () => {
       parseJsonArrayColumn('["a","b"]', onParseError);
       expect(onParseError).not.toHaveBeenCalled();
     });
+
+    it('does not invoke onParseError when JSON parses to a non-array', () => {
+      const onParseError = mock(() => {});
+      expect(parseJsonArrayColumn('{"a":1}', onParseError)).toEqual([]);
+      expect(parseJsonArrayColumn('42', onParseError)).toEqual([]);
+      expect(parseJsonArrayColumn('"a string"', onParseError)).toEqual([]);
+      expect(onParseError).not.toHaveBeenCalled();
+    });
+
+    it('treats whitespace-only strings as empty without invoking onParseError', () => {
+      const onParseError = mock(() => {});
+      expect(parseJsonArrayColumn('   ', onParseError)).toEqual([]);
+      expect(parseJsonArrayColumn('\n\t', onParseError)).toEqual([]);
+      expect(onParseError).not.toHaveBeenCalled();
+    });
   });
 });

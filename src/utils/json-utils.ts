@@ -16,9 +16,11 @@ export function parseJsonArrayColumn(
   onParseError?: (error: unknown, rawValue: string) => void,
 ): string[] {
   if (Array.isArray(value)) return value.filter((v): v is string => typeof v === 'string');
-  if (typeof value !== 'string' || value.length === 0) return [];
+  if (typeof value !== 'string') return [];
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return [];
   try {
-    const parsed = JSON.parse(value);
+    const parsed = JSON.parse(trimmed);
     return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : [];
   } catch (error) {
     onParseError?.(error, value);
