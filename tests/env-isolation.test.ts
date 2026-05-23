@@ -104,6 +104,39 @@ describe('Issue #2375: ANTHROPIC_BASE_URL env-var isolation', () => {
     expect(result.ANTHROPIC_BASE_URL).toBeUndefined();
   });
 
+  it('Issue #2620: Bedrock/Vertex routing env is stripped from isolatedEnv', () => {
+    // When the host Claude Code CLI is configured to route via AWS Bedrock,
+    // Google Vertex, or Mantle, it sets CLAUDE_CODE_USE_* + the three
+    // ANTHROPIC_DEFAULT_*_MODEL overrides. These MUST NOT propagate into the
+    // worker subprocess, which uses its own OAuth subscription endpoint and
+    // would otherwise route CLAUDE_MEM_MODEL against an endpoint that rejects
+    // it (`400 The provided model identifier is invalid`).
+    process.env.CLAUDE_CODE_USE_BEDROCK = '1';
+    process.env.CLAUDE_CODE_USE_VERTEX = '1';
+    process.env.CLAUDE_CODE_USE_MANTLE = '1';
+    process.env.ANTHROPIC_DEFAULT_OPUS_MODEL = 'us.anthropic.claude-opus-4-7';
+    process.env.ANTHROPIC_DEFAULT_SONNET_MODEL = 'us.anthropic.claude-sonnet-4-6';
+    process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL = 'us.anthropic.claude-haiku-4-5-20251001-v1:0';
+
+    try {
+      const result = buildIsolatedEnv();
+
+      expect(result.CLAUDE_CODE_USE_BEDROCK).toBeUndefined();
+      expect(result.CLAUDE_CODE_USE_VERTEX).toBeUndefined();
+      expect(result.CLAUDE_CODE_USE_MANTLE).toBeUndefined();
+      expect(result.ANTHROPIC_DEFAULT_OPUS_MODEL).toBeUndefined();
+      expect(result.ANTHROPIC_DEFAULT_SONNET_MODEL).toBeUndefined();
+      expect(result.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBeUndefined();
+    } finally {
+      delete process.env.CLAUDE_CODE_USE_BEDROCK;
+      delete process.env.CLAUDE_CODE_USE_VERTEX;
+      delete process.env.CLAUDE_CODE_USE_MANTLE;
+      delete process.env.ANTHROPIC_DEFAULT_OPUS_MODEL;
+      delete process.env.ANTHROPIC_DEFAULT_SONNET_MODEL;
+      delete process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL;
+    }
+  });
+
   it('~/.claude-mem/.env BASE_URL + AUTH_TOKEN reaches isolatedEnv', () => {
     // User intentionally configured a gateway with a gateway-appropriate
     // auth token. Both must be re-injected into isolatedEnv.
