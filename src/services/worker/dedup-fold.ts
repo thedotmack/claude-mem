@@ -68,10 +68,19 @@ let cached: { config: DedupFoldConfig; expiresAt: number } | null = null;
 export function getDedupFoldConfig(): DedupFoldConfig {
   const now = Date.now();
   if (cached && cached.expiresAt > now) return cached.config;
-  const dataDir = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
-  const settingsPath = join(dataDir, 'settings.json');
-  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-  const config = loadDedupFoldConfig(settings as unknown as Record<string, string>);
+
+  let config: DedupFoldConfig;
+  try {
+    const dataDir = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
+    const settingsPath = join(dataDir, 'settings.json');
+    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+    config = loadDedupFoldConfig(settings as unknown as Record<string, string>);
+  } catch (error) {
+    logger.warn('DEDUP', 'failed to load settings, using safe defaults',
+      undefined, error instanceof Error ? error : new Error(String(error)));
+    config = { enabled: false, windowSeconds: DEFAULT_WINDOW_SECONDS, disabledTools: [] };
+  }
+
   cached = { config, expiresAt: now + CACHE_TTL_MS };
   return config;
 }

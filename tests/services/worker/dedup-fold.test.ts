@@ -95,6 +95,13 @@ describe('loadDedupFoldConfig', () => {
 });
 
 describe('getDedupFoldConfig cache', () => {
+  it('returns same object reference within cache TTL', () => {
+    _resetDedupFoldConfigCache();
+    const a = getDedupFoldConfig();
+    const b = getDedupFoldConfig();
+    expect(a).toBe(b);
+  });
+
   it('reset works', () => {
     _resetDedupFoldConfigCache();
     const a = getDedupFoldConfig();
