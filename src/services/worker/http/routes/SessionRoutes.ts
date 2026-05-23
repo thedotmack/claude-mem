@@ -75,35 +75,6 @@ export class SessionRoutes extends BaseRouteHandler {
     super();
   }
 
-  private getActiveAgent(): ClaudeProvider | GeminiProvider | OpenRouterProvider {
-    if (isOpenRouterSelected()) {
-      if (isOpenRouterAvailable()) {
-        logger.debug('SESSION', 'Using OpenRouter agent');
-        return this.openRouterAgent;
-      } else {
-        throw new Error('OpenRouter provider selected but no API key configured. Set CLAUDE_MEM_OPENROUTER_API_KEY in settings or OPENROUTER_API_KEY environment variable.');
-      }
-    }
-    if (isGeminiSelected()) {
-      if (isGeminiAvailable()) {
-        logger.debug('SESSION', 'Using Gemini agent');
-        return this.geminiAgent;
-      } else {
-        throw new Error('Gemini provider selected but no API key configured. Set CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.');
-      }
-    }
-    // DeepSeek uses the same Anthropic-compatible endpoint as Claude
-    if (isDeepseekSelected()) {
-      if (isDeepseekAvailable()) {
-        logger.debug('SESSION', 'Using Claude SDK agent (DeepSeek backend)');
-        return this.sdkAgent;
-      } else {
-        throw new Error('DeepSeek provider selected but no API key configured. Set CLAUDE_MEM_DEEPSEEK_API_KEY in settings or configure ~/.claude-mem/.env.');
-      }
-    }
-    return this.sdkAgent;
-  }
-
   private getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' | 'deepseek' {
     if (isOpenRouterSelected() && isOpenRouterAvailable()) {
       return 'openrouter';
@@ -117,9 +88,37 @@ export class SessionRoutes extends BaseRouteHandler {
     return 'claude';
   }
 
+  /**
+   * Throws a clear diagnostic when a provider is selected but its API key is missing.
+   * Called at the top of the session-start path so users see the error before the SDK
+   * sends a wrong-model request.
+   */
+  private validateProviderConfig(): void {
+    if (isDeepseekSelected() && !isDeepseekAvailable()) {
+      throw new Error(
+        'DeepSeek provider selected but no API key configured. ' +
+        'Set CLAUDE_MEM_DEEPSEEK_API_KEY in settings or configure ~/.claude-mem/.env.'
+      );
+    }
+    if (isOpenRouterSelected() && !isOpenRouterAvailable()) {
+      throw new Error(
+        'OpenRouter provider selected but no API key configured. ' +
+        'Set CLAUDE_MEM_OPENROUTER_API_KEY in settings or OPENROUTER_API_KEY environment variable.'
+      );
+    }
+    if (isGeminiSelected() && !isGeminiAvailable()) {
+      throw new Error(
+        'Gemini provider selected but no API key configured. ' +
+        'Set CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.'
+      );
+    }
+  }
+
   public async ensureGeneratorRunning(sessionDbId: number, source: string): Promise<void> {
     const session = this.sessionManager.getSession(sessionDbId);
     if (!session) return;
+
+    this.validateProviderConfig();
 
     const selectedProvider = this.getSelectedProvider();
 
