@@ -174,13 +174,21 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       // already registered via /v1/sessions/start, so resolve it here (scoped by
       // project+team — no cross-tenant linkage).
       if (!insertInput.serverSessionId && body.contentSessionId) {
-        const linked = await new PostgresServerSessionsRepository(this.options.pool)
-          .findByContentSessionId({
-            contentSessionId: body.contentSessionId,
-            projectId: body.projectId,
-            teamId,
+        // Best-effort: a lookup failure (transient DB/pool error) must not fail
+        // ingestion — fall through and store the event unlinked (prior behavior).
+        try {
+          const linked = await new PostgresServerSessionsRepository(this.options.pool)
+            .findByContentSessionId({
+              contentSessionId: body.contentSessionId,
+              projectId: body.projectId,
+              teamId,
+            });
+          if (linked) insertInput.serverSessionId = linked.id;
+        } catch (err) {
+          logger.warn('HTTP', 'session linkage lookup failed; storing event unlinked', {
+            error: err instanceof Error ? err.message : String(err),
           });
-        if (linked) insertInput.serverSessionId = linked.id;
+        }
       }
       let event: PostgresAgentEvent;
       let outbox: PostgresObservationGenerationJob | null = null;
@@ -993,6 +1001,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       projectId: body.projectId,
       teamId,
       serverSessionId: body.serverSessionId ?? null,
+      contentSessionId: body.contentSessionId ?? null,
       sourceAdapter,
       sourceEventId: typeof (body as Record<string, unknown>).sourceEventId === 'string'
         ? ((body as Record<string, unknown>).sourceEventId as string)
