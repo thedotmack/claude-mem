@@ -177,13 +177,13 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         // Best-effort: a lookup failure (transient DB/pool error) must not fail
         // ingestion — fall through and store the event unlinked (prior behavior).
         try {
-          const linked = await new PostgresServerSessionsRepository(this.options.pool)
-            .findByContentSessionId({
+          const linkedId = await new PostgresServerSessionsRepository(this.options.pool)
+            .findIdByContentSessionId({
               contentSessionId: body.contentSessionId,
               projectId: body.projectId,
               teamId,
             });
-          if (linked) insertInput.serverSessionId = linked.id;
+          if (linkedId) insertInput.serverSessionId = linkedId;
         } catch (err) {
           logger.warn('HTTP', 'session linkage lookup failed; storing event unlinked', {
             error: err instanceof Error ? err.message : String(err),
