@@ -24,6 +24,10 @@ export interface QueueObservationResult {
 
 let bullmqFoldWarned = false;
 
+export function _resetBullmqFoldWarned(): void {
+  bullmqFoldWarned = false;
+}
+
 export class SessionManager {
   private dbManager: DatabaseManager;
   private sessions: Map<number, ActiveSession> = new Map();
