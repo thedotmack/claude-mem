@@ -142,11 +142,15 @@ CREATE TABLE IF NOT EXISTS pending_messages (
   created_at_epoch         INTEGER NOT NULL,
   agent_type               TEXT,
   agent_id                 TEXT,
+  fold_key                 TEXT,
+  fold_count               INTEGER NOT NULL DEFAULT 1,
   FOREIGN KEY (session_db_id) REFERENCES sdk_sessions(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_pending_messages_session        ON pending_messages(session_db_id);
 CREATE INDEX IF NOT EXISTS idx_pending_messages_status         ON pending_messages(status);
 CREATE INDEX IF NOT EXISTS idx_pending_messages_claude_session ON pending_messages(content_session_id);
+CREATE INDEX IF NOT EXISTS idx_pending_fold
+  ON pending_messages(session_db_id, fold_key, created_at_epoch);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_pending_session_tool
   ON pending_messages(content_session_id, tool_use_id)
   WHERE tool_use_id IS NOT NULL;
