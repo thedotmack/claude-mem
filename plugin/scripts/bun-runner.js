@@ -10,6 +10,10 @@ const IS_WINDOWS = process.platform === 'win32';
 const __bun_runner_dirname = dirname(fileURLToPath(import.meta.url));
 const RESOLVED_PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || resolve(__bun_runner_dirname, '..');
 
+const BUN_INSTALL_ARGS = Object.freeze(['install', '--production']);
+const BUN_INSTALL_TIMEOUT_MS = 30_000;
+const BUN_RUNNER_LOG_PREFIX = '[bun-runner]';
+
 function fixBrokenScriptPath(argPath) {
   if (argPath.startsWith('/scripts/') && !existsSync(argPath)) {
     const fixedPath = join(RESOLVED_PLUGIN_ROOT, argPath);
@@ -100,24 +104,34 @@ function ensurePluginDependencies(pluginRoot) {
   const pkgPath = join(pluginRoot, 'package.json');
   if (!existsSync(pkgPath)) return;
 
-  // Check if the critical runtime dependency (zod) is already available.
-  const zodPath = join(pluginRoot, 'node_modules', 'zod');
-  if (existsSync(zodPath)) return;
+  // Guard on node_modules (package-manager marker) rather than a specific
+  // package so the check stays correct if zod is later removed/renamed.
+  const nodeModulesPath = join(pluginRoot, 'node_modules');
+  if (existsSync(nodeModulesPath)) return;
 
-  // Run `bun install --production` to install plugin dependencies.
-  // This is a synchronous one-time operation that runs on the first
-  // hook invocation after a fresh plugin install.
+  let result;
   try {
-    spawnSync(bunPath, ['install', '--production'], {
+    result = spawnSync(bunPath, BUN_INSTALL_ARGS, {
       cwd: pluginRoot,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 30000,
+      timeout: BUN_INSTALL_TIMEOUT_MS,
       windowsHide: true,
     });
-  } catch (_) {
-    // Silently continue — worker will report the missing module error
-    // if dependencies are still unavailable.
+  } catch (err) {
+    const reason = err && err.message ? err.message : String(err);
+    console.error(`${BUN_RUNNER_LOG_PREFIX} bun install threw (${reason}); worker may crash with missing module errors`);
+    return;
+  }
+
+  // spawnSync does not throw on a failed child — surface .error (ENOENT,
+  // ETIMEDOUT, etc.) or non-zero/null .status so the user knows auto-install
+  // was attempted but failed (gh #2644 review).
+  if (result.error || (result.status !== null && result.status !== 0)) {
+    const reason = result.error
+      ? result.error.message
+      : `exit ${result.status}`;
+    console.error(`${BUN_RUNNER_LOG_PREFIX} bun install failed (${reason}); worker may crash with missing module errors`);
   }
 }
 
