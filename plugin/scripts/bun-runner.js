@@ -93,6 +93,36 @@ if (!bunPath) {
   process.exit(1);
 }
 
+// Ensure plugin runtime dependencies are installed (e.g. zod).
+// The plugin marketplace extracts files but does not run `bun install`,
+// so node_modules may be missing on fresh installs (gh #2637, #2640).
+function ensurePluginDependencies(pluginRoot) {
+  const pkgPath = join(pluginRoot, 'package.json');
+  if (!existsSync(pkgPath)) return;
+
+  // Check if the critical runtime dependency (zod) is already available.
+  const zodPath = join(pluginRoot, 'node_modules', 'zod');
+  if (existsSync(zodPath)) return;
+
+  // Run `bun install --production` to install plugin dependencies.
+  // This is a synchronous one-time operation that runs on the first
+  // hook invocation after a fresh plugin install.
+  try {
+    spawnSync(bunPath, ['install', '--production'], {
+      cwd: pluginRoot,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 30000,
+      windowsHide: true,
+    });
+  } catch (_) {
+    // Silently continue — worker will report the missing module error
+    // if dependencies are still unavailable.
+  }
+}
+
+ensurePluginDependencies(RESOLVED_PLUGIN_ROOT);
+
 function collectStdin() {
   return new Promise((resolve) => {
     if (process.stdin.isTTY) {
