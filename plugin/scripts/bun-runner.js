@@ -109,6 +109,11 @@ function ensurePluginDependencies(pluginRoot) {
   const nodeModulesPath = join(pluginRoot, 'node_modules');
   if (existsSync(nodeModulesPath)) return;
 
+  // First-run install is blocking (hook critical path). Surface a progress
+  // line so the user understands the hang is auto-install, not a freeze
+  // (gh #2644 review nit).
+  console.error(`${BUN_RUNNER_LOG_PREFIX} installing plugin dependencies (first run, one-time)...`);
+
   let result;
   try {
     result = spawnSync(bunPath, BUN_INSTALL_ARGS, {
