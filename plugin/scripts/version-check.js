@@ -1,7 +1,69 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, statSync, mkdirSync, writeFileSync, openSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { homedir } from 'os';
+import { spawn } from 'child_process';
+
+// Throttle window between detached auto-install attempts (install may still be
+// running, or it keeps failing — do not respawn every session).
+const DEPS_INSTALL_COOLDOWN_MS = 10 * 60 * 1000;
+
+function dataDir() {
+  return process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
+}
+
+// When the host auto-upgrades the plugin it creates a fresh version directory in the
+// plugin cache WITHOUT node_modules, so the worker and MCP server cannot resolve their
+// runtime deps (zod, ajv via @modelcontextprotocol/sdk, tree-sitter grammars, ...) and
+// claude-mem silently stops working until the user happens to run the install command.
+// Kick off a detached, throttled `bun install` to self-heal. This is a no-op when
+// node_modules already exists, so healthy installs are completely unaffected — it only
+// acts on the broken post-upgrade state.
+function ensureRuntimeDeps(root) {
+  try {
+    if (existsSync(join(root, 'node_modules'))) return; // healthy — nothing to do
+  } catch {
+    return;
+  }
+
+  const dir = dataDir();
+  const marker = join(dir, '.deps-install-attempted');
+  try {
+    if (existsSync(marker) && Date.now() - statSync(marker).mtimeMs < DEPS_INSTALL_COOLDOWN_MS) {
+      return;
+    }
+  } catch {}
+
+  try {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(marker, String(Date.now()));
+  } catch {
+    // If we cannot record the throttle marker, skip rather than risk a respawn loop.
+    return;
+  }
+
+  let out = 'ignore';
+  try {
+    out = openSync(join(dir, 'deps-install.log'), 'a');
+  } catch {}
+
+  try {
+    // shell:true lets the host PATH resolve `bun` (bun.cmd on Windows, bun on Unix).
+    // detached + unref keeps the Setup hook non-blocking; deps land within ~1 min.
+    const child = spawn('bun install', {
+      cwd: root,
+      detached: true,
+      shell: true,
+      windowsHide: true,
+      stdio: ['ignore', out, out],
+    });
+    child.on('error', () => {});
+    child.unref();
+  } catch {
+    // best-effort; the upgrade hint below still explains the manual recovery command.
+  }
+}
 
 function resolveRoot() {
   if (process.env.CLAUDE_PLUGIN_ROOT) {
@@ -18,6 +80,8 @@ function resolveRoot() {
 
 const ROOT = resolveRoot();
 if (!ROOT) process.exit(0);
+
+ensureRuntimeDeps(ROOT);
 
 function emitUpgradeHint(message) {
   if (process.env.CLAUDE_MEM_CODEX_HOOK === '1') {
