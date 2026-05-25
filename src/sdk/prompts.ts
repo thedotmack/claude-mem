@@ -106,11 +106,11 @@ function truncateObservationField(value: unknown, maxChars: number = OBS_PROMPT_
   // and the length check below stay well-defined.
   const raw = JSON.stringify(value, null, 2) ?? '';
   if (raw.length <= maxChars) return raw;
-  const headChars = Math.floor(maxChars * OBS_PROMPT_FIELD_HEAD_RATIO);
-  const tailChars = Math.floor(maxChars * OBS_PROMPT_FIELD_TAIL_RATIO);
+  const headChars = Math.max(0, Math.floor(maxChars * OBS_PROMPT_FIELD_HEAD_RATIO));
+  const tailChars = Math.max(0, Math.floor(maxChars * OBS_PROMPT_FIELD_TAIL_RATIO));
   const head = raw.slice(0, headChars);
-  const tail = raw.slice(-tailChars);
-  const elidedChars = raw.length - head.length - tail.length;
+  const tail = tailChars > 0 ? raw.slice(-tailChars) : '';
+  const elidedChars = Math.max(0, raw.length - head.length - tail.length);
   return `${head}\n... <elided chars="${elidedChars}" original_size_chars="${raw.length}" reason="oversize" /> ...\n${tail}`;
 }
 
