@@ -5,6 +5,7 @@ import type { DatabaseManager } from '../DatabaseManager.js';
 import type { SessionEventBroadcaster } from '../events/SessionEventBroadcaster.js';
 import type { ParsedSummary } from '../../../sdk/parser.js';
 import { stripMemoryTagsFromJson } from '../../../utils/tag-stripping.js';
+import { redactSensitive, getRedactionConfig } from '../../../utils/redaction.js';
 import { isProjectExcluded } from '../../../utils/project-filter.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
@@ -152,10 +153,14 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
   }
 
   const cleanedToolInput = payload.toolInput !== undefined
-    ? stripMemoryTagsFromJson(JSON.stringify(payload.toolInput))
+    ? stripMemoryTagsFromJson(
+        redactSensitive(JSON.stringify(payload.toolInput), getRedactionConfig()).redacted,
+      )
     : '{}';
   const cleanedToolResponse = payload.toolResponse !== undefined
-    ? stripMemoryTagsFromJson(JSON.stringify(payload.toolResponse))
+    ? stripMemoryTagsFromJson(
+        redactSensitive(JSON.stringify(payload.toolResponse), getRedactionConfig()).redacted,
+      )
     : '{}';
 
   await sessionManager.queueObservation(sessionDbId, {
