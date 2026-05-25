@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync, statSync, mkdirSync, writeFileSync, openSync } from 'fs';
+import { existsSync, readFileSync, statSync, mkdirSync, writeFileSync, openSync, closeSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { homedir } from 'os';
@@ -27,8 +27,10 @@ function ensureRuntimeDeps(root) {
     return;
   }
 
-  const dir = dataDir();
-  const marker = join(dir, '.deps-install-attempted');
+  // Scope the cooldown marker to this version directory (not the global data dir),
+  // so a second upgrade landing within the window still installs its own deps. `root`
+  // is writable — `bun install` writes node_modules into it below.
+  const marker = join(root, '.deps-install-attempted');
   try {
     if (existsSync(marker) && Date.now() - statSync(marker).mtimeMs < DEPS_INSTALL_COOLDOWN_MS) {
       return;
@@ -36,15 +38,16 @@ function ensureRuntimeDeps(root) {
   } catch {}
 
   try {
-    mkdirSync(dir, { recursive: true });
     writeFileSync(marker, String(Date.now()));
   } catch {
     // If we cannot record the throttle marker, skip rather than risk a respawn loop.
     return;
   }
 
+  const dir = dataDir();
   let out = 'ignore';
   try {
+    mkdirSync(dir, { recursive: true });
     out = openSync(join(dir, 'deps-install.log'), 'a');
   } catch {}
 
@@ -60,6 +63,10 @@ function ensureRuntimeDeps(root) {
     });
     child.on('error', () => {});
     child.unref();
+    // Hand the log fd entirely to the detached child; the parent does not need it.
+    if (typeof out === 'number') {
+      try { closeSync(out); } catch {}
+    }
   } catch {
     // best-effort; the upgrade hint below still explains the manual recovery command.
   }
