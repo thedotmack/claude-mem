@@ -13,45 +13,16 @@ import { removeFromClaudeSettings } from '../src/npx-cli/commands/uninstall.js';
  * remove that key symmetrically so the host CLI's auto-memory is restored
  * to its default state after `claude-mem uninstall`.
  *
- * Mirrors the runtime-style tests in install-disable-auto-memory.test.ts —
- * uses CLAUDE_CONFIG_DIR override to avoid touching the user's settings.
+ * Runtime-only — mirrors install-disable-auto-memory.test.ts, using a
+ * CLAUDE_CONFIG_DIR override so the user's real settings are never
+ * touched. Earlier revisions also had three regex-based source-inspection
+ * tests; greptile (PR #2630) flagged them as fragile (the lazy `\n\}`
+ * anchor breaks silently on refactors with nested column-0 braces or an
+ * indented function declaration), so they were dropped in favour of the
+ * behavioural assertions below, which are strictly stronger.
  */
 
-const uninstallSourcePath = join(
-  __dirname,
-  '..',
-  'src',
-  'npx-cli',
-  'commands',
-  'uninstall.ts',
-);
-const uninstallSource = readFileSync(uninstallSourcePath, 'utf-8');
-
 describe('Uninstall: clear Claude Code auto-memory env var', () => {
-  describe('removeFromClaudeSettings source', () => {
-    it('deletes the CLAUDE_CODE_DISABLE_AUTO_MEMORY env key', () => {
-      const helperBody = uninstallSource.match(
-        /function removeFromClaudeSettings\(\)[\s\S]*?\n\}/,
-      )?.[0];
-      expect(helperBody).toBeDefined();
-      expect(helperBody).toContain('delete settings.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY');
-    });
-
-    it('drops the env block when it becomes empty', () => {
-      const helperBody = uninstallSource.match(
-        /function removeFromClaudeSettings\(\)[\s\S]*?\n\}/,
-      )?.[0];
-      expect(helperBody).toMatch(/Object\.keys\(settings\.env\)\.length === 0[\s\S]{0,80}delete settings\.env/);
-    });
-
-    it('routes the final write through writeJsonFileAtomic', () => {
-      const helperBody = uninstallSource.match(
-        /function removeFromClaudeSettings\(\)[\s\S]*?\n\}/,
-      )?.[0];
-      expect(helperBody).toContain('writeJsonFileAtomic(claudeSettingsPath()');
-    });
-  });
-
   describe('removeFromClaudeSettings runtime behavior', () => {
     let tempDir: string;
     let originalConfigDir: string | undefined;
@@ -71,6 +42,30 @@ describe('Uninstall: clear Claude Code auto-memory env var', () => {
         process.env.CLAUDE_CONFIG_DIR = originalConfigDir;
       }
       rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    it('PR #2630: preserves a pre-existing CLAUDE_CODE_DISABLE_AUTO_MEMORY value that is not "1"', () => {
+      // The installer only ever writes the literal token "1" and no-ops if
+      // it already finds "1" present. So during uninstall we only strip the
+      // key when its value is exactly "1" — any other value (e.g. "0" to
+      // force auto-memory ON, or some unrelated truthy token the user set
+      // themselves) is user intent that must be preserved, not clobbered.
+      writeFileSync(
+        settingsPath,
+        JSON.stringify({
+          env: { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0', AWS_REGION: 'us-east-1' },
+        }, null, 2),
+      );
+      const before = readFileSync(settingsPath, 'utf-8');
+
+      removeFromClaudeSettings();
+
+      // No write should have occurred — user's value is untouched.
+      const after = readFileSync(settingsPath, 'utf-8');
+      expect(after).toBe(before);
+      const settings = JSON.parse(after);
+      expect(settings.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe('0');
+      expect(settings.env.AWS_REGION).toBe('us-east-1');
     });
 
     it('removes CLAUDE_CODE_DISABLE_AUTO_MEMORY from the env block', () => {
