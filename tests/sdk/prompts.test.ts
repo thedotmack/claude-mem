@@ -45,6 +45,6 @@ describe('buildObservationPrompt', () => {
 
     expect(prompt).toContain("Used <redacted type='openai_key'/> during setup.");
     expect(prompt).toContain(`If you see a "<redacted type='...'/>" marker`);
-    expect(prompt).toContain('Treat it as a placeholder; do not infer or reproduce the literal value.');
+    expect(prompt).toContain('do not infer the literal value or copy the marker itself into generated memory content.');
   });
 });

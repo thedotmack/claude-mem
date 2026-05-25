@@ -11038,7 +11038,7 @@ For more info: https://docs.claude-mem.ai/usage/gemini-provider
 
 `;_.debug("WORKER","SSE broadcast sent",{eventType:e.type,clients:this.sseClients.size});for(let i of this.sseClients)i.write(n)}getClientCount(){return this.sseClients.size}sendToClient(e,r){let n=`data: ${JSON.stringify(r)}
 
-`;e.write(n)}};fe();fe();var G_t="MODE SWITCH: PROGRESS SUMMARY",n1e=`If you see a "<redacted type='...'/>" marker, that field was a recognized secret pattern and was removed before storage. Treat it as a placeholder; do not infer or reproduce the literal value.`;function T_(t,e,r,n){return`${n.prompts.system_identity}
+`;e.write(n)}};fe();fe();var G_t="MODE SWITCH: PROGRESS SUMMARY",n1e=`If you see a "<redacted type='...'/>" marker, that field was a recognized secret pattern and was removed before storage. Treat it as a placeholder; do not infer the literal value or copy the marker itself into generated memory content.`;function T_(t,e,r,n){return`${n.prompts.system_identity}
 
 <observed_from_primary_session>
   <user_request>${r}</user_request>

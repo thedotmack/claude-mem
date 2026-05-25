@@ -22,7 +22,7 @@ export interface SDKSession {
 }
 
 const REDACTED_MARKER_HINT =
-  `If you see a "<redacted type='...'/>" marker, that field was a recognized secret pattern and was removed before storage. Treat it as a placeholder; do not infer or reproduce the literal value.`;
+  `If you see a "<redacted type='...'/>" marker, that field was a recognized secret pattern and was removed before storage. Treat it as a placeholder; do not infer the literal value or copy the marker itself into generated memory content.`;
 
 export function buildInitPrompt(project: string, sessionId: string, userPrompt: string, mode: ModeConfig): string {
   return `${mode.prompts.system_identity}
