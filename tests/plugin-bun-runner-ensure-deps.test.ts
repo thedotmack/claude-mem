@@ -86,6 +86,30 @@ describe('bun-runner ensurePluginDependencies failure diagnostics', () => {
     expect(stderr).toContain('exit 42');
   });
 
+  test('logs a stderr diagnostic when bun install is killed by signal (OOM / SIGKILL / SIGTERM)', async () => {
+    // Reproduces gh#2644 greptile review: spawnSync sets status=null AND
+    // leaves .error undefined when the child is killed by an external signal —
+    // only .signal carries the cause. Without an explicit signal branch the
+    // failure is swallowed silently. Fake bun raises SIGTERM against itself.
+    const pluginRoot = join(tmpRoot, 'plugin-signal');
+    mkdirSync(pluginRoot, { recursive: true });
+    writeFileSync(join(pluginRoot, 'package.json'), JSON.stringify({ name: 'fake-plugin', version: '0.0.0' }));
+
+    const fakeBinDir = join(pluginRoot, '.bin');
+    mkdirSync(fakeBinDir, { recursive: true });
+    const fakeBunPath = join(fakeBinDir, 'bun');
+    writeFileSync(
+      fakeBunPath,
+      `#!/usr/bin/env bash\nif [ "$1" = "install" ]; then\n  kill -TERM $$\n  sleep 5\nfi\nexit 0\n`,
+    );
+    chmodSync(fakeBunPath, 0o755);
+
+    const { stderr } = await runRunner(pluginRoot, fakeBinDir);
+
+    expect(stderr).toContain(EXPECTED_DIAGNOSTIC);
+    expect(stderr).toContain('killed by SIGTERM');
+  });
+
   test('does not log diagnostic when node_modules already present', async () => {
     const pluginRoot = join(tmpRoot, 'plugin-ok');
     mkdirSync(join(pluginRoot, 'node_modules'), { recursive: true });

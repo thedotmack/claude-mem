@@ -125,12 +125,21 @@ function ensurePluginDependencies(pluginRoot) {
   }
 
   // spawnSync does not throw on a failed child — surface .error (ENOENT,
-  // ETIMEDOUT, etc.) or non-zero/null .status so the user knows auto-install
+  // ETIMEDOUT, etc.), a non-zero exit, or signal-killed termination (SIGKILL
+  // from the OOM killer, SIGTERM, etc. — in that case .status is null AND
+  // .error is undefined, only .signal is set) so the user knows auto-install
   // was attempted but failed (gh #2644 review).
-  if (result.error || (result.status !== null && result.status !== 0)) {
-    const reason = result.error
-      ? result.error.message
-      : `exit ${result.status}`;
+  const killedBySignal = result.status === null && !!result.signal;
+  const nonZeroExit = result.status !== null && result.status !== 0;
+  if (result.error || nonZeroExit || killedBySignal) {
+    let reason;
+    if (result.error) {
+      reason = result.error.message;
+    } else if (killedBySignal) {
+      reason = `killed by ${result.signal}`;
+    } else {
+      reason = `exit ${result.status}`;
+    }
     console.error(`${BUN_RUNNER_LOG_PREFIX} bun install failed (${reason}); worker may crash with missing module errors`);
   }
 }
