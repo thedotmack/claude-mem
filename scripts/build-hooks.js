@@ -332,6 +332,12 @@ async function buildHooks() {
     const contextGenStats = fs.statSync(`${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`);
     console.log(`✓ context-generator built (${(contextGenStats.size / 1024).toFixed(2)} KB)`);
 
+    assertNoExternalZodRequire(
+      `${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`,
+      `${CONTEXT_GENERATOR.name}.cjs`,
+      `context-generator is distributed from the same plugin cache and should not depend on an external node_modules/zod appearing at runtime.`
+    );
+
     console.log(`\n🔧 Building NPX CLI...`);
     const npxCliOutDir = 'dist/npx-cli';
     if (!fs.existsSync(npxCliOutDir)) {
