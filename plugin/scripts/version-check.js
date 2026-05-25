@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from 'child_process';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, rmSync } from 'fs';
 import { homedir } from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -104,6 +104,24 @@ function ensurePluginDependencies(pluginRoot) {
       reason = `exit ${result.status}`;
     }
     console.error(`${VERSION_CHECK_LOG_PREFIX} bun install failed (${reason}); worker may crash with missing module errors`);
+    // `bun install` often creates `node_modules/` BEFORE the failure point
+    // (network timeout mid-fetch, OOM kill, registry 5xx after partial
+    // resolution). The existence guard above would then permanently skip
+    // retry on every subsequent Setup run, leaving the plugin broken with
+    // no recovery path short of manual `rm -rf node_modules`. Remove the
+    // partial dir so the next Setup invocation can retry automatically
+    // (gh #2650 review).
+    try {
+      rmSync(join(pluginRoot, NODE_MODULES_DIRNAME), { recursive: true, force: true });
+    } catch (rmErr) {
+      const rmReason = rmErr && rmErr.message ? rmErr.message : String(rmErr);
+      console.error(`${VERSION_CHECK_LOG_PREFIX} failed to clean up partial node_modules (${rmReason}); next Setup run may skip retry`);
+    }
+  } else {
+    // Close the diagnostic loop: a Setup hook that can block for up to
+    // 120s needs an explicit completion line so users can distinguish a
+    // hung install from one that finished silently (gh #2650 review).
+    console.error(`${VERSION_CHECK_LOG_PREFIX} plugin dependencies installed successfully`);
   }
 }
 
