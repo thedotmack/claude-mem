@@ -26,6 +26,9 @@ export interface ContextConfig {
   fullObservationField: 'narrative' | 'facts';
   showLastSummary: boolean;
   showLastMessage: boolean;
+
+  showDirectives: boolean;
+  directivesMax: number;
 }
 
 export interface Observation {

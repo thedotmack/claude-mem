@@ -20,6 +20,7 @@ import {
   getFullObservationIds,
 } from './ObservationCompiler.js';
 import { renderHeader } from './sections/HeaderRenderer.js';
+import { renderDirectives } from './sections/DirectivesRenderer.js';
 import { renderTimeline } from './sections/TimelineRenderer.js';
 import { shouldShowSummary, renderSummaryFields } from './sections/SummaryRenderer.js';
 import { renderPreviouslySection, renderFooter } from './sections/FooterRenderer.js';
@@ -61,16 +62,40 @@ function renderEmptyState(project: string, forHuman: boolean): string {
   return forHuman ? renderHumanEmptyState(project) : renderAgentEmptyState(project);
 }
 
+export function buildDirectivesBlock(projects: string[], forHuman: boolean): string {
+  const config = loadContextConfig();
+  if (!config.showDirectives) {
+    return '';
+  }
+
+  const db = initializeDatabase();
+  if (!db) {
+    return '';
+  }
+
+  try {
+    const directives = db.listActiveDirectives(projects, config.directivesMax);
+    return renderDirectives(directives, config, forHuman).join('\n');
+  } finally {
+    db.close();
+  }
+}
+
 function buildContextOutput(
   project: string,
   observations: Observation[],
   summaries: SessionSummary[],
+  directivesBlock: string,
   config: ContextConfig,
   cwd: string,
   sessionId: string | undefined,
   forHuman: boolean
 ): string {
   const output: string[] = [];
+
+  if (directivesBlock) {
+    output.push(directivesBlock);
+  }
 
   const economics = calculateTokenEconomics(observations);
 
@@ -114,6 +139,8 @@ export async function generateContext(
     config.sessionCount = 999999;
   }
 
+  const directivesBlock = buildDirectivesBlock(projects, forHuman);
+
   const db = initializeDatabase();
   if (!db) {
     return '';
@@ -128,13 +155,17 @@ export async function generateContext(
       : querySummaries(db, project, config);
 
     if (observations.length === 0 && summaries.length === 0) {
-      return renderEmptyState(project, forHuman);
+      const emptyState = renderEmptyState(project, forHuman);
+      return directivesBlock
+        ? [directivesBlock, emptyState].join('\n')
+        : emptyState;
     }
 
     const output = buildContextOutput(
       project,
       observations,
       summaries,
+      directivesBlock,
       config,
       cwd,
       input?.session_id,

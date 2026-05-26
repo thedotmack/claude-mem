@@ -126,6 +126,10 @@ get_observations(ids=[11131, 10942, 10855], orderBy="date_desc")
 - **Batch fetch:** 1 HTTP request vs N individual requests
 - **10x token savings** by filtering before fetching
 
+## Capturing Standing Directives
+
+When the user states a durable rule about how you should work — "always…", "never…", "from now on…", "stop doing…" — call `directive_add` once with that rule as `content`. Standing directives re-inject at the top of every future session, so they survive `/clear` and context fill. Use `directive_list` to see active directives and `directive_archive` to deactivate one by id.
+
 ## Knowledge Agents
 
 Want synthesized answers instead of raw records? Use `/knowledge-agent` to build a queryable corpus from your observation history. The knowledge agent reads all matching observations and answers questions conversationally.

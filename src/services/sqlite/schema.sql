@@ -1,7 +1,7 @@
 -- claude-mem SQLite schema
 --
 -- Authoritative shape of the database after all migrations through
--- runner.ts have been applied (current tip = migration 34). Fresh
+-- runner.ts have been applied (current tip = migration 35). Fresh
 -- databases boot directly into this shape; existing databases reach
 -- it via the migration runner.
 --
@@ -182,3 +182,20 @@ CREATE TABLE IF NOT EXISTS observation_feedback (
 );
 CREATE INDEX IF NOT EXISTS idx_feedback_observation ON observation_feedback(observation_id);
 CREATE INDEX IF NOT EXISTS idx_feedback_signal      ON observation_feedback(signal_type);
+
+-- ─────────────────────────────────────────────────────────────────────
+-- directives: durable user rules re-injected at the top of every session.
+-- ─────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS directives (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  scope             TEXT    NOT NULL DEFAULT 'global',
+  project           TEXT,
+  content           TEXT    NOT NULL,
+  status            TEXT    NOT NULL DEFAULT 'active',
+  source            TEXT    NOT NULL DEFAULT 'manual',
+  created_at        TEXT    NOT NULL,
+  created_at_epoch  INTEGER NOT NULL,
+  updated_at_epoch  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_directives_status_project ON directives(status, project);
+CREATE INDEX IF NOT EXISTS idx_directives_status_scope   ON directives(status, scope, created_at_epoch DESC);

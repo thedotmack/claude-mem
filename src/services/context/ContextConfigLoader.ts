@@ -25,5 +25,7 @@ export function loadContextConfig(): ContextConfig {
     fullObservationField: settings.CLAUDE_MEM_CONTEXT_FULL_FIELD as 'narrative' | 'facts',
     showLastSummary: settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY === 'true',
     showLastMessage: settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE === 'true',
+    showDirectives: settings.CLAUDE_MEM_CONTEXT_SHOW_DIRECTIVES === 'true',
+    directivesMax: parseInt(settings.CLAUDE_MEM_CONTEXT_DIRECTIVES_MAX, 10),
   };
 }

@@ -1,5 +1,5 @@
 
-export { generateContext } from './ContextBuilder.js';
+export { generateContext, buildDirectivesBlock } from './ContextBuilder.js';
 export type { ContextInput, ContextConfig } from './types.js';
 
 export { loadContextConfig } from './ContextConfigLoader.js';

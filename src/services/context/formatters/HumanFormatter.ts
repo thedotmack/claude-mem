@@ -186,3 +186,11 @@ export function renderHumanFooter(totalDiscoveryTokens: number, totalReadTokens:
 export function renderHumanEmptyState(project: string): string {
   return `\n${colors.bright}${colors.cyan}[${project}] recent context, ${formatHeaderDateTime()}${colors.reset}\n${colors.gray}${'─'.repeat(60)}${colors.reset}\n\n${colors.dim}No previous sessions found for this project yet.${colors.reset}\n`;
 }
+
+export function renderHumanDirectives(items: string[]): string[] {
+  return [
+    `${colors.bright}${colors.yellow}⚡ STANDING DIRECTIVES — always apply, you committed to these:${colors.reset}`,
+    ...items.map((content, i) => `${colors.yellow}${i + 1}.${colors.reset} ${content}`),
+    ''
+  ];
+}

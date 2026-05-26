@@ -361,8 +361,10 @@ export class SearchRoutes extends BaseRouteHandler {
         const port = settings.CLAUDE_MEM_WORKER_PORT;
         const viewerUrl = `http://localhost:${port}`;
         const hintBody = WELCOME_HINT_TEMPLATE.replace('{viewer_url}', viewerUrl);
+        const { buildDirectivesBlock } = await import('../../../context-generator.js');
+        const directivesBlock = buildDirectivesBlock(projects, forHuman);
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-        res.send(hintBody);
+        res.send(directivesBlock ? directivesBlock + '\n' + hintBody : hintBody);
         return;
       }
     }

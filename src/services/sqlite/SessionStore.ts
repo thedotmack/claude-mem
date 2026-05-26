@@ -10,7 +10,8 @@ import {
   ObservationRecord,
   SessionSummaryRecord,
   UserPromptRecord,
-  LatestPromptResult
+  LatestPromptResult,
+  Directive
 } from '../../types/database.js';
 import type { PendingMessageStore } from './PendingMessageStore.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from './types.js';
@@ -71,6 +72,70 @@ export class SessionStore {
     this.dropDeadPendingMessagesColumns();
     this.ensurePendingMessagesToolUseIdColumn();
     this.dropWorkerPidColumn();
+    this.addDirectivesTable();
+  }
+
+  private addDirectivesTable(): void {
+    const exists = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='directives'").get();
+    if (exists) return;
+
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS directives (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        scope             TEXT    NOT NULL DEFAULT 'global',
+        project           TEXT,
+        content           TEXT    NOT NULL,
+        status            TEXT    NOT NULL DEFAULT 'active',
+        source            TEXT    NOT NULL DEFAULT 'manual',
+        created_at        TEXT    NOT NULL,
+        created_at_epoch  INTEGER NOT NULL,
+        updated_at_epoch  INTEGER NOT NULL
+      )
+    `);
+
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_directives_status_project ON directives(status, project)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_directives_status_scope ON directives(status, scope, created_at_epoch DESC)');
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(35, new Date().toISOString());
+  }
+
+  addDirective(content: string, scope: 'global' | 'project', project: string | null): { id: number } {
+    const epoch = Date.now();
+    const iso = new Date(epoch).toISOString();
+
+    const inserted = this.db.prepare(`
+      INSERT INTO directives (scope, project, content, status, source, created_at, created_at_epoch, updated_at_epoch)
+      VALUES (?, ?, ?, 'active', 'manual', ?, ?, ?)
+      RETURNING id
+    `).get(scope, scope === 'global' ? null : project, content, iso, epoch, epoch) as { id: number };
+
+    return { id: inserted.id };
+  }
+
+  archiveDirective(id: number): { id: number } | null {
+    const epoch = Date.now();
+
+    const updated = this.db.prepare(`
+      UPDATE directives SET status = 'archived', updated_at_epoch = ?
+      WHERE id = ?
+      RETURNING id
+    `).get(epoch, id) as { id: number } | null;
+
+    return updated;
+  }
+
+  listActiveDirectives(projects: string[], limit: number): Directive[] {
+    const projectPlaceholders = projects.map(() => '?').join(',');
+    const projectClause = projects.length > 0
+      ? `OR project IN (${projectPlaceholders})`
+      : '';
+
+    return this.db.prepare(`
+      SELECT * FROM directives
+      WHERE status = 'active' AND (scope = 'global' ${projectClause})
+      ORDER BY created_at_epoch ASC, id ASC
+      LIMIT ?
+    `).all(...projects, limit) as Directive[];
   }
 
   private dropWorkerPidColumn(): void {

@@ -73,3 +73,15 @@ export interface LatestPromptResult {
   created_at_epoch: number;
 }
 
+export interface Directive {
+  id: number;
+  scope: string;
+  project: string | null;
+  content: string;
+  status: string;
+  source: string;
+  created_at: string;
+  created_at_epoch: number;
+  updated_at_epoch: number;
+}
+

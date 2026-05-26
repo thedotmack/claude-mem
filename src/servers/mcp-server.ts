@@ -64,7 +64,8 @@ function errorIfWorkerScriptMissing(): void {
 
 const TOOL_ENDPOINT_MAP: Record<string, string> = {
   'search': '/api/search',
-  'timeline': '/api/timeline'
+  'timeline': '/api/timeline',
+  'directive_list': '/api/directive/list'
 };
 
 async function callWorkerAPI(
@@ -515,6 +516,54 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     },
     handler: async (args: any) => {
       return await callWorkerAPIPost('/api/observations/batch', args);
+    }
+  },
+  {
+    name: 'directive_add',
+    description: "Save a STANDING DIRECTIVE (a durable user rule) that re-injects at the top of every future session. Use when the user states a lasting rule ('always…', 'never…', 'from now on…', 'stop doing…'). Params: content (required), scope ('global'|'project', default global), project (required if scope=project).",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        content: { type: 'string', description: 'The directive text (required)' },
+        scope: { type: 'string', description: "'global' (default) or 'project'" },
+        project: { type: 'string', description: 'Project name (required if scope=project)' }
+      },
+      required: ['content'],
+      additionalProperties: true
+    },
+    handler: async (args: any) => {
+      return await callWorkerAPIPost('/api/directive/add', args);
+    }
+  },
+  {
+    name: 'directive_list',
+    description: 'List active standing directives. Params: projects (comma-sep, optional).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projects: { type: 'string', description: 'Comma-separated project names (optional)' }
+      },
+      additionalProperties: true
+    },
+    handler: async (args: any) => {
+      const endpoint = TOOL_ENDPOINT_MAP['directive_list'];
+      const result = await callWorkerAPI(endpoint, args);
+      return formatJsonResult(result);
+    }
+  },
+  {
+    name: 'directive_archive',
+    description: 'Archive (deactivate) a standing directive by id. Params: id (required).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number', description: 'Directive id to archive (required)' }
+      },
+      required: ['id'],
+      additionalProperties: true
+    },
+    handler: async (args: any) => {
+      return await callWorkerAPIPost('/api/directive/archive', args);
     }
   },
   // Phase 8 — observation_* tools backed by server-beta REST core.

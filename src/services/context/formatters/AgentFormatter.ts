@@ -170,3 +170,11 @@ export function renderAgentFooter(totalDiscoveryTokens: number, totalReadTokens:
 export function renderAgentEmptyState(project: string): string {
   return `# [${project}] recent context, ${formatHeaderDateTime()}\n\nNo previous sessions found.`;
 }
+
+export function renderAgentDirectives(items: string[]): string[] {
+  return [
+    '⚡ STANDING DIRECTIVES — always apply, you committed to these:',
+    ...items.map((content, i) => `${i + 1}. ${content}`),
+    ''
+  ];
+}

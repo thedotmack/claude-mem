@@ -38,6 +38,31 @@ export class MigrationRunner {
     this.dropWorkerPidColumn();
     this.createServerOwnedTables();
     this.rebuildPendingMessagesForFinalQueueSchema();
+    this.addDirectivesTable();
+  }
+
+  private addDirectivesTable(): void {
+    const exists = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='directives'").get();
+    if (exists) return;
+
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS directives (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        scope             TEXT    NOT NULL DEFAULT 'global',
+        project           TEXT,
+        content           TEXT    NOT NULL,
+        status            TEXT    NOT NULL DEFAULT 'active',
+        source            TEXT    NOT NULL DEFAULT 'manual',
+        created_at        TEXT    NOT NULL,
+        created_at_epoch  INTEGER NOT NULL,
+        updated_at_epoch  INTEGER NOT NULL
+      )
+    `);
+
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_directives_status_project ON directives(status, project)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_directives_status_scope ON directives(status, scope, created_at_epoch DESC)');
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(35, new Date().toISOString());
   }
 
   private initializeSchema(): void {
