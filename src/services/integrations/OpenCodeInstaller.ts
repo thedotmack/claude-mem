@@ -38,8 +38,15 @@ export function getInstalledPluginPath(): string {
   return path.join(getOpenCodePluginsDirectory(), 'claude-mem.js');
 }
 
+function getOpenCodePluginEntries(config: OpenCodeConfig): unknown[] {
+  if (Array.isArray(config.plugin)) {
+    return config.plugin;
+  }
+  return config.plugin === undefined ? [] : [config.plugin];
+}
+
 export function addOpenCodePluginReference(config: OpenCodeConfig): OpenCodeConfig {
-  const existingPlugins = Array.isArray(config.plugin) ? config.plugin : [];
+  const existingPlugins = getOpenCodePluginEntries(config);
   if (existingPlugins.includes(OPENCODE_PLUGIN_CONFIG_PATH)) {
     return config;
   }
@@ -47,6 +54,15 @@ export function addOpenCodePluginReference(config: OpenCodeConfig): OpenCodeConf
   return {
     ...config,
     plugin: [...existingPlugins, OPENCODE_PLUGIN_CONFIG_PATH],
+  };
+}
+
+export function removeOpenCodePluginReference(config: OpenCodeConfig): OpenCodeConfig {
+  return {
+    ...config,
+    plugin: getOpenCodePluginEntries(config).filter(
+      (plugin) => plugin !== OPENCODE_PLUGIN_CONFIG_PATH,
+    ),
   };
 }
 
@@ -70,6 +86,28 @@ export function registerOpenCodePluginInConfig(): number {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`Failed to register OpenCode plugin in config: ${message}`);
+    return 1;
+  }
+}
+
+export function deregisterOpenCodePluginFromConfig(): number {
+  const configPath = getOpenCodeConfigPath();
+  if (!existsSync(configPath)) {
+    return 0;
+  }
+
+  try {
+    const config = JSON.parse(readFileSync(configPath, 'utf-8')) as OpenCodeConfig;
+    const updatedConfig = removeOpenCodePluginReference(config);
+
+    writeFileSync(configPath, `${JSON.stringify(updatedConfig, null, 2)}\n`, 'utf-8');
+    console.log(`  Plugin deregistered from: ${configPath}`);
+    logger.info('OPENCODE', 'Plugin deregistered from config', { path: configPath });
+
+    return 0;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Failed to deregister OpenCode plugin from config: ${message}`);
     return 1;
   }
 }
@@ -210,6 +248,10 @@ export function uninstallOpenCodePlugin(): number {
       console.error(`  Failed to remove plugin: ${message}`);
       hasErrors = true;
     }
+  }
+
+  if (deregisterOpenCodePluginFromConfig() !== 0) {
+    hasErrors = true;
   }
 
   const agentsMdPath = getOpenCodeAgentsMdPath();

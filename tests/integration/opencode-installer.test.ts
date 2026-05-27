@@ -4,7 +4,9 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import {
   addOpenCodePluginReference,
+  deregisterOpenCodePluginFromConfig,
   getOpenCodeConfigPath,
+  removeOpenCodePluginReference,
   registerOpenCodePluginInConfig,
 } from '../../src/services/integrations/OpenCodeInstaller.js';
 
@@ -46,6 +48,24 @@ describe('OpenCode installer config registration', () => {
     expect(config.plugin).toEqual(['context-mode', './plugins/claude-mem.js']);
   });
 
+  it('preserves an existing single-string plugin entry', () => {
+    const config = addOpenCodePluginReference({
+      plugin: 'context-mode',
+    });
+
+    expect(config.plugin).toEqual(['context-mode', './plugins/claude-mem.js']);
+  });
+
+  it('removes only claude-mem from plugin entries', () => {
+    const config = removeOpenCodePluginReference({
+      plugin: ['context-mode', './plugins/claude-mem.js'],
+      provider: { openai: { models: {} } },
+    });
+
+    expect(config.plugin).toEqual(['context-mode']);
+    expect(config.provider).toEqual({ openai: { models: {} } });
+  });
+
   it('creates opencode.json when missing', () => {
     const result = registerOpenCodePluginInConfig();
 
@@ -70,5 +90,18 @@ describe('OpenCode installer config registration', () => {
     const config = JSON.parse(readFileSync(getOpenCodeConfigPath(), 'utf-8'));
     expect(config.plugin).toEqual(['context-mode', './plugins/claude-mem.js']);
     expect(config.provider).toEqual({ openai: { models: {} } });
+  });
+
+  it('removes the plugin reference from opencode.json during deregistration', () => {
+    writeFileSync(getOpenCodeConfigPath(), JSON.stringify({
+      $schema: 'https://opencode.ai/config.json',
+      plugin: ['context-mode', './plugins/claude-mem.js'],
+    }), 'utf-8');
+
+    const result = deregisterOpenCodePluginFromConfig();
+
+    expect(result).toBe(0);
+    const config = JSON.parse(readFileSync(getOpenCodeConfigPath(), 'utf-8'));
+    expect(config.plugin).toEqual(['context-mode']);
   });
 });
