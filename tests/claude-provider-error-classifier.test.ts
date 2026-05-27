@@ -181,4 +181,13 @@ describe('classifyClaudeError — model identifier rejections without .status (#
     // fallback runs; no effort-hint should fire (no effort marker present).
     expect(warnSpy).not.toHaveBeenCalled();
   });
+
+  it('keeps a statused 5xx carrying invalid_request_error transient (status guard)', () => {
+    const sdkErr = Object.assign(
+      new Error('gateway error: invalid_request_error from upstream'),
+      { status: 503, error: { type: 'invalid_request_error' } },
+    );
+    const classified = classifyClaudeError(sdkErr);
+    expect(classified.kind).toBe('transient');
+  });
 });
