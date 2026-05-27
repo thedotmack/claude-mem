@@ -20,8 +20,8 @@ export function createMiddleware(
   middlewares.push((req: Request, res: Response, next: NextFunction) => {
     const staticExtensions = ['.html', '.js', '.css', '.svg', '.png', '.jpg', '.jpeg', '.webp', '.woff', '.woff2', '.ttf', '.eot'];
     const isStaticAsset = staticExtensions.some(ext => req.path.endsWith(ext));
-    const isPollingEndpoint = req.path === '/api/logs'; 
-    if (req.path.startsWith('/health') || req.path === '/' || isStaticAsset || isPollingEndpoint) {
+    const isQuietLogsEndpoint = req.path === '/api/logs' || req.path === '/api/logs/clear';
+    if (req.path.startsWith('/health') || req.path === '/' || isStaticAsset || isQuietLogsEndpoint) {
       return next();
     }
 
