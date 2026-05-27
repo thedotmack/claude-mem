@@ -273,6 +273,7 @@ describe('SettingsDefaultsManager', () => {
       expect(defaults.CLAUDE_MEM_MODEL).toBeDefined();
       expect(defaults.CLAUDE_MEM_WORKER_PORT).toBeDefined();
       expect(defaults.CLAUDE_MEM_WORKER_HOST).toBeDefined();
+      expect(defaults.CLAUDE_MEM_USE_GIT_ROOT).toBe('false');
 
       expect(defaults.CLAUDE_MEM_PROVIDER).toBeDefined();
       expect(defaults.CLAUDE_MEM_GEMINI_API_KEY).toBeDefined();
@@ -316,6 +317,7 @@ describe('SettingsDefaultsManager', () => {
       originalEnv.CLAUDE_MEM_WORKER_PORT = process.env.CLAUDE_MEM_WORKER_PORT;
       originalEnv.CLAUDE_MEM_MODEL = process.env.CLAUDE_MEM_MODEL;
       originalEnv.CLAUDE_MEM_LOG_LEVEL = process.env.CLAUDE_MEM_LOG_LEVEL;
+      originalEnv.CLAUDE_MEM_USE_GIT_ROOT = process.env.CLAUDE_MEM_USE_GIT_ROOT;
     });
 
     afterEach(() => {
@@ -333,6 +335,11 @@ describe('SettingsDefaultsManager', () => {
         delete process.env.CLAUDE_MEM_LOG_LEVEL;
       } else {
         process.env.CLAUDE_MEM_LOG_LEVEL = originalEnv.CLAUDE_MEM_LOG_LEVEL;
+      }
+      if (originalEnv.CLAUDE_MEM_USE_GIT_ROOT === undefined) {
+        delete process.env.CLAUDE_MEM_USE_GIT_ROOT;
+      } else {
+        process.env.CLAUDE_MEM_USE_GIT_ROOT = originalEnv.CLAUDE_MEM_USE_GIT_ROOT;
       }
     });
 
@@ -375,6 +382,18 @@ describe('SettingsDefaultsManager', () => {
       const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
       expect(result.CLAUDE_MEM_WORKER_PORT).toBe('88888');
+    });
+
+    it('should prioritize CLAUDE_MEM_USE_GIT_ROOT env var over file setting', () => {
+      const fileSettings = {
+        CLAUDE_MEM_USE_GIT_ROOT: 'false',
+      };
+      writeFileSync(settingsPath, JSON.stringify(fileSettings));
+      process.env.CLAUDE_MEM_USE_GIT_ROOT = 'true';
+
+      const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+      expect(result.CLAUDE_MEM_USE_GIT_ROOT).toBe('true');
     });
 
     it('should apply multiple env var overrides', () => {
