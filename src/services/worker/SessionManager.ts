@@ -261,17 +261,20 @@ export class SessionManager {
         data.foldKey ?? undefined,
       );
 
-      if (decision.fold && queue.bumpFoldCount) {
-        const { newCount } = queue.bumpFoldCount(decision.foldOntoRowId);
-        logger.debug('DEDUP', 'folded duplicate observation', undefined, {
-          rowId: decision.foldOntoRowId,
-          newCount,
-          toolName: data.tool_name,
-        });
-        return { folded: true };
+      if (decision.fold) {
+        if (queue.bumpFoldCount) {
+          const { newCount } = queue.bumpFoldCount(decision.foldOntoRowId);
+          logger.debug('DEDUP', 'folded duplicate observation', undefined, {
+            rowId: decision.foldOntoRowId,
+            newCount,
+            toolName: data.tool_name,
+          });
+          return { folded: true };
+        }
+        logger.warn('DEDUP', `fold candidate found (rowId=${decision.foldOntoRowId}) but queue engine lacks bumpFoldCount; enqueueing as new observation`);
       }
 
-      foldKey = !decision.fold ? decision.foldKey ?? null : null;
+      foldKey = decision.foldKey ?? null;
     }
 
     const foldWindowSeconds = foldStore ? dedupConfig.windowSeconds : null;
