@@ -190,4 +190,53 @@ describe('/api/logs/clear', () => {
     expect(logContent).not.toContain('line1');
     expect(logContent).not.toContain('line2');
   });
+
+  it('returns success when the log file does not exist', () => {
+    const date = new Date().toISOString().split('T')[0];
+    const logFile = join(testDir, 'logs', `claude-mem-${date}.log`);
+
+    const clearHandlers: Array<(req: any, res: any, next: () => void) => void> = [];
+    const app = {
+      get: () => {},
+      post: (path: string, ...handlers: Array<(req: any, res: any, next: () => void) => void>) => {
+        if (path === '/api/logs/clear') {
+          clearHandlers.push(...handlers);
+        }
+      },
+    };
+
+    new LogsRoutes().setupRoutes(app as any);
+
+    let statusCode = 200;
+    let responseBody: unknown;
+    const response = {
+      status: (code: number) => {
+        statusCode = code;
+        return response;
+      },
+      json: (body: unknown) => {
+        responseBody = body;
+        return response;
+      },
+    };
+
+    const request = { body: undefined, path: '/api/logs/clear' };
+    for (const handler of clearHandlers) {
+      let nextCalled = false;
+      handler(request, response, () => {
+        nextCalled = true;
+      });
+
+      if (!nextCalled) {
+        break;
+      }
+    }
+
+    expect(statusCode).toBe(200);
+    expect(responseBody).toMatchObject({
+      success: true,
+      message: 'Log file does not exist',
+      path: logFile,
+    });
+  });
 });
