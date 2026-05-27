@@ -19,6 +19,7 @@ import {
   type PostgresPool,
 } from '../../storage/postgres/pool.js';
 import { stripTags } from '../../utils/tag-stripping.js';
+import { redactSensitive, getRedactionConfig } from '../../utils/redaction.js';
 
 // processGeneratedResponse owns the full "we got XML from a provider →
 // persist + link + advance outbox" pipeline. Every side-effect runs inside
@@ -116,7 +117,9 @@ export async function processGeneratedResponse(
 
       // Defense-in-depth: even if the parser slipped a private-tagged
       // string through, scrub before persisting.
-      const scrubbed = stripTags(content);
+      const scrubbed = stripTags(
+        redactSensitive(content, getRedactionConfig()).redacted,
+      );
       if (!scrubbed.stripped || scrubbed.stripped.trim().length === 0) {
         continue;
       }
@@ -378,7 +381,9 @@ export async function processSessionSummaryResponse(
 
     const persisted: PostgresObservation[] = [];
     if (!privateContentDetected) {
-      const scrubbed = stripTags(summaryContent);
+      const scrubbed = stripTags(
+        redactSensitive(summaryContent, getRedactionConfig()).redacted,
+      );
       const scrubbedContent = scrubbed.stripped ?? '';
       if (scrubbedContent.trim().length > 0) {
         const generationKey = buildObservationGenerationKey({

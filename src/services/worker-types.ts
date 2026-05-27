@@ -49,6 +49,8 @@ export interface PendingMessage {
   agentId?: string;
   agentType?: string;
   toolUseId?: string;
+  fold_count?: number;
+  fold_window_seconds?: number;
 }
 
 export interface PendingMessageWithId extends PendingMessage {
@@ -65,6 +67,12 @@ export interface ObservationData {
   agentId?: string;
   agentType?: string;
   toolUseId?: string;
+  // Pre-computed fold key over the RAW (pre-redaction) tool input. Set by
+  // shared.ingestObservation so that S2 (auto-redaction) and S3 (dedup-fold)
+  // can coexist without normalizing distinct secret-bearing calls onto the
+  // same redacted placeholder. If absent, SessionManager hashes the
+  // post-redaction tool_input as a fallback (single-feature usage).
+  foldKey?: string | null;
 }
 
 export interface SSEEvent {

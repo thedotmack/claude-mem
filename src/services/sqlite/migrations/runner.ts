@@ -38,6 +38,8 @@ export class MigrationRunner {
     this.dropWorkerPidColumn();
     this.createServerOwnedTables();
     this.rebuildPendingMessagesForFinalQueueSchema();
+    this.addPendingMessagesFoldColumns();
+    this.addPendingMessagesFoldWindowSecondsColumn();
   }
 
   private initializeSchema(): void {
@@ -1124,5 +1126,44 @@ export class MigrationRunner {
       }
       throw new Error(`Migration 34 failed: ${String(error)}`);
     }
+  }
+
+  private addPendingMessagesFoldColumns(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(35) as SchemaVersion | undefined;
+    if (applied) return;
+
+    const cols = this.db.query('PRAGMA table_info(pending_messages)').all() as TableColumnInfo[];
+    const colNames = new Set(cols.map(c => c.name));
+
+    if (!colNames.has('fold_key')) {
+      this.db.run('ALTER TABLE pending_messages ADD COLUMN fold_key TEXT');
+      logger.debug('DB', 'Added fold_key column to pending_messages table');
+    }
+    if (!colNames.has('fold_count')) {
+      this.db.run('ALTER TABLE pending_messages ADD COLUMN fold_count INTEGER NOT NULL DEFAULT 1');
+      logger.debug('DB', 'Added fold_count column to pending_messages table');
+    }
+
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_pending_fold
+        ON pending_messages(session_db_id, fold_key, created_at_epoch)
+    `);
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(35, new Date().toISOString());
+  }
+
+  private addPendingMessagesFoldWindowSecondsColumn(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(36) as SchemaVersion | undefined;
+    if (applied) return;
+
+    const cols = this.db.query('PRAGMA table_info(pending_messages)').all() as TableColumnInfo[];
+    const hasColumn = cols.some(c => c.name === 'fold_window_seconds');
+
+    if (!hasColumn) {
+      this.db.run('ALTER TABLE pending_messages ADD COLUMN fold_window_seconds INTEGER');
+      logger.debug('DB', 'Added fold_window_seconds column to pending_messages table');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(36, new Date().toISOString());
   }
 }

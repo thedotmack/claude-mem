@@ -91,7 +91,13 @@ export class BullMqObservationQueueEngine
     this.registryKey = `${this.config.prefix}:queue_registry:sessions`;
   }
 
-  async enqueue(sessionDbId: number, contentSessionId: string, message: PendingMessage): Promise<number> {
+  async enqueue(
+    sessionDbId: number,
+    contentSessionId: string,
+    message: PendingMessage,
+    _foldKey: string | null = null,
+    _foldWindowSeconds: number | null = null,
+  ): Promise<number> {
     const runtime = this.getSessionRuntime(sessionDbId);
     await this.registerSession(sessionDbId);
     const createdAtEpoch = Date.now();

@@ -42,6 +42,8 @@
           "usage/knowledge-agents",
           "usage/claude-desktop",
           "usage/private-tags",
+          "usage/auto-redaction",
+          "usage/dedup-folding",
           "usage/export-import",
           "usage/manual-recovery",
           "usage/folder-context",

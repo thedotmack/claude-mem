@@ -5,6 +5,7 @@ import { ingestObservation } from '../shared.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
 import { stripMemoryTagsFromPrompt, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
+import { redactSensitive, getRedactionConfig } from '../../../../utils/redaction.js';
 import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { ClaudeProvider } from '../../ClaudeProvider.js';
@@ -289,7 +290,9 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     const cleanedLastAssistantMessage = last_assistant_message
-      ? stripMemoryTagsFromPrompt(String(last_assistant_message))
+      ? stripMemoryTagsFromPrompt(
+          redactSensitive(String(last_assistant_message), getRedactionConfig()).redacted,
+        )
       : last_assistant_message;
     await this.sessionManager.queueSummarize(sessionDbId, cleanedLastAssistantMessage);
 
@@ -387,7 +390,9 @@ export class SessionRoutes extends BaseRouteHandler {
       logger.debug('HTTP', `[ALIGNMENT] New Session | contentSessionId=${contentSessionId} | prompt#=${promptNumber} | memorySessionId will be captured on first SDK response`);
     }
 
-    const cleanedPrompt = stripMemoryTagsFromPrompt(prompt);
+    const cleanedPrompt = stripMemoryTagsFromPrompt(
+      redactSensitive(prompt, getRedactionConfig()).redacted,
+    );
 
     if (!cleanedPrompt || cleanedPrompt.trim() === '') {
       logger.debug('HOOK', 'Session init - prompt entirely private', {
