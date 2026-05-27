@@ -6,6 +6,7 @@ import { logger } from './logger.js';
 import { detectWorktree } from './worktree.js';
 
 const USE_GIT_ROOT_SETTING = 'CLAUDE_MEM_USE_GIT_ROOT';
+let cachedUseGitRootProjectName: boolean | undefined;
 
 function expandTilde(p: string): string {
   if (p === '~' || p.startsWith('~/')) {
@@ -20,26 +21,37 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+function isEnabledSetting(value: unknown): boolean {
+  return value === 'true' || value === true;
+}
+
 function useGitRootProjectName(): boolean {
   const envValue = process.env[USE_GIT_ROOT_SETTING];
   if (envValue !== undefined) {
-    return envValue === 'true';
+    return isEnabledSetting(envValue);
+  }
+
+  if (cachedUseGitRootProjectName !== undefined) {
+    return cachedUseGitRootProjectName;
   }
 
   try {
     const settingsPath = paths.settings();
     if (!existsSync(settingsPath)) {
-      return false;
+      cachedUseGitRootProjectName = false;
+      return cachedUseGitRootProjectName;
     }
 
     const parsed = asRecord(JSON.parse(readFileSync(settingsPath, 'utf-8')));
     if (!parsed) {
-      return false;
+      cachedUseGitRootProjectName = false;
+      return cachedUseGitRootProjectName;
     }
 
     const nestedEnv = asRecord(parsed.env);
     const settings = nestedEnv ?? parsed;
-    return settings[USE_GIT_ROOT_SETTING] === 'true';
+    cachedUseGitRootProjectName = isEnabledSetting(settings[USE_GIT_ROOT_SETTING]);
+    return cachedUseGitRootProjectName;
   } catch (error: unknown) {
     logger.debug(
       'PROJECT_NAME',
@@ -90,6 +102,27 @@ function resolveProjectPath(cwd: string): string {
   return findNearestGitRoot(expanded) ?? expanded;
 }
 
+function getProjectNameFromPath(projectPath: string, originalCwd: string): string {
+  const basename = path.basename(projectPath);
+
+  if (basename === '') {
+    const isWindows = process.platform === 'win32';
+    if (isWindows) {
+      const driveMatch = originalCwd.match(/^([A-Z]):\\/i);
+      if (driveMatch) {
+        const driveLetter = driveMatch[1].toUpperCase();
+        const projectName = `drive-${driveLetter}`;
+        logger.info('PROJECT_NAME', 'Drive root detected', { cwd: originalCwd, projectName });
+        return projectName;
+      }
+    }
+    logger.warn('PROJECT_NAME', 'Root directory detected, using fallback', { cwd: originalCwd });
+    return 'unknown-project';
+  }
+
+  return basename;
+}
+
 export function getProjectName(cwd: string | null | undefined): string {
   if (!cwd || cwd.trim() === '') {
     logger.warn('PROJECT_NAME', 'Empty cwd provided, using fallback', { cwd });
@@ -97,24 +130,7 @@ export function getProjectName(cwd: string | null | undefined): string {
   }
 
   const projectPath = resolveProjectPath(cwd);
-  const basename = path.basename(projectPath);
-
-  if (basename === '') {
-    const isWindows = process.platform === 'win32';
-    if (isWindows) {
-      const driveMatch = cwd.match(/^([A-Z]):\\/i);
-      if (driveMatch) {
-        const driveLetter = driveMatch[1].toUpperCase();
-        const projectName = `drive-${driveLetter}`;
-        logger.info('PROJECT_NAME', 'Drive root detected', { cwd, projectName });
-        return projectName;
-      }
-    }
-    logger.warn('PROJECT_NAME', 'Root directory detected, using fallback', { cwd });
-    return 'unknown-project';
-  }
-
-  return basename;
+  return getProjectNameFromPath(projectPath, cwd);
 }
 
 export interface ProjectContext {
@@ -125,13 +141,13 @@ export interface ProjectContext {
 }
 
 export function getProjectContext(cwd: string | null | undefined): ProjectContext {
-  const cwdProjectName = getProjectName(cwd);
-
-  if (!cwd) {
-    return { primary: cwdProjectName, parent: null, isWorktree: false, allProjects: [cwdProjectName] };
+  if (!cwd || cwd.trim() === '') {
+    const projectName = getProjectName(cwd);
+    return { primary: projectName, parent: null, isWorktree: false, allProjects: [projectName] };
   }
 
   const projectPath = resolveProjectPath(cwd);
+  const cwdProjectName = getProjectNameFromPath(projectPath, cwd);
   const worktreeInfo = detectWorktree(projectPath);
 
   if (worktreeInfo.isWorktree && worktreeInfo.parentProjectName) {
