@@ -205,9 +205,10 @@ if (DRY_RUN) {
 try {
   const rootDir = path.join(__dirname, '..');
   const gitignoreExcludes = getGitignoreExcludes(rootDir);
+  const DELETE = deleteFlag(); // cache once — used in every rsync block
 
   {
-    const cmdBase = `rsync -av ${deleteFlag()} --exclude=.git --exclude=bun.lock --exclude=package-lock.json --exclude=scripts/package.json --exclude=scripts/node_modules ${gitignoreExcludes} ${preserveExcludes()} ./ ~/.claude/plugins/marketplaces/thedotmack/`;
+    const cmdBase = `rsync -av ${DELETE} --exclude=.git --exclude=bun.lock --exclude=package-lock.json --exclude=scripts/package.json --exclude=scripts/node_modules ${gitignoreExcludes} ${preserveExcludes()} ./ ~/.claude/plugins/marketplaces/thedotmack/`;
     if (DRY_RUN) {
       // --dry-run: run the rsync in --dry-run mode regardless of whether
       // --force-delete is set, so the user always sees what the sync would
@@ -217,7 +218,7 @@ try {
       console.log('\x1b[36m%s\x1b[0m', 'Marketplace sync preview:');
       execSync(buildDryRunCommand(cmdBase), { stdio: 'inherit' });
     } else {
-      if (shouldShowPreview() && deleteFlag()) {
+      if (shouldShowPreview() && DELETE) {
         console.log('\x1b[36m%s\x1b[0m', 'Preview (would-delete items below). Pass --non-interactive to skip:');
         execSync(buildDryRunCommand(cmdBase), { stdio: 'inherit' });
       }
@@ -241,12 +242,12 @@ try {
 
   console.log(`Syncing to cache folder (version ${version})...`);
   {
-    const cmdBase = `rsync -av ${deleteFlag()} --exclude=.git ${pluginGitignoreExcludes} ${preserveExcludes()} plugin/ "${CACHE_VERSION_PATH}/"`;
+    const cmdBase = `rsync -av ${DELETE} --exclude=.git ${pluginGitignoreExcludes} ${preserveExcludes()} plugin/ "${CACHE_VERSION_PATH}/"`;
     if (DRY_RUN) {
       console.log('\x1b[36m%s\x1b[0m', `Cache (version ${version}) sync preview:`);
       execSync(buildDryRunCommand(cmdBase), { stdio: 'inherit' });
     } else {
-      if (shouldShowPreview() && deleteFlag()) {
+      if (shouldShowPreview() && DELETE) {
         console.log('\x1b[36m%s\x1b[0m', `Preview (cache ${version} would-delete):`);
         execSync(buildDryRunCommand(cmdBase), { stdio: 'inherit' });
       }
@@ -261,14 +262,14 @@ try {
 
   if (installedMismatch && installedMismatch.installedVersion !== version) {
     const INSTALLED_CACHE_PATH = path.join(CACHE_BASE_PATH, installedMismatch.installedVersion);
-    console.log(`Mirroring to installed-version cache (${installedMismatch.installedVersion}) for hot reload...`);
+    console.log(`${DRY_RUN ? '[dry-run] Would mirror to' : 'Mirroring to'} installed-version cache (${installedMismatch.installedVersion}) for hot reload...`);
     {
-      const cmdBase = `rsync -av ${deleteFlag()} --exclude=.git ${pluginGitignoreExcludes} ${preserveExcludes()} plugin/ "${INSTALLED_CACHE_PATH}/"`;
+      const cmdBase = `rsync -av ${DELETE} --exclude=.git ${pluginGitignoreExcludes} ${preserveExcludes()} plugin/ "${INSTALLED_CACHE_PATH}/"`;
       if (DRY_RUN) {
         console.log('\x1b[36m%s\x1b[0m', `Installed-version cache (${installedMismatch.installedVersion}) sync preview:`);
         execSync(buildDryRunCommand(cmdBase), { stdio: 'inherit' });
       } else {
-        if (shouldShowPreview() && deleteFlag()) {
+        if (shouldShowPreview() && DELETE) {
           console.log('\x1b[36m%s\x1b[0m', `Preview (installed-version cache ${installedMismatch.installedVersion} would-delete):`);
           execSync(buildDryRunCommand(cmdBase), { stdio: 'inherit' });
         }
