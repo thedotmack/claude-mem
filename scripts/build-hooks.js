@@ -578,16 +578,19 @@ async function buildHooks() {
         shell: process.platform === 'win32',
       });
       await new Promise((resolve) => {
+        let errorHandled = false;
+        installResult.on('error', (err) => {
+          errorHandled = true;
+          console.warn(`⚠️  Could not invoke npm in plugin/: ${err.message}. The build artifact is still valid, but you'll need to run \`cd plugin && npm install\` manually.`);
+          resolve();
+        });
         installResult.on('exit', (code) => {
+          if (errorHandled) { resolve(); return; }
           if (code === 0) {
             console.log('✓ plugin/node_modules populated');
           } else {
             console.warn(`⚠️  npm install in plugin/ exited with code ${code}. The build artifact is still valid, but you'll need to run \`cd plugin && npm install\` manually before the worker can resolve external dependencies (zod, better-auth, tree-sitter grammars).`);
           }
-          resolve();
-        });
-        installResult.on('error', (err) => {
-          console.warn(`⚠️  Could not invoke npm in plugin/: ${err.message}. The build artifact is still valid, but you'll need to run \`cd plugin && npm install\` manually.`);
           resolve();
         });
       });
