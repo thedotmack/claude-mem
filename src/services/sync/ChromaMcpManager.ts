@@ -105,9 +105,21 @@ export class ChromaMcpManager {
     const spawnEnvironment = this.getSpawnEnv();
     getSupervisor().assertCanSpawn('chroma mcp');
 
-    const isWindows = process.platform === 'win32';
-    const uvxSpawnCommand = isWindows ? (process.env.ComSpec || 'cmd.exe') : 'uvx';
-    const uvxSpawnArgs = isWindows ? ['/c', 'uvx', ...commandArgs] : commandArgs;
+    // Spawn uvx directly on every platform. Wrapping it inside `cmd.exe /c` on
+    // Windows is unsafe: cmd.exe interprets shell-metacharacters in its /c
+    // argument string BEFORE handing them to uvx, and Node's arg-array quoting
+    // does not survive that re-parse (per the cmd.exe parser's documented
+    // behavior of stripping the outer quote pair from /c). The chroma-mcp
+    // command emitted by buildCommandArgs() contains `--with onnxruntime>=1.20`
+    // and `--with protobuf<7`; cmd.exe parses `>=1.20` as `>` redirection to a
+    // file named `=1.20` and `<7` as `<` redirection from a file named `7`,
+    // truncating the uvx invocation. The result is an immediate exit with
+    // "The system cannot find the file specified" and every Chroma sync fails
+    // with `MCP error -32000: Connection closed` on Windows. uvx ships as
+    // uvx.exe (a real executable) on Windows installs, so Node's child_process
+    // can spawn it directly via CreateProcess without a shell.
+    const uvxSpawnCommand = 'uvx';
+    const uvxSpawnArgs = commandArgs;
 
     logger.info('CHROMA_MCP', 'Connecting to chroma-mcp via MCP stdio', {
       command: uvxSpawnCommand,
