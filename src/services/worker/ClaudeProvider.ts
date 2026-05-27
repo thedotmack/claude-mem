@@ -134,6 +134,21 @@ export function classifyClaudeError(err: unknown): ClassifiedProviderError {
     );
   }
 
+  // Some SDK call paths surface Anthropic 400 invalid_request errors as
+  // wrapped exceptions WITHOUT a `.status` field — only the canonical message
+  // text or a structured `error.type === 'invalid_request_error'` body
+  // survives the wrapping. Without this fallback, model-identifier rejections
+  // fall through to the default `transient` branch and the worker retries
+  // forever while `/health` keeps reporting `ok` (#2656). Conservative match:
+  // only the canonical phrases the Anthropic API emits for permanent 400s.
+  if (
+    errAny.error?.type === 'invalid_request_error' ||
+    /\bthe provided model identifier is invalid\b/i.test(message) ||
+    /\binvalid_request_error\b/i.test(message)
+  ) {
+    return new ClassifiedProviderError(message, { kind: 'unrecoverable', cause: err });
+  }
+
   // Server errors → transient.
   if (typeof errAny.status === 'number' && errAny.status >= 500 && errAny.status < 600) {
     return new ClassifiedProviderError(message, { kind: 'transient', cause: err });
