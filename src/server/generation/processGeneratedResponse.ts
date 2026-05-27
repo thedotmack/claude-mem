@@ -106,6 +106,19 @@ export async function processGeneratedResponse(
       };
     }
 
+    // Folder label travels on the server_session: the worker derives it from
+    // the cwd basename and sends it on session-init. The store stays a single
+    // global project; copying the folder onto each observation's metadata lets
+    // context injection and search facet by folder without isolating memory.
+    let sessionProject: string | null = null;
+    if (fresh.serverSessionId) {
+      const sessionResult = await client.query<{ project: string | null }>(
+        `SELECT metadata->>'project' AS project FROM server_sessions WHERE id = $1`,
+        [fresh.serverSessionId],
+      );
+      sessionProject = sessionResult.rows[0]?.project ?? null;
+    }
+
     const persisted: PostgresObservation[] = [];
     for (let index = 0; index < observationsToWrite.length; index++) {
       const parsedObservation = observationsToWrite[index]!;
@@ -142,6 +155,7 @@ export async function processGeneratedResponse(
           concepts: parsedObservation.concepts,
           files_read: parsedObservation.files_read,
           files_modified: parsedObservation.files_modified,
+          project: sessionProject,
           provider: input.providerLabel,
           model: input.modelId ?? null,
         },
@@ -376,6 +390,16 @@ export async function processSessionSummaryResponse(
       };
     }
 
+    // Same folder propagation as processGeneratedResponse (see note there).
+    let sessionProject: string | null = null;
+    if (fresh.serverSessionId) {
+      const sessionResult = await client.query<{ project: string | null }>(
+        `SELECT metadata->>'project' AS project FROM server_sessions WHERE id = $1`,
+        [fresh.serverSessionId],
+      );
+      sessionProject = sessionResult.rows[0]?.project ?? null;
+    }
+
     const persisted: PostgresObservation[] = [];
     if (!privateContentDetected) {
       const scrubbed = stripTags(summaryContent);
@@ -400,6 +424,7 @@ export async function processSessionSummaryResponse(
             completed: summary?.completed ?? null,
             next_steps: summary?.next_steps ?? null,
             notes: summary?.notes ?? null,
+            project: sessionProject,
             provider: input.providerLabel,
             model: input.modelId ?? null,
           },
