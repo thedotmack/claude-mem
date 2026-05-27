@@ -20,6 +20,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50`                        | Number of observations to inject      |
 | `CLAUDE_MEM_WORKER_PORT`      | `37700 + (uid % 100)`           | Worker service port (per-user default; override for fixed port) |
 | `CLAUDE_MEM_WORKER_HOST`      | `127.0.0.1`                     | Worker service host address           |
+| `CLAUDE_MEM_USE_GIT_ROOT`     | `false`                         | When `true`, derive project names from the nearest enclosing Git repository root instead of `path.basename(cwd)` |
 | `CLAUDE_MEM_DATA_DIR`         | `~/.claude-mem`                 | Data root — every other path (database, chroma, logs, settings.json, worker.pid) derives from this |
 | `CLAUDE_MEM_SKIP_TOOLS`       | `ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion` | Comma-separated tools to exclude from observations |
 
@@ -65,6 +66,12 @@ Use [LiteLLM Gateway](configuration/litellm-gateway) when you want `CLAUDE_MEM_P
 | `CLAUDE_MEM_LOG_LEVEL`        | `INFO`                          | Log verbosity (DEBUG, INFO, WARN, ERROR, SILENT) |
 | `CLAUDE_MEM_PYTHON_VERSION`   | `3.13`                          | Python version for chroma-mcp         |
 | `CLAUDE_CODE_PATH`            | _(auto-detect)_                 | Path to Claude Code CLI (for Windows) |
+
+### Git Root Project Names
+
+Set `CLAUDE_MEM_USE_GIT_ROOT=true` if you launch Claude Code from a parent folder that contains multiple independent Git repositories and then work inside those sub-repositories during the session. When enabled, claude-mem walks up from the hook `cwd` to the nearest `.git` file or directory and uses that directory basename as the project name.
+
+This only affects newly stored sessions, observations, and summaries. Existing memories keep their current project labels.
 
 ## Model Configuration
 

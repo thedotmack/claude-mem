@@ -1,5 +1,5 @@
 
-import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test';
 import { homedir } from 'os';
 import { getProjectName, getProjectContext } from '../../src/utils/project-name.js';
 
@@ -132,6 +132,109 @@ describe('getProjectContext', () => {
       expect(project).toBe('main-repo/my-worktree');
       expect(project).not.toBe('main-repo');
       expect(project).not.toBe('my-worktree');
+    });
+  });
+
+  describe('git root project naming (#2663)', () => {
+    let tmp: string;
+    let originalUseGitRoot: string | undefined;
+
+    beforeEach(async () => {
+      const { mkdtempSync } = await import('fs');
+      const { join } = await import('path');
+      const { tmpdir } = await import('os');
+
+      originalUseGitRoot = process.env.CLAUDE_MEM_USE_GIT_ROOT;
+      tmp = mkdtempSync(join(tmpdir(), 'cm-git-root-'));
+    });
+
+    afterEach(async () => {
+      const { rmSync } = await import('fs');
+
+      if (originalUseGitRoot === undefined) {
+        delete process.env.CLAUDE_MEM_USE_GIT_ROOT;
+      } else {
+        process.env.CLAUDE_MEM_USE_GIT_ROOT = originalUseGitRoot;
+      }
+
+      rmSync(tmp, { recursive: true, force: true });
+    });
+
+    it('keeps basename behavior when git root mode is false', async () => {
+      const { mkdirSync } = await import('fs');
+      const { join } = await import('path');
+      const repo = join(tmp, 'repo-a');
+      const nested = join(repo, 'src');
+
+      process.env.CLAUDE_MEM_USE_GIT_ROOT = 'false';
+      mkdirSync(join(repo, '.git'), { recursive: true });
+      mkdirSync(nested, { recursive: true });
+
+      expect(getProjectName(nested)).toBe('src');
+      expect(getProjectContext(nested).primary).toBe('src');
+    });
+
+    it('uses nearest normal repository root when git root mode is true', async () => {
+      const { mkdirSync } = await import('fs');
+      const { join } = await import('path');
+      const repo = join(tmp, 'code', 'repo-a');
+      const nested = join(repo, 'src', 'features');
+
+      process.env.CLAUDE_MEM_USE_GIT_ROOT = 'true';
+      mkdirSync(join(repo, '.git'), { recursive: true });
+      mkdirSync(nested, { recursive: true });
+
+      expect(getProjectName(nested)).toBe('repo-a');
+      expect(getProjectContext(nested).primary).toBe('repo-a');
+    });
+
+    it('falls back to cwd basename when git root mode finds no repository', async () => {
+      const { mkdirSync } = await import('fs');
+      const { join } = await import('path');
+      const parent = join(tmp, 'code');
+
+      process.env.CLAUDE_MEM_USE_GIT_ROOT = 'true';
+      mkdirSync(parent, { recursive: true });
+
+      expect(getProjectName(parent)).toBe('code');
+      expect(getProjectContext(parent).primary).toBe('code');
+    });
+
+    it('recognizes a .git file as a repository root marker', async () => {
+      const { mkdirSync, writeFileSync } = await import('fs');
+      const { join } = await import('path');
+      const repo = join(tmp, 'repo-file-git');
+      const nested = join(repo, 'src');
+
+      process.env.CLAUDE_MEM_USE_GIT_ROOT = 'true';
+      mkdirSync(nested, { recursive: true });
+      writeFileSync(join(repo, '.git'), 'gitdir: ../actual-git-dir\n');
+
+      expect(getProjectName(nested)).toBe('repo-file-git');
+      expect(getProjectContext(nested).primary).toBe('repo-file-git');
+    });
+
+    it('uses parent/worktree project context from a worktree subdirectory when git root mode is true', async () => {
+      const { mkdirSync, writeFileSync } = await import('fs');
+      const { join } = await import('path');
+      const mainRepo = join(tmp, 'main-repo');
+      const worktreeCheckout = join(tmp, 'my-worktree');
+      const worktreeNested = join(worktreeCheckout, 'packages', 'app');
+      const worktreeGitDir = join(mainRepo, '.git', 'worktrees', 'my-worktree');
+
+      process.env.CLAUDE_MEM_USE_GIT_ROOT = 'true';
+      mkdirSync(worktreeGitDir, { recursive: true });
+      mkdirSync(worktreeNested, { recursive: true });
+      writeFileSync(
+        join(worktreeCheckout, '.git'),
+        `gitdir: ${worktreeGitDir}\n`
+      );
+
+      const ctx = getProjectContext(worktreeNested);
+      expect(ctx.isWorktree).toBe(true);
+      expect(ctx.primary).toBe('main-repo/my-worktree');
+      expect(ctx.parent).toBe('main-repo');
+      expect(ctx.allProjects).toEqual(['main-repo', 'main-repo/my-worktree']);
     });
   });
 });
