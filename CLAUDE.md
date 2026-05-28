@@ -127,7 +127,7 @@ Run a daily version check across all package manifests and upgrade every depende
 
 **Sources:** [Article by @0xDepressionn](https://x.com/0xDepressionn/status/2055999112470839383) · [21-rule reference card](https://x.com/0xDepressionn/status/2057115586480513376/photo/1)
 
-Karpathy's method: 65% → 94% coding accuracy. One plain text file. 21 rules. 2-hour setup. ~$975/week saved per developer.
+Karpathy's structured approach to improving Claude coding accuracy: one plain text file, 21 rules.
 
 ### Karpathy's 4 core rules
 
@@ -148,6 +148,7 @@ Karpathy's method: 65% → 94% coding accuracy. One plain text file. 21 rules. 2
 7. Lock voice — Style + words I use / words I never use.
 
 **BEHAVIOR (8–14)** — prevent unauthorized changes
+> **Project override:** Rules 9 and 13 below are general interactive-session defaults. They are superseded by explicit autonomous directives elsewhere in this file — specifically, Daily Maintenance runs unattended without confirmation, and the global CLAUDE.md autonomy instructions take precedence.
 8. Stay in scope — Touch only what's asked. Note the rest.
 9. Ask first — Describe the change. Wait for yes.
 10. Confirm destruct — Deleting? List what's affected. Wait.
