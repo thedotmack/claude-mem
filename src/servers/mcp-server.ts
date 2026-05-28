@@ -693,26 +693,34 @@ process.on('SIGINT', cleanup);
  */
 function checkMarketplaceMarker(): void {
   try {
+    // Build config roots respecting CLAUDE_CONFIG_DIR for non-default installs.
     // Use os.homedir() so this works on Windows (HOME is unset there;
     // USERPROFILE is the Windows convention and homedir() picks it up).
     const home = homedir();
-    const marketplaceCandidates = [
-      resolve(home, '.claude', 'plugins', 'marketplaces', 'thedotmack'),
-      resolve(home, '.config', 'claude', 'plugins', 'marketplaces', 'thedotmack'),
-    ];
-    const present = marketplaceCandidates.some(p => p && existsSync(p));
-    const cacheCandidates = [
-      resolve(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem'),
-      resolve(home, '.config', 'claude', 'plugins', 'cache', 'thedotmack', 'claude-mem'),
-    ];
-    const cachePresent = cacheCandidates.some(p => p && existsSync(p));
-    const cacheRoot = cacheCandidates[0];
+    const configRoots = [
+      process.env.CLAUDE_CONFIG_DIR,
+      resolve(home, '.claude'),
+      resolve(home, '.config', 'claude'),
+    ].filter((p): p is string => Boolean(p));
+
+    const marketplaceCandidates = configRoots.map(root =>
+      resolve(root, 'plugins', 'marketplaces', 'thedotmack')
+    );
+    const present = marketplaceCandidates.some(p => existsSync(p));
+    const cacheCandidates = configRoots.map(root =>
+      resolve(root, 'plugins', 'cache', 'thedotmack', 'claude-mem')
+    );
+    const cachePresent = cacheCandidates.some(p => existsSync(p));
+    const detectedCacheRoot = cacheCandidates.find(p => existsSync(p));
 
     if (!present && cachePresent) {
+      const repairPath = detectedCacheRoot
+        ? resolve(detectedCacheRoot, '*', 'scripts', 'smart-install.js')
+        : '<claude-config>/plugins/cache/thedotmack/claude-mem/*/scripts/smart-install.js';
       logger.error(
         'SYSTEM',
-        'claude-mem MCP started but no marketplace directory was found at ~/.claude/plugins/marketplaces/thedotmack or the XDG equivalent. The IDE plugin loader needs that directory to fire claude-mem hooks (SessionStart, PostToolUse, Stop, etc.). Without it, MCP search will work but no new memories will be captured. To self-heal, run: node ~/.claude/plugins/cache/thedotmack/claude-mem/*/scripts/smart-install.js (or reinstall the plugin from the marketplace).',
-        { marketplaceCandidates, cacheRoot }
+        `claude-mem MCP started but no marketplace directory was found. The IDE plugin loader needs that directory to fire claude-mem hooks (SessionStart, PostToolUse, Stop, etc.). Without it, MCP search will work but no new memories will be captured. To self-heal, run: node ${repairPath} (or reinstall the plugin from the marketplace).`,
+        { marketplaceCandidates, detectedCacheRoot }
       );
     }
   } catch {
