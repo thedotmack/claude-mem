@@ -120,6 +120,11 @@ export function matchesRule(
 ): boolean {
   if (!rule) return true;
 
+  // When `all` is present alongside a sibling predicate (equals/in/contains/exists/regex),
+  // semantics are: all.every(subRule) && ownPredicate — the sub-rules AND the sibling predicate
+  // must both match. If there is no sibling predicate, `all` is the sole condition and returns
+  // true once every sub-rule passes. This ANDing is intentional; do not add a sibling predicate
+  // to a rule that uses `all` unless you mean to further narrow the match.
   if (Array.isArray(rule.all) && rule.all.length > 0) {
     for (const sub of rule.all) {
       if (!matchesRule(entry, sub, schema)) return false;
