@@ -100,7 +100,7 @@ import { KnowledgeAgent } from './worker/knowledge/KnowledgeAgent.js';
 
 export interface StatusOutput {
   continue: true;
-  suppressOutput: true;
+  suppressOutput?: true;
   status: 'ready' | 'error';
   message?: string;
 }
@@ -108,7 +108,7 @@ export interface StatusOutput {
 export function buildStatusOutput(status: 'ready' | 'error', message?: string): StatusOutput {
   return {
     continue: true,
-    suppressOutput: true,
+    ...(process.env.CLAUDE_MEM_CODEX_HOOK === '1' ? {} : { suppressOutput: true as const }),
     status,
     ...(message && { message })
   };

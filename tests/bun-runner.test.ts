@@ -23,3 +23,18 @@ describe('bun-runner.js findBun: DEP0190 regression guard (#1503)', () => {
     expect(source).toContain("spawnSync('which', ['bun']");
   });
 });
+
+describe('bun-runner.js Codex hook stdin fallback', () => {
+  it('feeds an empty JSON object for Codex hook invocations with missing stdin', () => {
+    expect(source).toContain('function shouldUseEmptyJsonFallback(args)');
+    expect(source).toContain("process.env.CLAUDE_MEM_CODEX_HOOK === '1'");
+    expect(source).toContain("return args[1] === 'hook' && args[2] === 'codex'");
+    expect(source).toContain("child.stdin.write('{}')");
+  });
+
+  it('keeps the empty stdin diagnostic for non-Codex invocations', () => {
+    expect(source.indexOf('shouldUseEmptyJsonFallback(args)')).toBeLessThan(
+      source.indexOf('[bun-runner] empty stdin payload received')
+    );
+  });
+});

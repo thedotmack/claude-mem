@@ -119,6 +119,14 @@ function collectStdin() {
 
 const stdinData = await collectStdin();
 
+function shouldUseEmptyJsonFallback(args) {
+  const script = String(args[0] || '').replace(/\\/g, '/').split('/').pop();
+  const isWorkerService = script === 'worker-service.cjs' || script === 'worker-service';
+  if (!isWorkerService) return false;
+  if (process.env.CLAUDE_MEM_CODEX_HOOK === '1') return true;
+  return args[1] === 'hook' && args[2] === 'codex';
+}
+
 const spawnOptions = {
   stdio: ['pipe', 'inherit', 'inherit'],
   windowsHide: true,
@@ -140,6 +148,9 @@ const child = spawn(spawnCmd, spawnArgs, spawnOptions);
 if (child.stdin) {
   if (stdinData && stdinData.length > 0) {
     child.stdin.write(stdinData);
+    child.stdin.end();
+  } else if (shouldUseEmptyJsonFallback(args)) {
+    child.stdin.write('{}');
     child.stdin.end();
   } else {
     // Issue #2188: empty/missing stdin previously masked by `|| '{}'` fallback,

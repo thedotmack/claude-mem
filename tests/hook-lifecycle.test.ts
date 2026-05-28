@@ -207,7 +207,19 @@ describe('Codex CLI Compatibility (#744)', () => {
         },
       }) as any;
 
-      expect(output).toEqual({ continue: true, suppressOutput: true });
+      expect(output).toEqual({ continue: true });
+    });
+
+    it('does not emit Claude-only suppressOutput for Codex outputs', async () => {
+      const { codexAdapter } = await import('../src/cli/adapters/codex.js');
+      const output = codexAdapter.formatOutput({
+        continue: true,
+        suppressOutput: true,
+        systemMessage: 'loaded context',
+      }) as any;
+
+      expect(output).toEqual({ continue: true, systemMessage: 'loaded context' });
+      expect(output).not.toHaveProperty('suppressOutput');
     });
   });
 
@@ -476,6 +488,8 @@ describe('hookCommand - stderr suppression', () => {
     expect(hookCommandSource).toContain("logger.error('HOOK'");
     expect(hookCommandSource).toContain("process.stderr.write = (() => true)");
     expect(hookCommandSource).toContain("process.stderr.write = originalStderrWrite");
+    expect(hookCommandSource).toContain("emitHookOutput(adapter, { continue: true, suppressOutput: true });");
+    expect(hookCommandSource).not.toContain("JSON.stringify({ continue: true, suppressOutput: true })");
     expect(hookCommandSource).not.toContain("console.error(`[claude-mem]");
     expect(hookCommandSource).not.toContain("console.error(`Hook error:");
   });

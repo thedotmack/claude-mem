@@ -78,11 +78,25 @@ describe('worker-json-status', () => {
         expect(buildStatusOutput('error', 'msg').continue).toBe(true);
       });
 
-      it('should always include suppressOutput: true', () => {
+      it('should always include suppressOutput: true outside Codex hook mode', () => {
         expect(buildStatusOutput('ready').suppressOutput).toBe(true);
         expect(buildStatusOutput('error').suppressOutput).toBe(true);
         expect(buildStatusOutput('ready', 'msg').suppressOutput).toBe(true);
         expect(buildStatusOutput('error', 'msg').suppressOutput).toBe(true);
+      });
+
+      it('should omit Claude-only suppressOutput in Codex hook mode', () => {
+        const original = process.env.CLAUDE_MEM_CODEX_HOOK;
+        process.env.CLAUDE_MEM_CODEX_HOOK = '1';
+        try {
+          expect(buildStatusOutput('ready')).toEqual({ continue: true, status: 'ready' });
+        } finally {
+          if (original === undefined) {
+            delete process.env.CLAUDE_MEM_CODEX_HOOK;
+          } else {
+            process.env.CLAUDE_MEM_CODEX_HOOK = original;
+          }
+        }
       });
     });
 

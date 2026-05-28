@@ -3,6 +3,17 @@ import { existsSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
+let emittedCodexHookOutput = false;
+
+function emitCodexSessionStart(additionalContext) {
+  const hookSpecificOutput = { hookEventName: 'SessionStart' };
+  if (typeof additionalContext === 'string' && additionalContext.length > 0) {
+    hookSpecificOutput.additionalContext = additionalContext;
+  }
+  console.log(JSON.stringify({ hookSpecificOutput }));
+  emittedCodexHookOutput = true;
+}
+
 function resolveRoot() {
   if (process.env.CLAUDE_PLUGIN_ROOT) {
     const root = process.env.CLAUDE_PLUGIN_ROOT;
@@ -17,16 +28,16 @@ function resolveRoot() {
 }
 
 const ROOT = resolveRoot();
-if (!ROOT) process.exit(0);
+if (!ROOT) {
+  if (process.env.CLAUDE_MEM_CODEX_HOOK === '1') {
+    emitCodexSessionStart();
+  }
+  process.exit(0);
+}
 
 function emitUpgradeHint(message) {
   if (process.env.CLAUDE_MEM_CODEX_HOOK === '1') {
-    console.log(JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: 'SessionStart',
-        additionalContext: message,
-      },
-    }));
+    emitCodexSessionStart(message);
   } else {
     console.error(message);
   }
@@ -65,5 +76,8 @@ try {
   }
 } catch {
   emitUpgradeHint('claude-mem: install marker unreadable - run: npx claude-mem@latest install');
+}
+if (process.env.CLAUDE_MEM_CODEX_HOOK === '1' && !emittedCodexHookOutput) {
+  emitCodexSessionStart();
 }
 process.exit(0);
