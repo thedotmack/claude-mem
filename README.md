@@ -10,8 +10,6 @@
   <br>
 </h1>
 
-**Languages:** [English](./README.md) · [中文](./docs/i18n/README.zh.md) · [Español](./docs/i18n/README.es.md) · [Français](./docs/i18n/README.fr.md) · [Português](./docs/i18n/README.pt-br.md) · [Русский](./docs/i18n/README.ru.md) · [Deutsch](./docs/i18n/README.de.md)
-
 <p align="center">
   <a href="docs/i18n/README.zh.md">🇨🇳 中文</a> •
   <a href="docs/i18n/README.zh-tw.md">🇹🇼 繁體中文</a> •
