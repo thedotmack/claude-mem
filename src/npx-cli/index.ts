@@ -26,6 +26,7 @@ ${pc.bold('Install Commands')} (no Bun required):
   ${pc.cyan('npx claude-mem install --provider claude|rapidmlx|apple|ollama|lmstudio|gemini|openrouter|litellm')}   Set memory backend
   ${pc.cyan('npx claude-mem install --provider gemini-classic|openrouter-classic')}   Use deprecated REST providers
   ${pc.cyan('npx claude-mem install --gateway-url <url>')}   Set LiteLLM gateway URL for gateway providers
+  ${pc.cyan('npx claude-mem install --gateway-token <token>')}   Set LiteLLM gateway auth token
   ${pc.cyan('npx claude-mem install --model <id>')}   Set Claude model or LiteLLM model alias
   ${pc.cyan('npx claude-mem install --no-auto-start')}   Skip worker auto-start at the end
   ${pc.cyan('npx claude-mem repair')}                Repair runtime (re-runs Bun/uv setup and bun install in plugin cache)

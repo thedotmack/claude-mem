@@ -816,7 +816,10 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
         mask: '*',
       });
       if (!p.isCancel(tokenResult)) {
-        authToken = String(tokenResult).trim();
+        const trimmedToken = String(tokenResult).trim();
+        if (trimmedToken.length > 0) {
+          authToken = trimmedToken;
+        }
       }
     }
 
