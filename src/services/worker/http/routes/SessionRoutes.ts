@@ -604,6 +604,10 @@ export class SessionRoutes extends BaseRouteHandler {
     const cleanedLastAssistantMessage = last_assistant_message
       ? stripMemoryTagsFromPrompt(String(last_assistant_message))
       : last_assistant_message;
+    if (!cleanedLastAssistantMessage?.trim()) {
+      res.json({ status: 'skipped', reason: 'empty_after_strip' });
+      return;
+    }
     this.sessionManager.queueSummarize(sessionDbId, cleanedLastAssistantMessage);
 
     // CRITICAL: Ensure SDK agent is running to consume the queue
@@ -753,6 +757,10 @@ export class SessionRoutes extends BaseRouteHandler {
     const cleanedLastAssistantMessage = last_assistant_message
       ? stripMemoryTagsFromPrompt(String(last_assistant_message))
       : last_assistant_message;
+    if (!cleanedLastAssistantMessage?.trim()) {
+      res.json({ status: 'skipped', reason: 'empty_after_strip' });
+      return;
+    }
     this.sessionManager.queueSummarize(sessionDbId, cleanedLastAssistantMessage);
 
     // Ensure SDK agent is running
