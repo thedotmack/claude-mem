@@ -172,7 +172,6 @@ describe('runOneTimeV12_4_3Cleanup', () => {
     const dbPath = path.join(tmpDataDir, 'claude-mem.db');
     seedDatabase(dbPath, { observerSessions: 2, stuckCount: 10 });
 
-    const realStatfsSync = fs.statfsSync;
     const statfsSpy = spyOn(fs, 'statfsSync').mockImplementation(() => ({
       type: 0,
       bsize: 0, // ← the bug: should be 4096 on APFS
@@ -181,7 +180,7 @@ describe('runOneTimeV12_4_3Cleanup', () => {
       bavail: 977028249,
       files: 0,
       ffree: 0,
-    }) as unknown as ReturnType<typeof realStatfsSync>);
+    }) as unknown as ReturnType<typeof fs.statfsSync>);
 
     try {
       runOneTimeV12_4_3Cleanup(tmpDataDir);
@@ -196,6 +195,19 @@ describe('runOneTimeV12_4_3Cleanup', () => {
     expect(payload.counts.stuckPendingMessages).toBe(10);
     expect(payload.backupPath).toBeTruthy();
     expect(existsSync(payload.backupPath)).toBe(true);
+
+    // Guard against the spy silently failing to intercept the named ESM import
+    // inside CleanupV12_4_3.ts. If the production code is still calling the
+    // real statfsSync (which returns ~1 TB free on this machine), the cleanup
+    // still completes and every assertion above passes vacuously. The WARN
+    // log line is only emitted on the defensive branch, so asserting on it
+    // disambiguates "spy worked, defensive branch fired" from "spy silently
+    // bypassed, normal branch fired".
+    expect(logger.warn).toHaveBeenCalledWith(
+      'SYSTEM',
+      expect.stringContaining('non-credible'),
+      expect.objectContaining({ bsize: 0 }),
+    );
   });
 
   it('honors CLAUDE_MEM_SKIP_CLEANUP_V12_4_3=1 by exiting without writing the marker', () => {
