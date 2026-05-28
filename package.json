@@ -47,13 +47,11 @@
     "plugin/.claude-plugin",
     "plugin/.codex-plugin",
     "plugin/.mcp.json",
-    "plugin/CLAUDE.md",
     "plugin/package.json",
     "plugin/hooks",
     "plugin/modes",
     "plugin/scripts/*.js",
     "plugin/scripts/*.cjs",
-    "plugin/scripts/CLAUDE.md",
     "plugin/skills",
     "plugin/ui",
     "openclaw"

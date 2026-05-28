@@ -21,8 +21,23 @@ export abstract class BaseRouteHandler {
     };
   }
 
+  /**
+   * Coerce an Express route/query param to a single string.
+   *
+   * Express 5 types params and query values as `string | string[]` (repeated
+   * keys produce an array). This returns the first element of an array, the
+   * string as-is, or '' when the value is absent — giving callers a plain
+   * `string` to work with.
+   */
+  protected toStringParam(value: string | string[] | undefined): string {
+    if (Array.isArray(value)) {
+      return value[0] ?? '';
+    }
+    return value ?? '';
+  }
+
   protected parseIntParam(req: Request, res: Response, paramName: string): number | null {
-    const value = parseInt(req.params[paramName], 10);
+    const value = parseInt(this.toStringParam(req.params[paramName]), 10);
     if (isNaN(value)) {
       this.badRequest(res, `Invalid ${paramName}`);
       return null;

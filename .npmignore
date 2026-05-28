@@ -6,6 +6,13 @@ datasets/
 private/
 antipattern-czar/
 
+# Maintainer dev-instruction files — never ship in the npm tarball (#2537).
+# Anchored paths so plugin-functional mode templates (e.g. plugin/modes/law-study-CLAUDE.md)
+# are NOT affected.
+/CLAUDE.md
+/plugin/CLAUDE.md
+/plugin/scripts/CLAUDE.md
+
 plugin/node_modules/
 plugin/scripts/claude-mem
 plugin/bun.lock

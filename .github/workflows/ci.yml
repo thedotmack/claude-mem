@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    name: typecheck · build · test · bundle-size
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Bun (worker runtime + test runner)
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # `npm run build` runs scripts/build-hooks.js, which enforces the worker
+      # bundle-size guardrail (WORKER_SERVICE_MAX_BYTES, see #2584) and the MCP
+      # server budget. A bundle that grows past threshold fails here → fails CI.
+      - name: Build (includes bundle-size guardrails)
+        run: npm run build
+
+      - name: Test
+        run: bun test

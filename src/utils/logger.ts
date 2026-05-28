@@ -25,6 +25,7 @@ export type Component =
   | 'DEDUP'
   | 'ENV'
   | 'FOLDER_INDEX'
+  | 'GIT'
   | 'HOOK'
   | 'HTTP'
   | 'IMPORT'

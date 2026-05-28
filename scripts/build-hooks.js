@@ -148,7 +148,18 @@ async function buildHooks() {
         'cohere-ai',
         'ollama',
         '@chroma-core/default-embed',
-        'onnxruntime-node'
+        'onnxruntime-node',
+        // better-auth (~3.7MB) is only reachable through BetterAuthRoutes' request-time
+        // dynamic import('better-auth/node') / import('./auth.js'). esbuild otherwise
+        // inlines that dynamic-import target into the worker bundle, dragging in the full
+        // better-auth library (kysely, oauth, nanoid, …) even though the worker never
+        // exercises it (the dep isn't in the worker's runtime plugin/package.json deps,
+        // and the route handler already wraps the import in try/catch → graceful 500).
+        // Keeping it external strips the dead weight from worker-service.cjs. See #2584.
+        'better-auth',
+        'better-auth/node',
+        'better-auth/plugins',
+        '@better-auth/api-key',
       ],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
@@ -173,6 +184,20 @@ async function buildHooks() {
     fs.chmodSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`, 0o755);
     const workerStats = fs.statSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`);
     console.log(`✓ worker-service built (${(workerStats.size / 1024).toFixed(2)} KB)`);
+
+    // Bundle-size guardrail for the worker. After externalizing the dead better-auth
+    // dependency (#2584) the worker bundle is ~2.29 MB. The threshold below leaves
+    // ~25% headroom so normal growth is fine, but a regression that re-bundles a
+    // heavy server-only dependency (e.g. better-auth, kysely, a Postgres driver)
+    // into the worker artifact will blow past it and fail the build/CI.
+    const WORKER_SERVICE_MAX_BYTES = 2900 * 1024;
+    if (workerStats.size > WORKER_SERVICE_MAX_BYTES) {
+      throw new Error(
+        `worker-service.cjs is ${(workerStats.size / 1024).toFixed(2)} KB, exceeding the ${(WORKER_SERVICE_MAX_BYTES / 1024).toFixed(0)} KB budget. ` +
+        `This usually means a heavy, server-only dependency leaked into the worker bundle — most likely a transitive (or dynamic) import dragged something like better-auth, kysely, or a database driver into worker-service.ts. ` +
+        `Such deps must be marked 'external' in the worker build's external array (see #2584 for the better-auth case) or gated behind the server-beta runtime so the worker never bundles them.`
+      );
+    }
 
     console.log(`\n🔧 Building server beta service...`);
     await build({
