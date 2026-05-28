@@ -536,7 +536,7 @@ export class OpenRouterProvider {
 
     const apiKey = settings.CLAUDE_MEM_OPENROUTER_API_KEY || getCredential('OPENROUTER_API_KEY') || '';
     const model = settings.CLAUDE_MEM_OPENROUTER_MODEL || 'xiaomi/mimo-v2-flash:free';
-    const baseUrl = settings.CLAUDE_MEM_OPENROUTER_BASE_URL || process.env.CLAUDE_MEM_OPENROUTER_BASE_URL || DEFAULT_OPENROUTER_BASE_URL;
+    const baseUrl = settings.CLAUDE_MEM_OPENROUTER_BASE_URL || DEFAULT_OPENROUTER_BASE_URL;
     const siteUrl = settings.CLAUDE_MEM_OPENROUTER_SITE_URL || '';
     const appName = settings.CLAUDE_MEM_OPENROUTER_APP_NAME || 'claude-mem';
 

@@ -310,11 +310,16 @@ export class SettingsRoutes extends BaseRouteHandler {
     }
 
     if (settings.CLAUDE_MEM_OPENROUTER_BASE_URL) {
+      let parsedBaseUrl: URL;
       try {
-        new URL(settings.CLAUDE_MEM_OPENROUTER_BASE_URL);
+        parsedBaseUrl = new URL(settings.CLAUDE_MEM_OPENROUTER_BASE_URL);
       } catch (error) {
         logger.debug('SETTINGS', 'Invalid URL format', { url: settings.CLAUDE_MEM_OPENROUTER_BASE_URL, error: error instanceof Error ? error.message : String(error) });
         return { valid: false, error: 'CLAUDE_MEM_OPENROUTER_BASE_URL must be a valid URL' };
+      }
+      const isLocalhost = parsedBaseUrl.hostname === 'localhost' || parsedBaseUrl.hostname === '127.0.0.1' || parsedBaseUrl.hostname === '::1';
+      if (!isLocalhost && parsedBaseUrl.protocol !== 'https:') {
+        return { valid: false, error: 'CLAUDE_MEM_OPENROUTER_BASE_URL must use HTTPS for non-localhost hosts to protect your API key' };
       }
     }
 
