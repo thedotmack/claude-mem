@@ -196,6 +196,16 @@ describe('Codex CLI Compatibility (#744)', () => {
       });
     });
 
+    it('does not emit suppressOutput because Codex rejects it for PostToolUse', async () => {
+      const { codexAdapter } = await import('../src/cli/adapters/codex.js');
+      const output = codexAdapter.formatOutput({
+        continue: true,
+        suppressOutput: true,
+      }) as any;
+
+      expect(output).toEqual({ continue: true });
+    });
+
     it('does not emit hookSpecificOutput for Stop outputs', async () => {
       const { codexAdapter } = await import('../src/cli/adapters/codex.js');
       const output = codexAdapter.formatOutput({
@@ -207,7 +217,7 @@ describe('Codex CLI Compatibility (#744)', () => {
         },
       }) as any;
 
-      expect(output).toEqual({ continue: true, suppressOutput: true });
+      expect(output).toEqual({ continue: true });
     });
   });
 

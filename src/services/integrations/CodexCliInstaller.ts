@@ -173,6 +173,57 @@ export function setTomlFeatureEnabled(content: string, featureName: string, enab
   return setTomlBooleanInTable(content, '[features]', featureName, enabled);
 }
 
+function tomlHeaderName(line: string): string | null {
+  const match = line.match(/^\s*\[([^\[\]]+)]\s*$/);
+  return match ? match[1].trim() : null;
+}
+
+function isMcpSearchHeaderName(name: string): boolean {
+  return name === 'mcp_servers.mcp-search'
+    || name === 'mcp_servers."mcp-search"'
+    || name === "mcp_servers.'mcp-search'";
+}
+
+function isMcpSearchChildHeaderName(name: string): boolean {
+  return name.startsWith('mcp_servers.mcp-search.')
+    || name.startsWith('mcp_servers."mcp-search".')
+    || name.startsWith("mcp_servers.'mcp-search'.");
+}
+
+function isClaudeMemMcpSearchBlock(lines: string[]): boolean {
+  const block = lines.join('\n');
+  return block.includes('claude-mem') || block.includes('mcp-server.cjs');
+}
+
+export function removeLegacyCodexMcpSearchConfig(content: string): string {
+  const lines = content.split('\n');
+  const nextLines: string[] = [];
+
+  for (let index = 0; index < lines.length;) {
+    const header = tomlHeaderName(lines[index]);
+    if (!header || !isMcpSearchHeaderName(header)) {
+      nextLines.push(lines[index]);
+      index += 1;
+      continue;
+    }
+
+    let end = index + 1;
+    while (end < lines.length) {
+      const nextHeader = tomlHeaderName(lines[end]);
+      if (nextHeader && !isMcpSearchChildHeaderName(nextHeader)) break;
+      end += 1;
+    }
+
+    const block = lines.slice(index, end);
+    if (!isClaudeMemMcpSearchBlock(block)) {
+      nextLines.push(...block);
+    }
+    index = end;
+  }
+
+  return nextLines.join('\n');
+}
+
 function writeCodexPluginConfig(enabled: boolean): boolean {
   if (!enabled && !existsSync(CODEX_CONFIG_PATH)) return false;
   mkdirSync(CODEX_DIR, { recursive: true });
@@ -186,6 +237,7 @@ function writeCodexPluginConfig(enabled: boolean): boolean {
     next = setTomlPluginEnabled(next, legacyPluginId, false);
   }
   next = setTomlPluginEnabled(next, CODEX_PLUGIN_ID, enabled);
+  next = removeLegacyCodexMcpSearchConfig(next);
 
   if (next === current) return false;
   writeFileSync(CODEX_CONFIG_PATH, next);

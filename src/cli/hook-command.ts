@@ -71,6 +71,13 @@ async function executeHookPipeline(
   return exitCode;
 }
 
+function printFormattedHookOutput(
+  adapter: ReturnType<typeof getPlatformAdapter>,
+  result: { continue: true; suppressOutput: true },
+): void {
+  console.log(JSON.stringify(adapter.formatOutput(result)));
+}
+
 export async function hookCommand(platform: string, event: string, options: HookCommandOptions = {}): Promise<number> {
   const originalStderrWrite = process.stderr.write.bind(process.stderr);
   process.stderr.write = (() => true) as typeof process.stderr.write;
@@ -83,7 +90,7 @@ export async function hookCommand(platform: string, event: string, options: Hook
   } catch (error) {
     if (error instanceof AdapterRejectedInput) {
       logger.warn('HOOK', `Adapter rejected input (${error.reason}), skipping hook`);
-      console.log(JSON.stringify({ continue: true, suppressOutput: true }));
+      printFormattedHookOutput(adapter, { continue: true, suppressOutput: true });
       if (!options.skipExit) {
         process.exit(HOOK_EXIT_CODES.SUCCESS);
       }
@@ -91,7 +98,7 @@ export async function hookCommand(platform: string, event: string, options: Hook
     }
     if (isNonBlockingHookInputError(error)) {
       logger.warn('HOOK', `Hook input unavailable, skipping hook: ${error instanceof Error ? error.message : error}`);
-      console.log(JSON.stringify({ continue: true, suppressOutput: true }));
+      printFormattedHookOutput(adapter, { continue: true, suppressOutput: true });
       if (!options.skipExit) {
         process.exit(HOOK_EXIT_CODES.SUCCESS);
       }
