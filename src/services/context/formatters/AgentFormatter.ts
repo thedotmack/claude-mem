@@ -8,6 +8,7 @@ import type {
 } from '../types.js';
 import { ModeManager } from '../../domain/ModeManager.js';
 import { formatObservationTokenDisplay } from '../TokenCalculator.js';
+import { buildToolSearchSelectArg } from '../../../shared/mcp-constants.js';
 
 function formatHeaderDateTime(): string {
   const now = new Date();
@@ -37,7 +38,7 @@ export function renderAgentLegend(): string[] {
     `Format: ID TIME TYPE TITLE`,
     `Fetch details: get_observations([IDs]) | Search: mem-search skill`,
     '',
-    `mem-search: load schemas with ToolSearch select:mcp__mcp-search__search,mcp__mcp-search__timeline,mcp__mcp-search__get_observations first. Then search→timeline→get_observations([ids]) batched. Never fetch full obs without filtering (10x token waste).`,
+    `mem-search: load schemas with ToolSearch select:${buildToolSearchSelectArg()} first. Then search→timeline→get_observations([ids]) batched. Never fetch full obs without filtering (10x token waste).`,
     `Orchestrate: for multi-step work, invoke the /make-plan skill (don't draft the plan inline) — it writes a phased plan file to plans/inbox/. Tell the user the file path, let them review, then /do.`,
     `Subagents: fan out independent work in parallel (Task tool, run_in_background:true). Orchestrator synthesizes/decides; subagents return evidence with sources + file:line citations.`,
     ''
