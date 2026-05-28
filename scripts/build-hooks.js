@@ -121,7 +121,7 @@ async function buildHooks() {
     console.log('✓ plugin/package.json generated');
 
     console.log('\n📦 Installing plugin dependencies...');
-    execSync('npm install --production', { cwd: 'plugin', stdio: 'inherit' });
+    execSync('npm install --omit=dev', { cwd: 'plugin', stdio: 'inherit' });
     console.log('✓ Plugin dependencies installed');
     
     console.log('\n📋 Building React viewer...');
