@@ -6,13 +6,11 @@ import {
   IndexInfo,
   TableNameRow,
   SchemaVersion,
-  SdkSessionRecord,
   ObservationRecord,
   SessionSummaryRecord,
   UserPromptRecord,
   LatestPromptResult
 } from '../../types/database.js';
-import type { PendingMessageStore } from './PendingMessageStore.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from './types.js';
 import { computeObservationContentHash } from './observations/store.js';
 import { parseFileList } from './observations/files.js';
@@ -1992,7 +1990,7 @@ export class SessionStore {
       notes: string | null;
     } | null,
     messageId: number,
-    _pendingStore: PendingMessageStore,
+    _pendingStore: unknown,
     promptNumber?: number,
     discoveryTokens: number = 0,
     overrideTimestampEpoch?: number,

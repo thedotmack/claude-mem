@@ -10,7 +10,6 @@ import {
   updateMemorySessionId,
 } from '../../src/services/sqlite/Sessions.js';
 import { storeObservations } from '../../src/services/sqlite/transactions.js';
-import { PendingMessageStore } from '../../src/services/sqlite/PendingMessageStore.js';
 import type { ObservationInput } from '../../src/services/sqlite/observations/types.js';
 import type { Database } from 'bun:sqlite';
 
@@ -145,14 +144,6 @@ describe('TRIAGE-03: Data Integrity', () => {
 
       expect(row.project).toBeTruthy();
       expect(row.project.length).toBeGreaterThan(0);
-    });
-  });
-
-  describe('hasAnyPendingWork', () => {
-
-    it('hasAnyPendingWork returns false when no pending or processing messages exist', () => {
-      const pendingStore = new PendingMessageStore(db);
-      expect(pendingStore.hasAnyPendingWork()).toBe(false);
     });
   });
 });

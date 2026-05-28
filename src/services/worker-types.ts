@@ -1,6 +1,5 @@
 
 import type { Response } from 'express';
-import type { RestartGuard } from './worker/RestartGuard.js';
 
 export interface ConversationMessage {
   role: 'user' | 'assistant';
@@ -24,10 +23,9 @@ export interface ActiveSession {
   earliestPendingTimestamp: number | null;  
   claimedMessageIds: number[];
   conversationHistory: ConversationMessage[];  
-  currentProvider: 'claude' | 'gemini' | 'openrouter' | null;  
-  consecutiveRestarts: number;  
-  restartGuard?: RestartGuard;
-  forceInit?: boolean;  
+  currentProvider: 'claude' | 'gemini' | 'openrouter' | null;
+  consecutiveRestarts: number;
+  forceInit?: boolean;
   idleTimedOut?: boolean;  
   lastGeneratorActivity: number;
   modelOverride?: string;

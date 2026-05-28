@@ -106,8 +106,7 @@ export class SessionRoutes extends BaseRouteHandler {
     const agent = provider === 'openrouter' ? this.openRouterAgent : (provider === 'gemini' ? this.geminiAgent : this.sdkAgent);
     const agentName = provider === 'openrouter' ? 'OpenRouter' : (provider === 'gemini' ? 'Gemini' : 'Claude SDK');
 
-    const pendingStore = this.sessionManager.getPendingMessageStore();
-    const actualQueueDepth = await pendingStore.getPendingCount(session.sessionDbId);
+    const actualQueueDepth = this.sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId);
 
     logger.info('SESSION', `Generator auto-starting (${source}) using ${agentName}`, {
       sessionId: session.sessionDbId,
@@ -130,7 +129,7 @@ export class SessionRoutes extends BaseRouteHandler {
         const errorMsg = error instanceof Error ? error.message : String(error);
 
         if (errorMsg.includes('code 143') || errorMsg.includes('signal SIGTERM')) {
-          logger.warn('SESSION', 'Generator killed by external signal — aborting session to prevent respawn', {
+          logger.warn('SESSION', 'Generator killed by external signal', {
             sessionId: session.sessionDbId,
             provider,
             error: errorMsg
@@ -139,26 +138,14 @@ export class SessionRoutes extends BaseRouteHandler {
           return;
         }
 
+        // No retry: the generator failed, the in-RAM batch is dropped, and the
+        // transcript is the recovery path. The next observation ingest will
+        // start a fresh generator via ensureGeneratorRunning.
         logger.error('SESSION', `Generator failed`, {
           sessionId: session.sessionDbId,
           provider: provider,
           error: errorMsg
         }, error);
-
-        try {
-          const reset = await this.sessionManager.resetProcessingToPending(session.sessionDbId);
-          if (reset > 0) {
-            logger.warn('SESSION', `Reset processing messages after generator error`, {
-              sessionId: session.sessionDbId,
-              reset
-            });
-          }
-        } catch (dbError) {
-          const normalizedDbError = dbError instanceof Error ? dbError : new Error(String(dbError));
-          logger.error('HTTP', 'Failed to reset processing messages after generator error', {
-            sessionId: session.sessionDbId
-          }, normalizedDbError);
-        }
       })
       .finally(async () => {
         const reason = session.abortReason ?? null;
@@ -166,12 +153,6 @@ export class SessionRoutes extends BaseRouteHandler {
         await handleGeneratorExit(session, reason, {
           sessionManager: this.sessionManager,
           completionHandler: this.completionHandler,
-          restartGenerator: (s, source) => {
-            void (async () => {
-              await this.applyTierRouting(s);
-              await this.startGeneratorWithProvider(s, this.getSelectedProvider(), source);
-            })();
-          },
         });
       });
   }
@@ -316,8 +297,7 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
-    const pendingStore = this.sessionManager.getPendingMessageStore();
-    const queueLength = await pendingStore.getPendingCount(sessionDbId);
+    const queueLength = this.sessionManager.getMessageBuffer().getPendingCount(sessionDbId);
 
     res.json({
       status: 'active',
@@ -488,8 +468,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
     session.modelOverride = undefined;
 
-    const pendingStore = this.sessionManager.getPendingMessageStore();
-    const pending = await pendingStore.peekPendingTypes(session.sessionDbId);
+    const pending = this.sessionManager.getMessageBuffer().peekTypes(session.sessionDbId);
 
     if (pending.length === 0) {
       session.modelOverride = undefined;

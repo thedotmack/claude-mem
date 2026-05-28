@@ -110,7 +110,6 @@ export async function processAgentResponse(
 
   await sessionManager.confirmClaimedMessages(session.sessionDbId);
   session.earliestPendingTimestamp = null;
-  session.restartGuard?.recordSuccess();
   worker?.broadcastProcessingStatus?.();
 
   void notifyTelegram({
