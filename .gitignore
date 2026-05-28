@@ -49,3 +49,4 @@ logs/run_evaluation/
 .docker-blowout-data/
 .scratch/
 docker/install-test/
+reports/*.pdf
