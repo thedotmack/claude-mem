@@ -384,8 +384,10 @@ export class SessionRoutes extends BaseRouteHandler {
 
     const currentCount = store.getPromptNumberFromUserPrompts(contentSessionId);
     const existingPrompt = promptId ? store.getUserPromptBySourceEventId(contentSessionId, promptId) : null;
-    if (existingPrompt) {
-      logger.debug('HTTP', 'session-init: duplicate prompt id ignored', {
+    const sessionIsLive = this.sessionManager.getSession(sessionDbId) !== undefined;
+    if (existingPrompt && sessionIsLive) {
+      // Prompt was already saved AND the session/generator is live — safe to short-circuit.
+      logger.debug('HTTP', 'session-init: duplicate prompt id ignored (session live)', {
         contentSessionId,
         promptId,
         promptNumber: existingPrompt.prompt_number,
@@ -395,14 +397,17 @@ export class SessionRoutes extends BaseRouteHandler {
         promptNumber: existingPrompt.prompt_number,
         skipped: true,
         reason: 'duplicate_prompt',
-        contextInjected: this.sessionManager.getSession(sessionDbId) !== undefined,
+        contextInjected: true,
         status: 'duplicate'
       });
       return;
     }
 
+    // If existingPrompt exists but session is NOT live (worker restarted between saveUserPrompt and
+    // initializeSession/ensureGeneratorRunning), fall through so we re-initialize the session and
+    // generator using the already-stored prompt number.
     const requestPromptNumber = typeof req.body.promptNumber === 'number' ? req.body.promptNumber : undefined;
-    const promptNumber = requestPromptNumber ?? (currentCount + 1);
+    const promptNumber = existingPrompt?.prompt_number ?? requestPromptNumber ?? (currentCount + 1);
 
     const memorySessionId = dbSession?.memory_session_id || null;
     if (promptNumber > 1) {

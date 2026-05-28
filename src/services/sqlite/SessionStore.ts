@@ -1749,10 +1749,18 @@ export class SessionStore {
     }
 
     const existingByNumber = this.db.prepare(`
-      SELECT id FROM user_prompts
+      SELECT id, source_event_id FROM user_prompts
       WHERE content_session_id = ? AND prompt_number = ?
-    `).get(contentSessionId, promptNumber) as { id: number } | undefined;
-    if (existingByNumber) return existingByNumber.id;
+    `).get(contentSessionId, promptNumber) as { id: number; source_event_id: string | null } | undefined;
+    if (existingByNumber) {
+      if (normalizedSourceEventId && !existingByNumber.source_event_id) {
+        this.db.prepare(`
+          UPDATE user_prompts SET source_event_id = ?
+          WHERE id = ? AND source_event_id IS NULL
+        `).run(normalizedSourceEventId, existingByNumber.id);
+      }
+      return existingByNumber.id;
+    }
 
     const now = new Date();
     const nowEpoch = now.getTime();
@@ -2705,11 +2713,17 @@ export class SessionStore {
     }
 
     const existing = this.db.prepare(`
-      SELECT id FROM user_prompts
+      SELECT id, source_event_id FROM user_prompts
       WHERE content_session_id = ? AND prompt_number = ?
-    `).get(prompt.content_session_id, prompt.prompt_number) as { id: number } | undefined;
+    `).get(prompt.content_session_id, prompt.prompt_number) as { id: number; source_event_id: string | null } | undefined;
 
     if (existing) {
+      if (sourceEventId && !existing.source_event_id) {
+        this.db.prepare(`
+          UPDATE user_prompts SET source_event_id = ?
+          WHERE id = ? AND source_event_id IS NULL
+        `).run(sourceEventId, existing.id);
+      }
       return { imported: false, id: existing.id };
     }
 
