@@ -17,16 +17,32 @@ function resolveRoot() {
 }
 
 const ROOT = resolveRoot();
-if (!ROOT) process.exit(0);
+
+let emittedCodexHookOutput = false;
+
+function emitCodexSessionStart(additionalContext) {
+  const output = {
+    hookSpecificOutput: {
+      hookEventName: 'SessionStart',
+    },
+  };
+  if (additionalContext) {
+    output.hookSpecificOutput.additionalContext = additionalContext;
+  }
+  console.log(JSON.stringify(output));
+  emittedCodexHookOutput = true;
+}
+
+if (!ROOT) {
+  if (process.env.CLAUDE_MEM_CODEX_HOOK === '1') {
+    emitCodexSessionStart();
+  }
+  process.exit(0);
+}
 
 function emitUpgradeHint(message) {
   if (process.env.CLAUDE_MEM_CODEX_HOOK === '1') {
-    console.log(JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: 'SessionStart',
-        additionalContext: message,
-      },
-    }));
+    emitCodexSessionStart(message);
   } else {
     console.error(message);
   }
@@ -65,5 +81,8 @@ try {
   }
 } catch {
   emitUpgradeHint('claude-mem: install marker unreadable - run: npx claude-mem@latest install');
+}
+if (process.env.CLAUDE_MEM_CODEX_HOOK === '1' && !emittedCodexHookOutput) {
+  emitCodexSessionStart();
 }
 process.exit(0);

@@ -16,6 +16,13 @@ function runVersionCheck(root: string) {
   });
 }
 
+function runCodexVersionCheck(root: string) {
+  return spawnSync('node', [VERSION_CHECK_SCRIPT], {
+    encoding: 'utf-8',
+    env: { ...process.env, CLAUDE_PLUGIN_ROOT: root, CLAUDE_MEM_CODEX_HOOK: '1' },
+  });
+}
+
 describe('plugin/scripts/version-check.js install marker compatibility', () => {
   let tempDir: string;
 
@@ -61,5 +68,36 @@ describe('plugin/scripts/version-check.js install marker compatibility', () => {
     expect(result.stderr).toContain(
       'claude-mem: upgraded to v12.4.4 - run: npx claude-mem@latest install',
     );
+  });
+
+  it('emits valid SessionStart JSON for a matching marker in Codex hook mode', () => {
+    writeFileSync(join(tempDir, '.install-version'), '12.4.4\n');
+
+    const result = runCodexVersionCheck(tempDir);
+    const output = JSON.parse(result.stdout);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(output).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'SessionStart',
+      },
+    });
+  });
+
+  it('emits Codex upgrade hints as SessionStart additionalContext', () => {
+    writeFileSync(join(tempDir, '.install-version'), '12.4.3\n');
+
+    const result = runCodexVersionCheck(tempDir);
+    const output = JSON.parse(result.stdout);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(output).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'SessionStart',
+        additionalContext: 'claude-mem: upgraded to v12.4.4 - run: npx claude-mem@latest install',
+      },
+    });
   });
 });
