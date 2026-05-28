@@ -87,9 +87,47 @@ describe('SessionStore.*ByIds — orderBy: "relevance" preserves caller ID order
       inserted.push(result.observationIds[0]);
     }
 
-    const callerOrder = [...inserted].reverse(); // [oldId... newer... oldest]
+    const callerOrder = [...inserted].reverse(); // [newest_id, ..., oldest_id]
     // Default order is date_desc -> newest first regardless of input order.
     const results = store.getObservationsByIds(callerOrder);
     expect(results.map(r => r.id)).toEqual([...inserted].reverse());
+  });
+
+  it('getObservationsByIds with limit < ids.length returns only limit rows in caller ID order', () => {
+    const sdkId = store.createSDKSession('content-limit', 'p', 'prompt');
+    store.updateMemorySessionId(sdkId, 'session-limit');
+
+    const baseTs = 1_700_000_000_000;
+    const inserted: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      const result = store.storeObservations(
+        'session-limit',
+        'p',
+        [{
+          type: 'test',
+          title: `obs-limit-${i}`,
+          subtitle: null,
+          facts: [`fact ${i}`],
+          narrative: null,
+          concepts: [],
+          files_read: [],
+          files_modified: [],
+        }],
+        null,
+        i,
+        0,
+        baseTs + i * 1000,
+      );
+      inserted.push(result.observationIds[0]);
+    }
+
+    // Request with limit=3 — must return the first 3 IDs from callerOrder,
+    // not an arbitrary 3 rows that happened to survive a SQL LIMIT on an
+    // unordered set.
+    const callerOrder = [...inserted].reverse(); // [newest_id, ..., oldest_id]
+    const results = store.getObservationsByIds(callerOrder, { orderBy: 'relevance', limit: 3 });
+
+    expect(results).toHaveLength(3);
+    expect(results.map(r => r.id)).toEqual(callerOrder.slice(0, 3));
   });
 });
