@@ -113,10 +113,38 @@ function executeCleanup(dbPath: string, effectiveDataDir: string, markerPath: st
   let backupPath: string | null = null;
   try {
     const fs = statfsSync(effectiveDataDir);
-    const free = Number(fs.bavail) * Number(fs.bsize);
-    if (free < required) {
-      logger.error('SYSTEM', 'Insufficient disk for v12.4.3 backup; skipping cleanup (will retry on next startup)', { dbSize, free, required });
-      return;
+    const bsize = Number(fs.bsize);
+    const bavail = Number(fs.bavail);
+
+    // Bun <= 1.3.14 on darwin-x64 returns a misaligned statfs struct
+    // (bsize = 0, fields shifted by one slot). Tracking issue:
+    //   https://github.com/oven-sh/bun/issues/31133
+    // Fix landed upstream in:
+    //   https://github.com/oven-sh/bun/pull/31139
+    // and will ship in the next Bun release after 1.3.14. Until then, any
+    // `bavail * bsize` math returns 0 and this gate would permanently skip
+    // the cleanup with a misleading `free=0` error. Treat non-credible
+    // readings (bsize <= 0, NaN, or non-finite) as "skip the gate" rather
+    // than "disk is full" -- a real out-of-space condition will still
+    // surface from the subsequent VACUUM INTO / copyFileSync.
+    if (!Number.isFinite(bsize) || !Number.isFinite(bavail) || bsize <= 0) {
+      logger.warn(
+        'SYSTEM',
+        'statfsSync returned non-credible values; proceeding without disk-space pre-flight',
+        {
+          bsize,
+          bavail,
+          runtime: typeof Bun !== 'undefined' ? `bun ${Bun.version}` : 'node',
+          platform: `${process.platform}-${process.arch}`,
+          hint: 'see https://github.com/oven-sh/bun/issues/31133 for the darwin-x64 case',
+        },
+      );
+    } else {
+      const free = bavail * bsize;
+      if (free < required) {
+        logger.error('SYSTEM', 'Insufficient disk for v12.4.3 backup; skipping cleanup (will retry on next startup)', { dbSize, free, required });
+        return;
+      }
     }
   } catch (err: unknown) {
     const error = err instanceof Error ? err : new Error(String(err));
