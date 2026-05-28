@@ -112,6 +112,7 @@ mock.module('child_process', () => {
 });
 
 const ORIGINAL_PLATFORM = process.platform;
+const ORIGINAL_COM_SPEC = process.env.ComSpec;
 Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
 process.env.ComSpec = 'C:\\Windows\\System32\\cmd.exe';
 
@@ -125,6 +126,11 @@ describe('ChromaMcpManager Windows spawn (2426)', () => {
 
   afterAll(() => {
     Object.defineProperty(process, 'platform', { value: ORIGINAL_PLATFORM, configurable: true });
+    if (ORIGINAL_COM_SPEC === undefined) {
+      delete process.env.ComSpec;
+    } else {
+      process.env.ComSpec = ORIGINAL_COM_SPEC;
+    }
   });
 
   it('spawns uvx directly on Windows (no cmd.exe /c wrapper)', async () => {
