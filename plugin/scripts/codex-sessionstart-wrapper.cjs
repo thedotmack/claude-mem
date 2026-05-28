@@ -108,17 +108,17 @@ function runSessionStart() {
   const input = readStdinPayload();
   const contextParts = [];
 
-  const version = runNode([versionCheck], '', 10000);
+  const version = runNode([versionCheck], '', 5000);
   if (version.status !== 0) fail('version-check', version);
   forwardStderr(version);
   const versionContext = extractContext(version.stdout);
   if (versionContext) contextParts.push(versionContext);
 
-  const start = runNode([bunRunner, workerService, 'start'], input, 60000);
+  const start = runNode([bunRunner, workerService, 'start'], input, 25000);
   if (start.status !== 0) fail('worker-start', start);
   forwardStderr(start);
 
-  const context = runNode([bunRunner, workerService, 'hook', 'codex', 'context'], input, 60000);
+  const context = runNode([bunRunner, workerService, 'hook', 'codex', 'context'], input, 35000);
   if (context.status !== 0) fail('codex-context', context);
   forwardStderr(context);
   const hookContext = extractContext(context.stdout);
