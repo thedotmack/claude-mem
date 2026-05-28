@@ -50,8 +50,14 @@ async function flushFireAndForget(): Promise<void> {
 }
 
 describe("opencode-plugin — OpenCode Hooks contract", () => {
-  beforeEach(() => {
+  // Hoisted so each test gets a fresh plugin instance (fresh closure-scoped
+  // initializedSessions + contentSessionIdsByOpenCodeSessionId maps).
+  // This prevents any session-ID bleed across tests if IDs are ever reused.
+  let hooks: Record<string, unknown>;
+
+  beforeEach(async () => {
     installFetchSpy();
+    hooks = await loadHooks();
   });
 
   afterEach(() => {
@@ -59,8 +65,6 @@ describe("opencode-plugin — OpenCode Hooks contract", () => {
   });
 
   it("exposes hooks as FLAT top-level keys (not nested under a 'hooks' wrapper)", async () => {
-    const hooks = await loadHooks();
-
     expect(typeof hooks["tool.execute.after"]).toBe("function");
     expect(typeof hooks["chat.message"]).toBe("function");
     expect(typeof hooks["experimental.session.compacting"]).toBe("function");
@@ -70,13 +74,11 @@ describe("opencode-plugin — OpenCode Hooks contract", () => {
   });
 
   it("'event' hook uses OpenCode's single-arg contract: (input: { event }) => Promise<void>", async () => {
-    const hooks = await loadHooks();
     const eventFn = hooks.event as (input: unknown) => Promise<void>;
     expect(eventFn.length).toBe(1);
   });
 
   it("'tool.execute.after' POSTs an observation and lazily initializes the session", async () => {
-    const hooks = await loadHooks();
     const toolAfter = hooks["tool.execute.after"] as (
       input: unknown,
       output: unknown,
@@ -98,7 +100,6 @@ describe("opencode-plugin — OpenCode Hooks contract", () => {
   });
 
   it("'tool.execute.after' skips POSTs when sessionID is missing (no phantom 'opencode-undefined-*' session, claude-mem#2503 follow-up)", async () => {
-    const hooks = await loadHooks();
     const toolAfter = hooks["tool.execute.after"] as (
       input: unknown,
       output: unknown,
@@ -118,7 +119,6 @@ describe("opencode-plugin — OpenCode Hooks contract", () => {
   });
 
   it("'chat.message' triggers session init once per sessionID", async () => {
-    const hooks = await loadHooks();
     const chatMessage = hooks["chat.message"] as (input: unknown) => Promise<void>;
 
     await chatMessage({ sessionID: "s-chat" });
@@ -131,7 +131,6 @@ describe("opencode-plugin — OpenCode Hooks contract", () => {
   });
 
   it("'experimental.session.compacting' lazy-inits the session but does NOT POST summarize (owned by session.compacted event)", async () => {
-    const hooks = await loadHooks();
     const compacting = hooks["experimental.session.compacting"] as (
       input: unknown,
       output: unknown,
@@ -148,7 +147,6 @@ describe("opencode-plugin — OpenCode Hooks contract", () => {
   });
 
   it("compacting hook + session.compacted event for the SAME session produces exactly one summarize POST (claude-mem#2503 P1)", async () => {
-    const hooks = await loadHooks();
     const compacting = hooks["experimental.session.compacting"] as (
       input: unknown,
       output: unknown,
@@ -168,7 +166,6 @@ describe("opencode-plugin — OpenCode Hooks contract", () => {
   });
 
   it("event(session.created) initializes the session and uses properties.info.id", async () => {
-    const hooks = await loadHooks();
     const eventFn = hooks.event as (input: unknown) => Promise<void>;
 
     await eventFn({
@@ -181,7 +178,6 @@ describe("opencode-plugin — OpenCode Hooks contract", () => {
   });
 
   it("event(message.updated) records an assistant observation; ignores user messages", async () => {
-    const hooks = await loadHooks();
     const eventFn = hooks.event as (input: unknown) => Promise<void>;
 
     await eventFn({
@@ -211,7 +207,6 @@ describe("opencode-plugin — OpenCode Hooks contract", () => {
   });
 
   it("event(session.compacted) reads properties.sessionID and POSTs summarize", async () => {
-    const hooks = await loadHooks();
     const eventFn = hooks.event as (input: unknown) => Promise<void>;
 
     await eventFn({
@@ -223,7 +218,6 @@ describe("opencode-plugin — OpenCode Hooks contract", () => {
   });
 
   it("event(session.deleted) does not crash on the properties.info.id payload", async () => {
-    const hooks = await loadHooks();
     const eventFn = hooks.event as (input: unknown) => Promise<void>;
 
     await eventFn({
@@ -233,7 +227,6 @@ describe("opencode-plugin — OpenCode Hooks contract", () => {
   });
 
   it("event hook ignores unknown event types without throwing", async () => {
-    const hooks = await loadHooks();
     const eventFn = hooks.event as (input: unknown) => Promise<void>;
 
     await eventFn({ event: { type: "unrelated.event", properties: {} } });
@@ -245,7 +238,6 @@ describe("opencode-plugin — OpenCode Hooks contract", () => {
   });
 
   it("'tool' registry still exposes claude_mem_search", async () => {
-    const hooks = await loadHooks();
     const tool = (hooks.tool as Record<string, { description?: string }>)?.claude_mem_search;
     expect(tool).toBeDefined();
     expect(typeof tool.description).toBe("string");
