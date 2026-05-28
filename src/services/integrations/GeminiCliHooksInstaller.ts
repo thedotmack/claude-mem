@@ -53,11 +53,8 @@ function buildHookCommand(
     throw new Error(`Unknown Gemini CLI event: ${geminiEventName}`);
   }
 
-  const escapedBunPath = bunPath.replace(/\\/g, '\\\\');
-  const escapedWorkerPath = workerServicePath.replace(/\\/g, '\\\\');
-
   const callOperator = process.platform === 'win32' ? '& ' : '';
-  return `${callOperator}"${escapedBunPath}" "${escapedWorkerPath}" hook gemini-cli ${internalEvent}`;
+  return `${callOperator}"${bunPath}" "${workerServicePath}" hook gemini-cli ${internalEvent}`;
 }
 
 function createHookGroup(hookCommand: string): GeminiHookGroup {
