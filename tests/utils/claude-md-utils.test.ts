@@ -523,7 +523,13 @@ describe('updateFolderClaudeMdFiles', () => {
   });
 
   it('should handle empty string paths gracefully with projectRoot', async () => {
-    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    // The empty strings are filtered out, leaving one valid folder that
+    // triggers exactly one fetch — which then reads the JSON body, so the
+    // mock must provide json() like a real ok Response.
+    const fetchMock = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve({ content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }] })
+    } as Response));
     global.fetch = fetchMock;
 
     await updateFolderClaudeMdFiles(

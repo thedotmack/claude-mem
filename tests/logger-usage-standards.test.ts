@@ -26,6 +26,15 @@ const EXCLUDED_PATTERNS = [
   /cli\/hook-command\.ts$/,  // CLI hook command uses console.log/error for hook protocol output
   /cli\/handlers\/user-message\.ts$/,  // User message handler uses console.error for user-visible context
   /services\/transcripts\/cli\.ts$/,  // CLI transcript subcommands use console.log for user-visible interactive output
+  /npx-cli\/commands\//,  // npx CLI subcommands (install/uninstall/runtime/server/etc) emit user-visible terminal output
+  /server\/runtime\/ServerBetaService\.ts$/,  // server-beta CLI entry point (status/usage output, process.exit)
+  /integrations\/McpIntegrations\.ts$/,  // CLI installer for MCP integrations (interactive install output)
+  /errors\.ts$/,  // Error class/type definitions (pure data, no logic to instrument)
+  /worker\/provider-errors\.ts$/,  // Provider error classification (pure data structures)
+  /worker\/knowledge\/CorpusRenderer\.ts$/,  // Pure string/markdown rendering, no side effects
+  /worker\/http\/middleware\/validateBody\.ts$/,  // Trivial zod validation middleware factory
+  /worker\/RateLimitStore\.ts$/,  // Side-effect-free in-memory rate-limit store
+  /worker\/events\/SessionEventBroadcaster\.ts$/,  // Thin SSE broadcast wrapper, no error paths
 ];
 
 const HIGH_PRIORITY_PATTERNS = [

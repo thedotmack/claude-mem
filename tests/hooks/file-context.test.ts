@@ -1,8 +1,24 @@
 
-import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, spyOn, mock } from 'bun:test';
 import { mkdirSync, mkdtempSync, writeFileSync, utimesSync, rmSync } from 'fs';
 import { tmpdir, homedir } from 'os';
 import { join } from 'path';
+
+// Capture the REAL modules BEFORE mocking so afterAll can restore them.
+// bun's `mock.module` is process-global and sticky; `mock.restore()` does NOT
+// undo it, so we must explicitly re-register the real implementations to keep
+// the suite order-independent (otherwise these mocks leak into later files).
+import * as realSettingsDefaultsManager from '../../src/shared/SettingsDefaultsManager.js';
+import * as realWorkerUtils from '../../src/shared/worker-utils.js';
+import * as realProjectName from '../../src/utils/project-name.js';
+import * as realProjectFilter from '../../src/utils/project-filter.js';
+
+// Snapshot the real exports into plain objects NOW, before mock.module mutates
+// the live ESM namespace bindings. These snapshots are re-registered in afterAll.
+const realSettingsSnapshot = { ...realSettingsDefaultsManager };
+const realWorkerUtilsSnapshot = { ...realWorkerUtils };
+const realProjectNameSnapshot = { ...realProjectName };
+const realProjectFilterSnapshot = { ...realProjectFilter };
 
 mock.module('../../src/shared/SettingsDefaultsManager.js', () => ({
   SettingsDefaultsManager: {
@@ -85,6 +101,13 @@ afterEach(() => {
     fetchSpy = null;
   }
   try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+});
+
+afterAll(() => {
+  mock.module('../../src/shared/SettingsDefaultsManager.js', () => realSettingsSnapshot);
+  mock.module('../../src/shared/worker-utils.js', () => realWorkerUtilsSnapshot);
+  mock.module('../../src/utils/project-name.js', () => realProjectNameSnapshot);
+  mock.module('../../src/utils/project-filter.js', () => realProjectFilterSnapshot);
 });
 
 describe('fileContextHandler — #2094 (no Read mutation)', () => {

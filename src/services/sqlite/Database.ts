@@ -2,6 +2,7 @@ import { Database } from 'bun:sqlite';
 import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { MigrationRunner } from './migrations/runner.js';
+import { assertSchemaReadable, isMalformedSchemaError, repairMalformedDatabase } from './SchemaRepair.js';
 
 const SQLITE_MMAP_SIZE_BYTES = 256 * 1024 * 1024; 
 const SQLITE_CACHE_SIZE_PAGES = 10_000;
@@ -22,7 +23,7 @@ export class ClaudeMemDatabase {
       ensureDir(DATA_DIR);
     }
 
-    this.db = new Database(dbPath, { create: true, readwrite: true });
+    this.db = ClaudeMemDatabase.openWithSchemaRepair(dbPath);
 
     this.db.run('PRAGMA journal_mode = WAL');
     this.db.run('PRAGMA synchronous = NORMAL');
@@ -33,6 +34,33 @@ export class ClaudeMemDatabase {
 
     const migrationRunner = new MigrationRunner(this.db);
     migrationRunner.runAllMigrations();
+  }
+
+  /**
+   * Opens the database, repairing it first if its on-disk `sqlite_master`
+   * schema is malformed (orphaned index, dropped column, missing table).
+   * A malformed schema causes the very first statement — even a PRAGMA — to
+   * throw, so we probe for readability before any PRAGMA runs and rebuild via
+   * SchemaRepair when necessary. Migrations restore the canonical schema after.
+   */
+  private static openWithSchemaRepair(dbPath: string): Database {
+    let db = new Database(dbPath, { create: true, readwrite: true });
+
+    try {
+      assertSchemaReadable(db);
+      return db;
+    } catch (error) {
+      if (!isMalformedSchemaError(error)) {
+        throw error;
+      }
+    }
+
+    db.close();
+    repairMalformedDatabase(dbPath);
+
+    db = new Database(dbPath, { create: true, readwrite: true });
+    assertSchemaReadable(db);
+    return db;
   }
 
   close(): void {

@@ -1,6 +1,7 @@
 
 import { homedir } from 'os';
 import { basename } from 'path';
+import { logger } from './logger.js';
 
 function globToRegex(pattern: string): RegExp {
   let expanded = pattern.startsWith('~')
@@ -40,7 +41,7 @@ export function isProjectExcluded(projectPath: string, exclusionPatterns: string
         return true;
       }
     } catch (error: unknown) {
-      console.warn(`[project-filter] Invalid exclusion pattern "${pattern}":`, error instanceof Error ? error.message : String(error));
+      logger.warn('PROJECT_NAME', 'Invalid exclusion pattern', { pattern, error: error instanceof Error ? error.message : String(error) });
       continue;
     }
   }

@@ -1,4 +1,14 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
+
+// Capture real exports before mock.module mutates the live namespace, then
+// re-register the snapshots in afterAll so these mocks do not leak into later
+// test files (bun's mock.module is process-global; mock.restore() does NOT undo it).
+import * as realSettingsDefaultsManager from '../../../src/shared/SettingsDefaultsManager.js';
+import * as realPaths from '../../../src/shared/paths.js';
+import * as realLogger from '../../../src/utils/logger.js';
+const realSettingsSnapshot = { ...realSettingsDefaultsManager };
+const realPathsSnapshot = { ...realPaths };
+const realLoggerSnapshot = { ...realLogger };
 
 let currentSettings: Record<string, string> = {};
 
@@ -48,6 +58,12 @@ mock.module('../../../src/utils/logger.js', () => ({
 }));
 
 import { ChromaMcpManager } from '../../../src/services/sync/ChromaMcpManager.js';
+
+afterAll(() => {
+  mock.module('../../../src/shared/SettingsDefaultsManager.js', () => realSettingsSnapshot);
+  mock.module('../../../src/shared/paths.js', () => realPathsSnapshot);
+  mock.module('../../../src/utils/logger.js', () => realLoggerSnapshot);
+});
 
 async function assertSslFlag(sslSetting: string | undefined, expectedValue: string) {
   currentSettings = { CLAUDE_MEM_CHROMA_MODE: 'remote' };

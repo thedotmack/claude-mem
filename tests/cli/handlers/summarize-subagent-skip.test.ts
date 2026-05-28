@@ -1,6 +1,14 @@
-import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, spyOn, mock } from 'bun:test';
 import { homedir } from 'os';
 import { join } from 'path';
+
+// Capture real exports before mock.module mutates the live namespace, then
+// re-register the snapshots in afterAll so these mocks do not leak into later
+// test files (bun's mock.module is process-global; mock.restore() does NOT undo it).
+import * as realSettingsDefaultsManager from '../../../src/shared/SettingsDefaultsManager.js';
+import * as realWorkerUtils from '../../../src/shared/worker-utils.js';
+const realSettingsSnapshot = { ...realSettingsDefaultsManager };
+const realWorkerUtilsSnapshot = { ...realWorkerUtils };
 
 mock.module('../../../src/shared/SettingsDefaultsManager.js', () => ({
   SettingsDefaultsManager: {
@@ -9,7 +17,7 @@ mock.module('../../../src/shared/SettingsDefaultsManager.js', () => ({
       return '';
     },
     getInt: () => 0,
-    loadFromFile: () => ({ CLAUDE_MEM_EXCLUDED_PROJECTS: [] }),
+    loadFromFile: () => ({ CLAUDE_MEM_EXCLUDED_PROJECTS: '' }),
   },
 }));
 
@@ -43,6 +51,11 @@ beforeEach(() => {
 
 afterEach(() => {
   loggerSpies.forEach(spy => spy.mockRestore());
+});
+
+afterAll(() => {
+  mock.module('../../../src/shared/SettingsDefaultsManager.js', () => realSettingsSnapshot);
+  mock.module('../../../src/shared/worker-utils.js', () => realWorkerUtilsSnapshot);
 });
 
 describe('summarizeHandler — subagent short-circuit', () => {

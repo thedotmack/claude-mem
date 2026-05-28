@@ -109,7 +109,10 @@ describe('Install Non-TTY Support', () => {
       );
       expect(copyRegion).toContain("'.agents'");
       expect(copyRegion).toContain("'.codex-plugin'");
-      expect(copyRegion).toContain("'.mcp.json'");
+      // Root .mcp.json was dropped in #2411; the MCP manifest now ships
+      // exclusively as plugin/.mcp.json (bundled inside the 'plugin' entry).
+      expect(copyRegion).toContain("'plugin'");
+      expect(copyRegion).not.toContain("'.mcp.json'");
     });
 
     it('validates the bundled plugin as the Codex marketplace source', () => {
@@ -119,12 +122,14 @@ describe('Install Non-TTY Support', () => {
       expect(codexInstallerSource).toContain("path.join('plugin', 'skills', 'mem-search', 'SKILL.md')");
     });
 
-    it('does not exclude MCP manifests during local marketplace sync', () => {
+    it('keeps the sync-managed gitignore override mechanism for local marketplace sync', () => {
       const gitignoreExcludeRegion = syncMarketplaceSource.slice(
         syncMarketplaceSource.indexOf('function getGitignoreExcludes'),
         syncMarketplaceSource.indexOf('const branch = getCurrentBranch'),
       );
-      expect(gitignoreExcludeRegion).toContain("'.mcp.json'");
+      // Root .mcp.json was dropped in #2411, so it is no longer a
+      // sync-managed override — the override mechanism itself remains.
+      expect(gitignoreExcludeRegion).toContain('syncManagedFiles');
       expect(gitignoreExcludeRegion).toContain('syncManagedFiles.has(line)');
     });
 
