@@ -53,6 +53,8 @@ export const ENV_PRESERVE = new Set([
   'ANTHROPIC_VERTEX_PROJECT_ID',
   'CLOUD_ML_REGION',
   'GOOGLE_APPLICATION_CREDENTIALS',
+  'GOOGLE_CLOUD_PROJECT',
+  'GOOGLE_OAUTH_ACCESS_TOKEN',
 ]);
 
 export function sanitizeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {

@@ -143,6 +143,22 @@ class Logger {
   }
 
   /**
+   * Non-throwing JSON stringify — handles circular references gracefully.
+   * Returns the JSON string on success, or a safe fallback summary on failure.
+   */
+  private safeStringify(data: any, indent?: number): string {
+    try {
+      return JSON.stringify(data, null, indent);
+    } catch {
+      // Circular or otherwise un-serialisable — return a stable fallback
+      const keys = typeof data === 'object' && data !== null ? Object.keys(data) : [];
+      return keys.length > 0
+        ? `{[circular] ${keys.length} keys: ${keys.slice(0, 3).join(', ')}${keys.length > 3 ? '...' : ''}}`
+        : String(data);
+    }
+  }
+
+  /**
    * Format data for logging - create compact summaries instead of full dumps
    */
   private formatData(data: any): string {
@@ -169,8 +185,8 @@ class Logger {
       const keys = Object.keys(data);
       if (keys.length === 0) return '{}';
       if (keys.length <= 3) {
-        // Show small objects inline
-        return JSON.stringify(data);
+        // Show small objects inline — safeStringify never throws (handles circular refs)
+        return this.safeStringify(data);
       }
       return `{${keys.length} keys: ${keys.slice(0, 3).join(', ')}...}`;
     }
@@ -303,13 +319,8 @@ class Logger {
           : ` ${data.message}`;
       } else if (this.getLevel() === LogLevel.DEBUG && typeof data === 'object') {
         // In debug mode, show full JSON for objects.
-        // Wrap stringify in try/catch so circular structures don't crash the logger;
-        // fall back to formatData (which marks arrays/object key counts safely).
-        try {
-          dataStr = '\n' + JSON.stringify(data, null, 2);
-        } catch {
-          dataStr = ' ' + this.formatData(data);
-        }
+        // safeStringify never throws — handles circular references gracefully.
+        dataStr = '\n' + this.safeStringify(data, 2);
       } else {
         dataStr = ' ' + this.formatData(data);
       }
