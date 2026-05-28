@@ -461,7 +461,7 @@ export class GeminiProvider {
 
     if (vertexConfig) {
       const { project, location } = vertexConfig;
-      url = `https://aiplatform.googleapis.com/v1/projects/${project}/locations/${location}/publishers/google/models/${encodeURIComponent(model)}:generateContent`;
+      url = `https://${location}-aiplatform.googleapis.com/v1/projects/${project}/locations/${location}/publishers/google/models/${encodeURIComponent(model)}:generateContent`;
       authHeaders = {};
     } else {
       url = `${GEMINI_API_URL}/${model}:generateContent?key=${apiKey}`;
