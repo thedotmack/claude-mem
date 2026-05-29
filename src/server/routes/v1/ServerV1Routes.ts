@@ -222,9 +222,18 @@ export class ServerV1Routes implements RouteHandler {
         return;
       }
       if (!this.ensureProjectAllowed(req, res, sourceMem.projectId)) return;
-      const relation = new MemoryRelationsRepository(this.options.getDatabase()).create(body);
-      this.audit(req, 'relation.create', relation.id, sourceMem.projectId);
-      res.status(201).json({ relation });
+      try {
+        const relation = new MemoryRelationsRepository(this.options.getDatabase()).create(body);
+        this.audit(req, 'relation.create', relation.id, sourceMem.projectId);
+        res.status(201).json({ relation });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes('UNIQUE constraint failed')) {
+          res.status(409).json({ error: 'Conflict', message: 'A relation of this type already exists between these two memories' });
+          return;
+        }
+        throw err;
+      }
     }));
 
     app.get('/v1/memories/:id/relations', readAuth, (req, res) => {
