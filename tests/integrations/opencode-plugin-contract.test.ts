@@ -4,7 +4,8 @@ import {
   parseSearchResponse,
   REGISTERED_OPENCODE_HOOKS,
   REAL_OPENCODE_EVENT_TYPES,
-} from "../../src/integrations/opencode-plugin/index";
+} from "../../src/integrations/opencode-plugin/plugin";
+import * as pluginEntryModule from "../../src/integrations/opencode-plugin/index";
 
 /**
  * Regression guard for plan-08 (OpenCode event-contract correctness).
@@ -88,6 +89,23 @@ describe("OpenCode plugin event contract", () => {
     expect(REAL_OPENCODE_EVENT_TYPES).toContain("session.deleted");
     for (const phantom of PHANTOM_BUS_EVENT_NAMES) {
       expect(REAL_OPENCODE_EVENT_TYPES as readonly string[]).not.toContain(phantom);
+    }
+  });
+
+  it("build entry exports only functions (OpenCode loader contract)", () => {
+    // OpenCode's plugin loader iterates over EVERY export of the module and
+    // throws TypeError("Plugin export is not a function") on the first export
+    // that is not a function (or an object exposing a `server` function),
+    // aborting the whole plugin. The build entry (index) must therefore export
+    // ONLY the plugin factory. Re-exporting the non-function contract constants
+    // here is what previously broke real OpenCode loading (silent zero capture).
+    const exportedValues = Object.values(pluginEntryModule);
+    expect(exportedValues.length).toBeGreaterThan(0);
+    for (const [name, value] of Object.entries(pluginEntryModule)) {
+      expect(
+        typeof value === "function",
+        `build-entry export "${name}" must be a function (OpenCode rejects non-function exports)`,
+      ).toBe(true);
     }
   });
 
