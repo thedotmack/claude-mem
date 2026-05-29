@@ -31,6 +31,19 @@ import type { CreatePostgresAgentEventInput } from '../storage/postgres/agent-ev
 import { ChromaSync } from '../services/sync/ChromaSync.js';
 import { ChromaMcpManager } from '../services/sync/ChromaMcpManager.js';
 import { IngestEventsService } from '../server/services/IngestEventsService.js';
+import { ModeManager } from '../services/domain/ModeManager.js';
+import {
+  ClaudeObservationProvider,
+  type ClaudeObservationProviderOptions,
+} from '../server/generation/providers/ClaudeObservationProvider.js';
+import { GeminiObservationProvider } from '../server/generation/providers/GeminiObservationProvider.js';
+import { OpenRouterObservationProvider } from '../server/generation/providers/OpenRouterObservationProvider.js';
+import type {
+  ServerGenerationProvider,
+  ServerGenerationResult,
+} from '../server/generation/providers/shared/types.js';
+import { processGeneratedResponse } from '../server/generation/processGeneratedResponse.js';
+import type { PostgresObservation } from '../storage/postgres/observations.js';
 
 /**
  * Tuning options for the required Chroma semantic-search engine.
@@ -51,6 +64,35 @@ export interface ChromaOptions {
    * resolving `uvx chroma-mcp` on PATH.
    */
   mcpPath?: string;
+}
+
+/**
+ * Pre-constructed generation provider accepted by
+ * {@link CmemClientOptions.provider}. Identical shape to the server's
+ * `ServerGenerationProvider`. Re-exported under a friendly name so
+ * SDK consumers don't have to reach into `claude-mem/server`.
+ */
+export type CmemProvider = ServerGenerationProvider;
+
+/**
+ * Configuration object accepted by {@link CmemClientOptions.provider}.
+ * The SDK uses this to construct the matching concrete provider
+ * ({@link ClaudeObservationProvider}, `GeminiObservationProvider`, or
+ * `OpenRouterObservationProvider`). Defaults to `provider: 'claude'`.
+ *
+ * Mirrors the env-driven shape used by
+ * `buildServerGenerationProviderFromEnv()` in
+ * `src/server/runtime/create-server-service.ts:247`.
+ */
+export interface CmemProviderConfig {
+  /** Provider API key. Required. */
+  apiKey: string;
+  /** Optional model id override (e.g. `claude-sonnet-4-6`). */
+  model?: string;
+  /** Provider kind. Defaults to `'claude'`. */
+  provider?: 'claude' | 'gemini' | 'openrouter';
+  /** OpenRouter-only: optional OpenAI-compatible base URL. */
+  baseUrl?: string;
 }
 
 /**
@@ -104,13 +146,23 @@ export interface CmemClientOptions {
   projectName?: string;
 
   /**
-   * Generation provider. Either a constructed `ServerGenerationProvider`
-   * (Phase 5 narrows the type) or `undefined` to fall back to the
-   * env-driven `buildServerGenerationProviderFromEnv()` resolution.
+   * Generation provider. Three accepted shapes:
+   *   1. A pre-constructed {@link CmemProvider} (anything with the right
+   *      `.generate(context, signal?)` shape — typically a server-internal
+   *      provider class like {@link ClaudeObservationProvider}).
+   *   2. A {@link CmemProviderConfig} `{ apiKey, model?, provider? }` —
+   *      the SDK instantiates the matching concrete provider for you.
+   *   3. `undefined` — the SDK falls back to the env-driven resolution
+   *      mirroring `buildServerGenerationProviderFromEnv()` in
+   *      `create-server-service.ts:247`. Reading `CLAUDE_MEM_SERVER_PROVIDER`
+   *      + `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` / `OPENROUTER_API_KEY`
+   *      and `CLAUDE_MEM_SERVER_MODEL`. Defaults to Claude when
+   *      `ANTHROPIC_API_KEY` is set.
    *
-   * Typed as `unknown` to avoid leaking server internals at Phase 2.
+   * When `client.generate(...)` is called without any of these resolving
+   * to a usable provider, the call rejects with a clear error.
    */
-  provider?: unknown;
+  provider?: CmemProvider | CmemProviderConfig;
 
   /**
    * Chroma tuning. Chroma is REQUIRED; this object does NOT include an
@@ -218,6 +270,36 @@ export interface CmemSessionInfo {
 }
 
 /**
+ * Result of a {@link CmemClient.generate} call. Mirrors
+ * `processGeneratedResponse`'s `'completed'` outcome — the persisted
+ * observations and the provider/model that produced them.
+ *
+ * `observations: []` is a normal-successful outcome when the provider
+ * decided there was nothing worth recording (privacy-skipped batch,
+ * `<skip_summary />` response, etc.). The job is marked completed
+ * either way.
+ */
+export interface CmemGenerateResult {
+  jobId: string;
+  observations: PostgresObservation[];
+  providerLabel: string;
+  modelId?: string;
+  /** `true` when the response was a privacy/skip signal with no observations. */
+  privateContentDetected: boolean;
+}
+
+/**
+ * Result of {@link CmemClient.captureAndGenerate}. The IDs from the
+ * underlying {@link CmemCaptureResult} plus the persisted
+ * {@link CmemGenerateResult}.
+ */
+export interface CmemCaptureAndGenerateResult {
+  agentEventId: string;
+  generationJobId: string;
+  result: CmemGenerateResult;
+}
+
+/**
  * Public client returned by {@link createCmemClient}. Method bodies are
  * filled in by Phase 3-7. Phase 3 wires construction, tenancy, and
  * `close()`; the I/O methods remain stubs.
@@ -237,10 +319,15 @@ export interface CmemClient {
   capture(event: CmemCaptureEvent): Promise<CmemCaptureResult>;
   /** Persist many events in a single transactional batch. */
   captureBatch(events: CmemCaptureEvent[]): Promise<CmemCaptureResult[]>;
-  /** Run the in-process generation pipeline for a queued job. */
-  generate(jobOrEventId: string): Promise<void>;
+  /**
+   * Run the in-process generation pipeline for a queued job. Transitions
+   * the job `queued → processing`, calls the configured provider, then
+   * delegates to `processGeneratedResponse` which writes the observations
+   * and marks the job `completed` in a single Postgres transaction.
+   */
+  generate(jobId: string): Promise<CmemGenerateResult>;
   /** Sugar for capture-then-generate. */
-  captureAndGenerate(event: CmemCaptureEvent): Promise<CmemCaptureResult>;
+  captureAndGenerate(event: CmemCaptureEvent): Promise<CmemCaptureAndGenerateResult>;
   /** Semantic search with FTS runtime safety net. See plan §6. */
   search(input: { query: string; limit?: number }): Promise<CmemSearchResponse>;
   /** Search + join contents into a single `\n\n`-delimited context blob. */
@@ -275,6 +362,154 @@ function resolveSdkDataDir(): string {
 interface ResolvedTenancy {
   teamId: string;
   projectId: string;
+}
+
+/**
+ * Type guard that recognizes an already-constructed
+ * {@link ServerGenerationProvider}. We don't `instanceof`-check the concrete
+ * provider classes because consumers may pass a custom implementation —
+ * the structural check (`.generate` + `.providerLabel`) is sufficient.
+ */
+function isCmemProvider(value: unknown): value is ServerGenerationProvider {
+  if (value === null || typeof value !== 'object') return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.providerLabel === 'string'
+    && typeof candidate.generate === 'function'
+  );
+}
+
+/**
+ * Build a {@link ServerGenerationProvider} from an explicit
+ * {@link CmemProviderConfig} object. Mirrors the env-driven dispatch in
+ * `src/server/runtime/create-server-service.ts:247-279`.
+ */
+function buildProviderFromConfig(config: CmemProviderConfig): ServerGenerationProvider {
+  const kind = (config.provider ?? 'claude').toLowerCase();
+  if (kind === 'claude' || kind === 'anthropic') {
+    const opts: ClaudeObservationProviderOptions = { apiKey: config.apiKey };
+    if (config.model) opts.model = config.model;
+    return new ClaudeObservationProvider(opts);
+  }
+  if (kind === 'gemini') {
+    const opts: { apiKey: string; model?: string } = { apiKey: config.apiKey };
+    if (config.model) opts.model = config.model;
+    return new GeminiObservationProvider(opts);
+  }
+  if (kind === 'openrouter') {
+    const opts: { apiKey: string; model?: string; baseUrl?: string } = {
+      apiKey: config.apiKey,
+    };
+    if (config.model) opts.model = config.model;
+    if (config.baseUrl) opts.baseUrl = config.baseUrl;
+    return new OpenRouterObservationProvider(opts);
+  }
+  throw new Error(
+    `cmem-sdk: unsupported provider kind "${config.provider ?? 'claude'}". ` +
+      `Expected one of: "claude", "gemini", "openrouter".`
+  );
+}
+
+/**
+ * Env-driven provider resolution. Mirrors
+ * `buildServerGenerationProviderFromEnv()` in
+ * `src/server/runtime/create-server-service.ts:247-279`. Returns `null`
+ * when no provider can be resolved from the environment — callers surface
+ * a clear error at `generate()` time instead of failing at construction.
+ */
+function buildProviderFromEnv(): ServerGenerationProvider | null {
+  const explicit = (process.env.CLAUDE_MEM_SERVER_PROVIDER ?? '').trim().toLowerCase();
+  const model = process.env.CLAUDE_MEM_SERVER_MODEL;
+  try {
+    if (explicit === 'claude' || explicit === 'anthropic' || explicit === '') {
+      const apiKey =
+        process.env.ANTHROPIC_API_KEY ?? process.env.CLAUDE_MEM_ANTHROPIC_API_KEY ?? '';
+      if (!apiKey) {
+        // No explicit env var demanded claude; fall through to the next
+        // candidate so an installer that only set GEMINI_API_KEY still works.
+        if (explicit === '') {
+          // continue to gemini/openrouter scan below
+        } else {
+          return null;
+        }
+      } else {
+        const opts: ClaudeObservationProviderOptions = { apiKey };
+        if (model) opts.model = model;
+        return new ClaudeObservationProvider(opts);
+      }
+    }
+    if (explicit === 'gemini' || (explicit === '' && process.env.GEMINI_API_KEY)) {
+      const apiKey = process.env.GEMINI_API_KEY ?? process.env.CLAUDE_MEM_GEMINI_API_KEY ?? '';
+      if (!apiKey) return null;
+      const opts: { apiKey: string; model?: string } = { apiKey };
+      if (model) opts.model = model;
+      return new GeminiObservationProvider(opts);
+    }
+    if (explicit === 'openrouter' || (explicit === '' && process.env.OPENROUTER_API_KEY)) {
+      const apiKey =
+        process.env.OPENROUTER_API_KEY ?? process.env.CLAUDE_MEM_OPENROUTER_API_KEY ?? '';
+      if (!apiKey) return null;
+      const opts: { apiKey: string; model?: string; baseUrl?: string } = { apiKey };
+      if (model) opts.model = model;
+      const baseUrl =
+        process.env.CLAUDE_MEM_OPENROUTER_BASE_URL ?? process.env.OPENROUTER_BASE_URL;
+      if (baseUrl) opts.baseUrl = baseUrl;
+      return new OpenRouterObservationProvider(opts);
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+/**
+ * Resolve a {@link ServerGenerationProvider} from {@link CmemClientOptions.provider}.
+ * Three branches, in order:
+ *   1. Already-constructed provider → return as-is.
+ *   2. {@link CmemProviderConfig} → instantiate via {@link buildProviderFromConfig}.
+ *   3. `undefined` → fall back to {@link buildProviderFromEnv}.
+ * Returns `null` only when env resolution found nothing — `generate()` then
+ * surfaces a clear "no provider configured" error.
+ */
+function resolveProvider(
+  optionsProvider: CmemClientOptions['provider']
+): ServerGenerationProvider | null {
+  if (optionsProvider === undefined) {
+    return buildProviderFromEnv();
+  }
+  if (isCmemProvider(optionsProvider)) {
+    return optionsProvider;
+  }
+  // Must be CmemProviderConfig.
+  return buildProviderFromConfig(optionsProvider);
+}
+
+/**
+ * Eager mode initialization. `parseAgentXml` (`src/sdk/parser.ts:105`)
+ * calls `ModeManager.getInstance().getActiveMode()` with no fallback —
+ * if no mode is loaded, it throws. We mirror `loadServerMode()` in
+ * `src/server/runtime/create-server-service.ts:167-177` and load `'code'`
+ * once at SDK construction so the failure (a missing/broken
+ * `plugin/modes/code.json`) surfaces during `createCmemClient(...)`
+ * instead of at every `generate()` call.
+ *
+ * Throws a clear cmem-sdk-tagged error if the mode cannot be loaded.
+ */
+function initializeMode(): void {
+  try {
+    const mgr = ModeManager.getInstance();
+    mgr.loadMode('code');
+    mgr.getActiveMode();
+  } catch (err) {
+    const underlying = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      'cmem-sdk: failed to load default observation mode "code". ' +
+        'Generation requires a mode (parser at src/sdk/parser.ts:105 has no fallback). ' +
+        'Verify the bundled plugin/modes/code.json is present. ' +
+        'Underlying: ' +
+        underlying
+    );
+  }
 }
 
 /**
@@ -350,6 +585,13 @@ async function resolveTenancy(
  * Phases 4-6 wire the I/O methods on the returned client.
  */
 export async function createCmemClient(options: CmemClientOptions): Promise<CmemClient> {
+  // 0. Mode initialization. `parseAgentXml` requires an active mode
+  //    (src/sdk/parser.ts:105 has no fallback). Loading at construction
+  //    surfaces missing-mode-file errors here instead of at every
+  //    generate() call. Consistent with the Chroma-required philosophy:
+  //    fail fast at construction, not silently at runtime.
+  initializeMode();
+
   // 1. Pool — either consumer-supplied or SDK-owned.
   let pool: PostgresPool;
   let ownsPool = false;
@@ -433,6 +675,14 @@ export async function createCmemClient(options: CmemClientOptions): Promise<Cmem
     pool,
     resolveEventQueue: () => null,
   });
+
+  // 7. Resolve the generation provider (Phase 5). Best-effort at construction
+  //    so the SDK can still serve capture/search even without a provider; a
+  //    `client.generate(...)` call without a resolved provider rejects with a
+  //    clear error. Provider exceptions during resolution (e.g. a
+  //    `ClaudeObservationProvider` constructor rejecting because apiKey is
+  //    empty) bubble up here and abort construction.
+  const provider = resolveProvider(options.provider);
 
   // 7. Build and return the client. capture / captureBatch / startSession /
   //    endSession are wired in this phase. generate / captureAndGenerate /
@@ -522,11 +772,153 @@ export async function createCmemClient(options: CmemClientOptions): Promise<Cmem
         };
       });
     },
-    generate() {
-      throw new Error('cmem-sdk: generate — Phase 5 not implemented yet');
+    async generate(jobId: string): Promise<CmemGenerateResult> {
+      if (closed) {
+        throw new Error('cmem-sdk: client is closed');
+      }
+      if (!provider) {
+        throw new Error(
+          'cmem-sdk: no generation provider is configured. ' +
+            'Pass options.provider to createCmemClient (either a constructed ' +
+            'ServerGenerationProvider or { apiKey, model?, provider? }), or set ' +
+            'CLAUDE_MEM_SERVER_PROVIDER + the matching API key environment variable.'
+        );
+      }
+      if (typeof jobId !== 'string' || jobId.trim().length === 0) {
+        throw new Error('cmem-sdk: generate requires a non-empty jobId string');
+      }
+
+      // Step 1: lock the outbox row. queued → processing is the ONLY legal
+      //   first-step transition (transitionStatus enforces it at the SQL
+      //   level; generation-jobs.ts:191-194). queued → completed throws.
+      //   Pre-load via getByIdForScope to give a precise "not claimable"
+      //   error rather than the generic "transition was not applied".
+      let lockedJob = await repos.observationGenerationJobs.getByIdForScope({
+        id: jobId,
+        projectId,
+        teamId,
+      });
+      if (!lockedJob) {
+        throw new Error(
+          `cmem-sdk: generation job ${jobId} not found in scope (projectId=${projectId}, teamId=${teamId})`
+        );
+      }
+      if (lockedJob.status !== 'queued') {
+        throw new Error(
+          `cmem-sdk: generation job ${jobId} is not claimable (status="${lockedJob.status}"). ` +
+            `generate() requires a job in status "queued"; the row may have been claimed ` +
+            `by another worker, already processed, or terminally failed.`
+        );
+      }
+
+      const transitioned = await repos.observationGenerationJobs.transitionStatus({
+        id: jobId,
+        projectId,
+        teamId,
+        status: 'processing',
+        lockedBy: 'cmem-sdk',
+      });
+      if (!transitioned) {
+        throw new Error(
+          `cmem-sdk: failed to lock generation job ${jobId}; it may have been ` +
+            `claimed concurrently by another worker.`
+        );
+      }
+      lockedJob = transitioned;
+
+      // Step 2: load events tied to the job. Mirrors
+      //   ProviderObservationGenerator.loadEvents (lines 483-532) for the
+      //   'agent_event' source type — the SDK only ever produces
+      //   'agent_event' jobs via capture(), but we still scope the load
+      //   by tenancy.
+      const events = lockedJob.agentEventId
+        ? (async () => {
+            const ev = await repos.agentEvents.getByIdForScope({
+              id: lockedJob!.agentEventId!,
+              projectId,
+              teamId,
+            });
+            return ev ? [ev] : [];
+          })()
+        : Promise.resolve([]);
+      const loadedEvents = await events;
+
+      // Step 3: load the project for the prompt's `projectName`.
+      const project = await repos.projects.getByIdForTeam(projectId, teamId);
+
+      // Step 4: call the provider. The lifted core mirrors
+      //   ProviderObservationGenerator.ts:200-209 — no BullMQ payload, no
+      //   AbortSignal (consumers control their own timeouts via the
+      //   provider's fetchImpl), no scope/revocation audit.
+      let providerResult: ServerGenerationResult;
+      try {
+        providerResult = await provider.generate({
+          job: lockedJob,
+          events: loadedEvents,
+          project: {
+            projectId,
+            teamId,
+            serverSessionId: lockedJob.serverSessionId,
+            projectName: project?.name ?? null,
+          },
+        });
+      } catch (err) {
+        // Provider crashed before we could persist. Leave the row in
+        // 'processing' so a future caller can either retry or admin-resolve
+        // it; we surface the underlying error verbatim so the caller can
+        // classify (transient vs auth_invalid vs unrecoverable).
+        throw err;
+      }
+
+      // Step 5: persist via processGeneratedResponse (the single Postgres
+      //   transaction that writes observations + observation_sources,
+      //   then transitions processing → completed). Mirrors
+      //   ProviderObservationGenerator.ts:211-227 minus the
+      //   session_summary branch (SDK currently captures only agent_event
+      //   jobs) and minus the BullMQ identity-context fields.
+      const persistInput: Parameters<typeof processGeneratedResponse>[0] = {
+        pool,
+        job: lockedJob,
+        rawText: providerResult.rawText,
+        providerLabel: providerResult.providerLabel,
+        sourceAdapter: 'sdk',
+      };
+      if (providerResult.modelId !== undefined) {
+        persistInput.modelId = providerResult.modelId;
+      }
+      const outcome = await processGeneratedResponse(persistInput);
+
+      if (outcome.kind === 'parse_error') {
+        // The provider returned text we couldn't parse; mark a clear error
+        // for the caller. The job row is left in 'processing' so an admin
+        // can investigate. Mirrors ProviderObservationGenerator.ts:229-238.
+        throw new Error(
+          `cmem-sdk: generation parse error for job ${outcome.jobId}: ${outcome.reason}`
+        );
+      }
+
+      const result: CmemGenerateResult = {
+        jobId: outcome.jobId,
+        observations: outcome.observations,
+        providerLabel: providerResult.providerLabel,
+        privateContentDetected: outcome.privateContentDetected,
+      };
+      if (providerResult.modelId !== undefined) {
+        result.modelId = providerResult.modelId;
+      }
+      return result;
     },
-    captureAndGenerate() {
-      throw new Error('cmem-sdk: captureAndGenerate — Phase 5 not implemented yet');
+    async captureAndGenerate(event: CmemCaptureEvent): Promise<CmemCaptureAndGenerateResult> {
+      if (closed) {
+        throw new Error('cmem-sdk: client is closed');
+      }
+      const captured = await client.capture(event);
+      const generated = await client.generate(captured.generationJobId);
+      return {
+        agentEventId: captured.agentEventId,
+        generationJobId: captured.generationJobId,
+        result: generated,
+      };
     },
     search() {
       throw new Error('cmem-sdk: search — Phase 6 not implemented yet');
