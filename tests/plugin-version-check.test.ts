@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdirSync, writeFileSync, rmSync } from 'fs';
+import { mkdirSync, writeFileSync, rmSync, readFileSync, copyFileSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -99,5 +99,45 @@ describe('plugin/scripts/version-check.js install marker compatibility', () => {
         additionalContext: 'claude-mem: upgraded to v12.4.4 - run: npx claude-mem@latest install',
       },
     });
+  });
+
+  it('emits bare SessionStart JSON when resolveRoot() returns null in Codex hook mode', () => {
+    // To force resolveRoot() → null we must defeat both lookup paths:
+    //   1. CLAUDE_PLUGIN_ROOT → point at a dir without package.json
+    //   2. import.meta.url fallback → run the script from a copy placed inside a temp dir
+    //      whose parent also has no package.json, so dirname(scriptDir) can't resolve either.
+    const isolatedScriptDir = join(
+      tmpdir(),
+      `version-check-isolated-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      'scripts',
+    );
+    mkdirSync(isolatedScriptDir, { recursive: true });
+    const isolatedScript = join(isolatedScriptDir, 'version-check.js');
+    copyFileSync(VERSION_CHECK_SCRIPT, isolatedScript);
+
+    const emptyRootDir = join(
+      tmpdir(),
+      `version-check-noroot-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    mkdirSync(emptyRootDir, { recursive: true });
+
+    try {
+      const result = spawnSync('node', [isolatedScript], {
+        encoding: 'utf-8',
+        env: { ...process.env, CLAUDE_PLUGIN_ROOT: emptyRootDir, CLAUDE_MEM_CODEX_HOOK: '1' },
+      });
+      const output = JSON.parse(result.stdout);
+
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe('');
+      expect(output).toEqual({
+        hookSpecificOutput: {
+          hookEventName: 'SessionStart',
+        },
+      });
+    } finally {
+      rmSync(isolatedScriptDir.replace(/\/scripts$/, ''), { recursive: true, force: true });
+      rmSync(emptyRootDir, { recursive: true, force: true });
+    }
   });
 });
