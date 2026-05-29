@@ -27,6 +27,7 @@ import {
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { buildHardenedSdkOptions } from '../../sdk/hardened-options.js';
 import { ClassifiedProviderError } from './provider-errors.js';
+import { resolveTierAlias } from './model-aliases.js';
 
 /**
  * Module-scoped guard so the "effort parameter" hint only fires once per
@@ -474,6 +475,7 @@ export class ClaudeProvider {
   private getModelId(): string {
     const settingsPath = paths.settings();
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-    return settings.CLAUDE_MEM_MODEL;
+    // Resolve $TIER:<fast|smart|simple|summary> aliases at request time (#2289).
+    return resolveTierAlias(settings.CLAUDE_MEM_MODEL, settings);
   }
 }

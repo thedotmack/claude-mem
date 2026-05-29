@@ -14,6 +14,7 @@ import {
   verifyPidFileOwnership,
   type PidInfo,
 } from '../../supervisor/process-registry.js';
+import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { ServerV1PostgresRoutes } from '../routes/v1/ServerV1PostgresRoutes.js';
 import { SessionsObservationsAdapter } from '../compat/SessionsObservationsAdapter.js';
 import { SessionsSummarizeAdapter } from '../compat/SessionsSummarizeAdapter.js';
@@ -874,8 +875,12 @@ function spawnServerBetaDaemon(port: number): number | undefined {
   const child = spawn(process.execPath, [scriptPath, '--daemon'], {
     detached: true,
     stdio: 'ignore',
+    // Strip host CLI bleed-through (CLAUDE_CODE_*, including EFFORT_LEVEL) and
+    // Anthropic credentials before handing env to the detached daemon. The
+    // daemon re-reads credentials from ~/.claude-mem/.env at SDK spawn time.
+    // See env-isolation discipline (#2357 / #2375).
     env: {
-      ...process.env,
+      ...sanitizeEnv(process.env),
       CLAUDE_MEM_SERVER_PORT: String(port),
     },
   });

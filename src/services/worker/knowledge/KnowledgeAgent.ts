@@ -8,6 +8,7 @@ import { USER_SETTINGS_PATH, OBSERVER_SESSIONS_DIR, ensureDir } from '../../../s
 import { buildIsolatedEnvWithFreshOAuth } from '../../../shared/EnvManager.js';
 import { findClaudeExecutable } from '../../../shared/find-claude-executable.js';
 import { sanitizeEnv } from '../../../supervisor/env-sanitizer.js';
+import { resolveTierAlias } from '../model-aliases.js';
 
 // @ts-ignore - Agent SDK types may not be available
 import { query } from '@anthropic-ai/claude-agent-sdk';
@@ -173,7 +174,8 @@ export class KnowledgeAgent {
 
   private getModelId(): string {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-    return settings.CLAUDE_MEM_MODEL;
+    // Resolve $TIER:<fast|smart|simple|summary> aliases at request time (#2289).
+    return resolveTierAlias(settings.CLAUDE_MEM_MODEL, settings);
   }
 
 }

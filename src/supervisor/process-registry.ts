@@ -81,7 +81,9 @@ export function captureProcessStartToken(pid: number): string | null {
     const result = spawnSync('ps', ['-p', String(pid), '-o', 'lstart='], {
       encoding: 'utf-8',
       timeout: 2000,
-      env: { ...process.env, LC_ALL: 'C', LANG: 'C' }
+      // Uniform spawn-env discipline: sanitize even for read-only system
+      // binaries so the spawn-env CI check stays a single rule (#2357/#2375).
+      env: { ...sanitizeEnv(process.env), LC_ALL: 'C', LANG: 'C' }
     });
     if (result.status !== 0) return null;
     const token = result.stdout.trim();
