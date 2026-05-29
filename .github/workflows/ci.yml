@@ -16,15 +16,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
 
       - name: Install Bun (worker runtime + test runner)
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
 
+      # The repo intentionally gitignores package-lock.json (.gitignore), so
+      # `cache: 'npm'` and `npm ci` (both require a committed lockfile) cannot
+      # be used here — matches windows.yml / npm-publish.yml, which install the
+      # same way.
       - name: Install dependencies
-        run: npm ci
+        run: npm install --no-audit --no-fund
 
       - name: Typecheck
         run: npm run typecheck
@@ -58,15 +61,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
 
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
 
+      # See note in the build job: no committed lockfile, so npm install.
       - name: Install dependencies
-        run: npm ci
+        run: npm install --no-audit --no-fund
 
       - name: Verify Docker is available
         run: docker compose version
