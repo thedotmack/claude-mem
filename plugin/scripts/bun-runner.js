@@ -4,6 +4,7 @@ import { existsSync, readFileSync, mkdirSync, appendFileSync, writeFileSync } fr
 import { join, dirname, resolve } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
+import { createRequire } from 'module';
 
 const IS_WINDOWS = process.platform === 'win32';
 
@@ -100,6 +101,53 @@ if (!bunPath) {
   console.error('After installation, restart your terminal.');
   process.exit(1);
 }
+
+// Runtime self-heal: ensure the worker's externalized deps are present in
+// plugin/node_modules before we spawn it. The build-time install + tarball
+// bundling (build-hooks.js + package.json `files`) covers the npm channel,
+// but the MARKETPLACE channel is a `git clone` of this repo where
+// `plugin/node_modules` is gitignored and never committed — so a freshly
+// installed marketplace plugin has no node_modules and every hook crashes
+// with `Cannot find module 'zod/v3'` (issues #2407 / #2453 / #2640 / #2379).
+// We can't fix that at build time (the install output is gitignored), so we
+// heal once here, on first run, before the worker is invoked.
+function ensureRuntimeDeps() {
+  let pkgJsonPath;
+  try {
+    pkgJsonPath = join(RESOLVED_PLUGIN_ROOT, 'package.json');
+    if (!existsSync(pkgJsonPath)) return; // not a plugin root with deps
+    const pluginRequire = createRequire(pkgJsonPath);
+    pluginRequire.resolve('zod/v3'); // resolves → deps present, nothing to do
+    return;
+  } catch {
+    // zod/v3 unresolvable → install the hook-critical deps once.
+    // We install ONLY zod + shell-quote (the pure-JS externals the worker
+    // needs to boot), with --ignore-scripts. Rationale: npm resolves the full
+    // dep tree from the existing package.json, and the tree-sitter grammars
+    // are native node-gyp builds — on a Node version without a prebuilt
+    // binding (e.g. Node 26) a grammar build fails and aborts the whole
+    // install, leaving zod uninstalled. --ignore-scripts skips those native
+    // postinstalls (zod/shell-quote are pure JS and need none), so the hook
+    // always recovers. Grammar/code-graph deps heal separately via the full
+    // `npx claude-mem install` and are not required for hooks to run.
+    console.error('[bun-runner] plugin/node_modules missing zod — installing hook-critical deps (first run on this install)...');
+    const install = spawnSync('npm', ['install', '--no-save', '--no-audit', '--no-fund', '--ignore-scripts', 'zod@^4.3.6', 'shell-quote@^1.8.3'], {
+      cwd: RESOLVED_PLUGIN_ROOT,
+      stdio: ['ignore', 'inherit', 'inherit'],
+      // npm on Windows is a .cmd shim — spawn without shell hits ENOENT.
+      shell: IS_WINDOWS,
+    });
+    if (install.error) {
+      console.error(`[bun-runner] could not run npm install in ${RESOLVED_PLUGIN_ROOT}: ${install.error.message}`);
+    } else if (install.status === 0) {
+      console.error('[bun-runner] runtime deps installed.');
+    } else {
+      console.error(`[bun-runner] npm install exited with code ${install.status}. Run \`cd ${RESOLVED_PLUGIN_ROOT} && npm install\` manually.`);
+    }
+  }
+}
+
+ensureRuntimeDeps();
 
 function collectStdin() {
   return new Promise((resolve) => {
