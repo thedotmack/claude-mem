@@ -97,6 +97,7 @@
     "cursor:status": "bun plugin/scripts/worker-service.cjs cursor status",
     "cursor:setup": "bun plugin/scripts/worker-service.cjs cursor setup",
     "lint:hook-io": "node scripts/check-hook-io-discipline.cjs",
+    "lint:spawn-env": "node scripts/check-spawn-env-discipline.cjs",
     "typecheck": "tsc --noEmit && tsc --noEmit -p src/ui/viewer/tsconfig.json",
     "typecheck:root": "tsc --noEmit",
     "typecheck:viewer": "tsc --noEmit -p src/ui/viewer/tsconfig.json",

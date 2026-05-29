@@ -38,6 +38,8 @@ const EXCLUDED_PATTERNS = [
   /worker\/RateLimitStore\.ts$/,  // Side-effect-free in-memory rate-limit store
   /worker\/events\/SessionEventBroadcaster\.ts$/,  // Thin SSE broadcast wrapper, no error paths
   /sdk\/output-classifier\.ts$/,  // Pure, side-effect-free output classifier; logging happens at the ResponseProcessor call site with full session context
+  /build\/hook-shell-template\.ts$/,  // Pure build-time shell-string generator (no runtime/observability surface); drift is enforced by build-hooks.js + plugin-distribution.test.ts
+  /worker\/model-aliases\.ts$/,  // Pure $TIER alias resolver (#2289); side-effect-free passthrough, logging happens at the request-time call site
 ];
 
 const HIGH_PRIORITY_PATTERNS = [

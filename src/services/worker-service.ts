@@ -613,7 +613,11 @@ function runServerBetaServiceCli(command: string, extraArgs: string[] = []): voi
 
   const child = spawn(process.execPath, [serverBetaScript, command, ...extraArgs], {
     stdio: 'inherit',
-    env: process.env,
+    // Strip host CLI bleed-through (CLAUDE_CODE_*, including EFFORT_LEVEL) and
+    // Anthropic credentials before handing env to the spawned daemon. The
+    // daemon re-reads its own credentials from ~/.claude-mem/.env. See
+    // env-isolation discipline (#2357 / #2375).
+    env: sanitizeEnv(process.env),
   });
   child.on('error', (error) => {
     console.error(`Failed to start server beta command: ${error.message}`);

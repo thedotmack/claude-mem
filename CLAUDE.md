@@ -37,6 +37,21 @@ npm run build-and-sync        # Build, sync to marketplace, restart worker
 
 Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created with defaults on first run.
 
+### Anthropic Credentials (proxies, gateways, BigModel, etc.)
+
+For non-OAuth Anthropic credentials (proxies / gateways / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY`), put them in `~/.claude-mem/.env`:
+
+```
+ANTHROPIC_BASE_URL=https://your-proxy.example
+ANTHROPIC_AUTH_TOKEN=your-token
+```
+
+`~/.claude-mem/.env` is the single source of truth for these variables. The file is read at worker/SDK spawn time and re-injected into the SDK subprocess. **Parent-shell exports of `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, and `ANTHROPIC_API_KEY` are intentionally ignored** — they are in `BLOCKED_ENV_VARS` (`src/shared/EnvManager.ts`) to prevent host-config bleed-through (#2375).
+
+Likewise, `CLAUDE_CODE_EFFORT_LEVEL` / `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT` from the host CLI are stripped before the SDK subprocess starts (#2357), so they never reach the Messages API as an `effort` parameter.
+
+If you only have an OAuth subscription, no `.env` is needed; the worker reads the token from your keychain at spawn time.
+
 ## Multi-account
 
 Claude-mem supports running multiple isolated profiles on the same machine (e.g. work vs personal accounts) via environment variables. No CLI subcommand needed — set the env vars in the shell where you run Claude Code.
@@ -56,6 +71,39 @@ Claude-mem supports running multiple isolated profiles on the same machine (e.g.
 - **All paths and ports derive from these two env vars.** Hooks, npx-cli (`install`/`uninstall`/`start`/`search`), the OpenCode plugin, the OpenClaw installer, and the timeline-report skill all honor them. The settings file itself lives at `$CLAUDE_MEM_DATA_DIR/settings.json`.
 
 - See `src/shared/SettingsDefaultsManager.ts` for the canonical port/data-dir defaults and `plugin/skills/timeline-report/SKILL.md` for the shell snippet that resolves the port for arbitrary skills.
+
+## Spawn-Contract Resolution
+
+claude-mem integrations resolve `${CLAUDE_PLUGIN_ROOT}` (and equivalents) using one of three rules. Pick the rule by **who owns the config file** — host or installer. See `plans/02-spawn-contract-templating.md` for the full catalogue and rationale (issues #1215, #1533).
+
+### Rule A — Host-managed shell-template (Claude Code, Codex CLI)
+
+Sites: `plugin/hooks/hooks.json`, `plugin/hooks/codex-hooks.json`, `plugin/.mcp.json`.
+
+The host (Claude Code or Codex) owns the file's runtime location and rotates the cache directory on plugin upgrade. The `command` strings use a defensive POSIX-shell prelude that reads `${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}` first, then falls back through the host cache directories (newest first) and the marketplace install dir. The fallback chain ORDER is contractual.
+
+These strings are emitted by the single generator `src/build/hook-shell-template.ts`. Hand-editing the command strings is forbidden — `scripts/build-hooks.js` (`verifyShellTemplateCanonical`) fails the build if a checked-in file drifts from the generator, and `tests/infrastructure/plugin-distribution.test.ts` asserts byte parity.
+
+### Rule B — Installer-managed bake (Cursor, Gemini, Windsurf, MCP-only IDEs)
+
+Sites: any per-IDE config file written by `src/services/integrations/*Installer.ts` (Cursor, Gemini, Windsurf, and the MCP-only IDEs: Copilot CLI, Antigravity, Goose, Roo, Warp).
+
+Those hosts perform NO `${VAR}` substitution on the `command`/`args` they exec, so the installer bakes absolute paths via the centralized helpers in `src/services/integrations/install-paths.ts` (`getMcpServerAbsolutePath`, `getWorkerServiceAbsolutePath`, `getBunAbsolutePath`, `getNodeAbsolutePath`, `getPluginRootAbsolutePath`). Installers are bake-and-overwrite of their `claude-mem`-namespaced entries, so re-running `npx claude-mem install` re-bakes idempotently on upgrade. Never emit a raw `${CLAUDE_PLUGIN_ROOT}` from an installer.
+
+### Rule C — Runtime resolution (`bun-runner.js`, `version-check.js`)
+
+Both runtime scripts accept `CLAUDE_PLUGIN_ROOT` env first, then fall back to `dirname(import.meta.url)/..`. This is the safety net behind Rules A and B. `bun-runner.js`'s `fixBrokenScriptPath` repairs a raw `/scripts/...` arg that leaked through an unsubstituted Rule A placeholder — the build asserts it stays present.
+
+### Exempt by design
+
+- **OpenCode** (`src/services/integrations/OpenCodeInstaller.ts`, `src/integrations/opencode-plugin/index.ts`): JS plugin, no shell — receives plugin-root via the OpenCode plugin context.
+- **OpenClaw** (`openclaw/`): configured via `configSchema` (`workerPort`, `workerHost`); no plugin-root templating.
+- **Manifest files** (`plugin.json`, `marketplace.json`): hosts do not support `${VAR}` substitution; relative paths only.
+
+### Windows spawn caveats
+
+- **Codex CLI** is installed as `codex.cmd` on Windows; `spawnSync('codex', …)` without a shell throws ENOENT (#2695). `codexSpawn()` in `CodexCliInstaller.ts` uses `shell: true` (+ arg quoting) on Windows so PATHEXT resolves the shim.
+- **chroma-mcp** is spawned via `cmd.exe /c uvx …`; dep-override specs like `protobuf<7` contain cmd.exe redirection operators and must be quoted (#2696). `quoteForCmdExe()` in `ChromaMcpManager.ts` wraps any arg containing `< > | & ^ ( )`.
 
 ## File Locations
 

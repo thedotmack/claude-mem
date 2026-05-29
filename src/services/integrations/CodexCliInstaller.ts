@@ -1,6 +1,6 @@
 import path from 'path';
 import { homedir } from 'os';
-import { execFileSync, spawnSync } from 'child_process';
+import { execFileSync, spawnSync, type SpawnSyncReturns } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { logger } from '../../utils/logger.js';
@@ -80,11 +80,36 @@ function resolvePluginMarketplaceRoot(preferredRoot?: string): string {
   throw new Error('Could not locate a Codex marketplace root with .agents/plugins/marketplace.json and plugin/.codex-plugin/plugin.json. Run npx claude-mem@latest install from the package or repo root.');
 }
 
-function runCodex(args: string[]): void {
-  const result = spawnSync('codex', args, {
+/**
+ * Spawn the `codex` CLI.
+ *
+ * Issue #2695: on Windows `codex` is installed as `codex.cmd` (a PATH shim).
+ * `child_process.spawnSync('codex', args)` without a shell does NOT consult
+ * PATHEXT, so it can only find an extension-less `codex` and throws ENOENT.
+ * Setting `shell: true` makes Windows resolve the `.cmd`/`.exe`/`.bat` shim
+ * via cmd.exe (the same workaround bun-runner.js uses for `where bun`). Under
+ * a shell the args are re-tokenized, so we quote each one to preserve paths
+ * containing spaces. On POSIX we keep the direct (no-shell) exec.
+ */
+export function codexSpawn(args: string[]): SpawnSyncReturns<string> {
+  const isWindows = process.platform === 'win32';
+  if (isWindows) {
+    const quotedArgs = args.map((arg) => `"${arg.replace(/"/g, '\\"')}"`);
+    return spawnSync('codex', quotedArgs, {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: true,
+      windowsHide: true,
+    });
+  }
+  return spawnSync('codex', args, {
     encoding: 'utf-8',
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+}
+
+function runCodex(args: string[]): void {
+  const result = codexSpawn(args);
   const output = console;
   const stdout = result.stdout?.trimEnd();
   const stderr = result.stderr?.trimEnd();
@@ -215,10 +240,7 @@ function compareSemver(left: [number, number, number], right: [number, number, n
 }
 
 function assertCodexMarketplaceSupported(): void {
-  const result = spawnSync('codex', ['--version'], {
-    encoding: 'utf-8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  const result = codexSpawn(['--version']);
   const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`.trim();
 
   if (result.error) {
