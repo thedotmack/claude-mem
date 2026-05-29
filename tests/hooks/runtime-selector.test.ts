@@ -91,4 +91,30 @@ describe('runtime-selector', () => {
     expect(matched).toBeDefined();
     expect(matched?.msg).toContain('reason=transport');
   });
+
+  // #2564 — switching CLAUDE_MEM_RUNTIME flips which runtime hooks dispatch to
+  // WITHOUT a reinstall. The selector reads the setting on every call (via
+  // loadFromFileOnce), so flipping the setting and re-resolving must change the
+  // resolved runtime. This proves the no-reinstall switch end-to-end at the
+  // dispatch boundary the hooks use (resolveRuntimeContext).
+  it('flips worker <-> server-beta when the setting changes (no reinstall)', () => {
+    // Start on worker.
+    mockSettings.CLAUDE_MEM_RUNTIME = 'worker';
+    expect(resolveRuntimeContext().runtime).toBe('worker');
+
+    // Flip to server-beta (fully configured) — hooks now resolve the server runtime.
+    mockSettings.CLAUDE_MEM_RUNTIME = 'server-beta';
+    mockSettings.CLAUDE_MEM_SERVER_BETA_URL = 'http://localhost:9999';
+    mockSettings.CLAUDE_MEM_SERVER_BETA_API_KEY = 'cmem_flip';
+    mockSettings.CLAUDE_MEM_SERVER_BETA_PROJECT_ID = 'proj-flip';
+    const flipped = resolveRuntimeContext();
+    expect(flipped.runtime).toBe('server-beta');
+    if (flipped.runtime === 'server-beta') {
+      expect(flipped.serverBaseUrl).toBe('http://localhost:9999');
+    }
+
+    // Flip back to worker — hooks resolve the worker runtime again.
+    mockSettings.CLAUDE_MEM_RUNTIME = 'worker';
+    expect(resolveRuntimeContext().runtime).toBe('worker');
+  });
 });

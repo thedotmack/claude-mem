@@ -17,6 +17,7 @@ import {
   isInstallCurrent,
 } from '../install/setup-runtime.js';
 import { playBanner } from '../banner.js';
+import { normalizeRuntimeFlag, planServerRuntimeInstall } from './server-runtime-setup.js';
 
 function getSetting<K extends keyof SettingsDefaults>(key: K): SettingsDefaults[K] {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH)[key];
@@ -642,7 +643,27 @@ function resolveClaudeAuthMethod(): 'subscription' | 'api-key' | 'gateway' {
   return 'subscription';
 }
 
-async function promptRuntime(): Promise<RuntimeId> {
+const DEFAULT_SERVER_RUNTIME_BASE_URL = 'http://127.0.0.1:37877';
+
+async function promptRuntime(options: InstallOptions): Promise<RuntimeId> {
+  // #2543 — non-interactive runtime selection via `--runtime`. When the flag is
+  // present we never prompt and never fall back to the worker path: we resolve
+  // the requested runtime deterministically and, for the server runtime, plan +
+  // execute the server-specific setup (Docker stack, key gen, IDE MCP config).
+  if (options.runtime !== undefined) {
+    const requested = normalizeRuntimeFlag(options.runtime);
+    if (requested === null) {
+      log.error(`Unknown --runtime: ${options.runtime}. Allowed: worker, server`);
+      process.exit(1);
+    }
+    if (requested === 'server-beta') {
+      await setupServerRuntimeNonInteractive(options);
+      return 'server-beta';
+    }
+    mergeSettings({ CLAUDE_MEM_RUNTIME: 'worker' });
+    return 'worker';
+  }
+
   if (!isInteractive) {
     mergeSettings({ CLAUDE_MEM_RUNTIME: 'worker' });
     return 'worker';
@@ -670,6 +691,40 @@ async function promptRuntime(): Promise<RuntimeId> {
     await maybeBootstrapServerBetaApiKey();
   }
   return selected;
+}
+
+// #2543 — execute the server-runtime install plan. Pure planning lives in
+// server-runtime-setup.ts (unit-tested); this function performs the side
+// effects the plan describes. Docker stack bring-up is config-only here (we log
+// the command an operator must run / a CI provisioner executes); key generation
+// reuses the same bootstrap path as the interactive flow (createServerApiKey +
+// DEFAULT_LOCAL_API_KEY_SCOPES via server-beta-bootstrap), and the IDE MCP
+// config target is recorded in settings so hooks resolve the server runtime.
+async function setupServerRuntimeNonInteractive(options: InstallOptions): Promise<void> {
+  const serverBaseUrl = (options.serverUrl ?? '').trim() || DEFAULT_SERVER_RUNTIME_BASE_URL;
+  const hasDatabaseUrl = Boolean((process.env.CLAUDE_MEM_SERVER_DATABASE_URL ?? '').trim());
+  const plan = planServerRuntimeInstall({ serverBaseUrl, hasDatabaseUrl });
+
+  mergeSettings(plan.settings);
+
+  if (plan.bringUpDockerStack) {
+    log.info(
+      'Server runtime selected. Bring up the bundled stack with '
+        + '`docker compose up -d postgres valkey claude-mem-server claude-mem-worker` '
+        + `(pg + redis/valkey). The server listens at ${serverBaseUrl}.`,
+    );
+  }
+
+  log.info(
+    `IDE MCP config target for the server runtime: ${plan.mcpServerConfig.type} ${plan.mcpServerConfig.url}`,
+  );
+
+  if (plan.generateApiKey) {
+    await maybeBootstrapServerBetaApiKey();
+  }
+  for (const note of plan.notes) {
+    log.warn(note);
+  }
 }
 
 async function maybeBootstrapServerBetaApiKey(): Promise<void> {
@@ -1018,6 +1073,11 @@ export interface InstallOptions {
   provider?: 'claude' | 'gemini' | 'openrouter';
   model?: string;
   noAutoStart?: boolean;
+  // #2543 — non-interactive runtime selection. `server` is the operator-facing
+  // alias for the canonical `server-beta` runtime id.
+  runtime?: 'worker' | 'server' | 'server-beta';
+  // Base URL the server runtime (and the injected IDE MCP config) targets.
+  serverUrl?: string;
 }
 
 export async function runInstallCommand(options: InstallOptions = {}): Promise<void> {
@@ -1087,7 +1147,7 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
     selectedIDEs = ['claude-code'];
   }
 
-  const selectedRuntime = await promptRuntime();
+  const selectedRuntime = await promptRuntime(options);
   const selectedProvider = await promptProvider(options);
   if (selectedProvider === 'claude') {
     await promptClaudeModel(options);
@@ -1228,12 +1288,19 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
     }
   }
 
-  const autoStartSkipped = !isInteractive || options.noAutoStart;
+  // The server runtime is brought up via its own stack (Docker pg+redis +
+  // `claude-mem server start`), NOT the worker-service spawner. Skip the
+  // worker-only autostart entirely so the server runtime never invokes the
+  // worker path (#2543).
+  const autoStartSkipped = !isInteractive || options.noAutoStart || selectedRuntime === 'server-beta';
 
   await runTasks([
     {
       title: selectedRuntime === 'server-beta' ? 'Starting server beta daemon' : 'Starting worker daemon',
       task: async (message) => {
+        if (selectedRuntime === 'server-beta') {
+          return `Server runtime selected — start it with ${pc.bold('npx claude-mem server start')} ${pc.dim('(or via Docker compose)')}`;
+        }
         if (autoStartSkipped) {
           return isInteractive
             ? `Skipped (--no-auto-start)`
@@ -1243,15 +1310,17 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
         const marketplaceScriptPath = join(marketplaceDirectory(), 'plugin', 'scripts', 'worker-service.cjs');
         const cacheScriptPath = join(pluginCacheDirectory(version), 'scripts', 'worker-service.cjs');
         const scriptPath = existsSync(marketplaceScriptPath) ? marketplaceScriptPath : cacheScriptPath;
-        message(`Spawning ${selectedRuntime === 'server-beta' ? 'server beta' : 'worker'} on port ${port}...`);
+        // selectedRuntime is narrowed to 'worker' here: the server-beta case
+        // returned above and never reaches the worker-service spawner.
+        message(`Spawning worker on port ${port}...`);
         workerStartResult = await ensureWorkerStarted(port, scriptPath);
         switch (workerStartResult) {
           case 'ready':
-            return `${selectedRuntime === 'server-beta' ? 'Server beta' : 'Worker'} ready at http://localhost:${port} ${pc.green('OK')}`;
+            return `Worker ready at http://localhost:${port} ${pc.green('OK')}`;
           case 'warming':
-            return `${selectedRuntime === 'server-beta' ? 'Server beta' : 'Worker'} starting on port ${port} — finishing in background ${pc.yellow('⏳')}`;
+            return `Worker starting on port ${port} — finishing in background ${pc.yellow('⏳')}`;
           case 'dead':
-            return `${selectedRuntime === 'server-beta' ? 'Server beta' : 'Worker'} did not start — try \`${selectedRuntime === 'server-beta' ? 'npx claude-mem server start' : 'npx claude-mem start'}\` manually ${pc.yellow('!')}`;
+            return `Worker did not start — try \`npx claude-mem start\` manually ${pc.yellow('!')}`;
         }
       },
     },
