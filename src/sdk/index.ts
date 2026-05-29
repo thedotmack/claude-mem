@@ -27,8 +27,10 @@ import {
   createPostgresStorageRepositories,
   type PostgresStorageRepositories,
 } from '../storage/postgres/index.js';
+import type { CreatePostgresAgentEventInput } from '../storage/postgres/agent-events.js';
 import { ChromaSync } from '../services/sync/ChromaSync.js';
 import { ChromaMcpManager } from '../services/sync/ChromaMcpManager.js';
+import { IngestEventsService } from '../server/services/IngestEventsService.js';
 
 /**
  * Tuning options for the required Chroma semantic-search engine.
@@ -153,23 +155,66 @@ export interface CmemContextResponse {
 /**
  * The friendly capture-event shape accepted by
  * {@link CmemClient.capture} / {@link CmemClient.captureBatch}. Phase 4
- * maps this to `CreatePostgresAgentEventInput`.
+ * maps this to `CreatePostgresAgentEventInput`. `projectId` + `teamId`
+ * are added by the SDK from the resolved tenancy, not by the caller.
  */
 export interface CmemCaptureEvent {
+  /** Source system label (e.g. 'custom-cli', 'my-bot'). Required. */
   sourceAdapter: string;
+  /** Event type tag (e.g. 'message', 'tool-use'). Required. */
   eventType: string;
+  /** Free-form payload. Will be JSON-serialized. */
   payload: Record<string, unknown>;
-  occurredAt?: Date | string;
+  /** When this event happened. Defaults to `new Date()`. */
+  occurredAt?: Date | string | number;
+  /** Caller's idempotency key for dedup. Optional but recommended. */
   sourceEventId?: string;
+  /** Optional server-session id this event belongs to. */
   serverSessionId?: string;
+  /** Optional platform-source label (e.g. 'claude-code', 'opencode'). */
+  platformSource?: string;
+  /** Free-form metadata. Defaults to `{}`. */
+  metadata?: Record<string, unknown>;
 }
 
 /**
- * Identifier returned by capture/generate calls. Phase 4 narrows.
+ * Result of a {@link CmemClient.capture} / `captureBatch` call. Mirrors
+ * the underlying `IngestEventsService.ingestOne` return shape, projected
+ * down to the IDs consumers actually want.
+ *
+ * `generationJobId` is the queued `observation_generation_jobs` row that
+ * Phase 5's `generate(jobId)` will consume. The SDK never enqueues to
+ * Redis/BullMQ, so the job stays in status `queued` until you run it.
  */
 export interface CmemCaptureResult {
   agentEventId: string;
   generationJobId: string;
+}
+
+/**
+ * Optional input accepted by {@link CmemClient.startSession}. Maps to
+ * `PostgresServerSessionsRepository.create`'s tenant-scoped input.
+ */
+export interface CmemStartSessionInput {
+  /** Caller-supplied external session id (used for idempotent dedup). */
+  externalSessionId?: string;
+  /** Caller-supplied content session id (used for idempotent dedup). */
+  contentSessionId?: string;
+  /** Agent identifier (e.g. user or assistant id). */
+  agentId?: string;
+  /** Agent type label. */
+  agentType?: string;
+  /** Platform-source label (e.g. 'claude-code', 'opencode'). */
+  platformSource?: string;
+  /** Free-form metadata. */
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Identifier returned by {@link CmemClient.startSession}.
+ */
+export interface CmemSessionInfo {
+  serverSessionId: string;
 }
 
 /**
@@ -201,8 +246,8 @@ export interface CmemClient {
   /** Search + join contents into a single `\n\n`-delimited context blob. */
   context(input: { query: string; limit?: number }): Promise<CmemContextResponse>;
   /** Begin a server session for grouping subsequent captures. */
-  startSession(input?: { name?: string }): Promise<{ serverSessionId: string }>;
-  /** End the named server session. */
+  startSession(input?: CmemStartSessionInput): Promise<CmemSessionInfo>;
+  /** End the named server session. Idempotent. */
   endSession(serverSessionId: string): Promise<void>;
   /** Close Chroma + pool (if SDK-owned). Safe to call repeatedly. */
   close(): Promise<void>;
@@ -380,20 +425,102 @@ export async function createCmemClient(options: CmemClientOptions): Promise<Cmem
     );
   }
 
-  // 6. Build and return the client. I/O methods are stubs filled in by
-  //    Phases 4-6.
+  // 6. Build the IngestEventsService once at construction. `resolveEventQueue`
+  //    MUST return `null` so the outbox row is written but no BullMQ enqueue
+  //    is attempted. Generation never runs inline here — that is Phase 5.
+  //    See IngestEventsService.ts:235-238 for the queued_only short-circuit.
+  const ingest = new IngestEventsService({
+    pool,
+    resolveEventQueue: () => null,
+  });
+
+  // 7. Build and return the client. capture / captureBatch / startSession /
+  //    endSession are wired in this phase. generate / captureAndGenerate /
+  //    search / context remain Phase 5/6 stubs.
   let closed = false;
+
+  function mapCaptureEvent(event: CmemCaptureEvent): CreatePostgresAgentEventInput {
+    const input: CreatePostgresAgentEventInput = {
+      projectId,
+      teamId,
+      sourceAdapter: event.sourceAdapter,
+      eventType: event.eventType,
+      payload: event.payload as CreatePostgresAgentEventInput['payload'],
+      occurredAt: event.occurredAt ?? new Date(),
+    };
+    if (event.sourceEventId !== undefined) {
+      input.sourceEventId = event.sourceEventId;
+    }
+    if (event.serverSessionId !== undefined) {
+      input.serverSessionId = event.serverSessionId;
+    }
+    if (event.platformSource !== undefined) {
+      input.platformSource = event.platformSource;
+    }
+    if (event.metadata !== undefined) {
+      input.metadata = event.metadata as CreatePostgresAgentEventInput['metadata'];
+    }
+    return input;
+  }
+
   const client: CmemClient = {
     teamId,
     projectId,
     repos,
     pool,
     chromaSync,
-    capture() {
-      throw new Error('cmem-sdk: capture — Phase 4 not implemented yet');
+    async capture(event: CmemCaptureEvent): Promise<CmemCaptureResult> {
+      if (closed) {
+        throw new Error('cmem-sdk: client is closed');
+      }
+      const result = await ingest.ingestOne(mapCaptureEvent(event), {
+        source: 'cmem-sdk.capture',
+        sourceAdapter: event.sourceAdapter,
+      });
+      // resolveEventQueue: () => null guarantees `outbox` is non-null and
+      // `enqueueState` is 'queued_only' whenever the default `generate: true`
+      // path runs (IngestEventsService.ts:236-238). If a future caller
+      // disables generation we surface a clear error rather than a TS-cast lie.
+      if (!result.outbox) {
+        throw new Error(
+          'cmem-sdk: capture expected a queued outbox row but received none. ' +
+            'This indicates IngestEventsService was invoked with generate: false; ' +
+            'capture() must produce a generation job for Phase 5 consumption.'
+        );
+      }
+      return {
+        agentEventId: result.event.id,
+        generationJobId: result.outbox.id,
+      };
     },
-    captureBatch() {
-      throw new Error('cmem-sdk: captureBatch — Phase 4 not implemented yet');
+    async captureBatch(events: CmemCaptureEvent[]): Promise<CmemCaptureResult[]> {
+      if (closed) {
+        throw new Error('cmem-sdk: client is closed');
+      }
+      if (events.length === 0) {
+        return [];
+      }
+      // ingestBatch wraps all writes in a single Postgres transaction
+      // (IngestEventsService.ts:170-220), which is materially better than
+      // looping ingestOne per event. Same resolveEventQueue: () => null
+      // semantics apply to every row.
+      const results = await ingest.ingestBatch(
+        events.map(mapCaptureEvent),
+        { source: 'cmem-sdk.captureBatch' }
+      );
+      return results.map((r, i) => {
+        if (!r.outbox) {
+          const sourceEventId = events[i]?.sourceEventId ?? '<no source_event_id>';
+          throw new Error(
+            'cmem-sdk: captureBatch expected a queued outbox row for event ' +
+              `${sourceEventId} but received none.`
+          );
+        }
+        return {
+          agentEventId: r.event.id,
+          generationJobId: r.outbox.id,
+        };
+      });
     },
     generate() {
       throw new Error('cmem-sdk: generate — Phase 5 not implemented yet');
@@ -407,11 +534,55 @@ export async function createCmemClient(options: CmemClientOptions): Promise<Cmem
     context() {
       throw new Error('cmem-sdk: context — Phase 6 not implemented yet');
     },
-    startSession() {
-      throw new Error('cmem-sdk: startSession — Phase 4 not implemented yet');
+    async startSession(input: CmemStartSessionInput = {}): Promise<CmemSessionInfo> {
+      if (closed) {
+        throw new Error('cmem-sdk: client is closed');
+      }
+      const createInput: Parameters<typeof repos.sessions.create>[0] = {
+        projectId,
+        teamId,
+      };
+      if (input.externalSessionId !== undefined) {
+        createInput.externalSessionId = input.externalSessionId;
+      }
+      if (input.contentSessionId !== undefined) {
+        createInput.contentSessionId = input.contentSessionId;
+      }
+      if (input.agentId !== undefined) {
+        createInput.agentId = input.agentId;
+      }
+      if (input.agentType !== undefined) {
+        createInput.agentType = input.agentType;
+      }
+      if (input.platformSource !== undefined) {
+        createInput.platformSource = input.platformSource;
+      }
+      if (input.metadata !== undefined) {
+        createInput.metadata = input.metadata as Parameters<
+          typeof repos.sessions.create
+        >[0]['metadata'];
+      }
+      const session = await repos.sessions.create(createInput);
+      return { serverSessionId: session.id };
     },
-    endSession() {
-      throw new Error('cmem-sdk: endSession — Phase 4 not implemented yet');
+    async endSession(serverSessionId: string): Promise<void> {
+      if (closed) {
+        throw new Error('cmem-sdk: client is closed');
+      }
+      // endSession is idempotent (server-sessions.ts:145-162). It returns
+      // null only if the (id, projectId, teamId) tuple does not exist;
+      // surface that as a clear error so callers don't silently no-op.
+      const updated = await repos.sessions.endSession({
+        id: serverSessionId,
+        projectId,
+        teamId,
+      });
+      if (!updated) {
+        throw new Error(
+          `cmem-sdk: endSession could not find server_session ${serverSessionId} ` +
+            `for tenant (projectId=${projectId}, teamId=${teamId})`
+        );
+      }
     },
     async close() {
       if (closed) {
