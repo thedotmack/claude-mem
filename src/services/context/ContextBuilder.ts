@@ -4,7 +4,7 @@ import { homedir } from 'os';
 import { unlinkSync } from 'fs';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
-import { getProjectContext } from '../../utils/project-name.js';
+import { getProjectContext, loadEnvironments } from '../../utils/project-name.js';
 
 import type { ContextInput, ContextConfig, Observation, SessionSummary } from './types.js';
 import { loadContextConfig } from './ContextConfigLoader.js';
@@ -57,8 +57,17 @@ function initializeDatabase(): SessionStore | null {
   }
 }
 
+function getEnvironmentHint(projectName: string): string | null {
+  const environments = loadEnvironments();
+  const matched = environments.find(env => env.name === projectName);
+  if (!matched) return null;
+  return `environment, paths: ${matched.patterns.join(', ')}`;
+}
+
 function renderEmptyState(project: string, forHuman: boolean): string {
-  return forHuman ? renderHumanEmptyState(project) : renderAgentEmptyState(project);
+  const envHint = getEnvironmentHint(project);
+  const projectDisplay = envHint ? `${project} (${envHint})` : project;
+  return forHuman ? renderHumanEmptyState(projectDisplay) : renderAgentEmptyState(projectDisplay);
 }
 
 function buildContextOutput(
