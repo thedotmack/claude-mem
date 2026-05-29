@@ -7,7 +7,7 @@ import { TimelineService } from './TimelineService.js';
 import type { TimelineItem } from './TimelineService.js';
 import type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../sqlite/types.js';
 import { logger } from '../../utils/logger.js';
-import { getProjectContext } from '../../utils/project-name.js';
+import path from 'path';
 import { formatDate, formatTime, formatDateTime, extractFirstFile, groupByDate, estimateTokens } from '../../shared/timeline-formatting.js';
 import { ModeManager } from '../domain/ModeManager.js';
 
@@ -1110,7 +1110,7 @@ export class SearchManager {
   }
 
   async getRecentContext(args: any): Promise<any> {
-    const project = args.project || getProjectContext(process.cwd()).primary;
+    const project = args.project || path.basename(process.cwd());
     const limit = args.limit || 3;
 
     const sessions = this.sessionStore.getRecentSessionsWithStatus(project, limit);
