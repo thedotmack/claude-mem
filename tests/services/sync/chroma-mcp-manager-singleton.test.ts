@@ -1,4 +1,6 @@
-import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
+import fs from 'node:fs';
+import path from 'node:path';
 
 // Capture real exports before mock.module mutates the live namespace, then
 // re-register the snapshots in afterAll so these mocks do not leak into later
@@ -23,6 +25,13 @@ const realChildProcess = require('node:child_process');
 // only signals the direct child (uvx). The fix routes every "abandon current
 // transport" path through disposeCurrentSubprocess(), which tree-kills via
 // killProcessTree() before nulling the handles.
+
+const ORIGINAL_CLAUDE_MEM_DATA_DIR = process.env.CLAUDE_MEM_DATA_DIR;
+const FAKE_DATA_DIR = `/tmp/fake-claude-mem-${process.pid}`;
+const FAKE_CHROMA_DIR = path.join(FAKE_DATA_DIR, 'chroma');
+const FAKE_CHROMA_LOCK = path.join(FAKE_CHROMA_DIR, '.claude-mem-chroma-mcp.lock');
+
+process.env.CLAUDE_MEM_DATA_DIR = FAKE_DATA_DIR;
 
 let transportCount = 0;
 const transportInstances: Array<FakeTransport> = [];
@@ -95,7 +104,7 @@ mock.module('../../../src/shared/SettingsDefaultsManager.js', () => ({
 mock.module('../../../src/shared/paths.js', () => ({
   USER_SETTINGS_PATH: '/tmp/fake-settings.json',
   paths: {
-    chroma: () => '/tmp/fake-chroma',
+    chroma: () => FAKE_CHROMA_DIR,
     combinedCerts: () => '/tmp/fake-combined-certs.pem',
   },
 }));
@@ -112,6 +121,7 @@ mock.module('../../../src/utils/logger.js', () => ({
 
 // Track tree-kill invocations and the transport whose subprocess was killed.
 const killTreeCalls: number[] = [];
+const execFileCalls: Array<{ cmd: string; args: string[] }> = [];
 
 mock.module('../../../src/supervisor/index.ts', () => ({
   getSupervisor: () => ({
@@ -136,32 +146,57 @@ mock.module('child_process', () => {
       cmd: string,
       args: string[],
       _opts: unknown,
-      cb: (err: Error | null, stdout: { stdout: string; stderr: string }) => void
+      cb: (err: Error | null, stdout: string, stderr: string) => void
     ) => {
+      execFileCalls.push({ cmd, args });
       // Bun's promisify path will call this as if it were a Node-style callback.
       if (cmd === 'pgrep') {
-        cb(null, { stdout: '', stderr: '' } as any);
+        cb(null, '', '');
       } else {
-        cb(null, { stdout: '', stderr: '' } as any);
+        cb(null, '', '');
       }
     },
     execSync: () => '',
+    execFileSync: () => '',
   };
 });
 
-// Stub process.kill so the tree-kill path can record targets without crashing
-// the test runner if the synthetic PID happens to collide with a real one.
-const realProcessKill = process.kill.bind(process);
+// Stub process.kill only while this suite is actively running so the tree-kill
+// path can record targets without crashing the test runner if the synthetic PID
+// happens to collide with a real one. Restoring in afterEach prevents this
+// module-level test double from contaminating later tests in the same Bun worker.
+const realProcessKill = process.kill;
 const stubbedProcessKill = ((pid: number, _signal?: string | number) => {
   killTreeCalls.push(pid);
   return true;
 }) as typeof process.kill;
-process.kill = stubbedProcessKill;
 
-import { ChromaMcpManager } from '../../../src/services/sync/ChromaMcpManager.js';
+function installProcessKillStub(): void {
+  process.kill = stubbedProcessKill;
+}
+
+function restoreProcessKill(): void {
+  process.kill = realProcessKill;
+}
+
+installProcessKillStub();
+const { ChromaMcpManager } = await import('../../../src/services/sync/ChromaMcpManager.js');
+const originalKillProcessTree = (ChromaMcpManager as unknown as {
+  killProcessTree: (pid: number) => Promise<void>;
+}).killProcessTree.bind(ChromaMcpManager);
+
+(ChromaMcpManager as unknown as {
+  killProcessTree: (pid: number) => Promise<void>;
+}).killProcessTree = async (pid: number) => {
+  killTreeCalls.push(pid);
+  await originalKillProcessTree(pid);
+};
 
 afterAll(() => {
   process.kill = realProcessKill;
+  (ChromaMcpManager as unknown as {
+    killProcessTree: (pid: number) => Promise<void>;
+  }).killProcessTree = originalKillProcessTree;
   mock.module('../../../src/shared/SettingsDefaultsManager.js', () => realSettingsSnapshot);
   mock.module('../../../src/shared/paths.js', () => realPathsSnapshot);
   mock.module('../../../src/utils/logger.js', () => realLoggerSnapshot);
@@ -171,17 +206,47 @@ afterAll(() => {
 });
 
 function resetState(): void {
+  try { fs.unlinkSync(FAKE_CHROMA_LOCK); } catch { /* absent */ }
+  try { fs.mkdirSync(FAKE_CHROMA_DIR, { recursive: true }); } catch { /* best-effort */ }
   transportCount = 0;
   transportInstances.length = 0;
   killTreeCalls.length = 0;
+  execFileCalls.length = 0;
   connectImpl = async () => {};
   callToolImpl = async () => ({ content: [{ type: 'text', text: '{}' }] });
 }
 
+function expectTreeKillFor(pid: number): void {
+  const taskkillCalled = execFileCalls.some(call =>
+    call.cmd === 'taskkill' && call.args.includes(String(pid))
+  );
+  expect(killTreeCalls.includes(pid) || taskkillCalled).toBe(true);
+}
+
 describe('ChromaMcpManager singleton enforcement (#2313)', () => {
   beforeEach(async () => {
+    installProcessKillStub();
     await ChromaMcpManager.reset();
     resetState();
+  });
+
+  afterEach(async () => {
+    try {
+      await ChromaMcpManager.reset();
+      try { fs.unlinkSync(FAKE_CHROMA_LOCK); } catch { /* absent */ }
+    } finally {
+      restoreProcessKill();
+    }
+  });
+
+  afterAll(() => {
+    restoreProcessKill();
+    try { fs.rmSync(FAKE_DATA_DIR, { recursive: true, force: true }); } catch { /* best-effort */ }
+    if (ORIGINAL_CLAUDE_MEM_DATA_DIR === undefined) {
+      delete process.env.CLAUDE_MEM_DATA_DIR;
+    } else {
+      process.env.CLAUDE_MEM_DATA_DIR = ORIGINAL_CLAUDE_MEM_DATA_DIR;
+    }
   });
 
   it('serializes concurrent ensureConnected() calls into one spawn', async () => {
@@ -223,7 +288,7 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(transportInstances.length).toBe(2);
     // The first transport's pid must have been signaled by killProcessTree
     // before the second transport spawned.
-    expect(killTreeCalls).toContain(firstPid);
+    expectTreeKillFor(firstPid);
   });
 
   it('stop() disposes state including any pending connecting promise', async () => {
@@ -237,17 +302,11 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
 
     // After stop(), every internal handle should be cleared and the prior
     // subprocess tree must have been signaled.
-    expect(killTreeCalls).toContain(subprocessPid);
+    expectTreeKillFor(subprocessPid);
 
     // A subsequent ensureConnected must spawn a fresh transport (not reuse
     // a stale one).
     await mgr.callTool('chroma_list_collections', { limit: 1 });
     expect(transportInstances.length).toBe(2);
   });
-});
-
-// Restore the real process.kill once the test module finishes evaluating any
-// late-arriving microtasks.
-process.on('exit', () => {
-  process.kill = realProcessKill;
 });

@@ -1,7 +1,7 @@
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { execFile, execSync, type ChildProcess } from 'child_process';
+import { execFile, execFileSync, execSync, type ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
 import os from 'os';
@@ -20,6 +20,8 @@ const MCP_CONNECTION_TIMEOUT_MS = 30_000;
 const RECONNECT_BACKOFF_MS = 10_000;
 const DEFAULT_CHROMA_DATA_DIR = paths.chroma();
 const CHROMA_SUPERVISOR_ID = 'chroma-mcp';
+const CHROMA_LOCK_FILE = '.claude-mem-chroma-mcp.lock';
+const PARENT_DEATH_CHECK_MS = 2_000;
 
 const CHROMA_MCP_PINNED_VERSION = '0.2.6';
 
@@ -53,13 +55,23 @@ const CHROMA_MCP_DEP_OVERRIDES: ReadonlyArray<string> = [
 
 export class ChromaMcpManager {
   private static instance: ChromaMcpManager | null = null;
+  private static lifecycleHooksRegistered = false;
   private client: Client | null = null;
   private transport: StdioClientTransport | null = null;
   private connected: boolean = false;
   private lastConnectionFailureTimestamp: number = 0;
   private connecting: Promise<void> | null = null;
+  private cleanupInProgress: Promise<void> | null = null;
+  private chromaLockFd: number | null = null;
+  private chromaLockPath: string | null = null;
+  private trackedSubprocessPid: number | null = null;
+  private readonly initialParentPid = process.ppid;
+  private parentDeathTimer: ReturnType<typeof setInterval> | null = null;
 
-  private constructor() {}
+  private constructor() {
+    ChromaMcpManager.registerLifecycleHooks();
+    this.startParentDeathMonitor();
+  }
 
   static getInstance(): ChromaMcpManager {
     if (!ChromaMcpManager.instance) {
@@ -69,6 +81,10 @@ export class ChromaMcpManager {
   }
 
   private async ensureConnected(): Promise<void> {
+    if (this.cleanupInProgress) {
+      await this.cleanupInProgress;
+    }
+
     if (this.connected && this.client) {
       return;
     }
@@ -110,6 +126,7 @@ export class ChromaMcpManager {
     await this.disposeCurrentSubprocess();
 
     const commandArgs = this.buildCommandArgs();
+    const persistentDataDir = this.getPersistentDataDir(commandArgs);
     const spawnEnvironment = this.getSpawnEnv();
     getSupervisor().assertCanSpawn('chroma mcp');
 
@@ -121,80 +138,81 @@ export class ChromaMcpManager {
     const uvxSpawnCommand = ChromaMcpManager.resolveUvxCommand();
     const uvxSpawnArgs = commandArgs;
 
-    logger.info('CHROMA_MCP', 'Connecting to chroma-mcp via MCP stdio', {
-      command: uvxSpawnCommand,
-      args: uvxSpawnArgs.join(' ')
-    });
-
-    this.transport = new StdioClientTransport({
-      command: uvxSpawnCommand,
-      args: uvxSpawnArgs,
-      env: spawnEnvironment,
-      cwd: os.homedir(),
-      stderr: 'pipe'
-    });
-
-    this.client = new Client(
-      { name: CHROMA_MCP_CLIENT_NAME, version: CHROMA_MCP_CLIENT_VERSION },
-      { capabilities: {} }
-    );
-
-    const mcpConnectionPromise = this.client.connect(this.transport);
-    let timeoutId: ReturnType<typeof setTimeout>;
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      timeoutId = setTimeout(
-        () => reject(new Error(`MCP connection to chroma-mcp timed out after ${MCP_CONNECTION_TIMEOUT_MS}ms`)),
-        MCP_CONNECTION_TIMEOUT_MS
-      );
-    });
-
     try {
-      await Promise.race([mcpConnectionPromise, timeoutPromise]);
-    } catch (connectionError) {
-      clearTimeout(timeoutId!);
-      logger.warn('CHROMA_MCP', 'Connection failed, killing subprocess tree to prevent zombie', {
-        error: connectionError instanceof Error ? connectionError.message : String(connectionError)
+      this.acquirePersistentDataDirLock(persistentDataDir);
+      logger.info('CHROMA_MCP', 'Connecting to chroma-mcp via MCP stdio', {
+        command: uvxSpawnCommand,
+        args: uvxSpawnArgs.join(' ')
       });
-      // Tree-kill (not just transport.close) so failed-connect descendants
-      // can't survive on Linux (#2313).
-      await this.disposeCurrentSubprocess();
-      throw connectionError;
-    }
-    clearTimeout(timeoutId!);
 
-    this.connected = true;
-    this.registerManagedProcess();
+      this.transport = new StdioClientTransport({
+        command: uvxSpawnCommand,
+        args: uvxSpawnArgs,
+        env: spawnEnvironment,
+        cwd: os.homedir(),
+        stderr: 'pipe'
+      });
 
-    logger.info('CHROMA_MCP', 'Connected to chroma-mcp successfully');
+      this.client = new Client(
+        { name: CHROMA_MCP_CLIENT_NAME, version: CHROMA_MCP_CLIENT_VERSION },
+        { capabilities: {} }
+      );
 
-    const currentTransport = this.transport;
-    const currentTrackedPid = (this.transport as unknown as { _process?: ChildProcess })._process?.pid;
-    this.transport.onclose = () => {
-      if (this.transport !== currentTransport) {
-        logger.debug('CHROMA_MCP', 'Ignoring stale onclose from previous transport');
-        return;
+      let timeoutId: ReturnType<typeof setTimeout> | null = null;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(
+          () => reject(new Error(`MCP connection to chroma-mcp timed out after ${MCP_CONNECTION_TIMEOUT_MS}ms`)),
+          MCP_CONNECTION_TIMEOUT_MS
+        );
+      });
+
+      try {
+        const mcpConnectionPromise = this.client.connect(this.transport);
+        await Promise.race([mcpConnectionPromise, timeoutPromise]);
+      } catch (connectionError) {
+        logger.warn('CHROMA_MCP', 'Connection failed, killing subprocess tree to prevent zombie', {
+          error: connectionError instanceof Error ? connectionError.message : String(connectionError)
+        });
+        // Tree-kill (not just transport.close) so failed-connect descendants
+        // can't survive on Linux (#2313).
+        throw connectionError;
+      } finally {
+        if (timeoutId) clearTimeout(timeoutId);
       }
-      logger.warn('CHROMA_MCP', 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff');
-      this.connected = false;
-      getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
-      this.client = null;
-      this.transport = null;
-      this.lastConnectionFailureTimestamp = Date.now();
 
-      // Direct child (uvx) emitted close, but on Linux the grandchildren
-      // (uv/python/chroma-mcp) often outlive their parent because MCP SDK
-      // does not use process groups. Sweep the descendant tree using the
-      // captured PID — best-effort; pgrep returns nothing if everything
-      // already exited (#2313).
-      if (currentTrackedPid) {
-        ChromaMcpManager.killProcessTree(currentTrackedPid).catch((error) => {
-          logger.debug('CHROMA_MCP', 'Background tree-kill after onclose finished (best-effort)', {
+      this.connected = true;
+      this.trackedSubprocessPid = (this.transport as unknown as { _process?: ChildProcess })._process?.pid ?? null;
+      this.updatePersistentDataDirLock(this.trackedSubprocessPid);
+      this.registerManagedProcess();
+
+      logger.info('CHROMA_MCP', 'Connected to chroma-mcp successfully');
+
+      const currentTransport = this.transport;
+      const currentTrackedPid = this.trackedSubprocessPid;
+      this.transport.onclose = () => {
+        if (this.transport !== currentTransport) {
+          logger.debug('CHROMA_MCP', 'Ignoring stale onclose from previous transport');
+          return;
+        }
+        logger.warn('CHROMA_MCP', 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff');
+        this.lastConnectionFailureTimestamp = Date.now();
+
+        // Direct child (uvx) emitted close, but on Linux the grandchildren
+        // (uv/python/chroma-mcp) often outlive their parent because MCP SDK
+        // does not use process groups. Keep the data-dir lock held until the
+        // best-effort tree-kill completes so an immediate reconnect cannot
+        // spawn a second persistent chroma-mcp for the same directory.
+        this.disposeCurrentSubprocess().catch((error) => {
+          logger.debug('CHROMA_MCP', 'Background cleanup after onclose finished (best-effort)', {
             pid: currentTrackedPid,
             error: error instanceof Error ? error.message : String(error)
           });
         });
-      }
-    };
+      };
+    } catch (error) {
+      await this.disposeCurrentSubprocess();
+      throw error;
+    }
   }
 
   private buildCommandArgs(): string[] {
@@ -245,6 +263,216 @@ export class ChromaMcpManager {
       '--client-type', 'persistent',
       '--data-dir', DEFAULT_CHROMA_DATA_DIR.replace(/\\/g, '/')
     ];
+  }
+
+
+  private getPersistentDataDir(commandArgs: string[]): string | null {
+    const clientTypeIndex = commandArgs.indexOf('--client-type');
+    if (clientTypeIndex < 0 || commandArgs[clientTypeIndex + 1] !== 'persistent') {
+      return null;
+    }
+
+    const dataDirIndex = commandArgs.indexOf('--data-dir');
+    const dataDir = dataDirIndex >= 0 ? commandArgs[dataDirIndex + 1] : null;
+    return dataDir ? path.resolve(dataDir) : path.resolve(DEFAULT_CHROMA_DATA_DIR);
+  }
+
+  private acquirePersistentDataDirLock(dataDir: string | null): void {
+    if (!dataDir) return;
+
+    fs.mkdirSync(dataDir, { recursive: true });
+    const lockPath = path.join(dataDir, CHROMA_LOCK_FILE);
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const fd = fs.openSync(lockPath, 'wx');
+        this.chromaLockFd = fd;
+        this.chromaLockPath = lockPath;
+        try {
+          this.writePersistentDataDirLock(null);
+        } catch (writeError) {
+          // writePersistentDataDirLock failed after openSync already succeeded
+          // (e.g. ENOSPC during fsyncSync). Close and reset the fd/path so this
+          // instance does not hold a leaked descriptor or inconsistent state.
+          this.chromaLockFd = null;
+          this.chromaLockPath = null;
+          try { fs.closeSync(fd); } catch { /* best-effort */ }
+          throw writeError;
+        }
+        return;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== 'EEXIST') {
+          throw error;
+        }
+
+        const existing = ChromaMcpManager.readPersistentDataDirLock(lockPath);
+        if (existing && ChromaMcpManager.lockReferencesLiveProcess(existing)) {
+          throw new Error(
+            `chroma-mcp persistent data dir is already locked by a live process ` +
+            `(dataDir=${dataDir}, ownerPid=${existing.ownerPid ?? 'unknown'}, chromaPid=${existing.chromaPid ?? 'unknown'})`
+          );
+        }
+
+        logger.warn('CHROMA_MCP', 'Removing stale chroma-mcp data-dir lock', {
+          lockPath,
+          ownerPid: existing?.ownerPid ?? null,
+          chromaPid: existing?.chromaPid ?? null,
+        });
+        try { fs.unlinkSync(lockPath); } catch { /* best-effort stale lock cleanup */ }
+      }
+    }
+
+    throw new Error(`failed to acquire chroma-mcp data-dir lock at ${lockPath}`);
+  }
+
+  private updatePersistentDataDirLock(chromaPid: number | null): void {
+    if (this.chromaLockFd === null || !this.chromaLockPath) return;
+    this.writePersistentDataDirLock(chromaPid);
+  }
+
+  private writePersistentDataDirLock(chromaPid: number | null): void {
+    if (this.chromaLockFd === null || !this.chromaLockPath) return;
+
+    const payload = JSON.stringify({
+      ownerPid: process.pid,
+      ownerParentPid: process.ppid,
+      chromaPid,
+      dataDir: path.dirname(this.chromaLockPath),
+      createdAt: new Date().toISOString(),
+    }, null, 2);
+
+    fs.ftruncateSync(this.chromaLockFd, 0);
+    fs.writeSync(this.chromaLockFd, payload, 0, 'utf8');
+    fs.fsyncSync(this.chromaLockFd);
+  }
+
+  private releasePersistentDataDirLock(): void {
+    const fd = this.chromaLockFd;
+    const lockPath = this.chromaLockPath;
+    this.chromaLockFd = null;
+    this.chromaLockPath = null;
+
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch { /* already closed */ }
+    }
+    if (lockPath) {
+      try { fs.unlinkSync(lockPath); } catch { /* already removed */ }
+    }
+  }
+
+  private static readPersistentDataDirLock(lockPath: string): { ownerPid?: number; chromaPid?: number } | null {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(lockPath, 'utf8')) as { ownerPid?: unknown; chromaPid?: unknown };
+      return {
+        ownerPid: typeof parsed.ownerPid === 'number' ? parsed.ownerPid : undefined,
+        chromaPid: typeof parsed.chromaPid === 'number' ? parsed.chromaPid : undefined,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private static lockReferencesLiveProcess(lock: { ownerPid?: number; chromaPid?: number }): boolean {
+    return ChromaMcpManager.isPidAlive(lock.ownerPid) || ChromaMcpManager.isPidAlive(lock.chromaPid);
+  }
+
+  private static isPidAlive(pid: number | undefined): boolean {
+    if (!Number.isInteger(pid) || !pid || pid <= 0) return false;
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === 'EPERM';
+    }
+  }
+
+
+  private static registerLifecycleHooks(): void {
+    if (ChromaMcpManager.lifecycleHooksRegistered) return;
+    ChromaMcpManager.lifecycleHooksRegistered = true;
+
+    const cleanupAsync = async (reason: string): Promise<void> => {
+      const instance = ChromaMcpManager.instance;
+      if (!instance) return;
+      logger.info('CHROMA_MCP', `Lifecycle cleanup triggered by ${reason}`);
+      await instance.stop();
+    };
+
+    const registerSignal = (signal: NodeJS.Signals): void => {
+      const handler = (): void => {
+        const otherListeners = process.listeners(signal).filter(listener => listener !== handler);
+        cleanupAsync(signal).finally(() => {
+          // If no supervisor/owner has its own handler, preserve the normal
+          // signal semantics after cleanup. When the supervisor is installed it
+          // owns process exit and we only perform best-effort child cleanup.
+          if (otherListeners.length === 0) {
+            process.removeListener(signal, handler);
+            try {
+              process.kill(process.pid, signal);
+            } catch {
+              process.exit(signal === 'SIGINT' ? 130 : 143);
+            }
+          }
+        });
+      };
+      process.on(signal, handler);
+    };
+
+    registerSignal('SIGINT');
+    registerSignal('SIGTERM');
+    if (process.platform !== 'win32') {
+      registerSignal('SIGHUP');
+    }
+
+    process.once('beforeExit', () => {
+      void cleanupAsync('beforeExit');
+    });
+    process.once('exit', () => {
+      ChromaMcpManager.instance?.cleanupSyncForProcessExit();
+    });
+
+    const stdin = process.stdin;
+    if (stdin && !stdin.destroyed) {
+      const handleStdinClosed = (): void => {
+        void cleanupAsync('stdin-close');
+      };
+      stdin.once('close', handleStdinClosed);
+    }
+  }
+
+  private startParentDeathMonitor(): void {
+    if (process.platform === 'win32' || this.initialParentPid <= 1 || this.parentDeathTimer) {
+      return;
+    }
+
+    this.parentDeathTimer = setInterval(() => {
+      const parentChangedToInit = process.ppid === 1 && this.initialParentPid !== 1;
+      const originalParentGone = !ChromaMcpManager.isPidAlive(this.initialParentPid);
+      if (!parentChangedToInit && !originalParentGone) {
+        return;
+      }
+
+      logger.warn('CHROMA_MCP', 'Parent process disappeared; cleaning up chroma-mcp subprocess');
+      void this.stop();
+    }, PARENT_DEATH_CHECK_MS);
+
+    this.parentDeathTimer.unref?.();
+  }
+
+  private stopParentDeathMonitor(): void {
+    if (this.parentDeathTimer) {
+      clearInterval(this.parentDeathTimer);
+      this.parentDeathTimer = null;
+    }
+  }
+
+  private cleanupSyncForProcessExit(): void {
+    const trackedPid = (this.transport as unknown as { _process?: ChildProcess })?._process?.pid ?? this.trackedSubprocessPid;
+    if (trackedPid) {
+      ChromaMcpManager.killProcessTreeSync(trackedPid);
+    }
+    this.releasePersistentDataDirLock();
   }
 
   async callTool(toolName: string, toolArguments: Record<string, unknown>): Promise<unknown> {
@@ -394,8 +622,19 @@ export class ChromaMcpManager {
    * subprocess (no-op in that case).
    */
   private async disposeCurrentSubprocess(): Promise<void> {
+    if (this.cleanupInProgress) {
+      return this.cleanupInProgress;
+    }
+
+    this.cleanupInProgress = this.disposeCurrentSubprocessInternal().finally(() => {
+      this.cleanupInProgress = null;
+    });
+    return this.cleanupInProgress;
+  }
+
+  private async disposeCurrentSubprocessInternal(): Promise<void> {
     const chromaProcess = (this.transport as unknown as { _process?: ChildProcess })?._process;
-    const trackedPid = chromaProcess?.pid;
+    const trackedPid = chromaProcess?.pid ?? this.trackedSubprocessPid;
 
     if (trackedPid) {
       try {
@@ -419,6 +658,8 @@ export class ChromaMcpManager {
       getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
     }
 
+    this.releasePersistentDataDirLock();
+    this.trackedSubprocessPid = null;
     this.client = null;
     this.transport = null;
     this.connected = false;
@@ -437,8 +678,11 @@ export class ChromaMcpManager {
    * pattern from shutdown.ts (Principle 5: OS-supervised teardown).
    */
   async stop(): Promise<void> {
-    if (!this.client && !this.transport) {
+    this.lastConnectionFailureTimestamp = 0;
+
+    if (!this.client && !this.transport && !this.trackedSubprocessPid && !this.chromaLockPath) {
       logger.debug('CHROMA_MCP', 'No active MCP connection to stop');
+      this.stopParentDeathMonitor();
       this.connecting = null;
       return;
     }
@@ -446,6 +690,7 @@ export class ChromaMcpManager {
     logger.info('CHROMA_MCP', 'Stopping chroma-mcp MCP connection');
 
     await this.disposeCurrentSubprocess();
+    this.stopParentDeathMonitor();
     this.connecting = null;
 
     logger.info('CHROMA_MCP', 'chroma-mcp MCP connection stopped');
@@ -539,6 +784,75 @@ export class ChromaMcpManager {
         error: error instanceof Error ? error.message : String(error)
       });
     }
+  }
+
+  /**
+   * Synchronous best-effort variant used from process `exit`, where async
+   * cleanup can no longer be awaited. Mirrors killProcessTree() but avoids
+   * timers/promises and does not throw.
+   */
+  private static killProcessTreeSync(pid: number): void {
+    if (!Number.isInteger(pid) || pid <= 0) return;
+
+    if (process.platform === 'win32') {
+      try {
+        execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], {
+          timeout: 5_000,
+          windowsHide: true,
+          stdio: 'ignore'
+        });
+      } catch {
+        // Already dead / taskkill unavailable — best-effort only.
+      }
+      return;
+    }
+
+    const descendants = ChromaMcpManager.collectDescendantPidsSync(pid);
+    for (const child of descendants) {
+      try { process.kill(child, 'SIGTERM'); } catch { /* already gone */ }
+    }
+    try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
+
+    // No sleep in exit handlers; immediately follow with SIGKILL using the
+    // descendant snapshot we captured while the root was still alive.
+    for (const child of descendants) {
+      try { process.kill(child, 'SIGKILL'); } catch { /* already gone */ }
+    }
+    try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
+  }
+
+  private static collectDescendantPidsSync(rootPid: number): number[] {
+    const seen = new Set<number>();
+    const collected: number[] = [];
+
+    const walk = (pid: number): void => {
+      let stdout = '';
+      try {
+        stdout = execFileSync('pgrep', ['-P', String(pid)], {
+          encoding: 'utf8',
+          timeout: 2_000,
+          stdio: ['ignore', 'pipe', 'ignore']
+        });
+      } catch {
+        return;
+      }
+
+      const children = stdout
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => line.length > 0)
+        .map(line => Number.parseInt(line, 10))
+        .filter(n => Number.isFinite(n) && n > 0 && !seen.has(n));
+
+      for (const child of children) {
+        seen.add(child);
+        walk(child);
+        collected.push(child);
+      }
+    };
+
+    walk(rootPid);
+    return collected;
   }
 
   /**
