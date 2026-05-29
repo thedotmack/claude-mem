@@ -22,6 +22,32 @@ const BUILT_IN_VERSION = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined'
   ? __DEFAULT_PACKAGE_VERSION__
   : 'development';
 
+/**
+ * Write-path contract guard (#2684): a memory_items row is only useful if at
+ * least one of its searchable columns is non-empty, because the FTS trigger
+ * indexes exactly those columns. Returns true if the create body would produce
+ * a searchable row.
+ */
+function hasSearchableContent(body: {
+  title?: string | null;
+  subtitle?: string | null;
+  text?: string | null;
+  narrative?: string | null;
+  facts?: string[];
+  concepts?: string[];
+}): boolean {
+  const hasText = (value: string | null | undefined): boolean =>
+    typeof value === 'string' && value.trim().length > 0;
+  return (
+    hasText(body.title) ||
+    hasText(body.subtitle) ||
+    hasText(body.text) ||
+    hasText(body.narrative) ||
+    (Array.isArray(body.facts) && body.facts.some(hasText)) ||
+    (Array.isArray(body.concepts) && body.concepts.some(hasText))
+  );
+}
+
 export interface ServerV1RoutesOptions {
   getDatabase: () => Database;
   authMode?: string;
@@ -156,6 +182,18 @@ export class ServerV1Routes implements RouteHandler {
 
     app.post('/v1/memories', writeAuth, this.handleCreate(CreateMemoryItemSchema, (req, res, body) => {
       if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
+      // Write-path contract (#2684/#2533): the FTS trigger (trg_memory_items_fts_insert)
+      // copies title/subtitle/text/narrative/facts/concepts into the search index.
+      // A row with NONE of the searchable text columns populated is invisible to
+      // search — it looks "frozen". Reject it LOUDLY here instead of silently
+      // persisting an unsearchable record.
+      if (!hasSearchableContent(body)) {
+        res.status(400).json({
+          error: 'ValidationError',
+          message: 'memory_items requires at least one searchable text field (narrative, text, title, subtitle, facts, or concepts) so the FTS index is populated; refusing to persist an empty record',
+        });
+        return;
+      }
       const memory = new MemoryItemsRepository(this.options.getDatabase()).create(body);
       this.audit(req, 'memory.write', memory.id, memory.projectId);
       res.status(201).json({ memory });
