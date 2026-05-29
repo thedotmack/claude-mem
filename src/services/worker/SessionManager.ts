@@ -122,6 +122,7 @@ export class SessionManager {
       conversationHistory: [],  // Initialize empty - will be populated by agents
       currentProvider: null,  // Will be set when generator starts
       consecutiveRestarts: 0,
+      consecutiveInvalidOutputs: 0,
       lastGeneratorActivity: Date.now(),  // Initialize for stale detection (Issue #1099)
       pendingAgentId: null,   // Subagent identity carried from the most recent claimed message
       pendingAgentType: null
@@ -232,6 +233,49 @@ export class SessionManager {
       session.earliestPendingTimestamp = null;
     }
     return confirmed;
+  }
+
+  /**
+   * Kill and respawn a poisoned SDK session while PRESERVING the in-RAM pending
+   * messages (plan-11, #2485). A session that keeps emitting non-XML/poisoned
+   * output wedges the pipeline at zero observations; aborting the generator and
+   * killing the SDK subprocess forces a fresh spawn on the next ingest, but the
+   * buffered tool-use fragments must survive so they get reprocessed.
+   *
+   * Unlike deleteSession this does NOT dispose the SessionMessageBuffer and does
+   * NOT remove the session from the active map: it un-claims any in-flight
+   * messages (so the next generator re-yields them), aborts the current
+   * generator with a 'poisoned' reason, and ensures the SDK subprocess exits.
+   * The next ensureGeneratorRunning starts a clean generator.
+   */
+  async respawnPoisonedSession(sessionDbId: number): Promise<void> {
+    const session = this.sessions.get(sessionDbId);
+    if (!session) {
+      return;
+    }
+
+    const preservedPending = this.buffer.getPendingCount(sessionDbId);
+    logger.warn('SESSION', 'Respawning poisoned SDK session, preserving pending messages', {
+      sessionId: sessionDbId,
+      preservedPending,
+      consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
+    });
+
+    // Re-yield anything claimed-but-unconfirmed so the fresh generator picks it up.
+    await this.resetProcessingToPending(sessionDbId);
+
+    // Drop stale conversation context: the poisoned turns are what wedged it.
+    session.conversationHistory = [];
+    session.consecutiveInvalidOutputs = 0;
+    session.memorySessionId = null;  // force a fresh SDK session id on respawn
+
+    session.abortReason = 'poisoned';
+    session.abortController.abort();
+
+    const tracked = getSdkProcessForSession(sessionDbId);
+    if (tracked && tracked.process.exitCode === null) {
+      await ensureSdkProcessExit(tracked, 5000);
+    }
   }
 
   async deleteSession(sessionDbId: number): Promise<void> {

@@ -35,6 +35,7 @@ const EXCLUDED_PATTERNS = [
   /worker\/http\/middleware\/validateBody\.ts$/,  // Trivial zod validation middleware factory
   /worker\/RateLimitStore\.ts$/,  // Side-effect-free in-memory rate-limit store
   /worker\/events\/SessionEventBroadcaster\.ts$/,  // Thin SSE broadcast wrapper, no error paths
+  /sdk\/output-classifier\.ts$/,  // Pure, side-effect-free output classifier; logging happens at the ResponseProcessor call site with full session context
 ];
 
 const HIGH_PRIORITY_PATTERNS = [

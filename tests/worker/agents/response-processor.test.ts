@@ -231,8 +231,8 @@ describe('ResponseProcessor', () => {
 
       expect(logger.warn).toHaveBeenCalledWith(
         'PARSER',
-        expect.stringMatching(/^TestAgent returned non-XML\/empty response/),
-        expect.objectContaining({ sessionId: 1 })
+        expect.stringMatching(/^TestAgent returned non-XML prose response/),
+        expect.objectContaining({ sessionId: 1, outputClass: 'prose' })
       );
       expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
       expect(session.earliestPendingTimestamp).toBeNull();
