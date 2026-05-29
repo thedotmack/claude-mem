@@ -1,4 +1,9 @@
-
+// IO discipline (see src/shared/hook-io.ts):
+// - hookSpecificOutput.additionalContext → MODEL_CONTEXT (model consumes; via stdout JSON)
+// - systemMessage                        → USER_HINT (user-visible; via stdout JSON systemMessage)
+// This handler is PURE: it returns a HookResult and MUST NOT call
+// process.stderr.write / process.stdout.write / console.* / process.exit.
+// logger.* calls are DIAGNOSTIC and route through hook-io's stderr path.
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import {
   executeWithWorkerFallback,

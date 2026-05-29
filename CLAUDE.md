@@ -75,6 +75,20 @@ Claude-mem hooks use specific exit codes per Claude Code's hook contract:
 
 **Philosophy**: Worker/hook errors exit with code 0 to prevent Windows Terminal tab accumulation. The wrapper/plugin layer handles restart logic. ERROR-level logging is maintained for diagnostics.
 
+### Hook IO Discipline
+
+All stdout / stderr / exit emits during a hook execution route through `src/shared/hook-io.ts`. `hookCommand` (`src/cli/hook-command.ts`) is its only orchestrator; handlers stay pure.
+
+- `emitDiagnostic(line)` — operator-visible stderr (logger fallback, fail-loud counter). Bypasses the hook stderr buffer.
+- `emitModelContext(adapter, result)` — JSON to stdout via the platform adapter's `formatOutput`. Exactly once per hook.
+- `withUserHint(result, hint)` — user-visible advisory, returned via `HookResult.systemMessage`; adapters route it per-platform.
+- `emitBlockingError(msg)` — flushes buffered stderr, writes `msg`, exits 2. The model receives `msg` per the hook contract. Used by `recordWorkerUnreachable` (fail-loud, fixes #2292) and `hookCommand`'s unrecoverable-error catch.
+- `exitGraceful()` — exit 0, drops any buffered stderr (the quiet-on-success / Windows Terminal behavior).
+
+Handler authors: write your handler as a pure function returning `HookResult`. **Never call `process.stderr.write`, `console.log`, `console.error`, or `process.exit` from a handler or adapter.** The `npm run lint:hook-io` check (`scripts/check-hook-io-discipline.cjs`) enforces this in `src/cli/handlers/**` and `src/cli/adapters/**`.
+
+The stderr buffer (installed by `installHookStderrBuffer`) captures unsolicited library writes during handler execution so they never leak into model context. Buffered bytes are dropped on `exitGraceful` and flushed on `emitDiagnostic` / `emitBlockingError`.
+
 ## Requirements
 
 - **Bun** (all platforms - auto-installed if missing)

@@ -883,6 +883,11 @@ async function main() {
     }
 
     case 'hook': {
+      // IO discipline: this case is the entry point to the hook execution path.
+      // Once hookCommand is invoked, src/shared/hook-io.ts owns all
+      // stdout/stderr/exit. The pre-hookCommand error paths below (missing args,
+      // worker failed to start) are CLI-style: console.error + exit 1 is
+      // acceptable because they occur BEFORE the buffered window opens.
       const platform = process.argv[3];
       const event = process.argv[4];
       if (!platform || !event) {

@@ -3,6 +3,13 @@ import { getPlatformAdapter } from './adapters/index.js';
 import { AdapterRejectedInput } from './adapters/errors.js';
 import { getEventHandler } from './handlers/index.js';
 import { HOOK_EXIT_CODES } from '../shared/hook-constants.js';
+import {
+  installHookStderrBuffer,
+  emitModelContext,
+  emitBlockingError,
+  exitGraceful,
+  resetHookIoState,
+} from '../shared/hook-io.js';
 import { logger } from '../utils/logger.js';
 
 export interface HookCommandOptions {
@@ -59,21 +66,30 @@ async function executeHookPipeline(
 ): Promise<number> {
   const rawInput = await readJsonFromStdin();
   const input = adapter.normalizeInput(rawInput);
-  input.platform = platform;  
+  input.platform = platform;
   const result = await handler.execute(input);
-  const output = adapter.formatOutput(result);
 
-  console.log(JSON.stringify(output));
+  // MODEL_CONTEXT: the only stdout JSON emit, via the platform adapter.
+  emitModelContext(adapter, result);
   const exitCode = result.exitCode ?? HOOK_EXIT_CODES.SUCCESS;
-  if (!options.skipExit) {
-    process.exit(exitCode);
-  }
+  exitGraceful(options);
   return exitCode;
 }
 
 export async function hookCommand(platform: string, event: string, options: HookCommandOptions = {}): Promise<number> {
-  const originalStderrWrite = process.stderr.write.bind(process.stderr);
-  process.stderr.write = (() => true) as typeof process.stderr.write;
+  resetHookIoState();
+
+  // Hook IO Discipline (issue #2292):
+  // We BUFFER stderr during handler execution so that unsolicited writes from
+  // third-party libraries don't leak into model context. The buffer is FLUSHED
+  // only when we choose to surface (logger errors at the catch-all branch,
+  // fail-loud counter from worker-utils, blocking-error path). Successful exits
+  // drop the buffer — preserving the original "quiet on success" behavior.
+  //
+  // To bypass the buffer for a specific write, use emitDiagnostic /
+  // emitBlockingError from src/shared/hook-io.ts. Direct process.stderr.write
+  // calls are buffered.
+  const stderrBuffer = installHookStderrBuffer();
 
   const adapter = getPlatformAdapter(platform);
   const handler = getEventHandler(event);
@@ -83,34 +99,34 @@ export async function hookCommand(platform: string, event: string, options: Hook
   } catch (error) {
     if (error instanceof AdapterRejectedInput) {
       logger.warn('HOOK', `Adapter rejected input (${error.reason}), skipping hook`);
-      console.log(JSON.stringify({ continue: true, suppressOutput: true }));
-      if (!options.skipExit) {
-        process.exit(HOOK_EXIT_CODES.SUCCESS);
-      }
+      emitModelContext(adapter, { continue: true, suppressOutput: true });
+      exitGraceful(options);
       return HOOK_EXIT_CODES.SUCCESS;
     }
     if (isNonBlockingHookInputError(error)) {
       logger.warn('HOOK', `Hook input unavailable, skipping hook: ${error instanceof Error ? error.message : error}`);
-      console.log(JSON.stringify({ continue: true, suppressOutput: true }));
-      if (!options.skipExit) {
-        process.exit(HOOK_EXIT_CODES.SUCCESS);
-      }
+      emitModelContext(adapter, { continue: true, suppressOutput: true });
+      exitGraceful(options);
       return HOOK_EXIT_CODES.SUCCESS;
     }
     if (isWorkerUnavailableError(error)) {
       logger.warn('HOOK', `Worker unavailable, skipping hook: ${error instanceof Error ? error.message : error}`);
-      if (!options.skipExit) {
-        process.exit(HOOK_EXIT_CODES.SUCCESS);  
-      }
+      // EXIT_SIGNAL per CLAUDE.md: transient worker errors exit 0 to avoid
+      // Windows Terminal tab accumulation. The fail-loud counter (worker-utils
+      // recordWorkerUnreachable) handles the surface-after-N-failures path.
+      exitGraceful(options);
       return HOOK_EXIT_CODES.SUCCESS;
     }
 
     logger.error('HOOK', `Hook error: ${error instanceof Error ? error.message : error}`, {}, error instanceof Error ? error : undefined);
-    if (!options.skipExit) {
-      process.exit(HOOK_EXIT_CODES.BLOCKING_ERROR);  
-    }
+    // BLOCKING_FEEDBACK: flush the buffered logger.error line to stderr and
+    // exit 2 so the model receives it per Claude Code's hook contract.
+    emitBlockingError(
+      `Hook error: ${error instanceof Error ? error.message : String(error)}`,
+      options,
+    );
     return HOOK_EXIT_CODES.BLOCKING_ERROR;
   } finally {
-    process.stderr.write = originalStderrWrite;
+    stderrBuffer.restore();
   }
 }
