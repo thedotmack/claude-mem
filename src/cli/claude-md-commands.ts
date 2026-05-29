@@ -14,6 +14,7 @@ import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { formatTime, groupByDate } from '../shared/timeline-formatting.js';
 import { isDirectChild } from '../shared/path-utils.js';
 import { logger } from '../utils/logger.js';
+import { getProjectContext } from '../utils/project-name.js';
 import { paths } from '../shared/paths.js';
 
 const DB_PATH = paths.database();
@@ -381,7 +382,7 @@ export async function generateClaudeMd(dryRun: boolean): Promise<number> {
     observationLimit
   });
 
-  const project = path.basename(workingDir);
+  const project = getProjectContext(workingDir).primary;
   const trackedFolders = getTrackedFolders(workingDir);
 
   if (trackedFolders.size === 0) {
