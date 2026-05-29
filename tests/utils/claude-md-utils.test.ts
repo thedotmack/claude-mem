@@ -1072,3 +1072,91 @@ describe('CLAUDE.local.md support', () => {
     expect(callUrl).not.toContain(encodeURIComponent('/project/src/b'));
   });
 });
+
+describe('skeleton CLAUDE.md deny-list (#2400)', () => {
+  const ENV_KEY = 'CLAUDE_MEM_FOLDER_MD_SKELETON_DENYLIST';
+  let savedEnv: string | undefined;
+
+  beforeEach(() => {
+    savedEnv = process.env[ENV_KEY];
+  });
+
+  afterEach(() => {
+    if (savedEnv === undefined) {
+      delete process.env[ENV_KEY];
+    } else {
+      process.env[ENV_KEY] = savedEnv;
+    }
+  });
+
+  // API text with no parseable observation rows -> formatTimelineForClaudeMd
+  // returns '' (empty/skeleton).
+  const emptySkeletonResponse = {
+    content: [{ text: 'no observation rows here' }],
+  };
+
+  it('does NOT overwrite an existing CLAUDE.md with a skeleton when the folder matches the deny-list', async () => {
+    process.env[ENV_KEY] = JSON.stringify(['**/transient']);
+
+    const folderPath = join(tempDir, 'transient');
+    mkdirSync(folderPath, { recursive: true });
+    const claudeMdPath = join(folderPath, 'CLAUDE.md');
+    const userContent = 'USER CONTENT — must be preserved';
+    writeFileSync(claudeMdPath, userContent);
+    const filePath = join(folderPath, 'file.ts');
+
+    global.fetch = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(emptySkeletonResponse),
+    } as Response));
+
+    await updateFolderClaudeMdFiles([filePath], 'test-project', 37777, tempDir);
+
+    // Deny-listed + empty/skeleton => injection suppressed, file untouched.
+    expect(readFileSync(claudeMdPath, 'utf-8')).toBe(userContent);
+  });
+
+  it('still injects when the folder does NOT match the deny-list (default behavior unchanged)', async () => {
+    process.env[ENV_KEY] = JSON.stringify(['**/some-other-dir']);
+
+    const folderPath = join(tempDir, 'content-dir');
+    mkdirSync(folderPath, { recursive: true });
+    const filePath = join(folderPath, 'file.ts');
+
+    global.fetch = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve({
+        content: [{ text: '| #123 | 4:30 PM | 🔵 | Real observation | ~100 |' }],
+      }),
+    } as Response));
+
+    await updateFolderClaudeMdFiles([filePath], 'test-project', 37777, tempDir);
+
+    const claudeMdPath = join(folderPath, 'CLAUDE.md');
+    expect(existsSync(claudeMdPath)).toBe(true);
+    expect(readFileSync(claudeMdPath, 'utf-8')).toContain('#123');
+  });
+
+  it('default (unset deny-list) preserves prior behavior — existing file gets the empty section rewritten', async () => {
+    delete process.env[ENV_KEY];
+
+    const folderPath = join(tempDir, 'no-denylist');
+    mkdirSync(folderPath, { recursive: true });
+    const claudeMdPath = join(folderPath, 'CLAUDE.md');
+    writeFileSync(claudeMdPath, 'PRE-EXISTING');
+    const filePath = join(folderPath, 'file.ts');
+
+    global.fetch = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(emptySkeletonResponse),
+    } as Response));
+
+    await updateFolderClaudeMdFiles([filePath], 'test-project', 37777, tempDir);
+
+    // With no deny-list, the existing file is still processed (the new guard is
+    // a no-op), so the tagged context section is appended to the existing file.
+    const content = readFileSync(claudeMdPath, 'utf-8');
+    expect(content).toContain('PRE-EXISTING');
+    expect(content).toContain('<claude-mem-context>');
+  });
+});

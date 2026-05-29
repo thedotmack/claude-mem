@@ -256,6 +256,31 @@ describe('fileContextHandler — #2094 (no Read mutation)', () => {
     expect(ctx).not.toContain('worker unavailable');
   });
 
+  it('queries with BOTH absolute and cwd-relative path candidates (#2691)', async () => {
+    const future = Date.now() + 60_000;
+    let capturedUrl = '';
+    fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((url: string | URL | Request) => {
+      capturedUrl = String(url);
+      return Promise.resolve(makeObservationsResponse([{ id: 1, created_at_epoch: future }]));
+    });
+
+    await fileContextHandler.execute({
+      sessionId: 'sess',
+      cwd: tmpDir,
+      toolName: 'Read',
+      toolInput: { file_path: testFile },
+    });
+
+    const parsed = new URL(capturedUrl);
+    const pathParams = parsed.searchParams.getAll('path');
+    // Both candidate forms are sent so the worker can match however the path was
+    // stored at PostToolUse time (absolute vs cwd-relative).
+    const absoluteForm = testFile.split(/[\\/]/).join('/');
+    expect(pathParams).toContain(absoluteForm);
+    expect(pathParams).toContain('test.md'); // cwd-relative form
+    expect(pathParams.length).toBeGreaterThanOrEqual(2);
+  });
+
   it('skips directories before querying file history', async () => {
     const directoryPath = join(tmpDir, 'large-dir');
     mkdirSync(directoryPath);

@@ -6,6 +6,7 @@ import { formatDate, groupByDate } from '../shared/timeline-formatting.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { workerHttpRequest } from '../shared/worker-utils.js';
 import { paths } from '../shared/paths.js';
+import { matchesAnyGlob } from './project-filter.js';
 
 const SETTINGS_PATH = paths.settings();
 
@@ -240,6 +241,20 @@ export async function updateFolderClaudeMdFiles(
     logger.warn('FOLDER_INDEX', 'Failed to parse CLAUDE_MEM_FOLDER_MD_EXCLUDE setting');
   }
 
+  // #2400 — deny-list of glob patterns where an empty/skeleton CLAUDE.md must
+  // NOT be injected. Unlike CLAUDE_MEM_FOLDER_MD_EXCLUDE (which excludes the
+  // folder entirely), this only suppresses injection when the generated content
+  // is empty/skeleton; folders with real activity still get a CLAUDE.md.
+  let skeletonDenylistPatterns: string[] = [];
+  try {
+    const parsed = JSON.parse(settings.CLAUDE_MEM_FOLDER_MD_SKELETON_DENYLIST || '[]');
+    if (Array.isArray(parsed)) {
+      skeletonDenylistPatterns = parsed.filter((p): p is string => typeof p === 'string');
+    }
+  } catch {
+    logger.warn('FOLDER_INDEX', 'Failed to parse CLAUDE_MEM_FOLDER_MD_SKELETON_DENYLIST setting');
+  }
+
   const foldersWithActiveClaudeMd = new Set<string>();
 
   for (const filePath of filePaths) {
@@ -331,7 +346,16 @@ export async function updateFolderClaudeMdFiles(
 
     const claudeMdPath = path.join(folderPath, targetFilename);
     const hasNoActivity = formatted.includes('*No recent activity*');
+    const isEmptyOrSkeleton = formatted.trim() === '' || hasNoActivity;
     const fileExists = existsSync(claudeMdPath);
+
+    // #2400 — when the generated content is empty/skeleton AND the folder
+    // matches the user's deny-list, never inject (skip even if the file exists,
+    // so we don't pollute non-content dirs with empty skeletons).
+    if (isEmptyOrSkeleton && matchesAnyGlob(folderPath, skeletonDenylistPatterns)) {
+      logger.debug('FOLDER_INDEX', 'Skipping skeleton CLAUDE.md in deny-listed folder', { folderPath, targetFilename });
+      continue;
+    }
 
     if (hasNoActivity && !fileExists) {
       logger.debug('FOLDER_INDEX', 'Skipping empty context file creation', { folderPath, targetFilename });
