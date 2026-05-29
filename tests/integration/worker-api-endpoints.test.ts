@@ -1,6 +1,13 @@
 
-import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, spyOn, mock } from 'bun:test';
 import { logger } from '../../src/utils/logger.js';
+
+// Capture the real middleware module before mock.module mutates the live
+// namespace, then re-register the snapshot in afterAll. bun's mock.module is
+// process-global and mock.restore() does NOT undo it, so without this the stub
+// createMiddleware leaks into later files (e.g. CORS + v1-routes server tests).
+import * as realMiddleware from '../../src/services/worker/http/middleware.js';
+const realMiddlewareSnapshot = { ...realMiddleware };
 
 mock.module('../../src/services/worker/http/middleware.js', () => ({
   createMiddleware: () => [],
@@ -53,6 +60,10 @@ describe('Worker API Endpoints Integration', () => {
       }
     }
     mock.restore();
+  });
+
+  afterAll(() => {
+    mock.module('../../src/services/worker/http/middleware.js', () => realMiddlewareSnapshot);
   });
 
   describe('Health/Readiness/Version Endpoints', () => {

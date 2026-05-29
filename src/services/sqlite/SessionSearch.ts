@@ -160,6 +160,19 @@ export class SessionSearch {
       params.push(filters.project);
     }
 
+    // Source-scoping (#2389): when a platformSource is supplied, restrict to
+    // rows whose owning sdk_session has that platform_source. observations and
+    // session_summaries both carry memory_session_id, which is the FK into
+    // sdk_sessions. COALESCE mirrors PaginationHelper: legacy rows with a NULL
+    // platform_source are treated as 'claude' so they never bleed into a
+    // codex/other-agent search.
+    if (filters.platformSource) {
+      conditions.push(
+        `COALESCE((SELECT s2.platform_source FROM sdk_sessions s2 WHERE s2.memory_session_id = ${tableAlias}.memory_session_id), 'claude') = ?`
+      );
+      params.push(filters.platformSource);
+    }
+
     if (filters.type) {
       if (Array.isArray(filters.type)) {
         const placeholders = filters.type.map(() => '?').join(',');

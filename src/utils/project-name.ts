@@ -1,5 +1,6 @@
 import { homedir } from 'os'
 import path from 'path';
+import { execFileSync } from 'child_process';
 import { logger } from './logger.js';
 import { detectWorktree } from './worktree.js';
 
@@ -10,6 +11,27 @@ function expandTilde(p: string): string {
   return p
 }
 
+/**
+ * Resolve the git repository ROOT for a directory, so a project's name is
+ * stable across its subdirectories and worktrees (#2663). Returns the absolute
+ * repo-root path, or null when `dir` is not inside a git repo (or git is
+ * unavailable). `--show-toplevel` resolves to the working-tree root even when
+ * invoked from a worktree or a nested subdirectory.
+ */
+function findGitRepoRoot(dir: string): string | null {
+  try {
+    const root = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd: dir,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    return root || null;
+  } catch {
+    // Not a git repo, git not installed, or dir does not exist — fall back to basename.
+    return null;
+  }
+}
+
 export function getProjectName(cwd: string | null | undefined): string {
   if (!cwd || cwd.trim() === '') {
     logger.warn('PROJECT_NAME', 'Empty cwd provided, using fallback', { cwd });
@@ -18,7 +40,13 @@ export function getProjectName(cwd: string | null | undefined): string {
 
   const expanded = expandTilde(cwd)
 
-  const basename = path.basename(expanded);
+  // #2663 — derive the project name from the git repo root when inside a repo so
+  // the name is stable across subdirectories/worktrees. Fall back to the cwd
+  // basename when not in a repo.
+  const repoRoot = findGitRepoRoot(expanded);
+  const nameSource = repoRoot ?? expanded;
+
+  const basename = path.basename(nameSource);
 
   if (basename === '') {
     const isWindows = process.platform === 'win32';

@@ -109,7 +109,10 @@ describe('Install Non-TTY Support', () => {
       );
       expect(copyRegion).toContain("'.agents'");
       expect(copyRegion).toContain("'.codex-plugin'");
-      expect(copyRegion).toContain("'.mcp.json'");
+      // Root .mcp.json was dropped in #2411; the MCP manifest now ships
+      // exclusively as plugin/.mcp.json (bundled inside the 'plugin' entry).
+      expect(copyRegion).toContain("'plugin'");
+      expect(copyRegion).not.toContain("'.mcp.json'");
     });
 
     it('validates the bundled plugin as the Codex marketplace source', () => {
@@ -119,12 +122,14 @@ describe('Install Non-TTY Support', () => {
       expect(codexInstallerSource).toContain("path.join('plugin', 'skills', 'mem-search', 'SKILL.md')");
     });
 
-    it('does not exclude MCP manifests during local marketplace sync', () => {
+    it('keeps the sync-managed gitignore override mechanism for local marketplace sync', () => {
       const gitignoreExcludeRegion = syncMarketplaceSource.slice(
         syncMarketplaceSource.indexOf('function getGitignoreExcludes'),
         syncMarketplaceSource.indexOf('const branch = getCurrentBranch'),
       );
-      expect(gitignoreExcludeRegion).toContain("'.mcp.json'");
+      // Root .mcp.json was dropped in #2411, so it is no longer a
+      // sync-managed override — the override mechanism itself remains.
+      expect(gitignoreExcludeRegion).toContain('syncManagedFiles');
       expect(gitignoreExcludeRegion).toContain('syncManagedFiles.has(line)');
     });
 
@@ -163,12 +168,16 @@ describe('Install Non-TTY Support', () => {
     });
 
     it('captures Codex CLI output for install failure reporting', () => {
-      const runCodexRegion = codexInstallerSource.slice(
-        codexInstallerSource.indexOf('function runCodex'),
+      // codex is spawned through the centralized codexSpawn() helper (#2695:
+      // shell-resolved on Windows so codex.cmd is found). The helper region
+      // owns the spawnSync call; runCodex captures stdout/stderr (pipe, not
+      // inherit) for failure reporting.
+      const codexSpawnRegion = codexInstallerSource.slice(
+        codexInstallerSource.indexOf('export function codexSpawn'),
         codexInstallerSource.indexOf('function removeCodexAgentsMdContext'),
       );
-      expect(runCodexRegion).toContain('spawnSync');
-      expect(runCodexRegion).not.toContain("stdio: 'inherit'");
+      expect(codexSpawnRegion).toContain('spawnSync');
+      expect(codexSpawnRegion).not.toContain("stdio: 'inherit'");
     });
 
     it('checks Codex CLI marketplace version before registration', () => {
@@ -177,9 +186,18 @@ describe('Install Non-TTY Support', () => {
         codexInstallerSource.indexOf('export function uninstallCodexCli'),
       );
       expect(codexInstallerSource).toContain("const MIN_CODEX_MARKETPLACE_VERSION = '0.128.0'");
-      expect(codexInstallerSource).toContain("spawnSync('codex', ['--version']");
+      expect(codexInstallerSource).toContain("codexSpawn(['--version'])");
       expect(installRegion.indexOf('assertCodexMarketplaceSupported()'))
         .toBeLessThan(installRegion.indexOf('registerCodexMarketplace(marketplaceRoot)'));
+    });
+
+    it('resolves codex.cmd on Windows via a shell-aware spawn (#2695)', () => {
+      const codexSpawnRegion = codexInstallerSource.slice(
+        codexInstallerSource.indexOf('export function codexSpawn'),
+        codexInstallerSource.indexOf('function runCodex'),
+      );
+      expect(codexSpawnRegion).toContain("process.platform === 'win32'");
+      expect(codexSpawnRegion).toContain('shell: true');
     });
 
     it('removes legacy Codex AGENTS context only after marketplace registration succeeds', () => {

@@ -17,7 +17,6 @@ import { configureSupervisorSignalHandlers, getSupervisor, startSupervisor } fro
 import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
 
 import { ensureWorkerStarted as ensureWorkerStartedShared, type WorkerStartResult } from './worker-spawner.js';
-import { handleGeneratorExit } from './worker/session/GeneratorExitHandler.js';
 
 export { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
 import { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
@@ -54,7 +53,9 @@ import {
   createServerApiKey,
   listServerApiKeys,
   revokeServerApiKey,
-} from '../server/auth/api-key-service.js';
+  migrateServerApiKeyScopes,
+  DEFAULT_LOCAL_API_KEY_SCOPES,
+} from '../server/auth/sqlite-api-key-service.js';
 import { ServerV1Routes } from '../server/routes/v1/ServerV1Routes.js';
 
 import {
@@ -206,9 +207,6 @@ export class WorkerService implements WorkerRef {
             : null,
         };
       },
-      getQueueHealth: () => this.sessionManager.isBullMqQueueEnabled()
-        ? this.sessionManager.getQueueHealth()
-        : null,
       preBodyParserRoutes: [
         new BetterAuthRoutes(() => this.dbManager.getConnection()),
       ],
@@ -279,7 +277,6 @@ export class WorkerService implements WorkerRef {
     const host = getWorkerHost();
 
     await startSupervisor();
-    await this.sessionManager.initializeQueueEngine();
 
     await this.server.listen(port, host);
 
@@ -353,16 +350,6 @@ export class WorkerService implements WorkerRef {
 
       logger.info('WORKER', 'Initializing database manager...');
       await this.dbManager.initialize();
-
-      const sweepResult = this.dbManager.getSessionStore().db.prepare(`
-        UPDATE pending_messages
-           SET status = 'pending'
-         WHERE status = 'processing'
-      `).run();
-
-      if (sweepResult.changes > 0) {
-        logger.info('SYSTEM', `Startup orphan sweep reclaimed ${sweepResult.changes} processing rows`);
-      }
 
       runOneTimeV12_4_3Cleanup();
 
@@ -516,237 +503,6 @@ export class WorkerService implements WorkerRef {
     });
   }
 
-  private getActiveAgent(): ClaudeProvider | GeminiProvider | OpenRouterProvider {
-    if (isOpenRouterSelected() && isOpenRouterAvailable()) {
-      return this.openRouterAgent;
-    }
-    if (isGeminiSelected() && isGeminiAvailable()) {
-      return this.geminiAgent;
-    }
-    return this.sdkAgent;
-  }
-
-  /**
-   * Re-classify a raw error at the worker-service dispatch site using the
-   * active provider's classifier. Returns null when the provider classifier
-   * doesn't recognize the shape (caller falls back to default behavior).
-   *
-   * Most provider errors should already be classified at the provider
-   * boundary — this is a safety net for errors from inside the SDK that
-   * never round-tripped through fetch (e.g. Anthropic SDK exceptions).
-   */
-  private reclassifyAtDispatch(
-    error: unknown,
-    agent: ClaudeProvider | GeminiProvider | OpenRouterProvider
-  ): ClassifiedProviderError | null {
-    try {
-      if (agent instanceof ClaudeProvider) {
-        return classifyClaudeError(error);
-      }
-      if (agent instanceof GeminiProvider) {
-        // Without a status code we still want network/spawn detection.
-        return classifyGeminiError({ cause: error });
-      }
-      if (agent instanceof OpenRouterProvider) {
-        return classifyOpenRouterError({ cause: error });
-      }
-    } catch {
-      // If the classifier itself throws, fall back to unclassified.
-    }
-    return null;
-  }
-
-  private startSessionProcessor(
-    session: ReturnType<typeof this.sessionManager.getSession>,
-    source: string
-  ): void {
-    if (!session) return;
-
-    const sid = session.sessionDbId;
-    const agent = this.getActiveAgent();
-    const providerName = agent.constructor.name;
-
-    if (session.abortController.signal.aborted) {
-      logger.debug('SYSTEM', 'Replacing aborted AbortController before starting generator', {
-        sessionId: session.sessionDbId
-      });
-      session.abortController = new AbortController();
-    }
-
-    let hadUnrecoverableError = false;
-    let sessionFailed = false;
-
-    logger.info('SYSTEM', `Starting generator (${source}) using ${providerName}`, { sessionId: sid });
-
-    session.lastGeneratorActivity = Date.now();
-
-    session.generatorPromise = agent.startSession(session, this)
-      .catch(async (error: unknown) => {
-        const errorMessage = (error as Error)?.message || '';
-
-        // Dispatch on F4 ClassifiedProviderError.kind. Replaces the old
-        // string-matching allowlist (#2244). Already-classified errors
-        // propagate kind from the provider boundary; raw errors get
-        // re-classified here using provider-specific helpers based on the
-        // active agent.
-        const classified: ClassifiedProviderError | null = isClassified(error)
-          ? error
-          : this.reclassifyAtDispatch(error, agent);
-
-        // FOREIGN KEY constraint failures from SQLite are unrecoverable but
-        // not provider-specific; check before deferring to the classifier so
-        // FK failures don't get misclassified as transient and retry forever
-        // (per-provider classifiers don't recognize FK errors).
-        const isFkConstraintFailure = errorMessage.includes('FOREIGN KEY constraint failed');
-
-        const dispatchKind: ProviderErrorClass | null = isFkConstraintFailure
-          ? 'unrecoverable'
-          : (classified ? classified.kind : null);
-
-        if (dispatchKind === 'unrecoverable' || dispatchKind === 'auth_invalid' || dispatchKind === 'quota_exhausted') {
-          hadUnrecoverableError = true;
-          this.lastAiInteraction = {
-            timestamp: Date.now(),
-            success: false,
-            provider: providerName,
-            error: errorMessage,
-          };
-          const logLabel =
-            dispatchKind === 'auth_invalid' ? 'auth invalid' :
-            dispatchKind === 'quota_exhausted' ? 'quota exhausted' : 'unrecoverable';
-          logger.error('SDK', `Unrecoverable generator error (${logLabel}) - will NOT restart`, {
-            sessionId: session.sessionDbId,
-            project: session.project,
-            errorKind: dispatchKind,
-            errorMessage
-          });
-          return;
-        }
-
-        if (this.isSessionTerminatedError(error)) {
-          logger.warn('SDK', 'SDK resume failed, falling back to standalone processing', {
-            sessionId: session.sessionDbId,
-            project: session.project,
-            reason: error instanceof Error ? error.message : String(error)
-          });
-          return this.runFallbackForTerminatedSession(session, error);
-        }
-
-        const staleResumePatterns = ['aborted by user', 'No conversation found'];
-        if (staleResumePatterns.some(p => errorMessage.includes(p))
-            && session.memorySessionId) {
-          logger.warn('SDK', 'Detected stale resume failure, clearing memorySessionId for fresh start', {
-            sessionId: session.sessionDbId,
-            memorySessionId: session.memorySessionId,
-            errorMessage
-          });
-          this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, null);
-          session.memorySessionId = null;
-          session.forceInit = true;
-        }
-        logger.error('SDK', 'Session generator failed', {
-          sessionId: session.sessionDbId,
-          project: session.project,
-          provider: providerName
-        }, error as Error);
-        sessionFailed = true;
-        this.lastAiInteraction = {
-          timestamp: Date.now(),
-          success: false,
-          provider: providerName,
-          error: errorMessage,
-        };
-        throw error;
-      })
-      .finally(async () => {
-        if (!sessionFailed && !hadUnrecoverableError) {
-          this.lastAiInteraction = {
-            timestamp: Date.now(),
-            success: true,
-            provider: providerName,
-          };
-        }
-
-        // Translate worker-service-specific error flags into the canonical reason enum.
-        let reason = session.abortReason ?? null;
-        session.abortReason = null;
-        if (hadUnrecoverableError) reason = 'restart-guard';
-        if (session.idleTimedOut) {
-          session.idleTimedOut = false;
-          reason = reason ?? 'idle';
-        }
-
-        await handleGeneratorExit(session, reason, {
-          sessionManager: this.sessionManager,
-          completionHandler: this.completionHandler,
-          restartGenerator: (s, source) => this.startSessionProcessor(s, source),
-        });
-      });
-  }
-
-  private static readonly SESSION_TERMINATED_PATTERNS = [
-    'process aborted by user',
-    'processtransport',
-    'not ready for writing',
-    'session generator failed',
-    'claude code process',
-  ] as const;
-
-  private isSessionTerminatedError(error: unknown): boolean {
-    const msg = error instanceof Error ? error.message : String(error);
-    const normalized = msg.toLowerCase();
-    return WorkerService.SESSION_TERMINATED_PATTERNS.some(
-      pattern => normalized.includes(pattern)
-    );
-  }
-
-  private async runFallbackForTerminatedSession(
-    session: ReturnType<typeof this.sessionManager.getSession>,
-    _originalError: unknown
-  ): Promise<void> {
-    if (!session) return;
-
-    const sessionDbId = session.sessionDbId;
-
-    if (!session.memorySessionId) {
-      const syntheticId = `fallback-${sessionDbId}-${Date.now()}`;
-      session.memorySessionId = syntheticId;
-      this.dbManager.getSessionStore().updateMemorySessionId(sessionDbId, syntheticId);
-    }
-
-    if (isGeminiAvailable()) {
-      try {
-        await this.geminiAgent.startSession(session, this);
-        return;
-      } catch (e) {
-        if (e instanceof Error) {
-          logger.warn('WORKER', 'Fallback Gemini failed, trying OpenRouter', {
-            sessionId: sessionDbId,
-          });
-          logger.error('WORKER', 'Gemini fallback error detail', { sessionId: sessionDbId }, e);
-        } else {
-          logger.error('WORKER', 'Gemini fallback failed with non-Error', { sessionId: sessionDbId }, new Error(String(e)));
-        }
-      }
-    }
-
-    if (isOpenRouterAvailable()) {
-      try {
-        await this.openRouterAgent.startSession(session, this);
-        return;
-      } catch (e) {
-        if (e instanceof Error) {
-          logger.error('WORKER', 'Fallback OpenRouter failed, will abandon messages', { sessionId: sessionDbId }, e);
-        } else {
-          logger.error('WORKER', 'Fallback OpenRouter failed with non-Error, will abandon messages', { sessionId: sessionDbId }, new Error(String(e)));
-        }
-      }
-    }
-
-    await this.completionHandler.finalizeSession(sessionDbId);
-    this.sessionManager.removeSessionImmediate(sessionDbId);
-  }
-
   private async terminateSession(sessionDbId: number, reason: string): Promise<void> {
     logger.info('SYSTEM', 'Session terminated', { sessionId: sessionDbId, reason });
 
@@ -809,7 +565,7 @@ function parseWorkerServiceCommand(argv: string[]): ParsedWorkerCommand {
     if (maybeSubCommand && lifecycleCommands.has(maybeSubCommand)) {
       return { command: `server-${maybeSubCommand}`, args: rest };
     }
-    const serverCommands = new Set(['logs', 'doctor', 'migrate', 'export', 'import', 'api-key']);
+    const serverCommands = new Set(['logs', 'doctor', 'migrate', 'export', 'import', 'api-key', 'keys', 'jobs']);
     return {
       command: maybeSubCommand && serverCommands.has(maybeSubCommand) ? `server-${maybeSubCommand}` : 'server-help',
       args: rest,
@@ -847,7 +603,7 @@ function printWorkerAliasHelp(): never {
   process.exit(1);
 }
 
-function runServerBetaServiceCli(command: string): void {
+function runServerBetaServiceCli(command: string, extraArgs: string[] = []): void {
   const serverBetaScript = path.join(__dirname, 'server-beta-service.cjs');
   if (!existsSync(serverBetaScript)) {
     console.error(`Server beta script not found at: ${serverBetaScript}`);
@@ -855,9 +611,13 @@ function runServerBetaServiceCli(command: string): void {
     process.exit(1);
   }
 
-  const child = spawn(process.execPath, [serverBetaScript, command], {
+  const child = spawn(process.execPath, [serverBetaScript, command, ...extraArgs], {
     stdio: 'inherit',
-    env: process.env,
+    // Strip host CLI bleed-through (CLAUDE_CODE_*, including EFFORT_LEVEL) and
+    // Anthropic credentials before handing env to the spawned daemon. The
+    // daemon re-reads its own credentials from ~/.claude-mem/.env. See
+    // env-isolation discipline (#2357 / #2375).
+    env: sanitizeEnv(process.env),
   });
   child.on('error', (error) => {
     console.error(`Failed to start server beta command: ${error.message}`);
@@ -899,10 +659,13 @@ function runServerApiKeyCli(args: string[]): never {
 
   try {
     if (subCommand === 'create') {
-      const scopes = (options.scope ?? options.scopes ?? 'memories:read')
-        .split(',')
-        .map(scope => scope.trim())
-        .filter(Boolean);
+      // #2428 — when no --scope is passed, default to the scopes the local v1
+      // routes actually require (read + write) so a default key works instead
+      // of being authorized for nothing.
+      const scopeFlag = options.scope ?? options.scopes;
+      const scopes = scopeFlag
+        ? scopeFlag.split(',').map(scope => scope.trim()).filter(Boolean)
+        : [...DEFAULT_LOCAL_API_KEY_SCOPES];
       const created = createServerApiKey(db, {
         name: options.name ?? 'server-api-key',
         teamId: options.team ?? null,
@@ -951,8 +714,29 @@ function runServerApiKeyCli(args: string[]): never {
       process.exit(0);
     }
 
+    if (subCommand === 'migrate-scopes') {
+      // #2560 — bring a key's scope set up to the default (or an explicit
+      // --scope list) so legacy/empty-scope keys work against the v1 routes.
+      const id = args[1] && !args[1].startsWith('--') ? args[1] : undefined;
+      if (!id) {
+        console.error('Usage: worker-service server api-key migrate-scopes <id> [--scope a,b]');
+        process.exit(1);
+      }
+      const scopeFlag = options.scope ?? options.scopes;
+      const scopes = scopeFlag
+        ? scopeFlag.split(',').map(scope => scope.trim()).filter(Boolean)
+        : [...DEFAULT_LOCAL_API_KEY_SCOPES];
+      const updated = migrateServerApiKeyScopes(db, id, scopes);
+      if (!updated) {
+        console.error(`API key not found: ${id}`);
+        process.exit(1);
+      }
+      console.log(JSON.stringify({ id: updated.id, scopes: updated.scopes, status: 'scopes-migrated' }, null, 2));
+      process.exit(0);
+    }
+
     console.error(`Unknown server api-key subcommand: ${subCommand ?? '(none)'}`);
-    console.error('Usage: worker-service server api-key create|list|revoke');
+    console.error('Usage: worker-service server api-key create|list|revoke|migrate-scopes');
     process.exit(1);
   } finally {
     db.close();
@@ -1055,9 +839,26 @@ async function main() {
       if (apiKeyCommand === 'create' || apiKeyCommand === 'list' || apiKeyCommand === 'revoke') {
         runServerApiKeyCli(commandArgs);
       }
+      if (apiKeyCommand === 'migrate-scopes') {
+        // #2560 — scope migration runs against the SQLite local backend here.
+        runServerApiKeyCli(commandArgs);
+      }
       console.error(`Unknown server api-key subcommand: ${apiKeyCommand ?? '(none)'}`);
-      console.error('Usage: worker-service server api-key create|list|revoke');
+      console.error('Usage: worker-service server api-key create|list|revoke|migrate-scopes');
       process.exit(1);
+      break;
+    }
+
+    // #2572 — `keys`/`jobs` are server-beta (Postgres) operability commands.
+    // Delegate to the server-beta script so they read the Postgres backend the
+    // server runtime actually uses, instead of the SQLite worker store.
+    case 'server-keys': {
+      runServerBetaServiceCli('server', ['keys', ...commandArgs]);
+      break;
+    }
+
+    case 'server-jobs': {
+      runServerBetaServiceCli('server', ['jobs', ...commandArgs]);
       break;
     }
 
@@ -1086,6 +887,11 @@ async function main() {
     }
 
     case 'hook': {
+      // IO discipline: this case is the entry point to the hook execution path.
+      // Once hookCommand is invoked, src/shared/hook-io.ts owns all
+      // stdout/stderr/exit. The pre-hookCommand error paths below (missing args,
+      // worker failed to start) are CLI-style: console.error + exit 1 is
+      // acceptable because they occur BEFORE the buffered window opens.
       const platform = process.argv[3];
       const event = process.argv[4];
       if (!platform || !event) {

@@ -139,6 +139,17 @@ class FakeFetch {
   };
 }
 
+class CapturingFetch {
+  lastUrl: string | undefined;
+  lastInit: RequestInit | undefined;
+  constructor(private readonly response: Response) {}
+  fetch: typeof fetch = async (input, init) => {
+    this.lastUrl = typeof input === 'string' ? input : input.toString();
+    this.lastInit = init;
+    return this.response;
+  };
+}
+
 function jsonResponse(status: number, body: unknown, headers?: Record<string, string>): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -223,5 +234,56 @@ describe('OpenRouterObservationProvider', () => {
       expect(error).toBeInstanceOf(ServerClassifiedProviderError);
       expect((error as ServerClassifiedProviderError).kind).toBe('rate_limit');
     }
+  });
+
+  // #2382/#2590/#2622/#2393 — configurable OpenAI-compatible base URL.
+  it('POSTs to the default OpenRouter URL when baseUrl is unset', async () => {
+    const capturing = new CapturingFetch(
+      jsonResponse(200, { choices: [{ message: { content: 'ok' } }] }),
+    );
+    const provider = new OpenRouterObservationProvider({ apiKey: 'fake', fetchImpl: capturing.fetch });
+    await provider.generate(makeContext());
+    expect(capturing.lastUrl).toBe('https://openrouter.ai/api/v1/chat/completions');
+  });
+
+  it('appends /chat/completions to a DeepSeek-style base URL', async () => {
+    const capturing = new CapturingFetch(
+      jsonResponse(200, { choices: [{ message: { content: 'ok' } }] }),
+    );
+    const provider = new OpenRouterObservationProvider({
+      apiKey: 'fake',
+      baseUrl: 'https://api.deepseek.com',
+      fetchImpl: capturing.fetch,
+    });
+    await provider.generate(makeContext());
+    expect(capturing.lastUrl).toBe('https://api.deepseek.com/chat/completions');
+  });
+
+  it('uses a full chat/completions base URL verbatim and normalizes trailing slash', async () => {
+    const capturing = new CapturingFetch(
+      jsonResponse(200, { choices: [{ message: { content: 'ok' } }] }),
+    );
+    const provider = new OpenRouterObservationProvider({
+      apiKey: 'fake',
+      baseUrl: 'http://localhost:1234/v1/chat/completions/',
+      fetchImpl: capturing.fetch,
+    });
+    await provider.generate(makeContext());
+    expect(capturing.lastUrl).toBe('http://localhost:1234/v1/chat/completions');
+  });
+
+  it('sends the configured model verbatim in the request body (#2393)', async () => {
+    const capturing = new CapturingFetch(
+      jsonResponse(200, { choices: [{ message: { content: 'ok' } }] }),
+    );
+    const provider = new OpenRouterObservationProvider({
+      apiKey: 'fake',
+      baseUrl: 'https://api.deepseek.com',
+      model: 'deepseek-chat',
+      fetchImpl: capturing.fetch,
+    });
+    await provider.generate(makeContext());
+    const body = JSON.parse(String(capturing.lastInit?.body)) as { model?: string };
+    expect(body.model).toBe('deepseek-chat');
   });
 });

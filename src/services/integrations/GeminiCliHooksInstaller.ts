@@ -3,7 +3,7 @@ import path from 'path';
 import { homedir } from 'os';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { logger } from '../../utils/logger.js';
-import { findWorkerServicePath, findBunPath } from './CursorHooksInstaller.js';
+import { getWorkerServiceAbsolutePath as findWorkerServicePath, getBunAbsolutePath as findBunPath } from './install-paths.js';
 
 interface GeminiHookEntry {
   name: string;

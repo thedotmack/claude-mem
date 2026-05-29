@@ -9,4 +9,5 @@ export {
   querySummaries,
   buildTimeline,
   getPriorSessionMessages,
+  cwdToDashed,
 } from './ObservationCompiler.js';

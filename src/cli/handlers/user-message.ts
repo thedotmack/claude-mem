@@ -24,14 +24,17 @@ export const userMessageHandler: EventHandler = {
     }
 
     const output = typeof result === 'string' ? result : '';
-    process.stderr.write(
+    // IO discipline: the banner is a USER_HINT. Return it via systemMessage so
+    // the platform adapter routes it (claude-code surfaces it inline, exactly
+    // like the old stderr write, but inside the HookResult contract). This
+    // handler MUST stay pure — no process.stderr.write / console.* / process.exit.
+    const bannerText =
       "\n\n" + String.fromCodePoint(0x1F4DD) + " Claude-Mem Context Loaded\n\n" +
       output +
       "\n\n" + String.fromCodePoint(0x1F4A1) + " Wrap any message with <private> ... </private> to prevent storing sensitive information.\n" +
       "\n" + String.fromCodePoint(0x1F4AC) + " Community https://discord.gg/J4wttp9vDu" +
-      `\n` + String.fromCodePoint(0x1F4FA) + ` Watch live in browser http://localhost:${port}/\n`
-    );
+      `\n` + String.fromCodePoint(0x1F4FA) + ` Watch live in browser http://localhost:${port}/\n`;
 
-    return { exitCode: HOOK_EXIT_CODES.SUCCESS };
+    return { exitCode: HOOK_EXIT_CODES.SUCCESS, systemMessage: bannerText };
   },
 };

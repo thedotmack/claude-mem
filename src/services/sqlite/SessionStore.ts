@@ -6,13 +6,11 @@ import {
   IndexInfo,
   TableNameRow,
   SchemaVersion,
-  SdkSessionRecord,
   ObservationRecord,
   SessionSummaryRecord,
   UserPromptRecord,
   LatestPromptResult
 } from '../../types/database.js';
-import type { PendingMessageStore } from './PendingMessageStore.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from './types.js';
 import { computeObservationContentHash } from './observations/store.js';
 import { parseFileList } from './observations/files.js';
@@ -1028,10 +1026,14 @@ export class SessionStore {
     `).run(nowIso, nowEpoch, sessionDbId);
   }
 
-  ensureMemorySessionIdRegistered(sessionDbId: number, memorySessionId: string): void {
+  ensureMemorySessionIdRegistered(
+    sessionDbId: number,
+    memorySessionId: string,
+    workerPort?: number
+  ): void {
     const session = this.db.prepare(`
-      SELECT id, memory_session_id FROM sdk_sessions WHERE id = ?
-    `).get(sessionDbId) as { id: number; memory_session_id: string | null } | undefined;
+      SELECT id, memory_session_id, worker_port FROM sdk_sessions WHERE id = ?
+    `).get(sessionDbId) as { id: number; memory_session_id: string | null; worker_port: number | null } | undefined;
 
     if (!session) {
       throw new Error(`Session ${sessionDbId} not found in sdk_sessions`);
@@ -1047,6 +1049,16 @@ export class SessionStore {
         oldId: session.memory_session_id,
         newId: memorySessionId
       });
+    }
+
+    // Session identity (#2533): record which worker owns this session before
+    // any observation is accepted, so a row is never persisted for a session
+    // whose identity is half-set. Only write when we have a port and it isn't
+    // already recorded, to avoid churn on every storage round.
+    if (typeof workerPort === 'number' && session.worker_port !== workerPort) {
+      this.db.prepare(`
+        UPDATE sdk_sessions SET worker_port = ? WHERE id = ?
+      `).run(workerPort, sessionDbId);
     }
   }
 
@@ -1992,7 +2004,7 @@ export class SessionStore {
       notes: string | null;
     } | null,
     messageId: number,
-    _pendingStore: PendingMessageStore,
+    _pendingStore: unknown,
     promptNumber?: number,
     discoveryTokens: number = 0,
     overrideTimestampEpoch?: number,

@@ -34,6 +34,17 @@ const BLOCKED_ENV_VARS = [
   'CLAUDE_CODE_OAUTH_TOKEN', // Issue #2215: prevent stale parent-process token from leaking into
                              // isolated env. The fresh token is read from the keychain at spawn
                              // time by buildIsolatedEnvWithFreshOAuth().
+  // Issue #2357 (defense-in-depth): host CLI effort config, not part of the
+  // plugin's contract. The SDK subprocess reads CLAUDE_CODE_EFFORT_LEVEL and
+  // forwards it as the `effort` Messages API parameter; models that don't
+  // support effort (Haiku 4.5, Sonnet 4.5, older) reject with a permanent
+  // HTTP 400, which previously retried forever. env-sanitizer's CLAUDE_CODE_*
+  // prefix filter already strips these on spawn paths that chain sanitizeEnv,
+  // but BLOCKED_ENV_VARS is the canonical leak deny-list — naming them here
+  // guarantees buildIsolatedEnv() strips them even on a path that forgets to
+  // chain sanitizeEnv.
+  'CLAUDE_CODE_EFFORT_LEVEL',
+  'CLAUDE_CODE_ALWAYS_ENABLE_EFFORT',
 ];
 
 export interface ClaudeMemEnv {
@@ -89,6 +100,20 @@ function serializeEnvFile(env: Record<string, string>): string {
   return lines.join('\n') + '\n';
 }
 
+/**
+ * Single source of truth for non-OAuth Anthropic credentials (#2375).
+ *
+ * Contract: ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL, and ANTHROPIC_AUTH_TOKEN
+ * are populated ONLY from ~/.claude-mem/.env — never from the parent shell.
+ * All three are in BLOCKED_ENV_VARS so process.env values cannot leak into
+ * the SDK subprocess; they are re-injected here (and in buildIsolatedEnv)
+ * exclusively from the file.
+ *
+ * The whitelist is enforced by property-by-property assignment below — only
+ * the five named keys are ever copied out. Do NOT replace this with
+ * Object.assign(result, parsed): that would let arbitrary keys (e.g. a leaked
+ * CLAUDE_CODE_* or a typo'd ANTHROPIC_* variant) through.
+ */
 export function loadClaudeMemEnv(): ClaudeMemEnv {
   const envFile = envFilePath();
   if (!existsSync(envFile)) {
@@ -250,6 +275,15 @@ export async function buildIsolatedEnvWithFreshOAuth(
   // gateway-appropriate token in ~/.claude-mem/.env if their gateway requires
   // one. A bare BASE_URL with no token = tokenless gateway (e.g. mTLS at the
   // network boundary).
+  //
+  // Post-#2375: ANTHROPIC_BASE_URL is in BLOCKED_ENV_VARS, so it can ONLY be
+  // present in isolatedEnv when the user intentionally configured it in
+  // ~/.claude-mem/.env (see loadClaudeMemEnv re-injection above). A BASE_URL
+  // leaked from the parent shell no longer reaches this predicate — that was
+  // the root cause of #2375 (leaked BASE_URL → OAuth-skip → no credential at
+  // all). Keeping the BASE_URL branch here is therefore the *security*-correct
+  // behavior: it prevents the OAuth token from being sent to a user-configured
+  // third-party gateway. It is NOT the leak path it was before the deny-list.
   if (isolatedEnv.ANTHROPIC_BASE_URL) {
     clearStaleMarker();
     return isolatedEnv;

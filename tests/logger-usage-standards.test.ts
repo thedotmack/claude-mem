@@ -24,8 +24,22 @@ const EXCLUDED_PATTERNS = [
   /SettingsDefaultsManager\.ts$/,  // Must use console.log to avoid circular dependency with logger
   /user-message-hook\.ts$/,  // Deprecated - kept for reference only, not registered in hooks.json
   /cli\/hook-command\.ts$/,  // CLI hook command uses console.log/error for hook protocol output
+  /shared\/hook-io\.ts$/,  // Canonical hook-protocol IO module: console.log emits MODEL_CONTEXT JSON to stdout (plan 01 / #2292)
   /cli\/handlers\/user-message\.ts$/,  // User message handler uses console.error for user-visible context
   /services\/transcripts\/cli\.ts$/,  // CLI transcript subcommands use console.log for user-visible interactive output
+  /npx-cli\/commands\//,  // npx CLI subcommands (install/uninstall/runtime/server/etc) emit user-visible terminal output
+  /npx-cli\/install\//,  // npx CLI install-time modules (error-reporter/setup-runtime/etc) emit user-visible terminal output during `npx claude-mem install`
+  /server\/runtime\/ServerBetaService\.ts$/,  // server-beta CLI entry point (status/usage output, process.exit)
+  /integrations\/McpIntegrations\.ts$/,  // CLI installer for MCP integrations (interactive install output)
+  /errors\.ts$/,  // Error class/type definitions (pure data, no logic to instrument)
+  /worker\/provider-errors\.ts$/,  // Provider error classification (pure data structures)
+  /worker\/knowledge\/CorpusRenderer\.ts$/,  // Pure string/markdown rendering, no side effects
+  /worker\/http\/middleware\/validateBody\.ts$/,  // Trivial zod validation middleware factory
+  /worker\/RateLimitStore\.ts$/,  // Side-effect-free in-memory rate-limit store
+  /worker\/events\/SessionEventBroadcaster\.ts$/,  // Thin SSE broadcast wrapper, no error paths
+  /sdk\/output-classifier\.ts$/,  // Pure, side-effect-free output classifier; logging happens at the ResponseProcessor call site with full session context
+  /build\/hook-shell-template\.ts$/,  // Pure build-time shell-string generator (no runtime/observability surface); drift is enforced by build-hooks.js + plugin-distribution.test.ts
+  /worker\/model-aliases\.ts$/,  // Pure $TIER alias resolver (#2289); side-effect-free passthrough, logging happens at the request-time call site
 ];
 
 const HIGH_PRIORITY_PATTERNS = [

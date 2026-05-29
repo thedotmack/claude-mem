@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+import { resolveOpenRouterChatCompletionsUrl } from '../../../shared/openrouter-base-url.js';
 import { logger } from '../../../utils/logger.js';
 import {
   ServerClassifiedProviderError,
@@ -12,12 +13,19 @@ import type {
   ServerGenerationResult,
 } from './shared/types.js';
 
-const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const DEFAULT_MODEL = 'anthropic/claude-3.5-sonnet';
 
 export interface OpenRouterObservationProviderOptions {
   apiKey: string;
   model?: string;
+  /**
+   * Optional OpenAI-compatible base URL (#2382/#2590/#2622/#2393). When set,
+   * requests POST to `<baseUrl>/chat/completions` (or verbatim if it already
+   * ends in `/chat/completions`). When unset, the default OpenRouter endpoint
+   * is used — behavior unchanged. Examples: https://api.deepseek.com (DeepSeek),
+   * http://localhost:1234/v1 (LM Studio), a custom gateway base.
+   */
+  baseUrl?: string;
   maxOutputTokens?: number;
   siteUrl?: string;
   appName?: string;
@@ -34,6 +42,7 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
   readonly providerLabel = 'openrouter' as const;
   private readonly apiKey: string;
   private readonly model: string;
+  private readonly apiUrl: string;
   private readonly maxOutputTokens: number;
   private readonly siteUrl: string;
   private readonly appName: string;
@@ -47,7 +56,9 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
       });
     }
     this.apiKey = options.apiKey;
+    // Model is passed verbatim so arbitrary OpenAI-compatible ids work. #2393.
     this.model = options.model ?? DEFAULT_MODEL;
+    this.apiUrl = resolveOpenRouterChatCompletionsUrl(options.baseUrl);
     this.maxOutputTokens = options.maxOutputTokens ?? 4096;
     this.siteUrl = options.siteUrl ?? 'https://github.com/thedotmack/claude-mem';
     this.appName = options.appName ?? 'claude-mem';
@@ -69,7 +80,7 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
 
     let response: Response;
     try {
-      response = await this.fetchImpl(OPENROUTER_API_URL, {
+      response = await this.fetchImpl(this.apiUrl, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${this.apiKey}`,

@@ -2,12 +2,17 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import {
   createServerApiKey,
+  createRawServerApiKey,
   hashServerApiKey,
+  hashServerApiKeyLegacySha256,
+  verifyRawKeyAgainstStoredHash,
+  migrateServerApiKeyScopes,
   revokeServerApiKey,
   verifyServerApiKey,
-} from '../../src/server/auth/api-key-service.js';
+  DEFAULT_LOCAL_API_KEY_SCOPES,
+} from '../../src/server/auth/sqlite-api-key-service.js';
 import { requireServerAuth } from '../../src/server/middleware/auth.js';
-import { ProjectsRepository, TeamsRepository } from '../../src/storage/sqlite/index.js';
+import { AuthRepository, ProjectsRepository, TeamsRepository } from '../../src/storage/sqlite/index.js';
 
 describe('server API key auth', () => {
   let db: Database;
@@ -21,7 +26,7 @@ describe('server API key auth', () => {
     db.close();
   });
 
-  it('creates raw keys once while storing only a hash', () => {
+  it('creates raw keys once while storing only a salted hash', () => {
     const created = createServerApiKey(db, {
       name: 'Team key',
       teamId: null,
@@ -30,9 +35,73 @@ describe('server API key auth', () => {
     });
 
     expect(created.rawKey).toStartWith('cmem_');
-    expect(created.record.keyHash).toBe(hashServerApiKey(created.rawKey));
+    // #2541 — stored hash is salted scrypt (non-deterministic per raw key),
+    // never the plaintext, and verifiable via the constant-time verifier.
+    expect(created.record.keyHash).toStartWith('scrypt$');
     expect(created.record.keyHash).not.toContain(created.rawKey);
+    expect(verifyRawKeyAgainstStoredHash(created.rawKey, created.record.keyHash)).toBe(true);
+    // Salt makes two hashes of the same input differ.
+    expect(hashServerApiKey(created.rawKey)).not.toBe(hashServerApiKey(created.rawKey));
     expect(created.record.prefix).toBe(created.rawKey.slice(0, 10));
+  });
+
+  it('verifies a key created with the salted scheme', () => {
+    const created = createServerApiKey(db, { name: 'k', scopes: ['memories:read'] });
+    expect(verifyServerApiKey(db, created.rawKey, ['memories:read'])?.record.id).toBe(created.record.id);
+    expect(verifyServerApiKey(db, 'cmem_wrong-key', ['memories:read'])).toBeNull();
+  });
+
+  it('still verifies legacy unsalted SHA-256 keys (#2541 backward compat)', () => {
+    // Seed a key the OLD way: unsalted SHA-256 hash written directly.
+    const rawKey = createRawServerApiKey();
+    const legacyHash = hashServerApiKeyLegacySha256(rawKey);
+    const repo = new AuthRepository(db);
+    const record = repo.createApiKey({
+      name: 'legacy',
+      keyHash: legacyHash,
+      prefix: rawKey.slice(0, 10),
+      scopes: ['memories:read'],
+    });
+    expect(record.keyHash).toBe(legacyHash);
+
+    // Legacy key still authenticates.
+    const verified = verifyServerApiKey(db, rawKey, ['memories:read']);
+    expect(verified?.record.id).toBe(record.id);
+
+    // After verify, the stored hash is transparently upgraded to salted scrypt.
+    const upgraded = new AuthRepository(db).getApiKeyById(record.id);
+    expect(upgraded?.keyHash).toStartWith('scrypt$');
+    // And it still verifies under the new scheme.
+    expect(verifyServerApiKey(db, rawKey, ['memories:read'])?.record.id).toBe(record.id);
+  });
+
+  it('defaults new keys to read+write scopes matching the v1 routes (#2428)', () => {
+    const created = createServerApiKey(db, { name: 'default-scope-key' });
+    expect(created.record.scopes).toEqual([...DEFAULT_LOCAL_API_KEY_SCOPES]);
+    // A default key is authorized for both read and write routes.
+    expect(verifyServerApiKey(db, created.rawKey, ['memories:read'])).not.toBeNull();
+    expect(verifyServerApiKey(db, created.rawKey, ['memories:write'])).not.toBeNull();
+    // But NOT for a scope it was never granted.
+    expect(verifyServerApiKey(db, created.rawKey, ['admin:all'])).toBeNull();
+  });
+
+  it('migrates a legacy key with empty scopes up to working defaults (#2560)', () => {
+    const rawKey = createRawServerApiKey();
+    const repo = new AuthRepository(db);
+    const record = repo.createApiKey({
+      name: 'empty-scope',
+      keyHash: hashServerApiKeyLegacySha256(rawKey),
+      prefix: rawKey.slice(0, 10),
+      scopes: [],
+    });
+    // Empty-scope key cannot access read routes.
+    expect(verifyServerApiKey(db, rawKey, ['memories:read'])).toBeNull();
+
+    const migrated = migrateServerApiKeyScopes(db, record.id);
+    expect(migrated?.scopes).toEqual([...DEFAULT_LOCAL_API_KEY_SCOPES]);
+    // Now it works.
+    expect(verifyServerApiKey(db, rawKey, ['memories:read'])).not.toBeNull();
+    expect(verifyServerApiKey(db, rawKey, ['memories:write'])).not.toBeNull();
   });
 
   it('verifies required scopes and rejects revoked keys', () => {

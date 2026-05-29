@@ -25,7 +25,9 @@ import {
 
 // @ts-ignore - Agent SDK types may not be available
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import { buildHardenedSdkOptions } from '../../sdk/hardened-options.js';
 import { ClassifiedProviderError } from './provider-errors.js';
+import { resolveTierAlias } from './model-aliases.js';
 
 /**
  * Module-scoped guard so the "effort parameter" hint only fires once per
@@ -166,20 +168,6 @@ export class ClaudeProvider {
     const claudePath = findClaudeExecutable('SDK');
 
     const modelId = session.modelOverride || this.getModelId();
-    const disallowedTools = [
-      'Bash',           // Prevent infinite loops
-      'Read',           // No file reading
-      'Write',          // No file writing
-      'Edit',           // No file editing
-      'Grep',           // No code searching
-      'Glob',           // No file pattern matching
-      'WebFetch',       // No web fetching
-      'WebSearch',      // No web searching
-      'Task',           // No spawning sub-agents
-      'NotebookEdit',   // No notebook editing
-      'AskUserQuestion',// No asking questions
-      'TodoWrite'       
-    ];
 
     const messageGenerator = this.createMessageGenerator(session, cwdTracker);
 
@@ -225,19 +213,18 @@ export class ClaudeProvider {
     ensureDir(OBSERVER_SESSIONS_DIR);
     const queryResult = query({
       prompt: messageGenerator,
-      options: {
+      options: buildHardenedSdkOptions({
+        source: 'Observer',
+        sessionDbId: session.sessionDbId,
+        contentSessionId: session.contentSessionId,
+        project: session.project,
         model: modelId,
-        cwd: OBSERVER_SESSIONS_DIR,
-        ...(shouldResume && session.memorySessionId ? { resume: session.memorySessionId } : {}),
-        disallowedTools,
-        abortController: session.abortController,
-        pathToClaudeCodeExecutable: claudePath,
-        spawnClaudeCodeProcess: createSdkSpawnFactory(session.sessionDbId),
         env: isolatedEnv,  // Use isolated credentials from ~/.claude-mem/.env, not process.env
-        mcpServers: {},
-        settingSources: [],
-        strictMcpConfig: true,
-      }
+        pathToClaudeCodeExecutable: claudePath,
+        abortController: session.abortController,
+        ...(shouldResume && session.memorySessionId ? { resume: session.memorySessionId } : {}),
+        spawnClaudeCodeProcess: createSdkSpawnFactory(session.sessionDbId),
+      }),
     });
 
     try {
@@ -488,6 +475,7 @@ export class ClaudeProvider {
   private getModelId(): string {
     const settingsPath = paths.settings();
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-    return settings.CLAUDE_MEM_MODEL;
+    // Resolve $TIER:<fast|smart|simple|summary> aliases at request time (#2289).
+    return resolveTierAlias(settings.CLAUDE_MEM_MODEL, settings);
   }
 }
