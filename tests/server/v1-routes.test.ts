@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:te
 import { Database } from 'bun:sqlite';
 import { Server, type ServerOptions } from '../../src/services/server/Server.js';
 import { ServerV1Routes } from '../../src/server/routes/v1/ServerV1Routes.js';
-import { createServerApiKey } from '../../src/server/auth/api-key-service.js';
+import { createServerApiKey } from '../../src/server/auth/sqlite-api-key-service.js';
 import { logger } from '../../src/utils/logger.js';
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
@@ -195,6 +195,28 @@ describe('server REST API v1 routes', () => {
     });
 
     expect(response.status).toBe(403);
+  });
+
+  it('authorizes a DEFAULT-scoped API key for the read and write routes it must access (#2428)', async () => {
+    // A key created with NO explicit scopes must work against the v1 routes
+    // (which require memories:read for reads and memories:write for writes).
+    // Previously the default was [] and every route 403'd.
+    const key = createServerApiKey(db, { name: 'default-scoped' });
+    const auth = { Authorization: `Bearer ${key.rawKey}`, 'Content-Type': 'application/json' };
+
+    // Write route (memories:write) — must be allowed.
+    const writeResponse = await fetch(`http://127.0.0.1:${port}/v1/projects`, {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ name: 'Default Key Project' }),
+    });
+    expect(writeResponse.status).toBe(201);
+
+    // Read route (memories:read) — must be allowed.
+    const readResponse = await fetch(`http://127.0.0.1:${port}/v1/projects`, {
+      headers: { Authorization: `Bearer ${key.rawKey}` },
+    });
+    expect(readResponse.status).toBe(200);
   });
 
   it('denies project creation when an API key is scoped to an existing project', async () => {

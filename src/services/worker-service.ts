@@ -53,7 +53,8 @@ import {
   createServerApiKey,
   listServerApiKeys,
   revokeServerApiKey,
-} from '../server/auth/api-key-service.js';
+  DEFAULT_LOCAL_API_KEY_SCOPES,
+} from '../server/auth/sqlite-api-key-service.js';
 import { ServerV1Routes } from '../server/routes/v1/ServerV1Routes.js';
 
 import {
@@ -653,10 +654,13 @@ function runServerApiKeyCli(args: string[]): never {
 
   try {
     if (subCommand === 'create') {
-      const scopes = (options.scope ?? options.scopes ?? 'memories:read')
-        .split(',')
-        .map(scope => scope.trim())
-        .filter(Boolean);
+      // #2428 — when no --scope is passed, default to the scopes the local v1
+      // routes actually require (read + write) so a default key works instead
+      // of being authorized for nothing.
+      const scopeFlag = options.scope ?? options.scopes;
+      const scopes = scopeFlag
+        ? scopeFlag.split(',').map(scope => scope.trim()).filter(Boolean)
+        : [...DEFAULT_LOCAL_API_KEY_SCOPES];
       const created = createServerApiKey(db, {
         name: options.name ?? 'server-api-key',
         teamId: options.team ?? null,

@@ -2,6 +2,7 @@
 
 import { existsSync } from 'fs';
 import { logger } from '../../utils/logger.js';
+import { ModeManager } from '../../services/domain/ModeManager.js';
 import { createPostgresStorageRepositories, getSharedPostgresPool, SERVER_BETA_POSTGRES_SCHEMA_VERSION } from '../../storage/postgres/index.js';
 import { bootstrapServerBetaPostgresSchema } from '../../storage/postgres/schema.js';
 import type { PostgresPool } from '../../storage/postgres/pool.js';
@@ -153,12 +154,32 @@ export function validateServerBetaEnv(
   };
 }
 
+// #2443 — the server-beta runtime must load an observation mode before it can
+// process any generation job; without it every job fails with "No mode
+// loaded". We mirror the worker's pattern (src/services/worker-service.ts) and
+// fail fast at boot if no mode can be loaded, so a broken install surfaces at
+// startup rather than as silent per-job failures.
+export function loadServerBetaMode(): void {
+  // ModeManager.loadMode('code') throws ('Critical: code.json mode file
+  // missing') if the bundled mode is absent — that propagates as a fatal boot
+  // error. We additionally assert a mode is active afterward.
+  const modeManager = ModeManager.getInstance();
+  modeManager.loadMode('code');
+  // getActiveMode() throws if nothing is loaded — this is the explicit
+  // validation that boot did not silently no-op.
+  modeManager.getActiveMode();
+  logger.info('SYSTEM', 'Server beta mode loaded', { mode: 'code' });
+}
+
 export async function createServerBetaService(
   options: CreateServerBetaServiceOptions = {},
 ): Promise<ServerBetaService> {
   if (!options.skipEnvValidation) {
     validateServerBetaEnv();
   }
+  // Fail fast if no observation mode can be loaded (#2443). Must happen before
+  // the service starts accepting jobs.
+  loadServerBetaMode();
   const pool = options.pool ?? getSharedPostgresPool({ requireDatabaseUrl: true });
   const bootstrap = await initializePostgres(pool, options.bootstrapSchema ?? true);
   const queueManager = options.queueManager ?? buildQueueManager();

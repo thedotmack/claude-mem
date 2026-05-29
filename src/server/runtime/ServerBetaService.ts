@@ -270,6 +270,13 @@ function resolveBoundPort(server: Server): number | null {
   return address && typeof address !== 'string' ? address.port : null;
 }
 
+// #2444 — `start` is foreground by default; `--daemon`/`-d` opts into the
+// detached background daemon. Exported so the CLI contract is unit-testable
+// without spawning a real service.
+export function startCommandWantsDaemon(startArgs: string[]): boolean {
+  return startArgs.some(flag => flag === '--daemon' || flag === '-d');
+}
+
 export async function runServerBetaCli(argv: string[] = process.argv.slice(2)): Promise<void> {
   const command = argv[0] ?? '--daemon';
   const port = getServerBetaPort();
@@ -304,12 +311,26 @@ export async function runServerBetaCli(argv: string[] = process.argv.slice(2)): 
         console.log(JSON.stringify({ status: 'ready', runtime: SERVER_BETA_RUNTIME, pid: existing.pid, port: existing.port }));
         return;
       }
-      const daemonPid = spawnServerBetaDaemon(port);
-      if (daemonPid === undefined) {
-        console.error('Failed to spawn server beta daemon.');
-        process.exit(1);
+
+      // #2444 — `start` runs in the FOREGROUND by default so the server is
+      // usable under systemd `Type=simple` (the supervisor owns the PID and
+      // restart policy). Detached daemonization is an explicit opt-in via
+      // `start --daemon`, preserving the old behavior for ad-hoc local use.
+      const wantsDaemon = startCommandWantsDaemon(argv.slice(1));
+      if (wantsDaemon) {
+        const daemonPid = spawnServerBetaDaemon(port);
+        if (daemonPid === undefined) {
+          console.error('Failed to spawn server beta daemon.');
+          process.exit(1);
+        }
+        console.log(JSON.stringify({ status: 'starting', runtime: SERVER_BETA_RUNTIME, pid: daemonPid, port }));
+        return;
       }
-      console.log(JSON.stringify({ status: 'starting', runtime: SERVER_BETA_RUNTIME, pid: daemonPid, port }));
+
+      // Foreground path: run the service in THIS process and block until a
+      // shutdown signal. Identical wiring to the internal `--daemon` worker
+      // process, but attached to the controlling terminal / unit.
+      await runServerBetaForeground(port, host);
       return;
     }
 
@@ -328,8 +349,10 @@ export async function runServerBetaCli(argv: string[] = process.argv.slice(2)): 
     }
 
     case 'restart': {
+      // restart implies a managed background daemon (there is no foreground
+      // process to hand control back to), so it re-spawns detached.
       await runServerBetaCli(['stop']);
-      await runServerBetaCli(['start']);
+      await runServerBetaCli(['start', '--daemon']);
       return;
     }
 
@@ -349,26 +372,40 @@ export async function runServerBetaCli(argv: string[] = process.argv.slice(2)): 
     }
 
     case '--daemon': {
-      const existing = readServerBetaPidFile();
-      if (verifyPidFileOwnership(existing) || await isPortInUse(port, host)) {
-        process.exit(0);
-      }
-      const { createServerBetaService } = await import('./create-server-beta-service.js');
-      const service = await createServerBetaService();
-      const shutdown = async () => {
-        await service.stop();
-        process.exit(0);
-      };
-      process.once('SIGTERM', shutdown);
-      process.once('SIGINT', shutdown);
-      await service.start();
+      // Internal entrypoint executed by the detached child spawned via
+      // `start --daemon`. Runs the same foreground loop in the child process.
+      await runServerBetaForeground(port, host);
       return;
     }
 
     default:
-      console.error('Usage: server-beta-service start|stop|restart|status');
+      console.error('Usage: server-beta-service start [--daemon] | stop | restart | status');
+      console.error('  start            run the server in the foreground (default; systemd Type=simple)');
+      console.error('  start --daemon   detach and run as a background daemon');
+      console.error('  stop             stop a running daemon');
+      console.error('  restart          stop then start (daemon)');
+      console.error('  status           print runtime status');
       process.exit(1);
   }
+}
+
+// #2444 — shared foreground run loop. Builds the service in THIS process,
+// installs signal handlers, and blocks until shutdown. Used both by `start`
+// (default, foreground) and by the internal `--daemon` child process.
+async function runServerBetaForeground(port: number, host: string): Promise<void> {
+  const existing = readServerBetaPidFile();
+  if (verifyPidFileOwnership(existing) || await isPortInUse(port, host)) {
+    process.exit(0);
+  }
+  const { createServerBetaService } = await import('./create-server-beta-service.js');
+  const service = await createServerBetaService();
+  const shutdown = async () => {
+    await service.stop();
+    process.exit(0);
+  };
+  process.once('SIGTERM', shutdown);
+  process.once('SIGINT', shutdown);
+  await service.start();
 }
 
 // Phase 10 — Postgres-backed `server api-key create|list|revoke` CLI. The
