@@ -7,25 +7,25 @@ import type { PostgresPool } from '../../storage/postgres/pool.js';
 import { ProviderObservationGenerator } from '../generation/ProviderObservationGenerator.js';
 import type { ServerGenerationProvider } from '../generation/providers/shared/types.js';
 import type { ServerGenerationJobPayload } from '../jobs/types.js';
-import type { ActiveServerBetaQueueManager } from './ActiveServerBetaQueueManager.js';
+import type { ActiveServerQueueManager } from './ActiveServerQueueManager.js';
 import type {
-  ServerBetaBoundaryHealth,
-  ServerBetaGenerationWorkerManager,
+  ServerBoundaryHealth,
+  ServerGenerationWorkerManager,
 } from './types.js';
 
-// ActiveServerBetaGenerationWorkerManager wires a BullMQ Worker (per the
+// ActiveServerGenerationWorkerManager wires a BullMQ Worker (per the
 // 'event' queue) to a ProviderObservationGenerator. Concurrency defaults to
 // 1 per the plan (line 80–86) so retries observe a single inflight provider
 // call per server. autorun:false / explicit run() is enforced by
 // ServerJobQueue.start.
 //
 // This class is wired in only when both a queue manager AND a configured
-// provider are present. create-server-beta-service keeps the disabled
-// adapter otherwise so server beta can boot without provider credentials.
+// provider are present. create-server-service keeps the disabled
+// adapter otherwise so the server can boot without provider credentials.
 
-export interface ActiveServerBetaGenerationWorkerManagerOptions {
+export interface ActiveServerGenerationWorkerManagerOptions {
   pool: PostgresPool;
-  queueManager: ActiveServerBetaQueueManager;
+  queueManager: ActiveServerQueueManager;
   provider: ServerGenerationProvider;
   workerId?: string;
   // Test seam: replace the generator with a stub.
@@ -36,15 +36,15 @@ export interface ActiveServerBetaGenerationWorkerManagerOptions {
   ) => ProviderObservationGenerator;
 }
 
-export class ActiveServerBetaGenerationWorkerManager implements ServerBetaGenerationWorkerManager {
+export class ActiveServerGenerationWorkerManager implements ServerGenerationWorkerManager {
   readonly kind = 'generation-worker-manager' as const;
   private started = false;
   private closed = false;
   private readonly generator: ProviderObservationGenerator;
   private readonly workerId: string;
 
-  constructor(private readonly options: ActiveServerBetaGenerationWorkerManagerOptions) {
-    this.workerId = options.workerId ?? `server-beta-${process.pid}`;
+  constructor(private readonly options: ActiveServerGenerationWorkerManagerOptions) {
+    this.workerId = options.workerId ?? `server-${process.pid}`;
     this.generator = options.generatorFactory
       ? options.generatorFactory(options.pool, options.provider, this.workerId)
       : new ProviderObservationGenerator({
@@ -138,7 +138,7 @@ export class ActiveServerBetaGenerationWorkerManager implements ServerBetaGenera
     }
   }
 
-  getHealth(): ServerBetaBoundaryHealth {
+  getHealth(): ServerBoundaryHealth {
     if (this.closed) {
       return { status: 'errored', reason: 'generation-worker-manager closed' };
     }

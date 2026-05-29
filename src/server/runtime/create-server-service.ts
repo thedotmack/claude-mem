@@ -2,37 +2,37 @@
 
 import { existsSync } from 'fs';
 import { logger } from '../../utils/logger.js';
-import { createPostgresStorageRepositories, getSharedPostgresPool, SERVER_BETA_POSTGRES_SCHEMA_VERSION } from '../../storage/postgres/index.js';
-import { bootstrapServerBetaPostgresSchema } from '../../storage/postgres/schema.js';
+import { createPostgresStorageRepositories, getSharedPostgresPool, SERVER_POSTGRES_SCHEMA_VERSION } from '../../storage/postgres/index.js';
+import { bootstrapServerPostgresSchema } from '../../storage/postgres/schema.js';
 import type { PostgresPool } from '../../storage/postgres/pool.js';
 import { getRedisQueueConfig } from '../queue/redis-config.js';
-import { ActiveServerBetaQueueManager } from './ActiveServerBetaQueueManager.js';
-import { ActiveServerBetaGenerationWorkerManager } from './ActiveServerBetaGenerationWorkerManager.js';
+import { ActiveServerQueueManager } from './ActiveServerQueueManager.js';
+import { ActiveServerGenerationWorkerManager } from './ActiveServerGenerationWorkerManager.js';
 import { ClaudeObservationProvider } from '../generation/providers/ClaudeObservationProvider.js';
 import { GeminiObservationProvider } from '../generation/providers/GeminiObservationProvider.js';
 import { OpenRouterObservationProvider } from '../generation/providers/OpenRouterObservationProvider.js';
 import type { ServerGenerationProvider } from '../generation/providers/shared/types.js';
-import { ServerBetaService } from './ServerBetaService.js';
+import { ServerService } from './ServerService.js';
 import {
-  DisabledServerBetaEventBroadcaster,
-  DisabledServerBetaGenerationWorkerManager,
-  DisabledServerBetaProviderRegistry,
-  DisabledServerBetaQueueManager,
-  type ServerBetaAuthMode,
-  type ServerBetaBootstrapStatus,
-  type ServerBetaGenerationWorkerManager,
-  type ServerBetaQueueManager,
-  type ServerBetaServiceGraph,
+  DisabledServerEventBroadcaster,
+  DisabledServerGenerationWorkerManager,
+  DisabledServerProviderRegistry,
+  DisabledServerQueueManager,
+  type ServerAuthMode,
+  type ServerBootstrapStatus,
+  type ServerGenerationWorkerManager,
+  type ServerQueueManager,
+  type ServerServiceGraph,
 } from './types.js';
 
-export interface CreateServerBetaServiceOptions {
+export interface CreateServerServiceOptions {
   pool?: PostgresPool;
-  authMode?: ServerBetaAuthMode;
+  authMode?: ServerAuthMode;
   bootstrapSchema?: boolean;
-  queueManager?: ServerBetaQueueManager;
+  queueManager?: ServerQueueManager;
   // Phase 5 seam: tests can inject a fake provider without env config.
   generationProvider?: ServerGenerationProvider;
-  generationWorkerManager?: ServerBetaGenerationWorkerManager;
+  generationWorkerManager?: ServerGenerationWorkerManager;
   // Phase 10: when true, skip building the generation worker. Used when the
   // service is just an HTTP front-end and a separate `server worker` process
   // consumes the BullMQ queues.
@@ -42,7 +42,7 @@ export interface CreateServerBetaServiceOptions {
   skipEnvValidation?: boolean;
 }
 
-// Phase 10 — env validation. Server beta in Docker requires explicit, complete
+// Phase 10 — env validation. Server in Docker requires explicit, complete
 // configuration. Missing pieces fail fast at startup rather than silently
 // degrading. Required env when running in Docker:
 //   - CLAUDE_MEM_SERVER_DATABASE_URL  (Postgres)
@@ -52,12 +52,12 @@ export interface CreateServerBetaServiceOptions {
 // `local-dev` bypass is only valid on a developer's loopback; in Docker the
 // container is reachable via service-to-service networking and exposed ports,
 // so the loopback assumption is invalid.
-export interface ServerBetaEnvValidationOptions {
+export interface ServerEnvValidationOptions {
   env?: NodeJS.ProcessEnv;
   isDocker?: boolean;
 }
 
-export interface ServerBetaEnvValidationResult {
+export interface ServerEnvValidationResult {
   isDocker: boolean;
   runtime: string;
   authMode: string;
@@ -77,9 +77,9 @@ export function detectDockerEnvironment(env: NodeJS.ProcessEnv = process.env): b
   return false;
 }
 
-export function validateServerBetaEnv(
-  options: ServerBetaEnvValidationOptions = {},
-): ServerBetaEnvValidationResult {
+export function validateServerEnv(
+  options: ServerEnvValidationOptions = {},
+): ServerEnvValidationResult {
   const env = options.env ?? process.env;
   const isDocker = options.isDocker ?? detectDockerEnvironment(env);
   const errors: string[] = [];
@@ -87,13 +87,15 @@ export function validateServerBetaEnv(
   const runtime = (env.CLAUDE_MEM_RUNTIME ?? '').trim();
   if (!runtime) {
     // Warn but allow — defaulted to 'worker' upstream; we log a warning so
-    // operators know server-beta is the active runtime here.
+    // operators know the server runtime is active here.
     if (isDocker) {
-      logger.warn('SYSTEM', 'CLAUDE_MEM_RUNTIME unset; server-beta container assumes runtime=server-beta');
+      logger.warn('SYSTEM', 'CLAUDE_MEM_RUNTIME unset; server container assumes runtime=server');
     }
-  } else if (runtime !== 'server-beta' && isDocker) {
+  } else if (runtime !== 'server' && runtime !== 'server-beta' && isDocker) {
+    // Phase 1a (cmem-sdk rename): accept both the canonical `server` and the
+    // legacy `server-beta` literal so existing operator configs keep working.
     errors.push(
-      `CLAUDE_MEM_RUNTIME=${runtime} is invalid in Docker; the server-beta image only runs CLAUDE_MEM_RUNTIME=server-beta.`,
+      `CLAUDE_MEM_RUNTIME=${runtime} is invalid in Docker; the server image only runs CLAUDE_MEM_RUNTIME=server (or legacy CLAUDE_MEM_RUNTIME=server-beta).`,
     );
   }
 
@@ -127,7 +129,7 @@ export function validateServerBetaEnv(
 
   const hasDatabaseUrl = Boolean((env.CLAUDE_MEM_SERVER_DATABASE_URL ?? '').trim());
   if (!hasDatabaseUrl) {
-    errors.push('CLAUDE_MEM_SERVER_DATABASE_URL is required to start server-beta (Postgres connection string).');
+    errors.push('CLAUDE_MEM_SERVER_DATABASE_URL is required to start the server (Postgres connection string).');
   }
 
   const hasRedisUrl = Boolean((env.CLAUDE_MEM_REDIS_URL ?? '').trim());
@@ -137,7 +139,7 @@ export function validateServerBetaEnv(
 
   if (errors.length > 0) {
     const message = [
-      'server-beta startup configuration is invalid:',
+      'server startup configuration is invalid:',
       ...errors.map(line => `  - ${line}`),
     ].join('\n');
     throw new Error(message);
@@ -145,7 +147,10 @@ export function validateServerBetaEnv(
 
   return {
     isDocker,
-    runtime: runtime || 'server-beta',
+    // Phase 1a: report the canonical `'server'` value when unset; legacy
+    // `'server-beta'` is preserved verbatim when explicitly supplied so
+    // diagnostics reflect the operator's actual config.
+    runtime: runtime || 'server',
     authMode,
     queueEngine: queueEngine || 'disabled',
     hasDatabaseUrl,
@@ -153,11 +158,11 @@ export function validateServerBetaEnv(
   };
 }
 
-export async function createServerBetaService(
-  options: CreateServerBetaServiceOptions = {},
-): Promise<ServerBetaService> {
+export async function createServerService(
+  options: CreateServerServiceOptions = {},
+): Promise<ServerService> {
   if (!options.skipEnvValidation) {
-    validateServerBetaEnv();
+    validateServerEnv();
   }
   const pool = options.pool ?? getSharedPostgresPool({ requireDatabaseUrl: true });
   const bootstrap = await initializePostgres(pool, options.bootstrapSchema ?? true);
@@ -167,11 +172,14 @@ export async function createServerBetaService(
       || process.env.CLAUDE_MEM_GENERATION_DISABLED === 'true');
   const generationWorkerManager = options.generationWorkerManager
     ?? (generationDisabled
-      ? new DisabledServerBetaGenerationWorkerManager(
+      ? new DisabledServerGenerationWorkerManager(
           'CLAUDE_MEM_GENERATION_DISABLED is set; this server runs HTTP only. A separate `claude-mem server worker start` process consumes the BullMQ queues.',
         )
       : buildGenerationWorkerManager(pool, queueManager, options.generationProvider));
-  const graph: ServerBetaServiceGraph = {
+  const graph: ServerServiceGraph = {
+    // Persisted runtime literal — Phase 1d will migrate this value. The TS
+    // identifiers above are now `Server*`; the wire/storage value remains
+    // `'server-beta'` for back-compat.
     runtime: 'server-beta',
     postgres: {
       pool,
@@ -180,35 +188,35 @@ export async function createServerBetaService(
     authMode: options.authMode ?? parseAuthMode(process.env.CLAUDE_MEM_AUTH_MODE),
     queueManager,
     generationWorkerManager,
-    providerRegistry: new DisabledServerBetaProviderRegistry('Phase 5 keeps the provider registry boundary as inert; per-call providers are owned by the generation worker manager.'),
-    eventBroadcaster: new DisabledServerBetaEventBroadcaster('Phase 2 boundary only; SSE/event broadcasting is not wired.'),
+    providerRegistry: new DisabledServerProviderRegistry('Phase 5 keeps the provider registry boundary as inert; per-call providers are owned by the generation worker manager.'),
+    eventBroadcaster: new DisabledServerEventBroadcaster('Phase 2 boundary only; SSE/event broadcasting is not wired.'),
     storage: createPostgresStorageRepositories(pool),
   };
 
-  if (generationWorkerManager instanceof ActiveServerBetaGenerationWorkerManager) {
+  if (generationWorkerManager instanceof ActiveServerGenerationWorkerManager) {
     generationWorkerManager.start();
   }
 
-  return new ServerBetaService({ graph });
+  return new ServerService({ graph });
 }
 
 function buildGenerationWorkerManager(
   pool: PostgresPool,
-  queueManager: ServerBetaQueueManager,
+  queueManager: ServerQueueManager,
   injectedProvider?: ServerGenerationProvider,
-): ServerBetaGenerationWorkerManager {
-  if (!(queueManager instanceof ActiveServerBetaQueueManager)) {
-    return new DisabledServerBetaGenerationWorkerManager(
+): ServerGenerationWorkerManager {
+  if (!(queueManager instanceof ActiveServerQueueManager)) {
+    return new DisabledServerGenerationWorkerManager(
       'queue manager is disabled; set CLAUDE_MEM_QUEUE_ENGINE=bullmq to enable provider generation.',
     );
   }
   const provider = injectedProvider ?? buildServerGenerationProviderFromEnv();
   if (!provider) {
-    return new DisabledServerBetaGenerationWorkerManager(
+    return new DisabledServerGenerationWorkerManager(
       'no server generation provider configured; set CLAUDE_MEM_SERVER_PROVIDER and the matching API key to enable.',
     );
   }
-  return new ActiveServerBetaGenerationWorkerManager({
+  return new ActiveServerGenerationWorkerManager({
     pool,
     queueManager,
     provider,
@@ -252,40 +260,40 @@ function buildServerGenerationProviderFromEnv(): ServerGenerationProvider | null
 // silently fall back to a disabled queue. Default behavior (sqlite engine
 // or no opt-in) keeps the disabled boundary so worker-era runtimes stay
 // compatible.
-function buildQueueManager(): ServerBetaQueueManager {
+function buildQueueManager(): ServerQueueManager {
   const config = getRedisQueueConfig();
   if (config.engine !== 'bullmq') {
-    return new DisabledServerBetaQueueManager(
-      `Queue engine is "${config.engine}"; set CLAUDE_MEM_QUEUE_ENGINE=bullmq to activate the server-beta queue manager.`,
+    return new DisabledServerQueueManager(
+      `Queue engine is "${config.engine}"; set CLAUDE_MEM_QUEUE_ENGINE=bullmq to activate the server queue manager.`,
     );
   }
-  return new ActiveServerBetaQueueManager(config);
+  return new ActiveServerQueueManager(config);
 }
 
-async function initializePostgres(pool: PostgresPool, bootstrapSchema: boolean): Promise<ServerBetaBootstrapStatus> {
+async function initializePostgres(pool: PostgresPool, bootstrapSchema: boolean): Promise<ServerBootstrapStatus> {
   if (!bootstrapSchema) {
     return { initialized: false, schemaVersion: null, appliedAt: null };
   }
 
-  await bootstrapServerBetaPostgresSchema(pool);
+  await bootstrapServerPostgresSchema(pool);
   const result = await pool.query(
     `
       SELECT version, applied_at
       FROM server_beta_schema_migrations
       WHERE version = $1
     `,
-    [SERVER_BETA_POSTGRES_SCHEMA_VERSION],
+    [SERVER_POSTGRES_SCHEMA_VERSION],
   );
   const row = result.rows[0] as { version?: number; applied_at?: Date | string } | undefined;
 
   return {
-    initialized: row?.version === SERVER_BETA_POSTGRES_SCHEMA_VERSION,
+    initialized: row?.version === SERVER_POSTGRES_SCHEMA_VERSION,
     schemaVersion: typeof row?.version === 'number' ? row.version : null,
     appliedAt: row?.applied_at ? new Date(row.applied_at).toISOString() : null,
   };
 }
 
-function parseAuthMode(value: string | undefined): ServerBetaAuthMode {
+function parseAuthMode(value: string | undefined): ServerAuthMode {
   if (value === 'local-dev' || value === 'disabled') {
     return value;
   }

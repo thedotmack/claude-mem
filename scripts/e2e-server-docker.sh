@@ -14,7 +14,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PROJECT_NAME="${COMPOSE_PROJECT_NAME:-claude-mem-server-beta-e2e-$(date +%s)}"
+PROJECT_NAME="${COMPOSE_PROJECT_NAME:-claude-mem-server-e2e-$(date +%s)}"
 RUN_ID="${E2E_RUN_ID:-$(date +%s)-$RANDOM}"
 COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.e2e.yml)
 # Test-only credentials. docker-compose.yml requires these to be set; the
@@ -24,8 +24,8 @@ export POSTGRES_USER="${POSTGRES_USER:-claudemem_e2e}"
 export POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-claudemem_e2e}"
 export POSTGRES_DB="${POSTGRES_DB:-claudemem_e2e}"
 COMPOSE=(docker compose -p "$PROJECT_NAME" "${COMPOSE_FILES[@]}")
-SERVER_SCRIPT="/opt/claude-mem/scripts/server-beta-service.cjs"
-# server-beta-service.cjs has its own `server api-key create|list|revoke`
+SERVER_SCRIPT="/opt/claude-mem/scripts/server-service.cjs"
+# server-service.cjs has its own `server api-key create|list|revoke`
 # subtree backed by Postgres (NOT the SQLite worker-service tree).
 SERVER_HEALTH_URL="http://127.0.0.1:37877/healthz"
 
@@ -150,7 +150,7 @@ echo "[e2e] running phase1 functional paths in test container"
   -e E2E_API_KEY="$FULL_KEY" \
   -e E2E_READ_ONLY_API_KEY="$READ_ONLY_KEY" \
   -e E2E_PROJECT_ID="$FULL_PROJECT_ID" \
-  server-beta-e2e
+  server-e2e
 
 echo "[e2e] revoking read-only key inside server container"
 "${COMPOSE[@]}" exec -T claude-mem-server \
@@ -168,7 +168,7 @@ echo "[e2e] running phase2 persistence and revoked-key checks in test container"
   -e E2E_API_KEY="$FULL_KEY" \
   -e E2E_REVOKED_API_KEY="$READ_ONLY_KEY" \
   -e E2E_PROJECT_ID="$FULL_PROJECT_ID" \
-  server-beta-e2e
+  server-e2e
 
 echo "[e2e] verifying anti-pattern guards"
 assert_local_dev_rejected_in_docker

@@ -37,13 +37,13 @@ Phases 1–3 (already merged in #2351) delivered the substrate: Postgres schema 
 | 4 | Event-to-job pipeline (transactional outbox + ingest service) | `src/server/services/IngestEventsService.ts`, `src/server/jobs/outbox.ts` |
 | 5 | Provider observation generator (Claude / Gemini / OpenRouter) | `src/server/generation/ProviderObservationGenerator.ts`, `src/server/generation/providers/*` |
 | 6 | Independent server session semantics + 3-policy scheduling | `src/storage/postgres/server-sessions.ts`, `src/server/runtime/SessionGenerationPolicy.ts` |
-| 7 | Hooks routed via HTTP (no worker dependency) | `src/services/hooks/runtime-selector.ts`, `src/services/hooks/server-beta-client.ts`, `src/services/hooks/server-beta-bootstrap.ts` |
+| 7 | Hooks routed via HTTP (no worker dependency) | `src/services/hooks/runtime-selector.ts`, `src/services/hooks/server-client.ts`, `src/services/hooks/server-bootstrap.ts` |
 | 8 | Dedicated MCP server backed by `/v1/*` core | `src/servers/mcp-server.ts` |
 | 9 | Compatibility adapters for legacy worker payloads | `src/server/compat/SessionsObservationsAdapter.ts`, `src/server/compat/SessionsSummarizeAdapter.ts` |
-| 10 | Docker stack — split-process deployable | `docker-compose.yml`, `docker/claude-mem/Dockerfile`, `scripts/e2e-server-beta-docker.sh` |
+| 10 | Docker stack — split-process deployable | `docker-compose.yml`, `docker/claude-mem/Dockerfile`, `scripts/e2e-server-docker.sh` |
 | 11 | Team-aware generation + audit chain | scope checks + audit writes inside `ProviderObservationGenerator.ts`; identity context in `IngestEventsService.ts`; `audit_logs` plumbing throughout |
 | 12 | Observability + operations | `src/server/middleware/request-id.ts`, request_id in BullMQ payload, `/api/health` queue lanes, `src/cli/server-jobs.ts`, operator routes (`POST /v1/jobs/:id/retry`, `POST /v1/jobs/:id/cancel`) |
-| 13 | Release readiness audit | `docs/server-beta-release-readiness.md` |
+| 13 | Release readiness audit | `docs/server-release-readiness.md` |
 
 Five rounds of reviewer feedback then landed ~20 follow-up fixes:
 
@@ -195,7 +195,7 @@ That last point matters: any client written against the legacy worker keeps work
 For a developer running claude-mem on one machine, server-beta is invisible. Here's what their first run looks like:
 
 1. `npx claude-mem install` (or upgrading to a server-beta-enabled build).
-2. `bootstrapServerBetaApiKey()` (`src/services/hooks/server-beta-bootstrap.ts`) runs on first hook fire. It:
+2. `bootstrapServerApiKey()` (`src/services/hooks/server-bootstrap.ts`) runs on first hook fire. It:
    - finds-or-creates a `local-hook-team` row in `teams`,
    - finds-or-creates a `local-hook-project` row in `projects`,
    - generates a 48-byte url-safe random api key, hashes it (sha256), and creates an `api_keys` row scoped to that team+project with hook-only scopes (`events:write`, `sessions:write`, `observations:read`, `jobs:read`),
@@ -404,7 +404,7 @@ This is the "we don't pick winners" property: a team that prefers Gemini for cos
 
 ```bash
 POSTGRES_USER=… POSTGRES_PASSWORD=… POSTGRES_DB=… docker compose exec claude-mem-server \
-  bun /opt/claude-mem/scripts/server-beta-service.cjs server api-key create \
+  bun /opt/claude-mem/scripts/server-service.cjs server api-key create \
     --team <team_id> --project <project_id> \
     --scope events:write,sessions:write,observations:read,jobs:read \
     --name alice-laptop
@@ -622,19 +622,19 @@ Code referenced throughout this doc, for navigation:
   - `src/server/routes/v1/ServerV1PostgresRoutes.ts`
   - `src/server/middleware/postgres-auth.ts`
   - `src/server/middleware/request-id.ts`
-  - `src/server/runtime/ServerBetaService.ts`
+  - `src/server/runtime/ServerService.ts`
 - Compatibility
   - `src/server/compat/SessionsObservationsAdapter.ts`
   - `src/server/compat/SessionsSummarizeAdapter.ts`
 - Hook routing
   - `src/services/hooks/runtime-selector.ts`
-  - `src/services/hooks/server-beta-client.ts`
-  - `src/services/hooks/server-beta-bootstrap.ts`
+  - `src/services/hooks/server-client.ts`
+  - `src/services/hooks/server-bootstrap.ts`
 - MCP
   - `src/servers/mcp-server.ts`
 - CLI
   - `src/cli/server-jobs.ts`
-  - `src/server/runtime/ServerBetaService.ts` (`runServerBetaApiKeyCli`, `runServerBetaCli`)
+  - `src/server/runtime/ServerService.ts` (`runServerApiKeyCli`, `runServerCli`)
 - Queue
   - `src/server/jobs/ServerJobQueue.ts`
   - `src/server/jobs/job-id.ts`
@@ -643,7 +643,7 @@ Code referenced throughout this doc, for navigation:
 - Deployment
   - `docker-compose.yml`
   - `docker/claude-mem/Dockerfile`
-  - `scripts/e2e-server-beta-docker.sh`
+  - `scripts/e2e-server-docker.sh`
 - Tests
   - `tests/server/runtime/*`
   - `tests/server/generation/*`
@@ -653,8 +653,8 @@ Code referenced throughout this doc, for navigation:
   - `tests/cli/*`
   - `tests/servers/*`
 - Existing release docs
-  - `docs/server-beta-parity-map.md`
-  - `docs/server-beta-release-readiness.md`
+  - `docs/server-parity-map.md`
+  - `docs/server-release-readiness.md`
   - `docs/server.md`
   - `docs/api.md`
 

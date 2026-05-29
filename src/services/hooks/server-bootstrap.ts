@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// Phase 7 — Local API key bootstrap for the server-beta runtime.
+// Phase 7 — Local API key bootstrap for the server runtime.
 //
-// When the operator selects `runtime: "server-beta"` during install (or via
+// When the operator selects `runtime: "server"` during install (or via
 // the `claude-mem server keys rotate` command), we provision a local hook
 // API key against the local Postgres so hooks can authenticate to /v1/*.
 //
@@ -14,8 +14,11 @@
 //      `api_keys` with the scopes hooks need: events:write, sessions:write,
 //      observations:read, jobs:read.
 //   4. Persist the plaintext key to ~/.claude-mem/settings.json under
-//      `CLAUDE_MEM_SERVER_BETA_API_KEY`, then chmod that file to 0600 so
-//      only the owner can read it.
+//      `CLAUDE_MEM_SERVER_API_KEY` (the new canonical key after the
+//      server-beta → server rename). Reads in `runtime-selector.ts`
+//      dual-accept the legacy `CLAUDE_MEM_SERVER_BETA_*` keys, but writes
+//      from this bootstrapper use the new canonical names going forward.
+//      Then chmod that file to 0600 so only the owner can read it.
 //
 // The plaintext key is NEVER written into the generated bundle and never
 // logged.
@@ -53,7 +56,7 @@ export interface BootstrapDependencies {
   closePool?: boolean;
 }
 
-export async function bootstrapServerBetaApiKey(
+export async function bootstrapServerApiKey(
   deps: BootstrapDependencies = {},
 ): Promise<BootstrapResult> {
   const closePool = deps.closePool ?? deps.pool === undefined;
@@ -82,7 +85,7 @@ export async function bootstrapServerBetaApiKey(
       action: 'api_key.create',
       resourceType: 'api_key',
       resourceId: created.id,
-      details: { source: 'server-beta-bootstrap' },
+      details: { source: 'server-bootstrap' },
     });
 
     return {
@@ -103,7 +106,7 @@ export interface RotateOptions {
   pool?: PostgresPool;
 }
 
-export async function rotateServerBetaApiKey(options: RotateOptions = {}): Promise<BootstrapResult> {
+export async function rotateServerApiKey(options: RotateOptions = {}): Promise<BootstrapResult> {
   const closePool = options.pool === undefined;
   const pool = options.pool ?? buildPoolFromEnv();
   try {
@@ -113,7 +116,7 @@ export async function rotateServerBetaApiKey(options: RotateOptions = {}): Promi
         [options.previousApiKeyId],
       );
     }
-    return await bootstrapServerBetaApiKey({ pool, closePool: false });
+    return await bootstrapServerApiKey({ pool, closePool: false });
   } finally {
     if (closePool) {
       await pool.end().catch(() => undefined);
@@ -121,7 +124,7 @@ export async function rotateServerBetaApiKey(options: RotateOptions = {}): Promi
   }
 }
 
-export function persistServerBetaSettings(
+export function persistServerSettings(
   settingsPath: string,
   values: { apiKey: string; projectId: string; serverBaseUrl?: string },
 ): void {
@@ -144,10 +147,15 @@ export function persistServerBetaSettings(
     ? existing.env
     : existing) as Record<string, unknown>;
 
-  flat.CLAUDE_MEM_SERVER_BETA_API_KEY = values.apiKey;
-  flat.CLAUDE_MEM_SERVER_BETA_PROJECT_ID = values.projectId;
+  // Phase 1d: write the new canonical settings keys. Legacy
+  // `CLAUDE_MEM_SERVER_BETA_*` keys are dual-accepted by reads in
+  // `runtime-selector.ts`, so existing installs continue to work. Any
+  // legacy keys that already live in `flat` are left untouched (we don't
+  // delete them) so a downgrade can still find them.
+  flat.CLAUDE_MEM_SERVER_API_KEY = values.apiKey;
+  flat.CLAUDE_MEM_SERVER_PROJECT_ID = values.projectId;
   if (values.serverBaseUrl) {
-    flat.CLAUDE_MEM_SERVER_BETA_URL = values.serverBaseUrl;
+    flat.CLAUDE_MEM_SERVER_URL = values.serverBaseUrl;
   }
 
   writeFileSync(settingsPath, JSON.stringify(flat, null, 2), 'utf-8');
@@ -202,7 +210,7 @@ function buildPoolFromEnv(): PostgresPool {
   const config = parsePostgresConfig({ requireDatabaseUrl: true });
   if (!config) {
     throw new Error(
-      'Cannot bootstrap server-beta API key: CLAUDE_MEM_SERVER_DATABASE_URL is not set.',
+      'Cannot bootstrap server API key: CLAUDE_MEM_SERVER_DATABASE_URL is not set.',
     );
   }
   return createPostgresPool(config);

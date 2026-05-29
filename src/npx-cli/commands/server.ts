@@ -1,10 +1,10 @@
 import pc from 'picocolors';
 import {
-  runServerBetaRestartCommand,
-  runServerBetaStartCommand,
-  runServerBetaStatusCommand,
-  runServerBetaStopCommand,
-  runServerBetaWorkerStartCommand,
+  runServerRestartCommand,
+  runServerStartCommand,
+  runServerStatusCommand,
+  runServerStopCommand,
+  runServerWorkerStartCommand,
   runRestartCommand,
   runServerApiKeyCommand,
   runStartCommand,
@@ -50,19 +50,19 @@ function runWorkerLifecycleCommand(command: string): boolean {
   }
 }
 
-function runServerBetaLifecycleCommand(command: string): boolean {
+function runServerLifecycleCommand(command: string): boolean {
   switch (command) {
     case 'start':
-      runServerBetaStartCommand();
+      runServerStartCommand();
       return true;
     case 'stop':
-      runServerBetaStopCommand();
+      runServerStopCommand();
       return true;
     case 'restart':
-      runServerBetaRestartCommand();
+      runServerRestartCommand();
       return true;
     case 'status':
-      runServerBetaStatusCommand();
+      runServerStatusCommand();
       return true;
     default:
       return false;
@@ -81,7 +81,7 @@ export async function runServerCommand(argv: string[] = []): Promise<void> {
     failUnsupported(`server ${subCommand}`);
   }
 
-  if (runServerBetaLifecycleCommand(subCommand)) {
+  if (runServerLifecycleCommand(subCommand)) {
     return;
   }
 
@@ -99,7 +99,7 @@ export async function runServerCommand(argv: string[] = []): Promise<void> {
   if (subCommand === 'worker') {
     const workerCommand = argv[1]?.toLowerCase();
     if (workerCommand === 'start') {
-      runServerBetaWorkerStartCommand();
+      runServerWorkerStartCommand();
       return;
     }
     console.error(pc.red(`Unknown server worker subcommand: ${workerCommand ?? '(none)'}`));
@@ -110,7 +110,7 @@ export async function runServerCommand(argv: string[] = []): Promise<void> {
   if (subCommand === 'keys') {
     const keysCommand = argv[1]?.toLowerCase();
     if (keysCommand === 'rotate') {
-      await runServerBetaKeysRotateCommand();
+      await runServerKeysRotateCommand();
       return;
     }
     console.error(pc.red(`Unknown server keys subcommand: ${keysCommand ?? '(none)'}`));
@@ -131,14 +131,14 @@ export async function runServerCommand(argv: string[] = []): Promise<void> {
   process.exit(1);
 }
 
-async function runServerBetaKeysRotateCommand(): Promise<void> {
+async function runServerKeysRotateCommand(): Promise<void> {
   if (!process.env.CLAUDE_MEM_SERVER_DATABASE_URL) {
-    console.error(pc.red('Cannot rotate server-beta API key: CLAUDE_MEM_SERVER_DATABASE_URL is not set.'));
+    console.error(pc.red('Cannot rotate server API key: CLAUDE_MEM_SERVER_DATABASE_URL is not set.'));
     console.error('Configure Postgres first, then re-run this command.');
     process.exit(1);
   }
-  const { rotateServerBetaApiKey, persistServerBetaSettings } = await import(
-    '../../services/hooks/server-beta-bootstrap.js'
+  const { rotateServerApiKey, persistServerSettings } = await import(
+    '../../services/hooks/server-bootstrap.js'
   );
   const { SettingsDefaultsManager } = await import('../../shared/SettingsDefaultsManager.js');
   const { join } = await import('path');
@@ -150,7 +150,10 @@ async function runServerBetaKeysRotateCommand(): Promise<void> {
     try {
       const raw = JSON.parse(readFileSync(settingsPath, 'utf-8')) as Record<string, unknown>;
       const flat = (raw.env && typeof raw.env === 'object' ? raw.env : raw) as Record<string, unknown>;
-      const previousKey = flat.CLAUDE_MEM_SERVER_BETA_API_KEY;
+      // Phase 1d: read the new canonical key first, fall back to the
+      // legacy `CLAUDE_MEM_SERVER_BETA_API_KEY` so rotations work for
+      // both fresh installs and pre-rename installs.
+      const previousKey = flat.CLAUDE_MEM_SERVER_API_KEY ?? flat.CLAUDE_MEM_SERVER_BETA_API_KEY;
       if (typeof previousKey === 'string' && previousKey.length > 0) {
         previousApiKeyId = await lookupApiKeyIdByPlaintext(previousKey);
       }
@@ -159,8 +162,8 @@ async function runServerBetaKeysRotateCommand(): Promise<void> {
     }
   }
 
-  const result = await rotateServerBetaApiKey({ previousApiKeyId });
-  persistServerBetaSettings(settingsPath, {
+  const result = await rotateServerApiKey({ previousApiKeyId });
+  persistServerSettings(settingsPath, {
     apiKey: result.rawKey,
     projectId: result.projectId,
   });
@@ -176,7 +179,7 @@ async function runServerBetaKeysRotateCommand(): Promise<void> {
 async function lookupApiKeyIdByPlaintext(rawKey: string): Promise<string | null> {
   const { createPostgresPool } = await import('../../storage/postgres/pool.js');
   const { parsePostgresConfig } = await import('../../storage/postgres/config.js');
-  const { hashApiKey } = await import('../../services/hooks/server-beta-bootstrap.js');
+  const { hashApiKey } = await import('../../services/hooks/server-bootstrap.js');
   const config = parsePostgresConfig({ requireDatabaseUrl: true });
   if (!config) return null;
   const pool = createPostgresPool(config);

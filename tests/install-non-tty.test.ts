@@ -241,7 +241,10 @@ describe('Install Non-TTY Support', () => {
 
   describe('runtime selection', () => {
     it('offers Server (beta) while keeping worker as the default runtime', () => {
-      expect(installSource).toContain("'server-beta'");
+      // Phase 1d: installer writes the new canonical `'server'` runtime value.
+      // The legacy `'server-beta'` value is still accepted by
+      // runtime-selector.ts for existing installs, but new writes use 'server'.
+      expect(installSource).toContain("value: 'server'");
       expect(installSource).toContain('Server (beta)');
       expect(installSource).toContain("initialValue: 'worker'");
       expect(installSource).toContain('CLAUDE_MEM_RUNTIME');

@@ -10,14 +10,14 @@ import {
 import type { RedisQueueConfig } from '../queue/redis-config.js';
 import { logger } from '../../utils/logger.js';
 import type {
-  ServerBetaBoundaryHealth,
-  ServerBetaQueueLaneMetric,
-  ServerBetaQueueManager,
+  ServerBoundaryHealth,
+  ServerQueueLaneMetric,
+  ServerQueueManager,
 } from './types.js';
 
-// ActiveServerBetaQueueManager owns one ServerJobQueue per generation kind.
+// ActiveServerQueueManager owns one ServerJobQueue per generation kind.
 // It is wired in only when CLAUDE_MEM_QUEUE_ENGINE=bullmq is set; otherwise
-// create-server-beta-service.ts keeps the disabled adapter in place.
+// create-server-service.ts keeps the disabled adapter in place.
 //
 // This boundary intentionally does not start any Worker processors here.
 // Phase 4+ wires processors that consume the queues, calling
@@ -26,7 +26,7 @@ import type {
 
 const QUEUE_KINDS: ServerGenerationJobKind[] = ['event', 'event-batch', 'summary', 'reindex'];
 
-export class ActiveServerBetaQueueManager implements ServerBetaQueueManager {
+export class ActiveServerQueueManager implements ServerQueueManager {
   readonly kind = 'queue-manager' as const;
 
   private readonly queues: Map<ServerGenerationJobKind, ServerJobQueue<ServerGenerationJobPayload>>;
@@ -38,7 +38,7 @@ export class ActiveServerBetaQueueManager implements ServerBetaQueueManager {
   ) {
     if (config.engine !== 'bullmq') {
       throw new Error(
-        `ActiveServerBetaQueueManager requires CLAUDE_MEM_QUEUE_ENGINE=bullmq (got ${config.engine}); ` +
+        `ActiveServerQueueManager requires CLAUDE_MEM_QUEUE_ENGINE=bullmq (got ${config.engine}); ` +
           'do not instantiate when bullmq is not selected.',
       );
     }
@@ -57,7 +57,7 @@ export class ActiveServerBetaQueueManager implements ServerBetaQueueManager {
     this.getQueue(kind).start(processor);
   }
 
-  getHealth(): ServerBetaBoundaryHealth {
+  getHealth(): ServerBoundaryHealth {
     if (this.closed) {
       return { status: 'errored', reason: 'queue-manager closed' };
     }
@@ -82,8 +82,8 @@ export class ActiveServerBetaQueueManager implements ServerBetaQueueManager {
    * reported with an `unavailable` flag rather than throwing so /api/health
    * remains responsive even in partial-failure modes.
    */
-  async getLaneMetrics(): Promise<ServerBetaQueueLaneMetric[]> {
-    const out: ServerBetaQueueLaneMetric[] = [];
+  async getLaneMetrics(): Promise<ServerQueueLaneMetric[]> {
+    const out: ServerQueueLaneMetric[] = [];
     for (const kind of QUEUE_KINDS) {
       const queue = this.queues.get(kind);
       if (!queue) continue;
@@ -133,7 +133,7 @@ export class ActiveServerBetaQueueManager implements ServerBetaQueueManager {
       }
     }
     if (errors.length > 0) {
-      logger.warn('QUEUE', 'errors closing server-beta queue manager', {
+      logger.warn('QUEUE', 'errors closing server queue manager', {
         count: errors.length,
         first: errors[0]!.message,
       });

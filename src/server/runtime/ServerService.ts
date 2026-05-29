@@ -17,41 +17,44 @@ import {
 import { ServerV1PostgresRoutes } from '../routes/v1/ServerV1PostgresRoutes.js';
 import { SessionsObservationsAdapter } from '../compat/SessionsObservationsAdapter.js';
 import { SessionsSummarizeAdapter } from '../compat/SessionsSummarizeAdapter.js';
-import { ActiveServerBetaQueueManager } from './ActiveServerBetaQueueManager.js';
-import type { ServerBetaServiceGraph, ServerBetaQueueLaneMetric } from './types.js';
+import { ActiveServerQueueManager } from './ActiveServerQueueManager.js';
+import type { ServerServiceGraph, ServerQueueLaneMetric } from './types.js';
 
-const SERVER_BETA_RUNTIME = 'server-beta';
-const DEFAULT_SERVER_BETA_HOST = '127.0.0.1';
-const DEFAULT_SERVER_BETA_PORT = 37877;
+// Phase 1d retains the persisted runtime literal `'server-beta'`. Renaming the
+// constant here keeps the TS identifier modern while preserving wire/storage
+// back-compat. Plan §1d will handle the literal migration.
+const SERVER_RUNTIME = 'server-beta';
+const DEFAULT_SERVER_HOST = '127.0.0.1';
+const DEFAULT_SERVER_PORT = 37877;
 
-export interface ServerBetaServiceOptions {
-  graph: ServerBetaServiceGraph;
+export interface ServerServiceOptions {
+  graph: ServerServiceGraph;
   host?: string;
   port?: number;
   persistRuntimeState?: boolean;
 }
 
-export interface ServerBetaRuntimeState {
-  runtime: typeof SERVER_BETA_RUNTIME;
+export interface ServerRuntimeState {
+  runtime: typeof SERVER_RUNTIME;
   pid: number;
   port: number;
   host: string;
   startedAt: string;
-  bootstrap: ServerBetaServiceGraph['postgres']['bootstrap'];
+  bootstrap: ServerServiceGraph['postgres']['bootstrap'];
   boundaries: {
-    queueManager: ReturnType<ServerBetaServiceGraph['queueManager']['getHealth']>;
-    generationWorkerManager: ReturnType<ServerBetaServiceGraph['generationWorkerManager']['getHealth']>;
-    providerRegistry: ReturnType<ServerBetaServiceGraph['providerRegistry']['getHealth']>;
-    eventBroadcaster: ReturnType<ServerBetaServiceGraph['eventBroadcaster']['getHealth']>;
+    queueManager: ReturnType<ServerServiceGraph['queueManager']['getHealth']>;
+    generationWorkerManager: ReturnType<ServerServiceGraph['generationWorkerManager']['getHealth']>;
+    providerRegistry: ReturnType<ServerServiceGraph['providerRegistry']['getHealth']>;
+    eventBroadcaster: ReturnType<ServerServiceGraph['eventBroadcaster']['getHealth']>;
   };
 }
 
-class ServerBetaRuntimeInfoRoutes implements RouteHandler {
-  constructor(private readonly graph: ServerBetaServiceGraph) {}
+class ServerRuntimeInfoRoutes implements RouteHandler {
+  constructor(private readonly graph: ServerServiceGraph) {}
 
   setupRoutes(app: Application): void {
     app.get('/healthz', (_req, res) => {
-      res.json({ status: 'ok', runtime: SERVER_BETA_RUNTIME });
+      res.json({ status: 'ok', runtime: SERVER_RUNTIME });
     });
 
     // Phase 12 — `/v1/info` includes per-lane queue metrics so deploy probes
@@ -62,7 +65,7 @@ class ServerBetaRuntimeInfoRoutes implements RouteHandler {
       const queueLanes = await collectQueueLaneMetrics(this.graph);
       res.json({
         name: 'claude-mem-server',
-        runtime: SERVER_BETA_RUNTIME,
+        runtime: SERVER_RUNTIME,
         authMode: this.graph.authMode,
         postgres: {
           initialized: this.graph.postgres.bootstrap.initialized,
@@ -81,10 +84,10 @@ class ServerBetaRuntimeInfoRoutes implements RouteHandler {
 }
 
 async function collectQueueLaneMetrics(
-  graph: ServerBetaServiceGraph,
-): Promise<ServerBetaQueueLaneMetric[]> {
+  graph: ServerServiceGraph,
+): Promise<ServerQueueLaneMetric[]> {
   const manager = graph.queueManager;
-  if (!(manager instanceof ActiveServerBetaQueueManager)) {
+  if (!(manager instanceof ActiveServerQueueManager)) {
     return [];
   }
   try {
@@ -96,8 +99,8 @@ async function collectQueueLaneMetrics(
   }
 }
 
-export class ServerBetaService {
-  private readonly graph: ServerBetaServiceGraph;
+export class ServerService {
+  private readonly graph: ServerServiceGraph;
   private readonly host: string;
   private readonly requestedPort: number;
   private boundPort: number | null = null;
@@ -105,10 +108,10 @@ export class ServerBetaService {
   private server: Server | null = null;
   private stopping = false;
 
-  constructor(options: ServerBetaServiceOptions) {
+  constructor(options: ServerServiceOptions) {
     this.graph = options.graph;
-    this.host = options.host ?? process.env.CLAUDE_MEM_SERVER_HOST ?? DEFAULT_SERVER_BETA_HOST;
-    this.requestedPort = options.port ?? getServerBetaPort();
+    this.host = options.host ?? process.env.CLAUDE_MEM_SERVER_HOST ?? DEFAULT_SERVER_HOST;
+    this.requestedPort = options.port ?? getServerPort();
     this.persistRuntimeState = options.persistRuntimeState ?? true;
   }
 
@@ -126,7 +129,7 @@ export class ServerBetaService {
         await this.start();
       },
       workerPath: '',
-      runtime: SERVER_BETA_RUNTIME,
+      runtime: SERVER_RUNTIME,
       getAiStatus: () => ({
         provider: 'disabled',
         authMethod: this.graph.authMode,
@@ -170,12 +173,12 @@ export class ServerBetaService {
         };
       },
     });
-    server.registerRoutes(new ServerBetaRuntimeInfoRoutes(this.graph));
+    server.registerRoutes(new ServerRuntimeInfoRoutes(this.graph));
     const v1Routes = new ServerV1PostgresRoutes({
       pool: this.graph.postgres.pool,
       queueManager: this.graph.queueManager,
       authMode: this.graph.authMode === 'disabled' ? 'api-key' : this.graph.authMode,
-      runtime: SERVER_BETA_RUNTIME,
+      runtime: SERVER_RUNTIME,
       // Session policy is read inside the routes (default 'per-event' from
       // resolveSessionGenerationPolicy(), env-overridable via
       // CLAUDE_MEM_SERVER_SESSION_POLICY). We do not duplicate it here.
@@ -184,7 +187,7 @@ export class ServerBetaService {
 
     // Phase 9 — legacy compatibility adapters. These translate the old
     // `/api/sessions/observations` and `/api/sessions/summarize` worker
-    // routes to the canonical Server beta event/job model. They share the
+    // routes to the canonical Server event/job model. They share the
     // SAME shared services with /v1/* routes — never duplicate ingest or
     // session-end logic. New clients should hit /v1/* directly.
     const compatAuthMode = this.graph.authMode === 'disabled' ? 'api-key' : this.graph.authMode;
@@ -205,9 +208,9 @@ export class ServerBetaService {
     this.server = server;
     this.boundPort = resolveBoundPort(server) ?? this.requestedPort;
     if (this.persistRuntimeState) {
-      writeServerBetaState(this.runtimeState());
+      writeServerState(this.runtimeState());
     }
-    logger.info('SYSTEM', 'Server beta started', { host: this.host, port: this.boundPort, pid: process.pid });
+    logger.info('SYSTEM', 'Server started', { host: this.host, port: this.boundPort, pid: process.pid });
   }
 
   async stop(): Promise<void> {
@@ -235,21 +238,21 @@ export class ServerBetaService {
       await this.graph.postgres.pool.end();
     } finally {
       if (this.persistRuntimeState) {
-        removeServerBetaState();
+        removeServerState();
       }
       this.boundPort = null;
       this.stopping = false;
-      logger.info('SYSTEM', 'Server beta stopped');
+      logger.info('SYSTEM', 'Server stopped');
     }
   }
 
-  getRuntimeState(): ServerBetaRuntimeState {
+  getRuntimeState(): ServerRuntimeState {
     return this.runtimeState();
   }
 
-  private runtimeState(): ServerBetaRuntimeState {
+  private runtimeState(): ServerRuntimeState {
     return {
-      runtime: SERVER_BETA_RUNTIME,
+      runtime: SERVER_RUNTIME,
       pid: process.pid,
       port: this.boundPort ?? this.requestedPort,
       host: this.host,
@@ -270,10 +273,10 @@ function resolveBoundPort(server: Server): number | null {
   return address && typeof address !== 'string' ? address.port : null;
 }
 
-export async function runServerBetaCli(argv: string[] = process.argv.slice(2)): Promise<void> {
+export async function runServerServiceCli(argv: string[] = process.argv.slice(2)): Promise<void> {
   const command = argv[0] ?? '--daemon';
-  const port = getServerBetaPort();
-  const host = process.env.CLAUDE_MEM_SERVER_HOST ?? DEFAULT_SERVER_BETA_HOST;
+  const port = getServerPort();
+  const host = process.env.CLAUDE_MEM_SERVER_HOST ?? DEFAULT_SERVER_HOST;
 
   // Phase 10: `claude-mem server worker [start|--daemon]` runs the BullMQ
   // generation worker as a foregrounded process — no HTTP server, no route
@@ -281,80 +284,80 @@ export async function runServerBetaCli(argv: string[] = process.argv.slice(2)): 
   if (command === 'worker') {
     const sub = (argv[1] ?? '--daemon').toLowerCase();
     if (sub === 'start' || sub === '--daemon' || sub === 'run') {
-      await runServerBetaGenerationWorker();
+      await runServerGenerationWorker();
       return;
     }
-    console.error('Usage: server-beta-service worker start');
+    console.error('Usage: server-service worker start');
     process.exit(1);
   }
 
-  // `server api-key create|list|revoke` mirrors the worker-service tooling
-  // but writes to the Postgres `api_keys` table the server-beta runtime
-  // actually reads from. The legacy worker-service CLI talks to SQLite and
-  // would be invisible to this stack.
+  // `server api-key` mirrors the worker-service tooling but writes to the
+  // Postgres `api_keys` table the server runtime actually reads from.
+  // The legacy worker-service CLI talks to SQLite and would be invisible
+  // to this stack.
   if (command === 'server' && argv[1]?.toLowerCase() === 'api-key') {
-    await runServerBetaApiKeyCli(argv.slice(2));
+    await runServerApiKeyCli(argv.slice(2));
     return;
   }
 
   switch (command) {
     case 'start': {
-      const existing = readServerBetaPidFile();
+      const existing = readServerPidFile();
       if (verifyPidFileOwnership(existing)) {
-        console.log(JSON.stringify({ status: 'ready', runtime: SERVER_BETA_RUNTIME, pid: existing.pid, port: existing.port }));
+        console.log(JSON.stringify({ status: 'ready', runtime: SERVER_RUNTIME, pid: existing.pid, port: existing.port }));
         return;
       }
-      const daemonPid = spawnServerBetaDaemon(port);
+      const daemonPid = spawnServerDaemon(port);
       if (daemonPid === undefined) {
-        console.error('Failed to spawn server beta daemon.');
+        console.error('Failed to spawn server daemon.');
         process.exit(1);
       }
-      console.log(JSON.stringify({ status: 'starting', runtime: SERVER_BETA_RUNTIME, pid: daemonPid, port }));
+      console.log(JSON.stringify({ status: 'starting', runtime: SERVER_RUNTIME, pid: daemonPid, port }));
       return;
     }
 
     case 'stop': {
-      const existing = readServerBetaPidFile();
+      const existing = readServerPidFile();
       if (!verifyPidFileOwnership(existing)) {
-        removeServerBetaState();
-        console.log('Server beta is not running');
+        removeServerState();
+        console.log('Server is not running');
         return;
       }
       process.kill(existing.pid, 'SIGTERM');
       await waitForPidExit(existing.pid, 5000);
-      removeServerBetaState();
-      console.log('Server beta stopped');
+      removeServerState();
+      console.log('Server stopped');
       return;
     }
 
     case 'restart': {
-      await runServerBetaCli(['stop']);
-      await runServerBetaCli(['start']);
+      await runServerServiceCli(['stop']);
+      await runServerServiceCli(['start']);
       return;
     }
 
     case 'status': {
-      const state = readServerBetaRuntimeState();
-      const pidInfo = readServerBetaPidFile();
+      const state = readServerRuntimeState();
+      const pidInfo = readServerPidFile();
       if (state && verifyPidFileOwnership(pidInfo)) {
-        console.log('Server beta is running');
+        console.log('Server is running');
         console.log(`  PID: ${state.pid}`);
         console.log(`  Port: ${state.port}`);
         console.log(`  Runtime: ${state.runtime}`);
         console.log(`  Started: ${state.startedAt}`);
       } else {
-        console.log('Server beta is not running');
+        console.log('Server is not running');
       }
       return;
     }
 
     case '--daemon': {
-      const existing = readServerBetaPidFile();
+      const existing = readServerPidFile();
       if (verifyPidFileOwnership(existing) || await isPortInUse(port, host)) {
         process.exit(0);
       }
-      const { createServerBetaService } = await import('./create-server-beta-service.js');
-      const service = await createServerBetaService();
+      const { createServerService } = await import('./create-server-service.js');
+      const service = await createServerService();
       const shutdown = async () => {
         await service.stop();
         process.exit(0);
@@ -366,16 +369,16 @@ export async function runServerBetaCli(argv: string[] = process.argv.slice(2)): 
     }
 
     default:
-      console.error('Usage: server-beta-service start|stop|restart|status');
+      console.error('Usage: server-service start|stop|restart|status');
       process.exit(1);
   }
 }
 
 // Phase 10 — Postgres-backed `server api-key create|list|revoke` CLI. The
 // legacy `worker-service.cjs server api-key` command talks to SQLite and
-// is invisible to the server-beta runtime, which reads keys from
-// Postgres. Use this entrypoint inside Docker / Compose.
-export async function runServerBetaApiKeyCli(argv: string[]): Promise<void> {
+// is invisible to the server runtime, which reads keys from Postgres. Use
+// this entrypoint inside Docker / Compose.
+export async function runServerApiKeyCli(argv: string[]): Promise<void> {
   const sub = argv[0]?.toLowerCase();
   const options = parseFlagArgs(argv.slice(1));
 
@@ -397,15 +400,15 @@ export async function runServerBetaApiKeyCli(argv: string[]): Promise<void> {
         .map((scope: string) => scope.trim())
         .filter(Boolean);
       // Resolve team/project. If the caller passed --team/--project, honor
-      // them. Otherwise, run the server-beta bootstrap to get-or-create the
+      // them. Otherwise, run the server bootstrap to get-or-create the
       // local team+project, then create a NEW key against those IDs with
       // the caller's requested scopes (the bootstrap key uses hook scopes,
       // which is the wrong default for an arbitrary CLI-issued key).
       let teamId = options.team ?? null;
       let projectId = options.project ?? null;
       if (!teamId || !projectId) {
-        const { bootstrapServerBetaApiKey } = await import('../../services/hooks/server-beta-bootstrap.js');
-        const result = await bootstrapServerBetaApiKey({ pool, closePool: false });
+        const { bootstrapServerApiKey } = await import('../../services/hooks/server-bootstrap.js');
+        const result = await bootstrapServerApiKey({ pool, closePool: false });
         teamId = result.teamId;
         projectId = result.projectId;
       }
@@ -416,7 +419,7 @@ export async function runServerBetaApiKeyCli(argv: string[]): Promise<void> {
         teamId,
         projectId,
         scopes,
-        actorId: 'system:server-beta-cli',
+        actorId: 'system:server-cli',
       });
       console.log(JSON.stringify({
         id: created.id,
@@ -483,7 +486,7 @@ export async function runServerBetaApiKeyCli(argv: string[]): Promise<void> {
     if (sub === 'revoke') {
       const id = argv[1];
       if (!id) {
-        console.error('Usage: server-beta-service server api-key revoke <id>');
+        console.error('Usage: server-service server api-key revoke <id>');
         process.exit(1);
       }
       const result = await pool.query(
@@ -501,7 +504,7 @@ export async function runServerBetaApiKeyCli(argv: string[]): Promise<void> {
     }
 
     console.error(`Unknown server api-key subcommand: ${sub ?? '(none)'}`);
-    console.error('Usage: server-beta-service server api-key create|list|revoke');
+    console.error('Usage: server-service server api-key create|list|revoke');
     process.exit(1);
   } finally {
     // Pool is shared; do not close here. The process will exit and the
@@ -528,27 +531,27 @@ function parseFlagArgs(argv: string[]): Record<string, string> {
 }
 
 // Phase 10 — generation-worker-only entrypoint. Starts BullMQ workers against
-// the same Postgres + Valkey/Redis the HTTP server-beta service uses, but
+// the same Postgres + Valkey/Redis the HTTP server service uses, but
 // never opens an HTTP listener. In Compose this is a separate, horizontally
-// scalable service. The HTTP server-beta service should run with
+// scalable service. The HTTP server service should run with
 // CLAUDE_MEM_GENERATION_DISABLED=true so generation only happens in this
 // process.
-export async function runServerBetaGenerationWorker(): Promise<void> {
-  const { validateServerBetaEnv, createServerBetaService } = await import('./create-server-beta-service.js');
-  validateServerBetaEnv();
-  // Build the service WITHOUT starting HTTP. We reuse createServerBetaService
+export async function runServerGenerationWorker(): Promise<void> {
+  const { validateServerEnv, createServerService } = await import('./create-server-service.js');
+  validateServerEnv();
+  // Build the service WITHOUT starting HTTP. We reuse createServerService
   // for pool + bootstrap + queue + generation worker wiring, but never call
   // service.start(). Generation is enabled here even if env says
   // CLAUDE_MEM_GENERATION_DISABLED, because this IS the generation worker.
   delete process.env.CLAUDE_MEM_GENERATION_DISABLED;
-  const service = await createServerBetaService();
+  const service = await createServerService();
   const state = service.getRuntimeState();
-  logger.info('SYSTEM', 'Server beta generation worker started (no HTTP)', {
+  logger.info('SYSTEM', 'Server generation worker started (no HTTP)', {
     pid: process.pid,
     queue: state.boundaries.queueManager,
     generation: state.boundaries.generationWorkerManager,
   });
-  console.log(JSON.stringify({ status: 'worker-running', runtime: SERVER_BETA_RUNTIME, pid: process.pid }));
+  console.log(JSON.stringify({ status: 'worker-running', runtime: SERVER_RUNTIME, pid: process.pid }));
 
   let stopping = false;
   const shutdown = async () => {
@@ -568,7 +571,7 @@ export async function runServerBetaGenerationWorker(): Promise<void> {
   await new Promise<void>(() => {});
 }
 
-function getServerBetaPort(): number {
+function getServerPort(): number {
   const parsed = Number.parseInt(process.env.CLAUDE_MEM_SERVER_PORT ?? '', 10);
   if (Number.isInteger(parsed) && parsed > 0) {
     return parsed;
@@ -576,10 +579,10 @@ function getServerBetaPort(): number {
   // UID-derived default for multi-account isolation: two users on the same
   // host get distinct ports without explicit configuration. Containerized
   // deployments always pass CLAUDE_MEM_SERVER_PORT so this branch is local-only.
-  return DEFAULT_SERVER_BETA_PORT + ((process.getuid?.() ?? 77) % 100);
+  return DEFAULT_SERVER_PORT + ((process.getuid?.() ?? 77) % 100);
 }
 
-function spawnServerBetaDaemon(port: number): number | undefined {
+function spawnServerDaemon(port: number): number | undefined {
   const scriptPath = typeof __filename !== 'undefined' ? __filename : fileURLToPath(import.meta.url);
   const child = spawn(process.execPath, [scriptPath, '--daemon'], {
     detached: true,
@@ -593,45 +596,45 @@ function spawnServerBetaDaemon(port: number): number | undefined {
   return child.pid;
 }
 
-function writeServerBetaState(state: ServerBetaRuntimeState): void {
-  mkdirSync(dirname(paths.serverBetaRuntime()), { recursive: true });
+function writeServerState(state: ServerRuntimeState): void {
+  mkdirSync(dirname(paths.serverRuntime()), { recursive: true });
   const pidInfo: PidInfo = {
     pid: state.pid,
     port: state.port,
     startedAt: state.startedAt,
     startToken: captureProcessStartToken(state.pid) ?? undefined,
   };
-  writeFileSync(paths.serverBetaPid(), JSON.stringify(pidInfo, null, 2));
-  writeFileSync(paths.serverBetaPort(), `${state.port}\n`);
-  writeFileSync(paths.serverBetaRuntime(), JSON.stringify(state, null, 2));
+  writeFileSync(paths.serverPid(), JSON.stringify(pidInfo, null, 2));
+  writeFileSync(paths.serverPort(), `${state.port}\n`);
+  writeFileSync(paths.serverRuntime(), JSON.stringify(state, null, 2));
 }
 
-function readServerBetaPidFile(): PidInfo | null {
-  if (!existsSync(paths.serverBetaPid())) {
+function readServerPidFile(): PidInfo | null {
+  if (!existsSync(paths.serverPid())) {
     return null;
   }
   try {
-    return JSON.parse(readFileSync(paths.serverBetaPid(), 'utf-8')) as PidInfo;
+    return JSON.parse(readFileSync(paths.serverPid(), 'utf-8')) as PidInfo;
   } catch {
     return null;
   }
 }
 
-function readServerBetaRuntimeState(): ServerBetaRuntimeState | null {
-  if (!existsSync(paths.serverBetaRuntime())) {
+function readServerRuntimeState(): ServerRuntimeState | null {
+  if (!existsSync(paths.serverRuntime())) {
     return null;
   }
   try {
-    return JSON.parse(readFileSync(paths.serverBetaRuntime(), 'utf-8')) as ServerBetaRuntimeState;
+    return JSON.parse(readFileSync(paths.serverRuntime(), 'utf-8')) as ServerRuntimeState;
   } catch {
     return null;
   }
 }
 
-function removeServerBetaState(): void {
-  rmSync(paths.serverBetaPid(), { force: true });
-  rmSync(paths.serverBetaPort(), { force: true });
-  rmSync(paths.serverBetaRuntime(), { force: true });
+function removeServerState(): void {
+  rmSync(paths.serverPid(), { force: true });
+  rmSync(paths.serverPort(), { force: true });
+  rmSync(paths.serverRuntime(), { force: true });
 }
 
 async function isPortInUse(port: number, host: string): Promise<boolean> {
@@ -655,8 +658,15 @@ async function waitForPidExit(pid: number, timeoutMs: number): Promise<void> {
   }
 }
 
-if (process.argv[1]?.endsWith('ServerBetaService.ts') || process.argv[1]?.endsWith('server-beta-service.cjs')) {
-  runServerBetaCli().catch(error => {
+if (
+  process.argv[1]?.endsWith('ServerService.ts') ||
+  process.argv[1]?.endsWith('server-service.cjs') ||
+  // Plan §1c line 149: keep fallback so installs still booting from the
+  // pre-rename plugin cache (server-beta-service.cjs) continue to dispatch.
+  process.argv[1]?.endsWith('ServerBetaService.ts') ||
+  process.argv[1]?.endsWith('server-beta-service.cjs')
+) {
+  runServerServiceCli().catch(error => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
   });

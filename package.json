@@ -108,7 +108,7 @@
     "test:context": "bun test tests/context/",
     "test:infra": "bun test tests/infrastructure/",
     "test:server": "bun test tests/server/",
-    "e2e:server-beta:docker": "bash scripts/e2e-server-beta-docker.sh",
+    "e2e:server:docker": "bash scripts/e2e-server-docker.sh",
     "prepublishOnly": "npm run build",
     "release": "np",
     "release:patch": "np patch --no-cleanup",

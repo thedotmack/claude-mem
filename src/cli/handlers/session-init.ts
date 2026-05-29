@@ -8,8 +8,8 @@ import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { isInternalProtocolPayload } from '../../utils/tag-stripping.js';
-import { resolveRuntimeContext, logServerBetaFallback } from '../../services/hooks/runtime-selector.js';
-import { isServerBetaClientError } from '../../services/hooks/server-beta-client.js';
+import { resolveRuntimeContext, logServerFallback } from '../../services/hooks/runtime-selector.js';
+import { isServerClientError } from '../../services/hooks/server-client.js';
 
 interface SessionInitResponse {
   sessionDbId: number;
@@ -52,7 +52,9 @@ export const sessionInitHandler: EventHandler = {
     const platformSource = normalizePlatformSource(input.platform);
 
     const runtime = resolveRuntimeContext();
-    if (runtime.runtime === 'server-beta') {
+    // Phase 1a (cmem-sdk rename): `runtime.runtime` is the canonical `'server'`
+    // value. Legacy `'server-beta'` is normalized inside `selectRuntime()`.
+    if (runtime.runtime === 'server') {
       try {
         await runtime.client.startSession({
           projectId: runtime.projectId,
@@ -63,24 +65,24 @@ export const sessionInitHandler: EventHandler = {
           platformSource,
           metadata: { project, prompt },
         });
-        logger.info('HOOK', 'session-init: server-beta session started', {
+        logger.info('HOOK', 'session-init: server session started', {
           contentSessionId: sessionId,
           project,
         });
-        // Server-beta does not currently support the same context-injection
-        // protocol as the worker. Skip semantic injection in server-beta mode
-        // until the server-beta context endpoint exists.
+        // Server does not currently support the same context-injection
+        // protocol as the worker. Skip semantic injection in server mode
+        // until the server context endpoint exists.
         return { continue: true, suppressOutput: true };
       } catch (error: unknown) {
-        if (isServerBetaClientError(error) && error.isFallbackEligible()) {
-          logServerBetaFallback(error.kind, {
+        if (isServerClientError(error) && error.isFallbackEligible()) {
+          logServerFallback(error.kind, {
             status: error.status,
             message: error.message,
             route: '/v1/sessions/start',
           });
           // fall through to worker fallback
         } else {
-          logger.error('HOOK', 'Server beta session-start failed (non-recoverable)', {
+          logger.error('HOOK', 'Server session-start failed (non-recoverable)', {
             error: error instanceof Error ? error.message : String(error),
           });
           return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };

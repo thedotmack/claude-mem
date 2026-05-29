@@ -618,7 +618,13 @@ function mergeSettings(updates: Record<string, string>): boolean {
 type ProviderId = 'claude' | 'gemini' | 'openrouter';
 type ClaudeAccessMode = 'subscription' | 'api-key';
 type ClaudeApiMode = 'direct' | 'gateway';
-type RuntimeId = 'worker' | 'server-beta';
+// Phase 1d: Persisted DB literals (`server_beta_schema_migrations`, job_type
+// enums, `server-beta-worker` lockedBy marker) are intentionally preserved in
+// the source code; runtime-selector dual-accepts both `'server'` and
+// `'server-beta'` settings values, but the installer writes the new canonical
+// form `'server'` going forward (settings keys: CLAUDE_MEM_SERVER_{URL,
+// API_KEY,PROJECT_ID}).
+type RuntimeId = 'worker' | 'server';
 
 function readRawStoredAuthMethod(): 'subscription' | 'api-key' | 'gateway' | undefined {
   try {
@@ -652,7 +658,7 @@ async function promptRuntime(): Promise<RuntimeId> {
     message: 'Which runtime should claude-mem start after install?',
     options: [
       { value: 'worker', label: 'Worker', hint: 'stable compatibility path' },
-      { value: 'server-beta', label: 'Server (beta)', hint: 'REST V1, API keys, team-ready storage' },
+      { value: 'server', label: 'Server (beta)', hint: 'REST V1, API keys, team-ready storage' },
     ],
     initialValue: 'worker',
   });
@@ -666,13 +672,13 @@ async function promptRuntime(): Promise<RuntimeId> {
     CLAUDE_MEM_RUNTIME: selected,
   });
 
-  if (selected === 'server-beta') {
-    await maybeBootstrapServerBetaApiKey();
+  if (selected === 'server') {
+    await maybeBootstrapServerApiKey();
   }
   return selected;
 }
 
-async function maybeBootstrapServerBetaApiKey(): Promise<void> {
+async function maybeBootstrapServerApiKey(): Promise<void> {
   // Only attempt if Postgres is configured. Without DATABASE_URL we cannot
   // reach the api_keys table — the operator must configure the server first
   // and rerun `claude-mem server keys rotate`.
@@ -684,11 +690,11 @@ async function maybeBootstrapServerBetaApiKey(): Promise<void> {
     return;
   }
   try {
-    const { bootstrapServerBetaApiKey, persistServerBetaSettings } = await import(
-      '../../services/hooks/server-beta-bootstrap.js'
+    const { bootstrapServerApiKey, persistServerSettings } = await import(
+      '../../services/hooks/server-bootstrap.js'
     );
-    const result = await bootstrapServerBetaApiKey();
-    persistServerBetaSettings(USER_SETTINGS_PATH, {
+    const result = await bootstrapServerApiKey();
+    persistServerSettings(USER_SETTINGS_PATH, {
       apiKey: result.rawKey,
       projectId: result.projectId,
     });
@@ -698,7 +704,7 @@ async function maybeBootstrapServerBetaApiKey(): Promise<void> {
     );
   } catch (error: unknown) {
     log.warn(
-      `Failed to bootstrap server-beta API key: ${error instanceof Error ? error.message : String(error)}. `
+      `Failed to bootstrap server API key: ${error instanceof Error ? error.message : String(error)}. `
         + 'Hooks will fall back to the worker until you run `npx claude-mem server keys rotate`.',
     );
   }
@@ -1232,7 +1238,7 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
 
   await runTasks([
     {
-      title: selectedRuntime === 'server-beta' ? 'Starting server beta daemon' : 'Starting worker daemon',
+      title: selectedRuntime === 'server' ? 'Starting server daemon' : 'Starting worker daemon',
       task: async (message) => {
         if (autoStartSkipped) {
           return isInteractive
@@ -1243,15 +1249,15 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
         const marketplaceScriptPath = join(marketplaceDirectory(), 'plugin', 'scripts', 'worker-service.cjs');
         const cacheScriptPath = join(pluginCacheDirectory(version), 'scripts', 'worker-service.cjs');
         const scriptPath = existsSync(marketplaceScriptPath) ? marketplaceScriptPath : cacheScriptPath;
-        message(`Spawning ${selectedRuntime === 'server-beta' ? 'server beta' : 'worker'} on port ${port}...`);
+        message(`Spawning ${selectedRuntime === 'server' ? 'server' : 'worker'} on port ${port}...`);
         workerStartResult = await ensureWorkerStarted(port, scriptPath);
         switch (workerStartResult) {
           case 'ready':
-            return `${selectedRuntime === 'server-beta' ? 'Server beta' : 'Worker'} ready at http://localhost:${port} ${pc.green('OK')}`;
+            return `${selectedRuntime === 'server' ? 'Server' : 'Worker'} ready at http://localhost:${port} ${pc.green('OK')}`;
           case 'warming':
-            return `${selectedRuntime === 'server-beta' ? 'Server beta' : 'Worker'} starting on port ${port} — finishing in background ${pc.yellow('⏳')}`;
+            return `${selectedRuntime === 'server' ? 'Server' : 'Worker'} starting on port ${port} — finishing in background ${pc.yellow('⏳')}`;
           case 'dead':
-            return `${selectedRuntime === 'server-beta' ? 'Server beta' : 'Worker'} did not start — try \`${selectedRuntime === 'server-beta' ? 'npx claude-mem server start' : 'npx claude-mem start'}\` manually ${pc.yellow('!')}`;
+            return `${selectedRuntime === 'server' ? 'Server' : 'Worker'} did not start — try \`${selectedRuntime === 'server' ? 'npx claude-mem server start' : 'npx claude-mem start'}\` manually ${pc.yellow('!')}`;
         }
       },
     },
@@ -1319,8 +1325,8 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
 
   const finalWorkerState = workerStartResult as WorkerStartResult;
   const workerAlive = finalWorkerState !== 'dead' || workerReady;
-  const runtimeLabel = selectedRuntime === 'server-beta' ? 'Server beta' : 'Worker';
-  const runtimeStartCommand = selectedRuntime === 'server-beta' ? 'npx claude-mem server start' : 'npx claude-mem start';
+  const runtimeLabel = selectedRuntime === 'server' ? 'Server' : 'Worker';
+  const runtimeStartCommand = selectedRuntime === 'server' ? 'npx claude-mem server start' : 'npx claude-mem start';
   const workerHeadline = autoStartSkipped
     ? `${pc.yellow('!')} ${runtimeLabel} autostart skipped — start it manually with ${pc.bold(runtimeStartCommand)}`
     : workerReady || finalWorkerState === 'ready'

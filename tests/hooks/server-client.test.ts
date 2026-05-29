@@ -9,10 +9,10 @@ mock.module('../../src/shared/worker-utils.js', () => ({
 }));
 
 import {
-  ServerBetaClient,
-  ServerBetaClientError,
-  isServerBetaClientError,
-} from '../../src/services/hooks/server-beta-client.js';
+  ServerClient,
+  ServerClientError,
+  isServerClientError,
+} from '../../src/services/hooks/server-client.js';
 
 interface CapturedRequest {
   url: string;
@@ -44,7 +44,7 @@ function installFetch(handler: (req: CapturedRequest) => Response | Promise<Resp
   }) as typeof globalThis.fetch;
 }
 
-describe('ServerBetaClient', () => {
+describe('ServerClient', () => {
   beforeEach(() => {
     captured = [];
   });
@@ -54,7 +54,7 @@ describe('ServerBetaClient', () => {
   });
 
   it('throws missing_api_key when apiKey is empty', async () => {
-    const client = new ServerBetaClient({ serverBaseUrl: 'http://x', apiKey: '' });
+    const client = new ServerClient({ serverBaseUrl: 'http://x', apiKey: '' });
     let caught: unknown;
     try {
       await client.recordEvent({
@@ -66,8 +66,8 @@ describe('ServerBetaClient', () => {
     } catch (error) {
       caught = error;
     }
-    expect(isServerBetaClientError(caught)).toBe(true);
-    if (caught instanceof ServerBetaClientError) {
+    expect(isServerClientError(caught)).toBe(true);
+    if (caught instanceof ServerClientError) {
       expect(caught.kind).toBe('missing_api_key');
       expect(caught.isFallbackEligible()).toBe(true);
     }
@@ -75,7 +75,7 @@ describe('ServerBetaClient', () => {
 
   it('startSession sends POST /v1/sessions/start with expected payload', async () => {
     installFetch(async () => new Response(JSON.stringify({ session: { id: 'sess-1', projectId: 'p1', teamId: 't1', externalSessionId: 'ext', contentSessionId: 'ext' } }), { status: 201, headers: { 'content-type': 'application/json' } }));
-    const client = new ServerBetaClient({ serverBaseUrl: 'http://localhost:9999/', apiKey: 'cmem_test' });
+    const client = new ServerClient({ serverBaseUrl: 'http://localhost:9999/', apiKey: 'cmem_test' });
     const result = await client.startSession({
       projectId: 'p1',
       externalSessionId: 'ext',
@@ -94,7 +94,7 @@ describe('ServerBetaClient', () => {
 
   it('recordEvent sends POST /v1/events with payload', async () => {
     installFetch(async () => new Response(JSON.stringify({ event: { id: 'e1', projectId: 'p1', serverSessionId: null } }), { status: 201 }));
-    const client = new ServerBetaClient({ serverBaseUrl: 'http://localhost:9999', apiKey: 'cmem_test' });
+    const client = new ServerClient({ serverBaseUrl: 'http://localhost:9999', apiKey: 'cmem_test' });
     const result = await client.recordEvent({
       projectId: 'p1',
       contentSessionId: 'cs1',
@@ -112,7 +112,7 @@ describe('ServerBetaClient', () => {
 
   it('endSession sends POST /v1/sessions/:id/end', async () => {
     installFetch(async () => new Response(JSON.stringify({ session: { id: 'sess-1' } }), { status: 200 }));
-    const client = new ServerBetaClient({ serverBaseUrl: 'http://localhost:9999', apiKey: 'cmem_test' });
+    const client = new ServerClient({ serverBaseUrl: 'http://localhost:9999', apiKey: 'cmem_test' });
     await client.endSession({ sessionId: 'sess-1' });
     expect(captured[0]?.url).toBe('http://localhost:9999/v1/sessions/sess-1/end');
     expect(captured[0]?.method).toBe('POST');
@@ -122,15 +122,15 @@ describe('ServerBetaClient', () => {
     globalThis.fetch = (async () => {
       throw new Error('ECONNREFUSED');
     }) as typeof globalThis.fetch;
-    const client = new ServerBetaClient({ serverBaseUrl: 'http://localhost:9999', apiKey: 'cmem_test' });
+    const client = new ServerClient({ serverBaseUrl: 'http://localhost:9999', apiKey: 'cmem_test' });
     let caught: unknown;
     try {
       await client.recordEvent({ projectId: 'p1', sourceType: 'hook', eventType: 'tool_use', occurredAtEpoch: 1 });
     } catch (error) {
       caught = error;
     }
-    expect(isServerBetaClientError(caught)).toBe(true);
-    if (caught instanceof ServerBetaClientError) {
+    expect(isServerClientError(caught)).toBe(true);
+    if (caught instanceof ServerClientError) {
       expect(caught.kind).toBe('transport');
       expect(caught.isFallbackEligible()).toBe(true);
     }
@@ -138,15 +138,15 @@ describe('ServerBetaClient', () => {
 
   it('classifies 5xx as fallback-eligible http_error', async () => {
     installFetch(async () => new Response('boom', { status: 502 }));
-    const client = new ServerBetaClient({ serverBaseUrl: 'http://localhost:9999', apiKey: 'cmem_test' });
+    const client = new ServerClient({ serverBaseUrl: 'http://localhost:9999', apiKey: 'cmem_test' });
     let caught: unknown;
     try {
       await client.recordEvent({ projectId: 'p1', sourceType: 'hook', eventType: 'tool_use', occurredAtEpoch: 1 });
     } catch (error) {
       caught = error;
     }
-    expect(caught).toBeInstanceOf(ServerBetaClientError);
-    if (caught instanceof ServerBetaClientError) {
+    expect(caught).toBeInstanceOf(ServerClientError);
+    if (caught instanceof ServerClientError) {
       expect(caught.kind).toBe('http_error');
       expect(caught.status).toBe(502);
       expect(caught.isFallbackEligible()).toBe(true);
@@ -155,15 +155,15 @@ describe('ServerBetaClient', () => {
 
   it('classifies 4xx (not 429) as non-fallback http_error', async () => {
     installFetch(async () => new Response('bad', { status: 400 }));
-    const client = new ServerBetaClient({ serverBaseUrl: 'http://localhost:9999', apiKey: 'cmem_test' });
+    const client = new ServerClient({ serverBaseUrl: 'http://localhost:9999', apiKey: 'cmem_test' });
     let caught: unknown;
     try {
       await client.recordEvent({ projectId: 'p1', sourceType: 'hook', eventType: 'tool_use', occurredAtEpoch: 1 });
     } catch (error) {
       caught = error;
     }
-    expect(caught).toBeInstanceOf(ServerBetaClientError);
-    if (caught instanceof ServerBetaClientError) {
+    expect(caught).toBeInstanceOf(ServerClientError);
+    if (caught instanceof ServerClientError) {
       expect(caught.kind).toBe('http_error');
       expect(caught.status).toBe(400);
       expect(caught.isFallbackEligible()).toBe(false);
@@ -172,15 +172,15 @@ describe('ServerBetaClient', () => {
 
   it('classifies 429 as fallback-eligible http_error', async () => {
     installFetch(async () => new Response('rate', { status: 429 }));
-    const client = new ServerBetaClient({ serverBaseUrl: 'http://localhost:9999', apiKey: 'cmem_test' });
+    const client = new ServerClient({ serverBaseUrl: 'http://localhost:9999', apiKey: 'cmem_test' });
     let caught: unknown;
     try {
       await client.recordEvent({ projectId: 'p1', sourceType: 'hook', eventType: 'tool_use', occurredAtEpoch: 1 });
     } catch (error) {
       caught = error;
     }
-    expect(caught).toBeInstanceOf(ServerBetaClientError);
-    if (caught instanceof ServerBetaClientError) {
+    expect(caught).toBeInstanceOf(ServerClientError);
+    if (caught instanceof ServerClientError) {
       expect(caught.status).toBe(429);
       expect(caught.isFallbackEligible()).toBe(true);
     }
@@ -188,7 +188,7 @@ describe('ServerBetaClient', () => {
 
   it('strips trailing slash from baseUrl', async () => {
     installFetch(async () => new Response(JSON.stringify({ session: { id: 's' } }), { status: 200 }));
-    const client = new ServerBetaClient({ serverBaseUrl: 'http://localhost:9999///', apiKey: 'cmem_test' });
+    const client = new ServerClient({ serverBaseUrl: 'http://localhost:9999///', apiKey: 'cmem_test' });
     await client.endSession({ sessionId: 's' });
     expect(captured[0]?.url).toBe('http://localhost:9999/v1/sessions/s/end');
   });
@@ -201,7 +201,7 @@ describe('ServerBetaClient', () => {
       JSON.stringify({ memory: { id: 'o1', projectId: 'p1', teamId: 't1', serverSessionId: null, kind: 'manual', content: 'hello', metadata: {} } }),
       { status: 201 },
     ));
-    const client = new ServerBetaClient({ serverBaseUrl: 'http://localhost:9999', apiKey: 'cmem_test' });
+    const client = new ServerClient({ serverBaseUrl: 'http://localhost:9999', apiKey: 'cmem_test' });
     const result = await client.addObservation({
       projectId: 'p1',
       content: 'hello',
@@ -220,7 +220,7 @@ describe('ServerBetaClient', () => {
       JSON.stringify({ observations: [{ id: 'o1', projectId: 'p1', content: 'matched' }] }),
       { status: 200 },
     ));
-    const client = new ServerBetaClient({ serverBaseUrl: 'http://localhost:9999', apiKey: 'cmem_test' });
+    const client = new ServerClient({ serverBaseUrl: 'http://localhost:9999', apiKey: 'cmem_test' });
     const result = await client.searchObservations({
       projectId: 'p1',
       query: 'login bug',
@@ -240,7 +240,7 @@ describe('ServerBetaClient', () => {
       }),
       { status: 200 },
     ));
-    const client = new ServerBetaClient({ serverBaseUrl: 'http://localhost:9999', apiKey: 'cmem_test' });
+    const client = new ServerClient({ serverBaseUrl: 'http://localhost:9999', apiKey: 'cmem_test' });
     const result = await client.contextObservations({ projectId: 'p1', query: 'q' });
     expect(captured[0]?.url).toBe('http://localhost:9999/v1/context');
     expect(result.context).toBe('a\n\nb');
@@ -252,7 +252,7 @@ describe('ServerBetaClient', () => {
       JSON.stringify({ generationJob: { id: 'j1', status: 'queued' } }),
       { status: 200 },
     ));
-    const client = new ServerBetaClient({ serverBaseUrl: 'http://localhost:9999', apiKey: 'cmem_test' });
+    const client = new ServerClient({ serverBaseUrl: 'http://localhost:9999', apiKey: 'cmem_test' });
     const result = await client.getJobStatus('j1');
     expect(captured[0]?.url).toBe('http://localhost:9999/v1/jobs/j1');
     expect(captured[0]?.method).toBe('GET');
@@ -260,18 +260,18 @@ describe('ServerBetaClient', () => {
   });
 
   it('getJobStatus rejects empty jobId', async () => {
-    const client = new ServerBetaClient({ serverBaseUrl: 'http://x', apiKey: 'cmem_test' });
+    const client = new ServerClient({ serverBaseUrl: 'http://x', apiKey: 'cmem_test' });
     let caught: unknown;
     try {
       await client.getJobStatus('');
     } catch (error) {
       caught = error;
     }
-    expect(caught).toBeInstanceOf(ServerBetaClientError);
+    expect(caught).toBeInstanceOf(ServerClientError);
   });
 
   it('payload builders omit absent fields', () => {
-    const client = new ServerBetaClient({ serverBaseUrl: 'http://x', apiKey: 'k' });
+    const client = new ServerClient({ serverBaseUrl: 'http://x', apiKey: 'k' });
     expect(client.buildAddObservationPayload({ projectId: 'p', content: 'c' })).toEqual({
       projectId: 'p',
       content: 'c',

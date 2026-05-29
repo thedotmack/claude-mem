@@ -1,15 +1,15 @@
 import { afterEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import pg from 'pg';
-import { ServerBetaService } from '../../src/server/runtime/ServerBetaService.js';
+import { ServerService } from '../../src/server/runtime/ServerService.js';
 import {
-  DisabledServerBetaEventBroadcaster,
-  DisabledServerBetaGenerationWorkerManager,
-  DisabledServerBetaProviderRegistry,
-  DisabledServerBetaQueueManager,
-  type ServerBetaServiceGraph,
+  DisabledServerEventBroadcaster,
+  DisabledServerGenerationWorkerManager,
+  DisabledServerProviderRegistry,
+  DisabledServerQueueManager,
+  type ServerServiceGraph,
 } from '../../src/server/runtime/types.js';
 import {
-  bootstrapServerBetaPostgresSchema,
+  bootstrapServerPostgresSchema,
   createPostgresStorageRepositories,
 } from '../../src/storage/postgres/index.js';
 import { logger } from '../../src/utils/logger.js';
@@ -17,8 +17,8 @@ import { logger } from '../../src/utils/logger.js';
 const loggerSpies: ReturnType<typeof spyOn>[] = [];
 const TEST_DATABASE_URL = process.env.CLAUDE_MEM_TEST_POSTGRES_URL;
 
-describe('ServerBetaService', () => {
-  let service: ServerBetaService | null = null;
+describe('ServerService', () => {
+  let service: ServerService | null = null;
 
   afterEach(async () => {
     if (service) {
@@ -37,7 +37,7 @@ describe('ServerBetaService', () => {
       spyOn(logger, 'error').mockImplementation(() => {}),
     );
 
-    service = new ServerBetaService({
+    service = new ServerService({
       graph: createStubGraph(),
       port: 0,
       host: '127.0.0.1',
@@ -71,7 +71,7 @@ describe('ServerBetaService', () => {
       );
       const pool = new pg.Pool({ connectionString: TEST_DATABASE_URL });
       try {
-        await bootstrapServerBetaPostgresSchema(pool);
+        await bootstrapServerPostgresSchema(pool);
         const repos = createPostgresStorageRepositories(pool);
 
         // Set up team / project / api key fixtures.
@@ -90,7 +90,7 @@ describe('ServerBetaService', () => {
           scopes: ['memories:write', 'memories:read'],
         });
 
-        service = new ServerBetaService({
+        service = new ServerService({
           graph: createPostgresGraph(pool, 'api-key'),
           port: 0,
           host: '127.0.0.1',
@@ -136,7 +136,7 @@ describe('ServerBetaService', () => {
       );
       const pool = new pg.Pool({ connectionString: TEST_DATABASE_URL });
       try {
-        await bootstrapServerBetaPostgresSchema(pool);
+        await bootstrapServerPostgresSchema(pool);
         const repos = createPostgresStorageRepositories(pool);
         const team = await repos.teams.create({ name: `phase4-skip-${Date.now()}` });
         const project = await repos.projects.create({
@@ -152,7 +152,7 @@ describe('ServerBetaService', () => {
           scopes: ['memories:write', 'memories:read'],
         });
 
-        service = new ServerBetaService({
+        service = new ServerService({
           graph: createPostgresGraph(pool, 'api-key'),
           port: 0,
           host: '127.0.0.1',
@@ -200,7 +200,7 @@ describe('ServerBetaService', () => {
       );
       const pool = new pg.Pool({ connectionString: TEST_DATABASE_URL });
       try {
-        await bootstrapServerBetaPostgresSchema(pool);
+        await bootstrapServerPostgresSchema(pool);
         const repos = createPostgresStorageRepositories(pool);
         const team = await repos.teams.create({ name: `phase4-batch-${Date.now()}` });
         const projectA = await repos.projects.create({ teamId: team.id, name: `pa-${Date.now()}` });
@@ -215,7 +215,7 @@ describe('ServerBetaService', () => {
           scopes: ['memories:write', 'memories:read'],
         });
 
-        service = new ServerBetaService({
+        service = new ServerService({
           graph: createPostgresGraph(pool, 'api-key'),
           port: 0,
           host: '127.0.0.1',
@@ -264,10 +264,10 @@ describe('ServerBetaService', () => {
 
 // `createStubGraph` keeps the existing in-process unit test alive without
 // requiring a live Postgres. The fake pool's `end()` is the only contract
-// touched by ServerBetaService.stop(). The Phase 4 ServerV1PostgresRoutes
+// touched by ServerService.stop(). The Phase 4 ServerV1PostgresRoutes
 // registered in start() do not call the pool until an HTTP request hits
 // them; the existing /api/health and /v1/info checks bypass v1 entirely.
-function createStubGraph(): ServerBetaServiceGraph {
+function createStubGraph(): ServerServiceGraph {
   return {
     runtime: 'server-beta',
     postgres: {
@@ -282,15 +282,15 @@ function createStubGraph(): ServerBetaServiceGraph {
       },
     },
     authMode: 'local-dev',
-    queueManager: new DisabledServerBetaQueueManager('test'),
-    generationWorkerManager: new DisabledServerBetaGenerationWorkerManager('test'),
-    providerRegistry: new DisabledServerBetaProviderRegistry('test'),
-    eventBroadcaster: new DisabledServerBetaEventBroadcaster('test'),
+    queueManager: new DisabledServerQueueManager('test'),
+    generationWorkerManager: new DisabledServerGenerationWorkerManager('test'),
+    providerRegistry: new DisabledServerProviderRegistry('test'),
+    eventBroadcaster: new DisabledServerEventBroadcaster('test'),
     storage: {} as any,
   };
 }
 
-function createPostgresGraph(pool: pg.Pool, authMode: 'api-key' | 'local-dev'): ServerBetaServiceGraph {
+function createPostgresGraph(pool: pg.Pool, authMode: 'api-key' | 'local-dev'): ServerServiceGraph {
   return {
     runtime: 'server-beta',
     postgres: {
@@ -302,10 +302,10 @@ function createPostgresGraph(pool: pg.Pool, authMode: 'api-key' | 'local-dev'): 
       },
     },
     authMode,
-    queueManager: new DisabledServerBetaQueueManager('phase 4 integration test'),
-    generationWorkerManager: new DisabledServerBetaGenerationWorkerManager('test'),
-    providerRegistry: new DisabledServerBetaProviderRegistry('test'),
-    eventBroadcaster: new DisabledServerBetaEventBroadcaster('test'),
+    queueManager: new DisabledServerQueueManager('phase 4 integration test'),
+    generationWorkerManager: new DisabledServerGenerationWorkerManager('test'),
+    providerRegistry: new DisabledServerProviderRegistry('test'),
+    eventBroadcaster: new DisabledServerEventBroadcaster('test'),
     storage: createPostgresStorageRepositories(pool as any),
   };
 }

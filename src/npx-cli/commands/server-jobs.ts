@@ -6,7 +6,7 @@ import { logger } from '../../utils/logger.js';
 // Phase 12 — `claude-mem server jobs <subcommand>` operator console for the
 // Postgres-backed observation generation queue. These commands talk DIRECTLY
 // to Postgres (and BullMQ when configured), bypassing the HTTP API. They MUST
-// run from a host that can reach the same database the server-beta runtime
+// run from a host that can reach the same database the server runtime
 // uses — set CLAUDE_MEM_SERVER_DATABASE_URL in the shell.
 //
 // Anti-pattern guards:
