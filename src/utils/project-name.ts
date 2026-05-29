@@ -1,13 +1,78 @@
 import { homedir } from 'os'
 import path from 'path';
+import { statSync, realpathSync } from 'fs';
+import picomatch from 'picomatch';
 import { logger } from './logger.js';
 import { detectWorktree } from './worktree.js';
+import type { Environment } from '../shared/SettingsDefaultsManager.js';
+import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 
 function expandTilde(p: string): string {
   if (p === '~' || p.startsWith('~/')) {
     return p.replace(/^~/, homedir())
   }
   return p
+}
+
+let cachedEnvironments: Environment[] | null = null;
+let cachedSettingsMtime = 0;
+let lastCacheTime = 0;
+const CACHE_DEBOUNCE_MS = 100;
+
+export function resetEnvironmentsCache(): void {
+  cachedEnvironments = null;
+  cachedSettingsMtime = 0;
+  lastCacheTime = 0;
+}
+
+export function loadEnvironments(): Environment[] {
+  const now = Date.now();
+  if (cachedEnvironments !== null && now - lastCacheTime < CACHE_DEBOUNCE_MS) {
+    return cachedEnvironments;
+  }
+
+  try {
+    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+    const mtime = statSync(settingsPath).mtimeMs;
+
+    if (cachedEnvironments !== null && mtime === cachedSettingsMtime) {
+      lastCacheTime = now;
+      return cachedEnvironments;
+    }
+
+    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+    const raw = settings.environments;
+    cachedEnvironments = raw ? JSON.parse(raw) : [];
+    cachedSettingsMtime = mtime;
+    lastCacheTime = now;
+    return cachedEnvironments;
+  } catch {
+    cachedEnvironments = [];
+    lastCacheTime = now;
+    return cachedEnvironments;
+  }
+}
+
+function matchEnvironment(cwd: string): string | null {
+  const environments = loadEnvironments();
+  if (environments.length === 0) return null;
+
+  let normalizedCwd = cwd;
+  try { normalizedCwd = realpathSync(cwd); } catch { /* path doesn't exist, use original */ }
+
+  const expandedCwd = expandTilde(normalizedCwd);
+
+  for (const env of environments) {
+    for (const pattern of env.patterns) {
+      const expandedPattern = expandTilde(pattern);
+      if (picomatch(expandedPattern)(expandedCwd)) {
+        logger.info('PROJECT_NAME', 'Environment matched', { cwd, envName: env.name, pattern });
+        return env.name;
+      }
+    }
+  }
+
+  return null;
 }
 
 export function getProjectName(cwd: string | null | undefined): string {
@@ -17,6 +82,12 @@ export function getProjectName(cwd: string | null | undefined): string {
   }
 
   const expanded = expandTilde(cwd)
+
+  // Check environment matching first
+  const envName = matchEnvironment(expanded);
+  if (envName) {
+    return envName;
+  }
 
   const basename = path.basename(expanded);
 
