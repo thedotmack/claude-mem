@@ -73,6 +73,17 @@ export function verifyCommitHashesInText(
 ): CommitVerificationResult {
   const candidates = [...new Set(fields.flatMap(f => extractCommitHashes(f)))];
 
+  // No repo to check against (cwd absent — e.g. the init-response path passes
+  // projectRoot=undefined). Absence of a repo is NOT evidence of fabrication:
+  // verifying every candidate as `false` here would let
+  // stripFabricatedHashesFromSummary() replace every 7–40 char hex substring
+  // (request IDs, short file hashes, tokens) with `[unverified commit]`,
+  // silently corrupting persisted summaries. When we cannot verify, we do not
+  // strip — treat all candidates as verified.
+  if (!cwd || !cwd.trim()) {
+    return { verified: candidates, fabricated: [] };
+  }
+
   const verified: string[] = [];
   const fabricated: string[] = [];
 

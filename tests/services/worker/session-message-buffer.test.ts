@@ -84,6 +84,16 @@ describe('SessionMessageBuffer (in-RAM observation buffer)', () => {
     expect(buffer.enqueue(1, obs('Read', 'a'))).toBeGreaterThan(0);
   });
 
+  test('clear also resets the dedup set so a previously-seen toolUseId re-enters', () => {
+    // Regression: clear() must drop seenToolUseIds like dispose() does.
+    // Otherwise a clear() not followed by dispose() leaves the dedup set intact
+    // and a later enqueue of a previously-seen toolUseId is silently lost (0).
+    const buffer = new SessionMessageBuffer();
+    expect(buffer.enqueue(1, obs('Read', 'a'))).toBeGreaterThan(0);
+    expect(buffer.clear(1)).toBe(1);
+    expect(buffer.enqueue(1, obs('Read', 'a'))).toBeGreaterThan(0); // not suppressed
+  });
+
   test('drain ends via idle timeout when no work arrives', async () => {
     const buffer = new SessionMessageBuffer();
     const controller = new AbortController();

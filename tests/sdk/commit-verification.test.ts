@@ -77,4 +77,19 @@ describe('verifyCommitHash / verifyCommitHashesInText (plan-11 #2574)', () => {
     expect(result.verified).toContain(realHash.toLowerCase());
     expect(result.fabricated).toContain('deadbeefdeadbeefdeadbeefdeadbeefdeadbeef');
   });
+
+  it('treats all candidates as verified (never fabricated) when cwd is absent', () => {
+    // Regression: a null/undefined cwd must NOT classify every hex string as
+    // fabricated — otherwise stripFabricatedHashesFromSummary corrupts summaries
+    // (request IDs, short file hashes) on the init-response path.
+    for (const cwd of [undefined, '', '   ']) {
+      const result = verifyCommitHashesInText(
+        [`Committed as ${realHash}`, 'Also see deadbeefdeadbeefdeadbeefdeadbeefdeadbeef'],
+        cwd
+      );
+      expect(result.fabricated).toEqual([]);
+      expect(result.verified).toContain(realHash.toLowerCase());
+      expect(result.verified).toContain('deadbeefdeadbeefdeadbeefdeadbeefdeadbeef');
+    }
+  });
 });

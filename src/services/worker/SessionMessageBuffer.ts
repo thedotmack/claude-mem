@@ -105,6 +105,10 @@ export class SessionMessageBuffer {
   clear(sessionDbId: number): number {
     const cleared = this.buffers.get(sessionDbId)?.length ?? 0;
     this.buffers.delete(sessionDbId);
+    // Mirror dispose(): drop the dedup set too. Otherwise a clear() not followed
+    // by dispose() leaves seenToolUseIds intact, so a later enqueue carrying a
+    // previously-seen toolUseId is silently suppressed (returns 0) and lost.
+    this.seenToolUseIds.delete(sessionDbId);
     if (cleared > 0) {
       this.onMutate?.();
     }
