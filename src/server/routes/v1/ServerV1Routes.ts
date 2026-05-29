@@ -5,13 +5,14 @@ import type { Database } from 'bun:sqlite';
 import { z, type ZodTypeAny } from 'zod';
 import type { RouteHandler } from '../../../services/server/Server.js';
 import { CreateAgentEventSchema } from '../../../core/schemas/agent-event.js';
-import { CreateMemoryItemSchema } from '../../../core/schemas/memory-item.js';
+import { CreateMemoryItemSchema, CreateMemoryRelationSchema } from '../../../core/schemas/memory-item.js';
 import { CreateProjectSchema } from '../../../core/schemas/project.js';
 import { CreateServerSessionSchema } from '../../../core/schemas/session.js';
 import {
   AgentEventsRepository,
   AuthRepository,
   MemoryItemsRepository,
+  MemoryRelationsRepository,
   ProjectsRepository,
   ServerSessionsRepository,
 } from '../../../storage/sqlite/index.js';
@@ -212,6 +213,53 @@ export class ServerV1Routes implements RouteHandler {
       this.audit(req, 'memory.context', null, body.projectId);
       res.json({ memories, context: memories.map(memory => memory.narrative ?? memory.text ?? memory.title).filter(Boolean).join('\n\n') });
     }));
+
+    app.post('/v1/relations', writeAuth, this.handleCreate(CreateMemoryRelationSchema, (req, res, body) => {
+      const memRepo = new MemoryItemsRepository(this.options.getDatabase());
+      const sourceMem = memRepo.getById(body.sourceMemoryId);
+      if (!sourceMem) {
+        res.status(404).json({ error: 'NotFound', message: 'Source memory not found' });
+        return;
+      }
+      if (!this.ensureProjectAllowed(req, res, sourceMem.projectId)) return;
+      const relation = new MemoryRelationsRepository(this.options.getDatabase()).create(body);
+      this.audit(req, 'relation.create', relation.id, sourceMem.projectId);
+      res.status(201).json({ relation });
+    }));
+
+    app.get('/v1/memories/:id/relations', readAuth, (req, res) => {
+      const id = this.routeParam(req.params.id);
+      const memory = new MemoryItemsRepository(this.options.getDatabase()).getById(id);
+      if (!memory) {
+        res.status(404).json({ error: 'NotFound', message: 'Memory not found' });
+        return;
+      }
+      if (!this.ensureProjectAllowed(req, res, memory.projectId)) return;
+      const repo = new MemoryRelationsRepository(this.options.getDatabase());
+      const direction = String(req.query.direction ?? 'both');
+      const asSource = direction === 'source' || direction === 'both' ? repo.listBySource(id) : [];
+      const asTarget = direction === 'target' || direction === 'both' ? repo.listByTarget(id) : [];
+      this.audit(req, 'relation.list', id, memory.projectId);
+      res.json({ asSource, asTarget });
+    });
+
+    app.post('/v1/relations/:id/set-active', writeAuth, this.handleCreate(
+      z.object({ isActive: z.boolean() }),
+      (req, res, body) => {
+        const id = this.routeParam(req.params.id);
+        const repo = new MemoryRelationsRepository(this.options.getDatabase());
+        const existing = repo.getById(id);
+        if (!existing) {
+          res.status(404).json({ error: 'NotFound', message: 'Relation not found' });
+          return;
+        }
+        const sourceMem = new MemoryItemsRepository(this.options.getDatabase()).getById(existing.sourceMemoryId);
+        if (sourceMem && !this.ensureProjectAllowed(req, res, sourceMem.projectId)) return;
+        const relation = repo.setActive(id, body.isActive);
+        this.audit(req, 'relation.set_active', id, sourceMem?.projectId ?? null);
+        res.json({ relation });
+      }
+    ));
 
     app.get('/v1/audit', readAuth, (req, res) => {
       const projectId = String(req.query.projectId ?? '');

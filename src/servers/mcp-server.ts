@@ -391,6 +391,76 @@ async function handleObservationGenerationStatus(
   }
 }
 
+interface MemoryRelateArgs {
+  projectId?: string;
+  sourceMemoryId: string;
+  targetMemoryId: string;
+  relationType: 'supersedes' | 'elaborates_on' | 'contextualizes' | 'obfuscates';
+  condition?: string;
+}
+
+async function handleMemoryRelate(
+  args: MemoryRelateArgs,
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+  try {
+    const ctx = requireServerBetaForObservationTool('memory_relate');
+    if (!args?.sourceMemoryId || !args?.targetMemoryId || !args?.relationType) {
+      throw new Error('memory_relate: sourceMemoryId, targetMemoryId, and relationType are required');
+    }
+    const response = await ctx.client.createRelation({
+      projectId: args.projectId && args.projectId.trim().length > 0 ? args.projectId : ctx.projectId,
+      sourceMemoryId: args.sourceMemoryId,
+      targetMemoryId: args.targetMemoryId,
+      relationType: args.relationType,
+      ...(args.condition !== undefined ? { condition: args.condition } : {}),
+    });
+    return formatJsonResult(response);
+  } catch (error) {
+    return formatToolError(error);
+  }
+}
+
+interface MemoryRelationsListArgs {
+  projectId?: string;
+  memoryId: string;
+  direction?: 'source' | 'target' | 'both';
+}
+
+async function handleMemoryRelationsList(
+  args: MemoryRelationsListArgs,
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+  try {
+    const ctx = requireServerBetaForObservationTool('memory_relations_list');
+    if (!args?.memoryId) {
+      throw new Error('memory_relations_list: memoryId is required');
+    }
+    const response = await ctx.client.listMemoryRelations(args.memoryId, args.direction ?? 'both');
+    return formatJsonResult(response);
+  } catch (error) {
+    return formatToolError(error);
+  }
+}
+
+interface RelationSetActiveArgs {
+  relationId: string;
+  isActive: boolean;
+}
+
+async function handleRelationSetActive(
+  args: RelationSetActiveArgs,
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+  try {
+    const ctx = requireServerBetaForObservationTool('relation_set_active');
+    if (!args?.relationId || typeof args?.isActive !== 'boolean') {
+      throw new Error('relation_set_active: relationId and isActive (boolean) are required');
+    }
+    const response = await ctx.client.setRelationActive(args.relationId, args.isActive);
+    return formatJsonResult(response);
+  } catch (error) {
+    return formatToolError(error);
+  }
+}
+
 async function ensureWorkerConnection(): Promise<boolean> {
   if (await verifyWorkerConnection()) {
     return true;
@@ -666,6 +736,59 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       additionalProperties: true,
     },
     handler: async (args: any) => handleObservationContext(args ?? {}),
+  },
+  {
+    name: 'memory_relate',
+    description: 'Create a typed relation between two memory items. relation_type must be one of: supersedes (new memory replaces old — old is hidden from search by default), elaborates_on (adds detail to an existing memory), contextualizes (provides background for), obfuscates (hides target from non-DM view). Server-beta runtime only.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string', description: 'Project id (falls back to CLAUDE_MEM_SERVER_BETA_PROJECT_ID)' },
+        sourceMemoryId: { type: 'string', description: 'The newer/active memory (the one doing the relating)' },
+        targetMemoryId: { type: 'string', description: 'The older/affected memory' },
+        relationType: {
+          type: 'string',
+          enum: ['supersedes', 'elaborates_on', 'contextualizes', 'obfuscates'],
+          description: 'Semantic relationship type',
+        },
+        condition: { type: 'string', description: 'Narrative resurfacing condition (mainly for obfuscates — e.g. "Remove Curse cast on character")' },
+      },
+      required: ['sourceMemoryId', 'targetMemoryId', 'relationType'],
+      additionalProperties: false,
+    },
+    handler: async (args: any) => handleMemoryRelate(args ?? {}),
+  },
+  {
+    name: 'memory_relations_list',
+    description: 'List all relations for a memory item — both outbound (this memory relates to others) and inbound (other memories relate to this one). Use direction param to filter. Server-beta runtime only.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        memoryId: { type: 'string', description: 'Memory item ID to list relations for (required)' },
+        direction: {
+          type: 'string',
+          enum: ['source', 'target', 'both'],
+          description: 'source = outbound only, target = inbound only, both = all (default: both)',
+        },
+      },
+      required: ['memoryId'],
+      additionalProperties: false,
+    },
+    handler: async (args: any) => handleMemoryRelationsList(args ?? {}),
+  },
+  {
+    name: 'relation_set_active',
+    description: 'Activate or deactivate a memory relation. Deactivating a supersedes relation resurfaces the previously hidden memory in search results. Server-beta runtime only.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        relationId: { type: 'string', description: 'Relation ID to update (required)' },
+        isActive: { type: 'boolean', description: 'true to activate, false to deactivate (required)' },
+      },
+      required: ['relationId', 'isActive'],
+      additionalProperties: false,
+    },
+    handler: async (args: any) => handleRelationSetActive(args ?? {}),
   },
   {
     name: 'smart_search',

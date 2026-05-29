@@ -2,7 +2,7 @@
 
 import { Database } from 'bun:sqlite';
 
-export const SERVER_STORAGE_SCHEMA_VERSION = 33;
+export const SERVER_STORAGE_SCHEMA_VERSION = 35;
 
 export const SERVER_OWNED_TABLES = [
   'projects',
@@ -10,6 +10,7 @@ export const SERVER_OWNED_TABLES = [
   'agent_events',
   'memory_items',
   'memory_sources',
+  'memory_relations',
   'teams',
   'team_members',
   'api_keys',
@@ -116,6 +117,21 @@ export function ensureServerStorageSchema(db: Database): void {
       FOREIGN KEY(memory_item_id) REFERENCES memory_items(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS memory_relations (
+      id                TEXT    PRIMARY KEY,
+      source_memory_id  TEXT    NOT NULL,
+      target_memory_id  TEXT    NOT NULL,
+      relation_type     TEXT    NOT NULL
+                        CHECK(relation_type IN ('supersedes', 'elaborates_on', 'contextualizes', 'obfuscates')),
+      is_active         INTEGER NOT NULL DEFAULT 1,
+      condition         TEXT,
+      metadata          TEXT    NOT NULL DEFAULT '{}',
+      created_at_epoch  INTEGER NOT NULL,
+      FOREIGN KEY(source_memory_id) REFERENCES memory_items(id) ON DELETE CASCADE,
+      FOREIGN KEY(target_memory_id) REFERENCES memory_items(id) ON DELETE CASCADE,
+      UNIQUE(source_memory_id, target_memory_id, relation_type)
+    );
+
     CREATE TABLE IF NOT EXISTS api_keys (
       id TEXT PRIMARY KEY,
       team_id TEXT,
@@ -202,6 +218,10 @@ export function ensureServerStorageSchema(db: Database): void {
     ON memory_sources(source_type, legacy_table, legacy_id)
     WHERE legacy_table IS NOT NULL AND legacy_id IS NOT NULL
   `);
+  db.run('CREATE INDEX IF NOT EXISTS idx_memory_relations_source ON memory_relations(source_memory_id)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_memory_relations_target ON memory_relations(target_memory_id)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_memory_relations_type ON memory_relations(relation_type)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_memory_relations_active_type ON memory_relations(is_active, relation_type)');
   db.run('CREATE INDEX IF NOT EXISTS idx_team_members_team ON team_members(team_id)');
   db.run('CREATE INDEX IF NOT EXISTS idx_api_keys_team ON api_keys(team_id)');
   db.run('CREATE INDEX IF NOT EXISTS idx_api_keys_project ON api_keys(project_id)');

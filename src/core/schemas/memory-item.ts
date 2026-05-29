@@ -2,6 +2,32 @@
 
 import { z } from 'zod';
 
+export const MemoryRelationTypeSchema = z.enum(['supersedes', 'elaborates_on', 'contextualizes', 'obfuscates']);
+
+export const MemoryRelationSchema = z.object({
+  id: z.string().min(1),
+  sourceMemoryId: z.string().min(1),
+  targetMemoryId: z.string().min(1),
+  relationType: MemoryRelationTypeSchema,
+  isActive: z.boolean().default(true),
+  condition: z.string().nullable().default(null),
+  metadata: z.record(z.string(), z.unknown()).default({}),
+  createdAtEpoch: z.number().int().nonnegative()
+});
+
+export const CreateMemoryRelationSchema = MemoryRelationSchema.omit({
+  id: true,
+  createdAtEpoch: true
+}).partial({
+  isActive: true,
+  condition: true,
+  metadata: true
+});
+
+export type MemoryRelationType = z.infer<typeof MemoryRelationTypeSchema>;
+export type MemoryRelation = z.infer<typeof MemoryRelationSchema>;
+export type CreateMemoryRelation = z.infer<typeof CreateMemoryRelationSchema>;
+
 export const MemoryItemKindSchema = z.enum(['observation', 'summary', 'prompt', 'manual']);
 export const MemorySourceTypeSchema = z.enum(['observation', 'session_summary', 'user_prompt', 'manual', 'import']);
 

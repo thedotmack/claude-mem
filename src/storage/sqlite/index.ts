@@ -3,6 +3,7 @@
 export * from './agent-events.js';
 export * from './auth.js';
 export * from './memory-items.js';
+export * from './memory-relations.js';
 export * from './projects.js';
 export * from './schema.js';
 export * from './server-sessions.js';

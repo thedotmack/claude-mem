@@ -182,6 +182,36 @@ export interface ServerBetaContextObservationsResponse {
   context: string;
 }
 
+export interface ServerBetaCreateRelationRequest {
+  projectId?: string;
+  sourceMemoryId: string;
+  targetMemoryId: string;
+  relationType: 'supersedes' | 'elaborates_on' | 'contextualizes' | 'obfuscates';
+  condition?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ServerBetaCreateRelationResponse {
+  relation: {
+    id: string;
+    sourceMemoryId: string;
+    targetMemoryId: string;
+    relationType: string;
+    isActive: boolean;
+    condition: string | null;
+    [key: string]: unknown;
+  };
+}
+
+export interface ServerBetaListRelationsResponse {
+  asSource: ServerBetaCreateRelationResponse['relation'][];
+  asTarget: ServerBetaCreateRelationResponse['relation'][];
+}
+
+export interface ServerBetaSetRelationActiveResponse {
+  relation: ServerBetaCreateRelationResponse['relation'];
+}
+
 // Phase 8 — generation job status, scoped by api-key team/project.
 export interface ServerBetaJobStatusResponse {
   generationJob: {
@@ -272,6 +302,39 @@ export class ServerBetaClient {
     return this.request<ServerBetaJobStatusResponse>(
       'GET',
       `/v1/jobs/${encodeURIComponent(jobId)}`,
+    );
+  }
+
+  async createRelation(
+    input: ServerBetaCreateRelationRequest,
+  ): Promise<ServerBetaCreateRelationResponse> {
+    return this.request<ServerBetaCreateRelationResponse>('POST', '/v1/relations', {
+      sourceMemoryId: input.sourceMemoryId,
+      targetMemoryId: input.targetMemoryId,
+      relationType: input.relationType,
+      ...(input.condition !== undefined ? { condition: input.condition } : {}),
+      ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
+    });
+  }
+
+  async listMemoryRelations(
+    memoryId: string,
+    direction: 'source' | 'target' | 'both' = 'both',
+  ): Promise<ServerBetaListRelationsResponse> {
+    return this.request<ServerBetaListRelationsResponse>(
+      'GET',
+      `/v1/memories/${encodeURIComponent(memoryId)}/relations?direction=${direction}`,
+    );
+  }
+
+  async setRelationActive(
+    relationId: string,
+    isActive: boolean,
+  ): Promise<ServerBetaSetRelationActiveResponse> {
+    return this.request<ServerBetaSetRelationActiveResponse>(
+      'POST',
+      `/v1/relations/${encodeURIComponent(relationId)}/set-active`,
+      { isActive },
     );
   }
 

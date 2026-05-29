@@ -238,19 +238,38 @@ export class MemoryItemsRepository {
     return row ? mapMemorySourceRow(row) : null;
   }
 
-  listByProject(projectId: string, limit = 100): MemoryItem[] {
+  listByProject(projectId: string, limit = 100, excludeSuperseded = true): MemoryItem[] {
+    const supersededClause = excludeSuperseded
+      ? `AND NOT EXISTS (
+           SELECT 1 FROM memory_relations
+           WHERE memory_relations.target_memory_id = memory_items.id
+             AND memory_relations.relation_type = 'supersedes'
+             AND memory_relations.is_active = 1
+         )`
+      : '';
+
     const rows = this.db.prepare(`
       SELECT * FROM memory_items
       WHERE project_id = ?
+      ${supersededClause}
       ORDER BY created_at_epoch DESC
       LIMIT ?
     `).all(projectId, limit) as MemoryItemRow[];
     return rows.map(mapMemoryItemRow);
   }
 
-  search(projectId: string, query: string, limit = 20): MemoryItem[] {
+  search(projectId: string, query: string, limit = 20, excludeSuperseded = true): MemoryItem[] {
     const ftsQuery = buildFtsQuery(query);
     if (!ftsQuery) return [];
+
+    const supersededClause = excludeSuperseded
+      ? `AND NOT EXISTS (
+           SELECT 1 FROM memory_relations
+           WHERE memory_relations.target_memory_id = memory_items.id
+             AND memory_relations.relation_type = 'supersedes'
+             AND memory_relations.is_active = 1
+         )`
+      : '';
 
     const rows = this.db.prepare(`
       SELECT memory_items.*
@@ -258,6 +277,7 @@ export class MemoryItemsRepository {
       JOIN memory_items_fts ON memory_items_fts.memory_item_id = memory_items.id
       WHERE memory_items_fts.project_id = ?
         AND memory_items_fts MATCH ?
+        ${supersededClause}
       ORDER BY memory_items.updated_at_epoch DESC
       LIMIT ?
     `).all(projectId, ftsQuery, limit) as MemoryItemRow[];

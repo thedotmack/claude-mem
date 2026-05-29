@@ -7,6 +7,8 @@
 --
 -- Source of truth: src/services/sqlite/migrations/runner.ts
 -- Regenerated from the migration runner and current schema invariants.
+-- Server-beta storage (memory_items, memory_relations, etc.) is defined in
+-- src/storage/sqlite/schema.ts (SERVER_STORAGE_SCHEMA_VERSION = 35).
 --
 -- Invariants enforced here (Plan 01):
 --   * pending_messages.UNIQUE(content_session_id, tool_use_id) — replaces
