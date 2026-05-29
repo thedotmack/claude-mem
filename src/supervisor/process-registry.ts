@@ -592,6 +592,17 @@ export function spawnSdkProcess(
     filteredArgs.push(arg);
   }
 
+  // Unix: detached:true causes the kernel to setpgid() on the child so the
+  // child becomes leader of a new process group whose pgid equals its pid.
+  // Windows: detached:true would let claude.exe outlive the worker AND
+  // documents windowsHide as "undefined behavior" when combined — visible
+  // GUI windows pop per assistant turn (#2190, #2198). On Windows we want
+  // claude.exe to die with the parent and stay hidden, so detached:false.
+  //
+  // stdin must be 'pipe' (not 'ignore') because SpawnedSdkProcess.stdin is
+  // typed NonNullable<...> and the Claude Agent SDK consumes that pipe to
+  // stream prompts in. With 'ignore', child.stdin would be null and the
+  // null-check below (line ~737) would tear the child down immediately.
   const isWin = process.platform === 'win32';
   const child = useCmdWrapper
     ? spawnHidden('cmd.exe', ['/d', '/c', options.command, ...filteredArgs], {
