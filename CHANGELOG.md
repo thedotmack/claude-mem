@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.4.0] - 2026-05-29
+
+Clears a large defect backlog (plans 01–11 plus standalone fixes) and adds provider configurability. Test suite moved 46 → 0 failing and typecheck 24 → 0 errors over the branch.
+
+### Features
+- **Configurable OpenAI-compatible base URL** for the OpenRouter provider (`CLAUDE_MEM_OPENROUTER_BASE_URL`) — point claude-mem at DeepSeek, LM Studio, or any custom OpenAI-compatible endpoint.
+
+### Fixes (highlights)
+- **Spawn contract (plan-02):** canonical `${CLAUDE_PLUGIN_ROOT}` resolution + Windows spawn fixes (codex.cmd, chroma-mcp cmd.exe quoting).
+- **Worker lifecycle (plan-03):** Windows PID-reuse start-token guard.
+- **Output fidelity (plan-11):** commit-hash verification before persist; null-`cwd` no longer strips every hex string from summaries.
+- **SQLite self-healing:** schema repair via `sqlite3 .recover`; close DB handle on repair error paths (no leaked write lock).
+- **SessionMessageBuffer:** `clear()` now also resets the dedup set, so a previously-seen toolUseId can re-enter.
+- **Standalone:** project name, dot-path encoding, path-match, CLAUDE.md denylist.
+
+### CI / tests
+- New CI workflow (typecheck · build · test · bundle-size + docker pg+valkey e2e) made green; removed npm-lockfile dependency to match the repo's no-committed-lockfile convention.
+- Fixed `mock.module` logger leakage across test files and guarded sqlite3 `.recover` capability so CI runs cleanly.
+
+Full diff: https://github.com/thedotmack/claude-mem/pull/2701
+
 ## [13.3.0] - 2026-05-21
 
 ## What's New
