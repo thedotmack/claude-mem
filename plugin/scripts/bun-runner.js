@@ -123,7 +123,7 @@ function shouldUseEmptyJsonFallback(args) {
   const script = String(args[0] || '').replace(/\\/g, '/').split('/').pop();
   const isWorkerService = script === 'worker-service.cjs' || script === 'worker-service';
   if (!isWorkerService) return false;
-  if (process.env.CLAUDE_MEM_CODEX_HOOK === '1') return true;
+  if (process.env.CLAUDE_MEM_CODEX_HOOK === '1' && args[1] === 'hook') return true;
   return args[1] === 'hook' && args[2] === 'codex';
 }
 
