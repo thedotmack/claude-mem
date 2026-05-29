@@ -309,6 +309,8 @@ async function buildHooks() {
         'better-auth/node',
         'better-auth/plugins',
         '@better-auth/api-key',
+        '@earendil-works/pi-ai',
+        '@earendil-works/pi-ai/oauth',
       ],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,

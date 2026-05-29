@@ -17,6 +17,16 @@ import { getSelectedProviderId, SessionRoutes } from '../src/services/worker/htt
 import { ClassifiedProviderError, type ProviderErrorClass } from '../src/services/worker/provider-errors';
 import type { ActiveSession } from '../src/services/worker-types';
 
+let refreshOpenAICodexTokenMock = mock(async (token: string) => ({
+  access: createFutureJwt(),
+  refresh: token,
+  expires: Date.now() + 60 * 60 * 1000,
+}));
+
+mock.module('@earendil-works/pi-ai/oauth', () => ({
+  refreshOpenAICodexToken: (token: string) => refreshOpenAICodexTokenMock(token),
+}));
+
 describe('OpenAICodexProvider selection', () => {
   let tempDir: string;
   let originalCodexHome: string | undefined;
@@ -28,6 +38,11 @@ describe('OpenAICodexProvider selection', () => {
     tempDir = join(tmpdir(), `openai-codex-provider-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     mkdirSync(tempDir, { recursive: true });
     process.env.CODEX_HOME = tempDir;
+    refreshOpenAICodexTokenMock = mock(async (token: string) => ({
+      access: createFutureJwt(),
+      refresh: token,
+      expires: Date.now() + 60 * 60 * 1000,
+    }));
   });
 
   afterEach(() => {
@@ -185,6 +200,59 @@ describe('OpenAICodexProvider selection', () => {
     expect(completeSimpleSpy.mock.calls[1][2]?.apiKey).toBe(accessToken);
   });
 
+  it('keeps a refreshed OAuth token in memory when auth persistence fails', async () => {
+    const expiredToken = createExpiredJwt();
+    const refreshedAccessToken = createFutureJwt();
+    const authPath = join(tempDir, 'auth.json');
+    writeFileSync(authPath, JSON.stringify({
+      auth_mode: 'chatgpt',
+      tokens: {
+        access_token: expiredToken,
+        refresh_token: 'refresh-token',
+        account_id: 'account-id',
+      },
+      last_refresh: new Date().toISOString(),
+    }));
+
+    refreshOpenAICodexTokenMock = mock(async (token: string) => {
+      rmSync(authPath, { force: true });
+      mkdirSync(authPath);
+      return {
+        access: refreshedAccessToken,
+        refresh: token,
+        expires: Date.now() + 60 * 60 * 1000,
+      };
+    });
+
+    loadFromFileSpy = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
+      ...SettingsDefaultsManager.getAllDefaults(),
+      CLAUDE_MEM_PROVIDER: 'openai-codex',
+      CLAUDE_MEM_OPENAI_CODEX_MODEL: 'gpt-5.4-mini',
+    }));
+
+    completeSimpleSpy = spyOn(piAi, 'completeSimple').mockResolvedValue({
+      role: 'assistant',
+      content: [],
+      api: 'openai-codex-responses',
+      provider: 'openai-codex',
+      model: 'gpt-5.4-mini',
+      usage: emptyUsage(),
+      stopReason: 'stop',
+      timestamp: Date.now(),
+    });
+
+    ModeManager.getInstance().loadMode('code');
+
+    const provider = new OpenAICodexProvider(fakeDbManager(), fakeSessionManager());
+    await provider.startSession(createActiveSession({ sessionDbId: 301, memorySessionId: 'refreshed-token-1' }));
+    await provider.startSession(createActiveSession({ sessionDbId: 302, memorySessionId: 'refreshed-token-2' }));
+
+    expect(refreshOpenAICodexTokenMock).toHaveBeenCalledTimes(1);
+    expect(completeSimpleSpy).toHaveBeenCalledTimes(2);
+    expect(completeSimpleSpy.mock.calls[0][2]?.apiKey).toBe(refreshedAccessToken);
+    expect(completeSimpleSpy.mock.calls[1][2]?.apiKey).toBe(refreshedAccessToken);
+  });
+
   it('hard-stops SessionRoutes on non-retryable OpenAI Codex provider errors without falling back to Claude', async () => {
     for (const kind of ['auth_invalid', 'quota_exhausted', 'unrecoverable'] as ProviderErrorClass[]) {
       loadFromFileSpy?.mockRestore();
@@ -197,13 +265,12 @@ describe('OpenAICodexProvider selection', () => {
       const sessionId = kind === 'auth_invalid' ? 101 : kind === 'quota_exhausted' ? 102 : 103;
       const session = createActiveSession({ sessionDbId: sessionId });
       const pendingStore = {
-        clearPendingForSession: mock(async () => undefined),
-        getPendingCount: mock(async () => 3),
-        peekPendingTypes: mock(async () => []),
+        getPendingCount: mock(() => 3),
+        peekTypes: mock(() => []),
       };
       const sessionManager = {
         getSession: mock(() => session),
-        getPendingMessageStore: mock(() => pendingStore),
+        getMessageBuffer: mock(() => pendingStore),
         removeSessionImmediate: mock(() => undefined),
       };
       const completionHandler = {
@@ -237,7 +304,6 @@ describe('OpenAICodexProvider selection', () => {
 
       expect(openAICodexAgent.startSession).toHaveBeenCalledTimes(1);
       expect(claudeAgent.startSession).not.toHaveBeenCalled();
-      expect(pendingStore.clearPendingForSession).toHaveBeenCalledWith(session.sessionDbId);
       expect(pendingStore.getPendingCount).toHaveBeenCalledWith(session.sessionDbId);
       expect(completionHandler.finalizeSession).toHaveBeenCalledWith(session.sessionDbId);
       expect(sessionManager.removeSessionImmediate).toHaveBeenCalledWith(session.sessionDbId);
@@ -316,6 +382,12 @@ describe('OpenAICodexProvider selection', () => {
 function createFutureJwt(): string {
   const header = Buffer.from(JSON.stringify({ alg: 'none' })).toString('base64url');
   const payload = Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600 })).toString('base64url');
+  return `${header}.${payload}.signature`;
+}
+
+function createExpiredJwt(): string {
+  const header = Buffer.from(JSON.stringify({ alg: 'none' })).toString('base64url');
+  const payload = Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) - 3600 })).toString('base64url');
   return `${header}.${payload}.signature`;
 }
 

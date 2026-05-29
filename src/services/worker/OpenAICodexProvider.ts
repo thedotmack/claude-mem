@@ -167,9 +167,18 @@ async function getAccessToken(): Promise<string> {
         { kind: 'auth_invalid', cause: error },
       );
     }
-    saveCodexCliAuthStore(authPath, auth.store, refreshed);
     const cachedToken = { access: refreshed.access, expires: refreshed.expires };
     tokenCache.set(authPath, cachedToken);
+    try {
+      saveCodexCliAuthStore(authPath, auth.store, refreshed);
+    } catch (error) {
+      logger.warn(
+        'SDK',
+        'Failed to persist refreshed OpenAI Codex OAuth token; using in-memory token for this run',
+        { authPath },
+        error instanceof Error ? error : new Error(String(error)),
+      );
+    }
     return cachedToken;
   })();
 
