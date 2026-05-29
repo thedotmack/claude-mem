@@ -50,6 +50,7 @@ ${pc.bold('Runtime Commands')} (requires Bun, delegates to installed plugin):
   ${pc.cyan('npx claude-mem search <query>')}       Search observations
   ${pc.cyan('npx claude-mem adopt [--dry-run] [--branch <name>]')}    Stamp merged worktrees into parent project
   ${pc.cyan('npx claude-mem cleanup [--dry-run]')}    Run one-time v12.4.3 pollution cleanup (or preview counts)
+  ${pc.cyan('npx claude-mem merge-environment --name=<env> --from=<proj1,proj2,...>')}    Migrate project data to an environment name
   ${pc.cyan('npx claude-mem transcript watch')}     Start transcript watcher
 
 ${pc.bold('IDE Identifiers')}:
@@ -190,6 +191,12 @@ async function main(): Promise<void> {
         console.error(`Usage: npx claude-mem transcript watch`);
         process.exit(1);
       }
+      break;
+    }
+
+    case 'merge-environment': {
+      const { runMergeEnvironmentCommand } = await import('./commands/merge-environment.js');
+      await runMergeEnvironmentCommand(args.slice(1));
       break;
     }
 
