@@ -101,6 +101,28 @@ describe('Codex CLI installer config repair', () => {
     expect(result).toContain('[mcp_servers.playwright]');
   });
 
+  it('removes unquoted child-table form [mcp_servers.mcp-search.env] for claude-mem', () => {
+    const input = [
+      '[mcp_servers.mcp-search]',
+      'command = "node"',
+      'args = ["/Users/alex/.codex/plugins/cache/claude-mem-local/claude-mem/12.7.5/scripts/mcp-server.cjs"]',
+      '',
+      '[mcp_servers.mcp-search.env]',
+      'CLAUDE_MEM_DATA_DIR = "/home/user/.claude-mem"',
+      '',
+      '[mcp_servers.playwright]',
+      'command = "npx"',
+      '',
+    ].join('\n');
+
+    const result = removeLegacyCodexMcpSearchConfig(input);
+
+    expect(result).not.toContain('[mcp_servers.mcp-search]');
+    expect(result).not.toContain('[mcp_servers.mcp-search.env]');
+    expect(result).not.toContain('CLAUDE_MEM_DATA_DIR');
+    expect(result).toContain('[mcp_servers.playwright]');
+  });
+
   it('preserves unrelated mcp-search config', () => {
     const input = [
       '[mcp_servers.mcp-search]',
