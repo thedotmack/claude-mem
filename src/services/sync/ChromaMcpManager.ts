@@ -105,18 +105,22 @@ export class ChromaMcpManager {
     const spawnEnvironment = this.getSpawnEnv();
     getSupervisor().assertCanSpawn('chroma mcp');
 
-    const isWindows = process.platform === 'win32';
-    const uvxSpawnCommand = isWindows ? (process.env.ComSpec || 'cmd.exe') : 'uvx';
-    const uvxSpawnArgs = isWindows ? ['/c', 'uvx', ...commandArgs] : commandArgs;
-
+    // Spawn uvx directly on every platform (issue 2426). The previous Windows
+    // branch wrapped this as `cmd.exe /c uvx ...`, which made cmd.exe reassemble
+    // the argv array into a single command line and re-parse the dep-override
+    // version specifiers (`onnxruntime>=1.20`, `protobuf<7`) as I/O redirection
+    // — so `chroma-mcp` never started and every tool call closed in ~30 ms with
+    // `MCP error -32000: Connection closed`. Node's child_process.spawn (via
+    // cross-spawn) resolves `uvx` → `uvx.exe` on PATH on Windows the same way
+    // it does on POSIX, so no shell wrap is needed.
     logger.info('CHROMA_MCP', 'Connecting to chroma-mcp via MCP stdio', {
-      command: uvxSpawnCommand,
-      args: uvxSpawnArgs.join(' ')
+      command: 'uvx',
+      args: commandArgs.join(' ')
     });
 
     this.transport = new StdioClientTransport({
-      command: uvxSpawnCommand,
-      args: uvxSpawnArgs,
+      command: 'uvx',
+      args: commandArgs,
       env: spawnEnvironment,
       cwd: os.homedir(),
       stderr: 'pipe'

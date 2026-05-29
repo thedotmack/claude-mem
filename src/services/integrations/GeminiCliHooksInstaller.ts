@@ -56,7 +56,8 @@ function buildHookCommand(
   const escapedBunPath = bunPath.replace(/\\/g, '\\\\');
   const escapedWorkerPath = workerServicePath.replace(/\\/g, '\\\\');
 
-  return `"${escapedBunPath}" "${escapedWorkerPath}" hook gemini-cli ${internalEvent}`;
+  const callOperator = process.platform === 'win32' ? '& ' : '';
+  return `${callOperator}"${escapedBunPath}" "${escapedWorkerPath}" hook gemini-cli ${internalEvent}`;
 }
 
 function createHookGroup(hookCommand: string): GeminiHookGroup {

@@ -129,6 +129,16 @@ let spawnCmd = bunPath;
 let spawnArgs = args;
 
 if (IS_WINDOWS) {
+  // On Windows, npm-installed bun is bun.cmd (a batch file) which spawn()
+  // can't execute directly. The previous `cmd /c` wrapper made a visible
+  // console window flash on every hook (issues #2150, #2186, #2187).
+  // shell:true lets Node resolve via PATHEXT *and* respects windowsHide,
+  // unlike an explicit cmd.exe wrapper. bun.exe paths work the same way.
+  //
+  // With shell:true we must pass a single fully-quoted command string and
+  // an empty args array. Passing args separately concatenates them
+  // unescaped, which breaks paths/args containing spaces and triggers
+  // DEP0190 on Node 22+. Mirrors the quoting in findBun().
   const quote = (s) => `"${String(s).replace(/"/g, '\\"')}"`;
   spawnOptions.shell = true;
   spawnCmd = [bunPath, ...args].map(quote).join(' ');
@@ -142,53 +152,65 @@ if (child.stdin) {
     child.stdin.write(stdinData);
     child.stdin.end();
   } else {
-    // Issue #2188: empty/missing stdin previously masked by `|| '{}'` fallback,
-    // which silently hid WSL bash failures (e.g. hooks invoked under a broken
-    // shell that never piped a payload). Surface the failure mode instead.
-    const dataDir = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
-    const payloadType = stdinData === null
-      ? 'null (no data event or stream error)'
-      : stdinData === undefined
-        ? 'undefined'
-        : Buffer.isBuffer(stdinData) && stdinData.length === 0
-          ? 'empty Buffer (zero bytes received)'
-          : `unexpected (${typeof stdinData})`;
-    const payloadByteLength = (stdinData && typeof stdinData.length === 'number')
-      ? stdinData.length
-      : 0;
-    const diagnostic = [
-      `[bun-runner] empty stdin payload received — issue #2188`,
-      `  script: ${args[0]}`,
-      `  payload byte length: ${payloadByteLength}`,
-      `  payload type: ${payloadType}`,
-      `  platform: ${process.platform}`,
-      `  shell: ${process.env.SHELL || 'n/a'}`,
-      `  stdin TTY: ${process.stdin.isTTY === true ? 'true' : process.stdin.isTTY === false ? 'false' : 'undefined'}`,
-      `  timestamp: ${new Date().toISOString()}`,
-      `  CLAUDE_PLUGIN_ROOT: ${RESOLVED_PLUGIN_ROOT}`,
-    ].join('\n');
+    // Lifecycle subcommands (start, stop, restart, status) never consume stdin —
+    // they manage the worker daemon, not hook payloads.  Killing the child here
+    // prevents the daemon from starting/stopping on platforms where Claude Code
+    // doesn't pipe a payload for SessionStart (e.g. Windows CC ≤ 2.1.145).
+    const lifecycleCommands = ['start', 'stop', 'restart', 'status'];
+    const isLifecycle = lifecycleCommands.some(cmd => args.includes(cmd));
 
-    // Write to stderr so Claude Code surfaces the diagnostic.
-    console.error(diagnostic);
+    if (isLifecycle) {
+      // Lifecycle commands don't need stdin — close pipe and let child run.
+      try { child.stdin.end(); } catch {}
+    } else {
+      // Issue #2188: empty/missing stdin previously masked by `|| '{}'` fallback,
+      // which silently hid WSL bash failures (e.g. hooks invoked under a broken
+      // shell that never piped a payload). Surface the failure mode instead.
+      const dataDir = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
+      const payloadType = stdinData === null
+        ? 'null (no data event or stream error)'
+        : stdinData === undefined
+          ? 'undefined'
+          : Buffer.isBuffer(stdinData) && stdinData.length === 0
+            ? 'empty Buffer (zero bytes received)'
+            : `unexpected (${typeof stdinData})`;
+      const payloadByteLength = (stdinData && typeof stdinData.length === 'number')
+        ? stdinData.length
+        : 0;
+      const diagnostic = [
+        `[bun-runner] empty stdin payload received — issue #2188`,
+        `  script: ${args[0]}`,
+        `  payload byte length: ${payloadByteLength}`,
+        `  payload type: ${payloadType}`,
+        `  platform: ${process.platform}`,
+        `  shell: ${process.env.SHELL || 'n/a'}`,
+        `  stdin TTY: ${process.stdin.isTTY === true ? 'true' : process.stdin.isTTY === false ? 'false' : 'undefined'}`,
+        `  timestamp: ${new Date().toISOString()}`,
+        `  CLAUDE_PLUGIN_ROOT: ${RESOLVED_PLUGIN_ROOT}`,
+      ].join('\n');
 
-    // Persist diagnostic to the runner-errors log and drop a CAPTURE_BROKEN marker
-    // file so the next session-start hint can surface the failure. We exit 0 to
-    // honor the project's exit-code strategy (worker/hook errors exit 0 to
-    // prevent Windows Terminal tab pileup) — the marker file is the durable
-    // signal that something is wrong, not the exit code.
-    try {
-      const logsDir = join(dataDir, 'logs');
-      mkdirSync(logsDir, { recursive: true });
-      appendFileSync(join(logsDir, 'runner-errors.log'), diagnostic + '\n\n');
-      mkdirSync(dataDir, { recursive: true });
-      writeFileSync(join(dataDir, 'CAPTURE_BROKEN'), diagnostic + '\n');
-    } catch (writeErr) {
-      console.error(`[bun-runner] failed to persist diagnostic: ${writeErr && writeErr.message ? writeErr.message : writeErr}`);
+      // Write to stderr so Claude Code surfaces the diagnostic.
+      console.error(diagnostic);
+
+      // Persist diagnostic to the runner-errors log and drop a CAPTURE_BROKEN marker
+      // file so the next session-start hint can surface the failure. We exit 0 to
+      // honor the project's exit-code strategy (worker/hook errors exit 0 to
+      // prevent Windows Terminal tab pileup) — the marker file is the durable
+      // signal that something is wrong, not the exit code.
+      try {
+        const logsDir = join(dataDir, 'logs');
+        mkdirSync(logsDir, { recursive: true });
+        appendFileSync(join(logsDir, 'runner-errors.log'), diagnostic + '\n\n');
+        mkdirSync(dataDir, { recursive: true });
+        writeFileSync(join(dataDir, 'CAPTURE_BROKEN'), diagnostic + '\n');
+      } catch (writeErr) {
+        console.error(`[bun-runner] failed to persist diagnostic: ${writeErr && writeErr.message ? writeErr.message : writeErr}`);
+      }
+
+      try { child.stdin.end(); } catch {}
+      try { child.kill(); } catch {}
+      process.exit(0);
     }
-
-    try { child.stdin.end(); } catch {}
-    try { child.kill(); } catch {}
-    process.exit(0);
   }
 }
 
