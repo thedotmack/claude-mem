@@ -18,9 +18,11 @@ consumer app
   └─ import { createCmemClient } from 'claude-mem/sdk'
        ├─ Postgres (pg)         ← system of record (capture, observations, sessions, jobs)  [src/storage/postgres/*]
        ├─ in-process generation ← provider.generate() (fetch) → parseAgentXml → processGeneratedResponse  [src/server/generation/*]
-       ├─ Chroma (optional)     ← semantic index over the SAME observations, via uvx chroma-mcp subprocess  [src/services/sync/*]
-       └─ search                ← Chroma semantic → Postgres FTS fallback (mirrors SearchManager)  [src/storage/postgres/observations.ts]
+       ├─ Chroma (REQUIRED)     ← semantic index over the SAME observations, via uvx chroma-mcp subprocess  [src/services/sync/*]
+       └─ search                ← Chroma semantic (primary). Postgres FTS exists only as a runtime safety net when Chroma transiently fails — it is NOT a feature toggle.  [src/storage/postgres/observations.ts]
 ```
+
+**Chroma is not optional.** claude-mem without semantic search is broken — observations are unsearchable in the way users actually search them. The SDK MUST initialize and verify Chroma at construction; if `uvx chroma-mcp` cannot start, `createCmemClient(...)` rejects. The Postgres FTS path is preserved only to mirror `SearchManager.ts:255`'s runtime resilience pattern (transient Chroma death mid-session); it is logged loudly when used and is not exposed as a user-configurable mode.
 
 What the SDK **must not** pull in: Express, BullMQ, ioredis/Redis, better-auth, the HTTP routes, the daemon/pidfile lifecycle, the worker's `bun:sqlite` storage, or the Claude Code subprocess generation path. All of these are the *shell* around the reusable core.
 
@@ -59,7 +61,7 @@ The wiring hub to study is `createServerBetaService()` (`src/server/runtime/crea
 | `src/server/generation/providers/shared/prompt-builder.ts` | `buildServerGenerationPrompt(context)` `:42` — has `loadActiveModeOrFallback()` `:46` (graceful), unlike `parser.ts`. |
 | `src/services/sync/ChromaSync.ts` | `constructor(project)` `:69`, collection `cm__<project>` `:74`; document layer `addDocuments(ChromaDocument[])` `:234` (id/document/metadata → `chroma_add_documents`) is **storage-agnostic**; `syncObservation(observationId:number, …, obs:ParsedObservation, …)` `:306` is **SQLite-shaped** (integer id, `StoredObservation`); `queryChroma(...)` `:855`; `close()` `:1096`. |
 | `src/services/sync/ChromaMcpManager.ts` | Singleton `getInstance()` `:56`; spawns `uvx chroma-mcp` subprocess; `callTool(name, args)`. Local all-MiniLM embeddings, **no API key**. |
-| `src/services/worker/DatabaseManager.ts` | Reference composition: `new ChromaSync('claude-mem')` `:26`, gated by `CLAUDE_MEM_CHROMA_ENABLED !== 'false'`. |
+| `src/services/worker/DatabaseManager.ts` | Reference composition: `new ChromaSync('claude-mem')` `:26`. The worker reads a `CLAUDE_MEM_CHROMA_ENABLED !== 'false'` env gate; **the SDK deliberately does NOT honor that gate** — Chroma is required (see Executive Decision). The gate is the worker's footgun and should not propagate. |
 | `src/services/worker/SearchManager.ts` | Reference search semantics: `search()` `:140` does Chroma semantic with **FTS fallback on Chroma failure** (`:255`). The SDK mirrors this branch logic against Postgres. |
 | `src/services/hooks/runtime-selector.ts` | **Regression source.** `selectRuntime()` `:35` requires `CLAUDE_MEM_RUNTIME === 'server-beta'` exactly; else silent worker fallback (`:71-78`). Settings keys `CLAUDE_MEM_SERVER_BETA_{URL,API_KEY,PROJECT_ID}` `:41-43`. |
 | `src/shared/SettingsDefaultsManager.ts` | Keys `CLAUDE_MEM_SERVER_BETA_*` `:76-78`, defaults `:151-154`; `CLAUDE_MEM_RUNTIME` default `'worker'` `:151`. |
@@ -94,7 +96,7 @@ The wiring hub to study is `createServerBetaService()` (`src/server/runtime/crea
 - `PostgresObservationRepository.search({ projectId, teamId, query, limit? })` — `observations.ts:153`
 - `PostgresObservationRepository.getByIdForScope({ id, projectId, teamId })` / `listByProject(...)` — `observations.ts:120,133`
 
-**Chroma (optional semantic; reuse, don't fork)**
+**Chroma (REQUIRED semantic; reuse, don't fork)**
 - `ChromaMcpManager.getInstance()` + `callTool('chroma_add_documents' | 'chroma_query_documents' | 'chroma_create_collection' | 'chroma_delete_documents', args)` — `ChromaMcpManager.ts:56`
 - `new ChromaSync(project)` + `queryChroma(...)` `:855` + `close()` `:1096`; the `ChromaDocument { id, document, metadata }` + `addDocuments` `:234` layer is the reusable, storage-agnostic seam.
 
@@ -183,10 +185,11 @@ Anti-pattern guards: do not `tsc`-emit the whole repo (drags in worker/`bun:sqli
 ## Phase 3: SDK core — connection, schema bootstrap, repositories, tenancy
 
 What to implement (copy the graph from `create-server-service.ts:156-186`, minus the service/queue/worker):
-- `createCmemClient(options)` where `options = { databaseUrl?, pool?, teamId?, projectId?, provider?, chroma?: boolean | ChromaOptions }`.
+- `createCmemClient(options)` where `options = { databaseUrl?, pool?, teamId?, projectId?, provider?, chroma?: ChromaOptions }`. **`chroma` is for tuning Chroma (collection prefix, MCP path, etc.), not for disabling it.** There is no `enabled: false` toggle.
   - Pool: `options.pool ?? createPostgresPool(parsePostgresConfig({ env: { CLAUDE_MEM_SERVER_DATABASE_URL: options.databaseUrl ?? process.env... } })!)` (or `getSharedPostgresPool`).
   - `await bootstrapServerPostgresSchema(pool)` (idempotent).
   - `repos = createPostgresStorageRepositories(pool)`.
+  - **Chroma required:** `chromaSync = new ChromaSync(projectId)`; `await chromaSync.ensureReady()` (or first `addDocuments`/`queryChroma` call). If the `uvx chroma-mcp` subprocess fails to start, `createCmemClient` REJECTS with a clear error — the SDK does not return a half-working client.
 - **Tenancy bootstrap**: Postgres requires `teamId` + `projectId` on every call, and `ProjectsRepository` has **no lookup-by-name** (`projects.ts:46` is `getByIdForTeam`). So:
   - If `options.teamId`/`projectId` provided → use them.
   - Else → `ensureDefaults()`: create a default team (`teams.create({name:'default'})`) + project (`projects.create({teamId, name: options.projectName ?? 'default'})`) **once**, and persist the IDs to the SDK's local state file (e.g. `$CLAUDE_MEM_DATA_DIR/sdk-tenant.json`) so subsequent runs reuse them. Document that production consumers should pass explicit IDs.
@@ -228,12 +231,15 @@ Verification: `captureAndGenerate(...)` yields one `observations` row whose `met
 
 Anti-pattern guards: no `@anthropic-ai/claude-agent-sdk`, no subprocess, no `queued→completed`, no BullMQ payload validation/locking ceremony (`:85,109-156`).
 
-## Phase 6: SDK search — Postgres FTS + optional Chroma semantic + context
+## Phase 6: SDK search — Chroma semantic (primary) + FTS runtime safety net + context
+
+**Chroma is required (not optional).** See "Executive Decision" above. The plain-FTS branch below exists only to mirror `SearchManager.ts:255`'s catch-and-degrade-once behavior for transient Chroma death — it is NOT a feature toggle, NOT a config-disabled path, and emits a loud `logger.error` so the broken state is visible.
 
 What to implement:
 - `client.search({ query, limit })` mirroring `SearchManager.search`'s branch logic (`SearchManager.ts:140,255`) against Postgres:
-  - If Chroma disabled or query empty → `PostgresObservationRepository.search({projectId, teamId, query, limit})` (FTS).
-  - If Chroma enabled → `queryChroma(query, limit, whereFilter)` → ranked observation **UUIDs** → hydrate via `observations.getByIdForScope` / batch; **on Chroma failure, fall back to FTS** (copy the try/catch shape from `SearchManager.ts:255`).
+  - Default path → `queryChroma(query, limit, whereFilter)` → ranked observation **UUIDs** → hydrate via `observations.getByIdForScope` / batch.
+  - Empty-query path → `PostgresObservationRepository.listByProject(...)` (no semantic intent to express).
+  - **On Chroma runtime failure (and ONLY runtime failure — not config):** fall back to `PostgresObservationRepository.search({projectId, teamId, query, limit})` (FTS), log `logger.error('CHROMA', 'semantic search failed; returning degraded FTS results — investigate uvx chroma-mcp', err)`, and surface `{ degraded: true }` in the response so callers can decide whether to retry or fail their own request.
 - `client.context({ query, limit })` = run `search`, then `results.map(o => o.content).join('\n\n')` (copy `ServerV1PostgresRoutes.ts:886-895`).
 - **Chroma↔Postgres glue (the only genuinely-new code, kept minimal):** reuse the storage-agnostic document layer, do **not** reuse SQLite-shaped `syncObservation`:
   - On observation persist (Phase 5), index it: build a `ChromaDocument { id: observation.id /*UUID string*/, document: observation.content, metadata: { projectId, teamId, kind, serverSessionId } }` and call the existing `chroma_add_documents` path (via `ChromaMcpManager.callTool` or a thin `ChromaSync` method that takes pre-built `ChromaDocument`s — refactor `addDocuments` from `private` to a reusable seam if needed, `ChromaSync.ts:234`).
@@ -243,11 +249,12 @@ What to implement:
 Doc references: `observations.ts:153,120,133`; `ServerV1PostgresRoutes.ts:886-895`; `ChromaSync.ts:69,74,234,855`; `ChromaMcpManager.ts:56`; `SearchManager.ts:140,255`; `DatabaseManager.ts:26` (enable gate `CLAUDE_MEM_CHROMA_ENABLED`).
 
 Verification:
-- FTS path: `search('websearch terms')` returns ranked Postgres rows with `chroma:false`.
-- Chroma path (when `uvx`/chroma-mcp available): semantic `search(...)` returns hydrated Postgres observations; killing chroma-mcp mid-test falls back to FTS without error.
-- `context(...)` returns `{ observations, context }` with `\n\n`-joined content.
+- **Chroma is required at construction:** with `uvx`/chroma-mcp deliberately unavailable, `createCmemClient(...)` REJECTS. (No silent-FTS-only mode.)
+- Chroma happy path: `createCmemClient` + `captureAndGenerate` + `search('semantic query')` returns hydrated Postgres observations ranked by semantic distance.
+- Chroma runtime-failure path: kill chroma-mcp after a successful `search`, run another `search`; results return with `{ degraded: true }`, a `logger.error('CHROMA', …)` is emitted, and a subsequent `createCmemClient` (cold start) REJECTS.
+- `context(...)` returns `{ observations, context }` with `\n\n`-joined content, and surfaces `{ degraded: true }` if its underlying `search` degraded.
 
-Anti-pattern guards: do **not** add pgvector; do **not** reuse `syncObservation(observationId:number, …)` (SQLite-shaped) for Postgres UUIDs; do **not** require an embeddings API key (Chroma embeds locally).
+Anti-pattern guards: do **not** add pgvector; do **not** reuse `syncObservation(observationId:number, …)` (SQLite-shaped) for Postgres UUIDs; do **not** require an embeddings API key (Chroma embeds locally); do **not** add a `chroma.enabled = false` option (would re-introduce the silently-broken state the user explicitly rejected).
 
 ## Phase 7: SDK public facade + types
 
@@ -285,4 +292,12 @@ Anti-pattern guard: the example must not start a worker or require Redis.
 
 - **tsup vs tsconfig.sdk.json** for the SDK build (Phase 2) — pick during execution; tsup gives JS+dts in one step, tsconfig avoids a new devDep.
 - **Chroma `addDocuments` exposure** (Phase 6) — refactor the `private addDocuments` into a reusable seam vs. call `ChromaMcpManager.callTool('chroma_add_documents')` directly from the SDK. Prefer the smallest change that keeps one code path for the chroma-mcp protocol.
+
+## Correction log
+- **2026-05-29** — Plan originally framed Chroma as "optional" (lines 21, 105, Phase 3 options, Phase 6 branches, Phase 6 verification). This was wrong: claude-mem without semantic search is broken. Updated:
+  - Architecture diagram + Executive Decision now mark Chroma REQUIRED.
+  - `createCmemClient` options dropped the boolean disable; `ChromaOptions` is for tuning only.
+  - Phase 6 default path is Chroma; FTS is a runtime safety net for transient failure that surfaces `{ degraded: true }` and `logger.error`, not a feature toggle.
+  - Phase 6 verification adds: `createCmemClient` MUST REJECT when Chroma is unavailable at construction.
+  - Phase 6 anti-patterns add: no `chroma.enabled = false` option.
 - **Tenancy persistence** (Phase 3) — confirm where to store the default `{teamId, projectId}` (SDK state file vs. require explicit IDs in production).
