@@ -270,6 +270,7 @@ interface UnprocessedEventRow {
   source_event_id: string | null;
   idempotency_key: string;
   event_type: string;
+  platform_source: string | null;
   payload: unknown;
   metadata: unknown;
   occurred_at: Date;
@@ -287,6 +288,7 @@ function mapUnprocessedEventRow(row: UnprocessedEventRow): PostgresAgentEvent {
     sourceEventId: row.source_event_id,
     idempotencyKey: row.idempotency_key,
     eventType: row.event_type,
+    platformSource: row.platform_source,
     payload: toJsonObject(row.payload),
     metadata: toJsonObject(row.metadata),
     occurredAtEpoch: row.occurred_at.getTime(),

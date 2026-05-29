@@ -53,6 +53,7 @@ import {
   createServerApiKey,
   listServerApiKeys,
   revokeServerApiKey,
+  migrateServerApiKeyScopes,
   DEFAULT_LOCAL_API_KEY_SCOPES,
 } from '../server/auth/sqlite-api-key-service.js';
 import { ServerV1Routes } from '../server/routes/v1/ServerV1Routes.js';
@@ -564,7 +565,7 @@ function parseWorkerServiceCommand(argv: string[]): ParsedWorkerCommand {
     if (maybeSubCommand && lifecycleCommands.has(maybeSubCommand)) {
       return { command: `server-${maybeSubCommand}`, args: rest };
     }
-    const serverCommands = new Set(['logs', 'doctor', 'migrate', 'export', 'import', 'api-key']);
+    const serverCommands = new Set(['logs', 'doctor', 'migrate', 'export', 'import', 'api-key', 'keys', 'jobs']);
     return {
       command: maybeSubCommand && serverCommands.has(maybeSubCommand) ? `server-${maybeSubCommand}` : 'server-help',
       args: rest,
@@ -602,7 +603,7 @@ function printWorkerAliasHelp(): never {
   process.exit(1);
 }
 
-function runServerBetaServiceCli(command: string): void {
+function runServerBetaServiceCli(command: string, extraArgs: string[] = []): void {
   const serverBetaScript = path.join(__dirname, 'server-beta-service.cjs');
   if (!existsSync(serverBetaScript)) {
     console.error(`Server beta script not found at: ${serverBetaScript}`);
@@ -610,7 +611,7 @@ function runServerBetaServiceCli(command: string): void {
     process.exit(1);
   }
 
-  const child = spawn(process.execPath, [serverBetaScript, command], {
+  const child = spawn(process.execPath, [serverBetaScript, command, ...extraArgs], {
     stdio: 'inherit',
     env: process.env,
   });
@@ -709,8 +710,29 @@ function runServerApiKeyCli(args: string[]): never {
       process.exit(0);
     }
 
+    if (subCommand === 'migrate-scopes') {
+      // #2560 — bring a key's scope set up to the default (or an explicit
+      // --scope list) so legacy/empty-scope keys work against the v1 routes.
+      const id = args[1] && !args[1].startsWith('--') ? args[1] : undefined;
+      if (!id) {
+        console.error('Usage: worker-service server api-key migrate-scopes <id> [--scope a,b]');
+        process.exit(1);
+      }
+      const scopeFlag = options.scope ?? options.scopes;
+      const scopes = scopeFlag
+        ? scopeFlag.split(',').map(scope => scope.trim()).filter(Boolean)
+        : [...DEFAULT_LOCAL_API_KEY_SCOPES];
+      const updated = migrateServerApiKeyScopes(db, id, scopes);
+      if (!updated) {
+        console.error(`API key not found: ${id}`);
+        process.exit(1);
+      }
+      console.log(JSON.stringify({ id: updated.id, scopes: updated.scopes, status: 'scopes-migrated' }, null, 2));
+      process.exit(0);
+    }
+
     console.error(`Unknown server api-key subcommand: ${subCommand ?? '(none)'}`);
-    console.error('Usage: worker-service server api-key create|list|revoke');
+    console.error('Usage: worker-service server api-key create|list|revoke|migrate-scopes');
     process.exit(1);
   } finally {
     db.close();
@@ -813,9 +835,26 @@ async function main() {
       if (apiKeyCommand === 'create' || apiKeyCommand === 'list' || apiKeyCommand === 'revoke') {
         runServerApiKeyCli(commandArgs);
       }
+      if (apiKeyCommand === 'migrate-scopes') {
+        // #2560 — scope migration runs against the SQLite local backend here.
+        runServerApiKeyCli(commandArgs);
+      }
       console.error(`Unknown server api-key subcommand: ${apiKeyCommand ?? '(none)'}`);
-      console.error('Usage: worker-service server api-key create|list|revoke');
+      console.error('Usage: worker-service server api-key create|list|revoke|migrate-scopes');
       process.exit(1);
+      break;
+    }
+
+    // #2572 — `keys`/`jobs` are server-beta (Postgres) operability commands.
+    // Delegate to the server-beta script so they read the Postgres backend the
+    // server runtime actually uses, instead of the SQLite worker store.
+    case 'server-keys': {
+      runServerBetaServiceCli('server', ['keys', ...commandArgs]);
+      break;
+    }
+
+    case 'server-jobs': {
+      runServerBetaServiceCli('server', ['jobs', ...commandArgs]);
       break;
     }
 
