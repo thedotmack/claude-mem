@@ -4,7 +4,7 @@ import { homedir } from 'os';
 import { unlinkSync } from 'fs';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
-import { getProjectContext, loadEnvironments } from '../../utils/project-name.js';
+import { getProjectContext } from '../../utils/project-name.js';
 
 import type { ContextInput, ContextConfig, Observation, SessionSummary } from './types.js';
 import { loadContextConfig } from './ContextConfigLoader.js';
@@ -19,7 +19,7 @@ import {
   buildTimeline,
   getFullObservationIds,
 } from './ObservationCompiler.js';
-import { renderHeader } from './sections/HeaderRenderer.js';
+import { renderHeader, getEnvironmentHint } from './sections/HeaderRenderer.js';
 import { renderTimeline } from './sections/TimelineRenderer.js';
 import { shouldShowSummary, renderSummaryFields } from './sections/SummaryRenderer.js';
 import { renderPreviouslySection, renderFooter } from './sections/FooterRenderer.js';
@@ -55,13 +55,6 @@ function initializeDatabase(): SessionStore | null {
     }
     throw error;
   }
-}
-
-function getEnvironmentHint(projectName: string): string | null {
-  const environments = loadEnvironments();
-  const matched = environments.find(env => env.name === projectName);
-  if (!matched) return null;
-  return `environment, paths: ${matched.patterns.join(', ')}`;
 }
 
 function renderEmptyState(project: string, forHuman: boolean): string {

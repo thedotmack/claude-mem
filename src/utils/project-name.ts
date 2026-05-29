@@ -45,7 +45,7 @@ export function loadEnvironments(): Environment[] {
     cachedEnvironments = raw ? JSON.parse(raw) : [];
     cachedSettingsMtime = mtime;
     lastCacheTime = now;
-    return cachedEnvironments;
+    return cachedEnvironments!;
   } catch {
     cachedEnvironments = [];
     lastCacheTime = now;

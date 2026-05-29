@@ -5,7 +5,7 @@ import { loadEnvironments } from '../../../utils/project-name.js';
 import * as Agent from '../formatters/AgentFormatter.js';
 import * as Human from '../formatters/HumanFormatter.js';
 
-function getEnvironmentHint(projectName: string): string | null {
+export function getEnvironmentHint(projectName: string): string | null {
   const environments = loadEnvironments();
   const matched = environments.find(env => env.name === projectName);
   if (!matched) return null;
