@@ -1,7 +1,17 @@
-import { describe, it, expect, mock, afterEach, beforeEach } from 'bun:test';
+import { describe, it, expect, mock, afterEach, afterAll, beforeEach } from 'bun:test';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
 import path, { join } from 'path';
 import { tmpdir } from 'os';
+
+// Snapshot the real modules BEFORE mock.module mutates the live namespace, then
+// re-register them in afterAll. bun's mock.module is process-global and
+// mock.restore() does NOT undo it, so a partial logger mock here would
+// otherwise leak into later test files (e.g. summarize-tag-stripping, which
+// needs logger.dataIn).
+import * as realLogger from '../../src/utils/logger.js';
+import * as realWorkerUtils from '../../src/shared/worker-utils.js';
+const realLoggerSnapshot = { ...realLogger };
+const realWorkerUtilsSnapshot = { ...realWorkerUtils };
 
 mock.module('../../src/utils/logger.js', () => ({
   logger: {
@@ -29,6 +39,11 @@ mock.module('../../src/shared/worker-utils.js', () => ({
   fetchWithTimeout: (url: string, init: any, timeoutMs: number) => globalThis.fetch(url, init),
   buildWorkerUrl: (apiPath: string) => `http://127.0.0.1:37777${apiPath}`,
 }));
+
+afterAll(() => {
+  mock.module('../../src/utils/logger.js', () => realLoggerSnapshot);
+  mock.module('../../src/shared/worker-utils.js', () => realWorkerUtilsSnapshot);
+});
 
 import {
   replaceTaggedContent,

@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import { describe, it, expect, mock, beforeEach } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterAll } from 'bun:test';
+
+// Snapshot real modules BEFORE mock.module mutates the live namespace, then
+// re-register in afterAll. bun's mock.module is process-global and survives
+// mock.restore(), so these would otherwise leak into later test files.
+import * as realHookSettings from '../../src/shared/hook-settings.js';
+import * as realLogger from '../../src/utils/logger.js';
+const realHookSettingsSnapshot = { ...realHookSettings };
+const realLoggerSnapshot = { ...realLogger };
 
 let mockSettings: Record<string, string> = {};
 
@@ -22,6 +30,11 @@ mock.module('../../src/utils/logger.js', () => ({
     formatTool: () => '',
   },
 }));
+
+afterAll(() => {
+  mock.module('../../src/shared/hook-settings.js', () => realHookSettingsSnapshot);
+  mock.module('../../src/utils/logger.js', () => realLoggerSnapshot);
+});
 
 import {
   resolveRuntimeContext,
