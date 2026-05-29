@@ -341,11 +341,13 @@ export class ServerBetaClient {
   buildAddObservationPayload(
     input: ServerBetaAddObservationRequest,
   ): Record<string, unknown> {
+    const kind = input.kind ?? 'manual';
     return {
       projectId: input.projectId,
-      content: input.content,
+      narrative: input.content,
+      kind,
+      type: kind,
       ...(input.serverSessionId !== undefined ? { serverSessionId: input.serverSessionId } : {}),
-      ...(input.kind !== undefined ? { kind: input.kind } : {}),
       ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
     };
   }
@@ -398,13 +400,12 @@ export class ServerBetaClient {
     }
 
     const url = `${this.baseUrl}${path}`;
-    const init: RequestInit = {
-      method,
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-    };
+    const isLocalDevBypass = this.apiKey.trim() === 'local-dev-bypass';
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (!isLocalDevBypass) {
+      headers['Authorization'] = `Bearer ${this.apiKey}`;
+    }
+    const init: RequestInit = { method, headers };
     if (body !== undefined) {
       init.body = JSON.stringify(body);
     }
