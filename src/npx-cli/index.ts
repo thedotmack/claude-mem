@@ -38,6 +38,7 @@ ${pc.bold('Runtime Commands')} (requires Bun, delegates to installed plugin):
   ${pc.cyan('npx claude-mem stop')}                 Stop worker service
   ${pc.cyan('npx claude-mem restart')}              Restart worker service
   ${pc.cyan('npx claude-mem status')}               Show worker status
+  ${pc.cyan('npx claude-mem doctor')}               Diagnose install/runtime health (bun, uv, worker)
   ${pc.cyan('npx claude-mem server start')}         Start server service
   ${pc.cyan('npx claude-mem server stop')}          Stop server service
   ${pc.cyan('npx claude-mem server restart')}       Restart server service
@@ -156,6 +157,12 @@ async function main(): Promise<void> {
     case 'status': {
       const { runStatusCommand } = await import('./commands/runtime.js');
       runStatusCommand();
+      break;
+    }
+
+    case 'doctor': {
+      const { runDoctorCommand } = await import('./commands/doctor.js');
+      await runDoctorCommand();
       break;
     }
 

@@ -1,6 +1,5 @@
 import * as p from '@clack/prompts';
 import pc from 'picocolors';
-import { execSync } from 'child_process';
 import { spawnHidden } from '../../shared/spawn.js';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
@@ -18,6 +17,15 @@ import {
 } from '../install/setup-runtime.js';
 import { playBanner } from '../banner.js';
 import { normalizeRuntimeFlag, planServerRuntimeInstall } from './server-runtime-setup.js';
+import { ErrorSeverity } from '../install/error-taxonomy.js';
+import {
+  createInstallSummary,
+  flushSummary,
+  installerError,
+  InstallAbortError,
+  type InstallSummary,
+} from '../install/error-reporter.js';
+import { extractEresolveBlock, isEresolve, runNpmStrict } from '../install/npm-install-helper.js';
 
 function getSetting<K extends keyof SettingsDefaults>(key: K): SettingsDefaults[K] {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH)[key];
@@ -161,12 +169,18 @@ export function disableClaudeAutoMemory(): boolean {
   return true;
 }
 
-function makeIDETask(ideId: string, failedIDEs: string[], pendingErrors: string[]): TaskDescriptor | null {
+function makeIDETask(ideId: string, summary: InstallSummary): TaskDescriptor | null {
   const recordFailure = (label: string, output: string) => {
-    failedIDEs.push(ideId);
-    if (output && output.trim().length > 0) {
-      pendingErrors.push(`${label}\n${output.trim()}`);
-    }
+    // Route every per-IDE failure through the central decision point. A single
+    // IDE failure is FAIL_LOUD_PER_IDE (partial install); the summary headline
+    // and exit code reflect it. The stderr is preserved verbatim in `details`.
+    installerError(ErrorSeverity.FAIL_LOUD_PER_IDE, {
+      component: label,
+      ide: ideId,
+      phase: 'ide-install',
+      cause: new Error(label),
+      details: output && output.trim().length > 0 ? output.trim().slice(0, 4000) : undefined,
+    }, summary);
   };
 
   switch (ideId) {
@@ -326,13 +340,10 @@ function makeIDETask(ideId: string, failedIDEs: string[], pendingErrors: string[
   }
 }
 
-async function setupIDEs(selectedIDEs: string[]): Promise<string[]> {
-  const failedIDEs: string[] = [];
-  const pendingErrors: string[] = [];
-
+async function setupIDEs(selectedIDEs: string[], summary: InstallSummary): Promise<string[]> {
   const tasks: TaskDescriptor[] = [];
   for (const ideId of selectedIDEs) {
-    const taskDescriptor = makeIDETask(ideId, failedIDEs, pendingErrors);
+    const taskDescriptor = makeIDETask(ideId, summary);
     if (taskDescriptor) tasks.push(taskDescriptor);
   }
 
@@ -340,11 +351,18 @@ async function setupIDEs(selectedIDEs: string[]): Promise<string[]> {
     await runTasks(tasks);
   }
 
-  for (const errorBlock of pendingErrors) {
-    log.warn(errorBlock);
+  // FAIL_LOUD_PER_IDE failures were recorded on the summary; if EVERY selected
+  // IDE failed, escalate to an ABORT (all-ides-failed) — a fully failed install
+  // must not print "Installation Complete".
+  if (selectedIDEs.length > 0 && summary.failedIDEs.length === selectedIDEs.length) {
+    installerError(ErrorSeverity.ABORT, {
+      component: 'all-ides',
+      phase: 'ide-install',
+      cause: new Error(`All ${selectedIDEs.length} selected IDE integrations failed.`),
+    }, summary);
   }
 
-  return failedIDEs;
+  return summary.failedIDEs;
 }
 
 function detectShellConfigFile(): { path: string; shell: 'zsh' | 'bash' | 'fish' } {
@@ -562,22 +580,64 @@ function copyPluginToCache(version: string): void {
   cpSync(sourcePluginDirectory, cachePath, { recursive: true, force: true });
 }
 
-function runNpmInstallInMarketplace(): void {
+/**
+ * Install marketplace dependencies, strict-first.
+ *
+ * Phase 4 of plans/04-installer-transparency.md: the old code ALWAYS passed
+ * `--legacy-peer-deps`, papering over any real peer conflict unconditionally.
+ * Now we run strict first and only fall back to `--legacy-peer-deps` on a
+ * confirmed ERESOLVE token, announced loudly. `--ignore-scripts` is the default
+ * (v12.6.2 lesson: a transitive postinstall can hang the install).
+ */
+function runNpmInstallInMarketplace(summary: InstallSummary): void {
   const marketplaceDir = marketplaceDirectory();
   const packageJsonPath = join(marketplaceDir, 'package.json');
 
   if (!existsSync(packageJsonPath)) return;
 
-  // --legacy-peer-deps suppresses a known false-positive ERESOLVE between
-  // tree-sitter@0.21 and @tree-sitter-grammars/* peer ranges. The native
-  // bindings path is unused (we load .wasm), so the conflict is benign.
-  // Revisit if real peer constraints are added to the marketplace deps.
-  execSync('npm install --omit=dev --legacy-peer-deps', {
-    cwd: marketplaceDir,
-    stdio: 'pipe',
-    encoding: 'utf8',
-    ...(IS_WINDOWS ? { shell: process.env.ComSpec ?? 'cmd.exe' } : {}),
-  });
+  const baseFlags = ['install', '--omit=dev', '--ignore-scripts'];
+  const strictResult = runNpmStrict(marketplaceDir, baseFlags);
+  if (strictResult.code === 0) return;
+
+  if (strictResult.timedOut) {
+    installerError(ErrorSeverity.ABORT, {
+      component: 'marketplace-npm-install',
+      phase: 'marketplace-deps',
+      cause: new Error('npm install timed out'),
+      details: strictResult.stderr.slice(0, 4000),
+    }, summary);
+  }
+
+  if (!isEresolve(strictResult.stderr)) {
+    // A strict failure with no ERESOLVE is a real bug — never retry, ABORT.
+    installerError(ErrorSeverity.ABORT, {
+      component: 'marketplace-npm-install',
+      phase: 'marketplace-deps',
+      cause: new Error(`npm install failed (exit ${strictResult.code})`),
+      details: strictResult.stderr.slice(0, 4000),
+    }, summary);
+  }
+
+  // Confirmed ERESOLVE — log loudly, attempt one fallback with --legacy-peer-deps.
+  log.warn('npm reported an ERESOLVE peer-dependency conflict in marketplace deps; retrying once with --legacy-peer-deps.');
+  log.warn(extractEresolveBlock(strictResult.stderr));
+
+  const legacyResult = runNpmStrict(marketplaceDir, [...baseFlags, '--legacy-peer-deps']);
+  if (legacyResult.code === 0) {
+    summary.warnings.push({
+      component: 'marketplace-npm-install',
+      message: 'tree-sitter peer-dep ERESOLVE was resolved with the --legacy-peer-deps fallback. Benign for the marketplace install; re-evaluate when tree-sitter peer ranges change.',
+      remediation: 'No action required.',
+    });
+    return;
+  }
+
+  installerError(ErrorSeverity.ABORT, {
+    component: 'marketplace-npm-install',
+    phase: 'marketplace-deps',
+    cause: new Error(`npm install --legacy-peer-deps still failed (exit ${legacyResult.code}): ERESOLVE`),
+    details: legacyResult.stderr.slice(0, 4000),
+  }, summary);
 }
 
 function mergeSettings(updates: Record<string, string>): boolean {
@@ -1081,6 +1141,32 @@ export interface InstallOptions {
 }
 
 export async function runInstallCommand(options: InstallOptions = {}): Promise<void> {
+  const summary = createInstallSummary();
+  try {
+    await runInstallCommandInner(options, summary);
+  } catch (error: unknown) {
+    if (error instanceof InstallAbortError) {
+      // Flush whatever warnings accrued before the abort, then print the
+      // remediation headline and exit non-zero. ABORT must never reach the
+      // "Installation Complete" path.
+      flushSummary(summary, (line) => (isInteractive ? p.log.message(line) : console.error(`  ${line}`)));
+      const headline = `Installation Aborted: ${error.category.id}`;
+      if (isInteractive) {
+        p.log.error(headline);
+        p.log.error(error.remediation);
+        p.outro(pc.red('claude-mem installation aborted.'));
+      } else {
+        console.error(`\n  ${headline}`);
+        console.error(`  ${error.remediation}`);
+        console.error(`  ${error.message}`);
+      }
+      process.exit(1);
+    }
+    throw error;
+  }
+}
+
+async function runInstallCommandInner(options: InstallOptions, summary: InstallSummary): Promise<void> {
   const version = readPluginVersion();
 
   if (isInteractive) {
@@ -1220,9 +1306,9 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
         title: 'Setting up runtime (first install can take ~30s)',
         task: async (message) => {
           message('Checking Bun…');
-          const { version: bunVersion } = await ensureBun();
+          const { version: bunVersion } = await ensureBun(summary);
           message('Checking uv…');
-          const { version: uvVersion } = await ensureUv();
+          const { version: uvVersion } = await ensureUv(summary);
           const cacheDir = pluginCacheDirectory(version);
           if (!isInstallCurrent(cacheDir, version)) {
             message('Installing plugin dependencies…');
@@ -1248,13 +1334,12 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
         title: 'Installing marketplace dependencies',
         task: async (message) => {
           message('Running npm install...');
-          try {
-            runNpmInstallInMarketplace();
-            return `Dependencies installed ${pc.green('OK')}`;
-          } catch (error: unknown) {
-            console.warn('[install] npm install error:', error instanceof Error ? error.message : String(error));
-            return `Dependencies may need manual install ${pc.yellow('!')}`;
-          }
+          // runNpmInstallInMarketplace throws InstallAbortError on a real
+          // failure (non-ERESOLVE, or ERESOLVE that --legacy-peer-deps could
+          // not fix). We deliberately do NOT swallow it here — the top-level
+          // handler turns it into "Installation Aborted" + exit 1.
+          runNpmInstallInMarketplace(summary);
+          return `Dependencies installed ${pc.green('OK')}`;
         },
       });
     }
@@ -1262,7 +1347,7 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
     await runTasks(tasks);
   }
 
-  const failedIDEs = await setupIDEs(selectedIDEs);
+  const failedIDEs = await setupIDEs(selectedIDEs, summary);
 
   // Disable Claude Code's built-in auto-memory (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1)
   // for any install that targets claude-code. claude-mem's hook-based memory is the
@@ -1282,9 +1367,13 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
         log.info('Claude Code: auto-memory already disabled, leaving settings.json untouched.');
       }
     } catch (error: unknown) {
-      // Don't fail the install over this — surface the warning and continue.
+      // Don't fail the install over this — WARN_CONTINUE via the central handler.
       autoMemoryStatus = 'failed';
-      log.warn(`Could not disable Claude Code auto-memory: ${error instanceof Error ? error.message : String(error)}`);
+      installerError(ErrorSeverity.WARN_CONTINUE, {
+        component: 'auto-memory',
+        phase: 'post-ide',
+        cause: error,
+      }, summary);
     }
   }
 
@@ -1326,7 +1415,12 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
     },
   ]);
 
-  const installStatus = failedIDEs.length > 0 ? 'Installation Partial' : 'Installation Complete';
+  // "Installation Complete" only when no ABORT fired (we'd have thrown) AND no
+  // IDE failed. Any failed IDE => "Installation Partial". Reads summary.failedIDEs
+  // (which captures failures that happen AFTER bufferConsole returns), not a
+  // stale local count.
+  const hasFailures = summary.failedIDEs.length > 0;
+  const installStatus = hasFailures ? 'Installation Partial' : 'Installation Complete';
   const summaryLines = [
     `Version:     ${pc.cyan(version)}`,
     `Plugin dir:  ${pc.cyan(marketplaceDir)}`,
@@ -1349,6 +1443,10 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
     console.log(`\n  ${installStatus}`);
     summaryLines.forEach(l => console.log(`  ${l}`));
   }
+
+  // Flush all WARN_CONTINUE / FAIL_LOUD_PER_IDE warnings + remediation AFTER the
+  // spinners and summary note (a live print would be clobbered by clack).
+  flushSummary(summary, (line) => (isInteractive ? p.log.message(line) : console.log(`  ${line}`)));
 
   const workerPort = getSetting('CLAUDE_MEM_WORKER_PORT');
 

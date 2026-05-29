@@ -78,7 +78,7 @@ describe('Install: disable Claude Code auto-memory', () => {
       // setupIDEs returns first; we need its result before deciding what to do,
       // and the disable step shouldn't run if claude-code wasn't installed.
       // Use lastIndexOf for the call so we match the call site, not the helper definition.
-      const setupCallIdx = installSource.indexOf('await setupIDEs(selectedIDEs)');
+      const setupCallIdx = installSource.indexOf('await setupIDEs(selectedIDEs');
       const disableCallIdx = installSource.lastIndexOf('disableClaudeAutoMemory()');
       expect(setupCallIdx).toBeGreaterThan(-1);
       expect(disableCallIdx).toBeGreaterThan(-1);
@@ -103,7 +103,10 @@ describe('Install: disable Claude Code auto-memory', () => {
       expect(integrationBlock).toContain('try {');
       expect(integrationBlock).toMatch(/const wrote = disableClaudeAutoMemory\(\)/);
       expect(integrationBlock).toContain('catch');
-      expect(integrationBlock).toMatch(/log\.warn/);
+      // Phase 3 of plans/04-installer-transparency.md: warnings no longer log
+      // live (a clack spinner clobbers them). They route through the central
+      // installerError(WARN_CONTINUE) decision point and are flushed at the end.
+      expect(integrationBlock).toMatch(/installerError\(ErrorSeverity\.WARN_CONTINUE/);
     });
 
     it('tracks a tri-state autoMemoryStatus (disabled / already-disabled / failed)', () => {
