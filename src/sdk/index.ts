@@ -28,8 +28,9 @@ import {
   type PostgresStorageRepositories,
 } from '../storage/postgres/index.js';
 import type { CreatePostgresAgentEventInput } from '../storage/postgres/agent-events.js';
-import { ChromaSync } from '../services/sync/ChromaSync.js';
+import { ChromaSync, type ChromaDocument } from '../services/sync/ChromaSync.js';
 import { ChromaMcpManager } from '../services/sync/ChromaMcpManager.js';
+import { logger } from '../utils/logger.js';
 import { IngestEventsService } from '../server/services/IngestEventsService.js';
 import { ModeManager } from '../services/domain/ModeManager.js';
 import {
@@ -172,36 +173,37 @@ export interface CmemClientOptions {
 }
 
 /**
- * Generic search-result entry surfaced by {@link CmemClient.search}.
+ * Response envelope for {@link CmemClient.search}.
  *
- * Phase 7 will narrow this to the real `PostgresObservation` shape.
- */
-export interface CmemSearchResult {
-  id: string;
-  content: string;
-  metadata?: Record<string, unknown>;
-  score?: number;
-}
-
-/**
- * Response envelope for search/context calls. `degraded: true` is set
- * when Chroma was unavailable at request time and the call fell back to
- * Postgres FTS (see plan §6).
+ * `observations` are hydrated {@link PostgresObservation} rows — the same
+ * shape callers see when reading directly from `repos.observations.*`.
+ *
+ * `chroma: true` means the result came from the Chroma semantic engine
+ * (the default and intended path). `chroma: false` + `degraded: true`
+ * means Chroma failed at request time and the SDK fell through to the
+ * Postgres FTS safety net. This is a RUNTIME state, not a config toggle;
+ * a `logger.error('CHROMA', …)` is emitted whenever it happens so an
+ * operator can investigate the chroma-mcp subprocess.
+ *
+ * `error` is only present on the degraded branch. See plan §6.
  */
 export interface CmemSearchResponse {
-  results: CmemSearchResult[];
-  degraded?: boolean;
+  observations: PostgresObservation[];
+  chroma: boolean;
+  degraded: boolean;
+  error?: { message: string };
 }
 
 /**
  * Response envelope for {@link CmemClient.context}. Mirrors the
  * `ServerV1PostgresRoutes` `/context` shape — observations + a single
- * `\n\n`-joined string.
+ * `\n\n`-joined string. `degraded` propagates from the underlying
+ * {@link CmemSearchResponse}.
  */
 export interface CmemContextResponse {
-  observations: CmemSearchResult[];
+  observations: PostgresObservation[];
   context: string;
-  degraded?: boolean;
+  degraded: boolean;
 }
 
 /**
@@ -569,6 +571,76 @@ async function resolveTenancy(
 }
 
 /**
+ * Mirror the per-tenant collection name that `new ChromaSync(projectId)`
+ * builds (`ChromaSync.ts:108-114`). We pin the same sanitization so the
+ * raw-callTool path in {@link CmemClient.search} and the
+ * `ChromaSync.ensureCollectionExists()` path operate on the same
+ * collection. Plan §6 line 246: per-tenant `cm__<projectId>`.
+ */
+function chromaCollectionName(projectId: string): string {
+  const sanitized = projectId
+    .replace(/[^a-zA-Z0-9._-]/g, '_')
+    .replace(/[^a-zA-Z0-9]+$/, '');
+  return `cm__${sanitized || 'unknown'}`;
+}
+
+/**
+ * Build {@link ChromaDocument}s for the freshly-persisted observations and
+ * index them into the per-tenant Chroma collection via the now-public
+ * `ChromaSync.addDocuments` (which batches + delete-then-add reconciles on
+ * the `already exist` race). The document `id` is the Postgres observation
+ * UUID — one Chroma doc per observation, NOT the SQLite-shaped
+ * `obs_<sqlite_id>_<field>` split that `syncObservation` produces.
+ *
+ * Indexing failure is degraded, not catastrophic: the observations are
+ * already in Postgres. The next `client.search()` either hits Chroma on
+ * the retry-batched delete+add path, or falls through to FTS via the
+ * search-side safety net. We log a warning and continue. See plan §6
+ * line 244-247.
+ */
+async function indexObservationsToChroma(
+  chromaSync: ChromaSync,
+  observations: PostgresObservation[],
+  scope: { projectId: string; teamId: string },
+): Promise<void> {
+  if (observations.length === 0) return;
+  const docs: ChromaDocument[] = observations.map(observation => {
+    const metadata: Record<string, string | number> = {
+      projectId: scope.projectId,
+      teamId: scope.teamId,
+      kind: observation.kind,
+      observationId: observation.id,
+      observationType: observation.kind,
+      // ChromaSync's clean step filters out empty strings (ChromaSync.ts:291-295),
+      // so passing '' for missing server_session_id collapses cleanly to
+      // metadata-absent rather than indexing a meaningless empty value.
+      serverSessionId: observation.serverSessionId ?? '',
+      createdAt: new Date(observation.createdAtEpoch).toISOString(),
+    };
+    return {
+      id: observation.id,
+      document: observation.content,
+      metadata,
+    };
+  });
+  try {
+    await chromaSync.addDocuments(docs);
+  } catch (err) {
+    // addDocuments swallows per-batch errors internally and returns a
+    // count; an outer throw means something more fundamental (ensure
+    // collection / connect) failed. Log + continue: the observations are
+    // still persisted in Postgres, search will degrade to FTS until the
+    // operator restarts chroma-mcp.
+    logger.error(
+      'CHROMA',
+      'observation indexing failed after generate(); observations are persisted but unsearchable in Chroma until reindex',
+      { projectId: scope.projectId, teamId: scope.teamId, observationCount: observations.length },
+      err as Error,
+    );
+  }
+}
+
+/**
  * Construct a {@link CmemClient}.
  *
  * Phase 3 wires:
@@ -897,6 +969,21 @@ export async function createCmemClient(options: CmemClientOptions): Promise<Cmem
         );
       }
 
+      // Step 6 (Phase 6): index the freshly-persisted observations into
+      //   Chroma so subsequent client.search() calls can find them. Postgres
+      //   is already canonical at this point — losing the Chroma index is
+      //   degraded (next search falls through to FTS), not catastrophic, so
+      //   indexing failures log + continue instead of throwing. The opposite
+      //   policy would re-emit an error and roll back the user's already-
+      //   completed generate(), which is worse than a silent reindex later.
+      if (outcome.observations.length > 0) {
+        await indexObservationsToChroma(
+          chromaSync,
+          outcome.observations,
+          { projectId, teamId },
+        );
+      }
+
       const result: CmemGenerateResult = {
         jobId: outcome.jobId,
         observations: outcome.observations,
@@ -920,11 +1007,124 @@ export async function createCmemClient(options: CmemClientOptions): Promise<Cmem
         result: generated,
       };
     },
-    search() {
-      throw new Error('cmem-sdk: search — Phase 6 not implemented yet');
+    async search(input: { query: string; limit?: number }): Promise<CmemSearchResponse> {
+      if (closed) {
+        throw new Error('cmem-sdk: client is closed');
+      }
+      const limit = input.limit ?? 10;
+      const query = typeof input.query === 'string' ? input.query : '';
+
+      // Empty-query path — no semantic intent to express. Mirror the
+      // SearchManager filter-only branch (SearchManager.ts:165-176) by
+      // returning the most recent observations for this tenant.
+      if (query.trim().length === 0) {
+        const observations = await repos.observations.listByProject({
+          projectId,
+          teamId,
+          limit,
+        });
+        return { observations, chroma: true, degraded: false };
+      }
+
+      // Default path — Chroma semantic. Per plan §6 line 240:
+      //   queryChromaRaw → UUID doc ids → hydrate via getByIdForScope.
+      // We call ChromaMcpManager.callTool directly (not ChromaSync.queryChroma)
+      // because the latter routes through deduplicateQueryResults() which
+      // is hard-coded to SQLite-shaped `obs_<digits>_<field>` ids and would
+      // silently drop our UUID-shaped doc ids. ChromaSync still owns the
+      // collection lifecycle (ensureCollectionExists / close); only the
+      // query parse differs.
+      try {
+        await chromaSync.ensureCollectionExists();
+        const mgr = ChromaMcpManager.getInstance();
+        // Per-tenant `where` filter: doc metadata carries projectId + teamId
+        // so a future shared collection can stay safely scoped, even though
+        // today's collection name is already `cm__<projectId>`.
+        const whereFilter = {
+          $and: [
+            { projectId },
+            { teamId },
+          ],
+        };
+        const raw = (await mgr.callTool('chroma_query_documents', {
+          collection_name: chromaCollectionName(projectId),
+          query_texts: [query],
+          n_results: limit,
+          where: whereFilter,
+          include: ['documents', 'metadatas', 'distances'],
+        })) as {
+          ids?: string[][];
+          documents?: string[][];
+          metadatas?: Array<Array<Record<string, unknown> | null>>;
+          distances?: number[][];
+        };
+
+        const docIds = raw?.ids?.[0] ?? [];
+        if (docIds.length === 0) {
+          return { observations: [], chroma: true, degraded: false };
+        }
+
+        // Hydrate via getByIdForScope. We preserve Chroma's rank order
+        // because semantic distance is the whole reason we called Chroma.
+        // listByProject would reorder by created_at and undo that.
+        const hydrated: PostgresObservation[] = [];
+        const seen = new Set<string>();
+        for (const docId of docIds) {
+          if (typeof docId !== 'string' || seen.has(docId)) continue;
+          seen.add(docId);
+          const obs = await repos.observations.getByIdForScope({
+            id: docId,
+            projectId,
+            teamId,
+          });
+          if (obs) hydrated.push(obs);
+        }
+        return { observations: hydrated, chroma: true, degraded: false };
+      } catch (err) {
+        // Runtime safety net — Chroma transiently died (subprocess exit,
+        // ECONNREFUSED, etc.). Mirrors SearchManager.ts:255's catch-and-
+        // degrade-once pattern. This is NOT a feature toggle: a successful
+        // run never enters this branch. We log loudly so an operator can
+        // investigate the uvx chroma-mcp subprocess. See plan §6 line 242
+        // and the 2026-05-29 correction log.
+        logger.error(
+          'CHROMA',
+          'semantic search failed; returning degraded FTS results — investigate uvx chroma-mcp',
+          { projectId, teamId, query },
+          err as Error,
+        );
+        const observations = await repos.observations.search({
+          projectId,
+          teamId,
+          query,
+          limit,
+        });
+        return {
+          observations,
+          chroma: false,
+          degraded: true,
+          error: { message: 'chroma-mcp transient failure' },
+        };
+      }
     },
-    context() {
-      throw new Error('cmem-sdk: context — Phase 6 not implemented yet');
+    async context(input: { query: string; limit?: number }): Promise<CmemContextResponse> {
+      if (closed) {
+        throw new Error('cmem-sdk: client is closed');
+      }
+      // Reuse search so the Chroma / degraded-FTS branching lives in exactly
+      // one place. The context-pack format below copies the
+      // ServerV1PostgresRoutes /v1/context handler verbatim
+      // (ServerV1PostgresRoutes.ts:892-895): map → filter non-empty → join.
+      const result = await client.search(input);
+      const context = result.observations
+        .map(observation => observation.content)
+        .filter(text => typeof text === 'string' && text.length > 0)
+        .join('\n\n');
+      return {
+        observations: result.observations,
+        context,
+        degraded: result.degraded,
+      };
     },
     async startSession(input: CmemStartSessionInput = {}): Promise<CmemSessionInfo> {
       if (closed) {

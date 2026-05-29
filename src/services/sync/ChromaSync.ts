@@ -45,7 +45,10 @@ function loadFilesHelper(): typeof SqliteFilesModule {
   return _filesHelper;
 }
 
-interface ChromaDocument {
+// Exported for cmem-sdk Phase 6: the SDK builds ChromaDocument values from
+// Postgres observations (UUID id, content string, metadata bag) and calls
+// the now-public addDocuments() to index them. Shape is unchanged.
+export interface ChromaDocument {
   id: string;
   document: string;
   metadata: Record<string, string | number>;
@@ -274,8 +277,14 @@ export class ChromaSync {
    * loop continues — we never throw — so callers must use the returned count
    * to advance their watermark, otherwise an interrupted backfill can mark
    * unsynced records as synced.
+   *
+   * Visibility: promoted from `private` to `public` for cmem-sdk Phase 6.
+   * The SDK indexes Postgres observations into Chroma using this same
+   * storage-agnostic document layer — same retry/dedupe semantics, same
+   * BATCH_SIZE. SQLite-shaped `syncObservation` is NOT reusable for the
+   * Postgres UUID path. See plan §6 line 244-247.
    */
-  private async addDocuments(documents: ChromaDocument[]): Promise<number> {
+  public async addDocuments(documents: ChromaDocument[]): Promise<number> {
     if (documents.length === 0) {
       return 0;
     }
