@@ -875,16 +875,26 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
       ? 'CLAUDE_MEM_GEMINI_API_KEY'
       : 'CLAUDE_MEM_OPENROUTER_API_KEY';
 
+    // Clear stale gateway settings so a prior gateway-provider switch doesn't
+    // bleed CLAUDE_MEM_CLAUDE_AUTH_METHOD='gateway' or ANTHROPIC_BASE_URL into
+    // this classic-provider configuration (fixes stale-auth-method bug).
+    const clearStaleGatewaySettings = (): void => {
+      mergeSettings({ CLAUDE_MEM_CLAUDE_AUTH_METHOD: '' });
+      saveClaudeMemEnv({ ANTHROPIC_BASE_URL: '' });
+    };
+
     const existingKey = getSetting(keyEnvName as keyof SettingsDefaults) as string | undefined;
     if (existingKey && existingKey.trim().length > 0) {
       const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: runtimeProvider });
       if (wrote) log.info(`Saved provider=${runtimeProvider} (${providerLabel}) to ~/.claude-mem/settings.json`);
+      clearStaleGatewaySettings();
       return;
     }
 
     if (!isInteractive) {
       const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: runtimeProvider });
       if (wrote) log.info(`Saved provider=${runtimeProvider} (${providerLabel}) to ~/.claude-mem/settings.json`);
+      clearStaleGatewaySettings();
       log.warn(`${providerLabel} requested non-interactively. API key prompt skipped — set ${keyEnvName} in settings.json or env manually.`);
       return;
     }
@@ -909,6 +919,7 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
     if (wrote) {
       log.info(`Saved provider=${runtimeProvider} (${providerLabel}) to ~/.claude-mem/settings.json`);
     }
+    clearStaleGatewaySettings();
   };
 
   if (!isInteractive) {
