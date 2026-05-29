@@ -1,312 +1,79 @@
 ---
 name: design-is
-description: Audit a design against Dieter Rams' ten "Good design is..." principles, then hand off a /make-plan prompt for one of three outcomes — new design, refine design, or redesign. Use when the user says "audit this design", "design review", "check this UI against Rams", "is this UI good", "critique this design", "design audit", or asks for a critique that should lead to a plan.
+description: Design or critique a UI through Dieter Rams' ten "Good design is..." principles. Two modes — CONCEIVE produces an actual design (the reframe, the metaphor, key surfaces sketched, voice, honesty guardrails); CRITIQUE reads an existing design against the principles with evidence and names the highest-leverage moves. Use when the user says "design a better X", "conceive a new viewer", "rethink this UI", "audit this design", "critique this UI", "is this good design", or "check this against Rams".
 ---
 
 # Design Is
+
+Use Dieter Rams' ten principles as a **lens for design**, not a scoring form. The deliverable is a design (or an honest critique) — never a folder of process artifacts and never a handoff that punts the real work to another skill.
+
+## Two modes
+
+Pick from the request:
+
+- **CONCEIVE** (generative) — "design a better X", "conceive a viewer", "rethink this UI", or no artifact exists yet. → You produce an actual design.
+- **CRITIQUE** (evaluative) — "audit this", "is this good", "what's wrong with this UI", an artifact exists and the user wants judgment. → You produce an evidenced read.
+
+Default to CONCEIVE when the user describes a *better thing they want*; CRITIQUE when they point at something and ask *if it's good*. They often chain (critique → conceive), but never start CONCEIVE by re-auditing what you're replacing — that's the trap that buries the design under meta.
 
 ## Do not use for
 
 - Routine UI code reviews → use `/review`
 - Pure copy edits → use a separate copy pass
-- Pre-design ideation with no artifact yet → start with `/make-plan` directly
-
-You are an ORCHESTRATOR. Audit a design against Dieter Rams' ten principles, score each principle with evidence, decide the outcome verdict (NEW / REFINE / REDESIGN), and hand off to `/make-plan` with a ready-to-run prompt.
-
-You do not write implementation code. You produce: evidence-cited scores, a verdict, and a `/make-plan` handoff prompt.
 
 ## The Ten Principles (Dieter Rams)
-
-Audit each principle in this exact order. Each gets a score 0–3 and ≥1 piece of evidence (`file:line`, screenshot region, copy excerpt, or measured value).
 
 1. **Good design is innovative** — Does it advance the form, or imitate? Innovation rides on technology; never an end in itself.
 2. **Good design makes a product useful** — Does it serve the primary task? Emphasizes usefulness; disregards anything that detracts.
 3. **Good design is aesthetic** — Is it beautiful? Only well-executed objects can be beautiful; aesthetic quality affects well-being.
-4. **Good design makes a product understandable** — Does the structure clarify function? Or is it self-explanatory at best?
-5. **Good design is unobtrusive** — Does it stay out of the way? Neither decorative objects nor works of art — leave room for self-expression.
+4. **Good design makes a product understandable** — Does the structure clarify function? Is it self-explanatory?
+5. **Good design is unobtrusive** — Does it stay out of the way? Leave room for self-expression.
 6. **Good design is honest** — Does it claim only what it is? No false promises, no manipulation, no inflated value.
 7. **Good design is long-lasting** — Will it age well? Avoids being fashionable; never appears antiquated.
-8. **Good design is thorough down to the last detail** — Are edges, empty states, errors, focus rings, motion curves all considered? Care and accuracy express respect for the user.
-9. **Good design is environmentally friendly** — Does it conserve resources? Minimizes pollution — in software: bundle weight, energy, attention, cognitive load.
-10. **Good design is as little design as possible** — Less, but better. Concentrates on essentials; back to purity, back to simplicity.
+8. **Good design is thorough down to the last detail** — Are edges, empty states, errors, focus rings, motion all considered? Care expresses respect for the user.
+9. **Good design is environmentally friendly** — Does it conserve resources? In software: bundle weight, energy, attention, cognitive load.
+10. **Good design is as little design as possible** — Less, but better. Concentrate on essentials; back to purity, back to simplicity.
 
-> The user wrote "Dieter Braun" — they mean Dieter Rams. Don't correct them inline; just use the right principles.
+> If the user wrote "Dieter Braun," they mean Dieter Rams. Don't correct them inline; just use the right principles.
 
-## Delegation Model
+The principles are a **lens**, never a rubric to back a predetermined answer into. The load-bearing three for software are usually **#2 useful, #4 understandable, #6 honest** — when they conflict with the rest, they win. In CONCEIVE they're generative questions (design *toward* them). In CRITIQUE they're a checklist (find where the design honors or violates each, with evidence).
 
-Use subagents for *evidence gathering* (reading components, measuring contrast, counting elements, inspecting tokens, screenshotting via agent-browser). Keep *scoring and verdict synthesis* with the orchestrator. Reject subagent reports that score without citing evidence and redeploy.
+## CONCEIVE mode
 
-### Subagent Reporting Contract (MANDATORY)
+Hand back an **actual design**, not a plan to make one. A design is a *position*, not a feature list — so think it through before sketching. Work the steps below, then write ONE design doc.
 
-Each evidence subagent response must include:
-1. Sources consulted — exact file paths and line ranges, or screenshot regions
-2. Concrete findings — what is present, what is missing, with quotes/values
-3. Per-principle facts (not opinions) — leave scoring to the orchestrator
-4. Known gaps — what could not be inspected and why
+1. **Reframe** — what is this thing *really*, to the person using it? Name the metaphor. What honest form does its claim demand? (#6) This is the spine; get it right and the rest follows.
+2. **The moments** — who opens it, when, and what they need each time. Design for the primary task (#2). The most frequent or highest-trust moment leads the layout.
+3. **North star** — one sentence the whole design serves.
+4. **Core surfaces** — the few screens/states that carry the product. Sketch each concretely (ASCII layout is fine) as an *experience*, not a spec. Make structure clarify function (#4).
+5. **The distinctive move** — what can THIS design do that a generic one can't, given its actual data/material? If the answer is "nothing," the design isn't done.
+6. **Voice & aesthetic** — plain language over jargon; restraint over decoration (#5, #10); states designed in, not bolted on — empty, first-run, error, loading (#8).
+7. **Honesty guardrails** — where could this design lie? (silent truncation, fake liveness, hidden cost, motion implying value it can't deliver). Design against each one. (#6)
+8. **Signature moments** — the 3–5 details that make it *felt*, not just correct.
+9. **Minimum vs. full** — what actually fixes the problem vs. what makes it singular, so it's buildable without over-building. (#10)
 
-## Output Artifacts
+**Output:** one `<name>-design.md`. No scorecards, no telemetry, no five-file ceremony. Vivid and concrete — sketches over specs, no endpoints/hooks/build steps (that's `/make-plan`'s job, not the design's).
 
-All artifacts go in `DESIGN-IS-<YYYY-MM-DD>/` at repo root (or the project the user points at):
+**Then (optional):** if the user wants to build it, offer a short `/make-plan` prompt — a paragraph naming the core surfaces and the must-haves. A paragraph, not a bracket template.
 
-- `00-scope.md` — what was audited (URL, component paths, screens), input materials
-- `01-evidence.md` — per-principle evidence collected by subagents
-- `02-scorecard.md` — per-principle 0–3 score with one-line justification + total
-- `03-verdict.md` — NEW / REFINE / REDESIGN with reasoning
-- `04-handoff-prompt.md` — copy-pasteable `/make-plan` prompt for the chosen outcome
+## CRITIQUE mode
 
-## Phases
+An honest, evidenced read — what holds, what fails, what'd make it better. Lightweight.
 
-### Phase 0: Scope Lock (ALWAYS FIRST)
+1. **Look at the real thing.** Read the source and/or open it (use the `browse`/agent-browser skill if it's running). Score what *ships*, not what was intended.
+2. **Walk the ten principles.** For each, one line: honors or violates, plus the evidence (`file:line`, a quoted string, a screenshot region, a measured value). Evidence over taste — "feels wrong" is not a finding.
+3. **Call it.** Where is the design strong, where weak, and is the right move to **refine** (bones are good) or **rethink** (a load-bearing principle — #2/#4/#6 — is broken)? One sentence; don't hedge across both.
+4. **Highest-leverage moves** — the 3–5 changes that move it most, each tied to a principle and its evidence.
 
-Ask the user (or infer from the request) and write `00-scope.md`:
-- What is being audited? (live URL, repo path, Figma frame, component name)
-- Who is the primary user, and what is the primary task?
-- Constraints (brand, stack, deadline)
-- Reference designs or competitors, if any
+Telemetry (byte counts, contrast ratios, time-to-interactive, ARIA audits) is **optional** — gather it only when a verdict actually turns on a number you can't eyeball (usually #9 weight or accessibility). Don't instrument by default; it's noise on a design read.
 
-If the user is asking about a design that doesn't exist yet, skip Phases 1–2 and go straight to Phase 3 with verdict = **NEW**.
+Honesty applies to the critique itself: if it's mostly good, say so; if it's broken, say so — regardless of what the user hoped to hear.
 
-### Phase 1: Evidence Gathering (FAN OUT)
+**Then (optional):** chain to CONCEIVE (if rethinking) or hand a short `/make-plan` prompt (if refining) — only if the user wants to proceed.
 
-Deploy subagents in parallel. Each must return ONLY the required fields below — no prose paragraphs, no scoring.
+## Discipline
 
-**1. Structural Evidence** subagent (always deploy)
-Required fields returned:
-- Total interactive-element count on audited surface
-- Max nesting depth of the primary component tree
-- Repeated-pattern count (same affordance appearing >1 place with the same purpose)
-- Dead-prop / unused-import count
-- File:line citations for every count
-
-**2. Visual Evidence** subagent (always deploy)
-Mode: if target is a reachable URL or running dev server → use the `agent-browser` skill for screenshots and computed-style inspection. If target is a static repo with no running instance → read source CSS / tokens / component files and report inferred facts only (mark these "INFERRED").
-Required fields returned:
-- Spacing scale observed (px array)
-- Type scale observed (px array)
-- Distinct color count (count of unique hex/oklch tokens actually rendered or referenced)
-- Lowest contrast ratio observed across primary text
-- States present checklist: empty / loading / error / success / focus / disabled — present or missing for each
-
-**3. Copy & Honesty** subagent (always deploy)
-Required fields returned:
-- List of every user-facing string with file:line
-- Flagged inflations (marketing superlatives without backing)
-- Flagged dark patterns (forced continuity, hidden cost, fake scarcity, confirmshaming)
-- Flagged jargon / unclear labels with proposed plain replacement
-- Label→behavior mismatches with file:line of both
-
-**4. Weight & Friction** subagent (always deploy)
-Required fields returned:
-- Initial JS bytes (number)
-- Network request count for primary view (number)
-- Time-to-interactive ms (number, measured or estimated with method noted)
-- Animation count on idle screen (number)
-- Notification / badge / modal count on initial load (number)
-
-**5. Accessibility Evidence** subagent (OPTIONAL — deploy only if target has a meaningful interactive UI surface; skip for static landing pages without interaction)
-Required fields returned:
-- WCAG contrast pass/fail per text token
-- Focus order list across primary controls
-- Keyboard reachability of every primary action (yes/no per action)
-- ARIA landmark count
-- Skip-link present (yes/no)
-
-**Principle → subagent mapping** (orchestrator uses this when scoring):
-
-| Principle | Fed by |
-|-----------|--------|
-| #1 innovative | orchestrator-only (judgment using all evidence) |
-| #2 useful | Structural, Accessibility |
-| #3 aesthetic | Visual |
-| #4 understandable | Structural, Copy & Honesty, Accessibility |
-| #5 unobtrusive | Structural, Visual |
-| #6 honest | Copy & Honesty |
-| #7 long-lasting | orchestrator-only (judgment using all evidence) |
-| #8 thorough | Visual |
-| #9 environmentally friendly | Weight & Friction |
-| #10 as little design as possible | Structural |
-
-The orchestrator writes `01-evidence.md` consolidating all subagent reports. Reject any finding without a source citation. Subagents are explicitly forbidden from scoring — only the orchestrator scores, using the rubric in Phase 2.
-
-### Phase 2: Scorecard (ORCHESTRATOR)
-
-The orchestrator scores each of the ten principles itself — do NOT delegate scoring.
-
-For each principle, write to `02-scorecard.md`:
-
-```
-N. Good design is <principle> — Score: X/3
-   Evidence: <one-line summary citing 01-evidence.md anchors>
-   Justification: <one sentence on why this score, not the one above or below>
-```
-
-Per-principle scoring anchors (apply verbatim — pick the level whose signal best matches the audited surface):
-
-#1 innovative — 3: introduces a pattern not seen in 5+ peer products and ships it with restraint. 2: refreshes an existing pattern with a clear improvement. 1: imitates competitors with minor variation. 0: copies a competitor's flow wholesale.
-#2 useful — 3: primary task completes in fewest possible steps; no decoy actions. 2: primary task completes but adjacent surface adds steps. 1: primary task requires unnecessary detours. 0: primary task is not directly supported on the screen audited.
-#3 aesthetic — 3: spacing/type/color obey a single visible system; no orphan styles. 2: ≤2 minor inconsistencies across audited surface. 1: 3–5 inconsistencies OR one jarring violation. 0: no visible system OR active visual noise.
-#4 understandable — 3: a first-time user names every primary control correctly. 2: 1 control needs a tooltip. 1: 2–3 controls unclear; jargon present. 0: primary action is not identifiable without help.
-#5 unobtrusive — 3: chrome recedes; content is the figure, UI the ground. 2: chrome visible but quiet. 1: decoration competes with content. 0: chrome dominates content.
-#6 honest — 3: every claim, badge, and label maps 1:1 to actual behavior. 2: ≤1 minor inflation (e.g. "powerful" once). 1: 2+ inflations OR one dark pattern. 0: any deceptive flow (forced continuity, hidden cost, fake scarcity).
-#7 long-lasting — 3: visual language has no dated trend markers; would read as current 3 years from now. 2: 1 dated marker. 1: 2–3 dated markers (skeuomorph residue, fad gradients, trend typography). 0: design reads as a specific year's trend.
-#8 thorough — 3: empty / loading / error / success / focus / disabled all present and considered. 2: 1 state missing or rough. 1: 2–3 states missing. 0: 4+ states missing or default-browser.
-#9 environmentally friendly — 3: initial JS <100KB, no idle animation, dark mode honored, prefers-reduced-motion respected. 2: <500KB, motion gated. 1: 500KB–2MB, motion always on. 0: >2MB OR autoplay video OR dark mode ignored.
-#10 as little design as possible — 3: every element earns its place; removing any one breaks the task. 2: ≤2 removable elements. 1: 3–5 removable elements. 0: page is dominated by decoration or duplicated affordances.
-
-Scoring rules:
-- **Tie-breaker rule**: When uncertain between two scores, pick the lower one. Convergence > generosity.
-- **Score worst, not mean**: When a principle has multiple representative instances on the audited surface, score the worst instance — not the average.
-- **No bonuses, no weights**: Scores stay 0–3 integer. Principles are equally weighted. Total is sum of ten scores, max 30.
-
-### Phase 3: Verdict (ORCHESTRATOR)
-
-Write `03-verdict.md` with one of three verdicts, chosen by these rules:
-
-- **NEW DESIGN** — No design exists yet, OR the existing artifact is a stub/wireframe with no real decisions to preserve.
-- **REFINE** — Total score ≥ 20 AND no individual principle scored 0. The bones are good; iterate.
-- **REDESIGN** — Total score < 20, OR any principle scored 0 on a load-bearing dimension (typically #2 useful, #4 understandable, or #6 honest). Start over from purpose.
-
-State the verdict in one sentence. Then list the 3–5 highest-leverage moves — each tied to a specific principle and evidence anchor. These become the spine of the next phase's plan.
-
-**Anti-patterns to reject in your own verdict:**
-- Recommending REFINE because the codebase is large (sunk cost is not a design principle)
-- Recommending REDESIGN because a single screen is ugly (scope it)
-- Recommending NEW when an honest REDESIGN is warranted (don't dodge the critique)
-
-### Phase 4: /make-plan Handoff
-
-Write `04-handoff-prompt.md` containing exactly ONE fenced `/make-plan` prompt matching the verdict. The prompt must be self-contained — the next session won't see this audit unless it's quoted in.
-
-Use the matching template below. Fill every `<bracket>`. Include the top 3–5 moves from Phase 3 verbatim, each with its evidence anchor.
-
-**Quote-in step (mandatory, applies to all three templates below):** Before emitting the handoff, replace EVERY `<bracket>` placeholder with concrete content from the audit. Inline the verdict paragraph from `03-verdict.md` and the top 3–5 moves verbatim into the template. Do NOT leave bare references like "see DESIGN-IS-.../03-verdict.md" — the next session won't have file access to the audit. The emitted handoff must be readable and actionable with zero external lookups.
-
-#### Template: NEW DESIGN
-
-````
-/make-plan Design <product/screen/component name> from scratch.
-
-Primary user: <who>
-Primary task: <one sentence>
-Constraints: <brand, stack, deadline, accessibility floor>
-
-Non-goals (do not design these now):
-- <explicit out-of-scope item 1>
-- <explicit out-of-scope item 2>
-- <explicit out-of-scope item 3>
-
-Reference principles to optimize for, in order:
-1. Useful (#2) — <what useful looks like here>
-2. Understandable (#4) — <what clarity looks like here>
-3. As little design as possible (#10) — <what restraint looks like here>
-
-Deliverables for the plan:
-- Information architecture (one screen map or component tree)
-- Primary flow wireframe (low-fi, labeled)
-- Token decisions (type scale, spacing scale, color count cap)
-- States checklist (empty, loading, error, success, focus, disabled)
-- Honesty audit on every user-facing string before ship
-
-Anti-patterns to guard against (specific to NEW):
-- Decoration without function
-- Novel interactions without precedent
-- Copy that overpromises
-- Designing for screens the Non-goals list excluded
-````
-
-#### Template: REFINE DESIGN
-
-````
-/make-plan Refine <product/screen/component name> based on a Dieter Rams audit (total <X>/30).
-
-Verdict paragraph (quoted from 03-verdict.md):
-> <paste the one-sentence verdict here>
-
-Keep (already strong, do NOT touch in this pass):
-- Principle #<N> (<name>) scored 3 — Evidence: <file:line or anchor>. Regression check: <what to grep / re-test to confirm it still scores 3 after the refine>.
-- <repeat for every principle that scored 3>
-
-Fix in priority order (top 3–5 moves from the audit, verbatim):
-1. <Principle # — short name>: <specific move>. Evidence: <file:line or anchor>.
-2. <Principle # — short name>: <specific move>. Evidence: <file:line or anchor>.
-3. <Principle # — short name>: <specific move>. Evidence: <file:line or anchor>.
-4. <optional 4th>
-5. <optional 5th>
-
-Out of scope for this refine pass: <explicit list — what NOT to touch>
-
-Deliverables for the plan:
-- Per-fix: target files, exact change, verification step
-- Token/spec changes consolidated in one place
-- Regression checklist for every "Keep" item above
-
-Anti-patterns to guard against (specific to REFINE):
-- Adding new abstractions where a direct change suffices
-- Restyling areas that already scored 3
-- Scope creep into structural redesign (if structure must change, this should be REDESIGN, not REFINE)
-- Letting fixes mutate principles outside the priority list
-````
-
-#### Template: REDESIGN
-
-````
-/make-plan Redesign <product/screen/component name>. Current design failed audit at <X>/30 with critical gaps in principles <comma-separated list of 0-scored or 1-scored load-bearing principles>.
-
-Verdict paragraph (quoted from 03-verdict.md):
-> <paste the one-sentence verdict here>
-
-Why redesign and not refine: <one sentence — usually a load-bearing principle (#2, #4, or #6) scored 0, or total is below threshold>
-
-Preserve from current design (MUST be non-empty — at minimum, name the brand tokens):
-- <specific element 1, with file:line>
-- <specific element 2, with file:line>
-- (if structurally nothing survives, write: "Brand tokens only — color palette and logo. Discard everything else.")
-
-Discard (MUST be non-empty — name the structural patterns causing the failures):
-- <pattern 1>. Evidence: <file:line>. Caused failure on principle #<N>.
-- <pattern 2>. Evidence: <file:line>. Caused failure on principle #<N>.
-
-Top 3–5 moves from the audit (verbatim):
-1. <Principle # — short name>: <specific move>. Evidence: <file:line>.
-2. <Principle # — short name>: <specific move>. Evidence: <file:line>.
-3. <Principle # — short name>: <specific move>. Evidence: <file:line>.
-
-Redesign principles in priority order:
-1. <Principle # — name> — <what success looks like>
-2. <Principle # — name> — <what success looks like>
-3. <Principle # — name> — <what success looks like>
-
-Deliverables for the plan:
-- New information architecture (not derived from old)
-- New primary flow (low-fi, labeled, compared side-by-side to current)
-- States checklist (empty, loading, error, success, focus, disabled)
-- Migration path for users currently on the old design
-- Cutover criteria (when is the old design retired)
-
-Anti-patterns to guard against (specific to REDESIGN):
-- Porting old structure under new styling
-- Keeping both designs behind a flag indefinitely
-- Redesigning to follow a trend rather than the principles above
-- Treating the Preserve list as optional — it must be filled before this handoff is valid
-````
-
-## Key Principles (for the auditor)
-
-- **Evidence over taste** — every score cites a source; "feels wrong" is not a finding
-- **Score what is, not what was intended** — design is what ships, not what was drawn
-- **Honesty applies to the audit too** — if total is 28/30, say REFINE even if the user wanted a redesign; if it's 12/30, say REDESIGN even if the user wanted a refine
-- **One verdict, not three** — pick NEW or REFINE or REDESIGN; do not hedge
-- **Handoff, don't implement** — `design-is` ends at the `/make-plan` prompt; `/make-plan` and `/do` take it from there
-- **Verdict commitment** — Once `02-scorecard.md` is written, the verdict follows the Phase 3 rule mechanically. Never re-score to back into a preferred verdict; if the scorecard says REDESIGN, the handoff is REDESIGN.
-
-## Failure Modes to Prevent
-
-- Scoring from screenshots alone without reading the code — redeploy with structural subagent
-- Scoring the codebase instead of the design — re-anchor on user-facing evidence
-- Awarding 3s generously to soften the verdict — recalibrate against the per-principle anchors in Phase 2
-- Producing a handoff prompt that doesn't quote the verdict and top moves — the next session is blind without them
-- Skipping Phase 0 scope lock — auditing the wrong surface wastes Phase 1
-- **Sunk-cost reasoning** — recommending REFINE because the codebase is large; sunk cost is not a design principle
-- **Hedging across verdicts** — "could be REFINE or REDESIGN depending on..." — pick one
-- **Score inflation to match a desired verdict** — score the evidence, then read the verdict off the rule
-- **Letting Phase 0 user preference override Phase 3 evidence** — the user can disagree with the verdict, but the audit reports what the evidence says
+- **Evidence over taste** (critique); **position over feature-list** (conceive).
+- **Judge/design what is**, not what was intended or hoped for.
+- **One doc out**, not a folder of artifacts. The design — or the critique — *is* the deliverable. This skill never offloads the real work to a handoff.
+- **Don't over-process.** If you're collecting metrics or filling templates instead of designing, stop and design.
