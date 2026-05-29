@@ -50,7 +50,10 @@ export class ClaudeMemDatabase {
       assertSchemaReadable(db);
       return db;
     } catch (error) {
+      // Close before re-throwing: a leaked open handle holds the SQLite write
+      // lock and can block subsequent open attempts on the same path.
       if (!isMalformedSchemaError(error)) {
+        db.close();
         throw error;
       }
     }
@@ -59,7 +62,13 @@ export class ClaudeMemDatabase {
     repairMalformedDatabase(dbPath);
 
     db = new Database(dbPath, { create: true, readwrite: true });
-    assertSchemaReadable(db);
+    try {
+      assertSchemaReadable(db);
+    } catch (error) {
+      // Repair ran but the rebuilt file is still unreadable — don't leak the handle.
+      db.close();
+      throw error;
+    }
     return db;
   }
 
