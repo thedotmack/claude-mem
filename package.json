@@ -55,6 +55,7 @@
     "plugin/scripts/*.cjs",
     "plugin/skills",
     "plugin/ui",
+    "plugin/node_modules",
     "openclaw"
   ],
   "engines": {
