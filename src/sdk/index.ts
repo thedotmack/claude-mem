@@ -1,13 +1,34 @@
 // cmem-sdk public API. Plan: plans/2026-05-25-cmem-sdk-and-server-rename.md §3-7.
 //
-// Phase 2 only defines the public surface as types + stubs that throw
-// a clear "not implemented yet (Phase 3)" error. This proves the export
-// wiring works end-to-end without prejudging Phase 3+ design.
+// Phase 3 implements the construction graph: pool → schema bootstrap →
+// repositories → tenancy resolution → Chroma (REQUIRED). The capture,
+// generate, search, and session methods on the returned client remain
+// stubs that throw a clear "not implemented yet" error — Phases 4-6
+// fill them in.
 //
 // Existing internals in this directory (parser.ts, prompts.ts,
 // commit-verification.ts, hardened-options.ts, output-classifier.ts) are
 // reused by Phase 5. They are intentionally NOT re-exported from the
 // public surface here.
+
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import * as os from 'node:os';
+
+import {
+  createPostgresPool,
+  closePostgresPool,
+  withPostgresTransaction,
+  type PostgresPool,
+} from '../storage/postgres/pool.js';
+import { parsePostgresConfig } from '../storage/postgres/config.js';
+import { bootstrapServerPostgresSchema } from '../storage/postgres/schema.js';
+import {
+  createPostgresStorageRepositories,
+  type PostgresStorageRepositories,
+} from '../storage/postgres/index.js';
+import { ChromaSync } from '../services/sync/ChromaSync.js';
+import { ChromaMcpManager } from '../services/sync/ChromaMcpManager.js';
 
 /**
  * Tuning options for the required Chroma semantic-search engine.
@@ -50,7 +71,8 @@ export interface CmemClientOptions {
    * When supplied, the SDK does NOT close it on `client.close()`.
    *
    * Typed as `unknown` here to keep the public type surface free of a
-   * runtime dependency on `pg` types at Phase 2 — Phase 3 narrows this.
+   * runtime dependency on `pg` types in consumer projects — Phase 3
+   * narrows internally when consumed.
    */
   pool?: unknown;
 
@@ -65,6 +87,12 @@ export interface CmemClientOptions {
    * `ensureDefaults()` and persists the resolved ID.
    */
   projectId?: string;
+
+  /**
+   * Optional human-readable team name used only when the SDK has to
+   * create a default team.
+   */
+  teamName?: string;
 
   /**
    * Optional human-readable project name used only when the SDK has to
@@ -146,9 +174,20 @@ export interface CmemCaptureResult {
 
 /**
  * Public client returned by {@link createCmemClient}. Method bodies are
- * filled in by Phase 3-7.
+ * filled in by Phase 3-7. Phase 3 wires construction, tenancy, and
+ * `close()`; the I/O methods remain stubs.
  */
 export interface CmemClient {
+  /** Resolved tenant team ID (UUID). */
+  readonly teamId: string;
+  /** Resolved tenant project ID (UUID). */
+  readonly projectId: string;
+  /** Repository facade over the Postgres storage layer. */
+  readonly repos: PostgresStorageRepositories;
+  /** The underlying `pg.Pool` instance the SDK is using. */
+  readonly pool: PostgresPool;
+  /** The constructed `ChromaSync` for semantic search (Phase 6 consumes). */
+  readonly chromaSync: ChromaSync;
   /** Persist a single agent event + outbox generation job. */
   capture(event: CmemCaptureEvent): Promise<CmemCaptureResult>;
   /** Persist many events in a single transactional batch. */
@@ -170,12 +209,221 @@ export interface CmemClient {
 }
 
 /**
+ * Resolve the claude-mem data directory without pulling in
+ * `src/shared/paths.ts` (which would transitively reference the
+ * worker's settings/logger layer). Mirrors the priority that
+ * `paths.ts::resolveDataDir` follows for the SDK's narrow needs:
+ *   1. `CLAUDE_MEM_DATA_DIR` env var
+ *   2. `$HOME/.claude-mem`
+ *
+ * Kept inline so the SDK bundle stays free of the worker's runtime
+ * surface. See plan §3, anti-pattern guards.
+ */
+function resolveSdkDataDir(): string {
+  const fromEnv = process.env.CLAUDE_MEM_DATA_DIR;
+  if (fromEnv && fromEnv.length > 0) {
+    return fromEnv;
+  }
+  return path.join(os.homedir(), '.claude-mem');
+}
+
+interface ResolvedTenancy {
+  teamId: string;
+  projectId: string;
+}
+
+/**
+ * Read-or-create the default `{teamId, projectId}` pair. Per plan §3
+ * line 191, this is the headless equivalent of the server runtime's
+ * implicit tenancy — it persists IDs to a state file under
+ * `$CLAUDE_MEM_DATA_DIR/sdk-tenant.json` so subsequent SDK runs reuse
+ * them without re-creating rows.
+ *
+ * Production consumers are expected to pass explicit `teamId`+`projectId`
+ * via {@link CmemClientOptions} and bypass this path entirely.
+ */
+async function resolveTenancy(
+  options: CmemClientOptions,
+  pool: PostgresPool
+): Promise<ResolvedTenancy> {
+  if (options.teamId && options.projectId) {
+    return { teamId: options.teamId, projectId: options.projectId };
+  }
+
+  const stateFile = path.join(resolveSdkDataDir(), 'sdk-tenant.json');
+
+  // 1. Try to reuse a previously persisted pair.
+  try {
+    const raw = fs.readFileSync(stateFile, 'utf8');
+    const parsed = JSON.parse(raw) as { teamId?: unknown; projectId?: unknown };
+    if (typeof parsed.teamId === 'string' && typeof parsed.projectId === 'string') {
+      return { teamId: parsed.teamId, projectId: parsed.projectId };
+    }
+  } catch {
+    // Missing or corrupt — fall through to create.
+  }
+
+  // 2. Create default team + project in one transaction so a half-write
+  //    can't leave an orphan team.
+  const created = await withPostgresTransaction(pool, async (tx) => {
+    const txRepos = createPostgresStorageRepositories(tx);
+    const team = await txRepos.teams.create({ name: options.teamName ?? 'default' });
+    const project = await txRepos.projects.create({
+      teamId: team.id,
+      name: options.projectName ?? 'default',
+    });
+    return { teamId: team.id, projectId: project.id };
+  });
+
+  // 3. Best-effort persist; failure to write the state file is not fatal —
+  //    it just means the next run will re-create the pair. Most callers
+  //    will pass explicit IDs in production anyway.
+  try {
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+    fs.writeFileSync(stateFile, JSON.stringify(created, null, 2));
+  } catch {
+    // ignore
+  }
+
+  return created;
+}
+
+/**
  * Construct a {@link CmemClient}.
  *
- * Phase 2 stub: throws synchronously inside the returned promise so the
- * export wiring can be exercised end-to-end (resolve → call → catch).
- * Phase 3 replaces this with the real wiring.
+ * Phase 3 wires:
+ *   1. Pool (either supplied or built from `databaseUrl` /
+ *      `CLAUDE_MEM_SERVER_DATABASE_URL`).
+ *   2. Idempotent schema bootstrap.
+ *   3. Repository facade.
+ *   4. Tenancy resolution (`teamId`+`projectId`).
+ *   5. Chroma (REQUIRED) — `ChromaSync(projectId).ensureCollectionExists()`
+ *      plus a `ChromaMcpManager.isHealthy()` belt-and-suspenders probe.
+ *      If `uvx chroma-mcp` cannot start, `createCmemClient` REJECTS and
+ *      cleans up the SDK-owned pool before throwing.
+ *
+ * Phases 4-6 wire the I/O methods on the returned client.
  */
-export async function createCmemClient(_options: CmemClientOptions): Promise<CmemClient> {
-  throw new Error('cmem-sdk: createCmemClient stub — Phase 3 not implemented yet');
+export async function createCmemClient(options: CmemClientOptions): Promise<CmemClient> {
+  // 1. Pool — either consumer-supplied or SDK-owned.
+  let pool: PostgresPool;
+  let ownsPool = false;
+  if (options.pool) {
+    pool = options.pool as PostgresPool;
+  } else {
+    // Allow `databaseUrl` to short-circuit env lookup by temporarily
+    // overlaying it onto process.env for `parsePostgresConfig`.
+    const envOverlay: NodeJS.ProcessEnv = options.databaseUrl
+      ? { ...process.env, CLAUDE_MEM_SERVER_DATABASE_URL: options.databaseUrl }
+      : process.env;
+    const cfg = parsePostgresConfig({ env: envOverlay });
+    if (!cfg) {
+      throw new Error(
+        'cmem-sdk: CLAUDE_MEM_SERVER_DATABASE_URL or options.databaseUrl is required'
+      );
+    }
+    pool = createPostgresPool(cfg);
+    ownsPool = true;
+  }
+
+  // 2. Idempotent schema bootstrap.
+  try {
+    await bootstrapServerPostgresSchema(pool);
+  } catch (err) {
+    if (ownsPool) {
+      await closePostgresPool(pool).catch(() => {});
+    }
+    throw err;
+  }
+
+  // 3. Repository facade.
+  const repos = createPostgresStorageRepositories(pool);
+
+  // 4. Tenancy resolution.
+  let teamId: string;
+  let projectId: string;
+  try {
+    const tenancy = await resolveTenancy(options, pool);
+    teamId = tenancy.teamId;
+    projectId = tenancy.projectId;
+  } catch (err) {
+    if (ownsPool) {
+      await closePostgresPool(pool).catch(() => {});
+    }
+    throw err;
+  }
+
+  // 5. Chroma — REQUIRED. ensureCollectionExists boots the chroma-mcp
+  //    subprocess (via ChromaMcpManager) and creates the per-project
+  //    collection; isHealthy() is the belt-and-suspenders check that the
+  //    manager itself is responsive afterwards.
+  const chromaSync = new ChromaSync(projectId);
+  try {
+    await chromaSync.ensureCollectionExists();
+    const mgr = ChromaMcpManager.getInstance();
+    const healthy = await mgr.isHealthy();
+    if (!healthy) {
+      throw new Error('chroma-mcp manager reports unhealthy after init');
+    }
+  } catch (err) {
+    // Clean up everything the SDK owns before rejecting.
+    await chromaSync.close().catch(() => {});
+    if (ownsPool) {
+      await closePostgresPool(pool).catch(() => {});
+    }
+    const underlying = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      'cmem-sdk: Chroma is required but uvx chroma-mcp could not start. ' +
+        'Install uv (https://docs.astral.sh/uv/) and ensure chroma-mcp is available. ' +
+        'Underlying: ' +
+        underlying
+    );
+  }
+
+  // 6. Build and return the client. I/O methods are stubs filled in by
+  //    Phases 4-6.
+  let closed = false;
+  const client: CmemClient = {
+    teamId,
+    projectId,
+    repos,
+    pool,
+    chromaSync,
+    capture() {
+      throw new Error('cmem-sdk: capture — Phase 4 not implemented yet');
+    },
+    captureBatch() {
+      throw new Error('cmem-sdk: captureBatch — Phase 4 not implemented yet');
+    },
+    generate() {
+      throw new Error('cmem-sdk: generate — Phase 5 not implemented yet');
+    },
+    captureAndGenerate() {
+      throw new Error('cmem-sdk: captureAndGenerate — Phase 5 not implemented yet');
+    },
+    search() {
+      throw new Error('cmem-sdk: search — Phase 6 not implemented yet');
+    },
+    context() {
+      throw new Error('cmem-sdk: context — Phase 6 not implemented yet');
+    },
+    startSession() {
+      throw new Error('cmem-sdk: startSession — Phase 4 not implemented yet');
+    },
+    endSession() {
+      throw new Error('cmem-sdk: endSession — Phase 4 not implemented yet');
+    },
+    async close() {
+      if (closed) {
+        return;
+      }
+      closed = true;
+      await chromaSync.close().catch(() => {});
+      if (ownsPool) {
+        await closePostgresPool(pool).catch(() => {});
+      }
+    },
+  };
+
+  return client;
 }

@@ -2,9 +2,48 @@
 import { ChromaMcpManager } from './ChromaMcpManager.js';
 import { ChromaSyncState, ProjectWatermarks } from './ChromaSyncState.js';
 import { ParsedObservation, ParsedSummary } from '../../sdk/parser.js';
-import { SessionStore } from '../sqlite/SessionStore.js';
+// cmem-sdk: keep SessionStore + parseFileList off the SDK's import graph.
+// Both come from the SQLite layer (`bun:sqlite`). The SDK only uses the
+// constructor + ensureCollectionExists + close() surface of ChromaSync,
+// so a TYPE-ONLY import is sufficient — value-level uses (`new
+// SessionStore()` / parseFileList(...)) are loaded lazily inside the
+// SQLite-only methods that need them. Plan §3 anti-pattern: do NOT add
+// `bun:sqlite` to the SDK bundle externals — fix the import chain.
+import type { SessionStore as SessionStoreType } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
-import { parseFileList } from '../sqlite/observations/files.js';
+import type * as SqliteFilesModule from '../sqlite/observations/files.js';
+
+type SessionStore = SessionStoreType;
+type SessionStoreCtor = new () => SessionStoreType;
+
+// Lazy CJS require so tsup (used by the cmem-sdk build) does not follow
+// these SQLite-coupled modules into the SDK bundle. Worker/Bun runtime
+// reaches them at first call; the SDK never calls the methods that
+// trigger these loads, so they never load in SDK consumers.
+const lazyCreateRequire = (): ((id: string) => unknown) => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const mod = require('module') as typeof import('module');
+  return mod.createRequire(import.meta.url);
+};
+
+let _sessionStoreCtor: SessionStoreCtor | undefined;
+function loadSessionStoreCtor(): SessionStoreCtor {
+  if (!_sessionStoreCtor) {
+    const req = lazyCreateRequire();
+    const m = req('../sqlite/SessionStore.js') as { SessionStore: SessionStoreCtor };
+    _sessionStoreCtor = m.SessionStore;
+  }
+  return _sessionStoreCtor;
+}
+
+let _filesHelper: typeof SqliteFilesModule | undefined;
+function loadFilesHelper(): typeof SqliteFilesModule {
+  if (!_filesHelper) {
+    const req = lazyCreateRequire();
+    _filesHelper = req('../sqlite/observations/files.js') as typeof SqliteFilesModule;
+  }
+  return _filesHelper;
+}
 
 interface ChromaDocument {
   id: string;
@@ -74,7 +113,8 @@ export class ChromaSync {
     this.collectionName = `cm__${sanitized || 'unknown'}`;
   }
 
-  private async ensureCollectionExists(): Promise<void> {
+  // Public: cmem-sdk requires Chroma at construction. Plan §3 line 192.
+  public async ensureCollectionExists(): Promise<void> {
     if (this.collectionCreated) {
       return;
     }
@@ -104,8 +144,12 @@ export class ChromaSync {
 
     const facts = obs.facts ? JSON.parse(obs.facts) : [];
     const concepts = obs.concepts ? JSON.parse(obs.concepts) : [];
-    const files_read = parseFileList(obs.files_read);
-    const files_modified = parseFileList(obs.files_modified);
+    // parseFileList is SQLite-shaped (`bun:sqlite` in the import chain) —
+    // resolve it through the deferred loader so this method stays out of
+    // the SDK bundle's import graph. Plan §3.
+    const filesHelper = loadFilesHelper();
+    const files_read = filesHelper.parseFileList(obs.files_read);
+    const files_modified = filesHelper.parseFileList(obs.files_modified);
 
     const baseMetadata: Record<string, string | number | null> = {
       sqlite_id: obs.id,
@@ -553,7 +597,8 @@ export class ChromaSync {
 
     const watermarks = ChromaSyncState.get(backfillProject);
 
-    const db = storeOverride ?? new SessionStore();
+    const SessionStoreCtor = loadSessionStoreCtor();
+    const db = storeOverride ?? new SessionStoreCtor();
 
     try {
       await this.runBackfillPipeline(db, backfillProject, watermarks);
@@ -966,7 +1011,8 @@ export class ChromaSync {
     let db: SessionStore | undefined;
     let sync: ChromaSync | undefined;
     try {
-      db = storeOverride ?? new SessionStore();
+      const SessionStoreCtor = loadSessionStoreCtor();
+      db = storeOverride ?? new SessionStoreCtor();
       sync = new ChromaSync('claude-mem');
     } catch (error) {
       logger.error('CHROMA_SYNC', 'Failed to initialize backfill resources',
