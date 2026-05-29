@@ -90,6 +90,13 @@
         ]
       },
       {
+        "group": "SDK & Embedding",
+        "icon": "code",
+        "pages": [
+          "sdk"
+        ]
+      },
+      {
         "group": "Architecture",
         "icon": "diagram-project",
         "pages": [
