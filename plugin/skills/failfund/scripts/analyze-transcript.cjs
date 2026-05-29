@@ -38,7 +38,10 @@ function parseArgs(argv) {
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--json') args.json = true;
-    else if (a === '--cwd') args.cwd = argv[++i];
+    else if (a === '--cwd') {
+      if (i + 1 >= argv.length) throw new Error('--cwd requires a path argument');
+      args.cwd = argv[++i];
+    }
     else if (!args.positional) args.positional = a;
   }
   return args;
