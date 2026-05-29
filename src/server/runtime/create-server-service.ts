@@ -2,6 +2,7 @@
 
 import { existsSync } from 'fs';
 import { logger } from '../../utils/logger.js';
+import { ModeManager } from '../../services/domain/ModeManager.js';
 import { createPostgresStorageRepositories, getSharedPostgresPool, SERVER_POSTGRES_SCHEMA_VERSION } from '../../storage/postgres/index.js';
 import { bootstrapServerPostgresSchema } from '../../storage/postgres/schema.js';
 import type { PostgresPool } from '../../storage/postgres/pool.js';
@@ -158,12 +159,32 @@ export function validateServerEnv(
   };
 }
 
+// #2443 — the server runtime must load an observation mode before it can
+// process any generation job; without it every job fails with "No mode
+// loaded". We mirror the worker's pattern (src/services/worker-service.ts) and
+// fail fast at boot if no mode can be loaded, so a broken install surfaces at
+// startup rather than as silent per-job failures.
+export function loadServerMode(): void {
+  // ModeManager.loadMode('code') throws ('Critical: code.json mode file
+  // missing') if the bundled mode is absent — that propagates as a fatal boot
+  // error. We additionally assert a mode is active afterward.
+  const modeManager = ModeManager.getInstance();
+  modeManager.loadMode('code');
+  // getActiveMode() throws if nothing is loaded — this is the explicit
+  // validation that boot did not silently no-op.
+  modeManager.getActiveMode();
+  logger.info('SYSTEM', 'Server mode loaded', { mode: 'code' });
+}
+
 export async function createServerService(
   options: CreateServerServiceOptions = {},
 ): Promise<ServerService> {
   if (!options.skipEnvValidation) {
     validateServerEnv();
   }
+  // Fail fast if no observation mode can be loaded (#2443). Must happen before
+  // the service starts accepting jobs.
+  loadServerMode();
   const pool = options.pool ?? getSharedPostgresPool({ requireDatabaseUrl: true });
   const bootstrap = await initializePostgres(pool, options.bootstrapSchema ?? true);
   const queueManager = options.queueManager ?? buildQueueManager();
@@ -244,8 +265,11 @@ function buildServerGenerationProviderFromEnv(): ServerGenerationProvider | null
     if (provider === 'openrouter') {
       const apiKey = process.env.OPENROUTER_API_KEY ?? process.env.CLAUDE_MEM_OPENROUTER_API_KEY ?? '';
       if (!apiKey) return null;
-      const opts: { apiKey: string; model?: string } = { apiKey };
+      const opts: { apiKey: string; model?: string; baseUrl?: string } = { apiKey };
       if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
+      // #2382/#2590/#2622/#2393 — optional OpenAI-compatible base URL.
+      const baseUrl = process.env.CLAUDE_MEM_OPENROUTER_BASE_URL ?? process.env.OPENROUTER_BASE_URL;
+      if (baseUrl) opts.baseUrl = baseUrl;
       return new OpenRouterObservationProvider(opts);
     }
   } catch {

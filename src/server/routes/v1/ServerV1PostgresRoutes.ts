@@ -985,6 +985,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         ? ((body as Record<string, unknown>).sourceEventId as string)
         : null,
       eventType: body.eventType,
+      platformSource: body.platformSource ?? null,
       payload: (body.payload ?? {}) as object,
       metadata: typeof (body as Record<string, unknown>).metadata === 'object'
         && (body as Record<string, unknown>).metadata !== null
@@ -1663,6 +1664,7 @@ function serializeEvent(event: PostgresAgentEvent): Record<string, unknown> {
     sourceAdapter: event.sourceAdapter,
     sourceEventId: event.sourceEventId,
     eventType: event.eventType,
+    platformSource: event.platformSource,
     payload: event.payload,
     metadata: event.metadata,
     occurredAtEpoch: event.occurredAtEpoch,

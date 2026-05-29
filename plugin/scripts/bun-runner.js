@@ -168,7 +168,14 @@ if (child.stdin) {
       `  CLAUDE_PLUGIN_ROOT: ${RESOLVED_PLUGIN_ROOT}`,
     ].join('\n');
 
-    // Write to stderr so Claude Code surfaces the diagnostic.
+    // IO discipline (see src/shared/hook-io.ts intent vocabulary):
+    // - this stderr write is a USER_HINT (Claude Code surfaces it inline).
+    // - the CAPTURE_BROKEN marker file below is a DIAGNOSTIC durable signal for
+    //   the next session-start hint.
+    // - exit 0 below is the EXIT_SIGNAL per CLAUDE.md (Windows Terminal tab
+    //   management); the marker file, not the exit code, is the durable failure
+    //   signal. bun-runner runs in its own node process BEFORE hookCommand's
+    //   stderr buffer is installed, so this write is never swallowed.
     console.error(diagnostic);
 
     // Persist diagnostic to the runner-errors log and drop a CAPTURE_BROKEN marker
@@ -193,6 +200,10 @@ if (child.stdin) {
 }
 
 child.on('error', (err) => {
+  // EXCEPTION to CLAUDE.md exit-0-on-error: Bun-not-found is a user environment
+  // problem, not a hook execution failure. Surfacing exit 1 here forces Claude
+  // Code to display the stderr message rather than silently retrying. This runs
+  // before any hook handler, so the exit-0 tab-management rationale doesn't apply.
   console.error(`Failed to start Bun: ${err.message}`);
   process.exit(1);
 });

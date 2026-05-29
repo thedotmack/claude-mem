@@ -26,19 +26,9 @@ export class SessionCompletionHandler {
 
     sessionStore.markSessionCompleted(sessionDbId);
 
-    try {
-      const pendingStore = this.sessionManager.getPendingMessageStore();
-      const cleared = await pendingStore.clearPendingForSession(sessionDbId);
-      if (cleared > 0) {
-        logger.warn('SESSION', `Cleared ${cleared} orphaned pending messages on session finalize`, {
-          sessionId: sessionDbId, cleared
-        });
-      }
-    } catch (e) {
-      logger.debug('SESSION', 'Failed to clear pending queue on session finalize', {
-        sessionId: sessionDbId, error: e instanceof Error ? e.message : String(e)
-      });
-    }
+    // The in-RAM message buffer is dropped when the session is removed
+    // (SessionManager.removeSessionImmediate/deleteSession → buffer.dispose),
+    // so there is nothing durable to clear here.
 
     this.eventBroadcaster.broadcastSessionCompleted(sessionDbId);
 

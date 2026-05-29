@@ -13,7 +13,7 @@ import { ENV_PREFIXES, ENV_EXACT_MATCHES } from '../../supervisor/env-sanitizer.
 import { flushResponseThen } from './flushResponseThen.js';
 import { getUptimeSeconds } from '../../shared/uptime.js';
 import { globalRateLimitStore } from '../worker/RateLimitStore.js';
-import type { ObservationQueueHealth } from '../../server/queue/ObservationQueueEngine.js';
+import type { ObservationQueueHealth } from '../../server/queue/queue-health-types.js';
 
 const INSTRUCTIONS_BASE_DIR: string = path.resolve(__dirname, '../skills/mem-search');
 const INSTRUCTIONS_OPERATIONS_DIR: string = path.join(INSTRUCTIONS_BASE_DIR, 'operations');
@@ -87,6 +87,29 @@ export interface ServerOptions {
   getAiStatus: () => AiStatus;
   preBodyParserRoutes?: RouteHandler[];
   getQueueHealth?: () => ObservationQueueHealth | null | Promise<ObservationQueueHealth | null>;
+  // #2572 — when true, install a minimal set of hardening response headers
+  // (the same headers helmet's defaults emit) before any route runs. Opt-in so
+  // the in-plugin worker runtime is unchanged; the server runtime sets it.
+  securityHeaders?: boolean;
+}
+
+// #2572 — hand-rolled security headers.
+//
+// We deliberately do NOT add `helmet` as a dependency: it is not currently in
+// package.json, and the only headers we need for the server runtime are a small
+// static set that helmet itself emits by default. Hand-rolling them keeps the
+// dependency surface (and the esbuild bundle) unchanged while still closing the
+// hardening gap. If helmet is ever added for richer policy, this can delegate.
+export function applySecurityHeaders(res: Response): void {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-DNS-Prefetch-Control', 'off');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+  res.setHeader('Origin-Agent-Cluster', '?1');
+  // Helmet removes this fingerprinting header by default.
+  res.removeHeader('X-Powered-By');
 }
 
 export class Server {
@@ -98,6 +121,8 @@ export class Server {
   constructor(options: ServerOptions) {
     this.options = options;
     this.app = express();
+    this.app.disable('x-powered-by');
+    this.setupSecurityHeaders();
     this.setupCors();
     this.setupPreBodyParserRoutes();
     this.setupMiddleware();
@@ -161,6 +186,16 @@ export class Server {
   private setupMiddleware(): void {
     const middlewares = createMiddleware(summarizeRequestBody, { includeCors: false });
     middlewares.forEach(mw => this.app.use(mw));
+  }
+
+  private setupSecurityHeaders(): void {
+    if (!this.options.securityHeaders) {
+      return;
+    }
+    this.app.use((_req: Request, res: Response, next: () => void) => {
+      applySecurityHeaders(res);
+      next();
+    });
   }
 
   private setupCors(): void {

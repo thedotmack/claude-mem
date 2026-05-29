@@ -3,11 +3,12 @@ import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync } from "
 import { execSync } from "child_process";
 import { spawnHidden } from "./spawn.js";
 import { logger } from "../utils/logger.js";
-import { HOOK_TIMEOUTS, HOOK_EXIT_CODES, getTimeout } from "./hook-constants.js";
+import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
 import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
 import { MARKETPLACE_ROOT, DATA_DIR } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
 import { validateWorkerPidFile } from "../supervisor/index.js";
+import { emitBlockingError } from "./hook-io.js";
 
 function readTimeoutEnv(
   envName: string,
@@ -408,10 +409,13 @@ function recordWorkerUnreachable(): number {
 
   const threshold = getFailLoudThreshold();
   if (next.consecutiveFailures >= threshold) {
-    process.stderr.write(
-      `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks.\n`
+    // #2292 fix: BLOCKING_FEEDBACK. emitBlockingError flushes the Phase 2
+    // stderr buffer (so preceding logger.warn lines also surface) and writes
+    // via the bypass channel + exits 2. Previously this raw process.stderr.write
+    // was swallowed by hookCommand's blanket no-op, so the user/model never saw it.
+    emitBlockingError(
+      `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks.`
     );
-    process.exit(HOOK_EXIT_CODES.BLOCKING_ERROR);
   }
   return next.consecutiveFailures;
 }

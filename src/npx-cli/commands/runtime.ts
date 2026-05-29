@@ -1,4 +1,5 @@
 import { spawnHidden } from '../../shared/spawn.js';
+import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import pc from 'picocolors';
@@ -57,7 +58,10 @@ function spawnBunWorkerCommand(command: string, extraArgs: string[] = []): void 
   const child = spawnHidden(bunPath, args, {
     stdio: 'inherit',
     cwd: marketplaceDirectory(),
-    env: process.env,
+    // Sanitize host CLI bleed-through and Anthropic credentials before
+    // launching the Bun worker/server/transcript process. Credentials are
+    // re-read from ~/.claude-mem/.env at SDK spawn time (#2357 / #2375).
+    env: sanitizeEnv(process.env),
   });
 
   child.on('error', (error) => {
@@ -84,7 +88,10 @@ function spawnBunServerCommand(command: string, extraArgs: string[] = []): void 
   const child = spawnHidden(bunPath, [serverScript, command, ...extraArgs], {
     stdio: 'inherit',
     cwd: marketplaceDirectory(),
-    env: process.env,
+    // Sanitize host CLI bleed-through and Anthropic credentials before
+    // launching the Bun worker/server/transcript process. Credentials are
+    // re-read from ~/.claude-mem/.env at SDK spawn time (#2357 / #2375).
+    env: sanitizeEnv(process.env),
   });
 
   child.on('error', (error) => {
@@ -157,7 +164,10 @@ export function runAdoptCommand(extraArgs: string[] = []): void {
   const child = spawnHidden(bunPath, args, {
     stdio: 'inherit',
     cwd: marketplaceDirectory(),
-    env: process.env,
+    // Sanitize host CLI bleed-through and Anthropic credentials before
+    // launching the Bun worker/server/transcript process. Credentials are
+    // re-read from ~/.claude-mem/.env at SDK spawn time (#2357 / #2375).
+    env: sanitizeEnv(process.env),
   });
 
   child.on('error', (error) => {
@@ -246,7 +256,10 @@ export function runTranscriptWatchCommand(): void {
   const child = spawnHidden(bunPath, [transcriptWatcherPath, 'watch'], {
     stdio: 'inherit',
     cwd: marketplaceDirectory(),
-    env: process.env,
+    // Sanitize host CLI bleed-through and Anthropic credentials before
+    // launching the Bun worker/server/transcript process. Credentials are
+    // re-read from ~/.claude-mem/.env at SDK spawn time (#2357 / #2375).
+    env: sanitizeEnv(process.env),
   });
 
   child.on('error', (error) => {

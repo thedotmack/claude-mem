@@ -1,6 +1,7 @@
 
 import { buildContinuationPrompt, buildInitPrompt, buildObservationPrompt, buildSummaryPrompt } from '../../sdk/prompts.js';
 import { getCredential } from '../../shared/EnvManager.js';
+import { resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-base-url.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
@@ -17,7 +18,17 @@ import {
 import { ClassifiedProviderError } from './provider-errors.js';
 import { withRetry } from './retry.js';
 
-const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
+/**
+ * OpenAI-compatible client configuration.
+ *
+ * The endpoint is resolved from CLAUDE_MEM_OPENROUTER_BASE_URL (settings or env;
+ * env var OPENROUTER_BASE_URL also honored). When unset, requests go to the
+ * default OpenRouter URL — behavior unchanged. When set to an OpenAI-compatible
+ * base (DeepSeek, LM Studio, a custom gateway, etc.), the provider POSTs to
+ * `<base>/chat/completions`. The model is taken verbatim from
+ * CLAUDE_MEM_OPENROUTER_MODEL. See src/shared/openrouter-base-url.ts for the
+ * resolution rules and per-provider config examples (#2382/#2590/#2622/#2393).
+ */
 
 /**
  * Parse Retry-After header (seconds or HTTP-date). Returns ms or undefined.
@@ -145,7 +156,7 @@ export class OpenRouterProvider {
   }
 
   async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
-    const { apiKey, model, siteUrl, appName } = this.getOpenRouterConfig();
+    const { apiKey, model, apiUrl, siteUrl, appName } = this.getOpenRouterConfig();
 
     if (!apiKey) {
       throw new Error('OpenRouter API key not configured. Set CLAUDE_MEM_OPENROUTER_API_KEY in settings or OPENROUTER_API_KEY environment variable.');
@@ -167,7 +178,7 @@ export class OpenRouterProvider {
     session.conversationHistory.push({ role: 'user', content: initPrompt });
 
     try {
-      const initResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName);
+      const initResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, apiUrl, siteUrl, appName);
       await this.handleInitResponse(initResponse, session, worker, model);
     } catch (error: unknown) {
       if (error instanceof Error) {
@@ -183,7 +194,7 @@ export class OpenRouterProvider {
 
     try {
       for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
-        lastCwd = await this.processOneMessage(session, message, lastCwd, apiKey, model, siteUrl, appName, worker, mode);
+        lastCwd = await this.processOneMessage(session, message, lastCwd, apiKey, model, apiUrl, siteUrl, appName, worker, mode);
       }
     } catch (error: unknown) {
       if (error instanceof Error) {
@@ -238,6 +249,7 @@ export class OpenRouterProvider {
     lastCwd: string | undefined,
     apiKey: string,
     model: string,
+    apiUrl: string,
     siteUrl: string | undefined,
     appName: string | undefined,
     worker: WorkerRef | undefined,
@@ -253,12 +265,12 @@ export class OpenRouterProvider {
     if (message.type === 'observation') {
       await this.processObservationMessage(
         session, message, originalTimestamp, lastCwd,
-        apiKey, model, siteUrl, appName, worker, mode
+        apiKey, model, apiUrl, siteUrl, appName, worker, mode
       );
     } else if (message.type === 'summarize') {
       await this.processSummaryMessage(
         session, message, originalTimestamp, lastCwd,
-        apiKey, model, siteUrl, appName, worker, mode
+        apiKey, model, apiUrl, siteUrl, appName, worker, mode
       );
     }
 
@@ -272,6 +284,7 @@ export class OpenRouterProvider {
     lastCwd: string | undefined,
     apiKey: string,
     model: string,
+    apiUrl: string,
     siteUrl: string | undefined,
     appName: string | undefined,
     worker: WorkerRef | undefined,
@@ -295,7 +308,7 @@ export class OpenRouterProvider {
     });
 
     session.conversationHistory.push({ role: 'user', content: obsPrompt });
-    const obsResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName);
+    const obsResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, apiUrl, siteUrl, appName);
 
     let tokensUsed = 0;
     if (obsResponse.content) {
@@ -318,6 +331,7 @@ export class OpenRouterProvider {
     lastCwd: string | undefined,
     apiKey: string,
     model: string,
+    apiUrl: string,
     siteUrl: string | undefined,
     appName: string | undefined,
     worker: WorkerRef | undefined,
@@ -336,7 +350,7 @@ export class OpenRouterProvider {
     }, mode);
 
     session.conversationHistory.push({ role: 'user', content: summaryPrompt });
-    const summaryResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName);
+    const summaryResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, apiUrl, siteUrl, appName);
 
     let tokensUsed = 0;
     if (summaryResponse.content) {
@@ -415,6 +429,7 @@ export class OpenRouterProvider {
     history: ConversationMessage[],
     apiKey: string,
     model: string,
+    apiUrl: string,
     siteUrl?: string,
     appName?: string
   ): Promise<{ content: string; tokensUsed?: number }> {
@@ -434,7 +449,7 @@ export class OpenRouterProvider {
     const data = await withRetry<OpenRouterResponse>(async (attemptSignal) => {
       let response: Response;
       try {
-        response = await fetch(OPENROUTER_API_URL, {
+        response = await fetch(apiUrl, {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${apiKey}`,
@@ -521,18 +536,25 @@ export class OpenRouterProvider {
     return { content, tokensUsed };
   }
 
-  private getOpenRouterConfig(): { apiKey: string; model: string; siteUrl?: string; appName?: string } {
+  private getOpenRouterConfig(): { apiKey: string; model: string; apiUrl: string; siteUrl?: string; appName?: string } {
     const settingsPath = USER_SETTINGS_PATH;
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
 
     const apiKey = settings.CLAUDE_MEM_OPENROUTER_API_KEY || getCredential('OPENROUTER_API_KEY') || '';
 
+    // Model is passed verbatim — any OpenAI-compatible model id is accepted
+    // (e.g. deepseek-chat, an LM Studio local model). #2393.
     const model = settings.CLAUDE_MEM_OPENROUTER_MODEL || 'xiaomi/mimo-v2-flash:free';
+
+    // Base URL: settings value wins, then OPENROUTER_BASE_URL env var, else
+    // the default OpenRouter endpoint (unchanged behavior). #2382/#2590/#2622/#2393.
+    const baseUrl = settings.CLAUDE_MEM_OPENROUTER_BASE_URL || process.env.OPENROUTER_BASE_URL || '';
+    const apiUrl = resolveOpenRouterChatCompletionsUrl(baseUrl);
 
     const siteUrl = settings.CLAUDE_MEM_OPENROUTER_SITE_URL || '';
     const appName = settings.CLAUDE_MEM_OPENROUTER_APP_NAME || 'claude-mem';
 
-    return { apiKey, model, siteUrl, appName };
+    return { apiKey, model, apiUrl, siteUrl, appName };
   }
 }
 

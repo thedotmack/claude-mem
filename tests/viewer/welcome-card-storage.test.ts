@@ -25,15 +25,15 @@ class MemoryStorage {
 const memStore = new MemoryStorage();
 (globalThis as unknown as { localStorage: MemoryStorage }).localStorage = memStore;
 
-const STORAGE_KEY = 'claude-mem-welcome-dismissed-v2';
-const LEGACY_KEY = 'claude-mem-welcome-dismissed-v1';
+const STORAGE_KEY = 'claude-mem-welcome-dismissed-v3';
+const LEGACY_KEY = 'claude-mem-welcome-dismissed-v2';
 
 import {
   getStoredWelcomeDismissed,
   setStoredWelcomeDismissed,
 } from '../../src/ui/viewer/components/WelcomeCard';
 
-describe('WelcomeCard storage helpers (v2 key)', () => {
+describe('WelcomeCard storage helpers (v3 key)', () => {
   beforeEach(() => {
     memStore.clear();
   });
@@ -42,20 +42,20 @@ describe('WelcomeCard storage helpers (v2 key)', () => {
     expect(getStoredWelcomeDismissed()).toBe(false);
   });
 
-  it('persists dismissal under the v2 key', () => {
+  it('persists dismissal under the v3 key', () => {
     setStoredWelcomeDismissed(true);
     expect(memStore.getItem(STORAGE_KEY)).toBe('true');
     expect(getStoredWelcomeDismissed()).toBe(true);
   });
 
-  it('clears the v2 key when dismissed=false', () => {
+  it('clears the v3 key when dismissed=false', () => {
     setStoredWelcomeDismissed(true);
     setStoredWelcomeDismissed(false);
     expect(memStore.getItem(STORAGE_KEY)).toBeNull();
     expect(getStoredWelcomeDismissed()).toBe(false);
   });
 
-  it('does not consult the v1 legacy key', () => {
+  it('does not consult the v2 legacy key', () => {
     memStore.setItem(LEGACY_KEY, 'true');
     expect(getStoredWelcomeDismissed()).toBe(false);
   });

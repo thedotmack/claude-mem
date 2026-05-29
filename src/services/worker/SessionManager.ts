@@ -1,70 +1,19 @@
 import { DatabaseManager } from './DatabaseManager.js';
 import { logger } from '../../utils/logger.js';
 import type { ActiveSession, PendingMessage, PendingMessageWithId, ObservationData } from '../worker-types.js';
-import {
-  SqliteObservationQueueEngine,
-  type HealthCheckedObservationQueueEngine,
-  type InspectableObservationQueueEngine,
-  type ObservationQueueHealth
-} from '../../server/queue/ObservationQueueEngine.js';
-import { BullMqObservationQueueEngine } from '../../server/queue/BullMqObservationQueueEngine.js';
-import { getObservationQueueEngineName } from '../../server/queue/redis-config.js';
+import { SessionMessageBuffer } from './SessionMessageBuffer.js';
 import { getSdkProcessForSession, ensureSdkProcessExit } from '../../supervisor/process-registry.js';
 import { getSupervisor } from '../../supervisor/index.js';
-import { RestartGuard } from './RestartGuard.js';
 
 export class SessionManager {
   private dbManager: DatabaseManager;
   private sessions: Map<number, ActiveSession> = new Map();
   private onSessionDeletedCallback?: () => void;
-  private queueEngine: InspectableObservationQueueEngine | null = null;
-  private queueEngineName: 'sqlite' | 'bullmq' | null = null;
   private onPendingMutate?: () => void;
+  private readonly buffer = new SessionMessageBuffer(() => this.onPendingMutate?.());
 
   constructor(dbManager: DatabaseManager) {
     this.dbManager = dbManager;
-  }
-
-  private getQueueEngine(): InspectableObservationQueueEngine {
-    if (!this.queueEngine) {
-      this.queueEngineName = getObservationQueueEngineName();
-      if (this.queueEngineName === 'bullmq') {
-        this.queueEngine = new BullMqObservationQueueEngine({
-          onMutate: () => this.onPendingMutate?.()
-        });
-      } else {
-        const sessionStore = this.dbManager.getSessionStore();
-        this.queueEngine = new SqliteObservationQueueEngine(
-          sessionStore.db,
-          () => this.onPendingMutate?.()
-        );
-      }
-    }
-    return this.queueEngine;
-  }
-
-  async initializeQueueEngine(): Promise<void> {
-    this.queueEngineName = getObservationQueueEngineName();
-    if (this.queueEngineName === 'sqlite') {
-      return;
-    }
-    const queue = this.getQueueEngine();
-    if (isHealthCheckedQueue(queue)) {
-      await queue.assertHealthy();
-      await queue.getTotalQueueDepth();
-    }
-  }
-
-  isBullMqQueueEnabled(): boolean {
-    return (this.queueEngineName ?? getObservationQueueEngineName()) === 'bullmq';
-  }
-
-  async getQueueHealth(): Promise<ObservationQueueHealth | null> {
-    const queue = this.getQueueEngine();
-    if (isHealthCheckedQueue(queue)) {
-      return queue.getHealth();
-    }
-    return null;
   }
 
   setOnSessionDeleted(callback: () => void): void {
@@ -172,11 +121,11 @@ export class SessionManager {
       claimedMessageIds: [],
       conversationHistory: [],  // Initialize empty - will be populated by agents
       currentProvider: null,  // Will be set when generator starts
-      consecutiveRestarts: 0,  // DEPRECATED: use restartGuard. Kept for logging compat.
-      restartGuard: new RestartGuard(),
+      consecutiveRestarts: 0,
+      consecutiveInvalidOutputs: 0,
       lastGeneratorActivity: Date.now(),  // Initialize for stale detection (Issue #1099)
       pendingAgentId: null,   // Subagent identity carried from the most recent claimed message
-      pendingAgentType: null  
+      pendingAgentType: null
     };
 
     logger.debug('SESSION', 'Creating new session object (memorySessionId cleared to prevent stale resume)', {
@@ -222,30 +171,18 @@ export class SessionManager {
       toolUseId: data.toolUseId,
     };
 
-    try {
-      const queue = this.getQueueEngine();
-      const messageId = await queue.enqueue(sessionDbId, session.contentSessionId, message);
-      const queueDepth = await queue.getPendingCount(sessionDbId);
-      const toolSummary = logger.formatTool(data.tool_name, data.tool_input);
-      if (messageId === 0) {
-        logger.debug('QUEUE', `DUP_SUPPRESSED | sessionDbId=${sessionDbId} | type=observation | tool=${toolSummary} | toolUseId=${data.toolUseId ?? 'null'} | depth=${queueDepth}`, {
-          sessionId: sessionDbId
-        });
-      } else {
-        logger.info('QUEUE', `ENQUEUED | sessionDbId=${sessionDbId} | messageId=${messageId} | type=observation | tool=${toolSummary} | depth=${queueDepth}`, {
-          sessionId: sessionDbId
-        });
-      }
-    } catch (error) {
-      const normalized = error instanceof Error ? error : new Error(String(error));
-      logger.info('QUEUE', 'enqueue failed; observation dropped', {
-        sessionId: sessionDbId,
-        tool: data.tool_name,
-        err: normalized.message
+    const messageId = this.buffer.enqueue(sessionDbId, message);
+    const queueDepth = this.buffer.getPendingCount(sessionDbId);
+    const toolSummary = logger.formatTool(data.tool_name, data.tool_input);
+    if (messageId === 0) {
+      logger.debug('QUEUE', `DUP_SUPPRESSED | sessionDbId=${sessionDbId} | type=observation | tool=${toolSummary} | toolUseId=${data.toolUseId ?? 'null'} | depth=${queueDepth}`, {
+        sessionId: sessionDbId
       });
-      throw normalized;
+    } else {
+      logger.info('QUEUE', `ENQUEUED | sessionDbId=${sessionDbId} | messageId=${messageId} | type=observation | tool=${toolSummary} | depth=${queueDepth}`, {
+        sessionId: sessionDbId
+      });
     }
-
   }
 
   async queueSummarize(sessionDbId: number, lastAssistantMessage?: string): Promise<void> {
@@ -259,36 +196,21 @@ export class SessionManager {
       last_assistant_message: lastAssistantMessage
     };
 
-    try {
-      const queue = this.getQueueEngine();
-      const messageId = await queue.enqueue(sessionDbId, session.contentSessionId, message);
-      const queueDepth = await queue.getPendingCount(sessionDbId);
-      if (messageId === 0) {
-        logger.debug('QUEUE', `DUP_SUPPRESSED | sessionDbId=${sessionDbId} | type=summarize | depth=${queueDepth}`, {
-          sessionId: sessionDbId
-        });
-      } else {
-        logger.info('QUEUE', `ENQUEUED | sessionDbId=${sessionDbId} | messageId=${messageId} | type=summarize | depth=${queueDepth}`, {
-          sessionId: sessionDbId
-        });
-      }
-    } catch (error) {
-      if (error instanceof Error) {
-        logger.error('SESSION', 'Failed to persist summarize to DB', {
-          sessionId: sessionDbId
-        }, error);
-      } else {
-        logger.error('SESSION', 'Failed to persist summarize to DB with non-Error', {
-          sessionId: sessionDbId
-        }, new Error(String(error)));
-      }
-      throw error; 
+    const messageId = this.buffer.enqueue(sessionDbId, message);
+    const queueDepth = this.buffer.getPendingCount(sessionDbId);
+    if (messageId === 0) {
+      logger.debug('QUEUE', `DUP_SUPPRESSED | sessionDbId=${sessionDbId} | type=summarize | depth=${queueDepth}`, {
+        sessionId: sessionDbId
+      });
+    } else {
+      logger.info('QUEUE', `ENQUEUED | sessionDbId=${sessionDbId} | messageId=${messageId} | type=summarize | depth=${queueDepth}`, {
+        sessionId: sessionDbId
+      });
     }
-
   }
 
   async clearPendingForSession(sessionDbId: number): Promise<number> {
-    return await this.getQueueEngine().clearPendingForSession(sessionDbId);
+    return this.buffer.clear(sessionDbId);
   }
 
   async resetProcessingToPending(sessionDbId: number): Promise<number> {
@@ -296,7 +218,7 @@ export class SessionManager {
     if (session) {
       session.claimedMessageIds = [];
     }
-    return await this.getQueueEngine().resetProcessingToPending(sessionDbId);
+    return this.buffer.resetClaimed(sessionDbId);
   }
 
   async confirmClaimedMessages(sessionDbId: number): Promise<number> {
@@ -304,13 +226,56 @@ export class SessionManager {
     const claimedIds = session?.claimedMessageIds ?? [];
     let confirmed = 0;
     for (const messageId of claimedIds) {
-      confirmed += await this.getQueueEngine().confirmProcessed(messageId);
+      confirmed += this.buffer.confirm(messageId);
     }
     if (session) {
       session.claimedMessageIds = [];
       session.earliestPendingTimestamp = null;
     }
     return confirmed;
+  }
+
+  /**
+   * Kill and respawn a poisoned SDK session while PRESERVING the in-RAM pending
+   * messages (plan-11, #2485). A session that keeps emitting non-XML/poisoned
+   * output wedges the pipeline at zero observations; aborting the generator and
+   * killing the SDK subprocess forces a fresh spawn on the next ingest, but the
+   * buffered tool-use fragments must survive so they get reprocessed.
+   *
+   * Unlike deleteSession this does NOT dispose the SessionMessageBuffer and does
+   * NOT remove the session from the active map: it un-claims any in-flight
+   * messages (so the next generator re-yields them), aborts the current
+   * generator with a 'poisoned' reason, and ensures the SDK subprocess exits.
+   * The next ensureGeneratorRunning starts a clean generator.
+   */
+  async respawnPoisonedSession(sessionDbId: number): Promise<void> {
+    const session = this.sessions.get(sessionDbId);
+    if (!session) {
+      return;
+    }
+
+    const preservedPending = this.buffer.getPendingCount(sessionDbId);
+    logger.warn('SESSION', 'Respawning poisoned SDK session, preserving pending messages', {
+      sessionId: sessionDbId,
+      preservedPending,
+      consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
+    });
+
+    // Re-yield anything claimed-but-unconfirmed so the fresh generator picks it up.
+    await this.resetProcessingToPending(sessionDbId);
+
+    // Drop stale conversation context: the poisoned turns are what wedged it.
+    session.conversationHistory = [];
+    session.consecutiveInvalidOutputs = 0;
+    session.memorySessionId = null;  // force a fresh SDK session id on respawn
+
+    session.abortReason = 'poisoned';
+    session.abortController.abort();
+
+    const tracked = getSdkProcessForSession(sessionDbId);
+    if (tracked && tracked.process.exitCode === null) {
+      await ensureSdkProcessExit(tracked, 5000);
+    }
   }
 
   async deleteSession(sessionDbId: number): Promise<void> {
@@ -365,6 +330,7 @@ export class SessionManager {
       }
     }
 
+    this.buffer.dispose(sessionDbId);
     this.sessions.delete(sessionDbId);
     logger.info('SESSION', 'Session deleted', {
       sessionId: sessionDbId,
@@ -386,6 +352,7 @@ export class SessionManager {
       session.respawnTimer = undefined;
     }
 
+    this.buffer.dispose(sessionDbId);
     this.sessions.delete(sessionDbId);
     logger.info('SESSION', 'Session removed from active sessions', {
       sessionId: sessionDbId,
@@ -400,28 +367,26 @@ export class SessionManager {
   async shutdownAll(): Promise<void> {
     const sessionIds = Array.from(this.sessions.keys());
     await Promise.all(sessionIds.map(id => this.deleteSession(id)));
-    await this.queueEngine?.close();
-    this.queueEngine = null;
   }
 
   async hasPendingMessages(): Promise<boolean> {
-    return (await this.getTotalQueueDepth()) > 0;
+    return this.getTotalQueueDepth() > 0;
   }
 
   getActiveSessionCount(): number {
     return this.sessions.size;
   }
 
-  async getTotalQueueDepth(): Promise<number> {
-    return await this.getQueueEngine().getTotalQueueDepth();
+  getTotalQueueDepth(): number {
+    return this.buffer.getTotalDepth();
   }
 
   async getTotalActiveWork(): Promise<number> {
-    return await this.getTotalQueueDepth();
+    return this.getTotalQueueDepth();
   }
 
   async isAnySessionProcessing(): Promise<boolean> {
-    return (await this.getTotalQueueDepth()) > 0;
+    return this.getTotalQueueDepth() > 0;
   }
 
   async *getMessageIterator(sessionDbId: number): AsyncIterableIterator<PendingMessageWithId> {
@@ -430,10 +395,10 @@ export class SessionManager {
       session = this.initializeSession(sessionDbId);
     }
 
-    const queue = this.getQueueEngine();
+    // Re-yield anything a prior generator pass claimed but did not confirm.
     await this.resetProcessingToPending(sessionDbId);
 
-    for await (const message of queue.createIterator({
+    for await (const message of this.buffer.drain({
       sessionDbId,
       signal: session.abortController.signal,
       onIdleTimeout: () => {
@@ -456,11 +421,8 @@ export class SessionManager {
     }
   }
 
-  getPendingMessageStore(): InspectableObservationQueueEngine {
-    return this.getQueueEngine();
+  /** Read-only access to the in-RAM buffer for diagnostics. */
+  getMessageBuffer(): SessionMessageBuffer {
+    return this.buffer;
   }
-}
-
-function isHealthCheckedQueue(queue: InspectableObservationQueueEngine): queue is HealthCheckedObservationQueueEngine {
-  return 'getHealth' in queue && 'assertHealthy' in queue;
 }

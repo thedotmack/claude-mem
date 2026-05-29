@@ -1,4 +1,12 @@
-import { describe, it, expect, mock, afterEach } from 'bun:test';
+import { describe, it, expect, mock, afterEach, afterAll } from 'bun:test';
+
+// Snapshot the real logger BEFORE mock.module mutates the live namespace, then
+// re-register it in afterAll. bun's mock.module is process-global and
+// mock.restore() does NOT undo it, so a partial logger mock here would
+// otherwise leak into later test files (e.g. summarize-tag-stripping, which
+// needs logger.dataIn).
+import * as realLogger from '../../src/utils/logger.js';
+const realLoggerSnapshot = { ...realLogger };
 
 mock.module('../../src/utils/logger.js', () => ({
   logger: {
@@ -14,6 +22,10 @@ import { extractFirstFile, groupByDate } from '../../src/shared/timeline-formatt
 
 afterEach(() => {
   mock.restore();
+});
+
+afterAll(() => {
+  mock.module('../../src/utils/logger.js', () => realLoggerSnapshot);
 });
 
 describe('extractFirstFile', () => {

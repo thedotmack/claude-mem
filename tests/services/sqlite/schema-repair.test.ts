@@ -27,6 +27,42 @@ function hasPython(): boolean {
   }
 }
 
+// repairMalformedDatabase() shells out to `sqlite3 <db> .recover`, which depends
+// on the dbpage virtual table. Some sqlite3 CLI builds (e.g. on the ubuntu CI
+// runner) are compiled without it and fail with "no such table: sqlite_dbpage".
+// The repair feature legitimately requires that capability, so — like the
+// hasPython() guard above — we skip the repair tests when the host sqlite3
+// cannot perform .recover rather than reporting a false failure.
+function canRecoverViaSqlite3(): boolean {
+  const probe = tempDbPath();
+  try {
+    const db = new Database(probe, { create: true, readwrite: true });
+    db.run('CREATE TABLE probe(x)');
+    db.run('INSERT INTO probe(x) VALUES (1)');
+    db.close();
+    execFileSync('sqlite3', [probe, '.recover'], { stdio: 'pipe', encoding: 'utf-8' });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    cleanup(probe);
+  }
+}
+
+const REPAIR_SUPPORTED = canRecoverViaSqlite3();
+
+function skipUnlessRepairable(): boolean {
+  if (!hasPython()) {
+    console.log('Python3 not available, skipping repair test');
+    return true;
+  }
+  if (!REPAIR_SUPPORTED) {
+    console.log("sqlite3 CLI lacks .recover (no sqlite_dbpage), skipping repair test");
+    return true;
+  }
+  return false;
+}
+
 function corruptDbViaPython(dbPath: string): void {
   const script = join(tmpdir(), `corrupt-${Date.now()}.py`);
   writeFileSync(script, `
@@ -50,8 +86,7 @@ c.close()
 
 describe('Schema repair on malformed database', () => {
   it('should repair a database with an orphaned index referencing a non-existent column', () => {
-    if (!hasPython()) {
-      console.log('Python3 not available, skipping test');
+    if (skipUnlessRepairable()) {
       return;
     }
 
@@ -120,8 +155,7 @@ describe('Schema repair on malformed database', () => {
   });
 
   it('should repair a corrupted DB that has no schema_versions table', () => {
-    if (!hasPython()) {
-      console.log('Python3 not available, skipping test');
+    if (skipUnlessRepairable()) {
       return;
     }
 
@@ -172,8 +206,7 @@ c.close()
   });
 
   it('should preserve existing data through repair and re-migration', () => {
-    if (!hasPython()) {
-      console.log('Python3 not available, skipping test');
+    if (skipUnlessRepairable()) {
       return;
     }
 

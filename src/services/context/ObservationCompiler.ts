@@ -174,8 +174,13 @@ export function querySummariesMulti(
   `).all(...projects, ...projects, config.sessionCount + SUMMARY_LOOKAHEAD) as SessionSummary[];
 }
 
-function cwdToDashed(cwd: string): string {
-  return cwd.replace(/\//g, '-');
+export function cwdToDashed(cwd: string): string {
+  // Claude Code encodes a project's transcript directory by replacing BOTH path
+  // separators AND dots with dashes (e.g. `/Users/john.doe/proj` ->
+  // `-Users-john-doe-proj`). Replacing only `/` left a literal `.` in the dir
+  // name, so "Include last message" silently no-opped for any cwd component
+  // containing a dot — Unix usernames like `john.doe`, dotted dirs, etc. (#2401).
+  return cwd.replace(/[/.]/g, '-');
 }
 
 function parseAssistantTextFromLine(line: string): string | null {

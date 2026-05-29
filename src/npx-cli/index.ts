@@ -26,6 +26,8 @@ ${pc.bold('Install Commands')} (no Bun required):
   ${pc.cyan('npx claude-mem install --provider claude|gemini|openrouter')}   Set LLM provider non-interactively
   ${pc.cyan('npx claude-mem install --model <id>')}   Set Claude model (when provider=claude)
   ${pc.cyan('npx claude-mem install --no-auto-start')}   Skip worker auto-start at the end
+  ${pc.cyan('npx claude-mem install --runtime worker|server')}   Select runtime non-interactively (server brings up Docker pg+redis, generates an API key, injects the IDE MCP config)
+  ${pc.cyan('npx claude-mem install --runtime server --server-url <url>')}   Point the server runtime at a specific base URL
   ${pc.cyan('npx claude-mem repair')}                Repair runtime (re-runs Bun/uv setup and bun install in plugin cache)
   ${pc.cyan('npx claude-mem update')}               Update to latest version
   ${pc.cyan('npx claude-mem uninstall')}            Remove plugin and configs
@@ -36,6 +38,7 @@ ${pc.bold('Runtime Commands')} (requires Bun, delegates to installed plugin):
   ${pc.cyan('npx claude-mem stop')}                 Stop worker service
   ${pc.cyan('npx claude-mem restart')}              Restart worker service
   ${pc.cyan('npx claude-mem status')}               Show worker status
+  ${pc.cyan('npx claude-mem doctor')}               Diagnose install/runtime health (bun, uv, worker)
   ${pc.cyan('npx claude-mem server start')}         Start server service
   ${pc.cyan('npx claude-mem server stop')}          Stop server service
   ${pc.cyan('npx claude-mem server restart')}       Restart server service
@@ -78,11 +81,18 @@ function parseInstallOptions(argv: string[]): InstallOptions {
     console.error(`Unknown --provider: ${provider}. Allowed: claude, gemini, openrouter`);
     process.exit(1);
   }
+  const runtime = readFlag(argv, '--runtime');
+  if (runtime !== undefined && runtime !== 'worker' && runtime !== 'server' && runtime !== 'server-beta') {
+    console.error(`Unknown --runtime: ${runtime}. Allowed: worker, server`);
+    process.exit(1);
+  }
   return {
     ide: readFlag(argv, '--ide'),
     provider: provider as InstallOptions['provider'],
     model: readFlag(argv, '--model'),
     noAutoStart: argv.includes('--no-auto-start'),
+    runtime: runtime as InstallOptions['runtime'],
+    serverUrl: readFlag(argv, '--server-url'),
   };
 }
 
@@ -147,6 +157,12 @@ async function main(): Promise<void> {
     case 'status': {
       const { runStatusCommand } = await import('./commands/runtime.js');
       runStatusCommand();
+      break;
+    }
+
+    case 'doctor': {
+      const { runDoctorCommand } = await import('./commands/doctor.js');
+      await runDoctorCommand();
       break;
     }
 

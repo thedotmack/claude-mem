@@ -105,6 +105,9 @@ export class SessionsObservationsAdapter implements RouteHandler {
           sourceAdapter: COMPAT_SOURCE_ADAPTER,
           sourceEventId: toolUseId,
           eventType: COMPAT_EVENT_TYPE,
+          // #2560 — persist platform_source on the event row (not just inside
+          // payload) so plan-09 scoping/queries can filter by platform.
+          platformSource: typeof parsed.data.platformSource === 'string' ? parsed.data.platformSource : null,
           payload: {
             contentSessionId: parsed.data.contentSessionId,
             tool_name: parsed.data.tool_name,

@@ -168,7 +168,7 @@ export function loadUserGrammars(projectRoot: string): UserGrammarConfig {
         QUERIES[queryKey] = queryContent;
         config.languageToQueryKey[language] = queryKey;
       } catch {
-        console.error(`[smart-file-read] Custom query file not found: ${fullQueryPath}, falling back to generic`);
+        logger.warn('PARSER', 'Custom query file not found, falling back to generic', { fullQueryPath });
         config.languageToQueryKey[language] = "generic";
       }
     } else {
@@ -256,7 +256,7 @@ export function resolveGrammarPathWithFallback(language: string, projectRoot?: s
     // Grammar package not installed
   }
 
-  console.error(`[smart-file-read] Grammar package not found for "${language}": ${entry.package} (install it in your project's node_modules)`);
+  logger.warn('PARSER', 'Grammar package not found', { language, package: entry.package });
   return null;
 }
 
