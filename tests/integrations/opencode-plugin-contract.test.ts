@@ -139,6 +139,41 @@ describe("OpenCode plugin event contract", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it("awaits its worker POSTs so capture survives a short-lived process", async () => {
+    // Reliability guard: OpenCode awaits hook handlers, so the hook must await
+    // its worker POSTs — otherwise a one-shot `opencode run` exits before the
+    // un-awaited fetch flushes and the observation is silently lost. We give
+    // each fetch a real async gap; a fire-and-forget hook would resolve with
+    // POSTs still in flight (settled < started), an awaiting hook resolves only
+    // once every POST it issued has settled.
+    let started = 0;
+    let settled = 0;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      started += 1;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      settled += 1;
+      return new Response(JSON.stringify({ status: "queued" }), { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      await plugin["tool.execute.after"](
+        { tool: "read", sessionID: "ses_await", callID: "c1" },
+        { title: "Read", output: "x", metadata: {}, args: {} },
+      );
+
+      // init + observation
+      expect(started).toBeGreaterThanOrEqual(2);
+      expect(
+        settled,
+        "every worker POST must have settled before the hook resolved (no fire-and-forget)",
+      ).toBe(started);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });
 
 describe("OpenCode search client response-shape contract", () => {

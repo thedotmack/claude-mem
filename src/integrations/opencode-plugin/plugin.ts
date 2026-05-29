@@ -104,26 +104,48 @@ const MAX_TOOL_RESPONSE_LENGTH = 1000;
 // The worker's /api/sessions/init and /api/sessions/observations handlers both
 // read `platformSource` and run it through normalizePlatformSource(); without
 // it, OpenCode work is mislabeled as 'claude' and source-scoped search (#2389)
-// cannot isolate it. Sent on both session-creating POSTs because these
-// fire-and-forget posts can arrive in either order.
+// cannot isolate it. Sent on both session-creating POSTs so the session is
+// tagged correctly whichever lands first.
 const PLATFORM_SOURCE = "opencode";
+
+// Cap how long a single worker POST may block a hook. OpenCode awaits hook
+// handlers, so awaiting the POST is what makes capture reliable in a one-shot
+// `opencode run` (the process stays alive until the post resolves instead of
+// exiting mid-flight). The timeout is the safety valve: a hung or dead worker
+// must never stall OpenCode — the post is abandoned and capture is skipped.
+const WORKER_POST_TIMEOUT_MS = 3000;
 
 const JSON_HEADERS: Record<string, string> = { "Content-Type": "application/json" };
 
-function workerPostFireAndForget(
+/**
+ * POST to the worker and await the result. Failures are swallowed (capture is
+ * best-effort and must never break the user's OpenCode session): a refused
+ * connection or a timeout means the worker is not running, which is fine.
+ */
+async function workerPost(
   path: string,
   body: Record<string, unknown>,
-): void {
-  fetch(`${WORKER_BASE_URL}${path}`, {
-    method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify(body),
-  }).catch((error: unknown) => {
+): Promise<void> {
+  try {
+    await fetch(`${WORKER_BASE_URL}${path}`, {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(WORKER_POST_TIMEOUT_MS),
+    });
+  } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    if (!message.includes("ECONNREFUSED")) {
+    // ECONNREFUSED = worker not running; AbortError/TimeoutError = worker hung.
+    // Both are expected, non-fatal conditions — stay quiet so we don't spam the
+    // OpenCode console on every tool call when the worker is simply offline.
+    const isExpected =
+      message.includes("ECONNREFUSED") ||
+      (error instanceof Error &&
+        (error.name === "AbortError" || error.name === "TimeoutError"));
+    if (!isExpected) {
       console.warn(`[claude-mem] Worker POST ${path} failed: ${message}`);
     }
-  });
+  }
 }
 
 async function workerGetText(path: string): Promise<string | null> {
@@ -172,11 +194,16 @@ function getOrCreateContentSessionId(openCodeSessionId: string): string {
  * the session the first time we see any activity for it (tool run or chat
  * message). This guarantees a session row exists before observations arrive.
  */
-function ensureSessionInitialized(openCodeSessionId: string, projectName: string): string {
+async function ensureSessionInitialized(
+  openCodeSessionId: string,
+  projectName: string,
+): Promise<string> {
   const contentSessionId = getOrCreateContentSessionId(openCodeSessionId);
+  // Mark initialized synchronously, before the await, so concurrent hooks for
+  // the same session don't each fire an init POST.
   if (!initializedSessionIds.has(openCodeSessionId)) {
     initializedSessionIds.add(openCodeSessionId);
-    workerPostFireAndForget("/api/sessions/init", {
+    await workerPost("/api/sessions/init", {
       contentSessionId,
       project: projectName,
       prompt: "",
@@ -204,8 +231,8 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       input: ToolExecuteAfterInput,
       output: ToolExecuteAfterOutput,
     ): Promise<void> => {
-      const contentSessionId = ensureSessionInitialized(input.sessionID, projectName);
-      workerPostFireAndForget("/api/sessions/observations", {
+      const contentSessionId = await ensureSessionInitialized(input.sessionID, projectName);
+      await workerPost("/api/sessions/observations", {
         contentSessionId,
         tool_name: input.tool,
         tool_input: output.args || {},
@@ -224,14 +251,14 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       if (!sessionID) return;
       if (output.message?.role !== "assistant") return;
 
-      const contentSessionId = ensureSessionInitialized(sessionID, projectName);
       const messageText = (output.parts || [])
         .filter((part) => part.type === "text" && typeof part.text === "string")
         .map((part) => part.text as string)
         .join("\n");
       if (!messageText) return;
 
-      workerPostFireAndForget("/api/sessions/observations", {
+      const contentSessionId = await ensureSessionInitialized(sessionID, projectName);
+      await workerPost("/api/sessions/observations", {
         contentSessionId,
         tool_name: "assistant_message",
         tool_input: {},
@@ -246,8 +273,8 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
     "experimental.session.compacting": async (
       input: SessionCompactingInput,
     ): Promise<void> => {
-      const contentSessionId = ensureSessionInitialized(input.sessionID, projectName);
-      workerPostFireAndForget("/api/sessions/summarize", {
+      const contentSessionId = await ensureSessionInitialized(input.sessionID, projectName);
+      await workerPost("/api/sessions/summarize", {
         contentSessionId,
         last_assistant_message: "",
       });
@@ -263,8 +290,8 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       switch (eventType) {
         case "session.idle": {
           // Best-effort summarize once a session goes idle.
-          const contentSessionId = ensureSessionInitialized(sessionID, projectName);
-          workerPostFireAndForget("/api/sessions/summarize", {
+          const contentSessionId = await ensureSessionInitialized(sessionID, projectName);
+          await workerPost("/api/sessions/summarize", {
             contentSessionId,
             last_assistant_message: "",
           });
