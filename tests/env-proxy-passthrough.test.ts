@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test';
 import * as fs from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -75,6 +75,10 @@ beforeEach(() => {
   for (const k of SNAPSHOT_KEYS) delete process.env[k];
 });
 
+afterEach(() => {
+  restoreEnv();
+});
+
 describe('proxy + CA passthrough via ~/.claude-mem/.env', () => {
   it('loadClaudeMemEnv reads HTTPS_PROXY and NODE_EXTRA_CA_CERTS', () => {
     fs.writeFileSync(TEST_ENV_FILE,
@@ -85,8 +89,6 @@ describe('proxy + CA passthrough via ~/.claude-mem/.env', () => {
     const env = loadClaudeMemEnv();
     expect(env.HTTPS_PROXY).toBe('http://corp-proxy.example.com:3128/');
     expect(env.NODE_EXTRA_CA_CERTS).toBe('/etc/ssl/certs/ca-certificates.crt');
-
-    restoreEnv();
   });
 
   it('applyProxyAndCaFromEnvFile injects values into process.env when absent', () => {
@@ -108,8 +110,6 @@ describe('proxy + CA passthrough via ~/.claude-mem/.env', () => {
     // Lowercase mirroring for proxy vars (curl-family tooling)
     expect(process.env.https_proxy).toBe('http://corp-proxy.example.com:3128/');
     expect(process.env.no_proxy).toBe('localhost,127.0.0.1');
-
-    restoreEnv();
   });
 
   it('applyProxyAndCaFromEnvFile does NOT overwrite values already set in process.env', () => {
@@ -120,8 +120,6 @@ describe('proxy + CA passthrough via ~/.claude-mem/.env', () => {
 
     expect(applied).not.toContain('HTTPS_PROXY');
     expect(process.env.HTTPS_PROXY).toBe('http://from-shell.example.com:8080/');
-
-    restoreEnv();
   });
 
   it('buildIsolatedEnv propagates proxy + CA vars to subprocess env', () => {
@@ -133,8 +131,6 @@ describe('proxy + CA passthrough via ~/.claude-mem/.env', () => {
     const isolated = buildIsolatedEnv(true);
     expect(isolated.HTTPS_PROXY).toBe('http://corp-proxy.example.com:3128/');
     expect(isolated.NODE_EXTRA_CA_CERTS).toBe('/opt/corp-ca.pem');
-
-    restoreEnv();
   });
 
   it('buildIsolatedEnv with credentials=false does NOT inject proxy/CA (matches existing semantics)', () => {
@@ -142,8 +138,6 @@ describe('proxy + CA passthrough via ~/.claude-mem/.env', () => {
 
     const isolated = buildIsolatedEnv(false);
     expect(isolated.HTTPS_PROXY).toBeUndefined();
-
-    restoreEnv();
   });
 
   it('returns empty list when no proxy/CA keys declared', () => {
@@ -154,8 +148,6 @@ describe('proxy + CA passthrough via ~/.claude-mem/.env', () => {
     const applied = applyProxyAndCaFromEnvFile();
     expect(applied).toEqual([]);
     expect(process.env.HTTPS_PROXY).toBeUndefined();
-
-    restoreEnv();
   });
 
   it('handles missing ~/.claude-mem/.env gracefully', () => {
@@ -163,6 +155,5 @@ describe('proxy + CA passthrough via ~/.claude-mem/.env', () => {
     expect(() => applyProxyAndCaFromEnvFile()).not.toThrow();
     const applied = applyProxyAndCaFromEnvFile();
     expect(applied).toEqual([]);
-    restoreEnv();
   });
 });

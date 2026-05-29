@@ -250,9 +250,12 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
     // we re-inject these into the spawned subprocess env. env-sanitizer otherwise
     // strips proxy vars from the parent shell to prevent silent session-bound
     // latching; this path is the documented opt-in for corporate networks.
+    // Precedence: shell-set value (already in isolatedEnv from the first loop)
+    // wins over the .env file value — matching applyProxyAndCaFromEnvFile()'s
+    // guard — so a test fixture or operator shell override is never clobbered.
     for (const key of PROXY_AND_CA_PASSTHROUGH_KEYS) {
       const value = (credentials as Record<string, string | undefined>)[key];
-      if (value) isolatedEnv[key] = value;
+      if (value && !isolatedEnv[key]) isolatedEnv[key] = value;
     }
 
     // Note: CLAUDE_CODE_OAUTH_TOKEN is intentionally NOT copied from
