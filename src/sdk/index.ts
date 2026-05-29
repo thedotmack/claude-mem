@@ -46,6 +46,77 @@ import type {
 import { processGeneratedResponse } from '../server/generation/processGeneratedResponse.js';
 import type { PostgresObservation } from '../storage/postgres/observations.js';
 
+// ---------------------------------------------------------------------------
+// Public type re-exports. Plan: plans/2026-05-25-cmem-sdk-and-server-rename.md §7
+// line 263 — "re-export `PostgresObservation`, the capture input type, search
+// result/context types, and the relevant `src/core/schemas` Zod types. Keep
+// the surface small and stable."
+//
+// Rules:
+//   - Type-only (`export type`) for storage/core shapes — consumers should
+//     read these as data, not instantiate Zod validators against them. This
+//     also keeps the SDK bundle from gaining new runtime imports of
+//     `src/core/schemas/*` (those modules pull `zod` at runtime).
+//   - Only the entity types a Phase 8 SDK consumer would actually name
+//     when they `import { ... } from 'claude-mem/sdk'` — implementation
+//     helpers (`PostgresStorageRepositories` is already re-exported via the
+//     `repos` field's structural type, internal `IngestEventsService`,
+//     `*Row` interfaces, deterministic-key builders) stay private.
+// ---------------------------------------------------------------------------
+
+// Postgres storage entity types. `PostgresObservation` is the headline
+// re-export — every public result-bearing SDK method returns these. The
+// other three are the rest of the rows surfaced through `client.repos.*` so
+// consumers can name them without reaching into `claude-mem` internals.
+export type {
+  PostgresObservation,
+  PostgresObservationSource,
+  ObservationSourceType,
+} from '../storage/postgres/observations.js';
+export type {
+  PostgresAgentEvent,
+  CreatePostgresAgentEventInput,
+} from '../storage/postgres/agent-events.js';
+export type { PostgresServerSession } from '../storage/postgres/server-sessions.js';
+export type { PostgresProject } from '../storage/postgres/projects.js';
+export type { PostgresTeam, PostgresTeamMember, PostgresTeamRole } from '../storage/postgres/teams.js';
+export type {
+  PostgresObservationGenerationJob,
+  PostgresObservationGenerationJobEvent,
+  ObservationGenerationJobSourceType,
+  ObservationGenerationJobStatus,
+  ObservationGenerationJobEventType,
+} from '../storage/postgres/generation-jobs.js';
+// `PostgresStorageRepositories` is referenced on the `CmemClient.repos`
+// field, so consumers using e.g. `client.repos.agentEvents.getByIdForScope(...)`
+// can name the shape themselves. The implementation factory
+// (`createPostgresStorageRepositories`) stays private — consumers go through
+// `createCmemClient`, not through the repo factory directly.
+export type { PostgresStorageRepositories } from '../storage/postgres/index.js';
+
+// Core schema types. These are the storage-agnostic shapes from
+// `src/core/schemas/`; they're a stable surface for downstream consumers
+// that want to model claude-mem data without importing the Postgres-specific
+// row types. Type-only — the matching `*Schema` Zod values stay internal
+// to keep the runtime surface frozen.
+export type {
+  MemoryItem,
+  CreateMemoryItem,
+  MemoryItemKind,
+  MemorySource,
+  CreateMemorySource,
+  MemorySourceType,
+} from '../core/schemas/memory-item.js';
+export type {
+  AgentEvent,
+  CreateAgentEvent,
+  AgentEventSourceType,
+} from '../core/schemas/agent-event.js';
+export type { ContextPack } from '../core/schemas/context-pack.js';
+export type { ServerSession, CreateServerSession, ServerSessionStatus } from '../core/schemas/session.js';
+export type { Project, CreateProject } from '../core/schemas/project.js';
+export type { Team, CreateTeam, TeamMember, CreateTeamMember, TeamRole } from '../core/schemas/team.js';
+
 /**
  * Tuning options for the required Chroma semantic-search engine.
  *
