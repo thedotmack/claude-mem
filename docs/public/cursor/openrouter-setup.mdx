@@ -118,6 +118,50 @@ To specify a model, add to your settings:
 }
 ```
 
+## Custom OpenAI-Compatible Endpoints
+
+The OpenRouter provider is a generic OpenAI-compatible client. Set `CLAUDE_MEM_OPENROUTER_BASE_URL` to point it at any endpoint that speaks the OpenAI `/chat/completions` API — DeepSeek, a local LM Studio server, or any custom gateway. The model id you set in `CLAUDE_MEM_OPENROUTER_MODEL` is sent verbatim.
+
+<Info>
+**Base URL resolution:** When `CLAUDE_MEM_OPENROUTER_BASE_URL` is empty (default), requests go to OpenRouter unchanged. When set, claude-mem POSTs to `<base_url>/chat/completions` — you can supply either a base like `https://api.deepseek.com/v1` (the `/chat/completions` path is appended automatically) or a full `.../chat/completions` URL (used verbatim). Trailing slashes are normalized. The environment variable `OPENROUTER_BASE_URL` is honored as a fallback.
+</Info>
+
+### DeepSeek
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openrouter",
+  "CLAUDE_MEM_OPENROUTER_BASE_URL": "https://api.deepseek.com",
+  "CLAUDE_MEM_OPENROUTER_MODEL": "deepseek-chat",
+  "CLAUDE_MEM_OPENROUTER_API_KEY": "YOUR_DEEPSEEK_API_KEY"
+}
+```
+
+### LM Studio (local model)
+
+LM Studio exposes an OpenAI-compatible server. No API key is required for local use, and you can use any model id you have loaded.
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openrouter",
+  "CLAUDE_MEM_OPENROUTER_BASE_URL": "http://localhost:1234/v1",
+  "CLAUDE_MEM_OPENROUTER_MODEL": "your-local-model-id"
+}
+```
+
+### Generic custom endpoint
+
+Any OpenAI-compatible gateway works the same way:
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openrouter",
+  "CLAUDE_MEM_OPENROUTER_BASE_URL": "https://my-gateway.example.com/v1",
+  "CLAUDE_MEM_OPENROUTER_MODEL": "model-id",
+  "CLAUDE_MEM_OPENROUTER_API_KEY": "YOUR_KEY"
+}
+```
+
 ## Cost Management
 
 OpenRouter charges per token. To manage costs:
