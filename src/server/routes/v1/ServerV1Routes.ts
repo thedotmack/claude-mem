@@ -222,6 +222,15 @@ export class ServerV1Routes implements RouteHandler {
         return;
       }
       if (!this.ensureProjectAllowed(req, res, sourceMem.projectId)) return;
+      const targetMem = memRepo.getById(body.targetMemoryId);
+      if (!targetMem) {
+        res.status(404).json({ error: 'NotFound', message: 'Target memory not found' });
+        return;
+      }
+      if (targetMem.projectId !== sourceMem.projectId) {
+        res.status(403).json({ error: 'Forbidden', message: 'Source and target memories must belong to the same project' });
+        return;
+      }
       try {
         const relation = new MemoryRelationsRepository(this.options.getDatabase()).create(body);
         this.audit(req, 'relation.create', relation.id, sourceMem.projectId);
@@ -245,7 +254,12 @@ export class ServerV1Routes implements RouteHandler {
       }
       if (!this.ensureProjectAllowed(req, res, memory.projectId)) return;
       const repo = new MemoryRelationsRepository(this.options.getDatabase());
-      const direction = String(req.query.direction ?? 'both');
+      const rawDirection = String(req.query.direction ?? 'both');
+      if (!['source', 'target', 'both'].includes(rawDirection)) {
+        res.status(400).json({ error: 'ValidationError', message: "direction must be 'source', 'target', or 'both'" });
+        return;
+      }
+      const direction = rawDirection as 'source' | 'target' | 'both';
       const asSource = direction === 'source' || direction === 'both' ? repo.listBySource(id) : [];
       const asTarget = direction === 'target' || direction === 'both' ? repo.listByTarget(id) : [];
       this.audit(req, 'relation.list', id, memory.projectId);
@@ -263,9 +277,13 @@ export class ServerV1Routes implements RouteHandler {
           return;
         }
         const sourceMem = new MemoryItemsRepository(this.options.getDatabase()).getById(existing.sourceMemoryId);
-        if (sourceMem && !this.ensureProjectAllowed(req, res, sourceMem.projectId)) return;
+        if (!sourceMem) {
+          res.status(500).json({ error: 'InternalError', message: 'Source memory for relation not found' });
+          return;
+        }
+        if (!this.ensureProjectAllowed(req, res, sourceMem.projectId)) return;
         const relation = repo.setActive(id, body.isActive);
-        this.audit(req, 'relation.set_active', id, sourceMem?.projectId ?? null);
+        this.audit(req, 'relation.set_active', id, sourceMem.projectId);
         res.json({ relation });
       }
     ));
