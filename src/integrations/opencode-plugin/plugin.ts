@@ -170,13 +170,17 @@ const initializedSessionIds = new Set<string>();
 
 const MAX_SESSION_MAP_ENTRIES = 1000;
 
+function forgetSession(openCodeSessionId: string): void {
+  contentSessionIdsByOpenCodeSessionId.delete(openCodeSessionId);
+  initializedSessionIds.delete(openCodeSessionId);
+}
+
 function getOrCreateContentSessionId(openCodeSessionId: string): string {
   if (!contentSessionIdsByOpenCodeSessionId.has(openCodeSessionId)) {
     while (contentSessionIdsByOpenCodeSessionId.size >= MAX_SESSION_MAP_ENTRIES) {
       const oldestKey = contentSessionIdsByOpenCodeSessionId.keys().next().value;
       if (oldestKey !== undefined) {
-        contentSessionIdsByOpenCodeSessionId.delete(oldestKey);
-        initializedSessionIds.delete(oldestKey);
+        forgetSession(oldestKey);
       } else {
         break;
       }
@@ -268,8 +272,10 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       });
     },
 
-    // Summarize when a session compacts. This is OpenCode's real compaction
-    // hook (the old `session.compacted` bus event never existed).
+    // Summarize when a session compacts. Awaited compaction hook — a reliable
+    // flush point. End-of-session flushing for the common (non-compacting) case
+    // is handled worker-side: OpenCode exposes no awaited end-of-turn hook, so
+    // the worker auto-summarizes opencode sessions when their ingest goes idle.
     "experimental.session.compacting": async (
       input: SessionCompactingInput,
     ): Promise<void> => {
@@ -289,7 +295,12 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
 
       switch (eventType) {
         case "session.idle": {
-          // Best-effort summarize once a session goes idle.
+          // Best-effort summarize when the session goes idle. OpenCode does not
+          // await this bus handler and disposes the instance almost immediately,
+          // so on a one-shot `opencode run` this POST often loses the race — the
+          // worker's idle auto-summary is the reliable backstop. When this POST
+          // does land it simply clears the worker's pending-flush flag first, so
+          // the two paths coordinate to produce exactly one summary.
           const contentSessionId = await ensureSessionInitialized(sessionID, projectName);
           await workerPost("/api/sessions/summarize", {
             contentSessionId,
@@ -298,8 +309,7 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
           break;
         }
         case "session.deleted": {
-          contentSessionIdsByOpenCodeSessionId.delete(sessionID);
-          initializedSessionIds.delete(sessionID);
+          forgetSession(sessionID);
           break;
         }
         default:

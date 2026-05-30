@@ -112,7 +112,32 @@ describe('poison respawn (plan-11 #2485)', () => {
     expect(session.consecutiveInvalidOutputs).toBe(0); // reset on respawn
   });
 
-  it('respawns only after N consecutive prose/idle outputs, not on the first', async () => {
+  it('never respawns on benign idle (empty) output, no matter how many', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(7, 'do the thing', 1);
+    session.memorySessionId = 'mem-7';
+    await sm.queueObservation(7, {
+      tool_name: 'Read', tool_input: {}, tool_response: {}, prompt_number: 1, toolUseId: 'tu-idle',
+    });
+
+    const respawnSpy = spyOn(sm, 'respawnPoisonedSession');
+
+    // Far more empty/whitespace outputs than the prose threshold. `idle` is
+    // benign ("nothing to observe") and must never accumulate toward respawn,
+    // or trivial sessions (e.g. a short one-shot `opencode run`) get killed
+    // before they can summarize.
+    for (let i = 0; i < INVALID_OUTPUT_RESPAWN_THRESHOLD + 3; i++) {
+      await processAgentResponse(
+        i % 2 === 0 ? '' : '   \n  ',
+        session, makeDbManager(), sm, mockWorker, 0, null, 'TestAgent'
+      );
+    }
+
+    expect(respawnSpy).not.toHaveBeenCalled();
+    expect(session.consecutiveInvalidOutputs).toBe(0);
+  });
+
+  it('respawns only after N consecutive prose outputs, not on the first', async () => {
     const sm = new SessionManager(makeDbManager());
     const session = sm.initializeSession(2, 'do the thing', 1);
     session.memorySessionId = 'mem-2';

@@ -17,9 +17,10 @@ import type { WorkerRef, StorageResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
 
 /**
- * Consecutive non-XML observer outputs tolerated before we kill and respawn the
- * SDK session (plan-11, #2485). Idle and prose both count; poisoned triggers an
- * immediate respawn regardless of the count.
+ * Consecutive malformed (`prose`) observer outputs tolerated before we kill and
+ * respawn the SDK session (plan-11, #2485). Benign `idle` (empty) output does
+ * NOT count — only `prose` accumulates; `poisoned` triggers an immediate
+ * respawn regardless of the count.
  */
 export const INVALID_OUTPUT_RESPAWN_THRESHOLD = 3;
 
@@ -49,7 +50,16 @@ export async function processAgentResponse(
     const outputClass = classifyObserverOutput(text);
     const preview = previewOutput(text);
 
-    session.consecutiveInvalidOutputs = (session.consecutiveInvalidOutputs ?? 0) + 1;
+    // `idle` is empty/whitespace output — the SDK legitimately had nothing to
+    // observe (common for short, low-signal sessions such as a one-shot
+    // `opencode run`). It is benign and must NOT count toward the poison-respawn
+    // threshold: doing so killed trivial sessions before they could summarize,
+    // which directly contradicts this classifier's stated purpose ("avoid
+    // respawn churn on benign idle output"). Only genuinely malformed `prose`
+    // accumulates toward respawn; `poisoned` still respawns immediately below.
+    if (outputClass !== 'idle') {
+      session.consecutiveInvalidOutputs = (session.consecutiveInvalidOutputs ?? 0) + 1;
+    }
 
     logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response — ignoring queued batch`, {
       sessionId: session.sessionDbId,
@@ -60,8 +70,8 @@ export async function processAgentResponse(
 
     // Recover from poison (plan-11, #2485): a poisoned closure string means the
     // SDK session is wedged and will keep emitting garbage — respawn immediately.
-    // For idle/prose, only respawn after N consecutive invalid outputs so we
-    // don't churn the session on benign single-batch misses.
+    // For prose, only respawn after N consecutive invalid outputs so we don't
+    // churn the session on benign single-batch misses.
     const mustRespawn =
       outputClass === 'poisoned' ||
       session.consecutiveInvalidOutputs >= INVALID_OUTPUT_RESPAWN_THRESHOLD;

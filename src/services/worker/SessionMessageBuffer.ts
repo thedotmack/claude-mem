@@ -14,7 +14,12 @@ interface BufferedMessage {
 export interface DrainOptions {
   sessionDbId: number;
   signal: AbortSignal;
-  onIdleTimeout?: () => void;
+  /**
+   * Called when the buffer has been idle for `idleTimeoutMs`. Return a truthy
+   * value to indicate the handler enqueued more work (e.g. an idle auto-summary)
+   * and draining should continue; otherwise the iterator ends after this call.
+   */
+  onIdleTimeout?: () => boolean | void;
   idleTimeoutMs?: number;
 }
 
@@ -169,12 +174,18 @@ export class SessionMessageBuffer {
       if (!received && !signal.aborted) {
         const idleDuration = Date.now() - lastActivityTime;
         if (idleDuration >= idleTimeoutMs) {
+          // The handler may enqueue more work (e.g. an idle auto-summary) and
+          // ask us to keep draining; otherwise it aborts and we end here.
+          const handledKeepDraining = onIdleTimeout?.();
+          if (handledKeepDraining) {
+            lastActivityTime = Date.now();
+            continue;
+          }
           logger.info('SESSION', 'Idle timeout reached, triggering abort to kill subprocess', {
             sessionDbId,
             idleDurationMs: idleDuration,
             thresholdMs: idleTimeoutMs
           });
-          onIdleTimeout?.();
           return;
         }
       } else {

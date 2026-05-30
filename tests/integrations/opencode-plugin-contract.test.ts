@@ -174,6 +174,7 @@ describe("OpenCode plugin event contract", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
 });
 
 describe("OpenCode search client response-shape contract", () => {

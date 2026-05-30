@@ -5,6 +5,17 @@ import { SessionMessageBuffer } from './SessionMessageBuffer.js';
 import { getSdkProcessForSession, ensureSdkProcessExit } from '../../supervisor/process-registry.js';
 import { getSupervisor } from '../../supervisor/index.js';
 
+/**
+ * Ingest-idle window for OpenCode sessions, shorter than the default 3 min.
+ * OpenCode has no awaited end-of-turn hook, so the worker summarizes when the
+ * session's ingest goes idle (see getMessageIterator's onIdleTimeout). A tighter
+ * window makes opencode summaries land in ~1 min instead of ~3.5 min. It stays
+ * comfortably longer than the gaps between tool calls within a turn, so it does
+ * not flush mid-turn; the auto-summary keeps the subprocess alive while work is
+ * still flowing, so a tighter window does not cause premature teardown either.
+ */
+const OPENCODE_IDLE_TIMEOUT_MS = 45 * 1000;
+
 export class SessionManager {
   private dbManager: DatabaseManager;
   private sessions: Map<number, ActiveSession> = new Map();
@@ -171,6 +182,8 @@ export class SessionManager {
       toolUseId: data.toolUseId,
     };
 
+    session.hasUnsummarizedActivity = true;
+
     const messageId = this.buffer.enqueue(sessionDbId, message);
     const queueDepth = this.buffer.getPendingCount(sessionDbId);
     const toolSummary = logger.formatTool(data.tool_name, data.tool_input);
@@ -195,6 +208,10 @@ export class SessionManager {
       type: 'summarize',
       last_assistant_message: lastAssistantMessage
     };
+
+    // A summary now covers everything ingested so far, so the opencode idle
+    // auto-summary has nothing left to flush until new observations arrive.
+    session.hasUnsummarizedActivity = false;
 
     const messageId = this.buffer.enqueue(sessionDbId, message);
     const queueDepth = this.buffer.getPendingCount(sessionDbId);
@@ -401,11 +418,25 @@ export class SessionManager {
     for await (const message of this.buffer.drain({
       sessionDbId,
       signal: session.abortController.signal,
+      idleTimeoutMs: session.platformSource === 'opencode' ? OPENCODE_IDLE_TIMEOUT_MS : undefined,
       onIdleTimeout: () => {
+        // OpenCode has no awaited end-of-turn hook to reliably POST a summarize
+        // (its session.idle bus event is fire-and-forget and the instance is
+        // disposed almost immediately). So when an opencode session's ingest
+        // goes idle with work that has not been summarized, the worker queues
+        // the summary itself and keeps draining to process it. The flag is
+        // cleared by queueSummarize, so the next idle (no new observations)
+        // falls through to abort — no loop, and exactly one summary per turn.
+        if (session.platformSource === 'opencode' && session.hasUnsummarizedActivity) {
+          logger.info('SESSION', 'OpenCode idle with unsummarized work: queueing auto-summary', { sessionDbId });
+          void this.queueSummarize(sessionDbId);
+          return true;
+        }
         logger.info('SESSION', 'Triggering abort due to idle timeout to kill subprocess', { sessionDbId });
         session.idleTimedOut = true;
         session.abortReason = 'idle';
         session.abortController.abort();
+        return false;
       }
     })) {
       session.claimedMessageIds.push(message._persistentId);

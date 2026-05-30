@@ -33,7 +33,15 @@ export interface ActiveSession {
    */
   consecutiveInvalidOutputs: number;
   forceInit?: boolean;
-  idleTimedOut?: boolean;  
+  idleTimedOut?: boolean;
+  /**
+   * Observations have been ingested since the last summary was queued. Used by
+   * the opencode idle auto-summary: OpenCode exposes no awaited end-of-turn hook
+   * to reliably POST a summarize, so when an opencode session's ingest goes idle
+   * with unsummarized work, the worker queues the summary itself. Set true when
+   * an observation is queued, cleared when a summarize is queued.
+   */
+  hasUnsummarizedActivity?: boolean;
   lastGeneratorActivity: number;
   modelOverride?: string;
   lastSummaryStored?: boolean;

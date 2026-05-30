@@ -123,4 +123,38 @@ describe('SessionMessageBuffer (in-RAM observation buffer)', () => {
       { message_type: 'summarize', tool_name: null },
     ]);
   });
+
+  test('a truthy onIdleTimeout return keeps draining work it enqueued (opencode idle auto-summary)', async () => {
+    // Mechanism behind the opencode idle auto-summary: when the buffer goes idle,
+    // the handler may enqueue more work (a synthetic summarize) and ask the drain
+    // to continue instead of ending. The first idle enqueues a summarize and
+    // returns true → that summarize is then drained; the second idle returns
+    // falsy → the iterator ends. No infinite loop, and the late-enqueued work is
+    // not dropped.
+    const buffer = new SessionMessageBuffer();
+    const controller = new AbortController();
+    buffer.enqueue(1, obs('Read', 'tool-1'));
+
+    let idleCalls = 0;
+    const drained: string[] = [];
+    for await (const msg of buffer.drain({
+      sessionDbId: 1,
+      signal: controller.signal,
+      idleTimeoutMs: 20,
+      onIdleTimeout: () => {
+        idleCalls += 1;
+        if (idleCalls === 1) {
+          buffer.enqueue(1, { type: 'summarize', last_assistant_message: '' });
+          return true; // keep draining
+        }
+        controller.abort();
+        return false; // end
+      },
+    })) {
+      drained.push(msg.type);
+    }
+
+    expect(drained).toEqual(['observation', 'summarize']);
+    expect(idleCalls).toBe(2);
+  });
 });
