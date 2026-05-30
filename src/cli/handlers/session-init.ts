@@ -10,6 +10,7 @@ import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { isInternalProtocolPayload } from '../../utils/tag-stripping.js';
 import { resolveRuntimeContext, logServerBetaFallback } from '../../services/hooks/runtime-selector.js';
 import { isServerBetaClientError } from '../../services/hooks/server-beta-client.js';
+import { findTranscriptPath, estimateContextFill } from '../../shared/transcript-context-fill.js';
 
 interface SessionInitResponse {
   sessionDbId: number;
@@ -129,6 +130,19 @@ export const sessionInitHandler: EventHandler = {
       String(settings.CLAUDE_MEM_SEMANTIC_INJECT).toLowerCase() === 'true';
     let additionalContext = '';
 
+    const threshold = parseFloat(settings.SESSION_SUMMARY_CONTEXT_THRESHOLD ?? '0.65');
+    const windowSize = parseInt(settings.SESSION_SUMMARY_CONTEXT_WINDOW_SIZE ?? '200000', 10);
+    if (sessionId && Number.isFinite(threshold) && threshold > 0 && Number.isFinite(windowSize) && windowSize > 0) {
+      const transcriptPath = findTranscriptPath(sessionId);
+      if (transcriptPath) {
+        const fill = estimateContextFill(transcriptPath, windowSize);
+        if (fill >= threshold) {
+          const pct = Math.round(fill * 100);
+          additionalContext = `[claude-mem] Context window is ~${pct}% full (threshold: ${Math.round(threshold * 100)}%). Consider drafting a session summary now to preserve continuity across compaction.`;
+        }
+      }
+    }
+
     if (semanticInject && prompt && prompt.length >= 20 && prompt !== '[media prompt]') {
       const limit = settings.CLAUDE_MEM_SEMANTIC_INJECT_LIMIT || '5';
       const semanticResult = await executeWithWorkerFallback<SemanticContextResponse>(
@@ -138,7 +152,9 @@ export const sessionInitHandler: EventHandler = {
       );
       if (!isWorkerFallback(semanticResult) && semanticResult?.context) {
         logger.debug('HOOK', `Semantic injection: ${semanticResult.count} observations for prompt`, { sessionId: sessionDbId, count: semanticResult.count });
-        additionalContext = semanticResult.context;
+        additionalContext = additionalContext
+          ? `${additionalContext}\n\n${semanticResult.context}`
+          : semanticResult.context;
       }
     }
 
