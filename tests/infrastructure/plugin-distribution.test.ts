@@ -197,6 +197,31 @@ describe('Plugin Distribution - Build Script Verification', () => {
   });
 });
 
+describe('Plugin Distribution - Runtime Dependency Isolation (#2407 / #2379)', () => {
+  const pluginPkg = () => readJson('plugin/package.json');
+
+  it('keeps zod and shell-quote as hard dependencies', () => {
+    const deps = pluginPkg().dependencies ?? {};
+    expect(deps['zod']).toBeDefined();
+    expect(deps['shell-quote']).toBeDefined();
+  });
+
+  it('moves native tree-sitter grammars to optionalDependencies so a grammar build failure cannot abort the whole install', () => {
+    const pkg = pluginPkg();
+    const deps = pkg.dependencies ?? {};
+    const optional = pkg.optionalDependencies ?? {};
+    expect(Object.keys(deps).some((k) => k.includes('tree-sitter'))).toBe(false);
+    expect(Object.keys(optional).some((k) => k.includes('tree-sitter'))).toBe(true);
+  });
+
+  it('gates the build on plugin runtime deps resolving from plugin/node_modules', () => {
+    const content = readFileSync(path.join(projectRoot, 'scripts/build-hooks.js'), 'utf-8');
+    expect(content).toContain('optionalDependencies');
+    expect(content).toContain('Verifying plugin runtime deps resolve');
+    expect(content).toContain('createRequire');
+  });
+});
+
 describe('Plugin Distribution - Setup Hook (#1547)', () => {
   it('should not reference removed setup.sh in Setup hook', () => {
     const hooksPath = path.join(projectRoot, 'plugin/hooks/hooks.json');

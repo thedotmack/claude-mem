@@ -205,8 +205,20 @@ async function buildHooks() {
       private: true,
       description: 'Runtime dependencies for claude-mem bundled hooks',
       type: 'module',
+      // Hook-critical, pure-JS deps that MUST install for the worker to boot.
+      // Kept here (not in optionalDependencies) so a failure fails the build.
       dependencies: {
         'zod': '^4.3.6',
+        'shell-quote': '^1.8.3',
+      },
+      // Tree-sitter grammars need native node-gyp / prebuild-install builds. As
+      // hard dependencies, a single grammar build failure (e.g. a Node version
+      // with no prebuilt binding) aborts the ENTIRE `npm install`, taking zod
+      // down with it and crashing every hook (#2407 / #2379). As optional deps
+      // the failure is tolerated: zod still installs, hooks still boot, and only
+      // code-graph parsing degrades. The resolve gate at the end of this build
+      // is the hard guard that zod actually landed.
+      optionalDependencies: {
         'tree-sitter-cli': '^0.26.5',
         'tree-sitter-c': '^0.24.1',
         'tree-sitter-cpp': '^0.23.4',
@@ -232,7 +244,6 @@ async function buildHooks() {
         '@tree-sitter-grammars/tree-sitter-yaml': '^0.7.1',
         '@derekstride/tree-sitter-sql': '^0.3.11',
         '@tree-sitter-grammars/tree-sitter-markdown': '^0.3.2',
-        'shell-quote': '^1.8.3',
       },
       overrides: {
         'tree-sitter': '^0.25.0'
@@ -658,6 +669,25 @@ async function buildHooks() {
     console.log('✓ All required distribution files present');
 
     await verifyShellTemplateCanonical();
+
+    // Hard gate: prove the worker's externalized runtime deps actually resolve
+    // from plugin/node_modules. The install step above is fail-soft (grammars
+    // are optionalDependencies), so this is the real guard against shipping a
+    // build that crashes every hook with `Cannot find module 'zod'`
+    // (#2407 / #2379).
+    console.log('\n📋 Verifying plugin runtime deps resolve...');
+    {
+      const { createRequire } = await import('node:module');
+      const pluginRequire = createRequire(path.join(__dirname, '..', 'plugin', 'package.json'));
+      for (const dep of ['zod', 'shell-quote']) {
+        try {
+          pluginRequire.resolve(dep);
+        } catch {
+          throw new Error(`Plugin runtime dep '${dep}' does not resolve from plugin/node_modules — the bundled worker would crash at runtime. Run \`cd plugin && npm install\` and rebuild.`);
+        }
+      }
+    }
+    console.log('✓ Plugin runtime deps resolve (zod, shell-quote)');
 
     console.log('\n✅ All build targets compiled successfully!');
     console.log(`   Output: ${hooksDir}/`);
