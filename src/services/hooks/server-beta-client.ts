@@ -341,11 +341,13 @@ export class ServerBetaClient {
     input: ServerBetaAddObservationRequest,
   ): Record<string, unknown> {
     const kind = input.kind ?? 'manual';
+    const metadataTitle = typeof input.metadata?.title === 'string' ? input.metadata.title : undefined;
     return {
       projectId: input.projectId,
-      narrative: input.content,
       kind,
       type: kind,
+      narrative: input.content,
+      ...(metadataTitle ? { title: metadataTitle } : {}),
       ...(input.serverSessionId !== undefined ? { serverSessionId: input.serverSessionId } : {}),
       ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
     };
