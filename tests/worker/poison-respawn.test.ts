@@ -38,8 +38,43 @@ mock.module('../../src/services/worker-service.js', () => ({
 
 import { SessionManager } from '../../src/services/worker/SessionManager.js';
 import { processAgentResponse, INVALID_OUTPUT_RESPAWN_THRESHOLD } from '../../src/services/worker/agents/ResponseProcessor.js';
+import { handleGeneratorExit } from '../../src/services/worker/session/GeneratorExitHandler.js';
 import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
+import type { SessionCompletionHandler } from '../../src/services/worker/session/SessionCompletionHandler.js';
+import type { ActiveSession } from '../../src/services/worker-types.js';
 import type { WorkerRef } from '../../src/services/worker/agents/types.js';
+
+/**
+ * Drive the real generator-exit lifecycle without standing up the full
+ * SessionRoutes (which would pull in the SDK providers and the process-global
+ * supervisor registry that this suite deliberately keeps unmocked). This mirrors
+ * SessionRoutes.startGeneratorWithProvider EXACTLY: reset an aborted controller
+ * for a fresh spawn, assign the generator promise, then on .finally() read and
+ * consume session.abortReason and hand it to the real handleGeneratorExit. The
+ * `startSession` callback stands in for the provider's generator body.
+ */
+async function runGeneratorLifecycle(
+  sm: SessionManager,
+  session: ActiveSession,
+  completionHandler: Pick<SessionCompletionHandler, 'finalizeSession'>,
+  startSession: (session: ActiveSession) => Promise<void>
+): Promise<void> {
+  if (session.abortController.signal.aborted) {
+    session.abortController = new AbortController();
+  }
+  session.currentProvider = 'claude';
+  session.generatorPromise = startSession(session)
+    .catch(() => { /* generator failed: batch dropped, transcript is recovery */ })
+    .finally(async () => {
+      const reason = session.abortReason ?? null;
+      session.abortReason = null;
+      await handleGeneratorExit(session, reason, {
+        sessionManager: sm,
+        completionHandler: completionHandler as SessionCompletionHandler,
+      });
+    });
+  await session.generatorPromise;
+}
 
 function makeDbManager(): DatabaseManager {
   return {
@@ -183,5 +218,99 @@ describe('poison respawn (plan-11 #2485)', () => {
     expect(session.consecutiveInvalidOutputs).toBe(0);
     expect(session.memorySessionId).toBeNull();
     expect(session.abortController.signal.aborted).toBe(true);
+  });
+
+  it('handleGeneratorExit preserves session and buffer on a "poisoned" exit', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(11, 'do the thing', 1);
+    await sm.queueObservation(11, {
+      tool_name: 'Read', tool_input: {}, tool_response: {}, prompt_number: 1, toolUseId: 'tu-p1',
+    });
+    expect(sm.getMessageBuffer().getPendingCount(11)).toBe(1);
+    session.generatorPromise = Promise.resolve();
+    session.currentProvider = 'claude';
+
+    const finalizeSession = mock(() => Promise.resolve());
+
+    await handleGeneratorExit(session, 'poisoned', {
+      sessionManager: sm,
+      completionHandler: { finalizeSession } as unknown as SessionCompletionHandler,
+    });
+
+    // Buffer NOT disposed, session NOT removed, no finalization on poison.
+    expect(finalizeSession).not.toHaveBeenCalled();
+    expect(sm.getSession(11)).toBeDefined();
+    expect(sm.getMessageBuffer().getPendingCount(11)).toBe(1);
+    // Dead generator still torn down so the next ensureGeneratorRunning starts fresh.
+    expect(session.generatorPromise).toBeNull();
+    expect(session.currentProvider).toBeNull();
+  });
+
+  it('handleGeneratorExit finalizes and removes the session on a non-poison exit', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(12, 'do the thing', 1);
+    await sm.queueObservation(12, {
+      tool_name: 'Read', tool_input: {}, tool_response: {}, prompt_number: 1, toolUseId: 'tu-i1',
+    });
+    session.generatorPromise = Promise.resolve();
+
+    const finalizeSession = mock(() => Promise.resolve());
+
+    await handleGeneratorExit(session, 'idle', {
+      sessionManager: sm,
+      completionHandler: { finalizeSession } as unknown as SessionCompletionHandler,
+    });
+
+    expect(finalizeSession).toHaveBeenCalledTimes(1);
+    expect(sm.getSession(12)).toBeUndefined();
+    expect(sm.getMessageBuffer().getPendingCount(12)).toBe(0); // buffer disposed
+  });
+
+  it('full lifecycle: poisoned exit preserves the buffer, then a fresh generator drains it', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(20, 'do the thing', 1);
+    session.memorySessionId = 'mem-20';
+    await sm.queueObservation(20, {
+      tool_name: 'Read', tool_input: {}, tool_response: {}, prompt_number: 1, toolUseId: 'tu-l1',
+    });
+    await sm.queueObservation(20, {
+      tool_name: 'Edit', tool_input: {}, tool_response: {}, prompt_number: 1, toolUseId: 'tu-l2',
+    });
+    expect(sm.getMessageBuffer().getPendingCount(20)).toBe(2);
+
+    const finalizeSession = mock(() => Promise.resolve());
+    const completionHandler = { finalizeSession };
+
+    // Round 1: the generator gets poisoned mid-run and respawns. This exercises
+    // the real respawnPoisonedSession -> .finally() -> handleGeneratorExit path.
+    await runGeneratorLifecycle(sm, session, completionHandler, async (s) => {
+      await sm.respawnPoisonedSession(s.sessionDbId);
+    });
+
+    // The poisoned exit must NOT finalize/evict: session and buffer survive so the
+    // preserved pending messages can be reprocessed (the previously-missing behavior).
+    expect(finalizeSession).not.toHaveBeenCalled();
+    expect(sm.getSession(20)).toBeDefined();
+    expect(sm.getMessageBuffer().getPendingCount(20)).toBe(2);
+    expect(session.generatorPromise).toBeNull();
+    expect(session.abortController.signal.aborted).toBe(true);
+
+    // Round 2: the next ingest's ensureGeneratorRunning equivalent starts a fresh
+    // generator. It must see a reset (non-aborted) controller and the intact buffer.
+    let observed: { pending: number; aborted: boolean } | null = null;
+    await runGeneratorLifecycle(sm, session, completionHandler, async (s) => {
+      observed = {
+        pending: sm.getMessageBuffer().getPendingCount(s.sessionDbId),
+        aborted: s.abortController.signal.aborted,
+      };
+      // Drain the preserved work, then exit normally (reason === null).
+      await sm.clearPendingForSession(s.sessionDbId);
+    });
+
+    expect(observed).toEqual({ pending: 2, aborted: false });
+    // A normal (non-poison) exit then finalizes and evicts the now-drained session.
+    expect(finalizeSession).toHaveBeenCalledTimes(1);
+    expect(sm.getSession(20)).toBeUndefined();
+    expect(sm.getMessageBuffer().getPendingCount(20)).toBe(0);
   });
 });
