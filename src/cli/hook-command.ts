@@ -11,6 +11,7 @@ import {
   resetHookIoState,
 } from '../shared/hook-io.js';
 import { logger } from '../utils/logger.js';
+import type { HookResult } from './types.js';
 
 export interface HookCommandOptions {
   skipExit?: boolean;
@@ -58,16 +59,54 @@ export function isNonBlockingHookInputError(error: unknown): boolean {
     (lower.includes('missing') || lower.includes('does not exist'));
 }
 
+function codexEventNameForHandler(event: string): string | undefined {
+  switch (event) {
+    case 'context':
+      return 'SessionStart';
+    case 'session-init':
+      return 'UserPromptSubmit';
+    case 'file-context':
+      return 'PreToolUse';
+    case 'observation':
+      return 'PostToolUse';
+    case 'summarize':
+      return 'Stop';
+    default:
+      return undefined;
+  }
+}
+
+export function sanitizeHookResultForPlatform(
+  platform: string,
+  event: string,
+  result: HookResult,
+): HookResult {
+  if (platform !== 'codex') return result;
+
+  const codexEventName = result.hookSpecificOutput?.hookEventName ?? codexEventNameForHandler(event);
+  if (
+    codexEventName !== 'PreToolUse'
+    && codexEventName !== 'PermissionRequest'
+    && codexEventName !== 'PostToolUse'
+  ) {
+    return result;
+  }
+
+  const { suppressOutput: _suppressOutput, ...rest } = result;
+  return rest;
+}
+
 async function executeHookPipeline(
   adapter: ReturnType<typeof getPlatformAdapter>,
   handler: ReturnType<typeof getEventHandler>,
   platform: string,
+  event: string,
   options: HookCommandOptions
 ): Promise<number> {
   const rawInput = await readJsonFromStdin();
   const input = adapter.normalizeInput(rawInput);
   input.platform = platform;
-  const result = await handler.execute(input);
+  const result = sanitizeHookResultForPlatform(platform, event, await handler.execute(input));
 
   // MODEL_CONTEXT: the only stdout JSON emit, via the platform adapter.
   emitModelContext(adapter, result);
@@ -95,17 +134,17 @@ export async function hookCommand(platform: string, event: string, options: Hook
   const handler = getEventHandler(event);
 
   try {
-    return await executeHookPipeline(adapter, handler, platform, options);
+    return await executeHookPipeline(adapter, handler, platform, event, options);
   } catch (error) {
     if (error instanceof AdapterRejectedInput) {
       logger.warn('HOOK', `Adapter rejected input (${error.reason}), skipping hook`);
-      emitModelContext(adapter, { continue: true, suppressOutput: true });
+      emitModelContext(adapter, sanitizeHookResultForPlatform(platform, event, { continue: true, suppressOutput: true }));
       exitGraceful(options);
       return HOOK_EXIT_CODES.SUCCESS;
     }
     if (isNonBlockingHookInputError(error)) {
       logger.warn('HOOK', `Hook input unavailable, skipping hook: ${error instanceof Error ? error.message : error}`);
-      emitModelContext(adapter, { continue: true, suppressOutput: true });
+      emitModelContext(adapter, sanitizeHookResultForPlatform(platform, event, { continue: true, suppressOutput: true }));
       exitGraceful(options);
       return HOOK_EXIT_CODES.SUCCESS;
     }

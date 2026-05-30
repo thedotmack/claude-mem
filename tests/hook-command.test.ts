@@ -1,5 +1,36 @@
 import { describe, it, expect } from 'bun:test';
-import { isNonBlockingHookInputError, isWorkerUnavailableError } from '../src/cli/hook-command.js';
+import {
+  sanitizeHookResultForPlatform,
+  isNonBlockingHookInputError,
+  isWorkerUnavailableError,
+} from '../src/cli/hook-command.js';
+
+describe('sanitizeHookResultForPlatform', () => {
+  it('removes suppressOutput from Codex PreToolUse and PostToolUse outputs', () => {
+    expect(
+      sanitizeHookResultForPlatform('codex', 'file-context', {
+        continue: true,
+        suppressOutput: true,
+      }),
+    ).toEqual({ continue: true });
+
+    expect(
+      sanitizeHookResultForPlatform('codex', 'observation', {
+        continue: true,
+        suppressOutput: true,
+      }),
+    ).toEqual({ continue: true });
+  });
+
+  it('keeps suppressOutput for Codex hooks whose schema supports it', () => {
+    expect(
+      sanitizeHookResultForPlatform('codex', 'session-init', {
+        continue: true,
+        suppressOutput: true,
+      }),
+    ).toEqual({ continue: true, suppressOutput: true });
+  });
+});
 
 describe('isNonBlockingHookInputError', () => {
   it('classifies missing transcript paths as non-blocking hook input errors', () => {

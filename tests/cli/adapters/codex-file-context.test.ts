@@ -43,6 +43,14 @@ describe('extractFilePaths', () => {
     expect(paths).toEqual([]);
   });
 
+  it('skips Bash commands that shell-quote cannot parse', () => {
+    const paths = extractFilePaths('Bash', {
+      command: "node - <<'NODE'\nconst session = `codex-hook-replay-${Date.now()}`;\nNODE",
+    }, tmpDir);
+
+    expect(paths).toEqual([]);
+  });
+
   it('extracts MCP read tool path arrays', () => {
     const paths = extractFilePaths('mcp__local_filesystem__read_file', {
       paths: ['README.md', 'notes.txt', 'missing.txt'],

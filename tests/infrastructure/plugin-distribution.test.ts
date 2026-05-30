@@ -95,6 +95,19 @@ describe('Plugin Distribution - Codex Marketplace', () => {
   });
 });
 
+describe('Plugin Distribution - SessionStart hook stdout discipline', () => {
+  it('silences worker start status JSON so SessionStart emits only hook-contract JSON', () => {
+    const claudeHooks = readJson('plugin/hooks/hooks.json');
+    const codexHooks = readJson('plugin/hooks/codex-hooks.json');
+
+    const claudeStart = claudeHooks.hooks.SessionStart[0].hooks[0].command;
+    const codexStart = codexHooks.hooks.SessionStart[0].hooks[1].command;
+
+    expect(claudeStart).toContain('worker-service.cjs" start >/dev/null');
+    expect(codexStart).toContain('worker-service.cjs" start >/dev/null');
+  });
+});
+
 describe('Plugin Distribution - hooks.json Integrity', () => {
   it('should have valid JSON in hooks.json', () => {
     const hooksPath = path.join(projectRoot, 'plugin/hooks/hooks.json');
@@ -250,7 +263,7 @@ const RULE_A_EXPECTATIONS: Record<string, Record<string, string>> = {
       trailingCommand: ['node', '"$_P/scripts/version-check.js"'],
       notFoundMessage: 'claude-mem: version-check.js not found',
     }),
-    'SessionStart.0.0': claudeHook(['start'], { trailingJson: { continue: true, suppressOutput: true } }),
+    'SessionStart.0.0': claudeHook(['start', '>/dev/null'], { trailingJson: { continue: true, suppressOutput: true } }),
     'SessionStart.0.1': claudeHook(['hook', 'claude-code', 'context']),
     'UserPromptSubmit.0.0': claudeHook(['hook', 'claude-code', 'session-init']),
     'PostToolUse.0.0': claudeHook(['hook', 'claude-code', 'observation']),
@@ -263,7 +276,7 @@ const RULE_A_EXPECTATIONS: Record<string, Record<string, string>> = {
       trailingCommand: ['node', '"$_P/scripts/version-check.js"'],
       notFoundMessage: 'claude-mem: version-check.js not found',
     }),
-    'SessionStart.0.1': codexHook(['start']),
+    'SessionStart.0.1': codexHook(['start', '>/dev/null']),
     'SessionStart.0.2': codexHook(['hook', 'codex', 'context']),
     'UserPromptSubmit.0.0': codexHook(['hook', 'codex', 'session-init']),
     'PreToolUse.0.0': codexHook(['hook', 'codex', 'file-context']),

@@ -85,7 +85,12 @@ function extractFromBash(toolInput: unknown, cwd: string): string[] {
   const command = normalizeCommand((toolInput as { command?: unknown } | undefined)?.command);
   if (!command) return [];
 
-  const tokens = parse(command);
+  let tokens: ParsedToken[];
+  try {
+    tokens = parse(command);
+  } catch {
+    return [];
+  }
   const paths: string[] = [];
 
   for (const segment of splitSegments(tokens)) {
