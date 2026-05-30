@@ -24,6 +24,12 @@ function commandHooksFrom(relativePath: string): string[] {
   );
 }
 
+function workerStartCommandsFrom(relativePath: string): string[] {
+  return commandHooksFrom(relativePath).filter(command =>
+    command.includes('worker-service.cjs" start')
+  );
+}
+
 function mcpStartupCommandFrom(relativePath: string): string {
   const parsed = readJson(relativePath);
   return parsed.mcpServers['mcp-search'].args[1];
@@ -97,14 +103,13 @@ describe('Plugin Distribution - Codex Marketplace', () => {
 
 describe('Plugin Distribution - SessionStart hook stdout discipline', () => {
   it('silences worker start status JSON so SessionStart emits only hook-contract JSON', () => {
-    const claudeHooks = readJson('plugin/hooks/hooks.json');
-    const codexHooks = readJson('plugin/hooks/codex-hooks.json');
+    const claudeStarts = workerStartCommandsFrom('plugin/hooks/hooks.json');
+    const codexStarts = workerStartCommandsFrom('plugin/hooks/codex-hooks.json');
 
-    const claudeStart = claudeHooks.hooks.SessionStart[0].hooks[0].command;
-    const codexStart = codexHooks.hooks.SessionStart[0].hooks[1].command;
-
-    expect(claudeStart).toContain('worker-service.cjs" start >/dev/null');
-    expect(codexStart).toContain('worker-service.cjs" start >/dev/null');
+    expect(claudeStarts).toHaveLength(1);
+    expect(codexStarts).toHaveLength(1);
+    expect(claudeStarts[0]).toContain('worker-service.cjs" start >/dev/null');
+    expect(codexStarts[0]).toContain('worker-service.cjs" start >/dev/null');
   });
 });
 
