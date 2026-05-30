@@ -62,7 +62,10 @@ export function requireServerAuth(
     }
 
     if (!rawKey) {
-      res.status(401).json({ error: 'Unauthorized', message: 'Missing bearer API key' });
+      res.status(401).json({
+        error: 'Unauthorized',
+        message: 'Missing API key (Authorization: Bearer <key> or X-Api-Key: <key>)',
+      });
       return;
     }
 

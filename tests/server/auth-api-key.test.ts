@@ -403,6 +403,9 @@ describe('server API key auth', () => {
 
     expect(calledNext).toBe(false);
     expect(res.statusCode).toBe(401);
-    expect(res.body).toMatchObject({ error: 'Unauthorized', message: 'Missing bearer API key' });
+    expect(res.body).toMatchObject({
+      error: 'Unauthorized',
+      message: 'Missing API key (Authorization: Bearer <key> or X-Api-Key: <key>)',
+    });
   });
 });
