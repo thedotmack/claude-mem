@@ -222,6 +222,10 @@ export class ServerV1Routes implements RouteHandler {
         return;
       }
       if (!this.ensureProjectAllowed(req, res, sourceMem.projectId)) return;
+      if (body.sourceMemoryId === body.targetMemoryId) {
+        res.status(400).json({ error: 'ValidationError', message: 'A memory cannot relate to itself' });
+        return;
+      }
       const targetMem = memRepo.getById(body.targetMemoryId);
       if (!targetMem) {
         res.status(404).json({ error: 'NotFound', message: 'Target memory not found' });
