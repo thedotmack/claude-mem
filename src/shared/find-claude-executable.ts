@@ -14,8 +14,16 @@ import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from './paths.js';
 import { logger, type Component } from '../utils/logger.js';
 
-/** How long to wait for `claude --version` before giving up (ms). */
-const VERSION_CHECK_TIMEOUT_MS = 3_000;
+/**
+ * How long to wait for `claude --version` before giving up (ms).
+ *
+ * The native `claude` binary is large (~225 MB) and a cold start on Windows
+ * (first run after install, antivirus real-time scan) can take several seconds.
+ * A too-tight timeout makes a perfectly good CLI look unusable, which on a
+ * Windows npm-global path then surfaces as a misleading "desktop app" error.
+ * Warm `--version` calls return in ~0.5 s, so 10 s only bites on cold starts.
+ */
+const VERSION_CHECK_TIMEOUT_MS = 10_000;
 
 /**
  * Returns true if the path looks like a Windows desktop-app installation
@@ -23,6 +31,13 @@ const VERSION_CHECK_TIMEOUT_MS = 3_000;
  */
 function looksLikeDesktopAppPath(candidatePath: string): boolean {
   const normalized = candidatePath.replace(/\\/g, '/').toLowerCase();
+  // npm / Node CLI installs on Windows live under %AppData%\Roaming\npm\node_modules\…
+  // — the exact location `npm install -g @anthropic-ai/claude-code` uses. Those contain
+  // "appdata" but are NOT the desktop app; treating them as such tells users to reinstall
+  // the CLI they already have. Bail out for any npm/node_modules path first. (See #2723.)
+  if (normalized.includes('/node_modules/') || normalized.includes('/npm/')) {
+    return false;
+  }
   return (
     normalized.includes('appdata') ||
     normalized.includes('program files') ||
