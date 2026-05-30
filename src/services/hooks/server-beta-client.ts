@@ -55,7 +55,7 @@ export class ServerBetaClientError extends Error {
 
 export interface ServerBetaClientConfig {
   serverBaseUrl: string;
-  apiKey: string;
+  apiKey: string | null;
   timeoutMs?: number;
 }
 
@@ -223,7 +223,7 @@ export interface ServerBetaJobStatusResponse {
 
 export class ServerBetaClient {
   private readonly baseUrl: string;
-  private readonly apiKey: string;
+  private readonly apiKey: string | null;
   private readonly timeoutMs: number;
 
   constructor(config: ServerBetaClientConfig) {
@@ -392,7 +392,7 @@ export class ServerBetaClient {
     path: string,
     body?: unknown,
   ): Promise<T> {
-    if (!this.apiKey || !this.apiKey.trim()) {
+    if (this.apiKey !== null && !this.apiKey.trim()) {
       throw new ServerBetaClientError(
         'missing_api_key',
         'Server beta API key is not configured (CLAUDE_MEM_SERVER_BETA_API_KEY).',
@@ -400,9 +400,8 @@ export class ServerBetaClient {
     }
 
     const url = `${this.baseUrl}${path}`;
-    const isLocalDevBypass = this.apiKey.trim() === 'local-dev-bypass';
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (!isLocalDevBypass) {
+    if (this.apiKey !== null) {
       headers['Authorization'] = `Bearer ${this.apiKey}`;
     }
     const init: RequestInit = { method, headers };
