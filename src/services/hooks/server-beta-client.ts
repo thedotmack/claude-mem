@@ -183,7 +183,6 @@ export interface ServerBetaContextObservationsResponse {
 }
 
 export interface ServerBetaCreateRelationRequest {
-  projectId?: string;
   sourceMemoryId: string;
   targetMemoryId: string;
   relationType: 'supersedes' | 'elaborates_on' | 'contextualizes' | 'obfuscates';

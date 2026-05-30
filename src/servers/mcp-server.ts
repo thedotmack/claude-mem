@@ -392,7 +392,6 @@ async function handleObservationGenerationStatus(
 }
 
 interface MemoryRelateArgs {
-  projectId?: string;
   sourceMemoryId: string;
   targetMemoryId: string;
   relationType: 'supersedes' | 'elaborates_on' | 'contextualizes' | 'obfuscates';
@@ -408,7 +407,6 @@ async function handleMemoryRelate(
       throw new Error('memory_relate: sourceMemoryId, targetMemoryId, and relationType are required');
     }
     const response = await ctx.client.createRelation({
-      projectId: args.projectId && args.projectId.trim().length > 0 ? args.projectId : ctx.projectId,
       sourceMemoryId: args.sourceMemoryId,
       targetMemoryId: args.targetMemoryId,
       relationType: args.relationType,
@@ -743,7 +741,6 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     inputSchema: {
       type: 'object',
       properties: {
-        projectId: { type: 'string', description: 'Project id (falls back to CLAUDE_MEM_SERVER_BETA_PROJECT_ID)' },
         sourceMemoryId: { type: 'string', description: 'The newer/active memory (the one doing the relating)' },
         targetMemoryId: { type: 'string', description: 'The older/affected memory' },
         relationType: {
