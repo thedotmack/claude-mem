@@ -264,6 +264,12 @@ export class SessionManager {
    * messages (so the next generator re-yields them), aborts the current
    * generator with a 'poisoned' reason, and ensures the SDK subprocess exits.
    * The next ensureGeneratorRunning starts a clean generator.
+   *
+   * This preservation only holds because GeneratorExitHandler.handleGeneratorExit
+   * special-cases reason === 'poisoned' and skips finalize/removeSessionImmediate.
+   * The abort here fires that exit handler via the generator's .finally(); if the
+   * handler ever stops honoring 'poisoned' the buffer would be disposed and this
+   * respawn would silently lose the preserved messages. The two MUST stay in sync.
    */
   async respawnPoisonedSession(sessionDbId: number): Promise<void> {
     const session = this.sessions.get(sessionDbId);

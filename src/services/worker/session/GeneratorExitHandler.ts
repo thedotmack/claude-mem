@@ -21,6 +21,15 @@ export interface GeneratorExitDependencies {
  * that is still live happens naturally — the next observation ingest calls
  * ensureGeneratorRunning, which starts a fresh generator that drains whatever is
  * buffered.
+ *
+ * The one exception is a 'poisoned' abort (plan-11, #2485). respawnPoisonedSession
+ * deliberately aborts the generator while KEEPING the session in the active map
+ * and the in-RAM buffer intact, so the preserved pending messages can be
+ * reprocessed by a fresh SDK session. Finalizing/removing here would dispose
+ * that buffer and evict the session before the next ensureGeneratorRunning could
+ * reach it, silently defeating the respawn. So for 'poisoned' we tear down only
+ * the dead generator (null the promise/provider, ensure the SDK subprocess
+ * exits) and leave the session and its buffer in place for the restart.
  */
 export async function handleGeneratorExit(
   session: ActiveSession,
@@ -37,6 +46,20 @@ export async function handleGeneratorExit(
 
   session.generatorPromise = null;
   session.currentProvider = null;
+
+  // Poison respawn (plan-11, #2485): the session and its in-RAM buffer were
+  // intentionally preserved by respawnPoisonedSession. Do NOT finalize or remove
+  // it — that would dispose the buffer and evict the session, dropping the
+  // preserved pending messages. The next ensureGeneratorRunning starts a fresh
+  // generator (resetting the aborted controller) that drains the buffer.
+  if (reason === 'poisoned') {
+    logger.info('SESSION', 'Generator exited for poison respawn — preserving session and buffer for restart', {
+      sessionId: sessionDbId,
+      reason,
+      preservedPending: sessionManager.getMessageBuffer().getPendingCount(sessionDbId)
+    });
+    return;
+  }
 
   logger.info('SESSION', 'Generator exited — finalizing session', { sessionId: sessionDbId, reason });
 

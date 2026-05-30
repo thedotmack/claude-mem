@@ -47,7 +47,7 @@ export interface ActiveSession {
   lastSummaryStored?: boolean;
   pendingAgentId?: string | null;
   pendingAgentType?: string | null;
-  abortReason?: 'idle' | 'shutdown' | 'overflow' | 'restart-guard' | 'quota' | string | null;
+  abortReason?: 'idle' | 'shutdown' | 'overflow' | 'restart-guard' | 'quota' | 'poisoned' | string | null;
   respawnTimer?: ReturnType<typeof setTimeout>;
 }
 
