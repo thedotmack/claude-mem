@@ -246,19 +246,46 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       });
     },
 
-    // Capture assistant chat messages as observations.
+    // Capture chat messages. User messages carry the prompt that labels the
+    // session; assistant messages become observations.
     "chat.message": async (
       _input: Record<string, unknown>,
       output: ChatMessageOutput,
     ): Promise<void> => {
       const sessionID = output.message?.sessionID;
       if (!sessionID) return;
-      if (output.message?.role !== "assistant") return;
+
+      const role = output.message?.role;
 
       const messageText = (output.parts || [])
         .filter((part) => part.type === "text" && typeof part.text === "string")
         .map((part) => part.text as string)
-        .join("\n");
+        .join("\n")
+        .trim();
+
+      // The user's prompt is the only thing that labels an opencode session in
+      // the viewer/search, and OpenCode delivers it through no other channel —
+      // `ensureSessionInitialized` only ever posts an empty prompt, which the
+      // worker renders as the literal "[media prompt]". Capture it here and
+      // initialize the session WITH the real prompt. Marking the session
+      // initialized before the await suppresses the empty-prompt fallback init
+      // from any tool/assistant hook that fires afterward. A genuinely
+      // text-less prompt (image/file only) leaves the "[media prompt]" label,
+      // which is the correct description in that case.
+      if (role === "user") {
+        if (!messageText) return;
+        const contentSessionId = getOrCreateContentSessionId(sessionID);
+        initializedSessionIds.add(sessionID);
+        await workerPost("/api/sessions/init", {
+          contentSessionId,
+          project: projectName,
+          prompt: messageText,
+          platformSource: PLATFORM_SOURCE,
+        });
+        return;
+      }
+
+      if (role !== "assistant") return;
       if (!messageText) return;
 
       const contentSessionId = await ensureSessionInitialized(sessionID, projectName);
