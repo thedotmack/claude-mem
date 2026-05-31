@@ -50,7 +50,7 @@ export class OllamaSessionProvider {
       const syntheticMemorySessionId = `ollama-${session.contentSessionId}-${Date.now()}`;
       session.memorySessionId = syntheticMemorySessionId;
       this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, syntheticMemorySessionId);
-      logger.info('SESSION', `MEMORY_ID_GENERATED | sessionDbId=${session.sessionDbId} | provider=Ollama`);
+      logger.success('SDK', `✓ OLLAMA ACTIVE | sessionDbId=${session.sessionDbId} | memorySessionId=${syntheticMemorySessionId}`);
     }
 
     const mode = ModeManager.getInstance().getActiveMode();
