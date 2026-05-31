@@ -34,7 +34,7 @@ export function renderAgentLegend(): string[] {
 
   return [
     `Legend: 🎯session ${typeLegendItems}`,
-    `Format: ID TIME TYPE TITLE`,
+    `Format: - ID TIME TYPE TITLE`,
     `Fetch details: get_observations([IDs]) | Search: mem-search skill`,
     ''
   ];
@@ -75,7 +75,9 @@ export function renderAgentContextEconomics(
 
 export function renderAgentDayHeader(day: string): string[] {
   return [
+    '',
     `### ${day}`,
+    '',
   ];
 }
 
@@ -87,16 +89,28 @@ function compactTime(time: string): string {
   return time.toLowerCase().replace(' am', 'a').replace(' pm', 'p');
 }
 
+function compactLine(value: string | null | undefined, fallback = ''): string {
+  return (value || fallback).replace(/\s+/g, ' ').trim();
+}
+
+function indentBlock(value: string): string[] {
+  return value
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean)
+    .map(line => `  ${line}`);
+}
+
 export function renderAgentTableRow(
   obs: Observation,
   timeDisplay: string,
   _config: ContextConfig
 ): string {
-  const title = obs.title || 'Untitled';
+  const title = compactLine(obs.title, 'Untitled');
   const icon = ModeManager.getInstance().getTypeIcon(obs.type);
   const time = timeDisplay ? compactTime(timeDisplay) : '"';
 
-  return `${obs.id} ${time} ${icon} ${title}`;
+  return `- ${obs.id} ${time} ${icon} ${title}`;
 }
 
 export function renderAgentFullObservation(
@@ -106,14 +120,14 @@ export function renderAgentFullObservation(
   config: ContextConfig
 ): string[] {
   const output: string[] = [];
-  const title = obs.title || 'Untitled';
+  const title = compactLine(obs.title, 'Untitled');
   const icon = ModeManager.getInstance().getTypeIcon(obs.type);
   const time = timeDisplay ? compactTime(timeDisplay) : '"';
   const { readTokens, discoveryDisplay } = formatObservationTokenDisplay(obs, config);
 
-  output.push(`**${obs.id}** ${time} ${icon} **${title}**`);
+  output.push(`- **${obs.id}** ${time} ${icon} **${title}**`);
   if (detailField) {
-    output.push(detailField);
+    output.push(...indentBlock(detailField));
   }
 
   const tokenParts: string[] = [];
@@ -124,7 +138,7 @@ export function renderAgentFullObservation(
     tokenParts.push(discoveryDisplay);
   }
   if (tokenParts.length > 0) {
-    output.push(tokenParts.join(' '));
+    output.push(`  ${tokenParts.join(' ')}`);
   }
   output.push('');
 
@@ -136,7 +150,7 @@ export function renderAgentSummaryItem(
   formattedTime: string
 ): string[] {
   return [
-    `S${summary.id} ${summary.request || 'Session started'} (${formattedTime})`,
+    `- S${summary.id} ${compactLine(summary.request, 'Session started')} (${formattedTime})`,
   ];
 }
 

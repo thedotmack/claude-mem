@@ -122,6 +122,7 @@ describe('AgentFormatter', () => {
 
       expect(result).toHaveLength(4);
       expect(result[0]).toContain('Legend:');
+      expect(result[1]).toBe('Format: - ID TIME TYPE TITLE');
       expect(result[3]).toBe('');
     });
 
@@ -214,8 +215,10 @@ describe('AgentFormatter', () => {
     it('should render day as h3 heading', () => {
       const result = renderAgentDayHeader('2025-01-01');
 
-      expect(result).toHaveLength(1);
-      expect(result[0]).toBe('### 2025-01-01');
+      expect(result).toHaveLength(3);
+      expect(result[0]).toBe('');
+      expect(result[1]).toBe('### 2025-01-01');
+      expect(result[2]).toBe('');
     });
   });
 
@@ -270,7 +273,7 @@ describe('AgentFormatter', () => {
 
       const result = renderAgentTableRow(obs, '10:00 AM', config);
 
-      expect(result).toBe('5 10:00a I Test Observation');
+      expect(result).toBe('- 5 10:00a I Test Observation');
     });
 
     it('should use quote mark for repeated time', () => {
@@ -280,6 +283,15 @@ describe('AgentFormatter', () => {
       const result = renderAgentTableRow(obs, '', config);
 
       expect(result).toContain('"');
+    });
+
+    it('should compact multiline titles for collapsed Codex hook previews', () => {
+      const obs = createTestObservation({ title: 'First line\nsecond   line' });
+      const config = createTestConfig();
+
+      const result = renderAgentTableRow(obs, '10:00 AM', config);
+
+      expect(result).toBe('- 1 10:00a I First line second line');
     });
   });
 
@@ -291,7 +303,7 @@ describe('AgentFormatter', () => {
       const result = renderAgentFullObservation(obs, '10:00 AM', 'Detail content', config);
       const joined = result.join('\n');
 
-      expect(joined).toContain('**7**');
+      expect(joined).toContain('- **7**');
       expect(joined).toContain('**Full Observation**');
     });
 
@@ -302,7 +314,7 @@ describe('AgentFormatter', () => {
       const result = renderAgentFullObservation(obs, '10:00 AM', 'The detailed narrative here', config);
       const joined = result.join('\n');
 
-      expect(joined).toContain('The detailed narrative here');
+      expect(joined).toContain('  The detailed narrative here');
     });
 
     it('should not include detail field when null', () => {
@@ -325,6 +337,16 @@ describe('AgentFormatter', () => {
       expect(joined).toContain('t');
       expect(joined).toContain('W 250');
     });
+
+    it('should indent multiline detail fields', () => {
+      const obs = createTestObservation();
+      const config = createTestConfig();
+
+      const result = renderAgentFullObservation(obs, '10:00 AM', 'Line one\n\nLine two', config);
+
+      expect(result).toContain('  Line one');
+      expect(result).toContain('  Line two');
+    });
   });
 
   describe('renderAgentSummaryItem', () => {
@@ -334,7 +356,7 @@ describe('AgentFormatter', () => {
       const result = renderAgentSummaryItem(summary, '2025-01-01 10:00');
       const joined = result.join('\n');
 
-      expect(joined).toContain('S5');
+      expect(joined).toContain('- S5');
     });
 
     it('should include request text', () => {
@@ -353,6 +375,14 @@ describe('AgentFormatter', () => {
       const joined = result.join('\n');
 
       expect(joined).toContain('Session started');
+    });
+
+    it('should compact multiline requests for collapsed Codex hook previews', () => {
+      const summary = { id: 1, request: 'Implement feature\nwith tests' };
+
+      const result = renderAgentSummaryItem(summary, '10:00');
+
+      expect(result[0]).toBe('- S1 Implement feature with tests (10:00)');
     });
   });
 
