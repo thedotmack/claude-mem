@@ -2,7 +2,7 @@ import { createHash } from 'crypto';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
-import { completeSimple, getModels, type AssistantMessage, type Context, type Message, type Model, type OAuthCredentials } from '@earendil-works/pi-ai';
+import type { AssistantMessage, Context, Message, Model, OAuthCredentials } from '@earendil-works/pi-ai';
 import { buildContinuationPrompt, buildInitPrompt, buildObservationPrompt, buildSummaryPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
@@ -53,6 +53,13 @@ interface CachedToken {
 
 const tokenCache = new Map<string, CachedToken>();
 const tokenRefreshes = new Map<string, Promise<CachedToken>>();
+let piAiImport: Promise<typeof import('@earendil-works/pi-ai')> | null = null;
+
+function loadPiAi(): Promise<typeof import('@earendil-works/pi-ai')> {
+  const packageName: string = '@earendil-works/pi-ai';
+  piAiImport ??= import(packageName);
+  return piAiImport;
+}
 
 export function getOpenAICodexSessionId(rawSessionId: string | number): string {
   const hash = createHash('sha256').update(String(rawSessionId)).digest('hex').slice(0, 48);
@@ -585,7 +592,8 @@ export class OpenAICodexProvider {
     return settings.CLAUDE_MEM_OPENAI_CODEX_MODEL || DEFAULT_MODEL;
   }
 
-  private getModel(modelId: string): CodexModel {
+  private async getModel(modelId: string): Promise<CodexModel> {
+    const { getModels } = await loadPiAi();
     const model = getModels('openai-codex').find(candidate => candidate.id === modelId);
     if (!model) {
       throw new ClassifiedProviderError(
@@ -600,7 +608,8 @@ export class OpenAICodexProvider {
     session: ActiveSession,
     modelId: string,
   ): Promise<CodexCompletionResult> {
-    const model = this.getModel(modelId);
+    const { completeSimple } = await loadPiAi();
+    const model = await this.getModel(modelId);
     const apiKey = await getAccessToken();
     const context = this.conversationToContext(session, modelId);
 
