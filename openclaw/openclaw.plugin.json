@@ -78,6 +78,16 @@
                 "default": "Claude Code Session",
                 "description": "Display label prefix for Claude Code sessions in the feed (project identifier is appended automatically)"
               },
+              "codex": {
+                "type": "string",
+                "default": "🤖",
+                "description": "Emoji for Codex sessions"
+              },
+              "codexLabel": {
+                "type": "string",
+                "default": "Codex Session",
+                "description": "Display label prefix for Codex sessions in the feed (project identifier is appended automatically)"
+              },
               "default": {
                 "type": "string",
                 "default": "🦀",

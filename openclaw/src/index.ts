@@ -134,6 +134,7 @@ interface ObservationSSEPayload {
   id: number;
   memory_session_id: string;
   session_id: string;
+  platform_source?: string | null;
   type: string;
   title: string | null;
   subtitle: string | null;
@@ -165,6 +166,8 @@ interface FeedEmojiConfig {
   primary?: string;
   claudeCode?: string;
   claudeCodeLabel?: string;
+  codex?: string;
+  codexLabel?: string;
   default?: string;
   agents?: Record<string, string>;
 }
@@ -206,19 +209,39 @@ function poolEmojiForAgent(agentId: string): string {
 const DEFAULT_PRIMARY_EMOJI = "🦞";
 const DEFAULT_CLAUDE_CODE_EMOJI = "⌨️";
 const DEFAULT_CLAUDE_CODE_LABEL = "Claude Code Session";
+const DEFAULT_CODEX_EMOJI = "🤖";
+const DEFAULT_CODEX_LABEL = "Codex Session";
 const DEFAULT_FALLBACK_EMOJI = "🦀";
 
 function buildGetSourceLabel(
   emojiConfig: FeedEmojiConfig | undefined
-): (project: string | null | undefined) => string {
+): (observation: Pick<ObservationSSEPayload, "project" | "platform_source">) => string {
   const primary = emojiConfig?.primary ?? DEFAULT_PRIMARY_EMOJI;
   const claudeCode = emojiConfig?.claudeCode ?? DEFAULT_CLAUDE_CODE_EMOJI;
   const claudeCodeLabel = emojiConfig?.claudeCodeLabel ?? DEFAULT_CLAUDE_CODE_LABEL;
+  const codex = emojiConfig?.codex ?? DEFAULT_CODEX_EMOJI;
+  const codexLabel = emojiConfig?.codexLabel ?? DEFAULT_CODEX_LABEL;
   const fallback = emojiConfig?.default ?? DEFAULT_FALLBACK_EMOJI;
   const pinnedAgents = emojiConfig?.agents ?? {};
 
-  return function getSourceLabel(project: string | null | undefined): string {
+  function formatExternalSource(icon: string, label: string, project: string): string {
+    const trimmedLabel = label.trim();
+    if (!trimmedLabel) {
+      return `${icon} ${project}`;
+    }
+    return `${icon} ${trimmedLabel} (${project})`;
+  }
+
+  return function getSourceLabel(observation: Pick<ObservationSSEPayload, "project" | "platform_source">): string {
+    const project = observation.project;
     if (!project) return fallback;
+    const platformSource = (observation.platform_source || "").trim().toLowerCase();
+    if (platformSource.includes("codex")) {
+      return formatExternalSource(codex, codexLabel, project);
+    }
+    if (platformSource && !platformSource.includes("openclaw")) {
+      return formatExternalSource(claudeCode, claudeCodeLabel, project);
+    }
     if (project.startsWith("openclaw-")) {
       const agentId = project.slice("openclaw-".length);
       if (!agentId) return `${primary} openclaw`;
@@ -228,11 +251,10 @@ function buildGetSourceLabel(
     if (project === "openclaw") {
       return `${primary} openclaw`;
     }
-    const trimmedLabel = claudeCodeLabel.trim();
-    if (!trimmedLabel) {
-      return `${claudeCode} ${project}`;
+    if (platformSource.includes("openclaw")) {
+      return `${primary} ${project}`;
     }
-    return `${claudeCode} ${trimmedLabel} (${project})`;
+    return formatExternalSource(claudeCode, claudeCodeLabel, project);
   };
 }
 
@@ -400,10 +422,10 @@ async function workerGetJson(
 
 function formatObservationMessage(
   observation: ObservationSSEPayload,
-  getSourceLabel: (project: string | null | undefined) => string,
+  getSourceLabel: (observation: Pick<ObservationSSEPayload, "project" | "platform_source">) => string,
 ): string {
   const title = observation.title || "Untitled";
-  const source = getSourceLabel(observation.project);
+  const source = getSourceLabel(observation);
   const isDetailed = DETAILED_FEED_TYPES.has(observation.type);
   const parts = [`${source}\n**${title}**`];
   if (observation.subtitle) {
@@ -529,7 +551,7 @@ async function connectToSSEStream(
   to: string,
   abortController: AbortController,
   setConnectionState: (state: ConnectionState) => void,
-  getSourceLabel: (project: string | null | undefined) => string,
+  getSourceLabel: (observation: Pick<ObservationSSEPayload, "project" | "platform_source">) => string,
   botToken?: string
 ): Promise<void> {
   let backoffMs = 1000;
@@ -791,11 +813,10 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     return null;
   }
 
-  // Centralized session-init POST. session_start, after_compaction, and
-  // before_agent_start each call this; the 2s dedup guard
-  // (shouldSkipDuplicatePromptInit) collapses the redundant inits a single
-  // user-message flow produces into one prompt record, while still ensuring a
-  // session is initialized even on flows that never reach before_agent_start.
+  // Centralized session-init POST for prompt-bearing events. session_start and
+  // after_compaction only refresh local session tracking; prompt persistence is
+  // intentionally deferred to before_agent_start so OpenClaw lifecycle noise is
+  // not stored as a user prompt.
   async function initSessionOnce(ctx: EventContext, promptText: string, via: string): Promise<void> {
     const { contentSessionId } = rememberSessionContext(ctx);
     const projectName = getProjectName(ctx);
@@ -816,7 +837,8 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   }
 
   api.on("session_start", async (_event, ctx) => {
-    await initSessionOnce(ctx, "session start", "session_start");
+    const { canonicalKey, contentSessionId } = rememberSessionContext(ctx);
+    api.logger.info(`[claude-mem] Session tracking initialized — prompt capture deferred to before_agent_start: session=${canonicalKey} contentSessionId=${contentSessionId}`);
   });
 
   api.on("message_received", async (event, ctx) => {
@@ -825,7 +847,8 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   });
 
   api.on("after_compaction", async (_event, ctx) => {
-    await initSessionOnce(ctx, "after compaction", "after_compaction");
+    const { canonicalKey, contentSessionId } = rememberSessionContext(ctx);
+    api.logger.info(`[claude-mem] Session preserved after compaction — prompt capture deferred to before_agent_start: session=${canonicalKey} contentSessionId=${contentSessionId}`);
   });
 
   api.on("before_agent_start", async (event, ctx) => {
