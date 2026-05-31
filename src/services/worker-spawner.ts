@@ -183,37 +183,52 @@ export async function ensureWorkerStarted(
     logger.info('SYSTEM', 'Worker PID file points to a live process, skipping duplicate spawn');
     const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
     if (healthy) {
+      const outcome = await reuseOrReplaceStaleWorker(port);
+      if (outcome !== 'replace') {
+        clearWorkerSpawnAttempted();
+        const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
+        logger.info('SYSTEM', 'Worker became healthy while waiting on live PID');
+        return ready ? 'ready' : 'warming';
+      }
+      logger.info('SYSTEM', 'Replaced stale worker; spawning current version');
+      // fall through to spawn
+    } else {
+      logger.warn('SYSTEM', 'Live PID detected but worker did not become healthy before timeout — likely still starting');
+      return 'warming';
+    }
+  } else if (await waitForHealth(port, 1000)) {
+    const outcome = await reuseOrReplaceStaleWorker(port);
+    if (outcome !== 'replace') {
       clearWorkerSpawnAttempted();
       const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
-      logger.info('SYSTEM', 'Worker became healthy while waiting on live PID');
+      if (!ready) {
+        logger.warn('SYSTEM', 'Worker is alive but readiness timed out — proceeding anyway');
+      }
+      logger.info('SYSTEM', 'Worker already running and healthy');
       return ready ? 'ready' : 'warming';
     }
-    logger.warn('SYSTEM', 'Live PID detected but worker did not become healthy before timeout — likely still starting');
-    return 'warming';
-  }
-
-  if (await waitForHealth(port, 1000)) {
-    clearWorkerSpawnAttempted();
-    const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
-    if (!ready) {
-      logger.warn('SYSTEM', 'Worker is alive but readiness timed out — proceeding anyway');
+    logger.info('SYSTEM', 'Replaced stale worker; spawning current version');
+    // fall through to spawn
+  } else {
+    const portInUse = await isPortInUse(port);
+    if (portInUse) {
+      logger.info('SYSTEM', 'Port in use, waiting for worker to become healthy');
+      const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
+      if (healthy) {
+        const outcome = await reuseOrReplaceStaleWorker(port);
+        if (outcome !== 'replace') {
+          clearWorkerSpawnAttempted();
+          const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
+          logger.info('SYSTEM', 'Worker is now healthy');
+          return ready ? 'ready' : 'warming';
+        }
+        logger.info('SYSTEM', 'Replaced stale worker; spawning current version');
+        // fall through to spawn
+      } else {
+        logger.error('SYSTEM', 'Port in use but worker not responding to health checks');
+        return 'dead';
+      }
     }
-    logger.info('SYSTEM', 'Worker already running and healthy');
-    return ready ? 'ready' : 'warming';
-  }
-
-  const portInUse = await isPortInUse(port);
-  if (portInUse) {
-    logger.info('SYSTEM', 'Port in use, waiting for worker to become healthy');
-    const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
-    if (healthy) {
-      clearWorkerSpawnAttempted();
-      const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
-      logger.info('SYSTEM', 'Worker is now healthy');
-      return ready ? 'ready' : 'warming';
-    }
-    logger.error('SYSTEM', 'Port in use but worker not responding to health checks');
-    return 'dead';
   }
 
   if (shouldSkipSpawnOnWindows()) {
