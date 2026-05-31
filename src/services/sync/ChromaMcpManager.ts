@@ -18,7 +18,11 @@ const CHROMA_MCP_CLIENT_NAME = 'claude-mem-chroma';
 const CHROMA_MCP_CLIENT_VERSION = '1.0.0';
 const MCP_CONNECTION_TIMEOUT_MS = 30_000;
 const RECONNECT_BACKOFF_MS = 10_000;
-const DEFAULT_CHROMA_DATA_DIR = paths.chroma();
+function getDefaultChromaDataDir(): string {
+  return process.env.CLAUDE_MEM_DATA_DIR
+    ? path.join(process.env.CLAUDE_MEM_DATA_DIR, 'chroma')
+    : paths.chroma();
+}
 const CHROMA_SUPERVISOR_ID = 'chroma-mcp';
 const CHROMA_LOCK_FILE = '.claude-mem-chroma-mcp.lock';
 const PARENT_DEATH_CHECK_MS = 2_000;
@@ -261,7 +265,7 @@ export class ChromaMcpManager {
       ...depOverrideFlags,
       `chroma-mcp==${CHROMA_MCP_PINNED_VERSION}`,
       '--client-type', 'persistent',
-      '--data-dir', DEFAULT_CHROMA_DATA_DIR.replace(/\\/g, '/')
+      '--data-dir', getDefaultChromaDataDir().replace(/\\/g, '/')
     ];
   }
 
@@ -274,7 +278,7 @@ export class ChromaMcpManager {
 
     const dataDirIndex = commandArgs.indexOf('--data-dir');
     const dataDir = dataDirIndex >= 0 ? commandArgs[dataDirIndex + 1] : null;
-    return dataDir ? path.resolve(dataDir) : path.resolve(DEFAULT_CHROMA_DATA_DIR);
+    return dataDir ? path.resolve(dataDir) : path.resolve(getDefaultChromaDataDir());
   }
 
   private acquirePersistentDataDirLock(dataDir: string | null): void {
