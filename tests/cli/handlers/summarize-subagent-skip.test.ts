@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:te
 import { homedir } from 'os';
 import { join } from 'path';
 
+import * as realWorkerUtils from '../../../src/shared/worker-utils.js';
+
 mock.module('../../../src/shared/SettingsDefaultsManager.js', () => ({
   SettingsDefaultsManager: {
     get: (key: string) => {
@@ -33,6 +35,7 @@ mock.module('../../../src/shared/SettingsDefaultsManager.js', () => ({
 
 const workerCallLog: Array<{ path: string; options: any }> = [];
 mock.module('../../../src/shared/worker-utils.js', () => ({
+  ...realWorkerUtils,
   ensureWorkerRunning: () => Promise.resolve(true),
   getWorkerPort: () => 37777,
   workerHttpRequest: (apiPath: string, options?: any) => {
