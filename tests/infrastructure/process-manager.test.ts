@@ -602,17 +602,18 @@ describe('ProcessManager', () => {
 
   describe('cleanStalePidFile', () => {
     it('should remove PID file when process is dead', () => {
+      const tempPidFile = path.join(tmpdir(), `claude-mem-stale-${process.pid}-${Date.now()}.pid`);
       const staleInfo: PidInfo = {
         pid: 2147483647,
         port: 37777,
         startedAt: '2024-01-01T00:00:00.000Z'
       };
-      writePidFile(staleInfo);
-      expect(existsSync(PID_FILE)).toBe(true);
+      writeFileSync(tempPidFile, JSON.stringify(staleInfo, null, 2));
+      expect(existsSync(tempPidFile)).toBe(true);
 
-      cleanStalePidFile();
+      cleanStalePidFile(tempPidFile);
 
-      expect(existsSync(PID_FILE)).toBe(false);
+      expect(existsSync(tempPidFile)).toBe(false);
     });
 
     it('should keep PID file when process is alive', () => {

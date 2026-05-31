@@ -560,7 +560,6 @@ export function touchPidFile(): void {
   }
 }
 
-export function cleanStalePidFile(): ValidateWorkerPidStatus {
-  return validateWorkerPidFile({ logAlive: false });
+export function cleanStalePidFile(pidFilePath?: string): ValidateWorkerPidStatus {
+  return validateWorkerPidFile({ logAlive: false, pidFilePath });
 }
-
