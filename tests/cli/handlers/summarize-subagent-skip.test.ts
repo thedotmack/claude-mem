@@ -1,8 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, spyOn, mock } from 'bun:test';
 import { homedir } from 'os';
 import { join } from 'path';
 
+import * as realHookSettings from '../../../src/shared/hook-settings.js';
 import * as realWorkerUtils from '../../../src/shared/worker-utils.js';
+const realHookSettingsSnapshot = { ...realHookSettings };
+const realWorkerUtilsSnapshot = { ...realWorkerUtils };
 
 mock.module('../../../src/shared/SettingsDefaultsManager.js', () => ({
   SettingsDefaultsManager: {
@@ -31,6 +34,10 @@ mock.module('../../../src/shared/SettingsDefaultsManager.js', () => ({
       CLAUDE_MEM_WORKER_PORT: '37777',
     }),
   },
+}));
+
+mock.module('../../../src/shared/hook-settings.js', () => ({
+  loadFromFileOnce: () => ({ CLAUDE_MEM_EXCLUDED_PROJECTS: '' }),
 }));
 
 const workerCallLog: Array<{ path: string; options: any }> = [];
@@ -64,6 +71,11 @@ beforeEach(() => {
 
 afterEach(() => {
   loggerSpies.forEach(spy => spy.mockRestore());
+});
+
+afterAll(() => {
+  mock.module('../../../src/shared/hook-settings.js', () => realHookSettingsSnapshot);
+  mock.module('../../../src/shared/worker-utils.js', () => realWorkerUtilsSnapshot);
 });
 
 describe('summarizeHandler — subagent short-circuit', () => {

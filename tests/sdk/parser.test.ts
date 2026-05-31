@@ -1,6 +1,13 @@
-import { afterEach, beforeEach, describe, it, expect } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+
+import * as realModeManager from '../../src/services/domain/ModeManager.js';
+const realModeManagerSnapshot = { ...realModeManager };
 
 import { ModeManager } from '../../src/services/domain/ModeManager.js';
+
+afterAll(() => {
+  mock.module('../../src/services/domain/ModeManager.js', () => realModeManagerSnapshot);
+});
 
 import { parseAgentXml } from '../../src/sdk/parser.js';
 

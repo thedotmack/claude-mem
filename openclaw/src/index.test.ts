@@ -302,7 +302,7 @@ describe("Observation I/O event handlers", () => {
     workerServer?.close();
   });
 
-  it("session_start initializes local session tracking without posting to worker", async () => {
+  it("session_start sends session init to worker", async () => {
     const { api, logs, fireEvent } = createMockApi({ workerPort });
     claudeMemPlugin(api);
 
@@ -313,11 +313,13 @@ describe("Observation I/O event handlers", () => {
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     const initRequest = receivedRequests.find((r) => r.url === "/api/sessions/init");
-    assert.equal(initRequest, undefined, "session_start should not post init without a prompt");
-    assert.ok(logs.some((l) => l.includes("Session tracking initialized")));
+    assert.ok(initRequest, "should send init request to worker");
+    assert.equal(initRequest!.body.project, "openclaw");
+    assert.ok(initRequest!.body.contentSessionId.startsWith("openclaw-agent-1-"));
+    assert.ok(logs.some((l) => l.includes("Session initialized")));
   });
 
-  it("session_start does not call init on worker", async () => {
+  it("session_start calls init on worker", async () => {
     const { api, fireEvent } = createMockApi({ workerPort });
     claudeMemPlugin(api);
 
@@ -325,19 +327,18 @@ describe("Observation I/O event handlers", () => {
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     const initRequests = receivedRequests.filter((r) => r.url === "/api/sessions/init");
-    assert.equal(initRequests.length, 0, "session_start should only track the session");
+    assert.equal(initRequests.length, 1, "should init on session_start");
   });
 
-  it("after_compaction preserves session tracking without re-initing worker", async () => {
-    const { api, logs, fireEvent } = createMockApi({ workerPort });
+  it("after_compaction re-inits session on worker", async () => {
+    const { api, fireEvent } = createMockApi({ workerPort });
     claudeMemPlugin(api);
 
     await fireEvent("after_compaction", { messageCount: 5, compactedCount: 3 }, {});
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     const initRequests = receivedRequests.filter((r) => r.url === "/api/sessions/init");
-    assert.equal(initRequests.length, 0, "after_compaction should not post a new init");
-    assert.ok(logs.some((l) => l.includes("Session preserved after compaction")));
+    assert.equal(initRequests.length, 1, "should re-init after compaction");
   });
 
   it("before_agent_start calls init for session privacy check", async () => {
