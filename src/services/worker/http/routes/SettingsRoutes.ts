@@ -16,6 +16,35 @@ import { flushResponseThen } from '../../../server/flushResponseThen.js';
 
 const updateSettingsSchema = z.object({}).passthrough();
 
+const BOOLEAN_SETTING_KEYS = [
+  'CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS',
+  'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
+  'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT',
+  'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT',
+  'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
+  'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
+] as const;
+
+const BOOLEAN_SETTING_SET = new Set<string>(BOOLEAN_SETTING_KEYS);
+
+export function normalizeSettingValue(key: string, value: unknown): unknown {
+  if (BOOLEAN_SETTING_SET.has(key) && typeof value === 'boolean') {
+    return value ? 'true' : 'false';
+  }
+  return value;
+}
+
+export function isValidBooleanSettingValue(value: unknown): boolean {
+  return (
+    value === undefined ||
+    value === null ||
+    value === '' ||
+    typeof value === 'boolean' ||
+    value === 'true' ||
+    value === 'false'
+  );
+}
+
 const toggleMcpSchema = z.object({
   enabled: z.boolean(),
 }).passthrough();
@@ -119,7 +148,7 @@ export class SettingsRoutes extends BaseRouteHandler {
 
     for (const key of settingKeys) {
       if (req.body[key] !== undefined) {
-        settings[key] = req.body[key];
+        settings[key] = normalizeSettingValue(key, req.body[key]);
       }
     }
 
@@ -259,17 +288,8 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
-    const booleanSettings = [
-      'CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS',
-      'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
-      'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT',
-      'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT',
-      'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
-      'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
-    ];
-
-    for (const key of booleanSettings) {
-      if (settings[key] && !['true', 'false'].includes(settings[key])) {
+    for (const key of BOOLEAN_SETTING_KEYS) {
+      if (!isValidBooleanSettingValue(settings[key])) {
         return { valid: false, error: `${key} must be "true" or "false"` };
       }
     }

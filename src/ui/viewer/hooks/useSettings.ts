@@ -5,6 +5,21 @@ import { API_ENDPOINTS } from '../constants/api';
 import { TIMING } from '../constants/timing';
 import { authFetch } from '../utils/api';
 
+function settingValue(value: unknown, fallback: string): string {
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+  return String(value);
+}
+
+function normalizeLoadedSettings(data: Record<string, unknown>): Settings {
+  const normalized = { ...DEFAULT_SETTINGS } as Settings & Record<string, string>;
+  for (const [key, fallback] of Object.entries(DEFAULT_SETTINGS)) {
+    normalized[key] = settingValue(data[key], fallback);
+  }
+  return normalized;
+}
+
 export function useSettings() {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [isSaving, setIsSaving] = useState(false);
@@ -19,34 +34,7 @@ export function useSettings() {
         return res.json();
       })
       .then(data => {
-        setSettings({
-          CLAUDE_MEM_MODEL: data.CLAUDE_MEM_MODEL ?? DEFAULT_SETTINGS.CLAUDE_MEM_MODEL,
-          CLAUDE_MEM_CONTEXT_OBSERVATIONS: data.CLAUDE_MEM_CONTEXT_OBSERVATIONS ?? DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_OBSERVATIONS,
-          CLAUDE_MEM_WORKER_PORT: data.CLAUDE_MEM_WORKER_PORT ?? DEFAULT_SETTINGS.CLAUDE_MEM_WORKER_PORT,
-          CLAUDE_MEM_WORKER_HOST: data.CLAUDE_MEM_WORKER_HOST ?? DEFAULT_SETTINGS.CLAUDE_MEM_WORKER_HOST,
-
-          CLAUDE_MEM_PROVIDER: data.CLAUDE_MEM_PROVIDER ?? DEFAULT_SETTINGS.CLAUDE_MEM_PROVIDER,
-          CLAUDE_MEM_GEMINI_API_KEY: data.CLAUDE_MEM_GEMINI_API_KEY ?? DEFAULT_SETTINGS.CLAUDE_MEM_GEMINI_API_KEY,
-          CLAUDE_MEM_GEMINI_MODEL: data.CLAUDE_MEM_GEMINI_MODEL ?? DEFAULT_SETTINGS.CLAUDE_MEM_GEMINI_MODEL,
-          CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: data.CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED ?? DEFAULT_SETTINGS.CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED,
-
-          CLAUDE_MEM_OPENROUTER_API_KEY: data.CLAUDE_MEM_OPENROUTER_API_KEY ?? DEFAULT_SETTINGS.CLAUDE_MEM_OPENROUTER_API_KEY,
-          CLAUDE_MEM_OPENROUTER_MODEL: data.CLAUDE_MEM_OPENROUTER_MODEL ?? DEFAULT_SETTINGS.CLAUDE_MEM_OPENROUTER_MODEL,
-          CLAUDE_MEM_OPENROUTER_SITE_URL: data.CLAUDE_MEM_OPENROUTER_SITE_URL ?? DEFAULT_SETTINGS.CLAUDE_MEM_OPENROUTER_SITE_URL,
-          CLAUDE_MEM_OPENROUTER_APP_NAME: data.CLAUDE_MEM_OPENROUTER_APP_NAME ?? DEFAULT_SETTINGS.CLAUDE_MEM_OPENROUTER_APP_NAME,
-
-          CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: data.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS ?? DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS,
-          CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: data.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS ?? DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS,
-          CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT: data.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT ?? DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT,
-          CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT: data.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT ?? DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT,
-
-          CLAUDE_MEM_CONTEXT_FULL_COUNT: data.CLAUDE_MEM_CONTEXT_FULL_COUNT ?? DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_FULL_COUNT,
-          CLAUDE_MEM_CONTEXT_FULL_FIELD: data.CLAUDE_MEM_CONTEXT_FULL_FIELD ?? DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_FULL_FIELD,
-          CLAUDE_MEM_CONTEXT_SESSION_COUNT: data.CLAUDE_MEM_CONTEXT_SESSION_COUNT ?? DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SESSION_COUNT,
-
-          CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: data.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY ?? DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY,
-          CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: data.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE ?? DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE,
-        });
+        setSettings(normalizeLoadedSettings(data));
       })
       .catch(error => {
         console.error('Failed to load settings:', error);
@@ -65,7 +53,16 @@ export function useSettings() {
       });
 
       if (!response.ok) {
-        setSaveStatus(`✗ Error: ${response.status === 401 ? 'Unauthorized' : response.statusText}`);
+        let message = response.status === 401 ? 'Unauthorized' : response.statusText;
+        try {
+          const body = await response.json();
+          if (typeof body?.error === 'string' && body.error) {
+            message = body.error;
+          }
+        } catch {
+          // Fall back to statusText when the response body is not JSON.
+        }
+        setSaveStatus(`✗ Error: ${message}`);
         setIsSaving(false);
         return;
       }
