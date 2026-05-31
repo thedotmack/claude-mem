@@ -1335,6 +1335,111 @@ describe("SSE stream integration", () => {
     await getService().stop({});
   });
 
+  it("labels Codex observations by platform_source instead of Claude Code fallback", async () => {
+    const { api, sentMessages, getService } = createMockApi({
+      workerPort: serverPort,
+      observationFeed: { enabled: true, channel: "telegram", to: "12345" },
+    });
+    claudeMemPlugin(api);
+
+    await getService().start({});
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    for (const res of serverResponses) {
+      res.write(
+        `data: ${JSON.stringify({
+          type: "new_observation",
+          observation: {
+            id: 12,
+            title: "Codex memory",
+            subtitle: null,
+            project: "app",
+            platform_source: "codex",
+          },
+          timestamp: Date.now(),
+        })}\n\n`
+      );
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    assert.equal(sentMessages.length, 1);
+    assert.ok(sentMessages[0].text.includes("Codex Session (app)"));
+    assert.ok(!sentMessages[0].text.includes("Claude Code Session (app)"));
+
+    await getService().stop({});
+  });
+
+  it("lets Codex platform_source override openclaw-like project names", async () => {
+    const { api, sentMessages, getService } = createMockApi({
+      workerPort: serverPort,
+      observationFeed: { enabled: true, channel: "telegram", to: "12345" },
+    });
+    claudeMemPlugin(api);
+
+    await getService().start({});
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    for (const res of serverResponses) {
+      res.write(
+        `data: ${JSON.stringify({
+          type: "new_observation",
+          observation: {
+            id: 14,
+            title: "Codex prefixed project",
+            subtitle: null,
+            project: "openclaw-app",
+            platform_source: "codex",
+          },
+          timestamp: Date.now(),
+        })}\n\n`
+      );
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    assert.equal(sentMessages.length, 1);
+    assert.ok(sentMessages[0].text.includes("Codex Session (openclaw-app)"));
+    assert.ok(!sentMessages[0].text.includes("app\n**Codex prefixed project**"));
+
+    await getService().stop({});
+  });
+
+  it("labels custom OpenClaw projects by openclaw platform_source", async () => {
+    const { api, sentMessages, getService } = createMockApi({
+      workerPort: serverPort,
+      observationFeed: { enabled: true, channel: "telegram", to: "12345" },
+    });
+    claudeMemPlugin(api);
+
+    await getService().start({});
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    for (const res of serverResponses) {
+      res.write(
+        `data: ${JSON.stringify({
+          type: "new_observation",
+          observation: {
+            id: 13,
+            title: "OpenClaw memory",
+            subtitle: null,
+            project: "app",
+            platform_source: "openclaw",
+          },
+          timestamp: Date.now(),
+        })}\n\n`
+      );
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    assert.equal(sentMessages.length, 1);
+    assert.ok(sentMessages[0].text.includes("app"));
+    assert.ok(!sentMessages[0].text.includes("Claude Code Session (app)"));
+
+    await getService().stop({});
+  });
+
   it("uses custom workerPort from config", async () => {
     const { api, logs, getService } = createMockApi({
       workerPort: serverPort,
