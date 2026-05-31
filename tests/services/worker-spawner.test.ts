@@ -3,7 +3,9 @@ import { describe, it, expect } from 'bun:test';
 import {
   ensureWorkerStarted,
   terminateStaleWorker,
+  reuseOrReplaceStaleWorker,
   type StaleWorkerDeps,
+  type VersionGateDeps,
 } from '../../src/services/worker-spawner.js';
 
 describe('ensureWorkerStarted validation guards', () => {
@@ -59,5 +61,36 @@ describe('terminateStaleWorker', () => {
     });
     const freed = await terminateStaleWorker(39010, deps);
     expect(freed).toBe(false);
+  });
+});
+
+describe('reuseOrReplaceStaleWorker', () => {
+  it('returns "reuse" when versions match (never terminates)', async () => {
+    let terminated = false;
+    const deps: VersionGateDeps = {
+      checkVersionMatch: async () => ({ matches: true, pluginVersion: '13.4.0', workerVersion: '13.4.0' }),
+      terminateStaleWorker: async () => { terminated = true; return true; },
+    };
+    const outcome = await reuseOrReplaceStaleWorker(39011, deps);
+    expect(outcome).toBe('reuse');
+    expect(terminated).toBe(false);
+  });
+
+  it('returns "replace" when versions differ and termination frees the port', async () => {
+    const deps: VersionGateDeps = {
+      checkVersionMatch: async () => ({ matches: false, pluginVersion: '13.5.0', workerVersion: '13.4.0' }),
+      terminateStaleWorker: async () => true,
+    };
+    const outcome = await reuseOrReplaceStaleWorker(39011, deps);
+    expect(outcome).toBe('replace');
+  });
+
+  it('returns "keep" when versions differ but the port cannot be freed (fail-soft)', async () => {
+    const deps: VersionGateDeps = {
+      checkVersionMatch: async () => ({ matches: false, pluginVersion: '13.5.0', workerVersion: '13.4.0' }),
+      terminateStaleWorker: async () => false,
+    };
+    const outcome = await reuseOrReplaceStaleWorker(39011, deps);
+    expect(outcome).toBe('keep');
   });
 });

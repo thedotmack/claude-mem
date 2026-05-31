@@ -123,6 +123,44 @@ export async function terminateStaleWorker(
   return await deps.waitForPortFree(port, POST_KILL_PORT_WAIT_MS);
 }
 
+export interface VersionGateDeps {
+  checkVersionMatch: (port: number) => Promise<VersionCheckResult>;
+  terminateStaleWorker: (port: number) => Promise<boolean>;
+}
+
+const defaultVersionGateDeps: VersionGateDeps = {
+  checkVersionMatch,
+  terminateStaleWorker: (port) => terminateStaleWorker(port),
+};
+
+export type VersionGateOutcome = 'reuse' | 'replace' | 'keep';
+
+/**
+ * Gate a healthy worker on `port` before reuse: if it reports a stale version
+ * (#2601), terminate it so a current worker can take over. Conservative — only
+ * replaces on a CONFIRMED version mismatch; if the running version is unknowable
+ * (`checkVersionMatch` returns matches:true for that case) it reuses.
+ */
+export async function reuseOrReplaceStaleWorker(
+  port: number,
+  deps: VersionGateDeps = defaultVersionGateDeps
+): Promise<VersionGateOutcome> {
+  const check = await deps.checkVersionMatch(port);
+  if (check.matches) return 'reuse';
+
+  logger.info('SYSTEM', 'Healthy worker is running a stale version — replacing', {
+    pluginVersion: check.pluginVersion,
+    workerVersion: check.workerVersion,
+  });
+
+  const freed = await deps.terminateStaleWorker(port);
+  if (!freed) {
+    logger.warn('SYSTEM', 'Could not free port from stale worker — keeping existing worker', { port });
+    return 'keep';
+  }
+  return 'replace';
+}
+
 export async function ensureWorkerStarted(
   port: number,
   workerScriptPath: string
