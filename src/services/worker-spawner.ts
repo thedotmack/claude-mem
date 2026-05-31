@@ -9,12 +9,19 @@ import {
   getPlatformTimeout,
   spawnDaemon,
   touchPidFile,
+  readPidFile,
+  isProcessAlive,
 } from './infrastructure/ProcessManager.js';
 import {
   isPortInUse,
   waitForHealth,
   waitForReadiness,
+  waitForPortFree,
+  httpShutdown,
+  checkVersionMatch,
+  type VersionCheckResult,
 } from './infrastructure/HealthMonitor.js';
+import type { PidInfo } from '../supervisor/process-registry.js';
 
 const WINDOWS_SPAWN_COOLDOWN_MS = 2 * 60 * 1000;
 
@@ -66,6 +73,55 @@ function clearWorkerSpawnAttempted(): void {
 }
 
 export type WorkerStartResult = 'ready' | 'warming' | 'dead';
+
+const GRACEFUL_SHUTDOWN_PORT_WAIT_MS = 5000;
+const POST_KILL_PORT_WAIT_MS = 5000;
+
+export interface StaleWorkerDeps {
+  httpShutdown: (port: number) => Promise<boolean>;
+  waitForPortFree: (port: number, ms: number) => Promise<boolean>;
+  readPidFile: () => PidInfo | null;
+  killProcess: (pid: number, signal: NodeJS.Signals) => void;
+  isProcessAlive: (pid: number) => boolean;
+}
+
+const defaultStaleWorkerDeps: StaleWorkerDeps = {
+  httpShutdown,
+  waitForPortFree,
+  readPidFile,
+  killProcess: (pid, signal) => { process.kill(pid, signal); },
+  isProcessAlive,
+};
+
+/**
+ * Terminate a worker that is running but reports a stale version, freeing the
+ * port so a current worker can take over (#2601). Tries graceful HTTP shutdown
+ * first, then SIGKILL on the PID-file pid as a fallback. Returns true iff the
+ * port is free afterwards.
+ */
+export async function terminateStaleWorker(
+  port: number,
+  deps: StaleWorkerDeps = defaultStaleWorkerDeps
+): Promise<boolean> {
+  await deps.httpShutdown(port);
+  if (await deps.waitForPortFree(port, GRACEFUL_SHUTDOWN_PORT_WAIT_MS)) {
+    return true;
+  }
+
+  const pidInfo = deps.readPidFile();
+  if (!pidInfo || !deps.isProcessAlive(pidInfo.pid)) {
+    logger.warn('SYSTEM', 'Stale worker did not release port and no live pid to kill', { port });
+    return false;
+  }
+
+  try {
+    deps.killProcess(pidInfo.pid, 'SIGKILL');
+  } catch (error) {
+    logger.warn('SYSTEM', 'SIGKILL on stale worker failed', { pid: pidInfo.pid }, error as Error);
+    return false;
+  }
+  return await deps.waitForPortFree(port, POST_KILL_PORT_WAIT_MS);
+}
 
 export async function ensureWorkerStarted(
   port: number,

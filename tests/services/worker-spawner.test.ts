@@ -1,6 +1,10 @@
 
 import { describe, it, expect } from 'bun:test';
-import { ensureWorkerStarted } from '../../src/services/worker-spawner.js';
+import {
+  ensureWorkerStarted,
+  terminateStaleWorker,
+  type StaleWorkerDeps,
+} from '../../src/services/worker-spawner.js';
 
 describe('ensureWorkerStarted validation guards', () => {
 
@@ -13,5 +17,47 @@ describe('ensureWorkerStarted validation guards', () => {
     const bogusPath = '/tmp/__claude-mem-test-nonexistent-worker-script-' + Date.now() + '.cjs';
     const result = await ensureWorkerStarted(39002, bogusPath);
     expect(result).toBe('dead');
+  });
+});
+
+function makeDeps(overrides: Partial<StaleWorkerDeps> = {}): { deps: StaleWorkerDeps; calls: string[] } {
+  const calls: string[] = [];
+  const deps: StaleWorkerDeps = {
+    httpShutdown: async () => { calls.push('httpShutdown'); return true; },
+    waitForPortFree: async () => { calls.push('waitForPortFree'); return true; },
+    readPidFile: () => { calls.push('readPidFile'); return { pid: 4242, port: 39010, startedAt: 'x' }; },
+    killProcess: () => { calls.push('killProcess'); },
+    isProcessAlive: () => { calls.push('isProcessAlive'); return true; },
+    ...overrides,
+  };
+  return { deps, calls };
+}
+
+describe('terminateStaleWorker', () => {
+  it('returns true after graceful shutdown frees the port (no kill)', async () => {
+    const { deps, calls } = makeDeps({ waitForPortFree: async () => true });
+    const freed = await terminateStaleWorker(39010, deps);
+    expect(freed).toBe(true);
+    expect(calls).toContain('httpShutdown');
+    expect(calls).not.toContain('killProcess');
+  });
+
+  it('SIGKILLs the PID-file pid when graceful shutdown does not free the port', async () => {
+    let portFreeCalls = 0;
+    const { deps, calls } = makeDeps({
+      waitForPortFree: async () => { portFreeCalls += 1; return portFreeCalls > 1; },
+    });
+    const freed = await terminateStaleWorker(39010, deps);
+    expect(freed).toBe(true);
+    expect(calls).toContain('killProcess');
+  });
+
+  it('returns false (fail-soft) when port stays occupied and no pid is available', async () => {
+    const { deps } = makeDeps({
+      waitForPortFree: async () => false,
+      readPidFile: () => null,
+    });
+    const freed = await terminateStaleWorker(39010, deps);
+    expect(freed).toBe(false);
   });
 });
