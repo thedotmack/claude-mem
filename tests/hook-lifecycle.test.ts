@@ -15,6 +15,17 @@ describe('Hook Lifecycle - Event Handlers', () => {
       expect(nonOkRegion.indexOf('resetWorkerFailureCounter()'))
         .toBeLessThan(nonOkRegion.indexOf('response.status === 429 || response.status >= 500'));
     });
+
+    it('lazy-spawns the worker with a sanitized environment', () => {
+      const source = readFileSync('src/shared/worker-utils.ts', 'utf-8');
+      const spawnRegion = source.slice(
+        source.indexOf("spawnHidden(runtimePath, [scriptPath, '--daemon']"),
+        source.indexOf('proc.unref();'),
+      );
+
+      expect(source).toContain('sanitizeEnv(process.env)');
+      expect(spawnRegion).toContain('env: sanitizeEnv(process.env)');
+    });
   });
 
   describe('getEventHandler', () => {

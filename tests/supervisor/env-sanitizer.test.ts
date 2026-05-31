@@ -42,6 +42,30 @@ describe('sanitizeEnv', () => {
     expect(result.NODE_PATH).toBe('/usr/local/lib');
   });
 
+  it('strips Codex runtime variables so daemon workers use the default Codex home', () => {
+    const result = sanitizeEnv({
+      CODEX_CI: '1',
+      CODEX_HOME: '/tmp/openclaw/codex-home',
+      CODEX_MANAGED_BY_BUN: '1',
+      CODEX_MANAGED_BY_NPM: '1',
+      CODEX_MANAGED_PACKAGE_ROOT: '/tmp/openclaw/npm/node_modules/@openai/codex',
+      CODEX_THREAD_ID: 'thread-123',
+      HOME: '/home/user',
+      OPENAI_API_KEY: 'provider-key',
+      PATH: '/usr/bin'
+    });
+
+    expect(result.CODEX_CI).toBeUndefined();
+    expect(result.CODEX_HOME).toBeUndefined();
+    expect(result.CODEX_MANAGED_BY_BUN).toBeUndefined();
+    expect(result.CODEX_MANAGED_BY_NPM).toBeUndefined();
+    expect(result.CODEX_MANAGED_PACKAGE_ROOT).toBeUndefined();
+    expect(result.CODEX_THREAD_ID).toBeUndefined();
+    expect(result.HOME).toBe('/home/user');
+    expect(result.OPENAI_API_KEY).toBe('provider-key');
+    expect(result.PATH).toBe('/usr/bin');
+  });
+
   it('preserves allowed variables like PATH, HOME, NODE_PATH', () => {
     const result = sanitizeEnv({
       PATH: '/usr/bin:/usr/local/bin',

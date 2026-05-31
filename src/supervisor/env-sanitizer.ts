@@ -1,13 +1,21 @@
-// Filters CLAUDE_CODE_* (and CLAUDECODE_*) unless explicitly preserved in
+// Filters assistant runtime variables unless explicitly preserved in
 // ENV_PRESERVE. This is layer 2 of defense for #2357 (CLAUDE_CODE_EFFORT_LEVEL
 // / CLAUDE_CODE_ALWAYS_ENABLE_EFFORT leaking into the SDK subprocess) — layer 1
 // is BLOCKED_ENV_VARS in EnvManager.ts. Do NOT add the EFFORT_* vars to
-// ENV_PRESERVE: preserving them would defeat the strip.
+// ENV_PRESERVE: preserving them would defeat the strip. Codex runtime vars are
+// stripped so daemons launched from nested agents do not inherit the agent's
+// temporary Codex home and break OAuth lookup for the worker.
 export const ENV_PREFIXES = ['CLAUDECODE_', 'CLAUDE_CODE_'];
 export const ENV_EXACT_MATCHES = new Set([
   'CLAUDECODE',
   'CLAUDE_CODE_SESSION',
   'CLAUDE_CODE_ENTRYPOINT',
+  'CODEX_CI',
+  'CODEX_HOME',
+  'CODEX_MANAGED_BY_BUN',
+  'CODEX_MANAGED_BY_NPM',
+  'CODEX_MANAGED_PACKAGE_ROOT',
+  'CODEX_THREAD_ID',
   'MCP_SESSION_ID',
 ]);
 
