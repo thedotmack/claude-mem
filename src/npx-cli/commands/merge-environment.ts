@@ -4,8 +4,10 @@ import { logger } from '../../utils/logger.js';
 
 export async function runMergeEnvironmentCommand(args: string[]): Promise<void> {
   // Parse --name=VALUE and --from=VALUE1,VALUE2,...
-  const nameArg = args.find(a => a.startsWith('--name='))?.split('=')[1] ?? '';
-  const fromArg = args.find(a => a.startsWith('--from='))?.split('=')[1] ?? '';
+  // Use slice() instead of split('=')[1] so values that contain '=' survive intact
+  // (e.g. --name=work=prod would otherwise be parsed as just "work").
+  const nameArg = args.find(a => a.startsWith('--name='))?.slice('--name='.length) ?? '';
+  const fromArg = args.find(a => a.startsWith('--from='))?.slice('--from='.length) ?? '';
   const fromProjects = fromArg ? fromArg.split(',').map(p => p.trim()).filter(Boolean) : [];
 
   if (!nameArg || nameArg.trim() === '') {
@@ -33,20 +35,33 @@ export async function runMergeEnvironmentCommand(args: string[]): Promise<void> 
   ];
 
   let totalUpdated = 0;
+  // All UPDATEs run inside a single transaction. If the process is killed
+  // mid-flight (crash, Ctrl-C, disk full), the database rolls back to its
+  // pre-migration state — never a half-applied state where some tables hold
+  // the new environment name and others still carry the old project names.
+  const migrate = db.transaction(() => {
+    for (const { table, column } of updates) {
+      const placeholders = fromProjects.map(() => '?').join(',');
+      const sql = `UPDATE ${table} SET ${column} = ? WHERE ${column} IN (${placeholders})`;
 
-  for (const { table, column } of updates) {
-    const placeholders = fromProjects.map(() => '?').join(',');
-    const sql = `UPDATE ${table} SET ${column} = ? WHERE ${column} IN (${placeholders})`;
-
-    try {
-      const stmt = db.prepare(sql);
-      const result = stmt.run(nameArg, ...fromProjects);
-      totalUpdated += result.changes;
-      logger.info('ENV', `Updated ${table}.${column}`, { changes: result.changes });
-    } catch (err) {
-      // Column may not exist yet (e.g. merged_into_project before migration runs)
-      logger.error('ENV', `Failed to update ${table}.${column}`, { error: String(err) });
+      try {
+        const stmt = db.prepare(sql);
+        const result = stmt.run(nameArg, ...fromProjects);
+        totalUpdated += result.changes;
+        logger.info('ENV', `Updated ${table}.${column}`, { changes: result.changes });
+      } catch (err) {
+        // Column may not exist yet (e.g. merged_into_project before migration runs)
+        logger.error('ENV', `Failed to update ${table}.${column}`, { error: String(err) });
+      }
     }
+  });
+
+  try {
+    migrate();
+  } catch (err) {
+    logger.error('ENV', 'Migration failed, all changes rolled back', { error: String(err) });
+    db.close();
+    process.exit(1);
   }
 
   db.close();

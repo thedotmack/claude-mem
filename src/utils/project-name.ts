@@ -58,7 +58,13 @@ export function loadEnvironments(): Environment[] {
 
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
     const raw = settings.environments;
-    cachedEnvironments = raw ? JSON.parse(raw) : [];
+    // settings.environments is typed as string, but loadFromFile hands back
+    // whatever JSON.parse produced from the on-disk file — so it can be either
+    // a JSON string ("[{...}]") or a native array ([{...}]) depending on how
+    // the user wrote it. Accept both shapes.
+    cachedEnvironments = Array.isArray(raw)
+      ? (raw as Environment[])
+      : (typeof raw === 'string' && raw ? JSON.parse(raw) : []);
     cachedSettingsMtime = mtime;
     lastCacheTime = now;
     return cachedEnvironments!;

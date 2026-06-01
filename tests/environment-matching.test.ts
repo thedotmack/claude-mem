@@ -100,4 +100,23 @@ describe('getProjectName environment matching', () => {
     const after = readFileSync(realSettingsPath, 'utf-8');
     expect(after).toBe(before);
   });
+
+  test('environments as native array (documented config format) works', () => {
+    // Greptile P1: the documented config form is a JSON array, not a string.
+    // After loadFromFile JSON.parses settings.json, environments is already
+    // an array — loadEnvironments must accept that without re-parsing.
+    const defaults = SettingsDefaultsManager.getAllDefaults();
+    const merged = { ...defaults, environments: [{ name: 'work', patterns: ['/Users/anyone/company-*'] }] };
+    writeFileSync(SETTINGS_PATH, JSON.stringify(merged, null, 2));
+    resetEnvironmentsCache();
+    expect(getProjectName('/Users/anyone/company-a')).toBe('work');
+  });
+
+  test('environments as JSON string also works', () => {
+    const defaults = SettingsDefaultsManager.getAllDefaults();
+    const merged = { ...defaults, environments: JSON.stringify([{ name: 'work', patterns: ['/Users/anyone/company-*'] }]) };
+    writeFileSync(SETTINGS_PATH, JSON.stringify(merged, null, 2));
+    resetEnvironmentsCache();
+    expect(getProjectName('/Users/anyone/company-a')).toBe('work');
+  });
 });
