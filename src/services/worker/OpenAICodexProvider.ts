@@ -87,8 +87,26 @@ function parseJsonFile<T>(filePath: string): T | null {
 function getCodexCliAuthPath(): string {
   const codexHome = process.env.CODEX_HOME
     ? expandOpenAICodexPath(process.env.CODEX_HOME)
-    : join(homedir(), '.codex');
+    : process.env.HOME
+      ? join(process.env.HOME, '.codex')
+      : join(homedir(), '.codex');
   return join(codexHome, 'auth.json');
+}
+
+function getCodexCliAuthPaths(): string[] {
+  const primary = getCodexCliAuthPath();
+  const fallback = join(process.env.HOME || homedir(), '.codex', 'auth.json');
+  const codexHome = process.env.CODEX_HOME ? expandOpenAICodexPath(process.env.CODEX_HOME) : '';
+
+  if (
+    codexHome
+    && primary !== fallback
+    && /(^|[/\\])\.openclaw([/\\]|$)/.test(codexHome)
+  ) {
+    return [primary, fallback];
+  }
+
+  return [primary];
 }
 
 function decodeJwtExpiryMs(token: string | undefined): number | undefined {
@@ -121,6 +139,14 @@ function loadCodexCliAuthStore(authPath: string): { store: CodexCliAuthStore; cr
   return { store, credential };
 }
 
+function loadCodexCliAuth(): { authPath: string; store: CodexCliAuthStore; credential: OAuthCredentials } | null {
+  for (const authPath of getCodexCliAuthPaths()) {
+    const auth = loadCodexCliAuthStore(authPath);
+    if (auth) return { authPath, ...auth };
+  }
+  return null;
+}
+
 function saveCodexCliAuthStore(authPath: string, store: CodexCliAuthStore, updated: OAuthCredentials): void {
   const tokens = store.tokens;
   if (!tokens) return;
@@ -140,18 +166,19 @@ function missingAuthMessage(): string {
 }
 
 async function getAccessToken(): Promise<string> {
-  const authPath = getCodexCliAuthPath();
-  const cached = tokenCache.get(authPath);
-
-  if (cached && Date.now() < cached.expires - TOKEN_REFRESH_BUFFER_MS) {
-    return cached.access;
+  for (const authPath of getCodexCliAuthPaths()) {
+    const cached = tokenCache.get(authPath);
+    if (cached && Date.now() < cached.expires - TOKEN_REFRESH_BUFFER_MS) {
+      return cached.access;
+    }
   }
 
-  const auth = loadCodexCliAuthStore(authPath);
+  const auth = loadCodexCliAuth();
   if (!auth) {
     throw new ClassifiedProviderError(missingAuthMessage(), { kind: 'auth_invalid', cause: new Error('missing OpenAI Codex OAuth profile') });
   }
 
+  const authPath = auth.authPath;
   const profile = auth.credential;
   if (profile.access && profile.expires && Date.now() < profile.expires - TOKEN_REFRESH_BUFFER_MS) {
     tokenCache.set(authPath, { access: profile.access, expires: profile.expires });
@@ -670,7 +697,7 @@ export class OpenAICodexProvider {
 }
 
 export function isOpenAICodexAvailable(): boolean {
-  return !!loadCodexCliAuthStore(getCodexCliAuthPath());
+  return !!loadCodexCliAuth();
 }
 
 export function isOpenAICodexSelected(): boolean {

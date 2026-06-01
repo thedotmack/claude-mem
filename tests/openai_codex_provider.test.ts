@@ -30,11 +30,13 @@ mock.module('@earendil-works/pi-ai/oauth', () => ({
 describe('OpenAICodexProvider selection', () => {
   let tempDir: string;
   let originalCodexHome: string | undefined;
+  let originalHome: string | undefined;
   let loadFromFileSpy: ReturnType<typeof spyOn>;
   let completeSimpleSpy: ReturnType<typeof spyOn>;
 
   beforeEach(() => {
     originalCodexHome = process.env.CODEX_HOME;
+    originalHome = process.env.HOME;
     tempDir = join(tmpdir(), `openai-codex-provider-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     mkdirSync(tempDir, { recursive: true });
     process.env.CODEX_HOME = tempDir;
@@ -50,6 +52,11 @@ describe('OpenAICodexProvider selection', () => {
       delete process.env.CODEX_HOME;
     } else {
       process.env.CODEX_HOME = originalCodexHome;
+    }
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
     }
     loadFromFileSpy?.mockRestore();
     completeSimpleSpy?.mockRestore();
@@ -84,6 +91,32 @@ describe('OpenAICodexProvider selection', () => {
 
     expect(isOpenAICodexSelected()).toBe(true);
     expect(isOpenAICodexAvailable()).toBe(false);
+  });
+
+  it('falls back to the user Codex auth when OpenClaw provides an isolated CODEX_HOME without auth', () => {
+    const homeDir = join(tempDir, 'home');
+    const codexDir = join(homeDir, '.codex');
+    const openClawCodexHome = join(homeDir, '.openclaw', 'agents', 'main', 'agent', 'codex-home');
+    mkdirSync(codexDir, { recursive: true });
+    mkdirSync(openClawCodexHome, { recursive: true });
+    process.env.HOME = homeDir;
+    process.env.CODEX_HOME = openClawCodexHome;
+    writeFileSync(join(codexDir, 'auth.json'), JSON.stringify({
+      auth_mode: 'chatgpt',
+      tokens: {
+        access_token: 'access-token',
+        refresh_token: 'refresh-token',
+        account_id: 'account-id',
+      },
+      last_refresh: new Date().toISOString(),
+    }));
+
+    loadFromFileSpy = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
+      ...SettingsDefaultsManager.getAllDefaults(),
+      CLAUDE_MEM_PROVIDER: 'openai-codex',
+    }));
+
+    expect(isOpenAICodexAvailable()).toBe(true);
   });
 
   it('keeps openai-codex selected even when OAuth is unavailable', () => {
