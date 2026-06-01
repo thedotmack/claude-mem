@@ -44,9 +44,18 @@ interface BeforePromptBuildResult {
 interface ToolResultPersistEvent {
   toolName?: string;
   params?: Record<string, unknown>;
+  toolCallId?: string;
   message?: {
     content?: Array<{ type: string; text?: string }>;
   };
+}
+
+interface AfterToolCallEvent {
+  toolName?: string;
+  params?: Record<string, unknown>;
+  toolCallId?: string;
+  result?: unknown;
+  error?: string;
 }
 
 interface AgentEndEvent {
@@ -119,6 +128,7 @@ interface OpenClawPluginApi {
   on: ((event: "before_prompt_build", callback: PromptBuildCallback) => void) &
       ((event: "before_agent_start", callback: EventCallback<BeforeAgentStartEvent>) => void) &
       ((event: "tool_result_persist", callback: EventCallback<ToolResultPersistEvent>) => void) &
+      ((event: "after_tool_call", callback: EventCallback<AfterToolCallEvent>) => void) &
       ((event: "agent_end", callback: EventCallback<AgentEndEvent>) => void) &
       ((event: "session_start", callback: EventCallback<SessionStartEvent>) => void) &
       ((event: "session_end", callback: EventCallback<SessionEndEvent>) => void) &
@@ -214,6 +224,9 @@ const DEFAULT_WORKER_PORT = 37777;
 const DEFAULT_WORKER_HOST = "127.0.0.1";
 const DEFAULT_OPENCLAW_PLATFORM_SOURCE = "openclaw";
 const DUPLICATE_PROMPT_INIT_WINDOW_MS = 30_000;
+const MAX_TOOL_RESPONSE_LENGTH = 1000;
+const AFTER_TOOL_CALL_FALLBACK_DELAY_MS = 500;
+const TOOL_EVENT_DEDUPE_TTL_MS = 10_000;
 
 const EMOJI_POOL = [
   "🔧","📐","🔍","💻","🧪","🐛","🛡️","☁️","📦","🎯",
@@ -427,6 +440,45 @@ function workerPostFireAndForget(
       logger.warn(`[claude-mem] Worker POST ${path} failed: ${message}`);
     }
   });
+}
+
+function truncateToolResponseText(text: string): string {
+  return text.length > MAX_TOOL_RESPONSE_LENGTH ? text.slice(0, MAX_TOOL_RESPONSE_LENGTH) : text;
+}
+
+function extractToolResponseTextFromPersistEvent(event: ToolResultPersistEvent): string {
+  const content = event.message?.content;
+  if (!Array.isArray(content)) return "";
+
+  return truncateToolResponseText(content
+    .filter((block) => (block.type === "tool_result" || block.type === "text") && "text" in block)
+    .map((block) => String(block.text))
+    .join("\n"));
+}
+
+function stringifyToolResult(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function extractToolResponseTextFromAfterToolCall(event: AfterToolCallEvent): string {
+  const response = stringifyToolResult(event.result);
+  const text = event.error ? `Error: ${event.error}${response ? `\n${response}` : ""}` : response;
+  return truncateToolResponseText(text);
+}
+
+function safeJsonFingerprint(value: unknown): string {
+  try {
+    return JSON.stringify(value ?? {})?.slice(0, 200) ?? "";
+  } catch {
+    return String(value ?? "").slice(0, 200);
+  }
 }
 
 async function workerGetText(
@@ -744,6 +796,8 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   const canonicalSessionKeys = new Map<string, string>();
   const sessionAliasesByCanonicalKey = new Map<string, Set<string>>();
   const recentPromptInits = new Map<string, number>();
+  const pendingAfterToolCallFallbacks = new Map<string, ReturnType<typeof setTimeout>>();
+  const persistedToolEvents = new Map<string, number>();
   const syncMemoryFile = userConfig.syncMemoryFile !== false; 
   const syncMemoryFileExclude = new Set(userConfig.syncMemoryFileExclude || []);
 
@@ -919,6 +973,58 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     api.logger.info(`[claude-mem] Session initialized via ${via}: contentSessionId=${contentSessionId} project=${projectName}`);
   }
 
+  function toolEventKey(ctx: EventContext, toolName: string, toolCallId: string | undefined, params: unknown): string {
+    const { canonicalKey } = rememberSessionContext(ctx);
+    const stableToolId = toolCallId || safeJsonFingerprint(params);
+    return `${canonicalKey}:${toolName}:${stableToolId}`;
+  }
+
+  function evictOldToolEventKeys(now = Date.now()): void {
+    for (const [key, timestamp] of persistedToolEvents) {
+      if (now - timestamp > TOOL_EVENT_DEDUPE_TTL_MS) {
+        persistedToolEvents.delete(key);
+      }
+    }
+  }
+
+  function markToolResultPersisted(key: string): void {
+    evictOldToolEventKeys();
+    persistedToolEvents.set(key, Date.now());
+    const pending = pendingAfterToolCallFallbacks.get(key);
+    if (pending) {
+      clearTimeout(pending);
+      pendingAfterToolCallFallbacks.delete(key);
+    }
+  }
+
+  function postToolObservation(
+    toolName: string,
+    params: Record<string, unknown> | undefined,
+    toolResponseText: string,
+    ctx: EventContext,
+    source: "tool_result_persist" | "after_tool_call"
+  ): void {
+    const { canonicalKey, contentSessionId } = rememberSessionContext(ctx);
+    const projectName = getProjectName(ctx);
+    const workspaceDir = getObservationCwd(ctx, projectName);
+    if (!ctx.workspaceDir) {
+      api.logger.info(`[claude-mem] Using project fallback cwd for observation: session=${canonicalKey} tool=${toolName} project=${projectName}`);
+    }
+
+    if (source === "after_tool_call") {
+      api.logger.info(`[claude-mem] after_tool_call fallback persisted: tool=${toolName} agent=${ctx.agentId ?? "none"} session=${ctx.sessionKey ?? "none"}`);
+    }
+
+    workerPostFireAndForget(workerPort, "/api/sessions/observations", {
+      contentSessionId,
+      tool_name: toolName,
+      tool_input: params || {},
+      tool_response: toolResponseText,
+      cwd: workspaceDir,
+      platformSource,
+    }, api.logger);
+  }
+
   api.on("session_start", async (_event, ctx) => {
     const { canonicalKey, contentSessionId } = rememberSessionContext(ctx);
     api.logger.info(`[claude-mem] Session tracking initialized — prompt capture deferred to before_agent_start: session=${canonicalKey} contentSessionId=${contentSessionId}`);
@@ -964,36 +1070,42 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
 
     if (toolName.startsWith("memory_")) return;
 
-    const { canonicalKey, contentSessionId } = rememberSessionContext(ctx);
+    const key = toolEventKey(ctx, toolName, event.toolCallId, event.params);
+    markToolResultPersisted(key);
+    postToolObservation(
+      toolName,
+      event.params,
+      extractToolResponseTextFromPersistEvent(event),
+      ctx,
+      "tool_result_persist"
+    );
+  });
 
-    let toolResponseText = "";
-    const content = event.message?.content;
-    if (Array.isArray(content)) {
-      toolResponseText = content
-        .filter((block) => (block.type === "tool_result" || block.type === "text") && "text" in block)
-        .map((block) => String(block.text))
-        .join("\n");
+  api.on("after_tool_call", (event, ctx) => {
+    const toolName = event.toolName;
+    if (!toolName) return;
+    if (toolName.startsWith("memory_")) return;
+
+    const key = toolEventKey(ctx, toolName, event.toolCallId, event.params);
+    evictOldToolEventKeys();
+    if (persistedToolEvents.has(key) || pendingAfterToolCallFallbacks.has(key)) {
+      return;
     }
 
-    const MAX_TOOL_RESPONSE_LENGTH = 1000;
-    if (toolResponseText.length > MAX_TOOL_RESPONSE_LENGTH) {
-      toolResponseText = toolResponseText.slice(0, MAX_TOOL_RESPONSE_LENGTH);
-    }
-
-    const projectName = getProjectName(ctx);
-    const workspaceDir = getObservationCwd(ctx, projectName);
-    if (!ctx.workspaceDir) {
-      api.logger.info(`[claude-mem] Using project fallback cwd for observation: session=${canonicalKey} tool=${toolName} project=${projectName}`);
-    }
-
-    workerPostFireAndForget(workerPort, "/api/sessions/observations", {
-      contentSessionId,
-      tool_name: toolName,
-      tool_input: event.params || {},
-      tool_response: toolResponseText,
-      cwd: workspaceDir,
-      platformSource,
-    }, api.logger);
+    const timer = setTimeout(() => {
+      pendingAfterToolCallFallbacks.delete(key);
+      if (persistedToolEvents.has(key)) {
+        return;
+      }
+      postToolObservation(
+        toolName,
+        event.params,
+        extractToolResponseTextFromAfterToolCall(event),
+        ctx,
+        "after_tool_call"
+      );
+    }, AFTER_TOOL_CALL_FALLBACK_DELAY_MS);
+    pendingAfterToolCallFallbacks.set(key, timer);
   });
 
   api.on("agent_end", async (event, ctx) => {
@@ -1034,6 +1146,11 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     sessionIds.clear();
     contextCache.clear();
     recentPromptInits.clear();
+    for (const timer of pendingAfterToolCallFallbacks.values()) {
+      clearTimeout(timer);
+    }
+    pendingAfterToolCallFallbacks.clear();
+    persistedToolEvents.clear();
     canonicalSessionKeys.clear();
     sessionAliasesByCanonicalKey.clear();
     api.logger.info("[claude-mem] Gateway started — session tracking reset");

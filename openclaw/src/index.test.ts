@@ -110,6 +110,7 @@ describe("claudeMemPlugin", () => {
     assert.ok(getEventHandlers("before_agent_start").length > 0, "before_agent_start handler registered");
     assert.ok(getEventHandlers("before_prompt_build").length > 0, "before_prompt_build handler registered");
     assert.ok(getEventHandlers("tool_result_persist").length > 0, "tool_result_persist handler registered");
+    assert.ok(getEventHandlers("after_tool_call").length > 0, "after_tool_call handler registered");
     assert.ok(getEventHandlers("agent_end").length > 0, "agent_end handler registered");
     assert.ok(getEventHandlers("gateway_start").length > 0, "gateway_start handler registered");
     assert.ok(logs.some((l) => l.includes("plugin loaded")));
@@ -521,6 +522,58 @@ describe("Observation I/O event handlers", () => {
     assert.ok(obsRequest!.body.contentSessionId.startsWith("openclaw-test-agent-"));
     assert.equal(obsRequest!.body.platformSource, "openclaw");
     assert.equal(obsRequest!.body.cwd, "/openclaw/openclaw");
+  });
+
+  it("after_tool_call sends observation when no tool_result_persist arrives", async () => {
+    const { api, fireEvent } = createMockApi({ workerPort });
+    claudeMemPlugin(api);
+
+    await fireEvent("after_tool_call", {
+      toolName: "shell",
+      params: { command: "pwd" },
+      result: { stdout: "/workspace\n" },
+      toolCallId: "tool-1",
+    }, { sessionKey: "fallback-session", agentId: "worker", workspaceDir: "/workspace" });
+
+    await new Promise((resolve) => setTimeout(resolve, 700));
+
+    const obsRequest = receivedRequests.find((r) => r.url === "/api/sessions/observations");
+    assert.ok(obsRequest, "should send observation from after_tool_call fallback");
+    assert.equal(obsRequest!.body.tool_name, "shell");
+    assert.deepEqual(obsRequest!.body.tool_input, { command: "pwd" });
+    assert.equal(obsRequest!.body.tool_response, "{\"stdout\":\"/workspace\\n\"}");
+    assert.equal(obsRequest!.body.cwd, "/workspace");
+    assert.equal(obsRequest!.body.platformSource, "openclaw");
+  });
+
+  it("after_tool_call fallback is canceled when tool_result_persist handles the same tool", async () => {
+    const { api, fireEvent } = createMockApi({ workerPort });
+    claudeMemPlugin(api);
+
+    const ctx = { sessionKey: "dedupe-session", agentId: "worker", workspaceDir: "/workspace" };
+    const params = { command: "pwd" };
+
+    await fireEvent("after_tool_call", {
+      toolName: "shell",
+      params,
+      result: { stdout: "fallback output" },
+      toolCallId: "tool-2",
+    }, ctx);
+
+    await fireEvent("tool_result_persist", {
+      toolName: "shell",
+      params,
+      toolCallId: "tool-2",
+      message: {
+        content: [{ type: "text", text: "persist output" }],
+      },
+    }, ctx);
+
+    await new Promise((resolve) => setTimeout(resolve, 700));
+
+    const obsRequests = receivedRequests.filter((r) => r.url === "/api/sessions/observations");
+    assert.equal(obsRequests.length, 1, "same tool call should be observed only once");
+    assert.equal(obsRequests[0].body.tool_response, "persist output");
   });
 
   it("tool_result_persist uses agent project fallback cwd when workspaceDir is unavailable", async () => {
