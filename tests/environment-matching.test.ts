@@ -1,25 +1,42 @@
-import { describe, test, expect, afterEach } from 'bun:test';
+import { describe, test, expect, beforeAll, afterAll, afterEach } from 'bun:test';
 import path from 'path';
-import { homedir } from 'os';
-import { writeFileSync } from 'fs';
-import { getProjectName, resetEnvironmentsCache } from '../src/utils/project-name.js';
+import os from 'os';
+import { writeFileSync, readFileSync, mkdtempSync, existsSync, rmSync } from 'fs';
+import {
+  getProjectName,
+  resetEnvironmentsCache,
+  setEnvironmentsSettingsPathForTesting,
+} from '../src/utils/project-name.js';
 import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager.js';
 import type { Environment } from '../src/shared/SettingsDefaultsManager.js';
 
-const HOME = homedir();
-const SETTINGS_PATH = path.join(HOME, '.claude-mem', 'settings.json');
+let TEMP_DIR = '';
+let SETTINGS_PATH = '';
 
 function writeEnvironments(envs: Environment[]) {
-  const existing = SettingsDefaultsManager.loadFromFile(SETTINGS_PATH);
-  existing.environments = JSON.stringify(envs);
-  writeFileSync(SETTINGS_PATH, JSON.stringify(existing, null, 2));
+  const defaults = SettingsDefaultsManager.getAllDefaults();
+  const merged = { ...defaults, environments: JSON.stringify(envs) };
+  writeFileSync(SETTINGS_PATH, JSON.stringify(merged, null, 2));
   resetEnvironmentsCache();
 }
 
 function clearEnvironments() {
   writeEnvironments([]);
-  resetEnvironmentsCache();
 }
+
+beforeAll(() => {
+  TEMP_DIR = mkdtempSync(path.join(os.tmpdir(), 'claude-mem-env-test-'));
+  SETTINGS_PATH = path.join(TEMP_DIR, 'settings.json');
+  writeFileSync(SETTINGS_PATH, JSON.stringify(SettingsDefaultsManager.getAllDefaults(), null, 2));
+  setEnvironmentsSettingsPathForTesting(SETTINGS_PATH);
+});
+
+afterAll(() => {
+  setEnvironmentsSettingsPathForTesting(null);
+  if (TEMP_DIR && existsSync(TEMP_DIR)) {
+    rmSync(TEMP_DIR, { recursive: true, force: true });
+  }
+});
 
 describe('getProjectName environment matching', () => {
   afterEach(() => {
@@ -28,47 +45,59 @@ describe('getProjectName environment matching', () => {
 
   test('no environments — falls back to basename', () => {
     clearEnvironments();
-    expect(getProjectName(path.join(HOME, 'company-a'))).toBe('company-a');
+    expect(getProjectName('/Users/anyone/company-a')).toBe('company-a');
   });
 
   test('cwd matches environment pattern — returns environment name', () => {
-    writeEnvironments([{ name: 'work', patterns: ['~/company-*'] }]);
-    expect(getProjectName(path.join(HOME, 'company-a'))).toBe('work');
+    writeEnvironments([{ name: 'work', patterns: ['/Users/anyone/company-*'] }]);
+    expect(getProjectName('/Users/anyone/company-a')).toBe('work');
   });
 
   test('cwd matches first environment — first match wins', () => {
     writeEnvironments([
-      { name: 'work', patterns: ['~/projects/shared-*'] },
-      { name: 'personal', patterns: ['~/projects/*'] },
+      { name: 'work', patterns: ['/Users/anyone/projects/shared-*'] },
+      { name: 'personal', patterns: ['/Users/anyone/projects/*'] },
     ]);
-    expect(getProjectName(path.join(HOME, 'projects', 'shared-lib'))).toBe('work');
+    expect(getProjectName('/Users/anyone/projects/shared-lib')).toBe('work');
   });
 
   test('cwd does not match any pattern — falls back to basename', () => {
-    writeEnvironments([{ name: 'work', patterns: ['~/company-*'] }]);
-    expect(getProjectName(path.join(HOME, 'random-dir'))).toBe('random-dir');
+    writeEnvironments([{ name: 'work', patterns: ['/Users/anyone/company-*'] }]);
+    expect(getProjectName('/Users/anyone/random-dir')).toBe('random-dir');
   });
 
   test('~ expansion works correctly', () => {
+    const home = os.homedir();
     writeEnvironments([{ name: 'work', patterns: ['~/workspace/harness/*'] }]);
-    expect(getProjectName(path.join(HOME, 'workspace', 'harness', 'claude-mem'))).toBe('work');
+    expect(getProjectName(path.join(home, 'workspace', 'harness', 'claude-mem'))).toBe('work');
   });
 
   test('pattern with * matches one level only', () => {
+    const home = os.homedir();
     writeEnvironments([{ name: 'work', patterns: ['~/workspace/*'] }]);
-    expect(getProjectName(path.join(HOME, 'workspace', 'harness'))).toBe('work');
-    // * should NOT match nested subdirectories
-    expect(getProjectName(path.join(HOME, 'workspace', 'harness', 'claude-mem'))).toBe('claude-mem');
+    expect(getProjectName(path.join(home, 'workspace', 'harness'))).toBe('work');
+    expect(getProjectName(path.join(home, 'workspace', 'harness', 'claude-mem'))).toBe('claude-mem');
   });
 
   test('pattern with ** matches any depth', () => {
+    const home = os.homedir();
     writeEnvironments([{ name: 'work', patterns: ['~/workspace/**'] }]);
-    expect(getProjectName(path.join(HOME, 'workspace', 'harness', 'claude-mem'))).toBe('work');
+    expect(getProjectName(path.join(home, 'workspace', 'harness', 'claude-mem'))).toBe('work');
   });
 
   test('empty cwd — returns unknown-project', () => {
     clearEnvironments();
     expect(getProjectName(null)).toBe('unknown-project');
     expect(getProjectName('')).toBe('unknown-project');
+  });
+
+  test('user real settings.json is NEVER touched', () => {
+    const realSettingsPath = path.join(os.homedir(), '.claude-mem', 'settings.json');
+    if (!existsSync(realSettingsPath)) return;
+    const before = readFileSync(realSettingsPath, 'utf-8');
+    writeEnvironments([{ name: 'should-not-leak', patterns: ['/tmp/**'] }]);
+    clearEnvironments();
+    const after = readFileSync(realSettingsPath, 'utf-8');
+    expect(after).toBe(before);
   });
 });

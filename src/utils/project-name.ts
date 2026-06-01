@@ -17,12 +17,28 @@ function expandTilde(p: string): string {
 let cachedEnvironments: Environment[] | null = null;
 let cachedSettingsMtime = 0;
 let lastCacheTime = 0;
+let settingsPathOverride: string | null = null;
 const CACHE_DEBOUNCE_MS = 100;
 
 export function resetEnvironmentsCache(): void {
   cachedEnvironments = null;
   cachedSettingsMtime = 0;
   lastCacheTime = 0;
+}
+
+/**
+ * Override the settings file path used by loadEnvironments.
+ * Production code must not call this — it exists so tests can point at a
+ * temporary settings file instead of mutating the user's real
+ * ~/.claude-mem/settings.json.
+ */
+export function setEnvironmentsSettingsPathForTesting(p: string | null): void {
+  settingsPathOverride = p;
+  resetEnvironmentsCache();
+}
+
+function getSettingsPath(): string {
+  return settingsPathOverride ?? path.join(homedir(), '.claude-mem', 'settings.json');
 }
 
 export function loadEnvironments(): Environment[] {
@@ -32,7 +48,7 @@ export function loadEnvironments(): Environment[] {
   }
 
   try {
-    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+    const settingsPath = getSettingsPath();
     const mtime = statSync(settingsPath).mtimeMs;
 
     if (cachedEnvironments !== null && mtime === cachedSettingsMtime) {
