@@ -6,6 +6,7 @@ import type { SessionEventBroadcaster } from '../events/SessionEventBroadcaster.
 import type { ParsedSummary } from '../../../sdk/parser.js';
 import { stripMemoryTagsFromJson } from '../../../utils/tag-stripping.js';
 import { isProjectExcluded } from '../../../utils/project-filter.js';
+import { shouldSkipAgentObservation } from '../../../shared/should-skip-agent-observation.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
 import { getProjectContext } from '../../../utils/project-name.js';
@@ -112,6 +113,15 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
   );
   if (skipTools.has(payload.toolName)) {
     return { ok: true, status: 'skipped', reason: 'tool_excluded' };
+  }
+
+  // #2736 — defense in depth: the hook handler already filters subagent
+  // observations before this HTTP call, but skip again here so any non-hook
+  // caller (direct API, future ingestion paths) is filtered before the
+  // queueObservation → provider request below.
+  const agentSkip = shouldSkipAgentObservation(payload.agentId, payload.agentType, settings);
+  if (agentSkip.skip) {
+    return { ok: true, status: 'skipped', reason: agentSkip.reason! };
   }
 
   const fileOperationTools = new Set(['Edit', 'Write', 'Read', 'NotebookEdit']);

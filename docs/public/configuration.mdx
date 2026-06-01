@@ -22,6 +22,43 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | `CLAUDE_MEM_WORKER_HOST`      | `127.0.0.1`                     | Worker service host address           |
 | `CLAUDE_MEM_DATA_DIR`         | `~/.claude-mem`                 | Data root — every other path (database, chroma, logs, settings.json, worker.pid) derives from this |
 | `CLAUDE_MEM_SKIP_TOOLS`       | `ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion` | Comma-separated tools to exclude from observations |
+| `CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS` | `false`               | When `true`, skip **every** subagent observation (any tool call carrying an `agentId`). See [Subagent & Dynamic Workflow filtering](#subagent--dynamic-workflow-filtering). |
+| `CLAUDE_MEM_SKIP_AGENT_TYPES` | _(empty)_                       | Comma-separated `agent_type` values to skip, e.g. `workflow-subagent,Explore,Plan`. Main-session observations are unaffected. |
+
+### Subagent & Dynamic Workflow filtering
+
+Claude Code [Dynamic Workflows](https://code.claude.com/docs/en/workflows) fan a single
+prompt out to tens-to-hundreds of parallel subagents (`agent_type: workflow-subagent`).
+Every tool call by every subagent fires a `PostToolUse` hook, so claude-mem creates one
+provider-analyzed observation per call — a single run can emit **hundreds-to-thousands**
+of low-signal observations. That can exhaust the configured provider's free-tier quota
+(HTTP 429) and drop the rest of the run, including valuable main-session work.
+
+Two settings let you filter these out **before** any worker round-trip or provider call.
+Both default to off, so existing behavior is preserved.
+
+- **Drop all subagent noise (recommended for heavy workflow users):**
+
+  ```json
+  { "CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS": "true" }
+  ```
+
+  This is the robust lever — it keys off the presence of an `agentId`, so it catches
+  every subagent regardless of type. Main-session observations are kept.
+
+- **Surgically drop specific agent types** (keep some subagents, drop others):
+
+  ```json
+  { "CLAUDE_MEM_SKIP_AGENT_TYPES": "workflow-subagent" }
+  ```
+
+  Add a comma-separated list of `agent_type` values. The two settings combine as a
+  union: an observation is skipped if the global toggle matches **or** its `agent_type`
+  is in the list.
+
+> Subagent **summaries** are already skipped automatically; these settings add the same
+> control for **observations**. Durable cross-session knowledge generally comes from the
+> main session, so dropping ephemeral subagent steps usually improves signal-to-noise.
 
 ### Gemini Provider Settings
 
