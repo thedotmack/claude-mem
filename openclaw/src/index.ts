@@ -155,6 +155,27 @@ interface SSENewObservationEvent {
   timestamp: number;
 }
 
+interface SummarySSEPayload {
+  id: number;
+  session_id: string;
+  platform_source?: string | null;
+  request: string | null;
+  investigated: string | null;
+  learned: string | null;
+  completed: string | null;
+  next_steps: string | null;
+  notes: string | null;
+  project: string | null;
+  prompt_number: number;
+  created_at_epoch: number;
+}
+
+interface SSENewSummaryEvent {
+  type: "new_summary";
+  summary: SummarySSEPayload;
+  timestamp: number;
+}
+
 type ConnectionState = "disconnected" | "connected" | "reconnecting";
 
 const DETAILED_FEED_TYPES = new Set(["security_alert", "security_note", "bugfix", "decision"]);
@@ -176,6 +197,7 @@ interface ClaudeMemPluginConfig {
   syncMemoryFile?: boolean;
   syncMemoryFileExclude?: string[];
   project?: string;
+  platformSource?: string;
   workerPort?: number;
   workerHost?: string;
   observationFeed?: {
@@ -190,7 +212,7 @@ interface ClaudeMemPluginConfig {
 const MAX_SSE_BUFFER_SIZE = 1024 * 1024; 
 const DEFAULT_WORKER_PORT = 37777;
 const DEFAULT_WORKER_HOST = "127.0.0.1";
-const OPENCLAW_PLATFORM_SOURCE = "openclaw";
+const DEFAULT_OPENCLAW_PLATFORM_SOURCE = "openclaw";
 const DUPLICATE_PROMPT_INIT_WINDOW_MS = 30_000;
 
 const EMOJI_POOL = [
@@ -213,9 +235,36 @@ const DEFAULT_CODEX_EMOJI = "🤖";
 const DEFAULT_CODEX_LABEL = "Codex Session";
 const DEFAULT_FALLBACK_EMOJI = "🦀";
 
+function normalizeFeedPlatformSource(value: string | null | undefined): string {
+  const source = (value || "").trim().toLowerCase().replace(/\s+/g, "-");
+  if (!source) return "";
+  if (source.includes("codex")) return "codex";
+  if (source.includes("claude")) return "claude";
+  if (source.includes("openclaw")) return "openclaw";
+  return source;
+}
+
+function resolveConfiguredPlatformSource(configured: string | null | undefined): string {
+  return normalizeFeedPlatformSource(configured) || DEFAULT_OPENCLAW_PLATFORM_SOURCE;
+}
+
+function inferObservationPlatformSource(
+  observation: Pick<ObservationSSEPayload, "platform_source" | "memory_session_id">
+): string {
+  const explicit = normalizeFeedPlatformSource(observation.platform_source);
+  if (explicit) return explicit;
+
+  const memorySessionId = (observation.memory_session_id || "").toLowerCase();
+  if (memorySessionId.includes("codex")) return "codex";
+  if (memorySessionId.includes("claude")) return "claude";
+  if (memorySessionId.includes("openclaw")) return "openclaw";
+
+  return "";
+}
+
 function buildGetSourceLabel(
   emojiConfig: FeedEmojiConfig | undefined
-): (observation: Pick<ObservationSSEPayload, "project" | "platform_source">) => string {
+): (observation: Pick<ObservationSSEPayload, "project" | "platform_source" | "memory_session_id">) => string {
   const primary = emojiConfig?.primary ?? DEFAULT_PRIMARY_EMOJI;
   const claudeCode = emojiConfig?.claudeCode ?? DEFAULT_CLAUDE_CODE_EMOJI;
   const claudeCodeLabel = emojiConfig?.claudeCodeLabel ?? DEFAULT_CLAUDE_CODE_LABEL;
@@ -232,24 +281,25 @@ function buildGetSourceLabel(
     return `${icon} ${trimmedLabel} (${project})`;
   }
 
-  return function getSourceLabel(observation: Pick<ObservationSSEPayload, "project" | "platform_source">): string {
+  return function getSourceLabel(observation: Pick<ObservationSSEPayload, "project" | "platform_source" | "memory_session_id">): string {
     const project = observation.project;
     if (!project) return fallback;
-    const platformSource = (observation.platform_source || "").trim().toLowerCase();
+    if (project.startsWith("openclaw-")) {
+      const agentId = project.slice("openclaw-".length);
+      if (!agentId) return `${primary} OpenClaw`;
+      const emoji = pinnedAgents[agentId] || primary;
+      return `${emoji} OpenClaw (${agentId})`;
+    }
+    if (project === "openclaw") {
+      return `${primary} OpenClaw`;
+    }
+
+    const platformSource = inferObservationPlatformSource(observation);
     if (platformSource.includes("codex")) {
       return formatExternalSource(codex, codexLabel, project);
     }
     if (platformSource && !platformSource.includes("openclaw")) {
       return formatExternalSource(claudeCode, claudeCodeLabel, project);
-    }
-    if (project.startsWith("openclaw-")) {
-      const agentId = project.slice("openclaw-".length);
-      if (!agentId) return `${primary} openclaw`;
-      const emoji = pinnedAgents[agentId] || poolEmojiForAgent(agentId);
-      return `${emoji} ${agentId}`;
-    }
-    if (project === "openclaw") {
-      return `${primary} openclaw`;
     }
     if (platformSource.includes("openclaw")) {
       return `${primary} ${project}`;
@@ -422,7 +472,7 @@ async function workerGetJson(
 
 function formatObservationMessage(
   observation: ObservationSSEPayload,
-  getSourceLabel: (observation: Pick<ObservationSSEPayload, "project" | "platform_source">) => string,
+  getSourceLabel: (observation: Pick<ObservationSSEPayload, "project" | "platform_source" | "memory_session_id">) => string,
 ): string {
   const title = observation.title || "Untitled";
   const source = getSourceLabel(observation);
@@ -470,6 +520,34 @@ function parseStringArray(value: string | null | undefined): string[] {
   } catch {
     return [];
   }
+}
+
+function formatSummaryMessage(
+  summary: SummarySSEPayload,
+  getSourceLabel: (observation: Pick<ObservationSSEPayload, "project" | "platform_source" | "memory_session_id">) => string,
+): string {
+  const source = getSourceLabel({
+    project: summary.project,
+    platform_source: summary.platform_source,
+    memory_session_id: summary.session_id,
+  });
+  const title = summary.request || "Session summary";
+  const parts = [`${source}\n**${title}**`];
+
+  if (summary.completed) {
+    parts.push(`Completed\n${truncateText(summary.completed, 420)}`);
+  }
+  if (summary.learned) {
+    parts.push(`Learned\n${truncateText(summary.learned, 420)}`);
+  }
+  if (summary.next_steps) {
+    parts.push(`Next\n${truncateText(summary.next_steps, 320)}`);
+  }
+  if (summary.notes) {
+    parts.push(`Notes\n${truncateText(summary.notes, 260)}`);
+  }
+
+  return truncateText(parts.join("\n\n"), 1200);
 }
 
 const CHANNEL_SEND_MAP: Record<string, { namespace: string; functionName: string }> = {
@@ -551,7 +629,7 @@ async function connectToSSEStream(
   to: string,
   abortController: AbortController,
   setConnectionState: (state: ConnectionState) => void,
-  getSourceLabel: (observation: Pick<ObservationSSEPayload, "project" | "platform_source">) => string,
+  getSourceLabel: (observation: Pick<ObservationSSEPayload, "project" | "platform_source" | "memory_session_id">) => string,
   botToken?: string
 ): Promise<void> {
   let backoffMs = 1000;
@@ -613,6 +691,10 @@ async function connectToSSEStream(
               const event = parsed as SSENewObservationEvent;
               const message = formatObservationMessage(event.observation, getSourceLabel);
               await sendToChannel(api, channel, to, message, botToken);
+            } else if (parsed.type === "new_summary" && parsed.summary) {
+              const event = parsed as SSENewSummaryEvent;
+              const message = formatSummaryMessage(event.summary, getSourceLabel);
+              await sendToChannel(api, channel, to, message, botToken);
             }
           } catch (parseError: unknown) {
             const errorMessage = parseError instanceof Error ? parseError.message : String(parseError);
@@ -643,6 +725,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   const workerPort = userConfig.workerPort || DEFAULT_WORKER_PORT;
   _workerHost = userConfig.workerHost || DEFAULT_WORKER_HOST;
   const baseProjectName = userConfig.project || "openclaw";
+  const platformSource = resolveConfiguredPlatformSource(userConfig.platformSource);
   const getSourceLabel = buildGetSourceLabel(userConfig.observationFeed?.emojis);
 
   function getProjectName(ctx: EventContext): string {
@@ -830,7 +913,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       contentSessionId,
       project: projectName,
       prompt: promptText,
-      platformSource: OPENCLAW_PLATFORM_SOURCE,
+      platformSource,
     }, api.logger);
 
     api.logger.info(`[claude-mem] Session initialized via ${via}: contentSessionId=${contentSessionId} project=${projectName}`);
@@ -909,7 +992,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       tool_input: event.params || {},
       tool_response: toolResponseText,
       cwd: workspaceDir,
-      platformSource: OPENCLAW_PLATFORM_SOURCE,
+      platformSource,
     }, api.logger);
   });
 
@@ -937,7 +1020,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     await workerPost(workerPort, "/api/sessions/summarize", {
       contentSessionId,
       last_assistant_message: lastAssistantMessage,
-      platformSource: OPENCLAW_PLATFORM_SOURCE,
+      platformSource,
     }, api.logger);
   });
 

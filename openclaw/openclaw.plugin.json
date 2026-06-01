@@ -38,6 +38,11 @@
         "default": "openclaw",
         "description": "Project name for scoping observations in the memory database"
       },
+      "platformSource": {
+        "type": "string",
+        "default": "openclaw",
+        "description": "Host platform source stored with OpenClaw-generated memory sessions. Keep this as openclaw even when the underlying model/provider is Codex."
+      },
       "observationFeed": {
         "type": "object",
         "description": "Live observation feed — streams observations to any OpenClaw channel in real-time",

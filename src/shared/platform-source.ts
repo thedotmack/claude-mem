@@ -18,6 +18,38 @@ export function normalizePlatformSource(value?: string | null): string {
   return source;
 }
 
+export function isOpenClawSessionSource(input: {
+  contentSessionId?: string | null;
+  project?: string | null;
+  cwd?: string | null;
+}): boolean {
+  const contentSessionId = (input.contentSessionId ?? '').trim().toLowerCase();
+  const project = (input.project ?? '').trim().toLowerCase();
+  const cwd = (input.cwd ?? '').trim().toLowerCase();
+
+  return contentSessionId.startsWith('openclaw-')
+    || contentSessionId.includes('openclaw-agent:')
+    || project === 'openclaw'
+    || project.startsWith('openclaw-')
+    || cwd.includes('/.openclaw/')
+    || cwd.includes('\\.openclaw\\');
+}
+
+export function resolvePlatformSourceForSession(
+  value: string | null | undefined,
+  input: {
+    contentSessionId?: string | null;
+    project?: string | null;
+    cwd?: string | null;
+  }
+): string {
+  if (isOpenClawSessionSource(input)) {
+    return 'openclaw';
+  }
+
+  return normalizePlatformSource(value);
+}
+
 export function sortPlatformSources(sources: string[]): string[] {
   const priority = ['claude', 'codex', 'cursor'];
 

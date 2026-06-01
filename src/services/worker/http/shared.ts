@@ -9,7 +9,7 @@ import { isProjectExcluded } from '../../../utils/project-filter.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
 import { getProjectContext } from '../../../utils/project-name.js';
-import { normalizePlatformSource } from '../../../shared/platform-source.js';
+import { resolvePlatformSourceForSession } from '../../../shared/platform-source.js';
 import { PrivacyCheckValidator } from '../validation/PrivacyCheckValidator.js';
 import { EventEmitter } from 'events';
 
@@ -97,9 +97,13 @@ export interface ObservationPayload {
 export async function ingestObservation(payload: ObservationPayload): Promise<IngestResult> {
   const { sessionManager, dbManager, eventBroadcaster, ensureGeneratorRunning } = requireContext();
 
-  const platformSource = normalizePlatformSource(payload.platformSource);
   const cwd = typeof payload.cwd === 'string' ? payload.cwd : '';
   const project = cwd.trim() ? getProjectContext(cwd).primary : '';
+  const platformSource = resolvePlatformSourceForSession(payload.platformSource, {
+    contentSessionId: payload.contentSessionId,
+    project,
+    cwd,
+  });
 
   const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
 
@@ -199,9 +203,13 @@ export function ingestPrompt(payload: PromptPayload): IngestResult {
     return { ok: false, reason: 'missing prompt text', status: 400 };
   }
 
-  const platformSource = normalizePlatformSource(payload.platformSource);
   const cwd = typeof payload.cwd === 'string' ? payload.cwd : '';
   const project = cwd.trim() ? getProjectContext(cwd).primary : '';
+  const platformSource = resolvePlatformSourceForSession(payload.platformSource, {
+    contentSessionId: payload.contentSessionId,
+    project,
+    cwd,
+  });
 
   try {
     const store = dbManager.getSessionStore();
@@ -237,9 +245,13 @@ export async function ingestSummary(payload: SummaryPayload): Promise<IngestResu
       return { ok: false, reason: 'missing contentSessionId', status: 400 };
     }
 
-    const platformSource = normalizePlatformSource(payload.platformSource);
     const cwd = typeof payload.cwd === 'string' ? payload.cwd : '';
     const project = cwd.trim() ? getProjectContext(cwd).primary : '';
+    const platformSource = resolvePlatformSourceForSession(payload.platformSource, {
+      contentSessionId: payload.contentSessionId,
+      project,
+      cwd,
+    });
 
     let sessionDbId: number;
     try {

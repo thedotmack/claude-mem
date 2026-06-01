@@ -158,6 +158,30 @@ describe('Sessions Module', () => {
         'claude'
       )).toThrow(/Platform source conflict/);
     });
+
+    it('should correct OpenClaw sessions previously misclassified as codex', () => {
+      const contentSessionId = 'openclaw-agent:researcher:telegram:group-123';
+      const sessionId = createSDKSession(
+        db,
+        contentSessionId,
+        'openclaw-researcher',
+        'prompt',
+        undefined,
+        'codex'
+      );
+
+      createSDKSession(
+        db,
+        contentSessionId,
+        'openclaw-researcher',
+        'prompt',
+        undefined,
+        'openclaw'
+      );
+
+      const session = getSessionById(db, sessionId);
+      expect(session?.platform_source).toBe('openclaw');
+    });
   });
 
   describe('updateMemorySessionId', () => {

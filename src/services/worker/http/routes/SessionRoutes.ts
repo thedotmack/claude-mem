@@ -17,7 +17,7 @@ import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { getProjectContext } from '../../../../utils/project-name.js';
-import { normalizePlatformSource } from '../../../../shared/platform-source.js';
+import { resolvePlatformSourceForSession } from '../../../../shared/platform-source.js';
 import { handleGeneratorExit } from '../../session/GeneratorExitHandler.js';
 import { captureEvent } from '../../../telemetry/telemetry.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
@@ -297,7 +297,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
   private handleSummarizeByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { contentSessionId, last_assistant_message, agentId } = req.body;
-    const platformSource = normalizePlatformSource(req.body.platformSource);
+    const platformSource = resolvePlatformSourceForSession(req.body.platformSource, { contentSessionId });
 
     if (agentId) {
       res.json({ status: 'skipped', reason: 'subagent_context' });
@@ -365,7 +365,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
     const project = req.body.project || 'unknown';
     const rawPrompt = typeof req.body.prompt === 'string' ? req.body.prompt : undefined;
-    const platformSource = normalizePlatformSource(req.body.platformSource);
+    const platformSource = resolvePlatformSourceForSession(req.body.platformSource, { contentSessionId, project });
     const customTitle = req.body.customTitle || undefined;
 
     if (rawPrompt && isInternalProtocolPayload(rawPrompt)) {

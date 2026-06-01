@@ -250,6 +250,20 @@ describe('Install Non-TTY Support', () => {
       expect(sampleConfigRegion).not.toContain("mode: 'agents'");
       expect(sampleConfigRegion).not.toContain('updateOn');
     });
+
+    it('does not map OpenClaw host platform source from the selected model provider', () => {
+      const openClawInstallerSource = readFileSync(
+        join(__dirname, '..', 'src', 'services', 'integrations', 'OpenClawInstaller.ts'),
+        'utf-8',
+      );
+      const resolverRegion = openClawInstallerSource.slice(
+        openClawInstallerSource.indexOf('function resolveOpenClawPlatformSource'),
+        openClawInstallerSource.indexOf('function registerPluginInOpenClawConfig'),
+      );
+      expect(resolverRegion).toContain('CLAUDE_MEM_OPENCLAW_PLATFORM_SOURCE');
+      expect(resolverRegion).not.toContain('CLAUDE_MEM_PROVIDER');
+      expect(resolverRegion).not.toContain('CLAUDE_MEM_OPENCLAW_PROVIDER');
+    });
   });
 
   describe('TaskDescriptor interface', () => {

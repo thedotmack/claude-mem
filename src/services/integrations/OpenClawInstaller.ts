@@ -12,6 +12,7 @@ import {
 } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 
 export function getOpenClawConfigDirectory(): string {
   return path.join(homedir(), '.openclaw');
@@ -105,12 +106,46 @@ function writeOpenClawConfig(config: Record<string, any>): void {
   writeFileSync(getOpenClawConfigFilePath(), JSON.stringify(config, null, 2) + '\n', 'utf-8');
 }
 
+function normalizeOpenClawPlatformSource(value: unknown): string {
+  if (typeof value !== 'string') return 'openclaw';
+  const source = value.trim().toLowerCase().replace(/\s+/g, '-');
+  if (!source) return 'openclaw';
+  if (source.includes('codex')) return 'codex';
+  if (source.includes('claude')) return 'claude';
+  if (source.includes('openclaw')) return 'openclaw';
+  return source;
+}
+
+function readRawClaudeMemSettings(): Record<string, unknown> {
+  try {
+    if (!existsSync(USER_SETTINGS_PATH)) return {};
+    const parsed = JSON.parse(readFileSync(USER_SETTINGS_PATH, 'utf-8'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    if ('env' in parsed && parsed.env && typeof parsed.env === 'object' && !Array.isArray(parsed.env)) {
+      return parsed.env as Record<string, unknown>;
+    }
+    return parsed as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+function resolveOpenClawPlatformSource(): string {
+  const rawSettings = readRawClaudeMemSettings();
+  return normalizeOpenClawPlatformSource(
+    process.env.CLAUDE_MEM_OPENCLAW_PLATFORM_SOURCE
+      ?? rawSettings.CLAUDE_MEM_OPENCLAW_PLATFORM_SOURCE
+  );
+}
+
 function registerPluginInOpenClawConfig(
   workerPort: number,
   project: string = 'openclaw',
   syncMemoryFile: boolean = true,
+  platformSource: string = 'openclaw',
 ): void {
   const config = readOpenClawConfig();
+  const normalizedPlatformSource = normalizeOpenClawPlatformSource(platformSource);
 
   if (!config.plugins) config.plugins = {};
   if (!config.plugins.slots) config.plugins.slots = {};
@@ -128,6 +163,7 @@ function registerPluginInOpenClawConfig(
         workerPort,
         project,
         syncMemoryFile,
+        platformSource: normalizedPlatformSource,
       },
     };
   } else {
@@ -143,6 +179,10 @@ function registerPluginInOpenClawConfig(
     if (existingPluginConfig.workerPort === undefined) existingPluginConfig.workerPort = workerPort;
     if (existingPluginConfig.project === undefined) existingPluginConfig.project = project;
     if (existingPluginConfig.syncMemoryFile === undefined) existingPluginConfig.syncMemoryFile = syncMemoryFile;
+    const existingPlatformSource = normalizeOpenClawPlatformSource(existingPluginConfig.platformSource);
+    if (existingPluginConfig.platformSource === undefined || ['openclaw', 'codex', 'claude'].includes(existingPlatformSource)) {
+      existingPluginConfig.platformSource = normalizedPlatformSource;
+    }
   }
 
   writeOpenClawConfig(config);
@@ -228,8 +268,14 @@ function copyPluginFilesAndRegister(
     'utf-8',
   );
 
-  const workerPort = SettingsDefaultsManager.getInt('CLAUDE_MEM_WORKER_PORT');
-  registerPluginInOpenClawConfig(workerPort);
+  const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+  const workerPort = parseInt(settings.CLAUDE_MEM_WORKER_PORT, 10);
+  registerPluginInOpenClawConfig(
+    Number.isFinite(workerPort) ? workerPort : SettingsDefaultsManager.getInt('CLAUDE_MEM_WORKER_PORT'),
+    'openclaw',
+    true,
+    resolveOpenClawPlatformSource(),
+  );
   console.log(`  Registered in openclaw.json`);
 
   logger.info('OPENCLAW', 'Plugin installed', { destination: extensionDirectory });
