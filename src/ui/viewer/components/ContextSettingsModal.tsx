@@ -472,32 +472,57 @@ export function ContextSettingsModal({
                   />
                 </div>
 
-                <div style={{ marginBottom: '12px' }}>
-                  <button
-                    className="save-btn"
-                    style={{ width: '100%' }}
-                    onClick={() => {
-                      const allOllama = JSON.stringify({
-                        "observation-analysis":"ollama","distill":"ollama","decision-extraction":"ollama",
-                        "todo-extraction":"ollama","session-summary":"ollama","feature-summary":"ollama",
-                        "branch-summary":"ollama","briefing-generation":"ollama","context-formatting":"ollama",
-                        "decision-formatting":"ollama","todo-formatting":"ollama","semantic-search":"ollama",
-                        "embeddings-generation":"ollama","similarity-scoring":"ollama",
-                        "metadata-enrichment":"ollama","concept-extraction":"ollama","file-impact-analysis":"ollama"
-                      });
-                      updateSetting('CLAUDE_MEM_PROVIDER', 'ollama');
-                      updateSetting('CLAUDE_MEM_TASKS', allOllama);
-                      updateSetting('CLAUDE_MEM_PREFER_COST_OPTIMIZATION', 'true');
-                      if (!formState.OLLAMA_ENDPOINT) {
-                        updateSetting('OLLAMA_ENDPOINT', 'http://localhost:11434');
-                      }
-                    }}
-                    type="button"
-                  >
-                    Use Ollama for Everything
-                  </button>
-                  <p style={{ fontSize: '0.8em', color: '#888', marginTop: '4px', textAlign: 'center' }}>
-                    Sets Ollama as provider for observations AND all 17 distillation tasks
+                <div style={{ marginBottom: '16px' }}>
+                  <p style={{ fontSize: '0.9em', fontWeight: '500', color: '#666', marginBottom: '8px' }}>Quick Configure - All Distillation Tasks:</p>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginBottom: '8px' }}>
+                    {/* Ollama */}
+                    <button
+                      className="save-btn"
+                      onClick={() => {
+                        const allOllama = JSON.stringify({
+                          "observation-analysis":"ollama","distill":"ollama","decision-extraction":"ollama",
+                          "todo-extraction":"ollama","session-summary":"ollama","feature-summary":"ollama",
+                          "branch-summary":"ollama","briefing-generation":"ollama","context-formatting":"ollama",
+                          "decision-formatting":"ollama","todo-formatting":"ollama","semantic-search":"ollama",
+                          "embeddings-generation":"ollama","similarity-scoring":"ollama",
+                          "metadata-enrichment":"ollama","concept-extraction":"ollama","file-impact-analysis":"ollama"
+                        });
+                        updateSetting('CLAUDE_MEM_PROVIDER', 'ollama');
+                        updateSetting('CLAUDE_MEM_TASKS', allOllama);
+                        updateSetting('CLAUDE_MEM_PREFER_COST_OPTIMIZATION', 'true');
+                        if (!formState.OLLAMA_ENDPOINT) {
+                          updateSetting('OLLAMA_ENDPOINT', 'http://localhost:11434');
+                        }
+                      }}
+                      type="button"
+                      style={{ fontSize: '0.9em', padding: '8px' }}
+                    >
+                      🦙 Ollama
+                    </button>
+
+                    {/* Gemini CLI */}
+                    <button
+                      className="save-btn"
+                      onClick={() => {
+                        const allGeminiCli = JSON.stringify({
+                          "observation-analysis":"gemini-cli","distill":"gemini-cli","decision-extraction":"gemini-cli",
+                          "todo-extraction":"gemini-cli","session-summary":"gemini-cli","feature-summary":"gemini-cli",
+                          "branch-summary":"gemini-cli","briefing-generation":"gemini-cli","context-formatting":"gemini-cli",
+                          "decision-formatting":"gemini-cli","todo-formatting":"gemini-cli","semantic-search":"gemini-cli",
+                          "embeddings-generation":"gemini-cli","similarity-scoring":"gemini-cli",
+                          "metadata-enrichment":"gemini-cli","concept-extraction":"gemini-cli","file-impact-analysis":"gemini-cli"
+                        });
+                        updateSetting('CLAUDE_MEM_TASKS', allGeminiCli);
+                        updateSetting('CLAUDE_MEM_PREFER_COST_OPTIMIZATION', 'true');
+                      }}
+                      type="button"
+                      style={{ fontSize: '0.9em', padding: '8px' }}
+                    >
+                      ✨ Gemini CLI
+                    </button>
+                  </div>
+                  <p style={{ fontSize: '0.75em', color: '#999', marginTop: '4px', textAlign: 'center' }}>
+                    Click to route all 17 distillation tasks to that provider
                   </p>
                 </div>
 
