@@ -62,6 +62,20 @@ describe('terminateStaleWorker', () => {
     const freed = await terminateStaleWorker(39010, deps);
     expect(freed).toBe(false);
   });
+
+  it('treats ESRCH (process already exited) as success when the port is now free', async () => {
+    // The stale worker may exit on its own (e.g. from the earlier httpShutdown)
+    // between the isProcessAlive check and the SIGKILL, so process.kill throws
+    // ESRCH. That is not a failure — the worker is gone; success is decided by
+    // whether the port is free, so we must still run waitForPortFree.
+    let portFreeCalls = 0;
+    const { deps } = makeDeps({
+      waitForPortFree: async () => { portFreeCalls += 1; return portFreeCalls > 1; },
+      killProcess: () => { const e = new Error('ESRCH') as NodeJS.ErrnoException; e.code = 'ESRCH'; throw e; },
+    });
+    const freed = await terminateStaleWorker(39010, deps);
+    expect(freed).toBe(true);
+  });
 });
 
 describe('reuseOrReplaceStaleWorker', () => {

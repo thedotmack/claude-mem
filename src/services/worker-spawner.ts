@@ -117,8 +117,16 @@ export async function terminateStaleWorker(
   try {
     deps.killProcess(pidInfo.pid, 'SIGKILL');
   } catch (error) {
-    logger.warn('SYSTEM', 'SIGKILL on stale worker failed', { pid: pidInfo.pid }, error as Error);
-    return false;
+    // ESRCH means the process already exited (e.g. it began shutting down from
+    // the earlier httpShutdown and died between the isProcessAlive check and the
+    // SIGKILL). That is the desired outcome, not a failure. Any other error
+    // still falls through to the port check, which is the real success criterion
+    // either way — returning false here would wrongly keep a dead worker and
+    // strand the session in 'warming'.
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== 'ESRCH') {
+      logger.warn('SYSTEM', 'SIGKILL on stale worker failed', { pid: pidInfo.pid, code }, error as Error);
+    }
   }
   return await deps.waitForPortFree(port, POST_KILL_PORT_WAIT_MS);
 }
