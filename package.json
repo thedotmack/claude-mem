@@ -48,6 +48,7 @@
     "plugin/.codex-plugin",
     "plugin/.mcp.json",
     "plugin/package.json",
+    "plugin/node_modules",
     "plugin/hooks",
     "plugin/modes",
     "plugin/scripts/*.js",

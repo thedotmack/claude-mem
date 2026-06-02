@@ -205,8 +205,20 @@ async function buildHooks() {
       private: true,
       description: 'Runtime dependencies for claude-mem bundled hooks',
       type: 'module',
+      // Hook-critical, pure-JS deps that MUST install for the worker to boot.
+      // Kept here (not in optionalDependencies) so a failure fails the build.
       dependencies: {
         'zod': '^4.3.6',
+        'shell-quote': '^1.8.3',
+      },
+      // Tree-sitter grammars need native node-gyp / prebuild-install builds. As
+      // hard dependencies, a single grammar build failure (e.g. a Node version
+      // with no prebuilt binding) aborts the ENTIRE `npm install`, taking zod
+      // down with it and crashing every hook (#2407 / #2379). As optional deps
+      // the failure is tolerated: zod still installs, hooks still boot, and only
+      // code-graph parsing degrades. The resolve gate at the end of this build
+      // is the hard guard that zod actually landed.
+      optionalDependencies: {
         'tree-sitter-cli': '^0.26.5',
         'tree-sitter-c': '^0.24.1',
         'tree-sitter-cpp': '^0.23.4',
@@ -232,7 +244,6 @@ async function buildHooks() {
         '@tree-sitter-grammars/tree-sitter-yaml': '^0.7.1',
         '@derekstride/tree-sitter-sql': '^0.3.11',
         '@tree-sitter-grammars/tree-sitter-markdown': '^0.3.2',
-        'shell-quote': '^1.8.3',
       },
       overrides: {
         'tree-sitter': '^0.25.0'
@@ -537,6 +548,67 @@ async function buildHooks() {
       console.log(`✓ opencode plugin built (${(opencodeStats.size / 1024).toFixed(2)} KB)`);
     }
 
+    console.log('\n📦 Installing plugin runtime dependencies into plugin/node_modules...');
+    // Why this exists: with better-auth externalized from the worker bundle
+    // (PR #2596 / issue #2584) and the existing zod + tree-sitter externals,
+    // the worker now relies on `plugin/node_modules` being populated at
+    // runtime. Marketplace installs already get this via `sync-marketplace.cjs`
+    // running `bun install` post-rsync, but:
+    //   1. Dev workflow (`bun plugin/scripts/worker-service.cjs start`) was
+    //      broken — repo-local plugin/ had no node_modules until you synced.
+    //   2. The npm tarball (`npm install -g claude-mem` → `npx claude-mem
+    //      install`) ships plugin/package.json but no plugin/node_modules
+    //      (issue #2407), so the worker fails with `Cannot find module 'zod/v3'`.
+    //
+    // Running install here fixes (1) outright and is a prerequisite for the
+    // npm tarball fix (which bundles plugin/node_modules into the published
+    // tarball — coming in a follow-up PR). We use `npm install` not `bun
+    // install` so this works on CI / publishers that may not have bun.
+    //
+    // We intentionally DO NOT pass --ignore-scripts: tree-sitter grammar
+    // packages rely on prebuild-install (a postinstall script) to download
+    // prebuilt .node bindings for the current arch. With --ignore-scripts
+    // the bindings never arrive and the MCP server fails to load any
+    // grammar. prebuild-install handles cross-platform via prebuilt
+    // binaries; only on niche archs (linux arm64 without prebuilt) does it
+    // fall back to node-gyp compilation. If the install fails entirely
+    // (e.g. node-gyp prerequisites missing on a publisher's machine), we
+    // log a warning but don't abort the build — the maintainer can resolve
+    // it before publishing.
+    try {
+      const { spawn: spawnInstall } = await import('node:child_process');
+      // shell: true on Windows is critical — npm there is a .cmd batch file,
+      // not a bare executable, so spawn('npm', ...) without shell hits ENOENT
+      // and the fail-soft handler below would silently leave Windows builds
+      // with an empty plugin/node_modules.
+      // cwd anchored to __dirname (not process.cwd()) so the step works even
+      // if the script is invoked from outside the repo root.
+      const installResult = spawnInstall('npm', ['install', '--omit=dev', '--no-audit', '--no-fund'], {
+        cwd: path.join(__dirname, '..', 'plugin'),
+        stdio: 'inherit',
+        shell: process.platform === 'win32',
+      });
+      await new Promise((resolve) => {
+        let errorHandled = false;
+        installResult.on('error', (err) => {
+          errorHandled = true;
+          console.warn(`⚠️  Could not invoke npm in plugin/: ${err.message}. The build artifact is still valid, but you'll need to run \`cd plugin && npm install\` manually.`);
+          resolve();
+        });
+        installResult.on('exit', (code) => {
+          if (errorHandled) { resolve(); return; }
+          if (code === 0) {
+            console.log('✓ plugin/node_modules populated');
+          } else {
+            console.warn(`⚠️  npm install in plugin/ exited with code ${code}. The build artifact is still valid, but you'll need to run \`cd plugin && npm install\` manually before the worker can resolve external dependencies (zod, better-auth, tree-sitter grammars).`);
+          }
+          resolve();
+        });
+      });
+    } catch (installError) {
+      console.warn(`⚠️  plugin/ install raised: ${installError.message}. Continuing — artifacts are still valid.`);
+    }
+
     console.log('\n📋 Copying onboarding explainer to plugin tree...');
     const onboardingExplainerSrc = 'src/services/worker/onboarding-explainer.md';
     const onboardingExplainerDst = 'plugin/skills/how-it-works/onboarding-explainer.md';
@@ -597,6 +669,36 @@ async function buildHooks() {
     console.log('✓ All required distribution files present');
 
     await verifyShellTemplateCanonical();
+
+    // Hard gate: prove the worker's externalized runtime deps actually resolve
+    // from plugin/node_modules. The install step above is fail-soft (grammars
+    // are optionalDependencies), so this is the real guard against shipping a
+    // build that crashes every hook with `Cannot find module 'zod'`
+    // (#2407 / #2379).
+    console.log('\n📋 Verifying plugin runtime deps resolve...');
+    {
+      const { createRequire } = await import('node:module');
+      const pluginNodeModules = path.join(__dirname, '..', 'plugin', 'node_modules');
+      const pluginRequire = createRequire(path.join(__dirname, '..', 'plugin', 'package.json'));
+      for (const dep of ['zod', 'shell-quote']) {
+        let resolved;
+        try {
+          resolved = pluginRequire.resolve(dep);
+        } catch {
+          throw new Error(`Plugin runtime dep '${dep}' does not resolve at all — the bundled worker would crash at runtime. Run \`cd plugin && npm install\` and rebuild.`);
+        }
+        // require.resolve walks UP to the repo-root node_modules, where zod and
+        // shell-quote also exist as build-time deps — so a successful resolve does
+        // NOT prove plugin/node_modules is populated. Assert the resolved path is
+        // actually inside plugin/node_modules, which is what ships in the npm
+        // tarball (root package.json `files`) and what every hook resolves from
+        // at runtime.
+        if (!resolved.startsWith(pluginNodeModules + path.sep)) {
+          throw new Error(`Plugin runtime dep '${dep}' resolved from ${resolved}, OUTSIDE plugin/node_modules — plugin/node_modules is not populated, so the npm tarball / fresh marketplace install would crash every hook with \`Cannot find module '${dep}'\`. Run \`cd plugin && npm install\` and rebuild.`);
+        }
+      }
+    }
+    console.log('✓ Plugin runtime deps resolve (zod, shell-quote)');
 
     console.log('\n✅ All build targets compiled successfully!');
     console.log(`   Output: ${hooksDir}/`);

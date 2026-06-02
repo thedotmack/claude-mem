@@ -184,6 +184,14 @@ describe('Plugin Distribution - package.json Files Field', () => {
     expect(packageJson.files).toContain('plugin/skills');
     expect(packageJson.files).toContain('plugin/scripts/*.cjs');
   });
+
+  it('ships plugin/node_modules in the npm tarball so hooks resolve zod at runtime (#2407)', () => {
+    const packageJson = JSON.parse(readFileSync(path.join(projectRoot, 'package.json'), 'utf-8'));
+    // npm strips a *top-level* node_modules from the tarball but keeps a nested
+    // one that is explicitly named in `files`, so this carries the worker's
+    // externalized runtime deps (zod, shell-quote) into `npm install -g`.
+    expect(packageJson.files).toContain('plugin/node_modules');
+  });
 });
 
 describe('Plugin Distribution - Build Script Verification', () => {
@@ -194,6 +202,31 @@ describe('Plugin Distribution - Build Script Verification', () => {
     expect(content).toContain('plugin/skills/mem-search/SKILL.md');
     expect(content).toContain('plugin/hooks/hooks.json');
     expect(content).toContain('plugin/.claude-plugin/plugin.json');
+  });
+});
+
+describe('Plugin Distribution - Runtime Dependency Isolation (#2407 / #2379)', () => {
+  const pluginPkg = () => readJson('plugin/package.json');
+
+  it('keeps zod and shell-quote as hard dependencies', () => {
+    const deps = pluginPkg().dependencies ?? {};
+    expect(deps['zod']).toBeDefined();
+    expect(deps['shell-quote']).toBeDefined();
+  });
+
+  it('moves native tree-sitter grammars to optionalDependencies so a grammar build failure cannot abort the whole install', () => {
+    const pkg = pluginPkg();
+    const deps = pkg.dependencies ?? {};
+    const optional = pkg.optionalDependencies ?? {};
+    expect(Object.keys(deps).some((k) => k.includes('tree-sitter'))).toBe(false);
+    expect(Object.keys(optional).some((k) => k.includes('tree-sitter'))).toBe(true);
+  });
+
+  it('gates the build on plugin runtime deps resolving from plugin/node_modules', () => {
+    const content = readFileSync(path.join(projectRoot, 'scripts/build-hooks.js'), 'utf-8');
+    expect(content).toContain('optionalDependencies');
+    expect(content).toContain('Verifying plugin runtime deps resolve');
+    expect(content).toContain('createRequire');
   });
 });
 
