@@ -273,6 +273,19 @@ const QUERIES: Record<string, string> = {
 (export_statement) @exp
 `,
 
+  // Plain JavaScript: the tree-sitter-javascript grammar has no type_identifier,
+  // interface_declaration, type_alias_declaration or enum_declaration nodes, so it
+  // cannot share the jsts query — tree-sitter aborts query compilation on the first
+  // unknown node type. Class names are (identifier) here, not (type_identifier).
+  js: `
+(function_declaration name: (identifier) @name) @func
+(lexical_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])) @const_func
+(class_declaration name: (identifier) @name) @cls
+(method_definition name: (property_identifier) @name) @method
+(import_statement) @imp
+(export_statement) @exp
+`,
+
   python: `
 (function_definition name: (identifier) @name) @func
 (class_definition name: (identifier) @name) @cls
@@ -422,6 +435,7 @@ const QUERIES: Record<string, string> = {
 function getQueryKey(language: string): string {
   switch (language) {
     case "javascript":
+      return "js";
     case "typescript":
     case "tsx":
       return "jsts";
