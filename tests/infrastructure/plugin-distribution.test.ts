@@ -184,6 +184,14 @@ describe('Plugin Distribution - package.json Files Field', () => {
     expect(packageJson.files).toContain('plugin/skills');
     expect(packageJson.files).toContain('plugin/scripts/*.cjs');
   });
+
+  it('ships plugin/node_modules in the npm tarball so hooks resolve zod at runtime (#2407)', () => {
+    const packageJson = JSON.parse(readFileSync(path.join(projectRoot, 'package.json'), 'utf-8'));
+    // npm strips a *top-level* node_modules from the tarball but keeps a nested
+    // one that is explicitly named in `files`, so this carries the worker's
+    // externalized runtime deps (zod, shell-quote) into `npm install -g`.
+    expect(packageJson.files).toContain('plugin/node_modules');
+  });
 });
 
 describe('Plugin Distribution - Build Script Verification', () => {
