@@ -678,12 +678,23 @@ async function buildHooks() {
     console.log('\n📋 Verifying plugin runtime deps resolve...');
     {
       const { createRequire } = await import('node:module');
+      const pluginNodeModules = path.join(__dirname, '..', 'plugin', 'node_modules');
       const pluginRequire = createRequire(path.join(__dirname, '..', 'plugin', 'package.json'));
       for (const dep of ['zod', 'shell-quote']) {
+        let resolved;
         try {
-          pluginRequire.resolve(dep);
+          resolved = pluginRequire.resolve(dep);
         } catch {
-          throw new Error(`Plugin runtime dep '${dep}' does not resolve from plugin/node_modules — the bundled worker would crash at runtime. Run \`cd plugin && npm install\` and rebuild.`);
+          throw new Error(`Plugin runtime dep '${dep}' does not resolve at all — the bundled worker would crash at runtime. Run \`cd plugin && npm install\` and rebuild.`);
+        }
+        // require.resolve walks UP to the repo-root node_modules, where zod and
+        // shell-quote also exist as build-time deps — so a successful resolve does
+        // NOT prove plugin/node_modules is populated. Assert the resolved path is
+        // actually inside plugin/node_modules, which is what ships in the npm
+        // tarball (root package.json `files`) and what every hook resolves from
+        // at runtime.
+        if (!resolved.startsWith(pluginNodeModules + path.sep)) {
+          throw new Error(`Plugin runtime dep '${dep}' resolved from ${resolved}, OUTSIDE plugin/node_modules — plugin/node_modules is not populated, so the npm tarball / fresh marketplace install would crash every hook with \`Cannot find module '${dep}'\`. Run \`cd plugin && npm install\` and rebuild.`);
         }
       }
     }
