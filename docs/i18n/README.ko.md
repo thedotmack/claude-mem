@@ -53,10 +53,10 @@
     <img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/version-6.5.0-green.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-13.4.0-green.svg" alt="Version">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg" alt="Node">
+    <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg" alt="Node">
   </a>
   <a href="https://github.com/thedotmack/awesome-claude-code">
     <img src="https://awesome.re/mentioned-badge.svg" alt="Mentioned in Awesome Claude Code">
@@ -220,7 +220,7 @@ Endless Mode 및 사용 방법에 대한 자세한 내용은 **[베타 기능 �
 
 ## 시스템 요구 사항
 
-- **Node.js**: 18.0.0 이상
+- **Node.js**: 20.0.0 이상
 - **Claude Code**: 플러그인 지원이 있는 최신 버전
 - **Bun**: JavaScript 런타임 및 프로세스 관리자 (누락 시 자동 설치)
 - **uv**: 벡터 검색을 위한 Python 패키지 관리자 (누락 시 자동 설치)

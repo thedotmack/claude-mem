@@ -54,10 +54,10 @@
     <img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/version-6.5.0-green.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-13.4.0-green.svg" alt="Version">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg" alt="Node">
+    <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg" alt="Node">
   </a>
   <a href="https://github.com/thedotmack/awesome-claude-code">
     <img src="https://awesome.re/mentioned-badge.svg" alt="Mentioned in Awesome Claude Code">
@@ -221,7 +221,7 @@ Veja **[Documentação de Recursos Beta](https://docs.claude-mem.ai/beta-feature
 
 ## Requisitos do Sistema
 
-- **Node.js**: 18.0.0 ou superior
+- **Node.js**: 20.0.0 ou superior
 - **Claude Code**: Versão mais recente com suporte a plugins
 - **Bun**: Runtime JavaScript e gerenciador de processos (instalado automaticamente se ausente)
 - **uv**: Gerenciador de pacotes Python para Procura vetorial (instalado automaticamente se ausente)
