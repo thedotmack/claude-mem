@@ -60,21 +60,39 @@ export const contextHandler: EventHandler = {
         : hint;
     }
 
-    let coloredTimeline = '';
+    const platform = input.platform;
+    const isCodex = platform === 'codex';
+
+    let systemMessage: string | undefined;
     if (showTerminalOutput) {
-      const colorResult = await executeWithWorkerFallback<string>(colorApiPath, 'GET');
-      if (!isWorkerFallback(colorResult) && typeof colorResult === 'string') {
-        coloredTimeline = colorResult.trim();
+      if (isCodex) {
+        // Codex's TUI flattens newlines when it surfaces hook output AND already
+        // echoes additionalContext back as its own "hook context" block. Re-sending
+        // the full timeline through systemMessage just duplicates that wall of text
+        // (shown as a "warning:" block) into an unreadable single line. Surface a
+        // compact one-line summary that stays legible even after Codex flattens it;
+        // the model still receives the full, properly formatted additionalContext.
+        if (additionalContext) {
+          const statsLine = additionalContext.match(/^Stats:\s*(.+)$/m)?.[1]?.trim();
+          const summary = statsLine
+            ? `📋 claude-mem: ${statsLine}`
+            : '📋 claude-mem: recent context loaded';
+          systemMessage = `${summary} · http://localhost:${port}`;
+        }
+      } else {
+        const colorResult = await executeWithWorkerFallback<string>(colorApiPath, 'GET');
+        const coloredTimeline =
+          !isWorkerFallback(colorResult) && typeof colorResult === 'string'
+            ? colorResult.trim()
+            : '';
+        const displayContent =
+          coloredTimeline ||
+          (platform === 'gemini-cli' || platform === 'gemini' ? additionalContext : '');
+        systemMessage = displayContent
+          ? `${displayContent}\n\nView Observations Live @ http://localhost:${port}`
+          : undefined;
       }
     }
-
-    const platform = input.platform;
-
-    const displayContent = coloredTimeline || (platform === 'gemini-cli' || platform === 'gemini' ? additionalContext : '');
-
-    const systemMessage = showTerminalOutput && displayContent
-      ? `${displayContent}\n\nView Observations Live @ http://localhost:${port}`
-      : undefined;
 
     return {
       hookSpecificOutput: {
