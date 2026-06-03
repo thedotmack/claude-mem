@@ -17,6 +17,7 @@ import { PostgresAuthRepository } from '../../storage/postgres/auth.js';
 import {
   withPostgresTransaction,
   type PostgresPool,
+  type PostgresPoolClient,
 } from '../../storage/postgres/pool.js';
 import { stripTags } from '../../utils/tag-stripping.js';
 
@@ -106,6 +107,12 @@ export async function processGeneratedResponse(
       };
     }
 
+    // Folder label travels on the server_session: the worker derives it from
+    // the cwd basename and sends it on session-init. The store stays a single
+    // global project; copying the folder onto each observation's metadata lets
+    // context injection and search facet by folder without isolating memory.
+    const sessionProject = await fetchSessionProject(client, fresh.serverSessionId, fresh.id);
+
     const persisted: PostgresObservation[] = [];
     for (let index = 0; index < observationsToWrite.length; index++) {
       const parsedObservation = observationsToWrite[index]!;
@@ -142,6 +149,7 @@ export async function processGeneratedResponse(
           concepts: parsedObservation.concepts,
           files_read: parsedObservation.files_read,
           files_modified: parsedObservation.files_modified,
+          project: sessionProject,
           provider: input.providerLabel,
           model: input.modelId ?? null,
         },
@@ -376,6 +384,9 @@ export async function processSessionSummaryResponse(
       };
     }
 
+    // Same folder propagation as processGeneratedResponse (see note there).
+    const sessionProject = await fetchSessionProject(client, fresh.serverSessionId, fresh.id);
+
     const persisted: PostgresObservation[] = [];
     if (!privateContentDetected) {
       const scrubbed = stripTags(summaryContent);
@@ -400,6 +411,7 @@ export async function processSessionSummaryResponse(
             completed: summary?.completed ?? null,
             next_steps: summary?.next_steps ?? null,
             notes: summary?.notes ?? null,
+            project: sessionProject,
             provider: input.providerLabel,
             model: input.modelId ?? null,
           },
@@ -508,6 +520,32 @@ export async function processSessionSummaryResponse(
       privateContentDetected,
     };
   });
+}
+
+/**
+ * Read the folder/project label for a server session. Returns null when no
+ * serverSessionId is provided (legacy jobs) or when the session row no longer
+ * exists (e.g. deleted between enqueue and processing). Missing rows are
+ * best-effort: the observation is still written with project: null.
+ */
+async function fetchSessionProject(
+  client: PostgresPoolClient,
+  serverSessionId: string | null | undefined,
+  jobId: string,
+): Promise<string | null> {
+  if (!serverSessionId) return null;
+  const result = await client.query<{ project: string | null }>(
+    `SELECT metadata->>'project' AS project FROM server_sessions WHERE id = $1`,
+    [serverSessionId],
+  );
+  if (result.rows.length === 0) {
+    logger.debug('SYSTEM', 'session row not found during project lookup; observation will have project: null', {
+      jobId,
+      serverSessionId,
+    });
+    return null;
+  }
+  return result.rows[0]?.project ?? null;
 }
 
 function renderSummaryContent(summary: ParsedSummary): string {
