@@ -1,6 +1,5 @@
 
 import { spawn } from 'child_process';
-import { randomUUID } from 'crypto';
 import { existsSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
@@ -10,7 +9,7 @@ import { logger } from '../../utils/logger.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { getCredential } from '../../shared/EnvManager.js';
-import { USER_SETTINGS_PATH, GEMINI_CLI_SESSIONS_DIR, ensureDir, paths } from '../../shared/paths.js';
+import { GEMINI_CLI_SESSIONS_DIR, ensureDir, paths } from '../../shared/paths.js';
 import type { ActiveSession } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import { processAgentResponse, isAbortError, type WorkerRef } from './agents/index.js';
@@ -25,9 +24,9 @@ import { findGeminiExecutable, hasGeminiExecutable } from '../../shared/find-gem
  * OAuth login — so users on the free/subscription tier need no API key.
  *
  * Each claude-mem session maps to one native gemini session: the first turn
- * creates it (`--session-id <uuid>`); every later turn resumes it
- * (`--resume <uuid>`), letting gemini hold the conversation context (and reuse
- * its prompt cache) across separate subprocess invocations.
+ * starts a new CLI session and captures the returned `session_id`; every later
+ * turn resumes it (`--resume <uuid>`), letting gemini hold the conversation
+ * context (and reuse its prompt cache) across separate subprocess invocations.
  *
  * Hardening:
  *   - `--approval-mode plan`  → read-only; the model cannot run tools or write
@@ -71,6 +70,12 @@ function isSessionNotFoundError(stderr: string): boolean {
     lower.includes('could not find session') ||
     (lower.includes('session') && lower.includes('not found'))
   );
+}
+
+function buildGeminiCliEnv(): NodeJS.ProcessEnv {
+  const savedGeminiApiKey = getCredential('GEMINI_API_KEY');
+  if (!savedGeminiApiKey || process.env.GEMINI_API_KEY) return process.env;
+  return { ...process.env, GEMINI_API_KEY: savedGeminiApiKey };
 }
 
 /**
@@ -130,7 +135,6 @@ interface RunOptions {
   cwd: string;
   model: string;
   prompt: string;
-  sessionId?: string;   // --session-id (create new)
   resumeId?: string;    // --resume (continue existing)
   signal: AbortSignal;
   timeoutMs: number;
@@ -154,9 +158,7 @@ function runGeminiCli(opts: RunOptions): Promise<RunResult> {
     }
 
     const args: string[] = [];
-    if (opts.sessionId) {
-      args.push('--session-id', opts.sessionId);
-    } else if (opts.resumeId) {
+    if (opts.resumeId) {
       args.push('--resume', opts.resumeId);
     }
     args.push(
@@ -169,7 +171,7 @@ function runGeminiCli(opts: RunOptions): Promise<RunResult> {
 
     const child = spawn(opts.executable, args, {
       cwd: opts.cwd,
-      env: process.env,
+      env: buildGeminiCliEnv(),
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
     });
@@ -208,12 +210,16 @@ function runGeminiCli(opts: RunOptions): Promise<RunResult> {
       rejectOnce(classifyGeminiCliError({ exitCode: null, stderr: err.message, cause: err }));
     });
 
+    child.stdin.on('error', (err) => {
+      rejectOnce(classifyGeminiCliError({ exitCode: null, stderr: err.message, cause: err }));
+    });
+
     child.on('close', (code) => {
       if (code !== 0) {
         // A resume against a vanished session is recoverable by falling back to
         // a fresh init — surface that distinctly so runTurn can react.
         if (opts.resumeId && isSessionNotFoundError(stderr)) {
-          rejectOnce(new ClassifiedProviderError('gemini session not found', { kind: 'unrecoverable', cause: new Error(stderr.slice(0, 200)) }));
+          rejectOnce(new ClassifiedProviderError('gemini session not found', { kind: 'session_not_found', cause: new Error(stderr.slice(0, 200)) }));
           return;
         }
         rejectOnce(classifyGeminiCliError({
@@ -248,8 +254,11 @@ function runGeminiCli(opts: RunOptions): Promise<RunResult> {
     });
 
     // Prompt is delivered on stdin; `-p ""` flips the CLI into headless mode.
-    child.stdin.write(opts.prompt);
-    child.stdin.end();
+    try {
+      child.stdin.end(opts.prompt);
+    } catch (err: unknown) {
+      rejectOnce(classifyGeminiCliError({ exitCode: null, stderr: err instanceof Error ? err.message : String(err), cause: err }));
+    }
   });
 }
 
@@ -341,7 +350,7 @@ export class GeminiCliProvider {
         return await runGeminiCli({ executable, cwd, model, prompt: promptText, resumeId: session.memorySessionId, signal, timeoutMs });
       } catch (error: unknown) {
         if (isAbortError(error)) throw error;
-        const notFound = error instanceof ClassifiedProviderError && error.message === 'gemini session not found';
+        const notFound = error instanceof ClassifiedProviderError && error.kind === 'session_not_found';
         if (!notFound) throw error;
         logger.warn('SDK', 'Gemini CLI resume failed (session not found) — starting fresh', {
           sessionId: session.sessionDbId,
@@ -352,9 +361,11 @@ export class GeminiCliProvider {
       }
     }
 
-    const newId = randomUUID();
-    const result = await runGeminiCli({ executable, cwd, model, prompt: promptText, sessionId: newId, signal, timeoutMs });
-    const captured = result.sessionId || newId;
+    const result = await runGeminiCli({ executable, cwd, model, prompt: promptText, signal, timeoutMs });
+    const captured = result.sessionId;
+    if (!captured) {
+      throw new ClassifiedProviderError('Gemini CLI did not return a session_id', { kind: 'transient', cause: new Error('missing session_id') });
+    }
     session.memorySessionId = captured;
     this.dbManager.getSessionStore().ensureMemorySessionIdRegistered(session.sessionDbId, captured);
     logger.info('SESSION', `MEMORY_ID_CAPTURED | sessionDbId=${session.sessionDbId} | provider=GeminiCli | memorySessionId=${captured}`, {
@@ -448,7 +459,7 @@ export class GeminiCliProvider {
   }
 
   private getTimeoutMs(): number {
-    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
     const raw = parseInt(settings.CLAUDE_MEM_GEMINI_CLI_TIMEOUT_MS, 10);
     return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_TIMEOUT_MS;
   }

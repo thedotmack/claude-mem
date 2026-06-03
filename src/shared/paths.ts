@@ -58,8 +58,8 @@ export const OBSERVER_SESSIONS_PROJECT = basename(OBSERVER_SESSIONS_DIR);
 /**
  * Stable cwd for every Gemini CLI observer subprocess. The gemini CLI scopes
  * sessions by project (derived from cwd), so all observer sessions share this
- * one directory; individual conversations are disambiguated by their session
- * UUID (passed via --session-id / --resume). See GeminiCliProvider.
+ * one directory; individual conversations are disambiguated by the session UUID
+ * captured from the first turn and later passed via --resume. See GeminiCliProvider.
  */
 export const GEMINI_CLI_SESSIONS_DIR = join(DATA_DIR, 'gemini-cli-sessions');
 

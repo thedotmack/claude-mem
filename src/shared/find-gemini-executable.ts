@@ -7,9 +7,10 @@
  *
  * The resolved path is cached module-wide because availability is polled per
  * request (getActiveAgent / getSelectedProvider) — re-running `which` +
- * `--version` (a subprocess) on every observation would be wasteful. Only a
- * successful resolution is cached; failures re-resolve so a freshly installed
- * CLI is picked up without a worker restart.
+ * `--version` (a subprocess) on every observation would be wasteful. The cache
+ * is scoped to the current explicit path setting so runtime settings changes
+ * re-resolve without a worker restart. Only successful resolutions are cached;
+ * failures re-resolve so a freshly installed CLI is picked up.
  */
 
 import { execSync, execFileSync } from 'child_process';
@@ -21,8 +22,9 @@ import { logger, type Component } from '../utils/logger.js';
 /** How long to wait for `gemini --version` before giving up (ms). */
 const VERSION_CHECK_TIMEOUT_MS = 5_000;
 
-/** Cached successful resolution — reset only by a worker restart. */
+/** Cached successful resolution for the last observed explicit-path setting. */
 let cachedPath: string | null = null;
+let cachedConfiguredPath: string | null = null;
 
 /**
  * Run `<candidate> --version` and return the trimmed stdout, or null on
@@ -53,26 +55,28 @@ function verifyGeminiVersion(candidate: string): string | null {
  * @throws {Error} when no valid `gemini` CLI can be found.
  */
 export function findGeminiExecutable(logComponent: Component = 'SDK'): string {
-  if (cachedPath) return cachedPath;
-
   const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+  const configuredPath = settings.CLAUDE_MEM_GEMINI_CLI_PATH || '';
+
+  if (cachedPath && cachedConfiguredPath === configuredPath) return cachedPath;
 
   // --- 1. Explicit configured path ----------------------------------------
-  if (settings.CLAUDE_MEM_GEMINI_CLI_PATH) {
-    if (!existsSync(settings.CLAUDE_MEM_GEMINI_CLI_PATH)) {
+  if (configuredPath) {
+    if (!existsSync(configuredPath)) {
       throw new Error(
-        `CLAUDE_MEM_GEMINI_CLI_PATH is set to "${settings.CLAUDE_MEM_GEMINI_CLI_PATH}" but the file does not exist.`
+        `CLAUDE_MEM_GEMINI_CLI_PATH is set to "${configuredPath}" but the file does not exist.`
       );
     }
-    const version = verifyGeminiVersion(settings.CLAUDE_MEM_GEMINI_CLI_PATH);
+    const version = verifyGeminiVersion(configuredPath);
     if (!version) {
       throw new Error(
-        `CLAUDE_MEM_GEMINI_CLI_PATH is set to "${settings.CLAUDE_MEM_GEMINI_CLI_PATH}" but it failed the --version check. ` +
+        `CLAUDE_MEM_GEMINI_CLI_PATH is set to "${configuredPath}" but it failed the --version check. ` +
         `Ensure this is a working @google/gemini-cli binary.`
       );
     }
-    logger.debug(logComponent, `Using configured CLAUDE_MEM_GEMINI_CLI_PATH: ${settings.CLAUDE_MEM_GEMINI_CLI_PATH} (${version})`);
-    cachedPath = settings.CLAUDE_MEM_GEMINI_CLI_PATH;
+    logger.debug(logComponent, `Using configured CLAUDE_MEM_GEMINI_CLI_PATH: ${configuredPath} (${version})`);
+    cachedConfiguredPath = configuredPath;
+    cachedPath = configuredPath;
     return cachedPath;
   }
 
@@ -88,6 +92,7 @@ export function findGeminiExecutable(logComponent: Component = 'SDK'): string {
       const version = verifyGeminiVersion(candidate);
       if (version) {
         logger.debug(logComponent, `Auto-detected Gemini CLI: ${candidate} (${version})`);
+        cachedConfiguredPath = configuredPath;
         cachedPath = candidate;
         return cachedPath;
       }
