@@ -1,5 +1,5 @@
 {
-  "description": "Claude-mem memory system hooks",
+  "description": "Claude-mem memory system hooks (Windows-compatible version)",
   "hooks": {
     "Setup": [
       {
@@ -7,8 +7,8 @@
         "hooks": [
           {
             "type": "command",
-            "shell": "bash",
-            "command": "export PATH=\"$HOME/.nvm/versions/node/v$(ls \\\"$HOME/.nvm/versions/node\\\" 2>/dev/null | sed 's/^v//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)/bin:$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:$PATH\"; _C=\"${CLAUDE_CONFIG_DIR:-$HOME/.claude}\"; _E=\"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}\"; _P=$({ [ -n \"$_E\" ] && printf '%s\\n' \"$_E\"; ls -dt \"$_C/plugins/cache/thedotmack/claude-mem\"/[0-9]*/ 2>/dev/null; printf '%s\\n' \"$_C/plugins/marketplaces/thedotmack/plugin\"; } | while IFS= read -r _R; do _R=\"${_R%/}\"; [ -d \"$_R/plugin/scripts\" ] && _Q=\"$_R/plugin\" || _Q=\"$_R\"; [ -f \"$_Q/scripts/version-check.js\" ] && { printf '%s\\n' \"$_Q\"; break; }; done); [ -n \"$_P\" ] || { echo \"claude-mem: version-check.js not found\" >&2; exit 1; }; command -v cygpath >/dev/null 2>&1 && { _W=$(cygpath -w \"$_P\" 2>/dev/null); [ -n \"$_W\" ] && _P=\"$_W\"; }; node \"$_P/scripts/version-check.js\"",
+            "shell": "node",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hook-entry.cjs ${CLAUDE_PLUGIN_ROOT}/scripts/worker-service.cjs version-check",
             "timeout": 300
           }
         ]
@@ -20,14 +20,14 @@
         "hooks": [
           {
             "type": "command",
-            "shell": "bash",
-            "command": "export PATH=\"$($SHELL -lc 'echo $PATH' 2>/dev/null):$PATH\"; _C=\"${CLAUDE_CONFIG_DIR:-$HOME/.claude}\"; _E=\"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}\"; _P=$({ [ -n \"$_E\" ] && printf '%s\\n' \"$_E\"; ls -dt \"$_C/plugins/cache/thedotmack/claude-mem\"/[0-9]*/ 2>/dev/null; printf '%s\\n' \"$_C/plugins/marketplaces/thedotmack/plugin\"; } | while IFS= read -r _R; do _R=\"${_R%/}\"; [ -d \"$_R/plugin/scripts\" ] && _Q=\"$_R/plugin\" || _Q=\"$_R\"; [ -f \"$_Q/scripts/bun-runner.js\" ] && [ -f \"$_Q/scripts/worker-service.cjs\" ] && { printf '%s\\n' \"$_Q\"; break; }; done); [ -n \"$_P\" ] || { echo \"claude-mem: plugin scripts not found\" >&2; exit 1; }; command -v cygpath >/dev/null 2>&1 && { _W=$(cygpath -w \"$_P\" 2>/dev/null); [ -n \"$_W\" ] && _P=\"$_W\"; }; node \"$_P/scripts/bun-runner.js\" \"$_P/scripts/worker-service.cjs\" start; echo '{\"continue\":true,\"suppressOutput\":true}'",
+            "shell": "node",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hook-entry.cjs ${CLAUDE_PLUGIN_ROOT}/scripts/worker-service.cjs start",
             "timeout": 60
           },
           {
             "type": "command",
-            "shell": "bash",
-            "command": "export PATH=\"$($SHELL -lc 'echo $PATH' 2>/dev/null):$PATH\"; _C=\"${CLAUDE_CONFIG_DIR:-$HOME/.claude}\"; _E=\"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}\"; _P=$({ [ -n \"$_E\" ] && printf '%s\\n' \"$_E\"; ls -dt \"$_C/plugins/cache/thedotmack/claude-mem\"/[0-9]*/ 2>/dev/null; printf '%s\\n' \"$_C/plugins/marketplaces/thedotmack/plugin\"; } | while IFS= read -r _R; do _R=\"${_R%/}\"; [ -d \"$_R/plugin/scripts\" ] && _Q=\"$_R/plugin\" || _Q=\"$_R\"; [ -f \"$_Q/scripts/bun-runner.js\" ] && [ -f \"$_Q/scripts/worker-service.cjs\" ] && { printf '%s\\n' \"$_Q\"; break; }; done); [ -n \"$_P\" ] || { echo \"claude-mem: plugin scripts not found\" >&2; exit 1; }; command -v cygpath >/dev/null 2>&1 && { _W=$(cygpath -w \"$_P\" 2>/dev/null); [ -n \"$_W\" ] && _P=\"$_W\"; }; node \"$_P/scripts/bun-runner.js\" \"$_P/scripts/worker-service.cjs\" hook claude-code context",
+            "shell": "node",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hook-entry.cjs ${CLAUDE_PLUGIN_ROOT}/scripts/worker-service.cjs hook claude-code context",
             "timeout": 60
           }
         ]
@@ -38,8 +38,8 @@
         "hooks": [
           {
             "type": "command",
-            "shell": "bash",
-            "command": "export PATH=\"$($SHELL -lc 'echo $PATH' 2>/dev/null):$PATH\"; _C=\"${CLAUDE_CONFIG_DIR:-$HOME/.claude}\"; _E=\"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}\"; _P=$({ [ -n \"$_E\" ] && printf '%s\\n' \"$_E\"; ls -dt \"$_C/plugins/cache/thedotmack/claude-mem\"/[0-9]*/ 2>/dev/null; printf '%s\\n' \"$_C/plugins/marketplaces/thedotmack/plugin\"; } | while IFS= read -r _R; do _R=\"${_R%/}\"; [ -d \"$_R/plugin/scripts\" ] && _Q=\"$_R/plugin\" || _Q=\"$_R\"; [ -f \"$_Q/scripts/bun-runner.js\" ] && [ -f \"$_Q/scripts/worker-service.cjs\" ] && { printf '%s\\n' \"$_Q\"; break; }; done); [ -n \"$_P\" ] || { echo \"claude-mem: plugin scripts not found\" >&2; exit 1; }; command -v cygpath >/dev/null 2>&1 && { _W=$(cygpath -w \"$_P\" 2>/dev/null); [ -n \"$_W\" ] && _P=\"$_W\"; }; node \"$_P/scripts/bun-runner.js\" \"$_P/scripts/worker-service.cjs\" hook claude-code session-init",
+            "shell": "node",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hook-entry.cjs ${CLAUDE_PLUGIN_ROOT}/scripts/worker-service.cjs hook claude-code session-init",
             "timeout": 60
           }
         ]
@@ -51,8 +51,8 @@
         "hooks": [
           {
             "type": "command",
-            "shell": "bash",
-            "command": "export PATH=\"$($SHELL -lc 'echo $PATH' 2>/dev/null):$PATH\"; _C=\"${CLAUDE_CONFIG_DIR:-$HOME/.claude}\"; _E=\"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}\"; _P=$({ [ -n \"$_E\" ] && printf '%s\\n' \"$_E\"; ls -dt \"$_C/plugins/cache/thedotmack/claude-mem\"/[0-9]*/ 2>/dev/null; printf '%s\\n' \"$_C/plugins/marketplaces/thedotmack/plugin\"; } | while IFS= read -r _R; do _R=\"${_R%/}\"; [ -d \"$_R/plugin/scripts\" ] && _Q=\"$_R/plugin\" || _Q=\"$_R\"; [ -f \"$_Q/scripts/bun-runner.js\" ] && [ -f \"$_Q/scripts/worker-service.cjs\" ] && { printf '%s\\n' \"$_Q\"; break; }; done); [ -n \"$_P\" ] || { echo \"claude-mem: plugin scripts not found\" >&2; exit 1; }; command -v cygpath >/dev/null 2>&1 && { _W=$(cygpath -w \"$_P\" 2>/dev/null); [ -n \"$_W\" ] && _P=\"$_W\"; }; node \"$_P/scripts/bun-runner.js\" \"$_P/scripts/worker-service.cjs\" hook claude-code observation",
+            "shell": "node",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hook-entry.cjs ${CLAUDE_PLUGIN_ROOT}/scripts/worker-service.cjs hook claude-code observation",
             "timeout": 120
           }
         ]
@@ -64,8 +64,8 @@
         "hooks": [
           {
             "type": "command",
-            "shell": "bash",
-            "command": "export PATH=\"$($SHELL -lc 'echo $PATH' 2>/dev/null):$PATH\"; _C=\"${CLAUDE_CONFIG_DIR:-$HOME/.claude}\"; _E=\"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}\"; _P=$({ [ -n \"$_E\" ] && printf '%s\\n' \"$_E\"; ls -dt \"$_C/plugins/cache/thedotmack/claude-mem\"/[0-9]*/ 2>/dev/null; printf '%s\\n' \"$_C/plugins/marketplaces/thedotmack/plugin\"; } | while IFS= read -r _R; do _R=\"${_R%/}\"; [ -d \"$_R/plugin/scripts\" ] && _Q=\"$_R/plugin\" || _Q=\"$_R\"; [ -f \"$_Q/scripts/bun-runner.js\" ] && [ -f \"$_Q/scripts/worker-service.cjs\" ] && { printf '%s\\n' \"$_Q\"; break; }; done); [ -n \"$_P\" ] || { echo \"claude-mem: plugin scripts not found\" >&2; exit 1; }; command -v cygpath >/dev/null 2>&1 && { _W=$(cygpath -w \"$_P\" 2>/dev/null); [ -n \"$_W\" ] && _P=\"$_W\"; }; node \"$_P/scripts/bun-runner.js\" \"$_P/scripts/worker-service.cjs\" hook claude-code file-context",
+            "shell": "node",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hook-entry.cjs ${CLAUDE_PLUGIN_ROOT}/scripts/worker-service.cjs hook claude-code file-context",
             "timeout": 60
           }
         ]
@@ -76,8 +76,8 @@
         "hooks": [
           {
             "type": "command",
-            "shell": "bash",
-            "command": "export PATH=\"$($SHELL -lc 'echo $PATH' 2>/dev/null):$PATH\"; _C=\"${CLAUDE_CONFIG_DIR:-$HOME/.claude}\"; _E=\"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}\"; _P=$({ [ -n \"$_E\" ] && printf '%s\\n' \"$_E\"; ls -dt \"$_C/plugins/cache/thedotmack/claude-mem\"/[0-9]*/ 2>/dev/null; printf '%s\\n' \"$_C/plugins/marketplaces/thedotmack/plugin\"; } | while IFS= read -r _R; do _R=\"${_R%/}\"; [ -d \"$_R/plugin/scripts\" ] && _Q=\"$_R/plugin\" || _Q=\"$_R\"; [ -f \"$_Q/scripts/bun-runner.js\" ] && [ -f \"$_Q/scripts/worker-service.cjs\" ] && { printf '%s\\n' \"$_Q\"; break; }; done); [ -n \"$_P\" ] || { echo \"claude-mem: plugin scripts not found\" >&2; exit 1; }; command -v cygpath >/dev/null 2>&1 && { _W=$(cygpath -w \"$_P\" 2>/dev/null); [ -n \"$_W\" ] && _P=\"$_W\"; }; node \"$_P/scripts/bun-runner.js\" \"$_P/scripts/worker-service.cjs\" hook claude-code summarize",
+            "shell": "node",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hook-entry.cjs ${CLAUDE_PLUGIN_ROOT}/scripts/worker-service.cjs hook claude-code summarize",
             "timeout": 120
           }
         ]
