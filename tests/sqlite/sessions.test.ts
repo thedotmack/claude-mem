@@ -182,6 +182,30 @@ describe('Sessions Module', () => {
       const session = getSessionById(db, sessionId);
       expect(session?.platform_source).toBe('openclaw');
     });
+
+    it('should correct Codex repo sessions previously misclassified as openclaw by project prefix', () => {
+      const contentSessionId = 'codex-session-openclaw-repo';
+      const sessionId = createSDKSession(
+        db,
+        contentSessionId,
+        'openclaw-fork-manager',
+        'prompt',
+        undefined,
+        'openclaw'
+      );
+
+      createSDKSession(
+        db,
+        contentSessionId,
+        'openclaw-fork-manager',
+        'prompt',
+        undefined,
+        'codex'
+      );
+
+      const session = getSessionById(db, sessionId);
+      expect(session?.platform_source).toBe('codex');
+    });
   });
 
   describe('updateMemorySessionId', () => {

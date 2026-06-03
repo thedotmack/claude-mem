@@ -28,22 +28,28 @@ function resolveCreateSessionArgs(
   };
 }
 
-function shouldCorrectOpenClawPlatformSource(
+function isStrongOpenClawSessionSource(contentSessionId: string, project: string): boolean {
+  const normalizedContentSessionId = contentSessionId.trim().toLowerCase();
+  const normalizedProject = project.trim().toLowerCase();
+  return normalizedContentSessionId.startsWith('openclaw-')
+    || normalizedContentSessionId.includes('openclaw-agent:')
+    || normalizedProject === 'openclaw';
+}
+
+function shouldCorrectPlatformSource(
   contentSessionId: string,
   project: string,
   storedPlatformSource: string,
   receivedPlatformSource: string
 ): boolean {
-  if (storedPlatformSource !== 'codex' || receivedPlatformSource !== 'openclaw') {
-    return false;
+  const strongOpenClawSession = isStrongOpenClawSessionSource(contentSessionId, project);
+  if (storedPlatformSource === 'codex' && receivedPlatformSource === 'openclaw') {
+    return strongOpenClawSession;
   }
-
-  const normalizedContentSessionId = contentSessionId.trim().toLowerCase();
-  const normalizedProject = project.trim().toLowerCase();
-  return normalizedContentSessionId.startsWith('openclaw-')
-    || normalizedContentSessionId.includes('openclaw-agent:')
-    || normalizedProject === 'openclaw'
-    || normalizedProject.startsWith('openclaw-');
+  if (storedPlatformSource === 'openclaw' && receivedPlatformSource === 'codex') {
+    return !strongOpenClawSession;
+  }
+  return false;
 }
 
 export class SessionStore {
@@ -1750,7 +1756,7 @@ export class SessionStore {
               AND COALESCE(platform_source, '') = ''
           `).run(resolved.platformSource, contentSessionId);
         } else if (storedPlatformSource !== resolved.platformSource) {
-          if (shouldCorrectOpenClawPlatformSource(contentSessionId, project, storedPlatformSource, resolved.platformSource)) {
+          if (shouldCorrectPlatformSource(contentSessionId, project, storedPlatformSource, resolved.platformSource)) {
             this.db.prepare(`
               UPDATE sdk_sessions SET platform_source = ?
               WHERE content_session_id = ?

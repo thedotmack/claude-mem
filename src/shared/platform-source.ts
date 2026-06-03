@@ -30,7 +30,6 @@ export function isOpenClawSessionSource(input: {
   return contentSessionId.startsWith('openclaw-')
     || contentSessionId.includes('openclaw-agent:')
     || project === 'openclaw'
-    || project.startsWith('openclaw-')
     || cwd.includes('/.openclaw/')
     || cwd.includes('\\.openclaw\\');
 }

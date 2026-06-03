@@ -15,4 +15,11 @@ describe('platform source resolution', () => {
       project: 'seedsearch',
     })).toBe('codex');
   });
+
+  it('does not classify repos whose names start with openclaw as OpenClaw sessions', () => {
+    expect(resolvePlatformSourceForSession('openai-codex', {
+      contentSessionId: 'codex-session-456',
+      project: 'openclaw-fork-manager',
+    })).toBe('codex');
+  });
 });

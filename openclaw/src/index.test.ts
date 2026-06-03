@@ -1234,7 +1234,7 @@ describe("SSE stream integration", () => {
     await getService().stop({});
   });
 
-  it("keeps OpenClaw project labels ahead of Codex platform hints", async () => {
+  it("labels Codex projects that start with openclaw by platform_source", async () => {
     const { api, sentMessages, getService } = createMockApi({
       workerPort: serverPort,
       observationFeed: { enabled: true, channel: "telegram", to: "12345" },
@@ -1250,9 +1250,9 @@ describe("SSE stream integration", () => {
           type: "new_observation",
           observation: {
             id: 14,
-            title: "Codex prefixed project",
+            title: "Codex prefixed repo",
             subtitle: null,
-            project: "openclaw-app",
+            project: "openclaw-fork-manager",
             platform_source: "codex",
           },
           timestamp: Date.now(),
@@ -1263,9 +1263,9 @@ describe("SSE stream integration", () => {
     await new Promise((resolve) => setTimeout(resolve, 200));
 
     assert.equal(sentMessages.length, 1);
-    assert.ok(sentMessages[0].text.includes("🦞 OpenClaw (app)"));
-    assert.ok(sentMessages[0].text.includes("Codex prefixed project"));
-    assert.ok(!sentMessages[0].text.includes("Codex Session (openclaw-app)"));
+    assert.ok(sentMessages[0].text.includes("Codex Session (openclaw-fork-manager)"));
+    assert.ok(sentMessages[0].text.includes("Codex prefixed repo"));
+    assert.ok(!sentMessages[0].text.includes("🦞 OpenClaw (fork-manager)"));
 
     await getService().stop({});
   });

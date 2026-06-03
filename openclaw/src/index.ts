@@ -297,6 +297,10 @@ function buildGetSourceLabel(
   return function getSourceLabel(observation: Pick<ObservationSSEPayload, "project" | "platform_source" | "memory_session_id">): string {
     const project = observation.project;
     if (!project) return fallback;
+    const platformSource = inferObservationPlatformSource(observation);
+    if (platformSource.includes("codex")) {
+      return formatExternalSource(codex, codexLabel, project);
+    }
     if (project.startsWith("openclaw-")) {
       const agentId = project.slice("openclaw-".length);
       if (!agentId) return `${primary} OpenClaw`;
@@ -307,10 +311,6 @@ function buildGetSourceLabel(
       return `${primary} OpenClaw`;
     }
 
-    const platformSource = inferObservationPlatformSource(observation);
-    if (platformSource.includes("codex")) {
-      return formatExternalSource(codex, codexLabel, project);
-    }
     if (platformSource && !platformSource.includes("openclaw")) {
       return formatExternalSource(claudeCode, claudeCodeLabel, project);
     }
