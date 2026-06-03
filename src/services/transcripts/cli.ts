@@ -1,6 +1,7 @@
 import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, loadTranscriptWatchConfig, writeSampleConfig } from './config.js';
 import { TranscriptWatcher } from './watcher.js';
 import { dryRunSource, formatDryRunReport } from './ingest.js';
+import { ensureWorkerRunning, workerHttpRequest } from '../../shared/worker-utils.js';
 
 function getArgValue(args: string[], name: string): string | null {
   const index = args.indexOf(name);
@@ -78,13 +79,35 @@ export async function runTranscriptCommand(subcommand: string | undefined, args:
       }
 
       // Real ingest calls ingestObservation, which requires the worker's
-      // setIngestContext — it must run inside the worker over HTTP, not here.
-      // That path lands in the follow-up PR. Until then, fail loudly rather
-      // than spend Haiku from a context that cannot honor idempotency.
-      console.error(
-        'Real ingest (worker-driven) is not wired yet. Run with --dry-run for the cost preview.'
+      // setIngestContext, so it runs INSIDE the worker. Drive it over HTTP.
+      const workerReady = await ensureWorkerRunning();
+      if (!workerReady) {
+        console.error('Worker is not running and could not be started. Cannot ingest.');
+        return 1;
+      }
+      const response = await workerHttpRequest('/api/transcript/ingest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source, includeSubagents }),
+        timeoutMs: 0, // backfill can be long; do not time out
+      });
+      if (!response.ok) {
+        console.error(`Ingest failed: HTTP ${response.status} ${await response.text()}`);
+        return 1;
+      }
+      const report = await response.json() as {
+        found: number; ingested: number; alreadyIndexed: number; failed: number;
+        sessions: Array<{ sessionId: string; isSubagent: boolean; status: string; observations: number; reason?: string }>;
+      };
+      for (const s of report.sessions) {
+        const tag = s.isSubagent ? '  subagent' : 'session';
+        console.log(`${tag} ${s.sessionId}: ${s.status}${s.reason ? ` (${s.reason})` : ''}, ${s.observations} obs`);
+      }
+      console.log(
+        `INGESTED: ${report.ingested} new, ${report.alreadyIndexed} already-indexed, ` +
+          `${report.failed} failed, of ${report.found} found.`
       );
-      return 2;
+      return report.failed > 0 ? 1 : 0;
     }
     default:
       console.log('Usage: claude-mem transcript <init|watch|validate|ingest> [--config <path>]');
