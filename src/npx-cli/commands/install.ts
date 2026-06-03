@@ -1129,13 +1129,13 @@ async function promptClaudeModel(options: InstallOptions): Promise<void> {
 }
 
 // --- CMEM Online email opt-in ----------------------------------------------
-// Interactive, optional. The CLI POSTs the email (plus an optional note) to a
-// server endpoint that holds the Resend key (see install/api/signup.js); the
-// secret never ships inside the npx package. Anything that goes wrong here is
-// swallowed — a marketing opt-in must never block or fail the install.
+// Interactive, optional. When CLAUDE_MEM_SIGNUP_URL points at a signup endpoint
+// (e.g. the Resend-backed handler that already lives in our web project) the
+// CLI POSTs the email + optional note there. The endpoint URL is the only knob;
+// we never embed a Resend key in the npx package. Anything that goes wrong here
+// is swallowed — a marketing opt-in must never block or fail the install.
 
-const SIGNUP_ENDPOINT =
-  process.env.CLAUDE_MEM_SIGNUP_URL?.trim() || 'https://install.cmem.ai/api/signup';
+const SIGNUP_ENDPOINT = process.env.CLAUDE_MEM_SIGNUP_URL?.trim() || '';
 const SIGNUP_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 interface StoredSignup {
@@ -1162,6 +1162,7 @@ function readStoredSignup(): StoredSignup | null {
 }
 
 async function submitOnlineSignup(payload: { email: string; note: string; version: string }): Promise<boolean> {
+  if (!SIGNUP_ENDPOINT) return false; // no endpoint configured — keep the email local only
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 5000);
   try {
