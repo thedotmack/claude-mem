@@ -15,12 +15,17 @@
  */
 import type { TranscriptSchema } from './types.js';
 
-/** Synthetic per-block event type, carried on the `__cc` field. */
+/**
+ * Synthetic per-block event type, carried on the `__cc` field.
+ * `session_end` is never produced by the normalizer — the ingest orchestrator
+ * emits it once at end-of-file to flush the session summary.
+ */
 export type ClaudeCodeEventType =
   | 'user_prompt'
   | 'assistant_text'
   | 'tool_use'
-  | 'tool_result';
+  | 'tool_result'
+  | 'session_end';
 
 /** A flattened, schema-ready event derived from one Claude Code content block. */
 export interface ClaudeCodeFlatEvent {
@@ -183,6 +188,12 @@ export const CLAUDE_CODE_SCHEMA: TranscriptSchema = {
         toolId: 'toolId',
         toolResponse: 'toolResponse',
       },
+    },
+    {
+      name: 'session-end',
+      match: { path: '__cc', equals: 'session_end' },
+      action: 'session_end',
+      fields: { sessionId: 'sessionId', cwd: 'cwd' },
     },
   ],
 };

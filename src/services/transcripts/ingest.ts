@@ -15,7 +15,8 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { basename, dirname, join } from 'path';
 import { expandHomePath } from './config.js';
-import { normalizeClaudeCodeLine } from './claude-code.js';
+import { normalizeClaudeCodeLine, CLAUDE_CODE_SCHEMA } from './claude-code.js';
+import type { TranscriptSchema, WatchTarget } from './types.js';
 
 export interface SubagentRef {
   /** content_session_id used for the subagent: `agent-<id>`. */
@@ -248,6 +249,178 @@ export function dryRunSource(source: string, options: ScanOptions = {}): DryRunR
       estimatedCostUsd,
     },
   };
+}
+
+// ───────────────────────────── real ingest ──────────────────────────────
+//
+// The spending path. Runs INSIDE the worker process (ingestObservation needs
+// setIngestContext), driven by an injected processor + idempotency check so it
+// stays unit-testable without a live worker.
+
+/** Minimal slice of TranscriptEventProcessor the orchestrator needs. */
+export interface IngestProcessor {
+  processEntry(
+    entry: unknown,
+    watch: WatchTarget,
+    schema: TranscriptSchema,
+    sessionIdOverride?: string | null
+  ): Promise<void>;
+}
+
+export interface IngestDeps {
+  processor: IngestProcessor;
+  /** True if a session with this content_session_id already exists (skip it). */
+  sessionExists: (contentSessionId: string) => boolean;
+}
+
+export interface IngestSessionResult {
+  sessionId: string;
+  isSubagent: boolean;
+  status: 'ingested' | 'skipped' | 'failed';
+  /** tool_use blocks fed through — proxy for observations queued. */
+  observations: number;
+  reason?: string;
+}
+
+export interface IngestReport {
+  source: string;
+  includeSubagents: boolean;
+  found: number;
+  ingested: number;
+  alreadyIndexed: number;
+  failed: number;
+  sessions: IngestSessionResult[];
+}
+
+/** Resolve the project root from a parent transcript's first line carrying cwd. */
+function firstCwd(filePath: string): string | undefined {
+  const raw = readFileSync(filePath, 'utf-8');
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const cwd = (JSON.parse(trimmed) as { cwd?: unknown }).cwd;
+      if (typeof cwd === 'string' && cwd.trim()) return cwd;
+    } catch {
+      // ignore non-JSON lines
+    }
+  }
+  return undefined;
+}
+
+interface SessionToIngest {
+  sessionId: string;
+  filePath: string;
+  isSubagent: boolean;
+  /** Project root cwd. Drives stored project; for subagents this is the PARENT's. */
+  cwd?: string;
+  /** When true, strip each line's own cwd so it falls back to the parent cwd. */
+  forceCwd?: boolean;
+}
+
+async function ingestOneSession(
+  deps: IngestDeps,
+  report: IngestReport,
+  s: SessionToIngest
+): Promise<void> {
+  report.found++;
+  const result: IngestSessionResult = {
+    sessionId: s.sessionId,
+    isSubagent: s.isSubagent,
+    status: 'ingested',
+    observations: 0,
+  };
+
+  // Idempotency: a pre-existing content_session_id (from a prior backfill OR
+  // from live capture) is left untouched. platform_source is set via watch.name.
+  if (deps.sessionExists(s.sessionId)) {
+    result.status = 'skipped';
+    result.reason = 'already-indexed';
+    report.alreadyIndexed++;
+    report.sessions.push(result);
+    return;
+  }
+
+  const watch: WatchTarget = {
+    name: 'claude',
+    path: s.filePath,
+    schema: CLAUDE_CODE_SCHEMA,
+    workspace: s.cwd,
+  };
+
+  try {
+    const raw = readFileSync(s.filePath, 'utf-8');
+    for (const line of raw.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(trimmed);
+      } catch {
+        continue;
+      }
+      for (const ev of normalizeClaudeCodeLine(parsed)) {
+        // Force the canonical content_session_id via the override (strip the
+        // per-event sessionId so the override wins), and for subagents strip
+        // the per-line cwd so project inherits the parent's (watch.workspace).
+        const e: Record<string, unknown> = { ...ev, sessionId: undefined };
+        if (s.forceCwd) e.cwd = undefined;
+        if (ev.__cc === 'tool_use') result.observations++;
+        await deps.processor.processEntry(e, watch, CLAUDE_CODE_SCHEMA, s.sessionId);
+      }
+    }
+    // Flush the session summary at EOF.
+    await deps.processor.processEntry({ __cc: 'session_end' }, watch, CLAUDE_CODE_SCHEMA, s.sessionId);
+    report.ingested++;
+  } catch (err) {
+    result.status = 'failed';
+    result.reason = err instanceof Error ? err.message : String(err);
+    report.failed++;
+  }
+  report.sessions.push(result);
+}
+
+/**
+ * Backfill every session under `source` into memory. Idempotent by
+ * content_session_id. Subagents (when included) inherit the parent's project.
+ */
+export async function ingestSource(
+  source: string,
+  options: ScanOptions,
+  deps: IngestDeps
+): Promise<IngestReport> {
+  const includeSubagents = options.includeSubagents ?? false;
+  const refs = scanSource(source, { includeSubagents });
+
+  const report: IngestReport = {
+    source: expandHomePath(source),
+    includeSubagents,
+    found: 0,
+    ingested: 0,
+    alreadyIndexed: 0,
+    failed: 0,
+    sessions: [],
+  };
+
+  for (const ref of refs) {
+    const repoCwd = firstCwd(ref.filePath);
+    await ingestOneSession(deps, report, {
+      sessionId: ref.sessionId,
+      filePath: ref.filePath,
+      isSubagent: false,
+      cwd: repoCwd,
+    });
+    for (const sub of ref.subagents) {
+      await ingestOneSession(deps, report, {
+        sessionId: sub.sessionId,
+        filePath: sub.filePath,
+        isSubagent: true,
+        cwd: repoCwd, // inherit parent project, NOT the subagent worktree
+        forceCwd: true,
+      });
+    }
+  }
+  return report;
 }
 
 /** Render a dry-run report as human-readable lines for the CLI. */
