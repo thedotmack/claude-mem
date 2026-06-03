@@ -38,6 +38,24 @@ export interface ScanOptions {
 
 const JSONL_EXT = '.jsonl';
 
+/**
+ * Cost-estimate constants. These are deliberately explicit and tunable — they
+ * are an ESTIMATE, not a billing guarantee.
+ *
+ * Caveat: the worker's observation generator may prepend per-session
+ * conversation history to each call, so real input can exceed the raw payload
+ * bytes counted here. Treat the input-token figure as a floor.
+ */
+const CHARS_PER_TOKEN = 4; // rough industry approximation (JSON skews a bit denser)
+const PROMPT_OVERHEAD_TOKENS = 400; // scaffolding/instructions sent per generation call
+const OUTPUT_TOKENS_PER_OBSERVATION = 250;
+const OUTPUT_TOKENS_PER_SUMMARY = 400;
+// Claude Haiku 4.5 list pricing (USD per million tokens). Adjust if the worker
+// is pointed at a different model, or set to 0 if Haiku runs on subscription
+// budget rather than metered API billing.
+const HAIKU_USD_PER_MTOK_INPUT = 1.0;
+const HAIKU_USD_PER_MTOK_OUTPUT = 5.0;
+
 function listSubagents(parentFilePath: string, sessionId: string): SubagentRef[] {
   // Subagents live at <dir>/<sessionId>/subagents/agent-<id>.jsonl with a
   // sibling agent-<id>.meta.json ({ agentType, description, [worktreePath] }).
@@ -111,6 +129,8 @@ export interface SessionCounts {
   assistantTexts: number;
   toolUses: number;
   toolResults: number;
+  /** Bytes of model-visible content (tool inputs/responses, prompts, replies). */
+  contentBytes: number;
 }
 
 export interface DryRunReport {
@@ -126,6 +146,12 @@ export interface DryRunReport {
     estimatedSummaries: number;
     /** estimatedObservations + estimatedSummaries — the Haiku-call proxy. */
     estimatedHaikuCalls: number;
+    contentBytes: number;
+    /** Estimated input tokens (content + per-call prompt overhead). A floor. */
+    estimatedInputTokens: number;
+    estimatedOutputTokens: number;
+    /** Estimated metered cost in USD at the Haiku rates above (0 if on subscription). */
+    estimatedCostUsd: number;
   };
 }
 
@@ -138,6 +164,13 @@ function countFile(filePath: string): Omit<SessionCounts, 'sessionId' | 'isSubag
     assistantTexts: 0,
     toolUses: 0,
     toolResults: 0,
+    contentBytes: 0,
+  };
+
+  const byteLen = (value: unknown): number => {
+    if (value === undefined || value === null) return 0;
+    const s = typeof value === 'string' ? value : JSON.stringify(value);
+    return Buffer.byteLength(s, 'utf-8');
   };
 
   const raw = readFileSync(filePath, 'utf-8');
@@ -154,10 +187,10 @@ function countFile(filePath: string): Omit<SessionCounts, 'sessionId' | 'isSubag
     }
     for (const ev of normalizeClaudeCodeLine(parsed)) {
       switch (ev.__cc) {
-        case 'user_prompt': counts.userPrompts++; break;
-        case 'assistant_text': counts.assistantTexts++; break;
-        case 'tool_use': counts.toolUses++; break;
-        case 'tool_result': counts.toolResults++; break;
+        case 'user_prompt': counts.userPrompts++; counts.contentBytes += byteLen(ev.prompt); break;
+        case 'assistant_text': counts.assistantTexts++; counts.contentBytes += byteLen(ev.message); break;
+        case 'tool_use': counts.toolUses++; counts.contentBytes += byteLen(ev.toolInput); break;
+        case 'tool_result': counts.toolResults++; counts.contentBytes += byteLen(ev.toolResponse); break;
       }
     }
   }
@@ -187,6 +220,18 @@ export function dryRunSource(source: string, options: ScanOptions = {}): DryRunR
 
   const estimatedObservations = sessions.reduce((n, s) => n + s.toolUses, 0);
   const estimatedSummaries = sessions.length;
+  const estimatedHaikuCalls = estimatedObservations + estimatedSummaries;
+  const contentBytes = sessions.reduce((n, s) => n + s.contentBytes, 0);
+
+  const estimatedInputTokens =
+    Math.round(contentBytes / CHARS_PER_TOKEN) + estimatedHaikuCalls * PROMPT_OVERHEAD_TOKENS;
+  const estimatedOutputTokens =
+    estimatedObservations * OUTPUT_TOKENS_PER_OBSERVATION +
+    estimatedSummaries * OUTPUT_TOKENS_PER_SUMMARY;
+  const estimatedCostUsd =
+    (estimatedInputTokens / 1_000_000) * HAIKU_USD_PER_MTOK_INPUT +
+    (estimatedOutputTokens / 1_000_000) * HAIKU_USD_PER_MTOK_OUTPUT;
+
   return {
     source: expandHomePath(source),
     includeSubagents,
@@ -196,7 +241,11 @@ export function dryRunSource(source: string, options: ScanOptions = {}): DryRunR
       parseFailures: sessions.reduce((n, s) => n + s.parseFailures, 0),
       estimatedObservations,
       estimatedSummaries,
-      estimatedHaikuCalls: estimatedObservations + estimatedSummaries,
+      estimatedHaikuCalls,
+      contentBytes,
+      estimatedInputTokens,
+      estimatedOutputTokens,
+      estimatedCostUsd,
     },
   };
 }
@@ -217,10 +266,24 @@ export function formatDryRunReport(report: DryRunReport): string {
   }
   lines.push('');
   const t = report.totals;
+  const mTokIn = (t.estimatedInputTokens / 1_000_000).toFixed(2);
+  const mTokOut = (t.estimatedOutputTokens / 1_000_000).toFixed(2);
   lines.push(
     `TOTAL: ${t.sessions} sessions → ~${t.estimatedObservations} observations + ` +
       `~${t.estimatedSummaries} summaries = ~${t.estimatedHaikuCalls} Haiku calls` +
       (t.parseFailures ? ` (${t.parseFailures} parse-failures)` : '')
+  );
+  lines.push(
+    `TOKENS (est): ~${mTokIn}M input + ~${mTokOut}M output ` +
+      `(from ${(t.contentBytes / 1_000_000).toFixed(2)} MB content + ${PROMPT_OVERHEAD_TOKENS}tok/call overhead)`
+  );
+  lines.push(
+    `COST (est): ~$${t.estimatedCostUsd.toFixed(2)} ` +
+      `at Haiku $${HAIKU_USD_PER_MTOK_INPUT}/$${HAIKU_USD_PER_MTOK_OUTPUT} per Mtok in/out`
+  );
+  lines.push(
+    'NOTE: input is a floor — the generator may prepend per-session history. ' +
+      'If Haiku runs on subscription budget, the $ figure is not metered.'
   );
   return lines.join('\n');
 }
