@@ -42,6 +42,16 @@ export function expandHome(p: string): string {
   return p;
 }
 
+/**
+ * The `memory/` dir for a repo cwd, using Claude Code's path encoding
+ * (absolute path with every '/' replaced by '-'). E.g.
+ *   /home/u/code/mm/observability → -home-u-code-mm-observability/memory
+ */
+export function memoryDirForCwd(cwd: string): string {
+  const encoded = cwd.replace(/\//g, '-');
+  return join(claudeProjectsDir(), encoded, MEMORY_SUBDIR);
+}
+
 // ───────────────────────────── frontmatter ──────────────────────────────
 //
 // Topic files carry a small YAML frontmatter block, e.g.
@@ -404,9 +414,10 @@ export interface MemoryObservationToStore {
   subtitle: string;
   narrative: string;
   concepts: string[];
+  /** Persisted JSON provenance (SessionStore.storeObservation writes `metadata`). */
+  metadata: Record<string, unknown>;
   /** Backdate to the file's mtime so imported memory sorts chronologically. */
   createdAtEpoch: number;
-  /** Provenance (informational; not all fields are persisted by the store). */
   sourceFile: string;
   originSessionId?: string;
 }
@@ -448,19 +459,25 @@ export interface MemoryIngestReport {
 
 /**
  * Map a memory file onto an observation. Pure (no I/O) → directly unit-testable.
- * Provenance rides in `subtitle` + `concepts` because storeObservation does not
- * persist a metadata column.
+ * Full provenance rides in `metadata` (persisted by SessionStore.storeObservation);
+ * a couple of lightweight `concepts` tags make imported memory searchable.
  */
 export function buildMemoryObservation(ref: MemoryDirRef, file: MemoryFileRef): MemoryObservationToStore {
   const memoryType = file.frontmatter.type ?? 'topic';
-  const concepts = ['memory-import', `memory-type:${memoryType}`, `file:${file.fileName}`];
-  if (file.frontmatter.originSessionId) {
-    concepts.push(`origin-session:${file.frontmatter.originSessionId}`);
-  }
+  const concepts = ['memory-import', `memory-type:${memoryType}`];
   const description = file.frontmatter.description?.trim();
   const subtitle = description && description.length
     ? description.slice(0, 300)
     : `Imported memory (${memoryType})`;
+
+  const metadata: Record<string, unknown> = {
+    source: 'memory-import',
+    file: file.fileName,
+    memoryType,
+    encodedDir: ref.encodedName,
+  };
+  if (file.frontmatter.originSessionId) metadata.originSessionId = file.frontmatter.originSessionId;
+  if (ref.cwd) metadata.cwd = ref.cwd;
 
   return {
     project: ref.project,
@@ -469,6 +486,7 @@ export function buildMemoryObservation(ref: MemoryDirRef, file: MemoryFileRef): 
     subtitle,
     narrative: file.body,
     concepts,
+    metadata,
     createdAtEpoch: file.mtimeEpoch,
     sourceFile: file.fileName,
     originSessionId: file.frontmatter.originSessionId,

@@ -263,3 +263,7 @@ export function runTranscriptWatchCommand(): void {
     process.exit(exitCode ?? 0);
   });
 }
+
+export function runMemoryIngestCommand(extraArgs: string[] = []): void {
+  spawnBunWorkerCommand('memory', ['ingest', ...extraArgs]);
+}
