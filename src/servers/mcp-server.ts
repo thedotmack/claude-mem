@@ -17,7 +17,7 @@ import {
 import { getWorkerPort, workerHttpRequest } from '../shared/worker-utils.js';
 import { ensureWorkerStarted } from '../services/worker-spawner.js';
 import { searchCodebase, formatSearchResults } from '../services/smart-file-read/search.js';
-import { parseFile, formatFoldedView, unfoldSymbol } from '../services/smart-file-read/parser.js';
+import { parseFile, formatFoldedView, unfoldSymbol, findProjectRoot } from '../services/smart-file-read/parser.js';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -725,13 +725,14 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     handler: async (args: any) => {
       const filePath = resolve(args.file_path);
       const content = await readFile(filePath, 'utf-8');
-      const unfolded = unfoldSymbol(content, filePath, args.symbol_name);
+      const projectRoot = findProjectRoot(filePath) ?? process.cwd();
+      const unfolded = unfoldSymbol(content, filePath, args.symbol_name, projectRoot);
       if (unfolded) {
         return {
           content: [{ type: 'text' as const, text: unfolded }]
         };
       }
-      const parsed = parseFile(content, filePath);
+      const parsed = parseFile(content, filePath, projectRoot);
       if (parsed.symbols.length > 0) {
         const available = parsed.symbols.map(s => `  - ${s.name} (${s.kind})`).join('\n');
         return {
@@ -765,7 +766,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     handler: async (args: any) => {
       const filePath = resolve(args.file_path);
       const content = await readFile(filePath, 'utf-8');
-      const parsed = parseFile(content, filePath);
+      const parsed = parseFile(content, filePath, findProjectRoot(filePath) ?? process.cwd());
       if (parsed.symbols.length > 0) {
         return {
           content: [{ type: 'text' as const, text: formatFoldedView(parsed) }]
