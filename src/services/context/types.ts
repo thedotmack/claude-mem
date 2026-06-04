@@ -85,16 +85,16 @@ export interface PriorMessages {
 }
 
 export const colors = {
-  reset: '[0m',
-  bright: '[1m',
-  dim: '[2m',
-  cyan: '[36m',
-  green: '[32m',
-  yellow: '[33m',
-  blue: '[34m',
-  magenta: '[35m',
-  gray: '[90m',
-  red: '[31m',
+  reset: '\x1b[0m',
+  bright: '\x1b[1m',
+  dim: '\x1b[2m',
+  cyan: '\x1b[36m',
+  green: '\x1b[32m',
+  yellow: '\x1b[33m',
+  blue: '\x1b[34m',
+  magenta: '\x1b[35m',
+  gray: '\x1b[90m',
+  red: '\x1b[31m',
 };
 
 export const CHARS_PER_TOKEN_ESTIMATE = 4;
