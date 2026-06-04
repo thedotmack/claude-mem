@@ -40,34 +40,6 @@ export class SessionRoutes extends BaseRouteHandler {
     super();
   }
 
-  private getActiveAgent(): ClaudeProvider | GeminiProvider | OpenRouterProvider | GeminiCliProvider {
-    if (isOpenRouterSelected()) {
-      if (isOpenRouterAvailable()) {
-        logger.debug('SESSION', 'Using OpenRouter agent');
-        return this.openRouterAgent;
-      } else {
-        throw new Error('OpenRouter provider selected but no API key configured. Set CLAUDE_MEM_OPENROUTER_API_KEY in settings or OPENROUTER_API_KEY environment variable.');
-      }
-    }
-    if (isGeminiCliSelected()) {
-      if (isGeminiCliAvailable()) {
-        logger.debug('SESSION', 'Using Gemini CLI agent');
-        return this.geminiCliAgent;
-      } else {
-        throw new Error('Gemini CLI provider selected but the `gemini` CLI is unavailable. Install @google/gemini-cli and sign in (or set CLAUDE_MEM_GEMINI_CLI_PATH).');
-      }
-    }
-    if (isGeminiSelected()) {
-      if (isGeminiAvailable()) {
-        logger.debug('SESSION', 'Using Gemini agent');
-        return this.geminiAgent;
-      } else {
-        throw new Error('Gemini provider selected but no API key configured. Set CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.');
-      }
-    }
-    return this.sdkAgent;
-  }
-
   private getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' | 'gemini-cli' {
     if (isOpenRouterSelected() && isOpenRouterAvailable()) {
       return 'openrouter';

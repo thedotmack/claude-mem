@@ -6,7 +6,7 @@
  * candidates are validated with `--version` so a stale shim can't be picked.
  *
  * The resolved path is cached module-wide because availability is polled per
- * request (getActiveAgent / getSelectedProvider) — re-running `which` +
+ * request (getSelectedProvider) — re-running `which` +
  * `--version` (a subprocess) on every observation would be wasteful. The cache
  * is scoped to the current explicit path setting so runtime settings changes
  * re-resolve without a worker restart. Only successful resolutions are cached;

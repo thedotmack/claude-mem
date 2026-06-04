@@ -352,15 +352,45 @@ export class GeminiCliProvider {
         if (isAbortError(error)) throw error;
         const notFound = error instanceof ClassifiedProviderError && error.kind === 'session_not_found';
         if (!notFound) throw error;
-        logger.warn('SDK', 'Gemini CLI resume failed (session not found) — starting fresh', {
+        logger.warn('SDK', 'Gemini CLI resume failed (session not found) — re-priming a fresh session', {
           sessionId: session.sessionDbId,
           staleMemorySessionId: session.memorySessionId,
         });
         session.memorySessionId = null;
-        // fall through to fresh init
+
+        // A vanished gemini session takes its whole conversation with it,
+        // including the init turn that established the observer role and the
+        // structured output format. promptText here is an observation/summary
+        // prompt that assumes that context; a brand-new session handed only
+        // this prompt would emit unstructured text that processAgentResponse
+        // silently discards. So prime the fresh session exactly as startSession
+        // would, then resume it with the real prompt — mirroring the normal
+        // init→turn flow.
+        const mode = ModeManager.getInstance().getActiveMode();
+        const primingPrompt = buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
+        const primed = await this.runFreshTurn(session, primingPrompt, executable, cwd, model, signal, timeoutMs);
+        return await runGeminiCli({ executable, cwd, model, prompt: promptText, resumeId: primed.sessionId, signal, timeoutMs });
       }
     }
 
+    return this.runFreshTurn(session, promptText, executable, cwd, model, signal, timeoutMs);
+  }
+
+  /**
+   * Spawn a brand-new gemini session (no `--resume`), capture and register the
+   * `session_id` it returns as the session's memorySessionId, and return the
+   * turn result. Used for the first turn of a session and to re-establish a
+   * session after a `--resume` finds none.
+   */
+  private async runFreshTurn(
+    session: ActiveSession,
+    promptText: string,
+    executable: string,
+    cwd: string,
+    model: string,
+    signal: AbortSignal,
+    timeoutMs: number,
+  ): Promise<RunResult> {
     const result = await runGeminiCli({ executable, cwd, model, prompt: promptText, signal, timeoutMs });
     const captured = result.sessionId;
     if (!captured) {
@@ -437,7 +467,7 @@ export class GeminiCliProvider {
       this.accountTokens(session, result.tokensUsed);
       await processAgentResponse(result.response, session, this.dbManager, this.sessionManager, worker, result.tokensUsed, originalTimestamp, 'GeminiCli', lastCwd, model);
     } else {
-      logger.warn('SDK', `Empty Gemini CLI ${kind} response, leaving queue intact`, {
+      logger.warn('SDK', `Empty Gemini CLI ${kind} response — message already consumed, nothing recorded`, {
         sessionId: session.sessionDbId,
       });
     }
