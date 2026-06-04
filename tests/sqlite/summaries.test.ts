@@ -4,6 +4,7 @@ import { ClaudeMemDatabase } from '../../src/services/sqlite/Database.js';
 import {
   storeSummary,
   getSummaryForSession,
+  getSummaryById,
 } from '../../src/services/sqlite/Summaries.js';
 import {
   createSDKSession,
@@ -196,6 +197,33 @@ describe('Summaries Module', () => {
       expect(retrieved).toHaveProperty('prompt_number');
       expect(retrieved).toHaveProperty('created_at');
       expect(retrieved).toHaveProperty('created_at_epoch');
+    });
+  });
+
+  describe('content_session_id', () => {
+    it('persists the originating content_session_id when provided', () => {
+      const memorySessionId = createSessionWithMemoryId('content-sum-stamp', 'mem-sum-stamp');
+      const result = storeSummary(
+        db,
+        memorySessionId,
+        'test-project',
+        createSummaryInput(),
+        1,
+        0,
+        undefined,
+        'content-sum-stamp'
+      );
+
+      const stored = getSummaryById(db, result.id);
+      expect(stored?.content_session_id).toBe('content-sum-stamp');
+    });
+
+    it('stores NULL content_session_id when omitted', () => {
+      const memorySessionId = createSessionWithMemoryId('content-sum-omit', 'mem-sum-omit');
+      const result = storeSummary(db, memorySessionId, 'test-project', createSummaryInput());
+
+      const stored = getSummaryById(db, result.id);
+      expect(stored?.content_session_id ?? null).toBeNull();
     });
   });
 });

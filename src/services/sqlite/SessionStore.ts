@@ -69,6 +69,25 @@ export class SessionStore {
     this.dropDeadPendingMessagesColumns();
     this.ensurePendingMessagesToolUseIdColumn();
     this.dropWorkerPidColumn();
+    this.addContentSessionIdColumns();
+  }
+
+  private addContentSessionIdColumns(): void {
+    const observationCols = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    if (!observationCols.some(c => c.name === 'content_session_id')) {
+      this.db.run('ALTER TABLE observations ADD COLUMN content_session_id TEXT');
+      logger.debug('DB', 'Added content_session_id column to observations table (#2769)');
+    }
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_content_session ON observations(content_session_id)');
+
+    const summaryCols = this.db.query('PRAGMA table_info(session_summaries)').all() as TableColumnInfo[];
+    if (!summaryCols.some(c => c.name === 'content_session_id')) {
+      this.db.run('ALTER TABLE session_summaries ADD COLUMN content_session_id TEXT');
+      logger.debug('DB', 'Added content_session_id column to session_summaries table (#2769)');
+    }
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_session_summaries_content_session ON session_summaries(content_session_id)');
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(35, new Date().toISOString());
   }
 
   private dropWorkerPidColumn(): void {
@@ -1763,7 +1782,8 @@ export class SessionStore {
     promptNumber?: number,
     discoveryTokens: number = 0,
     overrideTimestampEpoch?: number,
-    generatedByModel?: string
+    generatedByModel?: string,
+    contentSessionId?: string | null
   ): { id: number; createdAtEpoch: number } {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
@@ -1774,8 +1794,8 @@ export class SessionStore {
       INSERT INTO observations
       (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
        files_read, files_modified, prompt_number, discovery_tokens, agent_type, agent_id, content_hash, created_at, created_at_epoch,
-       generated_by_model, metadata)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       generated_by_model, metadata, content_session_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(memory_session_id, content_hash) DO NOTHING
       RETURNING id, created_at_epoch
     `);
@@ -1799,7 +1819,8 @@ export class SessionStore {
       timestampIso,
       timestampEpoch,
       generatedByModel || null,
-      observation.metadata ?? null
+      observation.metadata ?? null,
+      contentSessionId ?? null
     ) as { id: number; created_at_epoch: number } | null;
 
     if (inserted) {
@@ -1831,7 +1852,8 @@ export class SessionStore {
     },
     promptNumber?: number,
     discoveryTokens: number = 0,
-    overrideTimestampEpoch?: number
+    overrideTimestampEpoch?: number,
+    contentSessionId?: string | null
   ): { id: number; createdAtEpoch: number } {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
@@ -1839,8 +1861,9 @@ export class SessionStore {
     const stmt = this.db.prepare(`
       INSERT INTO session_summaries
       (memory_session_id, project, request, investigated, learned, completed,
-       next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch,
+       content_session_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -1855,7 +1878,8 @@ export class SessionStore {
       promptNumber || null,
       discoveryTokens,
       timestampIso,
-      timestampEpoch
+      timestampEpoch,
+      contentSessionId ?? null
     );
 
     return {
@@ -1890,7 +1914,8 @@ export class SessionStore {
     promptNumber?: number,
     discoveryTokens: number = 0,
     overrideTimestampEpoch?: number,
-    generatedByModel?: string
+    generatedByModel?: string,
+    contentSessionId?: string | null
   ): { observationIds: number[]; summaryId: number | null; createdAtEpoch: number } {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
@@ -1902,8 +1927,8 @@ export class SessionStore {
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
          files_read, files_modified, prompt_number, discovery_tokens, agent_type, agent_id, content_hash, created_at, created_at_epoch,
-         generated_by_model)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         generated_by_model, content_session_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(memory_session_id, content_hash) DO NOTHING
         RETURNING id
       `);
@@ -1931,7 +1956,8 @@ export class SessionStore {
           contentHash,
           timestampIso,
           timestampEpoch,
-          generatedByModel || null
+          generatedByModel || null,
+          contentSessionId ?? null
         ) as { id: number } | null;
 
         if (inserted) {
@@ -1953,8 +1979,9 @@ export class SessionStore {
         const summaryStmt = this.db.prepare(`
           INSERT INTO session_summaries
           (memory_session_id, project, request, investigated, learned, completed,
-           next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch,
+           content_session_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
         const result = summaryStmt.run(
@@ -1969,7 +1996,8 @@ export class SessionStore {
           promptNumber || null,
           discoveryTokens,
           timestampIso,
-          timestampEpoch
+          timestampEpoch,
+          contentSessionId ?? null
         );
         summaryId = Number(result.lastInsertRowid);
       }
@@ -2008,7 +2036,8 @@ export class SessionStore {
     promptNumber?: number,
     discoveryTokens: number = 0,
     overrideTimestampEpoch?: number,
-    generatedByModel?: string
+    generatedByModel?: string,
+    contentSessionId?: string | null
   ): { observationIds: number[]; summaryId?: number; createdAtEpoch: number } {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
@@ -2020,8 +2049,8 @@ export class SessionStore {
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
          files_read, files_modified, prompt_number, discovery_tokens, agent_type, agent_id, content_hash, created_at, created_at_epoch,
-         generated_by_model)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         generated_by_model, content_session_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(memory_session_id, content_hash) DO NOTHING
         RETURNING id
       `);
@@ -2049,7 +2078,8 @@ export class SessionStore {
           contentHash,
           timestampIso,
           timestampEpoch,
-          generatedByModel || null
+          generatedByModel || null,
+          contentSessionId ?? null
         ) as { id: number } | null;
 
         if (inserted) {
@@ -2071,8 +2101,9 @@ export class SessionStore {
         const summaryStmt = this.db.prepare(`
           INSERT INTO session_summaries
           (memory_session_id, project, request, investigated, learned, completed,
-           next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch,
+           content_session_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
         const result = summaryStmt.run(
@@ -2087,7 +2118,8 @@ export class SessionStore {
           promptNumber || null,
           discoveryTokens,
           timestampIso,
-          timestampEpoch
+          timestampEpoch,
+          contentSessionId ?? null
         );
         summaryId = Number(result.lastInsertRowid);
       }

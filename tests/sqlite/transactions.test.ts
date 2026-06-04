@@ -6,7 +6,7 @@ import {
   storeObservationsAndMarkComplete,
 } from '../../src/services/sqlite/transactions.js';
 import { getObservationById } from '../../src/services/sqlite/Observations.js';
-import { getSummaryForSession } from '../../src/services/sqlite/Summaries.js';
+import { getSummaryForSession, getSummaryById } from '../../src/services/sqlite/Summaries.js';
 import {
   createSDKSession,
   updateMemorySessionId,
@@ -304,6 +304,78 @@ describe('Transactions Module', () => {
         WHERE title = ?
       `).get('Rollback Obs') as { count: number };
       expect(count.count).toBe(0);
+    });
+  });
+
+  describe('content_session_id', () => {
+    it('storeObservations stamps content_session_id on observation and summary rows', () => {
+      const { memorySessionId } = createSessionWithMemoryId('content-tx-stamp', 'tx-stamp-session');
+      const observations = [createObservationInput({ title: 'Stamped Obs' })];
+      const summary = createSummaryInput();
+
+      const result = storeObservations(
+        db,
+        memorySessionId,
+        'test-project',
+        observations,
+        summary,
+        1,
+        0,
+        undefined,
+        'content-tx-stamp'
+      );
+
+      const obs = getObservationById(db, result.observationIds[0]);
+      expect(obs?.content_session_id).toBe('content-tx-stamp');
+
+      const storedSummary = getSummaryById(db, result.summaryId!);
+      expect(storedSummary?.content_session_id).toBe('content-tx-stamp');
+    });
+
+    it('storeObservations stores NULL content_session_id when omitted', () => {
+      const { memorySessionId } = createSessionWithMemoryId('content-tx-omit', 'tx-omit-session');
+      const result = storeObservations(
+        db,
+        memorySessionId,
+        'test-project',
+        [createObservationInput({ title: 'Unstamped Obs' })],
+        null
+      );
+
+      const obs = getObservationById(db, result.observationIds[0]);
+      expect(obs?.content_session_id ?? null).toBeNull();
+    });
+
+    it('storeObservationsAndMarkComplete stamps content_session_id', () => {
+      const { memorySessionId, sessionDbId } = createSessionWithMemoryId('content-tx-complete', 'tx-complete-session');
+      const observations = [createObservationInput({ title: 'Complete Stamped' })];
+      const summary = createSummaryInput();
+
+      db.prepare(`
+        INSERT INTO pending_messages
+        (session_db_id, content_session_id, message_type, created_at_epoch, status)
+        VALUES (?, ?, 'observation', ?, 'processing')
+      `).run(sessionDbId, 'content-tx-complete', Date.now());
+      const messageId = (db.prepare('SELECT last_insert_rowid() as id').get() as { id: number }).id;
+
+      const result = storeObservationsAndMarkComplete(
+        db,
+        memorySessionId,
+        'test-project',
+        observations,
+        summary,
+        messageId,
+        1,
+        0,
+        undefined,
+        'content-tx-complete'
+      );
+
+      const obs = getObservationById(db, result.observationIds[0]);
+      expect(obs?.content_session_id).toBe('content-tx-complete');
+
+      const storedSummary = getSummaryById(db, result.summaryId!);
+      expect(storedSummary?.content_session_id).toBe('content-tx-complete');
     });
   });
 });
