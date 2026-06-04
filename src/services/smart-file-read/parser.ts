@@ -759,6 +759,16 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   return { symbols: symbols.filter(s => !nested.has(s)), imports };
 }
 
+export function findProjectRoot(filePath: string): string | undefined {
+  let dir = dirname(filePath);
+  while (true) {
+    if (existsSync(join(dir, ".claude-mem.json"))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+}
+
 export function parseFile(content: string, filePath: string, projectRoot?: string): FoldedFile {
   const userConfig = projectRoot ? loadUserGrammars(projectRoot) : EMPTY_USER_GRAMMAR_CONFIG;
   const language = detectLanguageWithUserGrammars(filePath, userConfig);
@@ -982,8 +992,8 @@ function getSymbolIcon(kind: CodeSymbol["kind"]): string {
   return icons[kind] || "·";
 }
 
-export function unfoldSymbol(content: string, filePath: string, symbolName: string): string | null {
-  const file = parseFile(content, filePath);
+export function unfoldSymbol(content: string, filePath: string, symbolName: string, projectRoot?: string): string | null {
+  const file = parseFile(content, filePath, projectRoot);
 
   const findSymbol = (symbols: CodeSymbol[]): CodeSymbol | null => {
     for (const sym of symbols) {
