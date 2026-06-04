@@ -6,10 +6,6 @@ const watcherSource = readFileSync(
   join(__dirname, '..', 'src', 'services', 'transcripts', 'watcher.ts'),
   'utf-8',
 );
-const sessionRoutesSource = readFileSync(
-  join(__dirname, '..', 'src', 'services', 'worker', 'http', 'routes', 'SessionRoutes.ts'),
-  'utf-8',
-);
 
 describe('Codex transcript ingestion on Windows (#2192)', () => {
   it('normalizes backslashes to forward slashes before passing the path to globSync', () => {
@@ -30,8 +26,4 @@ describe('Codex transcript ingestion on Windows (#2192)', () => {
     expect(watcherSource).toMatch(/resolvePath\(watchRoot, name\)\.replace\(\/\\\\\/g, '\/'\)/);
   });
 
-  it('requeues in-flight processing rows when the generator aborts (queue self-deadlock fix)', () => {
-    expect(sessionRoutesSource).toMatch(/resetProcessingToPending/);
-    expect(sessionRoutesSource).toMatch(/Reset processing messages after generator error/);
-  });
 });

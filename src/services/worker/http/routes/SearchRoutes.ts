@@ -352,7 +352,12 @@ export class SearchRoutes extends BaseRouteHandler {
     }
 
     const settings = getCachedSettings();
-    const hintEnabled = String(settings.CLAUDE_MEM_WELCOME_HINT_ENABLED ?? '').toLowerCase() === 'true';
+    // Env always wins over cached settings (mirrors SettingsDefaultsManager
+    // applyEnvOverrides semantics). Reading process.env is free, so honoring it
+    // here keeps the welcome-hint toggle responsive without waiting out the
+    // settings cache TTL.
+    const hintEnabledRaw = process.env.CLAUDE_MEM_WELCOME_HINT_ENABLED ?? settings.CLAUDE_MEM_WELCOME_HINT_ENABLED;
+    const hintEnabled = String(hintEnabledRaw ?? '').toLowerCase() === 'true';
     if (hintEnabled && !full) {
       const sessionStore = this.searchManager.getSessionStore();
       // Memoized: skips the COUNT(*) query once any project in the set has

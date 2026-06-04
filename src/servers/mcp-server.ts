@@ -458,13 +458,14 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'search',
-    description: 'Step 1: Search memory. Returns index with IDs. Params: query, limit, project, type, obs_type, dateStart, dateEnd, offset, orderBy',
+    description: 'Step 1: Search memory. Returns index with IDs. Params: query, limit, project, platformSource, type, obs_type, dateStart, dateEnd, offset, orderBy',
     inputSchema: {
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Search query' },
         limit: { type: 'number', description: 'Max results (default 20)' },
         project: { type: 'string', description: 'Filter by project name' },
+        platformSource: { type: 'string', description: "Filter by platform source (e.g. claude, codex, cursor) — restricts results to that agent's own memory" },
         type: { type: 'string', description: 'Filter by observation type' },
         obs_type: { type: 'string', description: 'Filter by obs_type field' },
         dateStart: { type: 'string', description: 'Start date filter (ISO)' },

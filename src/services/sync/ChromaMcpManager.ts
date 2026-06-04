@@ -43,6 +43,24 @@ const CHROMA_MCP_DEP_OVERRIDES: ReadonlyArray<string> = [
   'protobuf<7',
 ];
 
+// Issue #2696: on Windows the chroma-mcp subprocess is spawned via
+// `cmd.exe /c uvx ...`. cmd.exe interprets `<`, `>`, `|`, `&`, `^`, and `(` `)`
+// as shell metacharacters BEFORE uvx ever sees them, so a dep-override spec
+// like `protobuf<7` is parsed as an input redirection (`protobuf < 7`) and the
+// command line breaks. Node's spawn arg-quoting only quotes args containing
+// spaces/quotes, not these cmd.exe operators, so we must wrap any arg that
+// contains one in double quotes ourselves. Args without metacharacters are
+// returned unchanged so the normal command line is byte-identical to before.
+const CMD_EXE_METACHARACTERS = /[<>|&^()]/;
+export function quoteForCmdExe(arg: string): string {
+  if (!CMD_EXE_METACHARACTERS.test(arg)) {
+    return arg;
+  }
+  // Escape any embedded double quotes, then wrap. Inside double quotes cmd.exe
+  // does not perform redirection/grouping on these metacharacters.
+  return `"${arg.replace(/"/g, '\\"')}"`;
+}
+
 export class ChromaMcpManager {
   private static instance: ChromaMcpManager | null = null;
   private client: Client | null = null;
@@ -107,7 +125,9 @@ export class ChromaMcpManager {
 
     const isWindows = process.platform === 'win32';
     const uvxSpawnCommand = isWindows ? (process.env.ComSpec || 'cmd.exe') : 'uvx';
-    const uvxSpawnArgs = isWindows ? ['/c', 'uvx', ...commandArgs] : commandArgs;
+    const uvxSpawnArgs = isWindows
+      ? ['/c', 'uvx', ...commandArgs.map(quoteForCmdExe)]
+      : commandArgs;
 
     logger.info('CHROMA_MCP', 'Connecting to chroma-mcp via MCP stdio', {
       command: uvxSpawnCommand,

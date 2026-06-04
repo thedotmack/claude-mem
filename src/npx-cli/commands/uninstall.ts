@@ -14,7 +14,51 @@ import {
 } from '../utils/paths.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { shutdownWorkerAndWait } from '../../services/install/shutdown-helper.js';
+import {
+  normalizeRuntimeFlag,
+  planServerRuntimeUninstall,
+  type InstallRuntimeId,
+} from './server-runtime-setup.js';
+
+// #2568 — read the runtime the operator installed so uninstall can dispatch to
+// the matching teardown. The worker path is the default and is unchanged: only
+// when the recorded runtime is the server runtime do we run the extra teardown.
+function readSelectedRuntime(): InstallRuntimeId {
+  try {
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    return normalizeRuntimeFlag(settings.CLAUDE_MEM_RUNTIME) ?? 'worker';
+  } catch {
+    return 'worker';
+  }
+}
+
+function clearServerRuntimeSettings(keys: readonly string[]): void {
+  if (!existsSync(USER_SETTINGS_PATH)) return;
+  let raw: Record<string, unknown>;
+  try {
+    raw = JSON.parse(readFileSync(USER_SETTINGS_PATH, 'utf-8')) as Record<string, unknown>;
+  } catch (error: unknown) {
+    console.warn('[uninstall] Could not read settings for server runtime cleanup:', error instanceof Error ? error.message : String(error));
+    return;
+  }
+  const flat = (raw.env && typeof raw.env === 'object' ? raw.env : raw) as Record<string, unknown>;
+  let changed = false;
+  for (const key of keys) {
+    if (key in flat) {
+      delete flat[key];
+      changed = true;
+    }
+  }
+  if (changed) {
+    try {
+      writeFileSync(USER_SETTINGS_PATH, JSON.stringify(flat, null, 2), 'utf-8');
+    } catch (error: unknown) {
+      console.warn('[uninstall] Could not write settings during server runtime cleanup:', error instanceof Error ? error.message : String(error));
+    }
+  }
+}
 
 function removeMarketplaceDirectory(): boolean {
   const marketplaceDir = marketplaceDirectory();
@@ -196,6 +240,29 @@ export async function runUninstallCommand(): Promise<void> {
     }
   } catch (error: unknown) {
     console.warn('[uninstall] Worker shutdown attempt failed:', error instanceof Error ? error.message : String(error));
+  }
+
+  // #2568 — server-runtime teardown. Gated on the installed/selected runtime so
+  // the worker uninstall path is completely unchanged. The bundled Docker
+  // compose stack lives under the marketplace dir; if it's present we treat the
+  // stack as locally managed and instruct teardown (the actual `docker compose
+  // down -v` is an operator/CI side effect, not run from this Node process).
+  const selectedRuntime = readSelectedRuntime();
+  const dockerStackManaged = existsSync(join(marketplaceDirectory(), 'docker-compose.yml'));
+  const serverPlan = planServerRuntimeUninstall({ selectedRuntime, dockerStackManaged });
+  if (serverPlan.isServerRuntime) {
+    if (serverPlan.tearDownDockerStack) {
+      p.log.info(
+        'Server runtime detected. Tear down the bundled stack with '
+          + '`docker compose down -v --remove-orphans` (stops + removes pg + redis/valkey).',
+      );
+    } else {
+      p.log.info('Server runtime detected (externally managed stack — leaving Docker/pg/redis untouched).');
+    }
+    if (serverPlan.clearServerSettings) {
+      clearServerRuntimeSettings(serverPlan.settingsKeysToClear);
+      p.log.info('Server runtime settings cleared from ~/.claude-mem/settings.json.');
+    }
   }
 
   await p.tasks([

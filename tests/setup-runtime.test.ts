@@ -7,6 +7,8 @@ import {
   readInstallMarker,
   writeInstallMarker,
   isInstallCurrent,
+  platformBunRemediation,
+  platformUvRemediation,
 } from '../src/npx-cli/install/setup-runtime';
 
 function probeBunVersion(): string | null {
@@ -130,6 +132,22 @@ describe('setup-runtime install marker', () => {
       mkdirSync(join(tempDir, 'node_modules'));
       writeFileSync(join(tempDir, '.install-version'), '1.0.0\n');
       expect(isInstallCurrent(tempDir, '1.0.0')).toBe(false);
+    });
+  });
+
+  describe('platform remediation strings (Phase 5)', () => {
+    it('bun remediation is non-empty and references Bun install', () => {
+      const text = platformBunRemediation();
+      expect(text.length).toBeGreaterThan(0);
+      expect(text).toContain('Bun');
+      expect(text).toContain('claude-mem install');
+    });
+
+    it('uv remediation is non-empty and references uv install', () => {
+      const text = platformUvRemediation();
+      expect(text.length).toBeGreaterThan(0);
+      expect(text.toLowerCase()).toContain('uv');
+      expect(text).toContain('claude-mem install');
     });
   });
 });

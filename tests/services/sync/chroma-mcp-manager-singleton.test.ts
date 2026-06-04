@@ -1,4 +1,19 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
+
+// Capture real exports before mock.module mutates the live namespace, then
+// re-register the snapshots in afterAll so these mocks do not leak into later
+// test files (bun's mock.module is process-global; mock.restore() does NOT undo it).
+import * as realSettingsDefaultsManager from '../../../src/shared/SettingsDefaultsManager.js';
+import * as realPaths from '../../../src/shared/paths.js';
+import * as realLogger from '../../../src/utils/logger.js';
+import * as realSupervisor from '../../../src/supervisor/index.ts';
+import * as realEnvSanitizer from '../../../src/supervisor/env-sanitizer.js';
+const realSettingsSnapshot = { ...realSettingsDefaultsManager };
+const realPathsSnapshot = { ...realPaths };
+const realLoggerSnapshot = { ...realLogger };
+const realSupervisorSnapshot = { ...realSupervisor };
+const realEnvSanitizerSnapshot = { ...realEnvSanitizer };
+const realChildProcess = require('node:child_process');
 
 // Singleton enforcement regression coverage for issue #2313.
 //
@@ -144,6 +159,16 @@ const stubbedProcessKill = ((pid: number, _signal?: string | number) => {
 process.kill = stubbedProcessKill;
 
 import { ChromaMcpManager } from '../../../src/services/sync/ChromaMcpManager.js';
+
+afterAll(() => {
+  process.kill = realProcessKill;
+  mock.module('../../../src/shared/SettingsDefaultsManager.js', () => realSettingsSnapshot);
+  mock.module('../../../src/shared/paths.js', () => realPathsSnapshot);
+  mock.module('../../../src/utils/logger.js', () => realLoggerSnapshot);
+  mock.module('../../../src/supervisor/index.ts', () => realSupervisorSnapshot);
+  mock.module('../../../src/supervisor/env-sanitizer.js', () => realEnvSanitizerSnapshot);
+  mock.module('child_process', () => realChildProcess);
+});
 
 function resetState(): void {
   transportCount = 0;

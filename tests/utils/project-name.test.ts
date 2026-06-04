@@ -54,6 +54,46 @@ describe('getProjectName', () => {
     });
   });
 
+  describe('#2663 — name derived from git repo root', () => {
+    let tmp: string;
+    let repoRoot: string;
+    let nestedDir: string;
+
+    beforeAll(async () => {
+      const { mkdtempSync, mkdirSync, realpathSync } = await import('fs');
+      const { execFileSync } = await import('child_process');
+      const { join } = await import('path');
+      const { tmpdir } = await import('os');
+
+      // macOS /tmp symlinks to /private/tmp; realpath so `git --show-toplevel`
+      // (which returns the canonical path) matches our expectations.
+      tmp = realpathSync(mkdtempSync(join(tmpdir(), 'cm-reporoot-')));
+      repoRoot = join(tmp, 'my-real-repo');
+      nestedDir = join(repoRoot, 'packages', 'deeply', 'nested');
+      mkdirSync(nestedDir, { recursive: true });
+      execFileSync('git', ['init', '-q'], { cwd: repoRoot });
+    });
+
+    afterAll(async () => {
+      const { rmSync } = await import('fs');
+      rmSync(tmp, { recursive: true, force: true });
+    });
+
+    it('deep subdirectory inside a repo yields the repo-root name', () => {
+      expect(getProjectName(nestedDir)).toBe('my-real-repo');
+    });
+
+    it('repo root itself yields the repo-root name', () => {
+      expect(getProjectName(repoRoot)).toBe('my-real-repo');
+    });
+
+    it('non-repo path falls back to basename(cwd)', () => {
+      // A path that does not exist (and therefore cannot be in a repo) must
+      // fall back to basename(cwd) rather than throwing or returning a root.
+      expect(getProjectName('/no/such/dir/standalone-folder')).toBe('standalone-folder');
+    });
+  });
+
   describe('realistic scenarios from #1478', () => {
     it('handles ~ the same as full home path', () => {
       const home = homedir();

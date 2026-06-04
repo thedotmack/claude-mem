@@ -278,11 +278,23 @@ export class ServerBetaClient {
   buildAddObservationPayload(
     input: ServerBetaAddObservationRequest,
   ): Record<string, unknown> {
+    // Write-path contract (#2684): /v1/memories persists a `memory_items` row
+    // whose searchable text lives in `narrative` (the FTS trigger copies it
+    // into memory_items_fts). The MCP `observation_add` surface speaks in terms
+    // of `content`; map it onto `narrative` so the row is never empty and the
+    // FTS index always has something to match. `type` is REQUIRED by
+    // CreateMemoryItemSchema; default it from `kind` so a manual insert that
+    // only supplied content still persists instead of 400-ing.
+    const content = input.content;
+    const kind = input.kind ?? 'manual';
+    const metadataTitle = typeof input.metadata?.title === 'string' ? input.metadata.title : undefined;
     return {
       projectId: input.projectId,
-      content: input.content,
+      kind,
+      type: kind,
+      narrative: content,
+      ...(metadataTitle ? { title: metadataTitle } : {}),
       ...(input.serverSessionId !== undefined ? { serverSessionId: input.serverSessionId } : {}),
-      ...(input.kind !== undefined ? { kind: input.kind } : {}),
       ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
     };
   }

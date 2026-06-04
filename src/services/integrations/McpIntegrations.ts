@@ -3,7 +3,7 @@ import path from 'path';
 import { homedir } from 'os';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { logger } from '../../utils/logger.js';
-import { findMcpServerPath } from './CursorHooksInstaller.js';
+import { getMcpServerAbsolutePath, getNodeAbsolutePath } from './install-paths.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
 import { injectContextIntoMarkdownFile } from '../../utils/context-injection.js';
 
@@ -15,7 +15,7 @@ Use claude-mem's MCP search tools for manual memory queries.`;
 
 function buildMcpServerEntry(mcpServerPath: string): { command: string; args: string[] } {
   return {
-    command: process.execPath,
+    command: getNodeAbsolutePath(),
     args: [mcpServerPath],
   };
 }
@@ -54,7 +54,7 @@ function installMcpIntegration(config: McpInstallerConfig): () => Promise<number
   return async (): Promise<number> => {
     console.log(`\nInstalling Claude-Mem MCP integration for ${config.ideLabel}...\n`);
 
-    const mcpServerPath = findMcpServerPath();
+    const mcpServerPath = getMcpServerAbsolutePath();
     if (!mcpServerPath) {
       console.error('Could not find MCP server script');
       console.error('   Expected at: ~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs');
@@ -176,7 +176,7 @@ function buildGooseMcpYamlBlock(mcpServerPath: string): string {
   return [
     'mcpServers:',
     '  claude-mem:',
-    `    command: ${process.execPath}`,
+    `    command: ${getNodeAbsolutePath()}`,
     '    args:',
     `      - ${mcpServerPath}`,
   ].join('\n');
@@ -185,7 +185,7 @@ function buildGooseMcpYamlBlock(mcpServerPath: string): string {
 function buildGooseClaudeMemEntryYaml(mcpServerPath: string): string {
   return [
     '  claude-mem:',
-    `    command: ${process.execPath}`,
+    `    command: ${getNodeAbsolutePath()}`,
     '    args:',
     `      - ${mcpServerPath}`,
   ].join('\n');
@@ -194,7 +194,7 @@ function buildGooseClaudeMemEntryYaml(mcpServerPath: string): string {
 export async function installGooseMcpIntegration(): Promise<number> {
   console.log('\nInstalling Claude-Mem MCP integration for Goose...\n');
 
-  const mcpServerPath = findMcpServerPath();
+  const mcpServerPath = getMcpServerAbsolutePath();
   if (!mcpServerPath) {
     console.error('Could not find MCP server script');
     console.error('   Expected at: ~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs');

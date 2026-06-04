@@ -1,6 +1,7 @@
 import { homedir } from 'os'
 import path from 'path';
 import { statSync, realpathSync } from 'fs';
+import { execFileSync } from 'child_process';
 import picomatch from 'picomatch';
 import { logger } from './logger.js';
 import { detectWorktree } from './worktree.js';
@@ -97,6 +98,27 @@ function matchEnvironment(cwd: string): string | null {
   return null;
 }
 
+/**
+ * Resolve the git repository ROOT for a directory, so a project's name is
+ * stable across its subdirectories and worktrees (#2663). Returns the absolute
+ * repo-root path, or null when `dir` is not inside a git repo (or git is
+ * unavailable). `--show-toplevel` resolves to the working-tree root even when
+ * invoked from a worktree or a nested subdirectory.
+ */
+function findGitRepoRoot(dir: string): string | null {
+  try {
+    const root = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd: dir,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    return root || null;
+  } catch {
+    // Not a git repo, git not installed, or dir does not exist — fall back to basename.
+    return null;
+  }
+}
+
 export function getProjectName(cwd: string | null | undefined): string {
   if (!cwd || cwd.trim() === '') {
     logger.warn('PROJECT_NAME', 'Empty cwd provided, using fallback', { cwd });
@@ -105,13 +127,20 @@ export function getProjectName(cwd: string | null | undefined): string {
 
   const expanded = expandTilde(cwd)
 
-  // Check environment matching first
+  // Environment matching wins over both git-repo-root and basename fallback —
+  // a user-configured environment is an explicit declaration of identity.
   const envName = matchEnvironment(expanded);
   if (envName) {
     return envName;
   }
 
-  const basename = path.basename(expanded);
+  // #2663 — derive the project name from the git repo root when inside a repo so
+  // the name is stable across subdirectories/worktrees. Fall back to the cwd
+  // basename when not in a repo.
+  const repoRoot = findGitRepoRoot(expanded);
+  const nameSource = repoRoot ?? expanded;
+
+  const basename = path.basename(nameSource);
 
   if (basename === '') {
     const isWindows = process.platform === 'win32';

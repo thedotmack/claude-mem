@@ -10,8 +10,11 @@ export type FieldSpec =
 export interface MatchRule {
   path?: string;
   equals?: unknown;
+  not_equals?: unknown;
   in?: unknown[];
+  not_in?: unknown[];
   contains?: string;
+  not_contains?: string;
   exists?: boolean;
   regex?: string;
 }

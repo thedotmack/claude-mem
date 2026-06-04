@@ -21,6 +21,7 @@ export interface PostgresAgentEvent {
   sourceEventId: string | null;
   idempotencyKey: string;
   eventType: string;
+  platformSource: string | null;
   payload: JsonValue;
   metadata: JsonObject;
   occurredAtEpoch: number;
@@ -36,6 +37,9 @@ export interface CreatePostgresAgentEventInput {
   sourceAdapter: string;
   sourceEventId?: string | null;
   eventType: string;
+  // #2560 — which platform produced the event (claude-code, opencode, ...).
+  // Persisted on agent_events for plan-09 scoping. Optional; null when unknown.
+  platformSource?: string | null;
   payload?: JsonValue;
   metadata?: JsonObject;
   occurredAt: Date | string | number;
@@ -50,6 +54,7 @@ interface AgentEventRow {
   source_event_id: string | null;
   idempotency_key: string;
   event_type: string;
+  platform_source: string | null;
   payload: unknown;
   metadata: unknown;
   occurred_at: Date;
@@ -71,11 +76,12 @@ export class PostgresAgentEventsRepository {
       `
         INSERT INTO agent_events (
           id, project_id, team_id, server_session_id, source_adapter,
-          source_event_id, idempotency_key, event_type, payload, metadata, occurred_at
+          source_event_id, idempotency_key, event_type, platform_source, payload, metadata, occurred_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb, $11)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12)
         ON CONFLICT (idempotency_key) DO UPDATE SET
-          metadata = agent_events.metadata || excluded.metadata
+          metadata = agent_events.metadata || excluded.metadata,
+          platform_source = COALESCE(excluded.platform_source, agent_events.platform_source)
         RETURNING *
       `,
       [
@@ -87,6 +93,7 @@ export class PostgresAgentEventsRepository {
         input.sourceEventId ?? null,
         idempotencyKey,
         input.eventType,
+        input.platformSource ?? null,
         JSON.stringify(input.payload ?? {}),
         JSON.stringify(input.metadata ?? {}),
         new Date(input.occurredAt)
@@ -177,6 +184,7 @@ function mapAgentEventRow(row: AgentEventRow): PostgresAgentEvent {
     sourceEventId: row.source_event_id,
     idempotencyKey: row.idempotency_key,
     eventType: row.event_type,
+    platformSource: row.platform_source,
     payload: row.payload,
     metadata: toJsonObject(row.metadata),
     occurredAtEpoch: toEpoch(row.occurred_at),

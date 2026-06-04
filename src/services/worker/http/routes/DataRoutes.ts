@@ -142,8 +142,14 @@ export class DataRoutes extends BaseRouteHandler {
   });
 
   private handleGetObservationsByFile = this.wrapHandler((req: Request, res: Response): void => {
-    const filePath = req.query.path as string | undefined;
-    if (!filePath) {
+    // #2691 — `path` may be repeated (?path=abs&path=rel) to carry multiple
+    // candidate forms (absolute, project-root-relative, cwd-relative) so the
+    // query matches however PostToolUse stored the path. Paths can contain
+    // commas, so we rely on repeated query params rather than comma-splitting.
+    const rawPath = req.query.path;
+    const candidatePaths = (Array.isArray(rawPath) ? rawPath : [rawPath])
+      .filter((p): p is string => typeof p === 'string' && p.length > 0);
+    if (candidatePaths.length === 0) {
       this.badRequest(res, 'path query parameter is required');
       return;
     }
@@ -154,7 +160,7 @@ export class DataRoutes extends BaseRouteHandler {
     const limit = Number.isFinite(parsedLimit) && parsedLimit! > 0 ? parsedLimit : undefined;
 
     const db = this.dbManager.getSessionStore().db;
-    const observations = getObservationsByFilePath(db, filePath, { projects, limit });
+    const observations = getObservationsByFilePath(db, candidatePaths, { projects, limit });
 
     res.json({ observations, count: observations.length });
   });

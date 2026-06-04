@@ -2,6 +2,7 @@
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
+import { logger } from '../utils/logger.js';
 
 const PLUGIN_SETTINGS_KEY = 'claude-mem@thedotmack';
 
@@ -14,7 +15,7 @@ export function isPluginDisabledInClaudeSettings(): boolean {
     const settings = JSON.parse(raw);
     return settings?.enabledPlugins?.[PLUGIN_SETTINGS_KEY] === false;
   } catch (error: unknown) {
-    console.error('[plugin-state] Failed to read Claude settings:', error instanceof Error ? error.message : String(error));
+    logger.error('CONFIG', 'Failed to read Claude settings', { error: error instanceof Error ? error.message : String(error) });
     return false;
   }
 }

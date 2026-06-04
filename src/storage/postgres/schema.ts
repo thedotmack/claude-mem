@@ -256,6 +256,16 @@ CREATE TABLE IF NOT EXISTS observation_generation_job_events (
 
 CREATE INDEX IF NOT EXISTS idx_agent_events_project_session ON agent_events(project_id, server_session_id, occurred_at);
 ALTER TABLE server_sessions ADD COLUMN IF NOT EXISTS idempotency_key TEXT;
+-- #2560 — platform_source on agent_events (consistent with server_sessions and
+-- the plan-09 scoping): which platform produced the event (claude-code,
+-- opencode, cursor, ...). Idempotent so an existing DB upgrades in place.
+ALTER TABLE agent_events ADD COLUMN IF NOT EXISTS platform_source TEXT;
+CREATE INDEX IF NOT EXISTS idx_agent_events_platform_source
+  ON agent_events(team_id, project_id, platform_source, occurred_at)
+  WHERE platform_source IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_server_sessions_platform_source
+  ON server_sessions(team_id, project_id, platform_source, started_at)
+  WHERE platform_source IS NOT NULL;
 ALTER TABLE observations ADD COLUMN IF NOT EXISTS content_search TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', content)) STORED;
 ALTER TABLE observations DROP CONSTRAINT IF EXISTS observations_generation_key_key;
 ALTER TABLE observation_generation_jobs DROP CONSTRAINT IF EXISTS observation_generation_jobs_source_type_source_id_job_type_key;

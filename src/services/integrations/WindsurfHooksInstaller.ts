@@ -6,7 +6,7 @@ import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { getWorkerPort } from '../../shared/worker-utils.js';
 import { DATA_DIR } from '../../shared/paths.js';
-import { findBunPath, findWorkerServicePath } from './CursorHooksInstaller.js';
+import { getBunAbsolutePath as findBunPath, getWorkerServiceAbsolutePath as findWorkerServicePath } from './install-paths.js';
 
 interface WindsurfHookEntry {
   command: string;

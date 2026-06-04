@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    name: typecheck · build · test · bundle-size
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Bun (worker runtime + test runner)
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # The repo intentionally gitignores package-lock.json (.gitignore), so
+      # `cache: 'npm'` and `npm ci` (both require a committed lockfile) cannot
+      # be used here — matches windows.yml / npm-publish.yml, which install the
+      # same way.
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # `npm run build` runs scripts/build-hooks.js, which enforces the worker
+      # bundle-size guardrail (WORKER_SERVICE_MAX_BYTES, see #2584) and the MCP
+      # server budget. A bundle that grows past threshold fails here → fails CI.
+      - name: Build (includes bundle-size guardrails)
+        run: npm run build
+
+      # The in-process server-runtime smoke test (tests/server/server-runtime-smoke.test.ts,
+      # #2550) runs here with no Docker: it boots the server HTTP surface in
+      # process, loads a mode, creates a key, makes an authed request, and
+      # checks the viewer responds. This gives every PR real server-runtime
+      # coverage. The full pg+redis e2e is the docker-gated job below.
+      - name: Test
+        run: bun test
+
+  server-runtime-e2e-docker:
+    name: server-runtime e2e (docker · pg + valkey)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Docker is available on ubuntu-latest GitHub runners. This job runs the
+    # full server-runtime e2e (#2550): real Postgres + Valkey, queue durability,
+    # restart recovery, and revoked-key denial. It does not gate PRs from the
+    # `build` job; a failure here surfaces a server-runtime regression before a
+    # user can file one (plan-07 test matrix).
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # See note in the build job: no committed lockfile, so npm install.
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Verify Docker is available
+        run: docker compose version
+
+      - name: Server-runtime Docker e2e
+        run: npm run e2e:server-beta:docker

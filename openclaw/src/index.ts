@@ -700,28 +700,17 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     return null;
   }
 
-  api.on("session_start", async (_event, ctx) => {
-    const { contentSessionId } = rememberSessionContext(ctx);
-    api.logger.info(`[claude-mem] Session tracking initialized: ${contentSessionId}`);
-  });
-
-  api.on("message_received", async (event, ctx) => {
-    const { canonicalKey, contentSessionId } = rememberSessionContext(ctx);
-    api.logger.info(`[claude-mem] Message received — prompt capture deferred to before_agent_start: session=${canonicalKey} contentSessionId=${contentSessionId} hasContent=${Boolean(event.content)}`);
-  });
-
-  api.on("after_compaction", async (_event, ctx) => {
-    const { contentSessionId } = rememberSessionContext(ctx);
-    api.logger.info(`[claude-mem] Session preserved after compaction: ${contentSessionId}`);
-  });
-
-  api.on("before_agent_start", async (event, ctx) => {
+  // Centralized session-init POST. session_start, after_compaction, and
+  // before_agent_start each call this; the 2s dedup guard
+  // (shouldSkipDuplicatePromptInit) collapses the redundant inits a single
+  // user-message flow produces into one prompt record, while still ensuring a
+  // session is initialized even on flows that never reach before_agent_start.
+  async function initSessionOnce(ctx: EventContext, promptText: string, via: string): Promise<void> {
     const { contentSessionId } = rememberSessionContext(ctx);
     const projectName = getProjectName(ctx);
-    const promptText = event.prompt || "agent run";
 
     if (shouldSkipDuplicatePromptInit(contentSessionId, projectName, promptText)) {
-      api.logger.info(`[claude-mem] Skipping duplicate prompt init: contentSessionId=${contentSessionId} project=${projectName}`);
+      api.logger.info(`[claude-mem] Skipping duplicate prompt init: contentSessionId=${contentSessionId} project=${projectName} via=${via}`);
       return;
     }
 
@@ -731,7 +720,24 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       prompt: promptText,
     }, api.logger);
 
-    api.logger.info(`[claude-mem] Session initialized via before_agent_start: contentSessionId=${contentSessionId} project=${projectName}`);
+    api.logger.info(`[claude-mem] Session initialized via ${via}: contentSessionId=${contentSessionId} project=${projectName}`);
+  }
+
+  api.on("session_start", async (_event, ctx) => {
+    await initSessionOnce(ctx, "session start", "session_start");
+  });
+
+  api.on("message_received", async (event, ctx) => {
+    const { canonicalKey, contentSessionId } = rememberSessionContext(ctx);
+    api.logger.info(`[claude-mem] Message received — prompt capture deferred to before_agent_start: session=${canonicalKey} contentSessionId=${contentSessionId} hasContent=${Boolean(event.content)}`);
+  });
+
+  api.on("after_compaction", async (_event, ctx) => {
+    await initSessionOnce(ctx, "after compaction", "after_compaction");
+  });
+
+  api.on("before_agent_start", async (event, ctx) => {
+    await initSessionOnce(ctx, event.prompt || "agent run", "before_agent_start");
   });
 
   api.on("before_prompt_build", async (_event, ctx) => {
@@ -767,11 +773,11 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       toolResponseText = toolResponseText.slice(0, MAX_TOOL_RESPONSE_LENGTH);
     }
 
-    const workspaceDir = ctx.workspaceDir;
-
-    if (!workspaceDir) {
-      api.logger.warn(`[claude-mem] Skipping observation persist because workspaceDir is unavailable: session=${canonicalKey} tool=${toolName}`);
-      return;
+    // Fall back to the process cwd when the event carries no workspaceDir, so a
+    // missing ctx field never silently drops a captured observation.
+    const workspaceDir = ctx.workspaceDir || process.cwd();
+    if (!ctx.workspaceDir) {
+      api.logger.info(`[claude-mem] tool_result_persist missing workspaceDir; using process.cwd(): session=${canonicalKey} tool=${toolName}`);
     }
 
     workerPostFireAndForget(workerPort, "/api/sessions/observations", {

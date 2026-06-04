@@ -14,10 +14,12 @@ import {
   verifyPidFileOwnership,
   type PidInfo,
 } from '../../supervisor/process-registry.js';
+import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { ServerV1PostgresRoutes } from '../routes/v1/ServerV1PostgresRoutes.js';
 import { SessionsObservationsAdapter } from '../compat/SessionsObservationsAdapter.js';
 import { SessionsSummarizeAdapter } from '../compat/SessionsSummarizeAdapter.js';
 import { ActiveServerBetaQueueManager } from './ActiveServerBetaQueueManager.js';
+import { ServerViewerRoutes } from './ServerViewerRoutes.js';
 import type { ServerBetaServiceGraph, ServerBetaQueueLaneMetric } from './types.js';
 
 const SERVER_BETA_RUNTIME = 'server-beta';
@@ -118,6 +120,9 @@ export class ServerBetaService {
     }
 
     const server = new Server({
+      // #2572 — server runtime is reachable over the network in Docker, so it
+      // emits hardening headers (the worker, loopback-only, does not).
+      securityHeaders: true,
       getInitializationComplete: () => this.graph.postgres.bootstrap.initialized,
       getMcpReady: () => true,
       onShutdown: () => this.stop(),
@@ -199,6 +204,13 @@ export class ServerBetaService {
       authMode: compatAuthMode,
     }));
 
+    // #2552 — mount the Viewer UI static handler so the viewer loads on the
+    // server runtime. Registered AFTER the /v1 and compat API routes so the
+    // viewer's own API calls resolve against those; express.static only
+    // matches existing files and the `/` GET only matches the root, so this
+    // never shadows an API route.
+    server.registerRoutes(new ServerViewerRoutes());
+
     server.finalizeRoutes();
 
     await server.listen(this.requestedPort, this.host);
@@ -270,6 +282,13 @@ function resolveBoundPort(server: Server): number | null {
   return address && typeof address !== 'string' ? address.port : null;
 }
 
+// #2444 — `start` is foreground by default; `--daemon`/`-d` opts into the
+// detached background daemon. Exported so the CLI contract is unit-testable
+// without spawning a real service.
+export function startCommandWantsDaemon(startArgs: string[]): boolean {
+  return startArgs.some(flag => flag === '--daemon' || flag === '-d');
+}
+
 export async function runServerBetaCli(argv: string[] = process.argv.slice(2)): Promise<void> {
   const command = argv[0] ?? '--daemon';
   const port = getServerBetaPort();
@@ -288,12 +307,24 @@ export async function runServerBetaCli(argv: string[] = process.argv.slice(2)): 
     process.exit(1);
   }
 
-  // `server api-key create|list|revoke` mirrors the worker-service tooling
-  // but writes to the Postgres `api_keys` table the server-beta runtime
-  // actually reads from. The legacy worker-service CLI talks to SQLite and
-  // would be invisible to this stack.
+  // `server api-key create|list|revoke|migrate-scopes` mirrors the
+  // worker-service tooling but writes to the Postgres `api_keys` table the
+  // server-beta runtime actually reads from. The legacy worker-service CLI
+  // talks to SQLite and would be invisible to this stack.
   if (command === 'server' && argv[1]?.toLowerCase() === 'api-key') {
     await runServerBetaApiKeyCli(argv.slice(2));
+    return;
+  }
+
+  // #2572 — `server keys` lists ACTIVE keys (never printing secrets) and
+  // `server jobs` lists/inspects queued generation jobs. Both read the
+  // Postgres backend the server-beta runtime uses.
+  if (command === 'server' && argv[1]?.toLowerCase() === 'keys') {
+    await runServerBetaKeysCli(argv.slice(2));
+    return;
+  }
+  if (command === 'server' && argv[1]?.toLowerCase() === 'jobs') {
+    await runServerBetaJobsCli(argv.slice(2));
     return;
   }
 
@@ -304,12 +335,26 @@ export async function runServerBetaCli(argv: string[] = process.argv.slice(2)): 
         console.log(JSON.stringify({ status: 'ready', runtime: SERVER_BETA_RUNTIME, pid: existing.pid, port: existing.port }));
         return;
       }
-      const daemonPid = spawnServerBetaDaemon(port);
-      if (daemonPid === undefined) {
-        console.error('Failed to spawn server beta daemon.');
-        process.exit(1);
+
+      // #2444 — `start` runs in the FOREGROUND by default so the server is
+      // usable under systemd `Type=simple` (the supervisor owns the PID and
+      // restart policy). Detached daemonization is an explicit opt-in via
+      // `start --daemon`, preserving the old behavior for ad-hoc local use.
+      const wantsDaemon = startCommandWantsDaemon(argv.slice(1));
+      if (wantsDaemon) {
+        const daemonPid = spawnServerBetaDaemon(port);
+        if (daemonPid === undefined) {
+          console.error('Failed to spawn server beta daemon.');
+          process.exit(1);
+        }
+        console.log(JSON.stringify({ status: 'starting', runtime: SERVER_BETA_RUNTIME, pid: daemonPid, port }));
+        return;
       }
-      console.log(JSON.stringify({ status: 'starting', runtime: SERVER_BETA_RUNTIME, pid: daemonPid, port }));
+
+      // Foreground path: run the service in THIS process and block until a
+      // shutdown signal. Identical wiring to the internal `--daemon` worker
+      // process, but attached to the controlling terminal / unit.
+      await runServerBetaForeground(port, host);
       return;
     }
 
@@ -328,8 +373,10 @@ export async function runServerBetaCli(argv: string[] = process.argv.slice(2)): 
     }
 
     case 'restart': {
+      // restart implies a managed background daemon (there is no foreground
+      // process to hand control back to), so it re-spawns detached.
       await runServerBetaCli(['stop']);
-      await runServerBetaCli(['start']);
+      await runServerBetaCli(['start', '--daemon']);
       return;
     }
 
@@ -349,39 +396,95 @@ export async function runServerBetaCli(argv: string[] = process.argv.slice(2)): 
     }
 
     case '--daemon': {
-      const existing = readServerBetaPidFile();
-      if (verifyPidFileOwnership(existing) || await isPortInUse(port, host)) {
-        process.exit(0);
-      }
-      const { createServerBetaService } = await import('./create-server-beta-service.js');
-      const service = await createServerBetaService();
-      const shutdown = async () => {
-        await service.stop();
-        process.exit(0);
-      };
-      process.once('SIGTERM', shutdown);
-      process.once('SIGINT', shutdown);
-      await service.start();
+      // Internal entrypoint executed by the detached child spawned via
+      // `start --daemon`. Runs the same foreground loop in the child process.
+      await runServerBetaForeground(port, host);
       return;
     }
 
     default:
-      console.error('Usage: server-beta-service start|stop|restart|status');
+      console.error('Usage: server-beta-service start [--daemon] | stop | restart | status');
+      console.error('  start            run the server in the foreground (default; systemd Type=simple)');
+      console.error('  start --daemon   detach and run as a background daemon');
+      console.error('  stop             stop a running daemon');
+      console.error('  restart          stop then start (daemon)');
+      console.error('  status           print runtime status');
+      console.error('  server api-key create|list|revoke|migrate-scopes   manage Postgres API keys');
+      console.error('  server keys                                        list active keys (no secrets)');
+      console.error('  server jobs [list|inspect <id>]                    list/inspect generation jobs');
       process.exit(1);
   }
+}
+
+// #2444 — shared foreground run loop. Builds the service in THIS process,
+// installs signal handlers, and blocks until shutdown. Used both by `start`
+// (default, foreground) and by the internal `--daemon` child process.
+async function runServerBetaForeground(port: number, host: string): Promise<void> {
+  const existing = readServerBetaPidFile();
+  if (verifyPidFileOwnership(existing) || await isPortInUse(port, host)) {
+    process.exit(0);
+  }
+  const { createServerBetaService } = await import('./create-server-beta-service.js');
+  const service = await createServerBetaService();
+  const shutdown = async () => {
+    await service.stop();
+    process.exit(0);
+  };
+  process.once('SIGTERM', shutdown);
+  process.once('SIGINT', shutdown);
+  await service.start();
 }
 
 // Phase 10 — Postgres-backed `server api-key create|list|revoke` CLI. The
 // legacy `worker-service.cjs server api-key` command talks to SQLite and
 // is invisible to the server-beta runtime, which reads keys from
 // Postgres. Use this entrypoint inside Docker / Compose.
+// #2572 — wrong-runtime guard.
+//
+// The server-beta operability commands (`api-key`, `keys`, `jobs`) only make
+// sense in the server-beta runtime, whose canonical store is Postgres. If they
+// are invoked in a worker-only context — `CLAUDE_MEM_RUNTIME` set to `worker`,
+// or no `CLAUDE_MEM_SERVER_DATABASE_URL` configured — we fail fast with an
+// actionable message instead of crashing later with an opaque pool error.
+export function assertServerRuntimeForCli(
+  commandLabel: string,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  const runtime = (env.CLAUDE_MEM_RUNTIME ?? '').trim().toLowerCase();
+  if (runtime && runtime !== 'server-beta') {
+    throw new Error(
+      `\`server ${commandLabel}\` is a server-beta runtime command, but CLAUDE_MEM_RUNTIME=${runtime}. ` +
+        'Set CLAUDE_MEM_RUNTIME=server-beta (and CLAUDE_MEM_SERVER_DATABASE_URL) to run server operations, ' +
+        'or use the worker CLI (`worker-service ...`) for the worker runtime.',
+    );
+  }
+  if (!(env.CLAUDE_MEM_SERVER_DATABASE_URL ?? '').trim()) {
+    throw new Error(
+      `CLAUDE_MEM_SERVER_DATABASE_URL is required for \`server ${commandLabel}\`. ` +
+        'This command talks to the server-beta Postgres backend; export the connection string before running it.',
+    );
+  }
+}
+
 export async function runServerBetaApiKeyCli(argv: string[]): Promise<void> {
   const sub = argv[0]?.toLowerCase();
   const options = parseFlagArgs(argv.slice(1));
 
-  if (!process.env.CLAUDE_MEM_SERVER_DATABASE_URL) {
-    console.error('CLAUDE_MEM_SERVER_DATABASE_URL is required for `server api-key` commands.');
+  try {
+    assertServerRuntimeForCli('api-key');
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
+  }
+
+  // #2560 — `api-key migrate-scopes <id>` brings a key's scope set up to a
+  // working default (or an explicit --scope list). The pure helper
+  // migrateServerApiKeyScopes() backs the SQLite path; here we apply the same
+  // semantics against the Postgres `api_keys` table the server-beta runtime
+  // reads from.
+  if (sub === 'migrate-scopes') {
+    await migrateServerBetaApiKeyScopes(argv.slice(1));
+    return;
   }
 
   const { getSharedPostgresPool } = await import('../../storage/postgres/index.js');
@@ -501,12 +604,200 @@ export async function runServerBetaApiKeyCli(argv: string[]): Promise<void> {
     }
 
     console.error(`Unknown server api-key subcommand: ${sub ?? '(none)'}`);
-    console.error('Usage: server-beta-service server api-key create|list|revoke');
+    console.error('Usage: server-beta-service server api-key create|list|revoke|migrate-scopes');
     process.exit(1);
   } finally {
     // Pool is shared; do not close here. The process will exit and the
     // pool tears down via the shared module's process exit hook.
   }
+}
+
+// #2560 — Postgres scope migration. Mirrors migrateServerApiKeyScopes() (the
+// SQLite helper) for the server-beta Postgres `api_keys` table: re-issues a
+// key's scope set so an operator can bring legacy/empty-scope keys up to a
+// working default (or an explicit --scope list). Defaults to the same
+// read+write memory scopes the v1 routes require.
+const DEFAULT_SERVER_KEY_SCOPES = ['memories:read', 'memories:write'];
+
+export async function migrateServerBetaApiKeyScopes(argv: string[]): Promise<void> {
+  const id = argv[0] && !argv[0].startsWith('--') ? argv[0] : undefined;
+  const options = parseFlagArgs(argv);
+  if (!id) {
+    console.error('Usage: server-beta-service server api-key migrate-scopes <id> [--scope a,b]');
+    process.exit(1);
+  }
+  const scopes = (options.scope ?? options.scopes ?? DEFAULT_SERVER_KEY_SCOPES.join(','))
+    .split(',')
+    .map(scope => scope.trim())
+    .filter(Boolean);
+
+  const { getSharedPostgresPool } = await import('../../storage/postgres/index.js');
+  const pool = getSharedPostgresPool({ requireDatabaseUrl: true });
+  const result = await pool.query<{ id: string; scopes: unknown }>(
+    `UPDATE api_keys
+       SET scopes = $2::jsonb, updated_at = now()
+     WHERE id = $1 AND revoked_at IS NULL
+     RETURNING id, scopes`,
+    [id, JSON.stringify(scopes)],
+  );
+  if (result.rowCount === 0) {
+    console.error(`API key not found or revoked: ${id}`);
+    process.exit(1);
+  }
+  console.log(JSON.stringify({ id, scopes, status: 'scopes-migrated' }, null, 2));
+}
+
+// #2572 — pure serialization for `server keys`. SECURITY: this is the ONLY
+// shaping of a key row the `keys` command emits, and it deliberately copies
+// only non-secret metadata — never `key_hash` or any raw key material. Exported
+// so a test can prove no secret field can leak regardless of the input row.
+export interface ServerKeyRow {
+  id: string;
+  team_id: string | null;
+  project_id: string | null;
+  scopes: unknown;
+  expires_at: Date | null;
+  last_used_at: Date | null;
+  created_at: Date;
+  // A leaked/extra secret column should NEVER appear in the output.
+  key_hash?: string;
+}
+
+export function serializeActiveServerKeyRow(row: ServerKeyRow): Record<string, unknown> {
+  return {
+    id: row.id,
+    teamId: row.team_id,
+    projectId: row.project_id,
+    scopes: row.scopes,
+    status: 'active',
+    lastUsedAt: row.last_used_at?.toISOString() ?? null,
+    expiresAt: row.expires_at?.toISOString() ?? null,
+    createdAt: row.created_at.toISOString(),
+  };
+}
+
+// #2572 — `server keys`: list ACTIVE (non-revoked, non-expired) keys. NEVER
+// prints the raw key or its hash — only non-secret metadata. This is a thin
+// operator convenience over `api-key list` that filters to usable keys.
+export async function runServerBetaKeysCli(argv: string[]): Promise<void> {
+  try {
+    assertServerRuntimeForCli('keys');
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
+  const options = parseFlagArgs(argv);
+  const teamFilter = options.team ?? null;
+  const limitArg = Number.parseInt(options.limit ?? '100', 10);
+  const limit = Number.isFinite(limitArg) && limitArg > 0 && limitArg <= 500 ? limitArg : 100;
+
+  const { getSharedPostgresPool } = await import('../../storage/postgres/index.js');
+  const pool = getSharedPostgresPool({ requireDatabaseUrl: true });
+  const where = teamFilter
+    ? 'WHERE revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now()) AND team_id = $2'
+    : 'WHERE revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now())';
+  const params: unknown[] = teamFilter ? [limit, teamFilter] : [limit];
+  const result = await pool.query<{
+    id: string;
+    team_id: string | null;
+    project_id: string | null;
+    scopes: unknown;
+    expires_at: Date | null;
+    last_used_at: Date | null;
+    created_at: Date;
+  }>(
+    `SELECT id, team_id, project_id, scopes, expires_at, last_used_at, created_at
+       FROM api_keys
+       ${where}
+       ORDER BY created_at DESC
+       LIMIT $1`,
+    params,
+  );
+  // SECURITY: serializeActiveServerKeyRow omits key_hash and any raw key
+  // material — only non-secret metadata is emitted.
+  console.log(JSON.stringify({
+    teamId: teamFilter,
+    count: result.rows.length,
+    keys: result.rows.map(serializeActiveServerKeyRow),
+  }, null, 2));
+}
+
+// #2572 — `server jobs [list|inspect <id>]`: list or inspect queued generation
+// jobs from the Postgres `observation_generation_jobs` table the server-beta
+// runtime and its BullMQ workers share.
+export async function runServerBetaJobsCli(argv: string[]): Promise<void> {
+  try {
+    assertServerRuntimeForCli('jobs');
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
+  const sub = (argv[0] && !argv[0].startsWith('--') ? argv[0] : 'list').toLowerCase();
+
+  const { getSharedPostgresPool } = await import('../../storage/postgres/index.js');
+  const pool = getSharedPostgresPool({ requireDatabaseUrl: true });
+
+  if (sub === 'inspect') {
+    const id = argv[1];
+    if (!id) {
+      console.error('Usage: server-beta-service server jobs inspect <id>');
+      process.exit(1);
+    }
+    const result = await pool.query(
+      `SELECT id, project_id, team_id, source_type, source_id, status, attempts,
+              max_attempts, created_at, completed_at, failed_at, last_error, payload
+         FROM observation_generation_jobs WHERE id = $1`,
+      [id],
+    );
+    if (result.rowCount === 0) {
+      console.error(`Generation job not found: ${id}`);
+      process.exit(1);
+    }
+    console.log(JSON.stringify(result.rows[0], null, 2));
+    return;
+  }
+
+  // list (default)
+  const options = parseFlagArgs(sub === 'list' ? argv.slice(1) : argv);
+  const status = options.status ?? null;
+  const limitArg = Number.parseInt(options.limit ?? '50', 10);
+  const limit = Number.isFinite(limitArg) && limitArg > 0 && limitArg <= 500 ? limitArg : 50;
+  const params: unknown[] = [limit];
+  let where = '';
+  if (status) {
+    params.unshift(status);
+    where = 'WHERE status = $1';
+  }
+  const limitIdx = params.length;
+  const result = await pool.query<{
+    id: string;
+    project_id: string;
+    team_id: string;
+    source_type: string;
+    status: string;
+    attempts: number;
+    created_at: Date;
+  }>(
+    `SELECT id, project_id, team_id, source_type, status, attempts, created_at
+       FROM observation_generation_jobs
+       ${where}
+       ORDER BY created_at DESC
+       LIMIT $${limitIdx}`,
+    params,
+  );
+  console.log(JSON.stringify({
+    status: status ?? 'any',
+    count: result.rows.length,
+    jobs: result.rows.map(row => ({
+      id: row.id,
+      projectId: row.project_id,
+      teamId: row.team_id,
+      sourceType: row.source_type,
+      status: row.status,
+      attempts: row.attempts,
+      createdAt: row.created_at.toISOString(),
+    })),
+  }, null, 2));
 }
 
 function parseFlagArgs(argv: string[]): Record<string, string> {
@@ -584,8 +875,12 @@ function spawnServerBetaDaemon(port: number): number | undefined {
   const child = spawn(process.execPath, [scriptPath, '--daemon'], {
     detached: true,
     stdio: 'ignore',
+    // Strip host CLI bleed-through (CLAUDE_CODE_*, including EFFORT_LEVEL) and
+    // Anthropic credentials before handing env to the detached daemon. The
+    // daemon re-reads credentials from ~/.claude-mem/.env at SDK spawn time.
+    // See env-isolation discipline (#2357 / #2375).
     env: {
-      ...process.env,
+      ...sanitizeEnv(process.env),
       CLAUDE_MEM_SERVER_PORT: String(port),
     },
   });
