@@ -6,6 +6,7 @@ import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { hasGeminiExecutable } from '../../shared/find-gemini-executable.js';
 import { loadClaudeMemEnv, saveClaudeMemEnv } from '../../shared/EnvManager.js';
 import { ensureWorkerStarted, type WorkerStartResult } from '../../services/worker-spawner.js';
 import {
@@ -676,7 +677,7 @@ function mergeSettings(updates: Record<string, string>): boolean {
   }
 }
 
-type ProviderId = 'claude' | 'gemini' | 'openrouter';
+type ProviderId = 'claude' | 'gemini' | 'openrouter' | 'gemini-cli';
 type ClaudeAccessMode = 'subscription' | 'api-key';
 type ClaudeApiMode = 'direct' | 'gateway';
 type RuntimeId = 'worker' | 'server-beta';
@@ -939,6 +940,12 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
         persistClaudeProvider();
         return 'claude';
       }
+      if (options.provider === 'gemini-cli') {
+        const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: 'gemini-cli' });
+        if (wrote) log.info('Saved provider=gemini-cli to ~/.claude-mem/settings.json');
+        log.info('Gemini CLI provider uses your `gemini` CLI login — no API key needed. Ensure @google/gemini-cli is installed and signed in.');
+        return 'gemini-cli';
+      }
       const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: options.provider });
       if (wrote) log.info(`Saved provider=${options.provider} to ~/.claude-mem/settings.json`);
       log.warn(`Provider=${options.provider} requested non-interactively. API key prompt skipped — set CLAUDE_MEM_${options.provider.toUpperCase()}_API_KEY and CLAUDE_MEM_PROVIDER in settings.json or env manually if not already set.`);
@@ -999,7 +1006,8 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
       message: 'Which memory provider do you want to use?',
       options: [
         { value: 'claude', label: 'Claude Agent SDK (recommended)' },
-        { value: 'gemini', label: 'Gemini' },
+        { value: 'gemini', label: 'Gemini (API key)' },
+        { value: 'gemini-cli', label: 'Gemini CLI (uses your gemini login — no API key)' },
         { value: 'openrouter', label: 'OpenRouter' },
       ],
       initialValue: initialProvider,
@@ -1014,6 +1022,17 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
   if (selectedProvider === 'claude') {
     await runClaudeAuthFlow();
     return 'claude';
+  }
+
+  if (selectedProvider === 'gemini-cli') {
+    const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: 'gemini-cli' });
+    if (wrote) log.info('Saved provider=gemini-cli to ~/.claude-mem/settings.json');
+    if (hasGeminiExecutable()) {
+      log.info('Found the `gemini` CLI — observations will be generated via your gemini login (no API key needed).');
+    } else {
+      log.warn('The `gemini` CLI was not found on PATH. Install it (npm install -g @google/gemini-cli) and sign in, or set CLAUDE_MEM_GEMINI_CLI_PATH.');
+    }
+    return 'gemini-cli';
   }
 
   const providerLabel = selectedProvider === 'gemini' ? 'Gemini' : 'OpenRouter';
@@ -1130,7 +1149,7 @@ async function promptClaudeModel(options: InstallOptions): Promise<void> {
 
 export interface InstallOptions {
   ide?: string;
-  provider?: 'claude' | 'gemini' | 'openrouter';
+  provider?: 'claude' | 'gemini' | 'openrouter' | 'gemini-cli';
   model?: string;
   noAutoStart?: boolean;
   // #2543 — non-interactive runtime selection. `server` is the operator-facing
