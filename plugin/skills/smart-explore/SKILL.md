@@ -162,6 +162,7 @@ Smart-explore uses **tree-sitter AST parsing** for structural analysis. Unsuppor
 | Java | `.java` |
 | C | `.c`, `.h` |
 | C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh` |
+| C# | `.cs` |
 
 Files with unrecognized extensions are parsed as plain text — `smart_search` still works (grep-style), but `smart_outline` and `smart_unfold` will not extract structured symbols.
 

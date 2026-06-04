@@ -46,6 +46,7 @@ const LANG_MAP: Record<string, string> = {
   ".java": "java",
   ".c": "c",
   ".h": "c",
+  ".cs": "csharp",
   ".cpp": "cpp",
   ".cc": "cpp",
   ".cxx": "cpp",
@@ -191,6 +192,7 @@ const GRAMMAR_PACKAGES: Record<string, string> = {
   java: "tree-sitter-java",
   c: "tree-sitter-c",
   cpp: "tree-sitter-cpp",
+  csharp: "tree-sitter-c-sharp",
   kotlin: "tree-sitter-kotlin",
   swift: "tree-sitter-swift",
   php: "tree-sitter-php/php",
@@ -261,6 +263,17 @@ export function resolveGrammarPathWithFallback(language: string, projectRoot?: s
 }
 
 const QUERIES: Record<string, string> = {
+  csharp: `
+(class_declaration name: (identifier) @name) @cls
+(interface_declaration name: (identifier) @name) @iface
+(struct_declaration name: (identifier) @name) @struct_def
+(enum_declaration name: (identifier) @name) @enm
+(record_declaration name: (identifier) @name) @cls
+(method_declaration name: (identifier) @name) @method
+(constructor_declaration name: (identifier) @name) @method
+(property_declaration name: (identifier) @name) @prop
+(using_directive) @imp
+`,
   jsts: `
 (function_declaration name: (identifier) @name) @func
 (lexical_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])) @const_func
@@ -430,6 +443,7 @@ function getQueryKey(language: string): string {
     case "rust": return "rust";
     case "ruby": return "ruby";
     case "java": return "java";
+    case "csharp": return "csharp";
     case "kotlin": return "kotlin";
     case "swift": return "swift";
     case "php": return "php";
@@ -568,6 +582,7 @@ const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
   const_func: "function",
   cls: "class",
   method: "method",
+  prop: "property",
   iface: "interface",
   tdef: "type",
   enm: "enum",

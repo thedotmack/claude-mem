@@ -169,6 +169,7 @@
     "remark-parse": "^11.0.0",
     "tree-sitter-bash": "^0.25.1",
     "tree-sitter-c": "^0.24.1",
+    "tree-sitter-c-sharp": "^0.23.5",
     "tree-sitter-cli": "^0.26.8",
     "tree-sitter-cpp": "^0.23.4",
     "tree-sitter-css": "^0.25.0",
@@ -198,6 +199,7 @@
   "trustedDependencies": [
     "esbuild",
     "tree-sitter-c",
+    "tree-sitter-c-sharp",
     "tree-sitter-cli",
     "tree-sitter-cpp",
     "tree-sitter-go",
