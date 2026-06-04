@@ -40,7 +40,7 @@ export class TranscriptRoutes extends BaseRouteHandler {
     const includeSubagents = body.includeSubagents === true;
 
     const deps: IngestDeps = {
-      processor: new TranscriptEventProcessor(),
+      processor: new TranscriptEventProcessor({ backfill: true }),
       sessionExists: id => this.sessionExists(id),
     };
 

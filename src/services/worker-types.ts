@@ -33,6 +33,12 @@ export interface ActiveSession {
    */
   consecutiveInvalidOutputs: number;
   forceInit?: boolean;
+  /**
+   * Backfill (#2690): this session is replaying a FINISHED transcript, so it
+   * uses historical prompt framing and paced one-observation-per-turn
+   * generation. In-memory only (set at queue time); live capture never sets it.
+   */
+  backfill?: boolean;
   idleTimedOut?: boolean;  
   lastGeneratorActivity: number;
   modelOverride?: string;
@@ -81,6 +87,7 @@ export interface PendingMessageWithId extends PendingMessage {
 }
 
 export interface ObservationData {
+  backfill?: boolean;
   tool_name: string;
   tool_input: any;
   tool_response: any;
