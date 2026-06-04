@@ -72,6 +72,10 @@ export function renderMermaidFlow(
 
   if (sessionObs.length === 0) return [];
 
+  // Only use next_steps from the summary that belongs to this session.
+  // summaries[0] may come from a different session if this session produced no summary.
+  const sessionSummary = summary?.memory_session_id === latestSessionId ? summary : undefined;
+
   const nodes = sessionObs.map((obs, i) => buildNode(obs, i));
 
   const lines: string[] = [];
@@ -91,8 +95,8 @@ export function renderMermaidFlow(
   }
 
   // Optional: next_steps terminal node from the session summary
-  if (summary?.next_steps && summary.next_steps.trim()) {
-    const nextStepsText = sanitize(summary.next_steps);
+  if (sessionSummary?.next_steps && sessionSummary.next_steps.trim()) {
+    const nextStepsText = sanitize(sessionSummary.next_steps);
     lines.push(`    NEXT(["Next: ${nextStepsText}"])`);
     lines.push(`    ${nodes[nodes.length - 1].id} --> NEXT`);
     lines.push(`    style NEXT fill:#bee3f8,color:#1a202c`);
