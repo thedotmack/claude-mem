@@ -367,7 +367,7 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
     // tree-sitter-cli postinstall downloads a Rust binary and can hang the
     // install. Bun honors trustedDependencies; npm does not. We additionally
     // pass --ignore-scripts as belt-and-suspenders and bound it with a timeout.
-    execSync(`${bunCmd} install --ignore-scripts`, {
+    execSync(`${bunCmd} install --frozen-lockfile --ignore-scripts`, {
       cwd: targetDir,
       stdio: 'pipe',
       timeout: INSTALL_TIMEOUT_MS,
