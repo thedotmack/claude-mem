@@ -14,10 +14,9 @@ const DEFAULT_STYLE = { fill: '#f1f5f9', color: '#1a202c', emoji: '📌' };
 
 function sanitize(text: string): string {
   return text
-    .replace(/"/g, "'")
+    .replace(/"/g, "'");
+    .replace(/\n/g, ' ')
     .replace(/[<>{}|]/g, ' ')
-    .replace(/
-/g, ' ')
     .trim()
     .slice(0, 60);
 }
@@ -40,7 +39,7 @@ function buildNode(obs: Observation, index: number): { id: string; line: string;
   const id = `N${index}`;
   const title = sanitize(obs.title ?? obs.subtitle ?? obs.type);
   const file = extractPrimaryFile(obs.files_modified ?? obs.files_read);
-  const label = file ? `${style.emoji} ${title}\n${file}` : `${style.emoji} ${title}`;
+  const label = file ? `${style.emoji} ${title} · ${file}` : `${style.emoji} ${title}`;
 
   return {
     id,
@@ -99,7 +98,7 @@ export function renderMermaidFlow(
     const nextStepsText = sanitize(sessionSummary.next_steps);
     lines.push(`    NEXT(["Next: ${nextStepsText}"])`);
     lines.push(`    ${nodes[nodes.length - 1].id} --> NEXT`);
-    lines.push(`    style NEXT fill:#bee3f8,color:#1a202c`);
+    lines.push('    style NEXT fill:#bee3f8,color:#1a202c');
   }
 
   // Node styles
