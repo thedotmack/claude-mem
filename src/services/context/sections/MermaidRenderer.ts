@@ -14,7 +14,7 @@ const DEFAULT_STYLE = { fill: '#f1f5f9', color: '#1a202c', emoji: '📌' };
 
 function sanitize(text: string): string {
   return text
-    .replace(/"/g, "'");
+    .replace(/"/g, "'")
     .replace(/\n/g, ' ')
     .replace(/[<>{}|]/g, ' ')
     .trim()
