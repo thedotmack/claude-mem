@@ -16,7 +16,7 @@ function sanitize(text: string): string {
   return text
     .replace(/"/g, "'")
     .replace(/\n/g, ' ')
-    .replace(/[<>{}|]/g, ' ')
+    .replace(/[<>{}|[\]]/g, ' ')
     .trim()
     .slice(0, 60);
 }
