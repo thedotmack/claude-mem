@@ -46,6 +46,44 @@ jobs:
       - name: Test
         run: bun test
 
+  clean-room-deps:
+    name: clean-room dependency closure smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Bun (worker runtime + test runner)
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # See note in the build job: no committed root lockfile, so npm install.
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      # Run the frozen-lockfile drift check against the COMMITTED tree BEFORE
+      # `npm run build` regenerates plugin/package.json + plugin/bun.lock (via
+      # gen-plugin-lockfile.cjs). If a contributor changed plugin deps (through
+      # scripts/build-hooks.js) but committed a stale plugin/bun.lock, the
+      # committed pair is out of sync and --frozen-lockfile fails here.
+      - name: Verify plugin lockfile is in sync (frozen-lockfile drift check)
+        working-directory: plugin
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Build
+        run: npm run build
+
+      # Clean-room install + import smoke test (plan-10): installs the packed
+      # tarball into a throwaway dir and verifies the dependency closure resolves
+      # and imports outside the dev tree.
+      - name: Clean-room dependency closure smoke
+        run: npm run smoke:clean-room
+
   server-runtime-e2e-docker:
     name: server-runtime e2e (docker · pg + valkey)
     runs-on: ubuntu-latest
