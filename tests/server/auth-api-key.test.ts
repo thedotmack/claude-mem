@@ -290,4 +290,122 @@ describe('server API key auth', () => {
       scopes: ['memories:write'],
     });
   });
+
+  it('middleware accepts X-Api-Key header as fallback when Bearer is absent', () => {
+    // Clients using @better-auth/api-key defaults (e.g. the worker bundle
+    // shipped from the Windows-canary line) send raw API keys via X-Api-Key
+    // instead of "Authorization: Bearer ...". The middleware accepts either
+    // so the server-beta runtime works with both client shapes out of the box.
+    const team = new TeamsRepository(db).create({ name: 'Core' });
+    const project = new ProjectsRepository(db).create({ name: 'Project' });
+    const created = createServerApiKey(db, {
+      name: 'XApiKey client',
+      teamId: team.id,
+      projectId: project.id,
+      scopes: ['memories:write'],
+    });
+    const middleware = requireServerAuth(() => db, {
+      authMode: 'api-key',
+      requiredScopes: ['memories:write'],
+    });
+    const req: any = {
+      ip: '10.0.0.5',
+      socket: {},
+      header: (name: string) => name.toLowerCase() === 'x-api-key' ? created.rawKey : undefined,
+    };
+    const res: any = {
+      status: () => res,
+      json: () => {},
+    };
+    let calledNext = false;
+
+    middleware(req, res, () => {
+      calledNext = true;
+    });
+
+    expect(calledNext).toBe(true);
+    expect(req.authContext).toMatchObject({
+      mode: 'api-key',
+      apiKeyId: created.record.id,
+      teamId: team.id,
+      projectId: project.id,
+      scopes: ['memories:write'],
+    });
+  });
+
+  it('middleware prefers Bearer over X-Api-Key when both are present', () => {
+    // Defense-in-depth: if a client sends both, Bearer wins. Avoids surprises
+    // where an unrelated X-Api-Key sneaks in via a proxy or a stale env var.
+    const team = new TeamsRepository(db).create({ name: 'Core' });
+    const bearerKey = createServerApiKey(db, {
+      name: 'Bearer key',
+      teamId: team.id,
+      projectId: null,
+      scopes: ['memories:write'],
+    });
+    const xApiKeyKey = createServerApiKey(db, {
+      name: 'X-Api-Key key',
+      teamId: team.id,
+      projectId: null,
+      scopes: ['memories:write'],
+    });
+    const middleware = requireServerAuth(() => db, {
+      authMode: 'api-key',
+      requiredScopes: ['memories:write'],
+    });
+    const req: any = {
+      ip: '10.0.0.5',
+      socket: {},
+      header: (name: string) => {
+        const normalized = name.toLowerCase();
+        if (normalized === 'authorization') return `Bearer ${bearerKey.rawKey}`;
+        if (normalized === 'x-api-key') return xApiKeyKey.rawKey;
+        return undefined;
+      },
+    };
+    const res: any = {
+      status: () => res,
+      json: () => {},
+    };
+    let calledNext = false;
+
+    middleware(req, res, () => {
+      calledNext = true;
+    });
+
+    expect(calledNext).toBe(true);
+    expect(req.authContext?.apiKeyId).toBe(bearerKey.record.id);
+  });
+
+  it('middleware rejects requests with neither Bearer nor X-Api-Key', () => {
+    const middleware = requireServerAuth(() => db, { authMode: 'api-key' });
+    const req: any = {
+      ip: '10.0.0.5',
+      socket: {},
+      header: (_name: string) => undefined,
+    };
+    const res: any = {
+      statusCode: 200,
+      body: null,
+      status(code: number) {
+        this.statusCode = code;
+        return this;
+      },
+      json(body: unknown) {
+        this.body = body;
+      },
+    };
+    let calledNext = false;
+
+    middleware(req, res, () => {
+      calledNext = true;
+    });
+
+    expect(calledNext).toBe(false);
+    expect(res.statusCode).toBe(401);
+    expect(res.body).toMatchObject({
+      error: 'Unauthorized',
+      message: 'Missing API key (Authorization: Bearer <key> or X-Api-Key: <key>)',
+    });
+  });
 });
