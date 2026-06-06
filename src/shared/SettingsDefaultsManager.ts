@@ -208,7 +208,10 @@ export class SettingsDefaultsManager {
       }
 
       const settingsData = readFileSync(settingsPath, 'utf-8');
-      const settings = JSON.parse(settingsData);
+      // Strip UTF-8 BOM if present — Windows tools (editors, formatters, CLI
+      // hooks) may prepend U+FEFF which Bun's JSON.parse rejects silently,
+      // causing a full fallback to defaults and breaking server-beta routing.
+      const settings = JSON.parse(settingsData.replace(/^\uFEFF/, ''));
 
       let flatSettings = settings;
       if (settings.env && typeof settings.env === 'object') {
