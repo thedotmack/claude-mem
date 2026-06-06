@@ -1,6 +1,6 @@
 
 import { spawn } from 'child_process';
-import { existsSync } from 'fs';
+import { existsSync, writeFileSync, unlinkSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { DatabaseManager } from './DatabaseManager.js';
@@ -72,10 +72,16 @@ function isSessionNotFoundError(stderr: string): boolean {
   );
 }
 
-function buildGeminiCliEnv(): NodeJS.ProcessEnv {
+function buildGeminiCliEnv(systemPromptFile?: string): NodeJS.ProcessEnv {
   const savedGeminiApiKey = getCredential('GEMINI_API_KEY');
-  if (!savedGeminiApiKey || process.env.GEMINI_API_KEY) return process.env;
-  return { ...process.env, GEMINI_API_KEY: savedGeminiApiKey };
+  const env = { ...process.env };
+  if (savedGeminiApiKey && !process.env.GEMINI_API_KEY) {
+    env.GEMINI_API_KEY = savedGeminiApiKey;
+  }
+  if (systemPromptFile) {
+    env.GEMINI_SYSTEM_MD = systemPromptFile;
+  }
+  return env;
 }
 
 /**
@@ -138,6 +144,7 @@ interface RunOptions {
   resumeId?: string;    // --resume (continue existing)
   signal: AbortSignal;
   timeoutMs: number;
+  systemPromptFile?: string;
 }
 
 interface RunResult {
@@ -171,7 +178,7 @@ function runGeminiCli(opts: RunOptions): Promise<RunResult> {
 
     const child = spawn(opts.executable, args, {
       cwd: opts.cwd,
-      env: buildGeminiCliEnv(),
+      env: buildGeminiCliEnv(opts.systemPromptFile),
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
     });
@@ -277,57 +284,82 @@ export class GeminiCliProvider {
     const cwd = GEMINI_CLI_SESSIONS_DIR;
     ensureDir(cwd);
 
-    // forceInit (context overflow / crash recovery): abandon the old gemini
-    // session and start a brand-new one.
-    if (session.forceInit) {
-      logger.info('SDK', 'forceInit set — starting fresh Gemini CLI session', {
-        sessionDbId: session.sessionDbId,
-        previousMemorySessionId: session.memorySessionId,
-      });
-      session.memorySessionId = null;
-      this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, null);
-      session.forceInit = false;
-    }
-
+    const systemPromptFile = join(cwd, `system-${session.sessionDbId}.md`);
     const mode = ModeManager.getInstance().getActiveMode();
-    const firstPrompt = session.lastPromptNumber === 1
-      ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode)
-      : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
-
-    session.conversationHistory.push({ role: 'user', content: firstPrompt });
-
-    let first: RunResult;
     try {
-      first = await this.runTurn(session, firstPrompt, executable, cwd, model);
-    } catch (error: unknown) {
-      return this.handleError(error, session);
-    }
-
-    if (first.response) {
-      session.conversationHistory.push({ role: 'assistant', content: first.response });
-      this.accountTokens(session, first.tokensUsed);
-      await processAgentResponse(first.response, session, this.dbManager, this.sessionManager, worker, first.tokensUsed, null, 'GeminiCli', undefined, model);
-    } else {
-      // Expected, not an error: the init turn only primes context (observer
-      // role + output format) and captures the memorySessionId — there is no
-      // tool observation to record yet, so an empty response is the normal
-      // case. ClaudeProvider treats its equivalent empty priming response the
-      // same way (it never logs an error for a zero-length init response).
-      logger.debug('SDK', 'Gemini CLI init turn returned no observation (expected — priming turn)', { sessionId: session.sessionDbId, model });
+      const systemContent = [
+        mode.prompts.system_identity,
+        '',
+        mode.prompts.observer_role,
+        '',
+        'Return ONLY valid XML observations or summaries. Never reply with prose or explanation outside XML.',
+      ].join('\n');
+      writeFileSync(systemPromptFile, systemContent, 'utf-8');
+      (session as any).systemPromptFile = systemPromptFile;
+    } catch (err) {
+      logger.warn('SDK', 'Failed to write custom system prompt file', { error: err });
     }
 
     try {
-      await this.processMessageLoop(session, worker, executable, cwd, model);
-    } catch (error: unknown) {
-      return this.handleError(error, session);
-    }
+      // forceInit (context overflow / crash recovery): abandon the old gemini
+      // session and start a brand-new one.
+      if (session.forceInit) {
+        logger.info('SDK', 'forceInit set — starting fresh Gemini CLI session', {
+          sessionDbId: session.sessionDbId,
+          previousMemorySessionId: session.memorySessionId,
+        });
+        session.memorySessionId = null;
+        this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, null);
+        session.forceInit = false;
+      }
 
-    const sessionDuration = Date.now() - session.startTime;
-    logger.success('SDK', 'Gemini CLI agent completed', {
-      sessionId: session.sessionDbId,
-      duration: `${(sessionDuration / 1000).toFixed(1)}s`,
-      memorySessionId: session.memorySessionId ?? undefined,
-    });
+      const firstPrompt = session.lastPromptNumber === 1
+        ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode)
+        : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
+
+      session.conversationHistory.push({ role: 'user', content: firstPrompt });
+
+      let first: RunResult;
+      try {
+        first = await this.runTurn(session, firstPrompt, executable, cwd, model);
+      } catch (error: unknown) {
+        return this.handleError(error, session);
+      }
+
+      if (first.response) {
+        session.conversationHistory.push({ role: 'assistant', content: first.response });
+        this.accountTokens(session, first.tokensUsed);
+        await processAgentResponse(first.response, session, this.dbManager, this.sessionManager, worker, first.tokensUsed, null, 'GeminiCli', undefined, model);
+      } else {
+        // Expected, not an error: the init turn only primes context (observer
+        // role + output format) and captures the memorySessionId — there is no
+        // tool observation to record yet, so an empty response is the normal
+        // case. ClaudeProvider treats its equivalent empty priming response the
+        // same way (it never logs an error for a zero-length init response).
+        logger.debug('SDK', 'Gemini CLI init turn returned no observation (expected — priming turn)', { sessionId: session.sessionDbId, model });
+      }
+
+      try {
+        await this.processMessageLoop(session, worker, executable, cwd, model);
+      } catch (error: unknown) {
+        return this.handleError(error, session);
+      }
+
+      const sessionDuration = Date.now() - session.startTime;
+      logger.success('SDK', 'Gemini CLI agent completed', {
+        sessionId: session.sessionDbId,
+        duration: `${(sessionDuration / 1000).toFixed(1)}s`,
+        memorySessionId: session.memorySessionId ?? undefined,
+      });
+    } finally {
+      try {
+        if (existsSync(systemPromptFile)) {
+          unlinkSync(systemPromptFile);
+        }
+      } catch {
+        // ignore
+      }
+    }
   }
 
   /**
@@ -345,9 +377,10 @@ export class GeminiCliProvider {
     const signal = session.abortController.signal;
     const timeoutMs = this.getTimeoutMs();
 
+    const systemPromptFile = (session as any).systemPromptFile;
     if (session.memorySessionId) {
       try {
-        return await runGeminiCli({ executable, cwd, model, prompt: promptText, resumeId: session.memorySessionId, signal, timeoutMs });
+        return await runGeminiCli({ executable, cwd, model, prompt: promptText, resumeId: session.memorySessionId, signal, timeoutMs, systemPromptFile });
       } catch (error: unknown) {
         if (isAbortError(error)) throw error;
         const notFound = error instanceof ClassifiedProviderError && error.kind === 'session_not_found';
@@ -362,14 +395,14 @@ export class GeminiCliProvider {
         // including the init turn that established the observer role and the
         // structured output format. promptText here is an observation/summary
         // prompt that assumes that context; a brand-new session handed only
-        // this prompt would emit unstructured text that processAgentResponse
+        // this prompt would emit unstructured text + processAgentResponse
         // silently discards. So prime the fresh session exactly as startSession
         // would, then resume it with the real prompt — mirroring the normal
         // init→turn flow.
         const mode = ModeManager.getInstance().getActiveMode();
         const primingPrompt = buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
         const primed = await this.runFreshTurn(session, primingPrompt, executable, cwd, model, signal, timeoutMs);
-        return await runGeminiCli({ executable, cwd, model, prompt: promptText, resumeId: primed.sessionId, signal, timeoutMs });
+        return await runGeminiCli({ executable, cwd, model, prompt: promptText, resumeId: primed.sessionId, signal, timeoutMs, systemPromptFile });
       }
     }
 
@@ -391,7 +424,8 @@ export class GeminiCliProvider {
     signal: AbortSignal,
     timeoutMs: number,
   ): Promise<RunResult> {
-    const result = await runGeminiCli({ executable, cwd, model, prompt: promptText, signal, timeoutMs });
+    const systemPromptFile = (session as any).systemPromptFile;
+    const result = await runGeminiCli({ executable, cwd, model, prompt: promptText, signal, timeoutMs, systemPromptFile });
     const captured = result.sessionId;
     if (!captured) {
       throw new ClassifiedProviderError('Gemini CLI did not return a session_id', { kind: 'transient', cause: new Error('missing session_id') });
