@@ -26,6 +26,33 @@ if (!existsSync(pluginManifest)) {
   );
 }
 
+const lockfile = path.join(pluginDir, 'bun.lock');
+
+// bun is the only tool that can regenerate the lockfile. On hosts that build
+// without bun on PATH (e.g. the Windows build CI job), regeneration is skipped:
+// the committed lockfile is already the deterministic closure, so a missing bun
+// is non-fatal AS LONG AS the lockfile is present. With neither, we cannot
+// produce the closure and must fail loud.
+function bunAvailable() {
+  try {
+    execSync('bun --version', { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+if (!bunAvailable()) {
+  if (existsSync(lockfile)) {
+    console.log('⚠️  bun not found on PATH — skipping regeneration; using committed plugin/bun.lock.');
+    process.exit(0);
+  }
+  throw new Error(
+    `gen-plugin-lockfile: bun is not on PATH and no committed lockfile exists at ${lockfile}. ` +
+    `Install bun (https://bun.sh) so the deterministic dependency closure can be generated.`
+  );
+}
+
 try {
   execSync('bun install --ignore-scripts', {
     cwd: pluginDir,
@@ -35,7 +62,6 @@ try {
   throw new Error(`bun install failed in ${pluginDir}\n${error.message}`);
 }
 
-const lockfile = path.join(pluginDir, 'bun.lock');
 if (!existsSync(lockfile)) {
   throw new Error(
     `gen-plugin-lockfile: bun install completed but ${lockfile} was not produced.`
