@@ -665,6 +665,52 @@ export class ChromaMcpManager {
     }
   }
 
+  /**
+   * uv installs `uvx` to a per-user bin dir that is often NOT on the PATH the
+   * worker inherited (the worker is spawned by the host with a minimal env that
+   * predates the user adding uv to PATH). Without it, `uvx`/`cmd /c uvx` dies
+   * with "not recognized" in ~25ms and semantic search silently falls back to
+   * keyword (#2790). Prepend uv's known bin dirs (and an explicit override) so
+   * the chroma child can always resolve uvx. Additive and cross-platform — only
+   * dirs that exist are added.
+   */
+  private static uvBinDirs(): string[] {
+    const home = os.homedir();
+    const dirs = [
+      process.env.CLAUDE_MEM_CHROMA_UVX_PATH,           // explicit override (dir or uvx path)
+      path.join(home, '.local', 'bin'),                 // uv default (Windows + Unix)
+      path.join(home, '.cargo', 'bin'),                 // cargo-installed uv
+    ].filter((d): d is string => Boolean(d));
+    // If the override points at the uvx binary itself, use its directory.
+    return dirs.map(d => {
+      try {
+        return fs.existsSync(d) && fs.statSync(d).isFile() ? path.dirname(d) : d;
+      } catch {
+        return d;
+      }
+    });
+  }
+
+  private static ensureUvOnPath(env: Record<string, string>): void {
+    const sep = process.platform === 'win32' ? ';' : ':';
+    const pathKey = Object.keys(env).find(k => k.toLowerCase() === 'path') ?? 'PATH';
+    const current = env[pathKey] ? env[pathKey].split(sep).filter(Boolean) : [];
+    const have = new Set(current.map(p => (process.platform === 'win32' ? p.toLowerCase() : p)));
+    const additions = ChromaMcpManager.uvBinDirs().filter(dir => {
+      try {
+        if (!fs.existsSync(dir)) return false;
+      } catch {
+        return false;
+      }
+      const key = process.platform === 'win32' ? dir.toLowerCase() : dir;
+      return !have.has(key);
+    });
+    if (additions.length > 0) {
+      env[pathKey] = [...additions, ...current].join(sep);
+      logger.debug('CHROMA_MCP', 'Prepended uv bin dir(s) to chroma child PATH', { added: additions });
+    }
+  }
+
   private getSpawnEnv(): Record<string, string> {
     const baseEnv: Record<string, string> = {};
     for (const [key, value] of Object.entries(sanitizeEnv(process.env))) {
@@ -672,6 +718,10 @@ export class ChromaMcpManager {
         baseEnv[key] = value;
       }
     }
+
+    // Ensure uvx is resolvable even if the worker's inherited PATH omits uv's
+    // bin dir (#2790).
+    ChromaMcpManager.ensureUvOnPath(baseEnv);
 
     // Disable Chroma's anonymous telemetry — it issues background HTTP from
     // the embedding subprocess on every collection touch.
