@@ -99,7 +99,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'true',  // Rate limiting ON by default for free tier users
     CLAUDE_MEM_GEMINI_MAX_CONTEXT_MESSAGES: '20',  // Max messages in Gemini context window
     CLAUDE_MEM_GEMINI_MAX_TOKENS: '100000',  // Max estimated tokens (~100k safety limit)
-    CLAUDE_MEM_GEMINI_CLI_MODEL: 'gemini-2.5-flash-lite',  // Model for the `gemini` CLI provider (uses CLI OAuth, no API key)
+    CLAUDE_MEM_GEMINI_CLI_MODEL: 'auto',  // Model for the `gemini` CLI provider (uses CLI OAuth, no API key)
     CLAUDE_MEM_GEMINI_CLI_PATH: '',  // Empty = auto-detect via 'which gemini'
     CLAUDE_MEM_GEMINI_CLI_TIMEOUT_MS: '120000',  // Per-turn timeout for gemini CLI subprocesses (ms)
     CLAUDE_MEM_OPENROUTER_API_KEY: '',  // Empty by default, can be set via UI or env

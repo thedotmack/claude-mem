@@ -179,13 +179,54 @@ function parseSummaryBlock(text: string, correlationId?: string | number): Parse
   };
 }
 
+function cleanXmlLists(text: string): string {
+  if (!text) return text;
+  
+  // Split the text by markdown code blocks (```) to avoid corrupting code content.
+  const parts = text.split(/(```[\s\S]*?```)/g);
+  
+  const processedParts = parts.map((part, index) => {
+    // If index is odd, this part is inside a code block.
+    if (index % 2 === 1) {
+      return part;
+    }
+    
+    return part
+      .replace(/<(item|li)>([\s\S]*?)<\/\1>/gi, (_, tagName, itemContent) => {
+        const trimmed = itemContent.trim();
+        if (trimmed.includes('\n')) {
+          return trimmed
+            .split('\n')
+            .map((line: string, lineIndex: number) => lineIndex === 0 ? `- ${line.trim()}` : `  ${line.trim()}`)
+            .join('\n');
+        }
+        return `- ${trimmed}`;
+      })
+      .replace(/<\/?(ul|ol)>/gi, '')
+      .split('\n')
+      .map((line: string) => {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('- ') || trimmed.startsWith('* ') || /^\d+\.\s/.test(trimmed)) {
+          return trimmed;
+        }
+        return line;
+      })
+      .join('\n')
+      .replace(/\n\s*\n/g, '\n')
+      .trim();
+  });
+  
+  return processedParts.join('');
+}
+
 function extractField(content: string, fieldName: string): string | null {
   const regex = new RegExp(`<${fieldName}>([\\s\\S]*?)</${fieldName}>`);
   const match = regex.exec(content);
   if (!match) return null;
 
   const trimmed = match[1].trim();
-  return trimmed === '' ? null : trimmed;
+  if (trimmed === '') return null;
+  return cleanXmlLists(trimmed);
 }
 
 function extractArrayElements(content: string, arrayName: string, elementName: string): string[] {

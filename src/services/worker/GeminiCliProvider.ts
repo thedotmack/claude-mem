@@ -496,7 +496,7 @@ export class GeminiCliProvider {
 
   private getConfig(): { model: string } {
     const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
-    const model = settings.CLAUDE_MEM_GEMINI_CLI_MODEL || 'gemini-2.5-flash-lite';
+    const model = settings.CLAUDE_MEM_GEMINI_CLI_MODEL || 'auto';
     return { model };
   }
 }

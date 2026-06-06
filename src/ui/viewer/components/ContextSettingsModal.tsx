@@ -454,9 +454,10 @@ export function ContextSettingsModal({
                     tooltip="Model passed to the `gemini` CLI. Uses your gemini login (OAuth) — no API key required."
                   >
                     <select
-                      value={formState.CLAUDE_MEM_GEMINI_CLI_MODEL || 'gemini-2.5-flash-lite'}
+                      value={formState.CLAUDE_MEM_GEMINI_CLI_MODEL || 'auto'}
                       onChange={(e) => updateSetting('CLAUDE_MEM_GEMINI_CLI_MODEL', e.target.value)}
                     >
+                      <option value="auto">auto (auto-select model)</option>
                       <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite (fastest)</option>
                       <option value="gemini-2.5-flash">gemini-2.5-flash (balanced)</option>
                       <option value="gemini-3-flash-preview">gemini-3-flash-preview (preview)</option>
