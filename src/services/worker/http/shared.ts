@@ -139,7 +139,7 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
     return { ok: false, reason: message, status: 500 };
   }
 
-  const userPrompt = PrivacyCheckValidator.checkUserPromptPrivacy(
+  const privacy = PrivacyCheckValidator.checkUserPromptPrivacy(
     store,
     payload.contentSessionId,
     promptNumber,
@@ -147,7 +147,7 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
     sessionDbId,
     { tool_name: payload.toolName }
   );
-  if (!userPrompt) {
+  if (!privacy.allow) {
     return { ok: true, status: 'skipped', reason: 'private' };
   }
 
