@@ -7,57 +7,57 @@
       "id": "bugfix",
       "label": "Bug Fix",
       "description": "Something was broken, now fixed",
-      "emoji": "🔴",
-      "work_emoji": "🛠️"
+      "emoji": "●",
+      "work_emoji": "⚒"
     },
     {
       "id": "feature",
       "label": "Feature",
       "description": "New capability or functionality added",
-      "emoji": "🟣",
-      "work_emoji": "🛠️"
+      "emoji": "◆",
+      "work_emoji": "⚒"
     },
     {
       "id": "refactor",
       "label": "Refactor",
       "description": "Code restructured, behavior unchanged",
-      "emoji": "🔄",
-      "work_emoji": "🛠️"
+      "emoji": "↻",
+      "work_emoji": "⚒"
     },
     {
       "id": "change",
       "label": "Change",
       "description": "Generic modification (docs, config, misc)",
-      "emoji": "✅",
-      "work_emoji": "🛠️"
+      "emoji": "✓",
+      "work_emoji": "⚒"
     },
     {
       "id": "discovery",
       "label": "Discovery",
       "description": "Learning about existing system",
-      "emoji": "🔵",
-      "work_emoji": "🔍"
+      "emoji": "○",
+      "work_emoji": "⌕"
     },
     {
       "id": "decision",
       "label": "Decision",
       "description": "Architectural/design choice with rationale",
-      "emoji": "⚖️",
-      "work_emoji": "⚖️"
+      "emoji": "⚖",
+      "work_emoji": "⚖"
     },
     {
       "id": "security_alert",
       "label": "Security Alert",
       "description": "A security issue that needs attention before continuing.",
-      "emoji": "🚨",
-      "work_emoji": "🚨"
+      "emoji": "⚠",
+      "work_emoji": "⚠"
     },
     {
       "id": "security_note",
       "label": "Security Note",
       "description": "A security-relevant observation worth recording, but not urgent.",
-      "emoji": "🔐",
-      "work_emoji": "🔐"
+      "emoji": "⚷",
+      "work_emoji": "⚷"
     }
   ],
   "observation_concepts": [
