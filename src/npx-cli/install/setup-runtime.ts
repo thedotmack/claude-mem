@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { execSync, spawnSync } from 'child_process';
+import { createRequire } from 'module';
 import { join } from 'path';
 import { homedir } from 'os';
 import { ErrorSeverity } from './error-taxonomy.js';
@@ -218,20 +219,64 @@ function installUv(): void {
   }
 }
 
-function verifyCriticalModules(targetDir: string): void {
+/**
+ * Subpath imports the bundled worker requires transitively (via
+ * @modelcontextprotocol/sdk / @anthropic-ai/claude-agent-sdk). A stale/partial
+ * install can leave the `zod` directory present while these subpath exports fail
+ * to resolve — surfacing later as a runtime `Cannot find module 'zod/v3'`. We
+ * assert them at install time so a broken closure fails LOUD here. Version-agnostic:
+ * we resolve subpaths, never a pinned version.
+ */
+const ZOD_REQUIRED_SUBPATHS = ['zod/v3', 'zod/v4', 'zod/v4-mini'] as const;
+
+export function verifyCriticalModules(targetDir: string): void {
   const pkg = JSON.parse(readFileSync(join(targetDir, 'package.json'), 'utf-8'));
   const dependencies = Object.keys(pkg.dependencies || {});
 
-  const missing: string[] = [];
+  const nodeModulesPath = join(targetDir, 'node_modules');
+  // A require anchored inside the install tree so require.resolve honors the
+  // installed package.json `exports` map for subpath resolution.
+  const requireFromTarget = createRequire(join(nodeModulesPath, 'noop.js'));
+  const resolvePaths = [nodeModulesPath];
+
+  const unresolvable: string[] = [];
+
+  // Each declared dependency must be installed, not merely a directory on disk.
   for (const dep of dependencies) {
-    const modulePath = join(targetDir, 'node_modules', ...dep.split('/'));
-    if (!existsSync(modulePath)) {
-      missing.push(dep);
+    try {
+      requireFromTarget.resolve(dep, { paths: resolvePaths });
+    } catch {
+      // Bare-name resolution can fail for a perfectly-installed package that has
+      // no importable entry point — e.g. bin-only packages like `tree-sitter-cli`
+      // (package.json has `bin` but no `main`/`module`/`exports`/`index.js`).
+      // Fall back to resolving its package.json to distinguish "installed but
+      // bin-only" from "genuinely missing": a truly absent package fails both.
+      // This preserves the original "is it installed" guarantee while still
+      // upgrading from directory-existence to real module resolution (#2730).
+      try {
+        requireFromTarget.resolve(`${dep}/package.json`, { paths: resolvePaths });
+      } catch {
+        unresolvable.push(dep);
+      }
     }
   }
 
-  if (missing.length > 0) {
-    throw new Error(`Post-install check failed: missing modules: ${missing.join(', ')}`);
+  // zod ships its public API behind subpath exports the worker bundle requires.
+  // The package dir existing does NOT imply these subpaths resolve (#2730).
+  if (dependencies.includes('zod')) {
+    for (const subpath of ZOD_REQUIRED_SUBPATHS) {
+      try {
+        requireFromTarget.resolve(subpath, { paths: resolvePaths });
+      } catch {
+        unresolvable.push(subpath);
+      }
+    }
+  }
+
+  if (unresolvable.length > 0) {
+    throw new Error(
+      `Post-install check failed: unresolvable modules: ${unresolvable.join(', ')}`,
+    );
   }
 }
 
@@ -367,7 +412,7 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
     // tree-sitter-cli postinstall downloads a Rust binary and can hang the
     // install. Bun honors trustedDependencies; npm does not. We additionally
     // pass --ignore-scripts as belt-and-suspenders and bound it with a timeout.
-    execSync(`${bunCmd} install --ignore-scripts`, {
+    execSync(`${bunCmd} install --frozen-lockfile --ignore-scripts`, {
       cwd: targetDir,
       stdio: 'pipe',
       timeout: INSTALL_TIMEOUT_MS,
