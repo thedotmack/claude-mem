@@ -317,9 +317,16 @@ export async function ensureWorkerRunning(): Promise<boolean> {
     return false;
   }
 
-  const alive = await waitForWorkerPort({ attempts: 3, backoffMs: 250 });
+  // Cold boot (#2795): on the first session after a reboot the SessionStart
+  // `start` hook is booting the daemon in parallel, and a cold macOS+Chroma
+  // worker needs ~7s to bind. The old 3-attempt/250ms budget (~0.75s) expired
+  // long before that, so the context (and session-init) hooks raced boot and
+  // soft-failed to empty — dropping memory injection and the user_prompts row
+  // (the upstream trigger for #2794). Wait up to ~15.5s (≈ POST_SPAWN_WAIT) so
+  // whichever worker wins the port is seen before we give up.
+  const alive = await waitForWorkerPort({ attempts: 6, backoffMs: 500 });
   if (!alive) {
-    logger.warn('SYSTEM', 'Worker port did not open after lazy-spawn within 3 attempts');
+    logger.warn('SYSTEM', 'Worker port did not open after lazy-spawn within the cold-boot wait (~15s)');
     return false;
   }
   const ready = await waitForWorkerReadiness();
