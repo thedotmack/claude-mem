@@ -2,10 +2,10 @@
   "mcpServers": {
     "mcp-search": {
       "type": "stdio",
-      "command": "sh",
+      "command": "node",
       "args": [
-        "-c",
-        "_C=\"${CLAUDE_CONFIG_DIR:-$HOME/.claude}\"; _E=\"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}\"; _P=$({ [ -n \"$_E\" ] && printf '%s\\n' \"$_E\"; printf '%s\\n' \"$PWD/plugin\" \"$PWD\"; ls -dt \"$HOME/.codex/plugins/cache/claude-mem-local/claude-mem\"/[0-9]*/ \"$HOME/.codex/plugins/cache/thedotmack/claude-mem\"/[0-9]*/ \"$_C/plugins/cache/thedotmack/claude-mem\"/[0-9]*/ 2>/dev/null; printf '%s\\n' \"$_C/plugins/marketplaces/thedotmack/plugin\"; } | while IFS= read -r _R; do [ -d \"$_R/plugin/scripts\" ] && _Q=\"$_R/plugin\" || _Q=\"$_R\"; [ -f \"$_Q/scripts/mcp-server.cjs\" ] && { printf '%s\\n' \"$_Q\"; break; }; done); [ -n \"$_P\" ] || { echo \"claude-mem: mcp server not found\" >&2; exit 1; }; exec node \"$_P/scripts/mcp-server.cjs\""
+        "-e",
+        "const f=require('fs'),p=require('path'),o=require('os'),c=require('child_process');const h=o.homedir();const C=process.env.CLAUDE_CONFIG_DIR||p.join(h,'.claude');const E=process.env.CLAUDE_PLUGIN_ROOT||process.env.PLUGIN_ROOT||'';const d=process.cwd();const L=x=>{try{return f.readdirSync(x).filter(n=>/^\\d/.test(n)).map(n=>p.join(x,n)).filter(z=>{try{return f.statSync(z).isDirectory()}catch{return false}}).sort((a,b)=>f.statSync(b).mtimeMs-f.statSync(a).mtimeMs)}catch{return[]}};const K=[E,p.join(d,\"plugin\"),d,...L(p.join(h,\".codex/plugins/cache/claude-mem-local/claude-mem\")),...L(p.join(h,\".codex/plugins/cache/thedotmack/claude-mem\")),...L(p.join(C,\"plugins/cache/thedotmack/claude-mem\")),p.join(C,\"plugins/marketplaces/thedotmack/plugin\")].filter(Boolean);let R=null;for(const k of K){const r=f.existsSync(p.join(k,'plugin','scripts'))?p.join(k,'plugin'):k;if(f.existsSync(p.join(r,'scripts',\"mcp-server.cjs\"))){R=r;break}}if(!R){process.stderr.write(\"claude-mem: mcp server not found\\n\");process.exit(1)}const ch=c.spawn(process.execPath,[p.join(R,'scripts',\"mcp-server.cjs\")],{stdio:'inherit'});for(const s of ['SIGTERM','SIGINT','SIGHUP'])process.on(s,()=>{try{ch.kill(s)}catch{}});ch.on('exit',(code,sig)=>{if(sig){process.removeAllListeners(sig);try{process.kill(process.pid,sig)}catch{process.exit(1)}}else process.exit(code==null?0:code)})"
       ]
     }
   }
