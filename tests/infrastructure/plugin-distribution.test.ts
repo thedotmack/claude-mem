@@ -266,7 +266,7 @@ const RULE_A_EXPECTATIONS: Record<string, Record<string, string>> = {
       trailingCommand: ['node', '"$_P/scripts/version-check.js"'],
       notFoundMessage: 'claude-mem: version-check.js not found',
     }),
-    'SessionStart.0.1': codexHook(['start']),
+    'SessionStart.0.1': codexHook(['start', '>/dev/null;', 'echo', '\'{"continue":true}\'']),
     'SessionStart.0.2': codexHook(['hook', 'codex', 'context']),
     'UserPromptSubmit.0.0': codexHook(['hook', 'codex', 'session-init']),
     'PreToolUse.0.0': codexHook(['hook', 'codex', 'file-context']),
