@@ -257,14 +257,14 @@ export class SessionRoutes extends BaseRouteHandler {
     const sessionDbId = store.createSDKSession(contentSessionId, '', '', undefined, platformSource);
     const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId);
 
-    const userPrompt = PrivacyCheckValidator.checkUserPromptPrivacy(
+    const privacy = PrivacyCheckValidator.checkUserPromptPrivacy(
       store,
       contentSessionId,
       promptNumber,
       'summarize',
       sessionDbId
     );
-    if (!userPrompt) {
+    if (!privacy.allow) {
       res.json({ status: 'skipped', reason: 'private' });
       return;
     }
