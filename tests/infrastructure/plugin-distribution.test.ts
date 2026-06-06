@@ -276,8 +276,9 @@ const RULE_A_EXPECTATIONS: Record<string, Record<string, string>> = {
 };
 
 const MCP_EXPECTED = buildShellCommand({
+  // The mcp Node launcher derives its spawn target from requireFile; it ignores
+  // trailingCommand, so none is passed (see buildMcpNodeLauncher).
   host: 'mcp', requireFile: 'mcp-server.cjs',
-  trailingCommand: ['exec', 'node', '"$_P/scripts/mcp-server.cjs"'],
   notFoundMessage: 'claude-mem: mcp server not found',
   mcpExtraCandidates: ['$PWD/plugin', '$PWD'],
   mcpExtraCacheRoots: [

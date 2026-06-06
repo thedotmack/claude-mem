@@ -33,9 +33,11 @@ export interface ShellTemplateOptions {
   /**
    * Trailing command tokens run after `_P` resolves. Tokens are emitted
    * verbatim (callers pass already-quoted `"$_P/scripts/X"` forms), matching
-   * the hand-authored files.
+   * the hand-authored files. Required for every shell host; the `mcp` host
+   * ignores it (the Node launcher derives its spawn target from `requireFile`),
+   * so mcp callers may omit it.
    */
-  trailingCommand: string[];
+  trailingCommand?: string[];
   /** Extra env exports prepended to the trailing command (e.g. CLAUDE_MEM_CODEX_HOOK=1). */
   extraEnv?: Record<string, string>;
   /** Optional trailing JSON echoed after the command (e.g. SessionStart continue marker). */
@@ -156,6 +158,11 @@ function shTokenToNode(token: string): string {
  * spawns the resolved server and forwards signals. The candidate order mirrors
  * the POSIX prelude's: $CLAUDE_PLUGIN_ROOT/$PLUGIN_ROOT, mcpExtraCandidates,
  * mtime-sorted cache roots, then the marketplace install dir.
+ *
+ * Only `requireFile`, `notFoundMessage`, and the mcp* candidate fields are
+ * consumed. `trailingCommand`, `extraEnv`, `trailingJson`, and the cygpath
+ * clause are intentionally ignored for this host — the spawn target is derived
+ * solely from `requireFile`, and the Node launcher needs no shell scaffolding.
  */
 function buildMcpNodeLauncher(options: ShellTemplateOptions): string {
   const candidates = (options.mcpExtraCandidates ?? []).map(shTokenToNode);
@@ -187,7 +194,7 @@ function buildMcpNodeLauncher(options: ShellTemplateOptions): string {
     `if(!R){process.stderr.write(${notFound});process.exit(1)}` +
     `const ch=c.spawn(process.execPath,[p.join(R,'scripts',${require})],{stdio:'inherit'});` +
     `for(const s of ['SIGTERM','SIGINT','SIGHUP'])process.on(s,()=>{try{ch.kill(s)}catch{}});` +
-    `ch.on('exit',(code,sig)=>{if(sig){process.removeAllListeners(sig);try{process.kill(process.pid,sig)}catch{process.exit(0)}}else process.exit(code==null?0:code)})`
+    `ch.on('exit',(code,sig)=>{if(sig){process.removeAllListeners(sig);try{process.kill(process.pid,sig)}catch{process.exit(1)}}else process.exit(code==null?0:code)})`
   );
 }
 
@@ -227,6 +234,11 @@ export function buildShellCommand(options: ShellTemplateOptions): string {
         .join('')
     : '';
 
+  // Shell hosts always run a trailing command; fail loud rather than emit a
+  // launcher that silently resolves `_P` and then does nothing.
+  if (!options.trailingCommand) {
+    throw new Error(`buildShellCommand: host '${options.host}' requires trailingCommand`);
+  }
   let command = `${envPrefix}${options.trailingCommand.join(' ')}`;
   if (options.trailingJson) {
     command += `; echo '${JSON.stringify(options.trailingJson)}'`;

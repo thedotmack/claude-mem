@@ -106,8 +106,9 @@ function shellTemplateManifest(buildShellCommand) {
     'plugin/.mcp.json': {
       kind: 'mcp',
       command: buildShellCommand({
+        // The mcp Node launcher derives its spawn target from requireFile, so
+        // no trailingCommand is needed (it is ignored for this host).
         host: 'mcp', requireFile: 'mcp-server.cjs',
-        trailingCommand: ['exec', 'node', '"$_P/scripts/mcp-server.cjs"'],
         notFoundMessage: 'claude-mem: mcp server not found',
         mcpExtraCandidates: ['$PWD/plugin', '$PWD'],
         mcpExtraCacheRoots: [
