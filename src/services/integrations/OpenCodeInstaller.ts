@@ -7,6 +7,14 @@ import { logger } from '../../utils/logger.js';
 import { CONTEXT_TAG_OPEN, CONTEXT_TAG_CLOSE, injectContextIntoMarkdownFile } from '../../utils/context-injection.js';
 import { getWorkerPort } from '../../shared/worker-utils.js';
 
+const OPENCODE_PLUGIN_CONFIG_PATH = './plugins/claude-mem.js';
+
+type OpenCodeConfig = {
+  $schema?: string;
+  plugin?: unknown;
+  [key: string]: unknown;
+};
+
 export function getOpenCodeConfigDirectory(): string {
   if (process.env.OPENCODE_CONFIG_DIR) {
     return process.env.OPENCODE_CONFIG_DIR;
@@ -18,12 +26,90 @@ export function getOpenCodePluginsDirectory(): string {
   return path.join(getOpenCodeConfigDirectory(), 'plugins');
 }
 
+export function getOpenCodeConfigPath(): string {
+  return path.join(getOpenCodeConfigDirectory(), 'opencode.json');
+}
+
 export function getOpenCodeAgentsMdPath(): string {
   return path.join(getOpenCodeConfigDirectory(), 'AGENTS.md');
 }
 
 export function getInstalledPluginPath(): string {
   return path.join(getOpenCodePluginsDirectory(), 'claude-mem.js');
+}
+
+function getOpenCodePluginEntries(config: OpenCodeConfig): unknown[] {
+  if (Array.isArray(config.plugin)) {
+    return config.plugin;
+  }
+  return config.plugin === undefined ? [] : [config.plugin];
+}
+
+export function addOpenCodePluginReference(config: OpenCodeConfig): OpenCodeConfig {
+  const existingPlugins = getOpenCodePluginEntries(config);
+  if (existingPlugins.includes(OPENCODE_PLUGIN_CONFIG_PATH)) {
+    return config;
+  }
+
+  return {
+    ...config,
+    plugin: [...existingPlugins, OPENCODE_PLUGIN_CONFIG_PATH],
+  };
+}
+
+export function removeOpenCodePluginReference(config: OpenCodeConfig): OpenCodeConfig {
+  return {
+    ...config,
+    plugin: getOpenCodePluginEntries(config).filter(
+      (plugin) => plugin !== OPENCODE_PLUGIN_CONFIG_PATH,
+    ),
+  };
+}
+
+export function registerOpenCodePluginInConfig(): number {
+  const configPath = getOpenCodeConfigPath();
+  const defaultConfig: OpenCodeConfig = {
+    $schema: 'https://opencode.ai/config.json',
+  };
+
+  try {
+    const config = existsSync(configPath)
+      ? JSON.parse(readFileSync(configPath, 'utf-8')) as OpenCodeConfig
+      : defaultConfig;
+    const updatedConfig = addOpenCodePluginReference(config);
+
+    writeFileSync(configPath, `${JSON.stringify(updatedConfig, null, 2)}\n`, 'utf-8');
+    console.log(`  Plugin registered in: ${configPath}`);
+    logger.info('OPENCODE', 'Plugin registered in config', { path: configPath });
+
+    return 0;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Failed to register OpenCode plugin in config: ${message}`);
+    return 1;
+  }
+}
+
+export function deregisterOpenCodePluginFromConfig(): number {
+  const configPath = getOpenCodeConfigPath();
+  if (!existsSync(configPath)) {
+    return 0;
+  }
+
+  try {
+    const config = JSON.parse(readFileSync(configPath, 'utf-8')) as OpenCodeConfig;
+    const updatedConfig = removeOpenCodePluginReference(config);
+
+    writeFileSync(configPath, `${JSON.stringify(updatedConfig, null, 2)}\n`, 'utf-8');
+    console.log(`  Plugin deregistered from: ${configPath}`);
+    logger.info('OPENCODE', 'Plugin deregistered from config', { path: configPath });
+
+    return 0;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Failed to deregister OpenCode plugin from config: ${message}`);
+    return 1;
+  }
 }
 
 export function findBuiltPluginPath(): string | null {
@@ -64,6 +150,11 @@ export function installOpenCodePlugin(): number {
 
     console.log(`  Plugin installed to: ${destinationPath}`);
     logger.info('OPENCODE', 'Plugin installed', { destination: destinationPath });
+
+    const registerResult = registerOpenCodePluginInConfig();
+    if (registerResult !== 0) {
+      return registerResult;
+    }
 
     return 0;
   } catch (error) {
@@ -157,6 +248,10 @@ export function uninstallOpenCodePlugin(): number {
       console.error(`  Failed to remove plugin: ${message}`);
       hasErrors = true;
     }
+  }
+
+  if (deregisterOpenCodePluginFromConfig() !== 0) {
+    hasErrors = true;
   }
 
   const agentsMdPath = getOpenCodeAgentsMdPath();
