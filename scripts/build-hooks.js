@@ -27,6 +27,11 @@ const CONTEXT_GENERATOR = {
   source: 'src/services/context-generator.ts'
 };
 
+const TRANSCRIPT_WATCHER = {
+  name: 'transcript-watcher',
+  source: 'src/services/transcripts/transcript-watcher-entry.ts'
+};
+
 function stripHardcodedDirname(filePath) {
   let content = fs.readFileSync(filePath, 'utf-8');
   const before = content.length;
@@ -471,6 +476,45 @@ async function buildHooks() {
     const contextGenStats = fs.statSync(`${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`);
     console.log(`✓ context-generator built (${(contextGenStats.size / 1024).toFixed(2)} KB)`);
 
+    console.log(`\n🔧 Building transcript watcher...`);
+    await build({
+      entryPoints: [TRANSCRIPT_WATCHER.source],
+      bundle: true,
+      platform: 'node',
+      target: 'node18',
+      format: 'cjs',
+      outfile: `${hooksDir}/${TRANSCRIPT_WATCHER.name}.cjs`,
+      minify: true,
+      logLevel: 'error',
+      // Externalize zod for consistency with worker-service / server-beta-service —
+      // any zod usage in the processor.ts import chain should resolve at runtime
+      // against plugin/node_modules instead of being inlined (avoids duplicate-
+      // instance hazards and keeps the bundle slim).
+      external: ['bun:sqlite', 'zod'],
+      define: {
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
+      },
+      banner: {
+        js: '#!/usr/bin/env bun'
+      }
+    });
+
+    stripHardcodedDirname(`${hooksDir}/${TRANSCRIPT_WATCHER.name}.cjs`);
+
+    fs.chmodSync(`${hooksDir}/${TRANSCRIPT_WATCHER.name}.cjs`, 0o755);
+    const transcriptWatcherStats = fs.statSync(`${hooksDir}/${TRANSCRIPT_WATCHER.name}.cjs`);
+    console.log(`✓ transcript-watcher built (${(transcriptWatcherStats.size / 1024).toFixed(2)} KB)`);
+
+    // Guard against accidental imports of heavy modules (worker-service,
+    // SDK runtimes, etc.) into the watcher's processor.ts chain. The watcher
+    // is a thin file-tail loop and should stay well under 200 KB.
+    const TRANSCRIPT_WATCHER_MAX_BYTES = 200 * 1024;
+    if (transcriptWatcherStats.size > TRANSCRIPT_WATCHER_MAX_BYTES) {
+      throw new Error(
+        `transcript-watcher.cjs is ${(transcriptWatcherStats.size / 1024).toFixed(2)} KB, exceeding the ${(TRANSCRIPT_WATCHER_MAX_BYTES / 1024).toFixed(0)} KB budget. The watcher is meant to be a thin file-tail loop — audit recent imports in src/services/transcripts/processor.ts and watcher.ts for unintended heavy dependencies.`
+      );
+    }
+
     console.log(`\n🔧 Building NPX CLI...`);
     const npxCliOutDir = 'dist/npx-cli';
     if (!fs.existsSync(npxCliOutDir)) {
@@ -618,6 +662,7 @@ async function buildHooks() {
     console.log(`   - Server beta: server-beta-service.cjs`);
     console.log(`   - MCP Server: mcp-server.cjs`);
     console.log(`   - Context Generator: context-generator.cjs`);
+    console.log(`   - Transcript Watcher: transcript-watcher.cjs`);
     console.log(`   Output: ${npxCliOutDir}/`);
     console.log(`   - NPX CLI: index.js`);
     if (fs.existsSync('openclaw/dist/index.js')) {
