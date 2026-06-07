@@ -43,22 +43,35 @@ const CHROMA_MCP_DEP_OVERRIDES: ReadonlyArray<string> = [
   'protobuf<7',
 ];
 
-// Issue #2696: on Windows the chroma-mcp subprocess is spawned via
-// `cmd.exe /c uvx ...`. cmd.exe interprets `<`, `>`, `|`, `&`, `^`, and `(` `)`
-// as shell metacharacters BEFORE uvx ever sees them, so a dep-override spec
-// like `protobuf<7` is parsed as an input redirection (`protobuf < 7`) and the
-// command line breaks. Node's spawn arg-quoting only quotes args containing
-// spaces/quotes, not these cmd.exe operators, so we must wrap any arg that
-// contains one in double quotes ourselves. Args without metacharacters are
-// returned unchanged so the normal command line is byte-identical to before.
-const CMD_EXE_METACHARACTERS = /[<>|&^()]/;
-export function quoteForCmdExe(arg: string): string {
-  if (!CMD_EXE_METACHARACTERS.test(arg)) {
-    return arg;
-  }
-  // Escape any embedded double quotes, then wrap. Inside double quotes cmd.exe
-  // does not perform redirection/grouping on these metacharacters.
-  return `"${arg.replace(/"/g, '\\"')}"`;
+// Spawn uvx directly on every platform (issues #2696 / #2716 / #2667).
+//
+// The Windows path used to wrap this as `cmd.exe /c uvx ...`. That makes
+// cmd.exe reassemble Node's argv array into a single command line and re-parse
+// the dep-override version specifiers (`onnxruntime>=1.20`, `protobuf<7`) as
+// I/O redirection (`protobuf < 7`), so chroma-mcp never started — every tool
+// call closed in ~30 ms with `MCP error -32000: Connection closed`.
+//
+// Quoting the args by hand did NOT survive the spawn: the MCP SDK launches
+// through cross-spawn with shell:false, and because the command is `cmd.exe`
+// (a `.exe`, not a `.bat`/`.cmd`) cross-spawn does not set
+// windowsVerbatimArguments. Node's own argv→command-line quoting then
+// re-escapes our quotes (`"protobuf<7"` → `"\"protobuf<7\""`), and cmd.exe —
+// which treats `\"` as a literal backslash plus a quote-toggle, not an escape —
+// closes the quote early and sees `<` outside quotes again. The wrapper is the
+// whole problem.
+//
+// Node's child_process.spawn resolves `uvx` → `uvx.exe`/`uvx.cmd` on PATH on
+// Windows exactly as it does on POSIX, so no shell wrap is needed: with uvx as
+// the direct command, the argv array is passed through without any cmd.exe
+// re-parsing and the `<`/`>` dep specs reach uvx intact. PATH resolution is
+// unaffected — getSpawnEnv() still prepends uv's bin dir (ensureUvOnPath,
+// #2790) to the child's env, which applies to a direct spawn just as it did to
+// the cmd.exe wrapper.
+export function buildChromaSpawnConfig(commandArgs: ReadonlyArray<string>): {
+  command: string;
+  args: string[];
+} {
+  return { command: 'uvx', args: [...commandArgs] };
 }
 
 export class ChromaMcpManager {
@@ -123,11 +136,7 @@ export class ChromaMcpManager {
     const spawnEnvironment = this.getSpawnEnv();
     getSupervisor().assertCanSpawn('chroma mcp');
 
-    const isWindows = process.platform === 'win32';
-    const uvxSpawnCommand = isWindows ? (process.env.ComSpec || 'cmd.exe') : 'uvx';
-    const uvxSpawnArgs = isWindows
-      ? ['/c', 'uvx', ...commandArgs.map(quoteForCmdExe)]
-      : commandArgs;
+    const { command: uvxSpawnCommand, args: uvxSpawnArgs } = buildChromaSpawnConfig(commandArgs);
 
     logger.info('CHROMA_MCP', 'Connecting to chroma-mcp via MCP stdio', {
       command: uvxSpawnCommand,

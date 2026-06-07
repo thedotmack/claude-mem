@@ -1,47 +1,47 @@
 import { describe, it, expect } from 'bun:test';
-import { quoteForCmdExe } from '../../../src/services/sync/ChromaMcpManager.js';
+import { buildChromaSpawnConfig } from '../../../src/services/sync/ChromaMcpManager.js';
 import { codexSpawn } from '../../../src/services/integrations/CodexCliInstaller.js';
 
 // Windows spawn-contract fixes folded into plans/02-spawn-contract-templating.md:
-//   #2696 — ChromaDB MCP subprocess: unquoted `protobuf<7` in cmd.exe /c
+//   #2696 / #2716 / #2667 — ChromaDB MCP subprocess: a `cmd.exe /c uvx ...`
+//     wrapper makes cmd.exe re-parse the dep-override version specifiers
+//     (`onnxruntime>=1.20`, `protobuf<7`) as I/O redirection. Fix: spawn uvx
+//     directly on every platform — no shell wrap, nothing for cmd.exe to mangle.
 //   #2695 — Codex CLI: spawnSync ENOENT for codex.cmd
 
-describe('Windows #2696 - cmd.exe metacharacter quoting for chroma-mcp deps', () => {
-  it('quotes dep specs containing cmd.exe redirection operators', () => {
-    expect(quoteForCmdExe('protobuf<7')).toBe('"protobuf<7"');
-    expect(quoteForCmdExe('onnxruntime>=1.20')).toBe('"onnxruntime>=1.20"');
+describe('chroma-mcp spawn contract — direct uvx, no cmd.exe wrapper (#2696/#2716/#2667)', () => {
+  const commandArgs = [
+    '--python', '3.13',
+    '--with', 'onnxruntime>=1.20',
+    '--with', 'protobuf<7',
+    'chroma-mcp==0.2.6',
+    '--client-type', 'persistent',
+    '--data-dir', '/home/u/.claude-mem/chroma',
+  ];
+
+  it('spawns uvx directly, with no cmd.exe shell wrapper', () => {
+    const { command, args } = buildChromaSpawnConfig(commandArgs);
+    expect(command).toBe('uvx');
+    // The defunct Windows branch used ComSpec/cmd.exe as the command and
+    // shoved `/c uvx` into the args — neither must come back.
+    expect(command).not.toMatch(/cmd(?:\.exe)?$/i);
+    expect(args).not.toContain('/c');
+    expect(args).not.toContain('uvx');
   });
 
-  it('leaves ordinary args (no metacharacters) byte-identical', () => {
-    expect(quoteForCmdExe('--with')).toBe('--with');
-    expect(quoteForCmdExe('--python')).toBe('--python');
-    expect(quoteForCmdExe('3.13')).toBe('3.13');
-    expect(quoteForCmdExe('chroma-mcp==0.2.6')).toBe('chroma-mcp==0.2.6');
-    expect(quoteForCmdExe('--client-type')).toBe('--client-type');
-    expect(quoteForCmdExe('persistent')).toBe('persistent');
+  it('passes dep version specifiers through verbatim (no cmd.exe metachar quoting)', () => {
+    const { args } = buildChromaSpawnConfig(commandArgs);
+    // The `<` / `>` specs must reach uvx unquoted and unescaped. cmd.exe is no
+    // longer in the path, so there is nothing to escape them for — wrapping
+    // them in quotes here would actually break uvx's own arg parsing.
+    expect(args).toContain('onnxruntime>=1.20');
+    expect(args).toContain('protobuf<7');
+    expect(args).toEqual(commandArgs);
   });
 
-  it('quotes pipe/ampersand/caret/paren metacharacters too', () => {
-    expect(quoteForCmdExe('a|b')).toBe('"a|b"');
-    expect(quoteForCmdExe('a&b')).toBe('"a&b"');
-    expect(quoteForCmdExe('a^b')).toBe('"a^b"');
-    expect(quoteForCmdExe('a(b)')).toBe('"a(b)"');
-  });
-
-  it('escapes embedded double quotes before wrapping', () => {
-    expect(quoteForCmdExe('a"<b')).toBe('"a\\"<b"');
-  });
-
-  it('the actual chroma dep-override specs become cmd.exe-safe', () => {
-    // These are the exact specs the manager passes through cmd.exe /c uvx ...
-    const specs = ['onnxruntime>=1.20', 'protobuf<7'];
-    for (const spec of specs) {
-      const quoted = quoteForCmdExe(spec);
-      expect(quoted.startsWith('"')).toBe(true);
-      expect(quoted.endsWith('"')).toBe(true);
-      // The inner content is preserved so uvx still sees the real spec.
-      expect(quoted.slice(1, -1)).toBe(spec);
-    }
+  it('returns a fresh array (does not alias the caller-owned commandArgs)', () => {
+    const { args } = buildChromaSpawnConfig(commandArgs);
+    expect(args).not.toBe(commandArgs);
   });
 });
 
