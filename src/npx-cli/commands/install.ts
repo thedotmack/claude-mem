@@ -1129,13 +1129,16 @@ async function promptClaudeModel(options: InstallOptions): Promise<void> {
 }
 
 // --- CMEM Online email opt-in ----------------------------------------------
-// Interactive, optional. When CLAUDE_MEM_SIGNUP_URL points at a signup endpoint
-// (e.g. the Resend-backed handler that already lives in our web project) the
-// CLI POSTs the email + optional note there. The endpoint URL is the only knob;
-// we never embed a Resend key in the npx package. Anything that goes wrong here
-// is swallowed — a marketing opt-in must never block or fail the install.
+// Interactive, optional. The CLI POSTs the email + optional note to the live
+// waitlist endpoint (cmem.ai/api/waitlist), which handles persistence, dedup,
+// and the confirmation email server-side. CLAUDE_MEM_SIGNUP_URL overrides the
+// default for testing/staging. No API keys ever ship in the npx package — the
+// endpoint is unauthenticated and the secret (Resend) stays server-side.
+// Anything that goes wrong here is swallowed — a marketing opt-in must never
+// block or fail the install.
 
-const SIGNUP_ENDPOINT = process.env.CLAUDE_MEM_SIGNUP_URL?.trim() || '';
+const DEFAULT_SIGNUP_ENDPOINT = 'https://cmem.ai/api/waitlist';
+const SIGNUP_ENDPOINT = process.env.CLAUDE_MEM_SIGNUP_URL?.trim() || DEFAULT_SIGNUP_ENDPOINT;
 const SIGNUP_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 interface StoredSignup {
@@ -1162,7 +1165,6 @@ function readStoredSignup(): StoredSignup | null {
 }
 
 async function submitOnlineSignup(payload: { email: string; note: string; version: string }): Promise<boolean> {
-  if (!SIGNUP_ENDPOINT) return false; // no endpoint configured — keep the email local only
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 5000);
   try {
@@ -1174,7 +1176,7 @@ async function submitOnlineSignup(payload: { email: string; note: string; versio
         note: payload.note,
         version: payload.version,
         platform: process.platform,
-        source: 'npx-install',
+        source: 'npx-installer',
       }),
       signal: controller.signal,
     });
