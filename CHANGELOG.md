@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.4.1] - 2026-06-08
+
+## What's new
+
+### 🟣 CMEM Online email opt-in during `npx claude-mem install`
+An optional, interactive email opt-in now appears at the start of the installer. Press Enter to skip — it never blocks or fails the install.
+
+- Collects an email + an optional "what are you working on / how can we help your team" note.
+- POSTs to the live `https://cmem.ai/api/waitlist` endpoint (handles persistence, dedup, and the confirmation email server-side). Overridable via `CLAUDE_MEM_SIGNUP_URL`; tagged `source: npx-installer`.
+- Skipped automatically when non-interactive, under CI, or with `CLAUDE_MEM_ONLINE_OPTIN=false`.
+- Signup is persisted locally so returning users aren't re-prompted; a failed send is retried silently on the next install.
+- No secrets ship in the npx package — the endpoint is unauthenticated and the Resend key stays server-side. The waitlist endpoint was extended to capture the optional note.
+
+### 🔴 Fixes
+- Remove a duplicate `ModeManager` import that was breaking the typecheck.
+- Exempt the `transcript-watcher-entry` CLI process entry point from the console-logging guard.
+
 ## [13.4.0] - 2026-05-29
 
 Clears a large defect backlog (plans 01–11 plus standalone fixes) and adds provider configurability. Test suite moved 46 → 0 failing and typecheck 24 → 0 errors over the branch.
