@@ -172,13 +172,16 @@ You can register additional tree-sitter grammars for file types not in the bundl
 ```json
 {
   "grammars": {
-    ".sol": "tree-sitter-solidity",
-    ".graphql": "tree-sitter-graphql"
+    "solidity": {
+      "package": "tree-sitter-solidity",
+      "extensions": [".sol"],
+      "query": "solidity-query.scm"
+    }
   }
 }
 ```
 
-Each key is a file extension; each value is the npm package name of the tree-sitter grammar. The grammar must be installed locally (`npm install tree-sitter-solidity`). Once registered, `smart_outline` and `smart_unfold` will parse those extensions structurally instead of falling back to plain text.
+Each key is a language name. `package` is the npm package of the tree-sitter grammar and `extensions` lists the file extensions it covers; the package must be installed in the project's `node_modules` (`npm install tree-sitter-solidity`). `query` (optional) is a path, relative to the config file, to a tree-sitter query whose captures (`@func`, `@cls`, `@method`, `@iface`, `@enm`, `@struct_def`, `@imp`) extract symbols. Without `query`, a minimal generic pattern is used — it only matches grammars that define `function_declaration`/`class_declaration` node types, and query compilation fails silently (0 symbols) for grammars that lack them, so a custom query is effectively required for most languages. Once registered, `smart_outline` and `smart_unfold` parse those extensions structurally instead of falling back to plain text.
 
 ### Markdown Special Support
 

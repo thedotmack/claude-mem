@@ -3,6 +3,7 @@ import type { SQLQueryBindings } from 'bun:sqlite';
 import { DatabaseManager } from './DatabaseManager.js';
 import { logger } from '../../utils/logger.js';
 import { OBSERVER_SESSIONS_PROJECT } from '../../shared/paths.js';
+import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../shared/user-prompts.js';
 import type { PaginatedResult, Observation, Summary, UserPrompt } from '../worker-types.js';
 
 export class PaginationHelper {
@@ -196,6 +197,24 @@ export class PaginationHelper {
       conditions.push(`COALESCE(s.platform_source, 'claude') = ?`);
       params.push(platformSource);
     }
+
+    conditions.push(`
+      NOT EXISTS (
+        SELECT 1
+        FROM user_prompts duplicate
+        WHERE duplicate.content_session_id = up.content_session_id
+          AND duplicate.prompt_text = up.prompt_text
+          AND (
+            duplicate.created_at_epoch > up.created_at_epoch
+            OR (
+              duplicate.created_at_epoch = up.created_at_epoch
+              AND duplicate.id > up.id
+            )
+          )
+          AND duplicate.created_at_epoch - up.created_at_epoch <= ?
+      )
+    `);
+    params.push(USER_PROMPT_DEDUPE_WINDOW_MS);
 
     if (conditions.length > 0) {
       query += ` WHERE ${conditions.join(' AND ')}`;

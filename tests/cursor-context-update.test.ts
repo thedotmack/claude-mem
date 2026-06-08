@@ -167,15 +167,22 @@ Paragraph 2`;
       expect(content).toContain('<html>');
     });
 
-    it('handles unicode in context', () => {
+    it('preserves BMP unicode and strips astral emoji (issue #2787)', () => {
       const unicodeContext = 'Emoji: 🚀 Japanese: 日本語 Arabic: العربية';
 
       writeContextFile(workspacePath, unicodeContext);
 
       const content = readContextFile(workspacePath);
-      expect(content).toContain('🚀');
+      // BMP scripts must survive untouched.
       expect(content).toContain('日本語');
       expect(content).toContain('العربية');
+      // Astral emoji are sanitized to BMP so a Claude Code context truncation
+      // can't split a surrogate pair and brick the session.
+      expect(content).not.toContain('🚀');
+      for (let i = 0; i < content!.length; i++) {
+        const code = content!.charCodeAt(i);
+        expect(code < 0xd800 || code > 0xdfff).toBe(true);
+      }
     });
 
     it('handles very long context', () => {

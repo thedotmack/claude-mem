@@ -33,9 +33,11 @@ export interface ShellTemplateOptions {
   /**
    * Trailing command tokens run after `_P` resolves. Tokens are emitted
    * verbatim (callers pass already-quoted `"$_P/scripts/X"` forms), matching
-   * the hand-authored files.
+   * the hand-authored files. Required for every shell host; the `mcp` host
+   * ignores it (the Node launcher derives its spawn target from `requireFile`),
+   * so mcp callers may omit it.
    */
-  trailingCommand: string[];
+  trailingCommand?: string[];
   /** Extra env exports prepended to the trailing command (e.g. CLAUDE_MEM_CODEX_HOOK=1). */
   extraEnv?: Record<string, string>;
   /** Optional trailing JSON echoed after the command (e.g. SessionStart continue marker). */
@@ -127,11 +129,87 @@ const CYGPATH_CLAUSE =
   `command -v cygpath >/dev/null 2>&1 && { _W=$(cygpath -w "$_P" 2>/dev/null); [ -n "$_W" ] && _P="$_W"; };`;
 
 /**
+ * Translate a shell-token candidate (`$PWD`, `$PWD/x`, `$HOME/x`, `$_C/x`) into
+ * an equivalent Node path expression for the cross-platform MCP launcher.
+ * `d` = process.cwd(), `h` = os.homedir(), `C` = resolved CLAUDE_CONFIG_DIR.
+ */
+function shTokenToNode(token: string): string {
+  if (token === '$PWD') return 'd';
+  const map: Array<[string, string]> = [
+    ['$PWD/', 'd'],
+    ['$HOME/', 'h'],
+    ['$_C/', 'C'],
+  ];
+  for (const [prefix, base] of map) {
+    if (token.startsWith(prefix)) {
+      return `p.join(${base},${JSON.stringify(token.slice(prefix.length))})`;
+    }
+  }
+  // Literal fallback (no known shell base) — embed as-is.
+  return JSON.stringify(token);
+}
+
+/**
+ * Cross-platform MCP launcher (issues #2792, #2790, #2714, #2461). The plugin
+ * `.mcp.json` previously used `command: "sh"`, which Claude Code cannot spawn on
+ * Windows when Git's `usr/bin` is not on PATH, so the search tools never
+ * registered. This emits the `node -e` payload (`.mcp.json` args[1]) that does
+ * the same plugin-root discovery in pure Node — no shell dependency — then
+ * spawns the resolved server and forwards signals. The candidate order mirrors
+ * the POSIX prelude's: $CLAUDE_PLUGIN_ROOT/$PLUGIN_ROOT, mcpExtraCandidates,
+ * mtime-sorted cache roots, then the marketplace install dir.
+ *
+ * Only `requireFile`, `notFoundMessage`, and the mcp* candidate fields are
+ * consumed. `trailingCommand`, `extraEnv`, `trailingJson`, and the cygpath
+ * clause are intentionally ignored for this host — the spawn target is derived
+ * solely from `requireFile`, and the Node launcher needs no shell scaffolding.
+ */
+function buildMcpNodeLauncher(options: ShellTemplateOptions): string {
+  const candidates = (options.mcpExtraCandidates ?? []).map(shTokenToNode);
+  const cacheRoots = [
+    ...(options.mcpExtraCacheRoots ?? []),
+    '$_C/plugins/cache/thedotmack/claude-mem',
+  ].map(shTokenToNode);
+  const marketplace = shTokenToNode('$_C/plugins/marketplaces/thedotmack/plugin');
+  const require = JSON.stringify(options.requireFile);
+  const notFound = JSON.stringify(`${options.notFoundMessage}\n`);
+
+  const kParts = [
+    'E',
+    ...candidates,
+    ...cacheRoots.map((root) => `...L(${root})`),
+    marketplace,
+  ].join(',');
+
+  return (
+    `const f=require('fs'),p=require('path'),o=require('os'),c=require('child_process');` +
+    `const h=o.homedir();` +
+    `const C=process.env.CLAUDE_CONFIG_DIR||p.join(h,'.claude');` +
+    `const E=process.env.CLAUDE_PLUGIN_ROOT||process.env.PLUGIN_ROOT||'';` +
+    `const d=process.cwd();` +
+    `const L=x=>{try{return f.readdirSync(x).filter(n=>/^\\d/.test(n)).map(n=>p.join(x,n)).filter(z=>{try{return f.statSync(z).isDirectory()}catch{return false}}).sort((a,b)=>f.statSync(b).mtimeMs-f.statSync(a).mtimeMs)}catch{return[]}};` +
+    `const K=[${kParts}].filter(Boolean);` +
+    `let R=null;` +
+    `for(const k of K){const r=f.existsSync(p.join(k,'plugin','scripts'))?p.join(k,'plugin'):k;if(f.existsSync(p.join(r,'scripts',${require}))){R=r;break}}` +
+    `if(!R){process.stderr.write(${notFound});process.exit(1)}` +
+    `const ch=c.spawn(process.execPath,[p.join(R,'scripts',${require})],{stdio:'inherit'});` +
+    `for(const s of ['SIGTERM','SIGINT','SIGHUP'])process.on(s,()=>{try{ch.kill(s)}catch{}});` +
+    `ch.on('exit',(code,sig)=>{if(sig){process.removeAllListeners(sig);try{process.kill(process.pid,sig)}catch{process.exit(1)}}else process.exit(code==null?0:code)})`
+  );
+}
+
+/**
  * Build the full single-line shell command string for a Rule A site.
  * The output is byte-compatible with the hand-authored command strings in
  * the host-managed config files.
  */
 export function buildShellCommand(options: ShellTemplateOptions): string {
+  // MCP uses a cross-platform Node launcher instead of an `sh -c` prelude so it
+  // spawns on Windows without Git Bash (#2792/#2790/#2714/#2461).
+  if (options.host === 'mcp') {
+    return buildMcpNodeLauncher(options);
+  }
+
   const parts: string[] = [];
 
   // The PATH prelude is pushed verbatim (including any trailing space). `parts`
@@ -146,12 +224,9 @@ export function buildShellCommand(options: ShellTemplateOptions): string {
   parts.push(candidateBlock(options));
   parts.push(`[ -n "$_P" ] || { echo "${options.notFoundMessage}" >&2; exit 1; };`);
 
-  // cygpath conversion: claude-code + codex-cli only. MCP runs under `sh -c`
-  // which already understands POSIX paths, so no conversion (matches current
-  // plugin/.mcp.json).
-  if (options.host !== 'mcp') {
-    parts.push(CYGPATH_CLAUSE);
-  }
+  // cygpath conversion: claude-code + codex-cli. MCP returned early above (it
+  // uses the Node launcher), so every host reaching here needs the clause.
+  parts.push(CYGPATH_CLAUSE);
 
   const envPrefix = options.extraEnv
     ? Object.entries(options.extraEnv)
@@ -159,6 +234,11 @@ export function buildShellCommand(options: ShellTemplateOptions): string {
         .join('')
     : '';
 
+  // Shell hosts always run a trailing command; fail loud rather than emit a
+  // launcher that silently resolves `_P` and then does nothing.
+  if (!options.trailingCommand) {
+    throw new Error(`buildShellCommand: host '${options.host}' requires trailingCommand`);
+  }
   let command = `${envPrefix}${options.trailingCommand.join(' ')}`;
   if (options.trailingJson) {
     command += `; echo '${JSON.stringify(options.trailingJson)}'`;

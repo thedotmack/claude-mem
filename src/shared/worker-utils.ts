@@ -9,6 +9,7 @@ import { MARKETPLACE_ROOT, DATA_DIR } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
 import { validateWorkerPidFile } from "../supervisor/index.js";
 import { emitBlockingError } from "./hook-io.js";
+import { checkVersionMatch } from "../services/infrastructure/index.js";
 
 function readTimeoutEnv(
   envName: string,
@@ -130,64 +131,6 @@ async function isWorkerReady(): Promise<boolean> {
   return response.ok;
 }
 
-function getPluginVersion(): string {
-  try {
-    const packageJsonPath = path.join(MARKETPLACE_ROOT, 'package.json');
-    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
-    return packageJson.version;
-  } catch (error: unknown) {
-    const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
-    if (code === 'ENOENT' || code === 'EBUSY') {
-      logger.debug('SYSTEM', 'Could not read plugin version (shutdown race)', { code });
-      return 'unknown';
-    }
-    throw error;
-  }
-}
-
-async function getWorkerVersion(): Promise<string> {
-  const response = await workerHttpRequest('/api/version', { timeoutMs: HEALTH_CHECK_TIMEOUT_MS });
-  if (!response.ok) {
-    throw new Error(`Failed to get worker version: ${response.status}`);
-  }
-  const data = await response.json() as { version: string };
-  return data.version;
-}
-
-async function checkWorkerVersion(): Promise<void> {
-  let pluginVersion: string;
-  try {
-    pluginVersion = getPluginVersion();
-  } catch (error: unknown) {
-    logger.debug('SYSTEM', 'Version check failed reading plugin version', {
-      error: error instanceof Error ? error.message : String(error)
-    });
-    return;
-  }
-
-  if (pluginVersion === 'unknown') return;
-
-  let workerVersion: string;
-  try {
-    workerVersion = await getWorkerVersion();
-  } catch (error: unknown) {
-    logger.debug('SYSTEM', 'Version check failed reading worker version', {
-      error: error instanceof Error ? error.message : String(error)
-    });
-    return;
-  }
-
-  if (workerVersion === 'unknown') return;
-
-  if (pluginVersion !== workerVersion) {
-    logger.debug('SYSTEM', 'Version check', {
-      pluginVersion,
-      workerVersion,
-      note: 'Mismatch will be auto-restarted by worker-service start command'
-    });
-  }
-}
-
 function resolveWorkerScriptPath(): string | null {
   const candidates = [
     path.join(MARKETPLACE_ROOT, 'plugin', 'scripts', 'worker-service.cjs'),
@@ -270,20 +213,48 @@ async function isWorkerPortAlive(): Promise<boolean> {
   if (!healthy) return false;
 
   const pidStatus = validateWorkerPidFile({ logAlive: false });
-  if (pidStatus === 'missing') return true;     
-  if (pidStatus === 'alive') return true;       
-  return false;                                 
+  if (pidStatus === 'missing') return true;
+  if (pidStatus === 'alive') return true;
+  return false;
 }
 
 export async function ensureWorkerRunning(): Promise<boolean> {
   if (await isWorkerPortAlive()) {
-    await checkWorkerVersion();
-    const ready = await waitForWorkerReadiness();
-    if (!ready) {
-      logger.warn('SYSTEM', 'Worker is healthy but not ready; skipping hook API call');
-      return false;
+    // A worker is already alive. If it is a DIFFERENT version than the
+    // installed plugin (e.g. the user upgraded but the previous worker is
+    // still squatting the port), recycle it so the current version takes
+    // over — otherwise the stale worker keeps serving indefinitely.
+    //
+    // Previously this branch only logged the mismatch (debug level) and
+    // returned, so a stale worker was reused across upgrades. We now act on
+    // it: ask the running worker to restart via its localhost-only admin
+    // endpoint, then fall through to the lazy-spawn + readiness path so the
+    // current-version worker is (re)started and awaited.
+    const { matches, pluginVersion, workerVersion } = await checkVersionMatch(getWorkerPort());
+    if (matches) {
+      const ready = await waitForWorkerReadiness();
+      if (!ready) {
+        logger.warn('SYSTEM', 'Worker is healthy but not ready; skipping hook API call');
+        return false;
+      }
+      return true;
     }
-    return true;
+
+    logger.info('SYSTEM', 'Worker version mismatch — recycling stale worker', {
+      pluginVersion,
+      workerVersion,
+    });
+    try {
+      await workerHttpRequest('/api/admin/restart', {
+        method: 'POST',
+        timeoutMs: HEALTH_CHECK_TIMEOUT_MS,
+      });
+    } catch (error: unknown) {
+      logger.debug('SYSTEM', 'Worker restart request failed; falling through to lazy-spawn', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    // Fall through to (re)spawn + readiness wait below.
   }
 
   const runtimePath = resolveBunRuntime();
@@ -317,9 +288,16 @@ export async function ensureWorkerRunning(): Promise<boolean> {
     return false;
   }
 
-  const alive = await waitForWorkerPort({ attempts: 3, backoffMs: 250 });
+  // Cold boot (#2795): on the first session after a reboot the SessionStart
+  // `start` hook is booting the daemon in parallel, and a cold macOS+Chroma
+  // worker needs ~7s to bind. The old 3-attempt/250ms budget (~0.75s) expired
+  // long before that, so the context (and session-init) hooks raced boot and
+  // soft-failed to empty — dropping memory injection and the user_prompts row
+  // (the upstream trigger for #2794). Wait up to ~15.5s (≈ POST_SPAWN_WAIT) so
+  // whichever worker wins the port is seen before we give up.
+  const alive = await waitForWorkerPort({ attempts: 6, backoffMs: 500 });
   if (!alive) {
-    logger.warn('SYSTEM', 'Worker port did not open after lazy-spawn within 3 attempts');
+    logger.warn('SYSTEM', 'Worker port did not open after lazy-spawn within the cold-boot wait (~15s)');
     return false;
   }
   const ready = await waitForWorkerReadiness();
@@ -422,7 +400,7 @@ function recordWorkerUnreachable(): number {
 
 function resetWorkerFailureCounter(): void {
   const state = readHookFailureState();
-  if (state.consecutiveFailures === 0) return;       
+  if (state.consecutiveFailures === 0) return;
   writeHookFailureStateAtomic({ consecutiveFailures: 0, lastFailureAt: 0 });
 }
 

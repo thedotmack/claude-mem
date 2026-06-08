@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { ClaudeMemDatabase } from '../../src/services/sqlite/Database.js';
 import {
   saveUserPrompt,
+  findRecentDuplicateUserPrompt,
   getPromptNumberFromUserPrompts,
 } from '../../src/services/sqlite/Prompts.js';
 import { createSDKSession } from '../../src/services/sqlite/Sessions.js';
@@ -56,6 +57,17 @@ describe('Prompts Module', () => {
       const id2 = saveUserPrompt(db, sessionB, 1, 'Prompt B1');
 
       expect(id1).not.toBe(id2);
+    });
+
+    it('should find a duplicate prompt in the recent dedupe window', () => {
+      const contentSessionId = createSession('duplicate-prompt-session');
+      const id = saveUserPrompt(db, contentSessionId, 1, 'Repeated prompt');
+
+      const duplicate = findRecentDuplicateUserPrompt(db, contentSessionId, 'Repeated prompt', 10_000);
+
+      expect(duplicate?.id).toBe(id);
+      expect(duplicate?.prompt_number).toBe(1);
+      expect(duplicate?.prompt_text).toBe('Repeated prompt');
     });
   });
 

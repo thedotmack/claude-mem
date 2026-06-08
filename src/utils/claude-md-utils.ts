@@ -7,6 +7,7 @@ import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { workerHttpRequest } from '../shared/worker-utils.js';
 import { paths } from '../shared/paths.js';
 import { matchesAnyGlob } from './project-filter.js';
+import { toBmpSafe } from './bmp-safe.js';
 
 const SETTINGS_PATH = paths.settings();
 
@@ -92,7 +93,9 @@ export function writeClaudeMdToFolder(folderPath: string, newContent: string, ta
     existingContent = readFileSync(claudeMdPath, 'utf-8');
   }
 
-  const finalContent = replaceTaggedContent(existingContent, newContent);
+  // #2787: never write astral (surrogate-pair) code points into auto-loaded
+  // context — a Claude Code truncation can split a pair and brick the session.
+  const finalContent = replaceTaggedContent(existingContent, toBmpSafe(newContent));
 
   writeFileSync(tempFile, finalContent);
   renameSync(tempFile, claudeMdPath);

@@ -15,6 +15,7 @@ import type { ObservationSearchResult, SessionSummarySearchResult } from './type
 import { computeObservationContentHash } from './observations/store.js';
 import { parseFileList } from './observations/files.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources } from '../../shared/platform-source.js';
+import { findRecentDuplicateUserPrompt as findRecentDuplicateUserPromptRecord } from './prompts/get.js';
 
 function resolveCreateSessionArgs(
   customTitle?: string,
@@ -1382,6 +1383,14 @@ export class SessionStore {
     `);
 
     return stmt.get(contentSessionId) as LatestPromptResult | undefined;
+  }
+
+  findRecentDuplicateUserPrompt(
+    contentSessionId: string,
+    promptText: string,
+    windowMs: number
+  ): LatestPromptResult | undefined {
+    return findRecentDuplicateUserPromptRecord(this.db, contentSessionId, promptText, windowMs);
   }
 
   getRecentSessionsWithStatus(project: string, limit: number = 3): Array<{

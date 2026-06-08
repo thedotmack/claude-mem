@@ -21,6 +21,7 @@ import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 import { handleGeneratorExit } from '../../session/GeneratorExitHandler.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
 import { getUptimeSeconds } from '../../../../shared/uptime.js';
+import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../../../shared/user-prompts.js';
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
 
@@ -257,14 +258,14 @@ export class SessionRoutes extends BaseRouteHandler {
     const sessionDbId = store.createSDKSession(contentSessionId, '', '', undefined, platformSource);
     const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId);
 
-    const userPrompt = PrivacyCheckValidator.checkUserPromptPrivacy(
+    const privacy = PrivacyCheckValidator.checkUserPromptPrivacy(
       store,
       contentSessionId,
       promptNumber,
       'summarize',
       sessionDbId
     );
-    if (!userPrompt) {
+    if (!privacy.allow) {
       res.json({ status: 'skipped', reason: 'private' });
       return;
     }
@@ -381,6 +382,31 @@ export class SessionRoutes extends BaseRouteHandler {
         promptNumber,
         skipped: true,
         reason: 'private'
+      });
+      return;
+    }
+
+    const duplicatePrompt = store.findRecentDuplicateUserPrompt(
+      contentSessionId,
+      cleanedPrompt,
+      USER_PROMPT_DEDUPE_WINDOW_MS
+    );
+
+    if (duplicatePrompt) {
+      const contextInjected = this.sessionManager.getSession(sessionDbId) !== undefined;
+      logger.debug('SESSION', 'Duplicate user prompt skipped', {
+        sessionId: sessionDbId,
+        promptNumber: duplicatePrompt.prompt_number,
+        duplicatePromptId: duplicatePrompt.id,
+        contextInjected
+      });
+
+      res.json({
+        sessionDbId,
+        promptNumber: duplicatePrompt.prompt_number,
+        skipped: true,
+        reason: 'duplicate',
+        contextInjected
       });
       return;
     }

@@ -272,6 +272,11 @@ ALTER TABLE observation_generation_jobs DROP CONSTRAINT IF EXISTS observation_ge
 CREATE UNIQUE INDEX IF NOT EXISTS idx_server_sessions_project_idempotency
   ON server_sessions(project_id, idempotency_key)
   WHERE idempotency_key IS NOT NULL;
+-- Supports the session linkage lookup on the /v1/events ingest path
+-- (WHERE content_session_id = $1 AND project_id = $2 ...).
+CREATE INDEX IF NOT EXISTS idx_server_sessions_content_session
+  ON server_sessions(project_id, content_session_id)
+  WHERE content_session_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_observations_generation_key_scope
   ON observations(team_id, project_id, generation_key)
   WHERE generation_key IS NOT NULL;

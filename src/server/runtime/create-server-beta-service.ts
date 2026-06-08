@@ -14,6 +14,7 @@ import { GeminiObservationProvider } from '../generation/providers/GeminiObserva
 import { OpenRouterObservationProvider } from '../generation/providers/OpenRouterObservationProvider.js';
 import type { ServerGenerationProvider } from '../generation/providers/shared/types.js';
 import { ServerBetaService } from './ServerBetaService.js';
+import { ModeManager } from '../../services/domain/ModeManager.js';
 import {
   DisabledServerBetaEventBroadcaster,
   DisabledServerBetaGenerationWorkerManager,
@@ -174,6 +175,19 @@ export function loadServerBetaMode(): void {
 export async function createServerBetaService(
   options: CreateServerBetaServiceOptions = {},
 ): Promise<ServerBetaService> {
+  // Generation prompt-builder requires an active mode; server-beta never went
+  // through the plugin setup path that loads one, so we do it here explicitly.
+  try {
+    ModeManager.getInstance().loadMode('code');
+  } catch (err) {
+    // Mode files are optional, but surface failures (e.g. malformed JSON in a
+    // CLAUDE_MEM_MODES_DIR file) so an operator can diagnose why custom types
+    // aren't appearing instead of silently falling back to the defaults.
+    logger.warn('SYSTEM', 'server-beta: failed to load mode at startup (mode files optional)', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   if (!options.skipEnvValidation) {
     validateServerBetaEnv();
   }
