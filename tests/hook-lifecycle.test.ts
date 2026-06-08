@@ -196,6 +196,29 @@ describe('Codex CLI Compatibility (#744)', () => {
       });
     });
 
+    it('strips suppressOutput because Codex rejects it for PostToolUse', async () => {
+      const { codexAdapter } = await import('../src/cli/adapters/codex.js');
+      const output = codexAdapter.formatOutput({
+        continue: true,
+        suppressOutput: true,
+        systemMessage: 'stored observation',
+        hookSpecificOutput: {
+          hookEventName: 'PostToolUse',
+          additionalContext: 'tool observation captured',
+        },
+      }) as Record<string, unknown>;
+
+      expect(output.suppressOutput).toBeUndefined();
+      expect(output).toEqual({
+        continue: true,
+        systemMessage: 'stored observation',
+        hookSpecificOutput: {
+          hookEventName: 'PostToolUse',
+          additionalContext: 'tool observation captured',
+        },
+      });
+    });
+
     it('does not emit hookSpecificOutput for Stop outputs', async () => {
       const { codexAdapter } = await import('../src/cli/adapters/codex.js');
       const output = codexAdapter.formatOutput({
@@ -207,7 +230,7 @@ describe('Codex CLI Compatibility (#744)', () => {
         },
       }) as any;
 
-      expect(output).toEqual({ continue: true, suppressOutput: true });
+      expect(output).toEqual({ continue: true });
     });
   });
 
