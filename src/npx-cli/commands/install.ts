@@ -184,6 +184,7 @@ function makeIDETask(ideId: string, summary: InstallSummary): TaskDescriptor | n
   };
 
   switch (ideId) {
+    case 'claude':
     case 'claude-code': {
       return {
         title: 'Claude Code: registering plugin',
