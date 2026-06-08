@@ -1128,6 +1128,134 @@ async function promptClaudeModel(options: InstallOptions): Promise<void> {
   }
 }
 
+// --- CMEM Online email opt-in ----------------------------------------------
+// Interactive, optional. The CLI POSTs the email + optional note to the live
+// waitlist endpoint (cmem.ai/api/waitlist), which handles persistence, dedup,
+// and the confirmation email server-side. CLAUDE_MEM_SIGNUP_URL overrides the
+// default for testing/staging. No API keys ever ship in the npx package — the
+// endpoint is unauthenticated and the secret (Resend) stays server-side.
+// Anything that goes wrong here is swallowed — a marketing opt-in must never
+// block or fail the install.
+
+const DEFAULT_SIGNUP_ENDPOINT = 'https://cmem.ai/api/waitlist';
+const SIGNUP_ENDPOINT = process.env.CLAUDE_MEM_SIGNUP_URL?.trim() || DEFAULT_SIGNUP_ENDPOINT;
+const SIGNUP_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+interface StoredSignup {
+  email: string;
+  note: string;
+  sent: boolean;
+}
+
+function readStoredSignup(): StoredSignup | null {
+  try {
+    if (!existsSync(USER_SETTINGS_PATH)) return null;
+    const raw = JSON.parse(readFileSync(USER_SETTINGS_PATH, 'utf-8')) as Record<string, unknown>;
+    const flat = (raw.env && typeof raw.env === 'object' ? raw.env : raw) as Record<string, unknown>;
+    const email = typeof flat.CLAUDE_MEM_ONLINE_SIGNUP_EMAIL === 'string' ? flat.CLAUDE_MEM_ONLINE_SIGNUP_EMAIL : '';
+    if (!email) return null;
+    return {
+      email,
+      note: typeof flat.CLAUDE_MEM_ONLINE_SIGNUP_NOTE === 'string' ? flat.CLAUDE_MEM_ONLINE_SIGNUP_NOTE : '',
+      sent: flat.CLAUDE_MEM_ONLINE_SIGNUP_SENT === 'true',
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function submitOnlineSignup(payload: { email: string; note: string; version: string }): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
+  try {
+    const res = await fetch(SIGNUP_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: payload.email,
+        note: payload.note,
+        version: payload.version,
+        platform: process.platform,
+        source: 'npx-installer',
+      }),
+      signal: controller.signal,
+    });
+    return res.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function promptCmemOnlineOptIn(version: string): Promise<void> {
+  // Interactive-only, and easy to turn off for CI / scripted installs.
+  if (!isInteractive) return;
+  if (process.env.CI) return;
+  if (String(process.env.CLAUDE_MEM_ONLINE_OPTIN ?? '').trim().toLowerCase() === 'false') return;
+
+  const prior = readStoredSignup();
+  if (prior) {
+    // We already captured this email — don't re-nag. If a previous send never
+    // reached the service, quietly retry once now and record the result.
+    if (!prior.sent) {
+      const ok = await submitOnlineSignup({ email: prior.email, note: prior.note, version });
+      if (ok) mergeSettings({ CLAUDE_MEM_ONLINE_SIGNUP_SENT: 'true' });
+    }
+    return;
+  }
+
+  p.note(
+    [
+      pc.bold(pc.cyan('New! CMEM Online: every mem everywhere all at once.')),
+      '',
+      "Share your email and we'll send you a link. We're rolling this out to our",
+      'top users first, then everyone ASAP.',
+    ].join('\n'),
+    'CMEM Online',
+  );
+
+  const emailResult = await p.text({
+    message: 'Your email (press Enter to skip):',
+    placeholder: 'you@example.com',
+    defaultValue: '',
+    validate: (v?: string) => {
+      const value = (v ?? '').trim();
+      if (value.length === 0) return undefined; // empty = skip, not an error
+      if (!SIGNUP_EMAIL_RE.test(value)) return "That doesn't look like an email — fix it, or clear the field to skip.";
+      return undefined;
+    },
+  });
+
+  if (p.isCancel(emailResult)) return;
+  const email = String(emailResult).trim();
+  if (email.length === 0) return;
+
+  const noteResult = await p.text({
+    message: 'Optionally: what are you working on, or how can we help you and your team? (Enter to skip)',
+    placeholder: 'e.g. migrating a monorepo, onboarding a 5-dev team…',
+    defaultValue: '',
+  });
+  const note = p.isCancel(noteResult) ? '' : String(noteResult).trim();
+
+  const spin = p.spinner();
+  spin.start('Signing you up for CMEM Online…');
+  const ok = await submitOnlineSignup({ email, note, version });
+  // Persist locally regardless of the network result so we never re-prompt;
+  // a failed send is retried silently on the next install (see above).
+  mergeSettings({
+    CLAUDE_MEM_ONLINE_SIGNUP_EMAIL: email,
+    CLAUDE_MEM_ONLINE_SIGNUP_NOTE: note,
+    CLAUDE_MEM_ONLINE_SIGNUP_AT: new Date().toISOString(),
+    CLAUDE_MEM_ONLINE_SIGNUP_SENT: ok ? 'true' : 'false',
+  });
+  if (ok) {
+    spin.stop(`You're on the list — we'll email ${pc.cyan(email)} your CMEM Online link.`);
+  } else {
+    spin.stop(pc.yellow(`Saved ${email} — we'll finish signing you up next time you run the installer.`));
+  }
+}
+
 export interface InstallOptions {
   ide?: string;
   provider?: 'claude' | 'gemini' | 'openrouter';
@@ -1198,6 +1326,8 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     segments.push(pc.dim('reinstall'));
   }
   log.info(segments.join(` ${dot} `));
+
+  await promptCmemOnlineOptIn(version);
 
   if (alreadyInstalled) {
     if (process.stdin.isTTY) {

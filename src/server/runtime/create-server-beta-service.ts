@@ -14,7 +14,6 @@ import { GeminiObservationProvider } from '../generation/providers/GeminiObserva
 import { OpenRouterObservationProvider } from '../generation/providers/OpenRouterObservationProvider.js';
 import type { ServerGenerationProvider } from '../generation/providers/shared/types.js';
 import { ServerBetaService } from './ServerBetaService.js';
-import { ModeManager } from '../../services/domain/ModeManager.js';
 import {
   DisabledServerBetaEventBroadcaster,
   DisabledServerBetaGenerationWorkerManager,
