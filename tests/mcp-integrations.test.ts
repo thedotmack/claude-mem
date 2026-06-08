@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
 import { join } from 'path';
-import { tmpdir } from 'os';
+import { tmpdir, homedir } from 'os';
 
 import { readJsonSafe } from '../src/utils/json-utils';
 import { injectContextIntoMarkdownFile, CONTEXT_TAG_OPEN, CONTEXT_TAG_CLOSE } from '../src/utils/context-injection';
+import { ANTIGRAVITY_CONFIG } from '../src/services/integrations/McpIntegrations';
 
 function buildMcpServerEntry(mcpServerPath: string): { command: string; args: string[] } {
   return {
@@ -260,6 +261,21 @@ describe('MCP Integrations', () => {
       const config = JSON.parse(readFileSync(configPath, 'utf-8'));
       expect(config.version).toBe(1);
       expect(config.mcpServers['claude-mem']).toBeDefined();
+    });
+  });
+
+  describe('Antigravity config path (regression)', () => {
+    it('targets ~/.gemini/config/mcp_config.json, the path Antigravity actually reads', () => {
+      // Antigravity resolves MCP servers from ~/.gemini/config/mcp_config.json (shared
+      // Cascade language_server resolution, verified against Antigravity CLI `agy` v1.0.6).
+      // It was previously ~/.gemini/antigravity/mcp_config.json — a path the tool never
+      // reads, so `claude-mem install` silently no-op'd for Antigravity.
+      expect(ANTIGRAVITY_CONFIG.configPath).toBe(
+        join(homedir(), '.gemini', 'config', 'mcp_config.json'),
+      );
+      expect(ANTIGRAVITY_CONFIG.configPath).not.toContain(
+        join('.gemini', 'antigravity'),
+      );
     });
   });
 

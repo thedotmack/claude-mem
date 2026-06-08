@@ -130,7 +130,7 @@ const COPILOT_CLI_CONFIG: McpInstallerConfig = {
   },
 };
 
-const ANTIGRAVITY_CONFIG: McpInstallerConfig = {
+export const ANTIGRAVITY_CONFIG: McpInstallerConfig = {
   ideId: 'antigravity',
   ideLabel: 'Antigravity',
   configPath: path.join(homedir(), '.gemini', 'config', 'mcp_config.json'),
