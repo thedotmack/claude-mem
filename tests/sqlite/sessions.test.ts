@@ -6,6 +6,7 @@ import {
   getSessionById,
   updateMemorySessionId,
 } from '../../src/services/sqlite/Sessions.js';
+import { MAX_STORED_PROMPT_CHARS } from '../../src/services/sqlite/prompt-storage.js';
 import type { Database } from 'bun:sqlite';
 
 describe('Sessions Module', () => {
@@ -47,6 +48,16 @@ describe('Sessions Module', () => {
       const sessionId2 = createSDKSession(db, 'session-b', 'project', 'prompt');
 
       expect(sessionId1).not.toBe(sessionId2);
+    });
+
+    it('should persist the same normalized prompt text used by prompt history', () => {
+      const oversizedPrompt = `<private>hidden</private>${'B'.repeat(MAX_STORED_PROMPT_CHARS + 150)}`;
+      const sessionId = createSDKSession(db, 'session-normalized', 'project', oversizedPrompt);
+      const session = getSessionById(db, sessionId);
+
+      expect(session?.user_prompt.startsWith('<private>')).toBe(false);
+      expect(session?.user_prompt.length).toBe(MAX_STORED_PROMPT_CHARS);
+      expect(session?.user_prompt.endsWith('…')).toBe(true);
     });
   });
 

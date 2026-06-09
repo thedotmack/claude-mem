@@ -7,6 +7,7 @@ import {
   getPromptNumberFromUserPrompts,
 } from '../../src/services/sqlite/Prompts.js';
 import { createSDKSession } from '../../src/services/sqlite/Sessions.js';
+import { MAX_STORED_PROMPT_CHARS } from '../../src/services/sqlite/prompt-storage.js';
 import type { Database } from 'bun:sqlite';
 
 describe('Prompts Module', () => {
@@ -68,6 +69,18 @@ describe('Prompts Module', () => {
       expect(duplicate?.id).toBe(id);
       expect(duplicate?.prompt_number).toBe(1);
       expect(duplicate?.prompt_text).toBe('Repeated prompt');
+    });
+
+    it('should store a tag-stripped bounded prompt payload', () => {
+      const contentSessionId = createSession('normalized-prompt-session');
+      const oversizedPrompt = `<claude-mem-context>ignored</claude-mem-context>${'A'.repeat(MAX_STORED_PROMPT_CHARS + 250)}`;
+
+      const id = saveUserPrompt(db, contentSessionId, 1, oversizedPrompt);
+      const stored = db.prepare('SELECT prompt_text FROM user_prompts WHERE id = ?').get(id) as { prompt_text: string };
+
+      expect(stored.prompt_text.startsWith('<claude-mem-context>')).toBe(false);
+      expect(stored.prompt_text.length).toBe(MAX_STORED_PROMPT_CHARS);
+      expect(stored.prompt_text.endsWith('…')).toBe(true);
     });
   });
 

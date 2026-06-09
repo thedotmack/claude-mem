@@ -1,6 +1,7 @@
 
 import type { Database } from 'bun:sqlite';
 import { logger } from '../../../utils/logger.js';
+import { normalizeStoredPromptText } from '../prompt-storage.js';
 
 export function saveUserPrompt(
   db: Database,
@@ -10,6 +11,7 @@ export function saveUserPrompt(
 ): number {
   const now = new Date();
   const nowEpoch = now.getTime();
+  const storedPromptText = normalizeStoredPromptText(promptText);
 
   const stmt = db.prepare(`
     INSERT INTO user_prompts
@@ -17,6 +19,6 @@ export function saveUserPrompt(
     VALUES (?, ?, ?, ?, ?)
   `);
 
-  const result = stmt.run(contentSessionId, promptNumber, promptText, now.toISOString(), nowEpoch);
+  const result = stmt.run(contentSessionId, promptNumber, storedPromptText, now.toISOString(), nowEpoch);
   return result.lastInsertRowid as number;
 }

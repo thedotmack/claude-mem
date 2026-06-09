@@ -2,6 +2,7 @@
 import type { Database } from 'bun:sqlite';
 import { logger } from '../../../utils/logger.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../../shared/platform-source.js';
+import { normalizeStoredPromptText } from '../prompt-storage.js';
 
 function resolveCreateSessionArgs(
   customTitle?: string,
@@ -25,6 +26,7 @@ export function createSDKSession(
   const nowEpoch = now.getTime();
   const resolved = resolveCreateSessionArgs(customTitle, platformSource);
   const normalizedPlatformSource = resolved.platformSource ?? DEFAULT_PLATFORM_SOURCE;
+  const storedUserPrompt = normalizeStoredPromptText(userPrompt);
 
   const existing = db.prepare(`
     SELECT id, platform_source FROM sdk_sessions WHERE content_session_id = ?
@@ -68,7 +70,7 @@ export function createSDKSession(
     INSERT INTO sdk_sessions
     (content_session_id, memory_session_id, project, platform_source, user_prompt, custom_title, started_at, started_at_epoch, status)
     VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'active')
-  `).run(contentSessionId, project, normalizedPlatformSource, userPrompt, resolved.customTitle || null, now.toISOString(), nowEpoch);
+  `).run(contentSessionId, project, normalizedPlatformSource, storedUserPrompt, resolved.customTitle || null, now.toISOString(), nowEpoch);
 
   const row = db.prepare('SELECT id FROM sdk_sessions WHERE content_session_id = ?')
     .get(contentSessionId) as { id: number };
