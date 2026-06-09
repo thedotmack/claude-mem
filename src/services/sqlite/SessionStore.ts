@@ -979,6 +979,12 @@ export class SessionStore {
     this.db.run('BEGIN TRANSACTION');
     try {
       this.db.run(`
+        UPDATE observations
+           SET content_hash = 'legacy-' || id
+         WHERE content_hash IS NULL
+      `);
+
+      this.db.run(`
         DELETE FROM observations
          WHERE id NOT IN (
            SELECT MIN(id) FROM observations
