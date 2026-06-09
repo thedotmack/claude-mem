@@ -6,13 +6,14 @@ import { Database } from 'bun:sqlite';
 
 type BusyTimeoutRow = {
   busy_timeout?: number | string;
+  timeout?: number | string;
 };
 
 const SQLITE_BUSY_TIMEOUT_MS = 5000;
 
 function getBusyTimeout(db: Database): number {
   const row = db.prepare('PRAGMA busy_timeout').get() as BusyTimeoutRow;
-  return Number(row?.busy_timeout);
+  return Number(row?.busy_timeout ?? row?.timeout ?? Object.values(row ?? {})[0]);
 }
 
 describe('Database PRAGMAs', () => {
@@ -30,6 +31,9 @@ describe('Database PRAGMAs', () => {
       expect(getBusyTimeout(db)).toBe(SQLITE_BUSY_TIMEOUT_MS);
     } finally {
       await manager.close();
+      if (process.platform === 'win32') {
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
       if (originalDataDir === undefined) {
         delete process.env.CLAUDE_MEM_DATA_DIR;
       } else {
