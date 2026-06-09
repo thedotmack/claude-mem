@@ -6,6 +6,7 @@ import {
   SAMPLE_CONFIG,
   filterNativeHookBackedCodexWatches,
   isNativeHookBackedCodexWatch,
+  shouldSuppressNativeCodexAgentsContext,
 } from '../../src/services/transcripts/config.js';
 import type { TranscriptWatchConfig } from '../../src/services/transcripts/types.js';
 
@@ -39,6 +40,46 @@ describe('transcript watcher config', () => {
       name: 'other',
       path: '~/.codex/sessions/**/*.jsonl',
       schema: 'other',
+    })).toBe(false);
+  });
+
+  it('suppresses native Codex transcript AGENTS context updates', () => {
+    expect(shouldSuppressNativeCodexAgentsContext({
+      name: 'codex',
+      schema: 'codex',
+      path: '~/.codex/sessions/**/*.jsonl',
+      context: {
+        mode: 'agents',
+      },
+    })).toBe(true);
+  });
+
+  it('does not suppress non-native or non-Codex AGENTS context updates', () => {
+    expect(shouldSuppressNativeCodexAgentsContext({
+      name: 'codex-archive',
+      schema: 'codex',
+      path: '~/custom-codex-export/**/*.jsonl',
+      context: {
+        mode: 'agents',
+      },
+    })).toBe(false);
+
+    expect(shouldSuppressNativeCodexAgentsContext({
+      name: 'other',
+      schema: 'codex',
+      path: '~/.codex/sessions/**/*.jsonl',
+      context: {
+        mode: 'agents',
+      },
+    })).toBe(false);
+
+    expect(shouldSuppressNativeCodexAgentsContext({
+      name: 'codex',
+      schema: 'codex',
+      path: '~/.codex/sessions/**/*.jsonl',
+      context: {
+        mode: 'agents-legacy',
+      },
     })).toBe(false);
   });
 
