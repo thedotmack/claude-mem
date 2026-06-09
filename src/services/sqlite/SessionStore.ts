@@ -1391,7 +1391,12 @@ export class SessionStore {
     promptText: string,
     windowMs: number
   ): LatestPromptResult | undefined {
-    return findRecentDuplicateUserPromptRecord(this.db, contentSessionId, promptText, windowMs);
+    return findRecentDuplicateUserPromptRecord(
+      this.db,
+      contentSessionId,
+      normalizeStoredPromptText(promptText),
+      windowMs
+    );
   }
 
   getRecentSessionsWithStatus(project: string, limit: number = 3): Array<{

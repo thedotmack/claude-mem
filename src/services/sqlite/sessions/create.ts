@@ -1,6 +1,5 @@
 
 import type { Database } from 'bun:sqlite';
-import { logger } from '../../../utils/logger.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../../shared/platform-source.js';
 import { normalizeStoredPromptText } from '../prompt-storage.js';
 

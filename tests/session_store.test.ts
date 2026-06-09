@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { SessionStore } from '../src/services/sqlite/SessionStore.js';
 import { PaginationHelper } from '../src/services/worker/PaginationHelper.js';
+import { MAX_STORED_PROMPT_CHARS } from '../src/services/sqlite/prompt-storage.js';
 
 describe('SessionStore', () => {
   let store: SessionStore;
@@ -52,6 +53,19 @@ describe('SessionStore', () => {
     const duplicate = store.findRecentDuplicateUserPrompt(contentSessionId, 'Repeated prompt', 10_000);
 
     expect(duplicate).toBeUndefined();
+  });
+
+  it('should normalize oversized prompts before duplicate lookup', () => {
+    const contentSessionId = 'oversized-duplicate-session-store';
+    const oversizedPrompt = `<claude-mem-context>ignored</claude-mem-context>${'A'.repeat(MAX_STORED_PROMPT_CHARS + 250)}`;
+    store.createSDKSession(contentSessionId, 'test-project', 'initial prompt');
+    const promptId = store.saveUserPrompt(contentSessionId, 1, oversizedPrompt);
+
+    const duplicate = store.findRecentDuplicateUserPrompt(contentSessionId, oversizedPrompt, 10_000);
+
+    expect(duplicate?.id).toBe(promptId);
+    expect(duplicate?.prompt_number).toBe(1);
+    expect(duplicate?.prompt_text.length).toBe(MAX_STORED_PROMPT_CHARS);
   });
 
   it('should hide only older duplicate prompts from paginated prompt results', () => {
