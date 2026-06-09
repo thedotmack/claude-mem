@@ -1,7 +1,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import { homedir } from 'os';
-import { getProjectName, getProjectContext } from '../../src/utils/project-name.js';
+import { getProjectName, getProjectContext, getDreamProjectName } from '../../src/utils/project-name.js';
 
 describe('getProjectName', () => {
   describe('tilde expansion', () => {
@@ -115,7 +115,7 @@ describe('getProjectContext', () => {
     expect(ctx.primary).toBe('my-project');
     expect(ctx.parent).toBeNull();
     expect(ctx.isWorktree).toBe(false);
-    expect(ctx.allProjects).toEqual(['my-project']);
+    expect(ctx.allProjects).toEqual([getDreamProjectName('my-project'), 'my-project']);
   });
 
   it('resolves ~ path correctly', () => {
@@ -164,7 +164,11 @@ describe('getProjectContext', () => {
       expect(ctx.isWorktree).toBe(true);
       expect(ctx.primary).toBe('main-repo/my-worktree');
       expect(ctx.parent).toBe('main-repo');
-      expect(ctx.allProjects).toEqual(['main-repo', 'main-repo/my-worktree']);
+      expect(ctx.allProjects).toEqual([
+        getDreamProjectName('main-repo'),
+        'main-repo',
+        'main-repo/my-worktree'
+      ]);
     });
 
     it('write-path call sites resolve to composite name in worktrees', () => {

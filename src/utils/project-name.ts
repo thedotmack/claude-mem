@@ -73,6 +73,14 @@ export interface ProjectContext {
   allProjects: string[];
 }
 
+export function getDreamProjectName(project: string): string {
+  return `${project}:dream`;
+}
+
+function withDreamProject(primaryProject: string, additionalProjects: string[] = []): string[] {
+  return [getDreamProjectName(primaryProject), primaryProject, ...additionalProjects];
+}
+
 export function getProjectContext(cwd: string | null | undefined): ProjectContext {
   const cwdProjectName = getProjectName(cwd);
 
@@ -89,9 +97,14 @@ export function getProjectContext(cwd: string | null | undefined): ProjectContex
       primary: composite,
       parent: worktreeInfo.parentProjectName,
       isWorktree: true,
-      allProjects: [worktreeInfo.parentProjectName, composite]
+      allProjects: withDreamProject(worktreeInfo.parentProjectName, [composite])
     };
   }
 
-  return { primary: cwdProjectName, parent: null, isWorktree: false, allProjects: [cwdProjectName] };
+  return {
+    primary: cwdProjectName,
+    parent: null,
+    isWorktree: false,
+    allProjects: withDreamProject(cwdProjectName)
+  };
 }

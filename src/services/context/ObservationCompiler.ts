@@ -15,6 +15,25 @@ import type {
 } from './types.js';
 import { SUMMARY_LOOKAHEAD } from './types.js';
 
+function isDreamProject(project: string): boolean {
+  return project.endsWith(':dream');
+}
+
+function prioritizeProjectRows<T extends { project?: string; created_at_epoch: number }>(
+  rows: T[],
+  projects: string[],
+  limit: number
+): T[] {
+  const dreamProjects = new Set(projects.filter(isDreamProject));
+  if (dreamProjects.size === 0) {
+    return rows.slice(0, limit);
+  }
+
+  const preferred = rows.filter((row) => row.project && dreamProjects.has(row.project));
+  const fallback = rows.filter((row) => !row.project || !dreamProjects.has(row.project));
+  return [...preferred, ...fallback].slice(0, limit);
+}
+
 export function queryObservations(
   db: SessionStore,
   project: string,
@@ -96,8 +115,9 @@ export function queryObservationsMulti(
   const conceptPlaceholders = conceptArray.map(() => '?').join(',');
 
   const projectPlaceholders = projects.map(() => '?').join(',');
+  const queryLimit = config.totalObservationCount * Math.max(2, projects.length);
 
-  return db.db.prepare(`
+  const rows = db.db.prepare(`
     SELECT
       o.id,
       o.memory_session_id,
@@ -130,8 +150,10 @@ export function queryObservationsMulti(
     ...projects,
     ...typeArray,
     ...conceptArray,
-    config.totalObservationCount
+    queryLimit
   ) as Observation[];
+
+  return prioritizeProjectRows(rows, projects, config.totalObservationCount);
 }
 
 export function countObservationsByProjects(db: SessionStore, projects: string[]): number {
@@ -151,8 +173,10 @@ export function querySummariesMulti(
   config: ContextConfig
 ): SessionSummary[] {
   const projectPlaceholders = projects.map(() => '?').join(',');
+  const resultLimit = config.sessionCount + SUMMARY_LOOKAHEAD;
+  const queryLimit = resultLimit * Math.max(2, projects.length);
 
-  return db.db.prepare(`
+  const rows = db.db.prepare(`
     SELECT
       ss.id,
       ss.memory_session_id,
@@ -171,7 +195,9 @@ export function querySummariesMulti(
            OR ss.merged_into_project IN (${projectPlaceholders}))
     ORDER BY ss.created_at_epoch DESC
     LIMIT ?
-  `).all(...projects, ...projects, config.sessionCount + SUMMARY_LOOKAHEAD) as SessionSummary[];
+  `).all(...projects, ...projects, queryLimit) as SessionSummary[];
+
+  return prioritizeProjectRows(rows, projects, resultLimit);
 }
 
 export function cwdToDashed(cwd: string): string {
