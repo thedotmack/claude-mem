@@ -196,7 +196,7 @@ describe('Codex CLI Compatibility (#744)', () => {
       });
     });
 
-    it('strips suppressOutput because Codex rejects it for PostToolUse', async () => {
+    it('strips suppressOutput from all Codex hook outputs because Codex rejects it', async () => {
       const { codexAdapter } = await import('../src/cli/adapters/codex.js');
       const output = codexAdapter.formatOutput({
         continue: true,

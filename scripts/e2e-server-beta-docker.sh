@@ -21,7 +21,20 @@ COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.e2e.yml)
 # stack will refuse to start without them. The values here are scoped to the
 # ephemeral E2E project namespace and are torn down by the cleanup trap.
 export POSTGRES_USER="${POSTGRES_USER:-claudemem_e2e}"
-export POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-claudemem_e2e}"
+generate_e2e_postgres_password() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 16
+  elif command -v uuidgen >/dev/null 2>&1; then
+    uuidgen | tr "[:upper:]" "[:lower:]" | tr -d "-"
+  else
+    printf '%s-%s-%s\n' "$RUN_ID" "$RANDOM" "$$" | shasum | awk '{print $1}'
+  fi
+}
+
+if [[ -z "${POSTGRES_PASSWORD:-}" ]]; then
+  printf -v POSTGRES_PASSWORD '%s' "$(generate_e2e_postgres_password)"
+fi
+export POSTGRES_PASSWORD
 export POSTGRES_DB="${POSTGRES_DB:-claudemem_e2e}"
 COMPOSE=(docker compose -p "$PROJECT_NAME" "${COMPOSE_FILES[@]}")
 SERVER_SCRIPT="/opt/claude-mem/scripts/server-beta-service.cjs"
