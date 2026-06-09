@@ -13,7 +13,7 @@ export function normalizeStoredPromptText(promptText: string): string {
   }
 
   // Keep stored prompt history bounded; search/timeline views need the user ask, not the full wrapper blob.
-  logger.debug('SQLITE', 'Truncated stored prompt text to the configured cap', {
+  logger.debug('DB', 'Truncated stored prompt text to the configured cap', {
     originalLength: preferredPrompt.length,
     storedLength: MAX_STORED_PROMPT_CHARS,
   });
