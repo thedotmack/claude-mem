@@ -260,8 +260,9 @@ ${i.stack}`:` ${i.message}`;else if(this.getLevel()===0&&typeof i=="object")try{
         created_at_epoch INTEGER NOT NULL,
         FOREIGN KEY (session_db_id) REFERENCES sdk_sessions(id) ON DELETE CASCADE
       )
-    `),this.db.run("CREATE INDEX IF NOT EXISTS idx_pending_messages_session ON pending_messages(session_db_id)"),this.db.run("CREATE INDEX IF NOT EXISTS idx_pending_messages_status ON pending_messages(status)"),this.db.run("CREATE INDEX IF NOT EXISTS idx_pending_messages_claude_session ON pending_messages(content_session_id)"),this.db.prepare("INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)").run(16,new Date().toISOString()),v.debug("DB","pending_messages table created successfully")}renameSessionIdColumns(){if(this.db.prepare("SELECT version FROM schema_versions WHERE version = ?").get(17))return;v.debug("DB","Checking session ID columns for semantic clarity rename");let r=0,n=(s,i,o)=>{let a=this.db.query(`PRAGMA table_info(${s})`).all(),c=a.some(u=>u.name===i);return a.some(u=>u.name===o)?!1:c?(this.db.run(`ALTER TABLE ${s} RENAME COLUMN ${i} TO ${o}`),v.debug("DB",`Renamed ${s}.${i} to ${o}`),!0):(v.warn("DB",`Column ${i} not found in ${s}, skipping rename`),!1)};n("sdk_sessions","claude_session_id","content_session_id")&&r++,n("sdk_sessions","sdk_session_id","memory_session_id")&&r++,n("pending_messages","claude_session_id","content_session_id")&&r++,n("observations","sdk_session_id","memory_session_id")&&r++,n("session_summaries","sdk_session_id","memory_session_id")&&r++,n("user_prompts","claude_session_id","content_session_id")&&r++,this.db.prepare("INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)").run(17,new Date().toISOString()),r>0?v.debug("DB",`Successfully renamed ${r} session ID columns`):v.debug("DB","No session ID column renames needed (already up to date)")}repairSessionIdColumnRename(){this.db.prepare("SELECT version FROM schema_versions WHERE version = ?").get(19)||this.db.prepare("INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)").run(19,new Date().toISOString())}addFailedAtEpochColumn(){if(this.db.prepare("SELECT version FROM schema_versions WHERE version = ?").get(20))return;this.db.query("PRAGMA table_info(pending_messages)").all().some(s=>s.name==="failed_at_epoch")||(this.db.run("ALTER TABLE pending_messages ADD COLUMN failed_at_epoch INTEGER"),v.debug("DB","Added failed_at_epoch column to pending_messages table")),this.db.prepare("INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)").run(20,new Date().toISOString())}addOnUpdateCascadeToForeignKeys(){if(this.db.prepare("SELECT version FROM schema_versions WHERE version = ?").get(21))return;v.debug("DB","Adding ON UPDATE CASCADE to FK constraints on observations and session_summaries"),this.db.run("PRAGMA foreign_keys = OFF"),this.db.run("BEGIN TRANSACTION"),this.db.run("DROP TRIGGER IF EXISTS observations_ai"),this.db.run("DROP TRIGGER IF EXISTS observations_ad"),this.db.run("DROP TRIGGER IF EXISTS observations_au"),this.db.run("DROP TABLE IF EXISTS observations_new");let n=this.db.query("PRAGMA table_info(observations)").all().some(m=>m.name==="metadata"),s=n?`,
-        metadata TEXT`:"",i=n?", metadata":"",o=`
+    `),this.db.run("CREATE INDEX IF NOT EXISTS idx_pending_messages_session ON pending_messages(session_db_id)"),this.db.run("CREATE INDEX IF NOT EXISTS idx_pending_messages_status ON pending_messages(status)"),this.db.run("CREATE INDEX IF NOT EXISTS idx_pending_messages_claude_session ON pending_messages(content_session_id)"),this.db.prepare("INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)").run(16,new Date().toISOString()),v.debug("DB","pending_messages table created successfully")}renameSessionIdColumns(){if(this.db.prepare("SELECT version FROM schema_versions WHERE version = ?").get(17))return;v.debug("DB","Checking session ID columns for semantic clarity rename");let r=0,n=(s,i,o)=>{let a=this.db.query(`PRAGMA table_info(${s})`).all(),c=a.some(u=>u.name===i);return a.some(u=>u.name===o)?!1:c?(this.db.run(`ALTER TABLE ${s} RENAME COLUMN ${i} TO ${o}`),v.debug("DB",`Renamed ${s}.${i} to ${o}`),!0):(v.warn("DB",`Column ${i} not found in ${s}, skipping rename`),!1)};n("sdk_sessions","claude_session_id","content_session_id")&&r++,n("sdk_sessions","sdk_session_id","memory_session_id")&&r++,n("pending_messages","claude_session_id","content_session_id")&&r++,n("observations","sdk_session_id","memory_session_id")&&r++,n("session_summaries","sdk_session_id","memory_session_id")&&r++,n("user_prompts","claude_session_id","content_session_id")&&r++,this.db.prepare("INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)").run(17,new Date().toISOString()),r>0?v.debug("DB",`Successfully renamed ${r} session ID columns`):v.debug("DB","No session ID column renames needed (already up to date)")}repairSessionIdColumnRename(){this.db.prepare("SELECT version FROM schema_versions WHERE version = ?").get(19)||this.db.prepare("INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)").run(19,new Date().toISOString())}addFailedAtEpochColumn(){if(this.db.prepare("SELECT version FROM schema_versions WHERE version = ?").get(20))return;this.db.query("PRAGMA table_info(pending_messages)").all().some(s=>s.name==="failed_at_epoch")||(this.db.run("ALTER TABLE pending_messages ADD COLUMN failed_at_epoch INTEGER"),v.debug("DB","Added failed_at_epoch column to pending_messages table")),this.db.prepare("INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)").run(20,new Date().toISOString())}addOnUpdateCascadeToForeignKeys(){if(this.db.prepare("SELECT version FROM schema_versions WHERE version = ?").get(21))return;v.debug("DB","Adding ON UPDATE CASCADE to FK constraints on observations and session_summaries"),this.db.run("PRAGMA foreign_keys = OFF"),this.db.run("BEGIN TRANSACTION"),this.db.run("DROP TRIGGER IF EXISTS observations_ai"),this.db.run("DROP TRIGGER IF EXISTS observations_ad"),this.db.run("DROP TRIGGER IF EXISTS observations_au"),this.db.run("DROP TABLE IF EXISTS observations_new");let r=this.db.query("PRAGMA table_info(observations)").all(),n=r.some(y=>y.name==="metadata"),s=r.some(y=>y.name==="content_hash"),i=n?`,
+        metadata TEXT`:"",o=n?", metadata":"",a=s?`,
+        content_hash TEXT`:"",c=s?", content_hash":"",l=`
       CREATE TABLE observations_new (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         memory_session_id TEXT NOT NULL,
@@ -278,21 +279,21 @@ ${i.stack}`:` ${i.message}`;else if(this.getLevel()===0&&typeof i=="object")try{
         prompt_number INTEGER,
         discovery_tokens INTEGER DEFAULT 0,
         created_at TEXT NOT NULL,
-        created_at_epoch INTEGER NOT NULL${s},
+        created_at_epoch INTEGER NOT NULL${i}${a},
         FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
       )
-    `,a=`
+    `,u=`
       INSERT INTO observations_new
       SELECT id, memory_session_id, project, text, type, title, subtitle, facts,
              narrative, concepts, files_read, files_modified, prompt_number,
-             discovery_tokens, created_at, created_at_epoch${i}
+             discovery_tokens, created_at, created_at_epoch${o}${c}
       FROM observations
-    `,c=`
+    `,d=`
       CREATE INDEX idx_observations_sdk_session ON observations(memory_session_id);
       CREATE INDEX idx_observations_project ON observations(project);
       CREATE INDEX idx_observations_type ON observations(type);
       CREATE INDEX idx_observations_created ON observations(created_at_epoch DESC);
-    `,l=`
+    `,p=`
       CREATE TRIGGER IF NOT EXISTS observations_ai AFTER INSERT ON observations BEGIN
         INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
         VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
@@ -309,7 +310,7 @@ ${i.stack}`:` ${i.message}`;else if(this.getLevel()===0&&typeof i=="object")try{
         INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
         VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
       END;
-    `;this.db.run("DROP TRIGGER IF EXISTS session_summaries_ai"),this.db.run("DROP TRIGGER IF EXISTS session_summaries_ad"),this.db.run("DROP TRIGGER IF EXISTS session_summaries_au"),this.db.run("DROP TABLE IF EXISTS session_summaries_new");let u=`
+    `;this.db.run("DROP TRIGGER IF EXISTS session_summaries_ai"),this.db.run("DROP TRIGGER IF EXISTS session_summaries_ad"),this.db.run("DROP TRIGGER IF EXISTS session_summaries_au"),this.db.run("DROP TABLE IF EXISTS session_summaries_new");let f=`
       CREATE TABLE session_summaries_new (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         memory_session_id TEXT NOT NULL,
@@ -328,17 +329,17 @@ ${i.stack}`:` ${i.message}`;else if(this.getLevel()===0&&typeof i=="object")try{
         created_at_epoch INTEGER NOT NULL,
         FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
       )
-    `,d=`
+    `,m=`
       INSERT INTO session_summaries_new
       SELECT id, memory_session_id, project, request, investigated, learned,
              completed, next_steps, files_read, files_edited, notes,
              prompt_number, discovery_tokens, created_at, created_at_epoch
       FROM session_summaries
-    `,p=`
+    `,h=`
       CREATE INDEX idx_session_summaries_sdk_session ON session_summaries(memory_session_id);
       CREATE INDEX idx_session_summaries_project ON session_summaries(project);
       CREATE INDEX idx_session_summaries_created ON session_summaries(created_at_epoch DESC);
-    `,f=`
+    `,g=`
       CREATE TRIGGER IF NOT EXISTS session_summaries_ai AFTER INSERT ON session_summaries BEGIN
         INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
         VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
@@ -355,7 +356,7 @@ ${i.stack}`:` ${i.message}`;else if(this.getLevel()===0&&typeof i=="object")try{
         INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
         VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
       END;
-    `;try{this.recreateObservationsWithCascade(o,a,c,l),this.recreateSessionSummariesWithCascade(u,d,p,f),this.db.prepare("INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)").run(21,new Date().toISOString()),this.db.run("COMMIT"),this.db.run("PRAGMA foreign_keys = ON"),v.debug("DB","Successfully added ON UPDATE CASCADE to FK constraints")}catch(m){throw this.db.run("ROLLBACK"),this.db.run("PRAGMA foreign_keys = ON"),m instanceof Error?m:new Error(String(m))}}recreateObservationsWithCascade(e,r,n,s){this.db.run(e),this.db.run(r),this.db.run("DROP TABLE observations"),this.db.run("ALTER TABLE observations_new RENAME TO observations"),this.db.run(n),this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='observations_fts'").all().length>0&&this.db.run(s)}recreateSessionSummariesWithCascade(e,r,n,s){this.db.run(e),this.db.run(r),this.db.run("DROP TABLE session_summaries"),this.db.run("ALTER TABLE session_summaries_new RENAME TO session_summaries"),this.db.run(n),this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='session_summaries_fts'").all().length>0&&this.db.run(s)}addObservationContentHashColumn(){if(this.db.query("PRAGMA table_info(observations)").all().some(n=>n.name==="content_hash")){this.db.prepare("INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)").run(22,new Date().toISOString());return}this.db.run("ALTER TABLE observations ADD COLUMN content_hash TEXT"),this.db.run("UPDATE observations SET content_hash = substr(hex(randomblob(8)), 1, 16) WHERE content_hash IS NULL"),this.db.run("CREATE INDEX IF NOT EXISTS idx_observations_content_hash ON observations(content_hash, created_at_epoch)"),v.debug("DB","Added content_hash column to observations table with backfill and index"),this.db.prepare("INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)").run(22,new Date().toISOString())}addSessionCustomTitleColumn(){if(this.db.prepare("SELECT version FROM schema_versions WHERE version = ?").get(23))return;this.db.query("PRAGMA table_info(sdk_sessions)").all().some(s=>s.name==="custom_title")||(this.db.run("ALTER TABLE sdk_sessions ADD COLUMN custom_title TEXT"),v.debug("DB","Added custom_title column to sdk_sessions table")),this.db.prepare("INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)").run(23,new Date().toISOString())}addSessionPlatformSourceColumn(){let r=this.db.query("PRAGMA table_info(sdk_sessions)").all().some(o=>o.name==="platform_source"),s=this.db.query("PRAGMA index_list(sdk_sessions)").all().some(o=>o.name==="idx_sdk_sessions_platform_source");this.db.prepare("SELECT version FROM schema_versions WHERE version = ?").get(24)&&r&&s||(r||(this.db.run(`ALTER TABLE sdk_sessions ADD COLUMN platform_source TEXT NOT NULL DEFAULT '${gr}'`),v.debug("DB","Added platform_source column to sdk_sessions table")),this.db.run(`
+    `;try{this.recreateObservationsWithCascade(l,u,d,p),this.recreateSessionSummariesWithCascade(f,m,h,g),this.db.prepare("INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)").run(21,new Date().toISOString()),this.db.run("COMMIT"),this.db.run("PRAGMA foreign_keys = ON"),v.debug("DB","Successfully added ON UPDATE CASCADE to FK constraints")}catch(y){throw this.db.run("ROLLBACK"),this.db.run("PRAGMA foreign_keys = ON"),y instanceof Error?y:new Error(String(y))}}recreateObservationsWithCascade(e,r,n,s){this.db.run(e),this.db.run(r),this.db.run("DROP TABLE observations"),this.db.run("ALTER TABLE observations_new RENAME TO observations"),this.db.run(n),this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='observations_fts'").all().length>0&&this.db.run(s)}recreateSessionSummariesWithCascade(e,r,n,s){this.db.run(e),this.db.run(r),this.db.run("DROP TABLE session_summaries"),this.db.run("ALTER TABLE session_summaries_new RENAME TO session_summaries"),this.db.run(n),this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='session_summaries_fts'").all().length>0&&this.db.run(s)}addObservationContentHashColumn(){if(this.db.query("PRAGMA table_info(observations)").all().some(n=>n.name==="content_hash")){this.db.prepare("INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)").run(22,new Date().toISOString());return}this.db.run("ALTER TABLE observations ADD COLUMN content_hash TEXT"),this.db.run("UPDATE observations SET content_hash = substr(hex(randomblob(8)), 1, 16) WHERE content_hash IS NULL"),this.db.run("CREATE INDEX IF NOT EXISTS idx_observations_content_hash ON observations(content_hash, created_at_epoch)"),v.debug("DB","Added content_hash column to observations table with backfill and index"),this.db.prepare("INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)").run(22,new Date().toISOString())}addSessionCustomTitleColumn(){if(this.db.prepare("SELECT version FROM schema_versions WHERE version = ?").get(23))return;this.db.query("PRAGMA table_info(sdk_sessions)").all().some(s=>s.name==="custom_title")||(this.db.run("ALTER TABLE sdk_sessions ADD COLUMN custom_title TEXT"),v.debug("DB","Added custom_title column to sdk_sessions table")),this.db.prepare("INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)").run(23,new Date().toISOString())}addSessionPlatformSourceColumn(){let r=this.db.query("PRAGMA table_info(sdk_sessions)").all().some(o=>o.name==="platform_source"),s=this.db.query("PRAGMA index_list(sdk_sessions)").all().some(o=>o.name==="idx_sdk_sessions_platform_source");this.db.prepare("SELECT version FROM schema_versions WHERE version = ?").get(24)&&r&&s||(r||(this.db.run(`ALTER TABLE sdk_sessions ADD COLUMN platform_source TEXT NOT NULL DEFAULT '${gr}'`),v.debug("DB","Added platform_source column to sdk_sessions table")),this.db.run(`
       UPDATE sdk_sessions
       SET platform_source = '${gr}'
       WHERE platform_source IS NULL OR platform_source = ''
@@ -385,10 +386,22 @@ ${i.stack}`:` ${i.message}`;else if(this.getLevel()===0&&typeof i=="object")try{
         ON pending_messages(content_session_id, tool_use_id)
         WHERE tool_use_id IS NOT NULL
       `),this.db.prepare("INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)").run(28,new Date().toISOString()),this.db.run("COMMIT")}catch(s){throw this.db.run("ROLLBACK"),s}}addObservationsUniqueContentHashIndex(){if(this.db.prepare("SELECT version FROM schema_versions WHERE version = ?").get(29))return;let r=this.db.query("PRAGMA table_info(observations)").all(),n=r.some(i=>i.name==="memory_session_id"),s=r.some(i=>i.name==="content_hash");if(!n||!s){this.db.prepare("INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)").run(29,new Date().toISOString());return}this.db.run("BEGIN TRANSACTION");try{this.db.run(`
+        UPDATE observations
+           SET content_hash = 'legacy-' || id
+         WHERE content_hash IS NULL
+      `),this.db.run(`
         DELETE FROM observations
-         WHERE id NOT IN (
-           SELECT MIN(id) FROM observations
-            GROUP BY memory_session_id, content_hash
+         WHERE id IN (
+           SELECT id
+             FROM (
+               SELECT id,
+                      ROW_NUMBER() OVER (
+                        PARTITION BY memory_session_id, content_hash
+                        ORDER BY id
+                      ) AS duplicate_rank
+                 FROM observations
+             )
+            WHERE duplicate_rank > 1
          )
       `),this.db.run(`
         CREATE UNIQUE INDEX IF NOT EXISTS ux_observations_session_hash
