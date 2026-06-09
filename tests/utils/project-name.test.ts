@@ -174,4 +174,47 @@ describe('getProjectContext', () => {
       expect(project).not.toBe('my-worktree');
     });
   });
+
+  describe('submodule parent context', () => {
+    let tmp: string;
+    let mainRepo: string;
+    let submoduleCheckout: string;
+
+    beforeAll(async () => {
+      const { mkdtempSync, mkdirSync, writeFileSync } = await import('fs');
+      const { join } = await import('path');
+      const { tmpdir } = await import('os');
+
+      tmp = mkdtempSync(join(tmpdir(), 'cm-submodule-'));
+      mainRepo = join(tmp, 'main-repo');
+      submoduleCheckout = join(mainRepo, 'vendor', 'docs');
+      const submoduleGitDir = join(mainRepo, '.git', 'modules', 'vendor', 'docs');
+
+      mkdirSync(submoduleGitDir, { recursive: true });
+      mkdirSync(submoduleCheckout, { recursive: true });
+      writeFileSync(
+        join(submoduleCheckout, '.git'),
+        `gitdir: ${submoduleGitDir}\n`
+      );
+    });
+
+    afterAll(async () => {
+      const { rmSync } = await import('fs');
+      rmSync(tmp, { recursive: true, force: true });
+    });
+
+    it('uses the parent repo as the primary project when in a submodule', () => {
+      const ctx = getProjectContext(submoduleCheckout);
+      expect(ctx.isWorktree).toBe(false);
+      expect(ctx.primary).toBe('main-repo');
+      expect(ctx.parent).toBe('main-repo');
+      expect(ctx.allProjects).toEqual(['main-repo']);
+    });
+
+    it('does not let the leaf submodule name displace parent context', () => {
+      const ctx = getProjectContext(submoduleCheckout);
+      expect(ctx.primary).not.toBe('docs');
+      expect(ctx.allProjects).not.toContain('docs');
+    });
+  });
 });

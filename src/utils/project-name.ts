@@ -93,5 +93,14 @@ export function getProjectContext(cwd: string | null | undefined): ProjectContex
     };
   }
 
+  if (worktreeInfo.isSubmodule && worktreeInfo.parentProjectName) {
+    return {
+      primary: worktreeInfo.parentProjectName,
+      parent: worktreeInfo.parentProjectName,
+      isWorktree: false,
+      allProjects: [worktreeInfo.parentProjectName]
+    };
+  }
+
   return { primary: cwdProjectName, parent: null, isWorktree: false, allProjects: [cwdProjectName] };
 }
