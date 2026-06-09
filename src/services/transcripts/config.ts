@@ -116,8 +116,8 @@ export const SAMPLE_CONFIG: TranscriptWatchConfig = {
 
 export function isNativeHookBackedCodexWatch(watch: { name?: string; path?: string; schema?: string | TranscriptSchema }): boolean {
   const schemaName = typeof watch.schema === 'string' ? watch.schema : watch.schema?.name;
-  const nameOrSchemaIsCodex = watch.name === 'codex' || schemaName === 'codex';
-  if (!nameOrSchemaIsCodex || !watch.path) return false;
+  const isCanonicalCodexWatch = watch.name === 'codex' && (!schemaName || schemaName === 'codex');
+  if (!isCanonicalCodexWatch || !watch.path) return false;
 
   const normalizedPath = expandHomePath(watch.path).replace(/\\/g, '/');
   const codexSessionsRoot = join(homedir(), '.codex', 'sessions').replace(/\\/g, '/');

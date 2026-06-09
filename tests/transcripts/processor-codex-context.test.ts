@@ -88,6 +88,7 @@ describe('TranscriptEventProcessor AGENTS context', () => {
   afterEach(() => {
     workerHttpRequestCalls.length = 0;
     writeAgentsCalls.length = 0;
+    mock.restore();
   });
 
   it('suppresses AGENTS writes for native-hook-backed Codex transcript watches', async () => {
@@ -105,12 +106,13 @@ describe('TranscriptEventProcessor AGENTS context', () => {
 
   it('still writes AGENTS context for non-native Codex transcript watches', async () => {
     const cwd = join(tmpdir(), 'non-native-codex-context');
+    const agentsPath = join(cwd, 'AGENTS.md');
     const watch = makeWatch({
       name: 'codex-legacy',
       path: join(tmpdir(), 'codex-export', '**', '*.jsonl'),
       context: {
         mode: 'agents',
-        path: join(tmpdir(), 'AGENTS.md'),
+        path: agentsPath,
         updateOn: ['session_start'],
       },
     });
@@ -118,7 +120,7 @@ describe('TranscriptEventProcessor AGENTS context', () => {
     await processor.processEntry(sessionPayload(cwd), watch, schema);
 
     expect(writeAgentsCalls).toHaveLength(1);
-    expect(writeAgentsCalls[0].agentsPath).toBe(join(tmpdir(), 'AGENTS.md'));
+    expect(writeAgentsCalls[0].agentsPath).toBe(agentsPath);
     expect(workerHttpRequestCalls).toContain('/api/context/inject?projects=repo-project');
     expect(writeAgentsCalls[0].content).toBe('injected-context');
   });
