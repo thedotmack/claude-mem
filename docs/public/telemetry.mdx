@@ -1,0 +1,108 @@
+---
+title: "Telemetry"
+description: "Opt-in, anonymous usage analytics — disabled by default, fully documented, easy to turn off"
+---
+
+# Telemetry
+
+Claude-mem includes **opt-in** anonymous usage analytics (via PostHog) to help prioritize fixes and features.
+
+**It ships disabled.** Nothing is ever sent unless you explicitly run:
+
+```bash
+npx claude-mem telemetry enable
+```
+
+There is no install-time auto-enable, no "anonymous by default" phase, and no nag. If you never run the enable command (and never set `CLAUDE_MEM_TELEMETRY=1`), zero bytes of telemetry leave your machine.
+
+## What is collected
+
+When enabled, events are anonymous and identified only by a random install UUID (`crypto.randomUUID()`, generated locally on first use). Events are sent with `$process_person_profile: false`, so PostHog never builds a person profile.
+
+Every event property passes through a strict whitelist scrubber — any key not in this table is silently dropped before sending:
+
+| Field | Example | Description |
+|---|---|---|
+| event name | `session_compressed` | Which of the four events occurred |
+| `distinct_id` | `7f3c…` (random UUID) | Anonymous install ID — not derived from you or your machine |
+| `version` | `13.4.2` | claude-mem version |
+| `os` | `darwin` | Operating system platform |
+| `arch` | `arm64` | CPU architecture |
+| `runtime` | `bun` | `bun` or `node` |
+| `runtime_version` | `1.2.0` | Runtime version string |
+| `duration_ms` | `1843` | How long an operation took |
+| `outcome` | `success` | Coarse result: success / failure |
+| `error_category` | `db_error` | Coarse error bucket — never an error message |
+| `locale` | `en-US` | Language tag |
+| `is_ci` | `false` | Whether running in CI |
+
+### Events
+
+| Event | When |
+|---|---|
+| `worker_started` | The background worker service finishes starting |
+| `session_compressed` | A session compression completes |
+| `search_performed` | A memory search runs (never the query text — only the outcome) |
+| `error_occurred` | The worker hits an error (category only, never the message) |
+
+## What is NEVER collected
+
+| Never collected | Notes |
+|---|---|
+| Prompts or conversation content | Not even truncated or hashed |
+| File paths or directory names | Including cwd, transcript paths, data dir |
+| Source code | In any form |
+| Project or repository names | Including git remotes and branch names |
+| Search queries | Only the fact that a search happened |
+| Error messages or stack traces | Only a coarse category string |
+| IP addresses | Never attached to events by the client; the analytics project is configured to discard sender IPs on ingest |
+| Hardware or machine identifiers | Not even hashed MAC addresses or hostnames |
+| Environment variable values | Ever |
+| Emails, usernames, or any PII | Ever |
+
+These are enforced in code: properties go through a whitelist (only the ten fields above survive), not a blocklist.
+
+## How to disable (four ways)
+
+Any one of these keeps telemetry off — they are checked in this order, first match wins:
+
+1. **`DO_NOT_TRACK`** — the [universal opt-out](https://consoledonottrack.com). Set `DO_NOT_TRACK=1` and telemetry is forced off, overriding everything else.
+2. **`CLAUDE_MEM_TELEMETRY=0`** (also `false` / `off`) — environment override. (`CLAUDE_MEM_TELEMETRY=1` conversely forces it on.)
+3. **Telemetry config file** — `enabled: false` in `telemetry.json` (see below).
+4. **CLI command**:
+   ```bash
+   npx claude-mem telemetry disable
+   ```
+
+Check the current state — and which of the four layers decided it — anytime:
+
+```bash
+npx claude-mem telemetry status
+```
+
+## Debug mode
+
+Want to see exactly what would be sent? Set:
+
+```bash
+CLAUDE_MEM_TELEMETRY_DEBUG=1
+```
+
+With debug mode on (and telemetry enabled), every would-be event payload is printed to stderr and **nothing is sent over the network**.
+
+## Where the config lives
+
+Consent and the anonymous install ID are stored in `telemetry.json` inside the claude-mem data directory:
+
+- Default: `~/.claude-mem/telemetry.json`
+- Or `$CLAUDE_MEM_DATA_DIR/telemetry.json` if you've overridden the data dir
+
+```json
+{
+  "enabled": false,
+  "installId": "<random UUID>",
+  "decidedAt": "2026-06-09T21:00:00.000Z"
+}
+```
+
+Delete the file to reset to the default (off, no install ID).

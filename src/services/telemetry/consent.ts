@@ -22,31 +22,59 @@ function isDoNotTrackSet(env: NodeJS.ProcessEnv): boolean {
   return value !== '0' && value !== 'false';
 }
 
+/** Which layer of the precedence chain decided the consent outcome. */
+export type TelemetryConsentSource = 'DO_NOT_TRACK' | 'env' | 'config' | 'default';
+
+export type TelemetryConsentExplanation = {
+  enabled: boolean;
+  source: TelemetryConsentSource;
+};
+
 /**
- * Resolves whether telemetry is allowed. Pure function — no I/O.
+ * Resolves whether telemetry is allowed AND which layer decided it.
+ * Pure function — no I/O.
  *
  * Precedence (first match wins):
  * 1. DO_NOT_TRACK set (truthy) -> always off
  * 2. CLAUDE_MEM_TELEMETRY env: '0'/'false'/'off' -> off, '1'/'true'/'on' -> on
- * 3. telemetry.json config: enabled === true -> on
+ * 3. telemetry.json config: enabled === true -> on, enabled === false -> off
  * 4. Default: off
+ */
+export function explainTelemetryConsent(
+  env: NodeJS.ProcessEnv,
+  config: TelemetryConfig | null
+): TelemetryConsentExplanation {
+  if (isDoNotTrackSet(env)) return { enabled: false, source: 'DO_NOT_TRACK' };
+
+  const override = env.CLAUDE_MEM_TELEMETRY?.toLowerCase();
+  if (override === '0' || override === 'false' || override === 'off') {
+    return { enabled: false, source: 'env' };
+  }
+  if (override === '1' || override === 'true' || override === 'on') {
+    return { enabled: true, source: 'env' };
+  }
+
+  if (config?.enabled === true) return { enabled: true, source: 'config' };
+  if (config?.enabled === false) return { enabled: false, source: 'config' };
+
+  return { enabled: false, source: 'default' };
+}
+
+/**
+ * Resolves whether telemetry is allowed. Pure function — no I/O.
+ * Thin wrapper over explainTelemetryConsent; behavior is identical to the
+ * original boolean resolver (a config with enabled === false and the
+ * default-off case both return false).
  */
 export function resolveTelemetryConsent(
   env: NodeJS.ProcessEnv,
   config: TelemetryConfig | null
 ): boolean {
-  if (isDoNotTrackSet(env)) return false;
-
-  const override = env.CLAUDE_MEM_TELEMETRY?.toLowerCase();
-  if (override === '0' || override === 'false' || override === 'off') return false;
-  if (override === '1' || override === 'true' || override === 'on') return true;
-
-  if (config?.enabled === true) return true;
-
-  return false;
+  return explainTelemetryConsent(env, config).enabled;
 }
 
-function getTelemetryConfigPath(): string {
+/** Absolute path of telemetry.json inside the claude-mem data dir. */
+export function getTelemetryConfigPath(): string {
   return join(resolveDataDir(), TELEMETRY_CONFIG_FILENAME);
 }
 

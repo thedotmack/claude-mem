@@ -83,6 +83,7 @@
           "configuration/litellm-gateway",
           "configuration/custom-anthropic-backends",
           "modes",
+          "telemetry",
           "development",
           "troubleshooting",
           "platform-integration",

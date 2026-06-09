@@ -4,6 +4,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import {
   resolveTelemetryConsent,
+  explainTelemetryConsent,
   loadTelemetryConfig,
   saveTelemetryConfig,
   getOrCreateInstallId,
@@ -88,6 +89,77 @@ describe('resolveTelemetryConsent', () => {
 
   it('config enabled=false stays off', () => {
     expect(resolveTelemetryConsent({}, disabledConfig)).toBe(false);
+  });
+});
+
+describe('explainTelemetryConsent', () => {
+  it('attributes DO_NOT_TRACK as the deciding layer', () => {
+    expect(explainTelemetryConsent({ DO_NOT_TRACK: '1' }, enabledConfig)).toEqual({
+      enabled: false,
+      source: 'DO_NOT_TRACK',
+    });
+  });
+
+  it('DO_NOT_TRACK wins over an enabling env override', () => {
+    expect(
+      explainTelemetryConsent({ DO_NOT_TRACK: '1', CLAUDE_MEM_TELEMETRY: '1' }, enabledConfig)
+    ).toEqual({ enabled: false, source: 'DO_NOT_TRACK' });
+  });
+
+  it('attributes CLAUDE_MEM_TELEMETRY to the env layer (off)', () => {
+    expect(explainTelemetryConsent({ CLAUDE_MEM_TELEMETRY: '0' }, enabledConfig)).toEqual({
+      enabled: false,
+      source: 'env',
+    });
+  });
+
+  it('attributes CLAUDE_MEM_TELEMETRY to the env layer (on)', () => {
+    expect(explainTelemetryConsent({ CLAUDE_MEM_TELEMETRY: 'on' }, null)).toEqual({
+      enabled: true,
+      source: 'env',
+    });
+  });
+
+  it('attributes a config decision to the config layer', () => {
+    expect(explainTelemetryConsent({}, enabledConfig)).toEqual({
+      enabled: true,
+      source: 'config',
+    });
+    expect(explainTelemetryConsent({}, disabledConfig)).toEqual({
+      enabled: false,
+      source: 'config',
+    });
+  });
+
+  it('falls back to default-off with no env and no config', () => {
+    expect(explainTelemetryConsent({}, null)).toEqual({ enabled: false, source: 'default' });
+  });
+
+  it('unrecognized env values fall through to config/default', () => {
+    expect(explainTelemetryConsent({ CLAUDE_MEM_TELEMETRY: 'maybe' }, enabledConfig)).toEqual({
+      enabled: true,
+      source: 'config',
+    });
+    expect(explainTelemetryConsent({ CLAUDE_MEM_TELEMETRY: 'maybe' }, null)).toEqual({
+      enabled: false,
+      source: 'default',
+    });
+  });
+
+  it('agrees with resolveTelemetryConsent for every layer', () => {
+    const cases: Array<[NodeJS.ProcessEnv, TelemetryConfig | null]> = [
+      [{ DO_NOT_TRACK: '1' }, enabledConfig],
+      [{ CLAUDE_MEM_TELEMETRY: '0' }, enabledConfig],
+      [{ CLAUDE_MEM_TELEMETRY: '1' }, disabledConfig],
+      [{}, enabledConfig],
+      [{}, disabledConfig],
+      [{}, null],
+    ];
+    for (const [env, config] of cases) {
+      expect(explainTelemetryConsent(env, config).enabled).toBe(
+        resolveTelemetryConsent(env, config)
+      );
+    }
   });
 });
 
