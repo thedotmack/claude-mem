@@ -12,8 +12,6 @@ export { SessionSearch } from './SessionSearch.js';
 
 export * from './types.js';
 
-export { migrations } from './migrations.js';
-
 export { storeObservations, storeObservationsAndMarkComplete } from './transactions.js';
 
 export * from './Sessions.js';
