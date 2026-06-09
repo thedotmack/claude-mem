@@ -1,8 +1,24 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { TranscriptSchema, WatchTarget } from '../../src/services/transcripts/types.js';
 import { TranscriptEventProcessor } from '../../src/services/transcripts/processor.js';
+import * as realSessionInit from '../../src/cli/handlers/session-init.js';
+import * as realWorkerUtils from '../../src/shared/worker-utils.js';
+import * as realAgentsMdUtils from '../../src/utils/agents-md-utils.js';
+import * as realProjectName from '../../src/utils/project-name.js';
+
+const realSessionInitSnapshot = { ...realSessionInit };
+const realWorkerUtilsSnapshot = { ...realWorkerUtils };
+const realAgentsMdUtilsSnapshot = { ...realAgentsMdUtils };
+const realProjectNameSnapshot = { ...realProjectName };
+
+afterAll(() => {
+  mock.module('../../src/cli/handlers/session-init.js', () => realSessionInitSnapshot);
+  mock.module('../../src/shared/worker-utils.js', () => realWorkerUtilsSnapshot);
+  mock.module('../../src/utils/agents-md-utils.js', () => realAgentsMdUtilsSnapshot);
+  mock.module('../../src/utils/project-name.js', () => realProjectNameSnapshot);
+});
 
 mock.module('../../src/cli/handlers/session-init.js', () => ({
   sessionInitHandler: {
