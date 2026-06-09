@@ -12,6 +12,7 @@ import { countObservationsByProjects } from '../../../context/ObservationCompile
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from '../../../sqlite/types.js';
+import { captureEvent } from '../../../telemetry/telemetry.js';
 
 const ONBOARDING_EXPLAINER_PATH: string = path.resolve(__dirname, '../skills/how-it-works/onboarding-explainer.md');
 
@@ -126,6 +127,7 @@ export class SearchRoutes extends BaseRouteHandler {
 
   private handleUnifiedSearch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const result = await this.searchManager.search(req.query);
+    captureEvent('search_performed', { outcome: 'ok' });
     res.json(result);
   });
 

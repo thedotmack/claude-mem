@@ -140,6 +140,7 @@
     "ioredis": "^5.10.1",
     "pg": "^8.20.0",
     "picocolors": "^1.1.1",
+    "posthog-node": "^5.36.8",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "shell-quote": "^1.8.3",

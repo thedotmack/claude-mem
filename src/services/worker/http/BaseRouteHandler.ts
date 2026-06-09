@@ -2,6 +2,7 @@
 import { Request, Response } from 'express';
 import { logger } from '../../../utils/logger.js';
 import { AppError } from '../../server/ErrorHandler.js';
+import { captureEvent } from '../../telemetry/telemetry.js';
 
 export abstract class BaseRouteHandler {
   protected wrapHandler(
@@ -57,6 +58,7 @@ export abstract class BaseRouteHandler {
     logger.failure('WORKER', context || 'Request failed', {}, error);
     if (!res.headersSent) {
       const statusCode = error instanceof AppError ? error.statusCode : 500;
+      if (statusCode >= 500) captureEvent('error_occurred', { error_category: 'http_500' });
       const response: Record<string, unknown> = { error: error.message };
 
       if (error instanceof AppError && error.code) {
