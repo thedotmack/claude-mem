@@ -116,8 +116,8 @@ export const SAMPLE_CONFIG: TranscriptWatchConfig = {
 
 export function isNativeHookBackedCodexWatch(watch: { name?: string; path?: string; schema?: string | TranscriptSchema }): boolean {
   const schemaName = typeof watch.schema === 'string' ? watch.schema : watch.schema?.name;
-  const isCanonicalCodexWatch = watch.name === 'codex' && (!schemaName || schemaName === 'codex');
-  if (!isCanonicalCodexWatch || !watch.path) return false;
+  const nameOrSchemaIsCodex = watch.name === 'codex' || schemaName === 'codex';
+  if (!nameOrSchemaIsCodex || !watch.path) return false;
 
   const normalizedPath = expandHomePath(watch.path).replace(/\\/g, '/');
   const codexSessionsRoot = join(homedir(), '.codex', 'sessions').replace(/\\/g, '/');
@@ -130,7 +130,9 @@ export function shouldSuppressNativeCodexAgentsContext(watch: {
   schema?: string | TranscriptSchema;
   context?: { mode?: string };
 }): boolean {
-  return watch.context?.mode === 'agents' && isNativeHookBackedCodexWatch(watch);
+  const schemaName = typeof watch.schema === 'string' ? watch.schema : watch.schema?.name;
+  const isCanonicalCodexWatch = watch.name === 'codex' && (!schemaName || schemaName === 'codex');
+  return watch.context?.mode === 'agents' && isCanonicalCodexWatch && isNativeHookBackedCodexWatch(watch);
 }
 
 export function filterNativeHookBackedCodexWatches(
