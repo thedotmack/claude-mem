@@ -4,7 +4,7 @@ import { execSync } from "child_process";
 import { spawnHidden } from "./spawn.js";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
-import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
+import { SettingsDefaultsManager, type SettingsDefaults } from "./SettingsDefaultsManager.js";
 import { MARKETPLACE_ROOT, DATA_DIR } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
 import { validateWorkerPidFile } from "../supervisor/index.js";
@@ -47,6 +47,8 @@ const HOOK_READINESS_TIMEOUT_MS = readTimeoutEnv(
   { min: 0, max: 300000 }
 );
 
+const API_REQUEST_TIMEOUT_BOUNDS = { min: 500, max: 300000 } as const;
+
 export function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs: number): Promise<Response> {
   return new Promise((resolve, reject) => {
     const timeoutId = setTimeout(
@@ -62,14 +64,69 @@ export function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs:
 
 let cachedPort: number | null = null;
 let cachedHost: string | null = null;
+let cachedSettings: SettingsDefaults | null = null;
+let cachedApiRequestTimeoutMs: number | null = null;
+
+function getWorkerSettingsPath(): string {
+  return path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
+}
+
+function getWorkerSettings(): SettingsDefaults {
+  if (cachedSettings !== null) {
+    return cachedSettings;
+  }
+
+  cachedSettings = SettingsDefaultsManager.loadFromFile(getWorkerSettingsPath());
+  return cachedSettings;
+}
+
+function parseBoundedTimeout(
+  rawValue: string | undefined,
+  bounds: { min: number; max: number }
+): number | null {
+  if (!rawValue) return null;
+  const parsed = parseInt(rawValue, 10);
+  if (Number.isFinite(parsed) && parsed >= bounds.min && parsed <= bounds.max) {
+    return parsed;
+  }
+  return null;
+}
+
+function readSettingsBackedTimeout(
+  settingName: keyof SettingsDefaults,
+  defaultValue: number,
+  bounds: { min: number; max: number }
+): number {
+  const envVal = process.env[settingName];
+  if (envVal !== undefined) {
+    const parsed = parseBoundedTimeout(envVal, bounds);
+    if (parsed !== null) {
+      return parsed;
+    }
+    logger.warn('SYSTEM', `Invalid ${settingName}, using default`, {
+      value: envVal, min: bounds.min, max: bounds.max
+    });
+    return defaultValue;
+  }
+
+  const settingsValue = getWorkerSettings()[settingName];
+  const parsed = parseBoundedTimeout(settingsValue, bounds);
+  if (parsed !== null) {
+    return parsed;
+  }
+
+  logger.warn('SYSTEM', `Invalid ${settingName} in settings.json, using default`, {
+    value: settingsValue, min: bounds.min, max: bounds.max
+  });
+  return defaultValue;
+}
 
 export function getWorkerPort(): number {
   if (cachedPort !== null) {
     return cachedPort;
   }
 
-  const settingsPath = path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
-  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+  const settings = getWorkerSettings();
   cachedPort = parseInt(settings.CLAUDE_MEM_WORKER_PORT, 10);
   return cachedPort;
 }
@@ -79,15 +136,29 @@ export function getWorkerHost(): string {
     return cachedHost;
   }
 
-  const settingsPath = path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
-  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+  const settings = getWorkerSettings();
   cachedHost = settings.CLAUDE_MEM_WORKER_HOST;
   return cachedHost;
+}
+
+export function getWorkerApiRequestTimeoutMs(): number {
+  if (cachedApiRequestTimeoutMs !== null) {
+    return cachedApiRequestTimeoutMs;
+  }
+
+  cachedApiRequestTimeoutMs = readSettingsBackedTimeout(
+    'CLAUDE_MEM_API_TIMEOUT_MS',
+    getTimeout(HOOK_TIMEOUTS.API_REQUEST),
+    API_REQUEST_TIMEOUT_BOUNDS
+  );
+  return cachedApiRequestTimeoutMs;
 }
 
 export function clearPortCache(): void {
   cachedPort = null;
   cachedHost = null;
+  cachedSettings = null;
+  cachedApiRequestTimeoutMs = null;
 }
 
 export function buildWorkerUrl(apiPath: string): string {
@@ -104,7 +175,7 @@ export function workerHttpRequest(
   } = {}
 ): Promise<Response> {
   const method = options.method ?? 'GET';
-  const timeoutMs = options.timeoutMs ?? API_REQUEST_TIMEOUT_MS;
+  const timeoutMs = options.timeoutMs ?? getWorkerApiRequestTimeoutMs();
 
   const url = buildWorkerUrl(apiPath);
   const init: RequestInit = { method };
