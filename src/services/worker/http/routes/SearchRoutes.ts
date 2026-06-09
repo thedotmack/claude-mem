@@ -365,7 +365,7 @@ export class SearchRoutes extends BaseRouteHandler {
       // Memoized: skips the COUNT(*) query once any project in the set has
       // observations. Hot-path: PostToolUse fires after every Read/Edit.
       if (!projectsHaveObservations(sessionStore, projects)) {
-        const port = settings.CLAUDE_MEM_WORKER_PORT;
+        const port = process.env.CLAUDE_MEM_WORKER_PORT ?? settings.CLAUDE_MEM_WORKER_PORT;
         const viewerUrl = `http://localhost:${port}`;
         const hintBody = WELCOME_HINT_TEMPLATE.replace('{viewer_url}', viewerUrl);
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
