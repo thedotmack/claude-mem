@@ -21,6 +21,25 @@ const TELEMETRY_PUBLIC_KEY = '';
 const DEFAULT_HOST = 'https://us.i.posthog.com';
 
 let client: PostHog | null = null;
+let isShutdown = false;
+
+/**
+ * Consent is re-resolved at most once per TTL window so the capture path does
+ * not touch the filesystem per event (telemetry.json read). A consent change
+ * via the CLI is picked up by a running worker within the TTL.
+ */
+const CONSENT_CACHE_TTL_MS = 30_000;
+let consentCache: { value: boolean; expiresAt: number } | null = null;
+
+function hasConsent(): boolean {
+  const now = Date.now();
+  if (consentCache && now < consentCache.expiresAt) {
+    return consentCache.value;
+  }
+  const value = resolveTelemetryConsent(process.env, loadTelemetryConfig());
+  consentCache = { value, expiresAt: now + CONSENT_CACHE_TTL_MS };
+  return value;
+}
 
 function getApiKey(): string {
   return process.env.CLAUDE_MEM_TELEMETRY_KEY || TELEMETRY_PUBLIC_KEY;
@@ -64,7 +83,10 @@ function buildBaseProperties(): Record<string, unknown> {
  */
 export function captureEvent(event: string, props?: Record<string, unknown>): void {
   try {
-    if (!resolveTelemetryConsent(process.env, loadTelemetryConfig())) {
+    // Once shutdown has flushed the client, late events (e.g. a request that
+    // raced graceful stop) are dropped rather than queued in a new client
+    // that would never be flushed.
+    if (isShutdown || !hasConsent()) {
       return;
     }
 
@@ -104,6 +126,7 @@ export function captureEvent(event: string, props?: Record<string, unknown>): vo
  * Never rejects.
  */
 export async function shutdownTelemetry(): Promise<void> {
+  isShutdown = true;
   const current = client;
   client = null;
   if (!current) {
