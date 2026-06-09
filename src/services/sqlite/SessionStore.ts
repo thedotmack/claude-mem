@@ -622,8 +622,11 @@ export class SessionStore {
 
     const observationsCols = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
     const observationsHasMetadata = observationsCols.some(c => c.name === 'metadata');
+    const observationsHasContentHash = observationsCols.some(c => c.name === 'content_hash');
     const metadataColumnSQL = observationsHasMetadata ? ',\n        metadata TEXT' : '';
     const metadataSelectSQL = observationsHasMetadata ? ', metadata' : '';
+    const contentHashColumnSQL = observationsHasContentHash ? ',\n        content_hash TEXT' : '';
+    const contentHashSelectSQL = observationsHasContentHash ? ', content_hash' : '';
 
     const observationsNewSQL = `
       CREATE TABLE observations_new (
@@ -642,7 +645,7 @@ export class SessionStore {
         prompt_number INTEGER,
         discovery_tokens INTEGER DEFAULT 0,
         created_at TEXT NOT NULL,
-        created_at_epoch INTEGER NOT NULL${metadataColumnSQL},
+        created_at_epoch INTEGER NOT NULL${metadataColumnSQL}${contentHashColumnSQL},
         FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
       )
     `;
@@ -650,7 +653,7 @@ export class SessionStore {
       INSERT INTO observations_new
       SELECT id, memory_session_id, project, text, type, title, subtitle, facts,
              narrative, concepts, files_read, files_modified, prompt_number,
-             discovery_tokens, created_at, created_at_epoch${metadataSelectSQL}
+             discovery_tokens, created_at, created_at_epoch${metadataSelectSQL}${contentHashSelectSQL}
       FROM observations
     `;
     const observationsIndexesSQL = `
@@ -986,9 +989,17 @@ export class SessionStore {
 
       this.db.run(`
         DELETE FROM observations
-         WHERE id NOT IN (
-           SELECT MIN(id) FROM observations
-            GROUP BY memory_session_id, content_hash
+         WHERE id IN (
+           SELECT id
+             FROM (
+               SELECT id,
+                      ROW_NUMBER() OVER (
+                        PARTITION BY memory_session_id, content_hash
+                        ORDER BY id
+                      ) AS duplicate_rank
+                 FROM observations
+             )
+            WHERE duplicate_rank > 1
          )
       `);
       this.db.run(`
