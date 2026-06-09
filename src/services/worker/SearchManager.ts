@@ -1122,7 +1122,7 @@ export class SearchManager {
   }
 
   async getRecentContext(args: any): Promise<any> {
-    const project = args.project || getProjectContext(process.cwd()).primary;
+    const project = args.project || path.basename(process.cwd());
     const limit = args.limit || 3;
 
     const sessions = this.sessionStore.getRecentSessionsWithStatus(project, limit);

@@ -1,14 +1,101 @@
 import { homedir } from 'os'
 import path from 'path';
+import { statSync, realpathSync } from 'fs';
 import { execFileSync } from 'child_process';
+import picomatch from 'picomatch';
 import { logger } from './logger.js';
 import { detectWorktree } from './worktree.js';
+import type { Environment } from '../shared/SettingsDefaultsManager.js';
+import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 
 function expandTilde(p: string): string {
   if (p === '~' || p.startsWith('~/')) {
     return p.replace(/^~/, homedir())
   }
   return p
+}
+
+let cachedEnvironments: Environment[] | null = null;
+let cachedSettingsMtime = 0;
+let lastCacheTime = 0;
+let settingsPathOverride: string | null = null;
+const CACHE_DEBOUNCE_MS = 100;
+
+export function resetEnvironmentsCache(): void {
+  cachedEnvironments = null;
+  cachedSettingsMtime = 0;
+  lastCacheTime = 0;
+}
+
+/**
+ * Override the settings file path used by loadEnvironments.
+ * Production code must not call this — it exists so tests can point at a
+ * temporary settings file instead of mutating the user's real
+ * ~/.claude-mem/settings.json.
+ */
+export function setEnvironmentsSettingsPathForTesting(p: string | null): void {
+  settingsPathOverride = p;
+  resetEnvironmentsCache();
+}
+
+function getSettingsPath(): string {
+  return settingsPathOverride ?? path.join(homedir(), '.claude-mem', 'settings.json');
+}
+
+export function loadEnvironments(): Environment[] {
+  const now = Date.now();
+  if (cachedEnvironments !== null && now - lastCacheTime < CACHE_DEBOUNCE_MS) {
+    return cachedEnvironments;
+  }
+
+  try {
+    const settingsPath = getSettingsPath();
+    const mtime = statSync(settingsPath).mtimeMs;
+
+    if (cachedEnvironments !== null && mtime === cachedSettingsMtime) {
+      lastCacheTime = now;
+      return cachedEnvironments;
+    }
+
+    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+    const raw = settings.environments;
+    // settings.environments is typed as string, but loadFromFile hands back
+    // whatever JSON.parse produced from the on-disk file — so it can be either
+    // a JSON string ("[{...}]") or a native array ([{...}]) depending on how
+    // the user wrote it. Accept both shapes.
+    cachedEnvironments = Array.isArray(raw)
+      ? (raw as Environment[])
+      : (typeof raw === 'string' && raw ? JSON.parse(raw) : []);
+    cachedSettingsMtime = mtime;
+    lastCacheTime = now;
+    return cachedEnvironments!;
+  } catch {
+    cachedEnvironments = [];
+    lastCacheTime = now;
+    return cachedEnvironments;
+  }
+}
+
+function matchEnvironment(cwd: string): string | null {
+  const environments = loadEnvironments();
+  if (environments.length === 0) return null;
+
+  let normalizedCwd = cwd;
+  try { normalizedCwd = realpathSync(cwd); } catch { /* path doesn't exist, use original */ }
+
+  const expandedCwd = expandTilde(normalizedCwd);
+
+  for (const env of environments) {
+    for (const pattern of env.patterns) {
+      const expandedPattern = expandTilde(pattern);
+      if (picomatch(expandedPattern)(expandedCwd)) {
+        logger.info('PROJECT_NAME', 'Environment matched', { cwd, envName: env.name, pattern });
+        return env.name;
+      }
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -39,6 +126,13 @@ export function getProjectName(cwd: string | null | undefined): string {
   }
 
   const expanded = expandTilde(cwd)
+
+  // Environment matching wins over both git-repo-root and basename fallback —
+  // a user-configured environment is an explicit declaration of identity.
+  const envName = matchEnvironment(expanded);
+  if (envName) {
+    return envName;
+  }
 
   // #2663 — derive the project name from the git repo root when inside a repo so
   // the name is stable across subdirectories/worktrees. Fall back to the cwd

@@ -2,7 +2,7 @@
 import { createHash } from 'crypto';
 import { Database } from 'bun:sqlite';
 import { logger } from '../../../utils/logger.js';
-import { getProjectContext } from '../../../utils/project-name.js';
+import path from 'path';
 import type { ObservationInput, StoreObservationResult } from './types.js';
 
 export function computeObservationContentHash(
@@ -28,7 +28,7 @@ export function storeObservation(
   const timestampEpoch = overrideTimestampEpoch ?? Date.now();
   const timestampIso = new Date(timestampEpoch).toISOString();
 
-  const resolvedProject = project || getProjectContext(process.cwd()).primary;
+  const resolvedProject = project || path.basename(process.cwd());
 
   const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
 
