@@ -1216,8 +1216,8 @@ async function promptCmemOnlineOptIn(version: string): Promise<void> {
   );
 
   const emailResult = await p.text({
-    message: 'Your email (press Enter to skip):',
-    placeholder: 'you@example.com',
+    message: 'Your work email (press Enter to skip):',
+    placeholder: 'you@company.com',
     defaultValue: '',
     validate: (v?: string) => {
       const value = (v ?? '').trim();
