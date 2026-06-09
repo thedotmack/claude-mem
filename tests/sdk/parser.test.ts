@@ -1,14 +1,6 @@
-import { describe, it, expect, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, it, expect } from 'bun:test';
 
-mock.module('../../src/services/domain/ModeManager.js', () => ({
-  ModeManager: {
-    getInstance: () => ({
-      getActiveMode: () => ({
-        observation_types: [{ id: 'bugfix' }, { id: 'discovery' }, { id: 'refactor' }],
-      }),
-    }),
-  },
-}));
+import { ModeManager } from '../../src/services/domain/ModeManager.js';
 
 import { parseAgentXml } from '../../src/sdk/parser.js';
 
@@ -18,6 +10,19 @@ function expectObservation(raw: string) {
   if (result.summary !== null) throw new Error('expected observation result, got a summary');
   return result.observations;
 }
+
+beforeEach(() => {
+  const modeManager = ModeManager.getInstance() as unknown as { activeMode: unknown };
+  modeManager.activeMode = {
+    observation_types: [{ id: 'bugfix' }, { id: 'discovery' }, { id: 'refactor' }],
+    observation_concepts: [],
+  };
+});
+
+afterEach(() => {
+  const modeManager = ModeManager.getInstance() as unknown as { activeMode: unknown };
+  modeManager.activeMode = null;
+});
 
 describe('parseAgentXml — observations', () => {
   it('returns a populated observation when title is present', () => {
