@@ -18,6 +18,8 @@ import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources }
 import { findRecentDuplicateUserPrompt as findRecentDuplicateUserPromptRecord } from './prompts/get.js';
 import { normalizeStoredPromptText } from './prompt-storage.js';
 
+const SQLITE_BUSY_TIMEOUT_MS = 5000;
+
 function resolveCreateSessionArgs(
   customTitle?: string,
   platformSource?: string
@@ -43,6 +45,7 @@ export class SessionStore {
       this.db.run('PRAGMA journal_mode = WAL');
       this.db.run('PRAGMA synchronous = NORMAL');
       this.db.run('PRAGMA foreign_keys = ON');
+      this.db.run(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
       this.db.run('PRAGMA journal_size_limit = 4194304'); 
     }
 
