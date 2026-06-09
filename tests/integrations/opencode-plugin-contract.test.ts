@@ -171,6 +171,77 @@ describe("OpenCode plugin event contract", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it("awaits message.part.updated session init without duplicating the assistant observation", async () => {
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const fetchResolvers: Array<() => void> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (((url: string | URL | Request, init?: RequestInit) => {
+      posts.push({
+        url: String(url),
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+
+      return new Promise<Response>((resolve) => {
+        fetchResolvers.push(() => {
+          resolve(new Response(JSON.stringify({ status: "queued" }), { status: 200 }));
+        });
+      });
+    }) as unknown) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const messagePartUpdated = plugin["message.part.updated"];
+      let resolved = false;
+      const hookPromise = messagePartUpdated({}, {
+        message: { id: "msg_1", role: "assistant", sessionID: "ses_3" },
+        parts: [{ type: "text", text: "partial assistant output" }],
+      }).then(() => {
+        resolved = true;
+      });
+
+      await Promise.resolve();
+      expect(posts).toHaveLength(1);
+      expect(posts[0]?.url).toContain("/api/sessions/init");
+      expect(resolved).toBe(false);
+
+      fetchResolvers.shift()?.();
+      await hookPromise;
+
+      expect(resolved).toBe(true);
+      expect(posts).toHaveLength(1);
+      expect(posts.some((post) => post.url.includes("/api/sessions/observations"))).toBe(false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("warns when an awaited worker POST returns a non-OK status", async () => {
+    const originalFetch = globalThis.fetch;
+    const originalWarn = console.warn;
+    const warnCalls: string[] = [];
+    console.warn = ((message: string) => {
+      warnCalls.push(message);
+    }) as typeof console.warn;
+
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ error: "nope" }), { status: 503 })) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const toolAfter = plugin["tool.execute.after"];
+      await toolAfter(
+        { tool: "read", sessionID: "ses_4", callID: "c4" },
+        { title: "Read", output: "file contents", metadata: {}, args: { path: "/a" } },
+      );
+
+      expect(warnCalls.some((call) => call.includes("Worker POST /api/sessions/init returned 503"))).toBe(true);
+      expect(warnCalls.some((call) => call.includes("Worker POST /api/sessions/observations returned 503"))).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+      console.warn = originalWarn;
+    }
+  });
 });
 
 describe("OpenCode search client response-shape contract", () => {

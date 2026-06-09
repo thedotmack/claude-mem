@@ -108,11 +108,14 @@ async function workerPost(
   body: Record<string, unknown>,
 ): Promise<void> {
   try {
-    await fetch(`${WORKER_BASE_URL}${path}`, {
+    const response = await fetch(`${WORKER_BASE_URL}${path}`, {
       method: "POST",
       headers: JSON_HEADERS,
       body: JSON.stringify(body),
     });
+    if (!response.ok) {
+      console.warn(`[claude-mem] Worker POST ${path} returned ${response.status}`);
+    }
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     if (!message.includes("ECONNREFUSED")) {
@@ -140,6 +143,7 @@ async function workerGetText(path: string): Promise<string | null> {
 
 const contentSessionIdsByOpenCodeSessionId = new Map<string, string>();
 const initializedSessionIds = new Set<string>();
+const pendingAssistantMessageIds = new Set<string>();
 
 const MAX_SESSION_MAP_ENTRIES = 1000;
 
@@ -193,6 +197,27 @@ function extractAssistantMessageText(output: ChatMessageOutput): string {
     .join("\n");
 }
 
+async function captureAssistantMessage(
+  sessionID: string,
+  output: ChatMessageOutput,
+  projectName: string,
+  cwd: string,
+): Promise<void> {
+  if (output.message?.role !== "assistant") return;
+
+  const messageText = extractAssistantMessageText(output);
+  if (!messageText) return;
+
+  const contentSessionId = await ensureSessionInitialized(sessionID, projectName);
+  await workerPost("/api/sessions/observations", {
+    contentSessionId,
+    tool_name: "assistant_message",
+    tool_input: {},
+    tool_response: truncate(messageText),
+    cwd,
+  });
+}
+
 export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
   const projectName = ctx.project?.name || "opencode";
 
@@ -222,19 +247,11 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
     ): Promise<void> => {
       const sessionID = output.message?.sessionID;
       if (!sessionID) return;
-      if (output.message?.role !== "assistant") return;
-
-      const messageText = extractAssistantMessageText(output);
-      if (!messageText) return;
-
-      const contentSessionId = await ensureSessionInitialized(sessionID, projectName);
-      await workerPost("/api/sessions/observations", {
-        contentSessionId,
-        tool_name: "assistant_message",
-        tool_input: {},
-        tool_response: truncate(messageText),
-        cwd: ctx.directory,
-      });
+      const messageId = output.message?.id;
+      if (messageId) {
+        pendingAssistantMessageIds.delete(`${sessionID}:${messageId}`);
+      }
+      await captureAssistantMessage(sessionID, output, projectName, ctx.directory);
     },
 
     "message.part.updated": async (
@@ -243,19 +260,11 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
     ): Promise<void> => {
       const sessionID = output.message?.sessionID;
       if (!sessionID) return;
-      if (output.message?.role !== "assistant") return;
-
-      const messageText = extractAssistantMessageText(output);
-      if (!messageText) return;
-
-      const contentSessionId = await ensureSessionInitialized(sessionID, projectName);
-      await workerPost("/api/sessions/observations", {
-        contentSessionId,
-        tool_name: "assistant_message",
-        tool_input: {},
-        tool_response: truncate(messageText),
-        cwd: ctx.directory,
-      });
+      const messageId = output.message?.id;
+      if (messageId) {
+        pendingAssistantMessageIds.add(`${sessionID}:${messageId}`);
+      }
+      await ensureSessionInitialized(sessionID, projectName);
     },
 
     // Summarize when a session compacts. This is OpenCode's real compaction
@@ -290,6 +299,11 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
         case "session.deleted": {
           contentSessionIdsByOpenCodeSessionId.delete(sessionID);
           initializedSessionIds.delete(sessionID);
+          for (const key of pendingAssistantMessageIds) {
+            if (key.startsWith(`${sessionID}:`)) {
+              pendingAssistantMessageIds.delete(key);
+            }
+          }
           break;
         }
         default:
