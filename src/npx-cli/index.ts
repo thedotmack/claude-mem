@@ -26,6 +26,7 @@ ${pc.bold('Install Commands')} (no Bun required):
   ${pc.cyan('npx claude-mem install --provider claude|gemini|openrouter')}   Set LLM provider non-interactively
   ${pc.cyan('npx claude-mem install --model <id>')}   Set Claude model (when provider=claude)
   ${pc.cyan('npx claude-mem install --no-auto-start')}   Skip worker auto-start at the end
+  ${pc.cyan('npx claude-mem install --disable-auto-memory')}   Explicitly disable Claude Code native auto-memory
   ${pc.cyan('npx claude-mem install --runtime worker|server')}   Select runtime non-interactively (server brings up Docker pg+redis, generates an API key, injects the IDE MCP config)
   ${pc.cyan('npx claude-mem install --runtime server --server-url <url>')}   Point the server runtime at a specific base URL
   ${pc.cyan('npx claude-mem repair')}                Repair runtime (re-runs Bun/uv setup and bun install in plugin cache)
@@ -91,6 +92,7 @@ function parseInstallOptions(argv: string[]): InstallOptions {
     provider: provider as InstallOptions['provider'],
     model: readFlag(argv, '--model'),
     noAutoStart: argv.includes('--no-auto-start'),
+    disableAutoMemory: argv.includes('--disable-auto-memory'),
     runtime: runtime as InstallOptions['runtime'],
     serverUrl: readFlag(argv, '--server-url'),
   };

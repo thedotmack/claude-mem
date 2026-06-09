@@ -169,6 +169,49 @@ export function disableClaudeAutoMemory(): boolean {
   return true;
 }
 
+type ClaudeAutoMemoryChoice = 'disable' | 'leave-enabled' | 'not-applicable';
+
+async function resolveClaudeAutoMemoryChoice(
+  selectedIDEs: string[],
+  options: InstallOptions,
+): Promise<ClaudeAutoMemoryChoice> {
+  if (!selectedIDEs.includes('claude-code')) {
+    return 'not-applicable';
+  }
+
+  if (options.disableAutoMemory) {
+    return 'disable';
+  }
+
+  if (!isInteractive) {
+    return 'leave-enabled';
+  }
+
+  const choice = await p.select<'leave-enabled' | 'disable'>({
+    message: 'Disable Claude Code auto-memory?',
+    options: [
+      {
+        value: 'leave-enabled',
+        label: 'Leave enabled',
+        hint: 'Recommended; keeps Claude Code native memory visible on startup.',
+      },
+      {
+        value: 'disable',
+        label: 'Disable auto-memory',
+        hint: 'Only if you explicitly want claude-mem to replace native startup memory.',
+      },
+    ],
+    initialValue: 'leave-enabled',
+  });
+
+  if (p.isCancel(choice)) {
+    p.cancel('Installation cancelled.');
+    process.exit(0);
+  }
+
+  return choice;
+}
+
 function makeIDETask(ideId: string, summary: InstallSummary): TaskDescriptor | null {
   const recordFailure = (label: string, output: string) => {
     // Route every per-IDE failure through the central decision point. A single
@@ -1261,6 +1304,7 @@ export interface InstallOptions {
   provider?: 'claude' | 'gemini' | 'openrouter';
   model?: string;
   noAutoStart?: boolean;
+  disableAutoMemory?: boolean;
   // #2543 — non-interactive runtime selection. `server` is the operator-facing
   // alias for the canonical `server-beta` runtime id.
   runtime?: 'worker' | 'server' | 'server-beta';
@@ -1486,8 +1530,9 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   // Tri-state so the summary can distinguish "wrote", "already set", and "failed".
   // A boolean would conflate the error path with "already set", which is misleading
   // when a write fails mid-install (the warn would say one thing, the summary another).
-  let autoMemoryStatus: 'disabled' | 'already-disabled' | 'failed' | null = null;
-  if (selectedIDEs.includes('claude-code')) {
+  let autoMemoryStatus: 'disabled' | 'already-disabled' | 'left-enabled' | 'failed' | null = null;
+  const autoMemoryChoice = await resolveClaudeAutoMemoryChoice(selectedIDEs, options);
+  if (autoMemoryChoice === 'disable') {
     try {
       const wrote = disableClaudeAutoMemory();
       autoMemoryStatus = wrote ? 'disabled' : 'already-disabled';
@@ -1505,6 +1550,9 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
         cause: error,
       }, summary);
     }
+  } else if (autoMemoryChoice === 'leave-enabled') {
+    autoMemoryStatus = 'left-enabled';
+    log.info('Claude Code: leaving native auto-memory enabled unless you explicitly opt in to disabling it.');
   }
 
   // The server runtime is brought up via its own stack (Docker pg+redis +
@@ -1560,6 +1608,8 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     summaryLines.push(`Auto-memory: ${pc.cyan('disabled')} (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1)`);
   } else if (autoMemoryStatus === 'already-disabled') {
     summaryLines.push(`Auto-memory: ${pc.cyan('already disabled')} (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1)`);
+  } else if (autoMemoryStatus === 'left-enabled') {
+    summaryLines.push(`Auto-memory: ${pc.cyan('left enabled')} (native Claude Code memory preserved)`);
   } else if (autoMemoryStatus === 'failed') {
     summaryLines.push(`Auto-memory: ${pc.red('write failed')} (see warning above)`);
   }
