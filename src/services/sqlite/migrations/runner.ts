@@ -941,7 +941,7 @@ export class MigrationRunner {
     try {
       this.db.run(`
         UPDATE observations
-           SET content_hash = 'legacy-' || id
+           SET content_hash = '__null_migration_' || id || '__'
          WHERE content_hash IS NULL
       `);
 

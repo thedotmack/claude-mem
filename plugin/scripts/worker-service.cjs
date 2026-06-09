@@ -387,7 +387,7 @@ ${i.stack}`:` ${i.message}`;else if(this.getLevel()===0&&typeof i=="object")try{
         WHERE tool_use_id IS NOT NULL
       `),this.db.prepare("INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)").run(28,new Date().toISOString()),this.db.run("COMMIT")}catch(s){throw this.db.run("ROLLBACK"),s}}addObservationsUniqueContentHashIndex(){if(this.db.prepare("SELECT version FROM schema_versions WHERE version = ?").get(29))return;let r=this.db.query("PRAGMA table_info(observations)").all(),n=r.some(i=>i.name==="memory_session_id"),s=r.some(i=>i.name==="content_hash");if(!n||!s){this.db.prepare("INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)").run(29,new Date().toISOString());return}this.db.run("BEGIN TRANSACTION");try{this.db.run(`
         UPDATE observations
-           SET content_hash = 'legacy-' || id
+           SET content_hash = '__null_migration_' || id || '__'
          WHERE content_hash IS NULL
       `),this.db.run(`
         DELETE FROM observations

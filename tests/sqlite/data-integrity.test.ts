@@ -256,7 +256,7 @@ describe('TRIAGE-03: Data Integrity', () => {
           SELECT COUNT(*) as count
             FROM observations
            WHERE memory_session_id = 'session-a'
-             AND content_hash LIKE 'legacy-%'
+             AND content_hash GLOB '__null_migration_*__'
         `).get() as { count: number };
         expect(sessionANulls.count).toBe(3);
 
@@ -264,7 +264,7 @@ describe('TRIAGE-03: Data Integrity', () => {
           SELECT COUNT(*) as count
             FROM observations
            WHERE memory_session_id = 'session-b'
-             AND content_hash LIKE 'legacy-%'
+             AND content_hash GLOB '__null_migration_*__'
         `).get() as { count: number };
         expect(sessionBNulls.count).toBe(2);
 
