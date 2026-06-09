@@ -16,6 +16,7 @@ import { computeObservationContentHash } from './observations/store.js';
 import { parseFileList } from './observations/files.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources } from '../../shared/platform-source.js';
 import { findRecentDuplicateUserPrompt as findRecentDuplicateUserPromptRecord } from './prompts/get.js';
+import { normalizeStoredPromptText } from './prompt-storage.js';
 
 function resolveCreateSessionArgs(
   customTitle?: string,
@@ -1407,7 +1408,12 @@ export class SessionStore {
     promptText: string,
     windowMs: number
   ): LatestPromptResult | undefined {
-    return findRecentDuplicateUserPromptRecord(this.db, contentSessionId, promptText, windowMs);
+    return findRecentDuplicateUserPromptRecord(
+      this.db,
+      contentSessionId,
+      normalizeStoredPromptText(promptText),
+      windowMs
+    );
   }
 
   getRecentSessionsWithStatus(project: string, limit: number = 3): Array<{
@@ -1694,6 +1700,7 @@ export class SessionStore {
     const nowEpoch = now.getTime();
     const resolved = resolveCreateSessionArgs(customTitle, platformSource);
     const normalizedPlatformSource = resolved.platformSource ?? DEFAULT_PLATFORM_SOURCE;
+    const storedUserPrompt = normalizeStoredPromptText(userPrompt);
 
     const existing = this.db.prepare(`
       SELECT id, platform_source FROM sdk_sessions WHERE content_session_id = ?
@@ -1737,7 +1744,7 @@ export class SessionStore {
       INSERT INTO sdk_sessions
       (content_session_id, memory_session_id, project, platform_source, user_prompt, custom_title, started_at, started_at_epoch, status)
       VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'active')
-    `).run(contentSessionId, project, normalizedPlatformSource, userPrompt, resolved.customTitle || null, now.toISOString(), nowEpoch);
+    `).run(contentSessionId, project, normalizedPlatformSource, storedUserPrompt, resolved.customTitle || null, now.toISOString(), nowEpoch);
 
     const row = this.db.prepare('SELECT id FROM sdk_sessions WHERE content_session_id = ?')
       .get(contentSessionId) as { id: number };
@@ -1747,6 +1754,7 @@ export class SessionStore {
   saveUserPrompt(contentSessionId: string, promptNumber: number, promptText: string): number {
     const now = new Date();
     const nowEpoch = now.getTime();
+    const storedPromptText = normalizeStoredPromptText(promptText);
 
     const stmt = this.db.prepare(`
       INSERT INTO user_prompts
@@ -1754,7 +1762,7 @@ export class SessionStore {
       VALUES (?, ?, ?, ?, ?)
     `);
 
-    const result = stmt.run(contentSessionId, promptNumber, promptText, now.toISOString(), nowEpoch);
+    const result = stmt.run(contentSessionId, promptNumber, storedPromptText, now.toISOString(), nowEpoch);
     return result.lastInsertRowid as number;
   }
 
