@@ -43,23 +43,13 @@ const CHROMA_MCP_DEP_OVERRIDES: ReadonlyArray<string> = [
   'protobuf<7',
 ];
 
-// Issue #2696: on Windows the chroma-mcp subprocess is spawned via
-// `cmd.exe /c uvx ...`. cmd.exe interprets `<`, `>`, `|`, `&`, `^`, and `(` `)`
-// as shell metacharacters BEFORE uvx ever sees them, so a dep-override spec
-// like `protobuf<7` is parsed as an input redirection (`protobuf < 7`) and the
-// command line breaks. Node's spawn arg-quoting only quotes args containing
-// spaces/quotes, not these cmd.exe operators, so we must wrap any arg that
-// contains one in double quotes ourselves. Args without metacharacters are
-// returned unchanged so the normal command line is byte-identical to before.
-const CMD_EXE_METACHARACTERS = /[<>|&^()]/;
-export function quoteForCmdExe(arg: string): string {
-  if (!CMD_EXE_METACHARACTERS.test(arg)) {
-    return arg;
-  }
-  // Escape any embedded double quotes, then wrap. Inside double quotes cmd.exe
-  // does not perform redirection/grouping on these metacharacters.
-  return `"${arg.replace(/"/g, '\\"')}"`;
-}
+// Issue #2696 (revised): chroma-mcp is now spawned by invoking uvx DIRECTLY on
+// every platform — see ChromaMcpManager.resolveUvxCommand(). The previous
+// `cmd.exe /c uvx ...` path, and the cmd.exe metacharacter-quoting helper that
+// went with it, were removed: even with the dep-override specs wrapped in double
+// quotes, Node's child_process arg-quoting for cmd.exe re-mangled the `>`/`<` in
+// `onnxruntime>=1.20` / `protobuf<7`, so cmd.exe parsed them as redirection and
+// died with "The directory name is invalid" in ~10ms — killing semantic search.
 
 export class ChromaMcpManager {
   private static instance: ChromaMcpManager | null = null;
@@ -123,11 +113,13 @@ export class ChromaMcpManager {
     const spawnEnvironment = this.getSpawnEnv();
     getSupervisor().assertCanSpawn('chroma mcp');
 
-    const isWindows = process.platform === 'win32';
-    const uvxSpawnCommand = isWindows ? (process.env.ComSpec || 'cmd.exe') : 'uvx';
-    const uvxSpawnArgs = isWindows
-      ? ['/c', 'uvx', ...commandArgs.map(quoteForCmdExe)]
-      : commandArgs;
+    // Spawn uvx DIRECTLY (no `cmd.exe /c` shell). On Windows, routing through
+    // cmd.exe makes it parse the `>`/`<` in the dep-override specs as shell
+    // redirection before uvx sees them; a shell-less spawn passes them literally.
+    // resolveUvxCommand returns the absolute uvx.exe path on Windows (Node won't
+    // PATHEXT-resolve a bare `uvx`) and bare `uvx` elsewhere (#2696).
+    const uvxSpawnCommand = ChromaMcpManager.resolveUvxCommand();
+    const uvxSpawnArgs = commandArgs;
 
     logger.info('CHROMA_MCP', 'Connecting to chroma-mcp via MCP stdio', {
       command: uvxSpawnCommand,
@@ -689,6 +681,49 @@ export class ChromaMcpManager {
         return d;
       }
     });
+  }
+
+  /**
+   * Resolve the command used to launch uvx.
+   *
+   * On Windows we MUST spawn uvx.exe DIRECTLY rather than via `cmd.exe /c uvx`:
+   * cmd.exe parses the `>`/`<` in the dep-override specs (onnxruntime>=1.20,
+   * protobuf<7) as shell redirection before uvx sees them, and Node's
+   * child_process arg-quoting for cmd.exe re-mangles even pre-quoted args, so
+   * cmd.exe dies with "The directory name is invalid" in ~10ms. The MCP
+   * transport then reports "Connection closed", the manager backs off, and
+   * semantic search silently degrades to keyword-only (#2696 follow-up).
+   *
+   * Node's shell-less spawn won't resolve a bare `uvx` via PATHEXT on Windows,
+   * so we resolve the absolute path to uvx.exe from the same uv bin dirs that
+   * ensureUvOnPath() adds to the child PATH (honouring CLAUDE_MEM_CHROMA_UVX_PATH
+   * when it points straight at a binary), falling back to bare 'uvx.exe'.
+   */
+  static resolveUvxCommand(platform: NodeJS.Platform = process.platform): string {
+    if (platform !== 'win32') {
+      return 'uvx';
+    }
+    const override = process.env.CLAUDE_MEM_CHROMA_UVX_PATH;
+    if (override) {
+      try {
+        if (fs.existsSync(override) && fs.statSync(override).isFile()) {
+          return override;
+        }
+      } catch {
+        // fall through to scanning the known uv bin dirs
+      }
+    }
+    for (const dir of ChromaMcpManager.uvBinDirs()) {
+      const candidate = path.join(dir, 'uvx.exe');
+      try {
+        if (fs.existsSync(candidate)) {
+          return candidate;
+        }
+      } catch {
+        // ignore and try the next candidate
+      }
+    }
+    return 'uvx.exe';
   }
 
   private static ensureUvOnPath(env: Record<string, string>): void {
