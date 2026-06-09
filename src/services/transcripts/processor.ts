@@ -7,7 +7,7 @@ import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { writeAgentsMd } from '../../utils/agents-md-utils.js';
 import { resolveFieldSpec, resolveFields, matchesRule } from './field-utils.js';
-import { expandHomePath } from './config.js';
+import { expandHomePath, shouldSuppressNativeCodexAgentsContext } from './config.js';
 import type { TranscriptSchema, WatchTarget, SchemaEvent } from './types.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { ingestObservation } from '../worker/http/shared.js';
@@ -343,6 +343,7 @@ export class TranscriptEventProcessor {
   private async updateContext(session: SessionState, watch: WatchTarget): Promise<void> {
     if (!watch.context) return;
     if (watch.context.mode !== 'agents') return;
+    if (shouldSuppressNativeCodexAgentsContext(watch)) return;
 
     const workerReady = await ensureWorkerRunning();
     if (!workerReady) return;

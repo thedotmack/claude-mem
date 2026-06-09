@@ -124,6 +124,17 @@ export function isNativeHookBackedCodexWatch(watch: { name?: string; path?: stri
   return normalizedPath === `${codexSessionsRoot}/**/*.jsonl`;
 }
 
+export function shouldSuppressNativeCodexAgentsContext(watch: {
+  name?: string;
+  path?: string;
+  schema?: string | TranscriptSchema;
+  context?: { mode?: string };
+}): boolean {
+  const schemaName = typeof watch.schema === 'string' ? watch.schema : watch.schema?.name;
+  const isCanonicalCodexWatch = watch.name === 'codex' && (!schemaName || schemaName === 'codex');
+  return watch.context?.mode === 'agents' && isCanonicalCodexWatch && isNativeHookBackedCodexWatch(watch);
+}
+
 export function filterNativeHookBackedCodexWatches(
   config: TranscriptWatchConfig,
   allowCodexTranscriptIngestion: boolean
