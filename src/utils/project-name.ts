@@ -32,6 +32,23 @@ function findGitRepoRoot(dir: string): string | null {
   }
 }
 
+function findNearestGitContextRoot(dir: string): string | null {
+  let current = dir;
+
+  while (true) {
+    const worktreeInfo = detectWorktree(current);
+    if (worktreeInfo.isWorktree || worktreeInfo.isSubmodule) {
+      return current;
+    }
+
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return null;
+    }
+    current = parent;
+  }
+}
+
 export function getProjectName(cwd: string | null | undefined): string {
   if (!cwd || cwd.trim() === '') {
     logger.warn('PROJECT_NAME', 'Empty cwd provided, using fallback', { cwd });
@@ -74,14 +91,21 @@ export interface ProjectContext {
 }
 
 export function getProjectContext(cwd: string | null | undefined): ProjectContext {
-  const cwdProjectName = getProjectName(cwd);
-
   if (!cwd) {
+    const cwdProjectName = getProjectName(cwd);
     return { primary: cwdProjectName, parent: null, isWorktree: false, allProjects: [cwdProjectName] };
   }
 
   const expandedCwd = expandTilde(cwd);
-  const worktreeInfo = detectWorktree(expandedCwd);
+  const contextRoot = findNearestGitContextRoot(expandedCwd);
+  const repoRoot = findGitRepoRoot(expandedCwd);
+  const worktreeProbePath = contextRoot ?? repoRoot ?? expandedCwd;
+  const worktreeInfo = detectWorktree(worktreeProbePath);
+  const cwdProjectName = repoRoot
+    ? path.basename(repoRoot)
+    : contextRoot
+      ? path.basename(contextRoot)
+      : getProjectName(cwd);
 
   if (worktreeInfo.isWorktree && worktreeInfo.parentProjectName) {
     const composite = `${worktreeInfo.parentProjectName}/${cwdProjectName}`;
@@ -96,7 +120,7 @@ export function getProjectContext(cwd: string | null | undefined): ProjectContex
   if (worktreeInfo.isSubmodule && worktreeInfo.parentProjectName) {
     return {
       primary: worktreeInfo.parentProjectName,
-      parent: worktreeInfo.parentProjectName,
+      parent: null,
       isWorktree: false,
       allProjects: [worktreeInfo.parentProjectName]
     };

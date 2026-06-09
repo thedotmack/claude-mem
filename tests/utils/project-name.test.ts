@@ -129,6 +129,7 @@ describe('getProjectContext', () => {
     const ctx = getProjectContext(null);
     expect(ctx.primary).toBe('unknown-project');
     expect(ctx.parent).toBeNull();
+    expect(ctx.allProjects).toEqual(['unknown-project']);
   });
 
   describe('worktree isolation', () => {
@@ -179,19 +180,24 @@ describe('getProjectContext', () => {
     let tmp: string;
     let mainRepo: string;
     let submoduleCheckout: string;
+    let submoduleNestedDir: string;
 
     beforeAll(async () => {
       const { mkdtempSync, mkdirSync, writeFileSync } = await import('fs');
       const { join } = await import('path');
       const { tmpdir } = await import('os');
+      const { execFileSync } = await import('child_process');
 
       tmp = mkdtempSync(join(tmpdir(), 'cm-submodule-'));
       mainRepo = join(tmp, 'main-repo');
       submoduleCheckout = join(mainRepo, 'vendor', 'docs');
+      submoduleNestedDir = join(submoduleCheckout, 'src', 'nested');
       const submoduleGitDir = join(mainRepo, '.git', 'modules', 'vendor', 'docs');
 
+      mkdirSync(mainRepo, { recursive: true });
+      execFileSync('git', ['init', '-q'], { cwd: mainRepo });
       mkdirSync(submoduleGitDir, { recursive: true });
-      mkdirSync(submoduleCheckout, { recursive: true });
+      mkdirSync(submoduleNestedDir, { recursive: true });
       writeFileSync(
         join(submoduleCheckout, '.git'),
         `gitdir: ${submoduleGitDir}\n`
@@ -207,7 +213,7 @@ describe('getProjectContext', () => {
       const ctx = getProjectContext(submoduleCheckout);
       expect(ctx.isWorktree).toBe(false);
       expect(ctx.primary).toBe('main-repo');
-      expect(ctx.parent).toBe('main-repo');
+      expect(ctx.parent).toBeNull();
       expect(ctx.allProjects).toEqual(['main-repo']);
     });
 
@@ -215,6 +221,13 @@ describe('getProjectContext', () => {
       const ctx = getProjectContext(submoduleCheckout);
       expect(ctx.primary).not.toBe('docs');
       expect(ctx.allProjects).not.toContain('docs');
+    });
+
+    it('keeps the parent repo context when launched from a nested submodule directory', () => {
+      const ctx = getProjectContext(submoduleNestedDir);
+      expect(ctx.primary).toBe('main-repo');
+      expect(ctx.parent).toBeNull();
+      expect(ctx.allProjects).toEqual(['main-repo']);
     });
   });
 });
