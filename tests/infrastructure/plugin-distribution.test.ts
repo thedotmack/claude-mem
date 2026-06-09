@@ -243,6 +243,7 @@ const claudeHook = (tail: string[], extra: Record<string, unknown> = {}) => buil
 });
 const codexHook = (tail: string[]) => buildShellCommand({
   host: 'codex-cli', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
+  extraEnv: { CLAUDE_MEM_CODEX_HOOK: '1' },
   trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found',
 });
 
@@ -448,5 +449,15 @@ describe('Claude SessionStart hook output compatibility', () => {
 
     expect(command).toContain('"$_P/scripts/worker-service.cjs" start');
     expect(command).not.toContain("; echo '{\"continue\":true,\"suppressOutput\":true}'");
+  });
+});
+
+describe('Codex SessionStart hook output compatibility', () => {
+  it('marks worker-service start as a Codex hook so status JSON is Codex-safe', () => {
+    const parsed = readJson('plugin/hooks/codex-hooks.json');
+    const command = hookCommandByPath(parsed, 'SessionStart.0.1') ?? '';
+
+    expect(command).toContain('CLAUDE_MEM_CODEX_HOOK=1 node');
+    expect(command).toContain('"$_P/scripts/worker-service.cjs" start');
   });
 });

@@ -72,6 +72,7 @@ function shellTemplateManifest(buildShellCommand) {
   });
   const codexHook = (tail) => buildShellCommand({
     host: 'codex-cli', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
+    extraEnv: { CLAUDE_MEM_CODEX_HOOK: '1' },
     trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found',
   });
 

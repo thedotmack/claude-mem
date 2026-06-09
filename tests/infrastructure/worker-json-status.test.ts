@@ -84,6 +84,17 @@ describe('worker-json-status', () => {
         expect(buildStatusOutput('ready', 'msg').suppressOutput).toBe(true);
         expect(buildStatusOutput('error', 'msg').suppressOutput).toBe(true);
       });
+
+      it('should omit suppressOutput for Codex-safe status output', () => {
+        const result = buildStatusOutput('ready', 'Worker started; still warming up', {
+          codexSafe: true
+        });
+
+        expect(result.continue).toBe(true);
+        expect(result.status).toBe('ready');
+        expect(result.message).toBe('Worker started; still warming up');
+        expect(result.suppressOutput).toBeUndefined();
+      });
     });
 
     describe('JSON serialization', () => {
