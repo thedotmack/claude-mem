@@ -19,7 +19,7 @@ function isDreamProject(project: string): boolean {
   return project.endsWith(':dream');
 }
 
-function prioritizeProjectRows<T extends { project?: string; created_at_epoch: number }>(
+export function prioritizeProjectRows<T extends { project?: string; created_at_epoch: number }>(
   rows: T[],
   projects: string[],
   limit: number
@@ -31,7 +31,14 @@ function prioritizeProjectRows<T extends { project?: string; created_at_epoch: n
 
   const preferred = rows.filter((row) => row.project && dreamProjects.has(row.project));
   const fallback = rows.filter((row) => !row.project || !dreamProjects.has(row.project));
-  return [...preferred, ...fallback].slice(0, limit);
+  if (fallback.length === 0 || limit <= 1) {
+    return [...preferred, ...fallback].slice(0, limit);
+  }
+
+  const preferredLimit = Math.max(0, limit - 1);
+  const selectedPreferred = preferred.slice(0, preferredLimit);
+  const selectedFallback = fallback.slice(0, limit - selectedPreferred.length);
+  return [...selectedPreferred, ...selectedFallback];
 }
 
 export function queryObservations(

@@ -78,7 +78,11 @@ export function getDreamProjectName(project: string): string {
 }
 
 function withDreamProject(primaryProject: string, additionalProjects: string[] = []): string[] {
-  return [getDreamProjectName(primaryProject), primaryProject, ...additionalProjects];
+  const uniqueProjects = [primaryProject, ...additionalProjects].filter(
+    (project, index, allProjects) => allProjects.indexOf(project) === index
+  );
+  const dreamProjects = uniqueProjects.map(getDreamProjectName);
+  return [...dreamProjects, ...uniqueProjects];
 }
 
 export function getProjectContext(cwd: string | null | undefined): ProjectContext {

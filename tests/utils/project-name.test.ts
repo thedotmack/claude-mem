@@ -129,6 +129,7 @@ describe('getProjectContext', () => {
     const ctx = getProjectContext(null);
     expect(ctx.primary).toBe('unknown-project');
     expect(ctx.parent).toBeNull();
+    expect(ctx.allProjects).toEqual(['unknown-project']);
   });
 
   describe('worktree isolation', () => {
@@ -166,6 +167,7 @@ describe('getProjectContext', () => {
       expect(ctx.parent).toBe('main-repo');
       expect(ctx.allProjects).toEqual([
         getDreamProjectName('main-repo'),
+        getDreamProjectName('main-repo/my-worktree'),
         'main-repo',
         'main-repo/my-worktree'
       ]);
