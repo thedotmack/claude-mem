@@ -38,39 +38,6 @@ const cachedOnboardingExplainer: string | null = (() => {
 // enough that toggling CLAUDE_MEM_WELCOME_HINT_ENABLED is responsive in
 // practice and long enough to absorb hook bursts.
 const SETTINGS_CACHE_TTL_MS = 5000;
-let cachedSettings: ReturnType<typeof SettingsDefaultsManager.loadFromFile> | null = null;
-let cachedSettingsAt = 0;
-
-function getCachedSettings(): ReturnType<typeof SettingsDefaultsManager.loadFromFile> {
-  const now = Date.now();
-  if (cachedSettings && now - cachedSettingsAt < SETTINGS_CACHE_TTL_MS) {
-    return cachedSettings;
-  }
-  cachedSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-  cachedSettingsAt = now;
-  return cachedSettings;
-}
-
-// Memoize the "this project has observations" answer per project. Observation
-// counts are monotonically increasing — once a project hits >0 it stays >0,
-// so we never need to re-query that combination again. Only cache the positive
-// result; zero counts have to be re-checked because new observations may land.
-const projectsKnownNonEmpty = new Set<string>();
-
-function projectsHaveObservations(
-  sessionStore: ReturnType<SearchManager['getSessionStore']>,
-  projects: string[],
-): boolean {
-  if (projects.every(p => projectsKnownNonEmpty.has(p))) {
-    return true;
-  }
-  const observationCount = countObservationsByProjects(sessionStore, projects);
-  if (observationCount > 0) {
-    for (const p of projects) projectsKnownNonEmpty.add(p);
-    return true;
-  }
-  return false;
-}
 
 const WELCOME_HINT_TEMPLATE = `# claude-mem status
 
@@ -93,10 +60,43 @@ const semanticContextSchema = z.object({
 }).passthrough();
 
 export class SearchRoutes extends BaseRouteHandler {
+  private cachedSettings: ReturnType<typeof SettingsDefaultsManager.loadFromFile> | null = null;
+  private cachedSettingsAt = 0;
+  // Scope this cache to the route instance so separate server/test instances do
+  // not inherit each other's positive observation state through shared modules.
+  private readonly projectsKnownNonEmpty = new Set<string>();
+
   constructor(
     private searchManager: SearchManager
   ) {
     super();
+  }
+
+  private getCachedSettings(): ReturnType<typeof SettingsDefaultsManager.loadFromFile> {
+    const now = Date.now();
+    if (this.cachedSettings && now - this.cachedSettingsAt < SETTINGS_CACHE_TTL_MS) {
+      return this.cachedSettings;
+    }
+    // Keep env overrides out of the cache so toggles remain request-local and
+    // tests do not inherit a transient process.env value for the next 5 seconds.
+    this.cachedSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, false);
+    this.cachedSettingsAt = now;
+    return this.cachedSettings;
+  }
+
+  private projectsHaveObservations(
+    sessionStore: ReturnType<SearchManager['getSessionStore']>,
+    projects: string[],
+  ): boolean {
+    if (projects.every(p => this.projectsKnownNonEmpty.has(p))) {
+      return true;
+    }
+    const observationCount = countObservationsByProjects(sessionStore, projects);
+    if (observationCount > 0) {
+      for (const p of projects) this.projectsKnownNonEmpty.add(p);
+      return true;
+    }
+    return false;
   }
 
   setupRoutes(app: express.Application): void {
@@ -351,7 +351,7 @@ export class SearchRoutes extends BaseRouteHandler {
       return;
     }
 
-    const settings = getCachedSettings();
+    const settings = this.getCachedSettings();
     // Env always wins over cached settings (mirrors SettingsDefaultsManager
     // applyEnvOverrides semantics). Reading process.env is free, so honoring it
     // here keeps the welcome-hint toggle responsive without waiting out the
@@ -362,8 +362,8 @@ export class SearchRoutes extends BaseRouteHandler {
       const sessionStore = this.searchManager.getSessionStore();
       // Memoized: skips the COUNT(*) query once any project in the set has
       // observations. Hot-path: PostToolUse fires after every Read/Edit.
-      if (!projectsHaveObservations(sessionStore, projects)) {
-        const port = settings.CLAUDE_MEM_WORKER_PORT;
+      if (!this.projectsHaveObservations(sessionStore, projects)) {
+        const port = process.env.CLAUDE_MEM_WORKER_PORT ?? settings.CLAUDE_MEM_WORKER_PORT;
         const viewerUrl = `http://localhost:${port}`;
         const hintBody = WELCOME_HINT_TEMPLATE.replace('{viewer_url}', viewerUrl);
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');

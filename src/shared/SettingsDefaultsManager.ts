@@ -190,7 +190,7 @@ export class SettingsDefaultsManager {
     return result;
   }
 
-  static loadFromFile(settingsPath: string): SettingsDefaults {
+  static loadFromFile(settingsPath: string, applyEnvOverrides = true): SettingsDefaults {
     try {
       if (!existsSync(settingsPath)) {
         const defaults = this.getAllDefaults();
@@ -204,7 +204,7 @@ export class SettingsDefaultsManager {
         } catch (error: unknown) {
           console.warn('[SETTINGS] Failed to create settings file, using in-memory defaults:', settingsPath, error instanceof Error ? error.message : String(error));
         }
-        return this.applyEnvOverrides(defaults);
+        return applyEnvOverrides ? this.applyEnvOverrides(defaults) : defaults;
       }
 
       const settingsData = readFileSync(settingsPath, 'utf-8');
@@ -233,10 +233,11 @@ export class SettingsDefaultsManager {
         }
       }
 
-      return this.applyEnvOverrides(result);
+      return applyEnvOverrides ? this.applyEnvOverrides(result) : result;
     } catch (error: unknown) {
       console.warn('[SETTINGS] Failed to load settings, using defaults:', settingsPath, error instanceof Error ? error.message : String(error));
-      return this.applyEnvOverrides(this.getAllDefaults());
+      const defaults = this.getAllDefaults();
+      return applyEnvOverrides ? this.applyEnvOverrides(defaults) : defaults;
     }
   }
 }
