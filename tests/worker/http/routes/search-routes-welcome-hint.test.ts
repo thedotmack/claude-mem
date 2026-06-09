@@ -2,10 +2,17 @@
 import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
 import type { Request, Response } from 'express';
 import { logger } from '../../../../src/utils/logger.js';
+import * as realPaths from '../../../../src/shared/paths.js';
+
+const realPathsSnapshot = { ...realPaths };
 
 const generateContextStub = mock(async () => 'CONTEXT_FROM_GENERATOR');
 mock.module('../../../../src/services/context-generator.js', () => ({
   generateContext: generateContextStub,
+}));
+mock.module('../../../../src/shared/paths.js', () => ({
+  ...realPathsSnapshot,
+  paths: realPaths.paths,
 }));
 
 import { SearchRoutes } from '../../../../src/services/worker/http/routes/SearchRoutes.js';
@@ -77,6 +84,7 @@ describe('SearchRoutes Welcome Hint', () => {
   afterEach(() => {
     loggerSpies.forEach(spy => spy.mockRestore());
     delete process.env.CLAUDE_MEM_WELCOME_HINT_ENABLED;
+    delete process.env.CLAUDE_MEM_WORKER_PORT;
   });
 
   it('returns the welcome hint when project has zero observations', async () => {
@@ -152,5 +160,21 @@ describe('SearchRoutes Welcome Hint', () => {
       '/path/parent',
       '/path/worktree',
     );
+  });
+
+  it('uses the request-local worker port env override in the welcome hint URL', async () => {
+    process.env.CLAUDE_MEM_WORKER_PORT = '43210';
+
+    const routes = new SearchRoutes(mockSearchManager);
+    const handler = captureContextInjectHandler(routes);
+
+    const res = createMockRes();
+    const req = { query: { projects: '/path/to/empty-project' } } as unknown as Request;
+
+    handler(req, res as unknown as Response);
+    await new Promise(resolve => setImmediate(resolve));
+
+    const body = (res.send as any).mock.calls[0][0] as string;
+    expect(body).toContain('http://localhost:43210');
   });
 });
