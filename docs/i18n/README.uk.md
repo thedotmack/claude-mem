@@ -53,10 +53,10 @@
     <img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/version-6.5.0-green.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-13.4.0-green.svg" alt="Version">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg" alt="Node">
+    <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg" alt="Node">
   </a>
   <a href="https://github.com/thedotmack/awesome-claude-code">
     <img src="https://awesome.re/mentioned-badge.svg" alt="Mentioned in Awesome Claude Code">
@@ -220,7 +220,7 @@ Claude-Mem пропонує **бета-канал** з експеримента�
 
 ## Системні вимоги
 
-- **Node.js**: 18.0.0 або вище
+- **Node.js**: 20.0.0 або вище
 - **Claude Code**: Остання версія з підтримкою плагінів
 - **Bun**: Середовище виконання JavaScript та менеджер процесів (автоматично встановлюється, якщо відсутнє)
 - **uv**: Менеджер пакетів Python для векторного пошуку (автоматично встановлюється, якщо відсутній)
