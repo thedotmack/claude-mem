@@ -1,9 +1,11 @@
 
-import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
 import type { Request, Response } from 'express';
 import { logger } from '../../../../src/utils/logger.js';
+import * as realContextGenerator from '../../../../src/services/context-generator.js';
 import * as realPaths from '../../../../src/shared/paths.js';
 
+const realContextGeneratorSnapshot = { ...realContextGenerator };
 const realPathsSnapshot = { ...realPaths };
 
 const generateContextStub = mock(async () => 'CONTEXT_FROM_GENERATOR');
@@ -87,6 +89,11 @@ describe('SearchRoutes Welcome Hint', () => {
     delete process.env.CLAUDE_MEM_WORKER_PORT;
   });
 
+  afterAll(() => {
+    mock.module('../../../../src/services/context-generator.js', () => realContextGeneratorSnapshot);
+    mock.module('../../../../src/shared/paths.js', () => realPathsSnapshot);
+  });
+
   it('returns the welcome hint when project has zero observations', async () => {
     const routes = new SearchRoutes(mockSearchManager);
     const handler = captureContextInjectHandler(routes);
@@ -160,6 +167,40 @@ describe('SearchRoutes Welcome Hint', () => {
       '/path/parent',
       '/path/worktree',
     );
+  });
+
+  it('does not leak positive observation state across route instances', async () => {
+    countQueryStub = mock(() => ({ count: 3 }));
+    prepareStub = mock(() => ({ get: countQueryStub }));
+    mockSessionStore = { db: { prepare: prepareStub } };
+    mockSearchManager = { getSessionStore: () => mockSessionStore };
+
+    const activeRoutes = new SearchRoutes(mockSearchManager);
+    const activeHandler = captureContextInjectHandler(activeRoutes);
+    const activeRes = createMockRes();
+    const activeReq = { query: { projects: '/path/to/project' } } as unknown as Request;
+
+    activeHandler(activeReq, activeRes as unknown as Response);
+    await new Promise(resolve => setImmediate(resolve));
+    expect(generateContextStub).toHaveBeenCalledTimes(1);
+
+    generateContextStub.mockClear();
+    countQueryStub = mock(() => ({ count: 0 }));
+    prepareStub = mock(() => ({ get: countQueryStub }));
+    mockSessionStore = { db: { prepare: prepareStub } };
+    mockSearchManager = { getSessionStore: () => mockSessionStore };
+
+    const emptyRoutes = new SearchRoutes(mockSearchManager);
+    const emptyHandler = captureContextInjectHandler(emptyRoutes);
+    const emptyRes = createMockRes();
+    const emptyReq = { query: { projects: '/path/to/project' } } as unknown as Request;
+
+    emptyHandler(emptyReq, emptyRes as unknown as Response);
+    await new Promise(resolve => setImmediate(resolve));
+
+    const body = (emptyRes.send as any).mock.calls[0][0] as string;
+    expect(body).toContain('# claude-mem status');
+    expect(generateContextStub).not.toHaveBeenCalled();
   });
 
   it('uses the request-local worker port env override in the welcome hint URL', async () => {
