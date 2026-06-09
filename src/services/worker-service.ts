@@ -761,9 +761,11 @@ async function main() {
   const port = getWorkerPort();
 
   function exitWithStatus(status: 'ready' | 'error', message?: string): never {
-    const output = buildStatusOutput(status, message, {
-      codexSafe: process.env.CLAUDE_MEM_CODEX_HOOK === '1'
-    });
+    if (process.env.CLAUDE_MEM_CODEX_HOOK === '1') {
+      process.exit(0);
+    }
+
+    const output = buildStatusOutput(status, message);
     console.log(JSON.stringify(output));
     process.exit(0);
   }
