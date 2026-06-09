@@ -46,7 +46,9 @@ function getCachedSettings(): ReturnType<typeof SettingsDefaultsManager.loadFrom
   if (cachedSettings && now - cachedSettingsAt < SETTINGS_CACHE_TTL_MS) {
     return cachedSettings;
   }
-  cachedSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+  // Keep env overrides out of the cache so toggles remain request-local and
+  // tests do not inherit a transient process.env value for the next 5 seconds.
+  cachedSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, false);
   cachedSettingsAt = now;
   return cachedSettings;
 }
