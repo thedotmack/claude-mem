@@ -21,7 +21,8 @@ import {
 // key must be in this allowlist; a future typo (e.g. "session.created") fails.
 const REAL_OPENCODE_HOOK_NAMES = new Set<string>([
   "tool.execute.after",
-  "chat.message",
+  "message.updated",
+  "message.part.updated",
   "event",
   "experimental.session.compacting",
   "tool.execute.before",
@@ -35,7 +36,6 @@ const REAL_OPENCODE_HOOK_NAMES = new Set<string>([
 // Bus event names the old code used that DO NOT exist in OpenCode's contract.
 const PHANTOM_BUS_EVENT_NAMES = [
   "session.created",
-  "message.updated",
   "session.compacted",
   "file.edited",
 ];
@@ -68,7 +68,8 @@ describe("OpenCode plugin event contract", () => {
 
     // The capture-critical hooks must be present.
     expect(hookKeys).toContain("tool.execute.after");
-    expect(hookKeys).toContain("chat.message");
+    expect(hookKeys).toContain("message.updated");
+    expect(hookKeys).toContain("message.part.updated");
     expect(hookKeys).toContain("experimental.session.compacting");
     expect(hookKeys).toContain("event");
   });
@@ -117,6 +118,55 @@ describe("OpenCode plugin event contract", () => {
       const obsBody = obsPost!.body as Record<string, unknown>;
       expect(obsBody.tool_name).toBe("read");
       expect(obsBody.tool_response).toBe("file contents");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("awaits message.updated worker posts before the hook resolves", async () => {
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const fetchResolvers: Array<() => void> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (((url: string | URL | Request, init?: RequestInit) => {
+      posts.push({
+        url: String(url),
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+
+      return new Promise<Response>((resolve) => {
+        fetchResolvers.push(() => {
+          resolve(new Response(JSON.stringify({ status: "queued" }), { status: 200 }));
+        });
+      });
+    }) as unknown) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const messageUpdated = plugin["message.updated"];
+      let resolved = false;
+      const hookPromise = messageUpdated({}, {
+        message: { role: "assistant", sessionID: "ses_2" },
+        parts: [{ type: "text", text: "assistant output" }],
+      }).then(() => {
+        resolved = true;
+      });
+
+      await Promise.resolve();
+      expect(posts).toHaveLength(1);
+      expect(posts[0]?.url).toContain("/api/sessions/init");
+      expect(resolved).toBe(false);
+
+      fetchResolvers.shift()?.();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(posts).toHaveLength(2);
+      expect(posts[1]?.url).toContain("/api/sessions/observations");
+      expect(resolved).toBe(false);
+
+      fetchResolvers.shift()?.();
+
+      await hookPromise;
+      expect(resolved).toBe(true);
     } finally {
       globalThis.fetch = originalFetch;
     }
