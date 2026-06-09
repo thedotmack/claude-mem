@@ -1,6 +1,7 @@
 
 import type { Database } from 'bun:sqlite';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../../shared/platform-source.js';
+import { logger } from '../../../utils/logger.js';
 import { normalizeStoredPromptText } from '../prompt-storage.js';
 
 function resolveCreateSessionArgs(
@@ -62,6 +63,11 @@ export function createSDKSession(
         );
       }
     }
+    logger.debug('DB', 'Reused existing SDK session row', {
+      contentSessionId,
+      sessionDbId: existing.id,
+      platformSource: resolved.platformSource ?? existing.platform_source ?? normalizedPlatformSource,
+    });
     return existing.id;
   }
 
@@ -73,6 +79,11 @@ export function createSDKSession(
 
   const row = db.prepare('SELECT id FROM sdk_sessions WHERE content_session_id = ?')
     .get(contentSessionId) as { id: number };
+  logger.debug('DB', 'Created SDK session row', {
+    contentSessionId,
+    sessionDbId: row.id,
+    platformSource: normalizedPlatformSource,
+  });
   return row.id;
 }
 

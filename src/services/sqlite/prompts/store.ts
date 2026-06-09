@@ -1,6 +1,7 @@
 
 import type { Database } from 'bun:sqlite';
 import { normalizeStoredPromptText } from '../prompt-storage.js';
+import { logger } from '../../../utils/logger.js';
 
 export function saveUserPrompt(
   db: Database,
@@ -19,5 +20,10 @@ export function saveUserPrompt(
   `);
 
   const result = stmt.run(contentSessionId, promptNumber, storedPromptText, now.toISOString(), nowEpoch);
+  logger.debug('DB', 'Stored user prompt row', {
+    contentSessionId,
+    promptNumber,
+    storedChars: storedPromptText.length,
+  });
   return result.lastInsertRowid as number;
 }
