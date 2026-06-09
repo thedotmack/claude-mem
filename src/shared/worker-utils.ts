@@ -8,7 +8,6 @@ import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
 import { MARKETPLACE_ROOT, DATA_DIR } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
 import { validateWorkerPidFile } from "../supervisor/index.js";
-import { emitBlockingError } from "./hook-io.js";
 import { checkVersionMatch } from "../services/infrastructure/index.js";
 
 function readTimeoutEnv(
@@ -387,12 +386,11 @@ function recordWorkerUnreachable(): number {
 
   const threshold = getFailLoudThreshold();
   if (next.consecutiveFailures >= threshold) {
-    // #2292 fix: BLOCKING_FEEDBACK. emitBlockingError flushes the Phase 2
-    // stderr buffer (so preceding logger.warn lines also surface) and writes
-    // via the bypass channel + exits 2. Previously this raw process.stderr.write
-    // was swallowed by hookCommand's blanket no-op, so the user/model never saw it.
-    emitBlockingError(
-      `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks.`
+    // Memory capture is opportunistic; hook failures can trigger agent re-entry loops.
+    // Keep the diagnostic in the log without failing Claude/Codex hook contracts.
+    logger.warn(
+      'SYSTEM',
+      `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks; continuing without memory hook worker`
     );
   }
   return next.consecutiveFailures;
