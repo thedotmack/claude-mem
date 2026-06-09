@@ -1,0 +1,545 @@
+================================================================================
+CLAUDE-MEM USAGE ANALYTICS — RESEARCH & PLANNING TRANSCRIPT
+================================================================================
+Exported: 2026-06-09
+Repo: thedotmack/claude-mem
+Branch: claude/analytics-platforms-comparison-o58erd
+Topic: Comparison of analytics/telemetry platforms (PostHog, Grafana, etc.) for
+       collecting usage analytics from the claude-mem CLI plugin, plus a phased
+       implementation plan.
+
+This file is a faithful reconstruction of the chat conversation so it can be
+re-ingested into Claude Code CLI as context. Tool calls and intermediate
+research-agent transcripts are summarized; final synthesized content is included
+verbatim.
+================================================================================
+
+
+################################################################################
+# USER (initial request)
+################################################################################
+
+Do a comprehensive comparison of different analytics platforms like posthog or
+grafana stuff and I have no idea about them, but I need to collect usage
+analytics, find out how similar products collect data, what they use, and how
+you would implement it and what it would reveal.
+
+
+################################################################################
+# ASSISTANT — scoping questions
+################################################################################
+
+Before researching, three scoping questions were asked (recommendation = first
+option):
+
+Q1. What are you instrumenting?
+    - claude-mem itself (CLI plugin telemetry)   <-- SELECTED
+    - A web/SaaS app
+    - Both / general learning
+
+Q2. Where should the analytics backend live?
+    - Open-source / self-host preferred           <-- SELECTED
+    - Managed cloud is fine
+    - Show me both, recommend one
+
+Q3. How important is privacy / minimal data collection?
+    - Critical — opt-in, minimal
+    - Balanced                                     <-- SELECTED
+    - Maximize insight
+
+SCOPE LOCKED: opt-in-friendly, balanced-privacy USAGE TELEMETRY for the
+claude-mem CLI plugin, with a self-host / open-source preference. This is a
+CLI/developer-tool telemetry problem, not web analytics.
+
+
+################################################################################
+# ARCHITECTURE GROUNDING (claude-mem codebase facts)
+################################################################################
+
+- NO telemetry/analytics exists today in claude-mem.
+- It runs a long-running background WORKER service (src/services/worker/) with
+  an HTTP layer, SSE broadcaster, and a BullMQ/Redis queue — ideal for
+  non-blocking async flushing.
+- It has LOCAL SQLite (src/services/sqlite/) with a registered migration array
+  in migrations.ts (currently up to version: 27; next = migration011 @ v28),
+  run via bun:sqlite.
+- A user-facing CLI lives under src/npx-cli/commands/ (e.g. doctor, server).
+- A consent PRECEDENT already exists: env vars CLAUDE_MEM_ONLINE_OPTIN,
+  CLAUDE_MEM_MANAGED, CLAUDE_MEM_INTERNAL. Project already has an
+  "opt-in before data leaves the machine" concept.
+- A viewer_settings key/value table + SettingsManager exist; data dir is
+  CLAUDE_MEM_DATA_DIR (~/.claude-mem).
+- Stack: TypeScript/Bun, Express, Zod, better-auth, @clack/prompts. v13.4.1.
+
+
+################################################################################
+# RESEARCH METHOD
+################################################################################
+
+Five parallel research agents ran web searches + fetches with adversarial
+fact-checking, across: (1) how dev CLI tools implement telemetry, (2) PostHog vs
+Grafana vs OpenTelemetry, (3) privacy web-analytics & event pipelines, (4)
+privacy/consent/GDPR best practices, (5) client implementation patterns + what
+telemetry reveals. Key flagged-uncertain items are noted at the end.
+
+
+################################################################################
+# SYNTHESIZED REPORT
+################################################################################
+
+================================================================================
+0. THE MENTAL MODEL (the part most people get wrong)
+================================================================================
+
+"Analytics platforms" are THREE different categories that look similar:
+
+  PRODUCT ANALYTICS   — core record = an EVENT tied to a user/install
+                        (distinct_id). Answers "what % run `search`? do v13
+                        users retain better?" Examples: PostHog, Countly,
+                        Mixpanel/Amplitude (SaaS).
+
+  OBSERVABILITY/METRICS — core record = a TIME-SERIES number with labels.
+                        Answers "p99 latency now? error rate/min?" Examples:
+                        Grafana + Prometheus/Loki/Tempo, Grafana Faro.
+
+  WEB ANALYTICS       — core record = a PAGEVIEW (URL + browser). Answers "which
+                        page gets the most Google visits?" Examples: Plausible,
+                        Umami, Matomo, Fathom.
+
+"Usage analytics from a CLI tool" (feature adoption, command frequency,
+retention, version migration) = PRODUCT ANALYTICS. That fact eliminates most
+Google results:
+
+- Grafana/Prometheus = WRONG MODEL. Metrics aggregate away the per-user/
+  per-event dimension; per-user labels (user_id) are an anti-pattern that blows
+  up TSDB memory (cardinality). Good for "is the worker healthy," useless for
+  "do users of feature X retain better."
+- Web analytics (Plausible/Umami/Matomo/Fathom) = POOR FIT. Atomic record is a
+  pageview: `url` is MANDATORY; unique users come from hashing IP+User-Agent+
+  daily-salt (a browser fingerprint a CLI lacks); "sessions" are 30-min browser
+  windows. You'd invent fake URLs like app://command/build. Privacy-excellent —
+  but it's privacy for web visitors, not a CLI consent model.
+- OpenTelemetry = NOT A BACKEND. It's an instrumentation standard (SDKs +
+  Collector) producing traces/metrics/logs shipped elsewhere. Useful transport;
+  zero funnels/retention out of the box.
+
+Real shortlist: PostHog, or DIY event pipeline (thin ingest -> ClickHouse), with
+RudderStack/Jitsu as middle-ground CDP options.
+
+
+================================================================================
+1. HOW COMPARABLE TOOLS COLLECT DATA (prior art)
+================================================================================
+
+Tool        | Default            | Collects                                   | Disable
+------------|--------------------|--------------------------------------------|---------------------------
+Next.js     | Opt-out            | command, versions, OS, features; anon ID = | next telemetry disable /
+            |                    | randomBytes(32), project ID = salted hash. | NEXT_TELEMETRY_DISABLED=1;
+            |                    | NO env vars/paths/file contents/errors.    | debug: NEXT_TELEMETRY_DEBUG=1
+Astro       | Opt-out (notice)   | command, CPU/OS, CI flag, integrations     | ASTRO_TELEMETRY_DISABLED;
+            |                    |                                            | honors DO_NOT_TRACK
+Gatsby      | Opt-out            | command, perf, errors, machine UUID in     | GATSBY_TELEMETRY_DISABLED;
+            |                    | ~/.config/gatsby, session ID, ONE-WAY HASH | honors DO_NOT_TRACK; debug
+            |                    | of cwd/git-remote                          | print mode
+.NET CLI    | Opt-out (notice)   | command, HASHED args, OS/runtime,          | DOTNET_CLI_TELEMETRY_OPTOUT=1
+            |                    | HASHED MAC + 3-octet IP  (!! cautionary)   |
+Homebrew    | Opt-out (notice)   | CI flag, install prefix, arch, OS, version | brew analytics off /
+            |                    | NO IP stored. Sends in separate bg process,| HOMEBREW_NO_ANALYTICS=1
+            |                    | fails fast/silently offline. Moved GA->     |
+            |                    | InfluxDB (EU) in 2023.                      |
+Angular CLI | OPT-IN  (rare)     | OS, pkg mgr, Node/CLI ver, command, project| ng analytics disable
+            |                    | counts                                     |
+Vite        | NONE               | no telemetry                               | n/a
+Deno        | NONE               | only daily update check                    | DENO_NO_UPDATE_CHECK=1
+Bun         | crash reports only | (plans usage metrics later)                | DO_NOT_TRACK=1 / bunfig.toml
+VS Code     | Opt-out            | 3 tiers: crash / error / usage             | telemetry.telemetryLevel: off
+Terraform   | Opt-out            | anon ID (dedup), version, CI *type* only   | CHECKPOINT_DISABLE
+
+CONVERGENT PATTERN (the blueprint):
+- Event shape: { command/event name, tool version, anon install ID, session ID,
+  OS+arch, runtime version, enabled features (often hashed), optional scrubbed
+  error }. Next.js model (random anon ID + salted-hash project ID + session ID)
+  is the de-facto JS-ecosystem standard.
+- Anon ID: random UUID generated first-run, stored in config file — NOT derived
+  from hardware.
+- Layered opt-out: tool-specific env var + cross-tool DO_NOT_TRACK + config flag
+  + a `telemetry disable` command.
+- A debug/print mode (*_TELEMETRY_DEBUG=1) showing exactly what WOULD be sent.
+- Transport: plain HTTPS POST to a collector. None use OpenTelemetry for their
+  own telemetry.
+
+TWO CAUTIONARY DATA POINTS:
+1. .NET collects a HASHED MAC + truncated IP. Repeatedly cited as what NOT to do
+   — a hashed hardware ID is PSEUDONYMIZATION, not anonymization (still
+   re-identifiable, still GDPR personal data). Linux distros patch it out.
+2. Opt-out gets you flamed. Next.js criticized for collecting before disclosing;
+   GitHub CLI flipped to opt-out April 2026 and took a public beating
+   (The Register, HN). Developers are the most telemetry-skeptical audience.
+
+THE DO_NOT_TRACK CONVENTION (consoledonottrack.com / donottrack.sh):
+Cross-tool env var. If DO_NOT_TRACK is set (any value, commonly =1), CLI apps
+should not send usage stats. Origin: "sneak" (Jeffrey Paul), 2021. Adopted by
+Bun, Astro, Gatsby, GitHub CLI, Turbo, Nuxt, Kedro, Syncthing, etc.
+
+
+================================================================================
+2. PLATFORM COMPARISON (scored for CLI usage analytics)
+================================================================================
+
+Platform                 | License                | Self-host | Data model      | Fit  | Notes
+-------------------------|------------------------|-----------|-----------------|------|------------------------------
+PostHog                  | MIT (+ proprietary ee/)| 3/5       | Events/install  | *****| Native funnels/retention/flags.
+                         |                        |           |                 |      | Backend = ClickHouse+Kafka+PG+
+                         |                        |           |                 |      | Redis+MinIO.
+DIY: ingest -> ClickHouse| Apache-2.0             | 4/5       | Events          | *****| Max control; you build the
+                         |                        |           |                 |      | dashboards. Same engine PostHog/
+                         |                        |           |                 |      | Plausible/Snowplow use.
+Jitsu                    | MIT                    | 2/5       | Events->warehouse| **** | Segment-style API, BUNDLES
+                         |                        |           |                 |      | ClickHouse. Easiest pipeline.
+RudderStack              | AGPL-3.0 (SDKs MIT)    | 3/5       | Segment-compat  | **** | Drop-in Segment API; routes to
+                         |                        |           |                 |      | your warehouse. Pipeline not store.
+Countly                  | AGPL-3.0               | 3/5       | Product events  | ***  | Mobile-app oriented; MongoDB.
+OpenTelemetry            | Apache-2.0             | 3-4/5     | Traces/metrics/ | ***  | Instrumentation layer only — pair
+                         |                        |           | logs            |      | with ClickHouse. Future-proof.
+Snowplow                 | SLULA (!!)             | 5/5       | Typed events    | **   | Community edition FORBIDS
+                         |                        |           |                 |      | production; prod = paid. Skip
+                         |                        |           |                 |      | (or OpenSnowcat fork).
+Grafana + Prometheus     | AGPLv3 / Apache        | 4/5       | Time-series     | **   | Right for worker health, wrong
+                         |                        |           |                 |      | for product questions.
+Plausible/Umami/Matomo/  | AGPL/MIT/GPL/proprietary| 1-3/5    | Pageviews       | *    | Web-visitor model; mandatory URL;
+Fathom                   |                        |           |                 |      | you'd hack it.
+
+PostHog self-host caveat: free Docker-Compose "hobby" deploy = ONE box; PostHog
+recommends moving to Cloud above ~100k-300k events/month (their docs cite both;
+verify). Kubernetes/Helm support dropped; they steer to Cloud. Fine for
+claude-mem's low volume for a long time, but know the ceiling exists. "No
+guarantee" support.
+
+Why ClickHouse keeps appearing: telemetry is append-only, high-volume,
+write-heavy, queried with big aggregations — columnar OLAP's sweet spot. Used by
+PostHog, Plausible, Snowplow, Jitsu. TimescaleDB (Postgres extension) is the
+pragmatic alt if team knows Postgres and volume is modest. DuckDB is for
+QUERYING exported data, not live ingest (single writer) — don't put it behind an
+HTTP collector.
+
+Web-analytics per-tool detail:
+- Plausible: AGPLv3 (tracker MIT); self-host = Elixir + PostgreSQL + ClickHouse;
+  POST /api/event requires name + url(required) + domain + props; must set
+  X-Forwarded-For/User-Agent manually.
+- Umami: MIT; Node + PostgreSQL/MySQL; /api/send still website-scoped.
+- Matomo: GPLv3 core; MySQL/MariaDB; heaviest; stores IPs by default.
+- Fathom: proprietary SaaS; Fathom Lite is MIT but maintenance-only; pageview-only.
+
+CDP/pipeline detail:
+- Snowplow: Apache->SLULA (2024-01-08). CE non-prod only; prod = paid license.
+  OpenSnowcat = Apache fork. Very heavy.
+- RudderStack: AGPL-3.0 server, MIT SDKs; drop-in Segment track/identify/page;
+  warehouse-native.
+- Jitsu: MIT throughout; bundles ClickHouse; docker compose; Segment-style API.
+  Strong pragmatic fit.
+- Countly: AGPL-3.0; mobile-SDK-first; MongoDB.
+
+
+================================================================================
+3. WHAT TO COLLECT — AND WHAT TO NEVER COLLECT
+================================================================================
+
+DO COLLECT (anonymous, aggregate)        | NEVER COLLECT
+-----------------------------------------|------------------------------------------
+Random install UUID (first-run, config)  | Hardware IDs — MAC address, EVEN HASHED
+OS + version, CPU architecture           | Usernames, emails, accounts
+claude-mem version                       | Source code, file contents, prompts, LLM I/O
+Bun/Node runtime version                 | Full file paths, working dir (even hashed risky)
+Event/command name                       | Project names, git remotes, repo/author
+Duration / timing                        | API tokens, secrets, env var values
+Success/failure + error CATEGORY         | Full IP / precise geolocation
+Locale, CI-environment boolean           | Clipboard, memory dumps, any PII
+
+GDPR one-liner: a TRULY RANDOM UUID with no mapping back to a person is a strong
+candidate for ANONYMIZED data -> outside GDPR scope. The moment you hash
+something identifying (MAC, username, cwd) you've created PSEUDONYMIZED data ->
+still personal data, fully in scope. EU regulators have enforced against "we
+called it anonymous but it was re-identifiable." IP addresses ARE personal data
+(CJEU Breyer, 2016) — don't log full IPs. Random UUID + no hardware fingerprints
++ no IPs ≈ sidestep the legal surface entirely.
+
+CONSENT DONE CORRECTLY (verified GitHub-CLI precedence model):
+1. First-run notice/prompt — send nothing before informed/consent. Lean opt-in
+   given claude-mem's sensitive domain.
+2. Env-var precedence: tool-specific var > DO_NOT_TRACK > config-file flag.
+   Recognize DO_NOT_TRACK set to any truthy value.
+3. `claude-mem telemetry disable` command + config setting.
+4. A debug mode printing payloads instead of sending.
+5. Docs enumerating every field collected and not-collected.
+
+
+================================================================================
+4. IMPLEMENTATION FOR CLAUDE-MEM
+================================================================================
+
+claude-mem already has the hard parts: a background worker (network I/O off the
+hot path), local SQLite + migrations, a user CLI, and an opt-in precedent.
+
+CARDINAL RULE: emission must be best-effort and NEVER slow or crash a command.
+Classic failure = a synchronous flush hanging because the network is down.
+
+RECOMMENDED ARCHITECTURE (fits existing code):
+
+  Hook/CLI fires event
+        |  (O(1), no network on hot path)
+        v
+  enqueue -> SQLite `telemetry_events` spool table   (reuse migration system)
+        |
+        v
+  Worker service (already running) drains the spool
+        |  batches, flushes async with a SHORT timeout
+        v
+  HTTPS POST /batch  ->  backend
+        |
+   on offline/failure: leave rows in spool, retry next tick. Never throw.
+
+Why SQLite spool not in-memory: hooks are short-lived processes; they exit
+before an in-memory queue (PostHog/Segment default flushAt:20, flushInterval:
+10s) would flush. Persist to SQLite, let the running worker do network I/O =
+robust version of Homebrew's detached-background-process pattern.
+
+WIRE FORMAT (no SDK needed — PostHog /batch/ with a non-secret project token):
+
+  {
+    "api_key": "<publishable_project_token>",
+    "batch": [
+      { "event": "session.compressed",
+        "properties": { "distinct_id": "<random-install-uuid>",
+                        "version": "13.4.1", "os": "linux", "arch": "arm64",
+                        "duration_ms": 842, "outcome": "ok" },
+        "timestamp": "2026-06-08T12:00:00Z" }
+    ]
+  }
+
+Same shape works for self-hosted PostHog OR a DIY ClickHouse endpoint — swap
+backend without changing the client.
+
+RECOMMENDED STACK:
+  Phase 1 — self-hosted PostHog (Docker Compose). MIT, turnkey funnels/retention/
+            flags, simple capture API. Client: SQLite spool drained by existing
+            worker, POSTing to /batch/.
+  Phase 2 — if outgrown / want full control: keep the SAME client, swap backend
+            to a thin ingest endpoint -> ClickHouse (or adopt Jitsu, MIT, bundles
+            ClickHouse, Segment-style API). Config change, not a rewrite.
+
+NOT recommended: Grafana/Prometheus (wrong model), web-analytics tools (wrong
+model), Snowplow (license forbids prod self-host).
+
+PostHog capture API facts (verified):
+- Single: POST {host}/i/v0/e/   Batch: POST {host}/batch/   (POST only, token auth)
+- Hosts: us.i.posthog.com / eu.i.posthog.com / self-hosted domain.
+- Required per event: api_key, distinct_id, event. Batch body < 20MB, no event
+  count limit. 200 = received. No rate limits on public capture endpoints.
+- Token is a publishable client token (safe to embed in a CLI).
+
+Client SDK behavior reference (if used instead of raw POST):
+- posthog-node / Segment analytics-node: in-memory queue, batch + async flush.
+  flushAt default 20, flushInterval default 10000ms. For short-lived processes:
+  flushAt:1, flushInterval:0, or captureImmediate(), then await shutdown().
+  NOTE: Segment's flush() does not guarantee all in-flight messages are sent.
+
+
+================================================================================
+5. WHAT IT WOULD REVEAL (and what it won't)
+================================================================================
+
+REVEALS:
+- Feature adoption — which capabilities (compression, search, context injection,
+  recovery) get used vs ignored. Caveat: one adoption number is ambiguous —
+  "never discovered" / "tried once, abandoned" / "used once, never returned"
+  look identical until you segment discovery vs first-use vs repeat-use.
+- Command/event frequency.
+- Activation funnel — install -> first session -> first successful compression,
+  and where people drop.
+- Retention / stickiness — DAU/WAU/MAU + cohort curves. Healthy active-user line
+  can hide steep cohort drop-off (no PMF). Retention curves tell you if the tool
+  has a future.
+- Error rates by category — common failures, by OS/version.
+- Performance — durations as p50/p95/p99, NEVER averages (a 50ms average hides
+  1-in-100 users waiting 4s).
+- Version migration — stamp every event with version -> see how fast people
+  leave old releases (informs deprecation).
+
+WON'T REVEAL (honest limits):
+- Survivorship + self-selection bias — you only see users who DIDN'T opt out AND
+  are still active. For a privacy-skeptical dev audience with opt-out, that's a
+  skewed sample: power users + privacy-indifferent over-represented; cautious/
+  enterprise/firewalled users near-invisible.
+- No "why." You see THAT search gets abandoned, never that ranking felt wrong.
+  Pair with qualitative input.
+- Invisible non-actions — telemetry only records supported paths; people who
+  wanted something and gave up before it existed never appear.
+
+
+================================================================================
+BOTTOM LINE FOR CLAUDE-MEM
+================================================================================
+1. Category: product analytics, not metrics or web analytics.
+2. Backend: self-hosted PostHog to start (MIT, turnkey, simple /batch), with an
+   easy migration path to DIY ClickHouse or Jitsu later — client code unchanged.
+3. Client: spool events to SQLite, let the EXISTING worker flush async with a
+   short timeout; never block or crash. Plumbing already in repo.
+4. Privacy: random install UUID; NO hardware IDs/IPs/paths/code/prompts;
+   first-run consent (lean opt-in); honor DO_NOT_TRACK; ship `telemetry disable`
+   + a debug-print mode; document every field.
+
+CONFIDENCE FLAGS (re-check before betting): PostHog's exact self-host event
+ceiling (docs cite both ~100k and ~300k/mo); Plausible's current custom-property
+limits; the exact mechanism Next.js uses to send (detached process asserted but
+unconfirmed; Homebrew's separate-process model IS confirmed). The recommendation
+holds regardless.
+
+
+################################################################################
+# USER
+################################################################################
+
+Don't freak out, think it through. Make a plan.
+
+
+################################################################################
+# ASSISTANT — PHASED IMPLEMENTATION PLAN
+################################################################################
+
+WHAT THE CODE ALREADY GIVES US:
+- Migrations: registered array in src/services/sqlite/migrations.ts (up to
+  version:27; next = migration011 @ version:28), run via bun:sqlite. Adding a
+  spool table is a one-file change.
+- A long-running worker (src/services/worker/) with DB access and job/HTTP layer
+  — natural place for network I/O off the user's hot path.
+- A user-facing CLI under src/npx-cli/commands/ (doctor, server) — where a
+  `claude-mem telemetry` command slots in.
+- A consent precedent: CLAUDE_MEM_ONLINE_OPTIN / CLAUDE_MEM_MANAGED /
+  CLAUDE_MEM_INTERNAL. Telemetry should ride the same mental model.
+- A viewer_settings key/value table + SettingsManager; data dir is
+  CLAUDE_MEM_DATA_DIR (~/.claude-mem).
+
+THE PLAN:
+
+Phase 0 — Decisions to lock (baked-in recommendations, override any):
+1. Opt-in, not opt-out. Skeptical dev audience + sensitive context + existing
+   opt-in precedent. First-run prompt; nothing leaves machine until yes.
+2. Backend: self-hosted PostHog first. Turnkey funnels/retention/flags, MIT,
+   simple /batch/. Client stays backend-agnostic.
+3. Consent + anon ID live in a config file (~/.claude-mem/telemetry.json), not
+   the DB — survives DB resets/migrations, trivially inspectable. Random UUID.
+
+Phase 1 — Consent & kill-switches (no events yet):
+- src/services/telemetry/consent.ts: resolver precedence (mirrors verified
+  GitHub-CLI model): DO_NOT_TRACK (truthy->off) -> CLAUDE_MEM_TELEMETRY env ->
+  telemetry.json config -> default OFF until consent.
+- First-run prompt (reuse @clack/prompts, already a dep) shown once; writes
+  choice + randomUUID() install ID to telemetry.json.
+- `claude-mem telemetry [status|enable|disable]` in src/npx-cli/commands/
+  telemetry.ts.
+- Debug mode CLAUDE_MEM_TELEMETRY_DEBUG=1 -> print payloads to stderr, send none.
+- Exit criteria: no consent -> resolver false; DO_NOT_TRACK=1 forces false;
+  nothing collected. Pure logic, unit-testable.
+
+Phase 2 — Event capture -> local spool:
+- migration011 (version:28): telemetry_events(id, event, properties_json,
+  created_at_epoch, attempts).
+- src/services/telemetry/capture.ts: capture(event, props) — guarded by Phase 1
+  resolver, scrubs/whitelists properties against allowed-fields list, writes one
+  row, returns immediately. O(1), no network, never throws.
+- Wire a SMALL number of high-value events first: cli.command,
+  session.compressed, search.performed, worker.started, error (category only).
+  Stamp every event with { install_uuid, version, os, arch, runtime }.
+- Hard rule in code: denylist + whitelist so source code, prompts, paths,
+  project names, IPs can't be attached even by accident.
+
+Phase 3 — Async flush from the worker:
+- src/services/telemetry/flush.ts: worker job drains spool, POSTs to PostHog
+  /batch/ with a short timeout (~3s), deletes sent rows, increments attempts on
+  failure, drops after N attempts. Offline = rows stay, retried next tick. Never
+  blocks/crashes.
+- Trigger on a low-frequency interval in the existing worker loop (no new daemon).
+- Exit criteria: kill network -> commands stay fast, rows accumulate, no errors;
+  restore -> rows flush and clear.
+
+Phase 4 — Backend + docs:
+- docker-compose snippet for self-hosted PostHog (or point at existing instance);
+  publishable token via CLAUDE_MEM_TELEMETRY_KEY.
+- docs/public/telemetry.mdx: enumerate EVERY field collected/not-collected, the
+  disable methods, DO_NOT_TRACK support. The trust artifact.
+- Build PostHog dashboards (feature adoption, version migration, p95 timing,
+  error categories).
+
+Testing & rollout:
+- Unit tests for the consent resolver and the property scrubber (the two
+  correctness-critical pieces).
+- Ship DISABLED by default; dogfood with your own opt-in; only then consider the
+  first-run prompt in a release.
+
+OPEN DECISIONS FLAGGED:
+- Confirm backend (PostHog-first with portable client vs straight-to-DIY
+  ClickHouse — only Phase 3 target URL changes).
+- Opt-in vs first-run-prompt-opt-out — the one decision with real product
+  consequences. Recommendation: opt-in.
+
+NEXT-STEP OPTIONS OFFERED:
+(A) refine/expand into a written design doc committed to the branch, or
+(B) start implementing Phase 1 + 2 (consent + spool — the safe, no-network
+    parts) as a draft.
+(No PR unless explicitly asked.)
+
+
+################################################################################
+# KEY SOURCES (selected)
+################################################################################
+
+CLI telemetry prior art:
+- https://nextjs.org/telemetry
+- https://github.com/vercel/next.js/blob/canary/packages/next/src/telemetry/storage.ts
+- https://astro.build/telemetry/
+- https://www.gatsbyjs.com/docs/telemetry/
+- https://learn.microsoft.com/en-us/dotnet/core/tools/telemetry
+- https://docs.brew.sh/Analytics
+- https://angular.dev/cli/analytics
+- https://code.visualstudio.com/docs/configure/telemetry
+- https://checkpoint.hashicorp.com/
+- https://consoledonottrack.com/  and  https://donottrack.sh/
+- https://github.com/cli/cli/blob/trunk/internal/telemetry/telemetry.go  (precedence model)
+- https://github.blog/changelog/2026-04-22-github-cli-opt-out-usage-telemetry/
+
+Platforms:
+- https://posthog.com/docs/self-host
+- https://posthog.com/docs/api/capture
+- https://posthog.com/docs/how-posthog-works/clickhouse
+- https://github.com/PostHog/posthog/blob/master/LICENSE
+- https://posthog.com/blog/sunsetting-helm-support-posthog
+- https://grafana.com/blog/2021/04/20/grafana-loki-tempo-relicensing-to-agplv3/
+- https://opentelemetry.io/docs/   and   /docs/collector/
+- https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/clickhouseexporter/README.md
+- https://plausible.io/docs/events-api
+- https://github.com/umami-software/umami
+- https://matomo.org/faq/general/matomo-analytics-licences-for-core-tracker-and-plugins/
+- https://github.com/usefathom/fathom
+- https://docs.snowplow.io/docs/resources/limited-use-license-faq/
+- https://github.com/rudderlabs/rudder-server
+- https://jitsu.com/  and  https://github.com/jitsucom/jitsu
+- https://github.com/Countly/countly-server
+- https://posthog.com/blog/duckdb-vs-clickhouse
+- https://www.tinybird.co/blog/clickhouse-vs-timescaledb
+
+Privacy / GDPR:
+- https://iapp.org/news/a/looking-to-comply-with-gdpr-heres-a-primer-on-anonymization-and-pseudonymization
+- https://gdprlocal.com/data-pseudonymisation-vs-anonymisation/
+- https://www.insideprivacy.com/international/cjeu-confirms-dynamic-ip-addresses-to-be-personal-data/  (Breyer)
+- https://oneuptime.com/blog/post/2026-02-06-scrub-pii-opentelemetry-logs-traces-metrics/view
+
+Implementation / what-it-reveals:
+- https://posthog.com/docs/libraries/node
+- https://segment.com/docs/connections/sources/catalog/libraries/server/node/
+- https://marcon.me/articles/cli-telemetry-best-practices/  (note: 403'd; from snippet)
+- https://oneuptime.com/blog/post/2025-09-15-p50-vs-p95-vs-p99-latency-percentiles/view
+- https://blog.logrocket.com/product-management/survivorship-bias-guide/
+
+================================================================================
+END OF TRANSCRIPT
+================================================================================
