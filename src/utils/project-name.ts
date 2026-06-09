@@ -99,7 +99,11 @@ export function getProjectContext(cwd: string | null | undefined): ProjectContex
   const expandedCwd = expandTilde(cwd);
   const contextRoot = findNearestGitContextRoot(expandedCwd);
   const repoRoot = findGitRepoRoot(expandedCwd);
-  const worktreeProbePath = contextRoot ?? repoRoot ?? expandedCwd;
+  const validContextRoot = contextRoot
+    && (!repoRoot || contextRoot === repoRoot || contextRoot.startsWith(`${repoRoot}${path.sep}`))
+    ? contextRoot
+    : null;
+  const worktreeProbePath = validContextRoot ?? repoRoot ?? expandedCwd;
   const worktreeInfo = detectWorktree(worktreeProbePath);
   const cwdProjectName = repoRoot
     ? path.basename(repoRoot)
