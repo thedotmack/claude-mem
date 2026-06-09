@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.4.2] - 2026-06-09
+
+## What's new
+
+**Installer: \"work email\" opt-in** — the CMEM Online signup prompt in `npx claude-mem install` now asks for your *work* email (placeholder `you@company.com`). This surfaces which orgs are adopting claude-mem.
+
 ## [13.4.1] - 2026-06-08
 
 ## What's new
