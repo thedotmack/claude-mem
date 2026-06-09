@@ -96,6 +96,17 @@ function fileExistsClause(options: ShellTemplateOptions): string {
  * Build the candidate-enumeration block. The `{ ...; }` subshell prints one
  * candidate root per line in priority order; the `while` loop picks the first
  * whose `scripts/<requireFile>` exists.
+ *
+ * The loop must NOT `break` on the first match. Under Cygwin/MSYS shells
+ * (Git-Bash on Windows) a `break` closes the pipe's read end while the
+ * producer subshell is still writing the remaining candidate lines; the next
+ * `printf`/`ls` then writes to a broken pipe, which Cygwin reports as EACCES
+ * ("printf: write error: Permission denied") instead of EPIPE — surfacing as a
+ * hook failure (issues #2707, #2709). Instead the loop drains every candidate
+ * (only a handful) and a `_F` guard prints the FIRST match exactly once, so the
+ * producer always completes and no broken-pipe write ever happens. The first
+ * match still wins, so the contractual fallback ORDER is unchanged. This is
+ * POSIX-clean (no bashisms), so the `mcp` host's `sh -c` loop is fixed too.
  */
 function candidateBlock(options: ShellTemplateOptions): string {
   const isMcp = options.host === 'mcp';
@@ -119,9 +130,9 @@ function candidateBlock(options: ShellTemplateOptions): string {
   const fileClause = fileExistsClause(options);
 
   return (
-    `_P=$({ ${lines.join(' ')} } | while IFS= read -r _R; do` +
+    `_F=; _P=$({ ${lines.join(' ')} } | while IFS= read -r _R; do` +
     `${trimAssignment} [ -d "$_R/plugin/scripts" ] && _Q="$_R/plugin" || _Q="$_R"; ` +
-    `${fileClause} && { printf '%s\\n' "$_Q"; break; }; done);`
+    `${fileClause} && [ -z "$_F" ] && { _F=1; printf '%s\\n' "$_Q"; }; done);`
   );
 }
 
