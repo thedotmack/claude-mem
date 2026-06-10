@@ -195,13 +195,16 @@ async function ensureSessionInitialized(openCodeSessionId: string, projectName: 
     return pendingInitialization;
   }
 
-  const initialization = (async (): Promise<string | null> => {
+  let initialization: Promise<string | null> | undefined;
+  initialization = (async (): Promise<string | null> => {
     const initialized = await workerPost("/api/sessions/init", {
       contentSessionId,
       project: projectName,
       prompt: "",
     });
-    pendingSessionInitializations.delete(openCodeSessionId);
+    if (pendingSessionInitializations.get(openCodeSessionId) === initialization) {
+      pendingSessionInitializations.delete(openCodeSessionId);
+    }
     if (!initialized) {
       return null;
     }

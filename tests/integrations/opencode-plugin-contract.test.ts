@@ -360,6 +360,81 @@ describe("OpenCode plugin event contract", () => {
     }
   });
 
+  it("keeps a replacement pending init alive when session.deleted races the original init", async () => {
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const fetchResolvers: Array<() => void> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (((url: string | URL | Request, init?: RequestInit) => {
+      posts.push({
+        url: String(url),
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+
+      return new Promise<Response>((resolve) => {
+        fetchResolvers.push(() => {
+          resolve(new Response(JSON.stringify({ status: "queued" }), { status: 200 }));
+        });
+      });
+    }) as unknown) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const eventHook = plugin["event"];
+
+      const initAPromise = eventHook({
+        event: {
+          type: "message.part.updated",
+          properties: {
+            sessionID: "ses_replace_pending",
+            message: { id: "msg_a", role: "assistant", sessionID: "ses_replace_pending" },
+            parts: [{ type: "text", text: "partial A" }],
+          },
+        },
+      });
+
+      await Promise.resolve();
+      expect(posts.filter((post) => post.url.includes("/api/sessions/init"))).toHaveLength(1);
+
+      await eventHook({
+        event: {
+          type: "session.deleted",
+          properties: { sessionID: "ses_replace_pending" },
+        },
+      });
+
+      const initBPromise = eventHook({
+        event: {
+          type: "message.updated",
+          properties: {
+            sessionID: "ses_replace_pending",
+            output: {
+              message: { role: "assistant", sessionID: "ses_replace_pending" },
+              parts: [{ type: "text", text: "assistant output after replacement init" }],
+            },
+          },
+        },
+      });
+
+      await Promise.resolve();
+      expect(posts.filter((post) => post.url.includes("/api/sessions/init"))).toHaveLength(2);
+
+      // Resolve init A first; it must not delete init B's pending entry.
+      fetchResolvers.shift()?.();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(posts.filter((post) => post.url.includes("/api/sessions/observations"))).toHaveLength(0);
+
+      // Resolve init B; the observation should still wait on the replacement init.
+      fetchResolvers.shift()?.();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(posts.filter((post) => post.url.includes("/api/sessions/observations"))).toHaveLength(1);
+
+      fetchResolvers.shift()?.();
+      await Promise.all([initAPromise, initBPromise]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("captures assistant output when message.updated uses properties.message and properties.parts", async () => {
     const posts: Array<{ url: string; body: unknown }> = [];
     const originalFetch = globalThis.fetch;
