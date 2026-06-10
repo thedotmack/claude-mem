@@ -54,14 +54,6 @@ function stripHardcodedDirname(filePath) {
   }
 }
 
-/**
- * Rule A canonical-template manifest: maps each host-managed config file's
- * command string to the buildShellCommand() options that generate it. The
- * build asserts the hand-maintained files still match the generator output so
- * the defensive shell prelude can't drift between the three files (issues
- * #1215, #1533). See src/build/hook-shell-template.ts and CLAUDE.md →
- * "Spawn-Contract Resolution".
- */
 function shellTemplateManifest(buildShellCommand) {
   const ccTrailing = (...tail) => [
     'node', '"$_P/scripts/bun-runner.js"', '"$_P/scripts/worker-service.cjs"', ...tail,
@@ -111,8 +103,6 @@ function shellTemplateManifest(buildShellCommand) {
     'plugin/.mcp.json': {
       kind: 'mcp',
       command: buildShellCommand({
-        // The mcp Node launcher derives its spawn target from requireFile, so
-        // no trailingCommand is needed (it is ignored for this host).
         host: 'mcp', requireFile: 'mcp-server.cjs',
         notFoundMessage: 'claude-mem: mcp server not found',
         mcpExtraCandidates: ['$PWD/plugin', '$PWD'],
@@ -133,9 +123,6 @@ function hookCommandByPath(parsed, dottedPath) {
 async function verifyShellTemplateCanonical() {
   console.log('\n📋 Verifying Rule A shell templates match the canonical generator...');
 
-  // Compile src/build/hook-shell-template.ts in-memory and import it. The build
-  // runs under Node, which can't import .ts directly, so we bundle to ESM and
-  // load via a data: URL.
   const bundled = await build({
     entryPoints: ['src/build/hook-shell-template.ts'],
     bundle: true,
@@ -173,7 +160,6 @@ async function verifyShellTemplateCanonical() {
     }
   }
 
-  // Rule C safety net (bun-runner.js fixBrokenScriptPath) must stay documented.
   const bunRunner = fs.readFileSync('plugin/scripts/bun-runner.js', 'utf-8');
   if (!bunRunner.includes('function fixBrokenScriptPath')) {
     throw new Error(
@@ -181,9 +167,6 @@ async function verifyShellTemplateCanonical() {
     );
   }
 
-  // Parser-compat guard (issue #2791): bun-runner.js is invoked by hosts that
-  // may run a pre-ES2020 Node whose ESM loader throws on optional chaining.
-  // Strip comments, then forbid `?.` / `??` in executable code.
   const bunRunnerCode = bunRunner
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/(^|[^:])\/\/.*$/gm, '$1');
@@ -292,18 +275,10 @@ async function buildHooks() {
       logLevel: 'error', // Suppress warnings (import.meta warning is benign)
       external: [
         'bun:sqlite',
-        'zod',
         'cohere-ai',
         'ollama',
         '@chroma-core/default-embed',
         'onnxruntime-node',
-        // better-auth (~3.7MB) is only reachable through BetterAuthRoutes' request-time
-        // dynamic import('better-auth/node') / import('./auth.js'). esbuild otherwise
-        // inlines that dynamic-import target into the worker bundle, dragging in the full
-        // better-auth library (kysely, oauth, nanoid, …) even though the worker never
-        // exercises it (the dep isn't in the worker's runtime plugin/package.json deps,
-        // and the route handler already wraps the import in try/catch → graceful 500).
-        // Keeping it external strips the dead weight from worker-service.cjs. See #2584.
         'better-auth',
         'better-auth/node',
         'better-auth/plugins',
@@ -311,10 +286,6 @@ async function buildHooks() {
       ],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
-        // Polyfill import.meta.url for ESM deps bundled into CJS output.
-        // @anthropic-ai/claude-agent-sdk's *.mjs files use createRequire(import.meta.url)
-        // and `new URL(rel, import.meta.url)`. We map import.meta.url to a file:// URL
-        // (not the raw __filename path) so URL construction preserves its semantics.
         'import.meta.url': '__IMPORT_META_URL__'
       },
       banner: {
@@ -341,6 +312,15 @@ async function buildHooks() {
       console.warn(
         `⚠️  worker-service.cjs is ${(workerStats.size / 1024).toFixed(2)} KB (advisory budget ${(WORKER_SERVICE_MAX_BYTES / 1024).toFixed(0)} KB). ` +
         `If this jumped unexpectedly, check whether a server-only dependency leaked into the worker bundle (see #2584).`
+      );
+    }
+
+    const workerBundleContent = fs.readFileSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`, 'utf-8');
+    const workerZodRequireRegex = /require\(\s*["']zod(?:\/[^"']*)?["']\s*\)/;
+    const workerZodRequireMatch = workerBundleContent.match(workerZodRequireRegex);
+    if (workerZodRequireMatch) {
+      throw new Error(
+        `worker-service.cjs contains external ${workerZodRequireMatch[0]}. Zod must be bundled into the worker service so the hook client process does not fail when plugin node_modules is unavailable after a version upgrade. See issue #2831.`
       );
     }
 
@@ -483,10 +463,6 @@ async function buildHooks() {
       outfile: `${hooksDir}/${TRANSCRIPT_WATCHER.name}.cjs`,
       minify: true,
       logLevel: 'error',
-      // Externalize zod for consistency with worker-service / server-beta-service —
-      // any zod usage in the processor.ts import chain should resolve at runtime
-      // against plugin/node_modules instead of being inlined (avoids duplicate-
-      // instance hazards and keeps the bundle slim).
       external: ['bun:sqlite', 'zod'],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
