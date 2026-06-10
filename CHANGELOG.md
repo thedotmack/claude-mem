@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.5.4] - 2026-06-10
+
+## Fixed
+
+- **Telemetry geolocation: closed the ~98.5% "unknown location" gap.** The posthog-node SDK assumes server deployments and stamps `$geoip_disable: true` on every event by default. claude-mem's worker runs on the user's own machine, so this needlessly suppressed PostHog's ingest-side GeoIP on all worker events (`worker_started`, `session_compressed`, `context_injected`, …). The client now passes `disableGeoip: false`, letting PostHog derive coarse location (country / region / city) at ingestion — from the request IP, which is then discarded. CLI events (`install_*`) were already unaffected.
+
+## Privacy
+
+- No change to the IP promise: raw IP addresses are still **never attached to events by the client and never stored** — the sender IP is used transiently at ingest for the coarse-location lookup, then discarded.
+- The telemetry docs (https://docs.claude-mem.ai/telemetry) and the `npx claude-mem telemetry enable` consent screen now disclose the ingest-derived coarse location.
+
+## Tests
+
+- New regression test asserts the PostHog client is constructed with `disableGeoip: false` (telemetry suite now 58 tests, all passing).
+
 ## [13.5.3] - 2026-06-10
 
 ## Telemetry: real data edition
