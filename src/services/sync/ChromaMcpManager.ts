@@ -204,6 +204,15 @@ export class ChromaMcpManager {
 
     const depOverrideFlags = CHROMA_MCP_DEP_OVERRIDES.flatMap(spec => ['--with', spec]);
 
+    // Invoke the package via `--from chroma-mcp==<ver> chroma-mcp` rather than the
+    // bare `chroma-mcp==<ver>` positional. The bare-positional sugar (`uvx PKG==VER`)
+    // only parses on uv >= 0.5.31 (PEP 508 specifiers in tool requests landed in
+    // astral-sh/uv#11337); on older uv (e.g. mise-pinned 0.5.x) it's rejected with
+    // `error: Not a valid package or extra name`, the subprocess dies in ~13ms, and
+    // it surfaces only as `MCP error -32000: Connection closed`. The `--from` form
+    // is the canonical invocation and works on every uv version.
+    const packageInvocation = ['--from', `chroma-mcp==${CHROMA_MCP_PINNED_VERSION}`, 'chroma-mcp'];
+
     if (chromaMode === 'remote') {
       const chromaHost = settings.CLAUDE_MEM_CHROMA_HOST || '127.0.0.1';
       const chromaPort = settings.CLAUDE_MEM_CHROMA_PORT || '8000';
@@ -215,7 +224,7 @@ export class ChromaMcpManager {
       const args = [
         '--python', pythonVersion,
         ...depOverrideFlags,
-        `chroma-mcp==${CHROMA_MCP_PINNED_VERSION}`,
+        ...packageInvocation,
         '--client-type', 'http',
         '--host', chromaHost,
         '--port', chromaPort
@@ -241,7 +250,7 @@ export class ChromaMcpManager {
     return [
       '--python', pythonVersion,
       ...depOverrideFlags,
-      `chroma-mcp==${CHROMA_MCP_PINNED_VERSION}`,
+      ...packageInvocation,
       '--client-type', 'persistent',
       '--data-dir', DEFAULT_CHROMA_DATA_DIR.replace(/\\/g, '/')
     ];
