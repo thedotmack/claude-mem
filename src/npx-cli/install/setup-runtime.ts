@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { execSync, spawnSync } from 'child_process';
+import { exec, execSync, spawnSync } from 'child_process';
 import { createRequire } from 'module';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -412,11 +412,17 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
     // tree-sitter-cli postinstall downloads a Rust binary and can hang the
     // install. Bun honors trustedDependencies; npm does not. We additionally
     // pass --ignore-scripts as belt-and-suspenders and bound it with a timeout.
-    execSync(`${bunCmd} install --frozen-lockfile --ignore-scripts`, {
-      cwd: targetDir,
-      stdio: 'pipe',
-      timeout: INSTALL_TIMEOUT_MS,
-      ...(IS_WINDOWS ? { shell: process.env.ComSpec ?? 'cmd.exe' } : {}),
+    // Async exec (not execSync): a blocked event loop freezes the installer's
+    // clack spinner for the duration of the install, which reads as a stall.
+    await new Promise<void>((resolve, reject) => {
+      exec(`${bunCmd} install --frozen-lockfile --ignore-scripts`, {
+        cwd: targetDir,
+        timeout: INSTALL_TIMEOUT_MS,
+        maxBuffer: 16 * 1024 * 1024,
+        ...(IS_WINDOWS ? { shell: process.env.ComSpec ?? 'cmd.exe' } : {}),
+      }, (error, stdout, stderr) =>
+        // exec errors don't carry stdio; attach so describeExecError can report it.
+        error ? reject(Object.assign(error, { stdout, stderr })) : resolve());
     });
   } catch (error) {
     throw new Error(`bun install failed in ${targetDir}\n${describeExecError(error)}`);

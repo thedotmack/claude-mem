@@ -1,5 +1,7 @@
 import * as p from '@clack/prompts';
 import pc from 'picocolors';
+import { randomUUID } from 'crypto';
+import { loadTelemetryConfig, saveTelemetryConfig } from '../../services/telemetry/consent.js';
 import { spawnHidden } from '../../shared/spawn.js';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
@@ -47,6 +49,24 @@ async function runTasks(tasks: TaskDescriptor[]): Promise<void> {
       console.log(`  ${result}`);
     }
   }
+}
+
+/**
+ * Tick a task's spinner message with elapsed seconds. The multi-minute
+ * dependency installs used to sit on one static message (and previously a
+ * blocked event loop), which read as a stalled install. Returns a stop
+ * function for a finally block. Non-interactive runs get the label once —
+ * a per-second console.log line would spam CI logs.
+ */
+function startHeartbeat(message: (msg: string) => void, label: string): () => void {
+  message(label);
+  if (!isInteractive) return () => {};
+  const started = Date.now();
+  const timer = setInterval(() => {
+    const elapsed = Math.round((Date.now() - started) / 1000);
+    message(`${label} ${pc.dim(`(${elapsed}s — still working)`)}`);
+  }, 1000);
+  return () => clearInterval(timer);
 }
 
 async function bufferConsole<T>(fn: () => Promise<T>): Promise<{ result: T; output: string }> {
@@ -632,14 +652,14 @@ function copyPluginToCache(version: string): void {
  * confirmed ERESOLVE token, announced loudly. `--ignore-scripts` is the default
  * (v12.6.2 lesson: a transitive postinstall can hang the install).
  */
-function runNpmInstallInMarketplace(summary: InstallSummary): void {
+async function runNpmInstallInMarketplace(summary: InstallSummary): Promise<void> {
   const marketplaceDir = marketplaceDirectory();
   const packageJsonPath = join(marketplaceDir, 'package.json');
 
   if (!existsSync(packageJsonPath)) return;
 
   const baseFlags = ['install', '--omit=dev', '--ignore-scripts'];
-  const strictResult = runNpmStrict(marketplaceDir, baseFlags);
+  const strictResult = await runNpmStrict(marketplaceDir, baseFlags);
   if (strictResult.code === 0) return;
 
   if (strictResult.timedOut) {
@@ -665,7 +685,7 @@ function runNpmInstallInMarketplace(summary: InstallSummary): void {
   log.warn('npm reported an ERESOLVE peer-dependency conflict in marketplace deps; retrying once with --legacy-peer-deps.');
   log.warn(extractEresolveBlock(strictResult.stderr));
 
-  const legacyResult = runNpmStrict(marketplaceDir, [...baseFlags, '--legacy-peer-deps']);
+  const legacyResult = await runNpmStrict(marketplaceDir, [...baseFlags, '--legacy-peer-deps']);
   if (legacyResult.code === 0) {
     summary.warnings.push({
       component: 'marketplace-npm-install',
@@ -1231,6 +1251,38 @@ async function submitOnlineSignup(payload: { email: string; note: string; versio
   }
 }
 
+/**
+ * Final step of the install flow: ask for anonymized-telemetry consent.
+ * Asked ONCE — any existing telemetry.json (enabled or not) means the user
+ * already decided, and we never re-nag. Declining is persisted so re-installs
+ * stay silent. Respects DO_NOT_TRACK (skip entirely: they already answered),
+ * CI, and non-TTY. See docs/public/telemetry.mdx for what is/isn't collected.
+ */
+async function promptTelemetryOptIn(): Promise<void> {
+  if (!isInteractive) return;
+  if (process.env.CI) return;
+  const dnt = process.env.DO_NOT_TRACK;
+  if (dnt !== undefined && dnt !== '' && dnt !== '0' && dnt !== 'false') return;
+  if (loadTelemetryConfig() !== null) return;
+
+  p.log.message(pc.dim(
+    'Anonymous install ID only — no prompts, file paths, code, or project names, ever.\n'
+    + 'Details: https://docs.claude-mem.ai/telemetry · Change anytime: claude-mem telemetry disable',
+  ));
+  const consent = await p.confirm({
+    message: 'Would you mind sharing anonymized usage data with CMEM? We use this data to make the product better.',
+    initialValue: true,
+  });
+  if (p.isCancel(consent)) return;
+
+  saveTelemetryConfig({
+    enabled: consent === true,
+    installId: randomUUID(),
+    decidedAt: new Date().toISOString(),
+  });
+  log.success(consent ? 'Thanks! Anonymized usage sharing is on.' : 'No problem — telemetry stays off.');
+}
+
 async function promptCmemOnlineOptIn(version: string): Promise<void> {
   // Interactive-only, and easy to turn off for CI / scripted installs.
   if (!isInteractive) return;
@@ -1485,9 +1537,13 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
           const { version: uvVersion } = await ensureUv(summary);
           const cacheDir = pluginCacheDirectory(version);
           if (!isInstallCurrent(cacheDir, version)) {
-            message('Installing plugin dependencies…');
             const { bunPath } = await ensureBun();
-            await installPluginDependencies(cacheDir, bunPath);
+            const stopHeartbeat = startHeartbeat(message, 'Installing plugin dependencies (bun install)…');
+            try {
+              await installPluginDependencies(cacheDir, bunPath);
+            } finally {
+              stopHeartbeat();
+            }
             writeInstallMarker(cacheDir, version, bunVersion, uvVersion);
           }
           return `Runtime ready (Bun ${bunVersion}, uv ${uvVersion}) ${pc.green('OK')}`;
@@ -1507,12 +1563,16 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
       tasks.push({
         title: 'Installing marketplace dependencies',
         task: async (message) => {
-          message('Running npm install...');
           // runNpmInstallInMarketplace throws InstallAbortError on a real
           // failure (non-ERESOLVE, or ERESOLVE that --legacy-peer-deps could
           // not fix). We deliberately do NOT swallow it here — the top-level
           // handler turns it into "Installation Aborted" + exit 1.
-          runNpmInstallInMarketplace(summary);
+          const stopHeartbeat = startHeartbeat(message, 'Running npm install…');
+          try {
+            await runNpmInstallInMarketplace(summary);
+          } finally {
+            stopHeartbeat();
+          }
           return `Dependencies installed ${pc.green('OK')}`;
         },
       });
@@ -1722,6 +1782,9 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
 
   if (isInteractive) {
     p.note(nextSteps.join('\n'), 'Next Steps');
+    // Deliberately the last interaction of the flow: consent is asked after
+    // the product is installed and working, never as a gate in front of it.
+    await promptTelemetryOptIn();
     if (failedIDEs.length > 0) {
       p.outro(pc.yellow('claude-mem installed with some IDE setup failures.'));
     } else {
