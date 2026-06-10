@@ -73,6 +73,8 @@ Every event property passes through a strict whitelist scrubber — any key not 
 | `obs_count_7d` / `obs_count_30d` | `1887` / `10357` | Observations stored in the last 7 / 30 days |
 | `days_since_last_obs` | `0` | Days since the most recent observation was stored |
 
+One value is derived server-side rather than sent by the client: PostHog resolves the request's sender IP to a **coarse location** (country / region / city) at ingestion, before the IP itself is discarded. The client never attaches an IP to any event, and the raw IP is never stored — see [What is NEVER collected](#what-is-never-collected).
+
 ### Events
 
 | Event | When | Extra properties |
@@ -96,7 +98,7 @@ Every event property passes through a strict whitelist scrubber — any key not 
 | Project or repository names | Including git remotes and branch names |
 | Search queries | Only the fact that a search happened |
 | Error messages or stack traces | Only a coarse category string |
-| IP addresses | Never attached to events by the client; the analytics project is configured to discard sender IPs on ingest |
+| IP addresses | Never attached to events by the client; the sender IP is used transiently at ingest to derive coarse location (country / region / city), then discarded — the analytics project is configured to never store sender IPs |
 | Hardware or machine identifiers | Not even hashed MAC addresses or hostnames |
 | Environment variable values | Ever |
 | Emails, usernames, or any PII | Ever |
