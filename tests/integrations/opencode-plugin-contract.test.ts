@@ -378,6 +378,64 @@ describe("OpenCode plugin event contract", () => {
       console.warn = originalWarn;
     }
   });
+
+  it("retries session init after a non-OK init response instead of pinning the session initialized", async () => {
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const originalFetch = globalThis.fetch;
+    let initAttempts = 0;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const normalizedUrl = String(url);
+      posts.push({
+        url: normalizedUrl,
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+
+      if (normalizedUrl.includes("/api/sessions/init")) {
+        initAttempts += 1;
+        const status = initAttempts === 1 ? 503 : 200;
+        return new Response(JSON.stringify({ status: status === 200 ? "queued" : "retry" }), { status });
+      }
+
+      return new Response(JSON.stringify({ status: "queued" }), { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const eventHook = plugin["event"];
+
+      await eventHook({
+        event: {
+          type: "message.part.updated",
+          properties: {
+            sessionID: "ses_retry",
+            message: { id: "msg_retry_partial", role: "assistant", sessionID: "ses_retry" },
+            parts: [{ type: "text", text: "partial" }],
+          },
+        },
+      });
+
+      expect(posts.filter((post) => post.url.includes("/api/sessions/init"))).toHaveLength(1);
+      expect(posts.filter((post) => post.url.includes("/api/sessions/observations"))).toHaveLength(0);
+
+      await eventHook({
+        event: {
+          type: "message.updated",
+          properties: {
+            sessionID: "ses_retry",
+            output: {
+              message: { role: "assistant", sessionID: "ses_retry" },
+              parts: [{ type: "text", text: "assistant output after retry" }],
+            },
+          },
+        },
+      });
+
+      expect(posts.filter((post) => post.url.includes("/api/sessions/init"))).toHaveLength(2);
+      expect(posts.filter((post) => post.url.includes("/api/sessions/observations"))).toHaveLength(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });
 
 describe("OpenCode search client response-shape contract", () => {

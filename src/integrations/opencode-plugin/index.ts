@@ -116,7 +116,7 @@ const JSON_HEADERS: Record<string, string> = { "Content-Type": "application/json
 async function workerPost(
   path: string,
   body: Record<string, unknown>,
-): Promise<void> {
+): Promise<boolean> {
   try {
     const response = await fetch(`${WORKER_BASE_URL}${path}`, {
       method: "POST",
@@ -125,12 +125,15 @@ async function workerPost(
     });
     if (!response.ok) {
       console.warn(`[claude-mem] Worker POST ${path} returned ${response.status}`);
+      return false;
     }
+    return true;
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     if (!message.includes("ECONNREFUSED")) {
       console.warn(`[claude-mem] Worker POST ${path} failed: ${message}`);
     }
+    return false;
   }
 }
 
@@ -153,7 +156,7 @@ async function workerGetText(path: string): Promise<string | null> {
 
 const contentSessionIdsByOpenCodeSessionId = new Map<string, string>();
 const initializedSessionIds = new Set<string>();
-const pendingSessionInitializations = new Map<string, Promise<string>>();
+const pendingSessionInitializations = new Map<string, Promise<string | null>>();
 
 const MAX_SESSION_MAP_ENTRIES = 1000;
 
@@ -181,7 +184,7 @@ function getOrCreateContentSessionId(openCodeSessionId: string): string {
  * the session the first time we see any activity for it (tool run or chat
  * message). This guarantees a session row exists before observations arrive.
  */
-async function ensureSessionInitialized(openCodeSessionId: string, projectName: string): Promise<string> {
+async function ensureSessionInitialized(openCodeSessionId: string, projectName: string): Promise<string | null> {
   const contentSessionId = getOrCreateContentSessionId(openCodeSessionId);
   if (initializedSessionIds.has(openCodeSessionId)) {
     return contentSessionId;
@@ -192,14 +195,17 @@ async function ensureSessionInitialized(openCodeSessionId: string, projectName: 
     return pendingInitialization;
   }
 
-  const initialization = (async (): Promise<string> => {
-    await workerPost("/api/sessions/init", {
+  const initialization = (async (): Promise<string | null> => {
+    const initialized = await workerPost("/api/sessions/init", {
       contentSessionId,
       project: projectName,
       prompt: "",
     });
-    initializedSessionIds.add(openCodeSessionId);
     pendingSessionInitializations.delete(openCodeSessionId);
+    if (!initialized) {
+      return null;
+    }
+    initializedSessionIds.add(openCodeSessionId);
     return contentSessionId;
   })();
 
@@ -233,6 +239,7 @@ async function captureAssistantMessage(
   if (!messageText) return;
 
   const contentSessionId = await ensureSessionInitialized(sessionID, projectName);
+  if (!contentSessionId) return;
   await workerPost("/api/sessions/observations", {
     contentSessionId,
     tool_name: "assistant_message",
@@ -255,6 +262,7 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       output: ToolExecuteAfterOutput,
     ): Promise<void> => {
       const contentSessionId = await ensureSessionInitialized(input.sessionID, projectName);
+      if (!contentSessionId) return;
       await workerPost("/api/sessions/observations", {
         contentSessionId,
         tool_name: input.tool,
@@ -270,6 +278,7 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       input: SessionCompactingInput,
     ): Promise<void> => {
       const contentSessionId = await ensureSessionInitialized(input.sessionID, projectName);
+      if (!contentSessionId) return;
       await workerPost("/api/sessions/summarize", {
         contentSessionId,
         last_assistant_message: "",
@@ -313,6 +322,7 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
           if (!sessionID) return;
           // Best-effort summarize once a session goes idle.
           const contentSessionId = await ensureSessionInitialized(sessionID, projectName);
+          if (!contentSessionId) return;
           await workerPost("/api/sessions/summarize", {
             contentSessionId,
             last_assistant_message: "",
