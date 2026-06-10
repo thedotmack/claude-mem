@@ -54,6 +54,30 @@ describe('scrubProperties', () => {
     });
   });
 
+  it('keeps the platform/toolchain keys with primitive values', () => {
+    const result = scrubProperties({
+      os_version: '10.0.22631',
+      is_wsl: false,
+      node_version: '22.14.0',
+      interactive: true,
+      install_method: 'npm',
+      bun_version: '1.3.9',
+      uv_version: '0.7.2',
+      claude_code_version: '2.0.14',
+    });
+
+    expect(result).toEqual({
+      os_version: '10.0.22631',
+      is_wsl: false,
+      node_version: '22.14.0',
+      interactive: true,
+      install_method: 'npm',
+      bun_version: '1.3.9',
+      uv_version: '0.7.2',
+      claude_code_version: '2.0.14',
+    });
+  });
+
   it('keeps the depth/economics keys with primitive values', () => {
     const result = scrubProperties({
       observation_count: 50,

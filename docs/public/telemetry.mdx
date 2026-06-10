@@ -29,9 +29,12 @@ Every event property passes through a strict whitelist scrubber — any key not 
 | `distinct_id` | `7f3c…` (random UUID) | Anonymous install ID — not derived from you or your machine |
 | `version` | `13.4.2` | claude-mem version |
 | `os` | `darwin` | Operating system platform |
+| `os_version` | `10.0.22631` | OS kernel release string — distinguishes e.g. Windows 10 from 11 |
+| `is_wsl` | `false` | Whether running under Windows Subsystem for Linux |
 | `arch` | `arm64` | CPU architecture |
 | `runtime` | `bun` | `bun` or `node` |
 | `runtime_version` | `1.2.0` | Runtime version string |
+| `node_version` | `22.14.0` | Node.js version string |
 | `duration_ms` | `1843` | How long an operation took |
 | `outcome` | `ok` | Coarse result: ok / error / partial |
 | `error_category` | `provider_error` | Coarse error bucket — never an error message |
@@ -45,6 +48,10 @@ Every event property passes through a strict whitelist scrubber — any key not 
 | `count` | `7` | Integer volume, e.g. observations stored in one compression |
 | `has_summary` | `true` | Whether a compression also produced a session summary |
 | `is_update` | `false` | Whether an install ran over an existing installation |
+| `interactive` | `true` | Whether the installer ran in an interactive terminal |
+| `install_method` | `npm` | Which package manager launched the CLI: npm / bun / pnpm / yarn |
+| `bun_version` / `uv_version` | `1.3.9` / `0.7.2` | Toolchain versions detected during install |
+| `claude_code_version` | `2.0.14` | Claude Code CLI version, if detectable |
 | `mode` | `code` | Active claude-mem mode id (our mode list) |
 | `model` | `claude-haiku-4-5` | Model id used for compression |
 | `hook` | `ingest` | What triggered a compression: init / ingest / summarize |
@@ -63,8 +70,8 @@ Every event property passes through a strict whitelist scrubber — any key not 
 
 | Event | When | Extra properties |
 |---|---|---|
-| `install_completed` | `npx claude-mem install` finishes | `ide`, `provider`, `runtime_mode`, `is_update`, `outcome`, `duration_ms` |
-| `install_failed` | The installer aborts | `error_category` (our error-taxonomy id) |
+| `install_completed` | `npx claude-mem install` finishes | `ide`, `provider`, `runtime_mode`, `is_update`, `outcome`, `duration_ms`, `interactive`, `install_method`, `bun_version`, `uv_version`, `claude_code_version` |
+| `install_failed` | The installer aborts | `error_category` (our error-taxonomy id), `interactive`, `install_method`, `claude_code_version` |
 | `uninstall_completed` | `npx claude-mem uninstall` finishes | — |
 | `worker_started` | The background worker starts, plus one heartbeat per 24h of uptime | `trigger` (start / heartbeat), `duration_ms` |
 | `session_compressed` | A session compression stores observations, or the compression generator fails | `outcome`, `duration_ms`, `count`, `has_summary`, `provider`, `model`, `ide`, `hook`, `compression_ms`, `observation_type`, `obs_type_*`, `tokens_input`, `tokens_output`, `compression_ratio`; on failure `error_category` |
