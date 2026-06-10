@@ -226,6 +226,132 @@ describe("OpenCode plugin event contract", () => {
     }
   });
 
+  it("coalesces concurrent first-seen session init across event hooks", async () => {
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const fetchResolvers: Array<() => void> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (((url: string | URL | Request, init?: RequestInit) => {
+      posts.push({
+        url: String(url),
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+
+      return new Promise<Response>((resolve) => {
+        fetchResolvers.push(() => {
+          resolve(new Response(JSON.stringify({ status: "queued" }), { status: 200 }));
+        });
+      });
+    }) as unknown) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const eventHook = plugin["event"];
+
+      const partPromise = eventHook({
+        event: {
+          type: "message.part.updated",
+          properties: {
+            sessionID: "ses_race",
+            message: { id: "msg_partial", role: "assistant", sessionID: "ses_race" },
+            parts: [{ type: "text", text: "partial" }],
+          },
+        },
+      });
+      const updatedPromise = eventHook({
+        event: {
+          type: "message.updated",
+          properties: {
+            sessionID: "ses_race",
+            output: {
+              message: { role: "assistant", sessionID: "ses_race" },
+              parts: [{ type: "text", text: "final output" }],
+            },
+          },
+        },
+      });
+
+      await Promise.resolve();
+      expect(posts.filter((post) => post.url.includes("/api/sessions/init"))).toHaveLength(1);
+      expect(posts.filter((post) => post.url.includes("/api/sessions/observations"))).toHaveLength(0);
+
+      fetchResolvers.shift()?.();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(posts.filter((post) => post.url.includes("/api/sessions/init"))).toHaveLength(1);
+      expect(posts.filter((post) => post.url.includes("/api/sessions/observations"))).toHaveLength(1);
+
+      fetchResolvers.shift()?.();
+      await Promise.all([partPromise, updatedPromise]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("captures assistant output when message.updated uses properties.message and properties.parts", async () => {
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      posts.push({
+        url: String(url),
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+      return new Response(JSON.stringify({ status: "queued" }), { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      await plugin["event"]({
+        event: {
+          type: "message.updated",
+          properties: {
+            sessionID: "ses_fallback_props",
+            message: { role: "assistant", sessionID: "ses_fallback_props" },
+            parts: [{ type: "text", text: "assistant fallback output" }],
+          },
+        },
+      });
+
+      const observationPost = posts.find((post) => post.url.includes("/api/sessions/observations"));
+      expect(observationPost).toBeTruthy();
+      expect((observationPost?.body as Record<string, unknown>).tool_response).toBe(
+        "assistant fallback output",
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("captures assistant output when message.updated uses top-level message and parts", async () => {
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      posts.push({
+        url: String(url),
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+      return new Response(JSON.stringify({ status: "queued" }), { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      await plugin["event"]({
+        event: {
+          type: "message.updated",
+          message: { role: "assistant", sessionID: "ses_fallback_top" },
+          parts: [{ type: "text", text: "assistant top-level fallback output" }],
+        },
+      });
+
+      const observationPost = posts.find((post) => post.url.includes("/api/sessions/observations"));
+      expect(observationPost).toBeTruthy();
+      expect((observationPost?.body as Record<string, unknown>).tool_response).toBe(
+        "assistant top-level fallback output",
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("warns when an awaited worker POST returns a non-OK status", async () => {
     const originalFetch = globalThis.fetch;
     const originalWarn = console.warn;

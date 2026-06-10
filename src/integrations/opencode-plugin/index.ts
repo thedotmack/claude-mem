@@ -153,6 +153,7 @@ async function workerGetText(path: string): Promise<string | null> {
 
 const contentSessionIdsByOpenCodeSessionId = new Map<string, string>();
 const initializedSessionIds = new Set<string>();
+const pendingSessionInitializations = new Map<string, Promise<string>>();
 
 const MAX_SESSION_MAP_ENTRIES = 1000;
 
@@ -182,14 +183,28 @@ function getOrCreateContentSessionId(openCodeSessionId: string): string {
  */
 async function ensureSessionInitialized(openCodeSessionId: string, projectName: string): Promise<string> {
   const contentSessionId = getOrCreateContentSessionId(openCodeSessionId);
-  if (!initializedSessionIds.has(openCodeSessionId)) {
-    initializedSessionIds.add(openCodeSessionId);
+  if (initializedSessionIds.has(openCodeSessionId)) {
+    return contentSessionId;
+  }
+
+  const pendingInitialization = pendingSessionInitializations.get(openCodeSessionId);
+  if (pendingInitialization) {
+    return pendingInitialization;
+  }
+
+  const initialization = (async (): Promise<string> => {
     await workerPost("/api/sessions/init", {
       contentSessionId,
       project: projectName,
       prompt: "",
     });
-  }
+    initializedSessionIds.add(openCodeSessionId);
+    pendingSessionInitializations.delete(openCodeSessionId);
+    return contentSessionId;
+  })();
+
+  pendingSessionInitializations.set(openCodeSessionId, initialization);
+  await initialization;
   return contentSessionId;
 }
 
@@ -308,6 +323,7 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
           if (!sessionID) return;
           contentSessionIdsByOpenCodeSessionId.delete(sessionID);
           initializedSessionIds.delete(sessionID);
+          pendingSessionInitializations.delete(sessionID);
           break;
         }
         default:
