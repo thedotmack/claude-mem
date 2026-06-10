@@ -196,13 +196,14 @@ export async function generateContextWithStats(
     );
     const queryProjects = useDreamQueries ? projects : rawProjects;
     const useMultiQuery = queryProjects.length > 1;
+    const singleQueryProject = queryProjects[0] ?? project;
 
     const observations = useMultiQuery
       ? queryObservationsMulti(db, queryProjects, config)
-      : queryObservations(db, project, config);
+      : queryObservations(db, singleQueryProject, config);
     const summaries = useMultiQuery
       ? querySummariesMulti(db, queryProjects, config)
-      : querySummaries(db, project, config);
+      : querySummaries(db, singleQueryProject, config);
 
     if (observations.length === 0 && summaries.length === 0) {
       return { text: renderEmptyState(project, forHuman), stats: null };
