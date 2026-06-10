@@ -7,7 +7,7 @@ import {
   createErrorResponse,
   errorHandler,
   notFoundHandler,
-} from '../../src/services/server/ErrorHandler.js';
+} from '../../src/shared/http/ErrorHandler.js';
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
 

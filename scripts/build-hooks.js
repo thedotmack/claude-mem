@@ -19,7 +19,7 @@ const SERVER_BETA_SERVICE = {
 
 const MCP_SERVER = {
   name: 'mcp-server',
-  source: 'src/servers/mcp-server.ts'
+  source: 'src/entrypoints/mcp-server.ts'
 };
 
 const CONTEXT_GENERATOR = {
@@ -433,7 +433,7 @@ async function buildHooks() {
     const bunRequireMatch = mcpBundleContent.match(bunRequireRegex);
     if (bunRequireMatch) {
       throw new Error(
-        `mcp-server.cjs contains a Bun-only ${bunRequireMatch[0]} call. This means a transitive import in src/servers/mcp-server.ts pulled in code from worker-service.ts (or another module that touches DatabaseManager/ChromaSync). The MCP server runs under Node and cannot load bun:* modules. Audit recent imports in src/servers/mcp-server.ts and src/services/worker-spawner.ts — the spawner module is intentionally lightweight and MUST NOT import anything that touches SQLite or other Bun-only modules. See PR #1645 for context.`
+        `mcp-server.cjs contains a Bun-only ${bunRequireMatch[0]} call. This means a transitive import in src/entrypoints/mcp-server.ts pulled in code from worker-service.ts (or another module that touches DatabaseManager/ChromaSync). The MCP server runs under Node and cannot load bun:* modules. Audit recent imports in src/entrypoints/mcp-server.ts and src/services/worker-spawner.ts — the spawner module is intentionally lightweight and MUST NOT import anything that touches SQLite or other Bun-only modules. See PR #1645 for context.`
       );
     }
     const zodRequireRegex = /require\(\s*["']zod(?:\/[^"']*)?["']\s*\)/;
