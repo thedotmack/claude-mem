@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import * as realInfrastructure from '../../src/services/infrastructure/index.js';
 import * as realSupervisor from '../../src/supervisor/index.js';
 import * as realSpawn from '../../src/shared/spawn.js';
@@ -81,8 +84,17 @@ function installFetchMock(): void {
 describe('ensureWorkerRunning — recycle waits for the dying worker\'s successor instead of spawning into the corpse', () => {
   const originalFetch = global.fetch;
   const originalReadinessBudget = process.env.CLAUDE_MEM_HOOK_READINESS_TIMEOUT_MS;
+  const originalDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+  let tempDataDir: string;
 
   beforeEach(() => {
+    // The lazy-spawn fallback now goes through the spawn gate
+    // (src/shared/worker-spawn-gate.ts), which writes <DATA_DIR>/spawn.lock.
+    // Point DATA_DIR at a temp dir so the test never touches the real
+    // ~/.claude-mem lock (a live launcher's lock would make the fallback
+    // SKIP its spawn and fail the expectation below).
+    tempDataDir = mkdtempSync(join(tmpdir(), 'claude-mem-recycle-successor-'));
+    process.env.CLAUDE_MEM_DATA_DIR = tempDataDir;
     installFetchMock();
     spawnCalls.length = 0;
   });
@@ -94,6 +106,12 @@ describe('ensureWorkerRunning — recycle waits for the dying worker\'s successo
     } else {
       process.env.CLAUDE_MEM_HOOK_READINESS_TIMEOUT_MS = originalReadinessBudget;
     }
+    if (originalDataDir === undefined) {
+      delete process.env.CLAUDE_MEM_DATA_DIR;
+    } else {
+      process.env.CLAUDE_MEM_DATA_DIR = originalDataDir;
+    }
+    rmSync(tempDataDir, { recursive: true, force: true });
     mock.restore();
   });
 

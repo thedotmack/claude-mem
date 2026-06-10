@@ -1,6 +1,5 @@
 import path from "path";
 import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync } from "fs";
-import { execSync } from "child_process";
 import { spawnHidden } from "./spawn.js";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
@@ -11,6 +10,11 @@ import { validateWorkerPidFile } from "../supervisor/index.js";
 import { emitBlockingError } from "./hook-io.js";
 import { captureCliEvent } from "../services/telemetry/cli-telemetry.js";
 import { checkVersionMatch } from "../services/infrastructure/index.js";
+// Imported from ProcessManager.js directly (not the infrastructure barrel):
+// tests mock the barrel module wholesale, and the resolver must stay real.
+// ProcessManager imports nothing from worker-utils, so no cycle.
+import { resolveWorkerRuntimePath } from "../services/infrastructure/ProcessManager.js";
+import { acquireSpawnLock, releaseSpawnLock } from "./worker-spawn-gate.js";
 
 function readTimeoutEnv(
   envName: string,
@@ -203,7 +207,13 @@ async function isWorkerReady(): Promise<boolean> {
   return response.ok;
 }
 
-function resolveWorkerScriptPath(): string | null {
+/**
+ * Canonical worker-script resolver: the marketplace install first, then the
+ * dev-tree copy under cwd. Exported so other launchers (e.g. the MCP server)
+ * prefer the same marketplace copy instead of spawning a stale cache-dir
+ * bundle.
+ */
+export function resolveWorkerScriptPath(): string | null {
   const candidates = [
     path.join(MARKETPLACE_ROOT, 'plugin', 'scripts', 'worker-service.cjs'),
     path.join(process.cwd(), 'plugin', 'scripts', 'worker-service.cjs'),
@@ -212,26 +222,6 @@ function resolveWorkerScriptPath(): string | null {
     if (existsSync(candidate)) return candidate;
   }
   return null;
-}
-
-function resolveBunRuntime(): string | null {
-  if (process.env.BUN && existsSync(process.env.BUN)) return process.env.BUN;
-
-  try {
-    const cmd = process.platform === 'win32' ? 'where bun' : 'which bun';
-    const output = execSync(cmd, {
-      stdio: ['ignore', 'pipe', 'ignore'],
-      encoding: 'utf-8',
-      windowsHide: true,
-    });
-    const firstMatch = output
-      .split(/\r?\n/)
-      .map(line => line.trim())
-      .find(line => line.length > 0);
-    return firstMatch || null;
-  } catch {
-    return null;
-  }
 }
 
 async function waitForWorkerPort(options: { attempts: number; backoffMs: number }): Promise<boolean> {
@@ -414,7 +404,7 @@ export async function ensureWorkerRunning(): Promise<boolean> {
     // Fall through to (re)spawn + readiness wait below.
   }
 
-  const runtimePath = resolveBunRuntime();
+  const runtimePath = resolveWorkerRuntimePath();
   const scriptPath = resolveWorkerScriptPath();
 
   if (!runtimePath) {
@@ -426,36 +416,56 @@ export async function ensureWorkerRunning(): Promise<boolean> {
     return false;
   }
 
-  logger.info('SYSTEM', 'Worker not running — lazy-spawning', { runtimePath, scriptPath });
-
+  // Spawn gate (worker-spawn-gate.ts): only ONE gated launcher — hook, MCP
+  // server, or the CLI restart fallback — may spawn at a time. (The dying
+  // worker's restart handoff in worker-shutdown.ts is deliberately NOT gated:
+  // it is the primary spawner on restart, and hooks wait for its successor.)
+  // Losing the lock never fails the hook; the loser skips its spawn and waits
+  // for the winner's worker on the existing port/readiness waits below. The
+  // winner holds the lock through the port-open wait (the spawn isn't "done"
+  // until the worker owns the port) and releases in finally on every exit
+  // path.
+  const spawnLockHeld = acquireSpawnLock();
   try {
-    const proc = spawnHidden(runtimePath, [scriptPath, '--daemon'], {
-      detached: true,
-      stdio: ['ignore', 'ignore', 'ignore'],
-    });
-    proc.unref();
-  } catch (error: unknown) {
-    if (error instanceof Error) {
-      logger.error('SYSTEM', 'Lazy-spawn of worker failed', { runtimePath, scriptPath }, error);
-    } else {
-      logger.error('SYSTEM', 'Lazy-spawn of worker failed (non-Error)', {
-        runtimePath, scriptPath, error: String(error),
-      });
-    }
-    return false;
-  }
+    if (spawnLockHeld) {
+      logger.info('SYSTEM', 'Worker not running — lazy-spawning', { runtimePath, scriptPath });
 
-  // Cold boot (#2795): on the first session after a reboot the SessionStart
-  // `start` hook is booting the daemon in parallel, and a cold macOS+Chroma
-  // worker needs ~7s to bind. The old 3-attempt/250ms budget (~0.75s) expired
-  // long before that, so the context (and session-init) hooks raced boot and
-  // soft-failed to empty — dropping memory injection and the user_prompts row
-  // (the upstream trigger for #2794). Wait up to ~15.5s (≈ POST_SPAWN_WAIT) so
-  // whichever worker wins the port is seen before we give up.
-  const alive = await waitForWorkerPort({ attempts: 6, backoffMs: 500 });
-  if (!alive) {
-    logger.warn('SYSTEM', 'Worker port did not open after lazy-spawn within the cold-boot wait (~15s)');
-    return false;
+      try {
+        const proc = spawnHidden(runtimePath, [scriptPath, '--daemon'], {
+          detached: true,
+          stdio: ['ignore', 'ignore', 'ignore'],
+        });
+        proc.unref();
+      } catch (error: unknown) {
+        if (error instanceof Error) {
+          logger.error('SYSTEM', 'Lazy-spawn of worker failed', { runtimePath, scriptPath }, error);
+        } else {
+          logger.error('SYSTEM', 'Lazy-spawn of worker failed (non-Error)', {
+            runtimePath, scriptPath, error: String(error),
+          });
+        }
+        return false;
+      }
+    } else {
+      logger.info('SYSTEM', 'Another launcher holds the spawn lock — skipping lazy-spawn and waiting for its worker');
+    }
+
+    // Cold boot (#2795): on the first session after a reboot the SessionStart
+    // `start` hook is booting the daemon in parallel, and a cold macOS+Chroma
+    // worker needs ~7s to bind. The old 3-attempt/250ms budget (~0.75s) expired
+    // long before that, so the context (and session-init) hooks raced boot and
+    // soft-failed to empty — dropping memory injection and the user_prompts row
+    // (the upstream trigger for #2794). Wait up to ~15.5s (≈ POST_SPAWN_WAIT) so
+    // whichever worker wins the port is seen before we give up.
+    const alive = await waitForWorkerPort({ attempts: 6, backoffMs: 500 });
+    if (!alive) {
+      logger.warn('SYSTEM', spawnLockHeld
+        ? 'Worker port did not open after lazy-spawn within the cold-boot wait (~15s)'
+        : 'Spawn-lock holder\'s worker port did not open within the cold-boot wait (~15s)');
+      return false;
+    }
+  } finally {
+    if (spawnLockHeld) releaseSpawnLock();
   }
   const ready = await waitForWorkerReadiness();
   if (!ready) {
