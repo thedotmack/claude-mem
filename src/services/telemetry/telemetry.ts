@@ -12,11 +12,10 @@ const packageVersion =
 
 /**
  * Publishable PostHog project token (phc_...). Publishable tokens are safe to
- * embed: the capture endpoints are public POST-only ingestion. Empty for now —
- * the maintainer pastes the real phc_ token before enabling ingestion.
+ * embed: the capture endpoints are public POST-only ingestion.
  * `CLAUDE_MEM_TELEMETRY_KEY` always overrides this constant.
  */
-const TELEMETRY_PUBLIC_KEY = '';
+const TELEMETRY_PUBLIC_KEY = 'phc_BKJAeNbpj932N9qEiU6qhutZEiu6LLfRpXfTbLM9MLaG';
 
 const DEFAULT_HOST = 'https://us.i.posthog.com';
 
