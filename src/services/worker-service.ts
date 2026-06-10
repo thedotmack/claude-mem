@@ -17,6 +17,7 @@ import { configureSupervisorSignalHandlers, getSupervisor, startSupervisor } fro
 import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
 
 import { ensureWorkerStarted as ensureWorkerStartedShared, type WorkerStartResult } from './worker-spawner.js';
+import { captureEvent, shutdownTelemetry } from './telemetry/telemetry.js';
 
 export { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
 import { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
@@ -293,6 +294,7 @@ export class WorkerService implements WorkerRef {
     });
 
     logger.info('SYSTEM', 'Worker started', { host, port, pid: process.pid });
+    captureEvent('worker_started');
 
     this.initializeBackground().catch((error) => {
       logger.error('SYSTEM', 'Background initialization failed', {}, error as Error);
@@ -517,6 +519,8 @@ export class WorkerService implements WorkerRef {
       this.transcriptWatcher = null;
       logger.info('TRANSCRIPT', 'Transcript watcher stopped');
     }
+
+    await shutdownTelemetry();
 
     await performGracefulShutdown({
       server: this.server.getHttpServer(),

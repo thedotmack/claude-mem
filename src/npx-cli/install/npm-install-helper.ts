@@ -14,7 +14,7 @@
  * `trustedDependencies` (Bun-only), so we suppress scripts at the CLI level.
  */
 
-import { spawnSync } from 'child_process';
+import { spawn } from 'child_process';
 
 const IS_WINDOWS = process.platform === 'win32';
 
@@ -50,20 +50,45 @@ export function extractEresolveBlock(stderr: string): string {
   return stderr.slice(start).trim();
 }
 
-export function runNpmStrict(cwd: string, flags: string[], isFirstRun = true): NpmResult {
-  const result = spawnSync('npm', flags, {
-    cwd,
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: resolveInstallTimeoutMs(isFirstRun),
-    ...(IS_WINDOWS ? { shell: process.env.ComSpec ?? 'cmd.exe' } : {}),
-  });
+// Async (spawn, not spawnSync) so the installer's clack spinner keeps
+// animating during a multi-minute npm install — a blocked event loop freezes
+// the spinner mid-frame and the install looks stalled.
+export function runNpmStrict(cwd: string, flags: string[], isFirstRun = true): Promise<NpmResult> {
+  return new Promise((resolve) => {
+    const child = spawn('npm', flags, {
+      cwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      ...(IS_WINDOWS ? { shell: process.env.ComSpec ?? 'cmd.exe' } : {}),
+    });
 
-  const timedOut = result.signal === 'SIGTERM' || (result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT';
-  return {
-    code: typeof result.status === 'number' ? result.status : (timedOut ? 124 : 1),
-    stdout: result.stdout ?? '',
-    stderr: result.stderr ?? (result.error ? String(result.error.message) : ''),
-    timedOut,
-  };
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    let spawnError: Error | null = null;
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGTERM');
+    }, resolveInstallTimeoutMs(isFirstRun));
+
+    child.stdout?.on('data', (d: Buffer) => { stdout += d.toString(); });
+    child.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
+    let settled = false;
+    const settle = (code: number | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({
+        code: typeof code === 'number' ? code : (timedOut ? 124 : 1),
+        stdout,
+        stderr: stderr || (spawnError ? String(spawnError.message) : ''),
+        timedOut,
+      });
+    };
+
+    // 'close' never fires when the process fails to spawn (ENOENT), so the
+    // error handler must settle too.
+    child.on('error', (error) => { spawnError = error; settle(null); });
+    child.on('close', (code) => { settle(code); });
+  });
 }

@@ -12,6 +12,7 @@ import { countObservationsByProjects } from '../../../context/ObservationCompile
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from '../../../sqlite/types.js';
+import { captureEvent } from '../../../telemetry/telemetry.js';
 
 const ONBOARDING_EXPLAINER_PATH: string = path.resolve(__dirname, '../skills/how-it-works/onboarding-explainer.md');
 
@@ -100,6 +101,19 @@ export class SearchRoutes extends BaseRouteHandler {
   }
 
   setupRoutes(app: express.Application): void {
+    // One telemetry site for every /api/search* endpoint (unified + dedicated
+    // variants), so search adoption is not undercounted. /api/search/help is
+    // documentation, not a search. Property is the outcome only — never query
+    // text (see docs/public/telemetry.mdx).
+    app.use('/api/search', (req: Request, res: Response, next: express.NextFunction) => {
+      if (req.path !== '/help') {
+        res.once('finish', () => {
+          captureEvent('search_performed', { outcome: res.statusCode < 400 ? 'ok' : 'error' });
+        });
+      }
+      next();
+    });
+
     app.get('/api/search', this.handleUnifiedSearch.bind(this));
     app.get('/api/timeline', this.handleUnifiedTimeline.bind(this));
     app.get('/api/decisions', this.handleDecisions.bind(this));

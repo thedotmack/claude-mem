@@ -15,6 +15,7 @@ import type { DatabaseManager } from '../DatabaseManager.js';
 import type { SessionManager } from '../SessionManager.js';
 import type { WorkerRef, StorageResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
+import { captureEvent } from '../../telemetry/telemetry.js';
 
 /**
  * Consecutive non-XML observer outputs tolerated before we kill and respawn the
@@ -170,6 +171,7 @@ export async function processAgentResponse(
   });
 
   session.lastSummaryStored = result.summaryId !== null;
+  captureEvent('session_compressed', { outcome: 'ok' });
 
   if (summary && (summary.skipped || session.lastSummaryStored)) {
     await ingestSummary({
