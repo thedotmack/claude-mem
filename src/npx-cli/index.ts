@@ -40,7 +40,7 @@ ${pc.bold('Runtime Commands')} (requires Bun, delegates to installed plugin):
   ${pc.cyan('npx claude-mem restart')}              Restart worker service
   ${pc.cyan('npx claude-mem status')}               Show worker status
   ${pc.cyan('npx claude-mem doctor')}               Diagnose install/runtime health (bun, uv, worker)
-  ${pc.cyan('npx claude-mem telemetry status|enable|disable')}   Manage opt-in anonymous telemetry (default off)
+  ${pc.cyan('npx claude-mem telemetry status|enable|disable')}   Manage anonymous telemetry (on by default, opt-out)
   ${pc.cyan('npx claude-mem server start')}         Start server service
   ${pc.cyan('npx claude-mem server stop')}          Stop server service
   ${pc.cyan('npx claude-mem server restart')}       Restart server service

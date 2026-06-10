@@ -1252,10 +1252,11 @@ async function submitOnlineSignup(payload: { email: string; note: string; versio
 }
 
 /**
- * Final step of the install flow: ask for anonymized-telemetry consent.
- * Asked ONCE — any existing telemetry.json (enabled or not) means the user
- * already decided, and we never re-nag. Declining is persisted so re-installs
- * stay silent. Respects DO_NOT_TRACK (skip entirely: they already answered),
+ * Final step of the install flow: tell the user telemetry is on by default
+ * (opt-out) and let them decide. Asked ONCE — a telemetry.json with a recorded
+ * enabled decision means the user already chose, and we never re-nag. An
+ * installId-only config (written by the worker's ID bootstrap) does NOT count
+ * as a decision. Respects DO_NOT_TRACK (skip entirely: they already answered),
  * CI, and non-TTY. See docs/public/telemetry.mdx for what is/isn't collected.
  */
 async function promptTelemetryOptIn(): Promise<void> {
@@ -1263,24 +1264,25 @@ async function promptTelemetryOptIn(): Promise<void> {
   if (process.env.CI) return;
   const dnt = process.env.DO_NOT_TRACK;
   if (dnt !== undefined && dnt !== '' && dnt !== '0' && dnt !== 'false') return;
-  if (loadTelemetryConfig() !== null) return;
+  const existing = loadTelemetryConfig();
+  if (existing?.enabled !== undefined) return;
 
   p.log.message(pc.dim(
     'Anonymous install ID only — no prompts, file paths, code, or project names, ever.\n'
     + 'Details: https://docs.claude-mem.ai/telemetry · Change anytime: claude-mem telemetry disable',
   ));
   const consent = await p.confirm({
-    message: 'Would you mind sharing anonymized usage data with CMEM? We use this data to make the product better.',
+    message: 'Share anonymized usage data with CMEM? It is on by default and helps us make the product better.',
     initialValue: true,
   });
   if (p.isCancel(consent)) return;
 
   saveTelemetryConfig({
     enabled: consent === true,
-    installId: randomUUID(),
+    installId: existing?.installId || randomUUID(),
     decidedAt: new Date().toISOString(),
   });
-  log.success(consent ? 'Thanks! Anonymized usage sharing is on.' : 'No problem — telemetry stays off.');
+  log.success(consent ? 'Thanks! Anonymized usage sharing is on.' : 'No problem — telemetry is off.');
 }
 
 async function promptCmemOnlineOptIn(version: string): Promise<void> {

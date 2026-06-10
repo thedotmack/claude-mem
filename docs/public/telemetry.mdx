@@ -1,19 +1,19 @@
 ---
 title: "Telemetry"
-description: "Opt-in, anonymous usage analytics — disabled by default, fully documented, easy to turn off"
+description: "Anonymous usage analytics — on by default, fully documented, one command to opt out"
 ---
 
 # Telemetry
 
-Claude-mem includes **opt-in** anonymous usage analytics (via PostHog) to help prioritize fixes and features.
+Claude-mem includes anonymous usage analytics (via PostHog) to help prioritize fixes and features.
 
-**It ships disabled.** Nothing is ever sent unless you explicitly say yes — either to the one-time question at the end of `npx claude-mem install` ("Would you mind sharing anonymized usage data with CMEM?"), or by running:
+**It is on by default (opt-out).** Events are anonymous, identified only by a random install UUID, and every property passes a strict whitelist — see [What is collected](#what-is-collected) and [What is NEVER collected](#what-is-never-collected) below. Turning it off is one command:
 
 ```bash
-npx claude-mem telemetry enable
+npx claude-mem telemetry disable
 ```
 
-There is no auto-enable and no "anonymous by default" phase. The installer asks once, after installation completes — your answer (either way) is remembered and never re-asked, the prompt is skipped entirely when `DO_NOT_TRACK` is set or in CI/non-interactive installs, and declining writes `enabled: false`. If you never say yes (and never set `CLAUDE_MEM_TELEMETRY=1`), zero bytes of telemetry leave your machine.
+The standard [`DO_NOT_TRACK`](https://consoledonottrack.com) environment variable is also honored and overrides everything. The installer asks once at the end of `npx claude-mem install` so the default is never silent for new installs — your answer (either way) is remembered and never re-asked, and the prompt is skipped entirely when `DO_NOT_TRACK` is set or in CI/non-interactive installs.
 
 ## What is collected
 
@@ -62,7 +62,7 @@ Every event property passes through a strict whitelist scrubber — any key not 
 
 These are enforced in code: properties go through a whitelist (only the ten fields above survive), not a blocklist.
 
-## How to disable (four ways)
+## How to opt out (four ways)
 
 Any one of these keeps telemetry off — they are checked in this order, first match wins:
 
@@ -105,4 +105,4 @@ Consent and the anonymous install ID are stored in `telemetry.json` inside the c
 }
 ```
 
-Delete the file to reset to the default (off, no install ID).
+The `enabled` field is only present once you've made an explicit choice (installer prompt, `telemetry enable`, or `telemetry disable`). A file with just an `installId` means no decision was recorded and the default (on) applies. Delete the file to reset completely — a fresh install ID is generated on next use.

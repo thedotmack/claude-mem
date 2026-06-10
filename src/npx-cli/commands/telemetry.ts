@@ -1,7 +1,8 @@
 /**
- * `npx claude-mem telemetry [status|enable|disable]` — manage opt-in anonymous
- * usage analytics. Telemetry ships disabled; nothing is ever sent without
- * explicit consent via `telemetry enable` (or CLAUDE_MEM_TELEMETRY=1).
+ * `npx claude-mem telemetry [status|enable|disable]` — manage anonymous usage
+ * analytics. Telemetry is ON by default (opt-out): anonymous events only,
+ * identified by a random install UUID. Turn it off anytime with
+ * `telemetry disable`, CLAUDE_MEM_TELEMETRY=0, or DO_NOT_TRACK=1.
  *
  * Full privacy documentation: https://docs.claude-mem.ai/telemetry
  */
@@ -38,13 +39,13 @@ const SOURCE_LABELS: Record<TelemetryConsentSource, string> = {
   DO_NOT_TRACK: 'DO_NOT_TRACK environment variable',
   env: 'CLAUDE_MEM_TELEMETRY environment variable',
   config: 'telemetry.json config file',
-  default: 'default (no consent recorded)',
+  default: 'default (on — no opt-out recorded)',
 };
 
 function printTelemetryUsage(): void {
   console.error(`Usage: ${pc.bold('npx claude-mem telemetry [status|enable|disable]')}`);
   console.error('  status   Show whether telemetry is on and which setting decided it (default)');
-  console.error('  enable   Opt in to anonymous usage analytics (interactive)');
+  console.error('  enable   Turn anonymous usage analytics back on (interactive)');
   console.error('  disable  Opt out of telemetry');
   console.error(`Docs: ${DOCS_URL}`);
 }
@@ -103,7 +104,7 @@ async function runTelemetryEnable(): Promise<void> {
 
   const shouldEnable = await p.confirm({
     message: 'Enable anonymous usage telemetry?',
-    initialValue: false,
+    initialValue: true,
   });
 
   if (p.isCancel(shouldEnable) || !shouldEnable) {

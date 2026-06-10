@@ -71,7 +71,7 @@ function buildBaseProperties(): Record<string, unknown> {
  * Capture a telemetry event. Fire-and-forget, synchronous, never throws,
  * never blocks. Ordering is deliberate:
  *
- *   1. Consent gate (DO_NOT_TRACK > env > telemetry.json > default OFF) —
+ *   1. Consent gate (DO_NOT_TRACK > env > telemetry.json > default ON) —
  *      without consent NOTHING happens, including debug printing.
  *   2. Whitelist scrub — only allowed primitive properties survive.
  *   3. Debug mode (CLAUDE_MEM_TELEMETRY_DEBUG=1) — print payload to stderr,
