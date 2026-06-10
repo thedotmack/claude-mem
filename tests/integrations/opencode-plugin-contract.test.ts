@@ -372,7 +372,7 @@ describe("OpenCode plugin event contract", () => {
       );
 
       expect(warnCalls.some((call) => call.includes("Worker POST /api/sessions/init returned 503"))).toBe(true);
-      expect(warnCalls.some((call) => call.includes("Worker POST /api/sessions/observations returned 503"))).toBe(true);
+      expect(warnCalls.some((call) => call.includes("Worker POST /api/sessions/observations returned 503"))).toBe(false);
     } finally {
       globalThis.fetch = originalFetch;
       console.warn = originalWarn;

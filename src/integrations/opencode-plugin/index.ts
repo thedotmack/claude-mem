@@ -210,8 +210,7 @@ async function ensureSessionInitialized(openCodeSessionId: string, projectName: 
   })();
 
   pendingSessionInitializations.set(openCodeSessionId, initialization);
-  await initialization;
-  return contentSessionId;
+  return await initialization;
 }
 
 function truncate(text: string): string {
