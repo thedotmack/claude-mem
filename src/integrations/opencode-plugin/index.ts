@@ -205,6 +205,9 @@ async function ensureSessionInitialized(openCodeSessionId: string, projectName: 
     if (!initialized) {
       return null;
     }
+    if (!contentSessionIdsByOpenCodeSessionId.has(openCodeSessionId)) {
+      return null;
+    }
     initializedSessionIds.add(openCodeSessionId);
     return contentSessionId;
   })();

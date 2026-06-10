@@ -286,6 +286,80 @@ describe("OpenCode plugin event contract", () => {
     }
   });
 
+  it("does not resurrect an initialized session after session.deleted races an in-flight init", async () => {
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const fetchResolvers: Array<() => void> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (((url: string | URL | Request, init?: RequestInit) => {
+      posts.push({
+        url: String(url),
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+
+      return new Promise<Response>((resolve) => {
+        fetchResolvers.push(() => {
+          resolve(new Response(JSON.stringify({ status: "queued" }), { status: 200 }));
+        });
+      });
+    }) as unknown) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const eventHook = plugin["event"];
+
+      const warmupPromise = eventHook({
+        event: {
+          type: "message.part.updated",
+          properties: {
+            sessionID: "ses_deleted_race",
+            message: { id: "msg_deleted_partial", role: "assistant", sessionID: "ses_deleted_race" },
+            parts: [{ type: "text", text: "partial" }],
+          },
+        },
+      });
+
+      await Promise.resolve();
+      expect(posts.filter((post) => post.url.includes("/api/sessions/init"))).toHaveLength(1);
+
+      await eventHook({
+        event: {
+          type: "session.deleted",
+          properties: { sessionID: "ses_deleted_race" },
+        },
+      });
+
+      fetchResolvers.shift()?.();
+      await warmupPromise;
+
+      const capturePromise = eventHook({
+        event: {
+          type: "message.updated",
+          properties: {
+            sessionID: "ses_deleted_race",
+            output: {
+              message: { role: "assistant", sessionID: "ses_deleted_race" },
+              parts: [{ type: "text", text: "assistant output after delete" }],
+            },
+          },
+        },
+      });
+
+      await Promise.resolve();
+      expect(posts.filter((post) => post.url.includes("/api/sessions/init"))).toHaveLength(2);
+      expect(posts.filter((post) => post.url.includes("/api/sessions/observations"))).toHaveLength(0);
+
+      fetchResolvers.shift()?.();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(posts.filter((post) => post.url.includes("/api/sessions/observations"))).toHaveLength(1);
+
+      fetchResolvers.shift()?.();
+      await capturePromise;
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("captures assistant output when message.updated uses properties.message and properties.parts", async () => {
     const posts: Array<{ url: string; body: unknown }> = [];
     const originalFetch = globalThis.fetch;
