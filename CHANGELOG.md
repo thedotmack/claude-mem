@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.5.2] - 2026-06-10
+
+## What's New in 13.5.2
+
+Platform and toolchain telemetry to diagnose the install → live-worker activation dropoff (anonymous, opt-out — see `npx claude-mem telemetry`):
+
+- Every event now carries `os_version` (kernel release — distinguishes Windows 10 vs 11, macOS releases), `is_wsl`, and `node_version` alongside the existing `os`/`arch`/`runtime` fields.
+- `install_completed` now reports `interactive` (TTY vs scripted), `install_method` (npm / bun / pnpm / yarn), and detected `bun_version`, `uv_version`, and `claude_code_version`.
+- `install_failed` carries the same install context so aborted installs are sliceable by platform too.
+- New fields are person properties as well, so activation funnels can be broken down by OS version, WSL, and install method.
+- Scrub whitelist, consent screen, docs, and tests updated for every new property.
+
 ## [13.5.1] - 2026-06-10
 
 ## What's New in 13.5.1
