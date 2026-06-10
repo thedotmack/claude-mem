@@ -118,19 +118,8 @@ export function buildStatusOutput(status: 'ready' | 'error', message?: string): 
   };
 }
 
-/**
- * Closed enum for worker_stopped telemetry. Must stay in sync with the
- * shutdown_reason whitelist documentation (scrub.ts / telemetry.mdx):
- * stop = /api/admin/shutdown (CLI `stop`), restart = /api/admin/restart or
- * CLI `restart` (tagged ?reason=restart), signal = SIGTERM/SIGINT handler.
- */
 export type WorkerShutdownReason = 'stop' | 'restart' | 'signal';
 
-// Clean-shutdown sentinel — same marker-file pattern as the one-time markers
-// in ProcessManager.ts (.chroma-cleaned-v10.3). Written in the graceful
-// shutdown path, consumed (read + deleted) at the next startup: sentinel
-// present = previous run stopped cleanly; stale PID file with no sentinel =
-// previous run died without reaching the graceful-shutdown path (crash).
 const CLEAN_SHUTDOWN_SENTINEL_PATH = path.join(DATA_DIR, '.worker-clean-shutdown');
 
 function writeCleanShutdownSentinel(): void {
@@ -160,8 +149,6 @@ function readAndClearCleanShutdownSentinel(): string | null {
     }
   }
   try {
-    // Always delete after reading: a stale sentinel would mislabel a later
-    // crash as 'clean'.
     unlinkSync(CLEAN_SHUTDOWN_SENTINEL_PATH);
   } catch (error: unknown) {
     if (error instanceof Error) {
@@ -177,8 +164,6 @@ export class WorkerService implements WorkerRef {
   private server: Server;
   private startTime: number = Date.now();
   private telemetryHeartbeat: ReturnType<typeof setInterval> | null = null;
-  // Crash detection (worker_started telemetry): derived once at startup from
-  // the previous run's stale PID file + the clean-shutdown sentinel.
   private previousShutdown: 'clean' | 'crash' | 'unknown' = 'unknown';
   private previousUptimeSeconds: number | null = null;
   private mcpClient: Client;
@@ -335,33 +320,18 @@ export class WorkerService implements WorkerRef {
     }));
   }
 
-  /**
-   * Crash detection for worker_started telemetry. Must run BEFORE
-   * startSupervisor() — whose validateWorkerPidFile() deletes the previous
-   * run's stale PID file — and before writePidFile overwrites it.
-   *   - clean-shutdown sentinel present → previous run stopped gracefully
-   *   - stale PID file present, no sentinel → previous run crashed
-   *   - neither (first run, or the spawner already cleaned the stale PID
-   *     file) → unknown
-   * The sentinel is consumed here so it can never mislabel a later crash.
-   */
   private detectPreviousShutdown(): void {
     const stalePidInfo = readPidFile();
     const sentinelTimestamp = readAndClearCleanShutdownSentinel();
 
     if (sentinelTimestamp !== null) {
       this.previousShutdown = 'clean';
-      // Previous uptime = previous run's PID-file startedAt → sentinel write
-      // time. The previous run's in-memory startTime is never persisted, so
-      // the PID file is the only source; omit when either side is missing.
       const startedAtMs = stalePidInfo ? Date.parse(stalePidInfo.startedAt) : NaN;
       const stoppedAtMs = Date.parse(sentinelTimestamp);
       if (Number.isFinite(startedAtMs) && Number.isFinite(stoppedAtMs) && stoppedAtMs >= startedAtMs) {
         this.previousUptimeSeconds = Math.floor((stoppedAtMs - startedAtMs) / 1000);
       }
     } else if (stalePidInfo) {
-      // Crash: the previous run's stop time is unknowable, so
-      // previous_uptime_seconds is deliberately omitted rather than guessed.
       this.previousShutdown = 'crash';
     } else {
       this.previousShutdown = 'unknown';
@@ -372,8 +342,6 @@ export class WorkerService implements WorkerRef {
     const port = getWorkerPort();
     const host = getWorkerHost();
 
-    // Must run before startSupervisor(): its validateWorkerPidFile() removes
-    // the dead previous run's stale PID file, which crash detection needs.
     this.detectPreviousShutdown();
 
     await startSupervisor();
@@ -393,10 +361,6 @@ export class WorkerService implements WorkerRef {
     });
 
     logger.info('SYSTEM', 'Worker started', { host, port, pid: process.pid });
-    // worker_started telemetry fires at the end of initializeBackground, once
-    // the DB is up: that lets the event carry the install's IDE (read from
-    // session history) as a person property, so IDE-level DAU/retention
-    // breakdowns are non-null for installs that never re-run the installer.
 
     this.initializeBackground().catch((error) => {
       logger.error('SYSTEM', 'Background initialization failed', {}, error as Error);
@@ -490,11 +454,6 @@ export class WorkerService implements WorkerRef {
       this.resolveInitialization();
       logger.info('SYSTEM', 'Core initialization complete (DB + search ready)');
 
-      // Lifecycle telemetry (person profile = anonymous install UUID). ide is
-      // this install's dominant client read from session history — a bounded
-      // platform enum (claude-code / cursor / ...), never user data. Props are
-      // rebuilt per capture so the daily heartbeat reports the install's
-      // current DB size/age/activity, not boot-time values.
       const buildLifecycleProps = (): Record<string, unknown> => {
         const props: Record<string, unknown> = {
           runtime_mode: 'worker',
@@ -509,18 +468,13 @@ export class WorkerService implements WorkerRef {
             .get() as { platform_source?: string } | null;
           if (row?.platform_source) props.ide = row.platform_source;
         } catch (error) {
-          // Expected only before the schema exists; anything else (e.g. the
-          // wrong-table query this once masked) should be diagnosable.
           logger.debug('SYSTEM', 'ide lookup for lifecycle telemetry failed', {}, error as Error);
         }
         try {
           Object.assign(props, collectInstallStats(this.dbManager.getConnection()));
         } catch (error) {
-          // Snapshot is best-effort; the lifecycle event still ships without it.
           logger.debug('SYSTEM', 'Install stats snapshot failed', {}, error as Error);
         }
-        // Process health for the daily heartbeat: memoryUsage() returns bytes;
-        // the scrubber drops non-finite numbers, so round to whole MiB.
         const memory = process.memoryUsage();
         props.process_rss_mb = Math.round(memory.rss / 1024 / 1024);
         props.heap_used_mb = Math.round(memory.heapUsed / 1024 / 1024);
@@ -529,15 +483,10 @@ export class WorkerService implements WorkerRef {
       captureEvent('worker_started', {
         trigger: 'start',
         duration_ms: Date.now() - this.startTime,
-        // Crash detection (detectPreviousShutdown): crash case carries no
-        // previous_uptime_seconds — the stop time is unknowable.
         previous_shutdown: this.previousShutdown,
         ...(this.previousUptimeSeconds !== null && { previous_uptime_seconds: this.previousUptimeSeconds }),
         ...buildLifecycleProps(),
       }, { person: true });
-      // Long-lived workers would otherwise look like a single day of activity.
-      // A daily heartbeat makes DAU/WAU/retention computable from distinct_id.
-      // unref() so the timer never keeps a stopping process alive.
       this.telemetryHeartbeat = setInterval(() => {
         captureEvent('worker_started', { trigger: 'heartbeat', ...buildLifecycleProps() }, { person: true });
       }, 24 * 60 * 60 * 1000);
@@ -679,9 +628,6 @@ export class WorkerService implements WorkerRef {
       clearInterval(this.telemetryHeartbeat);
       this.telemetryHeartbeat = null;
     }
-    // Mark this stop as graceful for the next start's crash detection, and
-    // capture worker_stopped BEFORE shutdownTelemetry() — isShutdown drops
-    // any event captured after the flush, by design.
     writeCleanShutdownSentinel();
     captureEvent('worker_stopped', {
       uptime_seconds: getUptimeSeconds(this.startTime),
@@ -784,10 +730,6 @@ function runServerBetaServiceCli(command: string, extraArgs: string[] = []): voi
 
   const child = spawn(process.execPath, [serverBetaScript, command, ...extraArgs], {
     stdio: 'inherit',
-    // Strip host CLI bleed-through (CLAUDE_CODE_*, including EFFORT_LEVEL) and
-    // Anthropic credentials before handing env to the spawned daemon. The
-    // daemon re-reads its own credentials from ~/.claude-mem/.env. See
-    // env-isolation discipline (#2357 / #2375).
     env: sanitizeEnv(process.env),
   });
   child.on('error', (error) => {
@@ -830,9 +772,6 @@ function runServerApiKeyCli(args: string[]): never {
 
   try {
     if (subCommand === 'create') {
-      // #2428 — when no --scope is passed, default to the scopes the local v1
-      // routes actually require (read + write) so a default key works instead
-      // of being authorized for nothing.
       const scopeFlag = options.scope ?? options.scopes;
       const scopes = scopeFlag
         ? scopeFlag.split(',').map(scope => scope.trim()).filter(Boolean)
@@ -886,8 +825,6 @@ function runServerApiKeyCli(args: string[]): never {
     }
 
     if (subCommand === 'migrate-scopes') {
-      // #2560 — bring a key's scope set up to the default (or an explicit
-      // --scope list) so legacy/empty-scope keys work against the v1 routes.
       const id = args[1] && !args[1].startsWith('--') ? args[1] : undefined;
       if (!id) {
         console.error('Usage: worker-service server api-key migrate-scopes <id> [--scope a,b]');
@@ -932,6 +869,14 @@ async function main() {
 
   switch (command) {
     case 'start': {
+      const portInUse = await isPortInUse(port);
+      if (portInUse) {
+        const alreadyHealthy = await waitForHealth(port, 1000);
+        if (alreadyHealthy) {
+          exitWithStatus('ready');
+          break;
+        }
+      }
       const result = await ensureWorkerStarted(port);
       if (result === 'dead') {
         exitWithStatus('error', 'Failed to start worker');
@@ -1011,7 +956,6 @@ async function main() {
         runServerApiKeyCli(commandArgs);
       }
       if (apiKeyCommand === 'migrate-scopes') {
-        // #2560 — scope migration runs against the SQLite local backend here.
         runServerApiKeyCli(commandArgs);
       }
       console.error(`Unknown server api-key subcommand: ${apiKeyCommand ?? '(none)'}`);
@@ -1020,9 +964,6 @@ async function main() {
       break;
     }
 
-    // #2572 — `keys`/`jobs` are server-beta (Postgres) operability commands.
-    // Delegate to the server-beta script so they read the Postgres backend the
-    // server runtime actually uses, instead of the SQLite worker store.
     case 'server-keys': {
       runServerBetaServiceCli('server', ['keys', ...commandArgs]);
       break;
@@ -1058,11 +999,6 @@ async function main() {
     }
 
     case 'hook': {
-      // IO discipline: this case is the entry point to the hook execution path.
-      // Once hookCommand is invoked, src/shared/hook-io.ts owns all
-      // stdout/stderr/exit. The pre-hookCommand error paths below (missing args,
-      // worker failed to start) are CLI-style: console.error + exit 1 is
-      // acceptable because they occur BEFORE the buffered window opens.
       const platform = process.argv[3];
       const event = process.argv[4];
       if (!platform || !event) {
@@ -1099,11 +1035,6 @@ async function main() {
     }
 
     case 'transcript': {
-      // npx-cli falls back to `worker-service.cjs transcript <sub>` when the
-      // standalone `transcript-watcher.cjs` is not present in the bundle
-      // (see thedotmack/claude-mem 2450). Dispatch to the shared
-      // implementation so `init`, `watch`, and `validate` all work
-      // regardless of which entry point the user invokes.
       const { runTranscriptCommand } = await import('./transcripts/cli.js');
       const exitCode = await runTranscriptCommand(commandArgs[0], commandArgs.slice(1));
       process.exit(exitCode);
