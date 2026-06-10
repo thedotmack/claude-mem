@@ -103,14 +103,38 @@ export class SearchRoutes extends BaseRouteHandler {
   setupRoutes(app: express.Application): void {
     // One telemetry site for every /api/search* endpoint (unified + dedicated
     // variants), so search adoption is not undercounted. /api/search/help is
-    // documentation, not a search. Property is the outcome only — never query
+    // documentation, not a search. Properties are the endpoint name (OUR route
+    // segment, bounded to a known enum), outcome, and latency — never query
     // text (see docs/public/telemetry.mdx).
+    const KNOWN_SEARCH_ENDPOINTS = new Set([
+      'unified', 'observations', 'sessions', 'prompts', 'by-concept', 'by-file', 'by-type',
+    ]);
     app.use('/api/search', (req: Request, res: Response, next: express.NextFunction) => {
       if (req.path !== '/help') {
+        const searchStartedAt = Date.now();
+        const segment = req.path === '/' ? 'unified' : req.path.slice(1).split('/')[0];
+        const endpoint = KNOWN_SEARCH_ENDPOINTS.has(segment) ? segment : 'other';
         res.once('finish', () => {
-          captureEvent('search_performed', { outcome: res.statusCode < 400 ? 'ok' : 'error' });
+          captureEvent('search_performed', {
+            endpoint,
+            outcome: res.statusCode < 400 ? 'ok' : 'error',
+            duration_ms: Date.now() - searchStartedAt,
+          });
         });
       }
+      next();
+    });
+
+    // The other half of the product loop: memory being READ back into new
+    // sessions. Outcome + latency only — never project names or content.
+    app.use('/api/context/inject', (req: Request, res: Response, next: express.NextFunction) => {
+      const injectStartedAt = Date.now();
+      res.once('finish', () => {
+        captureEvent('context_injected', {
+          outcome: res.statusCode < 400 ? 'ok' : 'error',
+          duration_ms: Date.now() - injectStartedAt,
+        });
+      });
       next();
     });
 

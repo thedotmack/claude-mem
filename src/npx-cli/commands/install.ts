@@ -2,6 +2,7 @@ import * as p from '@clack/prompts';
 import pc from 'picocolors';
 import { randomUUID } from 'crypto';
 import { loadTelemetryConfig, saveTelemetryConfig } from '../../services/telemetry/consent.js';
+import { captureCliEvent } from '../../services/telemetry/cli-telemetry.js';
 import { spawnHidden } from '../../shared/spawn.js';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
@@ -1372,6 +1373,8 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
     await runInstallCommandInner(options, summary);
   } catch (error: unknown) {
     if (error instanceof InstallAbortError) {
+      // error.category.id is OUR taxonomy id (error-taxonomy.ts), never a message.
+      await captureCliEvent('install_failed', { error_category: error.category.id });
       // Flush whatever warnings accrued before the abort, then print the
       // remediation headline and exit non-zero. ABORT must never reach the
       // "Installation Complete" path.
@@ -1393,6 +1396,7 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
 }
 
 async function runInstallCommandInner(options: InstallOptions, summary: InstallSummary): Promise<void> {
+  const installStartedAt = Date.now();
   const version = readPluginVersion();
 
   if (isInteractive) {
@@ -1802,6 +1806,17 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
       console.log('\nclaude-mem installed successfully!');
     }
   }
+
+  // After promptTelemetryOptIn so a just-made consent choice is honored.
+  // ide/provider/runtime_mode are installer enums, never user data.
+  await captureCliEvent('install_completed', {
+    ide: selectedIDEs.join(','),
+    provider: selectedProvider,
+    runtime_mode: selectedRuntime,
+    is_update: alreadyInstalled,
+    outcome: failedIDEs.length > 0 ? 'partial' : 'ok',
+    duration_ms: Date.now() - installStartedAt,
+  });
 }
 
 export async function runRepairCommand(): Promise<void> {

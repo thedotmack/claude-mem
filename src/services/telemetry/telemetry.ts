@@ -5,19 +5,7 @@ import {
   getOrCreateInstallId,
 } from './consent.js';
 import { scrubProperties } from './scrub.js';
-
-declare const __DEFAULT_PACKAGE_VERSION__: string;
-const packageVersion =
-  typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
-
-/**
- * Publishable PostHog project token (phc_...). Publishable tokens are safe to
- * embed: the capture endpoints are public POST-only ingestion.
- * `CLAUDE_MEM_TELEMETRY_KEY` always overrides this constant.
- */
-const TELEMETRY_PUBLIC_KEY = 'phc_BKJAeNbpj932N9qEiU6qhutZEiu6LLfRpXfTbLM9MLaG';
-
-const DEFAULT_HOST = 'https://us.i.posthog.com';
+import { getTelemetryApiKey, getTelemetryHost, buildBaseProperties } from './common.js';
 
 let client: PostHog | null = null;
 let isShutdown = false;
@@ -40,31 +28,15 @@ function hasConsent(): boolean {
   return value;
 }
 
-function getApiKey(): string {
-  return process.env.CLAUDE_MEM_TELEMETRY_KEY || TELEMETRY_PUBLIC_KEY;
-}
-
 function getClient(): PostHog {
   if (!client) {
-    client = new PostHog(getApiKey(), {
-      host: process.env.CLAUDE_MEM_TELEMETRY_HOST || DEFAULT_HOST,
+    client = new PostHog(getTelemetryApiKey(), {
+      host: getTelemetryHost(),
       flushAt: 20,
       flushInterval: 10000,
     });
   }
   return client;
-}
-
-function buildBaseProperties(): Record<string, unknown> {
-  return {
-    version: packageVersion,
-    os: process.platform,
-    arch: process.arch,
-    runtime: process.versions.bun ? 'bun' : 'node',
-    runtime_version: process.versions.bun ?? process.versions.node,
-    is_ci: Boolean(process.env.CI),
-    locale: Intl.DateTimeFormat().resolvedOptions().locale,
-  };
 }
 
 /**
@@ -105,7 +77,7 @@ export function captureEvent(event: string, props?: Record<string, unknown>): vo
       return;
     }
 
-    if (!getApiKey()) {
+    if (!getTelemetryApiKey()) {
       return;
     }
 

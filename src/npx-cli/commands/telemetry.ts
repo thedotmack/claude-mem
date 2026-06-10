@@ -27,13 +27,30 @@ const COLLECTED_FIELDS = [
   'runtime          bun or node',
   'runtime_version  runtime version string',
   'duration_ms      how long an operation took',
-  'outcome          success / failure',
+  'outcome          ok / error / partial',
   'error_category   coarse error bucket (never a message)',
   'locale           language tag (e.g. en-US)',
   'is_ci            whether running in CI',
+  'endpoint         which claude-mem search route (our route names)',
+  'ide              installer IDE choice (claude-code / cursor / ...)',
+  'provider         LLM provider choice (claude / gemini / openrouter)',
+  'runtime_mode     worker or server',
+  'trigger          start or heartbeat',
+  'count            integer volume (e.g. observations stored)',
+  'has_summary      whether a compression produced a summary',
+  'is_update        whether an install was an update',
 ];
 
-const EVENT_NAMES = ['worker_started', 'session_compressed', 'search_performed', 'error_occurred'];
+const EVENT_NAMES = [
+  'install_completed',
+  'install_failed',
+  'uninstall_completed',
+  'worker_started',
+  'session_compressed',
+  'context_injected',
+  'search_performed',
+  'error_occurred',
+];
 
 const SOURCE_LABELS: Record<TelemetryConsentSource, string> = {
   DO_NOT_TRACK: 'DO_NOT_TRACK environment variable',

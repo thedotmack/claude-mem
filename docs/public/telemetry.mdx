@@ -23,7 +23,7 @@ Every event property passes through a strict whitelist scrubber — any key not 
 
 | Field | Example | Description |
 |---|---|---|
-| event name | `session_compressed` | Which of the four events occurred |
+| event name | `session_compressed` | Which of the events below occurred |
 | `distinct_id` | `7f3c…` (random UUID) | Anonymous install ID — not derived from you or your machine |
 | `version` | `13.4.2` | claude-mem version |
 | `os` | `darwin` | Operating system platform |
@@ -31,19 +31,31 @@ Every event property passes through a strict whitelist scrubber — any key not 
 | `runtime` | `bun` | `bun` or `node` |
 | `runtime_version` | `1.2.0` | Runtime version string |
 | `duration_ms` | `1843` | How long an operation took |
-| `outcome` | `success` | Coarse result: success / failure |
-| `error_category` | `db_error` | Coarse error bucket — never an error message |
+| `outcome` | `ok` | Coarse result: ok / error / partial |
+| `error_category` | `provider_error` | Coarse error bucket — never an error message |
 | `locale` | `en-US` | Language tag |
 | `is_ci` | `false` | Whether running in CI |
+| `endpoint` | `by-file` | Which claude-mem search route — always one of our route names, never a query |
+| `ide` | `claude-code` | Installer IDE choice (the installer's own id list) |
+| `provider` | `claude` | LLM provider choice: claude / gemini / openrouter |
+| `runtime_mode` | `worker` | worker or server runtime |
+| `trigger` | `heartbeat` | Whether `worker_started` was a real start or the daily heartbeat |
+| `count` | `7` | Integer volume, e.g. observations stored in one compression |
+| `has_summary` | `true` | Whether a compression also produced a session summary |
+| `is_update` | `false` | Whether an install ran over an existing installation |
 
 ### Events
 
-| Event | When |
-|---|---|
-| `worker_started` | The background worker service finishes starting |
-| `session_compressed` | A session compression completes |
-| `search_performed` | A memory search runs (never the query text — only the outcome) |
-| `error_occurred` | The worker hits an error (category only, never the message) |
+| Event | When | Extra properties |
+|---|---|---|
+| `install_completed` | `npx claude-mem install` finishes | `ide`, `provider`, `runtime_mode`, `is_update`, `outcome`, `duration_ms` |
+| `install_failed` | The installer aborts | `error_category` (our error-taxonomy id) |
+| `uninstall_completed` | `npx claude-mem uninstall` finishes | — |
+| `worker_started` | The background worker starts, plus one heartbeat per 24h of uptime | `trigger` (start / heartbeat), `duration_ms` |
+| `session_compressed` | A session compression stores observations, or the compression generator fails | `outcome`, `duration_ms`, `count`, `has_summary`; on failure `provider`, `error_category` |
+| `context_injected` | Stored memory is injected into a new session | `outcome`, `duration_ms` |
+| `search_performed` | A memory search runs (never the query text) | `endpoint`, `outcome`, `duration_ms` |
+| `error_occurred` | The worker returns an HTTP 5xx | `error_category` |
 
 ## What is NEVER collected
 
@@ -60,7 +72,7 @@ Every event property passes through a strict whitelist scrubber — any key not 
 | Environment variable values | Ever |
 | Emails, usernames, or any PII | Ever |
 
-These are enforced in code: properties go through a whitelist (only the ten fields above survive), not a blocklist.
+These are enforced in code: properties go through a whitelist (only the fields in the table above survive), not a blocklist. Every whitelisted field is either a number, a boolean, or a value from a closed set we define — there is no field that could carry free-form user content.
 
 ## How to opt out (four ways)
 

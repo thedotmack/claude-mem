@@ -19,6 +19,7 @@ import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { getProjectContext } from '../../../../utils/project-name.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 import { handleGeneratorExit } from '../../session/GeneratorExitHandler.js';
+import { captureEvent } from '../../../telemetry/telemetry.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
 import { getUptimeSeconds } from '../../../../shared/uptime.js';
 import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../../../shared/user-prompts.js';
@@ -147,6 +148,11 @@ export class SessionRoutes extends BaseRouteHandler {
           provider: provider,
           error: errorMsg
         }, error);
+        captureEvent('session_compressed', {
+          outcome: 'error',
+          provider,
+          error_category: 'provider_error',
+        });
       })
       .finally(async () => {
         const reason = session.abortReason ?? null;

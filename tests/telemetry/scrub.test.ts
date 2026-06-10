@@ -30,6 +30,30 @@ describe('scrubProperties', () => {
     });
   });
 
+  it('keeps the funnel/feature keys with primitive values', () => {
+    const result = scrubProperties({
+      endpoint: 'by-file',
+      ide: 'claude-code',
+      provider: 'claude',
+      runtime_mode: 'worker',
+      trigger: 'heartbeat',
+      count: 7,
+      has_summary: true,
+      is_update: false,
+    });
+
+    expect(result).toEqual({
+      endpoint: 'by-file',
+      ide: 'claude-code',
+      provider: 'claude',
+      runtime_mode: 'worker',
+      trigger: 'heartbeat',
+      count: 7,
+      has_summary: true,
+      is_update: false,
+    });
+  });
+
   it('drops unknown keys silently', () => {
     const result = scrubProperties({
       version: '1.0.0',
