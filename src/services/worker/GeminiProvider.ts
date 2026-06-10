@@ -6,7 +6,7 @@ import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildConti
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { getCredential } from '../../shared/EnvManager.js';
 import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
-import { estimateTokens } from '../../shared/timeline-formatting.js';
+import { truncateConversationHistory } from './truncate-history.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import type { ModeConfig } from '../domain/types.js';
@@ -377,40 +377,12 @@ export class GeminiProvider {
 
   private truncateHistory(history: ConversationMessage[]): ConversationMessage[] {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-
     const MAX_CONTEXT_MESSAGES = parseInt(settings.CLAUDE_MEM_GEMINI_MAX_CONTEXT_MESSAGES) || DEFAULT_MAX_CONTEXT_MESSAGES;
     const MAX_ESTIMATED_TOKENS = parseInt(settings.CLAUDE_MEM_GEMINI_MAX_TOKENS) || DEFAULT_MAX_ESTIMATED_TOKENS;
-
-    if (history.length <= MAX_CONTEXT_MESSAGES) {
-      const totalTokens = history.reduce((sum, m) => sum + estimateTokens(m.content), 0);
-      if (totalTokens <= MAX_ESTIMATED_TOKENS) {
-        return history;
-      }
-    }
-
-    const truncated: ConversationMessage[] = [];
-    let tokenCount = 0;
-
-    for (let i = history.length - 1; i >= 0; i--) {
-      const msg = history[i];
-      const msgTokens = estimateTokens(msg.content);
-
-      if (truncated.length > 0 && (truncated.length >= MAX_CONTEXT_MESSAGES || tokenCount + msgTokens > MAX_ESTIMATED_TOKENS)) {
-        logger.warn('SDK', 'Context window truncated to prevent runaway costs', {
-          originalMessages: history.length,
-          keptMessages: truncated.length,
-          droppedMessages: i + 1,
-          estimatedTokens: tokenCount,
-          tokenLimit: MAX_ESTIMATED_TOKENS
-        });
-        break;
-      }
-
-      truncated.unshift(msg);  
-      tokenCount += msgTokens;
-    }
-
-    return truncated;
+    return truncateConversationHistory(history, {
+      maxContextMessages: MAX_CONTEXT_MESSAGES,
+      maxEstimatedTokens: MAX_ESTIMATED_TOKENS,
+    });
   }
 
   private conversationToGeminiContents(history: ConversationMessage[]): GeminiContent[] {

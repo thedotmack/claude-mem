@@ -17,6 +17,8 @@ import {
 } from './agents/index.js';
 import { ClassifiedProviderError } from './provider-errors.js';
 import { withRetry } from './retry.js';
+import { estimateTokens } from '../../shared/timeline-formatting.js';
+import { truncateConversationHistory } from './truncate-history.js';
 
 /**
  * OpenAI-compatible client configuration.
@@ -120,7 +122,6 @@ export function classifyOpenRouterError(input: {
 
 const DEFAULT_MAX_CONTEXT_MESSAGES = 20;  
 const DEFAULT_MAX_ESTIMATED_TOKENS = 100000;  
-const CHARS_PER_TOKEN_ESTIMATE = 4;  
 
 interface OpenAIMessage {
   role: 'user' | 'assistant' | 'system';
@@ -376,46 +377,14 @@ export class OpenRouterProvider {
     throw error;
   }
 
-  private estimateTokens(text: string): number {
-    return Math.ceil(text.length / CHARS_PER_TOKEN_ESTIMATE);
-  }
-
   private truncateHistory(history: ConversationMessage[]): ConversationMessage[] {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-
     const MAX_CONTEXT_MESSAGES = parseInt(settings.CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES) || DEFAULT_MAX_CONTEXT_MESSAGES;
     const MAX_ESTIMATED_TOKENS = parseInt(settings.CLAUDE_MEM_OPENROUTER_MAX_TOKENS) || DEFAULT_MAX_ESTIMATED_TOKENS;
-
-    if (history.length <= MAX_CONTEXT_MESSAGES) {
-      const totalTokens = history.reduce((sum, m) => sum + this.estimateTokens(m.content), 0);
-      if (totalTokens <= MAX_ESTIMATED_TOKENS) {
-        return history;
-      }
-    }
-
-    const truncated: ConversationMessage[] = [];
-    let tokenCount = 0;
-
-    for (let i = history.length - 1; i >= 0; i--) {
-      const msg = history[i];
-      const msgTokens = this.estimateTokens(msg.content);
-
-      if (truncated.length >= MAX_CONTEXT_MESSAGES || tokenCount + msgTokens > MAX_ESTIMATED_TOKENS) {
-        logger.warn('SDK', 'Context window truncated to prevent runaway costs', {
-          originalMessages: history.length,
-          keptMessages: truncated.length,
-          droppedMessages: i + 1,
-          estimatedTokens: tokenCount,
-          tokenLimit: MAX_ESTIMATED_TOKENS
-        });
-        break;
-      }
-
-      truncated.unshift(msg);  
-      tokenCount += msgTokens;
-    }
-
-    return truncated;
+    return truncateConversationHistory(history, {
+      maxContextMessages: MAX_CONTEXT_MESSAGES,
+      maxEstimatedTokens: MAX_ESTIMATED_TOKENS,
+    });
   }
 
   private conversationToOpenAIMessages(history: ConversationMessage[]): OpenAIMessage[] {
@@ -436,7 +405,7 @@ export class OpenRouterProvider {
     const truncatedHistory = this.truncateHistory(history);
     const messages = this.conversationToOpenAIMessages(truncatedHistory);
     const totalChars = truncatedHistory.reduce((sum, m) => sum + m.content.length, 0);
-    const estimatedTokens = this.estimateTokens(truncatedHistory.map(m => m.content).join(''));
+    const estimatedTokens = estimateTokens(truncatedHistory.map(m => m.content).join(''));
 
     logger.debug('SDK', `Querying OpenRouter multi-turn (${model})`, {
       turns: truncatedHistory.length,
