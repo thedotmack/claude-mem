@@ -8,9 +8,10 @@ import * as realPaths from '../../../../src/shared/paths.js';
 const realContextGeneratorSnapshot = { ...realContextGenerator };
 const realPathsSnapshot = { ...realPaths };
 
-const generateContextStub = mock(async () => 'CONTEXT_FROM_GENERATOR');
+const generateContextStub = mock(async () => ({ text: 'CONTEXT_FROM_GENERATOR', stats: null }));
 mock.module('../../../../src/services/context-generator.js', () => ({
-  generateContext: generateContextStub,
+  generateContext: mock(async () => 'CONTEXT_FROM_GENERATOR'),
+  generateContextWithStats: generateContextStub,
 }));
 mock.module('../../../../src/shared/paths.js', () => ({
   ...realPathsSnapshot,

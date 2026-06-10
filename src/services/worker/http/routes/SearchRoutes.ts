@@ -125,18 +125,8 @@ export class SearchRoutes extends BaseRouteHandler {
       next();
     });
 
-    // The other half of the product loop: memory being READ back into new
-    // sessions. Outcome + latency only — never project names or content.
-    app.use('/api/context/inject', (req: Request, res: Response, next: express.NextFunction) => {
-      const injectStartedAt = Date.now();
-      res.once('finish', () => {
-        captureEvent('context_injected', {
-          outcome: res.statusCode < 400 ? 'ok' : 'error',
-          duration_ms: Date.now() - injectStartedAt,
-        });
-      });
-      next();
-    });
+    // context_injected is captured inside handleContextInject so the event can
+    // carry the depth/economics stats computed during generation.
 
     app.get('/api/search', this.handleUnifiedSearch.bind(this));
     app.get('/api/timeline', this.handleUnifiedTimeline.bind(this));
@@ -410,23 +400,47 @@ export class SearchRoutes extends BaseRouteHandler {
       }
     }
 
-    const { generateContext } = await import('../../../context-generator.js');
+    const { generateContextWithStats } = await import('../../../context-generator.js');
 
-    const primaryProject = projects[projects.length - 1]; 
+    const primaryProject = projects[projects.length - 1];
     const cwd = `/context/${primaryProject}`;
 
-    const contextText = await generateContext(
-      {
-        session_id: 'context-inject-' + Date.now(),
-        cwd: cwd,
-        projects: projects,
-        full
-      },
-      forHuman
-    );
+    const injectStartedAt = Date.now();
+    let contextResult: Awaited<ReturnType<typeof generateContextWithStats>>;
+    try {
+      contextResult = await generateContextWithStats(
+        {
+          session_id: 'context-inject-' + Date.now(),
+          cwd: cwd,
+          projects: projects,
+          full
+        },
+        forHuman
+      );
+    } catch (error) {
+      captureEvent('context_injected', {
+        outcome: 'error',
+        duration_ms: Date.now() - injectStartedAt,
+      });
+      throw error;
+    }
+
+    // Stats are counts/enums computed alongside rendering (ContextInjectStats);
+    // mode/provider snapshot the settings the injection ran under. Empty-state
+    // responses (stats === null) injected no memory and are not counted.
+    if (contextResult.stats) {
+      const settingsSnapshot = this.getCachedSettings();
+      captureEvent('context_injected', {
+        outcome: 'ok',
+        duration_ms: Date.now() - injectStartedAt,
+        mode: settingsSnapshot.CLAUDE_MEM_MODE,
+        provider: settingsSnapshot.CLAUDE_MEM_PROVIDER,
+        ...contextResult.stats,
+      });
+    }
 
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.send(contextText);
+    res.send(contextResult.text);
   });
 
   private handleSemanticContext = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {

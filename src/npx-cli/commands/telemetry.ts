@@ -39,6 +39,16 @@ const COLLECTED_FIELDS = [
   'count            integer volume (e.g. observations stored)',
   'has_summary      whether a compression produced a summary',
   'is_update        whether an install was an update',
+  'mode             active claude-mem mode id',
+  'model            model id used for compression',
+  'hook             compression trigger (init / ingest / summarize)',
+  'observation_type / obs_type_*   observation type buckets (counts only)',
+  'compression_ms / tokens_input / tokens_output / compression_ratio',
+  '                 latency + real token usage of one compression call',
+  'observation_count / session_count / timeline_depth_days / has_session_summary',
+  '                 depth of one context injection',
+  'tokens_injected / tokens_saved_vs_naive / search_strategy',
+  '                 token economics of one context injection',
 ];
 
 const EVENT_NAMES = [

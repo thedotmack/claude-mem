@@ -325,6 +325,15 @@ export class ClaudeProvider {
               session.cumulativeInputTokens += usage.cache_creation_input_tokens;
             }
 
+            // Real per-response usage for telemetry (tokens_input includes the
+            // full context the model read: fresh + cache writes + cache reads).
+            session.lastUsage = {
+              input: (usage.input_tokens || 0) +
+                (usage.cache_creation_input_tokens || 0) +
+                (usage.cache_read_input_tokens || 0),
+              output: usage.output_tokens || 0,
+            };
+
             logger.debug('SDK', 'Token usage captured', {
               sessionId: session.sessionDbId,
               inputTokens: usage.input_tokens,
@@ -415,6 +424,8 @@ export class ClaudeProvider {
 
     session.conversationHistory.push({ role: 'user', content: initPrompt });
 
+    session.lastPromptSentAt = Date.now();
+    session.lastGeneratorSource = 'init';
     yield {
       type: 'user',
       message: {
@@ -450,6 +461,8 @@ export class ClaudeProvider {
 
         session.conversationHistory.push({ role: 'user', content: obsPrompt });
 
+        session.lastPromptSentAt = Date.now();
+        session.lastGeneratorSource = 'ingest';
         yield {
           type: 'user',
           message: {
@@ -471,6 +484,8 @@ export class ClaudeProvider {
 
         session.conversationHistory.push({ role: 'user', content: summaryPrompt });
 
+        session.lastPromptSentAt = Date.now();
+        session.lastGeneratorSource = 'summarize';
         yield {
           type: 'user',
           message: {

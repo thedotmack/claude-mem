@@ -172,11 +172,45 @@ export async function processAgentResponse(
   });
 
   session.lastSummaryStored = result.summaryId !== null;
+
+  // Telemetry: counts, enums, and REAL usage only (lastUsage is never an
+  // estimate — providers leave it null when the API gave no usage split).
+  const providerName =
+    session.currentProvider ??
+    ({ SDK: 'claude', Gemini: 'gemini', OpenRouter: 'openrouter' } as Record<string, string>)[agentName] ??
+    'claude';
+  const typeCounts: Record<string, number> = { bugfix: 0, discovery: 0, decision: 0, refactor: 0, other: 0 };
+  for (const obs of labeledObservations) {
+    const bucket = obs.type in typeCounts && obs.type !== 'other' ? obs.type : 'other';
+    typeCounts[bucket]++;
+  }
+  const dominantType = (Object.entries(typeCounts) as Array<[string, number]>)
+    .reduce((best, entry) => (entry[1] > best[1] ? entry : best), ['other', -1])[0];
+  const usage = session.lastUsage;
+  const compressionMs = session.lastPromptSentAt ? Date.now() - session.lastPromptSentAt : undefined;
+  session.lastUsage = null;
+  session.lastPromptSentAt = null;
+
   captureEvent('session_compressed', {
     outcome: 'ok',
     duration_ms: Date.now() - processingStartedAt,
     count: result.observationIds.length,
     has_summary: session.lastSummaryStored,
+    provider: providerName,
+    model: modelId,
+    ide: session.platformSource,
+    hook: session.lastGeneratorSource,
+    compression_ms: compressionMs,
+    observation_type: labeledObservations.length > 0 ? dominantType : undefined,
+    obs_type_bugfix: typeCounts.bugfix,
+    obs_type_discovery: typeCounts.discovery,
+    obs_type_decision: typeCounts.decision,
+    obs_type_refactor: typeCounts.refactor,
+    obs_type_other: typeCounts.other,
+    tokens_input: usage?.input,
+    tokens_output: usage?.output,
+    compression_ratio:
+      usage && usage.output > 0 ? Math.round((usage.input / usage.output) * 100) / 100 : undefined,
   });
 
   if (summary && (summary.skipped || session.lastSummaryStored)) {

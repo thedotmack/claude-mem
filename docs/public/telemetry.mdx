@@ -45,6 +45,19 @@ Every event property passes through a strict whitelist scrubber — any key not 
 | `count` | `7` | Integer volume, e.g. observations stored in one compression |
 | `has_summary` | `true` | Whether a compression also produced a session summary |
 | `is_update` | `false` | Whether an install ran over an existing installation |
+| `mode` | `code` | Active claude-mem mode id (our mode list) |
+| `model` | `claude-haiku-4-5` | Model id used for compression |
+| `hook` | `ingest` | What triggered a compression: init / ingest / summarize |
+| `observation_type`, `obs_type_*` | `bugfix`, `3` | Observation type buckets (bugfix / discovery / decision / refactor / other) — counts only |
+| `compression_ms` | `2140` | Latency of the compression model call |
+| `tokens_input` / `tokens_output` | `5800` / `420` | Real token usage reported by the model API for one compression |
+| `compression_ratio` | `13.8` | tokens_input ÷ tokens_output |
+| `observation_count`, `session_count` | `50`, `12` | How many observations/sessions fed one context injection |
+| `timeline_depth_days` | `90` | Age in days of the oldest injected observation |
+| `has_session_summary` | `true` | Whether a session summary was part of the injection |
+| `tokens_injected` | `17914` | Estimated tokens of injected context |
+| `tokens_saved_vs_naive` | `144379` | Estimated tokens saved vs re-discovering that work |
+| `search_strategy` | `timeline` | Which retrieval strategy built the injection (our enum) |
 
 ### Events
 
@@ -54,8 +67,8 @@ Every event property passes through a strict whitelist scrubber — any key not 
 | `install_failed` | The installer aborts | `error_category` (our error-taxonomy id) |
 | `uninstall_completed` | `npx claude-mem uninstall` finishes | — |
 | `worker_started` | The background worker starts, plus one heartbeat per 24h of uptime | `trigger` (start / heartbeat), `duration_ms` |
-| `session_compressed` | A session compression stores observations, or the compression generator fails | `outcome`, `duration_ms`, `count`, `has_summary`; on failure `provider`, `error_category` |
-| `context_injected` | Stored memory is injected into a new session | `outcome`, `duration_ms` |
+| `session_compressed` | A session compression stores observations, or the compression generator fails | `outcome`, `duration_ms`, `count`, `has_summary`, `provider`, `model`, `ide`, `hook`, `compression_ms`, `observation_type`, `obs_type_*`, `tokens_input`, `tokens_output`, `compression_ratio`; on failure `error_category` |
+| `context_injected` | Stored memory is injected into a new session | `outcome`, `duration_ms`, `mode`, `provider`, `search_strategy`, `observation_count`, `session_count`, `timeline_depth_days`, `has_session_summary`, `obs_type_*`, `tokens_injected`, `tokens_saved_vs_naive` |
 | `search_performed` | A memory search runs (never the query text) | `endpoint`, `outcome`, `duration_ms` |
 | `error_occurred` | The worker returns an HTTP 5xx | `error_category` |
 
