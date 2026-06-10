@@ -10,6 +10,12 @@ import {
   exitGraceful,
   resetHookIoState,
 } from '../shared/hook-io.js';
+import {
+  recordWorkerUnreachable,
+  setActiveHookType,
+  getActiveHookType,
+} from '../shared/worker-utils.js';
+import { captureCliEvent } from '../services/telemetry/cli-telemetry.js';
 import { logger } from '../utils/logger.js';
 
 export interface HookCommandOptions {
@@ -78,6 +84,9 @@ async function executeHookPipeline(
 
 export async function hookCommand(platform: string, event: string, options: HookCommandOptions = {}): Promise<number> {
   resetHookIoState();
+  // Register the hook event for the threshold-gated hook_failed telemetry
+  // (closed enum enforced inside; non-enum events just omit hook_type).
+  setActiveHookType(event);
 
   // Hook IO Discipline (issue #2292):
   // We BUFFER stderr during handler execution so that unsolicited writes from
@@ -113,12 +122,28 @@ export async function hookCommand(platform: string, event: string, options: Hook
       logger.warn('HOOK', `Worker unavailable, skipping hook: ${error instanceof Error ? error.message : error}`);
       // EXIT_SIGNAL per CLAUDE.md: transient worker errors exit 0 to avoid
       // Windows Terminal tab accumulation. The fail-loud counter (worker-utils
-      // recordWorkerUnreachable) handles the surface-after-N-failures path.
+      // recordWorkerUnreachable) handles the surface-after-N-failures path and
+      // emits the threshold-gated hook_failed telemetry internally. Awaited:
+      // when the count JUST reaches the threshold it sends the event and then
+      // exits 2; exitGraceful below would kill a pending POST mid-flight.
+      await recordWorkerUnreachable();
       exitGraceful(options);
       return HOOK_EXIT_CODES.SUCCESS;
     }
 
     logger.error('HOOK', `Hook error: ${error instanceof Error ? error.message : error}`, {}, error instanceof Error ? error : undefined);
+    // hook_failed telemetry MUST be awaited BEFORE emitBlockingError — it
+    // calls process.exit(2), which would kill a fire-and-forget POST
+    // mid-flight. captureCliEvent never throws and is hard-capped at 2s.
+    // Closed-enum props only: the error message itself is never sent.
+    {
+      const hookType = getActiveHookType();
+      await captureCliEvent('hook_failed', {
+        ...(hookType !== null ? { hook_type: hookType } : {}),
+        error_mode: 'blocking_error',
+        threshold_tripped: false,
+      });
+    }
     // BLOCKING_FEEDBACK: flush the buffered logger.error line to stderr and
     // exit 2 so the model receives it per Claude Code's hook contract.
     emitBlockingError(

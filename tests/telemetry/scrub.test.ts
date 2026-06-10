@@ -54,6 +54,30 @@ describe('scrubProperties', () => {
     });
   });
 
+  it('keeps the platform/toolchain keys with primitive values', () => {
+    const result = scrubProperties({
+      os_version: '10.0.22631',
+      is_wsl: false,
+      node_version: '22.14.0',
+      interactive: true,
+      install_method: 'npm',
+      bun_version: '1.3.9',
+      uv_version: '0.7.2',
+      claude_code_version: '2.0.14',
+    });
+
+    expect(result).toEqual({
+      os_version: '10.0.22631',
+      is_wsl: false,
+      node_version: '22.14.0',
+      interactive: true,
+      install_method: 'npm',
+      bun_version: '1.3.9',
+      uv_version: '0.7.2',
+      claude_code_version: '2.0.14',
+    });
+  });
+
   it('keeps the depth/economics keys with primitive values', () => {
     const result = scrubProperties({
       observation_count: 50,
@@ -79,6 +103,105 @@ describe('scrubProperties', () => {
     expect(result.tokens_saved_vs_naive).toBe(144379);
     expect(result.hook).toBe('ingest');
     expect(result.model).toBe('claude-haiku-4-5');
+  });
+
+  it('keeps the cost/endpoint keys with primitive values', () => {
+    const result = scrubProperties({
+      cost_usd: 0.0021,
+      endpoint_class: 'openrouter',
+    });
+
+    expect(result).toEqual({
+      cost_usd: 0.0021,
+      endpoint_class: 'openrouter',
+    });
+  });
+
+  it('keeps the install snapshot keys with primitive values', () => {
+    const result = scrubProperties({
+      db_observation_count: 92501,
+      db_session_count: 5243,
+      db_summary_count: 9698,
+      db_project_count: 379,
+      db_size_mb: 364.4,
+      install_age_days: 104,
+      obs_count_7d: 1887,
+      obs_count_30d: 10357,
+      days_since_last_obs: 0,
+    });
+
+    expect(Object.keys(result)).toHaveLength(9);
+    expect(result.db_observation_count).toBe(92501);
+    expect(result.install_age_days).toBe(104);
+    expect(result.days_since_last_obs).toBe(0);
+  });
+
+  it('keeps the retrieval quality keys with primitive values', () => {
+    const result = scrubProperties({
+      result_count: 0,
+      chroma_available: false,
+      fallback_reason: 'chroma_connection',
+    });
+
+    expect(result).toEqual({
+      result_count: 0,
+      chroma_available: false,
+      fallback_reason: 'chroma_connection',
+    });
+  });
+
+  it('keeps the compression trust keys with primitive values', () => {
+    const result = scrubProperties({
+      fabrication_detected: true,
+      fabricated_count: 2,
+      invalid_output_class: 'poisoned',
+      consecutive_invalid_outputs: 3,
+      respawn_triggered: true,
+      abort_reason: 'restart_guard',
+    });
+
+    expect(Object.keys(result)).toHaveLength(6);
+    expect(result.fabrication_detected).toBe(true);
+    expect(result.fabricated_count).toBe(2);
+    expect(result.invalid_output_class).toBe('poisoned');
+    expect(result.consecutive_invalid_outputs).toBe(3);
+    expect(result.respawn_triggered).toBe(true);
+    expect(result.abort_reason).toBe('restart_guard');
+  });
+
+  it('keeps the worker lifecycle keys with primitive values', () => {
+    const result = scrubProperties({
+      previous_shutdown: 'crash',
+      previous_uptime_seconds: 86400,
+      uptime_seconds: 3600,
+      shutdown_reason: 'restart',
+      process_rss_mb: 187,
+      heap_used_mb: 92,
+    });
+
+    expect(Object.keys(result)).toHaveLength(6);
+    expect(result.previous_shutdown).toBe('crash');
+    expect(result.previous_uptime_seconds).toBe(86400);
+    expect(result.uptime_seconds).toBe(3600);
+    expect(result.shutdown_reason).toBe('restart');
+    expect(result.process_rss_mb).toBe(187);
+    expect(result.heap_used_mb).toBe(92);
+  });
+
+  it('keeps the hook failure keys with primitive values', () => {
+    const result = scrubProperties({
+      hook_type: 'observation',
+      error_mode: 'worker_unavailable',
+      consecutive_failures: 3,
+      threshold_tripped: true,
+    });
+
+    expect(result).toEqual({
+      hook_type: 'observation',
+      error_mode: 'worker_unavailable',
+      consecutive_failures: 3,
+      threshold_tripped: true,
+    });
   });
 
   it('drops unknown keys silently', () => {

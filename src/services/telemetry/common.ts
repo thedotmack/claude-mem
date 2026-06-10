@@ -4,6 +4,8 @@
  * CLI direct-POST capture (cli-telemetry.ts).
  */
 
+import os from 'os';
+
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 const packageVersion =
   typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
@@ -34,12 +36,27 @@ export function getTelemetryHost(): string {
 export const PERSON_PROPERTY_KEYS = [
   'version',
   'os',
+  'os_version',
+  'is_wsl',
   'arch',
   'runtime',
   'locale',
   'ide',
   'provider',
   'runtime_mode',
+  'install_method',
+  'claude_code_version',
+  // Install snapshot (refreshed by the daily worker_started heartbeat) —
+  // lets cohorts slice by install scale, age, and activity.
+  'db_observation_count',
+  'db_session_count',
+  'db_summary_count',
+  'db_project_count',
+  'db_size_mb',
+  'install_age_days',
+  'obs_count_7d',
+  'obs_count_30d',
+  'days_since_last_obs',
 ] as const;
 
 /**
@@ -58,13 +75,38 @@ export function buildPersonSet(
   return set;
 }
 
+/**
+ * Kernel release (`os.release()`): "10.0.22631" distinguishes Win10/Win11
+ * builds, Darwin major maps to the macOS release, Linux gives the kernel.
+ * System metadata only — never user data.
+ */
+function detectOsVersion(): string {
+  try {
+    return os.release();
+  } catch {
+    return 'unknown';
+  }
+}
+
+function detectWsl(): boolean {
+  if (process.platform !== 'linux') return false;
+  try {
+    return Boolean(process.env.WSL_DISTRO_NAME) || os.release().toLowerCase().includes('microsoft');
+  } catch {
+    return false;
+  }
+}
+
 export function buildBaseProperties(): Record<string, unknown> {
   return {
     version: packageVersion,
     os: process.platform,
+    os_version: detectOsVersion(),
+    is_wsl: detectWsl(),
     arch: process.arch,
     runtime: process.versions.bun ? 'bun' : 'node',
     runtime_version: process.versions.bun ?? process.versions.node,
+    node_version: process.versions.node,
     is_ci: Boolean(process.env.CI),
     locale: Intl.DateTimeFormat().resolvedOptions().locale,
   };

@@ -21,6 +21,19 @@ import type { TimelineData } from './search/index.js';
 import { ResultFormatter } from './search/ResultFormatter.js';
 import { ChromaUnavailableError } from './search/errors.js';
 
+/**
+ * Telemetry envelope for search_performed (see docs/public/telemetry.mdx).
+ * Populated by SearchManager.search() via a mutable sink param so response
+ * shapes (json and text formats) stay untouched. Privacy: counts, booleans,
+ * and closed enums only — never query text, results, or error messages.
+ */
+export interface SearchTelemetryEnvelope {
+  result_count?: number;
+  search_strategy?: 'chroma' | 'fts' | 'filter_only';
+  chroma_available?: boolean;
+  fallback_reason?: 'none' | 'chroma_connection' | 'chroma_error' | 'chroma_not_initialized';
+}
+
 export class SearchManager {
   private orchestrator: SearchOrchestrator;
   private timelineBuilder: TimelineBuilder;
@@ -149,7 +162,7 @@ export class SearchManager {
     return normalized;
   }
 
-  async search(args: any): Promise<any> {
+  async search(args: any, telemetryOut?: SearchTelemetryEnvelope): Promise<any> {
     const normalized = this.normalizeParams(args);
     const { query, type, obs_type, concepts, files, format, ...options } = normalized;
     let observations: ObservationSearchResult[] = [];
@@ -305,6 +318,33 @@ export class SearchManager {
     }
 
     const totalResults = observations.length + sessions.length + prompts.length;
+
+    // Telemetry envelope (search_performed): derive the strategy from the
+    // three paths above. Enum/count values only — never the Chroma error
+    // message, query text, or result content.
+    if (telemetryOut) {
+      let searchStrategy: SearchTelemetryEnvelope['search_strategy'];
+      let fallbackReason: SearchTelemetryEnvelope['fallback_reason'];
+      if (!query) {
+        // PATH 1: filter-only SQLite (no query text; Chroma never consulted)
+        searchStrategy = 'filter_only';
+        fallbackReason = 'none';
+      } else if (this.chromaSync) {
+        // PATH 2: Chroma semantic search, degrading to FTS5 on error
+        searchStrategy = chromaFailed ? 'fts' : 'chroma';
+        fallbackReason = chromaFailed
+          ? (chromaFailureReason?.isConnectionError ? 'chroma_connection' : 'chroma_error')
+          : 'none';
+      } else {
+        // PATH 3: FTS5 keyword search (Chroma not initialized)
+        searchStrategy = 'fts';
+        fallbackReason = 'chroma_not_initialized';
+      }
+      telemetryOut.result_count = totalResults;
+      telemetryOut.search_strategy = searchStrategy;
+      telemetryOut.chroma_available = this.chromaSync !== null && !chromaFailed;
+      telemetryOut.fallback_reason = fallbackReason;
+    }
 
     if (format === 'json') {
       return {

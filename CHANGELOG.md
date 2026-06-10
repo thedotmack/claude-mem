@@ -4,6 +4,84 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.5.5] - 2026-06-10
+
+## Telemetry Reliability Signals (Plan 14)
+
+claude-mem instrumented success well — failure was invisible. This release adds the five highest-value missing reliability signals (#2874). Everything is closed-enum/count-only, whitelisted in the scrubber, and disclosed in both the [public docs](https://docs.claude-mem.ai/telemetry) and `claude-mem telemetry`.
+
+### Search retrieval quality (`search_performed`)
+- `result_count`, `search_strategy` (`chroma|fts|filter_only`), `chroma_available`, `fallback_reason` (`none|chroma_connection|chroma_error|chroma_not_initialized`)
+- Zero-result rate is now computable, and Chroma's silent degradation to FTS is visible.
+
+### Compression trust (`session_compressed`)
+- `fabrication_detected` / `fabricated_count` — commit-hash fabrication by the observer model, on every emit path
+- Respawn-gated invalid-output events: `invalid_output_class` (`xml|idle|prose|poisoned`), `consecutive_invalid_outputs`, `respawn_triggered`
+- `outcome: aborted` with `abort_reason` (`idle|shutdown|overflow|restart_guard|quota|poisoned|none`), emitted where all abort flows converge
+
+### Worker lifecycle
+- New `worker_stopped` event: `uptime_seconds`, `shutdown_reason` (`stop|restart|signal`)
+- Crash detection via clean-shutdown sentinel: `worker_started` now reports `previous_shutdown` (`crash|clean|unknown`) and `previous_uptime_seconds`
+- Memory health: integer `process_rss_mb` / `heap_used_mb` on lifecycle events and the heartbeat
+
+### Hook failures
+- New `hook_failed` event over the direct CLI transport (the worker being unreachable IS the failure being reported), threshold-gated on the fail-loud counter and awaited before process exit so events survive short-lived hook processes
+
+### Fixes
+- **CI**: the PostHog `disableGeoip` regression test was order-dependent and failed full-suite runs (CI on main had been red since v13.5.4). `posthog-node` is now mocked globally via a bun test preload — which also guarantees test runs can never construct a real PostHog client and flush fabricated events into production analytics.
+- Windows-managed shutdown IPC now forwards the restart reason for `shutdown_reason` fidelity.
+
+## [13.5.4] - 2026-06-10
+
+## Fixed
+
+- **Telemetry geolocation: closed the ~98.5% "unknown location" gap.** The posthog-node SDK assumes server deployments and stamps `$geoip_disable: true` on every event by default. claude-mem's worker runs on the user's own machine, so this needlessly suppressed PostHog's ingest-side GeoIP on all worker events (`worker_started`, `session_compressed`, `context_injected`, …). The client now passes `disableGeoip: false`, letting PostHog derive coarse location (country / region / city) at ingestion — from the request IP, which is then discarded. CLI events (`install_*`) were already unaffected.
+
+## Privacy
+
+- No change to the IP promise: raw IP addresses are still **never attached to events by the client and never stored** — the sender IP is used transiently at ingest for the coarse-location lookup, then discarded.
+- The telemetry docs (https://docs.claude-mem.ai/telemetry) and the `npx claude-mem telemetry enable` consent screen now disclose the ingest-derived coarse location.
+
+## Tests
+
+- New regression test asserts the PostHog client is constructed with `disableGeoip: false` (telemetry suite now 58 tests, all passing).
+
+## [13.5.3] - 2026-06-10
+
+## Telemetry: real data edition
+
+Every analytics number claude-mem reports about itself is now real, provider-reported data — plus a new daily install-state snapshot so we can see the actual state of the installed base.
+
+### Fixed: the four session_compressed data-quality bugs
+
+- **Claude token counts were placeholders.** The Agent SDK attaches an early-streaming usage snapshot to assistant messages (`output_tokens` of ~2–10, regardless of actual output). The `session_compressed` event is now fired from the SDK **result** message, which carries the finalized per-turn usage — verified empirically (placeholder said 8, result said 45). Compression ratios for Claude models drop from a nonsensical 6,000–38,000 to the true ~10–100 range.
+- **`cost_usd` is now real and populated.** Claude: computed from the SDK's cumulative `total_cost_usd` delta between consecutive turns. OpenRouter: `usage.cost` + `cost_details.upstream_inference_cost` (covers BYOK), with usage accounting requested from openrouter.ai only. Gemini reports no cost, so the field stays honestly absent — never estimated.
+- **Impossible compression ratios (< 1, or exactly 0.0) eliminated.** Custom OpenAI-compatible gateways that report suffix-only or one-sided token usage can no longer produce half-real events: usage is now both-sides-or-nothing, ratios require input > 0, and a new `endpoint_class` property (`openrouter` | `custom`) lets dashboards segment gateway-reported data.
+- **`model` is never silently missing or wrong.** The model that actually served the request (`response.model`) is stamped instead of the raw configured string, array-typed model settings are normalized, error-path events now carry the model, and `unknown` is the floor everywhere — non-string values previously vanished in the telemetry scrubber.
+
+### New: install-state snapshot
+
+`worker_started` (start + daily heartbeat) now reports an aggregate snapshot of the local memory DB as person properties: observation/session/summary/project counts, DB file size, install age in days, observations in the last 7/30 days, and days since the last observation. Counts and day-deltas only — never project names, text, or any content. Makes retention, scale, and activity cohorts directly sliceable in analytics.
+
+### Also fixed
+
+- The `ide` person property on `worker_started` never populated — the lookup queried a legacy table and silently threw on every start since it shipped.
+- Epoch math now normalizes legacy seconds-unit rows (a few hundred per install) that would have reported install ages of ~20,000 days.
+
+All new properties are whitelisted in the scrubber, documented at https://docs.claude-mem.ai/telemetry, and shown in the `npx claude-mem telemetry` consent screen. Telemetry remains anonymous and opt-out (`npx claude-mem telemetry disable`).
+
+## [13.5.2] - 2026-06-10
+
+## What's New in 13.5.2
+
+Platform and toolchain telemetry to diagnose the install → live-worker activation dropoff (anonymous, opt-out — see `npx claude-mem telemetry`):
+
+- Every event now carries `os_version` (kernel release — distinguishes Windows 10 vs 11, macOS releases), `is_wsl`, and `node_version` alongside the existing `os`/`arch`/`runtime` fields.
+- `install_completed` now reports `interactive` (TTY vs scripted), `install_method` (npm / bun / pnpm / yarn), and detected `bun_version`, `uv_version`, and `claude_code_version`.
+- `install_failed` carries the same install context so aborted installs are sliceable by platform too.
+- New fields are person properties as well, so activation funnels can be broken down by OS version, WSL, and install method.
+- Scrub whitelist, consent screen, docs, and tests updated for every new property.
+
 ## [13.5.1] - 2026-06-10
 
 ## What's New in 13.5.1

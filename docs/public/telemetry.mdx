@@ -29,11 +29,14 @@ Every event property passes through a strict whitelist scrubber — any key not 
 | `distinct_id` | `7f3c…` (random UUID) | Anonymous install ID — not derived from you or your machine |
 | `version` | `13.4.2` | claude-mem version |
 | `os` | `darwin` | Operating system platform |
+| `os_version` | `10.0.22631` | OS kernel release string — distinguishes e.g. Windows 10 from 11 |
+| `is_wsl` | `false` | Whether running under Windows Subsystem for Linux |
 | `arch` | `arm64` | CPU architecture |
 | `runtime` | `bun` | `bun` or `node` |
 | `runtime_version` | `1.2.0` | Runtime version string |
+| `node_version` | `22.14.0` | Node.js version string |
 | `duration_ms` | `1843` | How long an operation took |
-| `outcome` | `ok` | Coarse result: ok / error / partial |
+| `outcome` | `ok` | Coarse result — a closed enum: ok / error / partial / invalid_output / aborted |
 | `error_category` | `provider_error` | Coarse error bucket — never an error message |
 | `locale` | `en-US` | Language tag |
 | `is_ci` | `false` | Whether running in CI |
@@ -45,6 +48,10 @@ Every event property passes through a strict whitelist scrubber — any key not 
 | `count` | `7` | Integer volume, e.g. observations stored in one compression |
 | `has_summary` | `true` | Whether a compression also produced a session summary |
 | `is_update` | `false` | Whether an install ran over an existing installation |
+| `interactive` | `true` | Whether the installer ran in an interactive terminal |
+| `install_method` | `npm` | Which package manager launched the CLI: npm / bun / pnpm / yarn |
+| `bun_version` / `uv_version` | `1.3.9` / `0.7.2` | Toolchain versions detected during install |
+| `claude_code_version` | `2.0.14` | Claude Code CLI version, if detectable |
 | `mode` | `code` | Active claude-mem mode id (our mode list) |
 | `model` | `claude-haiku-4-5` | Model id used for compression |
 | `hook` | `ingest` | What triggered a compression: init / ingest / summarize |
@@ -52,24 +59,54 @@ Every event property passes through a strict whitelist scrubber — any key not 
 | `compression_ms` | `2140` | Latency of the compression model call |
 | `tokens_input` / `tokens_output` | `5800` / `420` | Real token usage reported by the model API for one compression |
 | `compression_ratio` | `13.8` | tokens_input ÷ tokens_output |
+| `cost_usd` | `0.0021` | Provider-reported cost of one compression call in USD (Claude SDK / openrouter.ai) — never an estimate, absent when the provider reports none |
+| `endpoint_class` | `openrouter` | Whether the OpenRouter provider targets openrouter.ai or a custom gateway |
 | `observation_count`, `session_count` | `50`, `12` | How many observations/sessions fed one context injection |
 | `timeline_depth_days` | `90` | Age in days of the oldest injected observation |
 | `has_session_summary` | `true` | Whether a session summary was part of the injection |
 | `tokens_injected` | `17914` | Estimated tokens of injected context |
 | `tokens_saved_vs_naive` | `144379` | Estimated tokens saved vs re-discovering that work |
 | `search_strategy` | `timeline` | Which retrieval strategy built the injection (our enum) |
+| `db_observation_count`, `db_session_count`, `db_summary_count`, `db_project_count` | `92501`, `5243`, `9698`, `379` | Total rows in the local memory database — counts only, never names or text |
+| `db_size_mb` | `364.4` | Memory database file size in MB |
+| `install_age_days` | `104` | Days since the install's first recorded session |
+| `obs_count_7d` / `obs_count_30d` | `1887` / `10357` | Observations stored in the last 7 / 30 days |
+| `days_since_last_obs` | `0` | Days since the most recent observation was stored |
+| `result_count` | `12` | How many results a memory search returned — count only, never the results or the query |
+| `chroma_available` | `true` | Whether the vector-search backend was reachable for a search (false = fell back to full-text search) |
+| `fallback_reason` | `none` | Why a search fell back from vector search: none / chroma_connection / chroma_error / chroma_not_initialized — a closed enum, never an error message |
+| `fabrication_detected` | `false` | Whether a compression's output referenced commit hashes that don't exist in your repo (a model-trust check) |
+| `fabricated_count` | `0` | How many nonexistent commit hashes were detected — count only, never the hashes |
+| `invalid_output_class` | `idle` | Coarse class of an unusable compression output: xml / idle / prose / poisoned (`xml` = looked like the expected format but failed to parse) — never the output itself |
+| `consecutive_invalid_outputs` | `3` | How many unusable outputs occurred in a row before recovery |
+| `respawn_triggered` | `true` | Whether the compression agent was restarted after repeated unusable output |
+| `abort_reason` | `idle` | Why a compression session was aborted: idle / shutdown / overflow / restart_guard / quota / poisoned / none — a closed enum |
+| `previous_shutdown` | `clean` | How the previous worker run ended, detected at startup: crash / clean / unknown |
+| `previous_uptime_seconds` | `86400` | How long the previous worker run was up, in whole seconds |
+| `uptime_seconds` | `3600` | How long the worker was up when it stopped, in whole seconds |
+| `shutdown_reason` | `restart` | Why the worker stopped: stop / restart / signal |
+| `process_rss_mb` | `187` | Worker process resident memory, integer megabytes |
+| `heap_used_mb` | `92` | Worker JS heap in use, integer megabytes |
+| `hook_type` | `observation` | Which hook kind failed: context / session-init / observation / summarize / file-context — our handler names |
+| `error_mode` | `worker_unavailable` | Coarse hook failure mode: worker_unavailable / blocking_error — never an error message |
+| `consecutive_failures` | `3` | How many hook failures occurred in a row (the fail-loud counter) |
+| `threshold_tripped` | `true` | Whether the consecutive-failure count reached the fail-loud threshold |
+
+One value is derived server-side rather than sent by the client: PostHog resolves the request's sender IP to a **coarse location** (country / region / city) at ingestion, before the IP itself is discarded. The client never attaches an IP to any event, and the raw IP is never stored — see [What is NEVER collected](#what-is-never-collected).
 
 ### Events
 
 | Event | When | Extra properties |
 |---|---|---|
-| `install_completed` | `npx claude-mem install` finishes | `ide`, `provider`, `runtime_mode`, `is_update`, `outcome`, `duration_ms` |
-| `install_failed` | The installer aborts | `error_category` (our error-taxonomy id) |
+| `install_completed` | `npx claude-mem install` finishes | `ide`, `provider`, `runtime_mode`, `is_update`, `outcome`, `duration_ms`, `interactive`, `install_method`, `bun_version`, `uv_version`, `claude_code_version` |
+| `install_failed` | The installer aborts | `error_category` (our error-taxonomy id), `interactive`, `install_method`, `claude_code_version` |
 | `uninstall_completed` | `npx claude-mem uninstall` finishes | — |
-| `worker_started` | The background worker starts, plus one heartbeat per 24h of uptime | `trigger` (start / heartbeat), `duration_ms` |
-| `session_compressed` | A session compression stores observations, or the compression generator fails | `outcome`, `duration_ms`, `count`, `has_summary`, `provider`, `model`, `ide`, `hook`, `compression_ms`, `observation_type`, `obs_type_*`, `tokens_input`, `tokens_output`, `compression_ratio`; on failure `error_category` |
+| `worker_started` | The background worker starts, plus one heartbeat per 24h of uptime | `trigger` (start / heartbeat), `duration_ms`, `ide`, `provider`, `mode`, `runtime_mode`, process memory (`process_rss_mb`, `heap_used_mb`), the install snapshot: `db_observation_count`, `db_session_count`, `db_summary_count`, `db_project_count`, `db_size_mb`, `install_age_days`, `obs_count_7d`, `obs_count_30d`, `days_since_last_obs`; on a real start also crash detection: `previous_shutdown` (crash / clean / unknown) and, after a clean shutdown, `previous_uptime_seconds` |
+| `session_compressed` | A session compression stores observations, repeated unusable model output forces an agent respawn, the compression generator fails, or a compression session is aborted | `outcome` (ok / invalid_output / error / aborted), `duration_ms`, `count`, `has_summary`, `provider`, `model`, `ide`, `hook`, `compression_ms`, `observation_type`, `obs_type_*`, `tokens_input`, `tokens_output`, `compression_ratio`, `cost_usd`, `endpoint_class`, `fabrication_detected`, `fabricated_count`; on an invalid-output respawn `invalid_output_class`, `consecutive_invalid_outputs`, `respawn_triggered`; on failure `error_category`; on abort `abort_reason` |
 | `context_injected` | Stored memory is injected into a new session | `outcome`, `duration_ms`, `mode`, `provider`, `search_strategy`, `observation_count`, `session_count`, `timeline_depth_days`, `has_session_summary`, `obs_type_*`, `tokens_injected`, `tokens_saved_vs_naive` |
-| `search_performed` | A memory search runs (never the query text) | `endpoint`, `outcome`, `duration_ms` |
+| `search_performed` | A memory search runs (never the query text) | `endpoint`, `outcome`, `duration_ms`, `result_count`, `search_strategy`, `chroma_available`, `fallback_reason` |
+| `worker_stopped` | The background worker shuts down gracefully | `uptime_seconds`, `shutdown_reason` (stop / restart / signal) |
+| `hook_failed` | A claude-mem hook fails hard — the worker is unreachable past the fail-loud threshold, or a blocking error occurs | `hook_type`, `error_mode`, `consecutive_failures`, `threshold_tripped` |
 | `error_occurred` | The worker returns an HTTP 5xx | `error_category` |
 
 ## What is NEVER collected
@@ -82,7 +119,7 @@ Every event property passes through a strict whitelist scrubber — any key not 
 | Project or repository names | Including git remotes and branch names |
 | Search queries | Only the fact that a search happened |
 | Error messages or stack traces | Only a coarse category string |
-| IP addresses | Never attached to events by the client; the analytics project is configured to discard sender IPs on ingest |
+| IP addresses | Never attached to events by the client; the sender IP is used transiently at ingest to derive coarse location (country / region / city), then discarded — the analytics project is configured to never store sender IPs |
 | Hardware or machine identifiers | Not even hashed MAC addresses or hostnames |
 | Environment variable values | Ever |
 | Emails, usernames, or any PII | Ever |

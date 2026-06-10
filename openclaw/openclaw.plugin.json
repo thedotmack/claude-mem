@@ -3,7 +3,7 @@
   "name": "Claude-Mem (Persistent Memory)",
   "description": "OpenClaw plugin for Claude-Mem. Records observations from embedded runner sessions and streams them to messaging channels.",
   "kind": "memory",
-  "version": "13.5.1",
+  "version": "13.5.5",
   "license": "Apache-2.0",
   "author": "thedotmack",
   "homepage": "https://claude-mem.ai",

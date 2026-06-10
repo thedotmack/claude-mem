@@ -1,6 +1,6 @@
 
 import path from 'path';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
 import { spawn } from 'child_process';
 import { Database } from 'bun:sqlite';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -8,6 +8,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
 import { DATA_DIR, DB_PATH, ensureDir } from '../shared/paths.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
+import { getUptimeSeconds } from '../shared/uptime.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { getAuthMethodDescription } from '../shared/EnvManager.js';
 import { logger } from '../utils/logger.js';
@@ -18,6 +19,7 @@ import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
 
 import { ensureWorkerStarted as ensureWorkerStartedShared, type WorkerStartResult } from './worker-spawner.js';
 import { captureEvent, shutdownTelemetry } from './telemetry/telemetry.js';
+import { collectInstallStats } from './telemetry/install-stats.js';
 
 export { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
 import { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
@@ -116,10 +118,69 @@ export function buildStatusOutput(status: 'ready' | 'error', message?: string): 
   };
 }
 
+/**
+ * Closed enum for worker_stopped telemetry. Must stay in sync with the
+ * shutdown_reason whitelist documentation (scrub.ts / telemetry.mdx):
+ * stop = /api/admin/shutdown (CLI `stop`), restart = /api/admin/restart or
+ * CLI `restart` (tagged ?reason=restart), signal = SIGTERM/SIGINT handler.
+ */
+export type WorkerShutdownReason = 'stop' | 'restart' | 'signal';
+
+// Clean-shutdown sentinel — same marker-file pattern as the one-time markers
+// in ProcessManager.ts (.chroma-cleaned-v10.3). Written in the graceful
+// shutdown path, consumed (read + deleted) at the next startup: sentinel
+// present = previous run stopped cleanly; stale PID file with no sentinel =
+// previous run died without reaching the graceful-shutdown path (crash).
+const CLEAN_SHUTDOWN_SENTINEL_PATH = path.join(DATA_DIR, '.worker-clean-shutdown');
+
+function writeCleanShutdownSentinel(): void {
+  try {
+    ensureDir(DATA_DIR);
+    writeFileSync(CLEAN_SHUTDOWN_SENTINEL_PATH, new Date().toISOString());
+  } catch (error: unknown) {
+    if (error instanceof Error) {
+      logger.warn('SYSTEM', 'Failed to write clean-shutdown sentinel', { path: CLEAN_SHUTDOWN_SENTINEL_PATH }, error);
+    } else {
+      logger.warn('SYSTEM', 'Failed to write clean-shutdown sentinel', { path: CLEAN_SHUTDOWN_SENTINEL_PATH }, new Error(String(error)));
+    }
+  }
+}
+
+function readAndClearCleanShutdownSentinel(): string | null {
+  if (!existsSync(CLEAN_SHUTDOWN_SENTINEL_PATH)) return null;
+
+  let contents: string | null = null;
+  try {
+    contents = readFileSync(CLEAN_SHUTDOWN_SENTINEL_PATH, 'utf-8').trim();
+  } catch (error: unknown) {
+    if (error instanceof Error) {
+      logger.warn('SYSTEM', 'Failed to read clean-shutdown sentinel', { path: CLEAN_SHUTDOWN_SENTINEL_PATH }, error);
+    } else {
+      logger.warn('SYSTEM', 'Failed to read clean-shutdown sentinel', { path: CLEAN_SHUTDOWN_SENTINEL_PATH }, new Error(String(error)));
+    }
+  }
+  try {
+    // Always delete after reading: a stale sentinel would mislabel a later
+    // crash as 'clean'.
+    unlinkSync(CLEAN_SHUTDOWN_SENTINEL_PATH);
+  } catch (error: unknown) {
+    if (error instanceof Error) {
+      logger.warn('SYSTEM', 'Failed to remove clean-shutdown sentinel', { path: CLEAN_SHUTDOWN_SENTINEL_PATH }, error);
+    } else {
+      logger.warn('SYSTEM', 'Failed to remove clean-shutdown sentinel', { path: CLEAN_SHUTDOWN_SENTINEL_PATH }, new Error(String(error)));
+    }
+  }
+  return contents;
+}
+
 export class WorkerService implements WorkerRef {
   private server: Server;
   private startTime: number = Date.now();
   private telemetryHeartbeat: ReturnType<typeof setInterval> | null = null;
+  // Crash detection (worker_started telemetry): derived once at startup from
+  // the previous run's stale PID file + the clean-shutdown sentinel.
+  private previousShutdown: 'clean' | 'crash' | 'unknown' = 'unknown';
+  private previousUptimeSeconds: number | null = null;
   private mcpClient: Client;
 
   private mcpReady: boolean = false;
@@ -190,8 +251,8 @@ export class WorkerService implements WorkerRef {
     this.server = new Server({
       getInitializationComplete: () => this.initializationCompleteFlag,
       getMcpReady: () => this.mcpReady,
-      onShutdown: () => this.shutdown(),
-      onRestart: () => this.shutdown(),
+      onShutdown: (reason) => this.shutdown(reason ?? 'stop'),
+      onRestart: () => this.shutdown('restart'),
       workerPath: __filename,
       getAiStatus: () => {
         let provider = 'claude';
@@ -222,7 +283,7 @@ export class WorkerService implements WorkerRef {
   private registerSignalHandlers(): void {
     configureSupervisorSignalHandlers(async () => {
       this.isShuttingDown = true;
-      await this.shutdown();
+      await this.shutdown('signal');
     });
   }
 
@@ -274,9 +335,46 @@ export class WorkerService implements WorkerRef {
     }));
   }
 
+  /**
+   * Crash detection for worker_started telemetry. Must run BEFORE
+   * startSupervisor() — whose validateWorkerPidFile() deletes the previous
+   * run's stale PID file — and before writePidFile overwrites it.
+   *   - clean-shutdown sentinel present → previous run stopped gracefully
+   *   - stale PID file present, no sentinel → previous run crashed
+   *   - neither (first run, or the spawner already cleaned the stale PID
+   *     file) → unknown
+   * The sentinel is consumed here so it can never mislabel a later crash.
+   */
+  private detectPreviousShutdown(): void {
+    const stalePidInfo = readPidFile();
+    const sentinelTimestamp = readAndClearCleanShutdownSentinel();
+
+    if (sentinelTimestamp !== null) {
+      this.previousShutdown = 'clean';
+      // Previous uptime = previous run's PID-file startedAt → sentinel write
+      // time. The previous run's in-memory startTime is never persisted, so
+      // the PID file is the only source; omit when either side is missing.
+      const startedAtMs = stalePidInfo ? Date.parse(stalePidInfo.startedAt) : NaN;
+      const stoppedAtMs = Date.parse(sentinelTimestamp);
+      if (Number.isFinite(startedAtMs) && Number.isFinite(stoppedAtMs) && stoppedAtMs >= startedAtMs) {
+        this.previousUptimeSeconds = Math.floor((stoppedAtMs - startedAtMs) / 1000);
+      }
+    } else if (stalePidInfo) {
+      // Crash: the previous run's stop time is unknowable, so
+      // previous_uptime_seconds is deliberately omitted rather than guessed.
+      this.previousShutdown = 'crash';
+    } else {
+      this.previousShutdown = 'unknown';
+    }
+  }
+
   async start(): Promise<void> {
     const port = getWorkerPort();
     const host = getWorkerHost();
+
+    // Must run before startSupervisor(): its validateWorkerPidFile() removes
+    // the dead previous run's stale PID file, which crash detection needs.
+    this.detectPreviousShutdown();
 
     await startSupervisor();
 
@@ -394,32 +492,54 @@ export class WorkerService implements WorkerRef {
 
       // Lifecycle telemetry (person profile = anonymous install UUID). ide is
       // this install's dominant client read from session history — a bounded
-      // platform enum (claude-code / cursor / ...), never user data.
-      const lifecycleProps: Record<string, unknown> = {
-        runtime_mode: 'worker',
-        provider: settings.CLAUDE_MEM_PROVIDER,
-        mode: settings.CLAUDE_MEM_MODE,
+      // platform enum (claude-code / cursor / ...), never user data. Props are
+      // rebuilt per capture so the daily heartbeat reports the install's
+      // current DB size/age/activity, not boot-time values.
+      const buildLifecycleProps = (): Record<string, unknown> => {
+        const props: Record<string, unknown> = {
+          runtime_mode: 'worker',
+          provider: settings.CLAUDE_MEM_PROVIDER,
+          mode: settings.CLAUDE_MEM_MODE,
+        };
+        try {
+          const row = this.dbManager.getConnection()
+            .query(`SELECT platform_source FROM sdk_sessions
+                    WHERE platform_source IS NOT NULL AND platform_source != ''
+                    ORDER BY id DESC LIMIT 1`)
+            .get() as { platform_source?: string } | null;
+          if (row?.platform_source) props.ide = row.platform_source;
+        } catch (error) {
+          // Expected only before the schema exists; anything else (e.g. the
+          // wrong-table query this once masked) should be diagnosable.
+          logger.debug('SYSTEM', 'ide lookup for lifecycle telemetry failed', {}, error as Error);
+        }
+        try {
+          Object.assign(props, collectInstallStats(this.dbManager.getConnection()));
+        } catch (error) {
+          // Snapshot is best-effort; the lifecycle event still ships without it.
+          logger.debug('SYSTEM', 'Install stats snapshot failed', {}, error as Error);
+        }
+        // Process health for the daily heartbeat: memoryUsage() returns bytes;
+        // the scrubber drops non-finite numbers, so round to whole MiB.
+        const memory = process.memoryUsage();
+        props.process_rss_mb = Math.round(memory.rss / 1024 / 1024);
+        props.heap_used_mb = Math.round(memory.heapUsed / 1024 / 1024);
+        return props;
       };
-      try {
-        const row = this.dbManager.getConnection()
-          .query(`SELECT platform_source FROM sessions
-                  WHERE platform_source IS NOT NULL AND platform_source != ''
-                  ORDER BY id DESC LIMIT 1`)
-          .get() as { platform_source?: string } | null;
-        if (row?.platform_source) lifecycleProps.ide = row.platform_source;
-      } catch {
-        // Fresh install with no sessions yet — ide arrives once sessions exist.
-      }
       captureEvent('worker_started', {
         trigger: 'start',
         duration_ms: Date.now() - this.startTime,
-        ...lifecycleProps,
+        // Crash detection (detectPreviousShutdown): crash case carries no
+        // previous_uptime_seconds — the stop time is unknowable.
+        previous_shutdown: this.previousShutdown,
+        ...(this.previousUptimeSeconds !== null && { previous_uptime_seconds: this.previousUptimeSeconds }),
+        ...buildLifecycleProps(),
       }, { person: true });
       // Long-lived workers would otherwise look like a single day of activity.
       // A daily heartbeat makes DAU/WAU/retention computable from distinct_id.
       // unref() so the timer never keeps a stopping process alive.
       this.telemetryHeartbeat = setInterval(() => {
-        captureEvent('worker_started', { trigger: 'heartbeat', ...lifecycleProps }, { person: true });
+        captureEvent('worker_started', { trigger: 'heartbeat', ...buildLifecycleProps() }, { person: true });
       }, 24 * 60 * 60 * 1000);
       this.telemetryHeartbeat.unref?.();
 
@@ -548,7 +668,7 @@ export class WorkerService implements WorkerRef {
     this.sessionManager.removeSessionImmediate(sessionDbId);
   }
 
-  async shutdown(): Promise<void> {
+  async shutdown(reason: WorkerShutdownReason = 'stop'): Promise<void> {
     if (this.transcriptWatcher) {
       this.transcriptWatcher.stop();
       this.transcriptWatcher = null;
@@ -559,6 +679,14 @@ export class WorkerService implements WorkerRef {
       clearInterval(this.telemetryHeartbeat);
       this.telemetryHeartbeat = null;
     }
+    // Mark this stop as graceful for the next start's crash detection, and
+    // capture worker_stopped BEFORE shutdownTelemetry() — isShutdown drops
+    // any event captured after the flush, by design.
+    writeCleanShutdownSentinel();
+    captureEvent('worker_stopped', {
+      uptime_seconds: getUptimeSeconds(this.startTime),
+      shutdown_reason: reason,
+    });
     await shutdownTelemetry();
 
     await performGracefulShutdown({
@@ -827,7 +955,7 @@ async function main() {
 
     case 'restart': {
       logger.info('SYSTEM', 'Restarting worker');
-      await httpShutdown(port);
+      await httpShutdown(port, 'restart');
       const restartFreed = await waitForPortFree(port, 5000);
       if (!restartFreed) {
         console.error('Port still bound after shutdown. Resolve manually.');

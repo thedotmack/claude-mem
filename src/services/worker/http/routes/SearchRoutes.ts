@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import path from 'path';
 import { z } from 'zod';
 import { SearchManager } from '../../SearchManager.js';
+import type { SearchTelemetryEnvelope } from '../../SearchManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
@@ -115,10 +116,15 @@ export class SearchRoutes extends BaseRouteHandler {
         const segment = req.path === '/' ? 'unified' : req.path.slice(1).split('/')[0];
         const endpoint = KNOWN_SEARCH_ENDPOINTS.has(segment) ? segment : 'other';
         res.once('finish', () => {
+          // res.locals.searchTelemetry is the retrieval-quality envelope
+          // (result_count, search_strategy, chroma_available, fallback_reason)
+          // populated by SearchManager.search() and stashed by the handler —
+          // counts/booleans/enums only, never response-body introspection.
           captureEvent('search_performed', {
             endpoint,
             outcome: res.statusCode < 400 ? 'ok' : 'error',
             duration_ms: Date.now() - searchStartedAt,
+            ...(res.locals.searchTelemetry ?? {}),
           });
         });
       }
@@ -153,7 +159,13 @@ export class SearchRoutes extends BaseRouteHandler {
   }
 
   private handleUnifiedSearch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const result = await this.searchManager.search(req.query);
+    // Mutable telemetry sink: SearchManager.search() fills it with the
+    // retrieval-quality envelope; the /api/search middleware spreads it into
+    // search_performed on response finish. Stashed before the await so the
+    // envelope survives even if response serialization fails afterwards.
+    const searchTelemetry: SearchTelemetryEnvelope = {};
+    res.locals.searchTelemetry = searchTelemetry;
+    const result = await this.searchManager.search(req.query, searchTelemetry);
     res.json(result);
   });
 

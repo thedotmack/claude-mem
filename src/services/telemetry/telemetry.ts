@@ -34,6 +34,15 @@ function getClient(): PostHog {
       host: getTelemetryHost(),
       flushAt: 20,
       flushInterval: 10000,
+      // posthog-node assumes server deployments and stamps $geoip_disable: true
+      // on every event by default, which suppresses ingest-side geolocation.
+      // claude-mem's worker runs on the user's own machine, so the ingestion
+      // request already originates from their IP — letting PostHog derive
+      // coarse location (country/region/city) at ingest. The raw IP is still
+      // never attached to events and is discarded on ingest (project setting);
+      // see docs/public/telemetry.mdx. This matches the CLI transport
+      // (cli-telemetry.ts), whose direct POST never suppressed geolocation.
+      disableGeoip: false,
     });
   }
   return client;
@@ -105,6 +114,18 @@ export function captureEvent(
   } catch {
     // Telemetry must never break the worker. Swallow everything.
   }
+}
+
+/**
+ * Test-only. The module state (singleton client, 30s consent TTL cache,
+ * shutdown latch) is process-wide, and the whole bun test suite shares one
+ * process — without a reset, a test asserting client construction inherits
+ * whatever earlier test files did. Never called by production code.
+ */
+export function __resetTelemetryForTests(): void {
+  client = null;
+  consentCache = null;
+  isShutdown = false;
 }
 
 /**

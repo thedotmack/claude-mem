@@ -54,6 +54,9 @@ export async function captureCliEvent(
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), CAPTURE_TIMEOUT_MS);
     try {
+      // Deliberately no $geoip_disable: the raw capture API geolocates from
+      // the request IP at ingest (coarse country/region/city; the IP itself is
+      // discarded), matching the worker transport (telemetry.ts).
       await fetch(`${getTelemetryHost()}/capture/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
