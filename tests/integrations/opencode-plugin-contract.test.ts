@@ -21,7 +21,6 @@ const REAL_OPENCODE_HOOK_NAMES = new Set<string>([
   "tool.execute.after",
   "event",
   "experimental.session.compacting",
-  "chat.message",
   "tool.execute.before",
   "permission.ask",
   "auth",
