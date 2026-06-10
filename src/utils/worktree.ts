@@ -52,8 +52,9 @@ export function detectWorktree(cwd: string): WorktreeInfo {
   }
 
   const gitdirPath = match[1];
+  const resolvedGitdirPath = path.resolve(path.dirname(gitPath), gitdirPath);
 
-  const worktreesMatch = gitdirPath.match(/^(.+)[/\\]\.git[/\\]worktrees[/\\]([^/\\]+)$/);
+  const worktreesMatch = resolvedGitdirPath.match(/^(.+)[/\\]\.git[/\\]worktrees[/\\]([^/\\]+)$/);
   if (worktreesMatch) {
     const parentRepoPath = worktreesMatch[1];
     const worktreeName = path.basename(cwd);
@@ -69,7 +70,7 @@ export function detectWorktree(cwd: string): WorktreeInfo {
     };
   }
 
-  const normalizedGitdirPath = gitdirPath.replace(/[/\\]+$/, '');
+  const normalizedGitdirPath = resolvedGitdirPath.replace(/[/\\]+$/, '');
   const submoduleMatch = normalizedGitdirPath.match(/^(.*?)[/\\]\.git[/\\]modules[/\\].+$/);
   if (!submoduleMatch) {
     return NOT_A_WORKTREE;

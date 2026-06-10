@@ -181,6 +181,7 @@ describe('getProjectContext', () => {
     let mainRepo: string;
     let submoduleCheckout: string;
     let submoduleNestedDir: string;
+    let submoduleGitDir: string;
 
     beforeAll(async () => {
       const { mkdtempSync, mkdirSync, writeFileSync } = await import('fs');
@@ -192,7 +193,7 @@ describe('getProjectContext', () => {
       mainRepo = join(tmp, 'main-repo');
       submoduleCheckout = join(mainRepo, 'vendor', 'docs');
       submoduleNestedDir = join(submoduleCheckout, 'src', 'nested');
-      const submoduleGitDir = join(mainRepo, '.git', 'modules', 'vendor', 'docs');
+      submoduleGitDir = join(mainRepo, '.git', 'modules', 'vendor', 'docs');
 
       mkdirSync(mainRepo, { recursive: true });
       execFileSync('git', ['init', '-q'], { cwd: mainRepo });
@@ -228,6 +229,26 @@ describe('getProjectContext', () => {
       expect(ctx.primary).toBe('main-repo');
       expect(ctx.parent).toBeNull();
       expect(ctx.allProjects).toEqual(['main-repo']);
+    });
+
+    it('resolves the default relative gitdir pointer before deriving the parent project', async () => {
+      const { writeFileSync } = await import('fs');
+      const { join } = await import('path');
+
+      writeFileSync(
+        join(submoduleCheckout, '.git'),
+        'gitdir: ../../.git/modules/vendor/docs\n'
+      );
+
+      const ctx = getProjectContext(submoduleCheckout);
+      expect(ctx.primary).toBe('main-repo');
+      expect(ctx.parent).toBeNull();
+      expect(ctx.allProjects).toEqual(['main-repo']);
+
+      writeFileSync(
+        join(submoduleCheckout, '.git'),
+        `gitdir: ${submoduleGitDir}\n`
+      );
     });
   });
 
