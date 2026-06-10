@@ -11,6 +11,7 @@ export function renderHeader(
   forHuman: boolean
 ): string[] {
   const output: string[] = [];
+  const fetchByIdSupported = config.fetchByIdSupported !== false;
 
   if (forHuman) {
     output.push(...Human.renderHumanHeader(project));
@@ -21,7 +22,7 @@ export function renderHeader(
   if (forHuman) {
     output.push(...Human.renderHumanLegend());
   } else {
-    output.push(...Agent.renderAgentLegend());
+    output.push(...Agent.renderAgentLegend(fetchByIdSupported));
   }
 
   if (forHuman) {
@@ -31,7 +32,7 @@ export function renderHeader(
   }
 
   if (forHuman) {
-    output.push(...Human.renderHumanContextIndex());
+    output.push(...Human.renderHumanContextIndex(fetchByIdSupported));
   } else {
     output.push(...Agent.renderAgentContextIndex());
   }

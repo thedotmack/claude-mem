@@ -8,6 +8,7 @@ import type {
 } from '../types.js';
 import { ModeManager } from '../../domain/ModeManager.js';
 import { formatObservationTokenDisplay } from '../TokenCalculator.js';
+import { formatContextReferenceId } from './id-display.js';
 
 function formatHeaderDateTime(): string {
   const now = new Date();
@@ -28,14 +29,18 @@ export function renderAgentHeader(project: string): string[] {
   ];
 }
 
-export function renderAgentLegend(): string[] {
+export function renderAgentLegend(fetchByIdSupported: boolean = true): string[] {
   const mode = ModeManager.getInstance().getActiveMode();
   const typeLegendItems = mode.observation_types.map(t => `${t.emoji}${t.id}`).join(' ');
+
+  const fetchLine = fetchByIdSupported
+    ? `Fetch details: get_observations([IDs]) | Search: mem-search skill`
+    : `Fetch details: mem-search by title/context (short refs are display-only)`;
 
   return [
     `Legend: 🎯session ${typeLegendItems}`,
     `Format: ID TIME TYPE TITLE`,
-    `Fetch details: get_observations([IDs]) | Search: mem-search skill`,
+    fetchLine,
     ''
   ];
 }
@@ -90,13 +95,14 @@ function compactTime(time: string): string {
 export function renderAgentTableRow(
   obs: Observation,
   timeDisplay: string,
-  _config: ContextConfig
+  config: ContextConfig
 ): string {
   const title = obs.title || 'Untitled';
   const icon = ModeManager.getInstance().getTypeIcon(obs.type);
   const time = timeDisplay ? compactTime(timeDisplay) : '"';
+  const refId = formatContextReferenceId(obs.id, config);
 
-  return `${obs.id} ${time} ${icon} ${title}`;
+  return `${refId} ${time} ${icon} ${title}`;
 }
 
 export function renderAgentFullObservation(
@@ -110,8 +116,9 @@ export function renderAgentFullObservation(
   const icon = ModeManager.getInstance().getTypeIcon(obs.type);
   const time = timeDisplay ? compactTime(timeDisplay) : '"';
   const { readTokens, discoveryDisplay } = formatObservationTokenDisplay(obs, config);
+  const refId = formatContextReferenceId(obs.id, config);
 
-  output.push(`**${obs.id}** ${time} ${icon} **${title}**`);
+  output.push(`**${refId}** ${time} ${icon} **${title}**`);
   if (detailField) {
     output.push(detailField);
   }
