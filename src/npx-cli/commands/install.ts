@@ -2,6 +2,7 @@ import * as p from '@clack/prompts';
 import pc from 'picocolors';
 import { randomUUID } from 'crypto';
 import { loadTelemetryConfig, saveTelemetryConfig } from '../../services/telemetry/consent.js';
+import { captureCliEvent } from '../../services/telemetry/cli-telemetry.js';
 import { spawnHidden } from '../../shared/spawn.js';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
@@ -1252,10 +1253,11 @@ async function submitOnlineSignup(payload: { email: string; note: string; versio
 }
 
 /**
- * Final step of the install flow: ask for anonymized-telemetry consent.
- * Asked ONCE — any existing telemetry.json (enabled or not) means the user
- * already decided, and we never re-nag. Declining is persisted so re-installs
- * stay silent. Respects DO_NOT_TRACK (skip entirely: they already answered),
+ * Final step of the install flow: tell the user telemetry is on by default
+ * (opt-out) and let them decide. Asked ONCE — a telemetry.json with a recorded
+ * enabled decision means the user already chose, and we never re-nag. An
+ * installId-only config (written by the worker's ID bootstrap) does NOT count
+ * as a decision. Respects DO_NOT_TRACK (skip entirely: they already answered),
  * CI, and non-TTY. See docs/public/telemetry.mdx for what is/isn't collected.
  */
 async function promptTelemetryOptIn(): Promise<void> {
@@ -1263,24 +1265,25 @@ async function promptTelemetryOptIn(): Promise<void> {
   if (process.env.CI) return;
   const dnt = process.env.DO_NOT_TRACK;
   if (dnt !== undefined && dnt !== '' && dnt !== '0' && dnt !== 'false') return;
-  if (loadTelemetryConfig() !== null) return;
+  const existing = loadTelemetryConfig();
+  if (existing?.enabled !== undefined) return;
 
   p.log.message(pc.dim(
     'Anonymous install ID only — no prompts, file paths, code, or project names, ever.\n'
     + 'Details: https://docs.claude-mem.ai/telemetry · Change anytime: claude-mem telemetry disable',
   ));
   const consent = await p.confirm({
-    message: 'Would you mind sharing anonymized usage data with CMEM? We use this data to make the product better.',
+    message: 'Share anonymized usage data with CMEM? It is on by default and helps us make the product better.',
     initialValue: true,
   });
   if (p.isCancel(consent)) return;
 
   saveTelemetryConfig({
     enabled: consent === true,
-    installId: randomUUID(),
+    installId: existing?.installId || randomUUID(),
     decidedAt: new Date().toISOString(),
   });
-  log.success(consent ? 'Thanks! Anonymized usage sharing is on.' : 'No problem — telemetry stays off.');
+  log.success(consent ? 'Thanks! Anonymized usage sharing is on.' : 'No problem — telemetry is off.');
 }
 
 async function promptCmemOnlineOptIn(version: string): Promise<void> {
@@ -1370,6 +1373,8 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
     await runInstallCommandInner(options, summary);
   } catch (error: unknown) {
     if (error instanceof InstallAbortError) {
+      // error.category.id is OUR taxonomy id (error-taxonomy.ts), never a message.
+      await captureCliEvent('install_failed', { error_category: error.category.id }, { person: true });
       // Flush whatever warnings accrued before the abort, then print the
       // remediation headline and exit non-zero. ABORT must never reach the
       // "Installation Complete" path.
@@ -1391,6 +1396,7 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
 }
 
 async function runInstallCommandInner(options: InstallOptions, summary: InstallSummary): Promise<void> {
+  const installStartedAt = Date.now();
   const version = readPluginVersion();
 
   if (isInteractive) {
@@ -1800,6 +1806,17 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
       console.log('\nclaude-mem installed successfully!');
     }
   }
+
+  // After promptTelemetryOptIn so a just-made consent choice is honored.
+  // ide/provider/runtime_mode are installer enums, never user data.
+  await captureCliEvent('install_completed', {
+    ide: selectedIDEs.join(','),
+    provider: selectedProvider,
+    runtime_mode: selectedRuntime,
+    is_update: alreadyInstalled,
+    outcome: failedIDEs.length > 0 ? 'partial' : 'ok',
+    duration_ms: Date.now() - installStartedAt,
+  }, { person: true });
 }
 
 export async function runRepairCommand(): Promise<void> {

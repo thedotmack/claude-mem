@@ -16,6 +16,17 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'error_category',
   'locale',
   'is_ci',
+  // Bounded enums/counters only — never user content. endpoint is one of OUR
+  // route names, ide/provider/runtime_mode are installer enums, trigger is
+  // start|heartbeat, count/has_summary/is_update are volume/shape metrics.
+  'endpoint',
+  'ide',
+  'provider',
+  'runtime_mode',
+  'trigger',
+  'count',
+  'has_summary',
+  'is_update',
 ]);
 
 const MAX_STRING_LENGTH = 200;

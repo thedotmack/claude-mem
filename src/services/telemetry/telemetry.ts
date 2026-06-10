@@ -5,20 +5,7 @@ import {
   getOrCreateInstallId,
 } from './consent.js';
 import { scrubProperties } from './scrub.js';
-
-declare const __DEFAULT_PACKAGE_VERSION__: string;
-const packageVersion =
-  typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
-
-/**
- * Publishable PostHog project token (phc_...). Publishable tokens are safe to
- * embed: the capture endpoints are public POST-only ingestion. Empty for now —
- * the maintainer pastes the real phc_ token before enabling ingestion.
- * `CLAUDE_MEM_TELEMETRY_KEY` always overrides this constant.
- */
-const TELEMETRY_PUBLIC_KEY = '';
-
-const DEFAULT_HOST = 'https://us.i.posthog.com';
+import { getTelemetryApiKey, getTelemetryHost, buildBaseProperties, buildPersonSet } from './common.js';
 
 let client: PostHog | null = null;
 let isShutdown = false;
@@ -41,14 +28,10 @@ function hasConsent(): boolean {
   return value;
 }
 
-function getApiKey(): string {
-  return process.env.CLAUDE_MEM_TELEMETRY_KEY || TELEMETRY_PUBLIC_KEY;
-}
-
 function getClient(): PostHog {
   if (!client) {
-    client = new PostHog(getApiKey(), {
-      host: process.env.CLAUDE_MEM_TELEMETRY_HOST || DEFAULT_HOST,
+    client = new PostHog(getTelemetryApiKey(), {
+      host: getTelemetryHost(),
       flushAt: 20,
       flushInterval: 10000,
     });
@@ -56,23 +39,11 @@ function getClient(): PostHog {
   return client;
 }
 
-function buildBaseProperties(): Record<string, unknown> {
-  return {
-    version: packageVersion,
-    os: process.platform,
-    arch: process.arch,
-    runtime: process.versions.bun ? 'bun' : 'node',
-    runtime_version: process.versions.bun ?? process.versions.node,
-    is_ci: Boolean(process.env.CI),
-    locale: Intl.DateTimeFormat().resolvedOptions().locale,
-  };
-}
-
 /**
  * Capture a telemetry event. Fire-and-forget, synchronous, never throws,
  * never blocks. Ordering is deliberate:
  *
- *   1. Consent gate (DO_NOT_TRACK > env > telemetry.json > default OFF) —
+ *   1. Consent gate (DO_NOT_TRACK > env > telemetry.json > default ON) —
  *      without consent NOTHING happens, including debug printing.
  *   2. Whitelist scrub — only allowed primitive properties survive.
  *   3. Debug mode (CLAUDE_MEM_TELEMETRY_DEBUG=1) — print payload to stderr,
@@ -80,8 +51,20 @@ function buildBaseProperties(): Record<string, unknown> {
  *   4. No API key configured — no-op (telemetry ships dark until the
  *      publishable token lands).
  *   5. posthog.capture() — SDK queues in memory and batches in background.
+ *
+ * Two event classes (opts.person):
+ *   - Lifecycle events (worker_started, install_*) pass person: true. They are
+ *     low-volume and build an anonymous person profile keyed to the random
+ *     install UUID, which is what makes PostHog's retention / stickiness /
+ *     lifecycle / cohort insights work. Person properties are restricted to
+ *     PERSON_PROPERTY_KEYS — the same whitelisted enums as event properties.
+ *   - Everything else (high-volume operational events) stays profile-less.
  */
-export function captureEvent(event: string, props?: Record<string, unknown>): void {
+export function captureEvent(
+  event: string,
+  props?: Record<string, unknown>,
+  opts?: { person?: boolean }
+): void {
   try {
     // Once shutdown has flushed the client, late events (e.g. a request that
     // raced graceful stop) are dropped rather than queued in a new client
@@ -94,9 +77,13 @@ export function captureEvent(event: string, props?: Record<string, unknown>): vo
       ...buildBaseProperties(),
       ...(props ?? {}),
     });
-    // Anonymous events: no person profile processing. Added AFTER scrubbing —
-    // $-prefixed PostHog directives are not user data and bypass the whitelist.
-    properties.$process_person_profile = false;
+    // $-prefixed PostHog directives are not user data and bypass the whitelist;
+    // they are added AFTER scrubbing.
+    if (opts?.person) {
+      properties.$set = buildPersonSet(properties);
+    } else {
+      properties.$process_person_profile = false;
+    }
 
     if (process.env.CLAUDE_MEM_TELEMETRY_DEBUG === '1') {
       // Direct stderr write (not console.*): debug mode is a human running the
@@ -106,7 +93,7 @@ export function captureEvent(event: string, props?: Record<string, unknown>): vo
       return;
     }
 
-    if (!getApiKey()) {
+    if (!getTelemetryApiKey()) {
       return;
     }
 

@@ -119,6 +119,7 @@ export function buildStatusOutput(status: 'ready' | 'error', message?: string): 
 export class WorkerService implements WorkerRef {
   private server: Server;
   private startTime: number = Date.now();
+  private telemetryHeartbeat: ReturnType<typeof setInterval> | null = null;
   private mcpClient: Client;
 
   private mcpReady: boolean = false;
@@ -294,7 +295,18 @@ export class WorkerService implements WorkerRef {
     });
 
     logger.info('SYSTEM', 'Worker started', { host, port, pid: process.pid });
-    captureEvent('worker_started');
+    captureEvent('worker_started', {
+      trigger: 'start',
+      duration_ms: Date.now() - this.startTime,
+    }, { person: true });
+
+    // Long-lived workers would otherwise look like a single day of activity.
+    // A daily heartbeat makes DAU/WAU/retention computable from distinct_id.
+    // unref() so the timer never keeps a stopping process alive.
+    this.telemetryHeartbeat = setInterval(() => {
+      captureEvent('worker_started', { trigger: 'heartbeat' }, { person: true });
+    }, 24 * 60 * 60 * 1000);
+    this.telemetryHeartbeat.unref?.();
 
     this.initializeBackground().catch((error) => {
       logger.error('SYSTEM', 'Background initialization failed', {}, error as Error);
@@ -520,6 +532,10 @@ export class WorkerService implements WorkerRef {
       logger.info('TRANSCRIPT', 'Transcript watcher stopped');
     }
 
+    if (this.telemetryHeartbeat) {
+      clearInterval(this.telemetryHeartbeat);
+      this.telemetryHeartbeat = null;
+    }
     await shutdownTelemetry();
 
     await performGracefulShutdown({

@@ -21,6 +21,7 @@ import {
   planServerRuntimeUninstall,
   type InstallRuntimeId,
 } from './server-runtime-setup.js';
+import { captureCliEvent } from '../../services/telemetry/cli-telemetry.js';
 
 // #2568 — read the runtime the operator installed so uninstall can dispatch to
 // the matching teardown. The worker path is the default and is unchanged: only
@@ -396,6 +397,10 @@ export async function runUninstallCommand(): Promise<void> {
     ].join('\n'),
     'Note',
   );
+
+  // Capture BEFORE the data dir note becomes stale advice: consent and the
+  // install ID still live in ~/.claude-mem, which uninstall preserves.
+  await captureCliEvent('uninstall_completed', {}, { person: true });
 
   p.outro(pc.green('claude-mem has been uninstalled.'));
 }

@@ -36,6 +36,7 @@ export async function processAgentResponse(
   projectRoot?: string,
   modelId?: string
 ): Promise<void> {
+  const processingStartedAt = Date.now();
   session.lastGeneratorActivity = Date.now();
 
   if (text) {
@@ -171,7 +172,12 @@ export async function processAgentResponse(
   });
 
   session.lastSummaryStored = result.summaryId !== null;
-  captureEvent('session_compressed', { outcome: 'ok' });
+  captureEvent('session_compressed', {
+    outcome: 'ok',
+    duration_ms: Date.now() - processingStartedAt,
+    count: result.observationIds.length,
+    has_summary: session.lastSummaryStored,
+  });
 
   if (summary && (summary.skipped || session.lastSummaryStored)) {
     await ingestSummary({
