@@ -45,6 +45,13 @@ export async function processAgentResponse(
 
   const parsed = parseAgentXml(text, session.contentSessionId);
 
+  // Provider enum for telemetry, derived once so the invalid-output and
+  // success paths stamp the same value.
+  const providerName =
+    session.currentProvider ??
+    ({ SDK: 'claude', Gemini: 'gemini', OpenRouter: 'openrouter' } as Record<string, string>)[agentName] ??
+    'claude';
+
   if (!parsed.valid) {
     // Classify the non-XML output so a dropped batch is VISIBLE, not silent
     // (plan-11, #2485). Attach a preview for diagnostics.
@@ -74,6 +81,18 @@ export async function processAgentResponse(
         outputClass,
         consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
         threshold: INVALID_OUTPUT_RESPAWN_THRESHOLD,
+      });
+      // Respawn-gated telemetry ONLY (never per invalid output — volume).
+      // Closed enums and counts; the raw model output never leaves the box.
+      captureEvent('session_compressed', {
+        outcome: 'invalid_output',
+        invalid_output_class: outputClass,
+        consecutive_invalid_outputs: session.consecutiveInvalidOutputs,
+        respawn_triggered: true,
+        provider: providerName,
+        model: typeof modelId === 'string' && modelId ? modelId : 'unknown',
+        ide: session.platformSource,
+        hook: session.lastGeneratorSource,
       });
       await sessionManager.respawnPoisonedSession(session.sessionDbId);
       return;
@@ -111,6 +130,7 @@ export async function processAgentResponse(
   // ground truth via `git cat-file -e` in the session's repo and strip
   // fabricated hashes from the persisted text. projectRoot carries the cwd of
   // the most recently observed tool-use.
+  let fabricatedCount = 0;
   if (summaryForStore) {
     const { fabricated } = verifyCommitHashesInText(
       [
@@ -124,6 +144,8 @@ export async function processAgentResponse(
       projectRoot,
       session.contentSessionId
     );
+
+    fabricatedCount = fabricated.length;
 
     if (fabricated.length > 0) {
       logger.warn('PARSER', `${agentName} summary referenced fabricated commit hash(es); flagging before persist`, {
@@ -175,10 +197,6 @@ export async function processAgentResponse(
 
   // Telemetry: counts, enums, and REAL usage only (lastUsage is never an
   // estimate — providers leave it null when the API gave no usage split).
-  const providerName =
-    session.currentProvider ??
-    ({ SDK: 'claude', Gemini: 'gemini', OpenRouter: 'openrouter' } as Record<string, string>)[agentName] ??
-    'claude';
   const typeCounts: Record<string, number> = { bugfix: 0, discovery: 0, decision: 0, refactor: 0, other: 0 };
   for (const obs of labeledObservations) {
     const bucket = obs.type in typeCounts && obs.type !== 'other' ? obs.type : 'other';
@@ -205,6 +223,10 @@ export async function processAgentResponse(
     hook: session.lastGeneratorSource,
     endpoint_class: session.endpointClass,
     compression_ms: compressionMs,
+    // Fabrication signals live HERE (not at the ClaudeProvider merge) so they
+    // flow through all three emit paths: immediate, deferred, and no-result.
+    fabrication_detected: fabricatedCount > 0,
+    fabricated_count: fabricatedCount,
     observation_type: labeledObservations.length > 0 ? dominantType : undefined,
     obs_type_bugfix: typeCounts.bugfix,
     obs_type_discovery: typeCounts.discovery,
