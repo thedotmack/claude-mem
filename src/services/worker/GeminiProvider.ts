@@ -207,7 +207,9 @@ export class GeminiProvider {
       : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
 
     session.conversationHistory.push({ role: 'user', content: initPrompt });
-    let initResponse: { content: string; tokensUsed?: number };
+    let initResponse: { content: string; tokensUsed?: number; inputTokens?: number; outputTokens?: number };
+    session.lastPromptSentAt = Date.now();
+    session.lastGeneratorSource = 'init';
     try {
       initResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
     } catch (error: unknown) {
@@ -224,6 +226,9 @@ export class GeminiProvider {
       const tokensUsed = initResponse.tokensUsed || 0;
       session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);  
       session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
+      session.lastUsage = initResponse.inputTokens || initResponse.outputTokens
+        ? { input: initResponse.inputTokens || 0, output: initResponse.outputTokens || 0 }
+        : null;
       await processAgentResponse(initResponse.content, session, this.dbManager, this.sessionManager, worker, tokensUsed, null, 'Gemini', undefined, model);
     } else {
       logger.error('SDK', 'Empty Gemini init response - session may lack context', { sessionId: session.sessionDbId, model });
@@ -303,6 +308,8 @@ export class GeminiProvider {
     });
 
     session.conversationHistory.push({ role: 'user', content: obsPrompt });
+    session.lastPromptSentAt = Date.now();
+    session.lastGeneratorSource = 'ingest';
     const obsResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
 
     let tokensUsed = 0;
@@ -311,6 +318,9 @@ export class GeminiProvider {
       tokensUsed = obsResponse.tokensUsed || 0;
       session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
       session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
+      session.lastUsage = obsResponse.inputTokens || obsResponse.outputTokens
+        ? { input: obsResponse.inputTokens || 0, output: obsResponse.outputTokens || 0 }
+        : null;
     }
 
     if (obsResponse.content) {
@@ -346,6 +356,8 @@ export class GeminiProvider {
     }, mode);
 
     session.conversationHistory.push({ role: 'user', content: summaryPrompt });
+    session.lastPromptSentAt = Date.now();
+    session.lastGeneratorSource = 'summarize';
     const summaryResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
 
     let tokensUsed = 0;
@@ -354,6 +366,9 @@ export class GeminiProvider {
       tokensUsed = summaryResponse.tokensUsed || 0;
       session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
       session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
+      session.lastUsage = summaryResponse.inputTokens || summaryResponse.outputTokens
+        ? { input: summaryResponse.inputTokens || 0, output: summaryResponse.outputTokens || 0 }
+        : null;
     }
 
     if (summaryResponse.content) {
@@ -425,7 +440,7 @@ export class GeminiProvider {
     apiKey: string,
     model: GeminiModel,
     rateLimitingEnabled: boolean
-  ): Promise<{ content: string; tokensUsed?: number }> {
+  ): Promise<{ content: string; tokensUsed?: number; inputTokens?: number; outputTokens?: number }> {
     const truncatedHistory = this.truncateHistory(history);
     const contents = this.conversationToGeminiContents(truncatedHistory);
     const totalChars = truncatedHistory.reduce((sum, m) => sum + m.content.length, 0);
@@ -497,7 +512,12 @@ export class GeminiProvider {
     const content = data.candidates[0].content.parts[0].text;
     const tokensUsed = data.usageMetadata?.totalTokenCount;
 
-    return { content, tokensUsed };
+    return {
+      content,
+      tokensUsed,
+      inputTokens: data.usageMetadata?.promptTokenCount,
+      outputTokens: data.usageMetadata?.candidatesTokenCount,
+    };
   }
 
   private getGeminiConfig(): { apiKey: string; model: GeminiModel; rateLimitingEnabled: boolean } {

@@ -41,6 +41,12 @@ export interface ActiveSession {
   pendingAgentType?: string | null;
   abortReason?: 'idle' | 'shutdown' | 'overflow' | 'restart-guard' | 'quota' | string | null;
   respawnTimer?: ReturnType<typeof setTimeout>;
+  /** When the latest compression prompt was dispatched to the model — telemetry compression_ms. */
+  lastPromptSentAt?: number | null;
+  /** Real token usage from the latest model response (never estimated) — telemetry tokens_input/output. */
+  lastUsage?: { input: number; output: number } | null;
+  /** What triggered the running generator ('init' | 'ingest' | 'summarize') — telemetry hook. */
+  lastGeneratorSource?: string;
 }
 
 export interface PendingMessage {

@@ -27,6 +27,28 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'count',
   'has_summary',
   'is_update',
+  // context_injected depth/economics — integers, booleans, and our own enums.
+  'observation_count',
+  'session_count',
+  'timeline_depth_days',
+  'has_session_summary',
+  'obs_type_bugfix',
+  'obs_type_discovery',
+  'obs_type_decision',
+  'obs_type_refactor',
+  'obs_type_other',
+  'tokens_injected',
+  'tokens_saved_vs_naive',
+  'mode',
+  'search_strategy',
+  // session_compressed depth — model id, our trigger names, real token usage.
+  'observation_type',
+  'hook',
+  'compression_ms',
+  'tokens_input',
+  'tokens_output',
+  'compression_ratio',
+  'model',
 ]);
 
 const MAX_STRING_LENGTH = 200;

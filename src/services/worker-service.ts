@@ -295,18 +295,10 @@ export class WorkerService implements WorkerRef {
     });
 
     logger.info('SYSTEM', 'Worker started', { host, port, pid: process.pid });
-    captureEvent('worker_started', {
-      trigger: 'start',
-      duration_ms: Date.now() - this.startTime,
-    }, { person: true });
-
-    // Long-lived workers would otherwise look like a single day of activity.
-    // A daily heartbeat makes DAU/WAU/retention computable from distinct_id.
-    // unref() so the timer never keeps a stopping process alive.
-    this.telemetryHeartbeat = setInterval(() => {
-      captureEvent('worker_started', { trigger: 'heartbeat' }, { person: true });
-    }, 24 * 60 * 60 * 1000);
-    this.telemetryHeartbeat.unref?.();
+    // worker_started telemetry fires at the end of initializeBackground, once
+    // the DB is up: that lets the event carry the install's IDE (read from
+    // session history) as a person property, so IDE-level DAU/retention
+    // breakdowns are non-null for installs that never re-run the installer.
 
     this.initializeBackground().catch((error) => {
       logger.error('SYSTEM', 'Background initialization failed', {}, error as Error);
@@ -399,6 +391,37 @@ export class WorkerService implements WorkerRef {
       this.initializationCompleteFlag = true;
       this.resolveInitialization();
       logger.info('SYSTEM', 'Core initialization complete (DB + search ready)');
+
+      // Lifecycle telemetry (person profile = anonymous install UUID). ide is
+      // this install's dominant client read from session history — a bounded
+      // platform enum (claude-code / cursor / ...), never user data.
+      const lifecycleProps: Record<string, unknown> = {
+        runtime_mode: 'worker',
+        provider: settings.CLAUDE_MEM_PROVIDER,
+        mode: settings.CLAUDE_MEM_MODE,
+      };
+      try {
+        const row = this.dbManager.getConnection()
+          .query(`SELECT platform_source FROM sessions
+                  WHERE platform_source IS NOT NULL AND platform_source != ''
+                  ORDER BY id DESC LIMIT 1`)
+          .get() as { platform_source?: string } | null;
+        if (row?.platform_source) lifecycleProps.ide = row.platform_source;
+      } catch {
+        // Fresh install with no sessions yet — ide arrives once sessions exist.
+      }
+      captureEvent('worker_started', {
+        trigger: 'start',
+        duration_ms: Date.now() - this.startTime,
+        ...lifecycleProps,
+      }, { person: true });
+      // Long-lived workers would otherwise look like a single day of activity.
+      // A daily heartbeat makes DAU/WAU/retention computable from distinct_id.
+      // unref() so the timer never keeps a stopping process alive.
+      this.telemetryHeartbeat = setInterval(() => {
+        captureEvent('worker_started', { trigger: 'heartbeat', ...lifecycleProps }, { person: true });
+      }, 24 * 60 * 60 * 1000);
+      this.telemetryHeartbeat.unref?.();
 
       await this.startTranscriptWatcher(settings);
 

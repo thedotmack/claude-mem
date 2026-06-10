@@ -178,6 +178,8 @@ export class OpenRouterProvider {
     session.conversationHistory.push({ role: 'user', content: initPrompt });
 
     try {
+      session.lastPromptSentAt = Date.now();
+      session.lastGeneratorSource = 'init';
       const initResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, apiUrl, siteUrl, appName);
       await this.handleInitResponse(initResponse, session, worker, model);
     } catch (error: unknown) {
@@ -221,7 +223,7 @@ export class OpenRouterProvider {
   }
 
   private async handleInitResponse(
-    initResponse: { content: string; tokensUsed?: number },
+    initResponse: { content: string; tokensUsed?: number; inputTokens?: number; outputTokens?: number },
     session: ActiveSession,
     worker: WorkerRef | undefined,
     model: string
@@ -231,6 +233,9 @@ export class OpenRouterProvider {
       const tokensUsed = initResponse.tokensUsed || 0;
       session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
       session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
+      session.lastUsage = initResponse.inputTokens || initResponse.outputTokens
+        ? { input: initResponse.inputTokens || 0, output: initResponse.outputTokens || 0 }
+        : null;
 
       await processAgentResponse(
         initResponse.content, session, this.dbManager, this.sessionManager,
@@ -308,6 +313,8 @@ export class OpenRouterProvider {
     });
 
     session.conversationHistory.push({ role: 'user', content: obsPrompt });
+    session.lastPromptSentAt = Date.now();
+    session.lastGeneratorSource = 'ingest';
     const obsResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, apiUrl, siteUrl, appName);
 
     let tokensUsed = 0;
@@ -316,6 +323,9 @@ export class OpenRouterProvider {
       tokensUsed = obsResponse.tokensUsed || 0;
       session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
       session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
+      session.lastUsage = obsResponse.inputTokens || obsResponse.outputTokens
+        ? { input: obsResponse.inputTokens || 0, output: obsResponse.outputTokens || 0 }
+        : null;
     }
 
     await processAgentResponse(
@@ -350,6 +360,8 @@ export class OpenRouterProvider {
     }, mode);
 
     session.conversationHistory.push({ role: 'user', content: summaryPrompt });
+    session.lastPromptSentAt = Date.now();
+    session.lastGeneratorSource = 'summarize';
     const summaryResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, apiUrl, siteUrl, appName);
 
     let tokensUsed = 0;
@@ -358,6 +370,9 @@ export class OpenRouterProvider {
       tokensUsed = summaryResponse.tokensUsed || 0;
       session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
       session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
+      session.lastUsage = summaryResponse.inputTokens || summaryResponse.outputTokens
+        ? { input: summaryResponse.inputTokens || 0, output: summaryResponse.outputTokens || 0 }
+        : null;
     }
 
     await processAgentResponse(
@@ -432,7 +447,7 @@ export class OpenRouterProvider {
     apiUrl: string,
     siteUrl?: string,
     appName?: string
-  ): Promise<{ content: string; tokensUsed?: number }> {
+  ): Promise<{ content: string; tokensUsed?: number; inputTokens?: number; outputTokens?: number }> {
     const truncatedHistory = this.truncateHistory(history);
     const messages = this.conversationToOpenAIMessages(truncatedHistory);
     const totalChars = truncatedHistory.reduce((sum, m) => sum + m.content.length, 0);
@@ -510,6 +525,8 @@ export class OpenRouterProvider {
 
     const content = data.choices[0].message.content;
     const tokensUsed = data.usage?.total_tokens;
+    const realInputTokens = data.usage?.prompt_tokens;
+    const realOutputTokens = data.usage?.completion_tokens;
 
     if (tokensUsed) {
       const inputTokens = data.usage?.prompt_tokens || 0;
@@ -533,7 +550,7 @@ export class OpenRouterProvider {
       }
     }
 
-    return { content, tokensUsed };
+    return { content, tokensUsed, inputTokens: realInputTokens, outputTokens: realOutputTokens };
   }
 
   private getOpenRouterConfig(): { apiKey: string; model: string; apiUrl: string; siteUrl?: string; appName?: string } {
