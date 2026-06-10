@@ -136,6 +136,74 @@ describe('scrubProperties', () => {
     expect(result.days_since_last_obs).toBe(0);
   });
 
+  it('keeps the retrieval quality keys with primitive values', () => {
+    const result = scrubProperties({
+      result_count: 0,
+      chroma_available: false,
+      fallback_reason: 'chroma_connection',
+    });
+
+    expect(result).toEqual({
+      result_count: 0,
+      chroma_available: false,
+      fallback_reason: 'chroma_connection',
+    });
+  });
+
+  it('keeps the compression trust keys with primitive values', () => {
+    const result = scrubProperties({
+      fabrication_detected: true,
+      fabricated_count: 2,
+      invalid_output_class: 'poisoned',
+      consecutive_invalid_outputs: 3,
+      respawn_triggered: true,
+      abort_reason: 'restart_guard',
+    });
+
+    expect(Object.keys(result)).toHaveLength(6);
+    expect(result.fabrication_detected).toBe(true);
+    expect(result.fabricated_count).toBe(2);
+    expect(result.invalid_output_class).toBe('poisoned');
+    expect(result.consecutive_invalid_outputs).toBe(3);
+    expect(result.respawn_triggered).toBe(true);
+    expect(result.abort_reason).toBe('restart_guard');
+  });
+
+  it('keeps the worker lifecycle keys with primitive values', () => {
+    const result = scrubProperties({
+      previous_shutdown: 'crash',
+      previous_uptime_seconds: 86400,
+      uptime_seconds: 3600,
+      shutdown_reason: 'restart',
+      process_rss_mb: 187,
+      heap_used_mb: 92,
+    });
+
+    expect(Object.keys(result)).toHaveLength(6);
+    expect(result.previous_shutdown).toBe('crash');
+    expect(result.previous_uptime_seconds).toBe(86400);
+    expect(result.uptime_seconds).toBe(3600);
+    expect(result.shutdown_reason).toBe('restart');
+    expect(result.process_rss_mb).toBe(187);
+    expect(result.heap_used_mb).toBe(92);
+  });
+
+  it('keeps the hook failure keys with primitive values', () => {
+    const result = scrubProperties({
+      hook_type: 'observation',
+      error_mode: 'worker_unavailable',
+      consecutive_failures: 3,
+      threshold_tripped: true,
+    });
+
+    expect(result).toEqual({
+      hook_type: 'observation',
+      error_mode: 'worker_unavailable',
+      consecutive_failures: 3,
+      threshold_tripped: true,
+    });
+  });
+
   it('drops unknown keys silently', () => {
     const result = scrubProperties({
       version: '1.0.0',
