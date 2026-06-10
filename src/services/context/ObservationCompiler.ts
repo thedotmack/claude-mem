@@ -19,28 +19,6 @@ function isDreamProject(project: string): boolean {
   return project.endsWith(':dream');
 }
 
-export function prioritizeProjectRows<T extends { project?: string; created_at_epoch: number }>(
-  rows: T[],
-  projects: string[],
-  limit: number
-): T[] {
-  const dreamProjects = new Set(projects.filter(isDreamProject));
-  if (dreamProjects.size === 0) {
-    return rows.slice(0, limit);
-  }
-
-  const preferred = rows.filter((row) => row.project && dreamProjects.has(row.project));
-  const fallback = rows.filter((row) => !row.project || !dreamProjects.has(row.project));
-  if (fallback.length === 0 || limit <= 1) {
-    return [...preferred, ...fallback].slice(0, limit);
-  }
-
-  const preferredLimit = Math.max(0, limit - 1);
-  const selectedPreferred = preferred.slice(0, preferredLimit);
-  const selectedFallback = fallback.slice(0, limit - selectedPreferred.length);
-  return [...selectedPreferred, ...selectedFallback];
-}
-
 export function queryObservations(
   db: SessionStore,
   project: string,
@@ -160,7 +138,7 @@ export function queryObservationsMulti(
     queryLimit
   ) as Observation[];
 
-  return prioritizeProjectRows(rows, projects, config.totalObservationCount);
+  return rows.slice(0, config.totalObservationCount);
 }
 
 export function countObservationsByProjects(db: SessionStore, projects: string[]): number {
@@ -168,6 +146,17 @@ export function countObservationsByProjects(db: SessionStore, projects: string[]
   const projectPlaceholders = projects.map(() => '?').join(',');
   const row = db.db.prepare(`
     SELECT COUNT(*) as count FROM observations
+    WHERE project IN (${projectPlaceholders})
+       OR merged_into_project IN (${projectPlaceholders})
+  `).get(...projects, ...projects) as { count: number } | undefined;
+  return row?.count ?? 0;
+}
+
+export function countSummariesByProjects(db: SessionStore, projects: string[]): number {
+  if (projects.length === 0) return 0;
+  const projectPlaceholders = projects.map(() => '?').join(',');
+  const row = db.db.prepare(`
+    SELECT COUNT(*) as count FROM session_summaries
     WHERE project IN (${projectPlaceholders})
        OR merged_into_project IN (${projectPlaceholders})
   `).get(...projects, ...projects) as { count: number } | undefined;
@@ -204,7 +193,7 @@ export function querySummariesMulti(
     LIMIT ?
   `).all(...projects, ...projects, queryLimit) as SessionSummary[];
 
-  return prioritizeProjectRows(rows, projects, resultLimit);
+  return rows.slice(0, resultLimit);
 }
 
 export function cwdToDashed(cwd: string): string {
@@ -277,7 +266,9 @@ export function getPriorSessionMessages(
     return { assistantMessage: '' };
   }
 
-  const priorSessionObs = observations.find(obs => obs.memory_session_id !== currentSessionId);
+  const priorSessionObs = observations.find(
+    obs => obs.memory_session_id !== currentSessionId && !isDreamProject(obs.project ?? '')
+  );
   if (!priorSessionObs) {
     return { assistantMessage: '' };
   }

@@ -10,6 +10,8 @@ import type { ContextInput, ContextConfig, Observation, SessionSummary } from '.
 import { loadContextConfig } from './ContextConfigLoader.js';
 import { calculateTokenEconomics } from './TokenCalculator.js';
 import {
+  countObservationsByProjects,
+  countSummariesByProjects,
   queryObservations,
   queryObservationsMulti,
   querySummaries,
@@ -181,11 +183,22 @@ export async function generateContextWithStats(
   }
 
   try {
-    const observations = projects.length > 1
-      ? queryObservationsMulti(db, projects, config)
+    const dreamProjects = projects.filter((candidate) => candidate.endsWith(':dream'));
+    const rawProjects = projects.filter((candidate) => !candidate.endsWith(':dream'));
+    const useDreamQueries = dreamProjects.length > 0 && (
+      countObservationsByProjects(db, dreamProjects) > 0 ||
+      countSummariesByProjects(db, dreamProjects) > 0
+    );
+    const observationProjects = useDreamQueries ? projects : rawProjects;
+    const summaryProjects = useDreamQueries ? projects : rawProjects;
+    const useObservationMultiQuery = observationProjects.length > 1;
+    const useSummaryMultiQuery = summaryProjects.length > 1;
+
+    const observations = useObservationMultiQuery
+      ? queryObservationsMulti(db, observationProjects, config)
       : queryObservations(db, project, config);
-    const summaries = projects.length > 1
-      ? querySummariesMulti(db, projects, config)
+    const summaries = useSummaryMultiQuery
+      ? querySummariesMulti(db, summaryProjects, config)
       : querySummaries(db, project, config);
 
     if (observations.length === 0 && summaries.length === 0) {

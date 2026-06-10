@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { buildTimeline } from '../../src/services/context/index.js';
-import { prioritizeProjectRows } from '../../src/services/context/ObservationCompiler.js';
+import { getPriorSessionMessages } from '../../src/services/context/ObservationCompiler.js';
 import type { Observation, SummaryTimelineItem } from '../../src/services/context/types.js';
 
 function createTestObservation(overrides: Partial<Observation> = {}): Observation {
@@ -135,38 +135,18 @@ describe('buildTimeline', () => {
     });
 });
 
-describe('prioritizeProjectRows', () => {
-    it('keeps one raw fallback row when dream rows fill the limit', () => {
-      const rows = [
-        { project: 'proj:dream', created_at_epoch: 5000, id: 1 },
-        { project: 'proj:dream', created_at_epoch: 4000, id: 2 },
-        { project: 'proj', created_at_epoch: 3000, id: 3 },
-      ];
-
-      const prioritized = prioritizeProjectRows(rows, ['proj:dream', 'proj'], 2);
-
-      expect(prioritized).toHaveLength(2);
-      expect(prioritized[0]?.project).toBe('proj:dream');
-      expect(prioritized[1]?.project).toBe('proj');
-    });
-
-    it('includes worktree-specific dream rows ahead of raw worktree fallback', () => {
-      const rows = [
-        { project: 'main-repo/my-worktree:dream', created_at_epoch: 5000, id: 1 },
-        { project: 'main-repo', created_at_epoch: 4000, id: 2 },
-        { project: 'main-repo/my-worktree', created_at_epoch: 3000, id: 3 },
-      ];
-
-      const prioritized = prioritizeProjectRows(
-        rows,
-        ['main-repo:dream', 'main-repo/my-worktree:dream', 'main-repo', 'main-repo/my-worktree'],
-        3,
+describe('getPriorSessionMessages', () => {
+    it('skips dream rows when choosing the prior raw transcript session', () => {
+      const result = getPriorSessionMessages(
+        [
+          { memory_session_id: 'dream-session', project: 'proj:dream' } as Observation,
+          { memory_session_id: 'raw-session', project: 'proj' } as Observation,
+        ],
+        { showLastMessage: true } as any,
+        'current-session',
+        '/tmp/proj',
       );
 
-      expect(prioritized.map((row) => row.project)).toEqual([
-        'main-repo/my-worktree:dream',
-        'main-repo',
-        'main-repo/my-worktree',
-      ]);
+      expect(result).toEqual({ userMessage: '', assistantMessage: '' });
     });
 });

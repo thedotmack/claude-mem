@@ -58,7 +58,8 @@ describe('getPriorSessionMessages — dot in cwd component (#2401)', () => {
     const { getPriorSessionMessages } = await import('../../src/services/context/ObservationCompiler.js');
 
     const observations = [
-      { memory_session_id: priorSessionId } as any,
+      { memory_session_id: 'dream-session-2401', project: 'some-project:dream' } as any,
+      { memory_session_id: priorSessionId, project: 'some-project' } as any,
     ];
     const config = { showLastMessage: true } as any;
 
