@@ -4,6 +4,36 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.5.0] - 2026-06-10
+
+## Anonymous usage analytics (PostHog) — and the v13.5.0 release
+
+claude-mem now ships anonymous, privacy-hardened usage analytics. This is the first release with any telemetry, and it follows the standard dev-tool model (Homebrew, Next.js, Astro): **on by default, one command to opt out, and incapable of carrying your content by construction.**
+
+### What's collected
+
+Eight events (`install_completed`, `install_failed`, `uninstall_completed`, `worker_started`, `session_compressed`, `context_injected`, `search_performed`, `error_occurred`), identified by a random install UUID generated locally. Every property passes a strict whitelist scrubber — only numbers, booleans, and values from closed sets we define (platform, version, IDE choice, durations, counts) can leave your machine.
+
+**Never collected — enforced by whitelist, not blocklist:** prompts or conversation content, file paths, source code, project or repo names, search queries, error messages, IP addresses, hardware identifiers, env values, emails, or any PII.
+
+### Opting out
+
+Any one of these turns it off:
+
+- `npx claude-mem telemetry disable`
+- `DO_NOT_TRACK=1` (the universal standard — overrides everything)
+- `CLAUDE_MEM_TELEMETRY=0`
+
+`npx claude-mem telemetry status` shows the current state and which setting decided it. The installer asks once at the end of `npx claude-mem install`, and your answer is never re-asked.
+
+Full documentation of every field and event: https://docs.claude-mem.ai/telemetry
+
+### Also in this release
+
+- Install flow: live progress for dependency steps and a consent prompt at the end of install
+- `npx claude-mem telemetry [status|enable|disable]` CLI command
+- Worker shutdown now flushes telemetry with a hard 3s bound — never delays stop
+
 ## [13.4.2] - 2026-06-09
 
 ## What's new
