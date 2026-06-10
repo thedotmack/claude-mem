@@ -272,6 +272,62 @@ async function waitForWorkerReadiness(timeoutMs: number = HOOK_READINESS_TIMEOUT
   return false;
 }
 
+/**
+ * Read the version the worker self-reports on GET /api/health. The payload
+ * carries pid/version even on a 503 (degraded queue) response, so the body is
+ * parsed regardless of status — same contract as restart-verify.ts. Returns
+ * null when the worker is unreachable or the payload is malformed.
+ */
+async function fetchWorkerHealthVersion(): Promise<string | null> {
+  try {
+    const response = await workerHttpRequest('/api/health', { timeoutMs: HEALTH_CHECK_TIMEOUT_MS });
+    const body = await response.json() as { version?: unknown };
+    return typeof body.version === 'string' ? body.version : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * After POSTing /api/admin/restart, the OLD worker spawns its own successor
+ * once its port closes (runShutdownSequence in src/services/worker-shutdown.ts;
+ * plans/2026-06-10-worker-restart-single-source-of-truth.md). Wait for that
+ * successor — a worker answering /api/health with the installed plugin's
+ * version — instead of immediately lazy-spawning into the dying worker
+ * (the old behavior, which caused the spawn ping-pong).
+ */
+async function waitForRecycledWorker(
+  pluginVersion: string,
+  timeoutMs: number = HOOK_READINESS_TIMEOUT_MS
+): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const observedVersion = await fetchWorkerHealthVersion();
+    if (observedVersion === pluginVersion) return true;
+
+    const remainingMs = timeoutMs - (Date.now() - start);
+    if (remainingMs <= 0) break;
+    await new Promise<void>(resolve => setTimeout(resolve, Math.min(500, remainingMs)));
+  }
+  return false;
+}
+
+/**
+ * Amplifier guard: a hook recycles a stale worker AT MOST once per
+ * invocation. If the worker that became ready still reports a mismatched
+ * version, warn and return — the NEXT hook event retries. Recycling again in
+ * the same invocation re-creates the restart storm.
+ */
+async function warnIfVersionStillMismatched(expectedPluginVersion: string): Promise<void> {
+  const observedVersion = await fetchWorkerHealthVersion();
+  if (observedVersion !== null && observedVersion !== expectedPluginVersion) {
+    logger.warn('SYSTEM', 'Worker is ready but still reports a stale version; not recycling again in this hook invocation (one recycle per hook event)', {
+      pluginVersion: expectedPluginVersion,
+      workerVersion: observedVersion,
+    });
+  }
+}
+
 async function isWorkerPortAlive(): Promise<boolean> {
   let healthy: boolean;
   try {
@@ -291,23 +347,30 @@ async function isWorkerPortAlive(): Promise<boolean> {
 }
 
 export async function ensureWorkerRunning(): Promise<boolean> {
+  // Installed-plugin version captured when the alive branch runs, so every
+  // post-readiness path below can run the one-shot amplifier check
+  // (warnIfVersionStillMismatched). Stays null when no worker was alive
+  // (plain cold-start lazy-spawn — no recycle happened, nothing to amplify)
+  // or when the plugin version is unreadable ('unknown').
+  let expectedPluginVersion: string | null = null;
+
   if (await isWorkerPortAlive()) {
     // A worker is already alive. If it is a DIFFERENT version than the
     // installed plugin (e.g. the user upgraded but the previous worker is
     // still squatting the port), recycle it so the current version takes
     // over — otherwise the stale worker keeps serving indefinitely.
-    //
-    // Previously this branch only logged the mismatch (debug level) and
-    // returned, so a stale worker was reused across upgrades. We now act on
-    // it: ask the running worker to restart via its localhost-only admin
-    // endpoint, then fall through to the lazy-spawn + readiness path so the
-    // current-version worker is (re)started and awaited.
     const { matches, pluginVersion, workerVersion } = await checkVersionMatch(getWorkerPort());
+    if (pluginVersion !== 'unknown') {
+      expectedPluginVersion = pluginVersion;
+    }
     if (matches) {
       const ready = await waitForWorkerReadiness();
       if (!ready) {
         logger.warn('SYSTEM', 'Worker is healthy but not ready; skipping hook API call');
         return false;
+      }
+      if (expectedPluginVersion !== null) {
+        await warnIfVersionStillMismatched(expectedPluginVersion);
       }
       return true;
     }
@@ -320,6 +383,28 @@ export async function ensureWorkerRunning(): Promise<boolean> {
       await workerHttpRequest('/api/admin/restart', {
         method: 'POST',
         timeoutMs: HEALTH_CHECK_TIMEOUT_MS,
+      });
+      // Do NOT lazy-spawn immediately after the POST — the old worker is
+      // still dying and owns the port, so a spawn here races the corpse (the
+      // observed restart ping-pong). The dying worker spawns its own
+      // successor once its port closes (worker-shutdown.ts; see
+      // plans/2026-06-10-worker-restart-single-source-of-truth.md); wait for
+      // that successor and only fall through to lazy-spawn as the safety net
+      // when it never appears.
+      if (await waitForRecycledWorker(pluginVersion)) {
+        const ready = await waitForWorkerReadiness();
+        if (!ready) {
+          logger.warn('SYSTEM', 'Recycled worker appeared but did not become ready; skipping hook API call');
+          return false;
+        }
+        if (expectedPluginVersion !== null) {
+          await warnIfVersionStillMismatched(expectedPluginVersion);
+        }
+        return true;
+      }
+      logger.warn('SYSTEM', 'No successor worker appeared after recycle; falling through to lazy-spawn', {
+        pluginVersion,
+        workerVersion,
       });
     } catch (error: unknown) {
       logger.debug('SYSTEM', 'Worker restart request failed; falling through to lazy-spawn', {
@@ -376,6 +461,11 @@ export async function ensureWorkerRunning(): Promise<boolean> {
   if (!ready) {
     logger.warn('SYSTEM', 'Worker lazy-spawned but did not become ready before hook readiness timeout');
     return false;
+  }
+  // Amplifier guard: even if the worker that won the port is still stale,
+  // never recycle a second time in the same hook invocation.
+  if (expectedPluginVersion !== null) {
+    await warnIfVersionStillMismatched(expectedPluginVersion);
   }
   return true;
 }

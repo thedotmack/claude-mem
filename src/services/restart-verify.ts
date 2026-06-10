@@ -6,9 +6,11 @@
  * graph (bun:sqlite, MCP SDK, telemetry, supervisor) and ends with an
  * isMainModule bootstrap, which makes it unsafe to import from `bun test`.
  *
- * Phase 2 of the worker-restart plan: `restart` must prove the NEW worker is
- * up (different pid than the old worker, and self-reporting the same baked
- * version as the CLI process that initiated the restart) or exit non-zero.
+ * `restart` must prove the NEW worker is up (different pid than the old
+ * worker, and self-reporting the same baked version as the CLI process that
+ * initiated the restart) or exit non-zero — a restart that silently leaves
+ * the old worker serving is worse than a failed one
+ * (plans/2026-06-10-worker-restart-single-source-of-truth.md).
  * Verification reads only the `pid` and `version` fields of GET /api/health
  * (src/services/server/Server.ts), which the worker reports from its own
  * baked __DEFAULT_PACKAGE_VERSION__ constant.

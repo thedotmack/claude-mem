@@ -7,6 +7,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
 import { getCurrentWorkerPid, verifyRestartedWorker } from './restart-verify.js';
+import { runShutdownSequence, type WorkerShutdownReason } from './worker-shutdown.js';
 import { DATA_DIR, DB_PATH, ensureDir, MARKETPLACE_ROOT } from '../shared/paths.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { getUptimeSeconds } from '../shared/uptime.js';
@@ -119,13 +120,10 @@ export function buildStatusOutput(status: 'ready' | 'error', message?: string): 
   };
 }
 
-/**
- * Closed enum for worker_stopped telemetry. Must stay in sync with the
- * shutdown_reason whitelist documentation (scrub.ts / telemetry.mdx):
- * stop = /api/admin/shutdown (CLI `stop`), restart = /api/admin/restart or
- * CLI `restart` (tagged ?reason=restart), signal = SIGTERM/SIGINT handler.
- */
-export type WorkerShutdownReason = 'stop' | 'restart' | 'signal';
+// Closed enum for worker_stopped telemetry — definition (and its
+// scrub.ts/telemetry.mdx sync requirements) moved to worker-shutdown.ts, the
+// import-safe shutdown seam. Re-exported here for existing importers.
+export type { WorkerShutdownReason } from './worker-shutdown.js';
 
 // Clean-shutdown sentinel — same marker-file pattern as the one-time markers
 // in ProcessManager.ts (.chroma-cleaned-v10.3). Written in the graceful
@@ -282,8 +280,11 @@ export class WorkerService implements WorkerRef {
   }
 
   private registerSignalHandlers(): void {
+    // Do NOT pre-set isShuttingDown here: the flag is now the re-entrancy
+    // guard INSIDE shutdown() (runShutdownSequence), and pre-setting it would
+    // turn the signal-path shutdown into a no-op. The supervisor has its own
+    // signal re-entrancy guard (shutdownInitiated in src/supervisor/index.ts).
     configureSupervisorSignalHandlers(async () => {
-      this.isShuttingDown = true;
       await this.shutdown('signal');
     });
   }
@@ -670,32 +671,62 @@ export class WorkerService implements WorkerRef {
   }
 
   async shutdown(reason: WorkerShutdownReason = 'stop'): Promise<void> {
-    if (this.transcriptWatcher) {
-      this.transcriptWatcher.stop();
-      this.transcriptWatcher = null;
-      logger.info('TRANSCRIPT', 'Transcript watcher stopped');
-    }
+    // Full sequence (re-entrancy guard, graceful-shutdown deadline, restart
+    // successor handoff) lives in worker-shutdown.ts so tests can exercise it
+    // without importing this module's bootstrap. When reason === 'restart'
+    // this runs inside flushResponseThen's flushed action, so the successor
+    // spawn completes before that helper's process.exit(0).
+    await runShutdownSequence({
+      reason,
+      isShuttingDown: () => this.isShuttingDown,
+      markShuttingDown: () => { this.isShuttingDown = true; },
+      beforeGracefulShutdown: async () => {
+        if (this.transcriptWatcher) {
+          this.transcriptWatcher.stop();
+          this.transcriptWatcher = null;
+          logger.info('TRANSCRIPT', 'Transcript watcher stopped');
+        }
 
-    if (this.telemetryHeartbeat) {
-      clearInterval(this.telemetryHeartbeat);
-      this.telemetryHeartbeat = null;
-    }
-    // Mark this stop as graceful for the next start's crash detection, and
-    // capture worker_stopped BEFORE shutdownTelemetry() — isShutdown drops
-    // any event captured after the flush, by design.
-    writeCleanShutdownSentinel();
-    captureEvent('worker_stopped', {
-      uptime_seconds: getUptimeSeconds(this.startTime),
-      shutdown_reason: reason,
-    });
-    await shutdownTelemetry();
-
-    await performGracefulShutdown({
-      server: this.server.getHttpServer(),
-      sessionManager: this.sessionManager,
-      mcpClient: this.mcpClient,
-      dbManager: this.dbManager,
-      chromaMcpManager: this.chromaMcpManager || undefined
+        if (this.telemetryHeartbeat) {
+          clearInterval(this.telemetryHeartbeat);
+          this.telemetryHeartbeat = null;
+        }
+        // Mark this stop as graceful for the next start's crash detection, and
+        // capture worker_stopped BEFORE shutdownTelemetry() — isShutdown drops
+        // any event captured after the flush, by design.
+        writeCleanShutdownSentinel();
+        captureEvent('worker_stopped', {
+          uptime_seconds: getUptimeSeconds(this.startTime),
+          shutdown_reason: reason,
+        });
+        await shutdownTelemetry();
+      },
+      performGracefulShutdown: () => performGracefulShutdown({
+        server: this.server.getHttpServer(),
+        sessionManager: this.sessionManager,
+        mcpClient: this.mcpClient,
+        dbManager: this.dbManager,
+        chromaMcpManager: this.chromaMcpManager || undefined
+      }),
+      gracefulDeadlineMs: getPlatformTimeout(10000),
+      restartHandoff: {
+        port: getWorkerPort(),
+        portFreeTimeoutMs: getPlatformTimeout(5000),
+        // Prefer the marketplace-installed script (same candidates as
+        // resolveWorkerScriptPath() in src/shared/worker-utils.ts) so the
+        // successor boots the freshly-synced plugin, falling back to this
+        // script for dev trees / CI where no marketplace copy exists.
+        resolveSuccessorScript: () => {
+          const successorCandidates = [
+            path.join(MARKETPLACE_ROOT, 'plugin', 'scripts', 'worker-service.cjs'),
+            path.join(process.cwd(), 'plugin', 'scripts', 'worker-service.cjs'),
+          ];
+          return successorCandidates.find(candidate => existsSync(candidate)) ?? __filename;
+        },
+        waitForPortFree,
+        removePidFile,
+        spawnDaemon,
+      },
     });
   }
 
