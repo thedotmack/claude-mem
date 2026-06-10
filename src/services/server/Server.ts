@@ -305,7 +305,10 @@ export class Server {
       if (isWindowsManaged) {
         res.json({ status: 'shutting_down' });
         logger.info('SYSTEM', 'Sending shutdown request to wrapper');
-        process.send!({ type: 'shutdown' });
+        // No wrapper in this repo listens for this message (legacy external
+        // path), but forward the reason so a wrapper that does can preserve
+        // shutdown_reason fidelity instead of defaulting to 'stop'.
+        process.send!({ type: 'shutdown', reason: shutdownReason });
       } else {
         flushResponseThen(res, { status: 'shutting_down' }, () => this.options.onShutdown(shutdownReason));
       }
