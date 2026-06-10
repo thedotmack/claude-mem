@@ -13,7 +13,7 @@ import {
   type MemoryItemKind,
   type MemorySource,
   type MemorySourceType
-} from '../../core/schemas/memory-item.js';
+} from '../../../core/schemas/memory-item.js';
 import { ensureServerStorageSchema } from './schema.js';
 import { parseJsonArray, parseJsonObject, stringifyJson } from './serde.js';
 

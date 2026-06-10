@@ -4,7 +4,7 @@
 -- applied. Fresh databases boot directly into this shape; existing
 -- databases reach it via SessionStore's inline migration chain.
 --
--- Source of truth: src/services/sqlite/SessionStore.ts (constructor migrations).
+-- Source of truth: src/storage/sqlite/SessionStore.ts (constructor migrations).
 --
 -- Invariants enforced here (Plan 01):
 --   * pending_messages.UNIQUE(content_session_id, tool_use_id) — replaces

@@ -2,9 +2,9 @@
 import { ChromaMcpManager } from './ChromaMcpManager.js';
 import { ChromaSyncState, ProjectWatermarks } from './ChromaSyncState.js';
 import { ParsedObservation, ParsedSummary } from '../../sdk/parser.js';
-import { SessionStore } from '../sqlite/SessionStore.js';
+import { SessionStore } from '../../storage/sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
-import { parseFileList } from '../sqlite/observations/files.js';
+import { parseFileList } from '../../storage/sqlite/observations/files.js';
 
 interface ChromaDocument {
   id: string;

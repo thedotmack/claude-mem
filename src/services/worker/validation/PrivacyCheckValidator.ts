@@ -1,4 +1,4 @@
-import { SessionStore } from '../../sqlite/SessionStore.js';
+import { SessionStore } from '../../../storage/sqlite/SessionStore.js';
 import { logger } from '../../../utils/logger.js';
 
 export type PromptPrivacyDecision =

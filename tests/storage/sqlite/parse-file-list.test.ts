@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { parseFileList } from '../../../src/services/sqlite/observations/files.js';
+import { parseFileList } from '../../../src/storage/sqlite/observations/files.js';
 
 describe('parseFileList', () => {
   it('returns [] for null', () => {

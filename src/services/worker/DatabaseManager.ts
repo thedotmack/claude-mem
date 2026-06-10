@@ -1,7 +1,7 @@
 
 import { Database } from 'bun:sqlite';
-import { SessionStore } from '../sqlite/SessionStore.js';
-import { SessionSearch } from '../sqlite/SessionSearch.js';
+import { SessionStore } from '../../storage/sqlite/SessionStore.js';
+import { SessionSearch } from '../../storage/sqlite/SessionSearch.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, DB_PATH } from '../../shared/paths.js';

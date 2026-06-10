@@ -7,7 +7,7 @@
 
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'crypto';
 import { Database } from 'bun:sqlite';
-import { AuthRepository, ensureServerStorageSchema } from '../../storage/sqlite/index.js';
+import { AuthRepository, ensureServerStorageSchema } from '../../storage/sqlite/server/index.js';
 import type { ApiKey } from '../../core/schemas/auth.js';
 
 export interface CreatedServerApiKey {

@@ -9,8 +9,8 @@ import {
   ServerSessionsRepository,
   TeamsRepository,
   ensureServerStorageSchema
-} from '../../../src/storage/sqlite/index.js';
-import { parseJsonArray, parseJsonObject } from '../../../src/storage/sqlite/serde.js';
+} from '../../../src/storage/sqlite/server/index.js';
+import { parseJsonArray, parseJsonObject } from '../../../src/storage/sqlite/server/serde.js';
 
 interface TableNameRow {
   name: string;

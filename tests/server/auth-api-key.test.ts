@@ -12,7 +12,7 @@ import {
   DEFAULT_LOCAL_API_KEY_SCOPES,
 } from '../../src/server/auth/sqlite-api-key-service.js';
 import { requireServerAuth } from '../../src/server/middleware/auth.js';
-import { AuthRepository, ProjectsRepository, TeamsRepository } from '../../src/storage/sqlite/index.js';
+import { AuthRepository, ProjectsRepository, TeamsRepository } from '../../src/storage/sqlite/server/index.js';
 
 describe('server API key auth', () => {
   let db: Database;

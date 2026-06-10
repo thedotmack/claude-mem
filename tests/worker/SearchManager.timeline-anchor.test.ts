@@ -19,8 +19,8 @@ mock.module('../../src/services/domain/ModeManager.js', () => ({
 }));
 
 import { Database } from 'bun:sqlite';
-import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
-import { SessionSearch } from '../../src/services/sqlite/SessionSearch.js';
+import { SessionStore } from '../../src/storage/sqlite/SessionStore.js';
+import { SessionSearch } from '../../src/storage/sqlite/SessionSearch.js';
 import { FormattingService } from '../../src/services/worker/FormattingService.js';
 import { TimelineService } from '../../src/services/worker/TimelineService.js';
 import { SearchManager } from '../../src/services/worker/SearchManager.js';

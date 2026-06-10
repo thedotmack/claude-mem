@@ -2,7 +2,7 @@
 
 import { randomUUID } from 'crypto';
 import { Database } from 'bun:sqlite';
-import { AgentEventSchema, CreateAgentEventSchema, type AgentEvent, type AgentEventSourceType, type CreateAgentEvent } from '../../core/schemas/agent-event.js';
+import { AgentEventSchema, CreateAgentEventSchema, type AgentEvent, type AgentEventSourceType, type CreateAgentEvent } from '../../../core/schemas/agent-event.js';
 import { ensureServerStorageSchema } from './schema.js';
 
 interface AgentEventRow {

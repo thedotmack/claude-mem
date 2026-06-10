@@ -7,8 +7,8 @@
 // yielding a consistent key across both handlers.
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
-import { getObservationsByFilePath } from '../../../src/services/sqlite/observations/get.js';
+import { SessionStore } from '../../../src/storage/sqlite/SessionStore.js';
+import { getObservationsByFilePath } from '../../../src/storage/sqlite/observations/get.js';
 
 describe('getObservationsByFilePath — multi-candidate path matching (#2691)', () => {
   let store: SessionStore;

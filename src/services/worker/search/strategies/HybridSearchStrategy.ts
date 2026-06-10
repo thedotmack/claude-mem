@@ -7,8 +7,8 @@ import {
   SessionSummarySearchResult
 } from '../types.js';
 import { ChromaSync } from '../../../sync/ChromaSync.js';
-import { SessionStore } from '../../../sqlite/SessionStore.js';
-import { SessionSearch } from '../../../sqlite/SessionSearch.js';
+import { SessionStore } from '../../../../storage/sqlite/SessionStore.js';
+import { SessionSearch } from '../../../../storage/sqlite/SessionSearch.js';
 import { logger } from '../../../../utils/logger.js';
 
 export class HybridSearchStrategy {

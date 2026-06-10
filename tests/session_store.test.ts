@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { SessionStore } from '../src/services/sqlite/SessionStore.js';
+import { SessionStore } from '../src/storage/sqlite/SessionStore.js';
 import { PaginationHelper } from '../src/services/worker/PaginationHelper.js';
-import { MAX_STORED_PROMPT_CHARS } from '../src/services/sqlite/prompt-storage.js';
+import { MAX_STORED_PROMPT_CHARS } from '../src/storage/sqlite/prompt-storage.js';
 
 describe('SessionStore', () => {
   let store: SessionStore;

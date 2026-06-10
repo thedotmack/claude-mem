@@ -13,7 +13,7 @@ import {
   type AuditLog,
   type CreateApiKey,
   type CreateAuditLog
-} from '../../core/schemas/auth.js';
+} from '../../../core/schemas/auth.js';
 import { ensureServerStorageSchema } from './schema.js';
 import { parseJsonArray, parseJsonObject, stringifyJson } from './serde.js';
 

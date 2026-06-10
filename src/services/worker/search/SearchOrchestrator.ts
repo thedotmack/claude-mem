@@ -1,6 +1,6 @@
 
-import { SessionSearch } from '../../sqlite/SessionSearch.js';
-import { SessionStore } from '../../sqlite/SessionStore.js';
+import { SessionSearch } from '../../../storage/sqlite/SessionSearch.js';
+import { SessionStore } from '../../../storage/sqlite/SessionStore.js';
 import { ChromaSync } from '../../sync/ChromaSync.js';
 
 import { ChromaSearchStrategy } from './strategies/ChromaSearchStrategy.js';

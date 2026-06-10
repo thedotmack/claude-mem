@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
-import { SessionSearch } from '../../../src/services/sqlite/SessionSearch.js';
+import { SessionStore } from '../../../src/storage/sqlite/SessionStore.js';
+import { SessionSearch } from '../../../src/storage/sqlite/SessionSearch.js';
 
 // Read-side source-scoping (#2389): /api/search must honor platformSource so a
 // codex (or other-agent) search returns only codex-sourced rows and never

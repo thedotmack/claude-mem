@@ -2,7 +2,7 @@
 
 import { randomUUID } from 'crypto';
 import { Database } from 'bun:sqlite';
-import { CreateProjectSchema, ProjectSchema, type CreateProject, type Project } from '../../core/schemas/project.js';
+import { CreateProjectSchema, ProjectSchema, type CreateProject, type Project } from '../../../core/schemas/project.js';
 import { ensureServerStorageSchema } from './schema.js';
 import { parseJsonObject, stringifyJson } from './serde.js';
 

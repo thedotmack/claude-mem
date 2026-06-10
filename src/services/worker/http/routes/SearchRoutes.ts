@@ -12,7 +12,7 @@ import { groupByDate } from '../../../../shared/timeline-formatting.js';
 import { countObservationsByProjects } from '../../../context/ObservationCompiler.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
-import type { ObservationSearchResult, SessionSummarySearchResult } from '../../../sqlite/types.js';
+import type { ObservationSearchResult, SessionSummarySearchResult } from '../../../../storage/sqlite/types.js';
 import { captureEvent } from '../../../telemetry/telemetry.js';
 import { telemetryBuffer } from '../../../telemetry/buffer.js';
 

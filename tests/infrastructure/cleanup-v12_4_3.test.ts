@@ -6,7 +6,7 @@ import path from 'path';
 import { tmpdir } from 'os';
 import { Database } from 'bun:sqlite';
 import { runOneTimeV12_4_3Cleanup } from '../../src/services/infrastructure/CleanupV12_4_3.js';
-import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
+import { SessionStore } from '../../src/storage/sqlite/SessionStore.js';
 import { OBSERVER_SESSIONS_PROJECT } from '../../src/shared/paths.js';
 import { logger } from '../../src/utils/logger.js';
 

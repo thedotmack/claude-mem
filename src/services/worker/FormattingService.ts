@@ -1,5 +1,5 @@
 
-import type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../sqlite/types.js';
+import type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../../storage/sqlite/types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import { logger } from '../../utils/logger.js';
 

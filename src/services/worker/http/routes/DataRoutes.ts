@@ -14,8 +14,8 @@ import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
-import { getObservationsByFilePath } from '../../../sqlite/observations/get.js';
-import { getFirstObservationCreatedAt } from '../../../sqlite/observations/recent.js';
+import { getObservationsByFilePath } from '../../../../storage/sqlite/observations/get.js';
+import { getFirstObservationCreatedAt } from '../../../../storage/sqlite/observations/recent.js';
 import { getUptimeSeconds } from '../../../../shared/uptime.js';
 
 const integerArrayLike = z.preprocess((value) => {

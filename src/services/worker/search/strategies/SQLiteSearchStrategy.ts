@@ -7,7 +7,7 @@ import {
   SessionSummarySearchResult,
   UserPromptSearchResult
 } from '../types.js';
-import { SessionSearch } from '../../../sqlite/SessionSearch.js';
+import { SessionSearch } from '../../../../storage/sqlite/SessionSearch.js';
 import { logger } from '../../../../utils/logger.js';
 
 export class SQLiteSearchStrategy {

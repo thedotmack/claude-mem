@@ -1,7 +1,7 @@
 
 import { logger } from '../../../utils/logger.js';
-import type { ObservationSearchResult } from '../../sqlite/types.js';
-import type { SessionStore } from '../../sqlite/SessionStore.js';
+import type { ObservationSearchResult } from '../../../storage/sqlite/types.js';
+import type { SessionStore } from '../../../storage/sqlite/SessionStore.js';
 import type { SearchOrchestrator } from '../search/SearchOrchestrator.js';
 import { CorpusRenderer } from './CorpusRenderer.js';
 import { CorpusStore } from './CorpusStore.js';

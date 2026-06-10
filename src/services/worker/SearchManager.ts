@@ -1,11 +1,11 @@
 
-import { SessionSearch } from '../sqlite/SessionSearch.js';
-import { SessionStore } from '../sqlite/SessionStore.js';
+import { SessionSearch } from '../../storage/sqlite/SessionSearch.js';
+import { SessionStore } from '../../storage/sqlite/SessionStore.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
 import { FormattingService } from './FormattingService.js';
 import { TimelineService } from './TimelineService.js';
 import type { TimelineItem } from './TimelineService.js';
-import type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../sqlite/types.js';
+import type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../../storage/sqlite/types.js';
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';

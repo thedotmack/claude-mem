@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
-import { getFirstObservationCreatedAt } from '../../src/services/sqlite/observations/recent.js';
+import { SessionStore } from '../../src/storage/sqlite/SessionStore.js';
+import { getFirstObservationCreatedAt } from '../../src/storage/sqlite/observations/recent.js';
 
 function obs(overrides: Partial<Parameters<SessionStore['storeObservation']>[2]> = {}) {
   return {

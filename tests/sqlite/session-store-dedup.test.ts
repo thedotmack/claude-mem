@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
-import { computeObservationContentHash } from '../../src/services/sqlite/observations/store.js';
+import { SessionStore } from '../../src/storage/sqlite/SessionStore.js';
+import { computeObservationContentHash } from '../../src/storage/sqlite/observations/store.js';
 
 function obs(overrides: Partial<Parameters<SessionStore['storeObservation']>[2]> = {}) {
   return {

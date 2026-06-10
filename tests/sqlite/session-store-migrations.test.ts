@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
+import { SessionStore } from '../../src/storage/sqlite/SessionStore.js';
 
 function seedLegacyContentHashScenario(db: Database): void {
   db.run(`

@@ -1,7 +1,7 @@
 
 import path from 'path';
 import { existsSync, readFileSync } from 'fs';
-import { SessionStore } from '../sqlite/SessionStore.js';
+import { SessionStore } from '../../storage/sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
 import { SYSTEM_REMINDER_REGEX } from '../../utils/tag-stripping.js';
 import { CLAUDE_CONFIG_DIR } from '../../shared/paths.js';

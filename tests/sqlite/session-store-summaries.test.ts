@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
+import { SessionStore } from '../../src/storage/sqlite/SessionStore.js';
 
 function summary(overrides: Partial<Parameters<SessionStore['storeSummary']>[2]> = {}) {
   return {

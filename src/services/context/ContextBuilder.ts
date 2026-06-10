@@ -2,7 +2,7 @@
 import path from 'path';
 import { homedir } from 'os';
 import { unlinkSync } from 'fs';
-import { SessionStore } from '../sqlite/SessionStore.js';
+import { SessionStore } from '../../storage/sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
 

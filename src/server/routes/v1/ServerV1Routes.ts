@@ -14,7 +14,7 @@ import {
   MemoryItemsRepository,
   ProjectsRepository,
   ServerSessionsRepository,
-} from '../../../storage/sqlite/index.js';
+} from '../../../storage/sqlite/server/index.js';
 import { requireServerAuth } from '../../middleware/auth.js';
 
 declare const __DEFAULT_PACKAGE_VERSION__: string;
