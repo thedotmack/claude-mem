@@ -117,6 +117,18 @@ export function captureEvent(
 }
 
 /**
+ * Test-only. The module state (singleton client, 30s consent TTL cache,
+ * shutdown latch) is process-wide, and the whole bun test suite shares one
+ * process — without a reset, a test asserting client construction inherits
+ * whatever earlier test files did. Never called by production code.
+ */
+export function __resetTelemetryForTests(): void {
+  client = null;
+  consentCache = null;
+  isShutdown = false;
+}
+
+/**
  * Flush queued events on graceful shutdown. Races the SDK shutdown against a
  * 3s timeout so a slow/unreachable ingestion host can never hang worker stop.
  * Never rejects.
