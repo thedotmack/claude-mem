@@ -25,6 +25,39 @@ export function getTelemetryHost(): string {
   return process.env.CLAUDE_MEM_TELEMETRY_HOST || DEFAULT_TELEMETRY_HOST;
 }
 
+/**
+ * Whitelisted properties that may also be set as PostHog person properties on
+ * lifecycle events (install_*, worker_started). The "person" is the anonymous
+ * install UUID — these traits make retention/cohort insights sliceable by
+ * platform and product choices. Strict subset of the scrub whitelist.
+ */
+export const PERSON_PROPERTY_KEYS = [
+  'version',
+  'os',
+  'arch',
+  'runtime',
+  'locale',
+  'ide',
+  'provider',
+  'runtime_mode',
+] as const;
+
+/**
+ * Splits already-scrubbed properties into a $set object for person-profile
+ * events. Lifecycle events are low-volume (~1-2/day/install), so the
+ * person-profile ingestion cost is bounded while unlocking PostHog's native
+ * retention, stickiness, lifecycle, and cohort insights.
+ */
+export function buildPersonSet(
+  scrubbed: Record<string, unknown>
+): Record<string, unknown> {
+  const set: Record<string, unknown> = {};
+  for (const key of PERSON_PROPERTY_KEYS) {
+    if (scrubbed[key] !== undefined) set[key] = scrubbed[key];
+  }
+  return set;
+}
+
 export function buildBaseProperties(): Record<string, unknown> {
   return {
     version: packageVersion,

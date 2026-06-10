@@ -298,13 +298,13 @@ export class WorkerService implements WorkerRef {
     captureEvent('worker_started', {
       trigger: 'start',
       duration_ms: Date.now() - this.startTime,
-    });
+    }, { person: true });
 
     // Long-lived workers would otherwise look like a single day of activity.
     // A daily heartbeat makes DAU/WAU/retention computable from distinct_id.
     // unref() so the timer never keeps a stopping process alive.
     this.telemetryHeartbeat = setInterval(() => {
-      captureEvent('worker_started', { trigger: 'heartbeat' });
+      captureEvent('worker_started', { trigger: 'heartbeat' }, { person: true });
     }, 24 * 60 * 60 * 1000);
     this.telemetryHeartbeat.unref?.();
 

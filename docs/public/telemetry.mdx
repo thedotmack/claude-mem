@@ -17,7 +17,9 @@ The standard [`DO_NOT_TRACK`](https://consoledonottrack.com) environment variabl
 
 ## What is collected
 
-When enabled, events are anonymous and identified only by a random install UUID (`crypto.randomUUID()`, generated locally on first use). Events are sent with `$process_person_profile: false`, so PostHog never builds a person profile.
+When enabled, events are anonymous and identified only by a random install UUID (`crypto.randomUUID()`, generated locally on first use).
+
+Low-volume lifecycle events (`install_*`, `uninstall_completed`, `worker_started`) build an analytics profile keyed to that random UUID so aggregate retention and cohort statistics are computable — the profile contains nothing beyond the whitelisted fields below (platform, version, IDE/provider choice). It is not, and cannot be, connected to you: there is no name, email, IP, hardware ID, or any other identifier. All high-volume events (`session_compressed`, `search_performed`, `context_injected`, `error_occurred`) are sent with `$process_person_profile: false` and build no profile at all.
 
 Every event property passes through a strict whitelist scrubber — any key not in this table is silently dropped before sending:
 

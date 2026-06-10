@@ -10,7 +10,7 @@
 
 import { resolveTelemetryConsent, loadTelemetryConfig, getOrCreateInstallId } from './consent.js';
 import { scrubProperties } from './scrub.js';
-import { getTelemetryApiKey, getTelemetryHost, buildBaseProperties } from './common.js';
+import { getTelemetryApiKey, getTelemetryHost, buildBaseProperties, buildPersonSet } from './common.js';
 
 const CAPTURE_TIMEOUT_MS = 2000;
 
@@ -21,7 +21,8 @@ const CAPTURE_TIMEOUT_MS = 2000;
  */
 export async function captureCliEvent(
   event: string,
-  props?: Record<string, unknown>
+  props?: Record<string, unknown>,
+  opts?: { person?: boolean }
 ): Promise<void> {
   try {
     if (!resolveTelemetryConsent(process.env, loadTelemetryConfig())) {
@@ -32,7 +33,13 @@ export async function captureCliEvent(
       ...buildBaseProperties(),
       ...(props ?? {}),
     });
-    properties.$process_person_profile = false;
+    // Lifecycle events (install_* / uninstall) build the anonymous person
+    // profile that powers retention and cohort insights; see telemetry.ts.
+    if (opts?.person) {
+      properties.$set = buildPersonSet(properties);
+    } else {
+      properties.$process_person_profile = false;
+    }
 
     if (process.env.CLAUDE_MEM_TELEMETRY_DEBUG === '1') {
       process.stderr.write('[telemetry] ' + JSON.stringify({ event, properties }) + '\n');

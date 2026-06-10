@@ -1374,7 +1374,7 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
   } catch (error: unknown) {
     if (error instanceof InstallAbortError) {
       // error.category.id is OUR taxonomy id (error-taxonomy.ts), never a message.
-      await captureCliEvent('install_failed', { error_category: error.category.id });
+      await captureCliEvent('install_failed', { error_category: error.category.id }, { person: true });
       // Flush whatever warnings accrued before the abort, then print the
       // remediation headline and exit non-zero. ABORT must never reach the
       // "Installation Complete" path.
@@ -1816,7 +1816,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     is_update: alreadyInstalled,
     outcome: failedIDEs.length > 0 ? 'partial' : 'ok',
     duration_ms: Date.now() - installStartedAt,
-  });
+  }, { person: true });
 }
 
 export async function runRepairCommand(): Promise<void> {
