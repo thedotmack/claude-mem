@@ -6,7 +6,8 @@ import { Database } from 'bun:sqlite';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
-import { DATA_DIR, DB_PATH, ensureDir } from '../shared/paths.js';
+import { getCurrentWorkerPid, verifyRestartedWorker } from './restart-verify.js';
+import { DATA_DIR, DB_PATH, ensureDir, MARKETPLACE_ROOT } from '../shared/paths.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { getUptimeSeconds } from '../shared/uptime.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
@@ -955,19 +956,41 @@ async function main() {
 
     case 'restart': {
       logger.info('SYSTEM', 'Restarting worker');
+      // Capture the old worker's pid BEFORE shutdown so we can later prove
+      // the worker answering health checks is a NEW process, not the corpse.
+      const oldPid = await getCurrentWorkerPid(port, 2000);
       await httpShutdown(port, 'restart');
-      const restartFreed = await waitForPortFree(port, 5000);
+      const restartFreed = await waitForPortFree(port, getPlatformTimeout(15000));
       if (!restartFreed) {
         console.error('Port still bound after shutdown. Resolve manually.');
         process.exit(1);
       }
       removePidFile();
-      const restartPid = spawnDaemon(__filename, port);
+      // Prefer the marketplace-installed script (same candidates as
+      // resolveWorkerScriptPath() in src/shared/worker-utils.ts) so restart
+      // boots the freshly-synced plugin, falling back to this script for dev
+      // trees / CI where no marketplace copy exists.
+      const restartScriptCandidates = [
+        path.join(MARKETPLACE_ROOT, 'plugin', 'scripts', 'worker-service.cjs'),
+        path.join(process.cwd(), 'plugin', 'scripts', 'worker-service.cjs'),
+      ];
+      const restartScript = restartScriptCandidates.find(candidate => existsSync(candidate)) ?? __filename;
+      const restartPid = spawnDaemon(restartScript, port);
       if (restartPid === undefined) {
         console.error('Failed to spawn worker daemon during restart.');
         process.exit(1);
       }
-      logger.info('SYSTEM', 'Worker restart spawned', { pid: restartPid });
+      logger.info('SYSTEM', 'Worker restart spawned', { pid: restartPid, script: restartScript });
+      // Restart must prove itself: the new worker has to answer /api/health
+      // with a different pid than the old worker and this CLI's own baked
+      // version, before the hard deadline — otherwise exit 1.
+      const verification = await verifyRestartedWorker(port, oldPid, packageVersion, getPlatformTimeout(30000));
+      if (!verification.ok) {
+        console.error(`Worker restart verification failed (old pid: ${oldPid ?? 'none'}, expected version: ${packageVersion}, spawned script: ${restartScript}); ${verification.lastObserved}`);
+        process.exit(1);
+      }
+      console.log(`Worker restart verified (pid: ${verification.pid}, version: ${verification.version})`);
+      logger.info('SYSTEM', 'Worker restart verified', { pid: verification.pid, version: verification.version });
       process.exit(0);
       break;
     }
@@ -1203,7 +1226,10 @@ async function main() {
         }
         logger.failure('SYSTEM', 'Worker failed to start', {}, error as Error);
         removePidFile();
-        process.exit(0);
+        // Genuine start failure (not duplicate suppression): exit non-zero so
+        // the restart verifier and any supervising caller see a dead boot
+        // instead of a silent "success".
+        process.exit(1);
       });
     }
   }
