@@ -1,5 +1,6 @@
 import path from "path";
-import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync } from "fs";
+import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync, unlinkSync } from "fs";
+import { execSync } from "child_process";
 import { spawnHidden } from "./spawn.js";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
@@ -503,6 +504,10 @@ function getHookFailuresPath(): string {
   return path.join(getStateDir(), 'hook-failures.json');
 }
 
+function getHooksDisabledPath(): string {
+  return path.join(getStateDir(), 'hooks-disabled-until.json');
+}
+
 function readHookFailureState(): HookFailureState {
   try {
     const raw = readFileSync(getHookFailuresPath(), 'utf-8');
@@ -587,29 +592,9 @@ export async function recordWorkerUnreachable(): Promise<number> {
 
   const threshold = getFailLoudThreshold();
   if (next.consecutiveFailures >= threshold) {
-    // hook_failed distress signal. Gated to the failure that JUST reached the
-    // threshold (`===`, not `>=`): the stderr warning below repeats on every
-    // failure past the threshold, but telemetry emits once per failure streak
-    // to bound volume. MUST be awaited BEFORE emitBlockingError — it calls
-    // process.exit(2) immediately, which would kill a fire-and-forget POST
-    // mid-flight. captureCliEvent never throws and is hard-capped at 2s, so
-    // this cannot hang the fail-loud path. Closed-enum/count props only —
-    // never error text. Transport is the direct CLI POST, never the worker
-    // API (the defining failure here IS "worker unreachable").
-    if (next.consecutiveFailures === threshold) {
-      await captureCliEvent('hook_failed', {
-        ...(activeHookType !== null ? { hook_type: activeHookType } : {}),
-        error_mode: 'worker_unavailable',
-        consecutive_failures: next.consecutiveFailures,
-        threshold_tripped: true,
-      });
-    }
-    // #2292 fix: BLOCKING_FEEDBACK. emitBlockingError flushes the Phase 2
-    // stderr buffer (so preceding logger.warn lines also surface) and writes
-    // via the bypass channel + exits 2. Previously this raw process.stderr.write
-    // was swallowed by hookCommand's blanket no-op, so the user/model never saw it.
+    writeHooksDisabledSentinel();
     emitBlockingError(
-      `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks.`
+      `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks. Hooks disabled for this session.`
     );
   }
   return next.consecutiveFailures;
@@ -619,6 +604,43 @@ function resetWorkerFailureCounter(): void {
   const state = readHookFailureState();
   if (state.consecutiveFailures === 0) return;
   writeHookFailureStateAtomic({ consecutiveFailures: 0, lastFailureAt: 0 });
+  try {
+    const sentinelPath = getHooksDisabledPath();
+    if (existsSync(sentinelPath)) unlinkSync(sentinelPath);
+  } catch {
+    // Best-effort cleanup.
+  }
+}
+
+function writeHooksDisabledSentinel(): void {
+  const stateDir = getStateDir();
+  const dest = getHooksDisabledPath();
+  const tmp = `${dest}.tmp`;
+  try {
+    if (!existsSync(stateDir)) {
+      mkdirSync(stateDir, { recursive: true });
+    }
+    const payload = { disabledAt: Date.now() };
+    writeFileSync(tmp, JSON.stringify(payload), 'utf-8');
+    renameSync(tmp, dest);
+  } catch (error: unknown) {
+    logger.debug('SYSTEM', 'Failed to write hooks-disabled sentinel', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function areHooksDisabledForSession(): boolean {
+  try {
+    if (!existsSync(getHooksDisabledPath())) return false;
+    const raw = readFileSync(getHooksDisabledPath(), 'utf-8');
+    const parsed = JSON.parse(raw) as { disabledAt?: number };
+    if (typeof parsed.disabledAt !== 'number') return false;
+    const DISABLED_TTL_MS = 30 * 60 * 1000;
+    return Date.now() - parsed.disabledAt < DISABLED_TTL_MS;
+  } catch {
+    return false;
+  }
 }
 
 const WORKER_FALLBACK_BRAND: unique symbol = Symbol.for('claude-mem/worker-fallback');
@@ -645,6 +667,10 @@ export async function executeWithWorkerFallback<T = unknown>(
   body?: unknown,
   options: WorkerFallbackOptions = {},
 ): Promise<WorkerCallResult<T>> {
+  if (areHooksDisabledForSession()) {
+    return { continue: true, reason: 'hooks_disabled_session', [WORKER_FALLBACK_BRAND]: true };
+  }
+
   const alive = await ensureWorkerAliveOnce();
   if (!alive) {
     await recordWorkerUnreachable();
