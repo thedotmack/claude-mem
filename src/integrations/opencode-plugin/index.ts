@@ -91,6 +91,17 @@ interface BusEvent {
   parts?: ChatMessageOutput["parts"];
 }
 
+function normalizeChatMessageOutput(value: {
+  message?: ChatMessageOutput["message"];
+  parts?: ChatMessageOutput["parts"];
+} | null | undefined): ChatMessageOutput | null {
+  if (!value?.message || !value.parts) return null;
+  return {
+    message: value.message,
+    parts: value.parts,
+  };
+}
+
 function resolveWorkerPort(): string {
   // Canonical resolution: CLAUDE_MEM_WORKER_PORT env override, else the
   // UID-derived default — identical to the rest of the codebase (#2406).
@@ -270,12 +281,15 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
         }
         case "message.updated": {
           const output =
-            event?.properties?.output ??
-            (event?.properties?.message || event?.properties?.parts
-              ? { message: event.properties?.message, parts: event.properties?.parts }
-              : event?.message || event?.parts
-                ? { message: event.message, parts: event.parts }
-                : null);
+            normalizeChatMessageOutput(event?.properties?.output) ??
+            normalizeChatMessageOutput({
+              message: event?.properties?.message,
+              parts: event?.properties?.parts,
+            }) ??
+            normalizeChatMessageOutput({
+              message: event?.message,
+              parts: event?.parts,
+            });
           if (!sessionID || !output) return;
           await captureAssistantMessage(sessionID, output, projectName, ctx.directory);
           break;
