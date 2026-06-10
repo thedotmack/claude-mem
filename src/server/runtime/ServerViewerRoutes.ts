@@ -13,7 +13,7 @@
 import express, { type Application, type Request, type Response } from 'express';
 import path from 'path';
 import { existsSync, readFileSync } from 'fs';
-import type { RouteHandler } from '../../services/server/Server.js';
+import type { RouteHandler } from '../../shared/http/Server.js';
 import { getPackageRoot } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 

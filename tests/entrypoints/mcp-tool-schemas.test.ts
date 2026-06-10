@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 
-const mcpServerPath = new URL('../../src/servers/mcp-server.ts', import.meta.url).pathname;
+const mcpServerPath = new URL('../../src/entrypoints/mcp-server.ts', import.meta.url).pathname;
 
 describe('MCP tool inputSchema declarations', () => {
   let tools: any[];

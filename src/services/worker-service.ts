@@ -57,7 +57,7 @@ import {
 import { performGracefulShutdown } from './infrastructure/GracefulShutdown.js';
 import { adoptMergedWorktrees, adoptMergedWorktreesForAllKnownRepos } from './infrastructure/WorktreeAdoption.js';
 
-import { Server } from './server/Server.js';
+import { Server } from '../shared/http/Server.js';
 import { BetterAuthRoutes } from '../server/auth/BetterAuthRoutes.js';
 import {
   createServerApiKey,
