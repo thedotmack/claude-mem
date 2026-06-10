@@ -63,6 +63,11 @@ function renderEmptyState(project: string, forHuman: boolean): string {
   return forHuman ? renderHumanEmptyState(project) : renderAgentEmptyState(project);
 }
 
+export function getPrimaryContextProject(projects: string[], fallback: string): string {
+  const rawProjects = projects.filter((candidate) => !candidate.endsWith(':dream'));
+  return rawProjects[rawProjects.length - 1] ?? fallback;
+}
+
 function buildContextOutput(
   project: string,
   observations: Observation[],
@@ -170,7 +175,7 @@ export async function generateContextWithStats(
   const context = getProjectContext(cwd);
 
   const projects = input?.projects?.length ? input.projects : context.allProjects;
-  const project = projects[projects.length - 1] ?? context.primary;
+  const project = getPrimaryContextProject(projects, context.primary);
 
   if (input?.full) {
     config.totalObservationCount = 999999;
@@ -189,16 +194,14 @@ export async function generateContextWithStats(
       countObservationsByProjects(db, dreamProjects) > 0 ||
       countSummariesByProjects(db, dreamProjects) > 0
     );
-    const observationProjects = useDreamQueries ? projects : rawProjects;
-    const summaryProjects = useDreamQueries ? projects : rawProjects;
-    const useObservationMultiQuery = observationProjects.length > 1;
-    const useSummaryMultiQuery = summaryProjects.length > 1;
+    const queryProjects = useDreamQueries ? projects : rawProjects;
+    const useMultiQuery = queryProjects.length > 1;
 
-    const observations = useObservationMultiQuery
-      ? queryObservationsMulti(db, observationProjects, config)
+    const observations = useMultiQuery
+      ? queryObservationsMulti(db, queryProjects, config)
       : queryObservations(db, project, config);
-    const summaries = useSummaryMultiQuery
-      ? querySummariesMulti(db, summaryProjects, config)
+    const summaries = useMultiQuery
+      ? querySummariesMulti(db, queryProjects, config)
       : querySummaries(db, project, config);
 
     if (observations.length === 0 && summaries.length === 0) {
