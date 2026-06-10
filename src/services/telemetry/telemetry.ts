@@ -25,15 +25,23 @@ let isShutdown = false;
  * via the CLI is picked up by a running worker within the TTL.
  */
 const CONSENT_CACHE_TTL_MS = 30_000;
-let consentCache: { value: boolean; expiresAt: number } | null = null;
+let consentCache: { value: boolean; expiresAt: number; envKey: string } | null = null;
+
+function getConsentEnvKey(env: NodeJS.ProcessEnv): string {
+  return JSON.stringify({
+    doNotTrack: env.DO_NOT_TRACK ?? null,
+    telemetry: env.CLAUDE_MEM_TELEMETRY ?? null,
+  });
+}
 
 function hasConsent(): boolean {
   const now = Date.now();
-  if (consentCache && now < consentCache.expiresAt) {
+  const envKey = getConsentEnvKey(process.env);
+  if (consentCache && consentCache.envKey === envKey && now < consentCache.expiresAt) {
     return consentCache.value;
   }
   const value = resolveTelemetryConsent(process.env, loadTelemetryConfig());
-  consentCache = { value, expiresAt: now + CONSENT_CACHE_TTL_MS };
+  consentCache = { value, expiresAt: now + CONSENT_CACHE_TTL_MS, envKey };
   return value;
 }
 
@@ -55,6 +63,10 @@ let autocaptureEnabled = false;
  */
 export function enableExceptionAutocaptureForWorker(): void {
   autocaptureEnabled = true;
+}
+
+export function __resetTelemetryStateForTesting(): void {
+  __resetTelemetryForTests();
 }
 
 function getClient(): PostHog {
