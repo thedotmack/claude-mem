@@ -231,7 +231,7 @@ child.on('error', (err) => {
 });
 
 child.on('close', (code, signal) => {
-  if ((signal || code > 128) && args.includes('start')) {
+  if (signal || code > 128) {
     process.exit(0);
   }
   process.exit(code || 0);
