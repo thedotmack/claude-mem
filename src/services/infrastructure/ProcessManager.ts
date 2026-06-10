@@ -340,35 +340,25 @@ function classifyCwdForRemap(cwd: string): CwdClassification {
 
 export function runOneTimeCwdRemap(dataDirectory?: string): void {
   const effectiveDataDir = dataDirectory ?? DATA_DIR;
-  const markerPath = path.join(effectiveDataDir, CWD_REMAP_MARKER_FILENAME);
   const dbPath = path.join(effectiveDataDir, 'claude-mem.db');
 
-  if (existsSync(markerPath)) {
-    logger.debug('SYSTEM', 'cwd-remap marker exists, skipping');
-    return;
-  }
-
   if (!existsSync(dbPath)) {
-    mkdirSync(effectiveDataDir, { recursive: true });
-    writeFileSync(markerPath, new Date().toISOString());
-    logger.debug('SYSTEM', 'No DB present, cwd-remap marker written without work', { dbPath });
+    logger.debug('SYSTEM', 'cwd-remap skipped (no DB yet)', { dbPath });
     return;
   }
-
-  logger.warn('SYSTEM', 'Running one-time cwd-based project remap', { dbPath });
 
   try {
-    executeCwdRemap(dbPath, effectiveDataDir, markerPath);
+    executeCwdRemap(dbPath, effectiveDataDir);
   } catch (err: unknown) {
     if (err instanceof Error) {
-      logger.error('SYSTEM', 'cwd-remap failed, marker not written (will retry on next startup)', {}, err);
+      logger.error('SYSTEM', 'cwd-remap failed', {}, err);
     } else {
-      logger.error('SYSTEM', 'cwd-remap failed, marker not written (will retry on next startup)', {}, new Error(String(err)));
+      logger.error('SYSTEM', 'cwd-remap failed', {}, new Error(String(err)));
     }
   }
 }
 
-function executeCwdRemap(dbPath: string, effectiveDataDir: string, markerPath: string): void {
+function executeCwdRemap(dbPath: string, effectiveDataDir: string): void {
   const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
 
   const probe = new Database(dbPath, { readonly: true });
@@ -378,15 +368,9 @@ function executeCwdRemap(dbPath: string, effectiveDataDir: string, markerPath: s
   probe.close();
 
   if (!hasPending) {
-    mkdirSync(effectiveDataDir, { recursive: true });
-    writeFileSync(markerPath, new Date().toISOString());
     logger.info('SYSTEM', 'pending_messages table not present, cwd-remap skipped');
     return;
   }
-
-  const backup = `${dbPath}.bak-cwd-remap-${Date.now()}`;
-  copyFileSync(dbPath, backup);
-  logger.info('SYSTEM', 'DB backed up before cwd-remap', { backup });
 
   const db = new Database(dbPath);
   try {
@@ -423,6 +407,10 @@ function executeCwdRemap(dbPath: string, effectiveDataDir: string, markerPath: s
     if (targets.length === 0) {
       logger.info('SYSTEM', 'cwd-remap: no sessions need updating');
     } else {
+      const backup = `${dbPath}.bak-cwd-remap-${Date.now()}`;
+      copyFileSync(dbPath, backup);
+      logger.info('SYSTEM', 'DB backed up before cwd-remap', { backup });
+
       const updSession = db.prepare('UPDATE sdk_sessions      SET project = ? WHERE id = ?');
       const updObs     = db.prepare('UPDATE observations      SET project = ? WHERE memory_session_id = ?');
       const updSum     = db.prepare('UPDATE session_summaries SET project = ? WHERE memory_session_id = ?');
@@ -441,10 +429,6 @@ function executeCwdRemap(dbPath: string, effectiveDataDir: string, markerPath: s
 
       logger.info('SYSTEM', 'cwd-remap applied', { sessions: sessionN, observations: obsN, summaries: sumN, backup });
     }
-
-    mkdirSync(effectiveDataDir, { recursive: true });
-    writeFileSync(markerPath, new Date().toISOString());
-    logger.info('SYSTEM', 'cwd-remap marker written', { markerPath });
   } finally {
     db.close();
   }
