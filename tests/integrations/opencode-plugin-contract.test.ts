@@ -9,9 +9,7 @@ import {
 /**
  * Regression guard for plan-08 (OpenCode event-contract correctness).
  *
- * The old plugin subscribed to bus event names that do not exist in OpenCode
- * (`session.created`, `message.updated`, `session.compacted`, `file.edited`,
- * `session.deleted` on a `(name, payload)` switch) and parsed `data.items`
+ * The old plugin subscribed to phantom hook names and parsed `data.items`
  * instead of the worker's real `data.content` blocks — so it captured nothing
  * and search always returned "No results". These tests fail CI if either
  * contract regresses.
@@ -21,10 +19,9 @@ import {
 // key must be in this allowlist; a future typo (e.g. "session.created") fails.
 const REAL_OPENCODE_HOOK_NAMES = new Set<string>([
   "tool.execute.after",
-  "message.updated",
-  "message.part.updated",
   "event",
   "experimental.session.compacting",
+  "chat.message",
   "tool.execute.before",
   "permission.ask",
   "auth",
@@ -33,7 +30,7 @@ const REAL_OPENCODE_HOOK_NAMES = new Set<string>([
   "tool",
 ]);
 
-// Bus event names the old code used that DO NOT exist in OpenCode's contract.
+// Hook or bus names the old code used that DO NOT exist in the relevant contract surface.
 const PHANTOM_BUS_EVENT_NAMES = [
   "session.created",
   "session.compacted",
@@ -68,8 +65,6 @@ describe("OpenCode plugin event contract", () => {
 
     // The capture-critical hooks must be present.
     expect(hookKeys).toContain("tool.execute.after");
-    expect(hookKeys).toContain("message.updated");
-    expect(hookKeys).toContain("message.part.updated");
     expect(hookKeys).toContain("experimental.session.compacting");
     expect(hookKeys).toContain("event");
   });
@@ -83,8 +78,9 @@ describe("OpenCode plugin event contract", () => {
   });
 
   it("only reacts to real bus event types", () => {
-    // session.idle / session.deleted are real OpenCode bus events; the phantom
-    // names must never appear in the reacted-to allowlist.
+    // The plugin must only switch on real OpenCode bus events.
+    expect(REAL_OPENCODE_EVENT_TYPES).toContain("message.updated");
+    expect(REAL_OPENCODE_EVENT_TYPES).toContain("message.part.updated");
     expect(REAL_OPENCODE_EVENT_TYPES).toContain("session.idle");
     expect(REAL_OPENCODE_EVENT_TYPES).toContain("session.deleted");
     for (const phantom of PHANTOM_BUS_EVENT_NAMES) {
@@ -123,7 +119,7 @@ describe("OpenCode plugin event contract", () => {
     }
   });
 
-  it("awaits message.updated worker posts before the hook resolves", async () => {
+  it("awaits message.updated worker posts before the event hook resolves", async () => {
     const posts: Array<{ url: string; body: unknown }> = [];
     const fetchResolvers: Array<() => void> = [];
     const originalFetch = globalThis.fetch;
@@ -142,11 +138,19 @@ describe("OpenCode plugin event contract", () => {
 
     try {
       const plugin = await ClaudeMemPlugin(pluginCtx);
-      const messageUpdated = plugin["message.updated"];
+      const eventHook = plugin["event"];
       let resolved = false;
-      const hookPromise = messageUpdated({}, {
-        message: { role: "assistant", sessionID: "ses_2" },
-        parts: [{ type: "text", text: "assistant output" }],
+      const hookPromise = eventHook({
+        event: {
+          type: "message.updated",
+          properties: {
+            sessionID: "ses_2",
+            output: {
+              message: { role: "assistant", sessionID: "ses_2" },
+              parts: [{ type: "text", text: "assistant output" }],
+            },
+          },
+        },
       }).then(() => {
         resolved = true;
       });
@@ -191,11 +195,17 @@ describe("OpenCode plugin event contract", () => {
 
     try {
       const plugin = await ClaudeMemPlugin(pluginCtx);
-      const messagePartUpdated = plugin["message.part.updated"];
+      const eventHook = plugin["event"];
       let resolved = false;
-      const hookPromise = messagePartUpdated({}, {
-        message: { id: "msg_1", role: "assistant", sessionID: "ses_3" },
-        parts: [{ type: "text", text: "partial assistant output" }],
+      const hookPromise = eventHook({
+        event: {
+          type: "message.part.updated",
+          properties: {
+            sessionID: "ses_3",
+            message: { id: "msg_1", role: "assistant", sessionID: "ses_3" },
+            parts: [{ type: "text", text: "partial assistant output" }],
+          },
+        },
       }).then(() => {
         resolved = true;
       });

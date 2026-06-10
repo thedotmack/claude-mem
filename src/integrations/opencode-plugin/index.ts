@@ -10,25 +10,21 @@ import { SettingsDefaultsManager } from "../../shared/SettingsDefaultsManager.js
  * step 1, cross-checked against OpenCode's documented plugin API):
  *
  *   - `tool.execute.after`            (input, output) — fires after every tool run
- *   - `message.updated`               ({}, output)    — fires on assistant message updates
- *   - `message.part.updated`          ({}, output)    — fires on streamed assistant message parts
  *   - `event`                         ({ event })     — generic bus; event.type carries the name
  *   - `experimental.session.compacting`               — fires when a session compacts
  *
  * The generic `event` hook delivers bus events whose discriminant is
- * `event.type`. The only bus event types claude-mem reacts to are
- * `session.deleted` (forget the session mapping) and `session.idle` (best-effort
- * summarize). Session creation/observation capture is driven by the dedicated
- * `tool.execute.after` / `message.updated` hooks above, not by bus events — that is
- * the #2435 fix: the old code subscribed to non-existent bus types
- * (`session.created`, `message.updated`, `session.compacted`, `file.edited`)
- * and therefore captured nothing.
+ * `event.type`. Assistant-message capture now happens via the real bus events
+ * `message.updated` and `message.part.updated`, while `session.idle` and
+ * `session.deleted` remain session-lifecycle events.
  *
  * REAL_OPENCODE_EVENT_TYPES is the allowlist of bus `event.type` values the
  * plugin is permitted to switch on. The contract test asserts the plugin only
  * references names in this list so a future typo fails CI.
  */
 export const REAL_OPENCODE_EVENT_TYPES = [
+  "message.updated",
+  "message.part.updated",
   "session.idle",
   "session.deleted",
 ] as const;
@@ -38,8 +34,6 @@ type RealOpenCodeEventType = (typeof REAL_OPENCODE_EVENT_TYPES)[number];
 /** The hook keys this plugin returns. The contract test asserts these are the real OpenCode hook names. */
 export const REGISTERED_OPENCODE_HOOKS = [
   "tool.execute.after",
-  "message.updated",
-  "message.part.updated",
   "event",
   "experimental.session.compacting",
 ] as const;
@@ -89,7 +83,12 @@ interface BusEvent {
   properties?: {
     sessionID?: string;
     info?: { id?: string };
+    message?: ChatMessageOutput["message"];
+    parts?: ChatMessageOutput["parts"];
+    output?: ChatMessageOutput;
   };
+  message?: ChatMessageOutput["message"];
+  parts?: ChatMessageOutput["parts"];
 }
 
 function resolveWorkerPort(): string {
@@ -143,7 +142,6 @@ async function workerGetText(path: string): Promise<string | null> {
 
 const contentSessionIdsByOpenCodeSessionId = new Map<string, string>();
 const initializedSessionIds = new Set<string>();
-const pendingAssistantMessageIds = new Set<string>();
 
 const MAX_SESSION_MAP_ENTRIES = 1000;
 
@@ -240,33 +238,6 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       });
     },
 
-    // Capture assistant chat messages as observations.
-    "message.updated": async (
-      _input: Record<string, unknown>,
-      output: ChatMessageOutput,
-    ): Promise<void> => {
-      const sessionID = output.message?.sessionID;
-      if (!sessionID) return;
-      const messageId = output.message?.id;
-      if (messageId) {
-        pendingAssistantMessageIds.delete(`${sessionID}:${messageId}`);
-      }
-      await captureAssistantMessage(sessionID, output, projectName, ctx.directory);
-    },
-
-    "message.part.updated": async (
-      _input: Record<string, unknown>,
-      output: ChatMessageOutput,
-    ): Promise<void> => {
-      const sessionID = output.message?.sessionID;
-      if (!sessionID) return;
-      const messageId = output.message?.id;
-      if (messageId) {
-        pendingAssistantMessageIds.add(`${sessionID}:${messageId}`);
-      }
-      await ensureSessionInitialized(sessionID, projectName);
-    },
-
     // Summarize when a session compacts. This is OpenCode's real compaction
     // hook (the old `session.compacted` bus event never existed).
     "experimental.session.compacting": async (
@@ -280,14 +251,37 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
     },
 
     // Generic bus events. Only `session.idle` and `session.deleted` are real
-    // and acted upon (see REAL_OPENCODE_EVENT_TYPES).
+    // and acted upon, plus the assistant-message bus events that OpenCode
+    // delivers only through this hook (see REAL_OPENCODE_EVENT_TYPES).
     event: async ({ event }: { event: BusEvent }): Promise<void> => {
       const eventType = event?.type as RealOpenCodeEventType | undefined;
-      const sessionID = event?.properties?.sessionID || event?.properties?.info?.id;
-      if (!sessionID) return;
+      const sessionID =
+        event?.properties?.sessionID ||
+        event?.properties?.info?.id ||
+        event?.properties?.output?.message?.sessionID ||
+        event?.properties?.message?.sessionID ||
+        event?.message?.sessionID;
 
       switch (eventType) {
+        case "message.part.updated": {
+          if (!sessionID) return;
+          await ensureSessionInitialized(sessionID, projectName);
+          break;
+        }
+        case "message.updated": {
+          const output =
+            event?.properties?.output ??
+            (event?.properties?.message || event?.properties?.parts
+              ? { message: event.properties?.message, parts: event.properties?.parts }
+              : event?.message || event?.parts
+                ? { message: event.message, parts: event.parts }
+                : null);
+          if (!sessionID || !output) return;
+          await captureAssistantMessage(sessionID, output, projectName, ctx.directory);
+          break;
+        }
         case "session.idle": {
+          if (!sessionID) return;
           // Best-effort summarize once a session goes idle.
           const contentSessionId = await ensureSessionInitialized(sessionID, projectName);
           await workerPost("/api/sessions/summarize", {
@@ -297,13 +291,9 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
           break;
         }
         case "session.deleted": {
+          if (!sessionID) return;
           contentSessionIdsByOpenCodeSessionId.delete(sessionID);
           initializedSessionIds.delete(sessionID);
-          for (const key of pendingAssistantMessageIds) {
-            if (key.startsWith(`${sessionID}:`)) {
-              pendingAssistantMessageIds.delete(key);
-            }
-          }
           break;
         }
         default:
