@@ -9,21 +9,10 @@ import type {
 import { ModeManager } from '../../domain/ModeManager.js';
 import { formatObservationTokenDisplay } from '../TokenCalculator.js';
 
-function formatHeaderDateTime(): string {
-  const now = new Date();
-  const date = now.toLocaleDateString('en-CA'); 
-  const time = now.toLocaleTimeString('en-US', {
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true
-  }).toLowerCase().replace(' ', '');
-  const tz = now.toLocaleTimeString('en-US', { timeZoneName: 'short' }).split(' ').pop();
-  return `${date} ${time} ${tz}`;
-}
-
 export function renderAgentHeader(project: string): string[] {
+  const date = new Date().toLocaleDateString('en-CA');
   return [
-    `# [${project}] recent context, ${formatHeaderDateTime()}`,
+    `# [${project}] recent context, ${date}`,
     ''
   ];
 }
@@ -156,5 +145,6 @@ export function renderAgentFooter(totalDiscoveryTokens: number, totalReadTokens:
 }
 
 export function renderAgentEmptyState(project: string): string {
-  return `# [${project}] recent context, ${formatHeaderDateTime()}\n\nNo previous sessions found.`;
+  const date = new Date().toLocaleDateString('en-CA');
+  return `# [${project}] recent context, ${date}\n\nNo previous sessions found.`;
 }
