@@ -105,6 +105,37 @@ describe('scrubProperties', () => {
     expect(result.model).toBe('claude-haiku-4-5');
   });
 
+  it('keeps the cost/endpoint keys with primitive values', () => {
+    const result = scrubProperties({
+      cost_usd: 0.0021,
+      endpoint_class: 'openrouter',
+    });
+
+    expect(result).toEqual({
+      cost_usd: 0.0021,
+      endpoint_class: 'openrouter',
+    });
+  });
+
+  it('keeps the install snapshot keys with primitive values', () => {
+    const result = scrubProperties({
+      db_observation_count: 92501,
+      db_session_count: 5243,
+      db_summary_count: 9698,
+      db_project_count: 379,
+      db_size_mb: 364.4,
+      install_age_days: 104,
+      obs_count_7d: 1887,
+      obs_count_30d: 10357,
+      days_since_last_obs: 0,
+    });
+
+    expect(Object.keys(result)).toHaveLength(9);
+    expect(result.db_observation_count).toBe(92501);
+    expect(result.install_age_days).toBe(104);
+    expect(result.days_since_last_obs).toBe(0);
+  });
+
   it('drops unknown keys silently', () => {
     const result = scrubProperties({
       version: '1.0.0',

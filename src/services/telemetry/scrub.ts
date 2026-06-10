@@ -61,6 +61,24 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'tokens_output',
   'compression_ratio',
   'model',
+  // Provider-reported spend of one compression call in USD (SDK result message
+  // for Claude, usage.cost for OpenRouter) — never an estimate.
+  'cost_usd',
+  // 'openrouter' | 'custom' — whether the OpenRouter provider talks to
+  // openrouter.ai or a user-pointed OpenAI-compatible gateway.
+  'endpoint_class',
+  // worker_started install snapshot — aggregate shape of the local memory DB:
+  // row counts, file size in MB, and day-granularity age/recency. Counts and
+  // day deltas only — never project names, observation text, or content.
+  'db_observation_count',
+  'db_session_count',
+  'db_summary_count',
+  'db_project_count',
+  'db_size_mb',
+  'install_age_days',
+  'obs_count_7d',
+  'obs_count_30d',
+  'days_since_last_obs',
 ]);
 
 const MAX_STRING_LENGTH = 200;

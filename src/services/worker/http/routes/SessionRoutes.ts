@@ -154,6 +154,9 @@ export class SessionRoutes extends BaseRouteHandler {
         captureEvent('session_compressed', {
           outcome: 'error',
           provider,
+          // Providers seed lastModelId when they start; 'unknown' covers a
+          // generator that died before resolving its model.
+          model: session.lastModelId ?? 'unknown',
           error_category: 'provider_error',
           hook: session.lastGeneratorSource,
           ide: session.platformSource,

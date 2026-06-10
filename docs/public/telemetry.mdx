@@ -59,12 +59,19 @@ Every event property passes through a strict whitelist scrubber — any key not 
 | `compression_ms` | `2140` | Latency of the compression model call |
 | `tokens_input` / `tokens_output` | `5800` / `420` | Real token usage reported by the model API for one compression |
 | `compression_ratio` | `13.8` | tokens_input ÷ tokens_output |
+| `cost_usd` | `0.0021` | Provider-reported cost of one compression call in USD (Claude SDK / openrouter.ai) — never an estimate, absent when the provider reports none |
+| `endpoint_class` | `openrouter` | Whether the OpenRouter provider targets openrouter.ai or a custom gateway |
 | `observation_count`, `session_count` | `50`, `12` | How many observations/sessions fed one context injection |
 | `timeline_depth_days` | `90` | Age in days of the oldest injected observation |
 | `has_session_summary` | `true` | Whether a session summary was part of the injection |
 | `tokens_injected` | `17914` | Estimated tokens of injected context |
 | `tokens_saved_vs_naive` | `144379` | Estimated tokens saved vs re-discovering that work |
 | `search_strategy` | `timeline` | Which retrieval strategy built the injection (our enum) |
+| `db_observation_count`, `db_session_count`, `db_summary_count`, `db_project_count` | `92501`, `5243`, `9698`, `379` | Total rows in the local memory database — counts only, never names or text |
+| `db_size_mb` | `364.4` | Memory database file size in MB |
+| `install_age_days` | `104` | Days since the install's first recorded session |
+| `obs_count_7d` / `obs_count_30d` | `1887` / `10357` | Observations stored in the last 7 / 30 days |
+| `days_since_last_obs` | `0` | Days since the most recent observation was stored |
 
 ### Events
 
@@ -73,8 +80,8 @@ Every event property passes through a strict whitelist scrubber — any key not 
 | `install_completed` | `npx claude-mem install` finishes | `ide`, `provider`, `runtime_mode`, `is_update`, `outcome`, `duration_ms`, `interactive`, `install_method`, `bun_version`, `uv_version`, `claude_code_version` |
 | `install_failed` | The installer aborts | `error_category` (our error-taxonomy id), `interactive`, `install_method`, `claude_code_version` |
 | `uninstall_completed` | `npx claude-mem uninstall` finishes | — |
-| `worker_started` | The background worker starts, plus one heartbeat per 24h of uptime | `trigger` (start / heartbeat), `duration_ms` |
-| `session_compressed` | A session compression stores observations, or the compression generator fails | `outcome`, `duration_ms`, `count`, `has_summary`, `provider`, `model`, `ide`, `hook`, `compression_ms`, `observation_type`, `obs_type_*`, `tokens_input`, `tokens_output`, `compression_ratio`; on failure `error_category` |
+| `worker_started` | The background worker starts, plus one heartbeat per 24h of uptime | `trigger` (start / heartbeat), `duration_ms`, `ide`, `provider`, `mode`, `runtime_mode`, and the install snapshot: `db_observation_count`, `db_session_count`, `db_summary_count`, `db_project_count`, `db_size_mb`, `install_age_days`, `obs_count_7d`, `obs_count_30d`, `days_since_last_obs` |
+| `session_compressed` | A session compression stores observations, or the compression generator fails | `outcome`, `duration_ms`, `count`, `has_summary`, `provider`, `model`, `ide`, `hook`, `compression_ms`, `observation_type`, `obs_type_*`, `tokens_input`, `tokens_output`, `compression_ratio`, `cost_usd`, `endpoint_class`; on failure `error_category`, `model` |
 | `context_injected` | Stored memory is injected into a new session | `outcome`, `duration_ms`, `mode`, `provider`, `search_strategy`, `observation_count`, `session_count`, `timeline_depth_days`, `has_session_summary`, `obs_type_*`, `tokens_injected`, `tokens_saved_vs_naive` |
 | `search_performed` | A memory search runs (never the query text) | `endpoint`, `outcome`, `duration_ms` |
 | `error_occurred` | The worker returns an HTTP 5xx | `error_category` |

@@ -189,6 +189,7 @@ export class GeminiProvider {
 
   async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
     const { apiKey, model, rateLimitingEnabled } = this.getGeminiConfig();
+    session.lastModelId = model;
 
     if (!apiKey) {
       throw new Error('Gemini API key not configured. Set CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.');
@@ -226,8 +227,8 @@ export class GeminiProvider {
       const tokensUsed = initResponse.tokensUsed || 0;
       session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);  
       session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
-      session.lastUsage = initResponse.inputTokens || initResponse.outputTokens
-        ? { input: initResponse.inputTokens || 0, output: initResponse.outputTokens || 0 }
+      session.lastUsage = typeof initResponse.inputTokens === 'number' && typeof initResponse.outputTokens === 'number'
+        ? { input: initResponse.inputTokens, output: initResponse.outputTokens }
         : null;
       await processAgentResponse(initResponse.content, session, this.dbManager, this.sessionManager, worker, tokensUsed, null, 'Gemini', undefined, model);
     } else {
@@ -318,8 +319,10 @@ export class GeminiProvider {
       tokensUsed = obsResponse.tokensUsed || 0;
       session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
       session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
-      session.lastUsage = obsResponse.inputTokens || obsResponse.outputTokens
-        ? { input: obsResponse.inputTokens || 0, output: obsResponse.outputTokens || 0 }
+      // Both sides or nothing: a backend reporting only one of the two counts
+      // must not produce a half-real event (input=0 → compression_ratio 0.0).
+      session.lastUsage = typeof obsResponse.inputTokens === 'number' && typeof obsResponse.outputTokens === 'number'
+        ? { input: obsResponse.inputTokens, output: obsResponse.outputTokens }
         : null;
     }
 
@@ -366,8 +369,8 @@ export class GeminiProvider {
       tokensUsed = summaryResponse.tokensUsed || 0;
       session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
       session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
-      session.lastUsage = summaryResponse.inputTokens || summaryResponse.outputTokens
-        ? { input: summaryResponse.inputTokens || 0, output: summaryResponse.outputTokens || 0 }
+      session.lastUsage = typeof summaryResponse.inputTokens === 'number' && typeof summaryResponse.outputTokens === 'number'
+        ? { input: summaryResponse.inputTokens, output: summaryResponse.outputTokens }
         : null;
     }
 

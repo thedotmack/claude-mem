@@ -46,6 +46,17 @@ export const PERSON_PROPERTY_KEYS = [
   'runtime_mode',
   'install_method',
   'claude_code_version',
+  // Install snapshot (refreshed by the daily worker_started heartbeat) —
+  // lets cohorts slice by install scale, age, and activity.
+  'db_observation_count',
+  'db_session_count',
+  'db_summary_count',
+  'db_project_count',
+  'db_size_mb',
+  'install_age_days',
+  'obs_count_7d',
+  'obs_count_30d',
+  'days_since_last_obs',
 ] as const;
 
 /**

@@ -52,10 +52,17 @@ const COLLECTED_FIELDS = [
   'observation_type / obs_type_*   observation type buckets (counts only)',
   'compression_ms / tokens_input / tokens_output / compression_ratio',
   '                 latency + real token usage of one compression call',
+  'cost_usd         provider-reported cost of one compression call (USD)',
+  'endpoint_class   openrouter.ai vs custom gateway (enum)',
   'observation_count / session_count / timeline_depth_days / has_session_summary',
   '                 depth of one context injection',
   'tokens_injected / tokens_saved_vs_naive / search_strategy',
   '                 token economics of one context injection',
+  'db_observation_count / db_session_count / db_summary_count / db_project_count',
+  '                 total rows in your local memory DB (counts only)',
+  'db_size_mb       memory database file size in MB',
+  'install_age_days / days_since_last_obs / obs_count_7d / obs_count_30d',
+  '                 install age and recent activity, in days/counts',
 ];
 
 const EVENT_NAMES = [
