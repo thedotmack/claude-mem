@@ -9,6 +9,7 @@ import { MARKETPLACE_ROOT, DATA_DIR } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
 import { validateWorkerPidFile } from "../supervisor/index.js";
 import { emitBlockingError } from "./hook-io.js";
+import { captureCliEvent } from "../services/telemetry/cli-telemetry.js";
 import { checkVersionMatch } from "../services/infrastructure/index.js";
 
 function readTimeoutEnv(
@@ -448,7 +449,35 @@ function getFailLoudThreshold(): number {
   return FAIL_LOUD_DEFAULT_THRESHOLD;
 }
 
-function recordWorkerUnreachable(): number {
+/**
+ * Closed enum of hook handler names allowed as the `hook_type` telemetry
+ * property. Mirrors the scrub whitelist comment (scrub.ts), the CLI
+ * disclosure (npx-cli/commands/telemetry.ts), and docs/public/telemetry.mdx —
+ * never widen one without the others. Events outside this set (user-message,
+ * file-edit) simply omit hook_type.
+ */
+const TELEMETRY_HOOK_TYPES = ['context', 'session-init', 'observation', 'summarize', 'file-context'] as const;
+export type TelemetryHookType = (typeof TELEMETRY_HOOK_TYPES)[number];
+
+let activeHookType: TelemetryHookType | null = null;
+
+/**
+ * Record which hook event this short-lived hook process is executing, so the
+ * fail-loud counter can tag its threshold-gated hook_failed telemetry.
+ * Called once at hookCommand entry; values outside the closed enum are
+ * dropped (never free text).
+ */
+export function setActiveHookType(event: string): void {
+  activeHookType = (TELEMETRY_HOOK_TYPES as readonly string[]).includes(event)
+    ? (event as TelemetryHookType)
+    : null;
+}
+
+export function getActiveHookType(): TelemetryHookType | null {
+  return activeHookType;
+}
+
+export async function recordWorkerUnreachable(): Promise<number> {
   const state = readHookFailureState();
   const next: HookFailureState = {
     consecutiveFailures: state.consecutiveFailures + 1,
@@ -458,6 +487,23 @@ function recordWorkerUnreachable(): number {
 
   const threshold = getFailLoudThreshold();
   if (next.consecutiveFailures >= threshold) {
+    // hook_failed distress signal. Gated to the failure that JUST reached the
+    // threshold (`===`, not `>=`): the stderr warning below repeats on every
+    // failure past the threshold, but telemetry emits once per failure streak
+    // to bound volume. MUST be awaited BEFORE emitBlockingError — it calls
+    // process.exit(2) immediately, which would kill a fire-and-forget POST
+    // mid-flight. captureCliEvent never throws and is hard-capped at 2s, so
+    // this cannot hang the fail-loud path. Closed-enum/count props only —
+    // never error text. Transport is the direct CLI POST, never the worker
+    // API (the defining failure here IS "worker unreachable").
+    if (next.consecutiveFailures === threshold) {
+      await captureCliEvent('hook_failed', {
+        ...(activeHookType !== null ? { hook_type: activeHookType } : {}),
+        error_mode: 'worker_unavailable',
+        consecutive_failures: next.consecutiveFailures,
+        threshold_tripped: true,
+      });
+    }
     // #2292 fix: BLOCKING_FEEDBACK. emitBlockingError flushes the Phase 2
     // stderr buffer (so preceding logger.warn lines also surface) and writes
     // via the bypass channel + exits 2. Previously this raw process.stderr.write
@@ -501,7 +547,7 @@ export async function executeWithWorkerFallback<T = unknown>(
 ): Promise<WorkerCallResult<T>> {
   const alive = await ensureWorkerAliveOnce();
   if (!alive) {
-    recordWorkerUnreachable();
+    await recordWorkerUnreachable();
     return { continue: true, reason: 'worker_unreachable', [WORKER_FALLBACK_BRAND]: true };
   }
 
