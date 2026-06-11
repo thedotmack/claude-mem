@@ -298,8 +298,6 @@ export function runOneTimeChromaMigration(dataDirectory?: string): void {
   logger.info('SYSTEM', 'Chroma migration marker written', { markerPath });
 }
 
-const CWD_REMAP_MARKER_FILENAME = '.cwd-remap-applied-v1';
-
 type CwdClassification =
   | { kind: 'main'; project: string }
   | { kind: 'worktree'; project: string }
@@ -547,4 +545,3 @@ export function touchPidFile(): void {
 export function cleanStalePidFile(): ValidateWorkerPidStatus {
   return validateWorkerPidFile({ logAlive: false });
 }
-
