@@ -632,7 +632,6 @@ function writeHooksDisabledSentinel(): void {
 
 function areHooksDisabledForSession(): boolean {
   try {
-    if (!existsSync(getHooksDisabledPath())) return false;
     const raw = readFileSync(getHooksDisabledPath(), 'utf-8');
     const parsed = JSON.parse(raw) as { disabledAt?: number };
     if (typeof parsed.disabledAt !== 'number') return false;
