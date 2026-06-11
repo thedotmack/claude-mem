@@ -279,6 +279,7 @@ async function buildHooks() {
         'ollama',
         '@chroma-core/default-embed',
         'onnxruntime-node',
+        // better-auth stays external because dynamic server routes otherwise drag server-only deps into worker-service.cjs (#2584).
         'better-auth',
         'better-auth/node',
         'better-auth/plugins',
