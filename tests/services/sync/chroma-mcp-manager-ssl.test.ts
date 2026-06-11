@@ -1,26 +1,19 @@
-import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
+import fs from 'node:fs';
+import path from 'node:path';
 
-// Capture real exports before mock.module mutates the live namespace, then
-// re-register the snapshots in afterAll so these mocks do not leak into later
-// test files (bun's mock.module is process-global; mock.restore() does NOT undo it).
-import * as realSettingsDefaultsManager from '../../../src/shared/SettingsDefaultsManager.js';
 import * as realPaths from '../../../src/shared/paths.js';
 import * as realLogger from '../../../src/utils/logger.js';
-const realSettingsSnapshot = { ...realSettingsDefaultsManager };
-const realPathsSnapshot = { ...realPaths };
+import * as realSupervisor from '../../../src/supervisor/index.ts';
+import * as realEnvSanitizer from '../../../src/supervisor/env-sanitizer.js';
 const realLoggerSnapshot = { ...realLogger };
+const realSupervisorSnapshot = { ...realSupervisor };
+const realEnvSanitizerSnapshot = { ...realEnvSanitizer };
+
+const FAKE_CHROMA_DIR = realPaths.paths.chroma();
+const FAKE_CHROMA_LOCK = path.join(FAKE_CHROMA_DIR, '.claude-mem-chroma-mcp.lock');
 
 let currentSettings: Record<string, string> = {};
-const defaultSettings: Record<string, string> = {
-  CLAUDE_MEM_QUEUE_ENGINE: 'sqlite',
-  CLAUDE_MEM_REDIS_MODE: 'external',
-  CLAUDE_MEM_REDIS_URL: '',
-  CLAUDE_MEM_REDIS_HOST: '127.0.0.1',
-  CLAUDE_MEM_REDIS_PORT: '6379',
-  CLAUDE_MEM_QUEUE_REDIS_PREFIX: 'claude_mem',
-  CLAUDE_MEM_WELCOME_HINT_ENABLED: 'true',
-  CLAUDE_MEM_WORKER_PORT: '37777',
-};
 
 let capturedTransportOpts: { command: string; args: string[] } | null = null;
 
@@ -45,16 +38,16 @@ mock.module('@modelcontextprotocol/sdk/client/index.js', () => ({
   },
 }));
 
-mock.module('../../../src/shared/SettingsDefaultsManager.js', () => ({
-  SettingsDefaultsManager: {
-    get: (key: string) => currentSettings[key] ?? defaultSettings[key] ?? '',
-    getInt: () => 0,
-    loadFromFile: () => ({ ...defaultSettings, ...currentSettings }),
-  },
+mock.module('../../../src/supervisor/index.ts', () => ({
+  getSupervisor: () => ({
+    assertCanSpawn: () => {},
+    registerProcess: () => {},
+    unregisterProcess: () => {},
+  }),
 }));
 
-mock.module('../../../src/shared/paths.js', () => ({
-  USER_SETTINGS_PATH: '/tmp/fake-settings.json',
+mock.module('../../../src/supervisor/env-sanitizer.js', () => ({
+  sanitizeEnv: (env: NodeJS.ProcessEnv) => env,
 }));
 
 mock.module('../../../src/utils/logger.js', () => ({
@@ -70,17 +63,25 @@ mock.module('../../../src/utils/logger.js', () => ({
   },
 }));
 
-import { ChromaMcpManager } from '../../../src/services/sync/ChromaMcpManager.js';
+const { ChromaMcpManager } = await import('../../../src/services/sync/ChromaMcpManager.js');
+type ChromaMcpManagerType = InstanceType<typeof ChromaMcpManager>;
 
 afterAll(() => {
-  mock.module('../../../src/shared/SettingsDefaultsManager.js', () => realSettingsSnapshot);
-  mock.module('../../../src/shared/paths.js', () => realPathsSnapshot);
   mock.module('../../../src/utils/logger.js', () => realLoggerSnapshot);
+  mock.module('../../../src/supervisor/index.ts', () => realSupervisorSnapshot);
+  mock.module('../../../src/supervisor/env-sanitizer.js', () => realEnvSanitizerSnapshot);
 });
+
+function writeCurrentSettings(): void {
+  fs.mkdirSync(FAKE_CHROMA_DIR, { recursive: true });
+  fs.mkdirSync(path.dirname(realPaths.USER_SETTINGS_PATH), { recursive: true });
+  fs.writeFileSync(realPaths.USER_SETTINGS_PATH, JSON.stringify(currentSettings, null, 2), 'utf-8');
+}
 
 async function assertSslFlag(sslSetting: string | undefined, expectedValue: string) {
   currentSettings = { CLAUDE_MEM_CHROMA_MODE: 'remote' };
   if (sslSetting !== undefined) currentSettings.CLAUDE_MEM_CHROMA_SSL = sslSetting;
+  writeCurrentSettings();
 
   await mgr.callTool('chroma_list_collections', {});
 
@@ -90,14 +91,26 @@ async function assertSslFlag(sslSetting: string | undefined, expectedValue: stri
   expect(capturedTransportOpts!.args[sslIdx + 1]).toBe(expectedValue);
 }
 
-let mgr: ChromaMcpManager;
+let mgr: ChromaMcpManagerType;
 
 describe('ChromaMcpManager SSL flag regression (#1286)', () => {
   beforeEach(async () => {
     await ChromaMcpManager.reset();
+    try { fs.unlinkSync(FAKE_CHROMA_LOCK); } catch { /* absent */ }
+    fs.mkdirSync(FAKE_CHROMA_DIR, { recursive: true });
     capturedTransportOpts = null;
     currentSettings = {};
+    writeCurrentSettings();
     mgr = ChromaMcpManager.getInstance();
+  });
+
+  afterEach(async () => {
+    await ChromaMcpManager.reset();
+    try { fs.unlinkSync(FAKE_CHROMA_LOCK); } catch { /* absent */ }
+  });
+
+  afterAll(() => {
+    try { fs.rmSync(FAKE_CHROMA_DIR, { recursive: true, force: true }); } catch { /* best-effort */ }
   });
 
   it('emits --ssl false when CLAUDE_MEM_CHROMA_SSL=false', async () => {
@@ -116,6 +129,7 @@ describe('ChromaMcpManager SSL flag regression (#1286)', () => {
     currentSettings = {
       CLAUDE_MEM_CHROMA_MODE: 'local',
     };
+    writeCurrentSettings();
 
     await mgr.callTool('chroma_list_collections', {});
 

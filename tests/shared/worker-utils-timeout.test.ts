@@ -16,6 +16,10 @@ import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManage
 // settings path at call time via SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR').
 import '../../src/shared/paths.js';
 
+async function importWorkerUtilsFresh() {
+  return import(`../../src/shared/worker-utils.js?worker-utils-timeout=${Date.now()}-${Math.random()}`);
+}
+
 describe('worker-utils API timeout resolution', () => {
   let tempDir: string;
   let settingsPath: string;
@@ -49,7 +53,7 @@ describe('worker-utils API timeout resolution', () => {
 
   it('uses settings.json timeout when no env override is present', async () => {
     writeSettings('45000');
-    const workerUtils = await import('../../src/shared/worker-utils.js');
+    const workerUtils = await importWorkerUtilsFresh();
     workerUtils.clearPortCache();
 
     expect(workerUtils.getWorkerApiRequestTimeoutMs()).toBe(45000);
@@ -59,7 +63,7 @@ describe('worker-utils API timeout resolution', () => {
     writeSettings('45000');
     process.env.CLAUDE_MEM_API_TIMEOUT_MS = '1200';
 
-    const workerUtils = await import('../../src/shared/worker-utils.js');
+    const workerUtils = await importWorkerUtilsFresh();
     workerUtils.clearPortCache();
 
     expect(workerUtils.getWorkerApiRequestTimeoutMs()).toBe(1200);
@@ -69,7 +73,7 @@ describe('worker-utils API timeout resolution', () => {
     writeSettings('45000');
     process.env.CLAUDE_MEM_API_TIMEOUT_MS = '999999';
 
-    const workerUtils = await import('../../src/shared/worker-utils.js');
+    const workerUtils = await importWorkerUtilsFresh();
     const loggerModule = await import('../../src/utils/logger.js');
     const warnSpy = spyOn(loggerModule.logger, 'warn').mockImplementation(() => {});
 
