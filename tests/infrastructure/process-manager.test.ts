@@ -1,9 +1,22 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { existsSync, readFileSync, mkdirSync, writeFileSync, rmSync, statSync } from 'fs';
-import { homedir } from 'os';
-import { tmpdir } from 'os';
+import { describe, it, expect, beforeEach, afterEach, afterAll } from 'bun:test';
+import { existsSync, readFileSync, mkdirSync, mkdtempSync, writeFileSync, rmSync, statSync } from 'fs';
+import { homedir, tmpdir } from 'os';
 import path from 'path';
-import {
+import type { PidInfo } from '../../src/services/infrastructure/index.js';
+
+// ── Data-dir isolation (Phase 6, worker-restart plan) ──────────────────────
+// These tests write corrupt JSON and sentinel PIDs into the worker PID file,
+// so that file must NEVER be the real ~/.claude-mem/worker.pid. paths.ts
+// freezes DATA_DIR at first evaluation and ProcessManager freezes PID_FILE
+// from it at import time — and ESM hoists static imports above any env
+// assignment — so the env var is set FIRST and the code under test is loaded
+// with dynamic imports below. (`import type` above is erased at compile time
+// and loads nothing.)
+const TEST_DATA_DIR = mkdtempSync(path.join(tmpdir(), 'claude-mem-pm-test-'));
+const PREVIOUS_DATA_DIR = process.env.CLAUDE_MEM_DATA_DIR;
+process.env.CLAUDE_MEM_DATA_DIR = TEST_DATA_DIR;
+
+const {
   writePidFile,
   readPidFile,
   removePidFile,
@@ -19,28 +32,58 @@ import {
   runOneTimeChromaMigration,
   captureProcessStartToken,
   verifyPidFileOwnership,
-  type PidInfo
-} from '../../src/services/infrastructure/index.js';
+} = await import('../../src/services/infrastructure/index.js');
+const { paths } = await import('../../src/shared/paths.js');
 
-const DATA_DIR = path.join(homedir(), '.claude-mem');
-const PID_FILE = path.join(DATA_DIR, 'worker.pid');
+// If an earlier test file in this bun process already evaluated paths.ts, the
+// module cache wins and DATA_DIR stays frozen on that earlier value — which is
+// the preload tripwire's per-run temp dir (tests/preload.ts), never the real
+// ~/.claude-mem. Derive the paths the assertions use from the SAME frozen
+// module the code under test uses, so test and code can never diverge.
+const DATA_DIR = paths.dataDir();
+const PID_FILE = paths.workerPid();
 
 describe('ProcessManager', () => {
-  let originalPidContent: string | null = null;
+  const REAL_DATA_DIR = path.join(homedir(), '.claude-mem');
 
   beforeEach(() => {
-    if (existsSync(PID_FILE)) {
-      originalPidContent = readFileSync(PID_FILE, 'utf-8');
-    }
+    mkdirSync(DATA_DIR, { recursive: true });
+    removePidFile();
   });
 
   afterEach(() => {
-    if (originalPidContent !== null) {
-      writeFileSync(PID_FILE, originalPidContent);
-      originalPidContent = null;
+    removePidFile();
+  });
+
+  afterAll(() => {
+    if (PREVIOUS_DATA_DIR === undefined) {
+      delete process.env.CLAUDE_MEM_DATA_DIR;
     } else {
-      removePidFile();
+      process.env.CLAUDE_MEM_DATA_DIR = PREVIOUS_DATA_DIR;
     }
+    if (DATA_DIR === TEST_DATA_DIR) {
+      // paths.ts froze on our per-file dir (this file evaluated it first):
+      // empty it but keep the directory alive so later-loaded modules in this
+      // process don't point at a deleted path.
+      rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+      mkdirSync(TEST_DATA_DIR, { recursive: true });
+    } else {
+      rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+    }
+  });
+
+  describe('test isolation (Phase 6, worker-restart plan)', () => {
+    it('resolves the PID file into a temp dir, never the real ~/.claude-mem', () => {
+      expect(DATA_DIR).not.toBe(REAL_DATA_DIR);
+      expect(PID_FILE.startsWith(REAL_DATA_DIR + path.sep)).toBe(false);
+      expect(PID_FILE).toBe(path.join(DATA_DIR, 'worker.pid'));
+    });
+
+    it('writePidFile lands in the isolated dir', () => {
+      writePidFile({ pid: 4242, port: 37777, startedAt: new Date().toISOString() });
+      expect(existsSync(PID_FILE)).toBe(true);
+      expect(readPidFile()!.pid).toBe(4242);
+    });
   });
 
   describe('writePidFile', () => {

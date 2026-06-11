@@ -3,12 +3,14 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSyn
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-// Eagerly evaluate src/shared/paths.ts while CLAUDE_MEM_DATA_DIR is still
-// unset: paths.ts freezes its DATA_DIR const at first evaluation, and without
-// this import the dynamic imports inside these tests can be the first to
-// evaluate it — while the env var points at a soon-deleted temp dir — which
+// Eagerly evaluate src/shared/paths.ts BEFORE any per-test env override:
+// paths.ts freezes its DATA_DIR const at first evaluation, and without this
+// import the dynamic imports inside these tests can be the first to evaluate
+// it — while the env var points at a soon-deleted per-test temp dir — which
 // poisons every later-loaded module in the same bun process (e.g.
-// ProcessManager's PID_FILE, failing tests/infrastructure/ in combined runs).
+// ProcessManager's PID_FILE in combined runs). At this point the env var is
+// the per-RUN temp dir pinned by the preload tripwire (tests/preload.ts), so
+// paths.ts freezes on a stable, isolated dir that outlives this file.
 // The module under test is unaffected: it resolves its lock path at call time
 // via resolveDataDir(), not via paths.ts's frozen const.
 import '../../src/shared/paths.js';
