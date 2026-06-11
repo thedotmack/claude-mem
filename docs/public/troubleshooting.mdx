@@ -130,7 +130,7 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
    - Windows Console Host makes `windowsHide` effective for short-lived subprocesses.
    - `windowsHide: true` still needs to be present on hook, worker, git, Bun, and daemon spawns.
 
-3. For scripted/registry-managed environments, the same default-terminal setting maps to `HKCU\Console\%%Startup` `DelegationConsole` and `DelegationTerminal` values for Windows Console Host. Prefer the UI path above unless you already manage this setting centrally.
+3. For scripted/registry-managed environments, the same default-terminal setting maps to `HKCU\Console\%Startup` `DelegationConsole` and `DelegationTerminal` values for Windows Console Host. Prefer the UI path above unless you already manage this setting centrally.
 
 If the flashing continues after switching to Windows Console Host, capture the process/window class that appears during a hook fire. A `CASCADIA_HOSTING_WINDOW_CLASS` window points back to Windows Terminal hosting; classic console flashes usually mean another spawn site is still missing `windowsHide: true`.
 
