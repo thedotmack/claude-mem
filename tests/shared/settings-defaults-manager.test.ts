@@ -271,6 +271,40 @@ describe('SettingsDefaultsManager', () => {
     });
   });
 
+  describe('stdout discipline', () => {
+    // CLI commands like `start` promise machine-readable JSON on stdout to
+    // the hook framework; settings bootstrap runs inside them, so its
+    // informational notices must go to stderr. PR #2894 CI caught the
+    // creation notice corrupting the start command's JSON on first boot in
+    // a fresh data dir.
+    it('should not write to stdout when creating the settings file', () => {
+      const stdoutCalls: unknown[][] = [];
+      const originalLog = console.log;
+      console.log = (...args: unknown[]) => { stdoutCalls.push(args); };
+      try {
+        expect(existsSync(settingsPath)).toBe(false);
+        SettingsDefaultsManager.loadFromFile(settingsPath);
+        expect(existsSync(settingsPath)).toBe(true);
+        expect(stdoutCalls).toEqual([]);
+      } finally {
+        console.log = originalLog;
+      }
+    });
+
+    it('should not write to stdout when migrating a nested-schema file', () => {
+      writeFileSync(settingsPath, JSON.stringify({ env: { CLAUDE_MEM_MODEL: 'nested-model' } }));
+      const stdoutCalls: unknown[][] = [];
+      const originalLog = console.log;
+      console.log = (...args: unknown[]) => { stdoutCalls.push(args); };
+      try {
+        SettingsDefaultsManager.loadFromFile(settingsPath);
+        expect(stdoutCalls).toEqual([]);
+      } finally {
+        console.log = originalLog;
+      }
+    });
+  });
+
   describe('getAllDefaults', () => {
     it('should return a copy of defaults', () => {
       const defaults1 = SettingsDefaultsManager.getAllDefaults();
