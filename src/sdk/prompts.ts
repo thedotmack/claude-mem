@@ -78,6 +78,7 @@ ${mode.prompts.footer}
 ${mode.prompts.header_memory_start}`;
 }
 
+// Observer prompt budgets keep oversized Read payloads from exhausting context while preserving the command header and final error lines.
 const OBS_PROMPT_FIELD_MAX_CHARS = 16_000;
 const OBS_PROMPT_FIELD_HEAD_RATIO = 0.6;
 const OBS_PROMPT_FIELD_TAIL_RATIO = 0.3;
