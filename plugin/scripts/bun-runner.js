@@ -231,7 +231,8 @@ child.on('error', (err) => {
 });
 
 child.on('close', (code, signal) => {
-  if (signal || code > 128) {
+  const isHookEventCommand = args[1] === 'hook';
+  if ((signal || code > 128) && isHookEventCommand) {
     process.exit(0);
   }
   process.exit(code || 0);
