@@ -67,6 +67,10 @@ function isPluginDisabledInClaudeSettings() {
     const settingsPath = join(configDir, 'settings.json');
     if (!existsSync(settingsPath)) return false;
     const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+    // No optional chaining (?.) here: this launcher must parse on the oldest
+    // Node that any host might invoke it with. Some Claude Code installs run
+    // hooks under a bundled pre-ES2020 Node whose ESM loader throws
+    // "SyntaxError: Unexpected token '.'" on `?.` (issue #2791).
     return Boolean(
       settings &&
       settings.enabledPlugins &&
