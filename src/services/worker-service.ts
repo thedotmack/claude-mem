@@ -5,10 +5,10 @@ import { spawn } from 'child_process';
 import { Database } from 'bun:sqlite';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { getWorkerPort, getWorkerHost, fetchWithTimeout } from '../shared/worker-utils.js';
+import { getWorkerPort, getWorkerHost, fetchWithTimeout, resolveWorkerScriptPath } from '../shared/worker-utils.js';
 import { getCurrentWorkerPid, verifyRestartedWorker } from './restart-verify.js';
 import { runShutdownSequence, type WorkerShutdownReason } from './worker-shutdown.js';
-import { DATA_DIR, DB_PATH, ensureDir, MARKETPLACE_ROOT } from '../shared/paths.js';
+import { DATA_DIR, DB_PATH, ensureDir } from '../shared/paths.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { getUptimeSeconds } from '../shared/uptime.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
@@ -713,17 +713,10 @@ export class WorkerService implements WorkerRef {
       restartHandoff: {
         port: getWorkerPort(),
         portFreeTimeoutMs: getPlatformTimeout(5000),
-        // Prefer the marketplace-installed script (same candidates as
-        // resolveWorkerScriptPath() in src/shared/worker-utils.ts) so the
-        // successor boots the freshly-synced plugin, falling back to this
-        // script for dev trees / CI where no marketplace copy exists.
-        resolveSuccessorScript: () => {
-          const successorCandidates = [
-            path.join(MARKETPLACE_ROOT, 'plugin', 'scripts', 'worker-service.cjs'),
-            path.join(process.cwd(), 'plugin', 'scripts', 'worker-service.cjs'),
-          ];
-          return successorCandidates.find(candidate => existsSync(candidate)) ?? __filename;
-        },
+        // Prefer the marketplace-installed script so the successor boots the
+        // freshly-synced plugin, falling back to this script for dev trees /
+        // CI where no marketplace copy exists.
+        resolveSuccessorScript: () => resolveWorkerScriptPath() ?? __filename,
         waitForPortFree,
         // Owner-or-dead guarded (Phase 5): the dying worker may delete the
         // PID file it owns (its own pid) or a dead pid's leftover — never a
@@ -1006,6 +999,7 @@ async function main() {
       const shutdownAccepted = await httpShutdown(port, 'restart');
 
       let handoffDetail = '';
+      let handoffSawLiveWorker = false;
       if (oldPid !== null && shutdownAccepted) {
         // PRIMARY: the dying worker self-replaces. Do NOT waitForPortFree and
         // do NOT spawn — the successor re-binds the port within ~200ms of it
@@ -1020,6 +1014,7 @@ async function main() {
           process.exit(0);
         }
         handoffDetail = `; handoff attempt: ${handoff.lastObserved}`;
+        handoffSawLiveWorker = handoff.lastPollSawHealth;
         logger.warn('SYSTEM', 'Self-replacing worker handoff did not verify in time — falling back to CLI spawn', {
           oldPid,
           lastObserved: handoff.lastObserved,
@@ -1031,16 +1026,18 @@ async function main() {
       // handoff), or the handoff never produced a verified successor (its
       // spawn failed). Only here may the CLI spawn, and only through the
       // spawn gate so it can never race a hook's lazy-spawn.
-      const restartFreed = await waitForPortFree(port, getPlatformTimeout(15000));
-      // Prefer the marketplace-installed script (same candidates as
-      // resolveWorkerScriptPath() in src/shared/worker-utils.ts) so restart
-      // boots the freshly-synced plugin, falling back to this script for dev
-      // trees / CI where no marketplace copy exists.
-      const restartScriptCandidates = [
-        path.join(MARKETPLACE_ROOT, 'plugin', 'scripts', 'worker-service.cjs'),
-        path.join(process.cwd(), 'plugin', 'scripts', 'worker-service.cjs'),
-      ];
-      const restartScript = restartScriptCandidates.find(candidate => existsSync(candidate)) ?? __filename;
+      //
+      // When the handoff verification's most recent poll already saw a live
+      // health responder, a worker (just not a verifiable successor) holds
+      // the port — waiting for it to free would burn the full timeout for
+      // nothing, so skip straight to verifying the current owner.
+      const restartFreed = handoffSawLiveWorker
+        ? false
+        : await waitForPortFree(port, getPlatformTimeout(15000));
+      // Prefer the marketplace-installed script so restart boots the
+      // freshly-synced plugin, falling back to this script for dev trees /
+      // CI where no marketplace copy exists.
+      const restartScript = resolveWorkerScriptPath() ?? __filename;
       let spawnedScript = 'none (port still bound — nothing spawned)';
       let spawnLockHeld = false;
       if (restartFreed) {
@@ -1058,7 +1055,7 @@ async function main() {
         // successor we failed to observe in time already owns the port (the
         // verification below passes). Spawning a competitor here is never
         // useful — it could not bind the port anyway.
-        logger.warn('SYSTEM', 'Port still bound entering restart fallback — verifying current port owner instead of spawning', { port });
+        logger.warn('SYSTEM', 'Port still bound entering restart fallback — verifying current port owner instead of spawning', { port, portWaitSkipped: handoffSawLiveWorker });
       }
       try {
         if (spawnLockHeld) {

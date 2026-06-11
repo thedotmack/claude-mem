@@ -116,6 +116,8 @@ describe('verifyRestartedWorker — restart must prove itself', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.lastObserved).toContain(String(OLD_PID));
+      // A live (stale) worker is serving — callers skip the port-free wait.
+      expect(result.lastPollSawHealth).toBe(true);
     }
   });
 
@@ -127,6 +129,8 @@ describe('verifyRestartedWorker — restart must prove itself', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.lastObserved).toContain('0.0.1-stale');
+      // A live (wrong-version) worker is serving — callers skip the port-free wait.
+      expect(result.lastPollSawHealth).toBe(true);
     }
   });
 
@@ -141,6 +145,8 @@ describe('verifyRestartedWorker — restart must prove itself', () => {
     if (!result.ok) {
       expect(result.lastObserved).toContain('connection error');
       expect(result.lastObserved).toContain('ECONNREFUSED');
+      // Nothing is serving on the port — callers may wait for it to free.
+      expect(result.lastPollSawHealth).toBe(false);
     }
     // Hard cap: the deadline bounds the wait (generous slack for CI).
     expect(elapsed).toBeLessThan(DEADLINE_MS + 1000);

@@ -32,7 +32,17 @@ export interface RestartVerifyOptions {
 
 export type RestartVerifyResult =
   | { ok: true; pid: number; version: string }
-  | { ok: false; lastObserved: string };
+  | {
+      ok: false;
+      lastObserved: string;
+      /**
+       * True when the most recent poll received a health payload — i.e. a
+       * live (but unverifiable) worker is serving on the port. Callers use
+       * this to skip waiting for the port to free: it will not free while
+       * that worker lives.
+       */
+      lastPollSawHealth: boolean;
+    };
 
 async function fetchHealthSnapshot(port: number, timeoutMs: number): Promise<HealthSnapshot> {
   const url = `http://${getWorkerHost()}:${port}/api/health`;
@@ -77,11 +87,13 @@ export async function verifyRestartedWorker(
   const requestTimeoutMs = options.requestTimeoutMs ?? 2000;
   const deadline = Date.now() + deadlineMs;
   let lastObserved = 'no health response observed before deadline';
+  let lastPollSawHealth = false;
 
   while (Date.now() < deadline) {
     try {
       const health = await fetchHealthSnapshot(port, requestTimeoutMs);
       lastObserved = `last health payload: ${JSON.stringify({ pid: health.pid, version: health.version })}`;
+      lastPollSawHealth = true;
       if (
         typeof health.pid === 'number' &&
         health.pid !== oldPid &&
@@ -92,9 +104,10 @@ export async function verifyRestartedWorker(
       }
     } catch (error) {
       lastObserved = `connection error: ${error instanceof Error ? error.message : String(error)}`;
+      lastPollSawHealth = false;
     }
     await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
   }
 
-  return { ok: false, lastObserved };
+  return { ok: false, lastObserved, lastPollSawHealth };
 }
