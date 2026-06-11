@@ -99,7 +99,7 @@ function stripBase64ImageBlocks(value: unknown): unknown {
   ) {
     const src = obj.source as Record<string, unknown>;
     const dataLen = typeof src.data === 'string' ? src.data.length : 0;
-    const sizeKb = Math.round((dataLen * 3) / 4 / 1024); 
+    const sizeKb = Math.round((dataLen * 3) / 4 / 1024);
     return {
       type: 'image',
       source: {
@@ -120,6 +120,7 @@ function stripBase64ImageBlocks(value: unknown): unknown {
 function truncateObservationField(value: unknown, maxChars: number = OBS_PROMPT_FIELD_MAX_CHARS): string {
   const raw = JSON.stringify(value, null, 2) ?? '';
   if (raw.length <= maxChars) return raw;
+  // Keep more head than tail because the tool name and error prefix usually carry the debugging signal.
   const headChars = Math.max(0, Math.floor(maxChars * OBS_PROMPT_FIELD_HEAD_RATIO));
   const tailChars = Math.max(0, Math.floor(maxChars * OBS_PROMPT_FIELD_TAIL_RATIO));
   const head = raw.slice(0, headChars);
