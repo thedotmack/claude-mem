@@ -19,6 +19,82 @@ function isDreamProject(project: string): boolean {
   return project.endsWith(':dream');
 }
 
+function rawProjectsForFallback(projects: string[]): string[] {
+  return projects.filter(project => !isDreamProject(project));
+}
+
+function queryLatestRawObservation(
+  db: SessionStore,
+  projects: string[],
+  typeArray: string[],
+  conceptArray: string[]
+): Observation | null {
+  const rawProjects = rawProjectsForFallback(projects);
+  if (rawProjects.length === 0) return null;
+
+  const projectPlaceholders = rawProjects.map(() => '?').join(',');
+  const typePlaceholders = typeArray.map(() => '?').join(',');
+  const conceptPlaceholders = conceptArray.map(() => '?').join(',');
+
+  return db.db.prepare(`
+    SELECT
+      o.id,
+      o.memory_session_id,
+      COALESCE(s.platform_source, 'claude') as platform_source,
+      o.type,
+      o.title,
+      o.subtitle,
+      o.narrative,
+      o.facts,
+      o.concepts,
+      o.files_read,
+      o.files_modified,
+      o.discovery_tokens,
+      o.created_at,
+      o.created_at_epoch,
+      o.project
+    FROM observations o
+    LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
+    WHERE (o.project IN (${projectPlaceholders})
+           OR o.merged_into_project IN (${projectPlaceholders}))
+      AND o.project NOT LIKE '%:dream'
+      AND type IN (${typePlaceholders})
+      AND EXISTS (
+        SELECT 1 FROM json_each(o.concepts)
+        WHERE value IN (${conceptPlaceholders})
+      )
+    ORDER BY o.created_at_epoch DESC
+    LIMIT 1
+  `).get(
+    ...rawProjects,
+    ...rawProjects,
+    ...typeArray,
+    ...conceptArray
+  ) as Observation | null;
+}
+
+function includeRawFallback(
+  db: SessionStore,
+  projects: string[],
+  rows: Observation[],
+  typeArray: string[],
+  conceptArray: string[],
+  limit: number
+): Observation[] {
+  const selected = rows.slice(0, limit);
+  if (rawProjectsForFallback(projects).length === 0) return selected;
+  if (selected.some(row => row.project && !isDreamProject(row.project))) return selected;
+
+  const fallback = queryLatestRawObservation(db, projects, typeArray, conceptArray);
+  if (!fallback) return selected;
+
+  const withFallback = selected.length >= limit
+    ? [...selected.slice(0, Math.max(0, limit - 1)), fallback]
+    : [...selected, fallback];
+
+  return withFallback.sort((a, b) => b.created_at_epoch - a.created_at_epoch);
+}
+
 export function queryObservations(
   db: SessionStore,
   project: string,
@@ -139,7 +215,14 @@ export function queryObservationsMulti(
     queryLimit
   ) as Observation[];
 
-  return rows.slice(0, config.totalObservationCount);
+  return includeRawFallback(
+    db,
+    projects,
+    rows,
+    typeArray,
+    conceptArray,
+    config.totalObservationCount
+  );
 }
 
 export function countObservationsByProjects(db: SessionStore, projects: string[]): number {

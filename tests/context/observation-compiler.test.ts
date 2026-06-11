@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { buildTimeline } from '../../src/services/context/index.js';
-import { getPriorSessionMessages } from '../../src/services/context/ObservationCompiler.js';
+import { getPriorSessionMessages, queryObservationsMulti } from '../../src/services/context/ObservationCompiler.js';
 import type { Observation, SummaryTimelineItem } from '../../src/services/context/types.js';
 
 function createTestObservation(overrides: Partial<Observation> = {}): Observation {
@@ -148,5 +148,43 @@ describe('getPriorSessionMessages', () => {
       );
 
       expect(result).toEqual({ userMessage: '', assistantMessage: '' });
+    });
+});
+
+describe('queryObservationsMulti', () => {
+    it('keeps one raw project row when dream rows saturate the combined result window', () => {
+      const dreamRows = [
+        createTestObservation({ id: 1, project: 'proj:dream', created_at_epoch: 4000 }),
+        createTestObservation({ id: 2, project: 'proj:dream', created_at_epoch: 3000 }),
+      ];
+      const rawFallback = createTestObservation({ id: 3, project: 'proj', created_at_epoch: 1000 });
+      const calls: string[] = [];
+      const db = {
+        db: {
+          prepare: (sql: string) => ({
+            all: () => {
+              calls.push(sql);
+              return dreamRows;
+            },
+            get: () => {
+              calls.push(sql);
+              return rawFallback;
+            },
+          }),
+        },
+      };
+
+      const rows = queryObservationsMulti(
+        db as any,
+        ['proj:dream', 'proj'],
+        {
+          observationTypes: new Set(['discovery']),
+          observationConcepts: new Set(['concept1']),
+          totalObservationCount: 2,
+        } as any
+      );
+
+      expect(rows.map(row => row.id)).toEqual([1, 3]);
+      expect(calls[1]).toContain("o.project NOT LIKE '%:dream'");
     });
 });
