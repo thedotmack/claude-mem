@@ -127,12 +127,14 @@ describe('GracefulShutdown', () => {
       expect(callOrder.indexOf('chromaMcpManager.stop')).toBeLessThan(callOrder.indexOf('dbManager.close'));
     }, 15000);
 
-    it('should remove PID file during shutdown', async () => {
+    it('should remove its OWN PID file during shutdown (owner guard)', async () => {
       const mockSessionManager: ShutdownableService = {
         shutdownAll: mock(async () => {})
       };
 
-      writePidFile({ pid: 99999, port: 37777, startedAt: new Date().toISOString() });
+      // Phase 5 (worker-restart plan): the shutdown cascade deletes the PID
+      // file only when this process owns it (recorded pid === process.pid).
+      writePidFile({ pid: process.pid, port: 37777, startedAt: new Date().toISOString() });
       expect(existsSync(PID_FILE)).toBe(true);
 
       const config: GracefulShutdownConfig = {
@@ -143,6 +145,28 @@ describe('GracefulShutdown', () => {
       await performGracefulShutdown(config);
 
       expect(existsSync(PID_FILE)).toBe(false);
+    });
+
+    it('should spare another process\'s PID file during shutdown (restart successor)', async () => {
+      const mockSessionManager: ShutdownableService = {
+        shutdownAll: mock(async () => {})
+      };
+
+      // A restart successor has already written its own PID file by the time
+      // the dying worker's cascade runs — the dying worker must not clobber
+      // it (Phase 5, worker-restart plan).
+      writePidFile({ pid: 99999, port: 37777, startedAt: new Date().toISOString() });
+      expect(existsSync(PID_FILE)).toBe(true);
+
+      const config: GracefulShutdownConfig = {
+        server: null,
+        sessionManager: mockSessionManager
+      };
+
+      await performGracefulShutdown(config);
+
+      expect(existsSync(PID_FILE)).toBe(true);
+      expect(readPidFile()!.pid).toBe(99999);
     });
 
     it('should handle missing optional services gracefully', async () => {

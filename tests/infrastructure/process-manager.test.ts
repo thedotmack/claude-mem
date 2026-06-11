@@ -7,6 +7,7 @@ import {
   writePidFile,
   readPidFile,
   removePidFile,
+  removePidFileIfOwner,
   getPlatformTimeout,
   parseElapsedTime,
   isProcessAlive,
@@ -134,6 +135,68 @@ describe('ProcessManager', () => {
       expect(existsSync(PID_FILE)).toBe(false);
 
       expect(() => removePidFile()).not.toThrow();
+    });
+  });
+
+  // Phase 5 (worker-restart plan): owner-or-dead guarded deletion. The CLI
+  // stop/restart cleanup and the dying worker's restart handoff must never
+  // delete a live successor's PID file.
+  describe('removePidFileIfOwner', () => {
+    it('deletes the file when the recorded pid matches the expected owner (even if alive)', () => {
+      writePidFile({ pid: process.pid, port: 37777, startedAt: new Date().toISOString() });
+
+      removePidFileIfOwner(process.pid);
+
+      expect(existsSync(PID_FILE)).toBe(false);
+    });
+
+    it('deletes the file when the recorded pid is dead, regardless of owner match', () => {
+      writePidFile({ pid: 2147483647, port: 37777, startedAt: new Date().toISOString() });
+
+      removePidFileIfOwner(null);
+
+      expect(existsSync(PID_FILE)).toBe(false);
+    });
+
+    it('spares the file when the recorded pid is a live, different process (restart successor)', () => {
+      // This test process stands in for the live successor; pid 1 (init,
+      // never this process) stands in for the worker the caller shut down.
+      writePidFile({ pid: process.pid, port: 37777, startedAt: new Date().toISOString() });
+
+      removePidFileIfOwner(1);
+
+      expect(existsSync(PID_FILE)).toBe(true);
+      expect(readPidFile()!.pid).toBe(process.pid);
+    });
+
+    it('spares a corrupt file (ownership cannot be proven)', () => {
+      writeFileSync(PID_FILE, 'not valid json {{{');
+
+      removePidFileIfOwner(process.pid);
+
+      expect(existsSync(PID_FILE)).toBe(true);
+    });
+
+    it('deletes a parseable file with no pid field (treated as dead owner)', () => {
+      // Valid JSON, but no `pid`: recorded.pid is undefined, so
+      // isProcessAlive() is false and the owner-or-dead guard falls through
+      // to removal. This intentionally diverges from the supervisor-side
+      // removeOwnedPidFile, which spares pid-less files — that guard only
+      // ever deletes its own file, while this helper may clean dead
+      // leftovers. The divergence is safe: a pid-less file can't belong to a
+      // live successor (writePidFile always records a pid).
+      writeFileSync(PID_FILE, JSON.stringify({ port: 37777 }));
+
+      removePidFileIfOwner(null);
+
+      expect(existsSync(PID_FILE)).toBe(false);
+    });
+
+    it('does not throw when the file is missing', () => {
+      removePidFile();
+      expect(existsSync(PID_FILE)).toBe(false);
+
+      expect(() => removePidFileIfOwner(process.pid)).not.toThrow();
     });
   });
 
