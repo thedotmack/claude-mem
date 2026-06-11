@@ -204,6 +204,46 @@ describe('ResponseProcessor', () => {
       expect(observations[0].type).toBe('discovery');
       expect(observations[1].type).toBe('bugfix');
     });
+
+    it('clears observation work without storing a summary when an observation prompt receives summary XML', async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+      } as unknown as SessionManager;
+
+      const session = createMockSession({
+        lastGeneratorSource: 'ingest',
+      });
+      const responseText = `
+        <summary>
+          <request>Observation prompt produced a summary</request>
+          <investigated>Wrong output root</investigated>
+        </summary>
+      `;
+
+      await processAgentResponse(
+        responseText,
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
+      expect(session.earliestPendingTimestamp).toBeNull();
+      expect(session.consecutiveInvalidOutputs).toBe(1);
+      expect(logger.warn).toHaveBeenCalledWith(
+        'PARSER',
+        expect.stringMatching(/^TestAgent returned summary XML while observation output was expected/),
+        expect.objectContaining({ sessionId: 1, outputClass: 'xml', expectedKind: 'observation', actualKind: 'summary' })
+      );
+    });
   });
 
   describe('non-XML observer responses', () => {
@@ -270,6 +310,84 @@ describe('ResponseProcessor', () => {
       expect(summary.request).toBe('Build login form');
       expect(summary.investigated).toBe('Reviewed existing forms');
       expect(summary.learned).toBe('React Hook Form works well');
+    });
+
+    it('clears summary work without storing observations when a summary prompt receives observation XML', async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+      } as unknown as SessionManager;
+
+      const session = createMockSession({
+        lastGeneratorSource: 'summarize',
+      });
+      const responseText = `
+        <observation>
+          <type>discovery</type>
+          <title>Summary prompt produced an observation</title>
+          <narrative>This should not be stored as a real observation.</narrative>
+        </observation>
+      `;
+
+      await processAgentResponse(
+        responseText,
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
+      expect(session.earliestPendingTimestamp).toBeNull();
+      expect(session.consecutiveInvalidOutputs).toBe(1);
+      expect(logger.warn).toHaveBeenCalledWith(
+        'PARSER',
+        expect.stringMatching(/^TestAgent returned observation XML while summary output was expected/),
+        expect.objectContaining({ sessionId: 1, outputClass: 'xml', expectedKind: 'summary', actualKind: 'observation' })
+      );
+    });
+
+    it('treats explicit skip observation XML as a summary contract mismatch during summary work', async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+      } as unknown as SessionManager;
+
+      const session = createMockSession({
+        lastGeneratorSource: 'summarize',
+      });
+      const responseText = `<observation>
+        <type>skip</type>
+        <narrative>No observations to record for this summary batch.</narrative>
+      </observation>`;
+
+      await processAgentResponse(
+        responseText,
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
+      expect(session.consecutiveInvalidOutputs).toBe(1);
+      expect(logger.warn).toHaveBeenCalledWith(
+        'PARSER',
+        expect.stringMatching(/^TestAgent returned observation XML while summary output was expected/),
+        expect.objectContaining({ sessionId: 1, outputClass: 'xml', expectedKind: 'summary', actualKind: 'observation' })
+      );
     });
 
     it('should handle response without summary', async () => {
@@ -458,6 +576,34 @@ describe('ResponseProcessor', () => {
   });
 
   describe('handling empty / non-XML response', () => {
+    it('clears pending work and does NOT call storeObservations on explicit skip observation XML', async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+      } as unknown as SessionManager;
+
+      const session = createMockSession({
+        lastGeneratorSource: 'ingest',
+        consecutiveInvalidOutputs: 2,
+      });
+      const responseText = `<observation>
+        <type>skip</type>
+        <narrative>No observations to record for this batch.</narrative>
+      </observation>`;
+
+      await processAgentResponse(
+        responseText, session, mockDbManager, mockSessionManager, mockWorker,
+        100, null, 'TestAgent'
+      );
+
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
+      expect(session.earliestPendingTimestamp).toBeNull();
+      expect(session.consecutiveInvalidOutputs).toBe(0);
+    });
+
     it('clears pending work and does NOT call storeObservations on empty response', async () => {
       const confirmClaimedMessages = mock(() => Promise.resolve(0));
       mockSessionManager = {

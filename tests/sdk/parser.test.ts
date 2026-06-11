@@ -8,6 +8,7 @@ function expectObservation(raw: string) {
   const result = parseAgentXml(raw);
   if (!result.valid) throw new Error('expected valid observation, got invalid result');
   if (result.summary !== null) throw new Error('expected observation result, got a summary');
+  expect(result.rootKind).toBe('observation');
   return result.observations;
 }
 
@@ -134,6 +135,32 @@ describe('parseAgentXml — observations', () => {
 
     expect(result).toHaveLength(1);
     expect(result[0].type).toBe('bugfix');
+  });
+
+  it('rejects explicit skip observation XML by default', () => {
+    const xml = `<observation>
+      <type>skip</type>
+      <narrative>No observations to record for this batch.</narrative>
+    </observation>`;
+
+    const result = parseAgentXml(xml);
+
+    expect(result.valid).toBe(false);
+  });
+
+  it('treats explicit skip observation XML as a valid no-op when enabled by the worker response path', () => {
+    const xml = `<observation>
+      <type>skip</type>
+      <narrative>No observations to record for this batch.</narrative>
+    </observation>`;
+
+    const result = parseAgentXml(xml, undefined, { allowNoOpObservations: true });
+
+    expect(result.valid).toBe(true);
+    if (!result.valid) return;
+    expect(result.rootKind).toBe('observation');
+    expect(result.summary).toBeNull();
+    expect(result.observations).toEqual([]);
   });
 
   it('returns a fail-fast result when no observation/summary blocks are present', () => {

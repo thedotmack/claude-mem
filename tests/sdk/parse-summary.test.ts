@@ -38,6 +38,7 @@ describe('parseAgentXml — summaries', () => {
     const result = parseAgentXml(text);
     expect(result.valid).toBe(true);
     if (result.valid && result.summary) {
+      expect(result.rootKind).toBe('summary');
       expect(result.summary.request).toBe('Fix the bug');
       expect(result.summary.investigated).toBeNull();
       expect(result.summary.learned).toBeNull();
@@ -55,6 +56,7 @@ describe('parseAgentXml — summaries', () => {
     const result = parseAgentXml(text);
     expect(result.valid).toBe(true);
     if (result.valid && result.summary) {
+      expect(result.rootKind).toBe('summary');
       expect(result.summary.request).toBe('Fix login bug');
       expect(result.summary.investigated).toBe('Auth flow and JWT expiry');
       expect(result.summary.learned).toBe('Token was expiring too soon');
@@ -67,6 +69,7 @@ describe('parseAgentXml — summaries', () => {
     const result = parseAgentXml('<skip_summary reason="no work done"/>');
     expect(result.valid).toBe(true);
     if (result.valid && result.summary) {
+      expect(result.rootKind).toBe('summary');
       expect(result.summary.skipped).toBe(true);
       expect(result.summary.skip_reason).toBe('no work done');
     }
@@ -76,6 +79,7 @@ describe('parseAgentXml — summaries', () => {
     const result = parseAgentXml('<observation><title>foo</title></observation>');
     expect(result.valid).toBe(true);
     if (result.valid) {
+      expect(result.rootKind).toBe('observation');
       expect(result.summary).toBeNull();
       expect(result.observations).toHaveLength(1);
     }
@@ -87,6 +91,7 @@ describe('parseAgentXml — summaries', () => {
     const result = parseAgentXml(text);
     expect(result.valid).toBe(true);
     if (result.valid) {
+      expect(result.rootKind).toBe('observation');
       expect(result.summary).toBeNull();
       expect(result.observations).toHaveLength(1);
       expect(result.observations[0].title).toBe('obs title');
