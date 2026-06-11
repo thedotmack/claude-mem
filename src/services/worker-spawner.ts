@@ -15,6 +15,7 @@ import {
   waitForHealth,
   waitForReadiness,
 } from './infrastructure/HealthMonitor.js';
+import { acquireSpawnLock, releaseSpawnLock } from '../shared/worker-spawn-gate.js';
 
 const WINDOWS_SPAWN_COOLDOWN_MS = 2 * 60 * 1000;
 
@@ -127,18 +128,38 @@ export async function ensureWorkerStarted(
     return 'dead';
   }
 
-  logger.info('SYSTEM', 'Starting worker daemon', { workerScriptPath });
-  markWorkerSpawnAttempted();
-  const pid = spawnDaemon(workerScriptPath, port);
-  if (pid === undefined) {
-    logger.error('SYSTEM', 'Failed to spawn worker daemon');
-    return 'dead';
-  }
+  // Spawn gate (src/shared/worker-spawn-gate.ts): only ONE gated launcher —
+  // hook, MCP server, or the CLI restart fallback — may spawn at a time. (The
+  // dying worker's restart handoff in worker-shutdown.ts is deliberately NOT
+  // gated: it is the primary spawner on restart, and hooks wait for its
+  // successor.) Losing the lock never fails this path; the loser skips its
+  // spawn and falls through to the SAME wait-for-health/readiness logic
+  // (someone else is spawning — wait for their worker). The winner holds the
+  // lock through the post-spawn health wait (the spawn isn't "done" until the
+  // worker owns the port) and releases in finally on every exit path.
+  const spawnLockHeld = acquireSpawnLock();
+  try {
+    if (spawnLockHeld) {
+      logger.info('SYSTEM', 'Starting worker daemon', { workerScriptPath });
+      markWorkerSpawnAttempted();
+      const pid = spawnDaemon(workerScriptPath, port);
+      if (pid === undefined) {
+        logger.error('SYSTEM', 'Failed to spawn worker daemon');
+        return 'dead';
+      }
+    } else {
+      logger.info('SYSTEM', 'Another launcher holds the spawn lock — skipping duplicate spawn and waiting for its worker');
+    }
 
-  const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.POST_SPAWN_WAIT));
-  if (!healthy) {
-    logger.warn('SYSTEM', 'Worker spawned but health endpoint not responding within window — likely still starting in background');
-    return 'warming';
+    const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.POST_SPAWN_WAIT));
+    if (!healthy) {
+      logger.warn('SYSTEM', spawnLockHeld
+        ? 'Worker spawned but health endpoint not responding within window — likely still starting in background'
+        : 'Spawn-lock holder\'s worker not healthy within window — likely still starting in background');
+      return 'warming';
+    }
+  } finally {
+    if (spawnLockHeld) releaseSpawnLock();
   }
 
   const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
@@ -147,7 +168,11 @@ export async function ensureWorkerStarted(
   }
 
   clearWorkerSpawnAttempted();
+  // touchPidFile is existsSync-guarded and merely refreshes the live worker's
+  // pid-file mtime — correct for lock losers too, since the worker IS up.
   touchPidFile();
-  logger.info('SYSTEM', 'Worker started successfully');
+  logger.info('SYSTEM', spawnLockHeld
+    ? 'Worker started successfully'
+    : 'Worker is up (started by another launcher)');
   return ready ? 'ready' : 'warming';
 }

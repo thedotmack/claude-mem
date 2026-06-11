@@ -40,11 +40,16 @@ function installFetchMock(): void {
 
     // /api/health and /api/readiness must report OK so the worker is "alive"
     // and "ready"; /api/admin/restart and anything else also returns OK.
+    // The health payload carries the PLUGIN version: the recycle path waits
+    // for a successor worker reporting the installed plugin's version on
+    // /api/health (the old worker spawns it after the port closes —
+    // src/services/worker-shutdown.ts), so this scripts "the successor came
+    // up immediately".
     return Promise.resolve({
       ok: true,
       status: 200,
       text: () => Promise.resolve(''),
-      json: () => Promise.resolve({}),
+      json: () => Promise.resolve({ version: versionMatchResult.pluginVersion }),
     } as unknown as Response);
   }) as unknown as typeof fetch;
 }

@@ -1,12 +1,26 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { existsSync, readFileSync, mkdirSync, writeFileSync, rmSync, statSync } from 'fs';
-import { homedir } from 'os';
-import { tmpdir } from 'os';
+import { describe, it, expect, beforeEach, afterEach, afterAll } from 'bun:test';
+import { existsSync, readFileSync, mkdirSync, mkdtempSync, writeFileSync, rmSync, statSync } from 'fs';
+import { homedir, tmpdir } from 'os';
 import path from 'path';
-import {
+import type { PidInfo } from '../../src/services/infrastructure/index.js';
+
+// ── Data-dir isolation (Phase 6, worker-restart plan) ──────────────────────
+// These tests write corrupt JSON and sentinel PIDs into the worker PID file,
+// so that file must NEVER be the real ~/.claude-mem/worker.pid. paths.ts
+// freezes DATA_DIR at first evaluation and ProcessManager freezes PID_FILE
+// from it at import time — and ESM hoists static imports above any env
+// assignment — so the env var is set FIRST and the code under test is loaded
+// with dynamic imports below. (`import type` above is erased at compile time
+// and loads nothing.)
+const TEST_DATA_DIR = mkdtempSync(path.join(tmpdir(), 'claude-mem-pm-test-'));
+const PREVIOUS_DATA_DIR = process.env.CLAUDE_MEM_DATA_DIR;
+process.env.CLAUDE_MEM_DATA_DIR = TEST_DATA_DIR;
+
+const {
   writePidFile,
   readPidFile,
   removePidFile,
+  removePidFileIfOwner,
   getPlatformTimeout,
   parseElapsedTime,
   isProcessAlive,
@@ -18,28 +32,58 @@ import {
   runOneTimeChromaMigration,
   captureProcessStartToken,
   verifyPidFileOwnership,
-  type PidInfo
-} from '../../src/services/infrastructure/index.js';
+} = await import('../../src/services/infrastructure/index.js');
+const { paths } = await import('../../src/shared/paths.js');
 
-const DATA_DIR = path.join(homedir(), '.claude-mem');
-const PID_FILE = path.join(DATA_DIR, 'worker.pid');
+// If an earlier test file in this bun process already evaluated paths.ts, the
+// module cache wins and DATA_DIR stays frozen on that earlier value — which is
+// the preload tripwire's per-run temp dir (tests/preload.ts), never the real
+// ~/.claude-mem. Derive the paths the assertions use from the SAME frozen
+// module the code under test uses, so test and code can never diverge.
+const DATA_DIR = paths.dataDir();
+const PID_FILE = paths.workerPid();
 
 describe('ProcessManager', () => {
-  let originalPidContent: string | null = null;
+  const REAL_DATA_DIR = path.join(homedir(), '.claude-mem');
 
   beforeEach(() => {
-    if (existsSync(PID_FILE)) {
-      originalPidContent = readFileSync(PID_FILE, 'utf-8');
-    }
+    mkdirSync(DATA_DIR, { recursive: true });
+    removePidFile();
   });
 
   afterEach(() => {
-    if (originalPidContent !== null) {
-      writeFileSync(PID_FILE, originalPidContent);
-      originalPidContent = null;
+    removePidFile();
+  });
+
+  afterAll(() => {
+    if (PREVIOUS_DATA_DIR === undefined) {
+      delete process.env.CLAUDE_MEM_DATA_DIR;
     } else {
-      removePidFile();
+      process.env.CLAUDE_MEM_DATA_DIR = PREVIOUS_DATA_DIR;
     }
+    if (DATA_DIR === TEST_DATA_DIR) {
+      // paths.ts froze on our per-file dir (this file evaluated it first):
+      // empty it but keep the directory alive so later-loaded modules in this
+      // process don't point at a deleted path.
+      rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+      mkdirSync(TEST_DATA_DIR, { recursive: true });
+    } else {
+      rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+    }
+  });
+
+  describe('test isolation (Phase 6, worker-restart plan)', () => {
+    it('resolves the PID file into a temp dir, never the real ~/.claude-mem', () => {
+      expect(DATA_DIR).not.toBe(REAL_DATA_DIR);
+      expect(PID_FILE.startsWith(REAL_DATA_DIR + path.sep)).toBe(false);
+      expect(PID_FILE).toBe(path.join(DATA_DIR, 'worker.pid'));
+    });
+
+    it('writePidFile lands in the isolated dir', () => {
+      writePidFile({ pid: 4242, port: 37777, startedAt: new Date().toISOString() });
+      expect(existsSync(PID_FILE)).toBe(true);
+      expect(readPidFile()!.pid).toBe(4242);
+    });
   });
 
   describe('writePidFile', () => {
@@ -134,6 +178,68 @@ describe('ProcessManager', () => {
       expect(existsSync(PID_FILE)).toBe(false);
 
       expect(() => removePidFile()).not.toThrow();
+    });
+  });
+
+  // Phase 5 (worker-restart plan): owner-or-dead guarded deletion. The CLI
+  // stop/restart cleanup and the dying worker's restart handoff must never
+  // delete a live successor's PID file.
+  describe('removePidFileIfOwner', () => {
+    it('deletes the file when the recorded pid matches the expected owner (even if alive)', () => {
+      writePidFile({ pid: process.pid, port: 37777, startedAt: new Date().toISOString() });
+
+      removePidFileIfOwner(process.pid);
+
+      expect(existsSync(PID_FILE)).toBe(false);
+    });
+
+    it('deletes the file when the recorded pid is dead, regardless of owner match', () => {
+      writePidFile({ pid: 2147483647, port: 37777, startedAt: new Date().toISOString() });
+
+      removePidFileIfOwner(null);
+
+      expect(existsSync(PID_FILE)).toBe(false);
+    });
+
+    it('spares the file when the recorded pid is a live, different process (restart successor)', () => {
+      // This test process stands in for the live successor; pid 1 (init,
+      // never this process) stands in for the worker the caller shut down.
+      writePidFile({ pid: process.pid, port: 37777, startedAt: new Date().toISOString() });
+
+      removePidFileIfOwner(1);
+
+      expect(existsSync(PID_FILE)).toBe(true);
+      expect(readPidFile()!.pid).toBe(process.pid);
+    });
+
+    it('spares a corrupt file (ownership cannot be proven)', () => {
+      writeFileSync(PID_FILE, 'not valid json {{{');
+
+      removePidFileIfOwner(process.pid);
+
+      expect(existsSync(PID_FILE)).toBe(true);
+    });
+
+    it('deletes a parseable file with no pid field (treated as dead owner)', () => {
+      // Valid JSON, but no `pid`: recorded.pid is undefined, so
+      // isProcessAlive() is false and the owner-or-dead guard falls through
+      // to removal. This intentionally diverges from the supervisor-side
+      // removeOwnedPidFile, which spares pid-less files — that guard only
+      // ever deletes its own file, while this helper may clean dead
+      // leftovers. The divergence is safe: a pid-less file can't belong to a
+      // live successor (writePidFile always records a pid).
+      writeFileSync(PID_FILE, JSON.stringify({ port: 37777 }));
+
+      removePidFileIfOwner(null);
+
+      expect(existsSync(PID_FILE)).toBe(false);
+    });
+
+    it('does not throw when the file is missing', () => {
+      removePidFile();
+      expect(existsSync(PID_FILE)).toBe(false);
+
+      expect(() => removePidFileIfOwner(process.pid)).not.toThrow();
     });
   });
 

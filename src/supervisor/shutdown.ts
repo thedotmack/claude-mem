@@ -1,5 +1,5 @@
 import { execFile } from 'child_process';
-import { rmSync } from 'fs';
+import { existsSync, readFileSync, rmSync } from 'fs';
 import { promisify } from 'util';
 import { logger } from '../utils/logger.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
@@ -84,6 +84,50 @@ export async function runShutdownCascade(options: ShutdownCascadeOptions): Promi
     options.registry.unregister(record.id);
   }
 
+  removeOwnedPidFile(pidFilePath, currentPid);
+
+  options.registry.pruneDeadEntries();
+}
+
+/**
+ * Owner-guarded PID-file removal (Phase 5, worker-restart plan).
+ *
+ * The shutdown cascade is the dying worker's LAST act — during a restart the
+ * successor worker has typically already written its OWN PID file by the time
+ * this runs. Blindly rmSync'ing here clobbered that file and made
+ * `worker status` report a healthy worker as not running. Deletion therefore
+ * requires proof of ownership: the recorded pid must equal `currentPid`.
+ *
+ * A missing file is a no-op. An unreadable/corrupt file cannot prove
+ * ownership, so it is left in place (the safe default): readPidFile() and
+ * validateWorkerPidFile() both treat unparseable files as ownerless, so a
+ * leftover corrupt file never blocks a successor's boot and is cleaned up by
+ * the next worker start.
+ */
+export function removeOwnedPidFile(pidFilePath: string, currentPid: number): void {
+  if (!existsSync(pidFilePath)) return;
+
+  let recordedPid: number | null = null;
+  try {
+    const parsed = JSON.parse(readFileSync(pidFilePath, 'utf-8')) as { pid?: unknown };
+    recordedPid = typeof parsed.pid === 'number' ? parsed.pid : null;
+  } catch (error: unknown) {
+    logger.debug('SYSTEM', 'PID file unreadable during shutdown — leaving it (cannot prove ownership)', {
+      pidFilePath,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return;
+  }
+
+  if (recordedPid !== currentPid) {
+    logger.debug('SYSTEM', 'PID file not owned by this process — leaving it for its owner (restart successor?)', {
+      pidFilePath,
+      recordedPid,
+      currentPid
+    });
+    return;
+  }
+
   try {
     rmSync(pidFilePath, { force: true });
   } catch (error: unknown) {
@@ -96,8 +140,6 @@ export async function runShutdownCascade(options: ShutdownCascadeOptions): Promi
       });
     }
   }
-
-  options.registry.pruneDeadEntries();
 }
 
 async function waitForExit(records: ManagedProcessRecord[], timeoutMs: number): Promise<void> {

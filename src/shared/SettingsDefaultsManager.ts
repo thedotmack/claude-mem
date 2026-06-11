@@ -203,7 +203,10 @@ export class SettingsDefaultsManager {
             mkdirSync(dir, { recursive: true });
           }
           writeFileSync(settingsPath, JSON.stringify(defaults, null, 2), 'utf-8');
-          console.log('[SETTINGS] Created settings file with defaults:', settingsPath);
+          // stderr, never stdout: this fires on the first boot in a fresh data
+          // dir, and CLI commands like `start` promise machine-readable JSON
+          // on stdout to the hook framework.
+          console.warn('[SETTINGS] Created settings file with defaults:', settingsPath);
         } catch (error: unknown) {
           console.warn('[SETTINGS] Failed to create settings file, using in-memory defaults:', settingsPath, error instanceof Error ? error.message : String(error));
         }
@@ -222,7 +225,8 @@ export class SettingsDefaultsManager {
 
         try {
           writeFileSync(settingsPath, JSON.stringify(flatSettings, null, 2), 'utf-8');
-          console.log('[SETTINGS] Migrated settings file from nested to flat schema:', settingsPath);
+          // stderr, never stdout — same JSON-on-stdout contract as above.
+          console.warn('[SETTINGS] Migrated settings file from nested to flat schema:', settingsPath);
         } catch (error: unknown) {
           console.warn('[SETTINGS] Failed to auto-migrate settings file:', settingsPath, error instanceof Error ? error.message : String(error));
           // Continue with in-memory migration even if write fails

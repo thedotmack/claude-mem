@@ -4,6 +4,17 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
+// Eagerly evaluate src/shared/paths.ts BEFORE any per-test env override:
+// paths.ts freezes its DATA_DIR const at first evaluation, and without this
+// import the dynamic `import('../../src/shared/worker-utils.js')` calls
+// below can be the first to evaluate it — while the env var points at a
+// soon-deleted per-test temp dir — poisoning every later-loaded module in the
+// same bun process (e.g. ProcessManager's PID_FILE in combined runs). At this
+// point the env var is the per-RUN temp dir pinned by the preload tripwire
+// (tests/preload.ts), so paths.ts freezes on a stable, isolated dir that
+// outlives this file. worker-utils itself is unaffected: it resolves its
+// settings path at call time via SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR').
+import '../../src/shared/paths.js';
 
 describe('worker-utils API timeout resolution', () => {
   let tempDir: string;
