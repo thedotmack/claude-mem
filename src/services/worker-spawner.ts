@@ -7,6 +7,7 @@ import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import {
   cleanStalePidFile,
   getPlatformTimeout,
+  reclaimStaleWorkerPort,
   spawnDaemon,
   touchPidFile,
 } from './infrastructure/ProcessManager.js';
@@ -119,8 +120,16 @@ export async function ensureWorkerStarted(
       logger.info('SYSTEM', 'Worker is now healthy');
       return ready ? 'ready' : 'warming';
     }
-    logger.error('SYSTEM', 'Port in use but worker not responding to health checks');
-    return 'dead';
+    // Port held but nothing healthy answering → almost certainly a stale/zombie
+    // worker still bound to the socket. Reclaim it (validated kill) and fall
+    // through to a fresh spawn below. If reclaim fails, give up cleanly instead
+    // of letting every subsequent hook re-spawn a daemon that dies on bind.
+    const reclaimed = await reclaimStaleWorkerPort(port);
+    if (!reclaimed) {
+      logger.error('SYSTEM', 'Port in use but worker not responding and reclaim failed');
+      return 'dead';
+    }
+    clearWorkerSpawnAttempted();
   }
 
   if (shouldSkipSpawnOnWindows()) {
