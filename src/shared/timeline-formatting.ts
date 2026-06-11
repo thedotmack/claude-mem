@@ -35,6 +35,10 @@ export function formatTime(dateInput: string | number): string {
   });
 }
 
+export function formatIsoDate(date: Date = new Date()): string {
+  return date.toLocaleDateString('en-CA');
+}
+
 export function formatDate(dateInput: string | number): string {
   const date = new Date(dateInput);
   return date.toLocaleString('en-US', {

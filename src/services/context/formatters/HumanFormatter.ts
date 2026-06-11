@@ -8,9 +8,10 @@ import type {
 import { colors } from '../types.js';
 import { ModeManager } from '../../domain/ModeManager.js';
 import { formatObservationTokenDisplay } from '../TokenCalculator.js';
+import { formatIsoDate } from '../../../shared/timeline-formatting.js';
 
 export function renderHumanHeader(project: string): string[] {
-  const date = new Date().toLocaleDateString('en-CA');
+  const date = formatIsoDate();
   return [
     '',
     `${colors.bright}${colors.cyan}[${project}] recent context, ${date}${colors.reset}`,
@@ -173,6 +174,6 @@ export function renderHumanFooter(totalDiscoveryTokens: number, totalReadTokens:
 }
 
 export function renderHumanEmptyState(project: string): string {
-  const date = new Date().toLocaleDateString('en-CA');
+  const date = formatIsoDate();
   return `\n${colors.bright}${colors.cyan}[${project}] recent context, ${date}${colors.reset}\n${colors.gray}${'─'.repeat(60)}${colors.reset}\n\n${colors.dim}No previous sessions found for this project yet.${colors.reset}\n`;
 }

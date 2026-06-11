@@ -8,9 +8,10 @@ import type {
 } from '../types.js';
 import { ModeManager } from '../../domain/ModeManager.js';
 import { formatObservationTokenDisplay } from '../TokenCalculator.js';
+import { formatIsoDate } from '../../../shared/timeline-formatting.js';
 
 export function renderAgentHeader(project: string): string[] {
-  const date = new Date().toLocaleDateString('en-CA');
+  const date = formatIsoDate();
   return [
     `# [${project}] recent context, ${date}`,
     ''
@@ -145,6 +146,6 @@ export function renderAgentFooter(totalDiscoveryTokens: number, totalReadTokens:
 }
 
 export function renderAgentEmptyState(project: string): string {
-  const date = new Date().toLocaleDateString('en-CA');
+  const date = formatIsoDate();
   return `# [${project}] recent context, ${date}\n\nNo previous sessions found.`;
 }
