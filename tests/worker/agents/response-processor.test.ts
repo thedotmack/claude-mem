@@ -238,6 +238,257 @@ describe('ResponseProcessor', () => {
       expect(session.earliestPendingTimestamp).toBeNull();
       expect(mockStoreObservations).not.toHaveBeenCalled();
     });
+
+    it('treats recognized empty-result prose as a valid no-op and clears invalid output debt', async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+      } as unknown as SessionManager;
+
+      const session = createMockSession({
+        consecutiveInvalidOutputs: 2,
+      });
+      const responseText = 'No observations to record at this time.';
+
+      await processAgentResponse(
+        responseText,
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
+      expect(session.consecutiveInvalidOutputs).toBe(0);
+      expect(session.earliestPendingTimestamp).toBeNull();
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith(
+        'PARSER',
+        expect.stringMatching(/^TestAgent returned non-XML empty-ack prose response/),
+        expect.objectContaining({ sessionId: 1, outputClass: 'prose' })
+      );
+    });
+
+    it('accepts the issue-reported no-observations variants as valid empty acknowledgements', async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+      } as unknown as SessionManager;
+
+      const examples = [
+        'No observations to record at this time.',
+        'no observations - investigation not yet started',
+        'No observations to record — no tool executions or technical findings… have been provided yet.',
+      ];
+
+      for (const responseText of examples) {
+        const session = createMockSession({
+          consecutiveInvalidOutputs: 2,
+        });
+
+        await processAgentResponse(
+          responseText,
+          session,
+          mockDbManager,
+          mockSessionManager,
+          mockWorker,
+          100,
+          null,
+          'TestAgent'
+        );
+
+        expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
+        expect(session.consecutiveInvalidOutputs).toBe(0);
+      }
+    });
+
+    it('rejects empty acknowledgements longer than 200 chars that start with no observations', async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+      } as unknown as SessionManager;
+
+      const session = createMockSession({
+        consecutiveInvalidOutputs: 1,
+      });
+      const longText = 'No observations ' + 'x'.repeat(200);
+
+      await processAgentResponse(
+        longText,
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(session.consecutiveInvalidOutputs).toBe(2);
+      expect(logger.warn).toHaveBeenCalledWith(
+        'PARSER',
+        expect.stringMatching(/^TestAgent returned non-XML prose response/),
+        expect.objectContaining({ sessionId: 1, outputClass: 'prose' })
+      );
+    });
+
+    it('rejects prose starting with observations found', async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+      } as unknown as SessionManager;
+
+      const session = createMockSession({
+        consecutiveInvalidOutputs: 1,
+      });
+
+      await processAgentResponse(
+        'I found 3 observations to record.',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(session.consecutiveInvalidOutputs).toBe(2);
+    });
+
+    it('rejects ack-prefixed prose that contains substantive findings', async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+      } as unknown as SessionManager;
+
+      const examples = [
+        'No observations, but I found a stale cache bug.',
+        'No observations to record, however I identified an error in the worker.',
+      ];
+
+      for (const responseText of examples) {
+        const session = createMockSession({
+          consecutiveInvalidOutputs: 1,
+        });
+
+        await processAgentResponse(
+          responseText,
+          session,
+          mockDbManager,
+          mockSessionManager,
+          mockWorker,
+          100,
+          null,
+          'TestAgent'
+        );
+
+        expect(session.consecutiveInvalidOutputs).toBe(2);
+      }
+    });
+
+    it('still counts unrecognized prose toward the invalid-output threshold', async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+      } as unknown as SessionManager;
+
+      const session = createMockSession({
+        consecutiveInvalidOutputs: 1,
+      });
+      const responseText = 'I spent a while thinking about it and have a few ideas.';
+
+      await processAgentResponse(
+        responseText,
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
+      expect(session.consecutiveInvalidOutputs).toBe(2);
+    });
+
+    it('treats idle outputs as valid no-ops and clears invalid output debt', async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+      } as unknown as SessionManager;
+
+      const session = createMockSession({
+        consecutiveInvalidOutputs: 2,
+      });
+
+      await processAgentResponse(
+        '',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
+      expect(session.consecutiveInvalidOutputs).toBe(0);
+      expect(session.earliestPendingTimestamp).toBeNull();
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+    });
+
+    it('does reject prose that does not start with no observations', async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+      } as unknown as SessionManager;
+
+      const session = createMockSession({
+        consecutiveInvalidOutputs: 1,
+      });
+      const responseText = 'I noticed a null-pointer risk while mapping dependencies.';
+
+      await processAgentResponse(
+        responseText,
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
+      expect(session.consecutiveInvalidOutputs).toBe(2);
+      expect(logger.warn).toHaveBeenCalledWith(
+        'PARSER',
+        expect.stringMatching(/^TestAgent returned non-XML prose response/),
+        expect.objectContaining({ sessionId: 1, outputClass: 'prose' })
+      );
+    });
   });
 
   describe('parsing summary from XML response', () => {
