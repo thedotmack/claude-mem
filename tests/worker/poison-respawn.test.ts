@@ -37,7 +37,7 @@ mock.module('../../src/services/worker-service.js', () => ({
 }));
 
 import { SessionManager } from '../../src/services/worker/SessionManager.js';
-import { processAgentResponse, INVALID_OUTPUT_RESPAWN_THRESHOLD } from '../../src/services/worker/agents/ResponseProcessor.js';
+import { processAgentResponse } from '../../src/services/worker/agents/ResponseProcessor.js';
 import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
 import type { WorkerRef } from '../../src/services/worker/agents/types.js';
 
@@ -112,7 +112,7 @@ describe('poison respawn (plan-11 #2485)', () => {
     expect(session.consecutiveInvalidOutputs).toBe(0); // reset on respawn
   });
 
-  it('respawns only after N consecutive prose/idle outputs, not on the first', async () => {
+  it('does not respawn on repeated prose/idle outputs', async () => {
     const sm = new SessionManager(makeDbManager());
     const session = sm.initializeSession(2, 'do the thing', 1);
     session.memorySessionId = 'mem-2';
@@ -122,22 +122,14 @@ describe('poison respawn (plan-11 #2485)', () => {
 
     const respawnSpy = spyOn(sm, 'respawnPoisonedSession');
 
-    // First (threshold - 1) prose responses must NOT respawn.
-    for (let i = 0; i < INVALID_OUTPUT_RESPAWN_THRESHOLD - 1; i++) {
+    for (let i = 0; i < 5; i++) {
       await processAgentResponse(
-        'Just some prose, no XML here.',
+        i % 2 === 0 ? 'Just some prose, no XML here.' : '',
         session, makeDbManager(), sm, mockWorker, 0, null, 'TestAgent'
       );
     }
     expect(respawnSpy).not.toHaveBeenCalled();
-    expect(session.consecutiveInvalidOutputs).toBe(INVALID_OUTPUT_RESPAWN_THRESHOLD - 1);
-
-    // The Nth invalid output crosses the threshold and triggers respawn.
-    await processAgentResponse(
-      'Still just prose.',
-      session, makeDbManager(), sm, mockWorker, 0, null, 'TestAgent'
-    );
-    expect(respawnSpy).toHaveBeenCalledWith(2);
+    expect(session.consecutiveInvalidOutputs).toBe(0);
   });
 
   it('respawnPoisonedSession preserves the buffer and resets context', async () => {

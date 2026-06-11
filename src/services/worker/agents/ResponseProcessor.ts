@@ -17,13 +17,6 @@ import type { WorkerRef, StorageResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
 import { captureEvent } from '../../telemetry/telemetry.js';
 
-/**
- * Consecutive non-XML observer outputs tolerated before we kill and respawn the
- * SDK session (plan-11, #2485). Idle and prose both count; poisoned triggers an
- * immediate respawn regardless of the count.
- */
-export const INVALID_OUTPUT_RESPAWN_THRESHOLD = 3;
-
 export async function processAgentResponse(
   text: string,
   session: ActiveSession,
@@ -58,29 +51,22 @@ export async function processAgentResponse(
     const outputClass = classifyObserverOutput(text);
     const preview = previewOutput(text);
 
-    session.consecutiveInvalidOutputs = (session.consecutiveInvalidOutputs ?? 0) + 1;
-
     logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response — ignoring queued batch`, {
       sessionId: session.sessionDbId,
       outputClass,
       preview,
-      consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
+      consecutiveInvalidOutputs: session.consecutiveInvalidOutputs ?? 0,
     });
 
     // Recover from poison (plan-11, #2485): a poisoned closure string means the
-    // SDK session is wedged and will keep emitting garbage — respawn immediately.
-    // For idle/prose, only respawn after N consecutive invalid outputs so we
-    // don't churn the session on benign single-batch misses.
-    const mustRespawn =
-      outputClass === 'poisoned' ||
-      session.consecutiveInvalidOutputs >= INVALID_OUTPUT_RESPAWN_THRESHOLD;
-
-    if (mustRespawn) {
+    // SDK session is wedged and will keep emitting garbage. Idle/prose outputs
+    // are benign no-ops: confirm the claimed batch and keep the session alive.
+    if (outputClass === 'poisoned') {
+      session.consecutiveInvalidOutputs = (session.consecutiveInvalidOutputs ?? 0) + 1;
       logger.error('SESSION', `${agentName} session poisoned — killing and respawning, pending messages preserved`, {
         sessionId: session.sessionDbId,
         outputClass,
         consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
-        threshold: INVALID_OUTPUT_RESPAWN_THRESHOLD,
       });
       // Respawn-gated telemetry ONLY (never per invalid output — volume).
       // Closed enums and counts; the raw model output never leaves the box.
@@ -101,6 +87,7 @@ export async function processAgentResponse(
     // Plain-text skip responses are intentionally ignored. Re-queueing them
     // creates an observer loop where the same low-signal batch is retried
     // until the restart guard fires or the provider quota is exhausted.
+    session.consecutiveInvalidOutputs = 0;
     await sessionManager.confirmClaimedMessages(session.sessionDbId);
     session.earliestPendingTimestamp = null;
     return;
