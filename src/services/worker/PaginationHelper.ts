@@ -5,6 +5,7 @@ import { logger } from '../../utils/logger.js';
 import { OBSERVER_SESSIONS_PROJECT } from '../../shared/paths.js';
 import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../shared/user-prompts.js';
 import { durableObservationWhere } from '../../shared/observation-sql.js';
+import { deriveObservationDisplayTitle } from '../../shared/observation-content.js';
 import type { PaginatedResult, Observation, Summary, UserPrompt } from '../worker-types.js';
 
 export class PaginationHelper {
@@ -48,6 +49,7 @@ export class PaginationHelper {
   private sanitizeObservation(obs: Observation): Observation {
     return {
       ...obs,
+      title: deriveObservationDisplayTitle(obs) ?? 'Observation',
       files_read: this.stripProjectPaths(obs.files_read, obs.project),
       files_modified: this.stripProjectPaths(obs.files_modified, obs.project)
     };

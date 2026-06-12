@@ -39,7 +39,7 @@ const MUTATING_COMMAND_PATTERNS = [
 ];
 
 const READ_ONLY_COMMAND_PATTERNS = [
-  /^(pwd|date|printf|echo)\b/i,
+  /^(pwd|date|printf|echo|true)\b/i,
   /^(ls|find|rg|grep|sed|cat|nl|head|tail|wc|stat|jq|ps|pgrep|which|sort|uniq|cut|tr|awk)\b/i,
   /^command\s+-v\b/i,
 ];
@@ -387,9 +387,59 @@ function pushSegment(segments: string[], segment: string): void {
 }
 
 function hasNonDevNullOutputRedirect(command: string): boolean {
-  const redirects = command.matchAll(/(?:^|[^<>=])\d*>>?\s*([^\s;&|]+)/g);
-  for (const redirect of redirects) {
-    const target = redirect[1]?.replace(/^['"]|['"]$/g, '') ?? '';
+  let quote: '"' | "'" | null = null;
+  let escaped = false;
+
+  for (let index = 0; index < command.length; index++) {
+    const char = command[index]!;
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+
+    if (quote) {
+      if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+
+    if (char !== '>') {
+      continue;
+    }
+
+    const previous = command[index - 1] ?? '';
+    const next = command[index + 1] ?? '';
+    if (previous === '<' || previous === '>' || previous === '=' || next === '=') {
+      continue;
+    }
+
+    if (next === '>') {
+      index++;
+    }
+
+    let targetStart = index + 1;
+    while (/\s/.test(command[targetStart] ?? '')) {
+      targetStart++;
+    }
+
+    let targetEnd = targetStart;
+    while (targetEnd < command.length && !/[\s;&|]/.test(command[targetEnd]!)) {
+      targetEnd++;
+    }
+
+    const target = command.slice(targetStart, targetEnd).replace(/^['"]|['"]$/g, '');
     if (target && !target.startsWith('&') && target !== '/dev/null') {
       return true;
     }

@@ -28,6 +28,10 @@ describe('observation-content', () => {
     expect(isNoOpObservationContent({
       narrative: 'No observations to record for summary batch.',
     })).toBe(true);
+
+    expect(isNoOpObservationContent({
+      narrative: 'All routine verification commands (diff --check, tests, typecheck, build) passed without incident. No debugging findings or root cause analysis to record.',
+    })).toBe(true);
   });
 
   it('derives display titles from durable content instead of Untitled', () => {

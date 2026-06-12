@@ -30,8 +30,10 @@ describe('observation-filter', () => {
       'git remote get-url origin',
       'rg -n "Untitled" src | sed -n "1,40p"',
       'sqlite3 /home/jura/.claude-mem/claude-mem.db "select project, count(*) from observations group by project"',
+      'sqlite3 /home/jura/.claude-mem/claude-mem.db "SELECT project, count(*) FROM observations WHERE created_at_epoch > (strftime(\'%s\',\'now\') - 7200) * 1000 GROUP BY project"',
       "curl -fsS 'http://127.0.0.1:37777/api/context/inject?projects=claude-mem' | sed -n '1,120p'",
       "curl -fsS 'http://127.0.0.1:37777/api/observations?project=claude-mem&limit=3' | jq 'keys'",
+      "curl -fsS 'http://127.0.0.1:37777/api/context/inject?projects=claude-mem' | rg -n 'Untitled' || true",
     ];
 
     for (const command of commands) {
@@ -153,6 +155,7 @@ describe('observation-filter', () => {
       'rg needle 2>errors.log',
       'echo ok 1>note.txt',
       'echo hi>note.txt',
+      'printf "x > y" > note.txt',
       'printf x>>file',
       "sed -i 's/a/b/' file.txt",
       "sed -i.bak 's/a/b/' file.txt",

@@ -33,6 +33,10 @@ export const NO_OP_OBSERVATION_TEXT_EXAMPLES = [
   'no tool usage observed in current session yet',
 ];
 
+const NO_OP_OBSERVATION_TEXT_PATTERNS = [
+  /^all routine verification commands\b.*\b(no debugging findings|no root cause analysis to record)\b/i,
+];
+
 export function normalizeObservationText(value: string | null | undefined): string {
   return (value ?? '')
     .replace(/[\r\n\t]+/g, ' ')
@@ -89,8 +93,11 @@ export function isNoOpObservationContent(fields: ObservationContentFields): bool
 
 function isNoOpObservationText(value: string): boolean {
   const normalized = normalizeObservationText(value).toLowerCase();
-  return NO_OP_OBSERVATION_TEXT_EXAMPLES.some(example =>
-    normalized === example || normalized === `${example}.`
+  return (
+    NO_OP_OBSERVATION_TEXT_EXAMPLES.some(example =>
+      normalized === example || normalized === `${example}.`
+    ) ||
+    NO_OP_OBSERVATION_TEXT_PATTERNS.some(pattern => pattern.test(normalized))
   );
 }
 

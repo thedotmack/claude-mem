@@ -9,6 +9,21 @@ function normalizedSqlText(field: string): string {
   return `lower(trim(replace(replace(replace(coalesce(${field}, ''), char(13), ' '), char(10), ' '), char(9), ' ')))`;
 }
 
+function normalizedSqlNoOpCondition(field: string): string {
+  const normalized = normalizedSqlText(field);
+  return `(
+    ${normalized} = ''
+    OR ${normalized} IN (${SQL_NO_OP_LIST})
+    OR (
+      ${normalized} LIKE 'all routine verification commands%'
+      AND (
+        ${normalized} LIKE '%no debugging findings%'
+        OR ${normalized} LIKE '%no root cause analysis to record%'
+      )
+    )
+  )`;
+}
+
 function jsonTextArrayIsEmpty(field: string): string {
   return `(trim(coalesce(${field}, '[]')) = '' OR trim(coalesce(${field}, '[]')) = '[]')`;
 }
@@ -33,22 +48,10 @@ export function durableObservationWhere(alias: string = 'o'): string {
     AND NOT (
       ${jsonTextArrayIsEmpty(facts)}
       AND ${jsonTextArrayIsEmpty(concepts)}
-      AND (
-        ${normalizedSqlText(title)} = ''
-        OR ${normalizedSqlText(title)} IN (${SQL_NO_OP_LIST})
-      )
-      AND (
-        ${normalizedSqlText(subtitle)} = ''
-        OR ${normalizedSqlText(subtitle)} IN (${SQL_NO_OP_LIST})
-      )
-      AND (
-        ${normalizedSqlText(text)} = ''
-        OR ${normalizedSqlText(text)} IN (${SQL_NO_OP_LIST})
-      )
-      AND (
-        ${normalizedSqlText(narrative)} = ''
-        OR ${normalizedSqlText(narrative)} IN (${SQL_NO_OP_LIST})
-      )
+      AND ${normalizedSqlNoOpCondition(title)}
+      AND ${normalizedSqlNoOpCondition(subtitle)}
+      AND ${normalizedSqlNoOpCondition(text)}
+      AND ${normalizedSqlNoOpCondition(narrative)}
       AND (
         ${normalizedSqlText(title)} != ''
         OR ${normalizedSqlText(subtitle)} != ''
