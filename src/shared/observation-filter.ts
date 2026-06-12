@@ -51,13 +51,14 @@ const FAILURE_PATTERNS = [
 ];
 
 const STRING_RESPONSE_FAILURE_PATTERNS = [
-  /\b(command not found|permission denied|no such file|exit code [1-9]\d*|exited with code [1-9]\d*|process exited with code [1-9]\d*)\b/i,
-  /\b(traceback|uncaught exception)\b/i,
+  /(^|\n)\s*(command not found|command failed with exit code [1-9]\d*|command exited with code [1-9]\d*|permission denied|no such file|exit code [1-9]\d*|exited with code [1-9]\d*|process exited with code [1-9]\d*)\b/i,
+  /(^|\n)\s*(traceback|uncaught exception)\b/i,
   /(^|\n)\s*(error|failed|failure|exception):/i,
+  /(^|\n)\s*(bash|sh|zsh|fish):[^\n]*command not found/i,
   /(^|\n)\s*(curl|jq|rg|grep|sed|cat|tail|head|sqlite3|git|find|ls|awk):[^\n]*(error|failed|failure|parse error|could not|cannot|no such|permission denied)/i,
   /(^|\n)\s*(parse error|regex parse error|failed to (open|read|stat|access)|cannot (open|read|stat|access)|could not (open|read|stat|access))\b/i,
   /"?exitCode"?\s*:\s*[1-9]/i,
-  /\b(status|http)\s*[:=]?\s*[45]\d\d\b/i,
+  /(^|\n)\s*(status|http)\s*[:=]?\s*[45]\d\d\b/i,
 ];
 
 export function getObservationSkipReason(input: ObservationFilterInput): ObservationSkipReason | null {

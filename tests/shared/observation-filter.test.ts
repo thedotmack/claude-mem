@@ -209,6 +209,24 @@ describe('observation-filter', () => {
 
     expect(getObservationSkipReason({
       toolName: 'Bash',
+      toolInput: { command: 'rg -n "needle" missing-dir' },
+      toolResponse: 'Command failed with exit code 1',
+    })).toBeNull();
+
+    expect(getObservationSkipReason({
+      toolName: 'Bash',
+      toolInput: { command: 'rg -n "needle" missing-dir' },
+      toolResponse: 'Command exited with code 2',
+    })).toBeNull();
+
+    expect(getObservationSkipReason({
+      toolName: 'Bash',
+      toolInput: { command: 'rg -n "needle" src' },
+      toolResponse: 'bash: rg: command not found',
+    })).toBeNull();
+
+    expect(getObservationSkipReason({
+      toolName: 'Bash',
       toolInput: { command: 'curl -fsS "http://127.0.0.1:37777/api/context/inject?projects=missing"' },
       toolResponse: 'curl: (22) The requested URL returned error: 404\nProcess exited with code 22',
     })).toBeNull();
@@ -253,6 +271,12 @@ describe('observation-filter', () => {
       toolName: 'Bash',
       toolInput: { command: 'rg -n "failed to read" src' },
       toolResponse: 'src/file.ts: const message = "failed to read from cache";',
+    })).toBe('routine_read_only_command');
+
+    expect(getObservationSkipReason({
+      toolName: 'Bash',
+      toolInput: { command: 'tail -n 240 /tmp/worker.log | rg -n "Process exited|curl|Failed to open"' },
+      toolResponse: '221:[INFO] PR comment mentions `Process exited with code 22`, `curl: (22) ... error: 404`, and `Failed to open file` as examples.',
     })).toBe('routine_read_only_command');
   });
 
