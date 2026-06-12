@@ -57,17 +57,16 @@ describe('kimiAdapter', () => {
   });
 
   describe('formatOutput', () => {
-    it('emits continue true by default', () => {
+    it('emits nothing when there is no context or system message', () => {
       const output = kimiAdapter.formatOutput({});
-      expect(output).toEqual({ continue: true });
+      expect(output).toBeUndefined();
     });
 
-    it('passes through suppressOutput and systemMessage', () => {
+    it('passes through systemMessage', () => {
       const output = kimiAdapter.formatOutput({
-        suppressOutput: true,
         systemMessage: 'hello',
       });
-      expect(output).toEqual({ continue: true, suppressOutput: true, systemMessage: 'hello' });
+      expect(output).toEqual({ continue: true, systemMessage: 'hello' });
     });
 
     it('maps hookSpecificOutput.additionalContext to top-level additionalContext', () => {

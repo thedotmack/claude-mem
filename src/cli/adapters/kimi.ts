@@ -78,14 +78,17 @@ export const kimiAdapter: PlatformAdapter = {
     };
   },
 
-  formatOutput(result): Record<string, unknown> {
-    const output: Record<string, unknown> = {};
-
-    output.continue = result.continue ?? true;
-
-    if (result.suppressOutput !== undefined) {
-      output.suppressOutput = result.suppressOutput;
+  formatOutput(result): Record<string, unknown> | undefined {
+    // Kimi displays stdout in the UI, so emit nothing when there's no
+    // context/system message to inject. Exit code 0 already means "continue".
+    const hasOutput = result.systemMessage || result.hookSpecificOutput?.additionalContext;
+    if (!hasOutput) {
+      return undefined;
     }
+
+    const output: Record<string, unknown> = {
+      continue: result.continue ?? true,
+    };
 
     if (result.systemMessage) {
       output.systemMessage = result.systemMessage;
