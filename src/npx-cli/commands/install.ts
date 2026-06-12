@@ -330,6 +330,23 @@ function makeIDETask(ideId: string, summary: InstallSummary): TaskDescriptor | n
       };
     }
 
+    case 'kimi-code': {
+      return {
+        title: 'Kimi Code CLI: installing hooks',
+        task: async (message) => {
+          message('Loading Kimi Code CLI installer…');
+          const { installKimiCodeHooks } = await import('../../services/integrations/KimiCodeHooksInstaller.js');
+          message('Installing Kimi Code CLI hooks…');
+          const { result, output } = await bufferConsole(() => installKimiCodeHooks());
+          if (result !== 0) {
+            recordFailure('Kimi Code CLI: hook installation failed', output);
+            return `Kimi Code CLI: hook installation failed ${pc.red('FAIL')}`;
+          }
+          return `Kimi Code CLI: hooks installed ${pc.green('OK')}`;
+        },
+      };
+    }
+
     case 'opencode': {
       return {
         title: 'OpenCode: installing plugin',
@@ -646,6 +663,7 @@ function copyPluginToMarketplace(): void {
   const allowedTopLevelEntries = [
     '.agents',
     '.codex-plugin',
+    '.kimi-plugin',
     'plugin',
     'package.json',
     'package-lock.json',

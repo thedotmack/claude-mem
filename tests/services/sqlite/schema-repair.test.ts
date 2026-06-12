@@ -5,7 +5,7 @@ import { MigrationRunner } from '../../../src/services/sqlite/migrations/runner.
 import { existsSync, unlinkSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { execFileSync, execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 
 function tempDbPath(): string {
   return join(tmpdir(), `claude-mem-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
@@ -18,21 +18,12 @@ function cleanup(path: string): void {
   }
 }
 
-function hasPython(): boolean {
-  try {
-    execSync('python3 --version', { stdio: 'pipe' });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 // repairMalformedDatabase() shells out to `sqlite3 <db> .recover`, which depends
 // on the dbpage virtual table. Some sqlite3 CLI builds (e.g. on the ubuntu CI
 // runner) are compiled without it and fail with "no such table: sqlite_dbpage".
-// The repair feature legitimately requires that capability, so — like the
-// hasPython() guard above — we skip the repair tests when the host sqlite3
-// cannot perform .recover rather than reporting a false failure.
+// The repair feature legitimately requires that capability, so we skip the repair
+// tests when the host sqlite3 cannot perform .recover rather than reporting a
+// false failure.
 function canRecoverViaSqlite3(): boolean {
   const probe = tempDbPath();
   try {
@@ -52,10 +43,6 @@ function canRecoverViaSqlite3(): boolean {
 const REPAIR_SUPPORTED = canRecoverViaSqlite3();
 
 function skipUnlessRepairable(): boolean {
-  if (!hasPython()) {
-    console.log('Python3 not available, skipping repair test');
-    return true;
-  }
   if (!REPAIR_SUPPORTED) {
     console.log("sqlite3 CLI lacks .recover (no sqlite_dbpage), skipping repair test");
     return true;
@@ -63,22 +50,37 @@ function skipUnlessRepairable(): boolean {
   return false;
 }
 
-function corruptDbViaPython(dbPath: string): void {
-  const script = join(tmpdir(), `corrupt-${Date.now()}.py`);
+function corruptDbViaSqlite3(dbPath: string): void {
+  const script = join(tmpdir(), `corrupt-${Date.now()}.sql`);
   writeFileSync(script, `
-import sqlite3, re, sys
-c = sqlite3.connect(sys.argv[1])
-c.execute("PRAGMA writable_schema = ON")
-row = c.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='observations'").fetchone()
-if row:
-    new_sql = re.sub(r',\\s*content_hash\\s+TEXT', '', row[0])
-    c.execute("UPDATE sqlite_master SET sql = ? WHERE type='table' AND name='observations'", (new_sql,))
-c.execute("PRAGMA writable_schema = OFF")
-c.commit()
-c.close()
+PRAGMA writable_schema = ON;
+UPDATE sqlite_master SET sql = replace(sql, ', content_hash TEXT', '')
+  WHERE type = 'table' AND name = 'observations';
+PRAGMA writable_schema = OFF;
 `);
   try {
-    execSync(`python3 "${script}" "${dbPath}"`, { timeout: 10000 });
+    execFileSync('sqlite3', [dbPath], { input: `.read ${script}\n`, timeout: 10000 });
+  } finally {
+    if (existsSync(script)) unlinkSync(script);
+  }
+}
+
+function corruptDbNoSchemaVersion(dbPath: string): void {
+  const script = join(tmpdir(), `corrupt-nosv-${Date.now()}.sql`);
+  writeFileSync(script, `
+PRAGMA writable_schema = ON;
+INSERT INTO sqlite_master (type, name, tbl_name, rootpage, sql)
+VALUES (
+  'index',
+  'idx_observations_content_hash',
+  'observations',
+  0,
+  'CREATE INDEX idx_observations_content_hash ON observations(content_hash, created_at_epoch)'
+);
+PRAGMA writable_schema = OFF;
+`);
+  try {
+    execFileSync('sqlite3', [dbPath], { input: `.read ${script}\n`, timeout: 10000 });
   } finally {
     if (existsSync(script)) unlinkSync(script);
   }
@@ -106,7 +108,7 @@ describe('Schema repair on malformed database', () => {
       db.run('PRAGMA wal_checkpoint(TRUNCATE)');
       db.close();
 
-      corruptDbViaPython(dbPath);
+      corruptDbViaSqlite3(dbPath);
 
       const corruptDb = new Database(dbPath, { readwrite: true });
       let threw = false;
@@ -160,25 +162,8 @@ describe('Schema repair on malformed database', () => {
     }
 
     const dbPath = tempDbPath();
-    const scriptPath = join(tmpdir(), `corrupt-nosv-${Date.now()}.py`);
     try {
-      writeFileSync(scriptPath, `
-import sqlite3, sys
-c = sqlite3.connect(sys.argv[1])
-c.execute('PRAGMA writable_schema = ON')
-# Inject an orphaned index into sqlite_master without any backing table.
-# This simulates a partially-synced DB where index metadata arrived but
-# the table schema is incomplete or missing columns.
-idx_sql = 'CREATE INDEX idx_observations_content_hash ON observations(content_hash, created_at_epoch)'
-c.execute(
-  "INSERT INTO sqlite_master (type, name, tbl_name, rootpage, sql) VALUES ('index', 'idx_observations_content_hash', 'observations', 0, ?)",
-  (idx_sql,)
-)
-c.execute('PRAGMA writable_schema = OFF')
-c.commit()
-c.close()
-`);
-      execFileSync('python3', [scriptPath, dbPath], { timeout: 10000 });
+      corruptDbNoSchemaVersion(dbPath);
 
       const corruptDb = new Database(dbPath, { readwrite: true });
       let threw = false;
@@ -201,7 +186,6 @@ c.close()
       repaired.close();
     } finally {
       cleanup(dbPath);
-      if (existsSync(scriptPath)) unlinkSync(scriptPath);
     }
   });
 
@@ -234,7 +218,7 @@ c.close()
       db.run('PRAGMA wal_checkpoint(TRUNCATE)');
       db.close();
 
-      corruptDbViaPython(dbPath);
+      corruptDbViaSqlite3(dbPath);
 
       const repaired = new ClaudeMemDatabase(dbPath);
 

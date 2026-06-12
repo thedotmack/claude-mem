@@ -71,6 +71,9 @@ import {
 import {
   handleGeminiCliCommand
 } from './integrations/GeminiCliHooksInstaller.js';
+import {
+  handleKimiCodeCommand
+} from './integrations/KimiCodeHooksInstaller.js';
 
 import { DatabaseManager } from './worker/DatabaseManager.js';
 import { SessionManager } from './worker/SessionManager.js';
@@ -1198,6 +1201,14 @@ async function main() {
       break;
     }
 
+    case 'kimi-code':
+    case 'kimi': {
+      const kimiSubcommand = process.argv[3];
+      const kimiResult = await handleKimiCodeCommand(kimiSubcommand, process.argv.slice(4));
+      process.exit(kimiResult);
+      break;
+    }
+
     case 'hook': {
       // IO discipline: this case is the entry point to the hook execution path.
       // Once hookCommand is invoked, src/shared/hook-io.ts owns all
@@ -1208,7 +1219,7 @@ async function main() {
       const event = process.argv[4];
       if (!platform || !event) {
         console.error('Usage: claude-mem hook <platform> <event>');
-        console.error('Platforms: claude-code, codex, cursor, gemini-cli, raw');
+        console.error('Platforms: claude-code, codex, cursor, gemini-cli, kimi-code, raw');
         console.error('Events: context, session-init, observation, summarize, user-message');
         process.exit(1);
       }
