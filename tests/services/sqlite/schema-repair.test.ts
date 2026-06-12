@@ -59,7 +59,7 @@ UPDATE sqlite_master SET sql = replace(sql, ', content_hash TEXT', '')
 PRAGMA writable_schema = OFF;
 `);
   try {
-    execFileSync('sqlite3', [dbPath, `.read ${script}`], { timeout: 10000 });
+    execFileSync('sqlite3', [dbPath], { input: `.read ${script}\n`, timeout: 10000 });
   } finally {
     if (existsSync(script)) unlinkSync(script);
   }
@@ -80,7 +80,7 @@ VALUES (
 PRAGMA writable_schema = OFF;
 `);
   try {
-    execFileSync('sqlite3', [dbPath, `.read ${script}`], { timeout: 10000 });
+    execFileSync('sqlite3', [dbPath], { input: `.read ${script}\n`, timeout: 10000 });
   } finally {
     if (existsSync(script)) unlinkSync(script);
   }
