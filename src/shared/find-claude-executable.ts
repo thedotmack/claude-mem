@@ -142,7 +142,13 @@ function runProbe(candidate: string, args: readonly string[]): { stdout: string 
   }
 }
 
-/** Probe one candidate: capability + version in a single spawn. */
+/**
+ * Probe one candidate. A capable CLI is classified in a single spawn
+ * (capability flags + --version). Only when that probe fails does a second
+ * plain `--version` spawn run, to split "runs but too old" from "doesn't run
+ * at all" without pattern-matching stderr wording — so the two-spawn cost is
+ * paid only for stale/broken installs, and the result is cached.
+ */
 function probeCandidate(candidate: string): ProbeResult {
   const capability = runProbe(candidate, CAPABILITY_PROBE_ARGS);
   if ('stdout' in capability && capability.stdout) {
