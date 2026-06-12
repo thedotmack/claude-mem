@@ -1,0 +1,46 @@
+{
+  "name": "claude-mem",
+  "version": "13.5.6",
+  "description": "Memory compression system for Claude Code - persist context across sessions",
+  "author": {
+    "name": "Alex Newman",
+    "url": "https://github.com/thedotmack"
+  },
+  "homepage": "https://github.com/thedotmack/claude-mem#readme",
+  "repository": "https://github.com/thedotmack/claude-mem",
+  "license": "Apache-2.0",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "claude-agent-sdk",
+    "mcp",
+    "plugin",
+    "memory",
+    "compression",
+    "knowledge-graph",
+    "transcript",
+    "typescript",
+    "nodejs"
+  ],
+  "skills": "./skills/",
+  "sessionStart": {
+    "skill": "kimi-mem"
+  },
+  "skillInstructions": "Claude-Mem is a persistent memory system. When a memory-related task arises, use the claude-mem MCP tools with the 3-layer retrieval workflow: 1) `search` to get a compact index of observation IDs, 2) `timeline` to see chronological context around interesting IDs, 3) `get_observations` to fetch full details only for filtered IDs. Never fetch full details before filtering.",
+  "mcpServers": {
+    "claude-mem": {
+      "command": "node",
+      "args": [
+        "./scripts/mcp-server.cjs"
+      ],
+      "cwd": "./"
+    }
+  },
+  "interface": {
+    "displayName": "claude-mem",
+    "shortDescription": "Persistent memory and context compression across Kimi Code CLI sessions.",
+    "longDescription": "claude-mem captures coding-session activity, compresses it into reusable observations, and injects relevant context back into future Kimi Code CLI sessions via lifecycle hooks and MCP search tools.",
+    "developerName": "Alex Newman",
+    "websiteURL": "https://github.com/thedotmack/claude-mem"
+  }
+}
