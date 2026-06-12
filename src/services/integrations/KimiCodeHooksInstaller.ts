@@ -52,10 +52,10 @@ function buildHookCommand(
     throw new Error(`Unknown Kimi event: ${kimiEventName}`);
   }
 
-  const escapedBunPath = bunPath.replace(/\\/g, '\\\\');
-  const escapedWorkerPath = workerServicePath.replace(/\\/g, '\\\\');
-
-  return `"${escapedBunPath}" "${escapedWorkerPath}" hook kimi-code ${internalEvent}`;
+  // Kimi splits the command string by whitespace and passes the resulting
+  // tokens as argv. Quoting paths is not supported, so we rely on the
+  // resolved paths having no spaces. (The standard install locations don't.)
+  return `${bunPath} ${workerServicePath} hook kimi-code ${internalEvent}`;
 }
 
 function createHookEntry(
