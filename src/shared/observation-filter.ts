@@ -183,11 +183,17 @@ function responseLooksLikeFailure(toolResponse: unknown): boolean {
       return FAILURE_PATTERNS.some(pattern => pattern.test(stderr));
     }
 
+    for (const field of ['output', 'stdout']) {
+      const value = (toolResponse as Record<string, unknown>)[field];
+      if (typeof value === 'string' && responseTextLooksLikeFailure(value)) {
+        return true;
+      }
+    }
+
     return false;
   }
 
-  const text = stringifyResponse(toolResponse).slice(0, 4000);
-  return STRING_RESPONSE_FAILURE_PATTERNS.some(pattern => pattern.test(text));
+  return responseTextLooksLikeFailure(stringifyResponse(toolResponse));
 }
 
 function getExplicitFailureStatus(response: Record<string, unknown>): boolean | null {
@@ -215,6 +221,11 @@ function stringifyResponse(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function responseTextLooksLikeFailure(value: string): boolean {
+  const text = value.slice(0, 4000);
+  return STRING_RESPONSE_FAILURE_PATTERNS.some(pattern => pattern.test(text));
 }
 
 function getParallelSkipReason(toolInput: unknown, toolResponse: unknown): ObservationSkipReason | null {

@@ -194,6 +194,24 @@ describe('observation-filter', () => {
 
     expect(getObservationSkipReason({
       toolName: 'Bash',
+      toolInput: { command: 'cat missing.ts' },
+      toolResponse: { output: 'cat: missing.ts: No such file or directory' },
+    })).toBeNull();
+
+    expect(getObservationSkipReason({
+      toolName: 'Bash',
+      toolInput: { command: 'rg -n "needle" missing-dir' },
+      toolResponse: { output: 'Process exited with code 2' },
+    })).toBeNull();
+
+    expect(getObservationSkipReason({
+      toolName: 'Bash',
+      toolInput: { command: 'rg -n "error" src' },
+      toolResponse: { output: 'src/file.ts: error text from source code' },
+    })).toBe('routine_read_only_command');
+
+    expect(getObservationSkipReason({
+      toolName: 'Bash',
       toolInput: { command: 'rg -n "error" src' },
       toolResponse: 'src/file.ts: error text from source code',
     })).toBe('routine_read_only_command');
