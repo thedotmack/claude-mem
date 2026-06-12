@@ -10,7 +10,7 @@ import {
 
 let tempDirs: string[] = [];
 
-function createSettingsFile(batchSize: string): string {
+function createSettingsFile(batchSize: unknown): string {
   const dir = mkdtempSync(join(tmpdir(), 'claude-mem-batch-size-'));
   tempDirs.push(dir);
   const settingsPath = join(dir, 'settings.json');
@@ -32,6 +32,13 @@ describe('observation batch size', () => {
     expect(parseObservationBatchSize('-2')).toBe(1);
     expect(parseObservationBatchSize('999')).toBe(MAX_OBSERVATION_BATCH_SIZE);
     expect(parseObservationBatchSize('12')).toBe(12);
+  });
+
+  it('accepts numeric JSON settings from existing user config files', () => {
+    const settingsPath = createSettingsFile(7);
+    const resolver = new ObservationBatchSizeResolver(settingsPath, 1000);
+
+    expect(resolver.get(10_000)).toBe(7);
   });
 
   it('caches settings reads until the TTL expires', () => {

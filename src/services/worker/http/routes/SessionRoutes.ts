@@ -341,7 +341,12 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     const store = this.dbManager.getSessionStore();
-    const sessionDbId = store.createSDKSession(contentSessionId, '', '');
+    const sessionDbId = store.getSessionIdByContentSessionId(contentSessionId);
+    if (sessionDbId === null) {
+      res.json({ status: 'not_found', queueLength: 0 });
+      return;
+    }
+
     const session = this.sessionManager.getSession(sessionDbId);
 
     if (!session) {

@@ -1694,6 +1694,15 @@ export class SessionStore {
     return result.count;
   }
 
+  getSessionIdByContentSessionId(contentSessionId: string): number | null {
+    const row = this.db.prepare(`
+      SELECT id FROM sdk_sessions WHERE content_session_id = ?
+      LIMIT 1
+    `).get(contentSessionId) as { id: number } | undefined;
+
+    return row?.id ?? null;
+  }
+
   createSDKSession(
     contentSessionId: string,
     project: string,
