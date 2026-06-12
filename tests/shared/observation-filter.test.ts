@@ -188,6 +188,72 @@ describe('observation-filter', () => {
       toolInput: { command: 'rg -n "needle" missing-dir' },
       toolResponse: { stderr: 'missing-dir: No such file or directory', exitCode: 2 },
     })).toBeNull();
+
+    expect(getObservationSkipReason({
+      toolName: 'Bash',
+      toolInput: { command: 'rg -n "error" src' },
+      toolResponse: 'src/file.ts: error text from source code',
+    })).toBe('routine_read_only_command');
+
+    expect(getObservationSkipReason({
+      toolName: 'Bash',
+      toolInput: { command: 'tail -n 240 /tmp/worker.log | rg -n "QUEUE ENQUEUED|ERROR|provider"' },
+      toolResponse: '[ERROR] historical worker log line',
+    })).toBe('routine_read_only_command');
+
+    expect(getObservationSkipReason({
+      toolName: 'Bash',
+      toolInput: { command: 'rg -n "needle" missing-dir' },
+      toolResponse: 'Process exited with code 2',
+    })).toBeNull();
+
+    expect(getObservationSkipReason({
+      toolName: 'Bash',
+      toolInput: { command: 'curl -fsS "http://127.0.0.1:37777/api/context/inject?projects=missing"' },
+      toolResponse: 'curl: (22) The requested URL returned error: 404\nProcess exited with code 22',
+    })).toBeNull();
+
+    expect(getObservationSkipReason({
+      toolName: 'Bash',
+      toolInput: { command: 'rg -n "[" src' },
+      toolResponse: 'regex parse error:\n    [',
+    })).toBeNull();
+
+    expect(getObservationSkipReason({
+      toolName: 'Bash',
+      toolInput: { command: 'cat missing.ts' },
+      toolResponse: 'Failed to open file',
+    })).toBeNull();
+
+    expect(getObservationSkipReason({
+      toolName: 'Bash',
+      toolInput: { command: 'curl -fsS "http://127.0.0.1:37777/api/context/inject?projects=missing"' },
+      toolResponse: 'curl: (22) The requested URL returned error: 404',
+    })).toBeNull();
+
+    expect(getObservationSkipReason({
+      toolName: 'Bash',
+      toolInput: { command: 'curl -fsS "http://127.0.0.1:37777/api/context/inject?projects=claude-mem"' },
+      toolResponse: 'curl: (7) Failed to connect to 127.0.0.1 port 37777',
+    })).toBeNull();
+
+    expect(getObservationSkipReason({
+      toolName: 'Bash',
+      toolInput: { command: 'jq . broken.json' },
+      toolResponse: 'jq: parse error: Invalid numeric literal at line 1, column 2',
+    })).toBeNull();
+
+    expect(getObservationSkipReason({
+      toolName: 'Bash',
+      toolInput: { command: 'jq . broken.json' },
+      toolResponse: 'parse error: Invalid numeric literal at line 1, column 2',
+    })).toBeNull();
+
+    expect(getObservationSkipReason({
+      toolName: 'Bash',
+      toolInput: { command: 'rg -n "failed to read" src' },
+      toolResponse: 'src/file.ts: const message = "failed to read from cache";',
+    })).toBe('routine_read_only_command');
   });
 
   it('allows redirects to /dev/null without treating them as mutations', () => {

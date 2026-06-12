@@ -45,7 +45,17 @@ const READ_ONLY_COMMAND_PATTERNS = [
 
 const FAILURE_PATTERNS = [
   /\b(error|failed|failure|exception|traceback)\b/i,
-  /\b(command not found|permission denied|no such file|exit code [1-9])\b/i,
+  /\b(command not found|permission denied|no such file|exit code [1-9]\d*)\b/i,
+  /"?exitCode"?\s*:\s*[1-9]/i,
+  /\b(status|http)\s*[:=]?\s*[45]\d\d\b/i,
+];
+
+const STRING_RESPONSE_FAILURE_PATTERNS = [
+  /\b(command not found|permission denied|no such file|exit code [1-9]\d*|exited with code [1-9]\d*|process exited with code [1-9]\d*)\b/i,
+  /\b(traceback|uncaught exception)\b/i,
+  /(^|\n)\s*(error|failed|failure|exception):/i,
+  /(^|\n)\s*(curl|jq|rg|grep|sed|cat|tail|head|sqlite3|git|find|ls|awk):[^\n]*(error|failed|failure|parse error|could not|cannot|no such|permission denied)/i,
+  /(^|\n)\s*(parse error|regex parse error|failed to (open|read|stat|access)|cannot (open|read|stat|access)|could not (open|read|stat|access))\b/i,
   /"?exitCode"?\s*:\s*[1-9]/i,
   /\b(status|http)\s*[:=]?\s*[45]\d\d\b/i,
 ];
@@ -175,7 +185,7 @@ function responseLooksLikeFailure(toolResponse: unknown): boolean {
   }
 
   const text = stringifyResponse(toolResponse).slice(0, 4000);
-  return FAILURE_PATTERNS.some(pattern => pattern.test(text));
+  return STRING_RESPONSE_FAILURE_PATTERNS.some(pattern => pattern.test(text));
 }
 
 function getExplicitFailureStatus(response: Record<string, unknown>): boolean | null {
