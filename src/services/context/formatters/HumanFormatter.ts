@@ -8,6 +8,7 @@ import type {
 import { colors } from '../types.js';
 import { ModeManager } from '../../domain/ModeManager.js';
 import { formatObservationTokenDisplay } from '../TokenCalculator.js';
+import { deriveObservationDisplayTitle } from '../../../shared/observation-content.js';
 
 function formatHeaderDateTime(): string {
   const now = new Date();
@@ -106,7 +107,7 @@ export function renderHumanTableRow(
   showTime: boolean,
   config: ContextConfig
 ): string {
-  const title = obs.title || 'Untitled';
+  const title = deriveObservationDisplayTitle(obs) ?? 'Observation';
   const icon = ModeManager.getInstance().getTypeIcon(obs.type);
   const { readTokens, discoveryTokens, workEmoji } = formatObservationTokenDisplay(obs, config);
 
@@ -125,7 +126,7 @@ export function renderHumanFullObservation(
   config: ContextConfig
 ): string[] {
   const output: string[] = [];
-  const title = obs.title || 'Untitled';
+  const title = deriveObservationDisplayTitle(obs) ?? 'Observation';
   const icon = ModeManager.getInstance().getTypeIcon(obs.type);
   const { readTokens, discoveryTokens, workEmoji } = formatObservationTokenDisplay(obs, config);
 

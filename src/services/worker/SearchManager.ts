@@ -10,6 +10,7 @@ import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { formatDate, formatTime, formatDateTime, extractFirstFile, groupByDate, estimateTokens } from '../../shared/timeline-formatting.js';
+import { deriveObservationDisplayTitle } from '../../shared/observation-content.js';
 import { ModeManager } from '../domain/ModeManager.js';
 
 import {
@@ -624,7 +625,9 @@ export class SearchManager {
 
     if (query) {
       const anchorObs = filteredItems.find(item => item.type === 'observation' && item.data.id === anchorId);
-      const anchorTitle = anchorObs && anchorObs.type === 'observation' ? ((anchorObs.data as ObservationSearchResult).title || 'Untitled') : 'Unknown';
+      const anchorTitle = anchorObs && anchorObs.type === 'observation'
+        ? (deriveObservationDisplayTitle(anchorObs.data as ObservationSearchResult) ?? 'Observation')
+        : 'Unknown';
       lines.push(`# Timeline for query: "${query}"`);
       lines.push(`**Anchor:** Observation #${anchorId} - ${anchorTitle}`);
     } else {
@@ -712,7 +715,7 @@ export class SearchManager {
           const icon = ModeManager.getInstance().getTypeIcon(obs.type);
 
           const time = formatTime(item.epoch);
-          const title = obs.title || 'Untitled';
+          const title = deriveObservationDisplayTitle(obs) ?? 'Observation';
           const tokens = estimateTokens(obs.narrative);
 
           const showTime = time !== lastTime;
@@ -1449,7 +1452,7 @@ export class SearchManager {
           const icon = ModeManager.getInstance().getTypeIcon(obs.type);
 
           const time = formatTime(item.epoch);
-          const title = obs.title || 'Untitled';
+          const title = deriveObservationDisplayTitle(obs) ?? 'Observation';
           const tokens = estimateTokens(obs.narrative);
 
           const showTime = time !== lastTime;
@@ -1553,7 +1556,7 @@ export class SearchManager {
 
       for (let i = 0; i < results.length; i++) {
         const obs = results[i];
-        const title = obs.title || `Observation #${obs.id}`;
+        const title = deriveObservationDisplayTitle(obs) ?? `Observation #${obs.id}`;
         const date = new Date(obs.created_at_epoch).toLocaleString();
         const type = obs.type ? `[${obs.type}]` : '';
 
@@ -1604,7 +1607,7 @@ export class SearchManager {
       const lines: string[] = [];
 
       lines.push(`# Timeline for query: "${query}"`);
-      lines.push(`**Anchor:** Observation #${topResult.id} - ${topResult.title || 'Untitled'}`);
+      lines.push(`**Anchor:** Observation #${topResult.id} - ${deriveObservationDisplayTitle(topResult) ?? 'Observation'}`);
       lines.push(`**Window:** ${depthBefore} records before -> ${depthAfter} records after | **Items:** ${filteredItems?.length ?? 0}`);
       lines.push('');
 
@@ -1682,7 +1685,7 @@ export class SearchManager {
             const icon = ModeManager.getInstance().getTypeIcon(obs.type);
 
             const time = formatTime(item.epoch);
-            const title = obs.title || 'Untitled';
+            const title = deriveObservationDisplayTitle(obs) ?? 'Observation';
             const tokens = estimateTokens(obs.narrative);
 
             const showTime = time !== lastTime;

@@ -8,6 +8,7 @@ import { stripMemoryTagsFromJson } from '../../../utils/tag-stripping.js';
 import { isProjectExcluded } from '../../../utils/project-filter.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
+import { getObservationSkipReason } from '../../../shared/observation-filter.js';
 import { getProjectContext } from '../../../utils/project-name.js';
 import { normalizePlatformSource } from '../../../shared/platform-source.js';
 import { PrivacyCheckValidator } from '../validation/PrivacyCheckValidator.js';
@@ -112,6 +113,15 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
   );
   if (skipTools.has(payload.toolName)) {
     return { ok: true, status: 'skipped', reason: 'tool_excluded' };
+  }
+
+  const observationSkipReason = getObservationSkipReason({
+    toolName: payload.toolName,
+    toolInput: payload.toolInput,
+    toolResponse: payload.toolResponse,
+  });
+  if (observationSkipReason) {
+    return { ok: true, status: 'skipped', reason: observationSkipReason };
   }
 
   const fileOperationTools = new Set(['Edit', 'Write', 'Read', 'NotebookEdit']);

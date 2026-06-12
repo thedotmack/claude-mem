@@ -16,6 +16,7 @@ import type { SessionManager } from '../SessionManager.js';
 import type { WorkerRef, StorageResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
 import { captureEvent } from '../../telemetry/telemetry.js';
+import { deriveObservationDisplayTitle } from '../../../shared/observation-content.js';
 
 /**
  * Consecutive non-XML observer outputs tolerated before we kill and respawn the
@@ -23,6 +24,21 @@ import { captureEvent } from '../../telemetry/telemetry.js';
  * immediate respawn regardless of the count.
  */
 export const INVALID_OUTPUT_RESPAWN_THRESHOLD = 3;
+
+type AgentOutputKind = 'observation' | 'summary' | 'none';
+type ExpectedOutputKind = Exclude<AgentOutputKind, 'none'>;
+
+function expectedOutputKindForGenerator(source: string | undefined): ExpectedOutputKind | null {
+  if (source === 'summarize') return 'summary';
+  if (source === 'init' || source === 'ingest') return 'observation';
+  return null;
+}
+
+function parsedOutputKind(parsed: { observations: ParsedObservation[]; summary: ParsedSummary | null }): AgentOutputKind {
+  if (parsed.summary) return 'summary';
+  if (parsed.observations.length > 0) return 'observation';
+  return 'none';
+}
 
 export async function processAgentResponse(
   text: string,
@@ -43,7 +59,7 @@ export async function processAgentResponse(
     session.conversationHistory.push({ role: 'assistant', content: text });
   }
 
-  const parsed = parseAgentXml(text, session.contentSessionId);
+  const parsed = parseAgentXml(text, session.contentSessionId, { allowNoOpObservations: true });
 
   // Provider enum for telemetry, derived once so the invalid-output and
   // success paths stamp the same value.
@@ -101,6 +117,63 @@ export async function processAgentResponse(
     // Plain-text skip responses are intentionally ignored. Re-queueing them
     // creates an observer loop where the same low-signal batch is retried
     // until the restart guard fires or the provider quota is exhausted.
+    await sessionManager.confirmClaimedMessages(session.sessionDbId);
+    session.earliestPendingTimestamp = null;
+    return;
+  }
+
+  const expectedKind = expectedOutputKindForGenerator(session.lastGeneratorSource);
+  const actualKind = parsedOutputKind(parsed);
+  const contractKind = actualKind === 'none' ? parsed.rootKind : actualKind;
+
+  if (expectedKind && contractKind !== expectedKind) {
+    const outputClass = classifyObserverOutput(text);
+    const preview = previewOutput(text);
+
+    session.consecutiveInvalidOutputs = (session.consecutiveInvalidOutputs ?? 0) + 1;
+
+    logger.warn('PARSER', `${agentName} returned ${contractKind} XML while ${expectedKind} output was expected — ignoring queued batch`, {
+      sessionId: session.sessionDbId,
+      outputClass,
+      preview,
+      expectedKind,
+      actualKind: contractKind,
+      generatorSource: session.lastGeneratorSource,
+      consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
+    });
+
+    if (session.consecutiveInvalidOutputs >= INVALID_OUTPUT_RESPAWN_THRESHOLD) {
+      logger.error('SESSION', `${agentName} output contract mismatch — killing and respawning, pending messages preserved`, {
+        sessionId: session.sessionDbId,
+        outputClass,
+        expectedKind,
+        actualKind: contractKind,
+        consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
+        threshold: INVALID_OUTPUT_RESPAWN_THRESHOLD,
+      });
+      captureEvent('session_compressed', {
+        outcome: 'invalid_output',
+        invalid_output_class: outputClass,
+        consecutive_invalid_outputs: session.consecutiveInvalidOutputs,
+        respawn_triggered: true,
+        provider: providerName,
+        model: typeof modelId === 'string' && modelId ? modelId : 'unknown',
+        ide: session.platformSource,
+        hook: session.lastGeneratorSource,
+        expected_output_kind: expectedKind,
+        actual_output_kind: contractKind,
+      });
+      await sessionManager.respawnPoisonedSession(session.sessionDbId);
+      return;
+    }
+
+    await sessionManager.confirmClaimedMessages(session.sessionDbId);
+    session.earliestPendingTimestamp = null;
+    return;
+  }
+
+  if (actualKind === 'none') {
+    session.consecutiveInvalidOutputs = 0;
     await sessionManager.confirmClaimedMessages(session.sessionDbId);
     session.earliestPendingTimestamp = null;
     return;
@@ -402,13 +475,13 @@ async function syncAndBroadcastObservations(
         obsId,
         duration: `${chromaDuration}ms`,
         type: obs.type,
-        title: obs.title || '(untitled)'
+        title: deriveObservationDisplayTitle(obs) ?? '(no title)'
       });
     }).catch((error) => {
       logger.error('CHROMA', `${agentName} chroma sync failed, continuing without vector search`, {
         obsId,
         type: obs.type,
-        title: obs.title || '(untitled)'
+        title: deriveObservationDisplayTitle(obs) ?? '(no title)'
       }, error);
     });
 

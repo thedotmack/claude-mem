@@ -4,6 +4,7 @@ import { ClaudeMemDatabase } from '../../src/services/sqlite/Database.js';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import {
   storeObservation,
+  computeLegacyObservationContentHash,
   computeObservationContentHash,
 } from '../../src/services/sqlite/observations/store.js';
 import {
@@ -32,6 +33,38 @@ function createSessionWithMemoryId(db: Database, contentSessionId: string, memor
   const sessionId = createSDKSession(db, contentSessionId, project, 'initial prompt');
   updateMemorySessionId(db, sessionId, memorySessionId);
   return memorySessionId;
+}
+
+function seedLegacyHashedObservation(
+  db: Database,
+  memorySessionId: string,
+  project: string,
+  observation: ObservationInput,
+  timestampEpoch: number = Date.now()
+): number {
+  const legacyHash = computeLegacyObservationContentHash(memorySessionId, observation);
+  const result = db.prepare(`
+    INSERT INTO observations
+      (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
+       files_read, files_modified, created_at, created_at_epoch, content_hash)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    memorySessionId,
+    project,
+    observation.type,
+    observation.title,
+    observation.subtitle,
+    JSON.stringify(observation.facts),
+    observation.narrative,
+    JSON.stringify(observation.concepts),
+    JSON.stringify(observation.files_read),
+    JSON.stringify(observation.files_modified),
+    new Date(timestampEpoch).toISOString(),
+    timestampEpoch,
+    legacyHash
+  );
+
+  return Number(result.lastInsertRowid);
 }
 
 function seedLegacyContentHashScenario(db: Database): void {
@@ -164,6 +197,54 @@ describe('TRIAGE-03: Data Integrity', () => {
       expect(hashes.size).toBe(4);
     });
 
+    it('computeObservationContentHash preserves the legacy hash for title and narrative only', () => {
+      const legacyHash = computeObservationContentHash('session-1', 'Title A', 'Narrative A');
+      const objectHash = computeObservationContentHash('session-1', {
+        title: 'Title A',
+        subtitle: null,
+        facts: [],
+        narrative: 'Narrative A',
+        concepts: [],
+        files_read: [],
+        files_modified: [],
+      });
+
+      expect(objectHash).toBe(legacyHash);
+    });
+
+    it('computeObservationContentHash includes subtitle and array content when present', () => {
+      const hash1 = computeObservationContentHash('session-1', {
+        title: null,
+        subtitle: 'Subtitle A',
+        facts: [],
+        narrative: null,
+        concepts: [],
+        files_read: [],
+        files_modified: [],
+      });
+      const hash2 = computeObservationContentHash('session-1', {
+        title: null,
+        subtitle: 'Subtitle B',
+        facts: [],
+        narrative: null,
+        concepts: [],
+        files_read: [],
+        files_modified: [],
+      });
+      const hash3 = computeObservationContentHash('session-1', {
+        title: null,
+        subtitle: 'Subtitle A',
+        facts: ['different fact'],
+        narrative: null,
+        concepts: [],
+        files_read: [],
+        files_modified: [],
+      });
+
+      expect(hash2).not.toBe(hash1);
+      expect(hash3).not.toBe(hash1);
+    });
+
     it('storeObservation deduplicates identical observations within 30s window', () => {
       const memId = createSessionWithMemoryId(db, 'content-dedup-1', 'mem-dedup-1');
       const obs = createObservationInput({ title: 'Same Title', narrative: 'Same Narrative' });
@@ -198,6 +279,82 @@ describe('TRIAGE-03: Data Integrity', () => {
       expect(result2.id).not.toBe(result1.id);
     });
 
+    it('storeObservation preserves distinct subtitle-only observations in one session', () => {
+      const memId = createSessionWithMemoryId(db, 'content-dedup-subtitle', 'mem-dedup-subtitle');
+      const obs1 = createObservationInput({
+        title: null,
+        subtitle: 'Subtitle A',
+        facts: [],
+        narrative: null,
+        concepts: [],
+        files_read: [],
+        files_modified: [],
+      });
+      const obs2 = createObservationInput({
+        title: null,
+        subtitle: 'Subtitle B',
+        facts: [],
+        narrative: null,
+        concepts: [],
+        files_read: [],
+        files_modified: [],
+      });
+
+      const now = Date.now();
+      const result1 = storeObservation(db, memId, 'test-project', obs1, 1, 0, now);
+      const result2 = storeObservation(db, memId, 'test-project', obs2, 1, 0, now);
+
+      expect(result2.id).not.toBe(result1.id);
+
+      const count = db.prepare('SELECT COUNT(*) as count FROM observations WHERE memory_session_id = ?').get(memId) as { count: number };
+      expect(count.count).toBe(2);
+    });
+
+    it('storeObservation reuses exact pre-upgrade legacy hash duplicates with additional fields', () => {
+      const memId = createSessionWithMemoryId(db, 'content-legacy-hash', 'mem-legacy-hash');
+      const obs = createObservationInput({
+        title: 'Legacy Title',
+        subtitle: 'Legacy Subtitle',
+        facts: ['legacy fact'],
+        narrative: 'Legacy narrative',
+        concepts: ['legacy concept'],
+        files_read: ['/legacy/read.ts'],
+        files_modified: ['/legacy/write.ts'],
+      });
+      const legacyId = seedLegacyHashedObservation(db, memId, 'test-project', obs);
+
+      const result = storeObservation(db, memId, 'test-project', obs, 1, 0, Date.now() + 1000);
+
+      expect(result.id).toBe(legacyId);
+      const count = db.prepare('SELECT COUNT(*) as count FROM observations WHERE memory_session_id = ?').get(memId) as { count: number };
+      expect(count.count).toBe(1);
+    });
+
+    it('storeObservation does not collapse distinct additional fields onto a legacy hash match', () => {
+      const memId = createSessionWithMemoryId(db, 'content-legacy-hash-distinct', 'mem-legacy-hash-distinct');
+      const legacyObs = createObservationInput({
+        title: 'Shared Title',
+        subtitle: 'Legacy Subtitle',
+        facts: ['legacy fact'],
+        narrative: 'Shared narrative',
+        concepts: [],
+        files_read: [],
+        files_modified: [],
+      });
+      const nextObs = createObservationInput({
+        ...legacyObs,
+        subtitle: 'New Subtitle',
+        facts: ['new fact'],
+      });
+      const legacyId = seedLegacyHashedObservation(db, memId, 'test-project', legacyObs);
+
+      const result = storeObservation(db, memId, 'test-project', nextObs, 1, 0, Date.now() + 1000);
+
+      expect(result.id).not.toBe(legacyId);
+      const count = db.prepare('SELECT COUNT(*) as count FROM observations WHERE memory_session_id = ?').get(memId) as { count: number };
+      expect(count.count).toBe(2);
+    });
+
     it('content_hash column is populated on new observations', () => {
       const memId = createSessionWithMemoryId(db, 'content-hash-col', 'mem-hash-col');
       const obs = createObservationInput();
@@ -222,6 +379,23 @@ describe('TRIAGE-03: Data Integrity', () => {
       expect(result.observationIds[2]).toBe(result.observationIds[0]);
 
       const count = db.prepare('SELECT COUNT(*) as count FROM observations').get() as { count: number };
+      expect(count.count).toBe(1);
+    });
+
+    it('storeObservations reuses exact pre-upgrade legacy hash duplicates', () => {
+      const memId = createSessionWithMemoryId(db, 'content-tx-legacy-hash', 'mem-tx-legacy-hash');
+      const obs = createObservationInput({
+        title: 'Transaction Legacy Title',
+        subtitle: 'Transaction Legacy Subtitle',
+        facts: ['transaction legacy fact'],
+        narrative: 'Transaction legacy narrative',
+      });
+      const legacyId = seedLegacyHashedObservation(db, memId, 'test-project', obs);
+
+      const result = storeObservations(db, memId, 'test-project', [obs], null);
+
+      expect(result.observationIds).toEqual([legacyId]);
+      const count = db.prepare('SELECT COUNT(*) as count FROM observations WHERE memory_session_id = ?').get(memId) as { count: number };
       expect(count.count).toBe(1);
     });
   });

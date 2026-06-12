@@ -2,6 +2,7 @@
 import type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../sqlite/types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import { logger } from '../../utils/logger.js';
+import { deriveObservationDisplayTitle } from '../../shared/observation-content.js';
 
 const CHARS_PER_TOKEN_ESTIMATE = 4;
 
@@ -39,7 +40,7 @@ Tips:
     const id = `#${obs.id}`;
     const time = this.formatTime(obs.created_at_epoch);
     const icon = ModeManager.getInstance().getTypeIcon(obs.type);
-    const title = obs.title || 'Untitled';
+    const title = deriveObservationDisplayTitle(obs) ?? 'Observation';
     const readTokens = this.estimateReadTokens(obs);
     const workEmoji = ModeManager.getInstance().getWorkEmoji(obs.type);
     const workTokens = obs.discovery_tokens || 0;
@@ -82,7 +83,7 @@ Tips:
     const id = `#${obs.id}`;
     const time = this.formatTime(obs.created_at_epoch);
     const icon = ModeManager.getInstance().getTypeIcon(obs.type);
-    const title = obs.title || 'Untitled';
+    const title = deriveObservationDisplayTitle(obs) ?? 'Observation';
     const readTokens = this.estimateReadTokens(obs);
 
     const timeDisplay = time === lastTime ? '″' : time;

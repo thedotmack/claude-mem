@@ -3,6 +3,7 @@ import { logger } from '../../../utils/logger.js';
 import type { ObservationSearchResult } from '../../sqlite/types.js';
 import type { SessionStore } from '../../sqlite/SessionStore.js';
 import type { SearchOrchestrator } from '../search/SearchOrchestrator.js';
+import { deriveObservationDisplayTitle } from '../../../shared/observation-content.js';
 import { CorpusRenderer } from './CorpusRenderer.js';
 import { CorpusStore } from './CorpusStore.js';
 import type { CorpusFile, CorpusFilter, CorpusObservation, CorpusStats } from './types.js';
@@ -102,7 +103,7 @@ export class CorpusBuilder {
     return {
       id: row.id,
       type: row.type,
-      title: row.title || '',
+      title: deriveObservationDisplayTitle(row) ?? '',
       subtitle: row.subtitle || null,
       narrative: row.narrative || null,
       facts: safeParseJsonArray(row.facts),

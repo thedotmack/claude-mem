@@ -70,6 +70,42 @@ export class SessionMessageBuffer {
     return id;
   }
 
+  /**
+   * Claim currently-buffered messages without waiting for future arrivals.
+   * Stops at the first unclaimed message that does not match `predicate` so
+   * callers preserve FIFO ordering across observation/summary boundaries.
+   */
+  claimAvailable(
+    sessionDbId: number,
+    max: number,
+    predicate: (message: PendingMessage) => boolean
+  ): PendingMessageWithId[] {
+    if (max <= 0) return [];
+
+    const list = this.buffers.get(sessionDbId);
+    if (!list) return [];
+
+    const claimed: PendingMessageWithId[] = [];
+    for (const item of list) {
+      if (claimed.length >= max) break;
+      if (item.claimed) continue;
+      if (!predicate(item.message)) break;
+
+      item.claimed = true;
+      claimed.push({
+        ...item.message,
+        _persistentId: item.id,
+        _originalTimestamp: item.enqueuedAt
+      });
+    }
+
+    if (claimed.length > 0) {
+      this.onMutate?.();
+    }
+
+    return claimed;
+  }
+
   /** Remove a stored message by id. Returns 1 if found, 0 otherwise. */
   confirm(messageId: number): number {
     for (const list of this.buffers.values()) {

@@ -12,6 +12,7 @@ import { groupByDate } from '../../../../shared/timeline-formatting.js';
 import { countObservationsByProjects } from '../../../context/ObservationCompiler.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
+import { deriveObservationDisplayTitle } from '../../../../shared/observation-content.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from '../../../sqlite/types.js';
 import { captureEvent } from '../../../telemetry/telemetry.js';
 
@@ -486,7 +487,7 @@ export class SearchRoutes extends BaseRouteHandler {
     const lines: string[] = ['## Relevant Past Work (semantic match)\n'];
     for (const obs of observations.slice(0, limit)) {
       const date = obs.created_at?.slice(0, 10) || '';
-      lines.push(`### ${obs.title || 'Observation'} (${date})`);
+      lines.push(`### ${deriveObservationDisplayTitle(obs) ?? 'Observation'} (${date})`);
       if (obs.narrative) lines.push(obs.narrative);
       lines.push('');
     }

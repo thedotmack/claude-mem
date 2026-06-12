@@ -182,6 +182,71 @@ describe('SessionStore', () => {
     expect(stored?.memory_session_id).toBe(memoryId);
   });
 
+  it('should derive paginated observation titles from durable narrative content', () => {
+    const claudeId = 'claude-sess-derived-title';
+    const memoryId = 'memory-sess-derived-title';
+    const sdkId = store.createSDKSession(claudeId, 'test-project', 'initial prompt');
+    store.updateMemorySessionId(sdkId, memoryId);
+
+    store.storeObservation(
+      memoryId,
+      'test-project',
+      {
+        type: 'discovery',
+        title: null,
+        subtitle: null,
+        facts: [],
+        narrative: 'Implemented queue coalescing. More details follow.',
+        concepts: [],
+        files_read: [],
+        files_modified: []
+      },
+      1,
+      0,
+      Date.now()
+    );
+
+    const helper = new PaginationHelper({
+      getSessionStore: () => store,
+    } as any);
+
+    const observations = helper.getObservations(0, 10, 'test-project').items;
+
+    expect(observations).toHaveLength(1);
+    expect(observations[0]!.title).toBe('Implemented queue coalescing.');
+  });
+
+  it('should hide routine verification no-op observations from paginated results', () => {
+    const claudeId = 'claude-sess-routine-noop';
+    const memoryId = 'memory-sess-routine-noop';
+    const sdkId = store.createSDKSession(claudeId, 'test-project', 'initial prompt');
+    store.updateMemorySessionId(sdkId, memoryId);
+
+    store.storeObservation(
+      memoryId,
+      'test-project',
+      {
+        type: 'bugfix',
+        title: null,
+        subtitle: null,
+        facts: [],
+        narrative: 'All routine verification commands (diff --check, tests, typecheck, build) passed without incident. No debugging findings or root cause analysis to record.',
+        concepts: [],
+        files_read: [],
+        files_modified: []
+      },
+      1,
+      0,
+      Date.now()
+    );
+
+    const helper = new PaginationHelper({
+      getSessionStore: () => store,
+    } as any);
+
+    expect(helper.getObservations(0, 10, 'test-project').items).toEqual([]);
+  });
+
   it('should store summary with timestamp override', () => {
     const claudeId = 'claude-sess-sum';
     const memoryId = 'memory-sess-sum';

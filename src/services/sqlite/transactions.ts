@@ -3,7 +3,12 @@ import { Database } from 'bun:sqlite';
 import { logger } from '../../utils/logger.js';
 import type { ObservationInput } from './observations/types.js';
 import type { SummaryInput } from './summaries/types.js';
-import { computeObservationContentHash } from './observations/store.js';
+import {
+  computeLegacyObservationContentHash,
+  computeObservationContentHash,
+  storedObservationMatchesHashFields,
+  type StoredObservationHashFields,
+} from './observations/store.js';
 
 export interface StoreObservationsResult {
   observationIds: number[];
@@ -41,9 +46,23 @@ export function storeObservationsAndMarkComplete(
     const lookupExistingStmt = db.prepare(
       'SELECT id FROM observations WHERE memory_session_id = ? AND content_hash = ?'
     );
+    const lookupLegacyExistingStmt = db.prepare(`
+      SELECT id, title, subtitle, facts, narrative, concepts, files_read, files_modified
+      FROM observations
+      WHERE memory_session_id = ? AND content_hash = ?
+    `);
 
     for (const observation of observations) {
-      const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
+      const contentHash = computeObservationContentHash(memorySessionId, observation);
+      const legacyContentHash = computeLegacyObservationContentHash(memorySessionId, observation);
+      if (legacyContentHash !== contentHash) {
+        const legacyExisting = lookupLegacyExistingStmt.get(memorySessionId, legacyContentHash) as (StoredObservationHashFields & { id: number }) | null;
+        if (legacyExisting && storedObservationMatchesHashFields(observation, legacyExisting)) {
+          observationIds.push(legacyExisting.id);
+          continue;
+        }
+      }
+
       const inserted = obsStmt.get(
         memorySessionId,
         project,
@@ -147,9 +166,23 @@ export function storeObservations(
     const lookupExistingStmt = db.prepare(
       'SELECT id FROM observations WHERE memory_session_id = ? AND content_hash = ?'
     );
+    const lookupLegacyExistingStmt = db.prepare(`
+      SELECT id, title, subtitle, facts, narrative, concepts, files_read, files_modified
+      FROM observations
+      WHERE memory_session_id = ? AND content_hash = ?
+    `);
 
     for (const observation of observations) {
-      const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
+      const contentHash = computeObservationContentHash(memorySessionId, observation);
+      const legacyContentHash = computeLegacyObservationContentHash(memorySessionId, observation);
+      if (legacyContentHash !== contentHash) {
+        const legacyExisting = lookupLegacyExistingStmt.get(memorySessionId, legacyContentHash) as (StoredObservationHashFields & { id: number }) | null;
+        if (legacyExisting && storedObservationMatchesHashFields(observation, legacyExisting)) {
+          observationIds.push(legacyExisting.id);
+          continue;
+        }
+      }
+
       const inserted = obsStmt.get(
         memorySessionId,
         project,

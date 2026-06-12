@@ -151,6 +151,12 @@ describe('SettingsDefaultsManager', () => {
         expect(result.CLAUDE_MEM_MODEL).toBe('all-keys-model');
         expect(result.CLAUDE_MEM_PROVIDER).toBe('gemini');
       });
+
+      it('should include the non-Claude observation batch size default', () => {
+        const defaults = SettingsDefaultsManager.getAllDefaults();
+
+        expect(defaults.CLAUDE_MEM_OBSERVATION_BATCH_SIZE).toBe('5');
+      });
     });
 
     describe('file exists but is empty or corrupt', () => {

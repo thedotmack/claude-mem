@@ -8,6 +8,7 @@ import type {
 } from '../types.js';
 import { ModeManager } from '../../domain/ModeManager.js';
 import { formatObservationTokenDisplay } from '../TokenCalculator.js';
+import { deriveObservationDisplayTitle } from '../../../shared/observation-content.js';
 
 function formatHeaderDateTime(): string {
   const now = new Date();
@@ -92,7 +93,7 @@ export function renderAgentTableRow(
   timeDisplay: string,
   _config: ContextConfig
 ): string {
-  const title = obs.title || 'Untitled';
+  const title = deriveObservationDisplayTitle(obs) ?? 'Observation';
   const icon = ModeManager.getInstance().getTypeIcon(obs.type);
   const time = timeDisplay ? compactTime(timeDisplay) : '"';
 
@@ -106,7 +107,7 @@ export function renderAgentFullObservation(
   config: ContextConfig
 ): string[] {
   const output: string[] = [];
-  const title = obs.title || 'Untitled';
+  const title = deriveObservationDisplayTitle(obs) ?? 'Observation';
   const icon = ModeManager.getInstance().getTypeIcon(obs.type);
   const time = timeDisplay ? compactTime(timeDisplay) : '"';
   const { readTokens, discoveryDisplay } = formatObservationTokenDisplay(obs, config);

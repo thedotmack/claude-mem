@@ -5,6 +5,7 @@ import { ParsedObservation, ParsedSummary } from '../../sdk/parser.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
 import { parseFileList } from '../sqlite/observations/files.js';
+import { deriveObservationDisplayTitle } from '../../shared/observation-content.js';
 
 interface ChromaDocument {
   id: string;
@@ -115,7 +116,7 @@ export class ChromaSync {
       merged_into_project: obs.merged_into_project ?? null,
       created_at_epoch: obs.created_at_epoch,
       type: obs.type || 'discovery',
-      title: obs.title || 'Untitled'
+      title: deriveObservationDisplayTitle(obs) ?? 'Observation'
     };
 
     if (obs.subtitle) {

@@ -6,6 +6,7 @@ import os from 'os';
 import { existsSync, mkdirSync, writeFileSync, readFileSync, renameSync, unlinkSync, readdirSync } from 'fs';
 import { execSync } from 'child_process';
 import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager.js';
+import { deriveObservationDisplayTitle } from '../src/shared/observation-content.js';
 
 const DB_PATH = path.join(os.homedir(), '.claude-mem', 'claude-mem.db');
 const SETTINGS_PATH = path.join(os.homedir(), '.claude-mem', 'settings.json');
@@ -18,6 +19,7 @@ interface ObservationRow {
   subtitle: string | null;
   narrative: string | null;
   facts: string | null;
+  concepts: string | null;
   type: string;
   created_at: string;
   created_at_epoch: number;
@@ -224,7 +226,7 @@ function formatObservationsForClaudeMd(observations: ObservationRow[], folderPat
         lastTime = time;
 
         const icon = getTypeIcon(obs.type);
-        const title = obs.title || 'Untitled';
+        const title = deriveObservationDisplayTitle(obs) ?? 'Observation';
         const tokens = estimateTokens(obs);
 
         lines.push(`| #${obs.id} | ${timeDisplay} | ${icon} | ${title} | ~${tokens} |`);

@@ -2,6 +2,7 @@
 import type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../sqlite/types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import { logger } from '../../utils/logger.js';
+import { deriveObservationDisplayTitle } from '../../shared/observation-content.js';
 
 export interface TimelineItem {
   type: 'observation' | 'session' | 'prompt';
@@ -70,7 +71,7 @@ export class TimelineService {
 
     if (query && anchorId) {
       const anchorObs = items.find(item => item.type === 'observation' && (item.data as ObservationSearchResult).id === anchorId);
-      const anchorTitle = anchorObs ? ((anchorObs.data as ObservationSearchResult).title || 'Untitled') : 'Unknown';
+      const anchorTitle = anchorObs ? (deriveObservationDisplayTitle(anchorObs.data as ObservationSearchResult) ?? 'Observation') : 'Unknown';
       lines.push(`# Timeline for query: "${query}"`);
       lines.push(`**Anchor:** Observation #${anchorId} - ${anchorTitle}`);
     } else if (anchorId) {
@@ -166,7 +167,7 @@ export class TimelineService {
 
           const icon = this.getTypeIcon(obs.type);
           const time = this.formatTime(item.epoch);
-          const title = obs.title || 'Untitled';
+          const title = deriveObservationDisplayTitle(obs) ?? 'Observation';
           const tokens = this.estimateTokens(obs.narrative);
 
           const showTime = time !== lastTime;

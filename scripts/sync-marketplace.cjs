@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 
 const { execSync } = require('child_process');
-const { existsSync, readFileSync } = require('fs');
+const { existsSync, mkdirSync, readFileSync } = require('fs');
 const path = require('path');
 const os = require('os');
 
 const INSTALLED_PATH = path.join(os.homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
-const CACHE_BASE_PATH = path.join(os.homedir(), '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem');
+const CLAUDE_CACHE_BASE_PATH = path.join(os.homedir(), '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem');
+const CODEX_CACHE_BASE_PATH = path.join(os.homedir(), '.codex', 'plugins', 'cache', 'claude-mem-local', 'claude-mem');
 
 function getCurrentBranch() {
   try {
@@ -86,19 +87,26 @@ try {
   );
 
   const version = getPluginVersion();
-  const CACHE_VERSION_PATH = path.join(CACHE_BASE_PATH, version);
 
   const pluginDir = path.join(rootDir, 'plugin');
   const pluginGitignoreExcludes = getGitignoreExcludes(pluginDir);
 
-  console.log(`Syncing to cache folder (version ${version})...`);
-  execSync(
-    `rsync -av --delete --exclude=.git ${pluginGitignoreExcludes} plugin/ "${CACHE_VERSION_PATH}/"`,
-    { stdio: 'inherit' }
-  );
+  for (const [label, cacheBasePath] of [
+    ['Claude', CLAUDE_CACHE_BASE_PATH],
+    ['Codex', CODEX_CACHE_BASE_PATH],
+  ]) {
+    const cacheVersionPath = path.join(cacheBasePath, version);
+    mkdirSync(cacheVersionPath, { recursive: true });
 
-  console.log(`Running bun install in cache folder (version ${version})...`);
-  execSync(`bun install`, { cwd: CACHE_VERSION_PATH, stdio: 'inherit' });
+    console.log(`Syncing to ${label} cache folder (version ${version})...`);
+    execSync(
+      `rsync -av --delete --exclude=.git ${pluginGitignoreExcludes} plugin/ "${cacheVersionPath}/"`,
+      { stdio: 'inherit' }
+    );
+
+    console.log(`Running bun install in ${label} cache folder (version ${version})...`);
+    execSync(`bun install`, { cwd: cacheVersionPath, stdio: 'inherit' });
+  }
 
   console.log('\x1b[32m%s\x1b[0m', 'Sync complete!');
 

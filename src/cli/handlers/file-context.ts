@@ -6,6 +6,7 @@ import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js'
 import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
 import { parseJsonArray } from '../../shared/timeline-formatting.js';
+import { deriveObservationDisplayTitle, hasDurableObservationContent } from '../../shared/observation-content.js';
 import { statSync } from 'fs';
 import path from 'path';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
@@ -45,6 +46,9 @@ interface ObservationRow {
   id: number;
   memory_session_id: string;
   title: string | null;
+  narrative: string | null;
+  facts: string | null;
+  concepts: string | null;
   type: string;
   created_at_epoch: number;
   files_read: string | null;
@@ -126,7 +130,7 @@ function formatFileTimeline(
     const chronological = [...dayObservations].sort((a, b) => a.created_at_epoch - b.created_at_epoch);
     lines.push(`### ${day}`);
     for (const obs of chronological) {
-      const title = (obs.title || 'Untitled').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160);
+      const title = deriveObservationDisplayTitle(obs, 160) ?? 'Observation';
       const icon = TYPE_ICONS[obs.type] || '\u2753';
       const time = compactTime(formatTime(obs.created_at_epoch));
       lines.push(`${obs.id} ${time} ${icon} ${title}`);
@@ -256,9 +260,10 @@ async function buildFileContextTimeline(input: NormalizedHookInput, filePath: st
   }
 
   const dedupedObservations = deduplicateObservations(data.observations, relativePath, DISPLAY_LIMIT);
-  if (dedupedObservations.length === 0) {
+  const displayObservations = dedupedObservations.filter(obs => hasDurableObservationContent(obs));
+  if (displayObservations.length === 0) {
     return null;
   }
 
-  return formatFileTimeline(dedupedObservations, filePath);
+  return formatFileTimeline(displayObservations, filePath);
 }

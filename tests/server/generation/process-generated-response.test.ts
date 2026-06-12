@@ -210,6 +210,34 @@ describe('processGeneratedResponse + markGenerationFailed', () => {
     expect(reloaded?.status).toBe('completed');
   });
 
+  it('marks job completed with no observation when provider returns explicit no-op observation XML', async () => {
+    await storage.observationGenerationJobs.transitionStatus({
+      id: jobId,
+      projectId,
+      teamId,
+      status: 'processing',
+    });
+    const fresh = (await reloadJob())!;
+    const outcome = await processGeneratedResponse({
+      pool: pool as unknown as Parameters<typeof processGeneratedResponse>[0]['pool'],
+      job: fresh,
+      rawText: '<observation><type>discovery</type><narrative>No durable observation to record.</narrative></observation>',
+      providerLabel: 'fake',
+    });
+
+    expect(outcome.kind).toBe('completed');
+    if (outcome.kind === 'completed') {
+      expect(outcome.observations).toHaveLength(0);
+      expect(outcome.privateContentDetected).toBe(true);
+    }
+
+    const list = await storage.observations.listByProject({ projectId, teamId });
+    expect(list).toHaveLength(0);
+
+    const reloaded = await reloadJob();
+    expect(reloaded?.status).toBe('completed');
+  });
+
   it('returns parse_error and does not write observations for malformed XML', async () => {
     await storage.observationGenerationJobs.transitionStatus({
       id: jobId,

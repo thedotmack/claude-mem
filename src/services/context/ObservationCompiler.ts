@@ -5,6 +5,7 @@ import { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
 import { SYSTEM_REMINDER_REGEX } from '../../utils/tag-stripping.js';
 import { CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
+import { durableObservationWhere } from '../../shared/observation-sql.js';
 import type {
   ContextConfig,
   Observation,
@@ -14,6 +15,8 @@ import type {
   PriorMessages,
 } from './types.js';
 import { SUMMARY_LOOKAHEAD } from './types.js';
+
+const DURABLE_OBSERVATION_SQL = `AND ${durableObservationWhere('o')}`;
 
 export function queryObservations(
   db: SessionStore,
@@ -33,6 +36,7 @@ export function queryObservations(
       o.type,
       o.title,
       o.subtitle,
+      o.text,
       o.narrative,
       o.facts,
       o.concepts,
@@ -49,6 +53,7 @@ export function queryObservations(
         SELECT 1 FROM json_each(o.concepts)
         WHERE value IN (${conceptPlaceholders})
       )
+      ${DURABLE_OBSERVATION_SQL}
     ORDER BY o.created_at_epoch DESC
     LIMIT ?
   `).all(
@@ -105,6 +110,7 @@ export function queryObservationsMulti(
       o.type,
       o.title,
       o.subtitle,
+      o.text,
       o.narrative,
       o.facts,
       o.concepts,
@@ -123,6 +129,7 @@ export function queryObservationsMulti(
         SELECT 1 FROM json_each(o.concepts)
         WHERE value IN (${conceptPlaceholders})
       )
+      ${DURABLE_OBSERVATION_SQL}
     ORDER BY o.created_at_epoch DESC
     LIMIT ?
   `).all(

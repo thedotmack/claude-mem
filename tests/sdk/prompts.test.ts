@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'bun:test';
 
-import { buildObservationPrompt } from '../../src/sdk/prompts.js';
+import { buildObservationBatchPrompt, buildObservationPrompt } from '../../src/sdk/prompts.js';
 
 describe('buildObservationPrompt', () => {
-  it('instructs the observer to avoid prose skip responses', () => {
+  it('instructs the observer to use XML no-op skip responses', () => {
     const prompt = buildObservationPrompt({
       id: 1,
       tool_name: 'exec_command',
@@ -13,9 +13,39 @@ describe('buildObservationPrompt', () => {
       cwd: '/repo',
     });
 
-    expect(prompt).toContain('Return either one or more <observation>...</observation> blocks, or an empty response');
-    expect(prompt).toContain('Concrete debugging findings from logs, queue state, database rows, session routing, or code-path inspection');
+    expect(prompt).toContain('exactly this no-op XML when nothing should be saved');
+    expect(prompt).toContain('<type>skip</type>');
+    expect(prompt).toContain('Skip routine status checks, repeated log/queue/database/process inspections');
+    expect(prompt).toContain('Record debugging findings only when they materially change the diagnosis');
     expect(prompt).toContain('Never reply with prose such as "Skipping", "No substantive tool executions"');
+  });
+
+  it('can batch multiple nearby tool events into one observer prompt', () => {
+    const prompt = buildObservationBatchPrompt([
+      {
+        id: 1,
+        tool_name: 'Read',
+        tool_input: JSON.stringify({ file_path: 'a.ts' }),
+        tool_output: JSON.stringify({ content: 'const a = 1;' }),
+        created_at_epoch: 1700000000000,
+        cwd: '/repo',
+      },
+      {
+        id: 2,
+        tool_name: 'Grep',
+        tool_input: JSON.stringify({ pattern: 'foo' }),
+        tool_output: JSON.stringify({ matches: ['a.ts:1'] }),
+        created_at_epoch: 1700000001000,
+        cwd: '/repo',
+      },
+    ]);
+
+    expect(prompt).toContain('<observed_from_primary_session_batch>');
+    expect(prompt).toContain('<event_count>2</event_count>');
+    expect(prompt).toContain('<tool_event index="1">');
+    expect(prompt).toContain('<tool_event index="2">');
+    expect(prompt).toContain('Combine related events into fewer observations');
+    expect(prompt).toContain('<type>skip</type>');
   });
 });
 

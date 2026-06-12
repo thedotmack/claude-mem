@@ -114,7 +114,7 @@ function truncateObservationField(value: unknown, maxChars: number = OBS_PROMPT_
   return `${head}\n... <elided chars="${elidedChars}" original_size_chars="${raw.length}" reason="oversize" /> ...\n${tail}`;
 }
 
-export function buildObservationPrompt(obs: Observation): string {
+function parseObservationToolFields(obs: Observation): { toolInput: unknown; toolOutput: unknown } {
   let toolInput: any;
   let toolOutput: any;
 
@@ -136,18 +136,59 @@ export function buildObservationPrompt(obs: Observation): string {
     toolOutput = obs.tool_output;
   }
 
-  return `<observed_from_primary_session>
+  return { toolInput, toolOutput };
+}
+
+function renderObservedToolUse(obs: Observation, tagName = 'observed_from_primary_session', index?: number): string {
+  const { toolInput, toolOutput } = parseObservationToolFields(obs);
+  const indexAttribute = typeof index === 'number' ? ` index="${index}"` : '';
+
+  return `<${tagName}${indexAttribute}>
   <what_happened>${obs.tool_name}</what_happened>
   <occurred_at>${new Date(obs.created_at_epoch).toISOString()}</occurred_at>${obs.cwd ? `\n  <working_directory>${obs.cwd}</working_directory>` : ''}
   <parameters>${truncateObservationField(toolInput)}</parameters>
   <outcome>${truncateObservationField(toolOutput)}</outcome>
-</observed_from_primary_session>
+</${tagName}>`;
+}
 
-If a <parameters> or <outcome> block above contains an "<elided chars=... />" marker, that field was truncated to fit the observer's context window. Describe only what you can see in the kept portion and do not infer details about the elided range.
+const OBSERVATION_RESPONSE_INSTRUCTIONS = `If a <parameters> or <outcome> block above contains an "<elided chars=... />" marker, that field was truncated to fit the observer's context window. Describe only what you can see in the kept portion and do not infer details about the elided range.
 
-Return either one or more <observation>...</observation> blocks, or an empty response if this tool use should be skipped.
-Concrete debugging findings from logs, queue state, database rows, session routing, or code-path inspection count as durable discoveries and should be recorded.
+Return either one or more <observation>...</observation> blocks for durable, useful information, or exactly this no-op XML when nothing should be saved:
+<observation>
+  <type>skip</type>
+  <narrative>No durable observation to record.</narrative>
+</observation>
+
+Skip routine status checks, repeated log/queue/database/process inspections, dependency listings, directory listings, and verification commands that only confirm expected state.
+Record debugging findings only when they materially change the diagnosis, identify a root cause, confirm a fix, or document durable behavior future sessions need.
 Never reply with prose such as "Skipping", "No substantive tool executions", or any explanation outside XML. Non-XML text is discarded.`;
+
+export function buildObservationPrompt(obs: Observation): string {
+  return `${renderObservedToolUse(obs)}
+
+${OBSERVATION_RESPONSE_INSTRUCTIONS}`;
+}
+
+export function buildObservationBatchPrompt(observations: Observation[]): string {
+  if (observations.length === 0) {
+    throw new Error('buildObservationBatchPrompt requires at least one observation');
+  }
+
+  if (observations.length === 1) {
+    return buildObservationPrompt(observations[0]!);
+  }
+
+  const events = observations
+    .map((obs, index) => renderObservedToolUse(obs, 'tool_event', index + 1))
+    .join('\n\n');
+
+  return `<observed_from_primary_session_batch>
+  <event_count>${observations.length}</event_count>
+${events}
+</observed_from_primary_session_batch>
+
+Multiple tool events above arrived close together. Combine related events into fewer observations; do not create one observation per tool event.
+${OBSERVATION_RESPONSE_INSTRUCTIONS}`;
 }
 
 export function buildSummaryPrompt(session: SDKSession, mode: ModeConfig): string {

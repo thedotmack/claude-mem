@@ -10,7 +10,7 @@ import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
-import { isInternalProtocolPayload } from '../../utils/tag-stripping.js';
+import { isInternalProtocolPayload, stripMemoryTagsFromPrompt } from '../../utils/tag-stripping.js';
 import { resolveRuntimeContext, logServerBetaFallback } from '../../services/hooks/runtime-selector.js';
 import { isServerBetaClientError } from '../../services/hooks/server-beta-client.js';
 
@@ -25,6 +25,17 @@ interface SessionInitResponse {
 interface SemanticContextResponse {
   context: string;
   count: number;
+}
+
+function deriveCustomTitle(prompt: string): string | undefined {
+  if (!prompt || prompt === '[media prompt]') return undefined;
+  const firstContentLine = prompt
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+  if (!firstContentLine) return undefined;
+  const compact = firstContentLine.replace(/\s+/g, ' ');
+  return compact.length <= 120 ? compact : `${compact.slice(0, 117).trimEnd()}...`;
 }
 
 export const sessionInitHandler: EventHandler = {
@@ -50,6 +61,7 @@ export const sessionInitHandler: EventHandler = {
     }
 
     const prompt = (!rawPrompt || !rawPrompt.trim()) ? '[media prompt]' : rawPrompt;
+    const customTitle = deriveCustomTitle(stripMemoryTagsFromPrompt(prompt));
 
     const project = getProjectContext(cwd).primary;
     const platformSource = normalizePlatformSource(input.platform);
@@ -101,6 +113,7 @@ export const sessionInitHandler: EventHandler = {
         project,
         prompt,
         platformSource,
+        customTitle,
       },
     );
 

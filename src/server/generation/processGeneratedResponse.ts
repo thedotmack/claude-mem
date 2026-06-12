@@ -64,7 +64,7 @@ export async function processGeneratedResponse(
 ): Promise<ProcessGeneratedResponseOutcome> {
   const { job, rawText } = input;
 
-  const parsed = parseAgentXml(rawText, job.id);
+  const parsed = parseAgentXml(rawText, job.id, { allowNoOpObservations: true });
   if (!parsed.valid) {
     return { kind: 'parse_error', jobId: job.id, reason: 'parser rejected response' };
   }

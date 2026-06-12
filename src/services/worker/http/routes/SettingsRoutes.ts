@@ -13,6 +13,7 @@ import { validateBody } from '../middleware/validateBody.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { clearPortCache } from '../../../../shared/worker-utils.js';
 import { flushResponseThen } from '../../../server/flushResponseThen.js';
+import { MAX_OBSERVATION_BATCH_SIZE } from '../../observation-batch-size.js';
 
 const updateSettingsSchema = z.object({}).passthrough();
 
@@ -99,6 +100,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_OPENROUTER_APP_NAME',
       'CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES',
       'CLAUDE_MEM_OPENROUTER_MAX_TOKENS',
+      'CLAUDE_MEM_OBSERVATION_BATCH_SIZE',
       'CLAUDE_MEM_DATA_DIR',
       'CLAUDE_MEM_LOG_LEVEL',
       'CLAUDE_MEM_PYTHON_VERSION',
@@ -314,6 +316,13 @@ export class SettingsRoutes extends BaseRouteHandler {
       } catch (error) {
         logger.debug('SETTINGS', 'Invalid URL format', { url: settings.CLAUDE_MEM_OPENROUTER_SITE_URL, error: error instanceof Error ? error.message : String(error) });
         return { valid: false, error: 'CLAUDE_MEM_OPENROUTER_SITE_URL must be a valid URL' };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_OBSERVATION_BATCH_SIZE) {
+      const count = parseInt(settings.CLAUDE_MEM_OBSERVATION_BATCH_SIZE, 10);
+      if (isNaN(count) || count < 1 || count > MAX_OBSERVATION_BATCH_SIZE) {
+        return { valid: false, error: `CLAUDE_MEM_OBSERVATION_BATCH_SIZE must be between 1 and ${MAX_OBSERVATION_BATCH_SIZE}` };
       }
     }
 
