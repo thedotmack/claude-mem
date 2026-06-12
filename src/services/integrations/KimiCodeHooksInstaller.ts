@@ -63,11 +63,12 @@ function createHookEntry(
   workerServicePath: string,
   kimiEventName: string,
 ): KimiHookEntry {
-  const matcher = kimiEventName === 'PostToolUse' || kimiEventName === 'UserPromptSubmit'
-    ? '*'
-    : kimiEventName === 'SessionStart'
-      ? 'startup|clear|compact'
-      : undefined;
+  // Kimi matchers are regexes against the target (tool name / prompt text / source).
+  // '*' is not a valid regex and would match nothing, so omit the matcher to
+  // catch all targets. SessionStart sources are 'startup' or 'resume' per Kimi docs.
+  const matcher = kimiEventName === 'SessionStart'
+    ? 'startup|resume|clear|compact'
+    : undefined;
 
   return {
     event: kimiEventName,
