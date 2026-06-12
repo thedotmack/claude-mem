@@ -39,6 +39,7 @@ export class SessionStore {
   constructor(dbPathOrDb: string | Database = DB_PATH) {
     if (dbPathOrDb instanceof Database) {
       this.db = dbPathOrDb;
+      this.db.run('PRAGMA foreign_keys = ON');
     } else {
       if (dbPathOrDb !== ':memory:') {
         ensureDir(DATA_DIR);

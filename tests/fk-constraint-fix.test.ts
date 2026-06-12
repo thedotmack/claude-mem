@@ -1,5 +1,6 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import { SessionStore } from '../src/services/sqlite/SessionStore.js';
 
 describe('FK Constraint Fix (Issue #846)', () => {
@@ -105,5 +106,52 @@ describe('FK Constraint Fix (Issue #846)', () => {
     );
 
     expect(result.id).toBeGreaterThan(0);
+  });
+
+  it('should cascade memory_session_id changes when constructed with a shared Database connection', () => {
+    const dbPath = `/tmp/test-fk-shared-${crypto.randomUUID()}.db`;
+    const initialStore = new SessionStore(dbPath);
+    initialStore.close();
+
+    const sharedDb = new Database(dbPath);
+    const sharedStore = new SessionStore(sharedDb);
+
+    try {
+      const sessionDbId = sharedStore.createSDKSession(
+        'codex-content-session',
+        'test-project',
+        'initial prompt',
+        undefined,
+        'codex'
+      );
+      sharedStore.ensureMemorySessionIdRegistered(sessionDbId, 'openrouter-codex-content-session-old');
+      const summaryId = sharedStore.storeSummary(
+        'openrouter-codex-content-session-old',
+        'test-project',
+        {
+          request: 'Summarize Codex work',
+          investigated: 'Investigated',
+          learned: 'Learned',
+          completed: 'Completed',
+          next_steps: 'Next',
+          notes: null
+        }
+      ).id;
+
+      sharedStore.ensureMemorySessionIdRegistered(sessionDbId, 'openrouter-codex-content-session-new');
+
+      const summary = sharedStore.db.prepare(
+        'SELECT memory_session_id FROM session_summaries WHERE id = ?'
+      ).get(summaryId) as { memory_session_id: string };
+
+      expect(summary.memory_session_id).toBe('openrouter-codex-content-session-new');
+    } finally {
+      sharedStore.close();
+      try {
+        require('fs').unlinkSync(dbPath);
+      } catch (e) {
+        // Ignore cleanup errors
+      }
+    }
   });
 });
