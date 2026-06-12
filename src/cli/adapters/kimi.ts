@@ -29,7 +29,22 @@ export const kimiAdapter: PlatformAdapter = {
     // Kimi sends the user prompt on UserPromptSubmit. Coerce to string to guard against
     // multimodal payloads where prompt may be an object/array.
     const rawField: unknown = r.prompt ?? r.query ?? r.input ?? r.message;
-    let prompt: string | undefined = typeof rawField === 'string' ? rawField : undefined;
+    let prompt: string | undefined;
+    if (typeof rawField === 'string') {
+      prompt = rawField;
+    } else if (Array.isArray(rawField)) {
+      prompt = rawField
+        .map((part: any) => {
+          if (typeof part === 'string') return part;
+          if (part && typeof part.text === 'string') return part.text;
+          return '';
+        })
+        .join('\n')
+        .trim();
+      if (prompt.length === 0) prompt = undefined;
+    } else if (rawField && typeof rawField === 'object' && typeof (rawField as any).text === 'string') {
+      prompt = (rawField as any).text;
+    }
 
     const metadata: Record<string, unknown> = {};
     if (r.source) metadata.source = r.source;

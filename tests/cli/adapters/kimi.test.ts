@@ -20,6 +20,23 @@ describe('kimiAdapter', () => {
       expect(kimiAdapter.normalizeInput({ message: 'sup' }).prompt).toBe('sup');
     });
 
+    it('coerces a ContentPart[] prompt array to a string', () => {
+      const input = kimiAdapter.normalizeInput({
+        prompt: [{ type: 'text', text: 'hello' }, { text: 'world' }],
+      });
+      expect(input.prompt).toBe('hello\nworld');
+    });
+
+    it('coerces a prompt object with a text field to a string', () => {
+      const input = kimiAdapter.normalizeInput({ prompt: { text: 'hello world' } });
+      expect(input.prompt).toBe('hello world');
+    });
+
+    it('falls back to undefined when prompt is an unsupported object', () => {
+      const input = kimiAdapter.normalizeInput({ prompt: { foo: 'bar' } });
+      expect(input.prompt).toBeUndefined();
+    });
+
     it('captures tool use fields', () => {
       const input = kimiAdapter.normalizeInput({
         tool_name: 'Bash',
