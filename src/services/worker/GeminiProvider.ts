@@ -17,6 +17,7 @@ import {
 } from './agents/index.js';
 import { ClassifiedProviderError } from './provider-errors.js';
 import { withRetry } from './retry.js';
+import { ObservationBatchSizeResolver } from './observation-batch-size.js';
 
 const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1/models';
 
@@ -137,8 +138,6 @@ let lastRequestTime = 0;
 
 const DEFAULT_MAX_CONTEXT_MESSAGES = 20;
 const DEFAULT_MAX_ESTIMATED_TOKENS = 100000;
-const DEFAULT_OBSERVATION_BATCH_SIZE = 5;
-const MAX_OBSERVATION_BATCH_SIZE = 25;
 
 async function enforceRateLimitForModel(model: GeminiModel, rateLimitingEnabled: boolean): Promise<void> {
   if (!rateLimitingEnabled) {
@@ -183,6 +182,7 @@ interface GeminiContent {
 export class GeminiProvider {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
+  private observationBatchSizeResolver = new ObservationBatchSizeResolver();
 
   constructor(dbManager: DatabaseManager, sessionManager: SessionManager) {
     this.dbManager = dbManager;
@@ -314,10 +314,7 @@ export class GeminiProvider {
   }
 
   private getObservationBatchSize(): number {
-    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-    const parsed = parseInt(settings.CLAUDE_MEM_OBSERVATION_BATCH_SIZE, 10);
-    if (isNaN(parsed)) return DEFAULT_OBSERVATION_BATCH_SIZE;
-    return Math.max(1, Math.min(MAX_OBSERVATION_BATCH_SIZE, parsed));
+    return this.observationBatchSizeResolver.get();
   }
 
   private async processObservationMessages(

@@ -12,7 +12,12 @@ import {
   LatestPromptResult
 } from '../../types/database.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from './types.js';
-import { computeObservationContentHash } from './observations/store.js';
+import {
+  computeLegacyObservationContentHash,
+  computeObservationContentHash,
+  storedObservationMatchesHashFields,
+  type StoredObservationHashFields,
+} from './observations/store.js';
 import { parseFileList } from './observations/files.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources } from '../../shared/platform-source.js';
 import { findRecentDuplicateUserPrompt as findRecentDuplicateUserPromptRecord } from './prompts/get.js';
@@ -1803,6 +1808,19 @@ export class SessionStore {
     const timestampIso = new Date(timestampEpoch).toISOString();
 
     const contentHash = computeObservationContentHash(memorySessionId, observation);
+    const legacyContentHash = computeLegacyObservationContentHash(memorySessionId, observation);
+
+    if (legacyContentHash !== contentHash) {
+      const legacyExisting = this.db.prepare(`
+        SELECT id, created_at_epoch, title, subtitle, facts, narrative, concepts, files_read, files_modified
+        FROM observations
+        WHERE memory_session_id = ? AND content_hash = ?
+      `).get(memorySessionId, legacyContentHash) as (StoredObservationHashFields & { id: number; created_at_epoch: number }) | null;
+
+      if (legacyExisting && storedObservationMatchesHashFields(observation, legacyExisting)) {
+        return { id: legacyExisting.id, createdAtEpoch: legacyExisting.created_at_epoch };
+      }
+    }
 
     const stmt = this.db.prepare(`
       INSERT INTO observations
@@ -1944,9 +1962,23 @@ export class SessionStore {
       const lookupExistingStmt = this.db.prepare(
         'SELECT id FROM observations WHERE memory_session_id = ? AND content_hash = ?'
       );
+      const lookupLegacyExistingStmt = this.db.prepare(`
+        SELECT id, title, subtitle, facts, narrative, concepts, files_read, files_modified
+        FROM observations
+        WHERE memory_session_id = ? AND content_hash = ?
+      `);
 
       for (const observation of observations) {
         const contentHash = computeObservationContentHash(memorySessionId, observation);
+        const legacyContentHash = computeLegacyObservationContentHash(memorySessionId, observation);
+        if (legacyContentHash !== contentHash) {
+          const legacyExisting = lookupLegacyExistingStmt.get(memorySessionId, legacyContentHash) as (StoredObservationHashFields & { id: number }) | null;
+          if (legacyExisting && storedObservationMatchesHashFields(observation, legacyExisting)) {
+            observationIds.push(legacyExisting.id);
+            continue;
+          }
+        }
+
         const inserted = obsStmt.get(
           memorySessionId,
           project,
@@ -2062,9 +2094,23 @@ export class SessionStore {
       const lookupExistingStmt = this.db.prepare(
         'SELECT id FROM observations WHERE memory_session_id = ? AND content_hash = ?'
       );
+      const lookupLegacyExistingStmt = this.db.prepare(`
+        SELECT id, title, subtitle, facts, narrative, concepts, files_read, files_modified
+        FROM observations
+        WHERE memory_session_id = ? AND content_hash = ?
+      `);
 
       for (const observation of observations) {
         const contentHash = computeObservationContentHash(memorySessionId, observation);
+        const legacyContentHash = computeLegacyObservationContentHash(memorySessionId, observation);
+        if (legacyContentHash !== contentHash) {
+          const legacyExisting = lookupLegacyExistingStmt.get(memorySessionId, legacyContentHash) as (StoredObservationHashFields & { id: number }) | null;
+          if (legacyExisting && storedObservationMatchesHashFields(observation, legacyExisting)) {
+            observationIds.push(legacyExisting.id);
+            continue;
+          }
+        }
+
         const inserted = obsStmt.get(
           memorySessionId,
           project,

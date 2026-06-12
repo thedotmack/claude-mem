@@ -5,7 +5,7 @@ import { logger } from '../../../utils/logger.js';
 import { getProjectContext } from '../../../utils/project-name.js';
 import type { ObservationInput, StoreObservationResult } from './types.js';
 
-interface ObservationHashFields {
+export interface ObservationHashFields {
   title: string | null;
   subtitle?: string | null;
   facts?: string[];
@@ -13,6 +13,16 @@ interface ObservationHashFields {
   concepts?: string[];
   files_read?: string[];
   files_modified?: string[];
+}
+
+export interface StoredObservationHashFields {
+  title: string | null;
+  subtitle: string | null;
+  facts: string | null;
+  narrative: string | null;
+  concepts: string | null;
+  files_read: string | null;
+  files_modified: string | null;
 }
 
 function hashParts(parts: string[]): string {
@@ -36,6 +46,60 @@ function hasAdditionalHashFields(observation: ObservationHashFields): boolean {
   );
 }
 
+function normalizeText(value: string | null | undefined): string {
+  return value || '';
+}
+
+function normalizeStoredArrayHashPart(value: string | null): string {
+  if (!value) return '[]';
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return JSON.stringify(Array.isArray(parsed) ? parsed : []);
+  } catch {
+    return value;
+  }
+}
+
+export function computeLegacyObservationContentHash(
+  memorySessionId: string,
+  observation: ObservationHashFields
+): string;
+export function computeLegacyObservationContentHash(
+  memorySessionId: string,
+  title: string | null,
+  narrative: string | null
+): string;
+export function computeLegacyObservationContentHash(
+  memorySessionId: string,
+  observationOrTitle: ObservationHashFields | string | null,
+  narrative?: string | null
+): string {
+  const observation = typeof observationOrTitle === 'object' && observationOrTitle !== null
+    ? observationOrTitle
+    : { title: observationOrTitle, narrative: narrative ?? null };
+
+  return hashParts([
+    memorySessionId || '',
+    normalizeText(observation.title),
+    normalizeText(observation.narrative),
+  ]);
+}
+
+export function storedObservationMatchesHashFields(
+  observation: ObservationHashFields,
+  stored: StoredObservationHashFields
+): boolean {
+  return (
+    normalizeText(stored.title) === normalizeText(observation.title) &&
+    normalizeText(stored.narrative) === normalizeText(observation.narrative) &&
+    normalizeText(stored.subtitle) === normalizeText(observation.subtitle) &&
+    normalizeStoredArrayHashPart(stored.facts) === arrayHashPart(observation.facts) &&
+    normalizeStoredArrayHashPart(stored.concepts) === arrayHashPart(observation.concepts) &&
+    normalizeStoredArrayHashPart(stored.files_read) === arrayHashPart(observation.files_read) &&
+    normalizeStoredArrayHashPart(stored.files_modified) === arrayHashPart(observation.files_modified)
+  );
+}
+
 export function computeObservationContentHash(
   memorySessionId: string,
   observation: ObservationHashFields
@@ -54,7 +118,11 @@ export function computeObservationContentHash(
     ? observationOrTitle
     : { title: observationOrTitle, narrative: narrative ?? null };
 
-  const legacyParts = [memorySessionId || '', observation.title || '', observation.narrative || ''];
+  const legacyParts = [
+    memorySessionId || '',
+    normalizeText(observation.title),
+    normalizeText(observation.narrative),
+  ];
 
   if (!hasAdditionalHashFields(observation)) {
     return hashParts(legacyParts);
@@ -85,6 +153,20 @@ export function storeObservation(
   const resolvedProject = project || getProjectContext(process.cwd()).primary;
 
   const contentHash = computeObservationContentHash(memorySessionId, observation);
+  const legacyContentHash = computeLegacyObservationContentHash(memorySessionId, observation);
+
+  if (legacyContentHash !== contentHash) {
+    const legacyExisting = db.prepare(`
+      SELECT id, created_at_epoch, title, subtitle, facts, narrative, concepts, files_read, files_modified
+      FROM observations
+      WHERE memory_session_id = ? AND content_hash = ?
+    `).get(memorySessionId, legacyContentHash) as (StoredObservationHashFields & { id: number; created_at_epoch: number }) | null;
+
+    if (legacyExisting && storedObservationMatchesHashFields(observation, legacyExisting)) {
+      logger.debug('DEDUP', `Skipped duplicate observation via legacy contentHash=${legacyContentHash} | existingId=${legacyExisting.id}`);
+      return { id: legacyExisting.id, createdAtEpoch: legacyExisting.created_at_epoch };
+    }
+  }
 
   const stmt = db.prepare(`
     INSERT INTO observations

@@ -17,6 +17,7 @@ import {
 } from './agents/index.js';
 import { ClassifiedProviderError } from './provider-errors.js';
 import { withRetry } from './retry.js';
+import { ObservationBatchSizeResolver } from './observation-batch-size.js';
 
 /**
  * OpenAI-compatible client configuration.
@@ -121,8 +122,6 @@ export function classifyOpenRouterError(input: {
 const DEFAULT_MAX_CONTEXT_MESSAGES = 20;  
 const DEFAULT_MAX_ESTIMATED_TOKENS = 100000;  
 const CHARS_PER_TOKEN_ESTIMATE = 4;  
-const DEFAULT_OBSERVATION_BATCH_SIZE = 5;
-const MAX_OBSERVATION_BATCH_SIZE = 25;
 
 interface OpenAIMessage {
   role: 'user' | 'assistant' | 'system';
@@ -186,6 +185,7 @@ function buildLastUsage(response: OpenRouterQueryResult): ActiveSession['lastUsa
 export class OpenRouterProvider {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
+  private observationBatchSizeResolver = new ObservationBatchSizeResolver();
 
   constructor(dbManager: DatabaseManager, sessionManager: SessionManager) {
     this.dbManager = dbManager;
@@ -352,10 +352,7 @@ export class OpenRouterProvider {
   }
 
   private getObservationBatchSize(): number {
-    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-    const parsed = parseInt(settings.CLAUDE_MEM_OBSERVATION_BATCH_SIZE, 10);
-    if (isNaN(parsed)) return DEFAULT_OBSERVATION_BATCH_SIZE;
-    return Math.max(1, Math.min(MAX_OBSERVATION_BATCH_SIZE, parsed));
+    return this.observationBatchSizeResolver.get();
   }
 
   private async processObservationMessages(
