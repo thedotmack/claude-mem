@@ -235,6 +235,34 @@ export class SessionManager {
     return confirmed;
   }
 
+  claimAvailableMessages(
+    sessionDbId: number,
+    max: number,
+    predicate: (message: PendingMessage) => boolean
+  ): PendingMessageWithId[] {
+    let session = this.sessions.get(sessionDbId);
+    if (!session) {
+      session = this.initializeSession(sessionDbId);
+    }
+
+    const messages = this.buffer.claimAvailable(sessionDbId, max, predicate);
+    if (messages.length === 0) {
+      return [];
+    }
+
+    for (const message of messages) {
+      session.claimedMessageIds.push(message._persistentId);
+      if (session.earliestPendingTimestamp === null) {
+        session.earliestPendingTimestamp = message._originalTimestamp;
+      } else {
+        session.earliestPendingTimestamp = Math.min(session.earliestPendingTimestamp, message._originalTimestamp);
+      }
+    }
+    session.lastGeneratorActivity = Date.now();
+
+    return messages;
+  }
+
   /**
    * Kill and respawn a poisoned SDK session while PRESERVING the in-RAM pending
    * messages (plan-11, #2485). A session that keeps emitting non-XML/poisoned

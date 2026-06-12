@@ -2,12 +2,12 @@
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
-import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
+import { buildInitPrompt, buildObservationBatchPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { getCredential } from '../../shared/EnvManager.js';
 import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 import { estimateTokens } from '../../shared/timeline-formatting.js';
-import type { ActiveSession, ConversationMessage } from '../worker-types.js';
+import type { ActiveSession, ConversationMessage, PendingMessage, PendingMessageWithId } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import type { ModeConfig } from '../domain/types.js';
 import {
@@ -135,8 +135,10 @@ const GEMINI_RPM_LIMITS: Record<GeminiModel, number> = {
 
 let lastRequestTime = 0;
 
-const DEFAULT_MAX_CONTEXT_MESSAGES = 20;  
-const DEFAULT_MAX_ESTIMATED_TOKENS = 100000;  
+const DEFAULT_MAX_CONTEXT_MESSAGES = 20;
+const DEFAULT_MAX_ESTIMATED_TOKENS = 100000;
+const DEFAULT_OBSERVATION_BATCH_SIZE = 5;
+const MAX_OBSERVATION_BATCH_SIZE = 25;
 
 async function enforceRateLimitForModel(model: GeminiModel, rateLimitingEnabled: boolean): Promise<void> {
   if (!rateLimitingEnabled) {
@@ -274,39 +276,81 @@ export class GeminiProvider {
       const originalTimestamp = session.earliestPendingTimestamp;
 
       if (message.type === 'observation') {
-        await this.processObservationMessage(session, message, worker, apiKey, model, rateLimitingEnabled, originalTimestamp, lastCwd);
+        const batch = this.collectObservationBatch(session, message);
+        lastCwd = await this.processObservationMessages(session, batch, worker, apiKey, model, rateLimitingEnabled, originalTimestamp, lastCwd);
       } else if (message.type === 'summarize') {
         await this.processSummaryMessage(session, message, worker, apiKey, model, rateLimitingEnabled, mode, originalTimestamp, lastCwd);
       }
     }
   }
 
-  private async processObservationMessage(
+  private collectObservationBatch(session: ActiveSession, first: PendingMessageWithId): PendingMessageWithId[] {
+    const batchSize = this.getObservationBatchSize();
+    if (batchSize <= 1) {
+      return [first];
+    }
+
+    const firstPromptNumber = first.prompt_number ?? null;
+    const firstAgentId = first.agentId ?? null;
+    const firstAgentType = first.agentType ?? null;
+    const extra = this.sessionManager.claimAvailableMessages(
+      session.sessionDbId,
+      batchSize - 1,
+      (message: PendingMessage) =>
+        message.type === 'observation' &&
+        (message.prompt_number ?? null) === firstPromptNumber &&
+        (message.agentId ?? null) === firstAgentId &&
+        (message.agentType ?? null) === firstAgentType
+    );
+
+    if (extra.length > 0) {
+      logger.info('QUEUE', 'BATCHED Gemini observations', {
+        sessionId: session.sessionDbId,
+        batchSize: 1 + extra.length
+      });
+    }
+
+    return [first, ...extra];
+  }
+
+  private getObservationBatchSize(): number {
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const parsed = parseInt(settings.CLAUDE_MEM_OBSERVATION_BATCH_SIZE, 10);
+    if (isNaN(parsed)) return DEFAULT_OBSERVATION_BATCH_SIZE;
+    return Math.max(1, Math.min(MAX_OBSERVATION_BATCH_SIZE, parsed));
+  }
+
+  private async processObservationMessages(
     session: ActiveSession,
-    message: { type: string; prompt_number?: number; tool_name?: string; tool_input?: unknown; tool_response?: unknown; cwd?: string },
+    messages: PendingMessageWithId[],
     worker: WorkerRef | undefined,
     apiKey: string,
     model: GeminiModel,
     rateLimitingEnabled: boolean,
     originalTimestamp: number | null,
     lastCwd: string | undefined
-  ): Promise<void> {
-    if (message.prompt_number !== undefined) {
-      session.lastPromptNumber = message.prompt_number;
+  ): Promise<string | undefined> {
+    for (const message of messages) {
+      if (message.prompt_number !== undefined) {
+        session.lastPromptNumber = message.prompt_number;
+      }
+      if (message.cwd) {
+        lastCwd = message.cwd;
+      }
     }
 
     if (!session.memorySessionId) {
       throw new Error('Cannot process observations: memorySessionId not yet captured. This session may need to be reinitialized.');
     }
 
-    const obsPrompt = buildObservationPrompt({
-      id: 0,
+    const obsPrompt = buildObservationBatchPrompt(messages.map((message, index) => ({
+      id: index,
       tool_name: message.tool_name!,
       tool_input: JSON.stringify(message.tool_input),
       tool_output: JSON.stringify(message.tool_response),
-      created_at_epoch: originalTimestamp ?? Date.now(),
+      created_at_epoch: message._originalTimestamp ?? originalTimestamp ?? Date.now(),
       cwd: message.cwd
-    });
+    })));
 
     session.conversationHistory.push({ role: 'user', content: obsPrompt });
     session.lastPromptSentAt = Date.now();
@@ -333,6 +377,8 @@ export class GeminiProvider {
         sessionId: session.sessionDbId
       });
     }
+
+    return lastCwd;
   }
 
   private async processSummaryMessage(

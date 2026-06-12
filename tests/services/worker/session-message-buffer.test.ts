@@ -123,4 +123,21 @@ describe('SessionMessageBuffer (in-RAM observation buffer)', () => {
       { message_type: 'summarize', tool_name: null },
     ]);
   });
+
+  test('claimAvailable claims only matching currently buffered messages and preserves boundaries', () => {
+    const buffer = new SessionMessageBuffer();
+    const first = buffer.enqueue(1, obs('Read', 'a'));
+    const second = buffer.enqueue(1, obs('Grep', 'b'));
+    buffer.enqueue(1, { type: 'summarize', last_assistant_message: 'done' });
+    buffer.enqueue(1, obs('LS', 'c'));
+
+    const claimed = buffer.claimAvailable(1, 10, message => message.type === 'observation');
+
+    expect(claimed.map(m => m._persistentId)).toEqual([first, second]);
+    expect(claimed.map(m => m.tool_name)).toEqual(['Read', 'Grep']);
+    expect(buffer.getPendingCount(1)).toBe(4);
+
+    const drained = buffer.claimAvailable(1, 10, message => message.type === 'observation');
+    expect(drained).toEqual([]);
+  });
 });

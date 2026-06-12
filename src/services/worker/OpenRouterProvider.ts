@@ -1,5 +1,5 @@
 
-import { buildContinuationPrompt, buildInitPrompt, buildObservationPrompt, buildSummaryPrompt } from '../../sdk/prompts.js';
+import { buildContinuationPrompt, buildInitPrompt, buildObservationBatchPrompt, buildSummaryPrompt } from '../../sdk/prompts.js';
 import { getCredential } from '../../shared/EnvManager.js';
 import { resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-base-url.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
@@ -7,7 +7,7 @@ import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import type { ModeConfig } from '../domain/types.js';
-import type { ActiveSession, ConversationMessage } from '../worker-types.js';
+import type { ActiveSession, ConversationMessage, PendingMessage, PendingMessageWithId } from '../worker-types.js';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import {
@@ -121,6 +121,8 @@ export function classifyOpenRouterError(input: {
 const DEFAULT_MAX_CONTEXT_MESSAGES = 20;  
 const DEFAULT_MAX_ESTIMATED_TOKENS = 100000;  
 const CHARS_PER_TOKEN_ESTIMATE = 4;  
+const DEFAULT_OBSERVATION_BATCH_SIZE = 5;
+const MAX_OBSERVATION_BATCH_SIZE = 25;
 
 interface OpenAIMessage {
   role: 'user' | 'assistant' | 'system';
@@ -287,7 +289,7 @@ export class OpenRouterProvider {
 
   private async processOneMessage(
     session: ActiveSession,
-    message: { _persistentId: number; agentId?: string | null; agentType?: string | null; type: 'observation' | 'summarize'; cwd?: string; prompt_number?: number; tool_name?: string; tool_input?: unknown; tool_response?: unknown; last_assistant_message?: string },
+    message: PendingMessageWithId,
     lastCwd: string | undefined,
     apiKey: string,
     model: string,
@@ -305,8 +307,9 @@ export class OpenRouterProvider {
     const originalTimestamp = session.earliestPendingTimestamp;
 
     if (message.type === 'observation') {
-      await this.processObservationMessage(
-        session, message, originalTimestamp, lastCwd,
+      const batch = this.collectObservationBatch(session, message);
+      lastCwd = await this.processObservationMessages(
+        session, batch, originalTimestamp, lastCwd,
         apiKey, model, apiUrl, siteUrl, appName, worker, mode
       );
     } else if (message.type === 'summarize') {
@@ -319,9 +322,45 @@ export class OpenRouterProvider {
     return lastCwd;
   }
 
-  private async processObservationMessage(
+  private collectObservationBatch(session: ActiveSession, first: PendingMessageWithId): PendingMessageWithId[] {
+    const batchSize = this.getObservationBatchSize();
+    if (batchSize <= 1) {
+      return [first];
+    }
+
+    const firstPromptNumber = first.prompt_number ?? null;
+    const firstAgentId = first.agentId ?? null;
+    const firstAgentType = first.agentType ?? null;
+    const extra = this.sessionManager.claimAvailableMessages(
+      session.sessionDbId,
+      batchSize - 1,
+      (message: PendingMessage) =>
+        message.type === 'observation' &&
+        (message.prompt_number ?? null) === firstPromptNumber &&
+        (message.agentId ?? null) === firstAgentId &&
+        (message.agentType ?? null) === firstAgentType
+    );
+
+    if (extra.length > 0) {
+      logger.info('QUEUE', 'BATCHED OpenRouter observations', {
+        sessionId: session.sessionDbId,
+        batchSize: 1 + extra.length
+      });
+    }
+
+    return [first, ...extra];
+  }
+
+  private getObservationBatchSize(): number {
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const parsed = parseInt(settings.CLAUDE_MEM_OBSERVATION_BATCH_SIZE, 10);
+    if (isNaN(parsed)) return DEFAULT_OBSERVATION_BATCH_SIZE;
+    return Math.max(1, Math.min(MAX_OBSERVATION_BATCH_SIZE, parsed));
+  }
+
+  private async processObservationMessages(
     session: ActiveSession,
-    message: { prompt_number?: number; tool_name?: string; tool_input?: unknown; tool_response?: unknown; cwd?: string },
+    messages: PendingMessageWithId[],
     originalTimestamp: number | null,
     lastCwd: string | undefined,
     apiKey: string,
@@ -331,23 +370,28 @@ export class OpenRouterProvider {
     appName: string | undefined,
     worker: WorkerRef | undefined,
     _mode: ModeConfig
-  ): Promise<void> {
-    if (message.prompt_number !== undefined) {
-      session.lastPromptNumber = message.prompt_number;
+  ): Promise<string | undefined> {
+    for (const message of messages) {
+      if (message.prompt_number !== undefined) {
+        session.lastPromptNumber = message.prompt_number;
+      }
+      if (message.cwd) {
+        lastCwd = message.cwd;
+      }
     }
 
     if (!session.memorySessionId) {
       throw new Error('Cannot process observations: memorySessionId not yet captured. This session may need to be reinitialized.');
     }
 
-    const obsPrompt = buildObservationPrompt({
-      id: 0,
+    const obsPrompt = buildObservationBatchPrompt(messages.map((message, index) => ({
+      id: index,
       tool_name: message.tool_name!,
       tool_input: JSON.stringify(message.tool_input),
       tool_output: JSON.stringify(message.tool_response),
-      created_at_epoch: originalTimestamp ?? Date.now(),
+      created_at_epoch: message._originalTimestamp ?? originalTimestamp ?? Date.now(),
       cwd: message.cwd
-    });
+    })));
 
     session.conversationHistory.push({ role: 'user', content: obsPrompt });
     session.lastPromptSentAt = Date.now();
@@ -367,6 +411,8 @@ export class OpenRouterProvider {
       obsResponse.content || '', session, this.dbManager, this.sessionManager,
       worker, tokensUsed, originalTimestamp, 'OpenRouter', lastCwd, obsResponse.servedModel ?? model
     );
+
+    return lastCwd;
   }
 
   private async processSummaryMessage(
