@@ -16,6 +16,17 @@ The `claude-mem` MCP server exposes search tools. Follow the 3-layer retrieval w
 
 Never fetch full details without filtering first.
 
+## File Context (Before Reading Files)
+
+Before using `ReadFile` on any source file that is central to the current task (e.g., a file you are about to edit, debug, or review — skip tiny configs and lock files), **first call `search` with the file path** to check for prior observations. If results appear, review the compact index and fetch details for any relevant IDs before reading the file.
+
+```
+# Example — check history before reading a source file
+search("src/cli/adapters/kimi.ts")
+```
+
+This replicates the automatic file-context injection that other claude-mem integrations provide via `PreToolUse` hooks. Skip this step only when the file is clearly new (no prior work in this project) or small (< 1,500 bytes).
+
 ## Capturing Memory
 
 When you make a significant decision, fix a bug, refactor code, or discover a non-obvious gotcha, the `PostToolUse` hooks will automatically create observations. You can also add a manual observation with the `observation_add` MCP tool.
