@@ -2,9 +2,15 @@
 
 Claude-Mem is active for this Kimi Code CLI session. It provides persistent memory across sessions: past observations, decisions, bugfixes, and discoveries are stored locally and can be retrieved through MCP tools.
 
-## When to Activate
+## Session Start (Required)
 
-This skill loads automatically at session start. You do not need to invoke it manually.
+This skill loads automatically at session start. **Immediately call `memory_context()` now** to load the context index for this project. This replaces the automatic context injection that other integrations receive via hooks — in Kimi Code CLI, you must pull context yourself.
+
+```
+memory_context()
+```
+
+Do this before responding to the first user message.
 
 ## Memory Tools
 
