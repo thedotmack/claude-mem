@@ -35,6 +35,7 @@ export interface Observation {
   type: string;
   title: string | null;
   subtitle: string | null;
+  text?: string | null;
   narrative: string | null;
   facts: string | null;
   concepts: string | null;

@@ -116,14 +116,15 @@ describe('parseAgentXml — observations', () => {
     expect(result[0].title).toBe('Real observation');
   });
 
-  it('filters out observation with only a subtitle (excluded from survival criteria) (#1625)', () => {
+  it('returns a populated observation when only subtitle is present', () => {
     const xml = `<observation>
       <type>discovery</type>
       <subtitle>Only a subtitle, no real content</subtitle>
     </observation>`;
 
-    const result = parseAgentXml(xml);
-    expect(result.valid).toBe(false);
+    const result = expectObservation(xml);
+    expect(result).toHaveLength(1);
+    expect(result[0].subtitle).toBe('Only a subtitle, no real content');
   });
 
   it('uses first mode type as fallback when type is missing', () => {
@@ -161,6 +162,47 @@ describe('parseAgentXml — observations', () => {
     expect(result.rootKind).toBe('observation');
     expect(result.summary).toBeNull();
     expect(result.observations).toEqual([]);
+  });
+
+  it('treats explicit skip observations with a no-op title as a valid no-op when enabled', () => {
+    const xml = `<observation>
+      <type>skip</type>
+      <title>No durable observation to record.</title>
+    </observation>`;
+
+    const result = parseAgentXml(xml, undefined, { allowNoOpObservations: true });
+
+    expect(result.valid).toBe(true);
+    if (!result.valid) return;
+    expect(result.rootKind).toBe('observation');
+    expect(result.summary).toBeNull();
+    expect(result.observations).toEqual([]);
+  });
+
+  it('treats no-op observation text as a valid no-op when enabled by the worker response path', () => {
+    const xml = `<observation>
+      <type>bugfix</type>
+      <narrative>No durable observation to record.</narrative>
+    </observation>`;
+
+    const result = parseAgentXml(xml, undefined, { allowNoOpObservations: true });
+
+    expect(result.valid).toBe(true);
+    if (!result.valid) return;
+    expect(result.rootKind).toBe('observation');
+    expect(result.summary).toBeNull();
+    expect(result.observations).toEqual([]);
+  });
+
+  it('rejects no-op observation text by default', () => {
+    const xml = `<observation>
+      <type>bugfix</type>
+      <narrative>No observations to record for this summary batch.</narrative>
+    </observation>`;
+
+    const result = parseAgentXml(xml);
+
+    expect(result.valid).toBe(false);
   });
 
   it('returns a fail-fast result when no observation/summary blocks are present', () => {

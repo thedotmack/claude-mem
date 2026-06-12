@@ -5,15 +5,69 @@ import { logger } from '../../../utils/logger.js';
 import { getProjectContext } from '../../../utils/project-name.js';
 import type { ObservationInput, StoreObservationResult } from './types.js';
 
+interface ObservationHashFields {
+  title: string | null;
+  subtitle?: string | null;
+  facts?: string[];
+  narrative: string | null;
+  concepts?: string[];
+  files_read?: string[];
+  files_modified?: string[];
+}
+
+function hashParts(parts: string[]): string {
+  return createHash('sha256')
+    .update(parts.join('\x00'))
+    .digest('hex')
+    .slice(0, 16);
+}
+
+function arrayHashPart(value: string[] | undefined): string {
+  return JSON.stringify(value ?? []);
+}
+
+function hasAdditionalHashFields(observation: ObservationHashFields): boolean {
+  return Boolean(
+    observation.subtitle ||
+    (observation.facts?.length ?? 0) > 0 ||
+    (observation.concepts?.length ?? 0) > 0 ||
+    (observation.files_read?.length ?? 0) > 0 ||
+    (observation.files_modified?.length ?? 0) > 0
+  );
+}
+
+export function computeObservationContentHash(
+  memorySessionId: string,
+  observation: ObservationHashFields
+): string;
 export function computeObservationContentHash(
   memorySessionId: string,
   title: string | null,
   narrative: string | null
+): string;
+export function computeObservationContentHash(
+  memorySessionId: string,
+  observationOrTitle: ObservationHashFields | string | null,
+  narrative?: string | null
 ): string {
-  return createHash('sha256')
-    .update([memorySessionId || '', title || '', narrative || ''].join('\x00'))
-    .digest('hex')
-    .slice(0, 16);
+  const observation = typeof observationOrTitle === 'object' && observationOrTitle !== null
+    ? observationOrTitle
+    : { title: observationOrTitle, narrative: narrative ?? null };
+
+  const legacyParts = [memorySessionId || '', observation.title || '', observation.narrative || ''];
+
+  if (!hasAdditionalHashFields(observation)) {
+    return hashParts(legacyParts);
+  }
+
+  return hashParts([
+    ...legacyParts,
+    observation.subtitle || '',
+    arrayHashPart(observation.facts),
+    arrayHashPart(observation.concepts),
+    arrayHashPart(observation.files_read),
+    arrayHashPart(observation.files_modified),
+  ]);
 }
 
 export function storeObservation(
@@ -30,7 +84,7 @@ export function storeObservation(
 
   const resolvedProject = project || getProjectContext(process.cwd()).primary;
 
-  const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
+  const contentHash = computeObservationContentHash(memorySessionId, observation);
 
   const stmt = db.prepare(`
     INSERT INTO observations

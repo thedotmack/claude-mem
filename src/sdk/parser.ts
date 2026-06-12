@@ -1,6 +1,7 @@
 
 import { logger } from '../utils/logger.js';
 import { ModeManager } from '../services/domain/ModeManager.js';
+import { isNoOpObservationContent } from '../shared/observation-content.js';
 
 // TODO(#2233): migrate to Anthropic tool-use API for deterministic JSON output. This text-XML path is the bridge.
 // Only strip fences when the entire payload is a single fenced block. Stripping
@@ -141,11 +142,20 @@ function parseObservationBlocks(text: string, correlationId?: string | number): 
       });
     }
 
-    if (!title && !narrative && facts.length === 0 && cleanedConcepts.length === 0) {
+    if (!title && !subtitle && !narrative && facts.length === 0 && cleanedConcepts.length === 0) {
       logger.warn('PARSER', 'Skipping empty observation (all content fields null)', {
         correlationId,
         type: finalType
       });
+      continue;
+    }
+
+    if (isNoOpObservationContent({ title, subtitle, narrative, facts, concepts: cleanedConcepts })) {
+      logger.debug('PARSER', 'Skipping no-op observation content', {
+        correlationId,
+        type: finalType
+      });
+      explicitNoOpCount++;
       continue;
     }
 
@@ -189,7 +199,15 @@ function isExplicitNoOpObservation(
     return false;
   }
 
-  if (title || facts.length > 0 || concepts.length > 0) {
+  if (facts.length > 0 || concepts.length > 0) {
+    return false;
+  }
+
+  if (isNoOpObservationContent({ title, subtitle, narrative })) {
+    return true;
+  }
+
+  if (title) {
     return false;
   }
 

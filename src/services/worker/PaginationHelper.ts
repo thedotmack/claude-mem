@@ -4,6 +4,7 @@ import { DatabaseManager } from './DatabaseManager.js';
 import { logger } from '../../utils/logger.js';
 import { OBSERVER_SESSIONS_PROJECT } from '../../shared/paths.js';
 import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../shared/user-prompts.js';
+import { durableObservationWhere } from '../../shared/observation-sql.js';
 import type { PaginatedResult, Observation, Summary, UserPrompt } from '../worker-types.js';
 
 export class PaginationHelper {
@@ -90,6 +91,7 @@ export class PaginationHelper {
       conditions.push(`COALESCE(s.platform_source, 'claude') = ?`);
       params.push(platformSource);
     }
+    conditions.push(durableObservationWhere('o'));
     if (conditions.length > 0) {
       query += ` WHERE ${conditions.join(' AND ')}`;
     }

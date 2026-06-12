@@ -400,12 +400,16 @@ function formatObservationMessage(
   observation: ObservationSSEPayload,
   getSourceLabel: (project: string | null | undefined) => string,
 ): string {
-  const title = observation.title || "Untitled";
+  const title = deriveObservationDisplayTitle(observation) ?? "Observation";
   const source = getSourceLabel(observation.project);
   const isDetailed = DETAILED_FEED_TYPES.has(observation.type);
   const parts = [`${source}\n**${title}**`];
-  if (observation.subtitle) {
-    parts.push(truncateText(observation.subtitle, isDetailed ? 500 : 260));
+  const subtitle = normalizeObservationText(observation.subtitle);
+  const usesSubtitleAsTitle = !normalizeObservationText(observation.title)
+    && !normalizeObservationText(observation.narrative)
+    && Boolean(subtitle);
+  if (subtitle && !usesSubtitleAsTitle) {
+    parts.push(truncateText(subtitle, isDetailed ? 500 : 260));
   }
 
   if (!isDetailed) {
@@ -446,6 +450,55 @@ function parseStringArray(value: string | null | undefined): string[] {
   } catch {
     return [];
   }
+}
+
+interface ObservationDisplayFields {
+  title?: string | null;
+  subtitle?: string | null;
+  text?: string | null;
+  narrative?: string | null;
+  facts?: string[] | string | null;
+  concepts?: string[] | string | null;
+}
+
+function normalizeObservationText(value: unknown): string {
+  return typeof value === "string" ? value.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim() : "";
+}
+
+function observationStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map(normalizeObservationText).filter(Boolean);
+  }
+  if (typeof value === "string") {
+    return parseStringArray(value);
+  }
+  return [];
+}
+
+function deriveObservationDisplayTitle(fields: ObservationDisplayFields, maxLength = 160): string | null {
+  const title = normalizeObservationText(fields.title);
+  if (title) return truncateText(title, maxLength);
+
+  const narrative = normalizeObservationText(fields.narrative);
+  if (narrative) return truncateText(firstSentence(narrative), maxLength);
+
+  const subtitle = normalizeObservationText(fields.subtitle);
+  if (subtitle) return truncateText(subtitle, maxLength);
+
+  const text = normalizeObservationText(fields.text);
+  if (text) return truncateText(firstSentence(text), maxLength);
+
+  const firstFact = observationStringArray(fields.facts)[0];
+  if (firstFact) return truncateText(firstFact, maxLength);
+
+  const concepts = observationStringArray(fields.concepts);
+  if (concepts.length > 0) return truncateText(`Concepts: ${concepts.slice(0, 4).join(", ")}`, maxLength);
+
+  return null;
+}
+
+function firstSentence(text: string): string {
+  return /^(.+?[.!?])(?:\s|$)/.exec(text)?.[1] ?? text;
 }
 
 const CHANNEL_SEND_MAP: Record<string, { namespace: string; functionName: string }> = {
@@ -939,7 +992,14 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       .slice(0, limit)
       .map((item, index) => {
         const row = item as Record<string, unknown>;
-        const title = String(row.title || row.subtitle || row.text || "Untitled");
+        const title = deriveObservationDisplayTitle({
+          title: normalizeObservationText(row.title),
+          subtitle: normalizeObservationText(row.subtitle),
+          text: normalizeObservationText(row.text),
+          narrative: normalizeObservationText(row.narrative),
+          facts: typeof row.facts === "string" || Array.isArray(row.facts) ? row.facts : null,
+          concepts: typeof row.concepts === "string" || Array.isArray(row.concepts) ? row.concepts : null,
+        }) ?? "Observation";
         const project = row.project ? ` [${String(row.project)}]` : "";
         return `${index + 1}. ${title}${project}`;
       })

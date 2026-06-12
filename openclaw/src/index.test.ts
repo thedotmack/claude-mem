@@ -969,7 +969,7 @@ describe("SSE stream integration", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 200));
     assert.equal(sentMessages.length, 1);
-    assert.ok(sentMessages[0].text.includes("Untitled"));
+    assert.ok(sentMessages[0].text.includes("Has subtitle"));
 
     await getService().stop({});
   });

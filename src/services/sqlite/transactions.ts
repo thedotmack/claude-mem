@@ -43,7 +43,7 @@ export function storeObservationsAndMarkComplete(
     );
 
     for (const observation of observations) {
-      const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
+      const contentHash = computeObservationContentHash(memorySessionId, observation);
       const inserted = obsStmt.get(
         memorySessionId,
         project,
@@ -149,7 +149,7 @@ export function storeObservations(
     );
 
     for (const observation of observations) {
-      const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
+      const contentHash = computeObservationContentHash(memorySessionId, observation);
       const inserted = obsStmt.get(
         memorySessionId,
         project,

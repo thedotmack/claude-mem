@@ -8,6 +8,7 @@ import { logger } from '../../utils/logger.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { getObservationSkipReason } from '../../shared/observation-filter.js';
 import { resolveRuntimeContext, logServerBetaFallback } from '../../services/hooks/runtime-selector.js';
 import { isServerBetaClientError } from '../../services/hooks/server-beta-client.js';
 
@@ -57,6 +58,15 @@ export const observationHandler: EventHandler = {
 
     if (!shouldTrackProject(cwd)) {
       logger.debug('HOOK', 'Project excluded from tracking, skipping observation', { cwd, toolName });
+      return { continue: true, suppressOutput: true };
+    }
+
+    const observationSkipReason = getObservationSkipReason({ toolName, toolInput, toolResponse });
+    if (observationSkipReason) {
+      logger.debug('HOOK', 'Low-signal observation skipped before dispatch', {
+        toolName,
+        reason: observationSkipReason,
+      });
       return { continue: true, suppressOutput: true };
     }
 

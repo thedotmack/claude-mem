@@ -1802,7 +1802,7 @@ export class SessionStore {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
 
-    const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
+    const contentHash = computeObservationContentHash(memorySessionId, observation);
 
     const stmt = this.db.prepare(`
       INSERT INTO observations
@@ -1946,7 +1946,7 @@ export class SessionStore {
       );
 
       for (const observation of observations) {
-        const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
+        const contentHash = computeObservationContentHash(memorySessionId, observation);
         const inserted = obsStmt.get(
           memorySessionId,
           project,
@@ -2064,7 +2064,7 @@ export class SessionStore {
       );
 
       for (const observation of observations) {
-        const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
+        const contentHash = computeObservationContentHash(memorySessionId, observation);
         const inserted = obsStmt.get(
           memorySessionId,
           project,

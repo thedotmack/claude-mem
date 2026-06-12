@@ -12,6 +12,7 @@ import {
 import { execSync } from 'child_process';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { formatTime, groupByDate } from '../shared/timeline-formatting.js';
+import { deriveObservationDisplayTitle } from '../shared/observation-content.js';
 import { isDirectChild } from '../shared/path-utils.js';
 import { logger } from '../utils/logger.js';
 import { paths } from '../shared/paths.js';
@@ -223,7 +224,7 @@ function formatObservationsForClaudeMd(observations: ObservationRow[], folderPat
         lastTime = time;
 
         const icon = getTypeIcon(obs.type);
-        const title = obs.title || 'Untitled';
+        const title = deriveObservationDisplayTitle(obs) ?? 'Observation';
         const tokens = estimateTokens(obs);
 
         lines.push(`| #${obs.id} | ${timeDisplay} | ${icon} | ${title} | ~${tokens} |`);

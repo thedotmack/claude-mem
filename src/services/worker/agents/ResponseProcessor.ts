@@ -16,6 +16,7 @@ import type { SessionManager } from '../SessionManager.js';
 import type { WorkerRef, StorageResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
 import { captureEvent } from '../../telemetry/telemetry.js';
+import { deriveObservationDisplayTitle } from '../../../shared/observation-content.js';
 
 /**
  * Consecutive non-XML observer outputs tolerated before we kill and respawn the
@@ -474,13 +475,13 @@ async function syncAndBroadcastObservations(
         obsId,
         duration: `${chromaDuration}ms`,
         type: obs.type,
-        title: obs.title || '(untitled)'
+        title: deriveObservationDisplayTitle(obs) ?? '(no title)'
       });
     }).catch((error) => {
       logger.error('CHROMA', `${agentName} chroma sync failed, continuing without vector search`, {
         obsId,
         type: obs.type,
-        title: obs.title || '(untitled)'
+        title: deriveObservationDisplayTitle(obs) ?? '(no title)'
       }, error);
     });
 

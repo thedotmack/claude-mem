@@ -25,6 +25,7 @@ import { shouldShowSummary, renderSummaryFields } from './sections/SummaryRender
 import { renderPreviouslySection, renderFooter } from './sections/FooterRenderer.js';
 import { renderAgentEmptyState } from './formatters/AgentFormatter.js';
 import { renderHumanEmptyState } from './formatters/HumanFormatter.js';
+import { hasDurableObservationContent } from '../../shared/observation-content.js';
 
 const VERSION_MARKER_PATH = path.join(
   homedir(),
@@ -181,9 +182,18 @@ export async function generateContextWithStats(
   }
 
   try {
-    const observations = projects.length > 1
-      ? queryObservationsMulti(db, projects, config)
-      : queryObservations(db, project, config);
+    const observationQueryConfig = {
+      ...config,
+      totalObservationCount: config.totalObservationCount >= 999999
+        ? config.totalObservationCount
+        : Math.max(config.totalObservationCount, Math.min(config.totalObservationCount * 4, config.totalObservationCount + 200)),
+    };
+    const queriedObservations = projects.length > 1
+      ? queryObservationsMulti(db, projects, observationQueryConfig)
+      : queryObservations(db, project, observationQueryConfig);
+    const observations = queriedObservations
+      .filter(obs => hasDurableObservationContent(obs))
+      .slice(0, config.totalObservationCount);
     const summaries = projects.length > 1
       ? querySummariesMulti(db, projects, config)
       : querySummaries(db, project, config);

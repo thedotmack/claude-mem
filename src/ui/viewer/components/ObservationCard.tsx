@@ -25,6 +25,38 @@ function stripProjectRoot(filePath: string): string {
   return parts.length > 3 ? parts.slice(-3).join('/') : filePath;
 }
 
+function normalizeText(value: string | null | undefined): string {
+  return (value ?? '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function truncateTitle(value: string): string {
+  return value.length > 160 ? `${value.slice(0, 157).trimEnd()}...` : value;
+}
+
+function deriveDisplayTitle(observation: Observation, facts: string[], concepts: string[]): string {
+  const title = normalizeText(observation.title);
+  if (title) return truncateTitle(title);
+
+  const narrative = normalizeText(observation.narrative);
+  if (narrative) {
+    const firstSentence = /^(.+?[.!?])(?:\s|$)/.exec(narrative)?.[1] ?? narrative;
+    return truncateTitle(firstSentence);
+  }
+
+  const subtitle = normalizeText(observation.subtitle);
+  if (subtitle) return truncateTitle(subtitle);
+
+  const text = normalizeText(observation.text);
+  if (text) {
+    const firstSentence = /^(.+?[.!?])(?:\s|$)/.exec(text)?.[1] ?? text;
+    return truncateTitle(firstSentence);
+  }
+
+  if (facts[0]) return truncateTitle(facts[0]);
+  if (concepts.length > 0) return truncateTitle(`Concepts: ${concepts.slice(0, 4).join(', ')}`);
+  return 'Observation';
+}
+
 export function ObservationCard({ observation }: ObservationCardProps) {
   const [showFacts, setShowFacts] = useState(false);
   const [showNarrative, setShowNarrative] = useState(false);
@@ -34,6 +66,12 @@ export function ObservationCard({ observation }: ObservationCardProps) {
   const concepts = observation.concepts ? JSON.parse(observation.concepts) : [];
   const filesRead = observation.files_read ? JSON.parse(observation.files_read).map(stripProjectRoot) : [];
   const filesModified = observation.files_modified ? JSON.parse(observation.files_modified).map(stripProjectRoot) : [];
+  const displayTitle = deriveDisplayTitle(observation, facts, concepts);
+  const subtitle = normalizeText(observation.subtitle);
+  const usesSubtitleAsTitle = !normalizeText(observation.title)
+    && !normalizeText(observation.narrative)
+    && Boolean(subtitle);
+  const shouldShowSubtitle = subtitle && !usesSubtitleAsTitle;
 
   const hasFactsContent = facts.length > 0 || concepts.length > 0 || filesRead.length > 0 || filesModified.length > 0;
 
@@ -92,11 +130,11 @@ export function ObservationCard({ observation }: ObservationCardProps) {
       </div>
 
       {/* Title */}
-      <div className="card-title">{observation.title || 'Untitled'}</div>
+      <div className="card-title">{displayTitle}</div>
 
       {/* Content based on toggle state */}
       <div className="view-mode-content">
-        {!showFacts && !showNarrative && observation.subtitle && (
+        {!showFacts && !showNarrative && shouldShowSubtitle && (
           <div className="card-subtitle">{observation.subtitle}</div>
         )}
         {showFacts && facts.length > 0 && (

@@ -164,6 +164,54 @@ describe('TRIAGE-03: Data Integrity', () => {
       expect(hashes.size).toBe(4);
     });
 
+    it('computeObservationContentHash preserves the legacy hash for title and narrative only', () => {
+      const legacyHash = computeObservationContentHash('session-1', 'Title A', 'Narrative A');
+      const objectHash = computeObservationContentHash('session-1', {
+        title: 'Title A',
+        subtitle: null,
+        facts: [],
+        narrative: 'Narrative A',
+        concepts: [],
+        files_read: [],
+        files_modified: [],
+      });
+
+      expect(objectHash).toBe(legacyHash);
+    });
+
+    it('computeObservationContentHash includes subtitle and array content when present', () => {
+      const hash1 = computeObservationContentHash('session-1', {
+        title: null,
+        subtitle: 'Subtitle A',
+        facts: [],
+        narrative: null,
+        concepts: [],
+        files_read: [],
+        files_modified: [],
+      });
+      const hash2 = computeObservationContentHash('session-1', {
+        title: null,
+        subtitle: 'Subtitle B',
+        facts: [],
+        narrative: null,
+        concepts: [],
+        files_read: [],
+        files_modified: [],
+      });
+      const hash3 = computeObservationContentHash('session-1', {
+        title: null,
+        subtitle: 'Subtitle A',
+        facts: ['different fact'],
+        narrative: null,
+        concepts: [],
+        files_read: [],
+        files_modified: [],
+      });
+
+      expect(hash2).not.toBe(hash1);
+      expect(hash3).not.toBe(hash1);
+    });
+
     it('storeObservation deduplicates identical observations within 30s window', () => {
       const memId = createSessionWithMemoryId(db, 'content-dedup-1', 'mem-dedup-1');
       const obs = createObservationInput({ title: 'Same Title', narrative: 'Same Narrative' });
@@ -196,6 +244,37 @@ describe('TRIAGE-03: Data Integrity', () => {
       const result2 = storeObservation(db, memId, 'test-project', obs2, 1, 0, now);
 
       expect(result2.id).not.toBe(result1.id);
+    });
+
+    it('storeObservation preserves distinct subtitle-only observations in one session', () => {
+      const memId = createSessionWithMemoryId(db, 'content-dedup-subtitle', 'mem-dedup-subtitle');
+      const obs1 = createObservationInput({
+        title: null,
+        subtitle: 'Subtitle A',
+        facts: [],
+        narrative: null,
+        concepts: [],
+        files_read: [],
+        files_modified: [],
+      });
+      const obs2 = createObservationInput({
+        title: null,
+        subtitle: 'Subtitle B',
+        facts: [],
+        narrative: null,
+        concepts: [],
+        files_read: [],
+        files_modified: [],
+      });
+
+      const now = Date.now();
+      const result1 = storeObservation(db, memId, 'test-project', obs1, 1, 0, now);
+      const result2 = storeObservation(db, memId, 'test-project', obs2, 1, 0, now);
+
+      expect(result2.id).not.toBe(result1.id);
+
+      const count = db.prepare('SELECT COUNT(*) as count FROM observations WHERE memory_session_id = ?').get(memId) as { count: number };
+      expect(count.count).toBe(2);
     });
 
     it('content_hash column is populated on new observations', () => {

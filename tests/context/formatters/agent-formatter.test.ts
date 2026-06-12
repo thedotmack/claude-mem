@@ -255,13 +255,27 @@ describe('AgentFormatter', () => {
       expect(result).toContain('Important Discovery');
     });
 
-    it('should use "Untitled" when title is null', () => {
-      const obs = createTestObservation({ title: null });
+    it('should derive a title from narrative when title is null', () => {
+      const obs = createTestObservation({ title: null, narrative: 'Narrative fallback title. More detail follows.' });
       const config = createTestConfig();
 
       const result = renderAgentTableRow(obs, '10:00 AM', config);
 
-      expect(result).toContain('Untitled');
+      expect(result).toContain('Narrative fallback title.');
+    });
+
+    it('should derive a title from legacy text when title and narrative are null', () => {
+      const obs = createTestObservation({
+        title: null,
+        narrative: null,
+        subtitle: null,
+        text: 'Legacy text fallback title. More detail follows.',
+      });
+      const config = createTestConfig();
+
+      const result = renderAgentTableRow(obs, '10:00 AM', config);
+
+      expect(result).toContain('Legacy text fallback title.');
     });
 
     it('should produce flat format: ID TIME TYPE TITLE', () => {
