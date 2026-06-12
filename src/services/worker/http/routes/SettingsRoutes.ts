@@ -13,6 +13,7 @@ import { validateBody } from '../middleware/validateBody.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { clearPortCache } from '../../../../shared/worker-utils.js';
 import { flushResponseThen } from '../../../server/flushResponseThen.js';
+import { MAX_OBSERVATION_BATCH_SIZE } from '../../observation-batch-size.js';
 
 const updateSettingsSchema = z.object({}).passthrough();
 
@@ -320,8 +321,8 @@ export class SettingsRoutes extends BaseRouteHandler {
 
     if (settings.CLAUDE_MEM_OBSERVATION_BATCH_SIZE) {
       const count = parseInt(settings.CLAUDE_MEM_OBSERVATION_BATCH_SIZE, 10);
-      if (isNaN(count) || count < 1 || count > 25) {
-        return { valid: false, error: 'CLAUDE_MEM_OBSERVATION_BATCH_SIZE must be between 1 and 25' };
+      if (isNaN(count) || count < 1 || count > MAX_OBSERVATION_BATCH_SIZE) {
+        return { valid: false, error: `CLAUDE_MEM_OBSERVATION_BATCH_SIZE must be between 1 and ${MAX_OBSERVATION_BATCH_SIZE}` };
       }
     }
 

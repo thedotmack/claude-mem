@@ -90,7 +90,7 @@ describe('observation-filter', () => {
         ],
       },
       toolResponse: { stdout: 'ok', exitCode: 0 },
-    })).toBe('meta_tool');
+    })).toBe('parallel_routine_read_only');
 
     expect(getObservationSkipReason({
       toolName: 'multi_tool_use.parallel',
@@ -132,7 +132,7 @@ describe('observation-filter', () => {
           { stdout: 'src/file.ts: error text from source code', exitCode: 0 },
         ],
       },
-    })).toBe('meta_tool');
+    })).toBe('parallel_routine_read_only');
   });
 
   it('keeps validation and mutating Bash commands observable', () => {

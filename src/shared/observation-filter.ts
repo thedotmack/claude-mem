@@ -2,6 +2,7 @@
 
 export type ObservationSkipReason =
   | 'meta_tool'
+  | 'parallel_routine_read_only'
   | 'routine_read_only_command';
 
 export interface ObservationFilterInput {
@@ -235,7 +236,7 @@ function getParallelSkipReason(toolInput: unknown, toolResponse: unknown): Obser
       toolResponse: toolResponses[index],
     });
     return reason !== null;
-  }) ? 'meta_tool' : null;
+  }) ? 'parallel_routine_read_only' : null;
 }
 
 function extractParallelToolUses(toolInput: unknown): Array<{ toolName: string; toolInput: unknown }> {
