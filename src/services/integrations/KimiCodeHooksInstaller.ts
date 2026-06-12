@@ -13,7 +13,6 @@ import {
 interface KimiHookEntry {
   event: string;
   matcher?: string;
-  name?: string;
   command: string;
   timeout?: number;
 }
@@ -33,7 +32,8 @@ function getKimiConfigPath(): string {
   return path.join(getKimiConfigDir(), 'config.toml');
 }
 const HOOK_NAME = 'claude-mem';
-const HOOK_TIMEOUT_MS = 120000;
+// Kimi timeout is in seconds. The docs show values like 5, 30, 60.
+const HOOK_TIMEOUT_SECONDS = 120;
 
 const KIMI_EVENT_TO_INTERNAL_EVENT: Record<string, string> = {
   'SessionStart': 'context',
@@ -73,9 +73,8 @@ function createHookEntry(
   return {
     event: kimiEventName,
     ...(matcher !== undefined && { matcher }),
-    name: HOOK_NAME,
     command: buildHookCommand(bunPath, workerServicePath, kimiEventName),
-    timeout: HOOK_TIMEOUT_MS,
+    timeout: HOOK_TIMEOUT_SECONDS,
   };
 }
 
@@ -106,10 +105,9 @@ function writeKimiConfig(config: KimiConfig): void {
 }
 
 function isClaudeMemHook(entry: KimiHookEntry): boolean {
-  return entry.name === HOOK_NAME
-    || (typeof entry.command === 'string'
-      && entry.command.includes('worker-service.cjs')
-      && entry.command.includes('hook kimi-code'));
+  return typeof entry.command === 'string'
+    && entry.command.includes('worker-service.cjs')
+    && entry.command.includes('hook kimi-code');
 }
 
 function mergeHooksIntoConfig(

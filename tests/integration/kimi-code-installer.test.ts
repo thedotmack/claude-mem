@@ -46,8 +46,8 @@ describe('Kimi Code CLI installer config registration', () => {
       'PostToolUse',
       'Stop',
     ]);
-    expect(config.hooks.every((h: any) => h.name === 'claude-mem')).toBe(true);
-    expect(config.hooks.every((h: any) => h.timeout === 120000)).toBe(true);
+    expect(config.hooks.every((h: any) => h.command.includes('hook kimi-code'))).toBe(true);
+    expect(config.hooks.every((h: any) => h.timeout === 120)).toBe(true);
   });
 
   it('preserves existing hooks and settings', async () => {
@@ -72,7 +72,7 @@ describe('Kimi Code CLI installer config registration', () => {
     expect(config.default_model).toBe('kimi-code/kimi-for-coding');
     expect(config.hooks.length).toBe(5);
     expect(config.hooks[0].event).toBe('PreToolUse');
-    expect(config.hooks.slice(1).every((h: any) => h.name === 'claude-mem')).toBe(true);
+    expect(config.hooks.slice(1).every((h: any) => h.command.includes('hook kimi-code'))).toBe(true);
   });
 
   it('is idempotent across repeated installs', async () => {
