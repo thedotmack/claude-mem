@@ -49,7 +49,7 @@ export const sessionInitHandler: EventHandler = {
       return { continue: true, suppressOutput: true };
     }
 
-    const prompt = (!rawPrompt || !rawPrompt.trim()) ? '[media prompt]' : rawPrompt;
+    const prompt = (!rawPrompt || typeof rawPrompt !== 'string' || !rawPrompt.trim()) ? '[media prompt]' : rawPrompt;
 
     const project = getProjectContext(cwd).primary;
     const platformSource = normalizePlatformSource(input.platform);

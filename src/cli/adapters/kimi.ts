@@ -26,8 +26,10 @@ export const kimiAdapter: PlatformAdapter = {
     const toolInput: unknown = r.tool_input;
     const toolResponse: unknown = r.tool_response;
 
-    // Kimi sends the user prompt on UserPromptSubmit.
-    let prompt: string | undefined = r.prompt ?? r.query ?? r.input ?? r.message;
+    // Kimi sends the user prompt on UserPromptSubmit. Coerce to string to guard against
+    // multimodal payloads where prompt may be an object/array.
+    const rawField: unknown = r.prompt ?? r.query ?? r.input ?? r.message;
+    let prompt: string | undefined = typeof rawField === 'string' ? rawField : undefined;
 
     const metadata: Record<string, unknown> = {};
     if (r.source) metadata.source = r.source;
