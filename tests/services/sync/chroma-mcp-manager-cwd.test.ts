@@ -8,13 +8,14 @@ const CHROMA_MCP_MANAGER_PATH = join(
 );
 
 describe('ChromaMcpManager: cwd isolation from project .env files (#1297)', () => {
-  it('StdioClientTransport is constructed with cwd set to homedir', () => {
+  it('getSpawnCwd resolves to os.homedir()', () => {
     const source = readFileSync(CHROMA_MCP_MANAGER_PATH, 'utf-8');
 
-    expect(source).toContain('cwd: os.homedir()');
+    expect(source).toContain('private getSpawnCwd(): string {');
+    expect(source).toContain('return os.homedir();');
   });
 
-  it('the cwd property appears inside the StdioClientTransport constructor call', () => {
+  it('the transport constructor passes through the resolved spawn cwd', () => {
     const source = readFileSync(CHROMA_MCP_MANAGER_PATH, 'utf-8');
 
     const transportBlockMatch = source.match(
@@ -24,7 +25,7 @@ describe('ChromaMcpManager: cwd isolation from project .env files (#1297)', () =
 
     const constructorBody = transportBlockMatch![1];
     expect(constructorBody).toContain('cwd');
-    expect(constructorBody).toContain('homedir');
+    expect(constructorBody).toContain('cwd: spawnCwd');
   });
 
   it('os module is imported (required for os.homedir())', () => {
