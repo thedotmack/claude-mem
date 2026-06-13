@@ -491,6 +491,10 @@ async function buildHooks() {
       outfile: `${hooksDir}/${TRANSCRIPT_WATCHER.name}.cjs`,
       minify: true,
       logLevel: 'error',
+      // Externalize zod for consistency with worker-service / server-beta-service —
+      // any zod usage in the processor.ts import chain should resolve at runtime
+      // against plugin/node_modules instead of being inlined (avoids duplicate-
+      // instance hazards and keeps the bundle slim).
       external: ['bun:sqlite', 'zod'],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
