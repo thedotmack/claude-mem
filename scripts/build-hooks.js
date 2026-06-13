@@ -54,6 +54,14 @@ function stripHardcodedDirname(filePath) {
   }
 }
 
+/**
+ * Rule A canonical-template manifest: maps each host-managed config file's
+ * command string to the buildShellCommand() options that generate it. The
+ * build asserts the hand-maintained files still match the generator output so
+ * the defensive shell prelude can't drift between the three files (issues
+ * #1215, #1533). See src/build/hook-shell-template.ts and CLAUDE.md →
+ * "Spawn-Contract Resolution".
+ */
 function shellTemplateManifest(buildShellCommand) {
   const ccTrailing = (...tail) => [
     'node', '"$_P/scripts/bun-runner.js"', '"$_P/scripts/worker-service.cjs"', ...tail,
@@ -103,6 +111,8 @@ function shellTemplateManifest(buildShellCommand) {
     'plugin/.mcp.json': {
       kind: 'mcp',
       command: buildShellCommand({
+        // The mcp Node launcher derives its spawn target from requireFile, so
+        // no trailingCommand is needed (it is ignored for this host).
         host: 'mcp', requireFile: 'mcp-server.cjs',
         notFoundMessage: 'claude-mem: mcp server not found',
         mcpExtraCandidates: ['$PWD/plugin', '$PWD'],
@@ -123,6 +133,9 @@ function hookCommandByPath(parsed, dottedPath) {
 async function verifyShellTemplateCanonical() {
   console.log('\n📋 Verifying Rule A shell templates match the canonical generator...');
 
+  // Compile src/build/hook-shell-template.ts in-memory and import it. The build
+  // runs under Node, which can't import .ts directly, so we bundle to ESM and
+  // load via a data: URL.
   const bundled = await build({
     entryPoints: ['src/build/hook-shell-template.ts'],
     bundle: true,
@@ -160,6 +173,7 @@ async function verifyShellTemplateCanonical() {
     }
   }
 
+  // Rule C safety net (bun-runner.js fixBrokenScriptPath) must stay documented.
   const bunRunner = fs.readFileSync('plugin/scripts/bun-runner.js', 'utf-8');
   if (!bunRunner.includes('function fixBrokenScriptPath')) {
     throw new Error(
@@ -167,6 +181,9 @@ async function verifyShellTemplateCanonical() {
     );
   }
 
+  // Parser-compat guard (issue #2791): bun-runner.js is invoked by hosts that
+  // may run a pre-ES2020 Node whose ESM loader throws on optional chaining.
+  // Strip comments, then forbid `?.` / `??` in executable code.
   const bunRunnerCode = bunRunner
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/(^|[^:])\/\/.*$/gm, '$1');
@@ -279,7 +296,13 @@ async function buildHooks() {
         'ollama',
         '@chroma-core/default-embed',
         'onnxruntime-node',
-        // better-auth stays external because dynamic server routes otherwise drag server-only deps into worker-service.cjs (#2584).
+        // better-auth (~3.7MB) is only reachable through BetterAuthRoutes' request-time
+        // dynamic import('better-auth/node') / import('./auth.js'). esbuild otherwise
+        // inlines that dynamic-import target into the worker bundle, dragging in the full
+        // better-auth library (kysely, oauth, nanoid, …) even though the worker never
+        // exercises it (the dep isn't in the worker's runtime plugin/package.json deps,
+        // and the route handler already wraps the import in try/catch → graceful 500).
+        // Keeping it external strips the dead weight from worker-service.cjs. See #2584.
         'better-auth',
         'better-auth/node',
         'better-auth/plugins',
@@ -287,6 +310,10 @@ async function buildHooks() {
       ],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
+        // Polyfill import.meta.url for ESM deps bundled into CJS output.
+        // @anthropic-ai/claude-agent-sdk's *.mjs files use createRequire(import.meta.url)
+        // and `new URL(rel, import.meta.url)`. We map import.meta.url to a file:// URL
+        // (not the raw __filename path) so URL construction preserves its semantics.
         'import.meta.url': '__IMPORT_META_URL__'
       },
       banner: {
