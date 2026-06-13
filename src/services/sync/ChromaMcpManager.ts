@@ -7,7 +7,7 @@ import path from 'path';
 import os from 'os';
 import fs from 'fs';
 import { logger } from '../../utils/logger.js';
-import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
@@ -16,10 +16,12 @@ const execFileAsync = promisify(execFile);
 
 const CHROMA_MCP_CLIENT_NAME = 'claude-mem-chroma';
 const CHROMA_MCP_CLIENT_VERSION = '1.0.0';
-const MCP_CONNECTION_TIMEOUT_MS = 30_000;
 const RECONNECT_BACKOFF_MS = 10_000;
 const DEFAULT_CHROMA_DATA_DIR = paths.chroma();
 const CHROMA_SUPERVISOR_ID = 'chroma-mcp';
+const DEFAULT_MCP_CONNECTION_TIMEOUT_MS = 60_000;
+const DEFAULT_MCP_PREWARM_TIMEOUT_MS = 300_000;
+const CHROMA_TIMEOUT_BOUNDS = { min: 10, max: 900_000 } as const;
 
 const CHROMA_MCP_PINNED_VERSION = '0.2.6';
 
@@ -53,11 +55,15 @@ const CHROMA_MCP_DEP_OVERRIDES: ReadonlyArray<string> = [
 
 export class ChromaMcpManager {
   private static instance: ChromaMcpManager | null = null;
+  private static readonly execFileAsync = execFileAsync;
   private client: Client | null = null;
   private transport: StdioClientTransport | null = null;
   private connected: boolean = false;
   private lastConnectionFailureTimestamp: number = 0;
   private connecting: Promise<void> | null = null;
+  private prewarmedCommandKey: string | null = null;
+  private prewarming: Promise<void> | null = null;
+  private prewarmingCommandKey: string | null = null;
 
   private constructor() {}
 
@@ -109,8 +115,21 @@ export class ChromaMcpManager {
     // orphans behind.
     await this.disposeCurrentSubprocess();
 
-    const commandArgs = this.buildCommandArgs();
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const commandArgs = this.buildCommandArgs(settings);
+    const prewarmArgs = this.buildPrewarmArgs(settings);
     const spawnEnvironment = this.getSpawnEnv();
+    const spawnCwd = this.getSpawnCwd();
+    const connectTimeoutMs = this.readBoundedTimeoutSetting(
+      settings,
+      'CLAUDE_MEM_CHROMA_CONNECT_TIMEOUT_MS',
+      DEFAULT_MCP_CONNECTION_TIMEOUT_MS
+    );
+    const prewarmTimeoutMs = this.readBoundedTimeoutSetting(
+      settings,
+      'CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS',
+      DEFAULT_MCP_PREWARM_TIMEOUT_MS
+    );
     getSupervisor().assertCanSpawn('chroma mcp');
 
     // Spawn uvx DIRECTLY (no `cmd.exe /c` shell). On Windows, routing through
@@ -121,6 +140,14 @@ export class ChromaMcpManager {
     const uvxSpawnCommand = ChromaMcpManager.resolveUvxCommand();
     const uvxSpawnArgs = commandArgs;
 
+    await this.ensurePrewarmed({
+      command: uvxSpawnCommand,
+      args: prewarmArgs,
+      env: spawnEnvironment,
+      cwd: spawnCwd,
+      timeoutMs: prewarmTimeoutMs,
+    });
+
     logger.info('CHROMA_MCP', 'Connecting to chroma-mcp via MCP stdio', {
       command: uvxSpawnCommand,
       args: uvxSpawnArgs.join(' ')
@@ -130,7 +157,7 @@ export class ChromaMcpManager {
       command: uvxSpawnCommand,
       args: uvxSpawnArgs,
       env: spawnEnvironment,
-      cwd: os.homedir(),
+      cwd: spawnCwd,
       stderr: 'pipe'
     });
 
@@ -143,8 +170,8 @@ export class ChromaMcpManager {
     let timeoutId: ReturnType<typeof setTimeout>;
     const timeoutPromise = new Promise<never>((_, reject) => {
       timeoutId = setTimeout(
-        () => reject(new Error(`MCP connection to chroma-mcp timed out after ${MCP_CONNECTION_TIMEOUT_MS}ms`)),
-        MCP_CONNECTION_TIMEOUT_MS
+        () => reject(new Error(`MCP connection to chroma-mcp timed out after ${connectTimeoutMs}ms`)),
+        connectTimeoutMs
       );
     });
 
@@ -197,13 +224,20 @@ export class ChromaMcpManager {
     };
   }
 
-  private buildCommandArgs(): string[] {
-    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-    const chromaMode = settings.CLAUDE_MEM_CHROMA_MODE || 'local';
+  private buildSharedCommandArgs(settings: SettingsDefaults): string[] {
     const pythonVersion = process.env.CLAUDE_MEM_PYTHON_VERSION || settings.CLAUDE_MEM_PYTHON_VERSION || '3.13';
 
     const depOverrideFlags = CHROMA_MCP_DEP_OVERRIDES.flatMap(spec => ['--with', spec]);
+    return [
+      '--python', pythonVersion,
+      ...depOverrideFlags,
+      `chroma-mcp==${CHROMA_MCP_PINNED_VERSION}`,
+    ];
+  }
 
+  private buildCommandArgs(settings: SettingsDefaults): string[] {
+    const chromaMode = settings.CLAUDE_MEM_CHROMA_MODE || 'local';
+    const args = this.buildSharedCommandArgs(settings);
     if (chromaMode === 'remote') {
       const chromaHost = settings.CLAUDE_MEM_CHROMA_HOST || '127.0.0.1';
       const chromaPort = settings.CLAUDE_MEM_CHROMA_PORT || '8000';
@@ -212,14 +246,7 @@ export class ChromaMcpManager {
       const chromaDatabase = settings.CLAUDE_MEM_CHROMA_DATABASE || 'default_database';
       const chromaApiKey = settings.CLAUDE_MEM_CHROMA_API_KEY || '';
 
-      const args = [
-        '--python', pythonVersion,
-        ...depOverrideFlags,
-        `chroma-mcp==${CHROMA_MCP_PINNED_VERSION}`,
-        '--client-type', 'http',
-        '--host', chromaHost,
-        '--port', chromaPort
-      ];
+      args.push('--client-type', 'http', '--host', chromaHost, '--port', chromaPort);
 
       args.push('--ssl', chromaSsl ? 'true' : 'false');
 
@@ -239,12 +266,14 @@ export class ChromaMcpManager {
     }
 
     return [
-      '--python', pythonVersion,
-      ...depOverrideFlags,
-      `chroma-mcp==${CHROMA_MCP_PINNED_VERSION}`,
+      ...args,
       '--client-type', 'persistent',
       '--data-dir', DEFAULT_CHROMA_DATA_DIR.replace(/\\/g, '/')
     ];
+  }
+
+  private buildPrewarmArgs(settings: SettingsDefaults): string[] {
+    return [...this.buildSharedCommandArgs(settings), '--help'];
   }
 
   async callTool(toolName: string, toolArguments: Record<string, unknown>): Promise<unknown> {
@@ -587,6 +616,80 @@ export class ChromaMcpManager {
       await ChromaMcpManager.instance.stop();
     }
     ChromaMcpManager.instance = null;
+  }
+
+  private async ensurePrewarmed(
+    spawnConfig: { command: string; args: string[]; env: Record<string, string>; cwd: string; timeoutMs: number }
+  ): Promise<void> {
+    const commandKey = JSON.stringify({ command: spawnConfig.command, args: spawnConfig.args });
+    if (this.prewarmedCommandKey === commandKey) {
+      return;
+    }
+
+    if (this.prewarming && this.prewarmingCommandKey === commandKey) {
+      await this.prewarming;
+      return;
+    }
+
+    this.prewarmingCommandKey = commandKey;
+    this.prewarming = this.runPrewarm(spawnConfig)
+      .then(() => {
+        this.prewarmedCommandKey = commandKey;
+      })
+      .finally(() => {
+        this.prewarming = null;
+        this.prewarmingCommandKey = null;
+      });
+
+    await this.prewarming;
+  }
+
+  private async runPrewarm(
+    spawnConfig: { command: string; args: string[]; env: Record<string, string>; cwd: string; timeoutMs: number }
+  ): Promise<void> {
+    logger.info('CHROMA_MCP', 'Prewarming chroma-mcp uvx environment before MCP connect', {
+      command: spawnConfig.command,
+      args: spawnConfig.args.join(' '),
+      timeoutMs: spawnConfig.timeoutMs
+    });
+
+    try {
+      await ChromaMcpManager.execFileAsync(spawnConfig.command, spawnConfig.args, {
+        env: spawnConfig.env,
+        cwd: spawnConfig.cwd,
+        timeout: spawnConfig.timeoutMs,
+        windowsHide: true,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/timed out/i.test(message)) {
+        throw new Error(`chroma-mcp prewarm timed out after ${spawnConfig.timeoutMs}ms`);
+      }
+      throw new Error(`chroma-mcp prewarm failed: ${message}`);
+    }
+  }
+
+  private readBoundedTimeoutSetting(
+    settings: SettingsDefaults,
+    key: 'CLAUDE_MEM_CHROMA_CONNECT_TIMEOUT_MS' | 'CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS',
+    defaultValue: number
+  ): number {
+    const parsed = Number.parseInt(settings[key], 10);
+    if (Number.isFinite(parsed) && parsed >= CHROMA_TIMEOUT_BOUNDS.min && parsed <= CHROMA_TIMEOUT_BOUNDS.max) {
+      return parsed;
+    }
+
+    logger.warn('CHROMA_MCP', `Invalid ${key}, using default`, {
+      value: settings[key],
+      min: CHROMA_TIMEOUT_BOUNDS.min,
+      max: CHROMA_TIMEOUT_BOUNDS.max,
+      defaultValue,
+    });
+    return defaultValue;
+  }
+
+  private getSpawnCwd(): string {
+    return os.homedir();
   }
 
   private getCombinedCertPath(): string | undefined {

@@ -1,8 +1,5 @@
 import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 
-// Capture real exports before mock.module mutates the live namespace, then
-// re-register the snapshots in afterAll so these mocks do not leak into later
-// test files (bun's mock.module is process-global; mock.restore() does NOT undo it).
 import * as realSettingsDefaultsManager from '../../../src/shared/SettingsDefaultsManager.js';
 import * as realPaths from '../../../src/shared/paths.js';
 import * as realLogger from '../../../src/utils/logger.js';
@@ -16,28 +13,44 @@ const realEnvSanitizerSnapshot = { ...realEnvSanitizer };
 const realChildProcess = require('node:child_process');
 
 let currentSettings: Record<string, string> = {};
+let execFileCalls: Array<{ command: string; args: string[]; timeout?: number }> = [];
+let connectCalls = 0;
+let sequence: string[] = [];
+let connectImpl: () => Promise<void> = async () => {};
 
-let capturedTransportOpts: { command: string; args: string[] } | null = null;
+class FakeTransport {
+  onclose: (() => void) | null = null;
+  _process = {
+    pid: 4242,
+    once() { return this; },
+    on() { return this; },
+  };
+
+  constructor(_opts: { command: string; args: string[] }) {}
+
+  async close(): Promise<void> {}
+}
 
 mock.module('@modelcontextprotocol/sdk/client/stdio.js', () => ({
-  StdioClientTransport: class FakeTransport {
-    onclose: (() => void) | null = null;
-    constructor(opts: { command: string; args: string[] }) {
-      capturedTransportOpts = { command: opts.command, args: opts.args };
-    }
-    async close() {}
-  },
+  StdioClientTransport: FakeTransport,
 }));
 
+class FakeClient {
+  async connect(): Promise<void> {
+    connectCalls += 1;
+    sequence.push('connect');
+    await connectImpl();
+  }
+
+  async callTool(): Promise<unknown> {
+    return { content: [{ type: 'text', text: '{}' }] };
+  }
+
+  async close(): Promise<void> {}
+}
+
 mock.module('@modelcontextprotocol/sdk/client/index.js', () => ({
-  Client: class FakeClient {
-    constructor() {}
-    async connect() {}
-    async callTool() {
-      return { content: [{ type: 'text', text: '{}' }] };
-    }
-    async close() {}
-  },
+  Client: FakeClient,
 }));
 
 mock.module('../../../src/shared/SettingsDefaultsManager.js', () => ({
@@ -83,11 +96,13 @@ mock.module('child_process', () => {
   return {
     ...original,
     execFile: (
-      _cmd: string,
-      _args: string[],
-      _opts: unknown,
+      command: string,
+      args: string[],
+      opts: { timeout?: number } | undefined,
       cb: (err: Error | null, result: { stdout: string; stderr: string }) => void
     ) => {
+      execFileCalls.push({ command, args, timeout: opts?.timeout });
+      sequence.push('prewarm');
       cb(null, { stdout: '', stderr: '' });
     },
     execSync: () => '',
@@ -107,52 +122,65 @@ afterAll(() => {
   mock.module('child_process', () => realChildProcess);
 });
 
-async function assertSslFlag(sslSetting: string | undefined, expectedValue: string) {
-  currentSettings = { CLAUDE_MEM_CHROMA_MODE: 'remote' };
-  if (sslSetting !== undefined) currentSettings.CLAUDE_MEM_CHROMA_SSL = sslSetting;
-
-  await mgr.callTool('chroma_list_collections', {});
-
-  expect(capturedTransportOpts).not.toBeNull();
-  const sslIdx = capturedTransportOpts!.args.indexOf('--ssl');
-  expect(sslIdx).not.toBe(-1);
-  expect(capturedTransportOpts!.args[sslIdx + 1]).toBe(expectedValue);
+function resetState(): void {
+  currentSettings = {
+    CLAUDE_MEM_CHROMA_MODE: 'local',
+    CLAUDE_MEM_CHROMA_CONNECT_TIMEOUT_MS: '1000',
+    CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS: '2000',
+  };
+  execFileCalls = [];
+  connectCalls = 0;
+  sequence = [];
+  (ChromaMcpManager as any).execFileAsync = async (
+    command: string,
+    args: string[],
+    opts: { timeout?: number } | undefined
+  ) => {
+    execFileCalls.push({ command, args, timeout: opts?.timeout });
+    sequence.push('prewarm');
+    return { stdout: '', stderr: '' };
+  };
+  connectImpl = async () => {};
 }
 
-let mgr: ChromaMcpManager;
-
-describe('ChromaMcpManager SSL flag regression (#1286)', () => {
+describe('ChromaMcpManager timeout and prewarm contract (#2897)', () => {
   beforeEach(async () => {
     await ChromaMcpManager.reset();
-    (ChromaMcpManager as any).execFileAsync = async () => ({ stdout: '', stderr: '' });
-    capturedTransportOpts = null;
-    currentSettings = {};
-    mgr = ChromaMcpManager.getInstance();
+    resetState();
   });
 
-  it('emits --ssl false when CLAUDE_MEM_CHROMA_SSL=false', async () => {
-    await assertSslFlag('false', 'false');
+  it('prewarms before starting the MCP handshake', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(sequence).toEqual(['prewarm', 'connect']);
+    expect(execFileCalls).toHaveLength(1);
+    expect(execFileCalls[0].args).toContain('--help');
   });
 
-  it('emits --ssl true when CLAUDE_MEM_CHROMA_SSL=true', async () => {
-    await assertSslFlag('true', 'true');
+  it('uses distinct prewarm and connect timeout budgets', async () => {
+    currentSettings.CLAUDE_MEM_CHROMA_CONNECT_TIMEOUT_MS = '25';
+    currentSettings.CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS = '2500';
+    connectImpl = () => new Promise<void>(() => {});
+    const mgr = ChromaMcpManager.getInstance();
+
+    await expect(mgr.callTool('chroma_list_collections', { limit: 1 })).rejects.toThrow(
+      'MCP connection to chroma-mcp timed out after 25ms'
+    );
+
+    expect(execFileCalls).toHaveLength(1);
+    expect(execFileCalls[0].timeout).toBe(2500);
   });
 
-  it('defaults --ssl false when CLAUDE_MEM_CHROMA_SSL is not set', async () => {
-    await assertSslFlag(undefined, 'false');
-  });
+  it('memoizes a successful prewarm across reconnects on the same manager instance', async () => {
+    const mgr = ChromaMcpManager.getInstance();
 
-  it('omits --ssl entirely in local mode', async () => {
-    currentSettings = {
-      CLAUDE_MEM_CHROMA_MODE: 'local',
-    };
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    await mgr.stop();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
 
-    await mgr.callTool('chroma_list_collections', {});
-
-    expect(capturedTransportOpts).not.toBeNull();
-    const args = capturedTransportOpts!.args;
-    expect(args).not.toContain('--ssl');
-    expect(args).toContain('--client-type');
-    expect(args[args.indexOf('--client-type') + 1]).toBe('persistent');
+    expect(connectCalls).toBe(2);
+    expect(execFileCalls).toHaveLength(1);
   });
 });
