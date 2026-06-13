@@ -46,6 +46,10 @@ export const PERSON_PROPERTY_KEYS = [
   'runtime_mode',
   'install_method',
   'claude_code_version',
+  // Inferred install day (YYYY-MM-DD) from the one-time historical backfill's
+  // install_inferred event — anchors the adoption curve for installs that
+  // predate telemetry.
+  'first_active_date',
   // Install snapshot (refreshed by the daily worker_started heartbeat) —
   // lets cohorts slice by install scale, age, and activity.
   'db_observation_count',

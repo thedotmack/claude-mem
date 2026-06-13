@@ -42,14 +42,40 @@ export type PostHogConstructorCall = { apiKey: string; options: Record<string, u
 export const postHogConstructorCalls: PostHogConstructorCall[] = [];
 export const postHogCaptureCalls: Array<Record<string, unknown>> = [];
 
+/**
+ * Behavior knob for the mock below. When `emitErrorOnShutdown` is set, the
+ * next shutdown() call emits it through every handler registered via
+ * on('error', ...) before resolving — simulating posthog-node's real
+ * delivery-failure surface (shutdown() swallows fetch errors internally; the
+ * public error emitter is the only failure signal). Tests that set it MUST
+ * reset it to null afterwards.
+ */
+export const postHogMockBehavior: { emitErrorOnShutdown: unknown | null } = {
+  emitErrorOnShutdown: null,
+};
+
 mock.module('posthog-node', () => ({
   PostHog: class {
+    private handlers: Record<string, Array<(...args: unknown[]) => void>> = {};
     constructor(apiKey: string, options: Record<string, unknown>) {
       postHogConstructorCalls.push({ apiKey, options });
     }
     capture(payload: Record<string, unknown>): void {
       postHogCaptureCalls.push(payload);
     }
-    async shutdown(): Promise<void> {}
+    on(event: string, handler: (...args: unknown[]) => void): () => void {
+      (this.handlers[event] ??= []).push(handler);
+      return () => {};
+    }
+    /** Test-only trigger mirroring the real SDK's internal emitter. */
+    emit(event: string, ...args: unknown[]): void {
+      for (const handler of this.handlers[event] ?? []) handler(...args);
+    }
+    async flush(): Promise<void> {}
+    async shutdown(): Promise<void> {
+      if (postHogMockBehavior.emitErrorOnShutdown !== null) {
+        this.emit('error', postHogMockBehavior.emitErrorOnShutdown);
+      }
+    }
   },
 }));

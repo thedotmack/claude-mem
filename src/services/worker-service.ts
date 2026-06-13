@@ -23,6 +23,7 @@ import { ensureWorkerStarted as ensureWorkerStartedShared, type WorkerStartResul
 import { acquireSpawnLock, releaseSpawnLock } from '../shared/worker-spawn-gate.js';
 import { captureEvent, shutdownTelemetry } from './telemetry/telemetry.js';
 import { collectInstallStats } from './telemetry/install-stats.js';
+import { runHistoricalBackfill } from './telemetry/backfill.js';
 
 export { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
 import { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
@@ -545,6 +546,17 @@ export class WorkerService implements WorkerRef {
         captureEvent('worker_started', { trigger: 'heartbeat', ...buildLifecycleProps() }, { person: true });
       }, 24 * 60 * 60 * 1000);
       this.telemetryHeartbeat.unref?.();
+
+      // One-time historical telemetry backfill (anonymized daily rollups).
+      // Fire-and-forget: gated internally by the backfill.json marker and the
+      // same consent checks as live telemetry; a failed run retries on the
+      // next worker start because no marker is written.
+      // runHistoricalBackfill never rejects by contract (its body is fully
+      // try/caught), so this .catch is an unhandled-rejection backstop that
+      // keeps the worker alive if that contract ever regresses.
+      runHistoricalBackfill(this.dbManager.getConnection()).catch(error => {
+        logger.error('SYSTEM', 'Telemetry historical backfill failed (non-blocking)', {}, error as Error);
+      });
 
       await this.startTranscriptWatcher(settings);
 
