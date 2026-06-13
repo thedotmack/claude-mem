@@ -666,14 +666,18 @@ export async function executeWithWorkerFallback<T = unknown>(
   body?: unknown,
   options: WorkerFallbackOptions = {},
 ): Promise<WorkerCallResult<T>> {
-  if (areHooksDisabledForSession()) {
-    return { continue: true, reason: 'hooks_disabled_session', [WORKER_FALLBACK_BRAND]: true };
-  }
-
+  const hooksDisabledForSession = areHooksDisabledForSession();
   const alive = await ensureWorkerAliveOnce();
   if (!alive) {
+    if (hooksDisabledForSession) {
+      return { continue: true, reason: 'hooks_disabled_session', [WORKER_FALLBACK_BRAND]: true };
+    }
     await recordWorkerUnreachable();
     return { continue: true, reason: 'worker_unreachable', [WORKER_FALLBACK_BRAND]: true };
+  }
+
+  if (hooksDisabledForSession) {
+    resetWorkerFailureCounter();
   }
 
   const init: { method: string; headers?: Record<string, string>; body?: string; timeoutMs?: number } = { method };
