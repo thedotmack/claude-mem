@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { exec, execSync, spawnSync } from 'child_process';
+import { execSync, spawn, spawnSync } from 'child_process';
 import { createRequire } from 'module';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -404,30 +404,69 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
     throw new Error(`installPluginDependencies: no package.json at ${targetDir}`);
   }
 
-  const bunCmd = IS_WINDOWS && bunPath.includes(' ') ? `"${bunPath}"` : bunPath;
+  const installArgs = getPluginDependencyInstallArgs();
 
   try {
     // Per CHANGELOG v12.6.1 -> v12.6.2: tree-sitter-swift's nested
     // tree-sitter-cli postinstall downloads a Rust binary and can hang the
-    // install. Bun honors trustedDependencies; npm does not. We additionally
-    // pass --ignore-scripts as belt-and-suspenders and bound it with a timeout.
-    // Async exec (not execSync): a blocked event loop freezes the installer's
+    // install. Bun honors trustedDependencies; npm does not, so we rely on Bun's
+    // trustedDependencies gate here and still bound the install with a timeout.
+    // Async spawn (not spawnSync): a blocked event loop freezes the installer's
     // clack spinner for the duration of the install, which reads as a stall.
     await new Promise<void>((resolve, reject) => {
-      exec(`${bunCmd} install --frozen-lockfile --ignore-scripts`, {
+      const child = spawn(bunPath, installArgs, {
         cwd: targetDir,
-        timeout: INSTALL_TIMEOUT_MS,
-        maxBuffer: 16 * 1024 * 1024,
-        ...(IS_WINDOWS ? { shell: process.env.ComSpec ?? 'cmd.exe' } : {}),
-      }, (error, stdout, stderr) =>
-        // exec errors don't carry stdio; attach so describeExecError can report it.
-        error ? reject(Object.assign(error, { stdout, stderr })) : resolve());
+        shell: false,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+
+      const stdoutChunks: Buffer[] = [];
+      const stderrChunks: Buffer[] = [];
+      const timer = setTimeout(() => {
+        child.kill();
+      }, INSTALL_TIMEOUT_MS);
+
+      child.stdout.on('data', (chunk: Buffer) => {
+        stdoutChunks.push(chunk);
+      });
+      child.stderr.on('data', (chunk: Buffer) => {
+        stderrChunks.push(chunk);
+      });
+
+      child.on('error', (error) => {
+        clearTimeout(timer);
+        reject(Object.assign(error, {
+          stdout: Buffer.concat(stdoutChunks).toString('utf-8'),
+          stderr: Buffer.concat(stderrChunks).toString('utf-8'),
+        }));
+      });
+
+      child.on('close', (code, signal) => {
+        clearTimeout(timer);
+        if (code === 0) {
+          resolve();
+          return;
+        }
+
+        const signalSuffix = signal ? ` (signal: ${signal})` : '';
+        reject(Object.assign(
+          new Error(`bun install exited with code ${code ?? 'null'}${signalSuffix}`),
+          {
+            stdout: Buffer.concat(stdoutChunks).toString('utf-8'),
+            stderr: Buffer.concat(stderrChunks).toString('utf-8'),
+          },
+        ));
+      });
     });
   } catch (error) {
     throw new Error(`bun install failed in ${targetDir}\n${describeExecError(error)}`);
   }
 
   verifyCriticalModules(targetDir);
+}
+
+export function getPluginDependencyInstallArgs(): string[] {
+  return ['install', '--frozen-lockfile'];
 }
 
 export function readInstallMarker(targetDir: string): MarkerSchema | null {

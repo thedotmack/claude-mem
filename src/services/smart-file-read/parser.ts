@@ -480,16 +480,45 @@ function getQueryFile(queryKey: string): string {
 }
 
 let cachedBinPath: string | null = null;
+type TreeSitterBinDeps = {
+  platform: NodeJS.Platform;
+  fileExists: typeof existsSync;
+  resolvePackageJson: (id: string) => string;
+};
 
-function getTreeSitterBin(): string {
+const treeSitterBinDeps: TreeSitterBinDeps = {
+  platform: process.platform,
+  fileExists: existsSync,
+  resolvePackageJson: (id: string) => _require.resolve(id),
+};
+
+export function resetTreeSitterBinCacheForTests(): void {
+  cachedBinPath = null;
+}
+
+export function setTreeSitterBinDepsForTests(
+  overrides?: Partial<TreeSitterBinDeps>,
+): void {
+  treeSitterBinDeps.platform = overrides?.platform ?? process.platform;
+  treeSitterBinDeps.fileExists = overrides?.fileExists ?? existsSync;
+  treeSitterBinDeps.resolvePackageJson = overrides?.resolvePackageJson ?? ((id: string) => _require.resolve(id));
+}
+
+export function getTreeSitterBinForTests(): string {
   if (cachedBinPath) return cachedBinPath;
 
   try {
-    const pkgPath = _require.resolve("tree-sitter-cli/package.json");
-    const binPath = join(dirname(pkgPath), "tree-sitter");
-    if (existsSync(binPath)) {
-      cachedBinPath = binPath;
-      return binPath;
+    const pkgPath = treeSitterBinDeps.resolvePackageJson("tree-sitter-cli/package.json");
+    const candidateNames = treeSitterBinDeps.platform === "win32"
+      ? ["tree-sitter.exe", "tree-sitter"]
+      : ["tree-sitter"];
+
+    for (const candidateName of candidateNames) {
+      const binPath = join(dirname(pkgPath), candidateName);
+      if (treeSitterBinDeps.fileExists(binPath)) {
+        cachedBinPath = binPath;
+        return binPath;
+      }
     }
   } catch {
     // [ANTI-PATTERN IGNORED]: tree-sitter-cli not in node_modules is expected; falls back to PATH
@@ -521,7 +550,7 @@ function runQuery(queryFile: string, sourceFile: string, grammarPath: string): R
 function runBatchQuery(queryFile: string, sourceFiles: string[], grammarPath: string): Map<string, RawMatch[]> {
   if (sourceFiles.length === 0) return new Map();
 
-  const bin = getTreeSitterBin();
+  const bin = getTreeSitterBinForTests();
   const execArgs = ["query", "-p", grammarPath, queryFile, ...sourceFiles];
 
   let output: string;

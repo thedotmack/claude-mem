@@ -4,6 +4,7 @@ import { spawnSync } from 'child_process';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
+  getPluginDependencyInstallArgs,
   readInstallMarker,
   writeInstallMarker,
   isInstallCurrent,
@@ -148,6 +149,13 @@ describe('setup-runtime install marker', () => {
       expect(text.length).toBeGreaterThan(0);
       expect(text.toLowerCase()).toContain('uv');
       expect(text).toContain('claude-mem install');
+    });
+  });
+
+  describe('installPluginDependencies argv', () => {
+    it('keeps frozen-lockfile and does not suppress trusted install scripts', () => {
+      expect(getPluginDependencyInstallArgs()).toEqual(['install', '--frozen-lockfile']);
+      expect(getPluginDependencyInstallArgs()).not.toContain('--ignore-scripts');
     });
   });
 });
