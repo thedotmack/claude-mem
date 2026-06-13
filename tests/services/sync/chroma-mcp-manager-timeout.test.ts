@@ -160,17 +160,39 @@ describe('ChromaMcpManager timeout and prewarm contract (#2897)', () => {
   });
 
   it('uses distinct prewarm and connect timeout budgets', async () => {
-    currentSettings.CLAUDE_MEM_CHROMA_CONNECT_TIMEOUT_MS = '25';
+    currentSettings.CLAUDE_MEM_CHROMA_CONNECT_TIMEOUT_MS = '1500';
     currentSettings.CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS = '2500';
     connectImpl = () => new Promise<void>(() => {});
     const mgr = ChromaMcpManager.getInstance();
 
     await expect(mgr.callTool('chroma_list_collections', { limit: 1 })).rejects.toThrow(
-      'MCP connection to chroma-mcp timed out after 25ms'
+      'MCP connection to chroma-mcp timed out after 1500ms'
     );
 
     expect(execFileCalls).toHaveLength(1);
     expect(execFileCalls[0].timeout).toBe(2500);
+  });
+
+  it('treats a killed prewarm child as a timeout', async () => {
+    (ChromaMcpManager as any).execFileAsync = async () => {
+      sequence.push('prewarm');
+      throw Object.assign(new Error('Command failed: uvx'), { killed: true });
+    };
+    const mgr = ChromaMcpManager.getInstance();
+
+    await expect(mgr.callTool('chroma_list_collections', { limit: 1 })).rejects.toThrow(
+      'chroma-mcp prewarm timed out after 2000ms'
+    );
+    expect(connectCalls).toBe(0);
+  });
+
+  it('falls back to defaults for unrealistically small timeout settings', () => {
+    currentSettings.CLAUDE_MEM_CHROMA_CONNECT_TIMEOUT_MS = '30';
+    currentSettings.CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS = '30';
+    const mgr = ChromaMcpManager.getInstance() as any;
+
+    expect(mgr.readBoundedTimeoutSetting(currentSettings, 'CLAUDE_MEM_CHROMA_CONNECT_TIMEOUT_MS', 60_000)).toBe(60_000);
+    expect(mgr.readBoundedTimeoutSetting(currentSettings, 'CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS', 300_000)).toBe(300_000);
   });
 
   it('memoizes a successful prewarm across reconnects on the same manager instance', async () => {

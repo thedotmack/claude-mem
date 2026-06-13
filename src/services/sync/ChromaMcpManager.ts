@@ -21,7 +21,7 @@ const DEFAULT_CHROMA_DATA_DIR = paths.chroma();
 const CHROMA_SUPERVISOR_ID = 'chroma-mcp';
 const DEFAULT_MCP_CONNECTION_TIMEOUT_MS = 60_000;
 const DEFAULT_MCP_PREWARM_TIMEOUT_MS = 300_000;
-const CHROMA_TIMEOUT_BOUNDS = { min: 10, max: 900_000 } as const;
+const CHROMA_TIMEOUT_BOUNDS = { min: 1_000, max: 900_000 } as const;
 
 const CHROMA_MCP_PINNED_VERSION = '0.2.6';
 
@@ -662,7 +662,8 @@ export class ChromaMcpManager {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (/timed out/i.test(message)) {
+      const killed = Boolean((error as NodeJS.ErrnoException & { killed?: boolean }).killed);
+      if (killed || /timed out/i.test(message)) {
         throw new Error(`chroma-mcp prewarm timed out after ${spawnConfig.timeoutMs}ms`);
       }
       throw new Error(`chroma-mcp prewarm failed: ${message}`);
