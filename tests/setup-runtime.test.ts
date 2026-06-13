@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { join } from 'path';
@@ -156,6 +156,48 @@ describe('setup-runtime install marker', () => {
     it('keeps frozen-lockfile and does not suppress trusted install scripts', () => {
       expect(getPluginDependencyInstallArgs()).toEqual(['install', '--frozen-lockfile']);
       expect(getPluginDependencyInstallArgs()).not.toContain('--ignore-scripts');
+    });
+
+    it('reports installer timeouts explicitly when the child is killed', async () => {
+      writeFileSync(join(tempDir, 'package.json'), '{}');
+
+      const originalSetTimeout = global.setTimeout;
+      const originalClearTimeout = global.clearTimeout;
+      global.setTimeout = ((callback: (...args: any[]) => void) => {
+        callback();
+        return 1 as unknown as ReturnType<typeof setTimeout>;
+      }) as typeof setTimeout;
+      global.clearTimeout = (() => {}) as typeof clearTimeout;
+
+      mock.module('child_process', () => {
+        const original = require('node:child_process');
+        return {
+          ...original,
+          spawn: () => {
+            const child = {
+              stdout: { on: () => child.stdout },
+              stderr: { on: () => child.stderr },
+              kill: () => {},
+              on: (event: string, cb: (...args: any[]) => void) => {
+                if (event === 'close') queueMicrotask(() => cb(1, null));
+                return child;
+              },
+            };
+            return child;
+          },
+        };
+      });
+
+      try {
+        const runtime = await import(`../src/npx-cli/install/setup-runtime.ts?timeout-test=${Date.now()}`);
+        await expect(runtime.installPluginDependencies(tempDir, 'bun')).rejects.toThrow(
+          'bun install timed out after 300000ms'
+        );
+      } finally {
+        global.setTimeout = originalSetTimeout;
+        global.clearTimeout = originalClearTimeout;
+        mock.restore();
+      }
     });
   });
 });

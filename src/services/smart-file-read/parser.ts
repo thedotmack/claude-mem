@@ -504,7 +504,7 @@ export function setTreeSitterBinDepsForTests(
   treeSitterBinDeps.resolvePackageJson = overrides?.resolvePackageJson ?? ((id: string) => _require.resolve(id));
 }
 
-export function getTreeSitterBinForTests(): string {
+export function getTreeSitterBin(): string {
   if (cachedBinPath) return cachedBinPath;
 
   try {
@@ -550,7 +550,7 @@ function runQuery(queryFile: string, sourceFile: string, grammarPath: string): R
 function runBatchQuery(queryFile: string, sourceFiles: string[], grammarPath: string): Map<string, RawMatch[]> {
   if (sourceFiles.length === 0) return new Map();
 
-  const bin = getTreeSitterBinForTests();
+  const bin = getTreeSitterBin();
   const execArgs = ["query", "-p", grammarPath, queryFile, ...sourceFiles];
 
   let output: string;

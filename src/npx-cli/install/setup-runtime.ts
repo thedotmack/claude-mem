@@ -422,7 +422,9 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
 
       const stdoutChunks: Buffer[] = [];
       const stderrChunks: Buffer[] = [];
+      let timedOut = false;
       const timer = setTimeout(() => {
+        timedOut = true;
         child.kill();
       }, INSTALL_TIMEOUT_MS);
 
@@ -445,6 +447,17 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
         clearTimeout(timer);
         if (code === 0) {
           resolve();
+          return;
+        }
+
+        if (timedOut) {
+          reject(Object.assign(
+            new Error(`bun install timed out after ${INSTALL_TIMEOUT_MS}ms`),
+            {
+              stdout: Buffer.concat(stdoutChunks).toString('utf-8'),
+              stderr: Buffer.concat(stderrChunks).toString('utf-8'),
+            },
+          ));
           return;
         }
 

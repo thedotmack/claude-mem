@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { dirname, join } from 'node:path';
 import {
-  getTreeSitterBinForTests,
+  getTreeSitterBin,
   resetTreeSitterBinCacheForTests,
   setTreeSitterBinDepsForTests,
 } from '../../../src/services/smart-file-read/parser.js';
@@ -26,7 +26,7 @@ describe('tree-sitter binary resolution', () => {
       },
     });
 
-    expect(getTreeSitterBinForTests()).toBe(join(dirname(fakePackageJsonPath), 'tree-sitter.exe'));
+    expect(getTreeSitterBin()).toBe(join(dirname(fakePackageJsonPath), 'tree-sitter.exe'));
   });
 
   it('falls back to PATH when no package-local binary exists', () => {
@@ -36,6 +36,20 @@ describe('tree-sitter binary resolution', () => {
       fileExists: () => false,
     });
 
-    expect(getTreeSitterBinForTests()).toBe('tree-sitter');
+    expect(getTreeSitterBin()).toBe('tree-sitter');
+  });
+
+  it('uses the bare tree-sitter name on non-Windows platforms', () => {
+    const fakeUnixPackageJsonPath = join('/repo', 'node_modules', 'tree-sitter-cli', 'package.json');
+    setTreeSitterBinDepsForTests({
+      platform: 'linux',
+      resolvePackageJson: () => fakeUnixPackageJsonPath,
+      fileExists: (candidatePath: string) => {
+        expect(candidatePath.endsWith('tree-sitter.exe')).toBe(false);
+        return candidatePath === join(dirname(fakeUnixPackageJsonPath), 'tree-sitter');
+      },
+    });
+
+    expect(getTreeSitterBin()).toBe(join(dirname(fakeUnixPackageJsonPath), 'tree-sitter'));
   });
 });
