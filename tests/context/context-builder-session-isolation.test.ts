@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { execFileSync } from 'child_process';
+import { pathToFileURL } from 'url';
 
 function scriptLiteral(value: string): string {
   return JSON.stringify(value.replace(/\\/g, '/'));
@@ -13,6 +14,10 @@ describe('generateContext session isolation', () => {
   let tempDataDir: string;
   let tempConfigDir: string;
   let cwd: string;
+  const repoRoot = join(import.meta.dir, '..', '..');
+  const sessionStoreUrl = pathToFileURL(join(repoRoot, 'src', 'services', 'sqlite', 'SessionStore.ts')).href;
+  const modeManagerUrl = pathToFileURL(join(repoRoot, 'src', 'services', 'domain', 'ModeManager.ts')).href;
+  const contextBuilderUrl = pathToFileURL(join(repoRoot, 'src', 'services', 'context', 'ContextBuilder.ts')).href;
 
   beforeEach(() => {
     tempRoot = mkdtempSync(join(tmpdir(), 'claude-mem-context-isolation-'));
@@ -42,9 +47,9 @@ describe('generateContext session isolation', () => {
     const script = `
       import { mkdirSync, writeFileSync } from 'fs';
       import { join } from 'path';
-      import { SessionStore } from ${scriptLiteral('file:///D:/Repos/claude-mem-pr-2909-session-context-isolation/src/services/sqlite/SessionStore.ts')};
-      import { ModeManager } from ${scriptLiteral('file:///D:/Repos/claude-mem-pr-2909-session-context-isolation/src/services/domain/ModeManager.ts')};
-      import { generateContext } from ${scriptLiteral('file:///D:/Repos/claude-mem-pr-2909-session-context-isolation/src/services/context/ContextBuilder.ts')};
+      import { SessionStore } from ${scriptLiteral(sessionStoreUrl)};
+      import { ModeManager } from ${scriptLiteral(modeManagerUrl)};
+      import { generateContext } from ${scriptLiteral(contextBuilderUrl)};
 
       const project = 'shared-project';
       const sessionA = 'session-a';
@@ -162,7 +167,7 @@ describe('generateContext session isolation', () => {
       'bun',
       ['-e', script],
       {
-        cwd: 'D:/Repos/claude-mem-pr-2909-session-context-isolation',
+        cwd: repoRoot,
         encoding: 'utf-8',
         env: {
           ...process.env,
