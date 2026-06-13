@@ -31,8 +31,38 @@ describe('classifyObserverOutput (plan-11 #2485)', () => {
     expect(classifyObserverOutput(null)).toBe('idle');
   });
 
-  it('classifies conversational prose as prose', () => {
-    expect(classifyObserverOutput('Skipping — repeated log scan with no new findings.')).toBe('prose');
+  it('classifies arbitrary conversational prose as prose', () => {
+    expect(classifyObserverOutput('Hmm, I think this one is a bit ambiguous, let me consider it.')).toBe('prose');
+  });
+
+  it('classifies "(no observations - insufficient data...)" as skip (field repro on haiku-4.5)', () => {
+    expect(
+      classifyObserverOutput('(no observations - insufficient data in this observation window)')
+    ).toBe('skip');
+  });
+
+  it('classifies "(No tool executions observed yet in the primary session.)" as skip', () => {
+    expect(
+      classifyObserverOutput('(No tool executions observed yet in the primary session.)')
+    ).toBe('skip');
+  });
+
+  it('classifies "(Empty - no tool execution data observed yet)" as skip', () => {
+    expect(classifyObserverOutput('(Empty - no tool execution data observed yet)')).toBe('skip');
+  });
+
+  it('classifies "Skipping — repeated log scan with no new findings." as skip', () => {
+    expect(classifyObserverOutput('Skipping — repeated log scan with no new findings.')).toBe('skip');
+  });
+
+  it('classifies "No substantive tool executions." as skip', () => {
+    expect(classifyObserverOutput('No substantive tool executions.')).toBe('skip');
+  });
+
+  it('XML gate takes precedence over skip-prose markers in narrative text', () => {
+    const xml =
+      '<observation><type>discovery</type><narrative>The agent reported no observations from this scan.</narrative></observation>';
+    expect(classifyObserverOutput(xml)).toBe('xml');
   });
 
   it('classifies "session exhausted" closure string as poisoned', () => {
