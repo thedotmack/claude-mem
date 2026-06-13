@@ -248,7 +248,8 @@ type CwdClassification =
 function gitQuery(cwd: string, args: string[]): string | null {
   const r = spawnSync('git', ['-C', cwd, ...args], {
     encoding: 'utf8',
-    timeout: 5000
+    timeout: 5000,
+    windowsHide: true,
   });
   if (r.status !== 0) return null;
   return (r.stdout ?? '').trim();
@@ -503,4 +504,3 @@ export function touchPidFile(): void {
 export function cleanStalePidFile(): ValidateWorkerPidStatus {
   return validateWorkerPidFile({ logAlive: false });
 }
-

@@ -26,6 +26,7 @@ export function resolveBunBinaryPath(): string | null {
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
     shell: IS_WINDOWS,
+    windowsHide: true,
   });
 
   if (pathCheck.status === 0 && pathCheck.stdout.trim()) {
@@ -40,4 +41,3 @@ export function resolveBunBinaryPath(): string | null {
 
   return null;
 }
-
