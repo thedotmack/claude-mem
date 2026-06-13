@@ -3,7 +3,7 @@ import pc from 'picocolors';
 import { existsSync } from 'fs';
 import { expandHome } from '../utils/system.js';
 
-export type InstallMode = 'fresh' | 'upgrade' | 'configure';
+export type InstallMode = 'fresh' | 'upgrade' | 'configure' | 'uninstall';
 
 export async function runWelcome(): Promise<InstallMode> {
   p.intro(pc.bgCyan(pc.black(' claude-mem installer ')));
@@ -27,6 +27,7 @@ export async function runWelcome(): Promise<InstallMode> {
           { value: 'upgrade' as const, label: 'Upgrade', hint: 'update to latest version' },
           { value: 'configure' as const, label: 'Configure', hint: 'change settings only' },
           { value: 'fresh' as const, label: 'Fresh Install', hint: 'reinstall from scratch' },
+          { value: 'uninstall' as const, label: 'Uninstall', hint: 'remove claude-mem' },
         ]
       : [
           { value: 'fresh' as const, label: 'Fresh Install', hint: 'recommended' },
