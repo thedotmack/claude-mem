@@ -667,7 +667,9 @@ export async function executeWithWorkerFallback<T = unknown>(
 ): Promise<WorkerCallResult<T>> {
   const alive = await ensureWorkerAliveOnce({ allowLazySpawn: options.allowLazySpawn });
   if (!alive) {
-    await recordWorkerUnreachable();
+    if (options.allowLazySpawn !== false) {
+      await recordWorkerUnreachable();
+    }
     return { continue: true, reason: 'worker_unreachable', [WORKER_FALLBACK_BRAND]: true };
   }
 

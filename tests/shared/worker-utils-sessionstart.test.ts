@@ -1,8 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 import * as realInfrastructure from '../../src/services/infrastructure/index.js';
 import * as realSupervisor from '../../src/supervisor/index.js';
 import * as realProcessManager from '../../src/services/infrastructure/ProcessManager.js';
 import * as realSpawn from '../../src/shared/spawn.js';
+import * as realPaths from '../../src/shared/paths.js';
 import * as realWorkerUtils from '../../src/shared/worker-utils.js';
 import * as realProjectName from '../../src/utils/project-name.js';
 import * as realHookSettings from '../../src/shared/hook-settings.js';
@@ -12,6 +16,7 @@ const realInfrastructureSnapshot = { ...realInfrastructure };
 const realSupervisorSnapshot = { ...realSupervisor };
 const realProcessManagerSnapshot = { ...realProcessManager };
 const realSpawnSnapshot = { ...realSpawn };
+const realPathsSnapshot = { ...realPaths };
 const realWorkerUtilsSnapshot = { ...realWorkerUtils };
 const realProjectNameSnapshot = { ...realProjectName };
 const realHookSettingsSnapshot = { ...realHookSettings };
@@ -80,15 +85,29 @@ function installWorkerFetchMock(): void {
 
 describe('worker-utils SessionStart best-effort startup', () => {
   const originalFetch = global.fetch;
+  const originalDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+  let tempDataDir: string;
 
   beforeEach(() => {
     spawnCalls = 0;
     healthFailuresBeforeSuccess = 0;
+    tempDataDir = mkdtempSync(join(tmpdir(), 'claude-mem-worker-utils-'));
+    process.env.CLAUDE_MEM_DATA_DIR = tempDataDir;
+    mock.module('../../src/shared/paths.js', () => ({
+      ...realPathsSnapshot,
+      DATA_DIR: tempDataDir,
+    }));
     installWorkerFetchMock();
   });
 
   afterEach(() => {
     global.fetch = originalFetch;
+    if (originalDataDir === undefined) {
+      delete process.env.CLAUDE_MEM_DATA_DIR;
+    } else {
+      process.env.CLAUDE_MEM_DATA_DIR = originalDataDir;
+    }
+    rmSync(tempDataDir, { recursive: true, force: true });
     mock.restore();
   });
 
@@ -97,6 +116,7 @@ describe('worker-utils SessionStart best-effort startup', () => {
     mock.module('../../src/supervisor/index.js', () => realSupervisorSnapshot);
     mock.module('../../src/services/infrastructure/ProcessManager.js', () => realProcessManagerSnapshot);
     mock.module('../../src/shared/spawn.js', () => realSpawnSnapshot);
+    mock.module('../../src/shared/paths.js', () => realPathsSnapshot);
   });
 
   it('skips lazy-spawn when a SessionStart caller opts into best-effort startup', async () => {
@@ -121,6 +141,30 @@ describe('worker-utils SessionStart best-effort startup', () => {
     expect(spawnCalls).toBe(1);
     expect(fetchLog.filter(call => call.url.includes('/api/health')).length).toBeGreaterThanOrEqual(3);
     expect(fetchLog.some(call => call.url.includes('/api/readiness'))).toBe(true);
+  });
+
+  it('does not persist a fail-loud worker-unreachable streak for best-effort SessionStart calls', async () => {
+    healthFailuresBeforeSuccess = 1;
+
+    const { executeWithWorkerFallback, isWorkerFallback } = await importWorkerUtilsFresh();
+    const result = await executeWithWorkerFallback('/api/context/inject?projects=test-project', 'GET', undefined, {
+      allowLazySpawn: false,
+    });
+
+    expect(isWorkerFallback(result)).toBe(true);
+    const failureStatePath = join(tempDataDir, 'state', 'hook-failures.json');
+    expect(existsSync(failureStatePath)).toBe(false);
+  });
+
+  it('still persists the fail-loud worker-unreachable streak on the normal failure path', async () => {
+    const { recordWorkerUnreachable } = await importWorkerUtilsFresh();
+    await recordWorkerUnreachable();
+
+    const failureStatePath = join(tempDataDir, 'state', 'hook-failures.json');
+    expect(existsSync(failureStatePath)).toBe(true);
+    expect(JSON.parse(readFileSync(failureStatePath, 'utf-8'))).toMatchObject({
+      consecutiveFailures: 1,
+    });
   });
 });
 
