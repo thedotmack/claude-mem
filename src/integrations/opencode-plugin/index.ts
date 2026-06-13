@@ -157,6 +157,7 @@ async function workerGetText(path: string): Promise<string | null> {
 const contentSessionIdsByOpenCodeSessionId = new Map<string, string>();
 const initializedSessionIds = new Set<string>();
 const pendingSessionInitializations = new Map<string, Promise<string | null>>();
+let nextContentSessionNonce = 0;
 
 const MAX_SESSION_MAP_ENTRIES = 1000;
 
@@ -173,7 +174,7 @@ function getOrCreateContentSessionId(openCodeSessionId: string): string {
     }
     contentSessionIdsByOpenCodeSessionId.set(
       openCodeSessionId,
-      `opencode-${openCodeSessionId}-${Date.now()}`,
+      `opencode-${openCodeSessionId}-${Date.now()}-${nextContentSessionNonce++}`,
     );
   }
   return contentSessionIdsByOpenCodeSessionId.get(openCodeSessionId)!;
@@ -208,7 +209,7 @@ async function ensureSessionInitialized(openCodeSessionId: string, projectName: 
     if (!initialized) {
       return null;
     }
-    if (!contentSessionIdsByOpenCodeSessionId.has(openCodeSessionId)) {
+    if (contentSessionIdsByOpenCodeSessionId.get(openCodeSessionId) !== contentSessionId) {
       return null;
     }
     initializedSessionIds.add(openCodeSessionId);

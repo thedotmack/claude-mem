@@ -435,6 +435,109 @@ describe("OpenCode plugin event contract", () => {
     }
   });
 
+  it("does not treat a replacement session as initialized before its own init finishes", async () => {
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const fetchResolvers: Array<() => void> = [];
+    const replacementOutput = "assistant output after stale init";
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (((url: string | URL | Request, init?: RequestInit) => {
+      posts.push({
+        url: String(url),
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+
+      return new Promise<Response>((resolve) => {
+        fetchResolvers.push(() => {
+          resolve(new Response(JSON.stringify({ status: "queued" }), { status: 200 }));
+        });
+      });
+    }) as unknown) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const eventHook = plugin["event"];
+
+      const initAPromise = eventHook({
+        event: {
+          type: "message.part.updated",
+          properties: {
+            sessionID: "ses_replace_identity",
+            message: { id: "msg_init_a", role: "assistant", sessionID: "ses_replace_identity" },
+            parts: [{ type: "text", text: "partial A" }],
+          },
+        },
+      });
+
+      await Promise.resolve();
+      expect(posts.filter((post) => post.url.includes("/api/sessions/init"))).toHaveLength(1);
+
+      await eventHook({
+        event: {
+          type: "session.deleted",
+          properties: { sessionID: "ses_replace_identity" },
+        },
+      });
+
+      const initBPromise = eventHook({
+        event: {
+          type: "message.part.updated",
+          properties: {
+            sessionID: "ses_replace_identity",
+            message: { id: "msg_init_b", role: "assistant", sessionID: "ses_replace_identity" },
+            parts: [{ type: "text", text: "partial B" }],
+          },
+        },
+      });
+
+      await Promise.resolve();
+      expect(posts.filter((post) => post.url.includes("/api/sessions/init"))).toHaveLength(2);
+
+      fetchResolvers.shift()?.();
+      await initAPromise;
+
+      const capturePromise = eventHook({
+        event: {
+          type: "message.updated",
+          properties: {
+            sessionID: "ses_replace_identity",
+            output: {
+              message: { role: "assistant", sessionID: "ses_replace_identity" },
+              parts: [{ type: "text", text: replacementOutput }],
+            },
+          },
+        },
+      });
+
+      await Promise.resolve();
+      expect(
+        posts.filter((post) => {
+          if (!post.url.includes("/api/sessions/observations")) {
+            return false;
+          }
+          const body = post.body as { tool_response?: string } | null;
+          return body?.tool_response === replacementOutput;
+        }),
+      ).toHaveLength(0);
+
+      fetchResolvers.shift()?.();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(
+        posts.filter((post) => {
+          if (!post.url.includes("/api/sessions/observations")) {
+            return false;
+          }
+          const body = post.body as { tool_response?: string } | null;
+          return body?.tool_response === replacementOutput;
+        }),
+      ).toHaveLength(1);
+
+      fetchResolvers.shift()?.();
+      await Promise.all([initBPromise, capturePromise]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("captures assistant output when message.updated uses properties.message and properties.parts", async () => {
     const posts: Array<{ url: string; body: unknown }> = [];
     const originalFetch = globalThis.fetch;
