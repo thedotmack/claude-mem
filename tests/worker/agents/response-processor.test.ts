@@ -378,6 +378,8 @@ describe('ResponseProcessor', () => {
       const examples = [
         'No observations, but I found a stale cache bug.',
         'No observations to record, however I identified an error in the worker.',
+        'No observations to record, the auth module looks clean.',
+        'No observations to record since exploration is early, but I noticed an auth risk.',
       ];
 
       for (const responseText of examples) {

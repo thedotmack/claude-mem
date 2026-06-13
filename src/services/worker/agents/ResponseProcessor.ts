@@ -34,16 +34,52 @@ const EMPTY_ACK_PREFIXES = [
   'no new observations',
 ] as const;
 const EMPTY_ACK_CONTENT_SIGNAL = /\b(?:but|however|although|except|identified|discovered|learned|recorded|captured|stored|noted|issue|bug|fix|error|failure)\b/;
+const EMPTY_ACK_NEUTRAL_REMAINDER_WORDS = new Set([
+  'at',
+  'this',
+  'time',
+  'for',
+  'batch',
+  'investigation',
+  'not',
+  'yet',
+  'started',
+  'no',
+  'tool',
+  'executions',
+  'or',
+  'technical',
+  'findings',
+  'have',
+  'been',
+  'provided',
+]);
 
 function hasEmptyAckPrefix(normalized: string, prefix: string): boolean {
-  return normalized === prefix ||
-    normalized.startsWith(`${prefix} `) ||
-    normalized.startsWith(`${prefix}.`) ||
-    normalized.startsWith(`${prefix}!`) ||
-    normalized.startsWith(`${prefix}-`) ||
-    normalized.startsWith(`${prefix} -`) ||
-    normalized.startsWith(`${prefix} —`) ||
-    normalized.startsWith(`${prefix} –`);
+  if (normalized === prefix) {
+    return true;
+  }
+
+  if (!normalized.startsWith(prefix)) {
+    return false;
+  }
+
+  const nextChar = normalized.charAt(prefix.length);
+  return /[\s.,!?:;\-—–]/.test(nextChar);
+}
+
+function isNeutralEmptyAckRemainder(remainder: string): boolean {
+  const stripped = remainder.replace(/^[\s.,!?:;\-—–]+/, '').trim();
+  if (stripped.length === 0) {
+    return true;
+  }
+
+  const words = stripped.match(/[a-z]+/g);
+  if (!words || words.length === 0) {
+    return true;
+  }
+
+  return words.every(word => EMPTY_ACK_NEUTRAL_REMAINDER_WORDS.has(word));
 }
 
 function isRecognizedEmptyObserverAck(text: string, outputClass: ReturnType<typeof classifyObserverOutput>): boolean {
@@ -66,7 +102,8 @@ function isRecognizedEmptyObserverAck(text: string, outputClass: ReturnType<type
   }
 
   const remainder = normalized.slice(matchedPrefix.length);
-  return !EMPTY_ACK_CONTENT_SIGNAL.test(remainder);
+  return !EMPTY_ACK_CONTENT_SIGNAL.test(remainder) &&
+    isNeutralEmptyAckRemainder(remainder);
 }
 
 export async function processAgentResponse(
