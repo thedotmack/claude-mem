@@ -28,7 +28,7 @@ mock.module('posthog-node', () => ({
 
 const {
   captureEvent,
-  __resetTelemetryStateForTesting,
+  __resetTelemetryForTests,
 } = await import('../../src/services/telemetry/telemetry');
 
 let tempDir: string;
@@ -54,13 +54,13 @@ beforeAll(() => {
 beforeEach(() => {
   constructorCalls.length = 0;
   captureCalls.length = 0;
-  __resetTelemetryStateForTesting();
+  __resetTelemetryForTests();
   process.env.CLAUDE_MEM_TELEMETRY = '1';
   delete process.env.DO_NOT_TRACK;
 });
 
 afterEach(() => {
-  __resetTelemetryStateForTesting();
+  __resetTelemetryForTests();
 });
 
 afterAll(() => {
