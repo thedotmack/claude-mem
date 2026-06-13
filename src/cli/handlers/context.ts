@@ -64,7 +64,9 @@ export const contextHandler: EventHandler = {
 
     let coloredTimeline = '';
     if (showTerminalOutput) {
-      const colorResult = await executeWithWorkerFallback<string>(colorApiPath, 'GET');
+      const colorResult = await executeWithWorkerFallback<string>(colorApiPath, 'GET', undefined, {
+        allowLazySpawn: false,
+      });
       if (!isWorkerFallback(colorResult) && typeof colorResult === 'string') {
         coloredTimeline = colorResult.trim();
       }

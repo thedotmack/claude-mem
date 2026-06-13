@@ -499,6 +499,7 @@ export async function ensureWorkerAliveOnce(options: EnsureWorkerRunningOptions 
   if (aliveCache === true) return true;
   if (aliveCache === false && options.allowLazySpawn !== false) return false;
 
+  // Best-effort SessionStart calls still re-check liveness after a cached full-spawn miss.
   const alive = await ensureWorkerRunning(options);
   if (alive || options.allowLazySpawn !== false) {
     aliveCache = alive;

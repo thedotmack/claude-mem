@@ -196,4 +196,40 @@ describe('contextHandler SessionStart integration', () => {
       exitCode: 0,
     });
   });
+
+  it('keeps the color timeline fetch on the same non-blocking path', async () => {
+    mock.module('../../src/shared/worker-utils.js', () => ({
+      executeWithWorkerFallback: (
+        url: string,
+        method: string,
+        body?: unknown,
+        options: Record<string, unknown> = {}
+      ) => {
+        executeCalls.push({ url, method, body, options });
+        return Promise.resolve(executeCalls.length === 1 ? 'context body' : 'colored body');
+      },
+      isWorkerFallback: () => false,
+      getWorkerPort: () => 37777,
+    }));
+    mock.module('../../src/shared/hook-settings.js', () => ({
+      loadFromFileOnce: () => ({ CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: 'true' }),
+    }));
+
+    const { contextHandler } = await importContextHandlerFresh();
+    const result = await contextHandler.execute({
+      cwd: 'D:\\Repos\\claude-mem-pr-2903-vscode-init-deadline',
+      platform: 'claude-code',
+    });
+
+    expect(executeCalls).toHaveLength(2);
+    expect(executeCalls[0]).toMatchObject({
+      url: '/api/context/inject?projects=test-project',
+      options: { allowLazySpawn: false },
+    });
+    expect(executeCalls[1]).toMatchObject({
+      url: '/api/context/inject?projects=test-project&colors=true',
+      options: { allowLazySpawn: false },
+    });
+    expect(result.systemMessage).toContain('colored body');
+  });
 });
