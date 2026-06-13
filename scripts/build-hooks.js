@@ -99,8 +99,7 @@ function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
           trailingCommand: ['node', '"$_P/scripts/version-check.js"'],
           notFoundMessage: 'claude-mem: version-check.js not found',
         }),
-        'SessionStart.0.0': claudeHook(['start'], { trailingJson: { continue: true, suppressOutput: true } }),
-        'SessionStart.0.1': claudeHook(['hook', 'claude-code', 'context']),
+        'SessionStart.0.0': claudeHook(['hook', 'claude-code', 'context']),
         'UserPromptSubmit.0.0': claudeHook(['hook', 'claude-code', 'session-init']),
         'PostToolUse.0.0': claudeHook(['hook', 'claude-code', 'observation']),
         'PreToolUse.0.0': claudeHook(['hook', 'claude-code', 'file-context']),
@@ -139,9 +138,7 @@ function hookEntryByPath(parsed, dottedPath) {
   return parsed.hooks?.[event]?.[Number(groupIdx)]?.hooks?.[Number(hookIdx)] ?? null;
 }
 
-async function verifyShellTemplateCanonical() {
-  console.log('\n📋 Verifying Rule A shell templates match the canonical generator...');
-
+async function loadCanonicalBuildShellCommand() {
   // Compile src/build/hook-shell-template.ts in-memory and import it. The build
   // runs under Node, which can't import .ts directly, so we bundle to ESM and
   // load via a data: URL.
@@ -156,7 +153,6 @@ async function verifyShellTemplateCanonical() {
   const moduleSource = bundled.outputFiles[0].text;
   const dataUrl = 'data:text/javascript;base64,' + Buffer.from(moduleSource).toString('base64');
   const { buildShellCommand, buildCodexWindowsCommand } = await import(dataUrl);
-
   const manifest = shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand);
 
   for (const [filePath, spec] of Object.entries(manifest)) {
@@ -661,6 +657,8 @@ async function buildHooks() {
     fs.mkdirSync(path.dirname(onboardingExplainerDst), { recursive: true });
     fs.copyFileSync(onboardingExplainerSrc, onboardingExplainerDst);
     console.log(`✓ Copied ${onboardingExplainerSrc} → ${onboardingExplainerDst}`);
+
+    await writeManagedHookFiles();
 
     console.log('\n📋 Verifying distribution files...');
     const validCodexHookEvents = new Set([
