@@ -109,6 +109,24 @@ One value is derived server-side rather than sent by the client: PostHog resolve
 | `hook_failed` | A claude-mem hook fails hard — the worker is unreachable past the fail-loud threshold, or a blocking error occurs | `hook_type`, `error_mode`, `consecutive_failures`, `threshold_tripped` |
 | `error_occurred` | The worker returns an HTTP 5xx | `error_category` |
 
+## Historical backfill
+
+Telemetry shipped later than claude-mem itself, so installs that predate it have activity the live events never saw. On the first worker start after upgrading, claude-mem performs a **one-time** backfill of that pre-telemetry history — anonymized counts only, passed through the same whitelist scrubber as everything else:
+
+| Event | When (timestamp) | What it carries |
+|---|---|---|
+| `historical_activity` | One per day the install was active, stamped on that historical day | Daily activity counts only: observations, sessions, summaries, prompts, distinct-project **count**, observation-type buckets (`obs_type_*`), session outcomes (`session_completed_count` / `session_failed_count`), per-platform session counts (`sessions_claude_count` etc.), `subagent_obs_count`, `discovery_tokens`, plus `backfilled: true`. Profile-less (`$process_person_profile: false`), like all high-volume events |
+| `install_inferred` | Once, stamped on the install's first recorded activity day | `first_active_date` (a date string, e.g. `2025-10-19`) and `backfilled: true` |
+
+Like everything else, these are counts and closed-set values only — **never titles, prompts, file contents, or project names**. The same anonymous install UUID identifies them, and every property passes the whitelist scrubber.
+
+A few things worth knowing:
+
+- **It runs once.** A completion marker (`backfill.json` in the claude-mem data directory) is written after a successful send and prevents the backfill from ever running again. Until a run succeeds, no marker is written, so a failed attempt simply retries on the next worker start.
+- **It honors the exact same consent gates as live telemetry** — `DO_NOT_TRACK`, `CLAUDE_MEM_TELEMETRY=0`, and `enabled: false` in `telemetry.json` all block it, and [debug mode](#debug-mode) prints the would-be payload without sending.
+- **Opting out before the first worker start after upgrading prevents it entirely.** Nothing is sent and no marker is written while you are opted out — though if you opt back in later, the backfill will then run.
+- **Location is upload-time, not historical.** The coarse location PostHog derives at ingestion (see above) reflects where the events were uploaded from, not where you were on the historical dates they describe.
+
 ## What is NEVER collected
 
 | Never collected | Notes |
