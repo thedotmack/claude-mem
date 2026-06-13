@@ -510,9 +510,7 @@ async function buildHooks() {
     const transcriptWatcherStats = fs.statSync(`${hooksDir}/${TRANSCRIPT_WATCHER.name}.cjs`);
     console.log(`✓ transcript-watcher built (${(transcriptWatcherStats.size / 1024).toFixed(2)} KB)`);
 
-    // Guard against accidental imports of heavy modules (worker-service,
-    // SDK runtimes, etc.) into the watcher's processor.ts chain. The watcher
-    // is a thin file-tail loop and should stay well under 200 KB.
+    // Advisory only — the watcher is meant to be a thin file-tail loop.
     const TRANSCRIPT_WATCHER_MAX_BYTES = 200 * 1024;
     if (transcriptWatcherStats.size > TRANSCRIPT_WATCHER_MAX_BYTES) {
       console.warn(
