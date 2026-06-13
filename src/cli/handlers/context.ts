@@ -34,7 +34,9 @@ export const contextHandler: EventHandler = {
       exitCode: HOOK_EXIT_CODES.SUCCESS,
     };
 
-    const contextResult = await executeWithWorkerFallback<string>(apiPath, 'GET');
+    const contextResult = await executeWithWorkerFallback<string>(apiPath, 'GET', undefined, {
+      allowLazySpawn: false,
+    });
     if (isWorkerFallback(contextResult)) {
       return emptyResult;
     }

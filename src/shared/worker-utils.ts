@@ -339,7 +339,12 @@ async function isWorkerPortAlive(): Promise<boolean> {
   return false;
 }
 
-export async function ensureWorkerRunning(): Promise<boolean> {
+export interface EnsureWorkerRunningOptions {
+  allowLazySpawn?: boolean;
+}
+
+export async function ensureWorkerRunning(options: EnsureWorkerRunningOptions = {}): Promise<boolean> {
+  const allowLazySpawn = options.allowLazySpawn !== false;
   // Installed-plugin version captured when the alive branch runs, so every
   // post-readiness path below can run the one-shot amplifier check
   // (warnIfVersionStillMismatched). Stays null when no worker was alive
@@ -405,6 +410,11 @@ export async function ensureWorkerRunning(): Promise<boolean> {
       });
     }
     // Fall through to (re)spawn + readiness wait below.
+  }
+
+  if (!allowLazySpawn) {
+    logger.info('SYSTEM', 'Worker not already healthy; skipping lazy-spawn for best-effort hook call');
+    return false;
   }
 
   const runtimePath = resolveWorkerRuntimePath();
@@ -485,10 +495,15 @@ export async function ensureWorkerRunning(): Promise<boolean> {
 
 let aliveCache: boolean | null = null;
 
-export async function ensureWorkerAliveOnce(): Promise<boolean> {
-  if (aliveCache !== null) return aliveCache;
-  aliveCache = await ensureWorkerRunning();
-  return aliveCache;
+export async function ensureWorkerAliveOnce(options: EnsureWorkerRunningOptions = {}): Promise<boolean> {
+  if (aliveCache === true) return true;
+  if (aliveCache === false && options.allowLazySpawn !== false) return false;
+
+  const alive = await ensureWorkerRunning(options);
+  if (alive || options.allowLazySpawn !== false) {
+    aliveCache = alive;
+  }
+  return alive;
 }
 
 interface HookFailureState {
@@ -640,6 +655,7 @@ export function isWorkerFallback<T>(result: WorkerCallResult<T>): result is Work
 
 export interface WorkerFallbackOptions {
   timeoutMs?: number;
+  allowLazySpawn?: boolean;
 }
 
 export async function executeWithWorkerFallback<T = unknown>(
@@ -648,7 +664,7 @@ export async function executeWithWorkerFallback<T = unknown>(
   body?: unknown,
   options: WorkerFallbackOptions = {},
 ): Promise<WorkerCallResult<T>> {
-  const alive = await ensureWorkerAliveOnce();
+  const alive = await ensureWorkerAliveOnce({ allowLazySpawn: options.allowLazySpawn });
   if (!alive) {
     await recordWorkerUnreachable();
     return { continue: true, reason: 'worker_unreachable', [WORKER_FALLBACK_BRAND]: true };
