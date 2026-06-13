@@ -64,11 +64,9 @@ describe('Database PRAGMAs', () => {
     try {
       expect(getBusyTimeout(store.db)).toBe(SQLITE_BUSY_TIMEOUT_MS);
     } finally {
-      // Checkpoint before closing to flush WAL
       try {
         store.db.run('PRAGMA wal_checkpoint(TRUNCATE)');
       } catch (e) {
-        // Ignore checkpoint errors
       }
       store.close();
       if (process.platform === 'win32') {
