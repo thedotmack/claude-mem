@@ -47,8 +47,8 @@ export function TerminalPreview({ content, isLoading = false, className = '' }: 
     fontSize: '12px',
     lineHeight: '1.6',
     overflow: 'auto',
-    color: 'var(--color-text-primary)',
-    backgroundColor: 'var(--color-bg-card)',
+    color: 'var(--fg)',
+    backgroundColor: 'var(--surface-sunken)',
     whiteSpace: wordWrap ? 'pre-wrap' : 'pre',
     wordBreak: wordWrap ? 'break-word' : 'normal',
     position: 'absolute',
@@ -59,8 +59,8 @@ export function TerminalPreview({ content, isLoading = false, className = '' }: 
     <div
       className={className}
       style={{
-        backgroundColor: 'var(--color-bg-card)',
-        border: '1px solid var(--color-border-primary)',
+        backgroundColor: 'var(--surface)',
+        border: '1px solid var(--border)',
         borderRadius: '8px',
         overflow: 'hidden',
         height: '100%',
@@ -73,11 +73,11 @@ export function TerminalPreview({ content, isLoading = false, className = '' }: 
       <div
         style={{
           padding: '12px',
-          borderBottom: '1px solid var(--color-border-primary)',
+          borderBottom: '1px solid var(--border)',
           display: 'flex',
           gap: '6px',
           alignItems: 'center',
-          backgroundColor: 'var(--color-bg-header)'
+          backgroundColor: 'var(--surface)'
         }}
       >
         <div style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: '#ff5f57' }} />
@@ -91,22 +91,22 @@ export function TerminalPreview({ content, isLoading = false, className = '' }: 
             padding: '4px 8px',
             fontSize: '11px',
             fontWeight: 500,
-            color: wordWrap ? 'var(--color-text-secondary)' : 'var(--color-accent-primary)',
+            color: wordWrap ? 'var(--fg-2)' : 'var(--coral-500)',
             backgroundColor: 'transparent',
             border: '1px solid',
-            borderColor: wordWrap ? 'var(--color-border-primary)' : 'var(--color-accent-primary)',
+            borderColor: wordWrap ? 'var(--border)' : 'var(--coral-500)',
             borderRadius: '4px',
             cursor: 'pointer',
             transition: 'all 0.2s',
             whiteSpace: 'nowrap'
           }}
           onMouseEnter={(e) => {
-            e.currentTarget.style.borderColor = 'var(--color-accent-primary)';
-            e.currentTarget.style.color = 'var(--color-accent-primary)';
+            e.currentTarget.style.borderColor = 'var(--coral-500)';
+            e.currentTarget.style.color = 'var(--coral-500)';
           }}
           onMouseLeave={(e) => {
-            e.currentTarget.style.borderColor = wordWrap ? 'var(--color-border-primary)' : 'var(--color-accent-primary)';
-            e.currentTarget.style.color = wordWrap ? 'var(--color-text-secondary)' : 'var(--color-accent-primary)';
+            e.currentTarget.style.borderColor = wordWrap ? 'var(--border)' : 'var(--coral-500)';
+            e.currentTarget.style.color = wordWrap ? 'var(--fg-2)' : 'var(--coral-500)';
           }}
           title={wordWrap ? 'Disable word wrap (scroll horizontally)' : 'Enable word wrap'}
         >
@@ -121,7 +121,7 @@ export function TerminalPreview({ content, isLoading = false, className = '' }: 
             padding: '16px',
             fontFamily: 'var(--font-terminal)',
             fontSize: '12px',
-            color: 'var(--color-text-secondary)'
+            color: 'var(--fg-2)'
           }}
         >
           Loading preview...

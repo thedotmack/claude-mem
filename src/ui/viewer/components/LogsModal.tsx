@@ -67,6 +67,105 @@ interface LogsDrawerProps {
   onClose: () => void;
 }
 
+const CONSOLE_STYLES = `
+.console-drawer {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 120;
+  display: flex; flex-direction: column;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+  font-family: var(--font-sans);
+  color: var(--fg);
+}
+.console-resize-handle {
+  position: relative; height: 10px; flex: 0 0 auto;
+  display: grid; place-items: center; cursor: ns-resize;
+  background: var(--surface-sunken); border-bottom: 1px solid var(--border-soft);
+}
+.console-resize-bar { width: 44px; height: 4px; border-radius: var(--r-pill); background: var(--border); }
+.console-resize-handle:hover .console-resize-bar { background: var(--coral-300); }
+.console-header {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--surface);
+}
+.console-tabs { display: flex; gap: var(--space-2); }
+.console-tab {
+  font-family: var(--font-display); font-weight: 600; font-size: 0.9375rem;
+  color: var(--fg-3); padding: var(--space-1) var(--space-2);
+  border-radius: var(--r-sm);
+}
+.console-tab.active { color: var(--fg); }
+.console-controls { display: flex; align-items: center; gap: var(--space-2); }
+.console-auto-refresh {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 0.8125rem; font-weight: 600; color: var(--fg-2); cursor: pointer;
+}
+.console-auto-refresh input { accent-color: var(--coral-500); }
+.console-control-btn {
+  display: grid; place-items: center; width: 30px; height: 30px;
+  border-radius: var(--r-sm); border: 1px solid var(--border-soft);
+  background: var(--surface); color: var(--fg-2); font-size: 0.95rem;
+  transition: border-color var(--dur-fast, 140ms) var(--ease-out, ease), color var(--dur-fast, 140ms) var(--ease-out, ease), background var(--dur-fast, 140ms) var(--ease-out, ease);
+}
+.console-control-btn:hover { border-color: var(--coral-300); color: var(--fg); background: var(--surface-tint); }
+.console-control-btn:disabled { opacity: 0.5; cursor: default; }
+.console-clear-btn:hover { border-color: var(--danger); color: var(--danger); background: var(--danger-bg); }
+.console-filters {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4);
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--surface-sunken);
+}
+.console-filter-section { display: flex; align-items: center; gap: var(--space-2); }
+.console-filter-label {
+  font-size: 0.6875rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--fg-3);
+}
+.console-filter-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.console-filter-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  height: 24px; padding: 0 10px;
+  border-radius: var(--r-pill); border: 1px solid var(--border-soft);
+  background: var(--surface); color: var(--fg-3);
+  font-size: 0.75rem; font-weight: 600;
+  transition: border-color var(--dur-fast, 140ms) var(--ease-out, ease), color var(--dur-fast, 140ms) var(--ease-out, ease), background var(--dur-fast, 140ms) var(--ease-out, ease);
+}
+.console-filter-chip:hover { border-color: var(--border); color: var(--fg-2); }
+.console-filter-chip.active {
+  border-color: var(--chip-color, var(--coral-500));
+  color: var(--chip-color, var(--coral-600));
+  background: var(--surface-tint);
+}
+.console-filter-action {
+  display: grid; place-items: center; width: 24px; height: 24px;
+  border-radius: var(--r-pill); border: 1px solid var(--border-soft);
+  background: var(--surface); color: var(--fg-3); font-size: 0.7rem;
+}
+.console-filter-action:hover { border-color: var(--coral-300); color: var(--fg); }
+.console-error {
+  padding: var(--space-2) var(--space-4);
+  background: var(--danger-bg); color: var(--danger);
+  font-size: 0.8125rem; font-weight: 600;
+}
+.console-content {
+  flex: 1; overflow: auto;
+  background: var(--surface-sunken);
+  scrollbar-width: thin; scrollbar-color: var(--border) transparent;
+}
+.console-logs {
+  padding: var(--space-3) var(--space-4);
+  font-family: var(--font-mono); font-size: 0.78rem; line-height: 1.55;
+}
+.log-line { white-space: pre-wrap; word-break: break-word; }
+.log-line-raw { color: var(--fg-3); }
+.log-line-empty { color: var(--fg-3); font-style: italic; padding: var(--space-2) 0; }
+.log-timestamp { color: var(--fg-3); }
+.log-correlation { color: var(--info); }
+.log-message { color: inherit; }
+`;
+
 export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
   const [logs, setLogs] = useState<string>('');
   const [isLoading, setIsLoading] = useState(false);
@@ -249,7 +348,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
     const levelConfig = LOG_LEVELS.find(l => l.key === line.level);
     const componentConfig = LOG_COMPONENTS.find(c => c.key === line.component);
 
-    let color = 'var(--color-text-primary)';
+    let color = 'var(--fg)';
     let fontWeight = 'normal';
     let backgroundColor = 'transparent';
 
@@ -309,6 +408,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
 
   return (
     <div className="console-drawer" style={{ height: `${height}px` }}>
+      <style>{CONSOLE_STYLES}</style>
       <div
         className="console-resize-handle"
         onMouseDown={handleMouseDown}

@@ -117,6 +117,173 @@ function ToggleSwitch({
   );
 }
 
+const SETTINGS_STYLES = `
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 200;
+  display: flex; align-items: center; justify-content: center;
+  padding: var(--space-5);
+  background: rgba(42,28,21,0.32);
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  animation: cmFade var(--dur, 240ms) var(--ease-out, ease);
+}
+@keyframes cmFade { from { opacity: 0; } to { opacity: 1; } }
+.context-settings-modal {
+  display: flex; flex-direction: column;
+  width: min(960px, 100%); max-height: calc(100vh - 48px);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  box-shadow: var(--shadow-lg);
+  font-family: var(--font-sans); color: var(--fg);
+  overflow: hidden;
+  animation: cmPop var(--dur, 240ms) var(--ease-bounce, ease);
+}
+@keyframes cmPop { from { opacity: 0; transform: translateY(10px) scale(0.985); } to { opacity: 1; transform: none; } }
+
+.modal-header {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-4);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--border-soft);
+}
+.modal-header h2 { font-family: var(--font-display); font-weight: 600; font-size: 1.375rem; color: var(--fg); }
+.header-controls { display: flex; align-items: center; gap: var(--space-3); }
+.preview-selector {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 0.8125rem; font-weight: 600; color: var(--fg-3);
+}
+.preview-selector select {
+  appearance: none; -webkit-appearance: none;
+  background: var(--surface); color: var(--fg);
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  padding: 5px 10px; font-family: var(--font-sans); font-weight: 500; font-size: 0.8125rem;
+  cursor: pointer;
+}
+.preview-selector select:disabled { opacity: 0.5; cursor: default; }
+.modal-close-btn {
+  display: grid; place-items: center; width: 34px; height: 34px;
+  border-radius: var(--r-pill); border: 1px solid var(--border-soft);
+  background: var(--surface-sunken); color: var(--fg-3);
+  transition: color var(--dur-fast, 140ms) var(--ease-out, ease), background var(--dur-fast, 140ms) var(--ease-out, ease);
+}
+.modal-close-btn:hover { color: var(--fg); background: var(--surface-tint); }
+
+.modal-body {
+  flex: 1; min-height: 0;
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  overflow: hidden;
+}
+.preview-column {
+  display: flex; flex-direction: column; min-width: 0;
+  background: var(--surface-sunken);
+  border-right: 1px solid var(--border-soft);
+  overflow: auto;
+}
+.preview-content { flex: 1; padding: var(--space-4); min-height: 0; }
+.settings-column {
+  display: flex; flex-direction: column; gap: var(--space-3);
+  padding: var(--space-5);
+  overflow: auto;
+  scrollbar-width: thin; scrollbar-color: var(--border) transparent;
+}
+
+.settings-section-collapsible {
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  overflow: hidden;
+}
+.settings-section-collapsible.open { border-color: var(--border); }
+.section-header-btn {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);
+  width: 100%; padding: var(--space-3) var(--space-4); text-align: left;
+}
+.section-header-content { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.section-title { font-family: var(--font-display); font-weight: 600; font-size: 1rem; color: var(--fg); }
+.section-description { font-size: 0.8125rem; font-weight: 500; color: var(--fg-3); }
+.chevron-icon { color: var(--fg-3); flex: 0 0 auto; transition: transform var(--dur-fast, 140ms) var(--ease-out, ease); }
+.chevron-icon.rotated { transform: rotate(180deg); }
+.section-content {
+  display: flex; flex-direction: column; gap: var(--space-4);
+  padding: var(--space-2) var(--space-4) var(--space-4);
+  border-top: 1px solid var(--border-soft);
+}
+
+.form-field { display: flex; flex-direction: column; gap: 6px; }
+.form-field-label {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 0.8125rem; font-weight: 700; color: var(--fg-2);
+}
+.tooltip-trigger { display: inline-grid; place-items: center; color: var(--fg-3); cursor: help; }
+.form-field input,
+.form-field select {
+  appearance: none; -webkit-appearance: none;
+  width: 100%;
+  background: var(--surface); color: var(--fg);
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  padding: 9px 12px;
+  font-family: var(--font-sans); font-weight: 500; font-size: 0.9375rem;
+  transition: border-color var(--dur-fast, 140ms) var(--ease-out, ease), box-shadow var(--dur-fast, 140ms) var(--ease-out, ease);
+}
+.form-field input:focus,
+.form-field select:focus {
+  outline: none;
+  border-color: var(--coral-400);
+  box-shadow: 0 0 0 3px var(--ring);
+}
+.form-field input::placeholder { color: var(--fg-3); }
+
+.display-subsection { display: flex; flex-direction: column; gap: var(--space-3); }
+.subsection-label {
+  font-size: 0.6875rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--fg-3);
+}
+.toggle-group { display: flex; flex-direction: column; gap: var(--space-2); }
+.toggle-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.toggle-info { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.toggle-label { font-size: 0.875rem; font-weight: 600; color: var(--fg); }
+.toggle-description { font-size: 0.78rem; font-weight: 500; color: var(--fg-3); line-height: 1.4; }
+.toggle-switch {
+  position: relative; flex: 0 0 auto;
+  width: 40px; height: 24px; border-radius: var(--r-pill);
+  background: var(--surface-sunken); border: 1px solid var(--border);
+  transition: background var(--dur-fast, 140ms) var(--ease-out, ease), border-color var(--dur-fast, 140ms) var(--ease-out, ease);
+}
+.toggle-switch .toggle-knob {
+  position: absolute; top: 2px; left: 2px;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: var(--surface); box-shadow: var(--shadow-xs);
+  transition: transform var(--dur-fast, 140ms) var(--ease-bounce, ease);
+}
+.toggle-switch.on { background: var(--coral-500); border-color: var(--coral-500); }
+.toggle-switch.on .toggle-knob { transform: translateX(16px); background: var(--cream-50); }
+.toggle-switch.disabled { opacity: 0.5; cursor: default; }
+
+.modal-footer {
+  display: flex; align-items: center; justify-content: flex-end; gap: var(--space-4);
+  padding: var(--space-4) var(--space-5);
+  border-top: 1px solid var(--border-soft);
+  background: var(--surface);
+}
+.save-status { margin-right: auto; font-size: 0.8125rem; font-weight: 600; color: var(--fg-3); }
+.save-status .success { color: var(--success); }
+.save-status .error { color: var(--danger); }
+.save-btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  height: 40px; padding: 0 var(--space-6);
+  border-radius: var(--r-pill); background: var(--coral-500); color: var(--fg-on-coral);
+  font-family: var(--font-sans); font-weight: 700; font-size: 0.9375rem;
+  box-shadow: var(--shadow-coral);
+  transition: background var(--dur-fast, 140ms) var(--ease-out, ease);
+}
+.save-btn:hover { background: var(--coral-600); }
+.save-btn:disabled { opacity: 0.6; cursor: default; box-shadow: none; }
+
+@media (max-width: 720px) {
+  .modal-body { grid-template-columns: 1fr; }
+  .preview-column { border-right: none; border-bottom: 1px solid var(--border-soft); max-height: 240px; }
+}
+`;
+
 export function ContextSettingsModal({
   isOpen,
   onClose,
@@ -172,6 +339,7 @@ export function ContextSettingsModal({
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
+      <style>{SETTINGS_STYLES}</style>
       <div className="context-settings-modal" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="modal-header">
@@ -220,7 +388,7 @@ export function ContextSettingsModal({
           <div className="preview-column">
             <div className="preview-content">
               {error ? (
-                <div style={{ color: '#ff6b6b' }}>
+                <div style={{ color: 'var(--danger)' }}>
                   Error loading preview: {error}
                 </div>
               ) : (
