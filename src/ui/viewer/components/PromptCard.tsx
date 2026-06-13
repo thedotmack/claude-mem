@@ -1,12 +1,14 @@
 import React from 'react';
-import { UserPrompt } from '../types';
+import { UserPrompt, FeedItemType } from '../types';
 import { formatDate } from '../utils/formatters';
+import { DeleteButton } from './DeleteButton';
 
 interface PromptCardProps {
   prompt: UserPrompt;
+  onDelete: (itemType: FeedItemType, id: number) => void;
 }
 
-export function PromptCard({ prompt }: PromptCardProps) {
+export function PromptCard({ prompt, onDelete }: PromptCardProps) {
   const date = formatDate(prompt.created_at_epoch);
 
   return (
@@ -15,6 +17,9 @@ export function PromptCard({ prompt }: PromptCardProps) {
         <div className="card-header-left">
           <span className="card-type">Prompt</span>
           <span className="card-project">{prompt.project}</span>
+        </div>
+        <div className="view-mode-toggles">
+          <DeleteButton itemType="prompt" id={prompt.id} onDelete={onDelete} />
         </div>
       </div>
       <div className="card-content">

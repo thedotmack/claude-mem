@@ -8,8 +8,14 @@ import { useSettings } from './hooks/useSettings';
 import { useStats } from './hooks/useStats';
 import { usePagination } from './hooks/usePagination';
 import { useTheme } from './hooks/useTheme';
-import { Observation, Summary, UserPrompt } from './types';
+import { Observation, Summary, UserPrompt, FeedItemType } from './types';
 import { mergeAndDeduplicateByProject } from './utils/data';
+
+const DELETE_ENDPOINTS: Record<FeedItemType, string> = {
+  observation: '/api/observation',
+  summary: '/api/summary',
+  prompt: '/api/prompt',
+};
 
 export function App() {
   const [currentFilter, setCurrentFilter] = useState('');
@@ -80,6 +86,30 @@ export function App() {
     }
   }, [currentFilter, pagination.observations, pagination.summaries, pagination.prompts]);
 
+  // Delete a feed item: call the worker, then drop it from local paginated
+  // state. The worker also broadcasts an `item_deleted` SSE event, which clears
+  // the live copy here and in any other open viewer tab.
+  const handleDelete = useCallback(async (itemType: FeedItemType, id: number) => {
+    try {
+      const response = await fetch(`${DELETE_ENDPOINTS[itemType]}/${id}`, { method: 'DELETE' });
+      if (!response.ok) {
+        throw new Error(`Delete failed: ${response.statusText}`);
+      }
+
+      if (itemType === 'observation') {
+        setPaginatedObservations(prev => prev.filter(o => o.id !== id));
+      } else if (itemType === 'summary') {
+        setPaginatedSummaries(prev => prev.filter(s => s.id !== id));
+      } else {
+        setPaginatedPrompts(prev => prev.filter(p => p.id !== id));
+      }
+
+      refreshStats();
+    } catch (error) {
+      console.error('Failed to delete item:', error);
+    }
+  }, [refreshStats]);
+
   // Reset paginated data and load first page when filter changes
   useEffect(() => {
     setPaginatedObservations([]);
@@ -108,6 +138,7 @@ export function App() {
         summaries={allSummaries}
         prompts={allPrompts}
         onLoadMore={handleLoadMore}
+        onDelete={handleDelete}
         isLoading={pagination.observations.isLoading || pagination.summaries.isLoading || pagination.prompts.isLoading}
         hasMore={pagination.observations.hasMore || pagination.summaries.hasMore || pagination.prompts.hasMore}
       />

@@ -1,12 +1,14 @@
 import React from "react";
-import { Summary } from "../types";
+import { Summary, FeedItemType } from "../types";
 import { formatDate } from "../utils/formatters";
+import { DeleteButton } from "./DeleteButton";
 
 interface SummaryCardProps {
   summary: Summary;
+  onDelete: (itemType: FeedItemType, id: number) => void;
 }
 
-export function SummaryCard({ summary }: SummaryCardProps) {
+export function SummaryCard({ summary, onDelete }: SummaryCardProps) {
   const date = formatDate(summary.created_at_epoch);
 
   const sections = [
@@ -22,6 +24,7 @@ export function SummaryCard({ summary }: SummaryCardProps) {
         <div className="summary-badge-row">
           <span className="card-type summary-badge">Session Summary</span>
           <span className="summary-project-badge">{summary.project}</span>
+          <DeleteButton itemType="summary" id={summary.id} onDelete={onDelete} />
         </div>
         {summary.request && (
           <h2 className="summary-title">{summary.request}</h2>
