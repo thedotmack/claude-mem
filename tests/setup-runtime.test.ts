@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -160,43 +160,30 @@ describe('setup-runtime install marker', () => {
 
     it('reports installer timeouts explicitly when the child is killed', async () => {
       writeFileSync(join(tempDir, 'package.json'), '{}');
+      const fakeBunPath = process.platform === 'win32'
+        ? join(tempDir, 'fake-bun.cmd')
+        : join(tempDir, 'fake-bun');
+      if (process.platform === 'win32') {
+        writeFileSync(fakeBunPath, '@echo off\r\nping -n 60 127.0.0.1 >nul\r\n');
+      } else {
+        writeFileSync(fakeBunPath, '#!/usr/bin/env bash\nsleep 60\n');
+        chmodSync(fakeBunPath, 0o755);
+      }
 
-      const originalSetTimeout = global.setTimeout;
-      const originalClearTimeout = global.clearTimeout;
-      global.setTimeout = ((callback: (...args: any[]) => void) => {
-        callback();
-        return 1 as unknown as ReturnType<typeof setTimeout>;
-      }) as typeof setTimeout;
-      global.clearTimeout = (() => {}) as typeof clearTimeout;
-
-      mock.module('child_process', () => {
-        const original = require('node:child_process');
-        return {
-          ...original,
-          spawn: () => {
-            const child = {
-              stdout: { on: () => child.stdout },
-              stderr: { on: () => child.stderr },
-              kill: () => {},
-              on: (event: string, cb: (...args: any[]) => void) => {
-                if (event === 'close') queueMicrotask(() => cb(1, null));
-                return child;
-              },
-            };
-            return child;
-          },
-        };
-      });
+      const originalTimeoutOverride = process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS;
+      process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS = '1';
 
       try {
         const runtime = await import(`../src/npx-cli/install/setup-runtime.ts?timeout-test=${Date.now()}`);
-        await expect(runtime.installPluginDependencies(tempDir, 'bun')).rejects.toThrow(
-          'bun install timed out after 300000ms'
+        await expect(runtime.installPluginDependencies(tempDir, fakeBunPath)).rejects.toThrow(
+          'bun install timed out after 1ms'
         );
       } finally {
-        global.setTimeout = originalSetTimeout;
-        global.clearTimeout = originalClearTimeout;
-        mock.restore();
+        if (originalTimeoutOverride === undefined) {
+          delete process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS;
+        } else {
+          process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS = originalTimeoutOverride;
+        }
       }
     });
   });
