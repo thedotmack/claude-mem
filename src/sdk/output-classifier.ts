@@ -10,7 +10,7 @@
  * churn on benign idle output, and trigger recovery on a poisoned session.
  */
 
-export type ObserverOutputClass = 'xml' | 'idle' | 'prose' | 'poisoned';
+export type ObserverOutputClass = 'xml' | 'idle' | 'skip' | 'prose' | 'poisoned';
 
 const PREVIEW_LENGTH = 200;
 
@@ -29,6 +29,33 @@ const POISONED_MARKERS: string[] = [
   'i cannot continue this session',
   'session closed',
   'this session has ended',
+];
+
+// Conversational "I have nothing to emit" prose that the prompt explicitly
+// warns against ("Never reply with prose such as 'Skipping', 'No substantive
+// tool executions'…"). Some models (notably haiku) still produce these as
+// short parenthesized replies — "(no observations - insufficient data in
+// this observation window)", "(No tool executions observed yet…)", etc.
+// Treating them as plain prose accumulated `consecutiveInvalidOutputs` until
+// the respawn threshold fired, and the respawn re-queued the same low-signal
+// batch — infinite loop. Recognizing them as a benign `skip` lets the
+// processor confirm the batch and move on without churn. Lowercase substring
+// matched.
+const SKIP_PROSE_MARKERS: string[] = [
+  'no observations',
+  'no observation ',
+  'no substantive',
+  'insufficient data',
+  'nothing to observe',
+  'nothing to record',
+  'nothing to summarize',
+  'nothing worth recording',
+  'no tool execution',
+  'no relevant tool',
+  'no meaningful',
+  'empty - no',
+  'skipping',
+  'skip this',
 ];
 
 /**
@@ -53,6 +80,11 @@ export function previewOutput(raw: unknown, maxLength: number = PREVIEW_LENGTH):
  *                root tag. (Whether it ultimately yields rows is parseAgentXml's
  *                job; this is the structural gate.)
  * - `idle`     — empty / whitespace-only. Benign: the SDK had nothing to say.
+ * - `skip`     — short prose matching a known "no observations / insufficient
+ *                data / skipping" marker. The model declined this batch on
+ *                purpose; treat as benign and confirm without accumulating
+ *                toward respawn (the field repro of an infinite loop on
+ *                haiku-4.5).
  * - `poisoned` — a known "session exhausted"/closure string. Recover by killing
  *                and respawning the SDK session.
  * - `prose`    — any other non-XML text. Conversational output; not persisted.
@@ -74,6 +106,14 @@ export function classifyObserverOutput(raw: unknown): ObserverOutputClass {
 
   if (/<(observation|summary)\b/i.test(raw) || /<skip_summary\b/i.test(raw)) {
     return 'xml';
+  }
+
+  // Skip-prose detection runs after the XML gate so a real `<observation>`
+  // that happens to mention "no observations" in its narrative still parses.
+  for (const marker of SKIP_PROSE_MARKERS) {
+    if (lower.includes(marker)) {
+      return 'skip';
+    }
   }
 
   return 'prose';

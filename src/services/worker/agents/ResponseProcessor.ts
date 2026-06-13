@@ -58,6 +58,23 @@ export async function processAgentResponse(
     const outputClass = classifyObserverOutput(text);
     const preview = previewOutput(text);
 
+    // Recognized "no-op" prose ("(no observations - insufficient data…)" etc.)
+    // is the model deliberately declining a batch, not a wedge. Confirm and
+    // move on without bumping the respawn counter — field repro on haiku-4.5
+    // showed these accumulating to the threshold, triggering respawn, then
+    // re-queueing the same low-signal batch into the fresh session, looping
+    // forever. Treat as benign skip.
+    if (outputClass === 'skip') {
+      logger.info('PARSER', `${agentName} skipped batch (recognized no-op prose)`, {
+        sessionId: session.sessionDbId,
+        outputClass,
+        preview,
+      });
+      await sessionManager.confirmClaimedMessages(session.sessionDbId);
+      session.earliestPendingTimestamp = null;
+      return;
+    }
+
     session.consecutiveInvalidOutputs = (session.consecutiveInvalidOutputs ?? 0) + 1;
 
     logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response — ignoring queued batch`, {
@@ -94,6 +111,19 @@ export async function processAgentResponse(
         ide: session.platformSource,
         hook: session.lastGeneratorSource,
       });
+      // For accumulated idle/prose, confirm the offending batch BEFORE respawn
+      // so the fresh SDK session moves on to new work. Re-queueing the same
+      // low-signal batch that just exhausted the counter is what created the
+      // observer loop in the field (haiku-4.5 repeatedly returning
+      // "(no observations…)" — the new patterns above catch that earlier,
+      // but this is the defense-in-depth: any unrecognized prose that hits
+      // the threshold is also a sign the model can't usefully process it).
+      // Poisoned (context-wedge) batches are still preserved so the fresh
+      // session can retry them with a clean context window.
+      if (outputClass !== 'poisoned') {
+        await sessionManager.confirmClaimedMessages(session.sessionDbId);
+        session.earliestPendingTimestamp = null;
+      }
       await sessionManager.respawnPoisonedSession(session.sessionDbId);
       return;
     }

@@ -125,7 +125,7 @@ describe('poison respawn (plan-11 #2485)', () => {
     // First (threshold - 1) prose responses must NOT respawn.
     for (let i = 0; i < INVALID_OUTPUT_RESPAWN_THRESHOLD - 1; i++) {
       await processAgentResponse(
-        'Just some prose, no XML here.',
+        'Hmm, that one is ambiguous, I will consider it.',
         session, makeDbManager(), sm, mockWorker, 0, null, 'TestAgent'
       );
     }
@@ -134,10 +134,88 @@ describe('poison respawn (plan-11 #2485)', () => {
 
     // The Nth invalid output crosses the threshold and triggers respawn.
     await processAgentResponse(
-      'Still just prose.',
+      'Still ambiguous, hmm.',
       session, makeDbManager(), sm, mockWorker, 0, null, 'TestAgent'
     );
     expect(respawnSpy).toHaveBeenCalledWith(2);
+  });
+
+  it('recognized skip-prose never increments counter or respawns (fixes haiku-4.5 observer loop)', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(4, 'do the thing', 1);
+    session.memorySessionId = 'mem-4';
+    await sm.queueObservation(4, {
+      tool_name: 'Read', tool_input: {}, tool_response: {}, prompt_number: 1, toolUseId: 'tu-s',
+    });
+
+    const respawnSpy = spyOn(sm, 'respawnPoisonedSession');
+    const confirmSpy = spyOn(sm, 'confirmClaimedMessages');
+
+    // Many more than threshold of recognized skip-prose responses — the
+    // field repro pattern from haiku-4.5: model conversationally declines
+    // batches. Pre-fix this looped through respawn → re-queue → loop.
+    for (let i = 0; i < INVALID_OUTPUT_RESPAWN_THRESHOLD * 3; i++) {
+      await processAgentResponse(
+        '(no observations - insufficient data in this observation window)',
+        session, makeDbManager(), sm, mockWorker, 0, null, 'TestAgent'
+      );
+    }
+
+    expect(respawnSpy).not.toHaveBeenCalled();
+    expect(session.consecutiveInvalidOutputs ?? 0).toBe(0);
+    // Each skip confirms the (currently-empty) claimed set — call shape proves
+    // we took the skip path, not the prose-accumulator path.
+    expect(confirmSpy).toHaveBeenCalled();
+  });
+
+  it('threshold respawn on prose confirms the offending batch BEFORE respawn (breaks re-queue loop)', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(5, 'do the thing', 1);
+    session.memorySessionId = 'mem-5';
+    await sm.queueObservation(5, {
+      tool_name: 'Read', tool_input: {}, tool_response: {}, prompt_number: 1, toolUseId: 'tu-p',
+    });
+
+    const respawnSpy = spyOn(sm, 'respawnPoisonedSession');
+    const confirmSpy = spyOn(sm, 'confirmClaimedMessages');
+
+    for (let i = 0; i < INVALID_OUTPUT_RESPAWN_THRESHOLD; i++) {
+      await processAgentResponse(
+        'Hmm, that one is ambiguous, I will consider it.',
+        session, makeDbManager(), sm, mockWorker, 0, null, 'TestAgent'
+      );
+    }
+
+    expect(respawnSpy).toHaveBeenCalledWith(5);
+    // Confirm fired BEFORE respawn so the accumulated low-signal batches are
+    // not re-queued into the fresh session. Without this, the same batches
+    // re-trigger the same prose → counter climbs again → respawn loop.
+    expect(confirmSpy).toHaveBeenCalled();
+    const confirmOrder = confirmSpy.mock.invocationCallOrder.at(-1) ?? 0;
+    const respawnOrder = respawnSpy.mock.invocationCallOrder.at(-1) ?? 0;
+    expect(confirmOrder).toBeLessThan(respawnOrder);
+  });
+
+  it('threshold respawn on poisoned closure-string still PRESERVES pending (context wedge is recoverable)', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(6, 'do the thing', 1);
+    session.memorySessionId = 'mem-6';
+    await sm.queueObservation(6, {
+      tool_name: 'Read', tool_input: {}, tool_response: {}, prompt_number: 1, toolUseId: 'tu-z',
+    });
+
+    const respawnSpy = spyOn(sm, 'respawnPoisonedSession');
+    const confirmSpy = spyOn(sm, 'confirmClaimedMessages');
+
+    await processAgentResponse(
+      'This session has been exhausted; I cannot continue.',
+      session, makeDbManager(), sm, mockWorker, 0, null, 'TestAgent'
+    );
+
+    expect(respawnSpy).toHaveBeenCalledWith(6);
+    // Poisoned must NOT confirm — the batch was never truly processed, just
+    // unable to fit in this SDK context window. The fresh session retries it.
+    expect(confirmSpy).not.toHaveBeenCalled();
   });
 
   it('respawnPoisonedSession preserves the buffer and resets context', async () => {
