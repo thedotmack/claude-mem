@@ -81,6 +81,20 @@ export function useSSE() {
             }
             break;
 
+          case 'item_deleted':
+            if (typeof data.id === 'number' && data.itemType) {
+              const deletedId = data.id;
+              console.log('[SSE] Item deleted:', data.itemType, deletedId);
+              if (data.itemType === 'observation') {
+                setObservations(prev => prev.filter(o => o.id !== deletedId));
+              } else if (data.itemType === 'summary') {
+                setSummaries(prev => prev.filter(s => s.id !== deletedId));
+              } else if (data.itemType === 'prompt') {
+                setPrompts(prev => prev.filter(p => p.id !== deletedId));
+              }
+            }
+            break;
+
           case 'processing_status':
             if (typeof data.isProcessing === 'boolean') {
               console.log('[SSE] Processing status:', data.isProcessing, 'Queue depth:', data.queueDepth);

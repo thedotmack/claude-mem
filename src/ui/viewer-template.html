@@ -945,6 +945,40 @@
       opacity: 1;
     }
 
+    .card-delete-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--color-bg-tertiary);
+      border: 1px solid var(--color-border-primary);
+      padding: 4px 6px;
+      border-radius: 4px;
+      cursor: pointer;
+      color: var(--color-text-secondary);
+      transition: all 0.15s ease;
+      flex-shrink: 0;
+    }
+
+    .card-delete-btn svg {
+      flex-shrink: 0;
+      opacity: 0.7;
+      transition: opacity 0.15s ease;
+    }
+
+    .card-delete-btn:hover {
+      background: #fde8e8;
+      border-color: #e5534b;
+      color: #cf222e;
+    }
+
+    .card-delete-btn:hover svg {
+      opacity: 1;
+    }
+
+    .summary-badge-row .card-delete-btn {
+      margin-left: auto;
+    }
+
     .view-mode-content {
       margin-bottom: 12px;
     }

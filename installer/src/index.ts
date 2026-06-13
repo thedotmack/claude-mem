@@ -8,6 +8,7 @@ import { writeSettings } from './utils/settings-writer.js';
 import { runInstallation } from './steps/install.js';
 import { runWorkerStartup } from './steps/worker.js';
 import { runCompletion } from './steps/complete.js';
+import { runUninstall } from './steps/uninstall.js';
 
 async function runInstaller(): Promise<void> {
   if (!process.stdin.isTTY) {
@@ -17,6 +18,12 @@ async function runInstaller(): Promise<void> {
   }
 
   const installMode = await runWelcome();
+
+  // Uninstall is a self-contained flow — skip dependency checks and config.
+  if (installMode === 'uninstall') {
+    await runUninstall();
+    return;
+  }
 
   // Dependency checks (all modes)
   await runDependencyChecks();
