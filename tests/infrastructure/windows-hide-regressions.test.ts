@@ -6,25 +6,36 @@ function readSource(...parts: string[]): string {
   return readFileSync(join(import.meta.dir, '..', '..', ...parts), 'utf-8');
 }
 
+function expectWindowsHideNear(source: string, pattern: RegExp): void {
+  expect(source).toMatch(pattern);
+}
+
 describe('windowsHide regression coverage (#2900)', () => {
   it('keeps windowsHide on the remaining live spawn sites', () => {
-    expect(readSource('src', 'npx-cli', 'utils', 'bun-resolver.ts')).toContain(
-      "shell: IS_WINDOWS,\n    windowsHide: true,"
+    expectWindowsHideNear(
+      readSource('src', 'npx-cli', 'utils', 'bun-resolver.ts'),
+      /spawnSync\(whichCommand,\s*\['bun'\],\s*\{[\s\S]*?shell:\s*IS_WINDOWS,[\s\S]*?windowsHide:\s*true/s
     );
-    expect(readSource('src', 'services', 'infrastructure', 'ProcessManager.ts')).toContain(
-      "timeout: 5000,\n    windowsHide: true,"
+    expectWindowsHideNear(
+      readSource('src', 'services', 'infrastructure', 'ProcessManager.ts'),
+      /spawnSync\('git',\s*\['-C',\s*cwd,\s*\.\.\.args\],\s*\{[\s\S]*?timeout:\s*5000,[\s\S]*?windowsHide:\s*true/s
     );
-    expect(readSource('src', 'services', 'infrastructure', 'WorktreeAdoption.ts')).toContain(
-      "timeout: GIT_TIMEOUT_MS,\n    windowsHide: true,"
+    expectWindowsHideNear(
+      readSource('src', 'services', 'infrastructure', 'WorktreeAdoption.ts'),
+      /spawnSync\('git',\s*\['-C',\s*cwd,\s*\.\.\.args\],\s*\{[\s\S]*?timeout:\s*GIT_TIMEOUT_MS,[\s\S]*?windowsHide:\s*true/s
     );
-    expect(readSource('src', 'build', 'hook-shell-template.ts')).toContain(
-      "stdio:'inherit',windowsHide:true"
+    expectWindowsHideNear(
+      readSource('src', 'build', 'hook-shell-template.ts'),
+      /c\.spawn\(process\.execPath,\[[\s\S]*?\{stdio:'inherit',windowsHide:true\}/s
     );
-    expect(readSource('src', 'services', 'worker-service.ts')).toContain(
-      "stdio: 'inherit',\n    windowsHide: true,"
+    expectWindowsHideNear(
+      readSource('src', 'services', 'worker-service.ts'),
+      /spawn\(process\.execPath,\s*\[serverBetaScript,\s*command,\s*\.\.\.extraArgs\],\s*\{[\s\S]*?stdio:\s*'inherit',[\s\S]*?windowsHide:\s*true/s
     );
-    expect(readSource('src', 'server', 'runtime', 'ServerBetaService.ts')).toContain(
-      "stdio: 'ignore',\n    windowsHide: true,"
+    expectWindowsHideNear(
+      readSource('src', 'server', 'runtime', 'ServerBetaService.ts'),
+      /spawn\(process\.execPath,\s*\[scriptPath,\s*'--daemon'\],\s*\{[\s\S]*?stdio:\s*'ignore',[\s\S]*?windowsHide:\s*true/s
     );
+    expect(readSource('plugin', '.mcp.json')).toContain('windowsHide:true');
   });
 });
