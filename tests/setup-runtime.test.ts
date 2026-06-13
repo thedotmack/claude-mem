@@ -1,8 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync } from 'fs';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
 import { spawnSync } from 'child_process';
+import * as childProcess from 'child_process';
+import { EventEmitter } from 'events';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { PassThrough } from 'stream';
 import {
   getPluginDependencyInstallArgs,
   readInstallMarker,
@@ -26,6 +29,7 @@ function probeBunVersion(): string | null {
 
 describe('setup-runtime install marker', () => {
   let tempDir: string;
+  let spawnSpy: ReturnType<typeof spyOn> | undefined;
 
   beforeEach(() => {
     tempDir = join(
@@ -36,6 +40,8 @@ describe('setup-runtime install marker', () => {
   });
 
   afterEach(() => {
+    spawnSpy?.mockRestore();
+    spawnSpy = undefined;
     try {
       rmSync(tempDir, { recursive: true, force: true });
     } catch {
@@ -160,22 +166,29 @@ describe('setup-runtime install marker', () => {
 
     it('reports installer timeouts explicitly when the child is killed', async () => {
       writeFileSync(join(tempDir, 'package.json'), '{}');
-      const fakeBunPath = process.platform === 'win32'
-        ? join(tempDir, 'fake-bun.cmd')
-        : join(tempDir, 'fake-bun');
-      if (process.platform === 'win32') {
-        writeFileSync(fakeBunPath, '@echo off\r\nping -n 60 127.0.0.1 >nul\r\n');
-      } else {
-        writeFileSync(fakeBunPath, '#!/usr/bin/env bash\nsleep 60\n');
-        chmodSync(fakeBunPath, 0o755);
-      }
-
       const originalTimeoutOverride = process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS;
       process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS = '1';
 
       try {
+        spawnSpy = spyOn(childProcess, 'spawn').mockImplementation(() => {
+          const fakeChild = new EventEmitter() as EventEmitter & {
+            stdout: PassThrough;
+            stderr: PassThrough;
+            kill: () => boolean;
+          };
+          fakeChild.stdout = new PassThrough();
+          fakeChild.stderr = new PassThrough();
+          fakeChild.kill = () => {
+            setTimeout(() => {
+              fakeChild.emit('close', null, 'SIGTERM');
+            }, 0);
+            return true;
+          };
+          return fakeChild as unknown as ReturnType<typeof childProcess.spawn>;
+        });
+
         const runtime = await import(`../src/npx-cli/install/setup-runtime.ts?timeout-test=${Date.now()}`);
-        await expect(runtime.installPluginDependencies(tempDir, fakeBunPath)).rejects.toThrow(
+        await expect(runtime.installPluginDependencies(tempDir, 'fake-bun')).rejects.toThrow(
           'bun install timed out after 1ms'
         );
       } finally {

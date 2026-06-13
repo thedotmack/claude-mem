@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { execSync, spawn, spawnSync } from 'child_process';
+import * as childProcess from 'child_process';
 import { createRequire } from 'module';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -72,7 +72,7 @@ function markerPath(targetDir: string): string {
 
 function getBunPath(): string | null {
   try {
-    const result = spawnSync('bun', ['--version'], {
+    const result = childProcess.spawnSync('bun', ['--version'], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: IS_WINDOWS,
@@ -94,7 +94,7 @@ function getBunVersion(): string | null {
   if (!bunPath) return null;
 
   try {
-    const result = spawnSync(bunPath, ['--version'], {
+    const result = childProcess.spawnSync(bunPath, ['--version'], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: IS_WINDOWS,
@@ -107,7 +107,7 @@ function getBunVersion(): string | null {
 
 function getUvPath(): string | null {
   try {
-    const result = spawnSync('uv', ['--version'], {
+    const result = childProcess.spawnSync('uv', ['--version'], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: IS_WINDOWS,
@@ -129,7 +129,7 @@ function getUvVersion(): string | null {
   if (!uvPath) return null;
 
   try {
-    const result = spawnSync(uvPath, ['--version'], {
+    const result = childProcess.spawnSync(uvPath, ['--version'], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: IS_WINDOWS,
@@ -157,13 +157,13 @@ function describeExecError(error: unknown): string {
 function installBun(): void {
   try {
     if (IS_WINDOWS) {
-      execSync('powershell -c "irm bun.sh/install.ps1 | iex"', {
+      childProcess.execSync('powershell -c "irm bun.sh/install.ps1 | iex"', {
         stdio: 'pipe',
         timeout: INSTALL_TIMEOUT_MS,
         shell: process.env.ComSpec ?? 'cmd.exe',
       });
     } else {
-      execSync('curl -fsSL https://bun.sh/install | bash', {
+      childProcess.execSync('curl -fsSL https://bun.sh/install | bash', {
         stdio: 'pipe',
         timeout: INSTALL_TIMEOUT_MS,
         shell: '/bin/bash',
@@ -189,13 +189,13 @@ function installBun(): void {
 function installUv(): void {
   try {
     if (IS_WINDOWS) {
-      execSync('powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"', {
+      childProcess.execSync('powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"', {
         stdio: 'pipe',
         timeout: INSTALL_TIMEOUT_MS,
         shell: process.env.ComSpec ?? 'cmd.exe',
       });
     } else {
-      execSync('curl -LsSf https://astral.sh/uv/install.sh | sh', {
+      childProcess.execSync('curl -LsSf https://astral.sh/uv/install.sh | sh', {
         stdio: 'pipe',
         timeout: INSTALL_TIMEOUT_MS,
         shell: '/bin/bash',
@@ -414,7 +414,7 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
     // Async spawn (not spawnSync): a blocked event loop freezes the installer's
     // clack spinner for the duration of the install, which reads as a stall.
     await new Promise<void>((resolve, reject) => {
-      const child = spawn(bunPath, installArgs, {
+      const child = childProcess.spawn(bunPath, installArgs, {
         cwd: targetDir,
         shell: false,
         stdio: ['pipe', 'pipe', 'pipe'],
