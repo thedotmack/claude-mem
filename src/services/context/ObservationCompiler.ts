@@ -18,7 +18,8 @@ import { SUMMARY_LOOKAHEAD } from './types.js';
 export function queryObservations(
   db: SessionStore,
   project: string,
-  config: ContextConfig
+  config: ContextConfig,
+  memorySessionId?: string
 ): Observation[] {
   const typeArray = Array.from(config.observationTypes);
   const typePlaceholders = typeArray.map(() => '?').join(',');
@@ -44,6 +45,7 @@ export function queryObservations(
     FROM observations o
     LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
     WHERE (o.project = ? OR o.merged_into_project = ?)
+      ${memorySessionId ? 'AND o.memory_session_id = ?' : ''}
       AND type IN (${typePlaceholders})
       AND EXISTS (
         SELECT 1 FROM json_each(o.concepts)
@@ -54,6 +56,7 @@ export function queryObservations(
   `).all(
     project,
     project,
+    ...(memorySessionId ? [memorySessionId] : []),
     ...typeArray,
     ...conceptArray,
     config.totalObservationCount
@@ -63,7 +66,8 @@ export function queryObservations(
 export function querySummaries(
   db: SessionStore,
   project: string,
-  config: ContextConfig
+  config: ContextConfig,
+  memorySessionId?: string
 ): SessionSummary[] {
   return db.db.prepare(`
     SELECT
@@ -80,15 +84,22 @@ export function querySummaries(
     FROM session_summaries ss
     LEFT JOIN sdk_sessions s ON ss.memory_session_id = s.memory_session_id
     WHERE (ss.project = ? OR ss.merged_into_project = ?)
+      ${memorySessionId ? 'AND ss.memory_session_id = ?' : ''}
     ORDER BY ss.created_at_epoch DESC
     LIMIT ?
-  `).all(project, project, config.sessionCount + SUMMARY_LOOKAHEAD) as SessionSummary[];
+  `).all(
+    project,
+    project,
+    ...(memorySessionId ? [memorySessionId] : []),
+    config.sessionCount + SUMMARY_LOOKAHEAD
+  ) as SessionSummary[];
 }
 
 export function queryObservationsMulti(
   db: SessionStore,
   projects: string[],
-  config: ContextConfig
+  config: ContextConfig,
+  memorySessionId?: string
 ): Observation[] {
   const typeArray = Array.from(config.observationTypes);
   const typePlaceholders = typeArray.map(() => '?').join(',');
@@ -118,6 +129,7 @@ export function queryObservationsMulti(
     LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
     WHERE (o.project IN (${projectPlaceholders})
            OR o.merged_into_project IN (${projectPlaceholders}))
+      ${memorySessionId ? 'AND o.memory_session_id = ?' : ''}
       AND type IN (${typePlaceholders})
       AND EXISTS (
         SELECT 1 FROM json_each(o.concepts)
@@ -128,6 +140,7 @@ export function queryObservationsMulti(
   `).all(
     ...projects,
     ...projects,
+    ...(memorySessionId ? [memorySessionId] : []),
     ...typeArray,
     ...conceptArray,
     config.totalObservationCount
@@ -148,7 +161,8 @@ export function countObservationsByProjects(db: SessionStore, projects: string[]
 export function querySummariesMulti(
   db: SessionStore,
   projects: string[],
-  config: ContextConfig
+  config: ContextConfig,
+  memorySessionId?: string
 ): SessionSummary[] {
   const projectPlaceholders = projects.map(() => '?').join(',');
 
@@ -169,9 +183,15 @@ export function querySummariesMulti(
     LEFT JOIN sdk_sessions s ON ss.memory_session_id = s.memory_session_id
     WHERE (ss.project IN (${projectPlaceholders})
            OR ss.merged_into_project IN (${projectPlaceholders}))
+      ${memorySessionId ? 'AND ss.memory_session_id = ?' : ''}
     ORDER BY ss.created_at_epoch DESC
     LIMIT ?
-  `).all(...projects, ...projects, config.sessionCount + SUMMARY_LOOKAHEAD) as SessionSummary[];
+  `).all(
+    ...projects,
+    ...projects,
+    ...(memorySessionId ? [memorySessionId] : []),
+    config.sessionCount + SUMMARY_LOOKAHEAD
+  ) as SessionSummary[];
 }
 
 export function cwdToDashed(cwd: string): string {

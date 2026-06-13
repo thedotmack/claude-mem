@@ -181,12 +181,13 @@ export async function generateContextWithStats(
   }
 
   try {
+    const currentSessionId = input?.session_id;
     const observations = projects.length > 1
-      ? queryObservationsMulti(db, projects, config)
-      : queryObservations(db, project, config);
+      ? queryObservationsMulti(db, projects, config, currentSessionId)
+      : queryObservations(db, project, config, currentSessionId);
     const summaries = projects.length > 1
-      ? querySummariesMulti(db, projects, config)
-      : querySummaries(db, project, config);
+      ? querySummariesMulti(db, projects, config, currentSessionId)
+      : querySummaries(db, project, config, currentSessionId);
 
     if (observations.length === 0 && summaries.length === 0) {
       return { text: renderEmptyState(project, forHuman), stats: null };
@@ -198,7 +199,7 @@ export async function generateContextWithStats(
       summaries,
       config,
       cwd,
-      input?.session_id,
+      currentSessionId,
       forHuman
     );
 
