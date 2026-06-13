@@ -114,6 +114,25 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'error_mode',
   'consecutive_failures',
   'threshold_tripped',
+  // Historical backfill (backfill.ts) — anonymous per-day rollup counters,
+  // the backfilled:true flag, and the single inferred-install date string
+  // (YYYY-MM-DD). Counts/sums and closed-enum buckets only — never project
+  // names, prompt text, or any raw string column. observation_count,
+  // session_count, and the obs_type_* family are shared with live
+  // context_injected above (different per-event semantics — see PR notes).
+  'discovery_tokens',
+  'summary_count',
+  'prompt_count',
+  'project_count',
+  'backfilled',
+  'first_active_date',
+  'session_completed_count',
+  'session_failed_count',
+  'sessions_claude_count',
+  'sessions_codex_count',
+  'sessions_gemini_count',
+  'sessions_other_platform_count',
+  'subagent_obs_count',
 ]);
 
 const MAX_STRING_LENGTH = 200;
