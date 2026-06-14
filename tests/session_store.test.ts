@@ -111,6 +111,35 @@ describe('SessionStore', () => {
     expect(ids).not.toContain(olderDuplicateId);
   });
 
+  it('should treat orphan OpenClaw observations as openclaw in paginated results', () => {
+    const sdkId = store.createSDKSession('openclaw-devops-main', 'openclaw-devops', 'initial prompt', undefined, 'openclaw');
+    store.updateMemorySessionId(sdkId, 'orphan-openclaw-memory');
+    store.storeObservation('orphan-openclaw-memory', 'openclaw-devops', {
+      type: 'discovery',
+      title: 'OpenClaw orphan',
+      subtitle: null,
+      facts: [],
+      narrative: 'orphan openclaw observation',
+      concepts: [],
+      files_read: [],
+      files_modified: [],
+    }, 1);
+    store.db.run('PRAGMA foreign_keys = OFF');
+    store.db.prepare('DELETE FROM sdk_sessions WHERE id = ?').run(sdkId);
+    store.db.run('PRAGMA foreign_keys = ON');
+
+    const helper = new PaginationHelper({
+      getSessionStore: () => store,
+    } as any);
+
+    const openclawItems = helper.getObservations(0, 10, undefined, 'openclaw').items;
+    const claudeItems = helper.getObservations(0, 10, undefined, 'claude').items;
+
+    expect(openclawItems).toHaveLength(1);
+    expect(openclawItems[0].platform_source).toBe('openclaw');
+    expect(claudeItems).toHaveLength(0);
+  });
+
   it('should store observation with timestamp override', () => {
     const claudeId = 'claude-sess-obs';
     const memoryId = 'memory-sess-obs';

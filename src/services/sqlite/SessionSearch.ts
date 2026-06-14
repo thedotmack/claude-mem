@@ -4,6 +4,7 @@ import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { isDirectChild } from '../../shared/path-utils.js';
 import { AppError } from '../server/ErrorHandler.js';
+import { platformSourceSubquerySql } from './platform-source-sql.js';
 import {
   ObservationSearchResult,
   SessionSummarySearchResult,
@@ -161,15 +162,11 @@ export class SessionSearch {
     }
 
     // Source-scoping (#2389): when a platformSource is supplied, restrict to
-    // rows whose owning sdk_session has that platform_source. observations and
-    // session_summaries both carry memory_session_id, which is the FK into
-    // sdk_sessions. COALESCE mirrors PaginationHelper: legacy rows with a NULL
-    // platform_source are treated as 'claude' so they never bleed into a
-    // codex/other-agent search.
+    // rows whose owning sdk_session has that platform_source. OpenClaw project
+    // rows without a session are treated as OpenClaw; other legacy null-source
+    // rows remain Claude so they never bleed into a codex/other-agent search.
     if (filters.platformSource) {
-      conditions.push(
-        `COALESCE((SELECT s2.platform_source FROM sdk_sessions s2 WHERE s2.memory_session_id = ${tableAlias}.memory_session_id), 'claude') = ?`
-      );
+      conditions.push(`${platformSourceSubquerySql(tableAlias)} = ?`);
       params.push(filters.platformSource);
     }
 

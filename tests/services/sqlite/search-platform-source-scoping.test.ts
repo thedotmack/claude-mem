@@ -65,4 +65,41 @@ describe('search platform_source scoping', () => {
     expect(results.length).toBe(1);
     expect(results[0].memory_session_id).toBe('codex-mem');
   });
+
+  it('treats orphan OpenClaw project rows as openclaw, not claude', () => {
+    const sdkId = store.createSDKSession(
+      'openclaw-devops-main',
+      'openclaw-devops',
+      'prompt',
+      undefined,
+      'openclaw',
+    );
+    store.ensureMemorySessionIdRegistered(sdkId, 'openclaw-orphan-mem');
+    store.storeObservation('openclaw-orphan-mem', 'openclaw-devops', {
+      type: 'discovery',
+      title: 'OpenClaw orphan finding',
+      subtitle: null,
+      facts: [],
+      narrative: 'shared scoping keyword from openclaw orphan',
+      concepts: [],
+      files_read: [],
+      files_modified: [],
+    }, 1);
+    store.db.run('PRAGMA foreign_keys = OFF');
+    store.db.prepare('DELETE FROM sdk_sessions WHERE id = ?').run(sdkId);
+    store.db.run('PRAGMA foreign_keys = ON');
+
+    const openclawResults = search.searchObservations('openclaw orphan', {
+      platformSource: 'openclaw',
+      project: 'openclaw-devops',
+    });
+    const claudeResults = search.searchObservations('openclaw orphan', {
+      platformSource: 'claude',
+      project: 'openclaw-devops',
+    });
+
+    expect(openclawResults.length).toBe(1);
+    expect(openclawResults[0].memory_session_id).toBe('openclaw-orphan-mem');
+    expect(claudeResults.length).toBe(0);
+  });
 });

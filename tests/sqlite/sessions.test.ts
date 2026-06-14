@@ -183,6 +183,30 @@ describe('Sessions Module', () => {
       expect(session?.platform_source).toBe('openclaw');
     });
 
+    it('should correct OpenClaw sessions previously defaulted to claude', () => {
+      const contentSessionId = 'openclaw-devops-main';
+      const sessionId = createSDKSession(
+        db,
+        contentSessionId,
+        'openclaw-devops',
+        'prompt'
+      );
+      let session = getSessionById(db, sessionId);
+      expect(session?.platform_source).toBe('claude');
+
+      createSDKSession(
+        db,
+        contentSessionId,
+        'openclaw-devops',
+        'prompt',
+        undefined,
+        'openclaw'
+      );
+
+      session = getSessionById(db, sessionId);
+      expect(session?.platform_source).toBe('openclaw');
+    });
+
     it('should correct Codex repo sessions previously misclassified as openclaw by project prefix', () => {
       const contentSessionId = 'codex-session-openclaw-repo';
       const sessionId = createSDKSession(

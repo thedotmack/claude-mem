@@ -29,6 +29,9 @@ function shouldCorrectPlatformSource(
   receivedPlatformSource: string
 ): boolean {
   const strongOpenClawSession = isStrongOpenClawSessionSource(contentSessionId, project);
+  if (storedPlatformSource === 'claude' && receivedPlatformSource === 'openclaw') {
+    return strongOpenClawSession;
+  }
   if (storedPlatformSource === 'codex' && receivedPlatformSource === 'openclaw') {
     return strongOpenClawSession;
   }
