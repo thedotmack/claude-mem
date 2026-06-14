@@ -2,6 +2,7 @@
 import { ParsedObservation } from '../../sdk/parser.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { logger } from '../../utils/logger.js';
 
 export interface TelegramNotifyInput {
@@ -9,6 +10,7 @@ export interface TelegramNotifyInput {
   observationIds: number[];
   project: string;
   memorySessionId: string;
+  platformSource?: string;
 }
 
 const MARKDOWN_V2_RESERVED = /[_*\[\]()~`>#+\-=|{}.!\\]/g;
@@ -18,6 +20,28 @@ const TYPE_EMOJI: Record<string, string> = {
   security_note: '🔐',
 };
 const DEFAULT_EMOJI = '🔔';
+
+function platformSessionLabel(platformSource: string | undefined): string {
+  switch (normalizePlatformSource(platformSource)) {
+    case 'codex':
+      return 'Codex Session';
+    case 'cursor':
+      return 'Cursor Session';
+    case 'openclaw':
+      return 'OpenClaw Session';
+    default:
+      return 'Claude Code Session';
+  }
+}
+
+function normalizeDisplayTextForPlatform(value: string | null | undefined, platformSource: string | undefined): string {
+  const text = value ?? '';
+  if (normalizePlatformSource(platformSource) === 'claude') {
+    return text;
+  }
+
+  return text.replace(/\bClaude Code Session\b/gi, platformSessionLabel(platformSource));
+}
 
 function escapeMarkdownV2(value: string): string {
   return value.replace(MARKDOWN_V2_RESERVED, '\\$&');
@@ -30,16 +54,17 @@ function splitCsv(value: string): string[] {
     .filter(entry => entry.length > 0);
 }
 
-function formatMessage(
+export function formatMessage(
   obs: ParsedObservation,
   project: string,
   memorySessionId: string,
   observationId: number,
+  platformSource?: string,
 ): string {
   const emoji = TYPE_EMOJI[obs.type] ?? DEFAULT_EMOJI;
   const type = escapeMarkdownV2(obs.type);
-  const title = escapeMarkdownV2(obs.title ?? '');
-  const subtitle = escapeMarkdownV2(obs.subtitle ?? '');
+  const title = escapeMarkdownV2(normalizeDisplayTextForPlatform(obs.title, platformSource));
+  const subtitle = escapeMarkdownV2(normalizeDisplayTextForPlatform(obs.subtitle, platformSource));
   const projectEscaped = escapeMarkdownV2(project);
   const idEscaped = escapeMarkdownV2(String(observationId));
   return `${emoji} *${type}* — ${title}\n${subtitle}\nProject: \`${projectEscaped}\` · obs \\#${idEscaped}`;
@@ -82,7 +107,7 @@ export async function notifyTelegram(input: TelegramNotifyInput): Promise<void> 
     return;
   }
 
-  const { observations, observationIds, project, memorySessionId } = input;
+  const { observations, observationIds, project, memorySessionId, platformSource } = input;
   for (let i = 0; i < observations.length; i++) {
     const obs = observations[i];
     const matchesType = triggerTypes.includes(obs.type);
@@ -93,7 +118,7 @@ export async function notifyTelegram(input: TelegramNotifyInput): Promise<void> 
 
     const observationId = observationIds[i];
     try {
-      const text = formatMessage(obs, project, memorySessionId, observationId);
+      const text = formatMessage(obs, project, memorySessionId, observationId, platformSource);
       await postOne(botToken, chatId, text);
     } catch (error) {
       logger.warn('TELEGRAM', 'Failed to send Telegram notification', {

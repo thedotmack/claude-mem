@@ -280,6 +280,7 @@ export async function processAgentResponse(
     observationIds: result.observationIds,
     project: session.project,
     memorySessionId: session.memorySessionId,
+    platformSource: session.platformSource,
   });
 
   await syncAndBroadcastObservations(
