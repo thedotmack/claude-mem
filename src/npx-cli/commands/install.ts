@@ -743,19 +743,29 @@ async function runNpmInstallInMarketplace(summary: InstallSummary): Promise<void
 function mergeSettings(updates: Record<string, string>): boolean {
   const path = USER_SETTINGS_PATH;
   try {
-    let current: Record<string, unknown> = {};
+    // Read the full document. The Claude-Code-style settings.json wraps env
+    // vars in a top-level `env` block and exposes peer keys at the root
+    // (hooks, permissions, apiKeyHelper, model, statusLine, etc.). The
+    // previous behavior of cloning ONLY `parsed.env` into `current` and
+    // writing `current` back as the entire file silently dropped every
+    // non-env top-level key — destroying user configuration that
+    // disableClaudeAutoMemory + writeJsonFileAtomic had carefully written.
+    //
+    // Track whether the file uses the env-nested shape so we can write
+    // back in the same shape, mutating only the relevant subtree.
+    let document: Record<string, unknown> = {};
+    let envNested = false;
     if (existsSync(path)) {
       try {
         const raw = readFileSync(path, 'utf-8');
         const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === 'object' && parsed.env && typeof parsed.env === 'object') {
-          current = { ...parsed.env };
-        } else if (parsed && typeof parsed === 'object') {
-          current = { ...parsed };
+        if (parsed && typeof parsed === 'object') {
+          document = parsed as Record<string, unknown>;
+          envNested = typeof document.env === 'object' && document.env !== null;
         }
       } catch (parseError: unknown) {
         console.warn('[install] Failed to parse existing settings.json, starting from empty:', parseError instanceof Error ? parseError.message : String(parseError));
-        current = {};
+        document = {};
       }
     } else {
       const dir = dirname(path);
@@ -764,11 +774,14 @@ function mergeSettings(updates: Record<string, string>): boolean {
       }
     }
 
+    const target = envNested
+      ? (document.env as Record<string, unknown>)
+      : document;
     for (const [key, value] of Object.entries(updates)) {
-      current[key] = value;
+      target[key] = value;
     }
 
-    writeFileSync(path, JSON.stringify(current, null, 2), 'utf-8');
+    writeFileSync(path, JSON.stringify(document, null, 2), 'utf-8');
     return true;
   } catch (error: unknown) {
     log.error(`Failed to write settings to ${path}: ${error instanceof Error ? error.message : String(error)}`);
