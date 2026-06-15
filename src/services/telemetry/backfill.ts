@@ -60,6 +60,23 @@ const BACKFILL_NAMESPACE = '8a9c2f4e-31b7-5d68-9c4a-f02e6d5b8a17';
 const BACKFILL_MARKER_FILENAME = 'backfill.json';
 
 /**
+ * Schema version of the backfill payload. Bump this whenever the rollup gains
+ * keys that already-backfilled installs must receive (a marker written by an
+ * older version re-runs so the enriched series reaches the existing base — not
+ * just fresh installs).
+ *
+ *   1 — original anonymized daily rollups (#2912).
+ *   2 — adds read_tokens / tokens_saved_vs_naive economics.
+ *
+ * A re-run is safe and does NOT double count: every event keeps its
+ * deterministic per-(installId, event, day) uuid, so PostHog's
+ * historical-migration dedup replaces each event in place with the enriched
+ * copy rather than appending a second row. Markers predating this field are
+ * treated as version 1.
+ */
+export const BACKFILL_VERSION = 2;
+
+/**
  * Mirror of the private STAT_TYPE_BUCKETS set in
  * src/services/context/ContextBuilder.ts — the closed observation-type
  * vocabulary live `context_injected` events use. Everything else buckets to
@@ -99,6 +116,8 @@ interface BackfillMarker {
   throughDay: string;
   eventCount: number;
   installId: string;
+  /** Schema version the marker was written at. Absent ⇒ legacy version 1. */
+  version: number;
 }
 
 function getBackfillMarkerPath(): string {
@@ -106,13 +125,24 @@ function getBackfillMarkerPath(): string {
 }
 
 /**
- * True when a completion marker exists. A corrupt marker file still counts as
- * complete: a marker was written at some point, and duplicate sends are worse
- * than a gap (PostHog data cannot be selectively deleted).
+ * True when a completion marker for the CURRENT schema version exists. A marker
+ * written by an older BACKFILL_VERSION counts as incomplete so already-
+ * backfilled installs re-run and pick up the enriched rollup keys — without it,
+ * the one-shot marker would pin them forever to whatever shipped when they
+ * first backfilled (the read_tokens / tokens_saved_vs_naive series would only
+ * ever reach fresh installs).
+ *
+ * A corrupt marker file still counts as complete: a marker was written at some
+ * point, and duplicate sends are worse than a gap (PostHog data cannot be
+ * selectively deleted). A marker missing the `version` field is a legacy
+ * version-1 marker.
  */
 function isBackfillComplete(): boolean {
   try {
-    return readJsonSafe<Partial<BackfillMarker> | null>(getBackfillMarkerPath(), null) !== null;
+    const marker = readJsonSafe<Partial<BackfillMarker> | null>(getBackfillMarkerPath(), null);
+    if (marker === null) return false;
+    const version = typeof marker.version === 'number' ? marker.version : 1;
+    return version >= BACKFILL_VERSION;
   } catch {
     return true;
   }
@@ -540,6 +570,7 @@ export async function runHistoricalBackfill(db: Database): Promise<void> {
         throughDay: lastFullDay,
         eventCount: 0,
         installId,
+        version: BACKFILL_VERSION,
       });
       return;
     }
@@ -588,6 +619,7 @@ export async function runHistoricalBackfill(db: Database): Promise<void> {
         throughDay: lastFullDay,
         eventCount: events.length,
         installId,
+        version: BACKFILL_VERSION,
       });
       logger.info('SYSTEM', 'Telemetry historical backfill complete', {
         eventCount: events.length,

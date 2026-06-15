@@ -16,6 +16,7 @@ import {
   buildBackfillEvents,
   runHistoricalBackfill,
   PROJECT_EPOCH_FLOOR,
+  BACKFILL_VERSION,
 } from '../../src/services/telemetry/backfill';
 import { scrubProperties } from '../../src/services/telemetry/scrub';
 import { __resetTelemetryForTests } from '../../src/services/telemetry/telemetry';
@@ -438,14 +439,50 @@ describe('runHistoricalBackfill gates', () => {
     expect(existsSync(markerPath())).toBe(false);
   });
 
-  it('(j) existing marker: returns before doing anything', async () => {
+  it('(j) current-version marker: returns before doing anything', async () => {
+    writeFileSync(
+      markerPath(),
+      JSON.stringify({
+        completedAt: 'x',
+        throughDay: '2026-01-01',
+        eventCount: 1,
+        installId: 'i',
+        version: BACKFILL_VERSION,
+      })
+    );
+    await runHistoricalBackfill(seedHistoricalDb());
+    expect(postHogConstructorCalls.length).toBe(0);
+    expect(postHogCaptureCalls.length).toBe(0);
+  });
+
+  it('(j) legacy marker without a version re-runs and rewrites at the current version', async () => {
+    // A version-1 marker (the #2912 rollup, no `version` field) must not pin an
+    // existing install to the old payload — the enriched economics rollup has
+    // to reach the already-backfilled base. Re-send is idempotent via the
+    // deterministic per-(installId, event, day) uuids.
     writeFileSync(
       markerPath(),
       JSON.stringify({ completedAt: 'x', throughDay: '2026-01-01', eventCount: 1, installId: 'i' })
     );
     await runHistoricalBackfill(seedHistoricalDb());
-    expect(postHogConstructorCalls.length).toBe(0);
-    expect(postHogCaptureCalls.length).toBe(0);
+    expect(postHogCaptureCalls.length).toBeGreaterThan(0);
+    expect(readMarker().version).toBe(BACKFILL_VERSION);
+  });
+
+  it('(j) older-version marker (< current) re-runs', async () => {
+    writeFileSync(
+      markerPath(),
+      JSON.stringify({
+        completedAt: 'x',
+        throughDay: '2026-01-01',
+        eventCount: 1,
+        installId: 'i',
+        version: BACKFILL_VERSION - 1,
+      })
+    );
+    await runHistoricalBackfill(seedHistoricalDb());
+    expect(postHogCaptureCalls.length).toBeGreaterThan(0);
+    expect(readMarker().version).toBe(BACKFILL_VERSION);
   });
 
   it('(j) debug mode: stderr dry-run, no send, no marker', async () => {
@@ -477,6 +514,7 @@ describe('runHistoricalBackfill gates', () => {
     expect(postHogCaptureCalls.length).toBe(0);
     expect(existsSync(markerPath())).toBe(true);
     expect(readMarker().eventCount).toBe(0);
+    expect(readMarker().version).toBe(BACKFILL_VERSION);
   });
 
   it('(j) second invocation after success sends nothing', async () => {
@@ -517,6 +555,7 @@ describe('runHistoricalBackfill gates', () => {
     expect([expectedThroughBefore, expectedThroughAfter]).toContain(marker.throughDay as string);
     expect(marker.eventCount).toBe(2);
     expect(marker.installId).toBe(postHogCaptureCalls[0].distinctId as string);
+    expect(marker.version).toBe(BACKFILL_VERSION);
   });
 
   it('(k) an emitted client error prevents the marker (retry on next start)', async () => {
