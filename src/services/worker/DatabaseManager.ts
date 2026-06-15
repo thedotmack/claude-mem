@@ -62,7 +62,7 @@ export class DatabaseManager {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const chromaEnabled = settings.CLAUDE_MEM_CHROMA_ENABLED !== 'false';
     if (chromaEnabled) {
-      this.chromaSync = new ChromaSync('claude-mem');
+      this.chromaSync = new ChromaSync('claude-mem', this.databaseType === 'mysql');
     } else {
       logger.info('DB', 'Chroma disabled via CLAUDE_MEM_CHROMA_ENABLED=false, using SQLite-only search');
     }
