@@ -592,6 +592,9 @@ export function normalizeSpawnSdkArgs(args: string[], extraArgs: string[] = []):
   const filteredArgs: string[] = [];
   for (const arg of args) {
     if (arg === '') {
+      // The SDK encodes optional flag/value pairs as `--flag ''` when the
+      // value is absent. Strip the whole pair, but only when the preceding
+      // token is a long option so positional args are left untouched.
       if (filteredArgs.length > 0 && filteredArgs[filteredArgs.length - 1].startsWith('--')) {
         filteredArgs.pop();
       }
