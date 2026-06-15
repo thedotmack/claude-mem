@@ -19,8 +19,9 @@ import { captureEvent } from '../../telemetry/telemetry.js';
 
 /**
  * Consecutive non-XML observer outputs tolerated before we kill and respawn the
- * SDK session (plan-11, #2485). Idle and prose both count; poisoned triggers an
- * immediate respawn regardless of the count.
+ * SDK session (plan-11, #2485). Only prose counts toward the threshold; idle is
+ * benign ("nothing to record") and never counts; poisoned triggers an immediate
+ * respawn regardless of the count.
  */
 export const INVALID_OUTPUT_RESPAWN_THRESHOLD = 3;
 
@@ -58,7 +59,14 @@ export async function processAgentResponse(
     const outputClass = classifyObserverOutput(text);
     const preview = previewOutput(text);
 
-    session.consecutiveInvalidOutputs = (session.consecutiveInvalidOutputs ?? 0) + 1;
+    // Idle is benign (empty / "nothing to record"): a healthy session with no
+    // memory-worthy content must NOT accumulate toward a kill/respawn. Only
+    // prose (a possible wedge) increments; poisoned respawns immediately below.
+    if (outputClass === 'idle') {
+      session.consecutiveInvalidOutputs = session.consecutiveInvalidOutputs ?? 0;
+    } else {
+      session.consecutiveInvalidOutputs = (session.consecutiveInvalidOutputs ?? 0) + 1;
+    }
 
     logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response — ignoring queued batch`, {
       sessionId: session.sessionDbId,
