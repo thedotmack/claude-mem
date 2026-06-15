@@ -6,6 +6,10 @@ function readSource(...parts: string[]): string {
   return readFileSync(join(import.meta.dir, '..', '..', ...parts), 'utf-8');
 }
 
+function readMcpLauncherCommand(): string {
+  return JSON.parse(readSource('plugin', '.mcp.json')).mcpServers['mcp-search'].args[1];
+}
+
 function expectWindowsHideNear(source: string, pattern: RegExp): void {
   expect(source).toMatch(pattern);
 }
@@ -26,7 +30,7 @@ describe('windowsHide regression coverage (#2900)', () => {
     );
     expectWindowsHideNear(
       readSource('src', 'build', 'hook-shell-template.ts'),
-      /c\.spawn\(process\.execPath,\[[\s\S]*?\{stdio:'inherit',windowsHide:true\}/s
+      /c\.spawn\(process\.execPath,\s*\[[\s\S]*?\],\s*\{[\s\S]*?stdio:\s*'inherit',[\s\S]*?windowsHide:\s*true[\s\S]*?\}/s
     );
     expectWindowsHideNear(
       readSource('src', 'services', 'worker-service.ts'),
@@ -36,6 +40,9 @@ describe('windowsHide regression coverage (#2900)', () => {
       readSource('src', 'server', 'runtime', 'ServerBetaService.ts'),
       /spawn\(process\.execPath,\s*\[scriptPath,\s*'--daemon'\],\s*\{[\s\S]*?stdio:\s*'ignore',[\s\S]*?windowsHide:\s*true/s
     );
-    expect(readSource('plugin', '.mcp.json')).toContain('windowsHide:true');
+    expectWindowsHideNear(
+      readMcpLauncherCommand(),
+      /c\.spawn\(process\.execPath,\s*\[[\s\S]*?\],\s*\{[\s\S]*?stdio:\s*'inherit',[\s\S]*?windowsHide:\s*true[\s\S]*?\}/s
+    );
   });
 });
