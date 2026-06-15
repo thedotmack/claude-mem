@@ -582,9 +582,31 @@ export interface SpawnedSdkProcess {
 export interface SpawnSdkOptions {
   command: string;
   args: string[];
+  extraArgs?: string[];
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
+}
+
+export function normalizeSpawnSdkArgs(args: string[], extraArgs: string[] = []): string[] {
+  const filteredArgs: string[] = [];
+  for (const arg of args) {
+    if (arg === '') {
+      if (filteredArgs.length > 0 && filteredArgs[filteredArgs.length - 1].startsWith('--')) {
+        filteredArgs.pop();
+      }
+      continue;
+    }
+    filteredArgs.push(arg);
+  }
+
+  for (const extraArg of extraArgs) {
+    if (extraArg !== '') {
+      filteredArgs.push(extraArg);
+    }
+  }
+
+  return filteredArgs;
 }
 
 export function spawnSdkProcess(
@@ -595,17 +617,7 @@ export function spawnSdkProcess(
 
   const useCmdWrapper = process.platform === 'win32' && options.command.endsWith('.cmd');
   const env = sanitizeEnv(options.env ?? process.env);
-
-  const filteredArgs: string[] = [];
-  for (const arg of options.args) {
-    if (arg === '') {
-      if (filteredArgs.length > 0 && filteredArgs[filteredArgs.length - 1].startsWith('--')) {
-        filteredArgs.pop();
-      }
-      continue;
-    }
-    filteredArgs.push(arg);
-  }
+  const filteredArgs = normalizeSpawnSdkArgs(options.args, options.extraArgs);
 
   const isWin = process.platform === 'win32';
   const child = useCmdWrapper
@@ -711,7 +723,7 @@ export function spawnSdkProcess(
   return { process: spawned, pid, pgid };
 }
 
-export function createSdkSpawnFactory(sessionDbId: number) {
+export function createSdkSpawnFactory(sessionDbId: number, extraArgs: string[] = []) {
   return (spawnOptions: SpawnSdkOptions): SpawnedSdkProcess => {
     const registry = getProcessRegistry();
 
@@ -746,7 +758,10 @@ export function createSdkSpawnFactory(sessionDbId: number) {
       }
     }
 
-    const result = spawnSdkProcess(sessionDbId, spawnOptions);
+    const result = spawnSdkProcess(sessionDbId, {
+      ...spawnOptions,
+      extraArgs: [...(spawnOptions.extraArgs ?? []), ...extraArgs],
+    });
     if (!result) {
       throw new Error(`Failed to spawn SDK subprocess for session ${sessionDbId}`);
     }

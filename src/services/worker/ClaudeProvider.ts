@@ -241,7 +241,7 @@ export class ClaudeProvider {
         pathToClaudeCodeExecutable: claudePath,
         abortController: session.abortController,
         ...(shouldResume && session.memorySessionId ? { resume: session.memorySessionId } : {}),
-        spawnClaudeCodeProcess: createSdkSpawnFactory(session.sessionDbId),
+        spawnClaudeCodeProcess: createSdkSpawnFactory(session.sessionDbId, ['--no-session-persistence']),
       }),
     });
 
