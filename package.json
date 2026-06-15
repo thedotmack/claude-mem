@@ -138,6 +138,7 @@
     "glob": "^13.0.6",
     "handlebars": "^4.7.9",
     "ioredis": "^5.10.1",
+    "mysql2": "^3.11.0",
     "pg": "^8.20.0",
     "picocolors": "^1.1.1",
     "posthog-node": "^5.36.15",

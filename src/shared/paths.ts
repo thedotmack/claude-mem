@@ -149,3 +149,29 @@ export const paths = {
   vectorDb: () => VECTOR_DB_DIR,
   observerSessions: () => OBSERVER_SESSIONS_DIR,
 } as const;
+
+/**
+ * Get the database type ('sqlite' or 'mysql')
+ */
+export function getDatabaseType(): string {
+  return SettingsDefaultsManager.get('CLAUDE_MEM_DATABASE_TYPE');
+}
+
+/**
+ * Get MySQL connection configuration
+ */
+export function getMySQLConfig(): {
+  host: string;
+  port: number;
+  user: string;
+  password: string;
+  database: string;
+} {
+  return {
+    host: SettingsDefaultsManager.get('CLAUDE_MEM_MYSQL_HOST'),
+    port: SettingsDefaultsManager.getInt('CLAUDE_MEM_MYSQL_PORT'),
+    user: SettingsDefaultsManager.get('CLAUDE_MEM_MYSQL_USER'),
+    password: SettingsDefaultsManager.get('CLAUDE_MEM_MYSQL_PASSWORD'),
+    database: SettingsDefaultsManager.get('CLAUDE_MEM_MYSQL_DATABASE'),
+  };
+}
