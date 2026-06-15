@@ -238,11 +238,12 @@ child.on('error', (err) => {
 });
 
 child.on('close', (code, signal) => {
-  if (shouldEmitHookContinueJson && !signal && (code ?? 0) === 0) {
+  const exitCode = typeof code === 'number' ? code : 0;
+  if (shouldEmitHookContinueJson && !signal && exitCode === 0) {
     process.stdout.write('{"continue":true,"suppressOutput":true}\n');
   }
   if ((signal || code > 128) && args.includes('start')) {
     process.exit(0);
   }
-  process.exit(code || 0);
+  process.exit(exitCode);
 });
