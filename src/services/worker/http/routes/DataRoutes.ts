@@ -4,7 +4,8 @@ import { z } from 'zod';
 import path from 'path';
 import { readFileSync, statSync, existsSync } from 'fs';
 import { logger } from '../../../../utils/logger.js';
-import { getPackageRoot, paths } from '../../../../shared/paths.js';
+import { getPackageRoot, paths, USER_SETTINGS_PATH } from '../../../../shared/paths.js';
+import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { getWorkerPort } from '../../../../shared/worker-utils.js';
 import { PaginationHelper } from '../../PaginationHelper.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
@@ -217,23 +218,51 @@ export class DataRoutes extends BaseRouteHandler {
     res.json(prompts[0]);
   });
 
-  private handleGetStats = this.wrapHandler((req: Request, res: Response): void => {
+  private handleGetStats = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const db = this.dbManager.getSessionStore().db;
+    const databaseType = this.dbManager.getDatabaseType();
 
     const packageRoot = getPackageRoot();
     const packageJsonPath = path.join(packageRoot, 'package.json');
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
     const version = packageJson.version;
 
-    const totalObservations = db.prepare('SELECT COUNT(*) as count FROM observations').get() as { count: number };
-    const totalSessions = db.prepare('SELECT COUNT(*) as count FROM sdk_sessions').get() as { count: number };
-    const totalSummaries = db.prepare('SELECT COUNT(*) as count FROM session_summaries').get() as { count: number };
-    const firstObservationAt = getFirstObservationCreatedAt(db);
+    let totalObservations: { count: number };
+    let totalSessions: { count: number };
+    let totalSummaries: { count: number };
 
-    const dbPath = paths.database();
-    let dbSize = 0;
-    if (existsSync(dbPath)) {
-      dbSize = statSync(dbPath).size;
+    if (databaseType === 'mysql') {
+      totalObservations = await db.prepare('SELECT COUNT(*) as count FROM observations').get() as { count: number };
+      totalSessions = await db.prepare('SELECT COUNT(*) as count FROM sdk_sessions').get() as { count: number };
+      totalSummaries = await db.prepare('SELECT COUNT(*) as count FROM session_summaries').get() as { count: number };
+    } else {
+      totalObservations = db.prepare('SELECT COUNT(*) as count FROM observations').get() as { count: number };
+      totalSessions = db.prepare('SELECT COUNT(*) as count FROM sdk_sessions').get() as { count: number };
+      totalSummaries = db.prepare('SELECT COUNT(*) as count FROM session_summaries').get() as { count: number };
+    }
+
+    let dbPath: string;
+    let dbSize: number;
+
+    if (databaseType === 'mysql') {
+      const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+      dbPath = `mysql://${settings.CLAUDE_MEM_MYSQL_HOST}:${settings.CLAUDE_MEM_MYSQL_PORT}/${settings.CLAUDE_MEM_MYSQL_DATABASE}`;
+      try {
+        const sizeResult = await db.prepare(`
+          SELECT SUM(data_length + index_length) as size
+          FROM information_schema.tables
+          WHERE table_schema = ?
+        `).get(settings.CLAUDE_MEM_MYSQL_DATABASE) as { size: number } | undefined;
+        dbSize = sizeResult?.size || 0;
+      } catch {
+        dbSize = 0;
+      }
+    } else {
+      dbPath = paths.database();
+      dbSize = 0;
+      if (existsSync(dbPath)) {
+        dbSize = statSync(dbPath).size;
+      }
     }
 
     const uptime = getUptimeSeconds(this.startTime);
@@ -253,8 +282,7 @@ export class DataRoutes extends BaseRouteHandler {
         size: dbSize,
         observations: totalObservations.count,
         sessions: totalSessions.count,
-        summaries: totalSummaries.count,
-        firstObservationAt
+        summaries: totalSummaries.count
       }
     });
   });

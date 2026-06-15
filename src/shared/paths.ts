@@ -154,7 +154,22 @@ export const paths = {
  * Get the database type ('sqlite' or 'mysql')
  */
 export function getDatabaseType(): string {
-  return SettingsDefaultsManager.get('CLAUDE_MEM_DATABASE_TYPE');
+  // 1. Environment variable takes priority
+  if (process.env.CLAUDE_MEM_DATABASE_TYPE) {
+    const t = process.env.CLAUDE_MEM_DATABASE_TYPE;
+    if (t === 'mysql' || t === 'sqlite') return t;
+  }
+  // 2. Fall back to settings.json (same pattern as resolveDataDir)
+  try {
+    const settingsPath = join(homedir(), '.claude-mem', 'settings.json');
+    if (existsSync(settingsPath)) {
+      const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+      const dbType = settings.env?.CLAUDE_MEM_DATABASE_TYPE ?? settings.CLAUDE_MEM_DATABASE_TYPE;
+      if (dbType === 'mysql' || dbType === 'sqlite') return dbType;
+    }
+  } catch { /* ignore */ }
+  // 3. Default
+  return 'sqlite';
 }
 
 /**
@@ -167,11 +182,29 @@ export function getMySQLConfig(): {
   password: string;
   database: string;
 } {
+  // Read from settings.json as fallback
+  let settings: Record<string, unknown> = {};
+  try {
+    const settingsPath = join(homedir(), '.claude-mem', 'settings.json');
+    if (existsSync(settingsPath)) {
+      const raw = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+      settings = raw.env ?? raw;
+    }
+  } catch { /* ignore */ }
+
+  const get = (key: string): string => {
+    return process.env[key] ?? (settings[key] as string) ?? SettingsDefaultsManager.get(key as any);
+  };
+  const getInt = (key: string): number => {
+    const v = get(key);
+    return parseInt(v, 10);
+  };
+
   return {
-    host: SettingsDefaultsManager.get('CLAUDE_MEM_MYSQL_HOST'),
-    port: SettingsDefaultsManager.getInt('CLAUDE_MEM_MYSQL_PORT'),
-    user: SettingsDefaultsManager.get('CLAUDE_MEM_MYSQL_USER'),
-    password: SettingsDefaultsManager.get('CLAUDE_MEM_MYSQL_PASSWORD'),
-    database: SettingsDefaultsManager.get('CLAUDE_MEM_MYSQL_DATABASE'),
+    host: get('CLAUDE_MEM_MYSQL_HOST'),
+    port: getInt('CLAUDE_MEM_MYSQL_PORT'),
+    user: get('CLAUDE_MEM_MYSQL_USER'),
+    password: get('CLAUDE_MEM_MYSQL_PASSWORD'),
+    database: get('CLAUDE_MEM_MYSQL_DATABASE'),
   };
 }
