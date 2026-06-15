@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.6.1] - 2026-06-15
+
+Patch release.
+
+- feat(telemetry): backfill historical token-savings economics (#2934) — backfills inferred generation-cost economics into anonymized daily telemetry rollups, with scrub coverage and tests.
+
+Full changelog: https://github.com/thedotmack/claude-mem/blob/main/CHANGELOG.md
+
 ## [13.6.0] - 2026-06-13
 
 ## 📊 Historical Telemetry Backfill
