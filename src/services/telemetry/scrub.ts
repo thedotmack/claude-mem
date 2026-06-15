@@ -121,6 +121,11 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   // session_count, and the obs_type_* family are shared with live
   // context_injected above (different per-event semantics — see PR notes).
   'discovery_tokens',
+  // read_tokens: per-day sum of once-each observation read cost
+  // (ceil(len(text)/CHARS_PER_TOKEN_ESTIMATE)); paired with discovery_tokens to
+  // derive the historical tokens_saved_vs_naive series. tokens_saved_vs_naive
+  // itself is whitelisted above (shared key name with live context_injected).
+  'read_tokens',
   'summary_count',
   'prompt_count',
   'project_count',

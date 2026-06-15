@@ -11,6 +11,7 @@ import {
   getOrCreateInstallId,
 } from './consent.js';
 import { scrubProperties } from './scrub.js';
+import { CHARS_PER_TOKEN_ESTIMATE } from '../context/types.js';
 import {
   getTelemetryApiKey,
   getTelemetryHost,
@@ -286,6 +287,42 @@ export function collectDailyRollups(
     // discovery_tokens arrives via migration — skip.
   }
 
+  // read_tokens / tokens_saved_vs_naive — the historical counterpart to live
+  // context_injected economics. Live telemetry derives savings as
+  // (discovery_tokens - read_tokens) where read_tokens is the size of the
+  // injected observation rendered into context. We cannot replay an actual
+  // injection for a past day, so we approximate per-day READ COST as the cost
+  // of reading every observation that day exactly once, using the SAME formula
+  // live uses (calculateObservationTokens / CHARS_PER_TOKEN_ESTIMATE) so the
+  // historical series is consistent with live numbers rather than a new metric.
+  //
+  // read_tokens         := ceil(len(text) / CHARS_PER_TOKEN_ESTIMATE) summed
+  // tokens_saved_vs_naive := discovery_tokens (rolled up above) - read_tokens,
+  //                          floored at 0 per day (a day can't have negative
+  //                          savings; clamping avoids a handful of summary-less
+  //                          legacy days dragging the series below zero).
+  //
+  // Caveat shipped to PostHog via backfilled:true: this is a once-per-observation
+  // lower bound on read cost, not a replay of real injections, so the historical
+  // savings curve is conservative relative to live (which re-injects context
+  // across many sessions). Generation-side cost (cost_usd / tokens_input /
+  // tokens_output from session_compressed) is NOT recoverable here — it was
+  // never persisted to SQLite — and is intentionally absent from the backfill.
+  try {
+    const f = frag('created_at_epoch');
+    const rows = db
+      .query(
+        `SELECT ${f.day} AS day,
+                COALESCE(SUM(CAST((LENGTH(text) + ${CHARS_PER_TOKEN_ESTIMATE} - 1) / ${CHARS_PER_TOKEN_ESTIMATE} AS INTEGER)), 0) AS read_tokens
+           FROM observations WHERE ${f.where} GROUP BY day`
+      )
+      .all(...params) as Array<{ day: string; read_tokens: number }>;
+    for (const row of rows) add(row.day, 'read_tokens', row.read_tokens);
+  } catch {
+    // observations.text missing on a partially-migrated install — skip; the
+    // savings derivation below simply won't fire for these days.
+  }
+
   // prompt_count — COUNT only; prompt_text is never selected.
   try {
     const f = frag('created_at_epoch');
@@ -317,6 +354,18 @@ export function collectDailyRollups(
     for (const row of rows) add(row.day, 'project_count', row.c);
   } catch {
     // Either table missing — skip.
+  }
+
+  // Derive tokens_saved_vs_naive per day from the two rollups collected above,
+  // mirroring live's savings = discovery_tokens - read_tokens. Floored at 0:
+  // days with read activity but no summary rows (so discovery_tokens absent)
+  // would otherwise emit a negative, which is meaningless for a savings series.
+  // Only emitted when the day actually has a read_tokens figure, so days with
+  // no observations stay clean rather than reporting a spurious 0.
+  for (const counters of byDay.values()) {
+    if (counters.read_tokens === undefined) continue;
+    const discovery = counters.discovery_tokens ?? 0;
+    counters.tokens_saved_vs_naive = Math.max(0, discovery - counters.read_tokens);
   }
 
   return Array.from(byDay.entries())
