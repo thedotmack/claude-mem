@@ -16,6 +16,7 @@ import {
   buildBackfillEvents,
   runHistoricalBackfill,
   PROJECT_EPOCH_FLOOR,
+  BACKFILL_VERSION,
 } from '../../src/services/telemetry/backfill';
 import { scrubProperties } from '../../src/services/telemetry/scrub';
 import { __resetTelemetryForTests } from '../../src/services/telemetry/telemetry';
@@ -45,6 +46,7 @@ function makeDb(): Database {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       memory_session_id TEXT,
       project TEXT NOT NULL,
+      text TEXT NOT NULL DEFAULT '',
       type TEXT NOT NULL DEFAULT 'other',
       agent_type TEXT,
       created_at_epoch INTEGER NOT NULL,
@@ -88,11 +90,12 @@ type ObsRow = {
   type?: string;
   agentType?: string | null;
   tokens?: number;
+  text?: string;
 };
 function insertObs(db: Database, row: ObsRow): void {
   db.prepare(
-    'INSERT INTO observations (memory_session_id, project, type, agent_type, created_at_epoch, discovery_tokens) VALUES (?, ?, ?, ?, ?, ?)'
-  ).run(row.memId ?? null, row.project ?? 'alpha', row.type ?? 'other', row.agentType ?? null, row.epoch, row.tokens ?? 0);
+    'INSERT INTO observations (memory_session_id, project, text, type, agent_type, created_at_epoch, discovery_tokens) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  ).run(row.memId ?? null, row.project ?? 'alpha', row.text ?? '', row.type ?? 'other', row.agentType ?? null, row.epoch, row.tokens ?? 0);
 }
 
 type SummaryRow = { epoch: number; project?: string; memId?: string | null; tokens?: number };
@@ -349,6 +352,36 @@ describe('buildBackfillEvents properties', () => {
     expect(rollups[0].counters.discovery_tokens).toBe(100);
   });
 
+  it('(f2) read_tokens uses ceil(len/4) and tokens_saved_vs_naive = discovery - read', () => {
+    const db = makeDb();
+    const epoch = Date.UTC(2025, 2, 4, 9, 0, 0); // 2025-03-04
+    // read cost mirrors live calculateObservationTokens: ceil(chars / 4).
+    insertObs(db, { epoch, memId: 's-1', text: 'x'.repeat(400) }); // ceil(400/4)=100
+    insertObs(db, { epoch: epoch + 1000, memId: 's-1', text: 'y'.repeat(401) }); // ceil(401/4)=101
+    insertObs(db, { epoch: epoch + 2000, memId: 's-1', text: 'z'.repeat(7) }); // ceil(7/4)=2
+    insertSummary(db, { epoch: epoch + 3000, memId: 's-1', tokens: 5000 });
+
+    const rollups = collectDailyRollups(db, LAST_FULL_DAY, '2024-01-01');
+    expect(rollups.length).toBe(1);
+    expect(rollups[0].counters.read_tokens).toBe(203); // 100 + 101 + 2
+    expect(rollups[0].counters.discovery_tokens).toBe(5000);
+    expect(rollups[0].counters.tokens_saved_vs_naive).toBe(4797); // 5000 - 203
+  });
+
+  it('(f3) tokens_saved_vs_naive floors at 0 when a day has reads but no summary', () => {
+    const db = makeDb();
+    const epoch = Date.UTC(2025, 2, 5, 9, 0, 0); // 2025-03-05
+    // Observations but no session_summaries row -> discovery_tokens absent.
+    // A naive (discovery - read) would go negative; the series must clamp to 0.
+    insertObs(db, { epoch, memId: 's-1', text: 'q'.repeat(4000) }); // 1000 read tokens
+
+    const rollups = collectDailyRollups(db, LAST_FULL_DAY, '2024-01-01');
+    expect(rollups.length).toBe(1);
+    expect(rollups[0].counters.read_tokens).toBe(1000);
+    expect(rollups[0].counters.discovery_tokens).toBeUndefined();
+    expect(rollups[0].counters.tokens_saved_vs_naive).toBe(0);
+  });
+
   it('(g) one session with one observation: no double counting', () => {
     const db = makeDb();
     const epoch = Date.UTC(2025, 3, 4, 14, 0, 0); // 2025-04-04
@@ -406,14 +439,50 @@ describe('runHistoricalBackfill gates', () => {
     expect(existsSync(markerPath())).toBe(false);
   });
 
-  it('(j) existing marker: returns before doing anything', async () => {
+  it('(j) current-version marker: returns before doing anything', async () => {
+    writeFileSync(
+      markerPath(),
+      JSON.stringify({
+        completedAt: 'x',
+        throughDay: '2026-01-01',
+        eventCount: 1,
+        installId: 'i',
+        version: BACKFILL_VERSION,
+      })
+    );
+    await runHistoricalBackfill(seedHistoricalDb());
+    expect(postHogConstructorCalls.length).toBe(0);
+    expect(postHogCaptureCalls.length).toBe(0);
+  });
+
+  it('(j) legacy marker without a version re-runs and rewrites at the current version', async () => {
+    // A version-1 marker (the #2912 rollup, no `version` field) must not pin an
+    // existing install to the old payload — the enriched economics rollup has
+    // to reach the already-backfilled base. Re-send is idempotent via the
+    // deterministic per-(installId, event, day) uuids.
     writeFileSync(
       markerPath(),
       JSON.stringify({ completedAt: 'x', throughDay: '2026-01-01', eventCount: 1, installId: 'i' })
     );
     await runHistoricalBackfill(seedHistoricalDb());
-    expect(postHogConstructorCalls.length).toBe(0);
-    expect(postHogCaptureCalls.length).toBe(0);
+    expect(postHogCaptureCalls.length).toBeGreaterThan(0);
+    expect(readMarker().version).toBe(BACKFILL_VERSION);
+  });
+
+  it('(j) older-version marker (< current) re-runs', async () => {
+    writeFileSync(
+      markerPath(),
+      JSON.stringify({
+        completedAt: 'x',
+        throughDay: '2026-01-01',
+        eventCount: 1,
+        installId: 'i',
+        version: BACKFILL_VERSION - 1,
+      })
+    );
+    await runHistoricalBackfill(seedHistoricalDb());
+    expect(postHogCaptureCalls.length).toBeGreaterThan(0);
+    expect(readMarker().version).toBe(BACKFILL_VERSION);
   });
 
   it('(j) debug mode: stderr dry-run, no send, no marker', async () => {
@@ -445,6 +514,7 @@ describe('runHistoricalBackfill gates', () => {
     expect(postHogCaptureCalls.length).toBe(0);
     expect(existsSync(markerPath())).toBe(true);
     expect(readMarker().eventCount).toBe(0);
+    expect(readMarker().version).toBe(BACKFILL_VERSION);
   });
 
   it('(j) second invocation after success sends nothing', async () => {
@@ -485,6 +555,7 @@ describe('runHistoricalBackfill gates', () => {
     expect([expectedThroughBefore, expectedThroughAfter]).toContain(marker.throughDay as string);
     expect(marker.eventCount).toBe(2);
     expect(marker.installId).toBe(postHogCaptureCalls[0].distinctId as string);
+    expect(marker.version).toBe(BACKFILL_VERSION);
   });
 
   it('(k) an emitted client error prevents the marker (retry on next start)', async () => {

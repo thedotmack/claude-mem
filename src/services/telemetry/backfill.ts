@@ -11,6 +11,7 @@ import {
   getOrCreateInstallId,
 } from './consent.js';
 import { scrubProperties } from './scrub.js';
+import { CHARS_PER_TOKEN_ESTIMATE } from '../context/types.js';
 import {
   getTelemetryApiKey,
   getTelemetryHost,
@@ -59,6 +60,23 @@ const BACKFILL_NAMESPACE = '8a9c2f4e-31b7-5d68-9c4a-f02e6d5b8a17';
 const BACKFILL_MARKER_FILENAME = 'backfill.json';
 
 /**
+ * Schema version of the backfill payload. Bump this whenever the rollup gains
+ * keys that already-backfilled installs must receive (a marker written by an
+ * older version re-runs so the enriched series reaches the existing base — not
+ * just fresh installs).
+ *
+ *   1 — original anonymized daily rollups (#2912).
+ *   2 — adds read_tokens / tokens_saved_vs_naive economics.
+ *
+ * A re-run is safe and does NOT double count: every event keeps its
+ * deterministic per-(installId, event, day) uuid, so PostHog's
+ * historical-migration dedup replaces each event in place with the enriched
+ * copy rather than appending a second row. Markers predating this field are
+ * treated as version 1.
+ */
+export const BACKFILL_VERSION = 2;
+
+/**
  * Mirror of the private STAT_TYPE_BUCKETS set in
  * src/services/context/ContextBuilder.ts — the closed observation-type
  * vocabulary live `context_injected` events use. Everything else buckets to
@@ -98,6 +116,8 @@ interface BackfillMarker {
   throughDay: string;
   eventCount: number;
   installId: string;
+  /** Schema version the marker was written at. Absent ⇒ legacy version 1. */
+  version: number;
 }
 
 function getBackfillMarkerPath(): string {
@@ -105,13 +125,24 @@ function getBackfillMarkerPath(): string {
 }
 
 /**
- * True when a completion marker exists. A corrupt marker file still counts as
- * complete: a marker was written at some point, and duplicate sends are worse
- * than a gap (PostHog data cannot be selectively deleted).
+ * True when a completion marker for the CURRENT schema version exists. A marker
+ * written by an older BACKFILL_VERSION counts as incomplete so already-
+ * backfilled installs re-run and pick up the enriched rollup keys — without it,
+ * the one-shot marker would pin them forever to whatever shipped when they
+ * first backfilled (the read_tokens / tokens_saved_vs_naive series would only
+ * ever reach fresh installs).
+ *
+ * A corrupt marker file still counts as complete: a marker was written at some
+ * point, and duplicate sends are worse than a gap (PostHog data cannot be
+ * selectively deleted). A marker missing the `version` field is a legacy
+ * version-1 marker.
  */
 function isBackfillComplete(): boolean {
   try {
-    return readJsonSafe<Partial<BackfillMarker> | null>(getBackfillMarkerPath(), null) !== null;
+    const marker = readJsonSafe<Partial<BackfillMarker> | null>(getBackfillMarkerPath(), null);
+    if (marker === null) return false;
+    const version = typeof marker.version === 'number' ? marker.version : 1;
+    return version >= BACKFILL_VERSION;
   } catch {
     return true;
   }
@@ -286,6 +317,42 @@ export function collectDailyRollups(
     // discovery_tokens arrives via migration — skip.
   }
 
+  // read_tokens / tokens_saved_vs_naive — the historical counterpart to live
+  // context_injected economics. Live telemetry derives savings as
+  // (discovery_tokens - read_tokens) where read_tokens is the size of the
+  // injected observation rendered into context. We cannot replay an actual
+  // injection for a past day, so we approximate per-day READ COST as the cost
+  // of reading every observation that day exactly once, using the SAME formula
+  // live uses (calculateObservationTokens / CHARS_PER_TOKEN_ESTIMATE) so the
+  // historical series is consistent with live numbers rather than a new metric.
+  //
+  // read_tokens         := ceil(len(text) / CHARS_PER_TOKEN_ESTIMATE) summed
+  // tokens_saved_vs_naive := discovery_tokens (rolled up above) - read_tokens,
+  //                          floored at 0 per day (a day can't have negative
+  //                          savings; clamping avoids a handful of summary-less
+  //                          legacy days dragging the series below zero).
+  //
+  // Caveat shipped to PostHog via backfilled:true: this is a once-per-observation
+  // lower bound on read cost, not a replay of real injections, so the historical
+  // savings curve is conservative relative to live (which re-injects context
+  // across many sessions). Generation-side cost (cost_usd / tokens_input /
+  // tokens_output from session_compressed) is NOT recoverable here — it was
+  // never persisted to SQLite — and is intentionally absent from the backfill.
+  try {
+    const f = frag('created_at_epoch');
+    const rows = db
+      .query(
+        `SELECT ${f.day} AS day,
+                COALESCE(SUM(CAST((LENGTH(text) + ${CHARS_PER_TOKEN_ESTIMATE} - 1) / ${CHARS_PER_TOKEN_ESTIMATE} AS INTEGER)), 0) AS read_tokens
+           FROM observations WHERE ${f.where} GROUP BY day`
+      )
+      .all(...params) as Array<{ day: string; read_tokens: number }>;
+    for (const row of rows) add(row.day, 'read_tokens', row.read_tokens);
+  } catch {
+    // observations.text missing on a partially-migrated install — skip; the
+    // savings derivation below simply won't fire for these days.
+  }
+
   // prompt_count — COUNT only; prompt_text is never selected.
   try {
     const f = frag('created_at_epoch');
@@ -317,6 +384,18 @@ export function collectDailyRollups(
     for (const row of rows) add(row.day, 'project_count', row.c);
   } catch {
     // Either table missing — skip.
+  }
+
+  // Derive tokens_saved_vs_naive per day from the two rollups collected above,
+  // mirroring live's savings = discovery_tokens - read_tokens. Floored at 0:
+  // days with read activity but no summary rows (so discovery_tokens absent)
+  // would otherwise emit a negative, which is meaningless for a savings series.
+  // Only emitted when the day actually has a read_tokens figure, so days with
+  // no observations stay clean rather than reporting a spurious 0.
+  for (const counters of byDay.values()) {
+    if (counters.read_tokens === undefined) continue;
+    const discovery = counters.discovery_tokens ?? 0;
+    counters.tokens_saved_vs_naive = Math.max(0, discovery - counters.read_tokens);
   }
 
   return Array.from(byDay.entries())
@@ -491,6 +570,7 @@ export async function runHistoricalBackfill(db: Database): Promise<void> {
         throughDay: lastFullDay,
         eventCount: 0,
         installId,
+        version: BACKFILL_VERSION,
       });
       return;
     }
@@ -539,6 +619,7 @@ export async function runHistoricalBackfill(db: Database): Promise<void> {
         throughDay: lastFullDay,
         eventCount: events.length,
         installId,
+        version: BACKFILL_VERSION,
       });
       logger.info('SYSTEM', 'Telemetry historical backfill complete', {
         eventCount: events.length,
