@@ -4,6 +4,7 @@ import { randomUUID } from 'crypto';
 import { spawnSync } from 'child_process';
 import { loadTelemetryConfig, saveTelemetryConfig } from '../../services/telemetry/consent.js';
 import { captureCliEvent } from '../../services/telemetry/cli-telemetry.js';
+import { rewriteInstalledClaudeCodeHooksForWindows } from '../../services/integrations/ClaudeCodeHooksInstaller.js';
 import { spawnHidden } from '../../shared/spawn.js';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
@@ -669,6 +670,10 @@ function copyPluginToMarketplace(): void {
       force: true,
     });
   }
+
+  if (IS_WINDOWS) {
+    rewriteInstalledClaudeCodeHooksForWindows(join(marketplaceDir, 'plugin'));
+  }
 }
 
 function copyPluginToCache(version: string): void {
@@ -678,6 +683,10 @@ function copyPluginToCache(version: string): void {
   rmSync(cachePath, { recursive: true, force: true });
   ensureDirectoryExists(cachePath);
   cpSync(sourcePluginDirectory, cachePath, { recursive: true, force: true });
+
+  if (IS_WINDOWS) {
+    rewriteInstalledClaudeCodeHooksForWindows(cachePath);
+  }
 }
 
 /**

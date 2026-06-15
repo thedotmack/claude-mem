@@ -25,6 +25,7 @@ function findBun() {
     ? spawnSync('where bun', {
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
         shell: true
       })
     : spawnSync('which', ['bun'], {
@@ -85,6 +86,12 @@ if (isPluginDisabledInClaudeSettings()) {
 }
 
 const args = process.argv.slice(2);
+
+let shouldEmitHookContinueJson = false;
+if (args[0] === '--hook-continue-json') {
+  shouldEmitHookContinueJson = true;
+  args.shift();
+}
 
 if (args.length === 0) {
   console.error('Usage: node bun-runner.js <script> [args...]');
@@ -231,6 +238,9 @@ child.on('error', (err) => {
 });
 
 child.on('close', (code, signal) => {
+  if (shouldEmitHookContinueJson && !signal && (code ?? 0) === 0) {
+    process.stdout.write('{"continue":true,"suppressOutput":true}\n');
+  }
   if ((signal || code > 128) && args.includes('start')) {
     process.exit(0);
   }
