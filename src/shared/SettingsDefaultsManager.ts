@@ -89,6 +89,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_MYSQL_DATABASE: string;
   CLAUDE_MEM_MYSQL_POOL_SIZE: string;
   CLAUDE_MEM_DATABASE_TYPE: string;
+  CLAUDE_MEM_WORKER_MODE: string;
 }
 
 export class SettingsDefaultsManager {
@@ -177,6 +178,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_MYSQL_DATABASE: 'claude_mem',
     CLAUDE_MEM_MYSQL_POOL_SIZE: '10',
     CLAUDE_MEM_DATABASE_TYPE: 'sqlite',
+    CLAUDE_MEM_WORKER_MODE: 'client',
   };
 
   static getAllDefaults(): SettingsDefaults {
