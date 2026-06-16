@@ -109,21 +109,21 @@ export class DataRoutes extends BaseRouteHandler {
     app.post('/api/import', validateBody(importSchema), this.handleImport.bind(this));
   }
 
-  private handleGetObservations = this.wrapHandler((req: Request, res: Response): void => {
+  private handleGetObservations = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { offset, limit, project, platformSource } = this.parsePaginationParams(req);
-    const result = this.paginationHelper.getObservations(offset, limit, project, platformSource);
+    const result = await this.paginationHelper.getObservations(offset, limit, project, platformSource);
     res.json(result);
   });
 
-  private handleGetSummaries = this.wrapHandler((req: Request, res: Response): void => {
+  private handleGetSummaries = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { offset, limit, project, platformSource } = this.parsePaginationParams(req);
-    const result = this.paginationHelper.getSummaries(offset, limit, project, platformSource);
+    const result = await this.paginationHelper.getSummaries(offset, limit, project, platformSource);
     res.json(result);
   });
 
-  private handleGetPrompts = this.wrapHandler((req: Request, res: Response): void => {
+  private handleGetPrompts = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { offset, limit, project, platformSource } = this.parsePaginationParams(req);
-    const result = this.paginationHelper.getPrompts(offset, limit, project, platformSource);
+    const result = await this.paginationHelper.getPrompts(offset, limit, project, platformSource);
     res.json(result);
   });
 
