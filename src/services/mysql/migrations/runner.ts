@@ -1,7 +1,8 @@
 /**
- * MySQL MigrationRunner
+ * @deprecated This file is unused. The active MySQL migration system is in migrations.ts.
+ * Kept for reference only. Do not import or use.
  *
- * Handles all database schema migrations for MySQL.
+ * Original purpose: MySQL MigrationRunner
  * Converted from SQLite migrations - key differences:
  * - INTEGER PRIMARY KEY AUTOINCREMENT → INT PRIMARY KEY AUTO_INCREMENT
  * - PRAGMA table_info → INFORMATION_SCHEMA.COLUMNS

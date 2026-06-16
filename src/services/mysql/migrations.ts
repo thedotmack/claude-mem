@@ -125,6 +125,12 @@ export const migration004: Migration = {
     await createIndexSafe(db, 'session_summaries', 'idx_session_summaries_created',
       'CREATE INDEX idx_session_summaries_created ON session_summaries(created_at_epoch DESC)');
 
+    // Record migration version 4
+    await db.run(
+      'INSERT IGNORE INTO schema_versions (version, applied_at) VALUES (?, NOW())',
+      [4]
+    );
+
     logger.info('DB', 'Migration 004: Created core MySQL tables');
   },
 
