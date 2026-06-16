@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'bun:test';
 
-import { ClaudeProvider } from '../src/services/worker/ClaudeProvider.js';
+import {
+  ClaudeProvider,
+  DEFAULT_CLAUDE_MAX_OBSERVER_TOKENS,
+  resolveObserverMaxTokens,
+  computeFullContextTokens,
+  observerContextExceeded,
+} from '../src/services/worker/ClaudeProvider.js';
 
 /**
  * #2956 — the Claude provider (Agent SDK) had no cumulative context bound, so a
@@ -15,58 +21,61 @@ import { ClaudeProvider } from '../src/services/worker/ClaudeProvider.js';
  * own: (1) the cap-resolution + threshold predicate, and (2) the reset effect
  * applied by resetSessionForFreshStart, which the guard reuses verbatim.
  */
-describe('ClaudeProvider proactive context bound (#2956)', () => {
-  // Mirror the guard's cap resolution and comparison exactly:
-  //   const cap = parseInt(settings.CLAUDE_MEM_CLAUDE_MAX_TOKENS, 10) || 150000;
-  //   if (currentContextTokens > cap) reset();
-  function exceedsBound(rawSetting: string | undefined, contextTokens: number): boolean {
-    const cap = parseInt(rawSetting ?? '', 10) || 150000;
-    return contextTokens > cap;
-  }
+// Compose the exact decision the guard makes, from the same exported units it
+// uses: resolve the cap from settings, then compare. Testing through these
+// means a change to the guard's resolution/comparison (e.g. > vs >=) is caught.
+function guardWouldReset(rawSetting: string | undefined, contextTokens: number): boolean {
+  const cap = resolveObserverMaxTokens({ CLAUDE_MEM_CLAUDE_MAX_TOKENS: rawSetting });
+  return observerContextExceeded(contextTokens, cap);
+}
 
-  // The SDK reports the full read-context as the sum of these fields; the guard
-  // sums them into session.lastUsage.input and compares that to the cap.
-  function fullContextTokens(usage: {
-    input_tokens?: number;
-    cache_creation_input_tokens?: number;
-    cache_read_input_tokens?: number;
-  }): number {
-    return (
-      (usage.input_tokens || 0) +
-      (usage.cache_creation_input_tokens || 0) +
-      (usage.cache_read_input_tokens || 0)
-    );
-  }
+describe('ClaudeProvider proactive context bound (#2956)', () => {
+  describe('cap resolution', () => {
+    it('uses the default cap when the setting is unset', () => {
+      expect(resolveObserverMaxTokens({})).toBe(DEFAULT_CLAUDE_MAX_OBSERVER_TOKENS);
+      expect(DEFAULT_CLAUDE_MAX_OBSERVER_TOKENS).toBe(150_000);
+    });
+
+    it('honors a configured numeric cap', () => {
+      expect(resolveObserverMaxTokens({ CLAUDE_MEM_CLAUDE_MAX_TOKENS: '50000' })).toBe(50_000);
+    });
+
+    it('falls back to the default for non-numeric or empty values', () => {
+      expect(resolveObserverMaxTokens({ CLAUDE_MEM_CLAUDE_MAX_TOKENS: '' })).toBe(DEFAULT_CLAUDE_MAX_OBSERVER_TOKENS);
+      expect(resolveObserverMaxTokens({ CLAUDE_MEM_CLAUDE_MAX_TOKENS: 'nope' })).toBe(DEFAULT_CLAUDE_MAX_OBSERVER_TOKENS);
+    });
+  });
 
   describe('threshold predicate', () => {
     it('does NOT trigger when context is under the default cap', () => {
-      expect(exceedsBound(undefined, 149_999)).toBe(false);
+      expect(guardWouldReset(undefined, 149_999)).toBe(false);
     });
 
     it('triggers when context exceeds the default cap', () => {
-      expect(exceedsBound(undefined, 150_001)).toBe(true);
+      expect(guardWouldReset(undefined, 150_001)).toBe(true);
     });
 
     it('does NOT trigger exactly at the cap (strict greater-than)', () => {
-      expect(exceedsBound(undefined, 150_000)).toBe(false);
+      expect(observerContextExceeded(150_000, 150_000)).toBe(false);
+      expect(guardWouldReset(undefined, 150_000)).toBe(false);
     });
 
     it('honors a configured cap', () => {
-      expect(exceedsBound('50000', 60_000)).toBe(true);
-      expect(exceedsBound('50000', 40_000)).toBe(false);
+      expect(guardWouldReset('50000', 60_000)).toBe(true);
+      expect(guardWouldReset('50000', 40_000)).toBe(false);
     });
 
     it('falls back to the default cap when the setting is non-numeric or empty', () => {
-      expect(exceedsBound('', 160_000)).toBe(true);
-      expect(exceedsBound('not-a-number', 160_000)).toBe(true);
-      expect(exceedsBound('', 100_000)).toBe(false);
+      expect(guardWouldReset('', 160_000)).toBe(true);
+      expect(guardWouldReset('not-a-number', 160_000)).toBe(true);
+      expect(guardWouldReset('', 100_000)).toBe(false);
     });
   });
 
   describe('full context size accounting', () => {
     it('sums fresh input, cache writes, and cache reads', () => {
       expect(
-        fullContextTokens({
+        computeFullContextTokens({
           input_tokens: 1_000,
           cache_creation_input_tokens: 2_000,
           cache_read_input_tokens: 147_500,
@@ -74,9 +83,10 @@ describe('ClaudeProvider proactive context bound (#2956)', () => {
       ).toBe(150_500);
     });
 
-    it('treats missing usage fields as zero (no false trigger)', () => {
-      expect(fullContextTokens({})).toBe(0);
-      expect(exceedsBound(undefined, fullContextTokens({}))).toBe(false);
+    it('treats missing usage fields and absent usage as zero (no false trigger)', () => {
+      expect(computeFullContextTokens({})).toBe(0);
+      expect(computeFullContextTokens(undefined)).toBe(0);
+      expect(guardWouldReset(undefined, computeFullContextTokens({}))).toBe(false);
     });
   });
 
