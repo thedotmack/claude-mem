@@ -81,15 +81,14 @@ export class DatabaseManager {
       this.sessionStore = null;
     }
 
-    if (this.sessionSearch) {
+    if (this.sessionSearch && typeof this.sessionSearch.close === 'function') {
       await this.sessionSearch.close();
       this.sessionSearch = null;
     }
 
-    if (this.db && typeof this.db.close === 'function') {
-      this.db.close();
-      this.db = null;
-    }
+    // Note: sessionStore.close() already ends the shared pool,
+    // so we don't need to close db again. Just null it out.
+    this.db = null;
 
     logger.info('DB', 'Database closed');
   }
