@@ -1,5 +1,4 @@
 {
-  "description": "claude-mem Codex CLI hook integration",
   "hooks": {
     "SessionStart": [
       {
