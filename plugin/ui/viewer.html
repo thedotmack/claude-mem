@@ -498,6 +498,10 @@
       line-height: 1;
     }
 
+
+
+
+
     .logomark {
       height: 32px;
       width: auto;
@@ -551,6 +555,42 @@
       align-items: center;
       gap: 8px;
       font-size: 13px;
+    }
+
+    .source-tabs {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .source-tab {
+      background: transparent;
+      border: 1px solid var(--color-border-primary);
+      color: var(--color-text-secondary);
+      border-radius: 999px;
+      padding: 6px 12px;
+      font-size: 12px;
+      line-height: 1;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+      cursor: pointer;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      white-space: nowrap;
+    }
+
+    .source-tab:hover {
+      background: var(--color-bg-card-hover);
+      border-color: var(--color-border-focus);
+      color: var(--color-text-primary);
+      transform: translateY(-1px);
+    }
+
+    .source-tab.active {
+      background: linear-gradient(135deg, var(--color-bg-button) 0%, var(--color-accent-primary) 100%);
+      border-color: var(--color-bg-button);
+      color: var(--color-text-button);
+      box-shadow: 0 2px 8px rgba(9, 105, 218, 0.18);
     }
 
     .settings-btn,
@@ -759,6 +799,112 @@
       max-width: 180px;
     }
 
+    /* Time Range Quick Select */
+    .time-range-quick-select {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      margin-right: 8px;
+    }
+
+    .time-range-btn {
+      background: var(--color-bg-card);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 4px;
+      padding: 4px 10px;
+      height: 28px;
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--color-text-secondary);
+      cursor: pointer;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .time-range-btn:hover {
+      background-color: var(--color-bg-card-hover);
+      border-color: var(--color-border-focus);
+      color: var(--color-text-primary);
+    }
+
+    /* Time Range Selector Styles */
+    .time-range-selector {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .time-range-selector input[type="date"] {
+      background: var(--color-bg-card);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 6px;
+      padding: 0 8px;
+      height: 36px;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--color-text-secondary);
+      cursor: pointer;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+      max-width: 140px;
+      font-family: inherit;
+    }
+
+    .time-range-selector input[type="date"]::-webkit-calendar-picker-indicator {
+      opacity: 0.6;
+      cursor: pointer;
+    }
+
+    .time-range-selector input[type="date"]:hover {
+      background-color: var(--color-bg-card-hover);
+      border-color: var(--color-border-focus);
+      color: var(--color-text-primary);
+      transform: translateY(-1px);
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
+    }
+
+    .time-range-selector input[type="date"]:focus {
+      outline: none;
+      border-color: var(--color-border-focus);
+      box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.1);
+      transform: translateY(-1px);
+    }
+
+    .time-range-separator {
+      color: var(--color-text-muted);
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    .type-filter {
+      background: var(--color-bg-card);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 6px;
+      padding: 0 8px;
+      height: 36px;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--color-text-secondary);
+      cursor: pointer;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+      font-family: inherit;
+    }
+
+    .type-filter:hover {
+      background-color: var(--color-bg-card-hover);
+      border-color: var(--color-border-focus);
+      color: var(--color-text-primary);
+      transform: translateY(-1px);
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
+    }
+
+    .type-filter:focus {
+      outline: none;
+      border-color: var(--color-border-focus);
+      box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.1);
+      transform: translateY(-1px);
+    }
+
     .status select:hover {
       background-color: var(--color-bg-card-hover);
       border-color: var(--color-border-focus);
@@ -868,6 +1014,7 @@
       align-items: center;
       gap: 10px;
     }
+
 
     .card-subheading {
       display: flex;
@@ -1078,25 +1225,15 @@
       color: var(--color-text-tertiary);
     }
 
+
+
     /* Stack single column on narrow screens (removed - no longer using card-files) */
     @media (max-width: 600px) {}
+
 
     /* Project badge styling */
     .card-project {
       color: var(--color-text-muted);
-    }
-
-    /* Merged-into-parent provenance badge */
-    .card-merged-badge {
-      padding: 1px 6px;
-      border-radius: 3px;
-      font-size: 9px;
-      font-weight: 500;
-      letter-spacing: 0.02em;
-      color: var(--color-text-muted);
-      background: var(--color-type-badge-bg);
-      border: 1px solid var(--color-border-primary);
-      opacity: 0.85;
     }
 
     .summary-card {
@@ -1404,208 +1541,6 @@
       color: var(--color-observation-badge-text);
     }
 
-    /* Welcome modal — first-launch + reusable as help via the ? button.
-       Layout strategy: desktop-first, fluid type via clamp(), and squares
-       built with the padding-bottom:100% trick (percentage padding resolves
-       against width, so the box is always W × W regardless of content). */
-    .welcome-modal-backdrop {
-      position: fixed;
-      inset: 0;
-      z-index: 1100;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: clamp(16px, 3vw, 40px);
-      background: rgba(0, 0, 0, 0.15);
-      animation: fadeIn 0.18s ease-out;
-      overflow-y: auto;
-    }
-
-    .welcome-modal {
-      position: relative;
-      width: 100%;
-      max-width: clamp(560px, 70vw, 960px);
-      padding: clamp(28px, 4vw, 52px) clamp(28px, 4.5vw, 60px) clamp(24px, 3vw, 40px);
-      border-radius: clamp(14px, 1.4vw, 20px);
-      background: color-mix(in srgb, var(--color-bg-card) 55%, transparent);
-      border: 1px solid color-mix(in srgb, var(--color-border-primary) 55%, transparent);
-      box-shadow:
-        0 40px 120px rgba(0, 0, 0, 0.6),
-        0 16px 48px rgba(0, 0, 0, 0.35),
-        0 0 0 1px rgba(255, 255, 255, 0.05) inset;
-      animation: slideUp 0.28s cubic-bezier(0.4, 0, 0.2, 1);
-      backdrop-filter: blur(28px) saturate(170%);
-      -webkit-backdrop-filter: blur(28px) saturate(170%);
-    }
-
-    .welcome-modal-dismiss {
-      position: absolute;
-      top: clamp(12px, 1.4vw, 18px);
-      right: clamp(12px, 1.4vw, 18px);
-      width: 36px;
-      height: 36px;
-      border-radius: 999px;
-      background: color-mix(in srgb, var(--color-bg-card) 70%, transparent);
-      border: 1px solid color-mix(in srgb, var(--color-border-primary) 70%, transparent);
-      color: var(--color-text-secondary);
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-      padding: 0;
-    }
-
-    .welcome-modal-dismiss:hover {
-      background: var(--color-bg-card-hover);
-      border-color: var(--color-border-focus);
-      color: var(--color-text-primary);
-      transform: scale(1.05);
-    }
-
-    .welcome-modal-dismiss:active {
-      transform: scale(0.95);
-    }
-
-    .welcome-modal-header {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      text-align: center;
-      gap: clamp(8px, 0.8vw, 12px);
-      margin-bottom: clamp(20px, 2.4vw, 36px);
-    }
-
-    .welcome-modal-logo {
-      width: clamp(72px, 7.5vw, 104px);
-      height: clamp(72px, 7.5vw, 104px);
-      object-fit: contain;
-      filter: drop-shadow(0 6px 20px rgba(0, 0, 0, 0.18));
-    }
-
-    .welcome-modal-header h2 {
-      margin: clamp(4px, 0.5vw, 8px) 0 0 0;
-      font-size: clamp(22px, 2.4vw, 32px);
-      font-weight: 600;
-      color: var(--color-text-title);
-      letter-spacing: -0.02em;
-      line-height: 1.2;
-    }
-
-    .welcome-modal-header p {
-      margin: 0;
-      font-size: clamp(13px, 1.2vw, 17px);
-      color: var(--color-text-secondary);
-      line-height: 1.5;
-    }
-
-    .welcome-modal-grid {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: clamp(10px, 1.2vw, 18px);
-    }
-
-    /* True-square shell: padding-bottom:100% resolves against parent
-       width, so the box is always W × W. Content is positioned absolutely
-       inside so it cannot push the box taller. */
-    .welcome-modal-feature {
-      position: relative;
-      width: 100%;
-      height: 0;
-      padding-bottom: 100%;
-      border-radius: clamp(10px, 1vw, 14px);
-      background: color-mix(in srgb, var(--color-bg-tertiary) 35%, transparent);
-      border: 1px solid color-mix(in srgb, var(--color-border-primary) 50%, transparent);
-      transition: border-color 0.18s ease, transform 0.18s ease, background 0.18s ease;
-    }
-
-    .welcome-modal-feature:hover {
-      border-color: var(--color-border-focus);
-      transform: translateY(-2px);
-      background: color-mix(in srgb, var(--color-bg-tertiary) 55%, transparent);
-    }
-
-    .welcome-modal-feature-inner {
-      position: absolute;
-      inset: 0;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      text-align: center;
-      gap: clamp(6px, 0.7vw, 12px);
-      padding: clamp(14px, 1.8vw, 26px);
-    }
-
-    .welcome-modal-feature-art {
-      width: clamp(56px, 6.5vw, 96px);
-      height: clamp(56px, 6.5vw, 96px);
-      color: var(--color-text-tertiary);
-      flex-shrink: 0;
-    }
-
-    .welcome-modal-feature-title {
-      margin: clamp(2px, 0.3vw, 6px) 0 0 0;
-      font-size: clamp(14px, 1.2vw, 17px);
-      font-weight: 600;
-      letter-spacing: -0.01em;
-      color: var(--color-text-primary);
-      line-height: 1.3;
-    }
-
-    .welcome-modal-feature-desc {
-      margin: 0;
-      font-size: clamp(11px, 0.9vw, 13px);
-      line-height: 1.45;
-      color: var(--color-text-secondary);
-    }
-
-    .welcome-modal-footer {
-      margin-top: clamp(20px, 2.2vw, 32px);
-      padding-top: clamp(14px, 1.4vw, 20px);
-      border-top: 1px solid color-mix(in srgb, var(--color-border-primary) 50%, transparent);
-      text-align: center;
-      font-size: clamp(12px, 1vw, 14px);
-      color: var(--color-text-muted);
-    }
-
-    .welcome-modal-footer a {
-      color: var(--color-accent-primary);
-      text-decoration: none;
-      font-weight: 500;
-    }
-
-    .welcome-modal-footer a:hover {
-      text-decoration: underline;
-    }
-
-    .welcome-modal-footer-sep {
-      margin: 0 8px;
-      opacity: 0.5;
-    }
-
-    /* Below ~600px three squares get too small to read — stack to one
-       column and let each block grow to natural content height. */
-    @media (max-width: 600px) {
-      .welcome-modal {
-        max-width: 100%;
-      }
-
-      .welcome-modal-grid {
-        grid-template-columns: 1fr;
-      }
-
-      .welcome-modal-feature {
-        height: auto;
-        padding-bottom: 0;
-      }
-
-      .welcome-modal-feature-inner {
-        position: static;
-        padding: 22px 18px;
-      }
-    }
-
     .card-content {
       margin-top: 14px;
       margin-bottom: 12px;
@@ -1733,6 +1668,7 @@
       margin: 0 auto;
     }
 
+
     /* Tablet Responsive Styles - 481px to 768px */
     @media (max-width: 768px) and (min-width: 481px) {
       /* Header stays on one line, hide icon links to save space */
@@ -1750,6 +1686,11 @@
 
       .status select {
         max-width: 160px;
+      }
+
+      .source-tab {
+        padding: 6px 10px;
+        font-size: 11px;
       }
 
       /* Hide icon links (docs, github, twitter) on tablet */
@@ -1809,6 +1750,24 @@
         gap: 10px;
       }
 
+      .source-tabs {
+        width: 100%;
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        padding-bottom: 2px;
+        scrollbar-width: none;
+      }
+
+      .source-tabs::-webkit-scrollbar {
+        display: none;
+      }
+
+      .source-tab {
+        flex-shrink: 0;
+        padding: 5px 10px;
+        font-size: 11px;
+      }
+
       .logomark {
         height: 28px;
       }
@@ -1837,6 +1796,28 @@
         padding: 0 28px 0 10px;
         height: 32px;
         font-size: 12px;
+      }
+
+      .time-range-selector {
+        flex-shrink: 0;
+      }
+
+      .time-range-selector input[type="date"] {
+        max-width: 110px;
+        height: 32px;
+        font-size: 11px;
+        padding: 0 6px;
+      }
+
+      .time-range-separator {
+        font-size: 11px;
+      }
+
+      .type-filter {
+        max-width: 100px;
+        height: 32px;
+        font-size: 11px;
+        flex-shrink: 0;
       }
 
       /* Hide icon links on mobile */
@@ -1887,6 +1868,7 @@
       .feed {
         padding: 16px 12px;
       }
+
 
       /* Card adjustments */
       .card {
@@ -3138,8 +3120,85 @@
 </head>
 
 <body>
-  <div id="root"></div>
-  <script src="viewer-bundle.js"></script>
+  <!-- Login Check Script -->
+  <script>
+    // Define handleLogin in global scope (before async IIFE)
+    async function handleLogin(e) {
+      e.preventDefault();
+      const username = document.getElementById('username').value;
+      const password = document.getElementById('password').value;
+      const errorEl = document.getElementById('login-error');
+      
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password })
+        });
+        
+        const data = await res.json();
+        
+        if (data.success) {
+          window.location.reload();
+        } else {
+          errorEl.textContent = data.error || 'Login failed';
+          errorEl.style.display = 'block';
+        }
+      } catch (err) {
+        errorEl.textContent = 'Connection error';
+        errorEl.style.display = 'block';
+      }
+    }
+    
+    // Check authentication before loading React app
+    (async function() {
+      try {
+        const response = await fetch('/api/auth/check');
+        const data = await response.json();
+        
+        if (!data.authenticated) {
+          // Show login UI
+          const loginHtml = `
+            <div id="login-container" style="display: flex; align-items: center; justify-content: center; height: 100vh; background: var(--color-bg-primary);">
+              <div style="background: var(--color-bg-card); border: 1px solid var(--color-border-primary); border-radius: 12px; padding: 40px; width: 400px; max-width: 90vw; box-shadow: 0 8px 32px rgba(0,0,0,0.1);">
+                <div style="text-align: center; margin-bottom: 32px;">
+                  <img src="claude-mem-logomark.webp" style="height: 48px; margin-bottom: 16px;" />
+                  <h1 style="font-size: 24px; font-weight: 600; color: var(--color-text-header); margin: 0;">claude-mem</h1>
+                  <p style="font-size: 13px; color: var(--color-text-muted); margin-top: 8px;">Authentication required</p>
+                </div>
+                <form id="login-form" onsubmit="handleLogin(event)" style="display: flex; flex-direction: column; gap: 16px;">
+                  <div>
+                    <label style="display: block; font-size: 12px; color: var(--color-text-secondary); margin-bottom: 6px;">Username</label>
+                    <input type="text" id="username" required style="width: 100%; padding: 10px 14px; border: 1px solid var(--color-border-primary); border-radius: 6px; font-size: 14px; background: var(--color-bg-input); color: var(--color-text-primary);" />
+                  </div>
+                  <div>
+                    <label style="display: block; font-size: 12px; color: var(--color-text-secondary); margin-bottom: 6px;">Password</label>
+                    <input type="password" id="password" required style="width: 100%; padding: 10px 14px; border: 1px solid var(--color-border-primary); border-radius: 6px; font-size: 14px; background: var(--color-bg-input); color: var(--color-text-primary);" />
+                  </div>
+                  <button type="submit" style="width: 100%; padding: 12px; background: var(--color-bg-button); color: white; border: none; border-radius: 6px; font-size: 14px; font-weight: 600; cursor: pointer; transition: background 0.2s;">Login</button>
+                </form>
+                <p id="login-error" style="color: var(--color-accent-error); font-size: 12px; text-align: center; margin-top: 16px; display: none;">Invalid username or password</p>
+
+              </div>
+            </div>
+          `;
+          document.body.innerHTML = loginHtml;
+          return;
+        }
+      } catch (error) {
+        console.error('Auth check failed:', error);
+      }
+      
+      // Authenticated, load React app
+      const rootDiv = document.createElement('div');
+      rootDiv.id = 'root';
+      document.body.appendChild(rootDiv);
+      
+      const script = document.createElement('script');
+      script.src = 'viewer-bundle.js';
+      document.body.appendChild(script);
+    })();
+  </script>
 </body>
 
 </html>

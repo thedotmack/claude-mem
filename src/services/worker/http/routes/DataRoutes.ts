@@ -287,7 +287,7 @@ export class DataRoutes extends BaseRouteHandler {
     });
   });
 
-  private handleGetProjects = this.wrapHandler((req: Request, res: Response): void => {
+  private handleGetProjects = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const store = this.dbManager.getSessionStore();
     const rawPlatformSource = req.query.platformSource as string | undefined;
     const platformSource = rawPlatformSource ? normalizePlatformSource(rawPlatformSource) : undefined;
@@ -302,7 +302,7 @@ export class DataRoutes extends BaseRouteHandler {
       return;
     }
 
-    res.json(store.getProjectCatalog());
+    res.json(await store.getProjectCatalog());
   });
 
   private handleGetProcessingStatus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
