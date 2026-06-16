@@ -14,6 +14,7 @@ import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsMana
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from '../../../sqlite/types.js';
 import { captureEvent } from '../../../telemetry/telemetry.js';
+import { telemetryBuffer } from '../../../telemetry/buffer.js';
 
 const ONBOARDING_EXPLAINER_PATH: string = path.resolve(__dirname, '../skills/how-it-works/onboarding-explainer.md');
 
@@ -430,7 +431,7 @@ export class SearchRoutes extends BaseRouteHandler {
         forHuman
       );
     } catch (error) {
-      captureEvent('context_injected', {
+      telemetryBuffer.record('context_injected', {
         outcome: 'error',
         duration_ms: Date.now() - injectStartedAt,
       });
@@ -442,7 +443,7 @@ export class SearchRoutes extends BaseRouteHandler {
     // responses (stats === null) injected no memory and are not counted.
     if (contextResult.stats) {
       const settingsSnapshot = this.getCachedSettings();
-      captureEvent('context_injected', {
+      telemetryBuffer.record('context_injected', {
         outcome: 'ok',
         duration_ms: Date.now() - injectStartedAt,
         mode: settingsSnapshot.CLAUDE_MEM_MODE,

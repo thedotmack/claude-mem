@@ -138,6 +138,24 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'sessions_gemini_count',
   'sessions_other_platform_count',
   'subagent_obs_count',
+  // Rollup events emitted by TelemetryBuffer (buffer.ts) — aggregate fields
+  // that replace the high-volume per-event stream with 5-minute windows.
+  // session_compressed_rollup aggregation fields:
+  'total_tokens_input',
+  'total_tokens_output',
+  'total_cost_usd',
+  'avg_duration_ms',
+  'avg_compression_ms',
+  'outcomes_ok',
+  'outcomes_error',
+  'outcomes_aborted',
+  'outcomes_invalid_output',
+  'top_model',
+  'fabrication_count',
+  'window_start_ts',
+  // context_injected_rollup aggregation fields:
+  'total_tokens',
+  'avg_tokens',
 ]);
 
 const MAX_STRING_LENGTH = 200;

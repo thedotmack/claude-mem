@@ -19,7 +19,7 @@ import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { getProjectContext } from '../../../../utils/project-name.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 import { handleGeneratorExit } from '../../session/GeneratorExitHandler.js';
-import { captureEvent } from '../../../telemetry/telemetry.js';
+import { telemetryBuffer } from '../../../telemetry/buffer.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
 import { getUptimeSeconds } from '../../../../shared/uptime.js';
 import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../../../shared/user-prompts.js';
@@ -174,7 +174,7 @@ export class SessionRoutes extends BaseRouteHandler {
         // controller on its next line, so aborted generators either resolve
         // normally (quota/overflow break) or hit the signal-aborted early
         // return above — this catch only ever sees non-abort rejections.
-        captureEvent('session_compressed', {
+        telemetryBuffer.record('session_compressed', {
           outcome: 'error',
           provider,
           // Providers seed lastModelId when they start; 'unknown' covers a
@@ -193,7 +193,7 @@ export class SessionRoutes extends BaseRouteHandler {
           // ONLY point every abort flow (idle / shutdown / overflow / quota /
           // poisoned) passes through. Emit the closed enum, never the raw
           // string ('quota:…' carries a window suffix).
-          captureEvent('session_compressed', {
+          telemetryBuffer.record('session_compressed', {
             outcome: 'aborted',
             provider,
             model: session.lastModelId ?? 'unknown',
