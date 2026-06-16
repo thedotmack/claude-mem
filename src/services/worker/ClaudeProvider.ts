@@ -160,6 +160,51 @@ export function classifyClaudeError(err: unknown): ClassifiedProviderError {
   return new ClassifiedProviderError(message, { kind: 'transient', cause: err });
 }
 
+/**
+ * Default proactive observer context cap (#2956), used when
+ * CLAUDE_MEM_CLAUDE_MAX_TOKENS is unset or non-numeric.
+ */
+export const DEFAULT_CLAUDE_MAX_OBSERVER_TOKENS = 150000;
+
+/**
+ * Resolve the configured observer context cap, falling back to the default for
+ * unset / non-numeric / non-positive values. Exported so the proactive-bound
+ * tests exercise the real resolution rule rather than a copy.
+ */
+export function resolveObserverMaxTokens(
+  settings: { CLAUDE_MEM_CLAUDE_MAX_TOKENS?: string }
+): number {
+  return parseInt(settings.CLAUDE_MEM_CLAUDE_MAX_TOKENS ?? '', 10) || DEFAULT_CLAUDE_MAX_OBSERVER_TOKENS;
+}
+
+/**
+ * The full context the model read on a turn: fresh input + cache writes + cache
+ * reads. This is the value that grows across an observer session and eventually
+ * overflows the window. Exported so the tests assert the real accounting.
+ */
+export function computeFullContextTokens(
+  usage: {
+    input_tokens?: number | null;
+    cache_creation_input_tokens?: number | null;
+    cache_read_input_tokens?: number | null;
+  } | undefined | null
+): number {
+  if (!usage) return 0;
+  return (
+    (usage.input_tokens || 0) +
+    (usage.cache_creation_input_tokens || 0) +
+    (usage.cache_read_input_tokens || 0)
+  );
+}
+
+/**
+ * The proactive-bound predicate. Exported and used by both the guard and its
+ * tests so a change here (e.g. > vs >=) cannot silently diverge from coverage.
+ */
+export function observerContextExceeded(currentContextTokens: number, maxObserverTokens: number): boolean {
+  return currentContextTokens > maxObserverTokens;
+}
+
 export class ClaudeProvider {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
@@ -210,7 +255,7 @@ export class ClaudeProvider {
     // grows too large. We read the real per-turn context size from usage and, if
     // it exceeds this cap, reset to a fresh start *before* hitting the hard
     // "Prompt is too long" wall (which otherwise saves zero memory).
-    const maxObserverTokens = parseInt(settings.CLAUDE_MEM_CLAUDE_MAX_TOKENS, 10) || 150000;
+    const maxObserverTokens = resolveObserverMaxTokens(settings);
     await waitForSlot(maxConcurrent, session.abortController.signal);
 
     const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
@@ -345,17 +390,16 @@ export class ClaudeProvider {
 
             // Real per-response usage for telemetry (tokens_input includes the
             // full context the model read: fresh + cache writes + cache reads).
+            const fullContextTokens = computeFullContextTokens(usage);
             session.lastUsage = {
-              input: (usage.input_tokens || 0) +
-                (usage.cache_creation_input_tokens || 0) +
-                (usage.cache_read_input_tokens || 0),
+              input: fullContextTokens,
               output: usage.output_tokens || 0,
             };
 
             // #2956 — the full context the model just read. When this crosses the
             // configured cap we reset to a fresh SDK session after the current
             // turn's memory is saved (see the guard after processAgentResponse).
-            currentContextTokens = session.lastUsage.input;
+            currentContextTokens = fullContextTokens;
 
             logger.debug('SDK', 'Token usage captured', {
               sessionId: session.sessionDbId,
@@ -414,14 +458,16 @@ export class ClaudeProvider {
           // this generator — mirroring the in-loop quota guard above. This stops
           // the observer before it hits the hard "Prompt is too long" wall that
           // would otherwise abort with zero memory saved.
-          if (currentContextTokens > maxObserverTokens) {
+          if (observerContextExceeded(currentContextTokens, maxObserverTokens)) {
             logger.warn('SDK', 'Observer context bound exceeded - resetting to a fresh SDK session', {
               sessionId: session.sessionDbId,
               contextTokens: currentContextTokens,
               tokenLimit: maxObserverTokens
             });
             this.resetSessionForFreshStart(session);
-            session.abortReason = 'context_bound';
+            // Internal abort reasons are hyphenated (cf. 'restart-guard');
+            // normalizeAbortReason maps this to the underscore telemetry enum.
+            session.abortReason = 'context-bound';
             try {
               session.abortController.abort();
             } catch {

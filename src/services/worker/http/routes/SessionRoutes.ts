@@ -38,7 +38,7 @@ function normalizeAbortReason(
     case 'idle': return 'idle';
     case 'shutdown': return 'shutdown';
     case 'overflow': return 'overflow';
-    case 'context_bound': return 'context_bound';
+    case 'context-bound': return 'context_bound';
     case 'restart-guard': return 'restart_guard';
     case 'quota': return 'quota';
     case 'poisoned': return 'poisoned';
