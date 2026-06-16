@@ -537,6 +537,42 @@ export const migration027: Migration = {
 };
 
 /**
+ * Migration 028 - Add merged_into_project columns
+ * Required by PaginationHelper queries
+ */
+export const migration028: Migration = {
+  version: 28,
+  up: async (db: MySQLDatabase) => {
+    // Add merged_into_project to observations
+    const hasObsMerged = await db.columnExists('observations', 'merged_into_project');
+    if (!hasObsMerged) {
+      await db.run('ALTER TABLE observations ADD COLUMN merged_into_project VARCHAR(500) NULL');
+      await createIndexSafe(db, 'observations', 'idx_observations_merged_into',
+        'CREATE INDEX idx_observations_merged_into ON observations(merged_into_project)');
+    }
+
+    // Add merged_into_project to session_summaries
+    const hasSumMerged = await db.columnExists('session_summaries', 'merged_into_project');
+    if (!hasSumMerged) {
+      await db.run('ALTER TABLE session_summaries ADD COLUMN merged_into_project VARCHAR(500) NULL');
+      await createIndexSafe(db, 'session_summaries', 'idx_summaries_merged_into',
+        'CREATE INDEX idx_summaries_merged_into ON session_summaries(merged_into_project)');
+    }
+
+    await db.run(
+      'INSERT IGNORE INTO schema_versions (version, applied_at) VALUES (?, NOW())',
+      [28]
+    );
+    logger.debug('DB', 'Migration 028: Added merged_into_project columns');
+  },
+
+  down: async (db: MySQLDatabase) => {
+    await db.run('ALTER TABLE observations DROP COLUMN IF EXISTS merged_into_project');
+    await db.run('ALTER TABLE session_summaries DROP COLUMN IF EXISTS merged_into_project');
+  }
+};
+
+/**
  * All migrations in order
  */
 export const migrations: Migration[] = [
@@ -553,6 +589,7 @@ export const migrations: Migration[] = [
   migration024,
   migration026,
   migration027,
+  migration028,
 ];
 
 /**
