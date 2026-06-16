@@ -57,7 +57,7 @@ afterEach(() => {
 // flush() — session_compressed rollup
 // ---------------------------------------------------------------------------
 
-describe('flush() — session_compressed_rollup', () => {
+describe('flush() — observer_turn_rollup', () => {
   it('emits exactly one rollup event for N records with correct sums and counts', () => {
     telemetryBuffer.record('session_compressed', {
       outcome: 'ok',
@@ -95,7 +95,7 @@ describe('flush() — session_compressed_rollup', () => {
     // Exactly one rollup event
     expect(postHogCaptureCalls.length).toBe(1);
     const call = postHogCaptureCalls[0] as { event: string; properties: Record<string, unknown> };
-    expect(call.event).toBe('session_compressed_rollup');
+    expect(call.event).toBe('observer_turn_rollup');
 
     const p = call.properties;
     expect(p.count).toBe(3);
@@ -189,13 +189,13 @@ describe('flush() — empty buckets', () => {
     expect(postHogCaptureCalls.length).toBe(0);
   });
 
-  it('emits only session_compressed_rollup when context_injected bucket is empty', () => {
+  it('emits only observer_turn_rollup when context_injected bucket is empty', () => {
     telemetryBuffer.record('session_compressed', { outcome: 'ok' });
     telemetryBuffer.flush();
 
     expect(postHogCaptureCalls.length).toBe(1);
     const event = (postHogCaptureCalls[0] as { event: string }).event;
-    expect(event).toBe('session_compressed_rollup');
+    expect(event).toBe('observer_turn_rollup');
   });
 
   it('emits only context_injected_rollup when session_compressed bucket is empty', () => {
@@ -233,7 +233,7 @@ describe('start() / stop() interval wiring', () => {
 
     // The interval flushed the record automatically
     expect(postHogCaptureCalls.length).toBe(1);
-    expect((postHogCaptureCalls[0] as { event: string }).event).toBe('session_compressed_rollup');
+    expect((postHogCaptureCalls[0] as { event: string }).event).toBe('observer_turn_rollup');
   });
 
   it('stop() clears the interval so no further auto-flushes occur', async () => {

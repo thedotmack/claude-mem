@@ -202,7 +202,7 @@ export const telemetryBuffer = {
     if (sessionCompressedBucket && sessionCompressedBucket.records.length > 0) {
       const rollup = computeSessionCompressedRollup(sessionCompressedBucket);
       sessionCompressedBucket = null;
-      captureEvent('session_compressed_rollup', rollup);
+      captureEvent('observer_turn_rollup', rollup);
     }
 
     if (contextInjectedBucket && contextInjectedBucket.records.length > 0) {
