@@ -11,6 +11,54 @@ let client: PostHog | null = null;
 let isShutdown = false;
 
 /**
+ * High-volume event sampling — the PostHog cost lever.
+ *
+ * `session_compressed` fires once per real compression and is by far the
+ * highest-volume event we emit (~89% of all ingested events; the next custom
+ * event is two orders of magnitude smaller). It is legitimate traffic, so we
+ * don't want to stop sending it — but at full fidelity it dominates the
+ * ingestion bill. Instead we keep a uniform random sample of it client-side,
+ * the standard PostHog approach (mirrors posthog-js's `sampleByEvent`): a
+ * `before_send` hook drops the rest before they ever leave the worker, so they
+ * are never ingested or billed.
+ *
+ * Sampling is uniform and outcome-agnostic, so the relative mix of
+ * ok/aborted/invalid_output/error is preserved. Surviving events carry
+ * `telemetry_sample_rate` so aggregate counts and token/cost sums can be scaled
+ * back up by `1 / telemetry_sample_rate` in PostHog.
+ */
+const SAMPLED_EVENTS = new Set(['session_compressed']);
+
+const DEFAULT_SAMPLE_RATE = 0.1;
+
+function resolveSampleRate(): number {
+  const raw = process.env.CLAUDE_MEM_TELEMETRY_SAMPLE_RATE;
+  if (raw == null || raw === '') return DEFAULT_SAMPLE_RATE;
+  const parsed = Number(raw);
+  // Out-of-range / unparseable overrides fall back to the default rather than
+  // silently disabling sampling (parsed >= 1) or dropping everything (<= 0).
+  return Number.isFinite(parsed) && parsed > 0 && parsed <= 1 ? parsed : DEFAULT_SAMPLE_RATE;
+}
+
+/**
+ * PostHog `before_send` sampler. Keeps only `sampleRate` (0..1) of events whose
+ * name is in `sampled`, dropping the rest by returning null. Generic over the
+ * event shape so it adopts posthog-node's exact event type at the call site
+ * (keeping the constructor option fully type-checked) while staying trivially
+ * unit-testable with a plain object. Non-sampled events pass through untouched.
+ */
+export function sampleEvent<E extends { event: string; properties?: Record<string, unknown> }>(
+  event: E | null,
+  sampled: Set<string>,
+  sampleRate: number
+): E | null {
+  if (!event || sampleRate >= 1 || !sampled.has(event.event)) return event;
+  if (Math.random() >= sampleRate) return null;
+  event.properties = { ...event.properties, telemetry_sample_rate: sampleRate };
+  return event;
+}
+
+/**
  * Consent is re-resolved at most once per TTL window so the capture path does
  * not touch the filesystem per event (telemetry.json read). A consent change
  * via the CLI is picked up by a running worker within the TTL.
@@ -43,6 +91,9 @@ function getClient(): PostHog {
       // see docs/public/telemetry.mdx. This matches the CLI transport
       // (cli-telemetry.ts), whose direct POST never suppressed geolocation.
       disableGeoip: false,
+      // Drop all but a uniform sample of the highest-volume event before it is
+      // sent (and billed). See SAMPLED_EVENTS / resolveSampleRate above.
+      before_send: event => sampleEvent(event, SAMPLED_EVENTS, resolveSampleRate()),
     });
   }
   return client;

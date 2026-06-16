@@ -162,6 +162,21 @@ Check the current state — and which of the four layers decided it — anytime:
 npx claude-mem telemetry status
 ```
 
+## Event sampling
+
+`session_compressed` fires once per real compression and is by far the highest-volume event — on the order of 90% of everything ingested. To keep ingestion costs proportionate, only a uniform random **sample** of it is sent; the rest are dropped client-side (via PostHog's `before_send` hook) before they ever leave your machine, so they are never transmitted or stored.
+
+- Default keep rate: **10%** (1 in 10 `session_compressed` events is sent).
+- Surviving events carry a `telemetry_sample_rate` property, so aggregate counts and token/cost sums can be scaled back up (multiply by `1 / telemetry_sample_rate`).
+- Sampling is uniform and outcome-agnostic, so the mix of `ok` / `aborted` / `invalid_output` / `error` is preserved.
+- All other events (lifecycle, errors, searches, …) are low-volume and sent in full.
+
+Override the keep rate with `CLAUDE_MEM_TELEMETRY_SAMPLE_RATE` (a value in `(0, 1]`). Set it to `1` to send every `session_compressed` event; out-of-range or unparseable values fall back to the default.
+
+```bash
+CLAUDE_MEM_TELEMETRY_SAMPLE_RATE=0.25   # send 25% of session_compressed events
+```
+
 ## Debug mode
 
 Want to see exactly what would be sent? Set:
