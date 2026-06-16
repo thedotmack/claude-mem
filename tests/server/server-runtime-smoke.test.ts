@@ -15,7 +15,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { Server, type ServerOptions } from '../../src/services/server/Server.js';
+import { Server, type ServerOptions } from '../../src/shared/http/Server.js';
 import { ServerV1Routes } from '../../src/server/routes/v1/ServerV1Routes.js';
 import { ServerViewerRoutes } from '../../src/server/runtime/ServerViewerRoutes.js';
 import { createServerApiKey, DEFAULT_LOCAL_API_KEY_SCOPES } from '../../src/server/auth/sqlite-api-key-service.js';

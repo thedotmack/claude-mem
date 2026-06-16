@@ -1,7 +1,7 @@
 
 import { Request, Response } from 'express';
 import { logger } from '../../../utils/logger.js';
-import { AppError } from '../../server/ErrorHandler.js';
+import { AppError } from '../../../shared/http/ErrorHandler.js';
 import { captureEvent } from '../../telemetry/telemetry.js';
 
 export abstract class BaseRouteHandler {

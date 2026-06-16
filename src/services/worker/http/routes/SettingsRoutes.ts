@@ -12,7 +12,7 @@ import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { clearPortCache } from '../../../../shared/worker-utils.js';
-import { flushResponseThen } from '../../../server/flushResponseThen.js';
+import { flushResponseThen } from '../../../../shared/http/flushResponseThen.js';
 
 const updateSettingsSchema = z.object({}).passthrough();
 

@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import net from 'net';
 import { dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { Server, type RouteHandler } from '../../services/server/Server.js';
+import { Server, type RouteHandler } from '../../shared/http/Server.js';
 import { paths } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import {

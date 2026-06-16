@@ -36,7 +36,7 @@ describe('MCP server name safety (#2473)', () => {
     // Read the source rather than importing it (importing runs the stdio server
     // bootstrap, which is undesirable in a unit test). Extract `name: '...'`
     // entries from the tools array.
-    const serverSrcPath = join(import.meta.dir, '..', '..', 'src', 'servers', 'mcp-server.ts');
+    const serverSrcPath = join(import.meta.dir, '..', '..', 'src', 'entrypoints', 'mcp-server.ts');
     const src = readFileSync(serverSrcPath, 'utf-8');
 
     const toolNames = Array.from(src.matchAll(/^\s{4}name: '([^']+)',?$/gm)).map(m => m[1]);
