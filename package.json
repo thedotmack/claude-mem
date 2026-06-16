@@ -130,6 +130,7 @@
     "@clack/prompts": "^1.3.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "ansi-to-html": "^0.7.2",
+    "bcrypt": "^6.0.0",
     "better-auth": "^1.6.16",
     "bullmq": "^5.76.6",
     "cors": "^2.8.6",

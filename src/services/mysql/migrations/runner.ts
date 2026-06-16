@@ -233,9 +233,18 @@ export class MigrationRunner {
       [config.database]
     );
 
+    // Validate index names before using them in SQL (prevent SQL injection)
+    const validIndexNamePattern = /^[a-zA-Z0-9_]+$/;
+    
     if (indexes.length > 0) {
       for (const idx of indexes) {
-        await this.db.run(`ALTER TABLE session_summaries DROP INDEX \`${idx.INDEX_NAME}\``);
+        const indexName = idx.INDEX_NAME;
+        // Validate index name contains only safe characters
+        if (!validIndexNamePattern.test(indexName)) {
+          logger.warn('DB', `Skipping invalid index name: ${indexName}`);
+          continue;
+        }
+        await this.db.run(`ALTER TABLE session_summaries DROP INDEX \`${indexName}\``);
       }
       logger.debug('DB', 'Removed UNIQUE constraint from session_summaries.memory_session_id');
     }
@@ -249,19 +258,14 @@ export class MigrationRunner {
   private async addObservationHierarchicalFields(): Promise<void> {
     if (await this.isMigrationApplied(8)) return;
 
-    const hasTitle = await this.db.columnExists('observations', 'title');
-    if (!hasTitle) {
-      await this.db.exec(`
-        ALTER TABLE observations ADD COLUMN title TEXT;
-        ALTER TABLE observations ADD COLUMN subtitle TEXT;
-        ALTER TABLE observations ADD COLUMN facts TEXT;
-        ALTER TABLE observations ADD COLUMN narrative TEXT;
-        ALTER TABLE observations ADD COLUMN concepts TEXT;
-        ALTER TABLE observations ADD COLUMN files_read TEXT;
-        ALTER TABLE observations ADD COLUMN files_modified TEXT;
-      `);
-      logger.debug('DB', 'Added hierarchical fields to observations');
+    const columns = ['title', 'subtitle', 'facts', 'narrative', 'concepts', 'files_read', 'files_modified'];
+    for (const col of columns) {
+      const hasColumn = await this.db.columnExists('observations', col);
+      if (!hasColumn) {
+        await this.db.run(`ALTER TABLE observations ADD COLUMN ${col} TEXT`);
+      }
     }
+    logger.debug('DB', 'Added hierarchical fields to observations');
 
     await this.recordMigration(8);
   }
@@ -298,7 +302,7 @@ export class MigrationRunner {
     }
 
     await this.db.run(`
-      CREATE TABLE user_prompts (
+      CREATE TABLE IF NOT EXISTS user_prompts (
         id INT PRIMARY KEY AUTO_INCREMENT,
         content_session_id VARCHAR(255) NOT NULL,
         prompt_number INT NOT NULL,
@@ -362,7 +366,7 @@ export class MigrationRunner {
     }
 
     await this.db.run(`
-      CREATE TABLE pending_messages (
+      CREATE TABLE IF NOT EXISTS pending_messages (
         id INT PRIMARY KEY AUTO_INCREMENT,
         session_db_id INT NOT NULL,
         content_session_id VARCHAR(255) NOT NULL,

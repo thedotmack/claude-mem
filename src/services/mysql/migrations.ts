@@ -235,7 +235,7 @@ export const migration010: Migration = {
     const tableExists = await db.tableExists('user_prompts');
     if (!tableExists) {
       await db.run(`
-        CREATE TABLE user_prompts (
+        CREATE TABLE IF NOT EXISTS user_prompts (
           id INT AUTO_INCREMENT PRIMARY KEY,
           content_session_id VARCHAR(255) NOT NULL,
           prompt_number INT NOT NULL,
@@ -306,7 +306,7 @@ export const migration016: Migration = {
     const tableExists = await db.tableExists('pending_messages');
     if (!tableExists) {
       await db.run(`
-        CREATE TABLE pending_messages (
+        CREATE TABLE IF NOT EXISTS pending_messages (
           id INT AUTO_INCREMENT PRIMARY KEY,
           session_db_id INT NOT NULL,
           content_session_id VARCHAR(255) NOT NULL,
@@ -553,6 +553,18 @@ export const migrations: Migration[] = [
  * Run all pending migrations
  */
 export async function runMigrations(db: MySQLDatabase): Promise<void> {
+  // Ensure schema_versions table exists before querying it
+  const tableExists = await db.tableExists('schema_versions');
+  if (!tableExists) {
+    await db.run(`
+      CREATE TABLE IF NOT EXISTS schema_versions (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        version INT UNIQUE NOT NULL,
+        applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+  }
+
   // Get applied versions
   const appliedRows = await db.all<{ version: number }>('SELECT version FROM schema_versions ORDER BY version');
   const appliedVersions = new Set(appliedRows.map(r => r.version));

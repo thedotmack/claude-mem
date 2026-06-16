@@ -6,6 +6,14 @@ import { createHash, randomBytes } from 'crypto';
 import type { MySQLDatabase } from './Database.js';
 import { logger } from '../../utils/logger.js';
 
+// Try to import bcrypt, fallback to SHA-256 if not available
+let bcrypt: any = null;
+try {
+  bcrypt = await import('bcrypt');
+} catch {
+  logger.warn('AUTH', 'bcrypt not available, falling back to SHA-256 (less secure)');
+}
+
 export interface UserRow {
   id: number;
   username: string;
@@ -28,36 +36,52 @@ export interface TokenRow {
 }
 
 /**
- * Simple password hash (SHA256 + salt)
- * For production, use bcrypt
+ * Password hash using bcrypt (preferred) or SHA-256 (fallback)
  */
-export function hashPassword(password: string, salt?: string): string {
-  const actualSalt = salt || randomBytes(16).toString('hex');
+export async function hashPassword(password: string): Promise<string> {
+  if (bcrypt) {
+    const salt = await bcrypt.genSalt(10);
+    return bcrypt.hash(password, salt);
+  }
+  // Fallback: SHA-256 with random salt
+  const salt = randomBytes(16).toString('hex');
   const hash = createHash('sha256')
-    .update(password + actualSalt)
+    .update(password + salt)
     .digest('hex');
-  return `${actualSalt}:${hash}`;
+  return `sha256:${salt}:${hash}`;
 }
 
 /**
  * Verify password against stored hash
  */
-export function verifyPassword(password: string, storedHash: string): boolean {
-  // Handle bcrypt format ($2a$...)
-  if (storedHash.startsWith('$2a$') || storedHash.startsWith('$2b$')) {
-    // TODO: Use bcrypt.compare() for proper bcrypt verification
-    // Currently SHA-256 is used for non-bcrypt hashes below
-    return false;
+export async function verifyPassword(password: string, storedHash: string): Promise<boolean> {
+  // Handle bcrypt format ($2a$... or $2b$...)
+  if (bcrypt && (storedHash.startsWith('$2a$') || storedHash.startsWith('$2b$'))) {
+    return bcrypt.compare(password, storedHash);
   }
   
-  // Handle our salt:hash format
-  const [salt, hash] = storedHash.split(':');
-  if (!salt || !hash) return false;
+  // Handle SHA-256 format (sha256:salt:hash)
+  if (storedHash.startsWith('sha256:')) {
+    const parts = storedHash.split(':');
+    if (parts.length !== 3) return false;
+    const [, salt, hash] = parts;
+    const computedHash = createHash('sha256')
+      .update(password + salt)
+      .digest('hex');
+    return computedHash === hash;
+  }
   
-  const computedHash = createHash('sha256')
-    .update(password + salt)
-    .digest('hex');
-  return computedHash === hash;
+  // Legacy format (salt:hash) - for backward compatibility
+  const parts = storedHash.split(':');
+  if (parts.length === 2) {
+    const [salt, hash] = parts;
+    const computedHash = createHash('sha256')
+      .update(password + salt)
+      .digest('hex');
+    return computedHash === hash;
+  }
+  
+  return false;
 }
 
 /**
@@ -88,7 +112,7 @@ export class AuthStore {
    * Create new user
    */
   async createUser(username: string, password: string, role: string = 'user'): Promise<number> {
-    const passwordHash = hashPassword(password);
+    const passwordHash = await hashPassword(password);
     const now = Date.now();
     const timestampIso = new Date(now).toISOString();
 
