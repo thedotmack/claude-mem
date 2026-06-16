@@ -88,6 +88,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_WORKER_HOST',
       'CLAUDE_MEM_PROVIDER',
       'CLAUDE_MEM_CLAUDE_AUTH_METHOD',
+      'CLAUDE_MEM_CLAUDE_MAX_TOKENS',
       'CLAUDE_MEM_GEMINI_API_KEY',
       'CLAUDE_MEM_GEMINI_MODEL',
       'CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED',
@@ -199,6 +200,13 @@ export class SettingsRoutes extends BaseRouteHandler {
       const validClaudeAuthMethods = ['subscription', 'api-key', 'gateway', 'cli'];
       if (!validClaudeAuthMethods.includes(settings.CLAUDE_MEM_CLAUDE_AUTH_METHOD)) {
         return { valid: false, error: 'CLAUDE_MEM_CLAUDE_AUTH_METHOD must be "subscription", "api-key", "gateway", or "cli"' };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_CLAUDE_MAX_TOKENS) {
+      const tokens = parseInt(settings.CLAUDE_MEM_CLAUDE_MAX_TOKENS, 10);
+      if (isNaN(tokens) || tokens < 1000 || tokens > 1000000) {
+        return { valid: false, error: 'CLAUDE_MEM_CLAUDE_MAX_TOKENS must be between 1000 and 1000000' };
       }
     }
 
