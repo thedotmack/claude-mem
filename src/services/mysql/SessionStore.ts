@@ -5,6 +5,7 @@
  * Uses mysql2/promise for async operations.
  */
 
+import { createHash } from 'crypto';
 import { MySQLDatabase } from './Database.js';
 import { runMigrations } from './migrations.js';
 import { logger } from '../../utils/logger.js';
@@ -799,18 +800,12 @@ export class SessionStore {
   }
 
   /**
-   * Compute content hash for deduplication
+   * Compute content hash for deduplication using SHA-256
+   * Provides 256-bit hash space to avoid birthday-paradox collisions
    */
   private computeContentHash(memorySessionId: string, title: string | null, narrative: string | null): string {
     const content = `${memorySessionId}:${title || ''}:${narrative || ''}`;
-    // Simple hash (not crypto, but sufficient for deduplication)
-    let hash = 0;
-    for (let i = 0; i < content.length; i++) {
-      const char = content.charCodeAt(i);
-      hash = ((hash << 5) - hash) + char;
-      hash = hash & hash;
-    }
-    return Math.abs(hash).toString(16).padStart(16, '0');
+    return createHash('sha256').update(content).digest('hex');
   }
 
   /**
