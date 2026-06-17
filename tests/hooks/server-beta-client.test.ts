@@ -285,7 +285,7 @@ describe('ServerBetaClient', () => {
       projectId: 'p',
       kind: 'manual',
       type: 'manual',
-      narrative: 'c',
+      content: 'c',
     });
     expect(client.buildSearchPayload({ projectId: 'p', query: 'q' })).toEqual({
       projectId: 'p',
