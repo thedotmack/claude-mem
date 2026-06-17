@@ -50,6 +50,21 @@ export function reinforceObservation(db: Database, id: number, today: Date = new
   return true;
 }
 
+/**
+ * Phase 4 — record that observations were surfaced to the agent during context
+ * injection. Bumps relevance_count, which feeds back into ranking as a small
+ * β·log1p(count) self-reinforcement of notes that keep proving useful enough to
+ * surface. Pure count signal — does NOT touch reinforcement_dates (surfacing is
+ * not the same as the world re-confirming the fact). No-op on empty input.
+ */
+export function recordSurfaced(db: Database, ids: number[]): void {
+  if (ids.length === 0) return;
+  const placeholders = ids.map(() => '?').join(',');
+  db.prepare(
+    `UPDATE observations SET relevance_count = COALESCE(relevance_count, 0) + 1 WHERE id IN (${placeholders})`,
+  ).run(...ids);
+}
+
 /** Current ACT-R strength of one observation (0 if no history / missing). */
 export function observationStrength(db: Database, id: number, today: Date = new Date()): number {
   const row = db

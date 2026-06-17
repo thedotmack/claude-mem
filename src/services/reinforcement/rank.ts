@@ -18,11 +18,14 @@ import {
  * was created months ago — exactly the durable knowledge pure recency buries.
  *
  *   score = ln(1 + age_created^-d + ALPHA * Σ age_reinforcement^-d)
+ *           + BETA * log1p(relevance_count)
  *
  * The creation term is taken from created_at_epoch (always present); the
- * reinforcement terms are the *additional* dates beyond creation. With
- * ALPHA = 0 the score is ln(1 + age_created^-d) — monotonic in recency — so the
- * selection collapses to the legacy "top-N most recent" behaviour exactly.
+ * reinforcement terms are the *additional* dates beyond creation; the BETA term
+ * is a small self-reinforcement of observations that keep surfacing (Phase 4).
+ * With ALPHA = 0 and BETA = 0 the score is ln(1 + age_created^-d) — monotonic in
+ * recency — so the selection collapses to the legacy "top-N most recent"
+ * behaviour exactly.
  */
 
 const MS_PER_DAY = 86_400_000;
@@ -30,6 +33,7 @@ const MS_PER_DAY = 86_400_000;
 export interface Rankable {
   created_at_epoch: number;
   reinforcement_dates?: string | null;
+  relevance_count?: number | null;
 }
 
 const POOL_MULT_DEFAULT = 5;
@@ -76,7 +80,11 @@ export function blendedScore(
     reinforcementSum += Math.pow(ageDays(dates[k], today), -tunables.powerD);
   }
 
-  return Math.log(1 + created + tunables.alpha * reinforcementSum);
+  const surfacings = Math.max(0, item.relevance_count ?? 0);
+  return (
+    Math.log(1 + created + tunables.alpha * reinforcementSum) +
+    tunables.beta * Math.log1p(surfacings)
+  );
 }
 
 /**

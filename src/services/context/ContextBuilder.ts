@@ -3,6 +3,7 @@ import path from 'path';
 import { homedir } from 'os';
 import { unlinkSync } from 'fs';
 import { SessionStore } from '../sqlite/SessionStore.js';
+import { recordSurfaced } from '../reinforcement/persist.js';
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
 
@@ -201,6 +202,13 @@ export async function generateContextWithStats(
       input?.session_id,
       forHuman
     );
+
+    // Phase 4: count this surfacing only for real agent injection — not human
+    // previews (forHuman) or full dumps — so relevance_count reflects genuine
+    // context delivery and can feed back into ranking.
+    if (!forHuman && !input?.full) {
+      recordSurfaced(db.db, observations.map(o => o.id));
+    }
 
     return { text: output, stats: buildInjectStats(observations, summaries, Boolean(input?.full)) };
   } finally {

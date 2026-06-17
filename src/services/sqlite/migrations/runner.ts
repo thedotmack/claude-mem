@@ -37,6 +37,7 @@ export class MigrationRunner {
     this.dropDeadPendingMessagesColumns();
     this.dropWorkerPidColumn();
     this.addObservationReinforcementColumns();
+    this.ensureObservationRelevanceCountColumn();
     this.createServerOwnedTables();
     this.rebuildPendingMessagesForFinalQueueSchema();
   }
@@ -1011,7 +1012,29 @@ export class MigrationRunner {
       logger.debug('DB', 'Added last_reinforced column to observations table');
     }
 
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(33, new Date().toISOString());
+    // Versions 33 (server-owned tables) and 34 (pending_messages rebuild) are
+    // already taken in this runner — use 35 to avoid tripping rebuild's
+    // `if (applied) return` guard. (SessionStore numbers the same migration 33;
+    // the two schema_versions sequences are independent.)
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(35, new Date().toISOString());
+  }
+
+  /**
+   * Phase 4 — surfacing observability (mirrors SessionStore). Ensures
+   * relevance_count exists so context injection can count surfacings and feed
+   * β·log1p(relevance_count) back into ranking. Idempotent.
+   */
+  private ensureObservationRelevanceCountColumn(): void {
+    const cols = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasColumn = cols.some(c => c.name === 'relevance_count');
+
+    if (!hasColumn) {
+      this.db.run('ALTER TABLE observations ADD COLUMN relevance_count INTEGER DEFAULT 0');
+      logger.debug('DB', 'Added relevance_count column to observations table');
+    }
+
+    // 36: next free version in this runner (33/34 taken, 35 = reinforcement).
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(36, new Date().toISOString());
   }
 
   private dropDeadPendingMessagesColumns(): void {

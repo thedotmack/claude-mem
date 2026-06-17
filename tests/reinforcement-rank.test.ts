@@ -20,7 +20,8 @@ function pool(...specs: Array<{ age: number; reinforced?: number[] }>): (Rankabl
     .sort((a, b) => b.created_at_epoch - a.created_at_epoch);
 }
 
-const OFF = { ...DEFAULT_TUNABLES, alpha: 0 };
+// Strict legacy kill switch: both reinforcement (alpha) and surfacing (beta) off.
+const OFF = { ...DEFAULT_TUNABLES, alpha: 0, beta: 0 };
 const ON = { ...DEFAULT_TUNABLES, alpha: 0.5 };
 
 describe('poolSize', () => {

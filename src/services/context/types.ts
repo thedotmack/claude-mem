@@ -45,6 +45,7 @@ export interface Observation {
   created_at_epoch: number;
   project?: string;
   reinforcement_dates?: string | null;
+  relevance_count?: number | null;
 }
 
 export interface SessionSummary {

@@ -72,6 +72,31 @@ export class SessionStore {
     this.ensurePendingMessagesToolUseIdColumn();
     this.dropWorkerPidColumn();
     this.addObservationReinforcementColumns();
+    this.ensureObservationRelevanceCountColumn();
+  }
+
+  /**
+   * Phase 4 — surfacing observability.
+   *
+   * Guarantees the `relevance_count` column exists so context injection can
+   * count how often an observation has surfaced and feed that back into ranking
+   * (β·log1p(relevance_count)). On the worker path the column already exists
+   * (added with the model columns); this keeps the two migration systems in
+   * lockstep and is a no-op there. Idempotent.
+   */
+  private ensureObservationRelevanceCountColumn(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(34) as SchemaVersion | undefined;
+    const columns = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasColumn = columns.some(col => col.name === 'relevance_count');
+
+    if (applied && hasColumn) return;
+
+    if (!hasColumn) {
+      this.db.run('ALTER TABLE observations ADD COLUMN relevance_count INTEGER DEFAULT 0');
+      logger.debug('DB', 'Added relevance_count column to observations table');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(34, new Date().toISOString());
   }
 
   /**
