@@ -53,3 +53,10 @@ docker/install-test/
 
 # Local session report artifacts (not part of distribution)
 reports/
+
+# Plugin build artifacts (excluded from tracking)
+plugin/ui/viewer-bundle.js
+plugin/scripts/mcp-server.cjs
+.claude-plugin/plugin.json
+.codex-plugin/plugin.json
+plugin/package.json
