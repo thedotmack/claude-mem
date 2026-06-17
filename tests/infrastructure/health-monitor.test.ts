@@ -5,7 +5,8 @@ import {
   waitForHealth,
   waitForPortFree,
   getInstalledPluginVersion,
-  checkVersionMatch
+  checkVersionMatch,
+  isLikelyClaudeMemWorkerCommand
 } from '../../src/services/infrastructure/index.js';
 
 describe('HealthMonitor', () => {
@@ -77,6 +78,26 @@ describe('HealthMonitor', () => {
       expect(result).toBe(false);
       
       spy.mockRestore();
+    });
+  });
+
+  describe('isLikelyClaudeMemWorkerCommand', () => {
+    it('recognizes a Bun-launched claude-mem worker-service daemon', () => {
+      const commandLine = 'bun.exe D:\\tools\\claude-mem\\plugin\\scripts\\worker-service.cjs --daemon';
+
+      expect(isLikelyClaudeMemWorkerCommand(commandLine)).toBe(true);
+    });
+
+    it('recognizes the compiled claude-mem worker binary', () => {
+      const commandLine = 'C:\\Users\\test\\.claude\\plugins\\cache\\thedotmack\\claude-mem\\13.6.1\\plugin\\scripts\\claude-mem --daemon';
+
+      expect(isLikelyClaudeMemWorkerCommand(commandLine)).toBe(true);
+    });
+
+    it('does not match unrelated processes on the same port', () => {
+      const commandLine = 'C:\\Program Files\\Some App\\server.exe --port 37778';
+
+      expect(isLikelyClaudeMemWorkerCommand(commandLine)).toBe(false);
     });
   });
 
