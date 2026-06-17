@@ -71,6 +71,42 @@ export class SessionStore {
     this.dropDeadPendingMessagesColumns();
     this.ensurePendingMessagesToolUseIdColumn();
     this.dropWorkerPidColumn();
+    this.addObservationReinforcementColumns();
+  }
+
+  /**
+   * Phase 1a — reinforcement / ACT-R memory.
+   *
+   * Adds the columns the strength engine (src/services/reinforcement) needs to
+   * bias context injection by how often the world re-confirms an observation,
+   * instead of recency alone:
+   *   - reinforcement_dates: JSON array of ISO `YYYY-MM-DD` reinforcement events
+   *     (spacing-effect history, FIFO-trimmed to MAX_REINFORCEMENT_HISTORY)
+   *   - last_reinforced: ISO date of the most recent reinforcement
+   *
+   * No backfill: pre-existing observations start with empty history
+   * (effectiveStrength([]) === 0), so they keep their current keyword/recency
+   * ranking and accrue strength going forward. Idempotent.
+   */
+  private addObservationReinforcementColumns(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(33) as SchemaVersion | undefined;
+
+    const columns = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasDates = columns.some(col => col.name === 'reinforcement_dates');
+    const hasLastReinforced = columns.some(col => col.name === 'last_reinforced');
+
+    if (applied && hasDates && hasLastReinforced) return;
+
+    if (!hasDates) {
+      this.db.run('ALTER TABLE observations ADD COLUMN reinforcement_dates TEXT');
+      logger.debug('DB', 'Added reinforcement_dates column to observations table');
+    }
+    if (!hasLastReinforced) {
+      this.db.run('ALTER TABLE observations ADD COLUMN last_reinforced TEXT');
+      logger.debug('DB', 'Added last_reinforced column to observations table');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(33, new Date().toISOString());
   }
 
   private dropWorkerPidColumn(): void {

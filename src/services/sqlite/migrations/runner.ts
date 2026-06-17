@@ -36,6 +36,7 @@ export class MigrationRunner {
     this.addObservationsMetadataColumn();
     this.dropDeadPendingMessagesColumns();
     this.dropWorkerPidColumn();
+    this.addObservationReinforcementColumns();
     this.createServerOwnedTables();
     this.rebuildPendingMessagesForFinalQueueSchema();
   }
@@ -988,6 +989,29 @@ export class MigrationRunner {
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(30, new Date().toISOString());
+  }
+
+  /**
+   * Phase 1a — reinforcement / ACT-R memory (mirrors SessionStore).
+   * Adds reinforcement_dates (JSON array of ISO days) + last_reinforced so the
+   * strength engine can bias context injection by re-confirmation, not recency
+   * alone. No backfill; idempotent. See src/services/reinforcement.
+   */
+  private addObservationReinforcementColumns(): void {
+    const cols = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasDates = cols.some(c => c.name === 'reinforcement_dates');
+    const hasLastReinforced = cols.some(c => c.name === 'last_reinforced');
+
+    if (!hasDates) {
+      this.db.run('ALTER TABLE observations ADD COLUMN reinforcement_dates TEXT');
+      logger.debug('DB', 'Added reinforcement_dates column to observations table');
+    }
+    if (!hasLastReinforced) {
+      this.db.run('ALTER TABLE observations ADD COLUMN last_reinforced TEXT');
+      logger.debug('DB', 'Added last_reinforced column to observations table');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(33, new Date().toISOString());
   }
 
   private dropDeadPendingMessagesColumns(): void {
