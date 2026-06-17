@@ -28,7 +28,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { buildHardenedSdkOptions } from '../../sdk/hardened-options.js';
 import { ClassifiedProviderError } from './provider-errors.js';
 import { resolveTierAlias } from './model-aliases.js';
-import { captureEvent } from '../telemetry/telemetry.js';
+import { telemetryBuffer } from '../telemetry/buffer.js';
 
 /**
  * Module-scoped guard so the "effort parameter" hint only fires once per
@@ -422,7 +422,7 @@ export class ClaudeProvider {
                 (resultUsage.cache_read_input_tokens || 0)
               : undefined;
             const finalOutput = resultUsage ? resultUsage.output_tokens || 0 : undefined;
-            captureEvent('session_compressed', {
+            telemetryBuffer.record('session_compressed', {
               ...pending,
               tokens_input: finalInput,
               tokens_output: finalOutput,
@@ -440,7 +440,7 @@ export class ClaudeProvider {
       // (abort/kill) still ships — without token fields, per the no-estimates
       // rule — instead of being silently dropped.
       if (session.pendingCompressionEvent) {
-        captureEvent('session_compressed', session.pendingCompressionEvent);
+        telemetryBuffer.record('session_compressed', session.pendingCompressionEvent);
         session.pendingCompressionEvent = null;
       }
       const tracked = getSdkProcessForSession(session.sessionDbId);

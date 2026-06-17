@@ -114,6 +114,48 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'error_mode',
   'consecutive_failures',
   'threshold_tripped',
+  // Historical backfill (backfill.ts) — anonymous per-day rollup counters,
+  // the backfilled:true flag, and the single inferred-install date string
+  // (YYYY-MM-DD). Counts/sums and closed-enum buckets only — never project
+  // names, prompt text, or any raw string column. observation_count,
+  // session_count, and the obs_type_* family are shared with live
+  // context_injected above (different per-event semantics — see PR notes).
+  'discovery_tokens',
+  // read_tokens: per-day sum of once-each observation read cost
+  // (ceil(len(text)/CHARS_PER_TOKEN_ESTIMATE)); paired with discovery_tokens to
+  // derive the historical tokens_saved_vs_naive series. tokens_saved_vs_naive
+  // itself is whitelisted above (shared key name with live context_injected).
+  'read_tokens',
+  'summary_count',
+  'prompt_count',
+  'project_count',
+  'backfilled',
+  'first_active_date',
+  'session_completed_count',
+  'session_failed_count',
+  'sessions_claude_count',
+  'sessions_codex_count',
+  'sessions_gemini_count',
+  'sessions_other_platform_count',
+  'subagent_obs_count',
+  // Rollup events emitted by TelemetryBuffer (buffer.ts) — aggregate fields
+  // that replace the high-volume per-event stream with 5-minute windows.
+  // session_compressed_rollup aggregation fields:
+  'total_tokens_input',
+  'total_tokens_output',
+  'total_cost_usd',
+  'avg_duration_ms',
+  'avg_compression_ms',
+  'outcomes_ok',
+  'outcomes_error',
+  'outcomes_aborted',
+  'outcomes_invalid_output',
+  'top_model',
+  'fabrication_count',
+  'window_start_ts',
+  // context_injected_rollup aggregation fields:
+  'total_tokens',
+  'avg_tokens',
 ]);
 
 const MAX_STRING_LENGTH = 200;

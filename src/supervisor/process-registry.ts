@@ -659,7 +659,13 @@ export function spawnSdkProcess(
     pgid,
   }, child);
 
-  child.on('exit', (code: number | null, signal: string | null) => {
+  child.on('exit', () => {
+    registry.unregister(recordId);
+  });
+
+  // 'close', not 'exit': 'exit' can fire while piped stderr still holds
+  // buffered data, truncating the tail. 'close' waits for all stdio to drain.
+  child.on('close', (code: number | null, signal: string | null) => {
     if (code !== 0) {
       const tail = stderrTail.trim();
       logger.warn('SDK_SPAWN', `[session-${sessionDbId}] Claude process exited`, {
@@ -669,7 +675,6 @@ export function spawnSdkProcess(
         ...(tail ? { stderrTail: tail } : {}),
       });
     }
-    registry.unregister(recordId);
   });
 
   if (!child.stdin || !child.stdout || !child.stderr) {

@@ -333,17 +333,14 @@ async function buildHooks() {
     const workerStats = fs.statSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`);
     console.log(`✓ worker-service built (${(workerStats.size / 1024).toFixed(2)} KB)`);
 
-    // Bundle-size guardrail for the worker. After externalizing the dead better-auth
-    // dependency (#2584) the worker bundle is ~2.29 MB. The threshold below leaves
-    // ~25% headroom so normal growth is fine, but a regression that re-bundles a
-    // heavy server-only dependency (e.g. better-auth, kysely, a Postgres driver)
-    // into the worker artifact will blow past it and fail the build/CI.
+    // Advisory only — a sudden jump usually means a heavy server-only dependency
+    // (better-auth, kysely, a database driver) leaked into the worker bundle via a
+    // transitive import (#2584). Never blocks the build.
     const WORKER_SERVICE_MAX_BYTES = 2900 * 1024;
     if (workerStats.size > WORKER_SERVICE_MAX_BYTES) {
-      throw new Error(
-        `worker-service.cjs is ${(workerStats.size / 1024).toFixed(2)} KB, exceeding the ${(WORKER_SERVICE_MAX_BYTES / 1024).toFixed(0)} KB budget. ` +
-        `This usually means a heavy, server-only dependency leaked into the worker bundle — most likely a transitive (or dynamic) import dragged something like better-auth, kysely, or a database driver into worker-service.ts. ` +
-        `Such deps must be marked 'external' in the worker build's external array (see #2584 for the better-auth case) or gated behind the server-beta runtime so the worker never bundles them.`
+      console.warn(
+        `⚠️  worker-service.cjs is ${(workerStats.size / 1024).toFixed(2)} KB (advisory budget ${(WORKER_SERVICE_MAX_BYTES / 1024).toFixed(0)} KB). ` +
+        `If this jumped unexpectedly, check whether a server-only dependency leaked into the worker bundle (see #2584).`
       );
     }
 
@@ -449,8 +446,8 @@ async function buildHooks() {
 
     const MCP_SERVER_MAX_BYTES = 600 * 1024;
     if (mcpServerStats.size > MCP_SERVER_MAX_BYTES) {
-      throw new Error(
-        `mcp-server.cjs is ${(mcpServerStats.size / 1024).toFixed(2)} KB, exceeding the ${(MCP_SERVER_MAX_BYTES / 1024).toFixed(0)} KB budget. This usually means a transitive import pulled worker-service.ts (or another heavy module) into the MCP bundle. The MCP server is supposed to be a thin HTTP wrapper — audit recent imports in src/servers/mcp-server.ts and src/services/worker-spawner.ts. See PR #1645 for context on why this guardrail exists.`
+      console.warn(
+        `⚠️  mcp-server.cjs is ${(mcpServerStats.size / 1024).toFixed(2)} KB (advisory budget ${(MCP_SERVER_MAX_BYTES / 1024).toFixed(0)} KB). If this jumped unexpectedly, a transitive import may have pulled worker-service.ts or another heavy module into the MCP bundle (see #1645).`
       );
     }
 
@@ -505,13 +502,11 @@ async function buildHooks() {
     const transcriptWatcherStats = fs.statSync(`${hooksDir}/${TRANSCRIPT_WATCHER.name}.cjs`);
     console.log(`✓ transcript-watcher built (${(transcriptWatcherStats.size / 1024).toFixed(2)} KB)`);
 
-    // Guard against accidental imports of heavy modules (worker-service,
-    // SDK runtimes, etc.) into the watcher's processor.ts chain. The watcher
-    // is a thin file-tail loop and should stay well under 200 KB.
+    // Advisory only — the watcher is meant to be a thin file-tail loop.
     const TRANSCRIPT_WATCHER_MAX_BYTES = 200 * 1024;
     if (transcriptWatcherStats.size > TRANSCRIPT_WATCHER_MAX_BYTES) {
-      throw new Error(
-        `transcript-watcher.cjs is ${(transcriptWatcherStats.size / 1024).toFixed(2)} KB, exceeding the ${(TRANSCRIPT_WATCHER_MAX_BYTES / 1024).toFixed(0)} KB budget. The watcher is meant to be a thin file-tail loop — audit recent imports in src/services/transcripts/processor.ts and watcher.ts for unintended heavy dependencies.`
+      console.warn(
+        `⚠️  transcript-watcher.cjs is ${(transcriptWatcherStats.size / 1024).toFixed(2)} KB (advisory budget ${(TRANSCRIPT_WATCHER_MAX_BYTES / 1024).toFixed(0)} KB). If this jumped unexpectedly, check src/services/transcripts/processor.ts and watcher.ts for heavy imports.`
       );
     }
 

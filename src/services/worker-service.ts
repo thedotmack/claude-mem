@@ -22,7 +22,9 @@ import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
 import { ensureWorkerStarted as ensureWorkerStartedShared, type WorkerStartResult } from './worker-spawner.js';
 import { acquireSpawnLock, releaseSpawnLock } from '../shared/worker-spawn-gate.js';
 import { captureEvent, shutdownTelemetry } from './telemetry/telemetry.js';
+import { telemetryBuffer } from './telemetry/buffer.js';
 import { collectInstallStats } from './telemetry/install-stats.js';
+import { runHistoricalBackfill } from './telemetry/backfill.js';
 
 export { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
 import { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
@@ -176,7 +178,6 @@ function readAndClearCleanShutdownSentinel(): string | null {
 export class WorkerService implements WorkerRef {
   private server: Server;
   private startTime: number = Date.now();
-  private telemetryHeartbeat: ReturnType<typeof setInterval> | null = null;
   // Crash detection (worker_started telemetry): derived once at startup from
   // the previous run's stale PID file + the clean-shutdown sentinel.
   private previousShutdown: 'clean' | 'crash' | 'unknown' = 'unknown';
@@ -538,13 +539,18 @@ export class WorkerService implements WorkerRef {
         ...(this.previousUptimeSeconds !== null && { previous_uptime_seconds: this.previousUptimeSeconds }),
         ...buildLifecycleProps(),
       }, { person: true });
-      // Long-lived workers would otherwise look like a single day of activity.
-      // A daily heartbeat makes DAU/WAU/retention computable from distinct_id.
-      // unref() so the timer never keeps a stopping process alive.
-      this.telemetryHeartbeat = setInterval(() => {
-        captureEvent('worker_started', { trigger: 'heartbeat', ...buildLifecycleProps() }, { person: true });
-      }, 24 * 60 * 60 * 1000);
-      this.telemetryHeartbeat.unref?.();
+      telemetryBuffer.start();
+
+      // One-time historical telemetry backfill (anonymized daily rollups).
+      // Fire-and-forget: gated internally by the backfill.json marker and the
+      // same consent checks as live telemetry; a failed run retries on the
+      // next worker start because no marker is written.
+      // runHistoricalBackfill never rejects by contract (its body is fully
+      // try/caught), so this .catch is an unhandled-rejection backstop that
+      // keeps the worker alive if that contract ever regresses.
+      runHistoricalBackfill(this.dbManager.getConnection()).catch(error => {
+        logger.error('SYSTEM', 'Telemetry historical backfill failed (non-blocking)', {}, error as Error);
+      });
 
       await this.startTranscriptWatcher(settings);
 
@@ -688,10 +694,6 @@ export class WorkerService implements WorkerRef {
           logger.info('TRANSCRIPT', 'Transcript watcher stopped');
         }
 
-        if (this.telemetryHeartbeat) {
-          clearInterval(this.telemetryHeartbeat);
-          this.telemetryHeartbeat = null;
-        }
         // Mark this stop as graceful for the next start's crash detection, and
         // capture worker_stopped BEFORE shutdownTelemetry() — isShutdown drops
         // any event captured after the flush, by design.

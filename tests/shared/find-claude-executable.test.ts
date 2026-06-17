@@ -5,6 +5,7 @@ import {
   CAPABILITY_PROBE_ARGS,
   _internals,
 } from '../../src/shared/find-claude-executable.js';
+import { logger } from '../../src/utils/logger.js';
 
 /**
  * All probing goes through the _internals seam, so these tests swap its
@@ -15,6 +16,8 @@ import {
 interface FakeCli {
   version: string;
   supportsDontAsk: boolean;
+  /** Fails every probe (corrupt install / desktop app) — the `broken` branch. */
+  broken?: boolean;
 }
 
 const ORIGINALS = { ..._internals };
@@ -52,6 +55,11 @@ function installFakes(options: { settingsPath?: string; platform?: NodeJS.Platfo
     if (!cli) {
       const error = new Error(`spawn ${path} ENOENT`) as Error & { stderr: string };
       error.stderr = '';
+      throw error;
+    }
+    if (cli.broken) {
+      const error = new Error('Command failed') as Error & { stderr: string };
+      error.stderr = 'cannot execute binary file';
       throw error;
     }
     if (args.includes('--permission-mode') && !cli.supportsDontAsk) {
@@ -145,6 +153,72 @@ describe('findClaudeExecutable candidate selection', () => {
   it('keeps the not-found error when nothing is installed', () => {
     installFakes();
     expect(() => findClaudeExecutable('SDK')).toThrow(/Claude executable not found/);
+  });
+});
+
+describe('findClaudeExecutable broken candidates', () => {
+  // A "broken" install fails BOTH the capability probe and plain --version
+  // (corrupt binary, dangling symlink, desktop app). Distinct from
+  // "incompatible", which still answers --version.
+  const ORIGINAL_WARN = logger.warn;
+  let warnings: string[];
+
+  beforeEach(() => {
+    warnings = [];
+    logger.warn = ((_component: unknown, message: string) => {
+      warnings.push(message);
+    }) as typeof logger.warn;
+  });
+
+  afterEach(() => {
+    logger.warn = ORIGINAL_WARN;
+  });
+
+  it('skips a broken candidate with a --version-check warning and picks the capable CLI', () => {
+    installFakes();
+    whichOutput = '/broken/claude\n/good/claude\n';
+    fakeClis.set('/broken/claude', { version: '0.0.0', supportsDontAsk: false, broken: true });
+    fakeClis.set('/good/claude', { version: '2.1.176', supportsDontAsk: true });
+
+    expect(findClaudeExecutable('SDK')).toBe('/good/claude');
+    expect(warnings.some((m) => m.includes('/broken/claude') && m.includes('failed --version check'))).toBe(true);
+  });
+
+  it('warns with desktop-app guidance when the broken candidate is a desktop-app path', () => {
+    installFakes({
+      platform: 'win32',
+      whereOutputs: {
+        'where claude': 'C:\\Users\\tester\\AppData\\Local\\AnthropicClaude\\claude.exe\r\nC:\\good\\claude.exe\r\n',
+      },
+    });
+    fakeClis.set('C:\\Users\\tester\\AppData\\Local\\AnthropicClaude\\claude.exe', { version: '0.0.0', supportsDontAsk: false, broken: true });
+    fakeClis.set('C:\\good\\claude.exe', { version: '2.1.176', supportsDontAsk: true });
+
+    expect(findClaudeExecutable('SDK')).toBe('C:\\good\\claude.exe');
+    expect(warnings.some((m) => m.includes('desktop app') && m.includes('AnthropicClaude'))).toBe(true);
+  });
+
+  it('falls through to not-found when the only candidate is broken', () => {
+    installFakes();
+    whichOutput = '/broken/claude\n';
+    fakeClis.set('/broken/claude', { version: '0.0.0', supportsDontAsk: false, broken: true });
+
+    expect(() => findClaudeExecutable('SDK')).toThrow(/Claude executable not found/);
+  });
+
+  it('reports a broken configured CLAUDE_CODE_PATH with the probe failure', () => {
+    installFakes({ settingsPath: '/custom/claude' });
+    fakeClis.set('/custom/claude', { version: '0.0.0', supportsDontAsk: false, broken: true });
+
+    expect(() => findClaudeExecutable('SDK')).toThrow(/failed the --version check/);
+  });
+
+  it('reports a desktop-app CLAUDE_CODE_PATH with CLI install guidance', () => {
+    const desktopPath = 'C:\\Users\\tester\\AppData\\Local\\AnthropicClaude\\claude.exe';
+    installFakes({ settingsPath: desktopPath });
+    fakeClis.set(desktopPath, { version: '0.0.0', supportsDontAsk: false, broken: true });
+
+    expect(() => findClaudeExecutable('SDK')).toThrow(/desktop app/);
   });
 });
 
