@@ -87,6 +87,17 @@ export class SessionRoutes extends BaseRouteHandler {
   }
 
   public async ensureGeneratorRunning(sessionDbId: number, source: string): Promise<void> {
+    // Check worker mode - client mode does NOT start generator
+    const workerMode = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_MODE;
+    if (workerMode === 'client') {
+      logger.info('SESSION', `CLIENT_MODE | sessionDbId=${sessionDbId} | source=${source} | skipping generator start`, {
+        sessionDbId,
+        source,
+        workerMode
+      });
+      return;
+    }
+
     const session = this.sessionManager.getSession(sessionDbId);
     if (!session) return;
 

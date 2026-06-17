@@ -71,7 +71,7 @@ export class ViewerRoutes extends BaseRouteHandler {
     res.send(viewerHtmlBytes);
   });
 
-  private handleSSEStream = this.wrapHandler((req: Request, res: Response): void => {
+  private handleSSEStream = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     try {
       this.dbManager.getSessionStore();
     } catch (initError: unknown) {
@@ -88,7 +88,7 @@ export class ViewerRoutes extends BaseRouteHandler {
 
     this.sseBroadcaster.addClient(res);
 
-    const projectCatalog = this.dbManager.getSessionStore().getProjectCatalog();
+    const projectCatalog = await this.dbManager.getSessionStore().getProjectCatalog();
     this.sseBroadcaster.broadcast({
       type: 'initial_load',
       projects: projectCatalog.projects,

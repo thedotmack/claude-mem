@@ -82,6 +82,14 @@ export interface SettingsDefaults {
   CLAUDE_MEM_SERVER_BETA_URL: string;
   CLAUDE_MEM_SERVER_BETA_API_KEY: string;
   CLAUDE_MEM_SERVER_BETA_PROJECT_ID: string;
+  CLAUDE_MEM_MYSQL_HOST: string;
+  CLAUDE_MEM_MYSQL_PORT: string;
+  CLAUDE_MEM_MYSQL_USER: string;
+  CLAUDE_MEM_MYSQL_PASSWORD: string;
+  CLAUDE_MEM_MYSQL_DATABASE: string;
+  CLAUDE_MEM_MYSQL_POOL_SIZE: string;
+  CLAUDE_MEM_DATABASE_TYPE: string;
+  CLAUDE_MEM_WORKER_MODE: string;
 }
 
 export class SettingsDefaultsManager {
@@ -163,6 +171,14 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_SERVER_BETA_URL: `http://127.0.0.1:${process.env.CLAUDE_MEM_SERVER_PORT ?? String(37877 + ((process.getuid?.() ?? 77) % 100))}`,  // Default server-beta runtime URL — UID-derived for multi-account isolation
     CLAUDE_MEM_SERVER_BETA_API_KEY: '',                     // Local hook API key, populated by installer when runtime=server-beta
     CLAUDE_MEM_SERVER_BETA_PROJECT_ID: '',                  // Default Postgres project_id used by hooks when runtime=server-beta
+    CLAUDE_MEM_MYSQL_HOST: '127.0.0.1',
+    CLAUDE_MEM_MYSQL_PORT: '3306',
+    CLAUDE_MEM_MYSQL_USER: 'root',
+    CLAUDE_MEM_MYSQL_PASSWORD: '',
+    CLAUDE_MEM_MYSQL_DATABASE: 'claude_mem',
+    CLAUDE_MEM_MYSQL_POOL_SIZE: '10',
+    CLAUDE_MEM_DATABASE_TYPE: 'sqlite',
+    CLAUDE_MEM_WORKER_MODE: 'client',
   };
 
   static getAllDefaults(): SettingsDefaults {

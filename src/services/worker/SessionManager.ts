@@ -4,6 +4,8 @@ import type { ActiveSession, PendingMessage, PendingMessageWithId, ObservationDa
 import { SessionMessageBuffer } from './SessionMessageBuffer.js';
 import { getSdkProcessForSession, ensureSdkProcessExit } from '../../supervisor/process-registry.js';
 import { getSupervisor } from '../../supervisor/index.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 
 export class SessionManager {
   private dbManager: DatabaseManager;
@@ -390,6 +392,16 @@ export class SessionManager {
   }
 
   async *getMessageIterator(sessionDbId: number): AsyncIterableIterator<PendingMessageWithId> {
+    // Check worker mode - client mode does NOT process queue
+    const workerMode = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_MODE;
+    if (workerMode === 'client') {
+      logger.info('SESSION', `CLIENT_MODE | sessionDbId=${sessionDbId} | skipping queue processing`, {
+        sessionDbId,
+        workerMode
+      });
+      return; // Empty iterator - client mode does not process queue
+    }
+
     let session = this.sessions.get(sessionDbId);
     if (!session) {
       session = this.initializeSession(sessionDbId);
