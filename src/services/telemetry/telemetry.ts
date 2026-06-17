@@ -6,6 +6,7 @@ import {
 } from './consent.js';
 import { scrubProperties } from './scrub.js';
 import { getTelemetryApiKey, getTelemetryHost, buildBaseProperties, buildPersonSet } from './common.js';
+import { telemetryBuffer } from './buffer.js';
 
 let client: PostHog | null = null;
 let isShutdown = false;
@@ -142,6 +143,8 @@ export async function shutdownTelemetry(): Promise<void> {
   }
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
+    telemetryBuffer.stop();
+    telemetryBuffer.flush();
     await Promise.race([
       current.shutdown(),
       new Promise<void>(resolve => {

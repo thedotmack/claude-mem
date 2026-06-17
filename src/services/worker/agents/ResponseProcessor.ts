@@ -15,7 +15,7 @@ import type { DatabaseManager } from '../DatabaseManager.js';
 import type { SessionManager } from '../SessionManager.js';
 import type { WorkerRef, StorageResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
-import { captureEvent } from '../../telemetry/telemetry.js';
+import { telemetryBuffer } from '../../telemetry/buffer.js';
 
 /**
  * Consecutive non-XML observer outputs tolerated before we kill and respawn the
@@ -84,7 +84,7 @@ export async function processAgentResponse(
       });
       // Respawn-gated telemetry ONLY (never per invalid output — volume).
       // Closed enums and counts; the raw model output never leaves the box.
-      captureEvent('session_compressed', {
+      telemetryBuffer.record('session_compressed', {
         outcome: 'invalid_output',
         invalid_output_class: outputClass,
         consecutive_invalid_outputs: session.consecutiveInvalidOutputs,
@@ -243,11 +243,11 @@ export async function processAgentResponse(
     // still-stashed event here means the prior turn never produced a result
     // (abort/kill): ship it without token fields rather than lose it.
     if (session.pendingCompressionEvent) {
-      captureEvent('session_compressed', session.pendingCompressionEvent);
+      telemetryBuffer.record('session_compressed', session.pendingCompressionEvent);
     }
     session.pendingCompressionEvent = compressionProps;
   } else {
-    captureEvent('session_compressed', {
+    telemetryBuffer.record('session_compressed', {
       ...compressionProps,
       tokens_input: usage?.input,
       tokens_output: usage?.output,
