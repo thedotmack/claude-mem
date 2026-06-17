@@ -34,6 +34,7 @@ interface SessionCompressedRecord {
 
 interface ContextInjectedRecord {
   tokens_injected?: number;
+  outcome?: string;
   [key: string]: unknown;
 }
 
@@ -149,6 +150,8 @@ function computeContextInjectedRollup(
 
   let totalTokens = 0;
   let tokenCount = 0;
+  let outcomesOk = 0;
+  let outcomesError = 0;
 
   for (const r of records) {
     // Callers spread ContextInjectStats which uses tokens_injected
@@ -157,12 +160,19 @@ function computeContextInjectedRollup(
       totalTokens += t;
       tokenCount++;
     }
+    // Injection callers only ever emit 'ok' or 'error'. Tracking the split
+    // keeps a window of 100% failed injections (zero tokens, all errors)
+    // distinguishable from a window of zero-token successes.
+    if (r.outcome === 'ok') outcomesOk++;
+    else if (r.outcome === 'error') outcomesError++;
   }
 
   return {
     count,
     total_tokens: totalTokens,
     avg_tokens: tokenCount > 0 ? totalTokens / tokenCount : 0,
+    outcomes_ok: outcomesOk,
+    outcomes_error: outcomesError,
     window_start_ts: windowStartTs,
   };
 }

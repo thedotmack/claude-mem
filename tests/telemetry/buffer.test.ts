@@ -175,6 +175,10 @@ describe('flush() — context_injected_rollup', () => {
     expect(p.total_tokens).toBe(2000);
     // avg_tokens: only 2 records had tokens → 2000 / 2 = 1000
     expect(p.avg_tokens).toBe(1000);
+    // outcome split: 2 ok, 1 error — distinguishes failed injections (zero
+    // tokens, all errors) from zero-token successes
+    expect(p.outcomes_ok).toBe(2);
+    expect(p.outcomes_error).toBe(1);
     expect(typeof p.window_start_ts).toBe('number');
   });
 });
