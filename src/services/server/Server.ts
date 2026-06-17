@@ -157,15 +157,33 @@ export class Server {
   async close(): Promise<void> {
     if (!this.server) return;
 
-    this.server.closeAllConnections();
-
-    if (process.platform === 'win32') {
-      await new Promise(r => setTimeout(r, 500));
-    }
-
-    await new Promise<void>((resolve, reject) => {
-      this.server!.close(err => err ? reject(err) : resolve());
+    const server = this.server;
+    const closeResult = new Promise<'closed' | 'error'>((resolve, reject) => {
+      server.close(err => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        resolve('closed');
+      });
     });
+
+    await new Promise(r => setTimeout(r, 50));
+    server.closeIdleConnections?.();
+    server.closeAllConnections();
+
+    const deadlineMs = process.platform === 'win32' ? 3000 : 1000;
+    const outcome = await Promise.race([
+      closeResult,
+      new Promise<'timeout'>(resolve => setTimeout(() => resolve('timeout'), deadlineMs)),
+    ]);
+
+    if (outcome === 'timeout') {
+      server.closeAllConnections();
+      logger.warn('SYSTEM', 'HTTP server close timed out after listener close; proceeding', {
+        deadlineMs,
+      });
+    }
 
     if (process.platform === 'win32') {
       await new Promise(r => setTimeout(r, 500));

@@ -45,6 +45,7 @@ import {
 } from './infrastructure/ProcessManager.js';
 import { runOneTimeV12_4_3Cleanup } from './infrastructure/CleanupV12_4_3.js';
 import {
+  forceKillStaleWorkerPortOwners,
   isPortInUse,
   waitForHealth,
   waitForReadiness,
@@ -989,9 +990,16 @@ async function main() {
       // pid's leftover) — never a live successor's (Phase 5).
       const stoppedPid = await getCurrentWorkerPid(port, 2000);
       await httpShutdown(port);
-      const freed = await waitForPortFree(port, getPlatformTimeout(15000));
+      let freed = await waitForPortFree(port, getPlatformTimeout(15000));
       if (!freed) {
         logger.warn('SYSTEM', 'Port did not free up after shutdown', { port });
+        const killedStaleOwner = await forceKillStaleWorkerPortOwners(port, stoppedPid);
+        if (killedStaleOwner) {
+          freed = await waitForPortFree(port, getPlatformTimeout(5000));
+          if (!freed) {
+            logger.warn('SYSTEM', 'Port still did not free up after force-killing stale worker owner', { port });
+          }
+        }
       }
       removePidFileIfOwner(stoppedPid);
       logger.info('SYSTEM', 'Worker stopped successfully');
@@ -1019,7 +1027,10 @@ async function main() {
         // handoff this CLI just triggered (and a CLI spawn would be a second
         // restart initiator — the disease this flow cures). Just verify the
         // successor.
-        const handoff = await verifyRestartedWorker(port, oldPid, packageVersion, getPlatformTimeout(30000));
+        const handoffVerifyTimeoutMs = process.platform === 'win32'
+          ? 30000
+          : getPlatformTimeout(30000);
+        const handoff = await verifyRestartedWorker(port, oldPid, packageVersion, handoffVerifyTimeoutMs);
         if (handoff.ok) {
           console.log(`Worker restart verified (pid: ${handoff.pid}, version: ${handoff.version})`);
           logger.info('SYSTEM', 'Worker restart verified', { pid: handoff.pid, version: handoff.version });
@@ -1043,9 +1054,19 @@ async function main() {
       // health responder, a worker (just not a verifiable successor) holds
       // the port — waiting for it to free would burn the full timeout for
       // nothing, so skip straight to verifying the current owner.
-      const restartFreed = handoffSawLiveWorker
-        ? false
-        : await waitForPortFree(port, getPlatformTimeout(15000));
+      let restartFreed = false;
+      if (!restartFreed && !handoffSawLiveWorker) {
+        const killedStaleOwner = await forceKillStaleWorkerPortOwners(port, oldPid);
+        if (killedStaleOwner) {
+          restartFreed = await waitForPortFree(port, getPlatformTimeout(5000));
+          if (!restartFreed) {
+            logger.warn('SYSTEM', 'Port still bound after force-killing stale worker owner during restart', { port });
+          }
+        }
+      }
+      if (!restartFreed && !handoffSawLiveWorker) {
+        restartFreed = await waitForPortFree(port, getPlatformTimeout(15000));
+      }
       // Prefer the marketplace-installed script so restart boots the
       // freshly-synced plugin, falling back to this script for dev trees /
       // CI where no marketplace copy exists.
@@ -1079,7 +1100,7 @@ async function main() {
             process.exit(1);
           }
           spawnedScript = restartScript;
-          logger.info('SYSTEM', 'Worker restart spawned (CLI fallback)', { pid: restartPid, script: restartScript });
+          logger.info('SYSTEM', 'Worker restart spawned (CLI fallback)', { pid: restartPid, script: restartScript, port });
           // Hold the lock until the spawned worker owns the port (the spawn
           // isn't "done" until then — same rule as the other gated
           // launchers); the longer verification below runs unlocked.
@@ -1096,7 +1117,7 @@ async function main() {
       // version, before the hard deadline — otherwise exit 1.
       const verification = await verifyRestartedWorker(port, oldPid, packageVersion, getPlatformTimeout(30000));
       if (!verification.ok) {
-        console.error(`Worker restart verification failed (old pid: ${oldPid ?? 'none'}, expected version: ${packageVersion}, spawned script: ${spawnedScript}); ${verification.lastObserved}${handoffDetail}`);
+        console.error(`Worker restart verification failed (old pid: ${oldPid ?? 'none'}, expected version: ${packageVersion}, spawned script: ${spawnedScript}, port: ${port}); ${verification.lastObserved}${handoffDetail}`);
         process.exit(1);
       }
       console.log(`Worker restart verified (pid: ${verification.pid}, version: ${verification.version})`);

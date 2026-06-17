@@ -11,9 +11,11 @@ import {
   touchPidFile,
 } from './infrastructure/ProcessManager.js';
 import {
+  forceKillStaleWorkerPortOwners,
   isPortInUse,
   waitForHealth,
   waitForReadiness,
+  waitForPortFree,
 } from './infrastructure/HealthMonitor.js';
 import { acquireSpawnLock, releaseSpawnLock } from '../shared/worker-spawn-gate.js';
 
@@ -119,8 +121,20 @@ export async function ensureWorkerStarted(
       logger.info('SYSTEM', 'Worker is now healthy');
       return ready ? 'ready' : 'warming';
     }
-    logger.error('SYSTEM', 'Port in use but worker not responding to health checks');
-    return 'dead';
+
+    const killedStaleOwner = await forceKillStaleWorkerPortOwners(port);
+    if (killedStaleOwner) {
+      const freed = await waitForPortFree(port, getPlatformTimeout(5000));
+      if (freed) {
+        logger.warn('SYSTEM', 'Cleared stale Windows worker port owner; continuing with worker spawn', { port });
+      } else {
+        logger.error('SYSTEM', 'Killed stale Windows worker port owner but port is still occupied', { port });
+        return 'dead';
+      }
+    } else {
+      logger.error('SYSTEM', 'Port in use but worker not responding to health checks');
+      return 'dead';
+    }
   }
 
   if (shouldSkipSpawnOnWindows()) {
