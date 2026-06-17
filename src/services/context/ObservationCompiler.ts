@@ -2,6 +2,7 @@
 import path from 'path';
 import { existsSync, readFileSync } from 'fs';
 import { SessionStore } from '../sqlite/SessionStore.js';
+import { rankByStrength, poolSize } from '../reinforcement/rank.js';
 import { logger } from '../../utils/logger.js';
 import { SYSTEM_REMINDER_REGEX } from '../../utils/tag-stripping.js';
 import { CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
@@ -25,7 +26,7 @@ export function queryObservations(
   const conceptArray = Array.from(config.observationConcepts);
   const conceptPlaceholders = conceptArray.map(() => '?').join(',');
 
-  return db.db.prepare(`
+  const pool = db.db.prepare(`
     SELECT
       o.id,
       o.memory_session_id,
@@ -40,7 +41,8 @@ export function queryObservations(
       o.files_modified,
       o.discovery_tokens,
       o.created_at,
-      o.created_at_epoch
+      o.created_at_epoch,
+      o.reinforcement_dates
     FROM observations o
     LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
     WHERE (o.project = ? OR o.merged_into_project = ?)
@@ -56,8 +58,13 @@ export function queryObservations(
     project,
     ...typeArray,
     ...conceptArray,
-    config.totalObservationCount
+    poolSize(config.totalObservationCount)
   ) as Observation[];
+
+  // Phase 2: re-rank the recency-ordered pool by recency·(1+α·strength) and keep
+  // the configured count. With CLAUDE_MEM_REINFORCE_ALPHA=0 this is identical to
+  // the legacy "top-N most recent" selection.
+  return rankByStrength(pool, config.totalObservationCount);
 }
 
 export function querySummaries(
@@ -97,7 +104,7 @@ export function queryObservationsMulti(
 
   const projectPlaceholders = projects.map(() => '?').join(',');
 
-  return db.db.prepare(`
+  const pool = db.db.prepare(`
     SELECT
       o.id,
       o.memory_session_id,
@@ -113,7 +120,8 @@ export function queryObservationsMulti(
       o.discovery_tokens,
       o.created_at,
       o.created_at_epoch,
-      o.project
+      o.project,
+      o.reinforcement_dates
     FROM observations o
     LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
     WHERE (o.project IN (${projectPlaceholders})
@@ -130,8 +138,11 @@ export function queryObservationsMulti(
     ...projects,
     ...typeArray,
     ...conceptArray,
-    config.totalObservationCount
+    poolSize(config.totalObservationCount)
   ) as Observation[];
+
+  // Phase 2: strength-weighted re-rank (see queryObservations).
+  return rankByStrength(pool, config.totalObservationCount);
 }
 
 export function countObservationsByProjects(db: SessionStore, projects: string[]): number {
