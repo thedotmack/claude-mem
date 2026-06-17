@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.6.2] - 2026-06-17
+
+## What's Changed
+
+### Telemetry cost reduction (#2977)
+- **TelemetryBuffer rollup windows** — high-volume `session_compressed` and `context_injected` events are now aggregated into 5-minute rollup windows (`observer_turn_rollup`, `context_injected_rollup`) before forwarding to PostHog, replacing ~45M individual events/month with ~20K rollup records. Cuts the projected PostHog bill from ~$7,700/mo to ~$10/mo without losing aggregate shape (counts, sums, averages, top model, per-outcome buckets).
+- **Outcome visibility in `context_injected_rollup`** — added `outcomes_ok` / `outcomes_error` buckets so a window of 100% failed injections is distinguishable from one of zero-token successes.
+
+### CI
+- **Windows build pinned to `windows-2022`** — the `windows-latest` image moved to `windows-2025` (Visual Studio 18), which the bundled `node-gyp@11.5.0` can't detect, breaking native `tree-sitter` rebuilds. Pinned to `windows-2022` (VS2022) until node-gyp gains VS18 support.
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v13.6.1...v13.6.2
+
 ## [13.6.1] - 2026-06-15
 
 Patch release.
