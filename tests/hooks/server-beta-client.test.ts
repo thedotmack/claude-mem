@@ -210,15 +210,13 @@ describe('ServerBetaClient', () => {
     });
     expect(captured[0]?.url).toBe('http://localhost:9999/v1/memories');
     expect(captured[0]?.method).toBe('POST');
-    // Write-path contract (#2684): content maps onto narrative (the FTS-indexed
-    // / trigger-precondition column) and type defaults from kind, so the row is
-    // never empty. The old payload shipped a `content` field that no column
-    // accepted, producing a frozen/empty observation.
+    // Write-path contract (#2984): payload uses `content` (the correct column
+    // name) and type defaults from kind, so the row is never empty.
     const body = captured[0]?.body as Record<string, unknown>;
-    expect(body.narrative).toBe('hello');
+    expect(body.content).toBe('hello');
     expect(body.kind).toBe('manual');
     expect(body.type).toBe('manual');
-    expect(body.content).toBeUndefined();
+    expect(body.narrative).toBeUndefined();
     expect(result.memory.id).toBe('o1');
   });
 
@@ -279,8 +277,8 @@ describe('ServerBetaClient', () => {
 
   it('payload builders omit absent fields', () => {
     const client = new ServerBetaClient({ serverBaseUrl: 'http://x', apiKey: 'k' });
-    // content → narrative, type defaults from kind (default 'manual') so a
-    // minimal observation_add still persists a searchable row (#2684).
+    // content is sent as-is, type defaults from kind (default 'manual') so a
+    // minimal observation_add still persists a searchable row (#2984).
     expect(client.buildAddObservationPayload({ projectId: 'p', content: 'c' })).toEqual({
       projectId: 'p',
       kind: 'manual',
