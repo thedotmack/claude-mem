@@ -16,6 +16,7 @@ import type { SessionManager } from '../SessionManager.js';
 import type { WorkerRef, StorageResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
 import { captureEvent } from '../../telemetry/telemetry.js';
+import { dedupJudgeEnabled, applyDedupJudge } from '../../reinforcement/dedup-judge.js';
 
 /**
  * Consecutive non-XML observer outputs tolerated before we kill and respawn the
@@ -171,12 +172,24 @@ export async function processAgentResponse(
     agent_id: session.pendingAgentId ?? null
   }));
 
+  // Phase 3 (opt-in): semantic dedup judge. Folds near-duplicate observations
+  // into existing rows (reinforce instead of insert). Default off; fully
+  // defensive — any failure stores the original batch unchanged.
+  let observationsToStore = labeledObservations;
+  if (dedupJudgeEnabled() && labeledObservations.length > 0) {
+    try {
+      observationsToStore = await applyDedupJudge(sessionStore.db, labeledObservations, session.project);
+    } catch (error) {
+      logger.warn('DEDUP', 'Dedup pass failed — storing all observations', {}, error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
   let result: ReturnType<typeof sessionStore.storeObservations>;
   try {
     result = sessionStore.storeObservations(
       session.memorySessionId,
       session.project,
-      labeledObservations,
+      observationsToStore,
       summaryForStore,
       session.lastPromptNumber,
       discoveryTokens,
