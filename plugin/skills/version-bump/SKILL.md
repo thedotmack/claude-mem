@@ -20,14 +20,15 @@ description: Automated semantic versioning and release workflow for Claude Code 
     - `.claude-plugin/plugin.json` — top-level Claude-plugin manifest
     - `plugin/.claude-plugin/plugin.json` — bundled Claude-plugin manifest
     - `.codex-plugin/plugin.json` — Codex-plugin manifest
+    - `plugin/.codex-plugin/plugin.json` — bundled Codex-plugin manifest
     - `openclaw/openclaw.plugin.json` — OpenClaw plugin manifest
 
-    Verify coverage before editing: `git grep -l "\"version\": \"<OLD>\""` should list all seven. If a new manifest has been added since this doc was last updated, update this list.
+    Verify coverage before editing: `git grep -l "\"version\": \"<OLD>\""` should list all eight. If a new manifest has been added since this doc was last updated, update this list.
 
 ## Workflow
 
 1.  **Update**: Increment the version string in every path above. Do NOT touch `CHANGELOG.md` — it's regenerated.
-2.  **Verify**: `git grep -n "\"version\": \"<NEW>\""` — confirm all seven files match. `git grep -n "\"version\": \"<OLD>\""` — should return zero hits.
+2.  **Verify**: `git grep -n "\"version\": \"<NEW>\""` — confirm all eight files match. `git grep -n "\"version\": \"<OLD>\""` — should return zero hits.
 3.  **Build and sync**: `npm run build-and-sync` to regenerate artifacts, sync the local marketplace copy, restart the worker, and clear the queue. Do not use plain `npm run build` for release validation because it can leave the local marketplace/worker out of sync.
 4.  **Commit**: `git add -A && git commit -m "chore: bump version to X.Y.Z"`.
 5.  **Tag**: `git tag -a vX.Y.Z -m "Version X.Y.Z"`.
@@ -62,7 +63,7 @@ description: Automated semantic versioning and release workflow for Claude Code 
 
 ## Checklist
 
-- [ ] All seven config files have matching versions
+- [ ] All eight config files have matching versions
 - [ ] `git grep` for old version returns zero hits
 - [ ] `npm run build-and-sync` succeeded
 - [ ] Git tag created and pushed
