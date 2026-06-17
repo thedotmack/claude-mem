@@ -84,4 +84,35 @@ describe('Phase 1c — reinforcement on the write path', () => {
     // missing row → false
     expect(reinforceObservation(store.db, 9999, new Date(day2))).toBe(false);
   });
+
+  // Regression: the worker writes observer output through the SessionStore
+  // *methods* (storeObservations / storeObservationsAndMarkComplete), NOT the
+  // standalone storeObservation() above. Live testing found those paths were
+  // unseeded — organic observations landed with NULL reinforcement_dates.
+  it('SessionStore.storeObservations (the worker batch path) seeds reinforcement', () => {
+    const { observationIds } = store.storeObservations(
+      's1',
+      'proj',
+      [obs({ title: 'batch a', narrative: 'a' }), obs({ title: 'batch b', narrative: 'b' })],
+      null,
+      1,
+      0,
+      day1,
+      'claude-sonnet-4-5',
+    );
+    expect(observationIds.length).toBe(2);
+    for (const id of observationIds) {
+      expect(datesOf(store, id)).toEqual(['2026-06-10']);
+      const row = store.db.prepare('SELECT last_reinforced FROM observations WHERE id=?').get(id) as { last_reinforced: string };
+      expect(row.last_reinforced).toBe('2026-06-10');
+    }
+  });
+
+  it('SessionStore.storeObservation (method) seeds and reinforces on exact dup', () => {
+    const first = store.storeObservation('s1', 'proj', obs({ title: 'm', narrative: 'm' }), 1, 0, day1);
+    expect(datesOf(store, first.id)).toEqual(['2026-06-10']);
+    const again = store.storeObservation('s1', 'proj', obs({ title: 'm', narrative: 'm' }), 2, 0, day2);
+    expect(again.id).toBe(first.id);
+    expect(datesOf(store, first.id)).toEqual(['2026-06-10', '2026-06-12']);
+  });
 });

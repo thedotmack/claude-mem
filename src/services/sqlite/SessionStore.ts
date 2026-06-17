@@ -14,6 +14,7 @@ import {
 import type { ObservationSearchResult, SessionSummarySearchResult } from './types.js';
 import { computeObservationContentHash } from './observations/store.js';
 import { parseFileList } from './observations/files.js';
+import { seedReinforcement, reinforceObservation } from '../reinforcement/persist.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources } from '../../shared/platform-source.js';
 import { findRecentDuplicateUserPrompt as findRecentDuplicateUserPromptRecord } from './prompts/get.js';
 import { normalizeStoredPromptText } from './prompt-storage.js';
@@ -1865,12 +1866,16 @@ export class SessionStore {
 
     const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
 
+    // Phase 1c: seed ACT-R reinforcement history so a fresh observation starts at
+    // baseline strength rather than zero.
+    const seed = seedReinforcement(timestampEpoch);
+
     const stmt = this.db.prepare(`
       INSERT INTO observations
       (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
        files_read, files_modified, prompt_number, discovery_tokens, agent_type, agent_id, content_hash, created_at, created_at_epoch,
-       generated_by_model, metadata)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       generated_by_model, metadata, reinforcement_dates, last_reinforced)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(memory_session_id, content_hash) DO NOTHING
       RETURNING id, created_at_epoch
     `);
@@ -1894,7 +1899,9 @@ export class SessionStore {
       timestampIso,
       timestampEpoch,
       generatedByModel || null,
-      observation.metadata ?? null
+      observation.metadata ?? null,
+      seed.dates,
+      seed.lastReinforced
     ) as { id: number; created_at_epoch: number } | null;
 
     if (inserted) {
@@ -1910,6 +1917,9 @@ export class SessionStore {
         `storeObservation: ON CONFLICT without existing row for content_hash=${contentHash}`
       );
     }
+    // Phase 1c: exact content-hash collision = the world re-confirming this
+    // observation — reinforce instead of silently dropping.
+    reinforceObservation(this.db, existing.id, new Date(timestampEpoch));
     return { id: existing.id, createdAtEpoch: existing.created_at_epoch };
   }
 
@@ -1990,6 +2000,8 @@ export class SessionStore {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
 
+    const seed = seedReinforcement(timestampEpoch);
+
     const storeTx = this.db.transaction(() => {
       const observationIds: number[] = [];
 
@@ -1997,8 +2009,8 @@ export class SessionStore {
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
          files_read, files_modified, prompt_number, discovery_tokens, agent_type, agent_id, content_hash, created_at, created_at_epoch,
-         generated_by_model)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         generated_by_model, reinforcement_dates, last_reinforced)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(memory_session_id, content_hash) DO NOTHING
         RETURNING id
       `);
@@ -2026,7 +2038,9 @@ export class SessionStore {
           contentHash,
           timestampIso,
           timestampEpoch,
-          generatedByModel || null
+          generatedByModel || null,
+          seed.dates,
+          seed.lastReinforced
         ) as { id: number } | null;
 
         if (inserted) {
@@ -2040,6 +2054,7 @@ export class SessionStore {
             `storeObservations: ON CONFLICT without existing row for content_hash=${contentHash}`
           );
         }
+        reinforceObservation(this.db, existing.id, new Date(timestampEpoch));
         observationIds.push(existing.id);
       }
 
@@ -2108,6 +2123,8 @@ export class SessionStore {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
 
+    const seed = seedReinforcement(timestampEpoch);
+
     const storeAndMarkTx = this.db.transaction(() => {
       const observationIds: number[] = [];
 
@@ -2115,8 +2132,8 @@ export class SessionStore {
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
          files_read, files_modified, prompt_number, discovery_tokens, agent_type, agent_id, content_hash, created_at, created_at_epoch,
-         generated_by_model)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         generated_by_model, reinforcement_dates, last_reinforced)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(memory_session_id, content_hash) DO NOTHING
         RETURNING id
       `);
@@ -2144,7 +2161,9 @@ export class SessionStore {
           contentHash,
           timestampIso,
           timestampEpoch,
-          generatedByModel || null
+          generatedByModel || null,
+          seed.dates,
+          seed.lastReinforced
         ) as { id: number } | null;
 
         if (inserted) {
@@ -2158,6 +2177,7 @@ export class SessionStore {
             `storeObservationsAndMarkComplete: ON CONFLICT without existing row for content_hash=${contentHash}`
           );
         }
+        reinforceObservation(this.db, existing.id, new Date(timestampEpoch));
         observationIds.push(existing.id);
       }
 
