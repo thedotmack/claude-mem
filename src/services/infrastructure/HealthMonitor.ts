@@ -6,12 +6,16 @@ import { logger } from '../../utils/logger.js';
 import { MARKETPLACE_ROOT } from '../../shared/paths.js';
 import { getWorkerHost } from '../../shared/worker-utils.js';
 
+function formatHostForUrl(host: string): string {
+  return host.includes(':') ? `[${host}]` : host;
+}
+
 async function httpRequestToWorker(
   port: number,
   endpointPath: string,
   method: string = 'GET'
 ): Promise<{ ok: boolean; statusCode: number; body: string }> {
-  const response = await fetch(`http://${getWorkerHost()}:${port}${endpointPath}`, { method });
+  const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}${endpointPath}`, { method });
   let body = '';
   try {
     body = await response.text();
@@ -24,7 +28,7 @@ async function httpRequestToWorker(
 export async function isPortInUse(port: number): Promise<boolean> {
   if (process.platform === 'win32') {
     try {
-      const response = await fetch(`http://${getWorkerHost()}:${port}/api/health`);
+      const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}/api/health`);
       return response.ok;
     } catch (error) {
       if (error instanceof Error) {
