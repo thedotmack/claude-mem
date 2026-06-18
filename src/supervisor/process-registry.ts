@@ -16,10 +16,10 @@ function parseCmdFile(cmdPath: string): { node: string; script: string } | null 
 
     let scriptPath = match[1];
     const cmdDir = path.dirname(cmdPath);
-    if (scriptPath.startsWith('%dp0%\\') || scriptPath.startsWith('%~dp0%\\')) {
-      scriptPath = scriptPath.replace(/^%~?dp0%\\/, cmdDir + '\\');
-    } else if (scriptPath.startsWith('%dp0%') || scriptPath.startsWith('%~dp0%')) {
-      scriptPath = scriptPath.replace(/^%~?dp0%/, cmdDir);
+    if (scriptPath.startsWith('%~dp0\\') || scriptPath.startsWith('%dp0\\')) {
+      scriptPath = scriptPath.replace(/^%~?dp0\\/, cmdDir + '\\');
+    } else if (scriptPath.startsWith('%~dp0') || scriptPath.startsWith('%dp0')) {
+      scriptPath = scriptPath.replace(/^%~?dp0/, cmdDir);
     }
 
     scriptPath = scriptPath.replace(/\\/g, path.sep);
@@ -28,8 +28,7 @@ function parseCmdFile(cmdPath: string): { node: string; script: string } | null 
       return null;
     }
 
-    const nodeDir = path.dirname(scriptPath);
-    const localNodePath = path.join(nodeDir, '..', '..', 'node.exe');
+    const localNodePath = path.join(cmdDir, 'node.exe');
     const node = existsSync(localNodePath) ? localNodePath : 'node';
 
     return { node, script: scriptPath };
