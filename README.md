@@ -8,6 +8,9 @@
     </picture>
   </a>
   <br>
+  <a href="https://vercel.com/open-source-program">
+    <img alt="Vercel OSS Program" src="https://vercel.com/oss/program-badge-2026.svg" />
+  </a>
 </h1>
 
 <p align="center">
