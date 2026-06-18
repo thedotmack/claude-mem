@@ -120,8 +120,36 @@ export function classifyOpenRouterError(input: {
 
 const DEFAULT_MAX_CONTEXT_MESSAGES = 20;  
 const DEFAULT_MAX_ESTIMATED_TOKENS = 100000;  
-const CHARS_PER_TOKEN_ESTIMATE = 4;  
+const CHARS_PER_TOKEN_ESTIMATE = 4;
 
+
+// ✅ ADDED: OpenRouter reasoning control
+const VALID_REASONING_EFFORTS = [
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+] as const;
+
+type ReasoningEffort = typeof VALID_REASONING_EFFORTS[number];
+
+
+// ✅ ADDED: Reads CLAUDE_MEM_OPENROUTER_REASONING_EFFORT setting
+function getReasoningEffort(): ReasoningEffort | undefined {
+  const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+
+  const value = settings.CLAUDE_MEM_OPENROUTER_REASONING_EFFORT;
+
+  if (
+    typeof value === 'string' &&
+    VALID_REASONING_EFFORTS.includes(value as ReasoningEffort)
+  ) {
+    return value as ReasoningEffort;
+  }
+
+  return undefined;
+}
 interface OpenAIMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
@@ -496,29 +524,65 @@ export class OpenRouterProvider {
 
     const data = await withRetry<OpenRouterResponse>(async (attemptSignal) => {
       let response: Response;
-      try {
-        response = await fetch(apiUrl, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${apiKey}`,
-            'HTTP-Referer': siteUrl || 'https://github.com/thedotmack/claude-mem',
-            'X-Title': appName || 'claude-mem',
-            'Content-Type': 'application/json',
-            ...(priorRequestId ? { 'x-claude-mem-prior-request-id': priorRequestId } : {}),
-          },
-          body: JSON.stringify({
-            model,
-            messages,
-            temperature: 0.3,  // Lower temperature for structured extraction
-            max_tokens: 4096,
-            // Ask openrouter.ai for usage accounting (token counts + cost).
-            // Only sent to openrouter.ai — strict custom gateways may reject
-            // unknown body fields.
-            ...(apiUrl.includes('openrouter.ai') ? { usage: { include: true } } : {}),
-          }),
-          signal: attemptSignal,
-        });
-      } catch (networkError: unknown) {
+// ✅ ADDED: get reasoning setting
+const reasoningEffort = getReasoningEffort();
+
+try {
+  response = await fetch(apiUrl, {
+    method: 'POST',
+
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'HTTP-Referer': siteUrl || 'https://github.com/thedotmack/claude-mem',
+      'X-Title': appName || 'claude-mem',
+      'Content-Type': 'application/json',
+
+      ...(priorRequestId
+        ? { 'x-claude-mem-prior-request-id': priorRequestId }
+        : {}),
+    },
+
+
+    body: JSON.stringify({
+      model,
+      messages,
+
+      temperature: 0.3,
+
+      max_tokens: 4096,
+
+
+      // ✅ ADDED: OpenRouter reasoning control
+      // Example:
+      // CLAUDE_MEM_OPENROUTER_REASONING_EFFORT=none
+      //
+      // Sends:
+      // reasoning: { effort: "none" }
+      //
+      // This disables GLM/DeepSeek thinking tokens
+      ...(reasoningEffort
+        ? {
+            reasoning: {
+              effort: reasoningEffort,
+            },
+          }
+        : {}),
+
+
+      // Existing OpenRouter usage tracking
+      ...(apiUrl.includes('openrouter.ai')
+        ? {
+            usage: {
+              include: true,
+            },
+          }
+        : {}),
+    }),
+
+
+    signal: attemptSignal,
+  });
+} catch (networkError: unknown) {
         throw classifyOpenRouterError({ cause: networkError });
       }
 
