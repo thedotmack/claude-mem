@@ -361,6 +361,10 @@ export async function runUninstallCommand(): Promise<void> {
       const { uninstallGeminiCliHooks } = await import('../../services/integrations/GeminiCliHooksInstaller.js');
       return uninstallGeminiCliHooks();
     }},
+    { label: 'Antigravity CLI hooks', fn: async () => {
+      const { uninstallAntigravityCliHooks } = await import('../../services/integrations/AntigravityCliHooksInstaller.js');
+      return uninstallAntigravityCliHooks();
+    }},
     { label: 'Windsurf hooks', fn: async () => {
       const { uninstallWindsurfHooks } = await import('../../services/integrations/WindsurfHooksInstaller.js');
       return uninstallWindsurfHooks();

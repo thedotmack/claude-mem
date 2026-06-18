@@ -330,6 +330,23 @@ function makeIDETask(ideId: string, summary: InstallSummary): TaskDescriptor | n
       };
     }
 
+    case 'antigravity-cli': {
+      return {
+        title: 'Antigravity CLI: installing hooks',
+        task: async (message) => {
+          message('Loading Antigravity CLI installer…');
+          const { installAntigravityCliHooks } = await import('../../services/integrations/AntigravityCliHooksInstaller.js');
+          message('Installing Antigravity CLI hooks…');
+          const { result, output } = await bufferConsole(() => installAntigravityCliHooks());
+          if (result !== 0) {
+            recordFailure('Antigravity CLI: hook installation failed', output);
+            return `Antigravity CLI: hook installation failed ${pc.red('FAIL')}`;
+          }
+          return `Antigravity CLI: hooks installed ${pc.green('OK')}`;
+        },
+      };
+    }
+
     case 'opencode': {
       return {
         title: 'OpenCode: installing plugin',
