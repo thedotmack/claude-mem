@@ -8,19 +8,16 @@
 // drives every Postgres integration test in the repo; CLAUDE_MEM_SERVER_DATABASE_URL
 // is the SDK-public name we expose to consumer apps.
 
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import pg from 'pg';
+import type pg from 'pg';
 import { createCmemClient } from '../../src/sdk/index.js';
+import { createIsolatedSchema, poolForSchema, dropSchema } from './pg-isolation.js';
 
 const testDatabaseUrl =
   process.env.CLAUDE_MEM_TEST_POSTGRES_URL ?? process.env.CLAUDE_MEM_SERVER_DATABASE_URL;
-
-function quoteIdentifier(name: string): string {
-  return `"${name.replaceAll('"', '""')}"`;
-}
 
 describe('createCmemClient — schema bootstrap idempotency', () => {
   if (!testDatabaseUrl) {
@@ -34,17 +31,8 @@ describe('createCmemClient — schema bootstrap idempotency', () => {
   // points into the temp directory.
   let dataDir: string;
   let schemaName: string;
-  let adminClient: pg.PoolClient;
   let adminPool: pg.Pool;
   let prevDataDir: string | undefined;
-
-  beforeAll(() => {
-    adminPool = new pg.Pool({ connectionString: testDatabaseUrl });
-  });
-
-  afterAll(async () => {
-    await adminPool.end();
-  });
 
   beforeEach(async () => {
     dataDir = path.join(os.tmpdir(), `cmem-sdk-bootstrap-${Date.now()}-${Math.random()}`);
@@ -52,24 +40,18 @@ describe('createCmemClient — schema bootstrap idempotency', () => {
     prevDataDir = process.env.CLAUDE_MEM_DATA_DIR;
     process.env.CLAUDE_MEM_DATA_DIR = dataDir;
 
-    schemaName = `cm_sdk_boot_${crypto.randomUUID().replaceAll('-', '_')}`;
-    adminClient = await adminPool.connect();
-    await adminClient.query(`CREATE SCHEMA ${quoteIdentifier(schemaName)}`);
-    await adminClient.query(`SET search_path TO ${quoteIdentifier(schemaName)}`);
-
-    // Force every subsequent pool connection (including the SDK's pool) to
-    // hit our isolated schema so writes never collide with the host's data.
-    adminPool.on('connect', (c) => {
-      c.query(`SET search_path TO ${quoteIdentifier(schemaName)}`).catch(() => {});
-    });
+    // Each test gets its own schema; the pool pins search_path in the
+    // connection startup packet so every pooled connection (including the
+    // SDK's) is deterministically scoped and writes never collide with the
+    // host's data — with no race against a fire-and-forget SET. See
+    // pg-isolation.ts.
+    schemaName = await createIsolatedSchema(testDatabaseUrl, 'cm_sdk_boot');
+    adminPool = poolForSchema(testDatabaseUrl, schemaName);
   });
 
   afterEach(async () => {
-    adminPool.removeAllListeners('connect');
-    try {
-      await adminClient.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(schemaName)} CASCADE`);
-    } catch {}
-    adminClient.release();
+    await adminPool.end().catch(() => {});
+    await dropSchema(testDatabaseUrl, schemaName).catch(() => {});
     if (prevDataDir === undefined) {
       delete process.env.CLAUDE_MEM_DATA_DIR;
     } else {

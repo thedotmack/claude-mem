@@ -8,19 +8,16 @@
 // uvx, createCmemClient(...) intentionally rejects, which is itself
 // covered by close.test.ts's "errors after close" path).
 
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import pg from 'pg';
+import type pg from 'pg';
 import { createCmemClient, type CmemProvider } from '../../src/sdk/index.js';
+import { createIsolatedSchema, poolForSchema, dropSchema } from './pg-isolation.js';
 
 const testDatabaseUrl =
   process.env.CLAUDE_MEM_TEST_POSTGRES_URL ?? process.env.CLAUDE_MEM_SERVER_DATABASE_URL;
-
-function quoteIdentifier(name: string): string {
-  return `"${name.replaceAll('"', '""')}"`;
-}
 
 async function uvxAvailable(): Promise<boolean> {
   try {
@@ -39,7 +36,6 @@ describe('CmemClient.captureAndGenerate (stub provider)', () => {
   let chromaAvailable = false;
   let dataDir: string;
   let schemaName: string;
-  let adminClient: pg.PoolClient;
   let adminPool: pg.Pool;
   let prevDataDir: string | undefined;
 
@@ -50,14 +46,6 @@ describe('CmemClient.captureAndGenerate (stub provider)', () => {
 
   beforeAll(async () => {
     chromaAvailable = await uvxAvailable();
-    if (!chromaAvailable) return;
-    adminPool = new pg.Pool({ connectionString: testDatabaseUrl });
-  });
-
-  afterAll(async () => {
-    if (chromaAvailable && adminPool) {
-      await adminPool.end();
-    }
   });
 
   beforeEach(async () => {
@@ -67,22 +55,17 @@ describe('CmemClient.captureAndGenerate (stub provider)', () => {
     prevDataDir = process.env.CLAUDE_MEM_DATA_DIR;
     process.env.CLAUDE_MEM_DATA_DIR = dataDir;
 
-    schemaName = `cm_sdk_gen_${crypto.randomUUID().replaceAll('-', '_')}`;
-    adminClient = await adminPool.connect();
-    await adminClient.query(`CREATE SCHEMA ${quoteIdentifier(schemaName)}`);
-    await adminClient.query(`SET search_path TO ${quoteIdentifier(schemaName)}`);
-    adminPool.on('connect', (c) => {
-      c.query(`SET search_path TO ${quoteIdentifier(schemaName)}`).catch(() => {});
-    });
+    // Per-test schema; pool pins search_path in the connection startup
+    // packet so every connection (incl. the SDK's) is deterministically
+    // scoped, with no race against a fire-and-forget SET. See pg-isolation.ts.
+    schemaName = await createIsolatedSchema(testDatabaseUrl, 'cm_sdk_gen');
+    adminPool = poolForSchema(testDatabaseUrl, schemaName);
   });
 
   afterEach(async () => {
     if (!chromaAvailable) return;
-    adminPool.removeAllListeners('connect');
-    try {
-      await adminClient.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(schemaName)} CASCADE`);
-    } catch {}
-    adminClient.release();
+    await adminPool.end().catch(() => {});
+    await dropSchema(testDatabaseUrl, schemaName).catch(() => {});
     if (prevDataDir === undefined) {
       delete process.env.CLAUDE_MEM_DATA_DIR;
     } else {
@@ -132,14 +115,14 @@ describe('CmemClient.captureAndGenerate (stub provider)', () => {
     expect(out.result.privateContentDetected).toBe(false);
 
     // The job should be completed.
-    const jobRow = await adminPool.query<{ status: string; completed_at_epoch: string | null }>(
-      `SELECT status, completed_at_epoch::text AS completed_at_epoch
+    const jobRow = await adminPool.query<{ status: string; completed_at: string | null }>(
+      `SELECT status, completed_at::text AS completed_at
        FROM observation_generation_jobs
        WHERE id = $1 AND project_id = $2`,
       [out.generationJobId, client.projectId]
     );
     expect(jobRow.rows[0]!.status).toBe('completed');
-    expect(jobRow.rows[0]!.completed_at_epoch).not.toBeNull();
+    expect(jobRow.rows[0]!.completed_at).not.toBeNull();
 
     // observation_sources should link the new observation to the source event.
     const sourceRow = await adminPool.query<{
@@ -149,8 +132,8 @@ describe('CmemClient.captureAndGenerate (stub provider)', () => {
     }>(
       `SELECT source_type, source_id, generation_job_id
        FROM observation_sources
-       WHERE observation_id = $1 AND project_id = $2`,
-      [observation.id, client.projectId]
+       WHERE observation_id = $1`,
+      [observation.id]
     );
     expect(sourceRow.rows).toHaveLength(1);
     expect(sourceRow.rows[0]!.source_type).toBe('agent_event');

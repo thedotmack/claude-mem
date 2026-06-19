@@ -125,12 +125,17 @@
     "2fa": false
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.138",
     "@better-auth/api-key": "^1.6.9",
-    "@clack/prompts": "^1.3.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "ansi-to-html": "^0.7.2",
     "better-auth": "^1.6.9",
+    "pg": "^8.20.0",
+    "zod": "^4.4.3"
+  },
+  "//dependencies-note": "Only deps that survive the bundler as live `import`/`require` in a shipped artifact live here — pg + zod + @modelcontextprotocol/sdk back `claude-mem/sdk`; better-auth (+ api-key) is the server-runtime auth surface. Everything else (express, bullmq, ioredis, react, react-dom, cors, dompurify, handlebars, @clack/prompts, ansi-to-html, glob, picocolors, shell-quote, yaml, zod-to-json-schema, @anthropic-ai/claude-agent-sdk) is esbuild-inlined into the worker/server/npx bundles, so it is a build-time devDependency and is NOT downloaded by `claude-mem/sdk` consumers. Verify with scripts/check-sdk-bundle.cjs + the dep scan before promoting anything back.",
+  "devDependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.138",
+    "@clack/prompts": "^1.3.0",
+    "ansi-to-html": "^0.7.2",
     "bullmq": "^5.76.6",
     "cors": "^2.8.6",
     "dompurify": "^3.4.2",
@@ -138,16 +143,12 @@
     "glob": "^13.0.6",
     "handlebars": "^4.7.9",
     "ioredis": "^5.10.1",
-    "pg": "^8.20.0",
     "picocolors": "^1.1.1",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "shell-quote": "^1.8.3",
     "yaml": "^2.8.4",
-    "zod": "^4.4.3",
-    "zod-to-json-schema": "^3.25.2"
-  },
-  "devDependencies": {
+    "zod-to-json-schema": "^3.25.2",
     "@derekstride/tree-sitter-sql": "^0.3.11",
     "@tree-sitter-grammars/tree-sitter-lua": "^0.4.1",
     "@tree-sitter-grammars/tree-sitter-markdown": "^0.3.2",

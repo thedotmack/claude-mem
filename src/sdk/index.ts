@@ -1,15 +1,15 @@
 // cmem-sdk public API. Plan: plans/2026-05-25-cmem-sdk-and-server-rename.md §3-7.
 //
-// Phase 3 implements the construction graph: pool → schema bootstrap →
-// repositories → tenancy resolution → Chroma (REQUIRED). The capture,
-// generate, search, and session methods on the returned client remain
-// stubs that throw a clear "not implemented yet" error — Phases 4-6
-// fill them in.
+// `createCmemClient(options)` builds the full in-process graph — pool →
+// schema bootstrap → repositories → tenancy resolution → Chroma (REQUIRED)
+// — and returns a CmemClient with every I/O method implemented: capture,
+// captureBatch, generate, captureAndGenerate, search, context,
+// startSession, endSession, and close.
 //
 // Existing internals in this directory (parser.ts, prompts.ts,
 // commit-verification.ts, hardened-options.ts, output-classifier.ts) are
-// reused by Phase 5. They are intentionally NOT re-exported from the
-// public surface here.
+// reused internally (parser.ts + prompts.ts back generation). They are
+// intentionally NOT re-exported from the public surface here.
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -373,9 +373,9 @@ export interface CmemCaptureAndGenerateResult {
 }
 
 /**
- * Public client returned by {@link createCmemClient}. Method bodies are
- * filled in by Phase 3-7. Phase 3 wires construction, tenancy, and
- * `close()`; the I/O methods remain stubs.
+ * Public client returned by {@link createCmemClient}. All methods are
+ * implemented: construction/tenancy/`close()` plus the capture, generate,
+ * search, context, and session I/O paths.
  */
 export interface CmemClient {
   /** Resolved tenant team ID (UUID). */
@@ -725,7 +725,8 @@ async function indexObservationsToChroma(
  *      If `uvx chroma-mcp` cannot start, `createCmemClient` REJECTS and
  *      cleans up the SDK-owned pool before throwing.
  *
- * Phases 4-6 wire the I/O methods on the returned client.
+ * The returned client's I/O methods (capture, generate, search, context,
+ * sessions) are all implemented below.
  */
 export async function createCmemClient(options: CmemClientOptions): Promise<CmemClient> {
   // 0. Mode initialization. `parseAgentXml` requires an active mode
@@ -827,9 +828,9 @@ export async function createCmemClient(options: CmemClientOptions): Promise<Cmem
   //    empty) bubble up here and abort construction.
   const provider = resolveProvider(options.provider);
 
-  // 7. Build and return the client. capture / captureBatch / startSession /
-  //    endSession are wired in this phase. generate / captureAndGenerate /
-  //    search / context remain Phase 5/6 stubs.
+  // 8. Build and return the client. All I/O methods (capture, captureBatch,
+  //    generate, captureAndGenerate, search, context, startSession,
+  //    endSession, close) are implemented below.
   let closed = false;
 
   function mapCaptureEvent(event: CmemCaptureEvent): CreatePostgresAgentEventInput {
