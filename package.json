@@ -40,24 +40,23 @@
     },
     "./modes/*": "./plugin/modes/*"
   },
-"files": [
-  "dist",
-  ".agents/plugins/marketplace.json",
-  ".claude-plugin/marketplace.json",
-  ".codex-plugin",
-  "plugin/.claude-plugin",
-  "plugin/.codex-plugin",
-  "plugin/.mcp.json",
-  "plugin/package.json",
-  "plugin/bun.lock",
-  "plugin/hooks",
-  "plugin/modes",
-  "plugin/scripts/*.js",
-  "plugin/scripts/*.cjs",
-  "plugin/skills",
-  "plugin/ui",
-  "openclaw"
-],
+  "files": [
+    "dist",
+    ".agents/plugins/marketplace.json",
+    ".claude-plugin/marketplace.json",    ".codex-plugin",
+    "plugin/.claude-plugin",
+    "plugin/.codex-plugin",
+    "plugin/.mcp.json",
+    "plugin/package.json",
+    "plugin/bun.lock",
+    "plugin/hooks",
+    "plugin/modes",
+    "plugin/scripts/*.js",
+    "plugin/scripts/*.cjs",
+    "plugin/skills",
+    "plugin/ui",
+    "openclaw"
+  ],
   "engines": {
     "node": ">=20.0.0",
     "bun": ">=1.0.0"
