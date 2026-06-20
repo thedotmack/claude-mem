@@ -496,7 +496,7 @@ interface HookFailureState {
   lastFailureAt: number;
 }
 
-const FAIL_LOUD_DEFAULT_THRESHOLD = 3;
+const FAIL_LOUD_DEFAULT_THRESHOLD = 10;  // #2996: increased from 3 to 10
 
 function getStateDir(): string {
   return path.join(DATA_DIR, 'state');

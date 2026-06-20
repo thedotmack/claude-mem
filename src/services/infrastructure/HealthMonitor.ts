@@ -22,19 +22,43 @@ async function httpRequestToWorker(
 
 export async function isPortInUse(port: number): Promise<boolean> {
   if (process.platform === 'win32') {
+    // First check: try the health endpoint (happy path - worker is alive and well)
     try {
       const response = await fetch(`http://127.0.0.1:${port}/api/health`);
       return response.ok;
     } catch (error) {
       if (error instanceof Error) {
-        logger.debug('SYSTEM', 'Windows health check failed (port not in use)', {}, error);
+        logger.debug('SYSTEM', 'Windows health endpoint check failed, falling back to TCP probe', {}, error);
       } else {
-        logger.debug('SYSTEM', 'Windows health check failed (port not in use)', { error: String(error) });
+        logger.debug('SYSTEM', 'Windows health endpoint check failed, falling back to TCP probe', { error: String(error) });
       }
-      return false;
     }
-  }
 
+    // Second check (#2996): health endpoint didn't respond, but the port may
+    // still be bound by a zombie/stale worker process. On Windows with multiple
+    // concurrent Claude Code sessions, this is the common failure mode: the
+    // worker process holds the port but no longer serves health checks. Without
+    // this TCP probe, isPortInUse returns false, the spawner proceeds, bind
+    // fails, and the 2-minute cooldown kicks in - paralyzing all sessions.
+    return new Promise<boolean>((resolve) => {
+      const socket = new net.Socket();
+      socket.setTimeout(2000);
+      socket.once('connect', () => {
+        socket.destroy();
+        logger.warn('SYSTEM', 'Port is TCP-bound but health endpoint unresponsive - likely a zombie worker', { port });
+        resolve(true);
+      });
+      socket.once('timeout', () => {
+        socket.destroy();
+        resolve(false);
+      });
+      socket.once('error', () => {
+        socket.destroy();
+        resolve(false);
+      });
+      socket.connect(port, '127.0.0.1');
+    });
+  }
   return new Promise((resolve) => {
     const server = net.createServer();
     server.once('error', (err: NodeJS.ErrnoException) => {

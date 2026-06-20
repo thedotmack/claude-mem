@@ -1,6 +1,7 @@
 
 import path from 'path';
 import { existsSync, mkdirSync, writeFileSync, unlinkSync, statSync } from 'fs';
+import { execSync } from 'child_process';
 import { logger } from '../utils/logger.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
@@ -14,11 +15,79 @@ import {
   isPortInUse,
   waitForHealth,
   waitForReadiness,
+  waitForPortFree,
 } from './infrastructure/HealthMonitor.js';
 import { acquireSpawnLock, releaseSpawnLock } from '../shared/worker-spawn-gate.js';
 
-const WINDOWS_SPAWN_COOLDOWN_MS = 2 * 60 * 1000;
+const WINDOWS_SPAWN_COOLDOWN_MS = 30 * 1000;  // #2996: reduced from 2min to 30s
 
+/**
+ * #2996: On Windows, when the port is bound but health checks fail (zombie worker),
+ * try to kill the stale process holding the port. Uses netstat to find the PID,
+ * then taskkill to terminate it. Without this, the spawn attempt fails with
+ * EADDRINUSE, the cooldown kicks in, and all concurrent sessions are blocked.
+ */
+async function reapStalePortHolderOnWindows(port: number): Promise<void> {
+  if (process.platform !== 'win32') return;
+
+  try {
+    // Find PID holding the port using netstat
+    const netstatResult = execSync(`netstat -ano | findstr :${port} | findstr LISTENING`, {
+      encoding: 'utf-8',
+      windowsHide: true,
+      timeout: 5000,
+    });
+
+    const lines = netstatResult.trim().split('\n');
+    if (lines.length === 0) {
+      logger.debug('SYSTEM', 'No process found holding port', { port });
+      return;
+    }
+
+    // Parse PID from netstat output (last column)
+    const lastLine = lines[lines.length - 1];
+    const parts = lastLine.trim().split(/\s+/);
+    const pid = parseInt(parts[parts.length - 1], 10);
+
+    if (!pid || pid <= 0) {
+      logger.debug('SYSTEM', 'Could not parse PID from netstat output', { port, output: lastLine });
+      return;
+    }
+
+    // Verify this is our worker process (check if it has bun or node in process name)
+    try {
+      const tasklistResult = execSync(`tasklist /FI "PID eq ${pid}" /FO CSV /NH`, {
+        encoding: 'utf-8',
+        windowsHide: true,
+        timeout: 3000,
+      });
+
+      // If process doesn't look like bun/node, skip killing it (might be unrelated)
+      if (!tasklistResult.toLowerCase().includes('bun') && !tasklistResult.toLowerCase().includes('node')) {
+        logger.warn('SYSTEM', 'Port held by non-bun/node process, skipping reap', { port, pid, process: tasklistResult.trim() });
+        return;
+      }
+    } catch {
+      logger.debug('SYSTEM', 'Could not verify process, proceeding with caution', { port, pid });
+    }
+
+    logger.warn('SYSTEM', 'Reaping stale worker process holding port', { port, pid });
+
+    // Kill the stale process
+    execSync(`taskkill /PID ${pid} /F /T`, {
+      encoding: 'utf-8',
+      windowsHide: true,
+      timeout: 5000,
+    });
+
+    // Wait a bit for the port to be released
+    await new Promise<void>(resolve => setTimeout(resolve, 1000));
+
+    logger.info('SYSTEM', 'Successfully reaped stale worker process', { port, pid });
+  } catch (error) {
+    logger.debug('SYSTEM', 'Failed to reap stale port holder (non-critical)', { port, error: error instanceof Error ? error.message : String(error) });
+  }
+}
 function getWorkerSpawnLockPath(): string {
   return path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), '.worker-start-attempted');
 }
@@ -119,8 +188,22 @@ export async function ensureWorkerStarted(
       logger.info('SYSTEM', 'Worker is now healthy');
       return ready ? 'ready' : 'warming';
     }
-    logger.error('SYSTEM', 'Port in use but worker not responding to health checks');
-    return 'dead';
+
+    // #2996: Port is bound but health checks failed - likely a zombie worker.
+    // On Windows, try to reap the stale process holding the port before giving up.
+    // This prevents the spawn attempt from failing with EADDRINUSE and triggering
+    // the cooldown that blocks all concurrent sessions.
+    await reapStalePortHolderOnWindows(port);
+
+    // After reaping, check if port is now free and worker can be spawned
+    const portFree = await waitForPortFree(port, 3000);
+    if (portFree) {
+      logger.info('SYSTEM', 'Port freed after reaping stale process, proceeding with spawn');
+      // Fall through to spawn logic below
+    } else {
+      logger.error('SYSTEM', 'Port in use but worker not responding to health checks (reap failed or port still held)');
+      return 'dead';
+    }
   }
 
   if (shouldSkipSpawnOnWindows()) {
