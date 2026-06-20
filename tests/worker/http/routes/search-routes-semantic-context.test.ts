@@ -80,8 +80,8 @@ describe('SearchRoutes /api/context/semantic', () => {
 
   it('returns scoped results without triggering fallback', async () => {
     const scopedRows = [
-      { title: 'scoped-hit', narrative: 'Scoped narrative', created_at: '2026-01-01T00:00:00Z', project: 'request-project' },
-      { title: 'extra', narrative: 'Ignored by limit', created_at: '2026-01-02T00:00:00Z', project: 'request-project' },
+      { id: 1, title: 'scoped-hit', narrative: 'Scoped narrative', created_at: '2026-01-01T00:00:00Z', project: 'request-project' },
+      { id: 2, title: 'extra', narrative: 'Ignored by limit', created_at: '2026-01-02T00:00:00Z', project: 'request-project' },
     ];
     searchMock = mock(() => ({ observations: scopedRows }));
 
@@ -98,7 +98,7 @@ describe('SearchRoutes /api/context/semantic', () => {
 
     const [body] = res.json.mock.calls[0] as any[];
     expect(searchMock).toHaveBeenCalledTimes(1);
-    expect(searchMock.mock.calls[0][0]).toMatchObject({ query: baseReq.body.q, project: 'request-project', limit: '2', type: 'observations', format: 'json' });
+    expect(searchMock.mock.calls[0][0]).toMatchObject({ query: baseReq.body.q, project: 'request-project', limit: '2', type: 'observations', format: 'json', orderBy: 'relevance' });
     expect(body.context).toContain('## Relevant Past Work (semantic match)');
     expect(body.context).toContain('Scoped narrative');
     expect(body.count).toBe(2);
@@ -107,9 +107,9 @@ describe('SearchRoutes /api/context/semantic', () => {
   it('falls back to one unscoped retry when scoped results are empty', async () => {
     let call = 0;
     const fallbackRows = [
-      { title: 'fallback-noise-first', narrative: 'Higher-ranked wrong project', created_at: '2026-01-01T00:00:00Z', project: 'other-project' },
-      { title: 'fallback-hit', narrative: 'Fallback by project', created_at: '2026-01-01T00:00:00Z', project: 'request-project' },
-      { title: 'fallback-noise', narrative: 'Wrong project', created_at: '2026-01-02T00:00:00Z', project: 'other-project' },
+      { id: 11, title: 'fallback-noise-first', narrative: 'Higher-ranked wrong project', created_at: '2026-01-01T00:00:00Z', project: 'other-project' },
+      { id: 12, title: 'fallback-hit', narrative: 'Fallback by project', created_at: '2026-01-01T00:00:00Z', project: 'request-project' },
+      { id: 13, title: 'fallback-noise', narrative: 'Wrong project', created_at: '2026-01-02T00:00:00Z', project: 'other-project' },
     ];
     searchMock = mock((args: any) => {
       call += 1;
@@ -128,7 +128,7 @@ describe('SearchRoutes /api/context/semantic', () => {
     const [body] = res.json.mock.calls[0] as any[];
     expect(searchMock).toHaveBeenCalledTimes(2);
     expect(searchMock.mock.calls[1][0]).not.toMatchObject({ project: 'request-project' });
-    expect(searchMock.mock.calls[1][0]).toMatchObject({ limit: '100' });
+    expect(searchMock.mock.calls[1][0]).toMatchObject({ limit: '100', orderBy: 'relevance' });
     expect(body.context).toContain('Fallback by project');
     expect(body.context).not.toContain('Higher-ranked wrong project');
     expect(body.context).not.toContain('Wrong project');
@@ -137,6 +137,7 @@ describe('SearchRoutes /api/context/semantic', () => {
 
   it('keeps the fallback window wide enough to recover project hits beyond the old prefilter cap', async () => {
     const fallbackRows = Array.from({ length: 26 }, (_value, index) => ({
+      id: index + 1,
       title: `fallback-row-${index + 1}`,
       narrative: index === 25 ? 'Late matching project row' : `Noise row ${index + 1}`,
       created_at: '2026-01-01T00:00:00Z',
@@ -157,15 +158,15 @@ describe('SearchRoutes /api/context/semantic', () => {
 
     const [body] = res.json.mock.calls[0] as any[];
     expect(searchMock).toHaveBeenCalledTimes(2);
-    expect(searchMock.mock.calls[1][0]).toMatchObject({ limit: '100' });
+    expect(searchMock.mock.calls[1][0]).toMatchObject({ limit: '100', orderBy: 'relevance' });
     expect(body.context).toContain('Late matching project row');
     expect(body.count).toBe(1);
   });
 
   it('recovers matches where merged_into_project matches the requested project', async () => {
     const fallbackRows = [
-      { title: 'adopted-hit', narrative: 'Merged match', created_at: '2026-01-03T00:00:00Z', project: 'other-project', merged_into_project: 'request-project' },
-      { title: 'not-a-hit', narrative: 'No match', created_at: '2026-01-04T00:00:00Z', project: 'other-project', merged_into_project: 'other-parent' },
+      { id: 21, title: 'adopted-hit', narrative: 'Merged match', created_at: '2026-01-03T00:00:00Z', project: 'other-project', merged_into_project: 'request-project' },
+      { id: 22, title: 'not-a-hit', narrative: 'No match', created_at: '2026-01-04T00:00:00Z', project: 'other-project', merged_into_project: 'other-parent' },
     ];
     searchMock = mock((args: any) => {
       if (args?.project) return { observations: [] };
@@ -184,8 +185,42 @@ describe('SearchRoutes /api/context/semantic', () => {
     expect(body.context).toContain('Merged match');
     expect(body.context).not.toContain('No match');
     expect(body.count).toBe(1);
-    expect(searchMock.mock.calls[1][0]).toMatchObject({ limit: '100', type: 'observations' });
+    expect(searchMock.mock.calls[1][0]).toMatchObject({ limit: '100', type: 'observations', orderBy: 'relevance' });
     expect(searchMock.mock.calls[1][0]).not.toHaveProperty('project');
+  });
+
+  it('supplements partial scoped hits with merged project matches from the unscoped retry', async () => {
+    let call = 0;
+    const scopedRows = [
+      { id: 31, title: 'direct-hit', narrative: 'Direct scoped match', created_at: '2026-01-01T00:00:00Z', project: 'request-project' },
+    ];
+    const fallbackRows = [
+      { id: 31, title: 'direct-hit', narrative: 'Direct scoped match', created_at: '2026-01-01T00:00:00Z', project: 'request-project' },
+      { id: 32, title: 'merged-hit', narrative: 'Recovered merged match', created_at: '2026-01-02T00:00:00Z', project: 'other-project', merged_into_project: 'request-project' },
+      { id: 33, title: 'wrong-project', narrative: 'Wrong project', created_at: '2026-01-03T00:00:00Z', project: 'other-project' },
+    ];
+    searchMock = mock((args: any) => {
+      call += 1;
+      if (call === 1) return { observations: scopedRows };
+      return { observations: fallbackRows };
+    });
+
+    const routes = new SearchRoutes({ search: searchMock } as any);
+    const handler = captureSemanticContextHandler(routes);
+    const req = { body: { ...baseReq.body, project: 'request-project', limit: '5' }, query: {} } as unknown as Request;
+    const res = createMockRes();
+
+    await handler(req, res as unknown as Response);
+    await new Promise(resolve => setImmediate(resolve));
+
+    const [body] = res.json.mock.calls[0] as any[];
+    expect(searchMock).toHaveBeenCalledTimes(2);
+    expect(searchMock.mock.calls[0][0]).toMatchObject({ project: 'request-project', orderBy: 'relevance' });
+    expect(searchMock.mock.calls[1][0]).toMatchObject({ limit: '100', orderBy: 'relevance' });
+    expect(body.context).toContain('Direct scoped match');
+    expect(body.context).toContain('Recovered merged match');
+    expect(body.context).not.toContain('Wrong project');
+    expect(body.count).toBe(2);
   });
 
   it('does not fall back when no project is provided', async () => {
@@ -208,8 +243,8 @@ describe('SearchRoutes /api/context/semantic', () => {
   it('returns empty semantic context when fallback observations do not match project filters', async () => {
     let call = 0;
     const fallbackRows = [
-      { title: 'wrong-project', narrative: 'Wrong project', created_at: '2026-01-05T00:00:00Z', project: 'other-project' },
-      { title: 'also-wrong', narrative: 'Also wrong', created_at: '2026-01-06T00:00:00Z', project: 'other-parent', merged_into_project: 'other-project' },
+      { id: 41, title: 'wrong-project', narrative: 'Wrong project', created_at: '2026-01-05T00:00:00Z', project: 'other-project' },
+      { id: 42, title: 'also-wrong', narrative: 'Also wrong', created_at: '2026-01-06T00:00:00Z', project: 'other-parent', merged_into_project: 'other-project' },
     ];
     searchMock = mock(() => {
       call += 1;
