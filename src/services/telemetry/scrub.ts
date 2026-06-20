@@ -91,8 +91,6 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   // 'xml' means XML-shaped output that still failed to parse; abort_reason:
   // idle | shutdown | overflow | restart_guard | quota | poisoned | none).
   // Never model output, never raw abort strings.
-  'fabrication_detected',
-  'fabricated_count',
   'invalid_output_class',
   'consecutive_invalid_outputs',
   'respawn_triggered',
@@ -151,7 +149,6 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'outcomes_aborted',
   'outcomes_invalid_output',
   'top_model',
-  'fabrication_count',
   'window_start_ts',
   // context_injected_rollup aggregation fields:
   'total_tokens',

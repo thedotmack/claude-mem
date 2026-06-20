@@ -28,7 +28,6 @@ interface SessionCompressedRecord {
   compression_ms?: number;
   outcome?: string;
   model?: string;
-  fabricated_count?: number;
   [key: string]: unknown;
 }
 
@@ -77,7 +76,6 @@ function computeSessionCompressedRollup(
   let outcomesError = 0;
   let outcomesAborted = 0;
   let outcomesInvalidOutput = 0;
-  let fabricationCount = 0;
   const modelFrequency: Map<string, number> = new Map();
 
   for (const r of records) {
@@ -106,9 +104,6 @@ function computeSessionCompressedRollup(
     if (typeof r.model === 'string' && r.model) {
       modelFrequency.set(r.model, (modelFrequency.get(r.model) ?? 0) + 1);
     }
-    if (typeof r.fabricated_count === 'number' && Number.isFinite(r.fabricated_count)) {
-      fabricationCount += r.fabricated_count;
-    }
   }
 
   const rollup: Record<string, unknown> = {
@@ -122,7 +117,6 @@ function computeSessionCompressedRollup(
     outcomes_error: outcomesError,
     outcomes_aborted: outcomesAborted,
     outcomes_invalid_output: outcomesInvalidOutput,
-    fabrication_count: fabricationCount,
     window_start_ts: windowStartTs,
   };
 

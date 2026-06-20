@@ -67,7 +67,6 @@ describe('flush() — observer_turn_rollup', () => {
       duration_ms: 800,
       compression_ms: 400,
       model: 'claude-sonnet-4-5',
-      fabricated_count: 0,
     });
     telemetryBuffer.record('session_compressed', {
       outcome: 'ok',
@@ -77,7 +76,6 @@ describe('flush() — observer_turn_rollup', () => {
       duration_ms: 1200,
       compression_ms: 600,
       model: 'claude-sonnet-4-5',
-      fabricated_count: 1,
     });
     telemetryBuffer.record('session_compressed', {
       outcome: 'error',
@@ -87,7 +85,6 @@ describe('flush() — observer_turn_rollup', () => {
       duration_ms: 300,
       // compression_ms deliberately omitted — must be skipped from avg
       model: 'claude-haiku-3-5',
-      fabricated_count: 0,
     });
 
     telemetryBuffer.flush();
@@ -112,7 +109,6 @@ describe('flush() — observer_turn_rollup', () => {
     expect(p.outcomes_invalid_output).toBe(0);
     // top_model: claude-sonnet-4-5 appeared twice vs claude-haiku-3-5 once
     expect(p.top_model).toBe('claude-sonnet-4-5');
-    expect(p.fabrication_count).toBe(1);
     expect(typeof p.window_start_ts).toBe('number');
     expect(p.window_start_ts).toBeGreaterThan(0);
   });
