@@ -14,4 +14,4 @@ The first session in a fresh project seeds memory; subsequent sessions receive a
 
 Everything stays in ~/.claude-mem on this machine.
 
-Nothing leaves your machine except calls to whichever AI provider you configured for compression (Claude / OpenRouter / Gemini). The SQLite database, vector index, logs, and settings all live under that directory and are removed cleanly on `npx claude-mem uninstall`.
+Nothing leaves your machine except calls to whichever AI provider you configured for compression (Claude / OpenRouter / Gemini / Agy CLI). The SQLite database, vector index, logs, and settings all live under that directory and are removed cleanly on `npx claude-mem uninstall`.

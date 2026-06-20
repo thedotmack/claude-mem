@@ -2,7 +2,7 @@
 
 ## Goal
 
-Add `agy-cli` as an independent claude-mem observation provider backed by the locally installed Antigravity CLI. Preserve the existing `gemini-cli` provider unchanged.
+Add `agy-cli` as an independent claude-mem observation provider backed by the locally installed Antigravity CLI. This supersedes the separate Gemini CLI observation-provider proposal without changing claude-mem's existing Gemini CLI hook integration.
 
 ## Verified CLI Contract
 
@@ -54,7 +54,7 @@ Add these settings:
 - `CLAUDE_MEM_AGY_CLI_MODEL` (optional; omitted means Antigravity default)
 - `CLAUDE_MEM_AGY_CLI_TIMEOUT_MS` (default `300000`, matching agy's five-minute print default)
 
-Expose `agy-cli` in settings validation and the viewer provider selector without renaming or removing `gemini-cli` fields.
+Expose `agy-cli` in settings validation, the installer, and the viewer provider selector.
 
 ### Worker Routing
 
@@ -62,7 +62,7 @@ Instantiate one `AgyCliProvider` in `WorkerService`, pass it to `SessionRoutes`,
 
 ## Error Handling
 
-- Missing executable: `auth_invalid`-style configuration failure with the searched paths in the message.
+- Missing executable: unrecoverable configuration failure with an actionable install/path message.
 - Abort: propagate an `AbortError` after terminating the child.
 - Timeout: terminate the child and classify as transient.
 - Missing conversation: classify separately and retry once with a fresh conversation.
@@ -81,5 +81,5 @@ Instantiate one `AgyCliProvider` in `WorkerService`, pass it to `SessionRoutes`,
 
 - No changes to Antigravity hooks or the OpenCLI adapter.
 - No automatic permission bypass flag.
-- No replacement or removal of `gemini-cli`.
+- No changes to the existing Gemini CLI hook integration.
 - No reliance on global active-conversation state.
