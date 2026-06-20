@@ -287,7 +287,7 @@ export class OpenRouterProvider {
 
   private async processOneMessage(
     session: ActiveSession,
-    message: { _persistentId: number; agentId?: string | null; agentType?: string | null; type: 'observation' | 'summarize'; cwd?: string; prompt_number?: number; tool_name?: string; tool_input?: unknown; tool_response?: unknown; last_assistant_message?: string },
+    message: { _persistentId: number; agentId?: string | null; agentType?: string | null; type: 'observation' | 'summarize' | 'pre-compact'; cwd?: string; prompt_number?: number; tool_name?: string; tool_input?: unknown; tool_response?: unknown; last_assistant_message?: string },
     lastCwd: string | undefined,
     apiKey: string,
     model: string,
@@ -309,7 +309,7 @@ export class OpenRouterProvider {
         session, message, originalTimestamp, lastCwd,
         apiKey, model, apiUrl, siteUrl, appName, worker, mode
       );
-    } else if (message.type === 'summarize') {
+    } else if (message.type === 'summarize' || message.type === 'pre-compact') {
       await this.processSummaryMessage(
         session, message, originalTimestamp, lastCwd,
         apiKey, model, apiUrl, siteUrl, appName, worker, mode

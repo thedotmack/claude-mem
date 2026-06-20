@@ -210,6 +210,43 @@ export class SessionManager {
     }
   }
 
+  async queuePreCompact(sessionDbId: number): Promise<void> {
+    let session = this.sessions.get(sessionDbId);
+    if (!session) {
+      session = this.initializeSession(sessionDbId);
+    }
+
+    const message: PendingMessage = {
+      type: 'pre-compact'
+    };
+
+    try {
+      const queue = this.getQueueEngine();
+      const messageId = await queue.enqueue(sessionDbId, session.contentSessionId, message);
+      const queueDepth = await queue.getPendingCount(sessionDbId);
+      if (messageId === 0) {
+        logger.debug('QUEUE', `DUP_SUPPRESSED | sessionDbId=${sessionDbId} | type=pre-compact | depth=${queueDepth}`, {
+          sessionId: sessionDbId
+        });
+      } else {
+        logger.info('QUEUE', `ENQUEUED | sessionDbId=${sessionDbId} | messageId=${messageId} | type=pre-compact | depth=${queueDepth}`, {
+          sessionId: sessionDbId
+        });
+      }
+    } catch (error) {
+      if (error instanceof Error) {
+        logger.error('SESSION', 'Failed to persist pre-compact to DB', {
+          sessionId: sessionDbId
+        }, error);
+      } else {
+        logger.error('SESSION', 'Failed to persist pre-compact to DB with non-Error', {
+          sessionId: sessionDbId
+        }, new Error(String(error)));
+      }
+      throw error;
+    }
+  }
+
   async clearPendingForSession(sessionDbId: number): Promise<number> {
     return this.buffer.clear(sessionDbId);
   }

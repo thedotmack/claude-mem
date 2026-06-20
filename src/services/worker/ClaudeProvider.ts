@@ -526,7 +526,7 @@ export class ClaudeProvider {
           parent_tool_use_id: null,
           isSynthetic: true
         };
-      } else if (message.type === 'summarize') {
+      } else if (message.type === 'summarize' || message.type === 'pre-compact') {
         const summaryPrompt = buildSummaryPrompt({
           id: session.sessionDbId,
           memory_session_id: session.memorySessionId,
