@@ -59,7 +59,7 @@
     <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="உரிமம்">
   </a>
   <a href="../../package.json">
-    <img src="https://img.shields.io/badge/version-13.4.0-green.svg" alt="பதிப்பு">
+    <img src="https://img.shields.io/badge/version-13.7.0-green.svg" alt="பதிப்பு">
   </a>
   <a href="../../package.json">
     <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg" alt="Node">
@@ -339,6 +339,22 @@ ls ~/.claude/plugins/marketplaces/thedotmack/plugin/modes/
 | `code` | இயல்புநிலை ஆங்கில பயன்முறை |
 | `code--zh` | எளிமையான சீன பயன்முறை |
 | `code--ja` | ஜப்பானிய பயன்முறை |
+| `code--hi` | இந்தி பயன்முறை |
+| `code--bn` | பெங்காலி பயன்முறை |
+| `code--vi` | வியட்நாமிய பயன்முறை |
+| `code--pt-br`| பிரேசிலிய போர்த்துகீசிய பயன்முறை |
+| `code--he` | ஹீப்ரு பயன்முறை |
+| `code--ar` | அரபு பயன்முறை |
+| `code--pl` | போலிஷ் பயன்முறை |
+| `code--cs` | செக் பயன்முறை |
+| `code--nl` | டச்சு பயன்முறை |
+| `code--tr` | துருக்கிய பயன்முறை |
+| `code--uk` | உக்ரேனிய பயன்முறை |
+| `code--tl` | தாகலாக் பயன்முறை |
+| `code--hu` | ஹங்கேரிய பயன்முறை |
+| `code--fi` | ஃபின்னிஷ் பயன்முறை |
+| `code--da` | டேனிஷ் பயன்முறை |
+| `code--no` | நார்வேஜியன் பயன்முறை |
 
 மொழி-குறிப்பிட்ட பயன்முறைகள் `code--[lang]` முறையை பின்பற்றுகின்றன, இங்கு `[lang]` என்பது ISO 639-1 மொழி குறியீடு (எ.கா., `zh` சீனத்திற்கு, `ja` ஜப்பானியத்திற்கு).
 
