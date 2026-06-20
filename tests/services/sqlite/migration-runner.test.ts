@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { MigrationRunner } from '../../../src/services/sqlite/migrations/runner.js';
+import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 
 interface TableNameRow {
   name: string;
@@ -113,6 +114,8 @@ describe('MigrationRunner', () => {
       expect(columnNames).toContain('prompt_number');
       expect(columnNames).toContain('discovery_tokens');
       expect(columnNames).toContain('content_hash');
+      expect(columnNames).toContain('generated_by_model');
+      expect(columnNames).toContain('relevance_count');
     });
 
     it('should record all migration versions', () => {
@@ -120,20 +123,22 @@ describe('MigrationRunner', () => {
       runner.runAllMigrations();
 
       const versions = getSchemaVersions(db);
-      expect(versions).toContain(4);   
-      expect(versions).toContain(5);   
-      expect(versions).toContain(6);   
-      expect(versions).toContain(7);   
-      expect(versions).toContain(8);   
-      expect(versions).toContain(9);   
-      expect(versions).toContain(10);  
-      expect(versions).toContain(11);  
-      expect(versions).toContain(16);  
-      expect(versions).toContain(17);  
-      expect(versions).toContain(20);  
-      expect(versions).toContain(21);  
-      expect(versions).toContain(22);  
-      expect(versions).toContain(30);  
+      expect(versions).toContain(4);
+      expect(versions).toContain(5);
+      expect(versions).toContain(6);
+      expect(versions).toContain(7);
+      expect(versions).toContain(8);
+      expect(versions).toContain(9);
+      expect(versions).toContain(10);
+      expect(versions).toContain(11);
+      expect(versions).toContain(16);
+      expect(versions).toContain(17);
+      expect(versions).toContain(19);
+      expect(versions).toContain(20);
+      expect(versions).toContain(21);
+      expect(versions).toContain(22);
+      expect(versions).toContain(26);
+      expect(versions).toContain(30);
       expect(versions).toContain(33);
       expect(versions).toContain(34);
     });
@@ -531,6 +536,53 @@ describe('MigrationRunner', () => {
       expect(memorySessionFk).toBeDefined();
       expect(memorySessionFk!.on_update).toBe('CASCADE');
       expect(memorySessionFk!.on_delete).toBe('CASCADE');
+    });
+  });
+
+  describe('schema convergence with SessionStore inline migrations', () => {
+    function snapshotSchema(db: Database) {
+      const tables = getTableNames(db);
+      const columnsByTable: Record<string, string[]> = {};
+      for (const table of tables) {
+        columnsByTable[table] = getColumns(db, table).map(c => c.name).sort();
+      }
+      return {
+        tables: [...tables].sort(),
+        columnsByTable,
+        versions: getSchemaVersions(db),
+      };
+    }
+
+    it('SessionStore on top of MigrationRunner does not drift the schema', () => {
+      const runner = new MigrationRunner(db);
+      runner.runAllMigrations();
+
+      const before = snapshotSchema(db);
+
+      expect(() => new SessionStore(db)).not.toThrow();
+
+      const after = snapshotSchema(db);
+      expect(after.tables).toEqual(before.tables);
+      expect(after.columnsByTable).toEqual(before.columnsByTable);
+      expect(after.versions).toEqual(before.versions);
+    });
+
+    it('MigrationRunner produces every column the worker SessionStore expects', () => {
+      const runner = new MigrationRunner(db);
+      runner.runAllMigrations();
+
+      const obsCols = getColumns(db, 'observations').map(c => c.name);
+      expect(obsCols).toContain('generated_by_model');
+      expect(obsCols).toContain('relevance_count');
+      expect(obsCols).toContain('agent_type');
+      expect(obsCols).toContain('agent_id');
+      expect(obsCols).toContain('metadata');
+      expect(obsCols).toContain('merged_into_project');
+
+      const pendingCols = getColumns(db, 'pending_messages').map(c => c.name);
+      expect(pendingCols).toContain('tool_use_id');
+      expect(pendingCols).toContain('agent_type');
+      expect(pendingCols).toContain('agent_id');
     });
   });
 
