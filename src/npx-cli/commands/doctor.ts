@@ -9,7 +9,7 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
 import pc from 'picocolors';
-import { isPluginInstalled, marketplaceDirectory } from '../utils/paths.js';
+import { isPluginInstalled, marketplaceDirectory, IS_WINDOWS } from '../utils/paths.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { resolveDataDir } from '../../shared/paths.js';
 
@@ -22,8 +22,6 @@ interface CheckResult {
   /** When false, a 'fail' does not affect the overall exit code. */
   required: boolean;
 }
-
-const IS_WINDOWS = process.platform === 'win32';
 
 function probeVersion(bin: string): string | null {
   try {

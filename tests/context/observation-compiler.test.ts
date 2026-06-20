@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { buildTimeline } from '../../src/services/context/index.js';
+import { buildTimeline } from '../../src/services/context/ObservationCompiler.js';
 import type { Observation, SummaryTimelineItem } from '../../src/services/context/types.js';
 
 function createTestObservation(overrides: Partial<Observation> = {}): Observation {

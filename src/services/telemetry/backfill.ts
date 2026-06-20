@@ -5,6 +5,7 @@ import type { Database } from 'bun:sqlite';
 import { resolveDataDir } from '../../shared/paths.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
 import { logger } from '../../utils/logger.js';
+import { toError } from '../../utils/to-error.js';
 import {
   resolveTelemetryConsent,
   loadTelemetryConfig,
@@ -17,6 +18,7 @@ import {
   getTelemetryHost,
   buildBaseProperties,
   buildPersonSet,
+  asMs,
 } from './common.js';
 
 /**
@@ -83,16 +85,6 @@ export const BACKFILL_VERSION = 2;
  * 'other' so the backfill vocabulary is identical to live telemetry.
  */
 const STAT_TYPE_BUCKETS = new Set(['bugfix', 'discovery', 'decision', 'refactor']);
-
-/**
- * Epoch columns hold mixed units historically: a few hundred legacy rows were
- * written in seconds, everything since in milliseconds. Normalize to ms in
- * SQL before any date math (same rule as install-stats.ts — and note it must
- * be applied INSIDE aggregate functions like MIN, never outside).
- */
-function asMs(col: string): string {
-  return `CASE WHEN ${col} < 1000000000000 THEN ${col} * 1000 ELSE ${col} END`;
-}
 
 /** YYYY-MM-DD (UTC) for an epoch-milliseconds instant. */
 export function utcDayString(epochMs: number): string {
@@ -638,7 +630,7 @@ export async function runHistoricalBackfill(db: Database): Promise<void> {
       'SYSTEM',
       'Telemetry historical backfill failed (non-blocking)',
       {},
-      error instanceof Error ? error : new Error(String(error))
+      toError(error)
     );
   }
 }

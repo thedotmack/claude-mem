@@ -29,11 +29,8 @@ mock.module('../../../src/services/domain/ModeManager.js', () => ({
 import {
   renderAgentHeader,
   renderAgentLegend,
-  renderAgentColumnKey,
-  renderAgentContextIndex,
   renderAgentContextEconomics,
   renderAgentDayHeader,
-  renderAgentFileHeader,
   renderAgentTableRow,
   renderAgentFullObservation,
   renderAgentSummaryItem,
@@ -132,22 +129,6 @@ describe('AgentFormatter', () => {
     });
   });
 
-  describe('renderAgentColumnKey', () => {
-    it('should return empty array in compact format', () => {
-      const result = renderAgentColumnKey();
-
-      expect(result).toHaveLength(0);
-    });
-  });
-
-  describe('renderAgentContextIndex', () => {
-    it('should return empty array in compact format', () => {
-      const result = renderAgentContextIndex();
-
-      expect(result).toHaveLength(0);
-    });
-  });
-
   describe('renderAgentContextEconomics', () => {
     it('should include observation count', () => {
       const economics = createTestEconomics({ totalObservations: 25 });
@@ -216,14 +197,6 @@ describe('AgentFormatter', () => {
 
       expect(result).toHaveLength(1);
       expect(result[0]).toBe('### 2025-01-01');
-    });
-  });
-
-  describe('renderAgentFileHeader', () => {
-    it('should return empty array in compact format', () => {
-      const result = renderAgentFileHeader('src/index.ts');
-
-      expect(result).toHaveLength(0);
     });
   });
 
@@ -381,7 +354,6 @@ describe('AgentFormatter', () => {
   describe('renderAgentPreviouslySection', () => {
     it('should render section when assistantMessage exists', () => {
       const priorMessages: PriorMessages = {
-        userMessage: '',
         assistantMessage: 'I completed the task successfully.',
       };
 
@@ -394,7 +366,6 @@ describe('AgentFormatter', () => {
 
     it('should return empty when assistantMessage is empty', () => {
       const priorMessages: PriorMessages = {
-        userMessage: '',
         assistantMessage: '',
       };
 
@@ -405,7 +376,6 @@ describe('AgentFormatter', () => {
 
     it('should include separator', () => {
       const priorMessages: PriorMessages = {
-        userMessage: '',
         assistantMessage: 'Some message',
       };
 

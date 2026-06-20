@@ -217,20 +217,20 @@ function findLastAssistantMessage(lines: string[]): string {
 
 export function extractPriorMessages(transcriptPath: string): PriorMessages {
   try {
-    if (!existsSync(transcriptPath)) return { userMessage: '', assistantMessage: '' };
+    if (!existsSync(transcriptPath)) return { assistantMessage: '' };
     const content = readFileSync(transcriptPath, 'utf-8').trim();
-    if (!content) return { userMessage: '', assistantMessage: '' };
+    if (!content) return { assistantMessage: '' };
 
     const lines = content.split('\n').filter(line => line.trim());
     const lastAssistantMessage = findLastAssistantMessage(lines);
-    return { userMessage: '', assistantMessage: lastAssistantMessage };
+    return { assistantMessage: lastAssistantMessage };
   } catch (error) {
     if (error instanceof Error) {
       logger.failure('WORKER', 'Failed to extract prior messages from transcript', { transcriptPath }, error);
     } else {
       logger.warn('WORKER', 'Failed to extract prior messages from transcript', { transcriptPath, error: String(error) });
     }
-    return { userMessage: '', assistantMessage: '' };
+    return { assistantMessage: '' };
   }
 }
 
@@ -241,12 +241,12 @@ export function getPriorSessionMessages(
   cwd: string
 ): PriorMessages {
   if (!config.showLastMessage || observations.length === 0) {
-    return { userMessage: '', assistantMessage: '' };
+    return { assistantMessage: '' };
   }
 
   const priorSessionObs = observations.find(obs => obs.memory_session_id !== currentSessionId);
   if (!priorSessionObs) {
-    return { userMessage: '', assistantMessage: '' };
+    return { assistantMessage: '' };
   }
 
   const priorSessionId = priorSessionObs.memory_session_id;

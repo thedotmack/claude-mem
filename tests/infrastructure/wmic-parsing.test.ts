@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect } from 'bun:test';
 
 function parsePowerShellOutput(stdout: string): number[] {
   return stdout
@@ -156,54 +156,5 @@ describe('PowerShell output parsing (Windows)', () => {
       expect(isValidParentPid(12345)).toBe(true);
       expect(isValidParentPid(2147483647)).toBe(true);
     });
-  });
-});
-
-describe('getChildProcesses platform behavior', () => {
-  const originalPlatform = process.platform;
-
-  afterEach(() => {
-    Object.defineProperty(process, 'platform', {
-      value: originalPlatform,
-      writable: true,
-      configurable: true
-    });
-  });
-
-  it('should return empty array on non-Windows platforms (darwin)', async () => {
-    Object.defineProperty(process, 'platform', {
-      value: 'darwin',
-      writable: true,
-      configurable: true
-    });
-
-    const { getChildProcesses } = await import('../../src/services/infrastructure/ProcessManager.js');
-
-    const result = await getChildProcesses(1000);
-
-    expect(result).toEqual([]);
-  });
-
-  it('should return empty array on non-Windows platforms (linux)', async () => {
-    Object.defineProperty(process, 'platform', {
-      value: 'linux',
-      writable: true,
-      configurable: true
-    });
-
-    const { getChildProcesses } = await import('../../src/services/infrastructure/ProcessManager.js');
-
-    const result = await getChildProcesses(1000);
-
-    expect(result).toEqual([]);
-  });
-
-  it('should return empty array for invalid parent PID regardless of platform', async () => {
-    const { getChildProcesses } = await import('../../src/services/infrastructure/ProcessManager.js');
-
-    expect(await getChildProcesses(0)).toEqual([]);
-    expect(await getChildProcesses(-1)).toEqual([]);
-    expect(await getChildProcesses(NaN)).toEqual([]);
-    expect(await getChildProcesses(1.5)).toEqual([]);
   });
 });

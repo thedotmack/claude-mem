@@ -28,6 +28,17 @@ export function getTelemetryHost(): string {
 }
 
 /**
+ * Epoch columns hold mixed units historically: a few hundred legacy rows were
+ * written in seconds, everything since in milliseconds. Normalize to ms in SQL
+ * before any date math (10^12 ms ≈ 2001, 10^12 s ≈ year 33658 — no plausible
+ * value is ambiguous). Must be applied INSIDE aggregate functions like MIN,
+ * never outside.
+ */
+export function asMs(col: string): string {
+  return `CASE WHEN ${col} < 1000000000000 THEN ${col} * 1000 ELSE ${col} END`;
+}
+
+/**
  * Whitelisted properties that may also be set as PostHog person properties on
  * lifecycle events (install_*, worker_started). The "person" is the anonymous
  * install UUID — these traits make retention/cohort insights sliceable by
@@ -79,19 +90,6 @@ export function buildPersonSet(
   return set;
 }
 
-/**
- * Kernel release (`os.release()`): "10.0.22631" distinguishes Win10/Win11
- * builds, Darwin major maps to the macOS release, Linux gives the kernel.
- * System metadata only — never user data.
- */
-function detectOsVersion(): string {
-  try {
-    return os.release();
-  } catch {
-    return 'unknown';
-  }
-}
-
 function detectWsl(): boolean {
   if (process.platform !== 'linux') return false;
   try {
@@ -105,7 +103,10 @@ export function buildBaseProperties(): Record<string, unknown> {
   return {
     version: packageVersion,
     os: process.platform,
-    os_version: detectOsVersion(),
+    // Kernel release: "10.0.22631" distinguishes Win10/Win11 builds, Darwin
+    // major maps to the macOS release, Linux gives the kernel. os.release()
+    // does not throw. System metadata only — never user data.
+    os_version: os.release(),
     is_wsl: detectWsl(),
     arch: process.arch,
     runtime: process.versions.bun ? 'bun' : 'node',
