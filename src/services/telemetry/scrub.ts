@@ -163,6 +163,16 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   // context_injected_rollup aggregation fields:
   'total_tokens',
   'avg_tokens',
+  // Per-session/window observation volume folded into the rollups so the
+  // context-cache-value and observation-type metrics survive the retirement of
+  // the legacy per-occurrence streams. observations_created (generation side,
+  // observer_turn_rollup) pairs with total_cost_usd to derive cost-per-obs;
+  // total_observations_injected (injection side, context_injected_rollup) is the
+  // cache-reuse count; total_tokens_saved_vs_naive is the windowed savings sum.
+  // The obs_type_* family is already whitelisted above (shared key names).
+  'observations_created',
+  'total_observations_injected',
+  'total_tokens_saved_vs_naive',
 ]);
 
 const MAX_STRING_LENGTH = 200;
