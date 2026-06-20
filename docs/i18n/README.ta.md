@@ -322,7 +322,7 @@ Claude-Mem `CLAUDE_MEM_MODE` அமைவு மூலம் பல பணிப
      Use an existing supported mode as the example instead. -->
 ```json
 {
-  "CLAUDE_MEM_MODE": "code--zh"
+  "CLAUDE_MEM_MODE": "code"
 }
 ```
 
@@ -341,6 +341,8 @@ ls ~/.claude/plugins/marketplaces/thedotmack/plugin/modes/
 | `code--ja` | ஜப்பானிய பயன்முறை |
 
 மொழி-குறிப்பிட்ட பயன்முறைகள் `code--[lang]` முறையை பின்பற்றுகின்றன, இங்கு `[lang]` என்பது ISO 639-1 மொழி குறியீடு (எ.கா., `zh` சீனத்திற்கு, `ja` ஜப்பானியத்திற்கு).
+
+குறிப்பு: தமிழ் மொழிக்கு குறிப்பிட்ட பயன்முறை (code--ta) தற்போது கிடைக்கவில்லை. எனவே தயவுசெய்து இயல்புநிலை ஆங்கில பயன்முறையை (code) பயன்படுத்தவும்.
 
 #### பயன்முறையை மாற்றிய பிறகு
 
