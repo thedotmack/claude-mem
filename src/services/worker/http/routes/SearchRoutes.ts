@@ -5,6 +5,7 @@ import path from 'path';
 import { z } from 'zod';
 import { SearchManager } from '../../SearchManager.js';
 import type { SearchTelemetryEnvelope } from '../../SearchManager.js';
+import { SEARCH_CONSTANTS } from '../../search/types.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
@@ -475,7 +476,10 @@ export class SearchRoutes extends BaseRouteHandler {
         query, type: 'observations', project, limit: String(limit), format: 'json'
       });
       if (!result?.observations?.length && project) {
-        const fallbackLimit = Math.min(Math.max(limit * 5, 20), 100);
+        // Chroma search already hydrates at most CHROMA_BATCH_SIZE semantic ids.
+        // Reuse that ceiling here so project filtering cannot drop a recoverable
+        // match just because it ranked outside a smaller route-local window.
+        const fallbackLimit = SEARCH_CONSTANTS.CHROMA_BATCH_SIZE;
         const fallbackResult = await this.searchManager.search({
           query, type: 'observations', limit: String(fallbackLimit), format: 'json'
         });

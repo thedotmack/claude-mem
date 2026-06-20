@@ -128,10 +128,37 @@ describe('SearchRoutes /api/context/semantic', () => {
     const [body] = res.json.mock.calls[0] as any[];
     expect(searchMock).toHaveBeenCalledTimes(2);
     expect(searchMock.mock.calls[1][0]).not.toMatchObject({ project: 'request-project' });
-    expect(searchMock.mock.calls[1][0]).toMatchObject({ limit: '25' });
+    expect(searchMock.mock.calls[1][0]).toMatchObject({ limit: '100' });
     expect(body.context).toContain('Fallback by project');
     expect(body.context).not.toContain('Higher-ranked wrong project');
     expect(body.context).not.toContain('Wrong project');
+    expect(body.count).toBe(1);
+  });
+
+  it('keeps the fallback window wide enough to recover project hits beyond the old prefilter cap', async () => {
+    const fallbackRows = Array.from({ length: 26 }, (_value, index) => ({
+      title: `fallback-row-${index + 1}`,
+      narrative: index === 25 ? 'Late matching project row' : `Noise row ${index + 1}`,
+      created_at: '2026-01-01T00:00:00Z',
+      project: index === 25 ? 'request-project' : 'other-project',
+    }));
+    searchMock = mock((args: any) => {
+      if (args?.project) return { observations: [] };
+      return { observations: fallbackRows };
+    });
+
+    const routes = new SearchRoutes({ search: searchMock } as any);
+    const handler = captureSemanticContextHandler(routes);
+    const req = { body: { ...baseReq.body, project: 'request-project', limit: '5' }, query: {} } as unknown as Request;
+    const res = createMockRes();
+
+    await handler(req, res as unknown as Response);
+    await new Promise(resolve => setImmediate(resolve));
+
+    const [body] = res.json.mock.calls[0] as any[];
+    expect(searchMock).toHaveBeenCalledTimes(2);
+    expect(searchMock.mock.calls[1][0]).toMatchObject({ limit: '100' });
+    expect(body.context).toContain('Late matching project row');
     expect(body.count).toBe(1);
   });
 
@@ -157,7 +184,7 @@ describe('SearchRoutes /api/context/semantic', () => {
     expect(body.context).toContain('Merged match');
     expect(body.context).not.toContain('No match');
     expect(body.count).toBe(1);
-    expect(searchMock.mock.calls[1][0]).toMatchObject({ limit: '20', type: 'observations' });
+    expect(searchMock.mock.calls[1][0]).toMatchObject({ limit: '100', type: 'observations' });
     expect(searchMock.mock.calls[1][0]).not.toHaveProperty('project');
   });
 
