@@ -78,12 +78,20 @@ describe('SearchRoutes /api/context/semantic', () => {
     loggerSpies.forEach(spy => spy.mockRestore());
   });
 
-  it('returns scoped results without triggering fallback', async () => {
+  it('retains scoped results when the relevance-ordered retry adds nothing new', async () => {
     const scopedRows = [
       { id: 1, title: 'scoped-hit', narrative: 'Scoped narrative', created_at: '2026-01-01T00:00:00Z', project: 'request-project' },
       { id: 2, title: 'extra', narrative: 'Ignored by limit', created_at: '2026-01-02T00:00:00Z', project: 'request-project' },
     ];
-    searchMock = mock(() => ({ observations: scopedRows }));
+    const fallbackRows = [
+      ...scopedRows,
+      { id: 3, title: 'wrong-project', narrative: 'Wrong project', created_at: '2026-01-03T00:00:00Z', project: 'other-project' },
+    ];
+    searchMock = mock((args: any) => (
+      args?.project
+        ? { observations: scopedRows }
+        : { observations: fallbackRows }
+    ));
 
     const routes = new SearchRoutes({ search: searchMock } as any);
     const handler = captureSemanticContextHandler(routes);
@@ -97,10 +105,12 @@ describe('SearchRoutes /api/context/semantic', () => {
     await new Promise(resolve => setImmediate(resolve));
 
     const [body] = res.json.mock.calls[0] as any[];
-    expect(searchMock).toHaveBeenCalledTimes(1);
+    expect(searchMock).toHaveBeenCalledTimes(2);
     expect(searchMock.mock.calls[0][0]).toMatchObject({ query: baseReq.body.q, project: 'request-project', limit: '100', type: 'observations', format: 'json', orderBy: 'relevance' });
+    expect(searchMock.mock.calls[1][0]).toMatchObject({ query: baseReq.body.q, limit: '100', type: 'observations', format: 'json', orderBy: 'relevance' });
     expect(body.context).toContain('## Relevant Past Work (semantic match)');
     expect(body.context).toContain('Scoped narrative');
+    expect(body.context).not.toContain('Wrong project');
     expect(body.count).toBe(2);
   });
 
@@ -221,6 +231,74 @@ describe('SearchRoutes /api/context/semantic', () => {
     expect(body.context).toContain('Recovered merged match');
     expect(body.context).not.toContain('Wrong project');
     expect(body.count).toBe(2);
+  });
+
+  it('recovers adopted matches even when scoped hydration already fills the limit', async () => {
+    const scopedRows = [
+      { id: 51, title: 'direct-hit-1', narrative: 'Direct hit 1', created_at: '2026-01-01T00:00:00Z', project: 'request-project' },
+      { id: 52, title: 'direct-hit-2', narrative: 'Direct hit 2', created_at: '2026-01-02T00:00:00Z', project: 'request-project' },
+      { id: 53, title: 'direct-hit-3', narrative: 'Direct hit 3', created_at: '2026-01-03T00:00:00Z', project: 'request-project' },
+      { id: 54, title: 'direct-hit-4', narrative: 'Direct hit 4', created_at: '2026-01-04T00:00:00Z', project: 'request-project' },
+      { id: 55, title: 'direct-hit-5', narrative: 'Direct hit 5', created_at: '2026-01-05T00:00:00Z', project: 'request-project' },
+    ];
+    const fallbackRows = [
+      { id: 56, title: 'merged-top-hit', narrative: 'Recovered adopted top hit', created_at: '2026-01-06T00:00:00Z', project: 'other-project', merged_into_project: 'request-project' },
+      ...scopedRows,
+    ];
+    searchMock = mock((args: any) => (
+      args?.project
+        ? { observations: scopedRows }
+        : { observations: fallbackRows }
+    ));
+
+    const routes = new SearchRoutes({ search: searchMock } as any);
+    const handler = captureSemanticContextHandler(routes);
+    const req = { body: { ...baseReq.body, project: 'request-project', limit: '5' }, query: {} } as unknown as Request;
+    const res = createMockRes();
+
+    await handler(req, res as unknown as Response);
+    await new Promise(resolve => setImmediate(resolve));
+
+    const [body] = res.json.mock.calls[0] as any[];
+    expect(searchMock).toHaveBeenCalledTimes(2);
+    expect(body.context).toContain('Recovered adopted top hit');
+    expect(body.context).toContain('Direct hit 1');
+    expect(body.context).toContain('Direct hit 4');
+    expect(body.context).not.toContain('Direct hit 5');
+    expect(body.count).toBe(6);
+  });
+
+  it('preserves fallback relevance order when recovered matches outrank direct scoped rows', async () => {
+    const scopedRows = [
+      { id: 61, title: 'direct-hit-low-1', narrative: 'Lower direct hit 1', created_at: '2026-01-01T00:00:00Z', project: 'request-project' },
+      { id: 62, title: 'direct-hit-low-2', narrative: 'Lower direct hit 2', created_at: '2026-01-02T00:00:00Z', project: 'request-project' },
+    ];
+    const fallbackRows = [
+      { id: 63, title: 'merged-high-hit', narrative: 'Recovered high-rank merged hit', created_at: '2026-01-03T00:00:00Z', project: 'other-project', merged_into_project: 'request-project' },
+      ...scopedRows,
+    ];
+    searchMock = mock((args: any) => (
+      args?.project
+        ? { observations: scopedRows }
+        : { observations: fallbackRows }
+    ));
+
+    const routes = new SearchRoutes({ search: searchMock } as any);
+    const handler = captureSemanticContextHandler(routes);
+    const req = { body: { ...baseReq.body, project: 'request-project', limit: '2' }, query: {} } as unknown as Request;
+    const res = createMockRes();
+
+    await handler(req, res as unknown as Response);
+    await new Promise(resolve => setImmediate(resolve));
+
+    const [body] = res.json.mock.calls[0] as any[];
+    expect(body.context).toContain('Recovered high-rank merged hit');
+    expect(body.context).toContain('Lower direct hit 1');
+    expect(body.context).not.toContain('Lower direct hit 2');
+    expect(body.context.indexOf('Recovered high-rank merged hit')).toBeLessThan(
+      body.context.indexOf('Lower direct hit 1')
+    );
+    expect(body.count).toBe(3);
   });
 
   it('does not fall back when no project is provided', async () => {

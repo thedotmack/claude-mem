@@ -481,18 +481,20 @@ export class SearchRoutes extends BaseRouteHandler {
         query, type: 'observations', project, limit: String(semanticWindowLimit), format: 'json', orderBy: 'relevance'
       });
       const scopedObservations = result?.observations || [];
-      if (project && scopedObservations.length < limit) {
+      if (project) {
         // Chroma search already hydrates at most CHROMA_BATCH_SIZE semantic ids.
         // Reuse that ceiling here so project filtering cannot drop a recoverable
         // match just because it ranked outside a smaller route-local window.
         const fallbackResult = await this.searchManager.search({
           query, type: 'observations', limit: String(semanticWindowLimit), format: 'json', orderBy: 'relevance'
         });
-        const seenObservationKeys = new Set(scopedObservations.map(observationKey));
+        const scopedObservationsByKey = new Map(
+          scopedObservations.map((obs: any) => [observationKey(obs), obs])
+        );
+        const seenObservationKeys = new Set<string>();
         result = {
           ...(result || {}),
           observations: [
-            ...scopedObservations,
             ...(fallbackResult?.observations || [])
               .filter((obs: any) => obs.project === project || obs.merged_into_project === project)
               .filter((obs: any) => {
@@ -500,7 +502,14 @@ export class SearchRoutes extends BaseRouteHandler {
                 if (seenObservationKeys.has(key)) return false;
                 seenObservationKeys.add(key);
                 return true;
-              }),
+              })
+              .map((obs: any) => scopedObservationsByKey.get(observationKey(obs)) || obs),
+            ...scopedObservations.filter((obs: any) => {
+              const key = observationKey(obs);
+              if (seenObservationKeys.has(key)) return false;
+              seenObservationKeys.add(key);
+              return true;
+            }),
           ],
         };
       }
