@@ -43,8 +43,6 @@ export interface ServerBetaRuntimeState {
   boundaries: {
     queueManager: ReturnType<ServerBetaServiceGraph['queueManager']['getHealth']>;
     generationWorkerManager: ReturnType<ServerBetaServiceGraph['generationWorkerManager']['getHealth']>;
-    providerRegistry: ReturnType<ServerBetaServiceGraph['providerRegistry']['getHealth']>;
-    eventBroadcaster: ReturnType<ServerBetaServiceGraph['eventBroadcaster']['getHealth']>;
   };
 }
 
@@ -73,8 +71,6 @@ class ServerBetaRuntimeInfoRoutes implements RouteHandler {
         boundaries: {
           queueManager: this.graph.queueManager.getHealth(),
           generationWorkerManager: this.graph.generationWorkerManager.getHealth(),
-          providerRegistry: this.graph.providerRegistry.getHealth(),
-          eventBroadcaster: this.graph.eventBroadcaster.getHealth(),
         },
         queueLanes,
       });
@@ -241,8 +237,6 @@ export class ServerBetaService {
       await Promise.all([
         this.graph.queueManager.close(),
         this.graph.generationWorkerManager.close(),
-        this.graph.providerRegistry.close(),
-        this.graph.eventBroadcaster.close(),
       ]);
       await this.graph.postgres.pool.end();
     } finally {
@@ -270,8 +264,6 @@ export class ServerBetaService {
       boundaries: {
         queueManager: this.graph.queueManager.getHealth(),
         generationWorkerManager: this.graph.generationWorkerManager.getHealth(),
-        providerRegistry: this.graph.providerRegistry.getHealth(),
-        eventBroadcaster: this.graph.eventBroadcaster.getHealth(),
       },
     };
   }
