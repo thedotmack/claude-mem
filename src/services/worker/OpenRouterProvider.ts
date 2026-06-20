@@ -120,8 +120,36 @@ export function classifyOpenRouterError(input: {
 
 const DEFAULT_MAX_CONTEXT_MESSAGES = 20;  
 const DEFAULT_MAX_ESTIMATED_TOKENS = 100000;  
-const CHARS_PER_TOKEN_ESTIMATE = 4;  
+const CHARS_PER_TOKEN_ESTIMATE = 4;
 
+
+// ✅ ADDED: OpenRouter reasoning control
+const VALID_REASONING_EFFORTS = [
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+] as const;
+
+type ReasoningEffort = typeof VALID_REASONING_EFFORTS[number];
+
+
+// ✅ ADDED: Reads CLAUDE_MEM_OPENROUTER_REASONING_EFFORT setting
+function getReasoningEffort(): ReasoningEffort | undefined {
+  const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+
+  const value = settings.CLAUDE_MEM_OPENROUTER_REASONING_EFFORT;
+
+  if (
+    typeof value === 'string' &&
+    VALID_REASONING_EFFORTS.includes(value as ReasoningEffort)
+  ) {
+    return value as ReasoningEffort;
+  }
+
+  return undefined;
+}
 interface OpenAIMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
@@ -485,6 +513,7 @@ export class OpenRouterProvider {
     const messages = this.conversationToOpenAIMessages(truncatedHistory);
     const totalChars = truncatedHistory.reduce((sum, m) => sum + m.content.length, 0);
     const estimatedTokens = this.estimateTokens(truncatedHistory.map(m => m.content).join(''));
+    const reasoningEffort = getReasoningEffort();
 
     logger.debug('SDK', `Querying OpenRouter multi-turn (${model})`, {
       turns: truncatedHistory.length,
@@ -496,41 +525,78 @@ export class OpenRouterProvider {
 
     const data = await withRetry<OpenRouterResponse>(async (attemptSignal) => {
       let response: Response;
+
       try {
         response = await fetch(apiUrl, {
           method: 'POST',
+
           headers: {
             'Authorization': `Bearer ${apiKey}`,
             'HTTP-Referer': siteUrl || 'https://github.com/thedotmack/claude-mem',
             'X-Title': appName || 'claude-mem',
             'Content-Type': 'application/json',
-            ...(priorRequestId ? { 'x-claude-mem-prior-request-id': priorRequestId } : {}),
+
+            ...(priorRequestId
+              ? { 'x-claude-mem-prior-request-id': priorRequestId }
+              : {}),
           },
+
           body: JSON.stringify({
             model,
             messages,
-            temperature: 0.3,  // Lower temperature for structured extraction
+
+            temperature: 0.3,
+
             max_tokens: 4096,
-            // Ask openrouter.ai for usage accounting (token counts + cost).
-            // Only sent to openrouter.ai — strict custom gateways may reject
-            // unknown body fields.
-            ...(apiUrl.includes('openrouter.ai') ? { usage: { include: true } } : {}),
+
+            // OpenRouter reasoning control
+            // Example:
+            // CLAUDE_MEM_OPENROUTER_REASONING_EFFORT=none
+            //
+            // Sends:
+            // reasoning: { effort: "none" }
+            //
+            // This disables GLM/DeepSeek thinking tokens
+            ...(reasoningEffort
+              ? {
+                  reasoning: {
+                    effort: reasoningEffort,
+                  },
+                }
+              : {}),
+
+            // Existing OpenRouter usage tracking
+            ...(apiUrl.includes('openrouter.ai')
+              ? {
+                  usage: {
+                    include: true,
+                  },
+                }
+              : {}),
           }),
+
           signal: attemptSignal,
         });
       } catch (networkError: unknown) {
         throw classifyOpenRouterError({ cause: networkError });
       }
 
-      const requestId = response.headers.get('x-request-id') ?? response.headers.get('x-openrouter-request-id');
+      const requestId =
+        response.headers.get('x-request-id') ??
+        response.headers.get('x-openrouter-request-id');
+
       if (requestId) {
         priorRequestId = requestId;
       } else {
-        logger.debug('SDK', 'OpenRouter response missing request-id header; retry dedup is best-effort');
+        logger.debug(
+          'SDK',
+          'OpenRouter response missing request-id header; retry dedup is best-effort'
+        );
       }
 
       if (!response.ok) {
         const errorText = await response.text();
+
         throw classifyOpenRouterError({
           status: response.status,
           bodyText: errorText,
@@ -548,11 +614,14 @@ export class OpenRouterProvider {
           status: response.status,
           bodyText: `${responseData.error.code} ${responseData.error.message ?? ''}`,
           headers: response.headers,
-          cause: new Error(`OpenRouter API error: ${responseData.error.code} - ${responseData.error.message}`),
+          cause: new Error(
+            `OpenRouter API error: ${responseData.error.code} - ${responseData.error.message}`
+          ),
         });
       }
 
       return responseData;
+
     }, { label: `OpenRouter ${model}` });
 
     if (!data.choices?.[0]?.message?.content) {
@@ -564,17 +633,29 @@ export class OpenRouterProvider {
     const tokensUsed = data.usage?.total_tokens;
     const realInputTokens = data.usage?.prompt_tokens;
     const realOutputTokens = data.usage?.completion_tokens;
-    // usage.cost is what openrouter.ai charged in credits (~USD); with BYOK the
-    // model spend is reported separately as upstream_inference_cost. Custom
-    // gateways usually omit both — costUsd stays undefined (never estimated).
-    const orCost = typeof data.usage?.cost === 'number' ? data.usage.cost : undefined;
-    const upstreamCost = typeof data.usage?.cost_details?.upstream_inference_cost === 'number'
-      ? data.usage.cost_details.upstream_inference_cost
-      : undefined;
-    const costUsd = orCost !== undefined || upstreamCost !== undefined
-      ? (orCost ?? 0) + (upstreamCost ?? 0)
-      : undefined;
-    const servedModel = typeof data.model === 'string' && data.model ? data.model : undefined;
+
+    // usage.cost is what openrouter.ai charged in credits (~USD);
+    // with BYOK the model spend is reported separately as upstream_inference_cost.
+    // Custom gateways usually omit both — costUsd stays undefined.
+    const orCost =
+      typeof data.usage?.cost === 'number'
+        ? data.usage.cost
+        : undefined;
+
+    const upstreamCost =
+      typeof data.usage?.cost_details?.upstream_inference_cost === 'number'
+        ? data.usage.cost_details.upstream_inference_cost
+        : undefined;
+
+    const costUsd =
+      orCost !== undefined || upstreamCost !== undefined
+        ? (orCost ?? 0) + (upstreamCost ?? 0)
+        : undefined;
+
+    const servedModel =
+      typeof data.model === 'string' && data.model
+        ? data.model
+        : undefined;
 
     if (tokensUsed) {
       logger.info('SDK', 'OpenRouter API usage', {
@@ -594,9 +675,15 @@ export class OpenRouterProvider {
       }
     }
 
-    return { content, tokensUsed, inputTokens: realInputTokens, outputTokens: realOutputTokens, costUsd, servedModel };
+    return {
+      content,
+      tokensUsed,
+      inputTokens: realInputTokens,
+      outputTokens: realOutputTokens,
+      costUsd,
+      servedModel
+    };
   }
-
   private getOpenRouterConfig(): { apiKey: string; model: string; apiUrl: string; siteUrl?: string; appName?: string } {
     const settingsPath = USER_SETTINGS_PATH;
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
