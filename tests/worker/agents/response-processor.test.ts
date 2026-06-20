@@ -354,6 +354,8 @@ describe('ResponseProcessor', () => {
         promptNumber,
         tokens,
         timestamp,
+        ,
+        contentSessionId,
       ] = mockStoreObservations.mock.calls[0];
 
       expect(memorySessionId).toBe('memory-session-456');
@@ -363,6 +365,7 @@ describe('ResponseProcessor', () => {
       expect(promptNumber).toBe(5);
       expect(tokens).toBe(100);
       expect(timestamp).toBe(1700000000000);
+      expect(contentSessionId).toBe('content-session-123');
     });
   });
 

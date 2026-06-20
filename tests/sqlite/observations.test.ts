@@ -243,4 +243,31 @@ describe('Observations Module', () => {
       expect(new Date(result!).getTime()).toBe(earliestEpoch);
     });
   });
+
+  describe('content_session_id', () => {
+    it('persists the originating content_session_id when provided', () => {
+      const memorySessionId = createSessionWithMemoryId('content-stamp', 'mem-stamp');
+      const result = storeObservation(
+        db,
+        memorySessionId,
+        'test-project',
+        createObservationInput(),
+        1,
+        0,
+        undefined,
+        'content-stamp'
+      );
+
+      const stored = getObservationById(db, result.id);
+      expect(stored?.content_session_id).toBe('content-stamp');
+    });
+
+    it('stores NULL content_session_id when omitted', () => {
+      const memorySessionId = createSessionWithMemoryId('content-omit', 'mem-omit');
+      const result = storeObservation(db, memorySessionId, 'test-project', createObservationInput());
+
+      const stored = getObservationById(db, result.id);
+      expect(stored?.content_session_id ?? null).toBeNull();
+    });
+  });
 });
