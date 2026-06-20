@@ -866,11 +866,11 @@ export class ChromaSync {
       if (isConnectionError) {
         this.collectionCreated = false;
         logger.error('CHROMA_SYNC', 'Connection lost during query',
-          { project: this.project, query }, error as Error);
+          { project: this.project, queryLength: query.length }, error as Error);
         throw new Error(`Chroma query failed - connection lost: ${errorMessage}`);
       }
 
-      logger.error('CHROMA_SYNC', 'Query failed', { project: this.project, query }, error as Error);
+      logger.error('CHROMA_SYNC', 'Query failed', { project: this.project, queryLength: query.length }, error as Error);
       throw error;
     }
 
