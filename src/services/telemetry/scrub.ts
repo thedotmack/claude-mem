@@ -140,7 +140,7 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'subagent_obs_count',
   // Rollup events emitted by TelemetryBuffer (buffer.ts) — aggregate fields
   // that replace the high-volume per-event stream with 5-minute windows.
-  // session_compressed_rollup aggregation fields:
+  // observer_turn_rollup aggregation fields:
   'total_tokens_input',
   'total_tokens_output',
   'total_cost_usd',
