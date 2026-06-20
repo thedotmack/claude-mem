@@ -482,8 +482,7 @@ export class SearchRoutes extends BaseRouteHandler {
         result = {
           ...(result || {}),
           observations: (fallbackResult?.observations || [])
-            .filter((obs: any) => obs.project === project || obs.merged_into_project === project)
-            .slice(0, limit),
+            .filter((obs: any) => obs.project === project || obs.merged_into_project === project),
         };
       }
     } catch (error) {
