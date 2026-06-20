@@ -8,6 +8,7 @@ import type {
 import { colors } from '../types.js';
 import { ModeManager } from '../../domain/ModeManager.js';
 import { formatObservationTokenDisplay } from '../TokenCalculator.js';
+import { formatContextReferenceId } from './id-display.js';
 
 function formatHeaderDateTime(): string {
   const now = new Date();
@@ -49,12 +50,15 @@ export function renderHumanColumnKey(): string[] {
   ];
 }
 
-export function renderHumanContextIndex(): string[] {
+export function renderHumanContextIndex(fetchByIdSupported: boolean = true): string[] {
+  const drilldownLine = fetchByIdSupported
+    ? `${colors.dim}  - Fetch by ID: get_observations([IDs]) for observations visible in this index${colors.reset}`
+    : `${colors.dim}  - Search: observation_search / mem-search skill (by-id fetch is not available in server-beta mode)${colors.reset}`;
   return [
     `${colors.dim}Context Index: This semantic index (titles, types, files, tokens) is usually sufficient to understand past work.${colors.reset}`,
     '',
     `${colors.dim}When you need implementation details, rationale, or debugging context:${colors.reset}`,
-    `${colors.dim}  - Fetch by ID: get_observations([IDs]) for observations visible in this index${colors.reset}`,
+    drilldownLine,
     `${colors.dim}  - Search history: Use the mem-search skill for past decisions, bugs, and deeper research${colors.reset}`,
     `${colors.dim}  - Trust this index over re-reading code for past decisions and learnings${colors.reset}`,
     ''
@@ -114,7 +118,7 @@ export function renderHumanTableRow(
   const readPart = (config.showReadTokens && readTokens > 0) ? `${colors.dim}(~${readTokens}t)${colors.reset}` : '';
   const discoveryPart = (config.showWorkTokens && discoveryTokens > 0) ? `${colors.dim}(${workEmoji} ${discoveryTokens.toLocaleString()}t)${colors.reset}` : '';
 
-  return `  ${colors.dim}#${obs.id}${colors.reset}  ${timePart}  ${icon}  ${title} ${readPart} ${discoveryPart}`;
+  return `  ${colors.dim}#${formatContextReferenceId(obs.id, config)}${colors.reset}  ${timePart}  ${icon}  ${title} ${readPart} ${discoveryPart}`;
 }
 
 export function renderHumanFullObservation(
@@ -133,7 +137,7 @@ export function renderHumanFullObservation(
   const readPart = (config.showReadTokens && readTokens > 0) ? `${colors.dim}(~${readTokens}t)${colors.reset}` : '';
   const discoveryPart = (config.showWorkTokens && discoveryTokens > 0) ? `${colors.dim}(${workEmoji} ${discoveryTokens.toLocaleString()}t)${colors.reset}` : '';
 
-  output.push(`  ${colors.dim}#${obs.id}${colors.reset}  ${timePart}  ${icon}  ${colors.bright}${title}${colors.reset}`);
+  output.push(`  ${colors.dim}#${formatContextReferenceId(obs.id, config)}${colors.reset}  ${timePart}  ${icon}  ${colors.bright}${title}${colors.reset}`);
   if (detailField) {
     output.push(`    ${colors.dim}${detailField}${colors.reset}`);
   }
