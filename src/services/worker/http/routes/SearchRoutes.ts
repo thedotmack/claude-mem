@@ -474,6 +474,18 @@ export class SearchRoutes extends BaseRouteHandler {
       result = await this.searchManager.search({
         query, type: 'observations', project, limit: String(limit), format: 'json'
       });
+      if (!result?.observations?.length && project) {
+        const fallbackLimit = Math.min(Math.max(limit * 5, 20), 100);
+        const fallbackResult = await this.searchManager.search({
+          query, type: 'observations', limit: String(fallbackLimit), format: 'json'
+        });
+        result = {
+          ...(result || {}),
+          observations: (fallbackResult?.observations || [])
+            .filter((obs: any) => obs.project === project || obs.merged_into_project === project)
+            .slice(0, limit),
+        };
+      }
     } catch (error) {
       const normalizedError = error instanceof Error ? error : new Error(String(error));
       logger.error('HTTP', 'Semantic context query failed', { query, project }, normalizedError);
