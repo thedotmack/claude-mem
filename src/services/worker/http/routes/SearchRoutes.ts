@@ -482,36 +482,49 @@ export class SearchRoutes extends BaseRouteHandler {
       });
       const scopedObservations = result?.observations || [];
       if (project) {
-        // Chroma search already hydrates at most CHROMA_BATCH_SIZE semantic ids.
-        // Reuse that ceiling here so project filtering cannot drop a recoverable
-        // match just because it ranked outside a smaller route-local window.
-        const fallbackResult = await this.searchManager.search({
-          query, type: 'observations', limit: String(semanticWindowLimit), format: 'json', orderBy: 'relevance'
-        });
-        const scopedObservationsByKey = new Map(
-          scopedObservations.map((obs: any) => [observationKey(obs), obs])
-        );
-        const seenObservationKeys = new Set<string>();
-        result = {
-          ...(result || {}),
-          observations: [
-            ...(fallbackResult?.observations || [])
-              .filter((obs: any) => obs.project === project || obs.merged_into_project === project)
-              .filter((obs: any) => {
+        try {
+          // Chroma search already hydrates at most CHROMA_BATCH_SIZE semantic ids.
+          // Reuse that ceiling here so project filtering cannot drop a recoverable
+          // match just because it ranked outside a smaller route-local window.
+          const fallbackResult = await this.searchManager.search({
+            query, type: 'observations', limit: String(semanticWindowLimit), format: 'json', orderBy: 'relevance'
+          });
+          const scopedObservationsByKey = new Map(
+            scopedObservations.map((obs: any) => [observationKey(obs), obs])
+          );
+          const seenObservationKeys = new Set<string>();
+          result = {
+            ...(result || {}),
+            observations: [
+              ...(fallbackResult?.observations || [])
+                .filter((obs: any) => obs.project === project || obs.merged_into_project === project)
+                .filter((obs: any) => {
+                  const key = observationKey(obs);
+                  if (seenObservationKeys.has(key)) return false;
+                  seenObservationKeys.add(key);
+                  return true;
+                })
+                .map((obs: any) => scopedObservationsByKey.get(observationKey(obs)) || obs),
+              ...scopedObservations.filter((obs: any) => {
                 const key = observationKey(obs);
                 if (seenObservationKeys.has(key)) return false;
                 seenObservationKeys.add(key);
                 return true;
-              })
-              .map((obs: any) => scopedObservationsByKey.get(observationKey(obs)) || obs),
-            ...scopedObservations.filter((obs: any) => {
-              const key = observationKey(obs);
-              if (seenObservationKeys.has(key)) return false;
-              seenObservationKeys.add(key);
-              return true;
-            }),
-          ],
-        };
+              }),
+            ],
+          };
+        } catch (fallbackError) {
+          if (!scopedObservations.length) throw fallbackError;
+          const normalizedFallbackError = fallbackError instanceof Error
+            ? fallbackError
+            : new Error(String(fallbackError));
+          logger.warn(
+            'HTTP',
+            'Semantic context fallback failed, keeping scoped results',
+            { query, project },
+            normalizedFallbackError
+          );
+        }
       }
     } catch (error) {
       const normalizedError = error instanceof Error ? error : new Error(String(error));

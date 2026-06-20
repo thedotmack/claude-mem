@@ -233,6 +233,31 @@ describe('SearchRoutes /api/context/semantic', () => {
     expect(body.count).toBe(2);
   });
 
+  it('keeps scoped results when the fallback retry throws', async () => {
+    let call = 0;
+    const scopedRows = [
+      { id: 43, title: 'direct-hit', narrative: 'Direct scoped match', created_at: '2026-01-01T00:00:00Z', project: 'request-project' },
+    ];
+    searchMock = mock(() => {
+      call += 1;
+      if (call === 1) return { observations: scopedRows };
+      throw new Error('fallback unavailable');
+    });
+
+    const routes = new SearchRoutes({ search: searchMock } as any);
+    const handler = captureSemanticContextHandler(routes);
+    const req = { body: { ...baseReq.body, project: 'request-project', limit: '5' }, query: {} } as unknown as Request;
+    const res = createMockRes();
+
+    await handler(req, res as unknown as Response);
+    await new Promise(resolve => setImmediate(resolve));
+
+    const [body] = res.json.mock.calls[0] as any[];
+    expect(searchMock).toHaveBeenCalledTimes(2);
+    expect(body.context).toContain('Direct scoped match');
+    expect(body.count).toBe(1);
+  });
+
   it('recovers adopted matches even when scoped hydration already fills the limit', async () => {
     const scopedRows = [
       { id: 51, title: 'direct-hit-1', narrative: 'Direct hit 1', created_at: '2026-01-01T00:00:00Z', project: 'request-project' },
