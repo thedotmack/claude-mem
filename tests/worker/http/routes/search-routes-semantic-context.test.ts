@@ -260,6 +260,7 @@ describe('SearchRoutes /api/context/semantic', () => {
     expect(body.context).toContain('Direct scoped match');
     expect(body.count).toBe(1);
     const warnContext = (loggerSpies[2].mock.calls[0] as any[])[2];
+    expect(JSON.stringify(loggerSpies[2].mock.calls[0])).not.toContain(baseReq.body.q);
     expect(warnContext).toEqual({ queryLength: baseReq.body.q.length, project: 'request-project' });
   });
 
@@ -295,7 +296,7 @@ describe('SearchRoutes /api/context/semantic', () => {
     expect(body.context).toContain('Direct hit 1');
     expect(body.context).toContain('Direct hit 4');
     expect(body.context).not.toContain('Direct hit 5');
-    expect(body.count).toBe(6);
+    expect(body.count).toBe(5);
   });
 
   it('preserves fallback relevance order when recovered matches outrank direct scoped rows', async () => {
@@ -328,7 +329,7 @@ describe('SearchRoutes /api/context/semantic', () => {
     expect(body.context.indexOf('Recovered high-rank merged hit')).toBeLessThan(
       body.context.indexOf('Lower direct hit 1')
     );
-    expect(body.count).toBe(3);
+    expect(body.count).toBe(2);
   });
 
   it('keeps scoped semantic ordering when the fallback search drops to FTS', async () => {
@@ -378,6 +379,9 @@ describe('SearchRoutes /api/context/semantic', () => {
 
     const [body] = res.json.mock.calls[0] as any[];
     expect(searchMock).toHaveBeenCalledTimes(1);
+    expect(searchMock.mock.calls[0][0]).toMatchObject({ query: baseReq.body.q, type: 'observations', limit: '5', format: 'json' });
+    expect(searchMock.mock.calls[0][0]).not.toHaveProperty('project');
+    expect(searchMock.mock.calls[0][0]).not.toHaveProperty('orderBy');
     expect(body.context).toBe('');
     expect(body.count).toBe(0);
   });

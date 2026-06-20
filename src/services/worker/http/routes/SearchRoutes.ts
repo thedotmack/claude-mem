@@ -465,6 +465,21 @@ export class SearchRoutes extends BaseRouteHandler {
     const project = (req.body?.project || req.query.project) as string;
     const limit = Math.min(Math.max(parseInt(String(req.body?.limit || req.query.limit || '5'), 10) || 5, 1), 20);
     const semanticWindowLimit = SEARCH_CONSTANTS.CHROMA_BATCH_SIZE;
+    const scopedSearchArgs = project
+      ? {
+          query,
+          type: 'observations',
+          project,
+          limit: String(semanticWindowLimit),
+          format: 'json',
+          orderBy: 'relevance',
+        }
+      : {
+          query,
+          type: 'observations',
+          limit: String(limit),
+          format: 'json',
+        };
     const observationKey = (obs: any): string => String(
       obs?.id
       ?? `${obs?.title || ''}:${obs?.created_at || ''}:${obs?.project || ''}:${obs?.merged_into_project || ''}`
@@ -478,9 +493,7 @@ export class SearchRoutes extends BaseRouteHandler {
     let result: any;
     try {
       const scopedTelemetry: SearchTelemetryEnvelope = {};
-      result = await this.searchManager.search({
-        query, type: 'observations', project, limit: String(semanticWindowLimit), format: 'json', orderBy: 'relevance'
-      }, scopedTelemetry);
+      result = await this.searchManager.search(scopedSearchArgs, scopedTelemetry);
       const scopedObservations = result?.observations || [];
       if (project) {
         try {
@@ -490,7 +503,10 @@ export class SearchRoutes extends BaseRouteHandler {
           const fallbackResult = await this.searchManager.search({
             query, type: 'observations', limit: String(semanticWindowLimit), format: 'json', orderBy: 'relevance'
           }, fallbackTelemetry);
-          if (fallbackTelemetry.search_strategy === 'fts' && scopedObservations.length) {
+          const fallbackUsedKeywordSearch =
+            fallbackTelemetry.search_strategy === 'fts'
+            || fallbackTelemetry.search_strategy === 'filter_only';
+          if (fallbackUsedKeywordSearch) {
             result = {
               ...(result || {}),
               observations: scopedObservations,
@@ -542,20 +558,21 @@ export class SearchRoutes extends BaseRouteHandler {
     }
 
     const observations = result?.observations || [];
-    if (!observations.length) {
+    const renderedObservations = observations.slice(0, limit);
+    if (!renderedObservations.length) {
       res.json({ context: '', count: 0 });
       return;
     }
 
     const lines: string[] = ['## Relevant Past Work (semantic match)\n'];
-    for (const obs of observations.slice(0, limit)) {
+    for (const obs of renderedObservations) {
       const date = obs.created_at?.slice(0, 10) || '';
       lines.push(`### ${obs.title || 'Observation'} (${date})`);
       if (obs.narrative) lines.push(obs.narrative);
       lines.push('');
     }
 
-    res.json({ context: lines.join('\n'), count: observations.length });
+    res.json({ context: lines.join('\n'), count: renderedObservations.length });
   });
 
   private handleOnboardingExplainer = this.wrapHandler((_req: Request, res: Response): void => {
