@@ -72,6 +72,22 @@ export function resolveTelemetryConsent(
   return explainTelemetryConsent(env, config).enabled;
 }
 
+/**
+ * Error-tracking kill-switch, INDEPENDENT of the analytics consent chain above.
+ *
+ * `CLAUDE_MEM_TELEMETRY_ERRORS=0` (or 'false'/'off') disables real exception
+ * capture ($exception with redacted message/stack) WITHOUT touching analytics:
+ * an operator who is fine with anonymous counters but not error text can opt out
+ * of just the error path. Defaults ON whenever telemetry consent is on — error
+ * capture is always additionally gated by the normal consent chain upstream, so
+ * "consent off" already implies "no errors". Pure — no I/O.
+ */
+export function isErrorTelemetryEnabled(env: NodeJS.ProcessEnv): boolean {
+  const value = env.CLAUDE_MEM_TELEMETRY_ERRORS?.toLowerCase();
+  if (value === '0' || value === 'false' || value === 'off') return false;
+  return true;
+}
+
 /** Absolute path of telemetry.json inside the claude-mem data dir. */
 export function getTelemetryConfigPath(): string {
   return join(resolveDataDir(), TELEMETRY_CONFIG_FILENAME);

@@ -58,6 +58,18 @@ interface LogContext {
   [key: string]: any;
 }
 
+/**
+ * Optional error sink. The logger must NEVER import the telemetry client (that
+ * would create an import cycle: telemetry → logger via instrument.ts → ...).
+ * Instead worker/telemetry init injects a sink via logger.setErrorSink(); when
+ * present, logger.error()/logger.failure() route their Error payload through it
+ * (consent + rate-limit + kill-switch all enforced INSIDE the sink, i.e.
+ * captureException). The sink is optional and swallow-all so logging keeps
+ * working with telemetry disabled or uninstalled.
+ */
+export type ErrorSink = (err: unknown, ctx?: Record<string, unknown>) => void;
+let errorSink: ErrorSink | null = null;
+
 
 class Logger {
   private level: LogLevel | null = null;
@@ -293,8 +305,40 @@ class Logger {
     this.log(LogLevel.WARN, component, message, context, data);
   }
 
+  /**
+   * Installs (or clears, with null) the optional error sink. Called once by
+   * worker/telemetry init to bridge logged errors into captureException without
+   * the logger importing telemetry (no import cycle). Never throws.
+   */
+  setErrorSink(sink: ErrorSink | null): void {
+    errorSink = sink;
+  }
+
   error(component: Component, message: string, context?: LogContext, data?: any): void {
     this.log(LogLevel.ERROR, component, message, context, data);
+    this.routeErrorToSink(message, context, data);
+  }
+
+  /**
+   * Routes a logged Error through the optional error sink (captureException).
+   * Only fires when `data` is an actual Error so we never ship arbitrary log
+   * payloads as exceptions. Swallow-all: the sink failing (or being absent)
+   * must never break logging. `failure()` delegates to `error()`, so it is
+   * covered too — but it passes the same `data` object, so we de-dupe by only
+   * routing from the single `error()` entry point.
+   */
+  private routeErrorToSink(message: string, context?: LogContext, data?: any): void {
+    try {
+      if (!errorSink || !(data instanceof Error)) return;
+      // Pass the message as context so the sink can fingerprint on it too; the
+      // sink (captureException) scrubs everything through error-scrub /
+      // scrubProperties, so an unsafe message here cannot leak — but `message`
+      // is not whitelisted, so it is dropped by scrubProperties anyway. We pass
+      // only the Error itself; context is intentionally minimal.
+      errorSink(data);
+    } catch {
+      // Telemetry/error-sink must never break logging.
+    }
   }
 
   dataIn(component: Component, message: string, context?: LogContext, data?: any): void {

@@ -4,6 +4,7 @@ import type { ActiveSession, PendingMessage, PendingMessageWithId, ObservationDa
 import { SessionMessageBuffer } from './SessionMessageBuffer.js';
 import { getSdkProcessForSession, ensureSdkProcessExit } from '../../supervisor/process-registry.js';
 import { getSupervisor } from '../../supervisor/index.js';
+import { telemetryBuffer } from '../telemetry/buffer.js';
 
 export class SessionManager {
   private dbManager: DatabaseManager;
@@ -284,6 +285,12 @@ export class SessionManager {
       return;
     }
 
+    // Phase 2: emit this session's single observer_turn_rollup at session end,
+    // while the session still exists. flushSession removes the bucket, so the
+    // matching call in removeSessionImmediate (or a re-entry here) is a safe
+    // no-op. Never throws — telemetry is fire-and-forget.
+    telemetryBuffer.flushSession(sessionDbId, 'session_end');
+
     const sessionDuration = Date.now() - session.startTime;
 
     if (session.respawnTimer) {
@@ -346,6 +353,11 @@ export class SessionManager {
   removeSessionImmediate(sessionDbId: number): void {
     const session = this.sessions.get(sessionDbId);
     if (!session) return;
+
+    // Phase 2: same session-end rollup as deleteSession. Whichever teardown
+    // path runs first flushes; flushSession removes the bucket so the second is
+    // a no-op (guards against the deleteSession/removeSessionImmediate pair).
+    telemetryBuffer.flushSession(sessionDbId, 'session_end');
 
     if (session.respawnTimer) {
       clearTimeout(session.respawnTimer);

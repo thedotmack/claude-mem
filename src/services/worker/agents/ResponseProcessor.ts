@@ -16,6 +16,7 @@ import type { SessionManager } from '../SessionManager.js';
 import type { WorkerRef, StorageResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
 import { telemetryBuffer } from '../../telemetry/buffer.js';
+import { instrument } from '../../telemetry/instrument.js';
 
 /**
  * Consecutive non-XML observer outputs tolerated before we kill and respawn the
@@ -76,24 +77,37 @@ export async function processAgentResponse(
       session.consecutiveInvalidOutputs >= INVALID_OUTPUT_RESPAWN_THRESHOLD;
 
     if (mustRespawn) {
-      logger.error('SESSION', `${agentName} session poisoned — killing and respawning, pending messages preserved`, {
-        sessionId: session.sessionDbId,
-        outputClass,
-        consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
-        threshold: INVALID_OUTPUT_RESPAWN_THRESHOLD,
-      });
-      // Respawn-gated telemetry ONLY (never per invalid output — volume).
-      // Closed enums and counts; the raw model output never leaves the box.
-      telemetryBuffer.record('session_compressed', {
-        outcome: 'invalid_output',
-        invalid_output_class: outputClass,
-        consecutive_invalid_outputs: session.consecutiveInvalidOutputs,
-        respawn_triggered: true,
-        provider: providerName,
-        model: typeof modelId === 'string' && modelId ? modelId : 'unknown',
-        ide: session.platformSource,
-        hook: session.lastGeneratorSource,
-      });
+      // Single instrumentation call: the local poison/respawn error line (full
+      // fidelity) and the scrubbed session_compressed rollup are one logical
+      // event. Respawn-gated telemetry ONLY (never per invalid output —
+      // volume). Closed enums and counts; the raw model output never leaves
+      // the box.
+      instrument(
+        'SESSION',
+        'error',
+        `${agentName} session poisoned — killing and respawning, pending messages preserved`,
+        {
+          sessionId: session.sessionDbId,
+          outputClass,
+          consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
+          threshold: INVALID_OUTPUT_RESPAWN_THRESHOLD,
+        },
+        {
+          event: 'session_compressed',
+          rollup: 'session',
+          sessionDbId: session.sessionDbId,
+          props: {
+            outcome: 'invalid_output',
+            invalid_output_class: outputClass,
+            consecutive_invalid_outputs: session.consecutiveInvalidOutputs,
+            respawn_triggered: true,
+            provider: providerName,
+            model: typeof modelId === 'string' && modelId ? modelId : 'unknown',
+            ide: session.platformSource,
+            hook: session.lastGeneratorSource,
+          },
+        }
+      );
       await sessionManager.respawnPoisonedSession(session.sessionDbId);
       return;
     }
@@ -243,11 +257,11 @@ export async function processAgentResponse(
     // still-stashed event here means the prior turn never produced a result
     // (abort/kill): ship it without token fields rather than lose it.
     if (session.pendingCompressionEvent) {
-      telemetryBuffer.record('session_compressed', session.pendingCompressionEvent);
+      telemetryBuffer.record('session_compressed', session.sessionDbId, session.pendingCompressionEvent);
     }
     session.pendingCompressionEvent = compressionProps;
   } else {
-    telemetryBuffer.record('session_compressed', {
+    telemetryBuffer.record('session_compressed', session.sessionDbId, {
       ...compressionProps,
       tokens_input: usage?.input,
       tokens_output: usage?.output,

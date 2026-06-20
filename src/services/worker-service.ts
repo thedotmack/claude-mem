@@ -21,7 +21,7 @@ import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
 
 import { ensureWorkerStarted as ensureWorkerStartedShared, type WorkerStartResult } from './worker-spawner.js';
 import { acquireSpawnLock, releaseSpawnLock } from '../shared/worker-spawn-gate.js';
-import { captureEvent, shutdownTelemetry } from './telemetry/telemetry.js';
+import { captureEvent, captureException, shutdownTelemetry, enableExceptionAutocaptureForWorker } from './telemetry/telemetry.js';
 import { telemetryBuffer } from './telemetry/buffer.js';
 import { collectInstallStats } from './telemetry/install-stats.js';
 import { runHistoricalBackfill } from './telemetry/backfill.js';
@@ -375,6 +375,15 @@ export class WorkerService implements WorkerRef {
   async start(): Promise<void> {
     const port = getWorkerPort();
     const host = getWorkerHost();
+
+    // Phase 3 telemetry: bridge logged errors into PostHog Error Tracking
+    // WITHOUT the logger importing telemetry (no import cycle). captureException
+    // enforces consent + kill-switch + rate-limit internally and never throws.
+    // enableExceptionAutocaptureForWorker() must run BEFORE the first capture
+    // constructs the client, since enableExceptionAutocapture is read at
+    // construction — so it is set here at the very top of worker start.
+    enableExceptionAutocaptureForWorker();
+    logger.setErrorSink((err) => captureException(err));
 
     // Must run before startSupervisor(): its validateWorkerPidFile() removes
     // the dead previous run's stale PID file, which crash detection needs.

@@ -1,17 +1,30 @@
 /**
- * TelemetryBuffer — aggregate high-volume telemetry events into 5-minute rollup
- * windows before forwarding to PostHog.
+ * TelemetryBuffer — aggregate high-volume telemetry events before forwarding to
+ * PostHog.
  *
- * Instead of one PostHog event per session compression or context injection, we
- * accumulate records in memory and emit a single rollup event per 5-minute
- * window. This cuts PostHog ingest volume proportionally to compression
- * frequency without losing aggregate shape (counts, sums, averages, top model).
+ * TWO ROLLUP STRATEGIES, deliberately asymmetric:
+ *
+ *   1. session_compressed → observer_turn_rollup — PER-SESSION accumulator,
+ *      keyed by sessionDbId, flushed ONCE at session end (Phase 2). Every
+ *      observer turn within a session folds into a single rollup emitted when
+ *      the session is torn down (session_end), the worker shuts down
+ *      (worker_shutdown), or a periodic safety sweep trips a cap (safety_flush).
+ *      This collapses the per-turn stream to ~one event per session.
+ *
+ *   2. context_injected → context_injected_rollup — TIME-WINDOW accumulator,
+ *      a single module-level bucket flushed every 5 minutes. context_injected
+ *      is a HOOK-level event (no sessionDbId in scope — see SearchRoutes.ts),
+ *      so it CANNOT be keyed by session. It stays a wall-clock rollup. Do NOT
+ *      "unify" these two paths — the asymmetry is intentional and load-bearing.
  *
  * Usage:
- *   telemetryBuffer.start();              // called once at worker startup
- *   telemetryBuffer.record('session_compressed', props);  // replaces captureEvent
- *   telemetryBuffer.flush();              // called before stop() at shutdown
- *   telemetryBuffer.stop();              // clears interval, no implicit flush
+ *   telemetryBuffer.start();                          // worker startup
+ *   telemetryBuffer.record('session_compressed', id, props);  // per-session
+ *   telemetryBuffer.record('context_injected', null, props);  // time-window
+ *   telemetryBuffer.flushSession(id, 'session_end');  // at session teardown
+ *   telemetryBuffer.drainAllSessions('worker_shutdown'); // before client.shutdown()
+ *   telemetryBuffer.flush();                          // time-window buckets only
+ *   telemetryBuffer.stop();                           // clears interval, no flush
  */
 
 import { captureEvent } from './telemetry.js';
@@ -41,6 +54,13 @@ interface ContextInjectedRecord {
 interface SessionCompressedBucket {
   records: SessionCompressedRecord[];
   windowStartTs: number;
+  /**
+   * Monotonic partial-flush counter. A session that never trips a safety_flush
+   * emits exactly one rollup with window_seq:0. A long-lived session that trips
+   * the safety sweep emits window_seq:0,1,2,… so partial rollups are
+   * distinguishable and order-recoverable in PostHog.
+   */
+  windowSeq: number;
 }
 
 interface ContextInjectedBucket {
@@ -48,22 +68,44 @@ interface ContextInjectedBucket {
   windowStartTs: number;
 }
 
+/** Reason a session_compressed bucket was flushed (closed enum). */
+export type RollupReason = 'session_end' | 'worker_shutdown' | 'safety_flush';
+
 // ---------------------------------------------------------------------------
 // Bucket state — module-level singletons reset on each flush
 // ---------------------------------------------------------------------------
 
-let sessionCompressedBucket: SessionCompressedBucket | null = null;
+// Per-session accumulators for session_compressed (Phase 2). Keyed by
+// sessionDbId; one bucket per active session, flushed at session end. The
+// sessionDbId is ONLY a map key — it is never copied into emitted props (not
+// whitelisted, install-correlatable). See computeSessionCompressedRollup.
+const sessionCompressedBuckets: Map<number, SessionCompressedBucket> = new Map();
+// Time-window bucket for context_injected (hook-level, no sessionDbId). See
+// the file header for why this path stays a wall-clock rollup.
 let contextInjectedBucket: ContextInjectedBucket | null = null;
 let intervalHandle: ReturnType<typeof setInterval> | null = null;
+let safetyHandle: ReturnType<typeof setInterval> | null = null;
+
+// ---------------------------------------------------------------------------
+// safety_flush thresholds. A session bucket older than MAX_AGE_MS or holding
+// more than MAX_RECORDS gets a partial rollup so (a) a forgotten/never-torn-down
+// session still reports and (b) per-session memory stays bounded. Chosen to be
+// generous: most sessions flush at session_end well before either trips, so the
+// common case is still exactly ONE rollup per session.
+// ---------------------------------------------------------------------------
+const SAFETY_SWEEP_INTERVAL_MS = 5 * 60 * 1000; // 5 min
+const SAFETY_MAX_AGE_MS = 60 * 60 * 1000;       // 1 hour
+const SAFETY_MAX_RECORDS = 1000;                // hard memory cap per session
 
 // ---------------------------------------------------------------------------
 // Rollup computation helpers
 // ---------------------------------------------------------------------------
 
 function computeSessionCompressedRollup(
-  bucket: SessionCompressedBucket
+  bucket: SessionCompressedBucket,
+  rollupReason: RollupReason
 ): Record<string, unknown> {
-  const { records, windowStartTs } = bucket;
+  const { records, windowStartTs, windowSeq } = bucket;
   const count = records.length;
 
   let totalTokensInput = 0;
@@ -124,6 +166,11 @@ function computeSessionCompressedRollup(
     outcomes_invalid_output: outcomesInvalidOutput,
     fabrication_count: fabricationCount,
     window_start_ts: windowStartTs,
+    // Phase 2: why this rollup was emitted (session_end | worker_shutdown |
+    // safety_flush) and the partial-flush sequence number for long-lived
+    // sessions that tripped a safety sweep.
+    rollup_reason: rollupReason,
+    window_seq: windowSeq,
   };
 
   // top_model: only present if at least one model string was recorded
@@ -185,17 +232,32 @@ export const telemetryBuffer = {
   /**
    * Record a single high-volume event into the in-memory bucket.
    * Thread-safe in the Node/Bun single-threaded sense.
+   *
+   * @param event  'session_compressed' (per-session) | 'context_injected' (time-window)
+   * @param sessionDbId  REQUIRED for 'session_compressed' — the per-session
+   *   accumulator key. MUST be null for 'context_injected' (no session in
+   *   scope). A session_compressed record with a null/non-numeric id is dropped
+   *   rather than misrouted — telemetry never throws, so we swallow silently.
+   * @param props  the (already-scrubbed) property bag for this occurrence.
    */
   record(
     event: 'session_compressed' | 'context_injected',
+    sessionDbId: number | null,
     props: Record<string, unknown>
   ): void {
     const now = Date.now();
     if (event === 'session_compressed') {
-      if (!sessionCompressedBucket) {
-        sessionCompressedBucket = { records: [], windowStartTs: now };
+      if (typeof sessionDbId !== 'number') {
+        // No session key ⇒ we can't accumulate per-session. Drop rather than
+        // crash or misroute. Telemetry is fire-and-forget.
+        return;
       }
-      sessionCompressedBucket.records.push(props as SessionCompressedRecord);
+      let bucket = sessionCompressedBuckets.get(sessionDbId);
+      if (!bucket) {
+        bucket = { records: [], windowStartTs: now, windowSeq: 0 };
+        sessionCompressedBuckets.set(sessionDbId, bucket);
+      }
+      bucket.records.push(props as SessionCompressedRecord);
     } else {
       if (!contextInjectedBucket) {
         contextInjectedBucket = { records: [], windowStartTs: now };
@@ -205,16 +267,73 @@ export const telemetryBuffer = {
   },
 
   /**
-   * Drain all non-empty buckets → emit one rollup captureEvent per bucket,
-   * then reset buckets to empty. Called by the interval and at shutdown.
+   * Flush ONE session's accumulated session_compressed records into a single
+   * observer_turn_rollup, then remove the bucket. Called at session teardown
+   * (session_end) and by the safety sweep (safety_flush).
+   *
+   * Removing the bucket is what makes a double-flush a safe no-op: a session
+   * that is torn down twice (deleteSession after removeSessionImmediate, or
+   * vice versa) finds no bucket on the second call and emits nothing.
+   *
+   * @returns true if a rollup was emitted (bucket had records), else false.
+   */
+  flushSession(sessionDbId: number, reason: RollupReason): boolean {
+    const bucket = sessionCompressedBuckets.get(sessionDbId);
+    if (!bucket || bucket.records.length === 0) {
+      // Always drop an empty bucket so it can't linger.
+      sessionCompressedBuckets.delete(sessionDbId);
+      return false;
+    }
+    const rollup = computeSessionCompressedRollup(bucket, reason);
+    sessionCompressedBuckets.delete(sessionDbId);
+    captureEvent('observer_turn_rollup', rollup);
+    return true;
+  },
+
+  /**
+   * Drain EVERY active session bucket as a single rollup each, with the given
+   * reason. Called from shutdownTelemetry() BEFORE the PostHog client is shut
+   * down — this is the single safe drain point for worker_shutdown (the
+   * SessionManager teardown path runs too late; see telemetry.ts shutdown
+   * ordering). Snapshot the keys first because flushSession mutates the map.
+   */
+  drainAllSessions(reason: RollupReason): void {
+    for (const sessionDbId of Array.from(sessionCompressedBuckets.keys())) {
+      telemetryBuffer.flushSession(sessionDbId, reason);
+    }
+  },
+
+  /**
+   * Periodic safety sweep: emit a partial rollup for any session whose bucket
+   * exceeds the max age OR max record count, then re-arm that bucket (reset its
+   * records + window, bump windowSeq) so a long-lived session keeps reporting
+   * and per-session memory stays bounded. Exported helper so the interval and
+   * tests can both invoke it deterministically.
+   */
+  safetyFlush(): void {
+    const now = Date.now();
+    for (const [sessionDbId, bucket] of Array.from(sessionCompressedBuckets.entries())) {
+      const overAge = now - bucket.windowStartTs >= SAFETY_MAX_AGE_MS;
+      const overCount = bucket.records.length >= SAFETY_MAX_RECORDS;
+      if (!overAge && !overCount) continue;
+      if (bucket.records.length === 0) continue;
+      const rollup = computeSessionCompressedRollup(bucket, 'safety_flush');
+      captureEvent('observer_turn_rollup', rollup);
+      // Re-arm in place: same session keeps accumulating into the next window
+      // with an incremented sequence number.
+      bucket.records = [];
+      bucket.windowStartTs = now;
+      bucket.windowSeq += 1;
+    }
+  },
+
+  /**
+   * Drain the context_injected TIME-WINDOW bucket → emit one
+   * context_injected_rollup, then reset it. Called by the 5-minute interval and
+   * at shutdown. Does NOT touch per-session session_compressed buckets — those
+   * flush at session end (see flushSession / drainAllSessions).
    */
   flush(): void {
-    if (sessionCompressedBucket && sessionCompressedBucket.records.length > 0) {
-      const rollup = computeSessionCompressedRollup(sessionCompressedBucket);
-      sessionCompressedBucket = null;
-      captureEvent('observer_turn_rollup', rollup);
-    }
-
     if (contextInjectedBucket && contextInjectedBucket.records.length > 0) {
       const rollup = computeContextInjectedRollup(contextInjectedBucket);
       contextInjectedBucket = null;
@@ -223,32 +342,44 @@ export const telemetryBuffer = {
   },
 
   /**
-   * Start the periodic flush interval. Idempotent — calling twice is harmless.
+   * Start the periodic intervals. Idempotent — calling twice is harmless.
+   *   - the time-window flush (context_injected) every intervalMs
+   *   - the per-session safety sweep every SAFETY_SWEEP_INTERVAL_MS
    *
-   * @param intervalMs  Flush interval in milliseconds. Defaults to 5 minutes.
+   * @param intervalMs  Time-window flush interval. Defaults to 5 minutes.
    */
   start(intervalMs: number = 5 * 60 * 1000): void {
-    if (intervalHandle !== null) {
-      return;
+    if (intervalHandle === null) {
+      intervalHandle = setInterval(() => {
+        telemetryBuffer.flush();
+      }, intervalMs);
+      if (intervalHandle && typeof (intervalHandle as NodeJS.Timeout).unref === 'function') {
+        (intervalHandle as NodeJS.Timeout).unref();
+      }
     }
-    intervalHandle = setInterval(() => {
-      telemetryBuffer.flush();
-    }, intervalMs);
-    // Don't prevent the process from exiting if only this interval remains.
-    if (intervalHandle && typeof (intervalHandle as NodeJS.Timeout).unref === 'function') {
-      (intervalHandle as NodeJS.Timeout).unref();
+    if (safetyHandle === null) {
+      safetyHandle = setInterval(() => {
+        telemetryBuffer.safetyFlush();
+      }, SAFETY_SWEEP_INTERVAL_MS);
+      if (safetyHandle && typeof (safetyHandle as NodeJS.Timeout).unref === 'function') {
+        (safetyHandle as NodeJS.Timeout).unref();
+      }
     }
   },
 
   /**
-   * Stop the periodic flush interval. Does NOT flush — the caller is
-   * responsible for calling flush() explicitly before or after stop()
-   * (shutdownTelemetry calls both in the right order).
+   * Stop the periodic intervals. Does NOT flush — the caller is responsible for
+   * draining explicitly before/after stop() (shutdownTelemetry drains session
+   * buckets + flushes the time-window bucket in the right order).
    */
   stop(): void {
     if (intervalHandle !== null) {
       clearInterval(intervalHandle);
       intervalHandle = null;
+    }
+    if (safetyHandle !== null) {
+      clearInterval(safetyHandle);
+      safetyHandle = null;
     }
   },
 
@@ -261,7 +392,16 @@ export const telemetryBuffer = {
       clearInterval(intervalHandle);
       intervalHandle = null;
     }
-    sessionCompressedBucket = null;
+    if (safetyHandle !== null) {
+      clearInterval(safetyHandle);
+      safetyHandle = null;
+    }
+    sessionCompressedBuckets.clear();
     contextInjectedBucket = null;
+  },
+
+  /** Test-only. Number of active per-session buckets (memory-bound assertion). */
+  __activeSessionBucketCount(): number {
+    return sessionCompressedBuckets.size;
   },
 };
