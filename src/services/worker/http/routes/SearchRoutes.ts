@@ -464,6 +464,7 @@ export class SearchRoutes extends BaseRouteHandler {
     const query = (req.body?.q || req.query.q) as string;
     const project = (req.body?.project || req.query.project) as string;
     const limit = Math.min(Math.max(parseInt(String(req.body?.limit || req.query.limit || '5'), 10) || 5, 1), 20);
+    const semanticWindowLimit = SEARCH_CONSTANTS.CHROMA_BATCH_SIZE;
     const observationKey = (obs: any): string => String(
       obs?.id
       ?? `${obs?.title || ''}:${obs?.created_at || ''}:${obs?.project || ''}:${obs?.merged_into_project || ''}`
@@ -477,16 +478,15 @@ export class SearchRoutes extends BaseRouteHandler {
     let result: any;
     try {
       result = await this.searchManager.search({
-        query, type: 'observations', project, limit: String(limit), format: 'json', orderBy: 'relevance'
+        query, type: 'observations', project, limit: String(semanticWindowLimit), format: 'json', orderBy: 'relevance'
       });
       const scopedObservations = result?.observations || [];
       if (project && scopedObservations.length < limit) {
         // Chroma search already hydrates at most CHROMA_BATCH_SIZE semantic ids.
         // Reuse that ceiling here so project filtering cannot drop a recoverable
         // match just because it ranked outside a smaller route-local window.
-        const fallbackLimit = SEARCH_CONSTANTS.CHROMA_BATCH_SIZE;
         const fallbackResult = await this.searchManager.search({
-          query, type: 'observations', limit: String(fallbackLimit), format: 'json', orderBy: 'relevance'
+          query, type: 'observations', limit: String(semanticWindowLimit), format: 'json', orderBy: 'relevance'
         });
         const seenObservationKeys = new Set(scopedObservations.map(observationKey));
         result = {

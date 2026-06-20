@@ -98,7 +98,7 @@ describe('SearchRoutes /api/context/semantic', () => {
 
     const [body] = res.json.mock.calls[0] as any[];
     expect(searchMock).toHaveBeenCalledTimes(1);
-    expect(searchMock.mock.calls[0][0]).toMatchObject({ query: baseReq.body.q, project: 'request-project', limit: '2', type: 'observations', format: 'json', orderBy: 'relevance' });
+    expect(searchMock.mock.calls[0][0]).toMatchObject({ query: baseReq.body.q, project: 'request-project', limit: '100', type: 'observations', format: 'json', orderBy: 'relevance' });
     expect(body.context).toContain('## Relevant Past Work (semantic match)');
     expect(body.context).toContain('Scoped narrative');
     expect(body.count).toBe(2);
@@ -215,7 +215,7 @@ describe('SearchRoutes /api/context/semantic', () => {
 
     const [body] = res.json.mock.calls[0] as any[];
     expect(searchMock).toHaveBeenCalledTimes(2);
-    expect(searchMock.mock.calls[0][0]).toMatchObject({ project: 'request-project', orderBy: 'relevance' });
+    expect(searchMock.mock.calls[0][0]).toMatchObject({ project: 'request-project', limit: '100', orderBy: 'relevance' });
     expect(searchMock.mock.calls[1][0]).toMatchObject({ limit: '100', orderBy: 'relevance' });
     expect(body.context).toContain('Direct scoped match');
     expect(body.context).toContain('Recovered merged match');
