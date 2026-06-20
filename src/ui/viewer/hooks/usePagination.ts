@@ -12,22 +12,23 @@ interface PaginationState {
 type DataType = 'observations' | 'summaries' | 'prompts';
 type DataItem = Observation | Summary | UserPrompt;
 
-function usePaginationFor<TItem extends DataItem>(endpoint: string, dataType: DataType, currentFilter: string) {
+function usePaginationFor<TItem extends DataItem>(endpoint: string, dataType: DataType, currentFilter: string, platformFilter: string) {
   const [state, setState] = useState<PaginationState>({
     isLoading: false,
     hasMore: true
   });
 
   const offsetRef = useRef(0);
-  const lastSelectionRef = useRef(currentFilter);
+  const lastSelectionRef = useRef(`${currentFilter}|${platformFilter}`);
   const stateRef = useRef(state);
 
   const loadMore = useCallback(async (): Promise<TItem[]> => {
-    const filterChanged = lastSelectionRef.current !== currentFilter;
+    const selectionKey = `${currentFilter}|${platformFilter}`;
+    const filterChanged = lastSelectionRef.current !== selectionKey;
 
     if (filterChanged) {
       offsetRef.current = 0;
-      lastSelectionRef.current = currentFilter;
+      lastSelectionRef.current = selectionKey;
 
       const newState = { isLoading: false, hasMore: true };
       setState(newState);
@@ -48,6 +49,10 @@ function usePaginationFor<TItem extends DataItem>(endpoint: string, dataType: Da
 
     if (currentFilter) {
       params.append('project', currentFilter);
+    }
+
+    if (platformFilter) {
+      params.append('platformSource', platformFilter);
     }
 
     const response = await authFetch(`${endpoint}?${params}`);
@@ -74,7 +79,7 @@ function usePaginationFor<TItem extends DataItem>(endpoint: string, dataType: Da
     offsetRef.current += UI.PAGINATION_PAGE_SIZE;
 
     return data.items;
-  }, [currentFilter, endpoint, dataType]);
+  }, [currentFilter, platformFilter, endpoint, dataType]);
 
   return {
     ...state,
@@ -82,10 +87,10 @@ function usePaginationFor<TItem extends DataItem>(endpoint: string, dataType: Da
   };
 }
 
-export function usePagination(currentFilter: string) {
-  const observations = usePaginationFor<Observation>(API_ENDPOINTS.OBSERVATIONS, 'observations', currentFilter);
-  const summaries = usePaginationFor<Summary>(API_ENDPOINTS.SUMMARIES, 'summaries', currentFilter);
-  const prompts = usePaginationFor<UserPrompt>(API_ENDPOINTS.PROMPTS, 'prompts', currentFilter);
+export function usePagination(currentFilter: string, platformFilter: string = '') {
+  const observations = usePaginationFor<Observation>(API_ENDPOINTS.OBSERVATIONS, 'observations', currentFilter, platformFilter);
+  const summaries = usePaginationFor<Summary>(API_ENDPOINTS.SUMMARIES, 'summaries', currentFilter, platformFilter);
+  const prompts = usePaginationFor<UserPrompt>(API_ENDPOINTS.PROMPTS, 'prompts', currentFilter, platformFilter);
 
   return {
     observations,
