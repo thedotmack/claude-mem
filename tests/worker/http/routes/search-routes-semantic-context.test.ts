@@ -238,9 +238,12 @@ describe('SearchRoutes /api/context/semantic', () => {
     const scopedRows = [
       { id: 43, title: 'direct-hit', narrative: 'Direct scoped match', created_at: '2026-01-01T00:00:00Z', project: 'request-project' },
     ];
-    searchMock = mock(() => {
+    searchMock = mock((_args: any, telemetry?: any) => {
       call += 1;
-      if (call === 1) return { observations: scopedRows };
+      if (call === 1) {
+        if (telemetry) telemetry.search_strategy = 'chroma';
+        return { observations: scopedRows };
+      }
       throw new Error('fallback unavailable');
     });
 
@@ -256,6 +259,8 @@ describe('SearchRoutes /api/context/semantic', () => {
     expect(searchMock).toHaveBeenCalledTimes(2);
     expect(body.context).toContain('Direct scoped match');
     expect(body.count).toBe(1);
+    const warnContext = (loggerSpies[2].mock.calls[0] as any[])[2];
+    expect(warnContext).toEqual({ queryLength: baseReq.body.q.length, project: 'request-project' });
   });
 
   it('recovers adopted matches even when scoped hydration already fills the limit', async () => {
@@ -324,6 +329,40 @@ describe('SearchRoutes /api/context/semantic', () => {
       body.context.indexOf('Lower direct hit 1')
     );
     expect(body.count).toBe(3);
+  });
+
+  it('keeps scoped semantic ordering when the fallback search drops to FTS', async () => {
+    const scopedRows = [
+      { id: 71, title: 'direct-hit-1', narrative: 'Scoped semantic hit 1', created_at: '2026-01-01T00:00:00Z', project: 'request-project' },
+      { id: 72, title: 'direct-hit-2', narrative: 'Scoped semantic hit 2', created_at: '2026-01-02T00:00:00Z', project: 'request-project' },
+    ];
+    const fallbackRows = [
+      { id: 73, title: 'fts-hit', narrative: 'Keyword fallback hit', created_at: '2026-01-03T00:00:00Z', project: 'request-project' },
+      ...scopedRows,
+    ];
+    searchMock = mock((args: any, telemetry?: any) => {
+      if (args?.project) {
+        if (telemetry) telemetry.search_strategy = 'chroma';
+        return { observations: scopedRows };
+      }
+      if (telemetry) telemetry.search_strategy = 'fts';
+      return { observations: fallbackRows };
+    });
+
+    const routes = new SearchRoutes({ search: searchMock } as any);
+    const handler = captureSemanticContextHandler(routes);
+    const req = { body: { ...baseReq.body, project: 'request-project', limit: '2' }, query: {} } as unknown as Request;
+    const res = createMockRes();
+
+    await handler(req, res as unknown as Response);
+    await new Promise(resolve => setImmediate(resolve));
+
+    const [body] = res.json.mock.calls[0] as any[];
+    expect(searchMock).toHaveBeenCalledTimes(2);
+    expect(body.context).toContain('Scoped semantic hit 1');
+    expect(body.context).toContain('Scoped semantic hit 2');
+    expect(body.context).not.toContain('Keyword fallback hit');
+    expect(body.count).toBe(2);
   });
 
   it('does not fall back when no project is provided', async () => {

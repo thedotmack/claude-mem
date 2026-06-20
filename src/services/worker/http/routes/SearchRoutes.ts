@@ -477,42 +477,50 @@ export class SearchRoutes extends BaseRouteHandler {
 
     let result: any;
     try {
+      const scopedTelemetry: SearchTelemetryEnvelope = {};
       result = await this.searchManager.search({
         query, type: 'observations', project, limit: String(semanticWindowLimit), format: 'json', orderBy: 'relevance'
-      });
+      }, scopedTelemetry);
       const scopedObservations = result?.observations || [];
       if (project) {
         try {
-          // Chroma search already hydrates at most CHROMA_BATCH_SIZE semantic ids.
-          // Reuse that ceiling here so project filtering cannot drop a recoverable
-          // match just because it ranked outside a smaller route-local window.
+          const fallbackTelemetry: SearchTelemetryEnvelope = {};
+          // Always run: the scoped result cannot self-report missing adopted rows,
+          // and CHROMA_BATCH_SIZE keeps the recovery window bounded.
           const fallbackResult = await this.searchManager.search({
             query, type: 'observations', limit: String(semanticWindowLimit), format: 'json', orderBy: 'relevance'
-          });
-          const scopedObservationsByKey = new Map(
-            scopedObservations.map((obs: any) => [observationKey(obs), obs])
-          );
-          const seenObservationKeys = new Set<string>();
-          result = {
-            ...(result || {}),
-            observations: [
-              ...(fallbackResult?.observations || [])
-                .filter((obs: any) => obs.project === project || obs.merged_into_project === project)
-                .filter((obs: any) => {
+          }, fallbackTelemetry);
+          if (fallbackTelemetry.search_strategy === 'fts' && scopedObservations.length) {
+            result = {
+              ...(result || {}),
+              observations: scopedObservations,
+            };
+          } else {
+            const scopedObservationsByKey = new Map(
+              scopedObservations.map((obs: any) => [observationKey(obs), obs])
+            );
+            const seenObservationKeys = new Set<string>();
+            result = {
+              ...(result || {}),
+              observations: [
+                ...(fallbackResult?.observations || [])
+                  .filter((obs: any) => obs.project === project || obs.merged_into_project === project)
+                  .filter((obs: any) => {
+                    const key = observationKey(obs);
+                    if (seenObservationKeys.has(key)) return false;
+                    seenObservationKeys.add(key);
+                    return true;
+                  })
+                  .map((obs: any) => scopedObservationsByKey.get(observationKey(obs)) || obs),
+                ...scopedObservations.filter((obs: any) => {
                   const key = observationKey(obs);
                   if (seenObservationKeys.has(key)) return false;
                   seenObservationKeys.add(key);
                   return true;
-                })
-                .map((obs: any) => scopedObservationsByKey.get(observationKey(obs)) || obs),
-              ...scopedObservations.filter((obs: any) => {
-                const key = observationKey(obs);
-                if (seenObservationKeys.has(key)) return false;
-                seenObservationKeys.add(key);
-                return true;
-              }),
-            ],
-          };
+                }),
+              ],
+            };
+          }
         } catch (fallbackError) {
           if (!scopedObservations.length) throw fallbackError;
           const normalizedFallbackError = fallbackError instanceof Error
@@ -521,14 +529,14 @@ export class SearchRoutes extends BaseRouteHandler {
           logger.warn(
             'HTTP',
             'Semantic context fallback failed, keeping scoped results',
-            { query, project },
+            { queryLength: query.length, project },
             normalizedFallbackError
           );
         }
       }
     } catch (error) {
       const normalizedError = error instanceof Error ? error : new Error(String(error));
-      logger.error('HTTP', 'Semantic context query failed', { query, project }, normalizedError);
+      logger.error('HTTP', 'Semantic context query failed', { queryLength: query.length, project }, normalizedError);
       res.json({ context: '', count: 0 });
       return;
     }
