@@ -153,6 +153,13 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'top_model',
   'fabrication_count',
   'window_start_ts',
+  // Phase 2 per-session rollup: rollup_reason is a closed enum
+  // (session_end | worker_shutdown | safety_flush) explaining why the session's
+  // single observer_turn_rollup was emitted; window_seq is the partial-flush
+  // sequence number (0 for a normal one-shot session, incrementing only when a
+  // long-lived session trips the safety sweep). Enum + integer only.
+  'rollup_reason',
+  'window_seq',
   // context_injected_rollup aggregation fields:
   'total_tokens',
   'avg_tokens',

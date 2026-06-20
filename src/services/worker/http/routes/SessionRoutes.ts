@@ -186,6 +186,7 @@ export class SessionRoutes extends BaseRouteHandler {
           {
             event: 'session_compressed',
             rollup: 'session',
+            sessionDbId: session.sessionDbId,
             props: {
               outcome: 'error',
               provider,
@@ -207,7 +208,7 @@ export class SessionRoutes extends BaseRouteHandler {
           // ONLY point every abort flow (idle / shutdown / overflow / quota /
           // poisoned) passes through. Emit the closed enum, never the raw
           // string ('quota:…' carries a window suffix).
-          telemetryBuffer.record('session_compressed', {
+          telemetryBuffer.record('session_compressed', session.sessionDbId, {
             outcome: 'aborted',
             provider,
             model: session.lastModelId ?? 'unknown',

@@ -431,7 +431,9 @@ export class SearchRoutes extends BaseRouteHandler {
         forHuman
       );
     } catch (error) {
-      telemetryBuffer.record('context_injected', {
+      // context_injected is HOOK-level (no sessionDbId in scope) → null key,
+      // routed to the 5-minute time-window rollup, NOT the per-session path.
+      telemetryBuffer.record('context_injected', null, {
         outcome: 'error',
         duration_ms: Date.now() - injectStartedAt,
       });
@@ -443,7 +445,8 @@ export class SearchRoutes extends BaseRouteHandler {
     // responses (stats === null) injected no memory and are not counted.
     if (contextResult.stats) {
       const settingsSnapshot = this.getCachedSettings();
-      telemetryBuffer.record('context_injected', {
+      // Hook-level → null key, time-window rollup (see error branch above).
+      telemetryBuffer.record('context_injected', null, {
         outcome: 'ok',
         duration_ms: Date.now() - injectStartedAt,
         mode: settingsSnapshot.CLAUDE_MEM_MODE,

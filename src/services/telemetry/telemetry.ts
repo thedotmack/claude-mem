@@ -135,16 +135,36 @@ export function __resetTelemetryForTests(): void {
  * Never rejects.
  */
 export async function shutdownTelemetry(): Promise<void> {
-  isShutdown = true;
-  const current = client;
-  client = null;
-  if (!current) {
-    return;
-  }
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     telemetryBuffer.stop();
+    // Drain ALL active per-session accumulators FIRST, while telemetry is
+    // still fully LIVE (isShutdown is NOT yet set and `client` is NOT yet
+    // nulled) — captureEvent's `if (isShutdown || !hasConsent()) return`
+    // gate must still pass so every in-flight session emits its single
+    // observer_turn_rollup (rollup_reason: 'worker_shutdown') into the live
+    // client's queue (constructing the client lazily via getClient() if no
+    // event was ever emitted before shutdown). This is the single safe drain
+    // point: the SessionManager teardown path (deleteSession → flushSession)
+    // runs in performGracefulShutdown, AFTER beforeGracefulShutdown has
+    // already called shutdownTelemetry — too late.
+    telemetryBuffer.drainAllSessions('worker_shutdown');
+    // Then drain the time-window context_injected bucket — still live.
     telemetryBuffer.flush();
+    // Capture whatever client the drains queued into (or that earlier events
+    // constructed), THEN latch shutdown and detach the singleton. Reading
+    // `client` here — after the drains — is what guarantees we tear down the
+    // exact instance the rollups landed in, rather than an empty pre-drain
+    // snapshot. Any event that races past this point is dropped (isShutdown)
+    // rather than queued into a fresh client that would never be flushed.
+    const current = client;
+    isShutdown = true;
+    client = null;
+    if (!current) {
+      return;
+    }
+    // Flush + tear down the captured client, racing a 3s timeout so a
+    // slow/unreachable ingestion host can never hang worker stop.
     await Promise.race([
       current.shutdown(),
       new Promise<void>(resolve => {
@@ -152,7 +172,10 @@ export async function shutdownTelemetry(): Promise<void> {
       }),
     ]);
   } catch {
-    // Never let telemetry flushing fail a shutdown.
+    // Never let telemetry flushing fail a shutdown. Ensure the latch is set
+    // even if a drain threw before we reached it above.
+    isShutdown = true;
+    client = null;
   } finally {
     if (timer) clearTimeout(timer);
   }

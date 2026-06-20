@@ -72,10 +72,14 @@ export interface InstrumentContext {
  * - `props`: structured properties, run through scrubProperties before capture.
  * - `rollup`: how to route the capture.
  *     'session' → route through telemetryBuffer.record('session_compressed')
- *                 (5-minute rollup window) when the event maps cleanly.
+ *                 into the PER-SESSION accumulator keyed by `sessionDbId`,
+ *                 flushed once at session end (Phase 2). REQUIRES sessionDbId.
  *     'hook'    → route through telemetryBuffer.record('context_injected')
- *                 (5-minute rollup window) when the event maps cleanly.
+ *                 (5-minute time-window rollup) when the event maps cleanly.
  *     'none' (default) → captureEvent() directly (no rollup).
+ * - `sessionDbId`: REQUIRED when rollup === 'session' — the per-session
+ *   accumulator key. It is ONLY a map key; it never enters the emitted props
+ *   (not whitelisted, install-correlatable). Ignored for 'hook'/'none'.
  * - `person`: forward person:true to captureEvent for low-volume lifecycle
  *   events that should build the anonymous install person profile. Only honored
  *   on the direct captureEvent path (the buffer rollup path has no person
@@ -85,6 +89,8 @@ export interface TelemetryDescriptor {
   event: string;
   props?: Record<string, unknown>;
   rollup?: 'session' | 'hook' | 'none';
+  /** Per-session accumulator key; required when rollup === 'session'. */
+  sessionDbId?: number;
   person?: boolean;
 }
 
@@ -129,8 +135,13 @@ export function instrument(
     if (rollup !== 'none') {
       const bufferEvent = ROLLUP_BUFFER_EVENT[rollup];
       // The buffer gates on consent internally via its eventual captureEvent
-      // flush. record() takes the (already-scrubbed) props bag.
-      telemetryBuffer.record(bufferEvent, scrubbed);
+      // flush. record() takes the (already-scrubbed) props bag. The
+      // session-scoped path requires a sessionDbId accumulator key; the
+      // hook-scoped (context_injected) path is time-windowed and passes null.
+      const sessionDbId = rollup === 'session'
+        ? (typeof telemetry.sessionDbId === 'number' ? telemetry.sessionDbId : null)
+        : null;
+      telemetryBuffer.record(bufferEvent, sessionDbId, scrubbed);
       return;
     }
 

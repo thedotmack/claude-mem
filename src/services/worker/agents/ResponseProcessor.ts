@@ -95,6 +95,7 @@ export async function processAgentResponse(
         {
           event: 'session_compressed',
           rollup: 'session',
+          sessionDbId: session.sessionDbId,
           props: {
             outcome: 'invalid_output',
             invalid_output_class: outputClass,
@@ -256,11 +257,11 @@ export async function processAgentResponse(
     // still-stashed event here means the prior turn never produced a result
     // (abort/kill): ship it without token fields rather than lose it.
     if (session.pendingCompressionEvent) {
-      telemetryBuffer.record('session_compressed', session.pendingCompressionEvent);
+      telemetryBuffer.record('session_compressed', session.sessionDbId, session.pendingCompressionEvent);
     }
     session.pendingCompressionEvent = compressionProps;
   } else {
-    telemetryBuffer.record('session_compressed', {
+    telemetryBuffer.record('session_compressed', session.sessionDbId, {
       ...compressionProps,
       tokens_input: usage?.input,
       tokens_output: usage?.output,
