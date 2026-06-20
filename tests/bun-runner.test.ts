@@ -31,4 +31,8 @@ describe('bun-runner.js findBun: DEP0190 regression guard (#1503)', () => {
     expect(source).toContain("'--hook-continue-json'");
     expect(source).toContain("process.stdout.write('{\"continue\":true,\"suppressOutput\":true}\\n')");
   });
+
+  it('suppresses child stdout when emitting SessionStart continue JSON', () => {
+    expect(source).toContain("stdio: ['pipe', shouldEmitHookContinueJson ? 'ignore' : 'inherit', 'inherit']");
+  });
 });

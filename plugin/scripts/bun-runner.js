@@ -135,7 +135,7 @@ function collectStdin() {
 const stdinData = await collectStdin();
 
 const spawnOptions = {
-  stdio: ['pipe', 'inherit', 'inherit'],
+  stdio: ['pipe', shouldEmitHookContinueJson ? 'ignore' : 'inherit', 'inherit'],
   windowsHide: true,
   env: process.env
 };
