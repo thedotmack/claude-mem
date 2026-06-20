@@ -9,6 +9,8 @@ interface HeaderProps {
   projects: string[];
   currentFilter: string;
   onFilterChange: (filter: string) => void;
+  platformFilter: string;
+  onPlatformFilterChange: (filter: string) => void;
   isProcessing: boolean;
   queueDepth: number;
   themePreference: ThemePreference;
@@ -17,11 +19,22 @@ interface HeaderProps {
   onShowHelp?: () => void;
 }
 
+const PLATFORMS = [
+  { value: '', label: 'All' },
+  { value: 'claude', label: 'Claude Code' },
+  { value: 'opencode', label: 'OpenCode' },
+  { value: 'gemini-cli', label: 'Gemini CLI' },
+  { value: 'codex', label: 'Codex' },
+  { value: 'cursor', label: 'Cursor' },
+];
+
 export function Header({
   isConnected,
   projects,
   currentFilter,
   onFilterChange,
+  platformFilter,
+  onPlatformFilterChange,
   isProcessing,
   queueDepth,
   themePreference,
@@ -82,6 +95,17 @@ export function Header({
           </svg>
         </a>
         <GitHubStarsButton username="thedotmack" repo="claude-mem" />
+        <div className="platform-filter">
+          {PLATFORMS.map(p => (
+            <button
+              key={p.value}
+              className={`platform-btn${platformFilter === p.value ? ' active' : ''}`}
+              onClick={() => onPlatformFilterChange(p.value)}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
         <select
           value={currentFilter}
           onChange={e => onFilterChange(e.target.value)}

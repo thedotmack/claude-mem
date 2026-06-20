@@ -6,6 +6,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, unlin
 import { logger } from '../../utils/logger.js';
 import { CONTEXT_TAG_OPEN, CONTEXT_TAG_CLOSE, injectContextIntoMarkdownFile } from '../../utils/context-injection.js';
 import { getWorkerPort } from '../../shared/worker-utils.js';
+import { getMcpServerAbsolutePath, getNodeAbsolutePath } from './install-paths.js';
 
 const OPENCODE_PLUGIN_CONFIG_PATH = './plugins/claude-mem.js';
 
@@ -64,6 +65,42 @@ export function removeOpenCodePluginReference(config: OpenCodeConfig): OpenCodeC
       (plugin) => plugin !== OPENCODE_PLUGIN_CONFIG_PATH,
     ),
   };
+}
+
+export function registerOpenCodeMCPServer(): number {
+  const configPath = getOpenCodeConfigPath();
+  const mcpServerPath = getMcpServerAbsolutePath();
+  if (!mcpServerPath) {
+    console.error('Could not find MCP server script');
+    console.error('   Expected at: ~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs');
+    return 1;
+  }
+
+  try {
+    const config = existsSync(configPath)
+      ? JSON.parse(readFileSync(configPath, 'utf-8'))
+      : {};
+
+    if (!config.mcp) {
+      config.mcp = {};
+    }
+
+    config.mcp['claude-mem'] = {
+      type: 'local',
+      command: [getNodeAbsolutePath(), mcpServerPath],
+      enabled: true,
+    };
+
+    writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf-8');
+    console.log(`  MCP server registered in: ${configPath}`);
+    logger.info('OPENCODE', 'MCP server registered', { path: configPath });
+
+    return 0;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Failed to register OpenCode MCP server: ${message}`);
+    return 1;
+  }
 }
 
 export function registerOpenCodePluginInConfig(): number {
@@ -324,6 +361,11 @@ export async function installOpenCodeIntegration(): Promise<number> {
   const pluginResult = installOpenCodePlugin();
   if (pluginResult !== 0) {
     return pluginResult;
+  }
+
+  const mcpResult = registerOpenCodeMCPServer();
+  if (mcpResult !== 0) {
+    return mcpResult;
   }
 
   const placeholderContext = `# Memory Context from Past Sessions

@@ -14,6 +14,7 @@ import { mergeAndDeduplicateByProject } from './utils/data';
 
 export function App() {
   const [currentFilter, setCurrentFilter] = useState('');
+  const [platformFilter, setPlatformFilter] = useState('');
   const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
   const [logsModalOpen, setLogsModalOpen] = useState(false);
   const [welcomeDismissed, setWelcomeDismissed] = useState<boolean>(getStoredWelcomeDismissed);
@@ -25,11 +26,13 @@ export function App() {
   const { settings, saveSettings, isSaving, saveStatus } = useSettings();
   const { refreshStats } = useStats();
   const { preference, setThemePreference } = useTheme();
-  const pagination = usePagination(currentFilter);
+  const pagination = usePagination(currentFilter, platformFilter);
 
-  const matchesSelection = useCallback((item: { project: string }) => {
-    return !currentFilter || item.project === currentFilter;
-  }, [currentFilter]);
+  const matchesSelection = useCallback((item: { project: string; platform_source?: string }) => {
+    if (currentFilter && item.project !== currentFilter) return false;
+    if (platformFilter && item.platform_source !== platformFilter) return false;
+    return true;
+  }, [currentFilter, platformFilter]);
 
   useEffect(() => {
     if (currentFilter && !projects.includes(currentFilter)) {
@@ -105,6 +108,8 @@ export function App() {
         projects={projects}
         currentFilter={currentFilter}
         onFilterChange={setCurrentFilter}
+        platformFilter={platformFilter}
+        onPlatformFilterChange={setPlatformFilter}
         isProcessing={isProcessing}
         queueDepth={queueDepth}
         themePreference={preference}
