@@ -262,7 +262,11 @@ export function prepareSummariesForTimeline(
   const mostRecentSummaryId = allSummaries[0]?.id;
 
   return displaySummaries.map((summary, i) => {
-    const olderSummary = i === 0 ? null : allSummaries[i + 1];
+    // Each summary is a "Session started" marker, so back-date it to the start
+    // of its session (the next-older summary's creation time) for every entry,
+    // including the newest. allSummaries is over-fetched by SUMMARY_LOOKAHEAD so
+    // the last displayed summary still has an older neighbor.
+    const olderSummary = allSummaries[i + 1] ?? null;
     return {
       ...summary,
       displayEpoch: olderSummary ? olderSummary.created_at_epoch : summary.created_at_epoch,
