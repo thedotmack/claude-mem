@@ -113,20 +113,6 @@ describe('SessionMessageBuffer (in-RAM observation buffer)', () => {
     expect(Date.now() - start).toBeGreaterThanOrEqual(20);
   });
 
-  test('drain stamps _originalTimestamp from message.originalTimestamp when set (back-dating)', async () => {
-    // Migration/backfill path: an explicit originalTimestamp overrides the
-    // enqueue-time now(), so the resulting observation is dated to the source
-    // (e.g. a native-memory file's mtime). The live hook path omits it.
-    const buffer = new SessionMessageBuffer();
-    const pastEpoch = 1_600_000_000_000; // 2020-09-13, clearly not "now"
-    buffer.enqueue(1, { ...obs('Read', 'a'), originalTimestamp: pastEpoch });
-    buffer.enqueue(1, obs('Write', 'b')); // no originalTimestamp → now()
-    const drained = await drainAll(buffer, 1);
-    expect(drained[0]._originalTimestamp).toBe(pastEpoch);
-    // The one without an explicit timestamp falls back to ~now.
-    expect(drained[1]._originalTimestamp).toBeGreaterThan(pastEpoch);
-  });
-
   test('peekTypes reflects buffered message types', () => {
     const buffer = new SessionMessageBuffer();
     buffer.enqueue(1, obs('Read', 'a'));

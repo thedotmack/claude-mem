@@ -94,14 +94,15 @@ describe('Install Non-TTY Support', () => {
       expect(installSource).toContain("selectedIDEs = ['claude-code']");
     });
 
-    it('parses the explicit --disable-auto-memory flag for non-interactive installs', () => {
-      expect(readFileSync(join(__dirname, '..', 'src', 'npx-cli', 'index.ts'), 'utf-8'))
-        .toContain("disableAutoMemory: argv.includes('--disable-auto-memory')");
+    it('parses both the --disable-auto-memory and --keep-auto-memory flags', () => {
+      const indexSource = readFileSync(join(__dirname, '..', 'src', 'npx-cli', 'index.ts'), 'utf-8');
+      expect(indexSource).toContain("disableAutoMemory: argv.includes('--disable-auto-memory')");
+      expect(indexSource).toContain("keepAutoMemory: argv.includes('--keep-auto-memory')");
     });
 
-    it('documents the explicit --disable-auto-memory install flag in help output', () => {
+    it('documents the --keep-auto-memory opt-out in help output (disable is now the default)', () => {
       expect(readFileSync(join(__dirname, '..', 'src', 'npx-cli', 'index.ts'), 'utf-8'))
-        .toContain('npx claude-mem install --disable-auto-memory');
+        .toContain('npx claude-mem install --keep-auto-memory');
     });
 
     it('uses console.log for intro in non-interactive mode', () => {

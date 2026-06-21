@@ -64,12 +64,7 @@ export class SessionMessageBuffer {
     }
 
     const id = this.nextId++;
-    // enqueuedAt becomes the observation's _originalTimestamp (drain() line ~163),
-    // which flows to created_at_epoch. The live hook path leaves originalTimestamp
-    // undefined → Date.now() (unchanged). Backfill/migration callers set it to a
-    // source timestamp (e.g. file mtime) to back-date the stored observation.
-    const enqueuedAt = message.originalTimestamp ?? Date.now();
-    this.getList(sessionDbId).push({ id, message, claimed: false, enqueuedAt });
+    this.getList(sessionDbId).push({ id, message, claimed: false, enqueuedAt: Date.now() });
     this.onMutate?.();
     this.signal(sessionDbId);
     return id;

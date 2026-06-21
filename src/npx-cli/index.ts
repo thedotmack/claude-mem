@@ -53,7 +53,7 @@ ${pc.bold('Runtime Commands')} (requires Bun, delegates to installed plugin):
   ${pc.cyan('npx claude-mem server api-key create|list|revoke')}   Manage API keys (not yet implemented)
   ${pc.cyan('npx claude-mem worker start|stop|restart|status')}    Worker compatibility aliases
   ${pc.cyan('npx claude-mem search <query>')}       Search observations
-  ${pc.cyan('npx claude-mem migrate-memory [--dry-run] [--project <name>]')}    Import Claude Code native auto-memory into claude-mem (per project)
+  ${pc.cyan('npx claude-mem migrate-memory [--dry-run] [--project <name>] [--keep-source]')}    Import Claude Code native auto-memory into claude-mem, then archive the originals (--keep-source to skip)
   ${pc.cyan('npx claude-mem adopt [--dry-run] [--branch <name>]')}    Stamp merged worktrees into parent project
   ${pc.cyan('npx claude-mem cleanup [--dry-run]')}    Run one-time v12.4.3 pollution cleanup (or preview counts)
   ${pc.cyan('npx claude-mem transcript watch')}     Start transcript watcher
