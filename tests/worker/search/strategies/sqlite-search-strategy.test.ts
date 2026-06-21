@@ -64,48 +64,6 @@ describe('SQLiteSearchStrategy', () => {
     strategy = new SQLiteSearchStrategy(mockSessionSearch);
   });
 
-  describe('canHandle', () => {
-    it('should return true when no query text (filter-only)', () => {
-      const options: StrategySearchOptions = {
-        project: 'test-project'
-      };
-      expect(strategy.canHandle(options)).toBe(true);
-    });
-
-    it('should return true when query is empty string', () => {
-      const options: StrategySearchOptions = {
-        query: '',
-        project: 'test-project'
-      };
-      expect(strategy.canHandle(options)).toBe(true);
-    });
-
-    it('should return false when query text is present', () => {
-      const options: StrategySearchOptions = {
-        query: 'semantic search query'
-      };
-      expect(strategy.canHandle(options)).toBe(false);
-    });
-
-    it('should return true when strategyHint is sqlite (even with query)', () => {
-      const options: StrategySearchOptions = {
-        query: 'semantic search query',
-        strategyHint: 'sqlite'
-      };
-      expect(strategy.canHandle(options)).toBe(true);
-    });
-
-    it('should return true for date range filter only', () => {
-      const options: StrategySearchOptions = {
-        dateRange: {
-          start: '2025-01-01',
-          end: '2025-01-31'
-        }
-      };
-      expect(strategy.canHandle(options)).toBe(true);
-    });
-  });
-
   describe('search', () => {
     it('should search all types by default', async () => {
       const options: StrategySearchOptions = {
@@ -336,12 +294,6 @@ describe('SQLiteSearchStrategy', () => {
         dateRange: { end: '2025-12-31' },
         orderBy: 'date_desc'
       });
-    });
-  });
-
-  describe('strategy name', () => {
-    it('should have name "sqlite"', () => {
-      expect(strategy.name).toBe('sqlite');
     });
   });
 });

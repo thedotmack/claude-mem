@@ -37,10 +37,6 @@ export class ServerClassifiedProviderError extends Error {
   }
 }
 
-export function isServerClassified(err: unknown): err is ServerClassifiedProviderError {
-  return err instanceof ServerClassifiedProviderError;
-}
-
 /**
  * Parse Retry-After header (seconds or HTTP-date). Returns ms or undefined.
  * Behavior intentionally mirrors the worker providers' helper so server

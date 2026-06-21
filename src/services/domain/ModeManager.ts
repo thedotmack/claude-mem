@@ -1,7 +1,7 @@
 
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
-import type { ModeConfig, ObservationType, ObservationConcept } from './types.js';
+import type { ModeConfig, ObservationType } from './types.js';
 import { logger } from '../../utils/logger.js';
 import { getPackageRoot } from '../../shared/paths.js';
 
@@ -173,10 +173,6 @@ export class ModeManager {
     return this.getActiveMode().observation_types;
   }
 
-  getObservationConcepts(): ObservationConcept[] {
-    return this.getActiveMode().observation_concepts;
-  }
-
   getTypeIcon(typeId: string): string {
     const type = this.getObservationTypes().find(t => t.id === typeId);
     return type?.emoji || '📝';
@@ -185,14 +181,5 @@ export class ModeManager {
   getWorkEmoji(typeId: string): string {
     const type = this.getObservationTypes().find(t => t.id === typeId);
     return type?.work_emoji || '📝';
-  }
-
-  validateType(typeId: string): boolean {
-    return this.getObservationTypes().some(t => t.id === typeId);
-  }
-
-  getTypeLabel(typeId: string): string {
-    const type = this.getObservationTypes().find(t => t.id === typeId);
-    return type?.label || typeId;
   }
 }

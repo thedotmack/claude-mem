@@ -43,16 +43,6 @@ export const geminiCliAdapter: PlatformAdapter = {
       toolResponse = toolResponse ?? { details: r.details };
     }
 
-    const metadata: Record<string, unknown> = {};
-    if (r.source) metadata.source = r.source;                     
-    if (r.reason) metadata.reason = r.reason;                     
-    if (r.trigger) metadata.trigger = r.trigger;                  
-    if (r.mcp_context) metadata.mcp_context = r.mcp_context;     
-    if (r.notification_type) metadata.notification_type = r.notification_type;
-    if (r.stop_hook_active !== undefined) metadata.stop_hook_active = r.stop_hook_active;
-    if (r.original_request_name) metadata.original_request_name = r.original_request_name;
-    if (hookEventName) metadata.hook_event_name = hookEventName;
-
     return {
       sessionId,
       cwd,
@@ -61,7 +51,6 @@ export const geminiCliAdapter: PlatformAdapter = {
       toolInput,
       toolResponse,
       transcriptPath: r.transcript_path,
-      metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
     };
   },
 

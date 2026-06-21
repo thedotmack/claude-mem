@@ -15,9 +15,7 @@ import { OpenRouterObservationProvider } from '../generation/providers/OpenRoute
 import type { ServerGenerationProvider } from '../generation/providers/shared/types.js';
 import { ServerBetaService } from './ServerBetaService.js';
 import {
-  DisabledServerBetaEventBroadcaster,
   DisabledServerBetaGenerationWorkerManager,
-  DisabledServerBetaProviderRegistry,
   DisabledServerBetaQueueManager,
   type ServerBetaAuthMode,
   type ServerBetaBootstrapStatus,
@@ -214,8 +212,6 @@ export async function createServerBetaService(
     authMode: options.authMode ?? parseAuthMode(process.env.CLAUDE_MEM_AUTH_MODE),
     queueManager,
     generationWorkerManager,
-    providerRegistry: new DisabledServerBetaProviderRegistry('Phase 5 keeps the provider registry boundary as inert; per-call providers are owned by the generation worker manager.'),
-    eventBroadcaster: new DisabledServerBetaEventBroadcaster('Phase 2 boundary only; SSE/event broadcasting is not wired.'),
     storage: createPostgresStorageRepositories(pool),
   };
 

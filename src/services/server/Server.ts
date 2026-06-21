@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import path from 'path';
 import { ALLOWED_OPERATIONS, ALLOWED_TOPICS } from './allowed-constants.js';
 import { logger } from '../../utils/logger.js';
-import { createCorsMiddleware, createMiddleware, summarizeRequestBody, requireLocalhost } from './Middleware.js';
+import { createCorsMiddleware, createMiddleware, summarizeRequestBody, requireLocalhost } from '../worker/http/middleware.js';
 import { errorHandler, notFoundHandler } from './ErrorHandler.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { isPidAlive } from '../../supervisor/process-registry.js';

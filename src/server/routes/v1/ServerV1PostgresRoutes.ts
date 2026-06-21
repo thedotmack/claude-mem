@@ -42,7 +42,6 @@ export interface ServerV1PostgresRoutesOptions {
   getEventQueue?: () => ReturnType<ActiveServerBetaQueueManager['getQueue']> | null;
   getSummaryQueue?: () => ReturnType<ActiveServerBetaQueueManager['getQueue']> | null;
   sessionPolicy?: ServerSessionGenerationPolicy;
-  sessionDebounceWindowMs?: number;
 }
 
 interface BatchPreValidationFailure {
@@ -102,18 +101,15 @@ export class ServerV1PostgresRoutes implements RouteHandler {
   constructor(private readonly options: ServerV1PostgresRoutesOptions) {
     const ingestOpts: ConstructorParameters<typeof IngestEventsService>[0] = {
       pool: options.pool,
-      resolveEventQueue: () => this.resolveEventQueue() as never,
+      resolveEventQueue: () => this.resolveQueue('event') as never,
     };
     if (options.sessionPolicy !== undefined) {
       ingestOpts.sessionPolicy = options.sessionPolicy;
     }
-    if (options.sessionDebounceWindowMs !== undefined) {
-      ingestOpts.sessionDebounceWindowMs = options.sessionDebounceWindowMs;
-    }
     this.ingestEvents = new IngestEventsService(ingestOpts);
     this.endSession = new EndSessionService({
       pool: options.pool,
-      resolveSummaryQueue: () => this.resolveSummaryQueue() as never,
+      resolveSummaryQueue: () => this.resolveQueue('summary') as never,
     });
   }
 
@@ -964,29 +960,15 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     }
   }
 
-  private resolveSummaryQueue(): ReturnType<ActiveServerBetaQueueManager['getQueue']> | null {
-    if (this.options.getSummaryQueue) {
-      return this.options.getSummaryQueue();
+  private resolveQueue(lane: 'summary' | 'event'): ReturnType<ActiveServerBetaQueueManager['getQueue']> | null {
+    const override = lane === 'summary' ? this.options.getSummaryQueue : this.options.getEventQueue;
+    if (override) {
+      return override();
     }
     const manager = this.options.queueManager as Partial<ActiveServerBetaQueueManager>;
     if (typeof manager.getQueue === 'function') {
       try {
-        return manager.getQueue('summary');
-      } catch {
-        return null;
-      }
-    }
-    return null;
-  }
-
-  private resolveEventQueue(): ReturnType<ActiveServerBetaQueueManager['getQueue']> | null {
-    if (this.options.getEventQueue) {
-      return this.options.getEventQueue();
-    }
-    const manager = this.options.queueManager as Partial<ActiveServerBetaQueueManager>;
-    if (typeof manager.getQueue === 'function') {
-      try {
-        return manager.getQueue('event');
+        return manager.getQueue(lane);
       } catch {
         return null;
       }
@@ -1436,12 +1418,8 @@ export class ServerV1PostgresRoutes implements RouteHandler {
   // and cancels can publish to the same lane the original ingest used.
   private resolveEventQueueForRetry(row: { source_type: string }):
     { add: (jobId: string, payload: unknown, options?: unknown) => Promise<unknown>; remove: (jobId: string) => Promise<void> } | null {
-    if (row.source_type === 'session_summary') {
-      const queue = this.resolveSummaryQueue();
-      if (!queue) return null;
-      return queue as never;
-    }
-    const queue = this.resolveEventQueue();
+    const lane = row.source_type === 'session_summary' ? 'summary' : 'event';
+    const queue = this.resolveQueue(lane);
     if (!queue) return null;
     return queue as never;
   }

@@ -4,6 +4,7 @@ import { existsSync, writeFileSync, mkdirSync, rmSync, statSync, copyFileSync, s
 import { Database } from 'bun:sqlite';
 import { DATA_DIR, OBSERVER_SESSIONS_PROJECT } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
+import { toError } from '../../utils/to-error.js';
 
 const MARKER_FILENAME = '.cleanup-v12.4.3-applied';
 const STUCK_PENDING_THRESHOLD = 10;
@@ -58,7 +59,7 @@ export function runOneTimeV12_4_3Cleanup(
     try {
       return scanCleanupCounts(dbPath);
     } catch (err: unknown) {
-      const error = err instanceof Error ? err : new Error(String(err));
+      const error = toError(err);
       logger.error('SYSTEM', 'v12.4.3 cleanup --dry-run scan failed', {}, error);
       return undefined;
     }
@@ -69,22 +70,32 @@ export function runOneTimeV12_4_3Cleanup(
   try {
     executeCleanup(dbPath, effectiveDataDir, markerPath);
   } catch (err: unknown) {
-    const error = err instanceof Error ? err : new Error(String(err));
+    const error = toError(err);
     logger.error('SYSTEM', 'v12.4.3 cleanup failed, marker not written (will retry on next startup)', {}, error);
   }
+}
+
+/**
+ * Count the observer-sessions rows and the user_prompts / observations /
+ * session_summaries rows that cascade-delete with them. Shared by the
+ * read-only dry-run scan and the live purge so both report identical figures.
+ */
+function countObserverSessionRows(db: Database): { sessions: number; cascadeRows: number } {
+  const sessions = (db.prepare(`SELECT COUNT(*) AS n FROM sdk_sessions WHERE project = ?`).get(OBSERVER_SESSIONS_PROJECT) as { n: number }).n;
+  const cascadeRows =
+    (db.prepare(`SELECT COUNT(*) AS n FROM user_prompts WHERE content_session_id IN (SELECT content_session_id FROM sdk_sessions WHERE project = ?)`).get(OBSERVER_SESSIONS_PROJECT) as { n: number }).n
+    + (db.prepare(`SELECT COUNT(*) AS n FROM observations WHERE memory_session_id IN (SELECT memory_session_id FROM sdk_sessions WHERE project = ? AND memory_session_id IS NOT NULL)`).get(OBSERVER_SESSIONS_PROJECT) as { n: number }).n
+    + (db.prepare(`SELECT COUNT(*) AS n FROM session_summaries WHERE memory_session_id IN (SELECT memory_session_id FROM sdk_sessions WHERE project = ? AND memory_session_id IS NOT NULL)`).get(OBSERVER_SESSIONS_PROJECT) as { n: number }).n;
+  return { sessions, cascadeRows };
 }
 
 function scanCleanupCounts(dbPath: string): CleanupCounts {
   const counts = emptyCounts();
   const db = new Database(dbPath, { readonly: true });
   try {
-    counts.observerSessions = (
-      db.prepare(`SELECT COUNT(*) AS n FROM sdk_sessions WHERE project = ?`).get(OBSERVER_SESSIONS_PROJECT) as { n: number }
-    ).n;
-    counts.observerCascadeRows =
-      (db.prepare(`SELECT COUNT(*) AS n FROM user_prompts WHERE content_session_id IN (SELECT content_session_id FROM sdk_sessions WHERE project = ?)`).get(OBSERVER_SESSIONS_PROJECT) as { n: number }).n
-      + (db.prepare(`SELECT COUNT(*) AS n FROM observations WHERE memory_session_id IN (SELECT memory_session_id FROM sdk_sessions WHERE project = ? AND memory_session_id IS NOT NULL)`).get(OBSERVER_SESSIONS_PROJECT) as { n: number }).n
-      + (db.prepare(`SELECT COUNT(*) AS n FROM session_summaries WHERE memory_session_id IN (SELECT memory_session_id FROM sdk_sessions WHERE project = ? AND memory_session_id IS NOT NULL)`).get(OBSERVER_SESSIONS_PROJECT) as { n: number }).n;
+    const observer = countObserverSessionRows(db);
+    counts.observerSessions = observer.sessions;
+    counts.observerCascadeRows = observer.cascadeRows;
     counts.stuckPendingMessages = (db.prepare(
       `SELECT COUNT(*) AS n FROM pending_messages
          WHERE status = 'processing'
@@ -147,7 +158,7 @@ function executeCleanup(dbPath: string, effectiveDataDir: string, markerPath: st
       }
     }
   } catch (err: unknown) {
-    const error = err instanceof Error ? err : new Error(String(err));
+    const error = toError(err);
     logger.warn('SYSTEM', 'statfsSync failed; proceeding without disk-space pre-flight', {}, error);
   }
 
@@ -164,7 +175,7 @@ function executeCleanup(dbPath: string, effectiveDataDir: string, markerPath: st
     logger.info('SYSTEM', 'v12.4.3 backup created via VACUUM INTO', { backupPath, dbSize });
   } catch (err: unknown) {
     vacuumFailed = true;
-    vacuumError = err instanceof Error ? err : new Error(String(err));
+    vacuumError = toError(err);
   }
   backupDb.close();
 
@@ -178,7 +189,7 @@ function executeCleanup(dbPath: string, effectiveDataDir: string, markerPath: st
       if (existsSync(shmPath)) copyFileSync(shmPath, `${backupPath}-shm`);
       logger.info('SYSTEM', 'v12.4.3 backup created via copyFileSync (incl. -wal/-shm if present)', { backupPath, dbSize });
     } catch (copyErr: unknown) {
-      const copyError = copyErr instanceof Error ? copyErr : new Error(String(copyErr));
+      const copyError = toError(copyErr);
       logger.error('SYSTEM', 'v12.4.3 backup failed via both VACUUM INTO and copyFileSync; aborting cleanup', {}, copyError);
       return;
     }
@@ -200,7 +211,7 @@ function executeCleanup(dbPath: string, effectiveDataDir: string, markerPath: st
   try {
     chromaWiped = wipeChromaArtifacts(effectiveDataDir);
   } catch (err: unknown) {
-    const error = err instanceof Error ? err : new Error(String(err));
+    const error = toError(err);
     chromaWipeError = error.message;
     logger.error('SYSTEM', 'v12.4.3: Chroma wipe failed; marker still written so cleanup does not re-run', {}, error);
   }
@@ -224,14 +235,10 @@ function executeCleanup(dbPath: string, effectiveDataDir: string, markerPath: st
 function runObserverSessionsPurge(db: Database, counts: CleanupCounts): void {
   db.run('BEGIN IMMEDIATE');
   try {
-    const sessionCount = (db.prepare(`SELECT COUNT(*) AS n FROM sdk_sessions WHERE project = ?`).get(OBSERVER_SESSIONS_PROJECT) as { n: number }).n;
-    const cascadeRows =
-      (db.prepare(`SELECT COUNT(*) AS n FROM user_prompts WHERE content_session_id IN (SELECT content_session_id FROM sdk_sessions WHERE project = ?)`).get(OBSERVER_SESSIONS_PROJECT) as { n: number }).n
-      + (db.prepare(`SELECT COUNT(*) AS n FROM observations WHERE memory_session_id IN (SELECT memory_session_id FROM sdk_sessions WHERE project = ? AND memory_session_id IS NOT NULL)`).get(OBSERVER_SESSIONS_PROJECT) as { n: number }).n
-      + (db.prepare(`SELECT COUNT(*) AS n FROM session_summaries WHERE memory_session_id IN (SELECT memory_session_id FROM sdk_sessions WHERE project = ? AND memory_session_id IS NOT NULL)`).get(OBSERVER_SESSIONS_PROJECT) as { n: number }).n;
+    const { sessions, cascadeRows } = countObserverSessionRows(db);
 
     db.run(`DELETE FROM sdk_sessions WHERE project = ?`, [OBSERVER_SESSIONS_PROJECT]);
-    counts.observerSessions = sessionCount;
+    counts.observerSessions = sessions;
     counts.observerCascadeRows = cascadeRows;
 
     db.run('COMMIT');

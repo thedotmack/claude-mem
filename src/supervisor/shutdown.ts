@@ -3,7 +3,7 @@ import { existsSync, readFileSync, rmSync } from 'fs';
 import { promisify } from 'util';
 import { logger } from '../utils/logger.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
-import { isPidAlive, type ManagedProcessRecord, type ProcessRegistry } from './process-registry.js';
+import { isPidAlive, waitForExit, type ManagedProcessRecord, type ProcessRegistry } from './process-registry.js';
 import { paths } from '../shared/paths.js';
 
 const execFileAsync = promisify(execFile);
@@ -139,18 +139,6 @@ export function removeOwnedPidFile(pidFilePath: string, currentPid: number): voi
         error: String(error)
       });
     }
-  }
-}
-
-async function waitForExit(records: ManagedProcessRecord[], timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-
-  while (Date.now() < deadline) {
-    const survivors = records.filter(record => isPidAlive(record.pid));
-    if (survivors.length === 0) {
-      return;
-    }
-    await new Promise(resolve => setTimeout(resolve, 100));
   }
 }
 

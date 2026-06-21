@@ -24,11 +24,9 @@ interface StoredObservation {
   facts: string | null; 
   narrative: string | null;
   concepts: string | null; 
-  files_read: string | null; 
-  files_modified: string | null; 
+  files_read: string | null;
+  files_modified: string | null;
   prompt_number: number;
-  discovery_tokens: number; 
-  created_at: string;
   created_at_epoch: number;
 }
 
@@ -44,8 +42,6 @@ interface StoredSummary {
   next_steps: string | null;
   notes: string | null;
   prompt_number: number;
-  discovery_tokens: number; 
-  created_at: string;
   created_at_epoch: number;
 }
 
@@ -54,7 +50,6 @@ interface StoredUserPrompt {
   content_session_id: string;
   prompt_number: number;
   prompt_text: string;
-  created_at: string;
   created_at_epoch: number;
   memory_session_id: string;
   project: string;
@@ -309,8 +304,7 @@ export class ChromaSync {
     project: string,
     obs: ParsedObservation,
     promptNumber: number,
-    createdAtEpoch: number,
-    discoveryTokens: number = 0
+    createdAtEpoch: number
   ): Promise<void> {
     const stored: StoredObservation = {
       id: observationId,
@@ -327,8 +321,6 @@ export class ChromaSync {
       files_read: JSON.stringify(obs.files_read),
       files_modified: JSON.stringify(obs.files_modified),
       prompt_number: promptNumber,
-      discovery_tokens: discoveryTokens,
-      created_at: new Date(createdAtEpoch * 1000).toISOString(),
       created_at_epoch: createdAtEpoch
     };
 
@@ -364,8 +356,7 @@ export class ChromaSync {
     project: string,
     summary: ParsedSummary,
     promptNumber: number,
-    createdAtEpoch: number,
-    discoveryTokens: number = 0
+    createdAtEpoch: number
   ): Promise<void> {
     const stored: StoredSummary = {
       id: summaryId,
@@ -379,8 +370,6 @@ export class ChromaSync {
       next_steps: summary.next_steps,
       notes: summary.notes,
       prompt_number: promptNumber,
-      discovery_tokens: discoveryTokens,
-      created_at: new Date(createdAtEpoch * 1000).toISOString(),
       created_at_epoch: createdAtEpoch
     };
 
@@ -434,7 +423,6 @@ export class ChromaSync {
       content_session_id: '', // Not needed for Chroma sync
       prompt_number: promptNumber,
       prompt_text: promptText,
-      created_at: new Date(createdAtEpoch * 1000).toISOString(),
       created_at_epoch: createdAtEpoch,
       memory_session_id: memorySessionId,
       project: project
@@ -529,11 +517,7 @@ export class ChromaSync {
 
   async bootstrapWatermarksFromChroma(project: string): Promise<void> {
     const existing = await this.getExistingChromaIds(project);
-    const max = (set: Set<number>): number => {
-      let m = 0;
-      for (const id of set) if (id > m) m = id;
-      return m;
-    };
+    const max = (set: Set<number>): number => (set.size ? Math.max(...set) : 0);
     ChromaSyncState.replace(project, {
       observations: max(existing.observations),
       summaries: max(existing.summaries),

@@ -83,8 +83,7 @@ export class MemoryRoutes extends BaseRouteHandler {
       targetProject,
       observation,
       0,
-      result.createdAtEpoch,
-      0
+      result.createdAtEpoch
     ).catch(err => {
       logger.error('CHROMA', 'ChromaDB sync failed', { id: result.id }, err as Error);
     });

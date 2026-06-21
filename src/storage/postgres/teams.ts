@@ -94,15 +94,6 @@ export class PostgresTeamsRepository {
     );
     return row ? mapTeamRow(row) : null;
   }
-
-  async getMember(teamId: string, userId: string): Promise<PostgresTeamMember | null> {
-    const row = await queryOne<TeamMemberRow>(
-      this.client,
-      'SELECT * FROM team_members WHERE team_id = $1 AND user_id = $2',
-      [teamId, userId]
-    );
-    return row ? mapTeamMemberRow(row) : null;
-  }
 }
 
 function mapTeamRow(row: TeamRow): PostgresTeam {

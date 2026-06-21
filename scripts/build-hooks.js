@@ -260,7 +260,7 @@ async function buildHooks() {
         'tree-sitter-cli'
       ],
       engines: {
-        node: '>=18.0.0',
+        node: '>=20.12.0',
         bun: '>=1.0.0'
       }
     };

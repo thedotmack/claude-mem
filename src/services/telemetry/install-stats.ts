@@ -1,5 +1,6 @@
 import { statSync } from 'fs';
 import type { Database } from 'bun:sqlite';
+import { asMs } from './common.js';
 
 /**
  * Aggregate, content-free snapshot of an install's memory database, attached
@@ -13,16 +14,6 @@ import type { Database } from 'bun:sqlite';
  * key emitted here must also be in the scrub whitelist and documented in
  * docs/public/telemetry.mdx.
  */
-
-/**
- * Epoch columns hold mixed units historically: a few hundred legacy rows were
- * written in seconds, everything since in milliseconds. Normalize to ms in
- * SQL before any date math (10^12 ms ≈ 2001, 10^12 s ≈ year 33658 — no
- * plausible value is ambiguous).
- */
-function asMs(col: string): string {
-  return `CASE WHEN ${col} < 1000000000000 THEN ${col} * 1000 ELSE ${col} END`;
-}
 
 const DAY_MS = 86_400_000;
 

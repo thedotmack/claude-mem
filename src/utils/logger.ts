@@ -121,14 +121,6 @@ class Logger {
     return this.level;
   }
 
-  correlationId(sessionId: number, observationNum: number): string {
-    return `obs-${sessionId}-${observationNum}`;
-  }
-
-  sessionId(sessionId: number): string {
-    return `session-${sessionId}`;
-  }
-
   private formatData(data: any): string {
     if (data === null || data === undefined) return '';
     if (typeof data === 'string') return data;
@@ -355,10 +347,6 @@ class Logger {
 
   failure(component: Component, message: string, context?: LogContext, data?: any): void {
     this.error(component, `✗ ${message}`, context, data);
-  }
-
-  timing(component: Component, message: string, durationMs: number, context?: LogContext): void {
-    this.info(component, `⏱ ${message}`, context, { duration: `${durationMs}ms` });
   }
 
   happyPathError<T = string>(

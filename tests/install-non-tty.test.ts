@@ -159,7 +159,7 @@ describe('Install Non-TTY Support', () => {
     it('replaces stale Codex marketplace registrations from a different source', () => {
       const registerRegion = codexInstallerSource.slice(
         codexInstallerSource.indexOf('function registerCodexMarketplace'),
-        codexInstallerSource.indexOf('function parseSemver'),
+        codexInstallerSource.indexOf('function extractSemver'),
       );
       expect(registerRegion).toContain('isMarketplaceDifferentSourceError(error)');
       expect(registerRegion).toContain("['plugin', 'marketplace', 'remove', MARKETPLACE_NAME]");
