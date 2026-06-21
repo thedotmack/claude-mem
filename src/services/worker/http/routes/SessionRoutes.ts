@@ -262,6 +262,7 @@ export class SessionRoutes extends BaseRouteHandler {
     platformSource: z.string().optional(),
     tool_use_id: z.string().optional(),
     toolUseId: z.string().optional(),
+    timestampEpoch: z.number().optional(),
   }).passthrough();
 
   private static readonly summarizeByClaudeIdSchema = z.object({
@@ -283,6 +284,7 @@ export class SessionRoutes extends BaseRouteHandler {
       agentType,
       tool_use_id,
       toolUseId,
+      timestampEpoch,
     } = req.body;
 
     const result = await ingestObservation({
@@ -295,6 +297,7 @@ export class SessionRoutes extends BaseRouteHandler {
       agentId,
       agentType,
       toolUseId: typeof tool_use_id === 'string' ? tool_use_id : (typeof toolUseId === 'string' ? toolUseId : undefined),
+      timestampEpoch: typeof timestampEpoch === 'number' ? timestampEpoch : undefined,
     });
 
     if (!result.ok) {

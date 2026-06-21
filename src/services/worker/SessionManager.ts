@@ -170,6 +170,7 @@ export class SessionManager {
       agentId: data.agentId,
       agentType: data.agentType,
       toolUseId: data.toolUseId,
+      originalTimestamp: data.originalTimestamp,
     };
 
     const messageId = this.buffer.enqueue(sessionDbId, message);

@@ -236,29 +236,39 @@ async function resolveClaudeAutoMemoryChoice(
     return 'not-applicable';
   }
 
+  // Explicit flags win, in both directions. --keep-auto-memory is the opt-out
+  // from the new disable-by-default behavior; --disable-auto-memory remains for
+  // symmetry / scripts that set it explicitly.
+  if (options.keepAutoMemory) {
+    return 'leave-enabled';
+  }
+
   if (options.disableAutoMemory) {
     return 'disable';
   }
 
+  // Disable by default. Native auto-memory creates shadow state and competes with
+  // claude-mem for context-window tokens, so non-interactive/CI installs disable
+  // it too unless --keep-auto-memory is passed.
   if (!isInteractive) {
-    return 'leave-enabled';
+    return 'disable';
   }
 
   const choice = await p.select<'leave-enabled' | 'disable'>({
     message: 'Disable Claude Code auto-memory?',
     options: [
       {
-        value: 'leave-enabled',
-        label: 'Leave enabled',
-        hint: 'Recommended; keeps Claude Code native memory visible on startup.',
-      },
-      {
         value: 'disable',
         label: 'Disable auto-memory',
-        hint: 'Only if you explicitly want claude-mem to replace native startup memory.',
+        hint: 'Recommended; native auto-memory conflicts with claude-mem and competes for context tokens.',
+      },
+      {
+        value: 'leave-enabled',
+        label: 'Leave enabled',
+        hint: 'Keep Claude Code native memory on (not recommended alongside claude-mem).',
       },
     ],
-    initialValue: 'leave-enabled',
+    initialValue: 'disable',
   });
 
   if (p.isCancel(choice)) {
@@ -1396,6 +1406,10 @@ export interface InstallOptions {
   model?: string;
   noAutoStart?: boolean;
   disableAutoMemory?: boolean;
+  // Inverse of disableAutoMemory. Disabling Claude Code native auto-memory is the
+  // DEFAULT now (it competes with claude-mem); this opts back into keeping it on,
+  // both interactively and in non-interactive/CI installs.
+  keepAutoMemory?: boolean;
   // #2543 — non-interactive runtime selection. `server` is the operator-facing
   // alias for the canonical `server-beta` runtime id.
   runtime?: 'worker' | 'server' | 'server-beta';
@@ -1664,7 +1678,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     }
   } else if (autoMemoryChoice === 'leave-enabled') {
     autoMemoryStatus = 'left-enabled';
-    log.info('Claude Code: leaving native auto-memory enabled unless you explicitly opt in to disabling it.');
+    log.info('Claude Code: keeping native auto-memory enabled (--keep-auto-memory). Note: it conflicts with claude-mem.');
   }
 
   // The server runtime is brought up via its own stack (Docker pg+redis +

@@ -53,6 +53,9 @@ export interface ObservationPayload {
   agentId?: string;
   agentType?: string;
   toolUseId?: string;
+  // Optional explicit observation timestamp (epoch ms). Omitted by the live hook
+  // (defaults to now); set by backfill/migration callers to back-date the row.
+  timestampEpoch?: number;
 }
 
 export async function ingestObservation(payload: ObservationPayload): Promise<IngestResult> {
@@ -134,6 +137,9 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
     agentId: typeof payload.agentId === 'string' ? payload.agentId : undefined,
     agentType: typeof payload.agentType === 'string' ? payload.agentType : undefined,
     toolUseId: typeof payload.toolUseId === 'string' ? payload.toolUseId : undefined,
+    originalTimestamp: typeof payload.timestampEpoch === 'number' && Number.isFinite(payload.timestampEpoch)
+      ? payload.timestampEpoch
+      : undefined,
   });
 
   await ensureGeneratorRunning?.(sessionDbId, 'observation');

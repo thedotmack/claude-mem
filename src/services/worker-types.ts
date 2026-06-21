@@ -73,6 +73,12 @@ export interface PendingMessage {
   agentId?: string;
   agentType?: string;
   toolUseId?: string;
+  // Optional explicit timestamp (epoch ms) for the resulting observation. The
+  // live PostToolUse path leaves this undefined, so the buffer stamps Date.now()
+  // at enqueue as before. Backfill/migration paths (e.g. importing native
+  // Claude Code auto-memory) set it to the source file's mtime so the stored
+  // observation is dated when the note was written, not at import time.
+  originalTimestamp?: number;
 }
 
 export interface PendingMessageWithId extends PendingMessage {
@@ -89,6 +95,8 @@ export interface ObservationData {
   agentId?: string;
   agentType?: string;
   toolUseId?: string;
+  // Optional explicit observation timestamp (epoch ms). See PendingMessage.originalTimestamp.
+  originalTimestamp?: number;
 }
 
 export interface SSEEvent {
