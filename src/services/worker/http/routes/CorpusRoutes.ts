@@ -56,8 +56,6 @@ const queryCorpusSchema = z.object({
   question: z.string().trim().min(1),
 }).passthrough();
 
-const emptyBodySchema = z.object({}).passthrough();
-
 export class CorpusRoutes extends BaseRouteHandler {
   constructor(
     private corpusStore: CorpusStore,
@@ -72,10 +70,18 @@ export class CorpusRoutes extends BaseRouteHandler {
     app.get('/api/corpus', this.handleListCorpora.bind(this));
     app.get('/api/corpus/:name', this.handleGetCorpus.bind(this));
     app.delete('/api/corpus/:name', this.handleDeleteCorpus.bind(this));
-    app.post('/api/corpus/:name/rebuild', validateBody(emptyBodySchema), this.handleRebuildCorpus.bind(this));
-    app.post('/api/corpus/:name/prime', validateBody(emptyBodySchema), this.handlePrimeCorpus.bind(this));
+    app.post('/api/corpus/:name/rebuild', this.handleRebuildCorpus.bind(this));
+    app.post('/api/corpus/:name/prime', this.handlePrimeCorpus.bind(this));
     app.post('/api/corpus/:name/query', validateBody(queryCorpusSchema), this.handleQueryCorpus.bind(this));
-    app.post('/api/corpus/:name/reprime', validateBody(emptyBodySchema), this.handleReprimeCorpus.bind(this));
+    app.post('/api/corpus/:name/reprime', this.handleReprimeCorpus.bind(this));
+  }
+
+  private corpusNotFound(res: Response, name: string): void {
+    res.status(404).json({
+      error: `Corpus "${name}" not found`,
+      fix: 'Check the corpus name or build a new one',
+      available: this.corpusStore.list().map(c => c.name)
+    });
   }
 
   private handleBuildCorpus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
@@ -111,11 +117,7 @@ export class CorpusRoutes extends BaseRouteHandler {
     const corpus = this.corpusStore.read(name);
 
     if (!corpus) {
-      res.status(404).json({
-        error: `Corpus "${name}" not found`,
-        fix: 'Check the corpus name or build a new one',
-        available: this.corpusStore.list().map(c => c.name)
-      });
+      this.corpusNotFound(res, name);
       return;
     }
 
@@ -128,11 +130,7 @@ export class CorpusRoutes extends BaseRouteHandler {
     const existed = this.corpusStore.delete(name);
 
     if (!existed) {
-      res.status(404).json({
-        error: `Corpus "${name}" not found`,
-        fix: 'Check the corpus name or build a new one',
-        available: this.corpusStore.list().map(c => c.name)
-      });
+      this.corpusNotFound(res, name);
       return;
     }
 
@@ -144,11 +142,7 @@ export class CorpusRoutes extends BaseRouteHandler {
     const existingCorpus = this.corpusStore.read(name);
 
     if (!existingCorpus) {
-      res.status(404).json({
-        error: `Corpus "${name}" not found`,
-        fix: 'Check the corpus name or build a new one',
-        available: this.corpusStore.list().map(c => c.name)
-      });
+      this.corpusNotFound(res, name);
       return;
     }
 
@@ -163,11 +157,7 @@ export class CorpusRoutes extends BaseRouteHandler {
     const corpus = this.corpusStore.read(name);
 
     if (!corpus) {
-      res.status(404).json({
-        error: `Corpus "${name}" not found`,
-        fix: 'Check the corpus name or build a new one',
-        available: this.corpusStore.list().map(c => c.name)
-      });
+      this.corpusNotFound(res, name);
       return;
     }
 
@@ -180,11 +170,7 @@ export class CorpusRoutes extends BaseRouteHandler {
     const corpus = this.corpusStore.read(name);
 
     if (!corpus) {
-      res.status(404).json({
-        error: `Corpus "${name}" not found`,
-        fix: 'Check the corpus name or build a new one',
-        available: this.corpusStore.list().map(c => c.name)
-      });
+      this.corpusNotFound(res, name);
       return;
     }
 
@@ -198,11 +184,7 @@ export class CorpusRoutes extends BaseRouteHandler {
     const corpus = this.corpusStore.read(name);
 
     if (!corpus) {
-      res.status(404).json({
-        error: `Corpus "${name}" not found`,
-        fix: 'Check the corpus name or build a new one',
-        available: this.corpusStore.list().map(c => c.name)
-      });
+      this.corpusNotFound(res, name);
       return;
     }
 

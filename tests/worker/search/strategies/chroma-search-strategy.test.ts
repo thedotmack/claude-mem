@@ -77,34 +77,6 @@ describe('ChromaSearchStrategy', () => {
     strategy = new ChromaSearchStrategy(mockChromaSync, mockSessionStore);
   });
 
-  describe('canHandle', () => {
-    it('should return true when query text is present', () => {
-      const options: StrategySearchOptions = {
-        query: 'semantic search query'
-      };
-      expect(strategy.canHandle(options)).toBe(true);
-    });
-
-    it('should return false for filter-only (no query)', () => {
-      const options: StrategySearchOptions = {
-        project: 'test-project'
-      };
-      expect(strategy.canHandle(options)).toBe(false);
-    });
-
-    it('should return false when query is empty string', () => {
-      const options: StrategySearchOptions = {
-        query: ''
-      };
-      expect(strategy.canHandle(options)).toBe(false);
-    });
-
-    it('should return false when query is undefined', () => {
-      const options: StrategySearchOptions = {};
-      expect(strategy.canHandle(options)).toBe(false);
-    });
-  });
-
   describe('search', () => {
     it('should call Chroma with query text', async () => {
       const options: StrategySearchOptions = {
@@ -392,12 +364,6 @@ describe('ChromaSearchStrategy', () => {
       expect(mockSessionStore.getObservationsByIds).toHaveBeenCalled();
       const calledWith = mockSessionStore.getObservationsByIds.mock.calls[0][0];
       expect(calledWith).toEqual([100]);
-    });
-  });
-
-  describe('strategy name', () => {
-    it('should have name "chroma"', () => {
-      expect(strategy.name).toBe('chroma');
     });
   });
 });

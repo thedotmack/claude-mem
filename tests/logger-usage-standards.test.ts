@@ -34,6 +34,8 @@ const EXCLUDED_PATTERNS = [
   /integrations\/McpIntegrations\.ts$/,  // CLI installer for MCP integrations (interactive install output)
   /errors\.ts$/,  // Error class/type definitions (pure data, no logic to instrument)
   /worker\/provider-errors\.ts$/,  // Provider error classification (pure data structures)
+  /worker\/agents\/FallbackErrorHandler\.ts$/,  // Pure isAbortError predicate after dead-code removal; no side effects (mirrors output-classifier)
+  /worker\/search\/ResultFormatter\.ts$/,  // Pure static Chroma-failure message builder; no side effects (mirrors CorpusRenderer)
   /worker\/knowledge\/CorpusRenderer\.ts$/,  // Pure string/markdown rendering, no side effects
   /worker\/http\/middleware\/validateBody\.ts$/,  // Trivial zod validation middleware factory
   /worker\/RateLimitStore\.ts$/,  // Side-effect-free in-memory rate-limit store

@@ -14,8 +14,6 @@ import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsMana
 import { clearPortCache } from '../../../../shared/worker-utils.js';
 import { flushResponseThen } from '../../../server/flushResponseThen.js';
 
-const updateSettingsSchema = z.object({}).passthrough();
-
 const toggleMcpSchema = z.object({
   enabled: z.boolean(),
 }).passthrough();
@@ -23,8 +21,6 @@ const toggleMcpSchema = z.object({
 const switchBranchSchema = z.object({
   branch: z.string().min(1),
 }).passthrough();
-
-const updateBranchSchema = z.object({}).passthrough();
 
 export class SettingsRoutes extends BaseRouteHandler {
   constructor(
@@ -35,14 +31,14 @@ export class SettingsRoutes extends BaseRouteHandler {
 
   setupRoutes(app: express.Application): void {
     app.get('/api/settings', this.handleGetSettings.bind(this));
-    app.post('/api/settings', validateBody(updateSettingsSchema), this.handleUpdateSettings.bind(this));
+    app.post('/api/settings', this.handleUpdateSettings.bind(this));
 
     app.get('/api/mcp/status', this.handleGetMcpStatus.bind(this));
     app.post('/api/mcp/toggle', validateBody(toggleMcpSchema), this.handleToggleMcp.bind(this));
 
     app.get('/api/branch/status', this.handleGetBranchStatus.bind(this));
     app.post('/api/branch/switch', validateBody(switchBranchSchema), this.handleSwitchBranch.bind(this));
-    app.post('/api/branch/update', validateBody(updateBranchSchema), this.handleUpdateBranch.bind(this));
+    app.post('/api/branch/update', this.handleUpdateBranch.bind(this));
   }
 
   private handleGetSettings = this.wrapHandler((req: Request, res: Response): void => {

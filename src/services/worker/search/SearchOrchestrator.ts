@@ -7,17 +7,9 @@ import { ChromaSearchStrategy } from './strategies/ChromaSearchStrategy.js';
 import { SQLiteSearchStrategy } from './strategies/SQLiteSearchStrategy.js';
 import { HybridSearchStrategy } from './strategies/HybridSearchStrategy.js';
 
-import { ResultFormatter } from './ResultFormatter.js';
-import { TimelineBuilder } from './TimelineBuilder.js';
-import type { TimelineItem, TimelineData } from './TimelineBuilder.js';
-
-import {
-  SEARCH_CONSTANTS,
-} from './types.js';
 import type {
   StrategySearchOptions,
   StrategySearchResult,
-  SearchResults,
   ObservationSearchResult
 } from './types.js';
 import { ChromaUnavailableError } from './errors.js';
@@ -33,8 +25,6 @@ export class SearchOrchestrator {
   private chromaStrategy: ChromaSearchStrategy | null = null;
   private sqliteStrategy: SQLiteSearchStrategy;
   private hybridStrategy: HybridSearchStrategy | null = null;
-  private resultFormatter: ResultFormatter;
-  private timelineBuilder: TimelineBuilder;
 
   constructor(
     private sessionSearch: SessionSearch,
@@ -47,9 +37,6 @@ export class SearchOrchestrator {
       this.chromaStrategy = new ChromaSearchStrategy(chromaSync, sessionStore);
       this.hybridStrategy = new HybridSearchStrategy(chromaSync, sessionStore, sessionSearch);
     }
-
-    this.resultFormatter = new ResultFormatter();
-    this.timelineBuilder = new TimelineBuilder();
   }
 
   async search(args: any): Promise<StrategySearchResult> {
@@ -132,45 +119,6 @@ export class SearchOrchestrator {
     return { ...results, usedChroma: false };
   }
 
-  getTimeline(
-    timelineData: TimelineData,
-    anchorId: number | string,
-    anchorEpoch: number,
-    depthBefore: number,
-    depthAfter: number
-  ): TimelineItem[] {
-    const items = this.timelineBuilder.buildTimeline(timelineData);
-    return this.timelineBuilder.filterByDepth(items, anchorId, anchorEpoch, depthBefore, depthAfter);
-  }
-
-  formatTimeline(
-    items: TimelineItem[],
-    anchorId: number | string | null,
-    options: {
-      query?: string;
-      depthBefore?: number;
-      depthAfter?: number;
-    } = {}
-  ): string {
-    return this.timelineBuilder.formatTimeline(items, anchorId, options);
-  }
-
-  formatSearchResults(
-    results: SearchResults,
-    query: string,
-    chromaFailed: boolean = false
-  ): string {
-    return this.resultFormatter.formatSearchResults(results, query, chromaFailed);
-  }
-
-  getFormatter(): ResultFormatter {
-    return this.resultFormatter;
-  }
-
-  getTimelineBuilder(): TimelineBuilder {
-    return this.timelineBuilder;
-  }
-
   private normalizeParams(args: any): NormalizedParams {
     const normalized: any = { ...args };
 
@@ -208,9 +156,5 @@ export class SearchOrchestrator {
     }
 
     return normalized;
-  }
-
-  isChromaAvailable(): boolean {
-    return !!this.chromaSync;
   }
 }

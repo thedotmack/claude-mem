@@ -11,45 +11,6 @@ import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
 import { getProjectContext } from '../../../utils/project-name.js';
 import { normalizePlatformSource } from '../../../shared/platform-source.js';
 import { PrivacyCheckValidator } from '../validation/PrivacyCheckValidator.js';
-import { EventEmitter } from 'events';
-
-export interface SummaryStoredEvent {
-  sessionId: string;
-  messageId: number;
-}
-
-class IngestEventBus extends EventEmitter {
-  private readonly recentStored = new Map<string, { event: SummaryStoredEvent; at: number }>();
-  private static readonly RECENT_EVENT_TTL_MS = 60_000;
-
-  constructor() {
-    super();
-    this.setMaxListeners(0);
-    this.on('summaryStoredEvent', (evt: SummaryStoredEvent) => {
-      this.recentStored.set(evt.sessionId, { event: evt, at: Date.now() });
-      this.evictExpiredStored();
-    });
-  }
-
-  takeRecentSummaryStored(sessionId: string): SummaryStoredEvent | undefined {
-    const entry = this.recentStored.get(sessionId);
-    if (!entry) return undefined;
-    if (Date.now() - entry.at > IngestEventBus.RECENT_EVENT_TTL_MS) {
-      this.recentStored.delete(sessionId);
-      return undefined;
-    }
-    return entry.event;
-  }
-
-  private evictExpiredStored(): void {
-    const cutoff = Date.now() - IngestEventBus.RECENT_EVENT_TTL_MS;
-    for (const [key, entry] of this.recentStored) {
-      if (entry.at < cutoff) this.recentStored.delete(key);
-    }
-  }
-}
-
-export const ingestEventBus = new IngestEventBus();
 
 interface IngestContext {
   sessionManager: SessionManager;
@@ -181,38 +142,6 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
   return { ok: true, sessionDbId };
 }
 
-export interface PromptPayload {
-  contentSessionId: string;
-  prompt: string;
-  cwd?: string;
-  platformSource?: string;
-  promptNumber?: number;
-}
-
-export function ingestPrompt(payload: PromptPayload): IngestResult {
-  const { dbManager } = requireContext();
-
-  if (!payload.contentSessionId) {
-    return { ok: false, reason: 'missing contentSessionId', status: 400 };
-  }
-  if (typeof payload.prompt !== 'string') {
-    return { ok: false, reason: 'missing prompt text', status: 400 };
-  }
-
-  const platformSource = normalizePlatformSource(payload.platformSource);
-  const cwd = typeof payload.cwd === 'string' ? payload.cwd : '';
-  const project = cwd.trim() ? getProjectContext(cwd).primary : '';
-
-  try {
-    const store = dbManager.getSessionStore();
-    const sessionDbId = store.createSDKSession(payload.contentSessionId, project, payload.prompt, undefined, platformSource);
-    return { ok: true, sessionDbId };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return { ok: false, reason: message, status: 500 };
-  }
-}
-
 export type SummaryPayload =
   | {
       kind: 'queue';
@@ -254,19 +183,6 @@ export async function ingestSummary(payload: SummaryPayload): Promise<IngestResu
 
     return { ok: true, sessionDbId };
   }
-
-  if (payload.parsed.skipped) {
-    ingestEventBus.emit('summaryStoredEvent', {
-      sessionId: payload.contentSessionId,
-      messageId: payload.messageId,
-    } satisfies SummaryStoredEvent);
-    return { ok: true, sessionDbId: payload.sessionDbId, messageId: payload.messageId };
-  }
-
-  ingestEventBus.emit('summaryStoredEvent', {
-    sessionId: payload.contentSessionId,
-    messageId: payload.messageId,
-  } satisfies SummaryStoredEvent);
 
   return { ok: true, sessionDbId: payload.sessionDbId, messageId: payload.messageId };
 }

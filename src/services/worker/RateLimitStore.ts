@@ -72,13 +72,6 @@ export class RateLimitStore {
     return this.entries.get(type);
   }
 
-  /** All current entries, newest-first by observedAt. */
-  getAll(): RateLimitEntry[] {
-    return Array.from(this.entries.values()).sort(
-      (a, b) => b.observedAt - a.observedAt,
-    );
-  }
-
   /** Latest snapshot per "interesting" window for health surface. */
   getMostRecentByWindow(): {
     five_hour?: RateLimitEntry;
@@ -98,11 +91,6 @@ export class RateLimitStore {
 
   get size(): number {
     return this.entries.size;
-  }
-
-  /** Drop all entries — used by tests for isolation. */
-  clear(): void {
-    this.entries.clear();
   }
 }
 

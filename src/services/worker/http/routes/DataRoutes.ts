@@ -66,8 +66,6 @@ const sdkSessionsBatchSchema = z.preprocess((value) => {
   memorySessionIds: stringArrayLike,
 }).passthrough());
 
-const setProcessingSchema = z.object({}).passthrough();
-
 const importSchema = z.object({
   sessions: z.array(z.unknown()).optional(),
   summaries: z.array(z.unknown()).optional(),
@@ -103,7 +101,6 @@ export class DataRoutes extends BaseRouteHandler {
     app.get('/api/projects', this.handleGetProjects.bind(this));
 
     app.get('/api/processing-status', this.handleGetProcessingStatus.bind(this));
-    app.post('/api/processing', validateBody(setProcessingSchema), this.handleSetProcessing.bind(this));
 
     app.post('/api/import', validateBody(importSchema), this.handleImport.bind(this));
   }
@@ -281,14 +278,6 @@ export class DataRoutes extends BaseRouteHandler {
     const isProcessing = await this.sessionManager.isAnySessionProcessing();
     const queueDepth = await this.sessionManager.getTotalActiveWork(); 
     res.json({ isProcessing, queueDepth });
-  });
-
-  private handleSetProcessing = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const isProcessing = await this.sessionManager.isAnySessionProcessing();
-    const queueDepth = await this.sessionManager.getTotalQueueDepth();
-    const activeSessions = this.sessionManager.getActiveSessionCount();
-
-    res.json({ status: 'ok', isProcessing, queueDepth, activeSessions });
   });
 
   private parsePaginationParams(req: Request): { offset: number; limit: number; project?: string; platformSource?: string } {
