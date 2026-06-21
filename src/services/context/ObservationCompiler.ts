@@ -263,10 +263,21 @@ export function prepareSummariesForTimeline(
 
   return displaySummaries.map((summary, i) => {
     // Each summary is a "Session started" marker, so back-date it to the start
-    // of its session (the next-older summary's creation time) for every entry,
-    // including the newest. allSummaries is over-fetched by SUMMARY_LOOKAHEAD so
-    // the last displayed summary still has an older neighbor.
-    const olderSummary = allSummaries[i + 1] ?? null;
+    // of its session: the next-older summary in the SAME project (its previous
+    // session). This applies to every entry, including the newest. In
+    // multi-project context allSummaries interleaves projects ordered by time,
+    // so we skip summaries from other projects rather than blindly taking
+    // allSummaries[i + 1]. allSummaries is over-fetched by SUMMARY_LOOKAHEAD so
+    // the last displayed summary still has an older neighbor to anchor to.
+    // (Single-project queries don't select `project`, so it is undefined for
+    // every row and this matches the immediate next summary, as before.)
+    let olderSummary: SessionSummary | null = null;
+    for (let j = i + 1; j < allSummaries.length; j++) {
+      if (allSummaries[j].project === summary.project) {
+        olderSummary = allSummaries[j];
+        break;
+      }
+    }
     return {
       ...summary,
       displayEpoch: olderSummary ? olderSummary.created_at_epoch : summary.created_at_epoch,

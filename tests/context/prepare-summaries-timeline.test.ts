@@ -48,6 +48,19 @@ describe('prepareSummariesForTimeline', () => {
     expect(result[1].shouldShowLink).toBe(true);
   });
 
+  it('anchors to the next-older summary in the same project (multi-project)', () => {
+    // allSummaries interleaves projects ordered by time: A@300, B@250, A@200.
+    const a300 = createSummary({ id: 1, created_at_epoch: 300, project: 'A' });
+    const b250 = createSummary({ id: 2, created_at_epoch: 250, project: 'B' });
+    const a200 = createSummary({ id: 3, created_at_epoch: 200, project: 'A' });
+
+    const result = prepareSummariesForTimeline([a300], [a300, b250, a200]);
+
+    // Project A's summary back-dates to A's previous session (200), not B (250).
+    expect(result[0].displayEpoch).toBe(200);
+    expect(result[0].displayTime).toBe(a200.created_at);
+  });
+
   it('falls back to a summary\'s own time when there is no older neighbor', () => {
     const only = createSummary({ id: 1, created_at_epoch: 300 });
 
