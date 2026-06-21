@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.8.0] - 2026-06-21
+
+## Telemetry: observation volume on per-session rollups
+
+Carries generation-side observation volume and type mix on the `observer_turn_rollup` event so cache-value KPIs survive the migration off the legacy per-occurrence `session_compressed` / `context_injected` streams.
+
+### What's new
+- **`observer_turn_rollup`** now sums `observations_created` and the `obs_type_*` family (bugfix / discovery / decision / refactor / other) across every compression turn in a session. Paired with `total_cost_usd`, this makes **cost-per-observation** and **observation-type-by-model** derivable from the rollup alone.
+- **`context_injected_rollup`** carries `total_observations_injected` and `total_tokens_saved_vs_naive` — context-cache value (observations served × cost/obs) is now derivable from the rollup.
+- `scrub.ts` whitelist extended for the new aggregate keys; all values are counts/sums only — never names, prompt text, or raw strings.
+- Public `telemetry.mdx` docs updated to document the new rollup fields.
+
+### Merge notes
+- Merged latest `main` (Ponytail audit, v13.7.1), which removed fabrication tracking; the now-stale `fabrication_count` / `fabricated_count` references were dropped from code and docs accordingly.
+
+Full changes: https://github.com/thedotmack/claude-mem/pull/3017
+
 ## [13.7.1] - 2026-06-21
 
 Cleanup + reliability release. No new user-facing features.
