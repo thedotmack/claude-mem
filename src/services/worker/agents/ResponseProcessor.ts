@@ -18,9 +18,8 @@ import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster
 import { telemetryBuffer } from '../../telemetry/buffer.js';
 
 /**
- * Consecutive non-XML observer outputs tolerated before we kill and respawn the
- * SDK session (plan-11, #2485). Idle and prose both count; poisoned triggers an
- * immediate respawn regardless of the count.
+ * Consecutive invalid observer outputs tolerated before we kill and respawn the
+ * SDK session (plan-11, #2485). Idle and prose both count toward this limit.
  */
 export const INVALID_OUTPUT_RESPAWN_THRESHOLD = 3;
 
@@ -66,17 +65,15 @@ export async function processAgentResponse(
       preview,
       consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
     });
-
-    // Recover from poison (plan-11, #2485): a poisoned closure string means the
-    // SDK session is wedged and will keep emitting garbage — respawn immediately.
-    // For idle/prose, only respawn after N consecutive invalid outputs so we
-    // don't churn the session on benign single-batch misses.
+    
+// Recover from repeated invalid output (plan-11, #2485).
+// The session is restarted only after N consecutive invalid outputs to avoid
+// churn from benign single-batch misses.
     const mustRespawn =
-      outputClass === 'poisoned' ||
       session.consecutiveInvalidOutputs >= INVALID_OUTPUT_RESPAWN_THRESHOLD;
 
     if (mustRespawn) {
-      logger.error('SESSION', `${agentName} session poisoned — killing and respawning, pending messages preserved`, {
+      logger.error('SESSION', `${agentName} session produced too many invalid outputs — killing and respawning, pending messages preserved`, {
         sessionId: session.sessionDbId,
         outputClass,
         consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
@@ -94,7 +91,7 @@ export async function processAgentResponse(
         ide: session.platformSource,
         hook: session.lastGeneratorSource,
       });
-      await sessionManager.respawnPoisonedSession(session.sessionDbId);
+      await sessionManager.respawnSession(session.sessionDbId);
       return;
     }
 
@@ -124,12 +121,9 @@ export async function processAgentResponse(
   const { observations, summary } = parsed;
   const summaryForStore = normalizeSummaryForStorage(summary);
 
-  // Verify before persist (plan-11, #2574): the summarizer can fabricate a
-  // nonexistent commit hash while keeping files_modified accurate, poisoning
-  // future context injection. Cross-check any emitted commit hash against
-  // ground truth via `git cat-file -e` in the session's repo and strip
-  // fabricated hashes from the persisted text. projectRoot carries the cwd of
-  // the most recently observed tool-use.
+// Recover from repeated invalid output (plan-11, #2485).
+// Respawn only after N consecutive invalid outputs to avoid churn from
+// benign single-batch misses.
   let fabricatedCount = 0;
   if (summaryForStore) {
     const { fabricated } = verifyCommitHashesInText(

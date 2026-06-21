@@ -34,17 +34,22 @@ describe('classifyObserverOutput (plan-11 #2485)', () => {
   it('classifies conversational prose as prose', () => {
     expect(classifyObserverOutput('Skipping — repeated log scan with no new findings.')).toBe('prose');
   });
-
-  it('classifies "session exhausted" closure string as poisoned', () => {
-    expect(classifyObserverOutput('This session has been exhausted, I cannot continue.')).toBe('poisoned');
+  it('classifies closure-like messages as prose, not poisoned', () => {
+    expect(
+      classifyObserverOutput('This session has been exhausted, I cannot continue.')
+    ).toBe('prose');
   });
 
-  it('classifies "prompt is too long" closure as poisoned', () => {
-    expect(classifyObserverOutput('Error: prompt is too long for this model.')).toBe('poisoned');
+  it('classifies context limit messages as prose, not poisoned', () => {
+    expect(
+      classifyObserverOutput('Error: prompt is too long for this model.')
+    ).toBe('prose');
   });
 
-  it('poison detection takes precedence over a stray tag', () => {
-    expect(classifyObserverOutput('session exhausted <observation></observation>')).toBe('poisoned');
+  it('XML structure takes precedence over message content', () => {
+    expect(
+      classifyObserverOutput('session exhausted <observation></observation>')
+    ).toBe('xml');
   });
 });
 

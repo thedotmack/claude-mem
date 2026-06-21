@@ -33,14 +33,13 @@ const MAX_USER_PROMPT_BYTES = 256 * 1024;
  */
 function normalizeAbortReason(
   reason: string | null | undefined
-): 'idle' | 'shutdown' | 'overflow' | 'restart_guard' | 'quota' | 'poisoned' | 'none' {
+): 'idle' | 'shutdown' | 'overflow' | 'restart_guard' | 'quota'   | 'none' {
   switch ((reason ?? '').split(':')[0]) {
     case 'idle': return 'idle';
     case 'shutdown': return 'shutdown';
     case 'overflow': return 'overflow';
     case 'restart-guard': return 'restart_guard';
     case 'quota': return 'quota';
-    case 'poisoned': return 'poisoned';
     default: return 'none';
   }
 }
@@ -189,10 +188,8 @@ export class SessionRoutes extends BaseRouteHandler {
         const reason = session.abortReason ?? null;
         session.abortReason = null;  // consume the reason
         if (reason !== null) {
-          // Abort accounting lives HERE, where the reason is consumed — the
-          // ONLY point every abort flow (idle / shutdown / overflow / quota /
-          // poisoned) passes through. Emit the closed enum, never the raw
-          // string ('quota:…' carries a window suffix).
+          // ONLY point every abort flow (idle / shutdown / overflow / quota)
+          // passes through. Emit the closed enum, never the raw
           telemetryBuffer.record('session_compressed', {
             outcome: 'aborted',
             provider,
