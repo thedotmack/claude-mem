@@ -1650,10 +1650,11 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
 
   const failedIDEs = await setupIDEs(selectedIDEs, summary);
 
-  // Optionally disable Claude Code's built-in auto-memory (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1)
-  // when the user explicitly opts in, either through the interactive prompt or
-  // via --disable-auto-memory. claude-mem's hook-based memory is the intended
-  // source of cross-session context, but we no longer mutate settings.json silently.
+  // Disable Claude Code's built-in auto-memory (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1)
+  // by default — it competes with claude-mem for context-window tokens. The user
+  // can opt back in via --keep-auto-memory or the interactive "Leave enabled"
+  // choice; resolveClaudeAutoMemoryChoice() decides. claude-mem's hook-based
+  // memory is the intended source of cross-session context.
   // Four-state so the summary can distinguish "wrote", "already set", "left enabled",
   // and "failed". A boolean would conflate the error path with a deliberate no-op.
   let autoMemoryStatus: 'disabled' | 'already-disabled' | 'left-enabled' | 'failed' | null = null;

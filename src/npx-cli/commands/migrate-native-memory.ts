@@ -83,8 +83,20 @@ function recoverProjectCwd(projectDir: string, encodedName: string): string {
     const jsonl = readdirSync(projectDir).find(f => f.endsWith('.jsonl'));
     if (jsonl) {
       const content = readFileSync(join(projectDir, jsonl), 'utf8');
-      const match = content.match(/"cwd"\s*:\s*"([^"]+)"/);
-      if (match && match[1]) return match[1];
+      // Each line is a standalone JSON object. Parse lines and read the
+      // top-level `cwd` field — never a regex over the whole file, which could
+      // match a nested `"cwd"` embedded in a tool_input/tool_response blob and
+      // misattribute the entire project's migrated observations.
+      for (const line of content.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          const entry = JSON.parse(trimmed) as { cwd?: unknown };
+          if (typeof entry.cwd === 'string' && entry.cwd) return entry.cwd;
+        } catch {
+          // not valid JSON on its own — skip this line
+        }
+      }
     }
   } catch {
     // fall through to filesystem probing
@@ -352,6 +364,18 @@ export async function runMigrateNativeMemoryCommand(extraArgs: string[] = []): P
   let projects = discoverNativeProjects();
   if (opts.project) {
     projects = projects.filter(p => p.displayName === opts.project || p.encodedName === opts.project);
+    // displayName is just the project name (often a folder basename), so two
+    // distinct checkouts can share it (e.g. client-a/myapp and client-b/myapp).
+    // Warn rather than silently migrating both, and show the encoded names so
+    // the user can re-run with an exact --project <encodedName> if needed.
+    if (projects.length > 1) {
+      console.log(pc.yellow(`Warning: --project ${opts.project} matched ${projects.length} projects:`));
+      for (const p of projects) {
+        console.log(`  ${pc.cyan(p.cwd)} ${pc.dim(`(${p.encodedName})`)}`);
+      }
+      console.log(pc.dim('All of the above will be migrated. Re-run with --project <encoded-name> to target just one.'));
+      console.log();
+    }
   }
 
   if (projects.length === 0) {
