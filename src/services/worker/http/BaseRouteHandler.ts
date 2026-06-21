@@ -2,7 +2,7 @@
 import { Request, Response } from 'express';
 import { logger } from '../../../utils/logger.js';
 import { AppError } from '../../server/ErrorHandler.js';
-import { captureEvent } from '../../telemetry/telemetry.js';
+import { instrument } from '../../telemetry/instrument.js';
 
 export abstract class BaseRouteHandler {
   protected wrapHandler(
@@ -55,10 +55,20 @@ export abstract class BaseRouteHandler {
   }
 
   protected handleError(res: Response, error: Error, context?: string): void {
-    logger.failure('WORKER', context || 'Request failed', {}, error);
+    const statusCode = error instanceof AppError ? error.statusCode : 500;
+    // The local failure line (full fidelity) always fires. The Error payload
+    // (ctx.data) routes through logger.error → the error sink → captureException
+    // (Phase 3), which sends a REDACTED $exception to PostHog Error Tracking —
+    // consent-gated, kill-switch-gated, and rate-limited. This replaces the old
+    // enum-only `error_occurred` event with the real (scrubbed) exception, so we
+    // no longer attach a telemetry descriptor here.
+    instrument(
+      'WORKER',
+      'failure',
+      context || 'Request failed',
+      { data: error }
+    );
     if (!res.headersSent) {
-      const statusCode = error instanceof AppError ? error.statusCode : 500;
-      if (statusCode >= 500) captureEvent('error_occurred', { error_category: 'http_500' });
       const response: Record<string, unknown> = { error: error.message };
 
       if (error instanceof AppError && error.code) {
