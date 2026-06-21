@@ -1,14 +1,12 @@
-// Filters CLAUDE_CODE_* (and CLAUDECODE_*) unless explicitly preserved in
-// ENV_PRESERVE. This is layer 2 of defense for #2357 (CLAUDE_CODE_EFFORT_LEVEL
-// / CLAUDE_CODE_ALWAYS_ENABLE_EFFORT leaking into the SDK subprocess) — layer 1
-// is BLOCKED_ENV_VARS in EnvManager.ts. Do NOT add the EFFORT_* vars to
-// ENV_PRESERVE: preserving them would defeat the strip.
 export const ENV_PREFIXES = ['CLAUDECODE_', 'CLAUDE_CODE_'];
 export const ENV_EXACT_MATCHES = new Set([
   'CLAUDECODE',
   'CLAUDE_CODE_SESSION',
   'CLAUDE_CODE_ENTRYPOINT',
   'MCP_SESSION_ID',
+]);
+
+export const ENV_PROXY_VARS = new Set([
   // Proxy vars: strip so the SDK subprocess doesn't inherit a proxy config.
   'HTTP_PROXY',
   'HTTPS_PROXY',
@@ -45,6 +43,7 @@ export function sanitizeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.Proces
     if (value === undefined) continue;
     if (ENV_PRESERVE.has(key)) { sanitized[key] = value; continue; }
     if (ENV_EXACT_MATCHES.has(key)) continue;
+    if (ENV_PROXY_VARS.has(key)) { sanitized[key] = value; continue; }
     if (ENV_PREFIXES.some(prefix => key.startsWith(prefix))) continue;
     sanitized[key] = value;
   }
