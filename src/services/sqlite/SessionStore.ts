@@ -1472,6 +1472,23 @@ export class SessionStore {
     }>;
   }
 
+  /**
+   * Set created_at/created_at_epoch for every observation of a session to a
+   * specific epoch. Used by the native-memory migration to date imported notes
+   * by their source file's mtime AFTER storage — the enqueue-time hint is
+   * unreliable because the agent's idle turns reset the pending timestamp before
+   * the observation is emitted. Returns the number of rows updated.
+   */
+  backdateObservationsForSession(memorySessionId: string, epochMs: number): number {
+    const iso = new Date(epochMs).toISOString();
+    const info = this.db.prepare(`
+      UPDATE observations
+      SET created_at_epoch = ?, created_at = ?
+      WHERE memory_session_id = ?
+    `).run(epochMs, iso, memorySessionId);
+    return info.changes;
+  }
+
   getObservationById(id: number): ObservationRecord | null {
     const stmt = this.db.prepare(`
       SELECT *

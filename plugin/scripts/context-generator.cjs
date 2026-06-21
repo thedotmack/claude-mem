@@ -483,7 +483,11 @@ ${o.stack}`:` ${o.message}`;else if(this.getLevel()===0&&typeof o=="object")try{
       FROM observations
       WHERE memory_session_id = ?
       ORDER BY created_at_epoch ASC
-    `).all(e)}getObservationById(e){return this.db.prepare(`
+    `).all(e)}backdateObservationsForSession(e,t){let s=new Date(t).toISOString();return this.db.prepare(`
+      UPDATE observations
+      SET created_at_epoch = ?, created_at = ?
+      WHERE memory_session_id = ?
+    `).run(t,s,e).changes}getObservationById(e){return this.db.prepare(`
       SELECT *
       FROM observations
       WHERE id = ?

@@ -26,7 +26,7 @@ ${pc.bold('Install Commands')} (no Bun required):
   ${pc.cyan('npx claude-mem install --provider claude|gemini|openrouter')}   Set LLM provider non-interactively
   ${pc.cyan('npx claude-mem install --model <id>')}   Set Claude model (when provider=claude)
   ${pc.cyan('npx claude-mem install --no-auto-start')}   Skip worker auto-start at the end
-  ${pc.cyan('npx claude-mem install --disable-auto-memory')}   Explicitly disable Claude Code native auto-memory
+  ${pc.cyan('npx claude-mem install --keep-auto-memory')}   Keep Claude Code native auto-memory on (disabled by default; it conflicts with claude-mem)
   ${pc.cyan('npx claude-mem install --runtime worker|server')}   Select runtime non-interactively (server brings up Docker pg+redis, generates an API key, injects the IDE MCP config)
   ${pc.cyan('npx claude-mem install --runtime server --server-url <url>')}   Point the server runtime at a specific base URL
   ${pc.cyan('npx claude-mem repair')}                Repair runtime (re-runs Bun/uv setup and bun install in plugin cache)
@@ -53,6 +53,7 @@ ${pc.bold('Runtime Commands')} (requires Bun, delegates to installed plugin):
   ${pc.cyan('npx claude-mem server api-key create|list|revoke')}   Manage API keys (not yet implemented)
   ${pc.cyan('npx claude-mem worker start|stop|restart|status')}    Worker compatibility aliases
   ${pc.cyan('npx claude-mem search <query>')}       Search observations
+  ${pc.cyan('npx claude-mem migrate-memory [--dry-run] [--project <name>] [--keep-source]')}    Import Claude Code native auto-memory into claude-mem, then archive the originals (--keep-source to skip)
   ${pc.cyan('npx claude-mem adopt [--dry-run] [--branch <name>]')}    Stamp merged worktrees into parent project
   ${pc.cyan('npx claude-mem cleanup [--dry-run]')}    Run one-time v12.4.3 pollution cleanup (or preview counts)
   ${pc.cyan('npx claude-mem transcript watch')}     Start transcript watcher
@@ -94,6 +95,7 @@ function parseInstallOptions(argv: string[]): InstallOptions {
     model: readFlag(argv, '--model'),
     noAutoStart: argv.includes('--no-auto-start'),
     disableAutoMemory: argv.includes('--disable-auto-memory'),
+    keepAutoMemory: argv.includes('--keep-auto-memory'),
     runtime: runtime as InstallOptions['runtime'],
     serverUrl: readFlag(argv, '--server-url'),
   };
@@ -202,6 +204,14 @@ async function main(): Promise<void> {
     case 'cleanup': {
       const { runCleanupCommand } = await import('./commands/runtime.js');
       runCleanupCommand(args.slice(1));
+      break;
+    }
+
+    case 'migrate-memory':
+    case 'migrate-native-memory':
+    case 'transfer-memory': {
+      const { runMigrateNativeMemoryCommand } = await import('./commands/migrate-native-memory.js');
+      await runMigrateNativeMemoryCommand(args.slice(1));
       break;
     }
 
