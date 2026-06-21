@@ -34,6 +34,29 @@ function serverBetaServiceScriptPath(): string {
   return join(marketplaceDirectory(), 'plugin', 'scripts', 'server-beta-service.cjs');
 }
 
+/**
+ * Spawn a plugin .cjs script under Bun with inherited stdio, exiting this
+ * process with the child's exit code. `args[0]` is the script path. Sanitizes
+ * host CLI bleed-through and Anthropic credentials before launch; credentials
+ * are re-read from ~/.claude-mem/.env at SDK spawn time (#2357 / #2375).
+ */
+function spawnPlugin(bunPath: string, args: string[], startFailureLabel = 'Bun'): void {
+  const child = spawnHidden(bunPath, args, {
+    stdio: 'inherit',
+    cwd: marketplaceDirectory(),
+    env: sanitizeEnv(process.env),
+  });
+
+  child.on('error', (error) => {
+    console.error(pc.red(`Failed to start ${startFailureLabel}: ${error.message}`));
+    process.exit(1);
+  });
+
+  child.on('close', (exitCode) => {
+    process.exit(exitCode ?? 0);
+  });
+}
+
 function spawnBunWorkerCommand(command: string, extraArgs: string[] = []): void {
   ensureInstalledOrExit();
   const bunPath = resolveBunOrExit();
@@ -45,25 +68,7 @@ function spawnBunWorkerCommand(command: string, extraArgs: string[] = []): void 
     process.exit(1);
   }
 
-  const args = [workerScript, command, ...extraArgs];
-
-  const child = spawnHidden(bunPath, args, {
-    stdio: 'inherit',
-    cwd: marketplaceDirectory(),
-    // Sanitize host CLI bleed-through and Anthropic credentials before
-    // launching the Bun worker/server/transcript process. Credentials are
-    // re-read from ~/.claude-mem/.env at SDK spawn time (#2357 / #2375).
-    env: sanitizeEnv(process.env),
-  });
-
-  child.on('error', (error) => {
-    console.error(pc.red(`Failed to start Bun: ${error.message}`));
-    process.exit(1);
-  });
-
-  child.on('close', (exitCode) => {
-    process.exit(exitCode ?? 0);
-  });
+  spawnPlugin(bunPath, [workerScript, command, ...extraArgs]);
 }
 
 function spawnBunServerBetaCommand(command: string, extraArgs: string[] = []): void {
@@ -77,23 +82,7 @@ function spawnBunServerBetaCommand(command: string, extraArgs: string[] = []): v
     process.exit(1);
   }
 
-  const child = spawnHidden(bunPath, [serverScript, command, ...extraArgs], {
-    stdio: 'inherit',
-    cwd: marketplaceDirectory(),
-    // Sanitize host CLI bleed-through and Anthropic credentials before
-    // launching the Bun worker/server/transcript process. Credentials are
-    // re-read from ~/.claude-mem/.env at SDK spawn time (#2357 / #2375).
-    env: sanitizeEnv(process.env),
-  });
-
-  child.on('error', (error) => {
-    console.error(pc.red(`Failed to start Bun: ${error.message}`));
-    process.exit(1);
-  });
-
-  child.on('close', (exitCode) => {
-    process.exit(exitCode ?? 0);
-  });
+  spawnPlugin(bunPath, [serverScript, command, ...extraArgs]);
 }
 
 export function runServerBetaStartCommand(): void {
@@ -151,25 +140,7 @@ export function runAdoptCommand(extraArgs: string[] = []): void {
   }
 
   const userCwd = process.cwd();
-  const args = [workerScript, 'adopt', '--cwd', userCwd, ...extraArgs];
-
-  const child = spawnHidden(bunPath, args, {
-    stdio: 'inherit',
-    cwd: marketplaceDirectory(),
-    // Sanitize host CLI bleed-through and Anthropic credentials before
-    // launching the Bun worker/server/transcript process. Credentials are
-    // re-read from ~/.claude-mem/.env at SDK spawn time (#2357 / #2375).
-    env: sanitizeEnv(process.env),
-  });
-
-  child.on('error', (error) => {
-    console.error(pc.red(`Failed to start Bun: ${error.message}`));
-    process.exit(1);
-  });
-
-  child.on('close', (exitCode) => {
-    process.exit(exitCode ?? 0);
-  });
+  spawnPlugin(bunPath, [workerScript, 'adopt', '--cwd', userCwd, ...extraArgs]);
 }
 
 export function runCleanupCommand(extraArgs: string[] = []): void {
@@ -245,21 +216,5 @@ export function runTranscriptWatchCommand(): void {
     return;
   }
 
-  const child = spawnHidden(bunPath, [transcriptWatcherPath, 'watch'], {
-    stdio: 'inherit',
-    cwd: marketplaceDirectory(),
-    // Sanitize host CLI bleed-through and Anthropic credentials before
-    // launching the Bun worker/server/transcript process. Credentials are
-    // re-read from ~/.claude-mem/.env at SDK spawn time (#2357 / #2375).
-    env: sanitizeEnv(process.env),
-  });
-
-  child.on('error', (error) => {
-    console.error(pc.red(`Failed to start transcript watcher: ${error.message}`));
-    process.exit(1);
-  });
-
-  child.on('close', (exitCode) => {
-    process.exit(exitCode ?? 0);
-  });
+  spawnPlugin(bunPath, [transcriptWatcherPath, 'watch'], 'transcript watcher');
 }

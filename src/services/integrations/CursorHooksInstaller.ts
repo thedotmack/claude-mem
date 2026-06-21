@@ -2,35 +2,23 @@
 import path from 'path';
 import { homedir } from 'os';
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'fs';
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import { logger } from '../../utils/logger.js';
 import { getWorkerPort, workerHttpRequest } from '../../shared/worker-utils.js';
-import { DATA_DIR, CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
+import { DATA_DIR } from '../../shared/paths.js';
 import {
   readCursorRegistry as readCursorRegistryFromFile,
   writeCursorRegistry as writeCursorRegistryToFile,
   writeContextFile,
   type CursorProjectRegistry
 } from '../../utils/cursor-utils.js';
-import type { CursorInstallTarget, CursorHooksJson, CursorMcpConfig, Platform } from './types.js';
+import type { CursorInstallTarget, CursorHooksJson, CursorMcpConfig } from './types.js';
 import {
   getMcpServerAbsolutePath,
   getWorkerServiceAbsolutePath,
   getBunAbsolutePath,
 } from './install-paths.js';
 
-const execAsync = promisify(exec);
-
 const CURSOR_REGISTRY_FILE = path.join(DATA_DIR, 'cursor-projects.json');
-
-export function detectPlatform(): Platform {
-  return process.platform === 'win32' ? 'windows' : 'unix';
-}
-
-export function getScriptExtension(): string {
-  return detectPlatform() === 'windows' ? '.ps1' : '.sh';
-}
 
 export function readCursorRegistry(): CursorProjectRegistry {
   return readCursorRegistryFromFile(CURSOR_REGISTRY_FILE);
@@ -484,28 +472,6 @@ export function checkCursorHooksStatus(): number {
   }
 
   return 0;
-}
-
-export async function detectClaudeCode(): Promise<boolean> {
-  try {
-    const { stdout } = await execAsync('which claude || where claude', { timeout: 5000 });
-    if (stdout.trim()) {
-      return true;
-    }
-  } catch (error) {
-    if (error instanceof Error) {
-      logger.debug('WORKER', 'Claude CLI not in PATH', {}, error);
-    } else {
-      logger.debug('WORKER', 'Claude CLI not in PATH', {}, new Error(String(error)));
-    }
-  }
-
-  const pluginDir = path.join(CLAUDE_CONFIG_DIR, 'plugins');
-  if (existsSync(pluginDir)) {
-    return true;
-  }
-
-  return false;
 }
 
 export async function handleCursorCommand(subcommand: string, args: string[]): Promise<number> {

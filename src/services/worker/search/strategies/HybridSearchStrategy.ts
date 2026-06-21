@@ -1,5 +1,4 @@
 
-import { BaseSearchStrategy, SearchStrategy } from './SearchStrategy.js';
 import {
   StrategySearchOptions,
   StrategySearchResult,
@@ -12,34 +11,19 @@ import { SessionStore } from '../../../sqlite/SessionStore.js';
 import { SessionSearch } from '../../../sqlite/SessionSearch.js';
 import { logger } from '../../../../utils/logger.js';
 
-export class HybridSearchStrategy extends BaseSearchStrategy implements SearchStrategy {
-  readonly name = 'hybrid';
-
+export class HybridSearchStrategy {
   constructor(
     private chromaSync: ChromaSync,
     private sessionStore: SessionStore,
     private sessionSearch: SessionSearch
-  ) {
-    super();
-  }
+  ) {}
 
-  canHandle(options: StrategySearchOptions): boolean {
-    return !!this.chromaSync && (
-      !!options.concepts ||
-      !!options.files ||
-      (!!options.type && !!options.query) ||
-      options.strategyHint === 'hybrid'
-    );
-  }
-
-  async search(options: StrategySearchOptions): Promise<StrategySearchResult> {
-    const { query, limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project } = options;
-
-    if (!query) {
-      return this.emptyResult('hybrid');
-    }
-
-    return this.emptyResult('hybrid');
+  private emptyResult(strategy: 'hybrid'): StrategySearchResult {
+    return {
+      results: { observations: [], sessions: [], prompts: [] },
+      usedChroma: true,
+      strategy
+    };
   }
 
   async findByConcept(

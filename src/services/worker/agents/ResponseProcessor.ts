@@ -2,7 +2,6 @@
 import { logger } from '../../../utils/logger.js';
 import { parseAgentXml, type ParsedObservation, type ParsedSummary } from '../../../sdk/parser.js';
 import { classifyObserverOutput, previewOutput } from '../../../sdk/output-classifier.js';
-import { verifyCommitHashesInText } from '../../../sdk/commit-verification.js';
 import { ingestSummary } from '../http/shared.js';
 import { updateCursorContextForProject } from '../../integrations/CursorHooksInstaller.js';
 import { notifyTelegram } from '../../integrations/TelegramNotifier.js';
@@ -138,39 +137,6 @@ export async function processAgentResponse(
   const { observations, summary } = parsed;
   const summaryForStore = normalizeSummaryForStorage(summary);
 
-  // Verify before persist (plan-11, #2574): the summarizer can fabricate a
-  // nonexistent commit hash while keeping files_modified accurate, poisoning
-  // future context injection. Cross-check any emitted commit hash against
-  // ground truth via `git cat-file -e` in the session's repo and strip
-  // fabricated hashes from the persisted text. projectRoot carries the cwd of
-  // the most recently observed tool-use.
-  let fabricatedCount = 0;
-  if (summaryForStore) {
-    const { fabricated } = verifyCommitHashesInText(
-      [
-        summaryForStore.request,
-        summaryForStore.investigated,
-        summaryForStore.learned,
-        summaryForStore.completed,
-        summaryForStore.next_steps,
-        summaryForStore.notes,
-      ],
-      projectRoot,
-      session.contentSessionId
-    );
-
-    fabricatedCount = fabricated.length;
-
-    if (fabricated.length > 0) {
-      logger.warn('PARSER', `${agentName} summary referenced fabricated commit hash(es); flagging before persist`, {
-        sessionId: session.sessionDbId,
-        fabricated,
-        cwd: projectRoot ?? '(none)',
-      });
-      stripFabricatedHashesFromSummary(summaryForStore, fabricated);
-    }
-  }
-
   const sessionStore = dbManager.getSessionStore();
   sessionStore.ensureMemorySessionIdRegistered(session.sessionDbId, session.memorySessionId, getWorkerPort());
 
@@ -237,10 +203,6 @@ export async function processAgentResponse(
     hook: session.lastGeneratorSource,
     endpoint_class: session.endpointClass,
     compression_ms: compressionMs,
-    // Fabrication signals live HERE (not at the ClaudeProvider merge) so they
-    // flow through all three emit paths: immediate, deferred, and no-result.
-    fabrication_detected: fabricatedCount > 0,
-    fabricated_count: fabricatedCount,
     observation_type: labeledObservations.length > 0 ? dominantType : undefined,
     obs_type_bugfix: typeCounts.bugfix,
     obs_type_discovery: typeCounts.discovery,
@@ -302,7 +264,6 @@ export async function processAgentResponse(
     session,
     dbManager,
     worker,
-    discoveryTokens,
     agentName,
     projectRoot
   );
@@ -314,7 +275,6 @@ export async function processAgentResponse(
     session,
     dbManager,
     worker,
-    discoveryTokens,
     agentName
   );
 }
@@ -340,46 +300,12 @@ function normalizeSummaryForStorage(summary: ParsedSummary | null): {
   };
 }
 
-type StorableSummary = {
-  request: string;
-  investigated: string;
-  learned: string;
-  completed: string;
-  next_steps: string;
-  notes: string | null;
-};
-
-/**
- * Replace each fabricated commit hash in the summary's text fields with a
- * `[unverified commit]` marker so the false claim is neither persisted nor
- * silently dropped — it is flagged in place (plan-11, #2574). Mutates in place.
- */
-function stripFabricatedHashesFromSummary(summary: StorableSummary, fabricated: string[]): void {
-  if (fabricated.length === 0) return;
-  const replace = (value: string | null): string | null => {
-    if (!value) return value;
-    let next = value;
-    for (const hash of fabricated) {
-      // Word-boundary replace, case-insensitive: hashes were lowercased on extraction.
-      next = next.replace(new RegExp(`\\b${hash}\\b`, 'gi'), '[unverified commit]');
-    }
-    return next;
-  };
-  summary.request = replace(summary.request) ?? '';
-  summary.investigated = replace(summary.investigated) ?? '';
-  summary.learned = replace(summary.learned) ?? '';
-  summary.completed = replace(summary.completed) ?? '';
-  summary.next_steps = replace(summary.next_steps) ?? '';
-  summary.notes = replace(summary.notes);
-}
-
 async function syncAndBroadcastObservations(
   observations: ParsedObservation[],
   result: StorageResult,
   session: ActiveSession,
   dbManager: DatabaseManager,
   worker: WorkerRef | undefined,
-  discoveryTokens: number,
   agentName: string,
   projectRoot?: string
 ): Promise<void> {
@@ -408,8 +334,7 @@ async function syncAndBroadcastObservations(
       session.project,
       obs,
       session.lastPromptNumber,
-      result.createdAtEpoch,
-      discoveryTokens
+      result.createdAtEpoch
     ).then(() => {
       const chromaDuration = Date.now() - chromaStart;
       logger.debug('CHROMA', 'Observation synced', {
@@ -477,7 +402,6 @@ async function syncAndBroadcastSummary(
   session: ActiveSession,
   dbManager: DatabaseManager,
   worker: WorkerRef | undefined,
-  discoveryTokens: number,
   agentName: string
 ): Promise<void> {
   if (!summaryForStore || !result.summaryId) {
@@ -492,8 +416,7 @@ async function syncAndBroadcastSummary(
     session.project,
     summaryForStore,
     session.lastPromptNumber,
-    result.createdAtEpoch,
-    discoveryTokens
+    result.createdAtEpoch
   ).then(() => {
     const chromaDuration = Date.now() - chromaStart;
     logger.debug('CHROMA', 'Summary synced', {

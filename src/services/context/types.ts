@@ -79,7 +79,6 @@ export interface TokenEconomics {
 }
 
 export interface PriorMessages {
-  userMessage: string;
   assistantMessage: string;
 }
 

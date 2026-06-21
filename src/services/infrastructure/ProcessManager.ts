@@ -2,16 +2,13 @@
 import path from 'path';
 import { homedir } from 'os';
 import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, rmSync, statSync, utimesSync, copyFileSync } from 'fs';
-import { exec, execSync, spawnSync } from 'child_process';
+import { execSync, spawnSync } from 'child_process';
 import { spawnHidden } from '../../shared/spawn.js';
-import { promisify } from 'util';
 import { logger } from '../../utils/logger.js';
-import { HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
+import { toError } from '../../utils/to-error.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor, validateWorkerPidFile, type ValidateWorkerPidStatus } from '../../supervisor/index.js';
 import { paths } from '../../shared/paths.js';
-
-const execAsync = promisify(exec);
 
 const DATA_DIR = paths.dataDir();
 const PID_FILE = paths.workerPid();
@@ -215,63 +212,6 @@ export function removePidFileIfOwner(expectedOwnerPid: number | null): void {
 export function getPlatformTimeout(baseMs: number): number {
   const WINDOWS_MULTIPLIER = 2.0;
   return process.platform === 'win32' ? Math.round(baseMs * WINDOWS_MULTIPLIER) : baseMs;
-}
-
-export async function getChildProcesses(parentPid: number): Promise<number[]> {
-  if (process.platform !== 'win32') {
-    return [];
-  }
-
-  if (!Number.isInteger(parentPid) || parentPid <= 0) {
-    logger.warn('SYSTEM', 'Invalid parent PID for child process enumeration', { parentPid });
-    return [];
-  }
-
-  try {
-    const cmd = `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process -Filter 'ParentProcessId=${parentPid}' | Select-Object -ExpandProperty ProcessId"`;
-    const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND, windowsHide: true });
-    return stdout
-      .split('\n')
-      .map(line => line.trim())
-      .filter(line => line.length > 0 && /^\d+$/.test(line))
-      .map(line => parseInt(line, 10))
-      .filter(pid => pid > 0);
-  } catch (error: unknown) {
-    if (error instanceof Error) {
-      logger.error('SYSTEM', 'Failed to enumerate child processes', { parentPid }, error);
-    } else {
-      logger.error('SYSTEM', 'Failed to enumerate child processes', { parentPid }, new Error(String(error)));
-    }
-    return [];
-  }
-}
-
-export function parseElapsedTime(etime: string): number {
-  if (!etime || etime.trim() === '') return -1;
-
-  const cleaned = etime.trim();
-  let totalMinutes = 0;
-
-  const dayMatch = cleaned.match(/^(\d+)-(\d+):(\d+):(\d+)$/);
-  if (dayMatch) {
-    totalMinutes = parseInt(dayMatch[1], 10) * 24 * 60 +
-                   parseInt(dayMatch[2], 10) * 60 +
-                   parseInt(dayMatch[3], 10);
-    return totalMinutes;
-  }
-
-  const hourMatch = cleaned.match(/^(\d+):(\d+):(\d+)$/);
-  if (hourMatch) {
-    totalMinutes = parseInt(hourMatch[1], 10) * 60 + parseInt(hourMatch[2], 10);
-    return totalMinutes;
-  }
-
-  const minMatch = cleaned.match(/^(\d+):(\d+)$/);
-  if (minMatch) {
-    return parseInt(minMatch[1], 10);
-  }
-
-  return -1;
 }
 
 const CHROMA_MIGRATION_MARKER_FILENAME = '.chroma-cleaned-v10.3';
@@ -488,7 +428,7 @@ export function spawnDaemon(
         'SYSTEM',
         'Failed to spawn worker daemon on Windows',
         { runtimePath },
-        error instanceof Error ? error : new Error(String(error))
+        toError(error)
       );
       return undefined;
     }

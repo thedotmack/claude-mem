@@ -1,12 +1,10 @@
 -- claude-mem SQLite schema
 --
--- Authoritative shape of the database after all migrations through
--- runner.ts have been applied (current tip = migration 34). Fresh
--- databases boot directly into this shape; existing databases reach
--- it via the migration runner.
+-- Authoritative shape of the database after all migrations have been
+-- applied. Fresh databases boot directly into this shape; existing
+-- databases reach it via SessionStore's inline migration chain.
 --
--- Source of truth: src/services/sqlite/migrations/runner.ts
--- Regenerated from the migration runner and current schema invariants.
+-- Source of truth: src/services/sqlite/SessionStore.ts (constructor migrations).
 --
 -- Invariants enforced here (Plan 01):
 --   * pending_messages.UNIQUE(content_session_id, tool_use_id) — replaces

@@ -1,6 +1,6 @@
 {
   "name": "claude-mem-plugin",
-  "version": "13.7.0",
+  "version": "13.7.1",
   "private": true,
   "description": "Runtime dependencies for claude-mem bundled hooks",
   "type": "module",
@@ -40,7 +40,7 @@
     "tree-sitter-cli"
   ],
   "engines": {
-    "node": ">=18.0.0",
+    "node": ">=20.12.0",
     "bun": ">=1.0.0"
   }
 }

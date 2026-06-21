@@ -50,18 +50,6 @@ export interface ServerBetaGenerationWorkerManager {
   close(): Promise<void>;
 }
 
-export interface ServerBetaProviderRegistry {
-  readonly kind: 'provider-registry';
-  getHealth(): ServerBetaBoundaryHealth;
-  close(): Promise<void>;
-}
-
-export interface ServerBetaEventBroadcaster {
-  readonly kind: 'event-broadcaster';
-  getHealth(): ServerBetaBoundaryHealth;
-  close(): Promise<void>;
-}
-
 export interface ServerBetaServiceGraph {
   runtime: ServerBetaRuntimeName;
   postgres: {
@@ -71,16 +59,12 @@ export interface ServerBetaServiceGraph {
   authMode: ServerBetaAuthMode;
   queueManager: ServerBetaQueueManager;
   generationWorkerManager: ServerBetaGenerationWorkerManager;
-  providerRegistry: ServerBetaProviderRegistry;
-  eventBroadcaster: ServerBetaEventBroadcaster;
   storage: PostgresStorageRepositories;
 }
 
 abstract class DisabledServerBetaBoundary {
   abstract readonly kind: ServerBetaQueueManager['kind']
-    | ServerBetaGenerationWorkerManager['kind']
-    | ServerBetaProviderRegistry['kind']
-    | ServerBetaEventBroadcaster['kind'];
+    | ServerBetaGenerationWorkerManager['kind'];
 
   constructor(private readonly reason: string) {}
 
@@ -97,12 +81,4 @@ export class DisabledServerBetaQueueManager extends DisabledServerBetaBoundary i
 
 export class DisabledServerBetaGenerationWorkerManager extends DisabledServerBetaBoundary implements ServerBetaGenerationWorkerManager {
   readonly kind = 'generation-worker-manager' as const;
-}
-
-export class DisabledServerBetaProviderRegistry extends DisabledServerBetaBoundary implements ServerBetaProviderRegistry {
-  readonly kind = 'provider-registry' as const;
-}
-
-export class DisabledServerBetaEventBroadcaster extends DisabledServerBetaBoundary implements ServerBetaEventBroadcaster {
-  readonly kind = 'event-broadcaster' as const;
 }

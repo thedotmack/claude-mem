@@ -84,11 +84,6 @@ export class ServerSessionsRepository {
     return row ? mapServerSessionRow(row) : null;
   }
 
-  getByMemorySessionId(memorySessionId: string): ServerSession | null {
-    const row = this.db.prepare('SELECT * FROM server_sessions WHERE memory_session_id = ? ORDER BY started_at_epoch DESC LIMIT 1').get(memorySessionId) as ServerSessionRow | null;
-    return row ? mapServerSessionRow(row) : null;
-  }
-
   listByProject(projectId: string): ServerSession[] {
     const rows = this.db.prepare('SELECT * FROM server_sessions WHERE project_id = ? ORDER BY started_at_epoch DESC').all(projectId) as ServerSessionRow[];
     return rows.map(mapServerSessionRow);

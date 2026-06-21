@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.7.1] - 2026-06-21
+
+Cleanup + reliability release. No new user-facing features.
+
+## Fixed
+- **Node version floor corrected.** `engines.node` now requires `>=20.12.0` to match the stdlib `util.parseEnv` adopted during the audit. It previously advertised `>=20.0.0`, where `util.parseEnv` is `undefined` — causing silent credential-load failures (and a hard throw in `saveClaudeMemEnv`) on Node 20.0–20.11. Fixed in both the npm package and the generated plugin manifest. (#3021)
+
+## Changed (internal)
+- **Ponytail audit — −10.4k lines** of dead/redundant code removed across 8 slices (worker HTTP routes, agents, session/rate-limit, search pipeline, providers, storage/shared).
+- **Provider refactor.** New `OpenAICompatibleProvider` base class unifies the Gemini and OpenRouter session lifecycle; per-provider behavior preserved via abstract flags (`requireNonEmptyToTruncate`, `forwardEmptyMessageResponse`).
+- **Infra deduplication.** Consolidated `parseRetryAfterMs` (3→1), `waitForExit` (2→1), request-auth helpers (2→1), and `resolveQueue` (2→1); a `CREDENTIAL_KEYS` loop replaces three duplicated copy blocks.
+- **Worker-restart hardening** via a single-spawn gate.
+- **Deterministic dependency closure** for the bundled plugin runtime.
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v13.7.0...v13.7.1
+
 ## [13.7.0] - 2026-06-20
 
 ## PostHog telemetry overhaul

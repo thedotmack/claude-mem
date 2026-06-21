@@ -1,5 +1,4 @@
 
-import { BaseSearchStrategy, SearchStrategy } from './SearchStrategy.js';
 import {
   StrategySearchOptions,
   StrategySearchResult,
@@ -11,15 +10,15 @@ import {
 import { SessionSearch } from '../../../sqlite/SessionSearch.js';
 import { logger } from '../../../../utils/logger.js';
 
-export class SQLiteSearchStrategy extends BaseSearchStrategy implements SearchStrategy {
-  readonly name = 'sqlite';
+export class SQLiteSearchStrategy {
+  constructor(private sessionSearch: SessionSearch) {}
 
-  constructor(private sessionSearch: SessionSearch) {
-    super();
-  }
-
-  canHandle(options: StrategySearchOptions): boolean {
-    return !options.query || options.strategyHint === 'sqlite';
+  private emptyResult(strategy: 'sqlite'): StrategySearchResult {
+    return {
+      results: { observations: [], sessions: [], prompts: [] },
+      usedChroma: false,
+      strategy
+    };
   }
 
   async search(options: StrategySearchOptions): Promise<StrategySearchResult> {

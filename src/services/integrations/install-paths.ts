@@ -73,11 +73,6 @@ export function getWorkerServiceAbsolutePath(): string | null {
   return resolvePluginScript('worker-service.cjs');
 }
 
-/** Absolute path to the version-check script (`version-check.js`), or null. */
-export function getVersionCheckAbsolutePath(): string | null {
-  return resolvePluginScript('version-check.js');
-}
-
 /**
  * Absolute path to a Bun runtime. Falls back to the bare `bun` name (resolved
  * via PATH at exec time) when no known install location exists.

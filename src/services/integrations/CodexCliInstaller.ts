@@ -227,16 +227,8 @@ function disableCodexPluginConfig(): void {
   console.log(`  Disabled Codex plugin: ${CODEX_PLUGIN_ID}${changed ? '' : ' (already disabled)'}`);
 }
 
-function parseSemver(value: string): [number, number, number] | null {
-  const match = value.match(/(\d+)\.(\d+)\.(\d+)/);
-  if (!match) return null;
-  return [Number(match[1]), Number(match[2]), Number(match[3])];
-}
-
-function compareSemver(left: [number, number, number], right: [number, number, number]): number {
-  if (left[0] !== right[0]) return left[0] - right[0];
-  if (left[1] !== right[1]) return left[1] - right[1];
-  return left[2] - right[2];
+function extractSemver(value: string): string | null {
+  return value.match(/\d+\.\d+\.\d+/)?.[0] ?? null;
 }
 
 function assertCodexMarketplaceSupported(): void {
@@ -251,15 +243,14 @@ function assertCodexMarketplaceSupported(): void {
     return;
   }
 
-  const version = parseSemver(output);
+  const version = extractSemver(output);
   if (!version) {
     console.warn(`  Could not parse Codex CLI version from "${output || '<empty>'}". Continuing; plugin marketplace support requires ${MIN_CODEX_MARKETPLACE_VERSION} or newer.`);
     return;
   }
 
-  const minimumVersion = parseSemver(MIN_CODEX_MARKETPLACE_VERSION);
-  if (minimumVersion && compareSemver(version, minimumVersion) < 0) {
-    throw new Error(`Codex CLI ${version.join('.')} is too old for plugin marketplace support. Update Codex CLI to ${MIN_CODEX_MARKETPLACE_VERSION} or newer, then run: npx claude-mem@latest install`);
+  if (version.localeCompare(MIN_CODEX_MARKETPLACE_VERSION, undefined, { numeric: true }) < 0) {
+    throw new Error(`Codex CLI ${version} is too old for plugin marketplace support. Update Codex CLI to ${MIN_CODEX_MARKETPLACE_VERSION} or newer, then run: npx claude-mem@latest install`);
   }
 }
 

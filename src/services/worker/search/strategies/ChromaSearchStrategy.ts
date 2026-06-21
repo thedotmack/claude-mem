@@ -1,5 +1,4 @@
 
-import { BaseSearchStrategy, SearchStrategy } from './SearchStrategy.js';
 import {
   StrategySearchOptions,
   StrategySearchResult,
@@ -13,18 +12,18 @@ import { ChromaSync } from '../../../sync/ChromaSync.js';
 import { SessionStore } from '../../../sqlite/SessionStore.js';
 import { logger } from '../../../../utils/logger.js';
 
-export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchStrategy {
-  readonly name = 'chroma';
-
+export class ChromaSearchStrategy {
   constructor(
     private chromaSync: ChromaSync,
     private sessionStore: SessionStore
-  ) {
-    super();
-  }
+  ) {}
 
-  canHandle(options: StrategySearchOptions): boolean {
-    return !!options.query && !!this.chromaSync;
+  private emptyResult(strategy: 'chroma'): StrategySearchResult {
+    return {
+      results: { observations: [], sessions: [], prompts: [] },
+      usedChroma: true,
+      strategy
+    };
   }
 
   async search(options: StrategySearchOptions): Promise<StrategySearchResult> {

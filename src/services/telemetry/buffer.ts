@@ -41,7 +41,6 @@ interface SessionCompressedRecord {
   compression_ms?: number;
   outcome?: string;
   model?: string;
-  fabricated_count?: number;
   // Per-turn observation accounting (ResponseProcessor compressionProps):
   // `count` is the number of observations created in this compression turn,
   // and obs_type_* is that turn's type breakdown. Summing these across the
@@ -140,7 +139,6 @@ function computeSessionCompressedRollup(
   let outcomesError = 0;
   let outcomesAborted = 0;
   let outcomesInvalidOutput = 0;
-  let fabricationCount = 0;
   let observationsCreated = 0;
   let obsTypeBugfix = 0;
   let obsTypeDiscovery = 0;
@@ -174,9 +172,6 @@ function computeSessionCompressedRollup(
 
     if (typeof r.model === 'string' && r.model) {
       modelFrequency.set(r.model, (modelFrequency.get(r.model) ?? 0) + 1);
-    }
-    if (typeof r.fabricated_count === 'number' && Number.isFinite(r.fabricated_count)) {
-      fabricationCount += r.fabricated_count;
     }
     // Generation-side observation volume. r.count is observations created in
     // this turn (NOT the rollup's turn count); sum it so the rollup carries
@@ -212,7 +207,6 @@ function computeSessionCompressedRollup(
     outcomes_error: outcomesError,
     outcomes_aborted: outcomesAborted,
     outcomes_invalid_output: outcomesInvalidOutput,
-    fabrication_count: fabricationCount,
     // Generation-side observation volume + type mix for the session. Lets
     // PostHog derive cost-per-observation (total_cost_usd / observations_created)
     // and observation-type-by-(top_)model directly from the rollup, instead of
