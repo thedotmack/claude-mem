@@ -41,12 +41,33 @@ interface SessionCompressedRecord {
   compression_ms?: number;
   outcome?: string;
   model?: string;
+  // Per-turn observation accounting (ResponseProcessor compressionProps):
+  // `count` is the number of observations created in this compression turn,
+  // and obs_type_* is that turn's type breakdown. Summing these across the
+  // session lets the rollup carry generation-side observation volume (so
+  // cost-per-observation = total_cost_usd / observations_created stays
+  // derivable from the rollup alone, not just the legacy session_compressed
+  // stream). NOTE: distinct from the rollup's own `count`, which is the number
+  // of turns (records.length).
+  count?: number;
+  obs_type_bugfix?: number;
+  obs_type_discovery?: number;
+  obs_type_decision?: number;
+  obs_type_refactor?: number;
+  obs_type_other?: number;
   [key: string]: unknown;
 }
 
 interface ContextInjectedRecord {
   tokens_injected?: number;
   outcome?: string;
+  // Per-injection depth/economics (ContextInjectStats): observation_count is
+  // how many observations were injected, tokens_saved_vs_naive the read-vs-
+  // discovery savings. Summed into the rollup so context-cache value
+  // (observations injected × cost/obs) survives once the legacy per-occurrence
+  // context_injected stream decays away.
+  observation_count?: number;
+  tokens_saved_vs_naive?: number;
   [key: string]: unknown;
 }
 
@@ -118,6 +139,12 @@ function computeSessionCompressedRollup(
   let outcomesError = 0;
   let outcomesAborted = 0;
   let outcomesInvalidOutput = 0;
+  let observationsCreated = 0;
+  let obsTypeBugfix = 0;
+  let obsTypeDiscovery = 0;
+  let obsTypeDecision = 0;
+  let obsTypeRefactor = 0;
+  let obsTypeOther = 0;
   const modelFrequency: Map<string, number> = new Map();
 
   for (const r of records) {
@@ -146,6 +173,27 @@ function computeSessionCompressedRollup(
     if (typeof r.model === 'string' && r.model) {
       modelFrequency.set(r.model, (modelFrequency.get(r.model) ?? 0) + 1);
     }
+    // Generation-side observation volume. r.count is observations created in
+    // this turn (NOT the rollup's turn count); sum it so the rollup carries
+    // observations_created alongside total_cost_usd.
+    if (typeof r.count === 'number' && Number.isFinite(r.count)) {
+      observationsCreated += r.count;
+    }
+    if (typeof r.obs_type_bugfix === 'number' && Number.isFinite(r.obs_type_bugfix)) {
+      obsTypeBugfix += r.obs_type_bugfix;
+    }
+    if (typeof r.obs_type_discovery === 'number' && Number.isFinite(r.obs_type_discovery)) {
+      obsTypeDiscovery += r.obs_type_discovery;
+    }
+    if (typeof r.obs_type_decision === 'number' && Number.isFinite(r.obs_type_decision)) {
+      obsTypeDecision += r.obs_type_decision;
+    }
+    if (typeof r.obs_type_refactor === 'number' && Number.isFinite(r.obs_type_refactor)) {
+      obsTypeRefactor += r.obs_type_refactor;
+    }
+    if (typeof r.obs_type_other === 'number' && Number.isFinite(r.obs_type_other)) {
+      obsTypeOther += r.obs_type_other;
+    }
   }
 
   const rollup: Record<string, unknown> = {
@@ -159,6 +207,16 @@ function computeSessionCompressedRollup(
     outcomes_error: outcomesError,
     outcomes_aborted: outcomesAborted,
     outcomes_invalid_output: outcomesInvalidOutput,
+    // Generation-side observation volume + type mix for the session. Lets
+    // PostHog derive cost-per-observation (total_cost_usd / observations_created)
+    // and observation-type-by-(top_)model directly from the rollup, instead of
+    // the decaying legacy session_compressed stream.
+    observations_created: observationsCreated,
+    obs_type_bugfix: obsTypeBugfix,
+    obs_type_discovery: obsTypeDiscovery,
+    obs_type_decision: obsTypeDecision,
+    obs_type_refactor: obsTypeRefactor,
+    obs_type_other: obsTypeOther,
     window_start_ts: windowStartTs,
     // Phase 2: why this rollup was emitted (session_end | worker_shutdown |
     // safety_flush) and the partial-flush sequence number for long-lived
@@ -193,6 +251,8 @@ function computeContextInjectedRollup(
   let tokenCount = 0;
   let outcomesOk = 0;
   let outcomesError = 0;
+  let totalObservationsInjected = 0;
+  let totalTokensSaved = 0;
 
   for (const r of records) {
     // Callers spread ContextInjectStats which uses tokens_injected
@@ -200,6 +260,16 @@ function computeContextInjectedRollup(
     if (typeof t === 'number' && Number.isFinite(t)) {
       totalTokens += t;
       tokenCount++;
+    }
+    // Injection depth/economics. observation_count is how many observations
+    // this injection served from the cache; tokens_saved_vs_naive its read-vs-
+    // discovery savings. Summed so context-cache value (observations injected ×
+    // cost/obs) is derivable from the rollup, not just legacy context_injected.
+    if (typeof r.observation_count === 'number' && Number.isFinite(r.observation_count)) {
+      totalObservationsInjected += r.observation_count;
+    }
+    if (typeof r.tokens_saved_vs_naive === 'number' && Number.isFinite(r.tokens_saved_vs_naive)) {
+      totalTokensSaved += r.tokens_saved_vs_naive;
     }
     // Injection callers only ever emit 'ok' or 'error'. Tracking the split
     // keeps a window of 100% failed injections (zero tokens, all errors)
@@ -212,6 +282,8 @@ function computeContextInjectedRollup(
     count,
     total_tokens: totalTokens,
     avg_tokens: tokenCount > 0 ? totalTokens / tokenCount : 0,
+    total_observations_injected: totalObservationsInjected,
+    total_tokens_saved_vs_naive: totalTokensSaved,
     outcomes_ok: outcomesOk,
     outcomes_error: outcomesError,
     window_start_ts: windowStartTs,
