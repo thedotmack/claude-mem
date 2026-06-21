@@ -6,7 +6,6 @@ interface UseContextPreviewResult {
   preview: string;
   isLoading: boolean;
   error: string | null;
-  refresh: () => Promise<void>;
   projects: string[];
   sources: string[];
   selectedSource: string | null;
@@ -127,7 +126,6 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
     preview,
     isLoading,
     error,
-    refresh,
     projects,
     sources: catalog.sources,
     selectedSource,

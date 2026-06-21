@@ -9,9 +9,7 @@ export const ENV_EXACT_MATCHES = new Set([
   'CLAUDE_CODE_SESSION',
   'CLAUDE_CODE_ENTRYPOINT',
   'MCP_SESSION_ID',
-]);
-
-export const ENV_PROXY_VARS = new Set([
+  // Proxy vars: strip so the SDK subprocess doesn't inherit a proxy config.
   'HTTP_PROXY',
   'HTTPS_PROXY',
   'ALL_PROXY',
@@ -47,7 +45,6 @@ export function sanitizeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.Proces
     if (value === undefined) continue;
     if (ENV_PRESERVE.has(key)) { sanitized[key] = value; continue; }
     if (ENV_EXACT_MATCHES.has(key)) continue;
-    if (ENV_PROXY_VARS.has(key)) continue;
     if (ENV_PREFIXES.some(prefix => key.startsWith(prefix))) continue;
     sanitized[key] = value;
   }

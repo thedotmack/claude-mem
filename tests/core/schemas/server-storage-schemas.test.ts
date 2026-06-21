@@ -1,13 +1,10 @@
 import { describe, expect, it } from 'bun:test';
-import {
-  AgentEventSchema,
-  ApiKeySchema,
-  ContextPackSchema,
-  MemoryItemSchema,
-  ProjectSchema,
-  ServerSessionSchema,
-  TeamSchema
-} from '../../../src/core/schemas/index.js';
+import { AgentEventSchema } from '../../../src/core/schemas/agent-event.js';
+import { ApiKeySchema } from '../../../src/core/schemas/auth.js';
+import { MemoryItemSchema } from '../../../src/core/schemas/memory-item.js';
+import { ProjectSchema } from '../../../src/core/schemas/project.js';
+import { ServerSessionSchema } from '../../../src/core/schemas/session.js';
+import { TeamSchema } from '../../../src/core/schemas/team.js';
 
 describe('server storage Zod schemas', () => {
   it('parses the shared contracts used by server-owned tables', () => {
@@ -60,19 +57,12 @@ describe('server storage Zod schemas', () => {
       updatedAtEpoch: now
     });
 
-    const contextPack = ContextPackSchema.parse({
-      projectId: project.id,
-      generatedAtEpoch: now,
-      items: [memoryItem]
-    });
-
     expect(project.metadata).toEqual({});
     expect(session.platformSource).toBe('claude');
     expect(memoryItem.facts).toEqual([]);
     expect(event.payload).toEqual({});
     expect(team.metadata).toEqual({});
     expect(apiKey.status).toBe('active');
-    expect(contextPack.items).toHaveLength(1);
   });
 
   it('rejects invalid enum values at the contract boundary', () => {
