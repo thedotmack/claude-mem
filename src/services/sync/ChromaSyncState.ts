@@ -19,7 +19,6 @@ function statePath(): string {
 }
 
 let cache: Record<string, ProjectWatermarks> | null = null;
-let dirty = false;
 
 function load(): Record<string, ProjectWatermarks> {
   if (cache) return cache;
@@ -50,7 +49,6 @@ function persist(): void {
   const tmp = `${path}.tmp`;
   writeFileSync(tmp, JSON.stringify(cache, null, 2), 'utf8');
   renameSync(tmp, path);
-  dirty = false;
 }
 
 export const ChromaSyncState = {
@@ -70,23 +68,12 @@ export const ChromaSyncState = {
     if (id <= current[kind]) return;
     current[kind] = id;
     all[project] = current;
-    dirty = true;
     persist();
   },
 
   replace(project: string, marks: ProjectWatermarks): void {
     const all = load();
     all[project] = { ...marks };
-    dirty = true;
     persist();
-  },
-
-  flush(): void {
-    if (dirty) persist();
-  },
-
-  resetCache(): void {
-    cache = null;
-    dirty = false;
   }
 };

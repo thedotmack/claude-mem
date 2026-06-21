@@ -381,8 +381,7 @@ export class DataRoutes extends BaseRouteHandler {
             obs.project,
             parsedObs,
             obs.prompt_number || 0,
-            obs.created_at_epoch,
-            obs.discovery_tokens || 0
+            obs.created_at_epoch
           ).catch(err => {
             logger.error('CHROMA', 'Import ChromaDB sync failed', { id }, err as Error);
           });

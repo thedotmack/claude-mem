@@ -172,18 +172,9 @@ function gooseConfigHasClaudeMemEntry(yamlContent: string): boolean {
     yamlContent.includes('mcpServers:');
 }
 
-function buildGooseMcpYamlBlock(mcpServerPath: string): string {
+function buildGooseClaudeMemEntryYaml(mcpServerPath: string, withHeader = false): string {
   return [
-    'mcpServers:',
-    '  claude-mem:',
-    `    command: ${getNodeAbsolutePath()}`,
-    '    args:',
-    `      - ${mcpServerPath}`,
-  ].join('\n');
-}
-
-function buildGooseClaudeMemEntryYaml(mcpServerPath: string): string {
-  return [
+    ...(withHeader ? ['mcpServers:'] : []),
     '  claude-mem:',
     `    command: ${getNodeAbsolutePath()}`,
     '    args:',
@@ -242,13 +233,13 @@ function mergeGooseYamlConfig(configPath: string, mcpServerPath: string): void {
       writeFileSync(configPath, yamlContent);
       console.log(`  Added claude-mem to existing mcpServers in: ${configPath}`);
     } else {
-      const mcpBlock = '\n' + buildGooseMcpYamlBlock(mcpServerPath) + '\n';
+      const mcpBlock = '\n' + buildGooseClaudeMemEntryYaml(mcpServerPath, true) + '\n';
       yamlContent = yamlContent.trimEnd() + '\n' + mcpBlock;
       writeFileSync(configPath, yamlContent);
       console.log(`  Appended mcpServers section to: ${configPath}`);
     }
   } else {
-    const templateContent = buildGooseMcpYamlBlock(mcpServerPath) + '\n';
+    const templateContent = buildGooseClaudeMemEntryYaml(mcpServerPath, true) + '\n';
     writeFileSync(configPath, templateContent);
     console.log(`  Created config with MCP server: ${configPath}`);
   }

@@ -250,7 +250,6 @@ export async function processAgentResponse(
     session,
     dbManager,
     worker,
-    discoveryTokens,
     agentName,
     projectRoot
   );
@@ -262,7 +261,6 @@ export async function processAgentResponse(
     session,
     dbManager,
     worker,
-    discoveryTokens,
     agentName
   );
 }
@@ -294,7 +292,6 @@ async function syncAndBroadcastObservations(
   session: ActiveSession,
   dbManager: DatabaseManager,
   worker: WorkerRef | undefined,
-  discoveryTokens: number,
   agentName: string,
   projectRoot?: string
 ): Promise<void> {
@@ -323,8 +320,7 @@ async function syncAndBroadcastObservations(
       session.project,
       obs,
       session.lastPromptNumber,
-      result.createdAtEpoch,
-      discoveryTokens
+      result.createdAtEpoch
     ).then(() => {
       const chromaDuration = Date.now() - chromaStart;
       logger.debug('CHROMA', 'Observation synced', {
@@ -392,7 +388,6 @@ async function syncAndBroadcastSummary(
   session: ActiveSession,
   dbManager: DatabaseManager,
   worker: WorkerRef | undefined,
-  discoveryTokens: number,
   agentName: string
 ): Promise<void> {
   if (!summaryForStore || !result.summaryId) {
@@ -407,8 +402,7 @@ async function syncAndBroadcastSummary(
     session.project,
     summaryForStore,
     session.lastPromptNumber,
-    result.createdAtEpoch,
-    discoveryTokens
+    result.createdAtEpoch
   ).then(() => {
     const chromaDuration = Date.now() - chromaStart;
     logger.debug('CHROMA', 'Summary synced', {

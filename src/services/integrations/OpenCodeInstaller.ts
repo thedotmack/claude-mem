@@ -178,21 +178,6 @@ export function injectContextIntoAgentsMd(contextContent: string): number {
   }
 }
 
-export async function syncContextToAgentsMd(
-  port: number,
-  project: string,
-): Promise<void> {
-  try {
-    await fetchAndInjectOpenCodeContext(port, project);
-  } catch (error) {
-    if (error instanceof Error) {
-      logger.debug('WORKER', 'Worker not available during context sync', {}, error);
-    } else {
-      logger.debug('WORKER', 'Worker not available during context sync', {}, new Error(String(error)));
-    }
-  }
-}
-
 async function fetchRealContextFromWorker(): Promise<string | null> {
   const workerPort = getWorkerPort();
   const healthResponse = await fetch(`http://127.0.0.1:${workerPort}/api/readiness`);
