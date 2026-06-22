@@ -471,7 +471,6 @@ export class SearchRoutes extends BaseRouteHandler {
           type: 'observations',
           project,
           limit: String(limit),
-          semanticLimit: String(semanticWindowLimit),
           format: 'json',
           orderBy: 'relevance',
         }
@@ -494,7 +493,11 @@ export class SearchRoutes extends BaseRouteHandler {
     let result: any;
     try {
       const scopedTelemetry: SearchTelemetryEnvelope = {};
-      result = await this.searchManager.search(scopedSearchArgs, scopedTelemetry);
+      result = await this.searchManager.search(
+        scopedSearchArgs,
+        scopedTelemetry,
+        { semanticHydrationLimit: semanticWindowLimit }
+      );
       const scopedObservations = result?.observations || [];
       if (project) {
         try {
@@ -505,10 +508,9 @@ export class SearchRoutes extends BaseRouteHandler {
             query,
             type: 'observations',
             limit: String(limit),
-            semanticLimit: String(semanticWindowLimit),
             format: 'json',
             orderBy: 'relevance'
-          }, fallbackTelemetry);
+          }, fallbackTelemetry, { semanticHydrationLimit: semanticWindowLimit });
           const fallbackUsedKeywordSearch =
             fallbackTelemetry.search_strategy === 'fts'
             || fallbackTelemetry.search_strategy === 'filter_only';

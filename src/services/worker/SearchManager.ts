@@ -32,6 +32,10 @@ export interface SearchTelemetryEnvelope {
   fallback_reason?: 'none' | 'chroma_connection' | 'chroma_error' | 'chroma_not_initialized';
 }
 
+interface SearchExecutionOptions {
+  semanticHydrationLimit?: number;
+}
+
 export class SearchManager {
   private orchestrator: SearchOrchestrator;
 
@@ -299,11 +303,15 @@ export class SearchManager {
     return normalized;
   }
 
-  async search(args: any, telemetryOut?: SearchTelemetryEnvelope): Promise<any> {
+  async search(args: any, telemetryOut?: SearchTelemetryEnvelope, executionOptions: SearchExecutionOptions = {}): Promise<any> {
     const normalized = this.normalizeParams(args);
-    const { query, type, obs_type, concepts, files, format, ...options } = normalized;
-    const semanticLimit = Math.max(
-      Number.parseInt(String(options.semanticLimit ?? SEARCH_CONSTANTS.CHROMA_BATCH_SIZE), 10) || SEARCH_CONSTANTS.CHROMA_BATCH_SIZE,
+    const { query, type, obs_type, concepts, files, format, semanticLimit: _ignoredPublicSemanticLimit, ...options } = normalized;
+    const requestedLimit = Math.max(
+      Number.parseInt(String(options.limit ?? SEARCH_CONSTANTS.DEFAULT_LIMIT), 10) || SEARCH_CONSTANTS.DEFAULT_LIMIT,
+      1
+    );
+    const semanticLimit = Math.min(
+      Math.max(requestedLimit, executionOptions.semanticHydrationLimit ?? requestedLimit),
       SEARCH_CONSTANTS.CHROMA_BATCH_SIZE
     );
     let observations: ObservationSearchResult[] = [];
