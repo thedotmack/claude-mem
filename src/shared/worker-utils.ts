@@ -496,9 +496,15 @@ interface HookFailureState {
   lastFailureAt: number;
 }
 
-// #2996: Windows multi-window setups are prone to zombie worker pviron stalling the port;
-// a higher threshold gives the worker more time to self-heal before blocking prompts.
-// On Linux/maOs, port conflicts are less common so the original 3 is kept.
+// #2996: Platform-specific fail-loud threshold
+// Windows (all versions: 10, 11, and future): TCP port conflicts are common due to
+// zombie worker processes that hold ports after crashes. Multi-window Claude Code
+// sessions frequently trigger this. A higher threshold (10) gives the worker ~30-60s
+// to self-heal before blocking prompts.
+// Linux/macOS: Port conflicts are rare (SO_REUSEADDR behavior is more permissive,
+// process cleanup is cleaner). The original threshold (3) provides faster failure
+// detection for genuine worker issues.
+// Note: process.platform === 'win32' matches Windows 10, 11, and all future versions.
 const FAIL_LOUD_DEFAULT_THRESHOLD = process.platform === 'win32' ? 10 : 3;
 
 function getStateDir(): string {
