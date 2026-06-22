@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { buildTimeline } from '../../src/services/context/index.js';
+import { buildTimeline } from '../../src/services/context/ObservationCompiler.js';
 import { getPriorSessionMessages, queryObservationsMulti } from '../../src/services/context/ObservationCompiler.js';
 import type { Observation, SummaryTimelineItem } from '../../src/services/context/types.js';
 
@@ -147,7 +147,7 @@ describe('getPriorSessionMessages', () => {
         '/tmp/proj',
       );
 
-      expect(result).toEqual({ userMessage: '', assistantMessage: '' });
+      expect(result).toEqual({ assistantMessage: '' });
     });
 });
 
