@@ -16,6 +16,21 @@ function getBusyTimeout(db: Database): number {
   return Number(row?.busy_timeout ?? row?.timeout ?? Object.values(row ?? {})[0]);
 }
 
+async function removeDirWithWindowsRetry(path: string): Promise<void> {
+  const attempts = process.platform === 'win32' ? 5 : 1;
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      rmSync(path, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      const busy = error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'EBUSY';
+      if (!busy || attempt === attempts) throw error;
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+  }
+}
+
 describe('Database PRAGMAs', () => {
   it('applies busy_timeout in DatabaseManager initialization', async () => {
     const originalDataDir = process.env.CLAUDE_MEM_DATA_DIR;
@@ -31,15 +46,12 @@ describe('Database PRAGMAs', () => {
       expect(getBusyTimeout(db)).toBe(SQLITE_BUSY_TIMEOUT_MS);
     } finally {
       await manager.close();
-      if (process.platform === 'win32') {
-        await new Promise(resolve => setTimeout(resolve, 25));
-      }
       if (originalDataDir === undefined) {
         delete process.env.CLAUDE_MEM_DATA_DIR;
       } else {
         process.env.CLAUDE_MEM_DATA_DIR = originalDataDir;
       }
-      rmSync(testDataDir, { recursive: true, force: true });
+      await removeDirWithWindowsRetry(testDataDir);
     }
   });
 
@@ -69,10 +81,7 @@ describe('Database PRAGMAs', () => {
       } catch (e) {
       }
       store.close();
-      if (process.platform === 'win32') {
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
-      rmSync(testDataDir, { recursive: true, force: true });
+      await removeDirWithWindowsRetry(testDataDir);
     }
   });
 
