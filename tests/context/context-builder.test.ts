@@ -13,6 +13,8 @@ import * as realAgentFormatterNs from '../../src/services/context/formatters/Age
 import * as realHumanFormatterNs from '../../src/services/context/formatters/HumanFormatter.js';
 
 const queryObservationsCalls: string[] = [];
+let countObservationsByProjectsValue = 1;
+let countSummariesByProjectsValue = 0;
 const realSessionStore = { ...realSessionStoreNs };
 const realProjectName = { ...realProjectNameNs };
 const realContextConfigLoader = { ...realContextConfigLoaderNs };
@@ -54,8 +56,8 @@ mock.module('../../src/services/context/TokenCalculator.js', () => ({
 }));
 
 mock.module('../../src/services/context/ObservationCompiler.js', () => ({
-  countObservationsByProjects: () => 1,
-  countSummariesByProjects: () => 0,
+  countObservationsByProjects: () => countObservationsByProjectsValue,
+  countSummariesByProjects: () => countSummariesByProjectsValue,
   queryObservations: (_db: unknown, project: string) => {
     queryObservationsCalls.push(project);
     return [];
@@ -135,6 +137,22 @@ describe('getPrimaryContextProject', () => {
 
   it('queries the dream namespace directly when it is the only effective project', async () => {
     queryObservationsCalls.length = 0;
+    countObservationsByProjectsValue = 1;
+    countSummariesByProjectsValue = 0;
+
+    const result = await generateContextWithStats({
+      cwd: '/tmp/project',
+      projects: ['project-a:dream'],
+    });
+
+    expect(queryObservationsCalls).toEqual(['project-a:dream']);
+    expect(result.text).toBe('empty:fallback-project');
+  });
+
+  it('does not fall back to cwd raw context when a dream-only request has no dream rows', async () => {
+    queryObservationsCalls.length = 0;
+    countObservationsByProjectsValue = 0;
+    countSummariesByProjectsValue = 0;
 
     const result = await generateContextWithStats({
       cwd: '/tmp/project',

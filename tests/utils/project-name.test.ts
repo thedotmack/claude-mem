@@ -129,7 +129,20 @@ describe('getProjectContext', () => {
     const ctx = getProjectContext(null);
     expect(ctx.primary).toBe('unknown-project');
     expect(ctx.parent).toBeNull();
-    expect(ctx.allProjects).toEqual(['unknown-project']);
+    expect(ctx.allProjects).toEqual([
+      getDreamProjectName('unknown-project'),
+      'unknown-project',
+    ]);
+  });
+
+  it('returns dream-aware fallback context for undefined', () => {
+    const ctx = getProjectContext(undefined);
+    expect(ctx.primary).toBe('unknown-project');
+    expect(ctx.parent).toBeNull();
+    expect(ctx.allProjects).toEqual([
+      getDreamProjectName('unknown-project'),
+      'unknown-project',
+    ]);
   });
 
   describe('worktree isolation', () => {

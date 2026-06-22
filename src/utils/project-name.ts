@@ -89,7 +89,12 @@ export function getProjectContext(cwd: string | null | undefined): ProjectContex
   const cwdProjectName = getProjectName(cwd);
 
   if (!cwd) {
-    return { primary: cwdProjectName, parent: null, isWorktree: false, allProjects: [cwdProjectName] };
+    return {
+      primary: cwdProjectName,
+      parent: null,
+      isWorktree: false,
+      allProjects: withDreamProject(cwdProjectName)
+    };
   }
 
   const expandedCwd = expandTilde(cwd);

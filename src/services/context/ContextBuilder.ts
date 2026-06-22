@@ -194,7 +194,7 @@ export async function generateContextWithStats(
       countObservationsByProjects(db, dreamProjects) > 0 ||
       countSummariesByProjects(db, dreamProjects) > 0
     );
-    const queryProjects = useDreamQueries ? projects : rawProjects;
+    const queryProjects = useDreamQueries || rawProjects.length === 0 ? projects : rawProjects;
     const useMultiQuery = queryProjects.length > 1;
     const singleQueryProject = queryProjects[0] ?? project;
 

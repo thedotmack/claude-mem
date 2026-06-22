@@ -9,7 +9,7 @@ import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
 import { groupByDate } from '../../../../shared/timeline-formatting.js';
-import { countObservationsByProjects } from '../../../context/ObservationCompiler.js';
+import { countObservationsByProjects, countSummariesByProjects } from '../../../context/ObservationCompiler.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from '../../../sqlite/types.js';
@@ -87,7 +87,7 @@ export class SearchRoutes extends BaseRouteHandler {
     return this.cachedSettings;
   }
 
-  private projectsHaveObservations(
+  private projectsHaveContext(
     sessionStore: ReturnType<SearchManager['getSessionStore']>,
     projects: string[],
   ): boolean {
@@ -95,7 +95,8 @@ export class SearchRoutes extends BaseRouteHandler {
       return true;
     }
     const observationCount = countObservationsByProjects(sessionStore, projects);
-    if (observationCount > 0) {
+    const summaryCount = countSummariesByProjects(sessionStore, projects);
+    if (observationCount > 0 || summaryCount > 0) {
       for (const p of projects) this.projectsKnownNonEmpty.add(p);
       return true;
     }
@@ -402,8 +403,9 @@ export class SearchRoutes extends BaseRouteHandler {
     if (hintEnabled && !full) {
       const sessionStore = this.searchManager.getSessionStore();
       // Memoized: skips the COUNT(*) query once any project in the set has
-      // observations. Hot-path: PostToolUse fires after every Read/Edit.
-      if (!this.projectsHaveObservations(sessionStore, projects)) {
+      // observations or summaries. Hot-path: PostToolUse fires after every
+      // Read/Edit.
+      if (!this.projectsHaveContext(sessionStore, projects)) {
         const port = process.env.CLAUDE_MEM_WORKER_PORT ?? settings.CLAUDE_MEM_WORKER_PORT;
         const viewerUrl = `http://localhost:${port}`;
         const hintBody = WELCOME_HINT_TEMPLATE.replace('{viewer_url}', viewerUrl);
