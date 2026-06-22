@@ -224,8 +224,21 @@ async function buildHooks() {
       private: true,
       description: 'Runtime dependencies for claude-mem bundled hooks',
       type: 'module',
+      // Pure-JS, required for the worker to boot at all. These MUST install even
+      // when the native tree-sitter grammars below fail to compile (e.g. on a
+      // Node version whose v8 headers break node-gyp). Keeping them out of the
+      // same bucket as the native deps is what prevents one failed grammar build
+      // from aborting `npm install` before zod lands — which took the worker down
+      // entirely (Cannot find module 'zod/v3') and triggered a recycle storm.
       dependencies: {
         'zod': '^4.4.3',
+        'shell-quote': '^1.8.3',
+      },
+      // Native (node-gyp) grammars. Optional on purpose: npm treats a failed
+      // optional-dependency build as non-fatal and the install still succeeds,
+      // so a grammar that can't compile on this platform/Node just disables that
+      // language's parsing instead of bricking the whole plugin.
+      optionalDependencies: {
         'tree-sitter-cli': '^0.26.5',
         'tree-sitter-c': '^0.24.1',
         'tree-sitter-cpp': '^0.23.4',
@@ -251,7 +264,6 @@ async function buildHooks() {
         '@tree-sitter-grammars/tree-sitter-yaml': '^0.7.1',
         '@derekstride/tree-sitter-sql': '^0.3.11',
         '@tree-sitter-grammars/tree-sitter-markdown': '^0.3.2',
-        'shell-quote': '^1.8.3',
       },
       overrides: {
         'tree-sitter': '^0.25.0'

@@ -227,6 +227,42 @@ export function resolveWorkerScriptPath(): string | null {
   return null;
 }
 
+/**
+ * Spawn-free preflight: can the worker we're about to (re)spawn actually boot?
+ *
+ * The bundled worker does a runtime `require('zod/v3')`, so a plugin whose
+ * node_modules never got `zod` installed — e.g. its `npm install` aborted on a
+ * failed native tree-sitter build — crashes instantly on startup and never
+ * binds the port. Two callers use this:
+ *  - the version recycler, so it never kills a HEALTHY worker to swap in a
+ *    broken target (which turns a partial install into a total outage); and
+ *  - the lazy-spawn path, so a down+broken install fails fast with an
+ *    actionable reason instead of a silent ~15s cold-boot timeout.
+ *
+ * Checks the one hard dependency the bundle needs: zod, with its `./v3` subpath.
+ */
+function checkInstalledWorkerDependencies(): { ok: boolean; reason?: string } {
+  const scriptPath = resolveWorkerScriptPath();
+  if (!scriptPath) {
+    return { ok: false, reason: 'worker-service.cjs not found' };
+  }
+  // <plugin>/scripts/worker-service.cjs -> node_modules at <plugin>/node_modules
+  const pluginDir = path.dirname(path.dirname(scriptPath));
+  const zodPkgPath = path.join(pluginDir, 'node_modules', 'zod', 'package.json');
+  if (!existsSync(zodPkgPath)) {
+    return { ok: false, reason: `zod not installed (${zodPkgPath})` };
+  }
+  try {
+    const pkg = JSON.parse(readFileSync(zodPkgPath, 'utf-8')) as { exports?: Record<string, unknown> };
+    if (!pkg.exports || pkg.exports['./v3'] === undefined) {
+      return { ok: false, reason: 'installed zod does not expose the ./v3 subpath the worker requires' };
+    }
+  } catch (err: unknown) {
+    return { ok: false, reason: `unreadable zod package.json: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  return { ok: true };
+}
+
 async function waitForWorkerPort(options: { attempts: number; backoffMs: number }): Promise<boolean> {
   let delayMs = options.backoffMs;
   for (let attempt = 1; attempt <= options.attempts; attempt++) {
@@ -368,6 +404,27 @@ export async function ensureWorkerRunning(): Promise<boolean> {
       return true;
     }
 
+    // Guard: never recycle a HEALTHY worker into a target that cannot boot.
+    // If the installed plugin's dependencies are broken (e.g. zod missing after
+    // a failed native-build install), recycling would kill the working worker
+    // and leave nothing — a total outage + fail-loud blocking. Keep serving on
+    // the current (mismatched but healthy) worker and surface remediation; the
+    // next hook retries the recycle once deps are fixed.
+    const recyclePreflight = checkInstalledWorkerDependencies();
+    if (!recyclePreflight.ok) {
+      logger.warn('SYSTEM', 'Installed worker version differs but its dependencies are broken — NOT recycling; keeping the current healthy worker. Reinstall the plugin (or run `npm install` in the plugin dir) to fix.', {
+        pluginVersion,
+        workerVersion,
+        reason: recyclePreflight.reason,
+      });
+      const ready = await waitForWorkerReadiness();
+      if (!ready) {
+        logger.warn('SYSTEM', 'Worker is healthy but not ready; skipping hook API call');
+        return false;
+      }
+      return true;
+    }
+
     logger.info('SYSTEM', 'Worker version mismatch — recycling stale worker', {
       pluginVersion,
       workerVersion,
@@ -416,6 +473,18 @@ export async function ensureWorkerRunning(): Promise<boolean> {
   }
   if (!scriptPath) {
     logger.warn('SYSTEM', 'Cannot lazy-spawn worker: worker-service.cjs not found in plugin/scripts');
+    return false;
+  }
+
+  // Fail fast on a broken install: spawning a worker that crashes on
+  // `require('zod/v3')` would only burn the ~15s cold-boot wait and then
+  // fail-loud with a generic "unreachable" message. Surface the real cause.
+  const spawnPreflight = checkInstalledWorkerDependencies();
+  if (!spawnPreflight.ok) {
+    logger.warn('SYSTEM', 'Cannot lazy-spawn worker: installed plugin dependencies are broken (the worker would crash on startup). Reinstall the plugin or run `npm install` in the plugin dir.', {
+      scriptPath,
+      reason: spawnPreflight.reason,
+    });
     return false;
   }
 
