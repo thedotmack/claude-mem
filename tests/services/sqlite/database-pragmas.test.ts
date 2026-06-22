@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { Database } from 'bun:sqlite';
-import { paths } from '../../../src/shared/paths.js';
+import { resolveDbPath } from '../../../src/shared/paths.js';
 
 type BusyTimeoutRow = {
   busy_timeout?: number | string;
@@ -49,7 +49,7 @@ describe('Database PRAGMAs', () => {
       await manager.initialize();
       const db = manager.getConnection();
       expect(getBusyTimeout(db)).toBe(SQLITE_BUSY_TIMEOUT_MS);
-      expect(paths.database()).toBe(join(testDataDir, 'claude-mem.db'));
+      expect(resolveDbPath()).toBe(join(testDataDir, 'claude-mem.db'));
     } finally {
       await manager.close();
       if (originalDataDir === undefined) {

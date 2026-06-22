@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { TableNameRow } from '../../types/database.js';
-import { paths } from '../../shared/paths.js';
+import { resolveDbPath } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { isDirectChild } from '../../shared/path-utils.js';
 import { AppError } from '../server/ErrorHandler.js';
@@ -21,7 +21,7 @@ export class SessionSearch {
 
   private static readonly MISSING_SEARCH_INPUT_MESSAGE = 'Either query or filters required for search';
 
-  constructor(dbPathOrDb: string | Database = paths.database()) {
+  constructor(dbPathOrDb: string | Database = resolveDbPath()) {
     if (dbPathOrDb instanceof Database) {
       this.db = dbPathOrDb;
     } else {

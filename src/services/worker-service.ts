@@ -8,7 +8,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { getWorkerPort, getWorkerHost, fetchWithTimeout, resolveWorkerScriptPath } from '../shared/worker-utils.js';
 import { getCurrentWorkerPid, verifyRestartedWorker } from './restart-verify.js';
 import { runShutdownSequence, type WorkerShutdownReason } from './worker-shutdown.js';
-import { DATA_DIR, DB_PATH, ensureDir, paths } from '../shared/paths.js';
+import { DATA_DIR, DB_PATH, ensureDir, resolveDataDir, resolveDbPath } from '../shared/paths.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { getUptimeSeconds } from '../shared/uptime.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
@@ -872,8 +872,8 @@ function parseServerApiKeyOptions(args: string[]): Record<string, string> {
 }
 
 function openServerCommandDatabase(): Database {
-  ensureDir(paths.dataDir());
-  return applySqliteBusyTimeout(new Database(paths.database(), { create: true, readwrite: true }));
+  ensureDir(resolveDataDir());
+  return applySqliteBusyTimeout(new Database(resolveDbPath(), { create: true, readwrite: true }));
 }
 
 function runServerApiKeyCli(args: string[]): never {

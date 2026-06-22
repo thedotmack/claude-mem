@@ -1,5 +1,5 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite';
-import { OBSERVER_SESSIONS_PROJECT, paths } from '../../shared/paths.js';
+import { OBSERVER_SESSIONS_PROJECT, resolveDbPath } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import {
   TableColumnInfo,
@@ -32,7 +32,7 @@ function resolveCreateSessionArgs(
 export class SessionStore {
   public db: Database;
 
-  constructor(dbPathOrDb: string | Database = paths.database()) {
+  constructor(dbPathOrDb: string | Database = resolveDbPath()) {
     if (dbPathOrDb instanceof Database) {
       this.db = dbPathOrDb;
     } else {

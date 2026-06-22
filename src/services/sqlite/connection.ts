@@ -1,6 +1,7 @@
 import { Database } from 'bun:sqlite';
 import { dirname } from 'path';
 import { ensureDir } from '../../shared/paths.js';
+import { logger } from '../../utils/logger.js';
 
 export const SQLITE_BUSY_TIMEOUT_MS = 5000;
 
@@ -19,5 +20,15 @@ export function ensureDatabaseParentDir(dbPath: string): void {
     return;
   }
 
-  ensureDir(parentDir);
+  try {
+    ensureDir(parentDir);
+  } catch (error) {
+    logger.error(
+      'DB',
+      'Failed to ensure SQLite parent directory',
+      { dbPath, parentDir },
+      error instanceof Error ? error : new Error(String(error))
+    );
+    throw error;
+  }
 }
