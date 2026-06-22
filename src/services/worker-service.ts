@@ -92,6 +92,10 @@ import { setIngestContext, attachIngestGeneratorStarter } from './worker/http/sh
 import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, filterNativeHookBackedCodexWatches, loadTranscriptWatchConfig } from './transcripts/config.js';
 import { TranscriptWatcher } from './transcripts/watcher.js';
 
+import { CloudRoutes } from './cloud/CloudRoutes.js';
+import { CloudSyncService } from './cloud/CloudSyncService.js';
+import { isCloudEnabled } from './cloud/config.js';
+
 import { ViewerRoutes } from './worker/http/routes/ViewerRoutes.js';
 import { SessionRoutes } from './worker/http/routes/SessionRoutes.js';
 import { DataRoutes } from './worker/http/routes/DataRoutes.js';
@@ -199,6 +203,8 @@ export class WorkerService implements WorkerRef {
   private sessionEventBroadcaster: SessionEventBroadcaster;
   private completionHandler: SessionCompletionHandler;
   private corpusStore: CorpusStore;
+  /** Cloud sync engine (default-off). Null until started; never started unless enabled. */
+  private cloudSync: CloudSyncService | null = null;
 
   private searchRoutes: SearchRoutes | null = null;
 
@@ -337,6 +343,25 @@ export class WorkerService implements WorkerRef {
     this.server.registerRoutes(new ServerV1Routes({
       getDatabase: () => this.dbManager.getConnection(),
     }));
+    // Cloud-sync control plane (/api/cloud/*). The routes always register so the
+    // viewer can read status / connect; the SYNC ENGINE itself only starts when
+    // cloud is enabled (default-off => cloudSync stays null, no connections).
+    this.server.registerRoutes(new CloudRoutes(() => this.cloudSync, () => this.ensureCloudSync()));
+  }
+
+  /**
+   * Lazily create (once) the cloud sync engine. Used by /api/cloud/connect so a
+   * default-off install can be connected without a worker restart. Does NOT start
+   * it — the caller calls start() (which is idempotent and gated on isCloudEnabled).
+   */
+  private ensureCloudSync(): CloudSyncService {
+    if (!this.cloudSync) {
+      this.cloudSync = new CloudSyncService(
+        () => this.dbManager.getConnection(),
+        (status) => this.sessionEventBroadcaster.broadcastCloudSyncStatus(status as Record<string, unknown>),
+      );
+    }
+    return this.cloudSync;
   }
 
   /**
@@ -568,6 +593,14 @@ export class WorkerService implements WorkerRef {
         });
       }
 
+      // Cloud sync (default-off). Only instantiate + start when enabled, so a
+      // default install starts NOTHING here: no listeners, no connections, no
+      // timers. The /api/cloud/connect route lazily creates this on first connect.
+      if (isCloudEnabled()) {
+        this.ensureCloudSync().start();
+        logger.info('CLOUD', 'Cloud sync engine started (enabled)');
+      }
+
       const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
       this.mcpReady = existsSync(mcpServerPath);
 
@@ -703,6 +736,11 @@ export class WorkerService implements WorkerRef {
         if (this.telemetryHeartbeat) {
           clearInterval(this.telemetryHeartbeat);
           this.telemetryHeartbeat = null;
+        }
+
+        if (this.cloudSync) {
+          this.cloudSync.stop();
+          this.cloudSync = null;
         }
         // Mark this stop as graceful for the next start's crash detection, and
         // capture worker_stopped BEFORE shutdownTelemetry() — isShutdown drops

@@ -49,4 +49,15 @@ export class SessionEventBroadcaster {
   broadcastSummarizeQueued(): void {
     this.workerService.broadcastProcessingStatus();
   }
+
+  /**
+   * Broadcast a cloud-sync status snapshot over SSE. The viewer listens for
+   * `cloud_sync_status` to show connection/backfill/quarantine state live.
+   */
+  broadcastCloudSyncStatus(status: Record<string, unknown>): void {
+    this.sseBroadcaster.broadcast({
+      type: 'cloud_sync_status',
+      ...status,
+    });
+  }
 }
