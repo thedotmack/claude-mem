@@ -236,7 +236,7 @@ export class SessionManager {
   }
 
   /**
-   *Kill and respawn an invalid-output SDK session while PRESERVING the in-RAM pending
+   * Kill and respawn an invalid-output SDK session while PRESERVING the in-RAM pending
    * messages (plan-11, #2485). A session that keeps emitting non-XML/invalid
    * output wedges the pipeline at zero observations; aborting the generator and
    * killing the SDK subprocess forces a fresh spawn on the next ingest, but the

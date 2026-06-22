@@ -1,7 +1,7 @@
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
 import { logger } from '../../src/utils/logger.js';
 
-// No supervisor/process-registry mocks: respawnPoisonedSession only calls
+// No supervisor/process-registry mocks: respawnSession only calls
 // getSdkProcessForSession (returns undefined for a session that never spawned
 // an SDK subprocess) and does not call getSupervisor, so the real modules are
 // safe here. Mocking them with mock.module would leak globally across the bun
@@ -63,7 +63,7 @@ const mockWorker = { broadcastProcessingStatus: () => {} } as unknown as WorkerR
 
 let spies: ReturnType<typeof spyOn>[] = [];
 
-describe('poison respawn (plan-11 #2485)', () => {
+describe('invalid output recovery (plan-11 #2485)', () => {
   beforeEach(() => {
     spies = [
       spyOn(logger, 'info').mockImplementation(() => {}),
@@ -82,34 +82,39 @@ describe('poison respawn (plan-11 #2485)', () => {
     mock.module('../../src/services/domain/ModeManager.js', () => realModeManager);
   });
 
-  it('respawns immediately on a poisoned closure string and preserves pending messages', async () => {
+  it('ignores closure-like output instead of respawning immediately', async () => {
     const sm = new SessionManager(makeDbManager());
     const session = sm.initializeSession(1, 'do the thing', 1);
     session.memorySessionId = 'mem-1';
 
-    // Buffer two pending observations that must survive a respawn.
     await sm.queueObservation(1, {
-      tool_name: 'Read', tool_input: {}, tool_response: {}, prompt_number: 1, toolUseId: 'tu-1',
+      tool_name: 'Read',
+      tool_input: {},
+      tool_response: {},
+      prompt_number: 1,
+      toolUseId: 'tu-1',
     });
-    await sm.queueObservation(1, {
-      tool_name: 'Edit', tool_input: {}, tool_response: {}, prompt_number: 1, toolUseId: 'tu-2',
-    });
-    expect(sm.getMessageBuffer().getPendingCount(1)).toBe(2);
 
-    const respawnSpy = spyOn(sm, 'respawnPoisonedSession');
+    expect(sm.getMessageBuffer().getPendingCount(1)).toBe(1);
+
+    const respawnSpy = spyOn(sm, 'respawnSession');
 
     await processAgentResponse(
       'This session has been exhausted; I cannot continue.',
-      session, makeDbManager(), sm, mockWorker, 0, null, 'TestAgent'
+      session,
+      makeDbManager(),
+      sm,
+      mockWorker,
+      0,
+      null,
+      'TestAgent'
     );
 
-    expect(respawnSpy).toHaveBeenCalledWith(1);
-    // Pending messages preserved (buffer NOT disposed) so the fresh generator reprocesses them.
-    expect(sm.getMessageBuffer().getPendingCount(1)).toBe(2);
-    // Session still active (not deleted) and abort fired for a fresh spawn.
-    expect(sm.getSession(1)).toBeDefined();
-    expect(session.abortController.signal.aborted).toBe(true);
-    expect(session.consecutiveInvalidOutputs).toBe(0); // reset on respawn
+    // New behavior: no keyword-based respawn
+    expect(respawnSpy).not.toHaveBeenCalled();
+
+    // Pending messages are only confirmed/dropped after ignored output handling
+    expect(session.consecutiveInvalidOutputs).toBe(1);
   });
 
   it('respawns only after N consecutive prose/idle outputs, not on the first', async () => {
@@ -120,7 +125,7 @@ describe('poison respawn (plan-11 #2485)', () => {
       tool_name: 'Read', tool_input: {}, tool_response: {}, prompt_number: 1, toolUseId: 'tu-a',
     });
 
-    const respawnSpy = spyOn(sm, 'respawnPoisonedSession');
+    const respawnSpy = spyOn(sm, 'respawnSession');
 
     // First (threshold - 1) prose responses must NOT respawn.
     for (let i = 0; i < INVALID_OUTPUT_RESPAWN_THRESHOLD - 1; i++) {
@@ -140,7 +145,7 @@ describe('poison respawn (plan-11 #2485)', () => {
     expect(respawnSpy).toHaveBeenCalledWith(2);
   });
 
-  it('respawnPoisonedSession preserves the buffer and resets context', async () => {
+  it('respawnSession preserves the buffer and resets context', async () => {
     const sm = new SessionManager(makeDbManager());
     const session = sm.initializeSession(3, 'do the thing', 1);
     session.memorySessionId = 'mem-3';
@@ -150,7 +155,7 @@ describe('poison respawn (plan-11 #2485)', () => {
       tool_name: 'Read', tool_input: {}, tool_response: {}, prompt_number: 1, toolUseId: 'tu-x',
     });
 
-    await sm.respawnPoisonedSession(3);
+    await sm.respawnSession(3);
 
     expect(sm.getMessageBuffer().getPendingCount(3)).toBe(1); // preserved
     expect(sm.getSession(3)).toBeDefined();
