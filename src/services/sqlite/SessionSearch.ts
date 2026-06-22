@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { TableNameRow } from '../../types/database.js';
-import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
+import { paths } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { isDirectChild } from '../../shared/path-utils.js';
 import { AppError } from '../server/ErrorHandler.js';
@@ -14,20 +14,22 @@ import {
   ObservationRow,
   UserPromptRow
 } from './types.js';
+import { applySqliteBusyTimeout, ensureDatabaseParentDir } from './connection.js';
 
 export class SessionSearch {
   private db: Database;
 
   private static readonly MISSING_SEARCH_INPUT_MESSAGE = 'Either query or filters required for search';
 
-  constructor(dbPathOrDb: string | Database = DB_PATH) {
+  constructor(dbPathOrDb: string | Database = paths.database()) {
     if (dbPathOrDb instanceof Database) {
       this.db = dbPathOrDb;
     } else {
-      ensureDir(DATA_DIR);
+      ensureDatabaseParentDir(dbPathOrDb);
       this.db = new Database(dbPathOrDb);
       this.db.run('PRAGMA journal_mode = WAL');
     }
+    applySqliteBusyTimeout(this.db);
 
     this._fts5Available = this.isFts5Available();
 

@@ -112,26 +112,30 @@ export function getPackageCommandsDir(): string {
   return join(packageRoot, 'commands');
 }
 
+function resolveDataPath(...segments: string[]): string {
+  return join(resolveDataDir(), ...segments);
+}
+
 export const paths = {
-  dataDir: () => DATA_DIR,
-  workerPid: () => join(DATA_DIR, 'worker.pid'),
-  serverBetaPid: () => join(DATA_DIR, '.server-beta.pid'),
-  serverBetaPort: () => join(DATA_DIR, '.server-beta.port'),
-  serverBetaRuntime: () => join(DATA_DIR, '.server-beta.runtime.json'),
-  settings: () => join(DATA_DIR, 'settings.json'),
-  database: () => join(DATA_DIR, 'claude-mem.db'),
-  chroma: () => join(DATA_DIR, 'chroma'),
-  combinedCerts: () => join(DATA_DIR, 'combined_certs.pem'),
-  transcriptsConfig: () => join(DATA_DIR, 'transcript-watch.json'),
-  transcriptsState: () => join(DATA_DIR, 'transcript-watch-state.json'),
-  corpora: () => join(DATA_DIR, 'corpora'),
-  supervisorRegistry: () => join(DATA_DIR, 'supervisor.json'),
-  envFile: () => join(DATA_DIR, '.env'),
-  logsDir: () => LOGS_DIR,
-  archives: () => ARCHIVES_DIR,
-  trash: () => TRASH_DIR,
-  backups: () => BACKUPS_DIR,
-  modes: () => MODES_DIR,
-  vectorDb: () => VECTOR_DB_DIR,
-  observerSessions: () => OBSERVER_SESSIONS_DIR,
+  dataDir: () => resolveDataDir(),
+  workerPid: () => resolveDataPath('worker.pid'),
+  serverBetaPid: () => resolveDataPath('.server-beta.pid'),
+  serverBetaPort: () => resolveDataPath('.server-beta.port'),
+  serverBetaRuntime: () => resolveDataPath('.server-beta.runtime.json'),
+  settings: () => resolveDataPath('settings.json'),
+  database: () => resolveDataPath('claude-mem.db'),
+  chroma: () => resolveDataPath('chroma'),
+  combinedCerts: () => resolveDataPath('combined_certs.pem'),
+  transcriptsConfig: () => resolveDataPath('transcript-watch.json'),
+  transcriptsState: () => resolveDataPath('transcript-watch-state.json'),
+  corpora: () => resolveDataPath('corpora'),
+  supervisorRegistry: () => resolveDataPath('supervisor.json'),
+  envFile: () => resolveDataPath('.env'),
+  logsDir: () => resolveDataPath('logs'),
+  archives: () => resolveDataPath('archives'),
+  trash: () => resolveDataPath('trash'),
+  backups: () => resolveDataPath('backups'),
+  modes: () => resolveDataPath('modes'),
+  vectorDb: () => resolveDataPath('vector-db'),
+  observerSessions: () => resolveDataPath('observer-sessions'),
 } as const;

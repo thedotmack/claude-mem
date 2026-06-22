@@ -9,6 +9,7 @@ import { toError } from '../../utils/to-error.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor, validateWorkerPidFile, type ValidateWorkerPidStatus } from '../../supervisor/index.js';
 import { paths } from '../../shared/paths.js';
+import { applySqliteBusyTimeout } from '../sqlite/connection.js';
 
 const DATA_DIR = paths.dataDir();
 const PID_FILE = paths.workerPid();
@@ -311,7 +312,7 @@ export function runOneTimeCwdRemap(dataDirectory?: string): void {
 function executeCwdRemap(dbPath: string, effectiveDataDir: string, markerPath: string): void {
   const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
 
-  const probe = new Database(dbPath, { readonly: true });
+  const probe = applySqliteBusyTimeout(new Database(dbPath, { readonly: true }));
   const hasPending = probe.prepare(
     "SELECT name FROM sqlite_master WHERE type='table' AND name='pending_messages'"
   ).get() as { name: string } | undefined;
@@ -328,7 +329,7 @@ function executeCwdRemap(dbPath: string, effectiveDataDir: string, markerPath: s
   copyFileSync(dbPath, backup);
   logger.info('SYSTEM', 'DB backed up before cwd-remap', { backup });
 
-  const db = new Database(dbPath);
+  const db = applySqliteBusyTimeout(new Database(dbPath));
   try {
     const cwdRows = db.prepare(`
       SELECT cwd FROM pending_messages
@@ -503,4 +504,3 @@ export function touchPidFile(): void {
 export function cleanStalePidFile(): ValidateWorkerPidStatus {
   return validateWorkerPidFile({ logAlive: false });
 }
-
