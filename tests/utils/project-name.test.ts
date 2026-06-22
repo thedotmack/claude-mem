@@ -3,12 +3,14 @@ import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import { homedir } from 'os';
 import { getProjectName, getProjectContext, getDreamProjectName } from '../../src/utils/project-name.js';
 
+function homeBasename(): string {
+  return homedir().split(/[/\\]/).filter(Boolean).pop() ?? '';
+}
+
 describe('getProjectName', () => {
   describe('tilde expansion', () => {
     it('resolves bare ~ to home directory basename', () => {
-      const home = homedir();
-      const expected = home.split('/').pop() || home.split('\\').pop() || '';
-      expect(getProjectName('~')).toBe(expected);
+      expect(getProjectName('~')).toBe(homeBasename());
     });
 
     it('resolves ~/subpath to subpath', () => {
@@ -16,9 +18,7 @@ describe('getProjectName', () => {
     });
 
     it('resolves ~/ to home directory basename', () => {
-      const home = homedir();
-      const expected = home.split('/').pop() || home.split('\\').pop() || '';
-      expect(getProjectName('~/')).toBe(expected);
+      expect(getProjectName('~/')).toBe(homeBasename());
     });
   });
 
@@ -106,6 +106,10 @@ describe('getProjectName', () => {
         getProjectName(`${home}/projects/app`)
       );
     });
+  });
+
+  it('does not append :dream twice for already-dream project names', () => {
+    expect(getDreamProjectName('already:dream')).toBe('already:dream');
   });
 });
 

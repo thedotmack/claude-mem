@@ -23,6 +23,24 @@ function rawProjectsForFallback(projects: string[]): string[] {
   return projects.filter(project => !isDreamProject(project));
 }
 
+function rowMatchesRawProject(
+  row: Pick<Observation, 'project' | 'merged_into_project'>,
+  rawProjects: Set<string>
+): boolean {
+  return rawProjects.has(row.project ?? '') || rawProjects.has(row.merged_into_project ?? '');
+}
+
+function sortRowsForContext(rows: Observation[], rawProjects: Set<string>): Observation[] {
+  return [...rows].sort((a, b) => {
+    const aIsRaw = rowMatchesRawProject(a, rawProjects);
+    const bIsRaw = rowMatchesRawProject(b, rawProjects);
+    if (aIsRaw !== bIsRaw) {
+      return aIsRaw ? 1 : -1;
+    }
+    return b.created_at_epoch - a.created_at_epoch;
+  });
+}
+
 function queryLatestRawObservation(
   db: SessionStore,
   projects: string[],
@@ -52,12 +70,12 @@ function queryLatestRawObservation(
       o.discovery_tokens,
       o.created_at,
       o.created_at_epoch,
-      o.project
+      o.project,
+      o.merged_into_project
     FROM observations o
     LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
     WHERE (o.project IN (${projectPlaceholders})
            OR o.merged_into_project IN (${projectPlaceholders}))
-      AND o.project NOT LIKE '%:dream'
       AND type IN (${typePlaceholders})
       AND EXISTS (
         SELECT 1 FROM json_each(o.concepts)
@@ -81,9 +99,11 @@ function includeRawFallback(
   conceptArray: string[],
   limit: number
 ): Observation[] {
-  const selected = rows.slice(0, limit);
-  if (rawProjectsForFallback(projects).length === 0) return selected;
-  if (selected.some(row => row.project && !isDreamProject(row.project))) return selected;
+  const rawProjects = new Set(rawProjectsForFallback(projects));
+  const prioritizedRows = sortRowsForContext(rows, rawProjects);
+  const selected = prioritizedRows.slice(0, limit);
+  if (rawProjects.size === 0) return selected;
+  if (selected.some(row => rowMatchesRawProject(row, rawProjects))) return selected;
 
   const fallback = queryLatestRawObservation(db, projects, typeArray, conceptArray);
   if (!fallback) return selected;
@@ -92,7 +112,7 @@ function includeRawFallback(
     ? [...selected.slice(0, Math.max(0, limit - 1)), fallback]
     : [...selected, fallback];
 
-  return withFallback.sort((a, b) => b.created_at_epoch - a.created_at_epoch);
+  return sortRowsForContext(withFallback, rawProjects);
 }
 
 export function queryObservations(
@@ -121,7 +141,8 @@ export function queryObservations(
       o.discovery_tokens,
       o.created_at,
       o.created_at_epoch,
-      o.project
+      o.project,
+      o.merged_into_project
     FROM observations o
     LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
     WHERE (o.project = ? OR o.merged_into_project = ?)
@@ -177,7 +198,19 @@ export function queryObservationsMulti(
   const conceptPlaceholders = conceptArray.map(() => '?').join(',');
 
   const projectPlaceholders = projects.map(() => '?').join(',');
+  const rawProjects = rawProjectsForFallback(projects);
+  const rawProjectPlaceholders = rawProjects.map(() => '?').join(',');
   const queryLimit = config.totalObservationCount * Math.max(2, projects.length);
+  const rawPriorityOrder = rawProjects.length > 0
+    ? `
+      CASE
+        WHEN o.project IN (${rawProjectPlaceholders})
+          OR o.merged_into_project IN (${rawProjectPlaceholders})
+        THEN 1
+        ELSE 0
+      END,
+    `
+    : '';
 
   const rows = db.db.prepare(`
     SELECT
@@ -195,7 +228,8 @@ export function queryObservationsMulti(
       o.discovery_tokens,
       o.created_at,
       o.created_at_epoch,
-      o.project
+      o.project,
+      o.merged_into_project
     FROM observations o
     LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
     WHERE (o.project IN (${projectPlaceholders})
@@ -205,13 +239,15 @@ export function queryObservationsMulti(
         SELECT 1 FROM json_each(o.concepts)
         WHERE value IN (${conceptPlaceholders})
       )
-    ORDER BY o.created_at_epoch DESC
+    ORDER BY ${rawPriorityOrder} o.created_at_epoch DESC
     LIMIT ?
   `).all(
     ...projects,
     ...projects,
     ...typeArray,
     ...conceptArray,
+    ...rawProjects,
+    ...rawProjects,
     queryLimit
   ) as Observation[];
 

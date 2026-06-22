@@ -74,7 +74,7 @@ export interface ProjectContext {
 }
 
 export function getDreamProjectName(project: string): string {
-  return `${project}:dream`;
+  return project.endsWith(':dream') ? project : `${project}:dream`;
 }
 
 function withDreamProject(primaryProject: string, additionalProjects: string[] = []): string[] {

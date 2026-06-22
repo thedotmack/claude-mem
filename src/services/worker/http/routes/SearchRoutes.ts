@@ -65,9 +65,9 @@ const semanticContextSchema = z.object({
 export class SearchRoutes extends BaseRouteHandler {
   private cachedSettings: ReturnType<typeof SettingsDefaultsManager.loadFromFile> | null = null;
   private cachedSettingsAt = 0;
-  // Scope this cache to the route instance so separate server/test instances do
-  // not inherit each other's positive observation state through shared modules.
-  private readonly projectsKnownNonEmpty = new Set<string>();
+  // Cache exact request project-sets only; a mixed non-empty request must not
+  // imply that each individual project inside it has context.
+  private readonly projectSetsKnownNonEmpty = new Set<string>();
 
   constructor(
     private searchManager: SearchManager
@@ -91,13 +91,14 @@ export class SearchRoutes extends BaseRouteHandler {
     sessionStore: ReturnType<SearchManager['getSessionStore']>,
     projects: string[],
   ): boolean {
-    if (projects.every(p => this.projectsKnownNonEmpty.has(p))) {
+    const cacheKey = projects.join('\0');
+    if (this.projectSetsKnownNonEmpty.has(cacheKey)) {
       return true;
     }
     const observationCount = countObservationsByProjects(sessionStore, projects);
     const summaryCount = countSummariesByProjects(sessionStore, projects);
     if (observationCount > 0 || summaryCount > 0) {
-      for (const p of projects) this.projectsKnownNonEmpty.add(p);
+      this.projectSetsKnownNonEmpty.add(cacheKey);
       return true;
     }
     return false;

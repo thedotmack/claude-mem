@@ -185,6 +185,68 @@ describe('queryObservationsMulti', () => {
       );
 
       expect(rows.map(row => row.id)).toEqual([1, 3]);
-      expect(calls[1]).toContain("o.project NOT LIKE '%:dream'");
+    });
+
+    it('treats merged raw rows as raw context and skips redundant fallback replacement', () => {
+      const mergedRawRow = createTestObservation({
+        id: 7,
+        project: 'child:dream',
+        merged_into_project: 'parent',
+        created_at_epoch: 2500,
+      });
+      const oldFallback = createTestObservation({
+        id: 8,
+        project: 'parent',
+        created_at_epoch: 1000,
+      });
+      const db = {
+        db: {
+          prepare: () => ({
+            all: () => [mergedRawRow],
+            get: () => oldFallback,
+          }),
+        },
+      };
+
+      const rows = queryObservationsMulti(
+        db as any,
+        ['parent:dream', 'parent'],
+        {
+          observationTypes: new Set(['discovery']),
+          observationConcepts: new Set(['concept1']),
+          totalObservationCount: 1,
+        } as any
+      );
+
+      expect(rows.map(row => row.id)).toEqual([7]);
+    });
+
+    it('keeps dream rows ahead of newer raw rows while still returning raw context secondarily', () => {
+      const rows = [
+        createTestObservation({ id: 1, project: 'proj', created_at_epoch: 5000 }),
+        createTestObservation({ id: 2, project: 'proj', created_at_epoch: 4000 }),
+        createTestObservation({ id: 3, project: 'proj:dream', created_at_epoch: 1000 }),
+      ];
+      const fallback = createTestObservation({ id: 4, project: 'proj', created_at_epoch: 4500 });
+      const db = {
+        db: {
+          prepare: () => ({
+            all: () => rows,
+            get: () => fallback,
+          }),
+        },
+      };
+
+      const result = queryObservationsMulti(
+        db as any,
+        ['proj:dream', 'proj'],
+        {
+          observationTypes: new Set(['discovery']),
+          observationConcepts: new Set(['concept1']),
+          totalObservationCount: 2,
+        } as any
+      );
+
+      expect(result.map(row => row.id)).toEqual([3, 1]);
     });
 });
