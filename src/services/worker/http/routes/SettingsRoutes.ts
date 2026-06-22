@@ -5,6 +5,7 @@ import path from 'path';
 import { readFileSync, writeFileSync, existsSync, renameSync, mkdirSync } from 'fs';
 import { getPackageRoot, paths } from '../../../../shared/paths.js';
 import { logger } from '../../../../utils/logger.js';
+import { stripBom } from '../../../../utils/json-utils.js';
 import { SettingsManager } from '../../SettingsManager.js';
 import { getBranchInfo, switchBranch, pullUpdates } from '../../BranchManager.js';
 import { ModeManager } from '../../../domain/ModeManager.js';
@@ -65,7 +66,7 @@ export class SettingsRoutes extends BaseRouteHandler {
     if (existsSync(settingsPath)) {
       const settingsData = readFileSync(settingsPath, 'utf-8');
       try {
-        settings = JSON.parse(settingsData);
+        settings = JSON.parse(stripBom(settingsData));
       } catch (parseError) {
         const normalizedParseError = parseError instanceof Error ? parseError : new Error(String(parseError));
         logger.error('HTTP', 'Failed to parse settings file', { settingsPath }, normalizedParseError);
