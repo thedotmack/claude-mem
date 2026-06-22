@@ -311,7 +311,7 @@ export class SearchManager {
       1
     );
     const semanticLimit = Math.min(
-      Math.max(requestedLimit, executionOptions.semanticHydrationLimit ?? requestedLimit),
+      Math.max(requestedLimit, executionOptions.semanticHydrationLimit ?? SEARCH_CONSTANTS.CHROMA_BATCH_SIZE),
       SEARCH_CONSTANTS.CHROMA_BATCH_SIZE
     );
     let observations: ObservationSearchResult[] = [];
@@ -496,8 +496,11 @@ export class SearchManager {
     }
 
     if (format === 'json') {
+      const jsonObservations = executionOptions.semanticHydrationLimit
+        ? observations
+        : observations.slice(0, requestedLimit);
       return {
-        observations,
+        observations: jsonObservations,
         sessions,
         prompts,
         totalResults,
