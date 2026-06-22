@@ -45,7 +45,6 @@ function hasConsent(): boolean {
   return value;
 }
 
-<<<<<<< HEAD
 /**
  * Whether THIS process is the long-lived worker. Only the worker enables
  * uncaught-exception autocapture (enableExceptionAutocapture) — short-lived CLI
