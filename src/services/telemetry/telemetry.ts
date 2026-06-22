@@ -25,15 +25,24 @@ let isShutdown = false;
  * via the CLI is picked up by a running worker within the TTL.
  */
 const CONSENT_CACHE_TTL_MS = 30_000;
-let consentCache: { value: boolean; expiresAt: number } | null = null;
+let consentCache: { value: boolean; expiresAt: number; overrideKey: string } | null = null;
+
+function getConsentOverrideKey(env: NodeJS.ProcessEnv): string {
+  return `${env.DO_NOT_TRACK ?? ''}\u0000${env.CLAUDE_MEM_TELEMETRY ?? ''}`;
+}
 
 function hasConsent(): boolean {
   const now = Date.now();
-  if (consentCache && now < consentCache.expiresAt) {
+  const overrideKey = getConsentOverrideKey(process.env);
+  if (
+    consentCache &&
+    consentCache.overrideKey === overrideKey &&
+    now < consentCache.expiresAt
+  ) {
     return consentCache.value;
   }
   const value = resolveTelemetryConsent(process.env, loadTelemetryConfig());
-  consentCache = { value, expiresAt: now + CONSENT_CACHE_TTL_MS };
+  consentCache = { value, expiresAt: now + CONSENT_CACHE_TTL_MS, overrideKey };
   return value;
 }
 
