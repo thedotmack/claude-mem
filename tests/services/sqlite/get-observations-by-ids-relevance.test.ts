@@ -46,6 +46,40 @@ describe('SessionStore.*ByIds — orderBy: "relevance" preserves caller ID order
     expect(results.map(r => r.id)).toEqual(callerOrder);
   });
 
+  it('applies a relevance limit after restoring the caller-provided ID order', () => {
+    const sdkId = store.createSDKSession('content-relevance-limit', 'p', 'prompt');
+    store.updateMemorySessionId(sdkId, 'session-relevance-limit');
+
+    const baseTs = 1_700_000_000_000;
+    const inserted: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      const result = store.storeObservations(
+        'session-relevance-limit',
+        'p',
+        [{
+          type: 'test',
+          title: `obs-limit-${i}`,
+          subtitle: null,
+          facts: [`fact ${i}`],
+          narrative: null,
+          concepts: [],
+          files_read: [],
+          files_modified: [],
+        }],
+        null,
+        i,
+        0,
+        baseTs + i * 1000,
+      );
+      inserted.push(result.observationIds[0]);
+    }
+
+    const callerOrder = [...inserted].reverse();
+    const results = store.getObservationsByIds(callerOrder, { orderBy: 'relevance', limit: 2 });
+
+    expect(results.map(r => r.id)).toEqual(callerOrder.slice(0, 2));
+  });
+
   it('getObservationsByIds still respects date_desc when orderBy defaults', () => {
     const sdkId = store.createSDKSession('content-date', 'p', 'prompt');
     store.updateMemorySessionId(sdkId, 'session-date');

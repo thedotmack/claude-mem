@@ -3,7 +3,7 @@ import { SearchManager } from '../../src/services/worker/SearchManager.js';
 import { SEARCH_CONSTANTS } from '../../src/services/worker/search/types.js';
 
 describe('SearchManager semanticLimit handling', () => {
-  it('keeps public semantic observation JSON responses on the requested limit while ignoring public semanticLimit args', async () => {
+  it('keeps public semantic observation JSON hydration on the requested limit while ignoring public semanticLimit args', async () => {
     const sessionSearch = {
       searchObservations: mock(() => []),
       searchSessions: mock(() => []),
@@ -21,7 +21,7 @@ describe('SearchManager semanticLimit handling', () => {
         metadatas: Array.from({ length: 6 }, () => ({ doc_type: 'observation', created_at_epoch: Date.now() })),
       })),
     } as any;
-    sessionStore.getObservationsByIds = mock(() => (
+    sessionStore.getObservationsByIds = mock((_ids: number[], options: { limit?: number }) => (
       [11, 12, 13, 14, 15, 16].map(id => ({
         id,
         title: `obs-${id}`,
@@ -29,7 +29,7 @@ describe('SearchManager semanticLimit handling', () => {
         created_at: '2026-01-01T00:00:00Z',
         created_at_epoch: Date.now(),
         project: 'request-project',
-      }))
+      })).slice(0, options.limit ?? 6)
     ));
 
     const manager = new SearchManager(
@@ -57,10 +57,10 @@ describe('SearchManager semanticLimit handling', () => {
     );
     expect(sessionStore.getObservationsByIds).toHaveBeenCalledWith(
       [11, 12, 13, 14, 15, 16],
-      expect.objectContaining({ project: 'request-project', limit: 100, orderBy: 'relevance' })
+      expect.objectContaining({ project: 'request-project', limit: 5, orderBy: 'relevance' })
     );
     expect(result.observations.map((obs: any) => obs.id)).toEqual([11, 12, 13, 14, 15]);
-    expect(result.totalResults).toBe(6);
+    expect(result.totalResults).toBe(5);
   });
 
   it('retains a bounded semantic candidate window so later recent hits survive recency filtering', async () => {
@@ -124,7 +124,7 @@ describe('SearchManager semanticLimit handling', () => {
     );
     expect(sessionStore.getObservationsByIds).toHaveBeenCalledWith(
       [16],
-      expect.objectContaining({ project: 'request-project', limit: 100, orderBy: 'relevance' })
+      expect.objectContaining({ project: 'request-project', limit: 5, orderBy: 'relevance' })
     );
     expect(result.observations.map((obs: any) => obs.id)).toEqual([16]);
   });

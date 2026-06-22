@@ -310,10 +310,13 @@ export class SearchManager {
       Number.parseInt(String(options.limit ?? SEARCH_CONSTANTS.DEFAULT_LIMIT), 10) || SEARCH_CONSTANTS.DEFAULT_LIMIT,
       1
     );
-    const semanticLimit = Math.min(
+    const semanticCandidateLimit = Math.min(
       Math.max(requestedLimit, executionOptions.semanticHydrationLimit ?? SEARCH_CONSTANTS.CHROMA_BATCH_SIZE),
       SEARCH_CONSTANTS.CHROMA_BATCH_SIZE
     );
+    const semanticHydrationLimit = executionOptions.semanticHydrationLimit === undefined
+      ? requestedLimit
+      : semanticCandidateLimit;
     let observations: ObservationSearchResult[] = [];
     let sessions: SessionSummarySearchResult[] = [];
     let prompts: UserPromptSearchResult[] = [];
@@ -364,7 +367,7 @@ export class SearchManager {
       }
 
       try {
-        const chromaResults = await this.queryChroma(query, semanticLimit, whereFilter);
+        const chromaResults = await this.queryChroma(query, semanticCandidateLimit, whereFilter);
         chromaSucceeded = true; 
         logger.debug('SEARCH', 'ChromaDB returned semantic matches', { matchCount: chromaResults.ids.length });
 
@@ -414,7 +417,7 @@ export class SearchManager {
           }
 
           if (obsIds.length > 0) {
-            const obsOptions = { ...options, type: obs_type, concepts, files, limit: semanticLimit };
+            const obsOptions = { ...options, type: obs_type, concepts, files, limit: semanticHydrationLimit };
             observations = this.sessionStore.getObservationsByIds(obsIds, obsOptions);
           }
           if (sessionIds.length > 0) {
