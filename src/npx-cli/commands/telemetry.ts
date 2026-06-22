@@ -71,7 +71,7 @@ const COLLECTED_FIELDS = [
   'invalid_output_class   xml / idle / prose (never the output)',
   'consecutive_invalid_outputs   unusable outputs in a row before recovery',
   'respawn_triggered      whether the compression agent was restarted',
-  'abort_reason     idle / shutdown / overflow / restart_guard / quota / none',
+  'abort_reason     idle / shutdown / overflow / restart_guard / quota / invalid_output / none',
   'previous_shutdown      crash / clean / unknown (detected at worker start)',
   'previous_uptime_seconds / uptime_seconds',
   '                 worker uptime in whole seconds (previous run / at stop)',

@@ -66,9 +66,9 @@ export async function processAgentResponse(
       consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
     });
     
-// Recover from repeated invalid output (plan-11, #2485).
-// The session is restarted only after N consecutive invalid outputs to avoid
-// churn from benign single-batch misses.
+    // Recover from repeated invalid output (plan-11, #2485).
+    // The session is restarted only after N consecutive invalid outputs to avoid
+    // churn from benign single-batch misses.
     const mustRespawn =
       session.consecutiveInvalidOutputs >= INVALID_OUTPUT_RESPAWN_THRESHOLD;
 
@@ -121,9 +121,10 @@ export async function processAgentResponse(
   const { observations, summary } = parsed;
   const summaryForStore = normalizeSummaryForStorage(summary);
 
-// Recover from repeated invalid output (plan-11, #2485).
-// Respawn only after N consecutive invalid outputs to avoid churn from
-// benign single-batch misses.
+  // Verify before persist (plan-11, #2574): the summarizer can fabricate a
+  // nonexistent commit hash while keeping files_modified accurate. Cross-check
+  // any emitted commit hash against ground truth via `git cat-file -e` in the
+  // session's repo and strip fabricated hashes from the persisted text.
   let fabricatedCount = 0;
   if (summaryForStore) {
     const { fabricated } = verifyCommitHashesInText(

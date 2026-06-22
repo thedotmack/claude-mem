@@ -89,7 +89,7 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   // session_compressed trust signals — booleans, counters, and our own
   // closed enums (invalid_output_class: xml | idle | prose | poisoned, where
   // 'xml' means XML-shaped output that still failed to parse; abort_reason:
-  // idle | shutdown | overflow | restart_guard | quota  | none).
+  // idle | shutdown | overflow | restart_guard | quota  | invalid_output | none).
   // Never model output, never raw abort strings.
   'fabrication_detected',
   'fabricated_count',
