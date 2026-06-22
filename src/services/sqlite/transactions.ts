@@ -4,6 +4,8 @@ import { logger } from '../../utils/logger.js';
 import type { ObservationInput } from './observations/types.js';
 import type { SummaryInput } from './summaries/types.js';
 import { computeObservationContentHash } from './observations/store.js';
+import { isCloudEnabled } from '../cloud/config.js';
+import { enqueueOutbox, notifyEnqueued } from '../cloud/outbox.js';
 
 export interface StoreObservationsResult {
   observationIds: number[];
@@ -26,6 +28,11 @@ export function storeObservationsAndMarkComplete(
 ): StoreAndMarkCompleteResult {
   const timestampEpoch = overrideTimestampEpoch ?? Date.now();
   const timestampIso = new Date(timestampEpoch).toISOString();
+
+  // Read the cloud gate ONCE, before the transaction, so no config read (and
+  // certainly no network) ever happens inside the hot write path. When disabled
+  // (the default) this is a single cached boolean and the txn does nothing extra.
+  const cloudEnabled = isCloudEnabled();
 
   const storeAndMarkTx = db.transaction(() => {
     const observationIds: number[] = [];
@@ -66,6 +73,9 @@ export function storeObservationsAndMarkComplete(
 
       if (inserted) {
         observationIds.push(inserted.id);
+        if (cloudEnabled) {
+          enqueueOutbox(db, { kind: 'observation', localId: inserted.id, lane: 'live', createdAtEpoch: timestampEpoch });
+        }
         continue;
       }
 
@@ -102,6 +112,9 @@ export function storeObservationsAndMarkComplete(
         timestampEpoch
       );
       summaryId = Number(result.lastInsertRowid);
+      if (cloudEnabled) {
+        enqueueOutbox(db, { kind: 'summary', localId: summaryId, lane: 'live', createdAtEpoch: timestampEpoch });
+      }
     }
 
     // Current queue rows are live work only; completed work is removed, not retained as processed.
@@ -117,7 +130,10 @@ export function storeObservationsAndMarkComplete(
     return { observationIds, summaryId, createdAtEpoch: timestampEpoch };
   });
 
-  return storeAndMarkTx();
+  const result = storeAndMarkTx();
+  // Wake the pusher AFTER commit, never inside the txn (avoid waking before commit).
+  if (cloudEnabled) notifyEnqueued();
+  return result;
 }
 
 export function storeObservations(
@@ -132,6 +148,11 @@ export function storeObservations(
 ): StoreObservationsResult {
   const timestampEpoch = overrideTimestampEpoch ?? Date.now();
   const timestampIso = new Date(timestampEpoch).toISOString();
+
+  // Read the cloud gate ONCE, before the transaction, so no config read (and
+  // certainly no network) ever happens inside the hot write path. When disabled
+  // (the default) this is a single cached boolean and the txn does nothing extra.
+  const cloudEnabled = isCloudEnabled();
 
   const storeTx = db.transaction(() => {
     const observationIds: number[] = [];
@@ -172,6 +193,9 @@ export function storeObservations(
 
       if (inserted) {
         observationIds.push(inserted.id);
+        if (cloudEnabled) {
+          enqueueOutbox(db, { kind: 'observation', localId: inserted.id, lane: 'live', createdAtEpoch: timestampEpoch });
+        }
         continue;
       }
 
@@ -208,10 +232,16 @@ export function storeObservations(
         timestampEpoch
       );
       summaryId = Number(result.lastInsertRowid);
+      if (cloudEnabled) {
+        enqueueOutbox(db, { kind: 'summary', localId: summaryId, lane: 'live', createdAtEpoch: timestampEpoch });
+      }
     }
 
     return { observationIds, summaryId, createdAtEpoch: timestampEpoch };
   });
 
-  return storeTx();
+  const result = storeTx();
+  // Wake the pusher AFTER commit, never inside the txn (avoid waking before commit).
+  if (cloudEnabled) notifyEnqueued();
+  return result;
 }

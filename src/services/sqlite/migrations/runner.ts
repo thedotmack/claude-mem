@@ -8,6 +8,7 @@ import {
 } from '../../../types/database.js';
 import { DEFAULT_PLATFORM_SOURCE } from '../../../shared/platform-source.js';
 import { ensureServerStorageSchema, SERVER_STORAGE_SCHEMA_VERSION } from '../../../storage/sqlite/schema.js';
+import { ensureCloudOutboxTable } from '../../cloud/migration.js';
 
 export class MigrationRunner {
   constructor(private db: Database) {}
@@ -38,6 +39,11 @@ export class MigrationRunner {
     this.dropWorkerPidColumn();
     this.createServerOwnedTables();
     this.rebuildPendingMessagesForFinalQueueSchema();
+    this.createCloudOutboxTable();
+  }
+
+  private createCloudOutboxTable(): void {
+    ensureCloudOutboxTable(this.db);
   }
 
   private initializeSchema(): void {

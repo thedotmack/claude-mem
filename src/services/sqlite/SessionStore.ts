@@ -17,6 +17,9 @@ import { parseFileList } from './observations/files.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources } from '../../shared/platform-source.js';
 import { findRecentDuplicateUserPrompt as findRecentDuplicateUserPromptRecord } from './prompts/get.js';
 import { normalizeStoredPromptText } from './prompt-storage.js';
+import { ensureCloudOutboxTable } from '../cloud/migration.js';
+import { enqueueOutbox, notifyEnqueued } from '../cloud/outbox.js';
+import { isCloudEnabled } from '../cloud/config.js';
 
 function resolveCreateSessionArgs(
   customTitle?: string,
@@ -71,6 +74,11 @@ export class SessionStore {
     this.dropDeadPendingMessagesColumns();
     this.ensurePendingMessagesToolUseIdColumn();
     this.dropWorkerPidColumn();
+    this.createCloudOutboxTable();
+  }
+
+  private createCloudOutboxTable(): void {
+    ensureCloudOutboxTable(this.db);
   }
 
   private dropWorkerPidColumn(): void {
@@ -1929,6 +1937,10 @@ export class SessionStore {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
 
+    // Read the cloud gate ONCE, before the transaction, so no config read (and
+    // certainly no network) ever happens inside the hot write path.
+    const cloudEnabled = isCloudEnabled();
+
     const storeTx = this.db.transaction(() => {
       const observationIds: number[] = [];
 
@@ -1970,6 +1982,9 @@ export class SessionStore {
 
         if (inserted) {
           observationIds.push(inserted.id);
+          if (cloudEnabled) {
+            enqueueOutbox(this.db, { kind: 'observation', localId: inserted.id, lane: 'live', createdAtEpoch: timestampEpoch });
+          }
           continue;
         }
 
@@ -2006,12 +2021,18 @@ export class SessionStore {
           timestampEpoch
         );
         summaryId = Number(result.lastInsertRowid);
+        if (cloudEnabled) {
+          enqueueOutbox(this.db, { kind: 'summary', localId: summaryId, lane: 'live', createdAtEpoch: timestampEpoch });
+        }
       }
 
       return { observationIds, summaryId, createdAtEpoch: timestampEpoch };
     });
 
-    return storeTx();
+    const result = storeTx();
+    // Wake the pusher AFTER commit, never inside the txn.
+    if (cloudEnabled) notifyEnqueued();
+    return result;
   }
 
   storeObservationsAndMarkComplete(
@@ -2046,6 +2067,10 @@ export class SessionStore {
   ): { observationIds: number[]; summaryId?: number; createdAtEpoch: number } {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
+
+    // Read the cloud gate ONCE, before the transaction, so no config read (and
+    // certainly no network) ever happens inside the hot write path.
+    const cloudEnabled = isCloudEnabled();
 
     const storeAndMarkTx = this.db.transaction(() => {
       const observationIds: number[] = [];
@@ -2088,6 +2113,9 @@ export class SessionStore {
 
         if (inserted) {
           observationIds.push(inserted.id);
+          if (cloudEnabled) {
+            enqueueOutbox(this.db, { kind: 'observation', localId: inserted.id, lane: 'live', createdAtEpoch: timestampEpoch });
+          }
           continue;
         }
 
@@ -2124,6 +2152,9 @@ export class SessionStore {
           timestampEpoch
         );
         summaryId = Number(result.lastInsertRowid);
+        if (cloudEnabled) {
+          enqueueOutbox(this.db, { kind: 'summary', localId: summaryId, lane: 'live', createdAtEpoch: timestampEpoch });
+        }
       }
 
       // Current queue rows are live work only; completed work is removed, not retained as processed.
@@ -2139,7 +2170,10 @@ export class SessionStore {
       return { observationIds, summaryId, createdAtEpoch: timestampEpoch };
     });
 
-    return storeAndMarkTx();
+    const result = storeAndMarkTx();
+    // Wake the pusher AFTER commit, never inside the txn.
+    if (cloudEnabled) notifyEnqueued();
+    return result;
   }
 
   getSessionSummariesByIds(
