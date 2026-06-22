@@ -39,10 +39,8 @@ async function reapStalePortHolderOnWindows(port: number): Promise<void> {
     });
 
     const lines = netstatResult.trim().split('\n');
-    if (lines.length === 0) {
-      logger.debug('SYSTEM', 'No process found holding port', { port });
-      return;
-    }
+    // findstr exits with code 1 on no match (execSync throws), so if we reach
+    // here there is always at least one line.
 
     // Parse PID from netstat output (last column)
     const lastLine = lines[lines.length - 1];
@@ -198,6 +196,8 @@ export async function ensureWorkerStarted(
     // After reaping, check if port is now free and worker can be spawned
     const portFree = await waitForPortFree(port, 3000);
     if (portFree) {
+      // #2996: clear cooldown marker so shouldSkipSpawnOnWindows() won't block the respawn
+      clearWorkerSpawnAttempted();
       logger.info('SYSTEM', 'Port freed after reaping stale process, proceeding with spawn');
       // Fall through to spawn logic below
     } else {

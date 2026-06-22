@@ -496,7 +496,10 @@ interface HookFailureState {
   lastFailureAt: number;
 }
 
-const FAIL_LOUD_DEFAULT_THRESHOLD = 10;  // #2996: increased from 3 to 10
+// #2996: Windows multi-window setups are prone to zombie worker pviron stalling the port;
+// a higher threshold gives the worker more time to self-heal before blocking prompts.
+// On Linux/maOs, port conflicts are less common so the original 3 is kept.
+const FAIL_LOUD_DEFAULT_THRESHOLD = process.platform === 'win32' ? 10 : 3;
 
 function getStateDir(): string {
   return path.join(DATA_DIR, 'state');
