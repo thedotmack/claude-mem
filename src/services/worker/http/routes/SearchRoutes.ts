@@ -479,6 +479,7 @@ export class SearchRoutes extends BaseRouteHandler {
           type: 'observations',
           limit: String(limit),
           format: 'json',
+          orderBy: 'relevance',
         };
     const observationKey = (obs: any): string => String(
       obs?.id

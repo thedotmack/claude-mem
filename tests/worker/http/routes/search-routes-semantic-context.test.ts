@@ -393,9 +393,8 @@ describe('SearchRoutes /api/context/semantic', () => {
 
     const [body] = res.json.mock.calls[0] as any[];
     expect(searchMock).toHaveBeenCalledTimes(1);
-    expect(searchMock.mock.calls[0][0]).toMatchObject({ query: baseReq.body.q, type: 'observations', limit: '5', format: 'json' });
+    expect(searchMock.mock.calls[0][0]).toMatchObject({ query: baseReq.body.q, type: 'observations', limit: '5', format: 'json', orderBy: 'relevance' });
     expect(searchMock.mock.calls[0][0]).not.toHaveProperty('project');
-    expect(searchMock.mock.calls[0][0]).not.toHaveProperty('orderBy');
     expect(body.context).toBe('');
     expect(body.count).toBe(0);
   });
