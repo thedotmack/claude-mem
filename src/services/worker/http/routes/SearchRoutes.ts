@@ -470,7 +470,8 @@ export class SearchRoutes extends BaseRouteHandler {
           query,
           type: 'observations',
           project,
-          limit: String(semanticWindowLimit),
+          limit: String(limit),
+          semanticLimit: String(semanticWindowLimit),
           format: 'json',
           orderBy: 'relevance',
         }
@@ -501,7 +502,12 @@ export class SearchRoutes extends BaseRouteHandler {
           // Always run: the scoped result cannot self-report missing adopted rows,
           // and CHROMA_BATCH_SIZE keeps the recovery window bounded.
           const fallbackResult = await this.searchManager.search({
-            query, type: 'observations', limit: String(semanticWindowLimit), format: 'json', orderBy: 'relevance'
+            query,
+            type: 'observations',
+            limit: String(limit),
+            semanticLimit: String(semanticWindowLimit),
+            format: 'json',
+            orderBy: 'relevance'
           }, fallbackTelemetry);
           const fallbackUsedKeywordSearch =
             fallbackTelemetry.search_strategy === 'fts'

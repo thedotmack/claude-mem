@@ -302,6 +302,10 @@ export class SearchManager {
   async search(args: any, telemetryOut?: SearchTelemetryEnvelope): Promise<any> {
     const normalized = this.normalizeParams(args);
     const { query, type, obs_type, concepts, files, format, ...options } = normalized;
+    const semanticLimit = Math.max(
+      Number.parseInt(String(options.semanticLimit ?? SEARCH_CONSTANTS.CHROMA_BATCH_SIZE), 10) || SEARCH_CONSTANTS.CHROMA_BATCH_SIZE,
+      SEARCH_CONSTANTS.CHROMA_BATCH_SIZE
+    );
     let observations: ObservationSearchResult[] = [];
     let sessions: SessionSummarySearchResult[] = [];
     let prompts: UserPromptSearchResult[] = [];
@@ -352,7 +356,7 @@ export class SearchManager {
       }
 
       try {
-        const chromaResults = await this.queryChroma(query, 100, whereFilter);
+        const chromaResults = await this.queryChroma(query, semanticLimit, whereFilter);
         chromaSucceeded = true; 
         logger.debug('SEARCH', 'ChromaDB returned semantic matches', { matchCount: chromaResults.ids.length });
 
@@ -402,7 +406,7 @@ export class SearchManager {
           }
 
           if (obsIds.length > 0) {
-            const obsOptions = { ...options, type: obs_type, concepts, files };
+            const obsOptions = { ...options, type: obs_type, concepts, files, limit: semanticLimit };
             observations = this.sessionStore.getObservationsByIds(obsIds, obsOptions);
           }
           if (sessionIds.length > 0) {
