@@ -24,7 +24,16 @@ export async function isPortInUse(port: number): Promise<boolean> {
   if (process.platform === 'win32') {
     // First check: try the health endpoint (happy path - worker is alive and well)
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/api/health`);
+      // #2996: bound the health probe with a 3s timeout so a wedged process
+      // that accepts but never responds does not block the recovery path.
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3000);
+      try {
+        const response = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: controller.signal });
+        clearTimeout(timeoutId);
+      } finally {
+        clearTimeout(timeoutId);
+      }
       // #2996: if fetch() succeeds (no exception), the port is in use regardless of HTTP status.
       // A 404/500 from a wedged worker or unrelated local server still means the port is bound.
       return true;
