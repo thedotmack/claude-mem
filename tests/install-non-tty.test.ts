@@ -265,6 +265,13 @@ describe('Install Non-TTY Support', () => {
       expect(installSource).toContain('export interface InstallOptions');
       expect(installSource).toContain('ide?: string');
     });
+
+    it('supports agy-cli as an independent provider', () => {
+      expect(installSource).toContain("'agy-cli'");
+      expect(installSource).toContain("{ value: 'agy-cli', label: 'Agy CLI (uses your Antigravity login)' }");
+      expect(installSource).toContain("CLAUDE_MEM_PROVIDER: 'agy-cli'");
+      expect(installSource).toContain('hasAgyExecutable()');
+    });
   });
 
   describe('runtime selection', () => {

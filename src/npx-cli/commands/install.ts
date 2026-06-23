@@ -10,6 +10,7 @@ import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { hasAgyExecutable } from '../../shared/find-agy-executable.js';
 import { loadClaudeMemEnv, saveClaudeMemEnv } from '../../shared/EnvManager.js';
 import { ensureWorkerStarted, type WorkerStartResult } from '../../services/worker-spawner.js';
 import {
@@ -776,7 +777,7 @@ function mergeSettings(updates: Record<string, string>): boolean {
   }
 }
 
-type ProviderId = 'claude' | 'gemini' | 'openrouter';
+type ProviderId = 'claude' | 'gemini' | 'openrouter' | 'agy-cli';
 type ClaudeAccessMode = 'subscription' | 'api-key';
 type ClaudeApiMode = 'direct' | 'gateway';
 type RuntimeId = 'worker' | 'server-beta';
@@ -1039,6 +1040,12 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
         persistClaudeProvider();
         return 'claude';
       }
+      if (options.provider === 'agy-cli') {
+        const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: 'agy-cli' });
+        if (wrote) log.info('Saved provider=agy-cli to ~/.claude-mem/settings.json');
+        log.info('Agy CLI provider uses your Antigravity login. Ensure `agy` is installed and Antigravity can authenticate.');
+        return 'agy-cli';
+      }
       const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: options.provider });
       if (wrote) log.info(`Saved provider=${options.provider} to ~/.claude-mem/settings.json`);
       log.warn(`Provider=${options.provider} requested non-interactively. API key prompt skipped — set CLAUDE_MEM_${options.provider.toUpperCase()}_API_KEY and CLAUDE_MEM_PROVIDER in settings.json or env manually if not already set.`);
@@ -1100,6 +1107,7 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
       options: [
         { value: 'claude', label: 'Claude Agent SDK (recommended)' },
         { value: 'gemini', label: 'Gemini' },
+        { value: 'agy-cli', label: 'Agy CLI (uses your Antigravity login)' },
         { value: 'openrouter', label: 'OpenRouter' },
       ],
       initialValue: initialProvider,
@@ -1114,6 +1122,17 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
   if (selectedProvider === 'claude') {
     await runClaudeAuthFlow();
     return 'claude';
+  }
+
+  if (selectedProvider === 'agy-cli') {
+    const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: 'agy-cli' });
+    if (wrote) log.info('Saved provider=agy-cli to ~/.claude-mem/settings.json');
+    if (hasAgyExecutable()) {
+      log.info('Found the `agy` CLI — observations will be generated through your Antigravity login.');
+    } else {
+      log.warn('The `agy` CLI was not found. Install Antigravity CLI or set CLAUDE_MEM_AGY_CLI_PATH.');
+    }
+    return 'agy-cli';
   }
 
   const providerLabel = selectedProvider === 'gemini' ? 'Gemini' : 'OpenRouter';
@@ -1392,7 +1411,7 @@ async function promptCmemOnlineOptIn(version: string): Promise<void> {
 
 export interface InstallOptions {
   ide?: string;
-  provider?: 'claude' | 'gemini' | 'openrouter';
+  provider?: 'claude' | 'gemini' | 'openrouter' | 'agy-cli';
   model?: string;
   noAutoStart?: boolean;
   disableAutoMemory?: boolean;

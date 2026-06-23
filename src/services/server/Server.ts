@@ -69,6 +69,8 @@ export interface RouteHandler {
 
 export interface AiStatus {
   provider: string;
+  available?: boolean;
+  error?: string;
   authMethod: string;
   lastInteraction: {
     timestamp: number;

@@ -18,6 +18,9 @@ export interface SettingsDefaults {
   CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: string;  
   CLAUDE_MEM_GEMINI_MAX_CONTEXT_MESSAGES: string;  
   CLAUDE_MEM_GEMINI_MAX_TOKENS: string;  
+  CLAUDE_MEM_AGY_CLI_MODEL: string;          // Optional model passed to Antigravity CLI
+  CLAUDE_MEM_AGY_CLI_PATH: string;           // Explicit path to the agy binary (empty = auto-detect)
+  CLAUDE_MEM_AGY_CLI_TIMEOUT_MS: string;     // Per-turn timeout for agy CLI subprocesses
   CLAUDE_MEM_OPENROUTER_API_KEY: string;
   CLAUDE_MEM_OPENROUTER_MODEL: string;
   CLAUDE_MEM_OPENROUTER_BASE_URL: string;
@@ -99,6 +102,9 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'true',  // Rate limiting ON by default for free tier users
     CLAUDE_MEM_GEMINI_MAX_CONTEXT_MESSAGES: '20',  // Max messages in Gemini context window
     CLAUDE_MEM_GEMINI_MAX_TOKENS: '100000',  // Max estimated tokens (~100k safety limit)
+    CLAUDE_MEM_AGY_CLI_MODEL: '',  // Empty = use the Antigravity CLI default model
+    CLAUDE_MEM_AGY_CLI_PATH: '',  // Empty = auto-detect via 'which agy' or ~/.local/bin/agy
+    CLAUDE_MEM_AGY_CLI_TIMEOUT_MS: '300000',  // Per-turn timeout for agy CLI subprocesses (ms)
     CLAUDE_MEM_OPENROUTER_API_KEY: '',  // Empty by default, can be set via UI or env
     CLAUDE_MEM_OPENROUTER_MODEL: 'xiaomi/mimo-v2-flash:free',  // Default OpenRouter model (free tier)
     CLAUDE_MEM_OPENROUTER_BASE_URL: '',  // #2382/#2590/#2622/#2393 — optional OpenAI-compatible base URL (e.g. https://api.deepseek.com, http://localhost:1234/v1). Empty = default OpenRouter endpoint.

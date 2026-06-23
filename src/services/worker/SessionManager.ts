@@ -5,6 +5,8 @@ import { SessionMessageBuffer } from './SessionMessageBuffer.js';
 import { getSdkProcessForSession, ensureSdkProcessExit } from '../../supervisor/process-registry.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { telemetryBuffer } from '../telemetry/buffer.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { paths } from '../../shared/paths.js';
 
 export class SessionManager {
   private dbManager: DatabaseManager;
@@ -73,6 +75,10 @@ export class SessionManager {
     }
 
     const dbSession = this.dbManager.getSessionById(sessionDbId);
+    const selectedProvider = SettingsDefaultsManager.loadFromFile(paths.settings()).CLAUDE_MEM_PROVIDER;
+    const persistedAgyConversationId = selectedProvider === 'agy-cli'
+      ? dbSession.memory_session_id
+      : null;
 
     logger.debug('SESSION', 'Fetched session from database', {
       sessionDbId,
@@ -80,7 +86,12 @@ export class SessionManager {
       memory_session_id: dbSession.memory_session_id
     });
 
-    if (dbSession.memory_session_id) {
+    if (persistedAgyConversationId) {
+      logger.info('SESSION', 'Restoring persisted Agy CLI conversation after worker restart', {
+        sessionDbId,
+        memorySessionId: persistedAgyConversationId,
+      });
+    } else if (dbSession.memory_session_id) {
       logger.warn('SESSION', `Discarding stale memory_session_id from previous worker instance (Issue #817)`, {
         sessionDbId,
         staleMemorySessionId: dbSession.memory_session_id,
@@ -107,7 +118,9 @@ export class SessionManager {
     session = {
       sessionDbId,
       contentSessionId: dbSession.content_session_id,
-      memorySessionId: null,  // Always start fresh - SDK will capture new ID
+      // Claude SDK contexts die with the worker, but Agy conversations are
+      // durable Antigravity resources and can be resumed across restarts.
+      memorySessionId: persistedAgyConversationId,
       project: dbSession.project,
       platformSource: dbSession.platform_source,
       userPrompt,
@@ -129,11 +142,11 @@ export class SessionManager {
       pendingAgentType: null
     };
 
-    logger.debug('SESSION', 'Creating new session object (memorySessionId cleared to prevent stale resume)', {
+    logger.debug('SESSION', 'Creating new session object', {
       sessionDbId,
       contentSessionId: dbSession.content_session_id,
       dbMemorySessionId: dbSession.memory_session_id || '(none in DB)',
-      memorySessionId: '(cleared - will capture fresh from SDK)',
+      memorySessionId: persistedAgyConversationId ?? '(cleared - will capture fresh from provider)',
       lastPromptNumber: promptNumber || this.dbManager.getSessionStore().getPromptNumberFromUserPrompts(dbSession.content_session_id)
     });
 
