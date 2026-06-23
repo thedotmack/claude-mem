@@ -32,47 +32,77 @@ async function reapStalePortHolderOnWindows(port: number): Promise<void> {
 
   try {
     // Find PID holding the port using netstat
-    const netstatResult = execSync(`netstat -ano | findstr :${port} | findstr LISTENING`, {
+    // #2996: use raw netstat output and filter in JS to avoid findstr prefix matching
+    // (e.g. findstr :3000 would falsely match :30000)
+    const netstatResult = execSync(etstat -ano\, {
       encoding: 'utf-8',
       windowsHide: true,
       timeout: 5000,
     });
 
-    const lines = netstatResult.trim().split('\n');
-    // findstr exits with code 1 on no match (execSync throws), so if we reach
-    // here there is always at least one line.
+    // Parse and filter lines: must match exact port number and be in LISTENING state
+    const portPattern = new RegExp(\\\\\);
+    const lines = netstatResult
+      .split('\n')
+      .filter(line => {
+        const parts = line.trim().split(/\s+/);
+        // netstat format: Protocol Local Address Foreign Address State PID
+        // Expect: TCP   0.0.0.0:3000   0.0.0.0:0    LISTENING   1234
+        if (parts.length < 5) return false;
+        const [_proto, localAddr, _foreign, state, _pid] = parts;
+        // Exact port match: local address must end with :<port>
+        return state === 'LISTENING' && portPattern.test(localAddr);
+      });
 
-    // Parse PID from netstat output (last column)
-    const lastLine = lines[lines.length - 1];
-    const parts = lastLine.trim().split(/\s+/);
-    const pid = parseInt(parts[parts.length - 1], 10);
-
-    if (!pid || pid <= 0) {
-      logger.debug('SYSTEM', 'Could not parse PID from netstat output', { port, output: lastLine });
+    if (lines.length === 0) {
+      logger.debug('SYSTEM', 'No process found holding exact port', { port });
       return;
     }
 
-    // Verify this is our worker process (check if it has bun or node in process name)
+    // Parse PID from first matching line
+    const firstLine = lines[0];
+    const parts = firstLine.trim().split(/\s+/);
+    const pid = parseInt(parts[parts.length - 1], 10);
+
+    if (!pid || pid <= 0) {
+      logger.debug('SYSTEM', 'Could not parse PID from netstat output', { port, output: firstLine });
+      return;
+    }
+
+    // Verify this is our worker process: check command line for claude-mem/worker
+    let isOurWorker: boolean = false;
     try {
-      const tasklistResult = execSync(`tasklist /FI "PID eq ${pid}" /FO CSV /NH`, {
+      const wmicResult = execSync(\wmic process where ProcessId=á64 get CommandLine /FORMAT:LIST\, {
         encoding: 'utf-8',
         windowsHide: true,
         timeout: 3000,
       });
 
-      // If process doesn't look like bun/node, skip killing it (might be unrelated)
-      if (!tasklistResult.toLowerCase().includes('bun') && !tasklistResult.toLowerCase().includes('node')) {
-        logger.warn('SYSTEM', 'Port held by non-bun/node process, skipping reap', { port, pid, process: tasklistResult.trim() });
+      const cmdLine = wmicResult.toLowerCase();
+      isOurWorker = cmdLine.includes('claude-mem') ||
+                    cmdLine.includes('worker-service') ||
+                    cmdLine.includes('worker-service.cjs');
+
+      if (!isOurWorker) {
+        logger.warn('SYSTEM', 'Port held by non-claude-mem process, skipping reap', {
+          port, pid,
+          commandLine: wmicResult.trim().substring(0, 100),
+        });
         return;
       }
-    } catch {
-      logger.debug('SYSTEM', 'Could not verify process, proceeding with caution', { port, pid });
+    } catch (error) {
+      // #2996: verification is mandatory - don't kill unverified processes
+      logger.warn('SYSTEM', 'Could not verify process ownership, skipping reap', {
+        port, pid,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
     }
 
-    logger.warn('SYSTEM', 'Reaping stale worker process holding port', { port, pid });
+    logger.warn('SYSTEM', 'Reaping stale claude-mem worker process holding port', { port, pid });
 
     // Kill the stale process
-    execSync(`taskkill /PID ${pid} /F /T`, {
+    execSync(\	askkill /PID á64 /F /T\, {
       encoding: 'utf-8',
       windowsHide: true,
       timeout: 5000,
@@ -81,9 +111,12 @@ async function reapStalePortHolderOnWindows(port: number): Promise<void> {
     // Wait a bit for the port to be released
     await new Promise<void>(resolve => setTimeout(resolve, 1000));
 
-    logger.info('SYSTEM', 'Successfully reaped stale worker process', { port, pid });
+    logger.info('SYSTEM', 'Successfully reaped stale claude-mem worker process', { port, pid });
   } catch (error) {
-    logger.debug('SYSTEM', 'Failed to reap stale port holder (non-critical)', { port, error: error instanceof Error ? error.message : String(error) });
+    logger.debug('SYSTEM', 'Failed to reap stale port holder (non-critical)', {
+      port,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 function getWorkerSpawnLockPath(): string {

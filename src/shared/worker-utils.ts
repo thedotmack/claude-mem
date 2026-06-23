@@ -497,6 +497,10 @@ interface HookFailureState {
 }
 
 // #2996: Platform-specific fail-loud threshold
+// This constant is the FALLBACK when settings.json has no explicit value.
+// SettingsDefaultsManager keeps the default at '3' for backward compatibility
+// (so existing settings.json files aren't affected), but on Windows we want
+// a higher threshold (10) to handle zombie worker recovery.
 // Windows (all versions: 10, 11, and future): TCP port conflicts are common due to
 // zombie worker processes that hold ports after crashes. Multi-window Claude Code
 // sessions frequently trigger this. A higher threshold (10) gives the worker ~30-60s

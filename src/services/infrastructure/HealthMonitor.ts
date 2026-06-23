@@ -25,7 +25,9 @@ export async function isPortInUse(port: number): Promise<boolean> {
     // First check: try the health endpoint (happy path - worker is alive and well)
     try {
       const response = await fetch(`http://127.0.0.1:${port}/api/health`);
-      return response.ok;
+      // #2996: if fetch() succeeds (no exception), the port is in use regardless of HTTP status.
+      // A 404/500 from a wedged worker or unrelated local server still means the port is bound.
+      return true;
     } catch (error) {
       if (error instanceof Error) {
         logger.debug('SYSTEM', 'Windows health endpoint check failed, falling back to TCP probe', {}, error);
