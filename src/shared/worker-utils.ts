@@ -554,14 +554,36 @@ function writeHookFailureStateAtomic(state: HookFailureState): void {
 }
 
 function getFailLoudThreshold(): number {
-  try {
-    const settings = loadFromFileOnce();
-    const raw = settings.CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD;
-    const parsed = parseInt(raw, 10);
-    if (Number.isFinite(parsed) && parsed >= 1) return parsed;
-  } catch {
-    // settings unreadable — fall through to default
+  // #2996: distinguish user-explicit threshold from SettingsDefaultsManager defaults.
+  // 1. Check environment variable first (highest priority).
+  const envRaw = process.env.CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD;
+  if (envRaw !== undefined) {
+    const envParsed = parseInt(envRaw, 10);
+    if (Number.isFinite(envParsed) && envParsed >= 1) return envParsed;
   }
+
+  // 2. Read the raw settings file to check if user explicitly set the key.
+  // SettingsDefaultsManager.loadFromFile() writes defaults to disk when the
+  // file doesn't exist, making it impossible to distinguish default from explicit.
+  try {
+    const { existsSync: _es, readFileSync: _rs } = require('fs');
+    const { USER_SETTINGS_PATH } = require('./paths.js');
+    if (_es(USER_SETTINGS_PATH)) {
+      const raw = _rs(USER_SETTINGS_PATH, 'utf-8');
+      const settings = JSON.parse(raw.replace(/^\uFEFF/, ''));
+      const flatSettings = settings.env && typeof settings.env === 'object'
+        ? { ...settings.env, ...settings }
+        : settings;
+      if ('CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD' in flatSettings) {
+        const parsed = parseInt(String(flatSettings.CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD), 10);
+        if (Number.isFinite(parsed) && parsed >= 1) return parsed;
+      }
+    }
+  } catch {
+    // settings unreadable—fall through to default
+  }
+
+  // 3. No explicit value found; use platform-specific fallback.
   return FAIL_LOUD_DEFAULT_THRESHOLD;
 }
 
