@@ -34,23 +34,21 @@ async function reapStalePortHolderOnWindows(port: number): Promise<void> {
     // Find PID holding the port using netstat
     // #2996: use raw netstat output and filter in JS to avoid findstr prefix matching
     // (e.g. findstr :3000 would falsely match :30000)
-    const netstatResult = execSync(etstat -ano\, {
+    const netstatResult = execSync(`netstat -ano`, {
       encoding: 'utf-8',
       windowsHide: true,
       timeout: 5000,
     });
 
     // Parse and filter lines: must match exact port number and be in LISTENING state
-    const portPattern = new RegExp(\\\\\);
+    const portPattern = new RegExp(`\b${port}\b`);
     const lines = netstatResult
       .split('\n')
       .filter(line => {
         const parts = line.trim().split(/\s+/);
         // netstat format: Protocol Local Address Foreign Address State PID
-        // Expect: TCP   0.0.0.0:3000   0.0.0.0:0    LISTENING   1234
         if (parts.length < 5) return false;
         const [_proto, localAddr, _foreign, state, _pid] = parts;
-        // Exact port match: local address must end with :<port>
         return state === 'LISTENING' && portPattern.test(localAddr);
       });
 
@@ -69,10 +67,11 @@ async function reapStalePortHolderOnWindows(port: number): Promise<void> {
       return;
     }
 
-    // Verify this is our worker process: check command line for claude-mem/worker
+    // Verify ownership: check command line for claude-mem/worker
+    // Try wmic first, fall back to tasklist if wmic is unavailable
     let isOurWorker: boolean = false;
     try {
-      const wmicResult = execSync(\wmic process where ProcessId=á64 get CommandLine /FORMAT:LIST\, {
+      const wmicResult = execSync(`wmic process where ProcessId=${pid} get CommandLine /FORMAT:LIST`, {
         encoding: 'utf-8',
         windowsHide: true,
         timeout: 3000,
@@ -80,21 +79,43 @@ async function reapStalePortHolderOnWindows(port: number): Promise<void> {
 
       const cmdLine = wmicResult.toLowerCase();
       isOurWorker = cmdLine.includes('claude-mem') ||
-                    cmdLine.includes('worker-service') ||
-                    cmdLine.includes('worker-service.cjs');
+                    cmdLine.includes('worker-service');
+    } catch (wmicError) {
+      // #2996: wmic may be unavailable on some Windows installs.
+      // Fall back to tasklist to verify process name is bun or node.
+      logger.debug('SYSTEM', 'wmic unavailable, falling back to tasklist', {
+        port, pid,
+        error: wmicError instanceof Error ? wmicError.message : String(wmicError),
+      });
+      try {
+        const tasklistResult = execSync(`tasklist /FI "PID eq ${pid}" /FO CSV /NH`, {
+          encoding: 'utf-8',
+          windowsHide: true,
+          timeout: 3000,
+        });
 
-      if (!isOurWorker) {
-        logger.warn('SYSTEM', 'Port held by non-claude-mem process, skipping reap', {
+        const procLine = tasklistResult.toLowerCase();
+        isOurWorker = procLine.includes('bun') || procLine.includes('node');
+
+        if (!isOurWorker) {
+          logger.warn('SYSTEM', 'Port held by non-bun/node process, skipping reap', {
+            port, pid, process: tasklistResult.trim(),
+          });
+          return;
+        }
+      } catch (tasklistError) {
+        // #2996: both wmic and tasklist failed - verification is mandatory
+        logger.warn('SYSTEM', 'Could not verify process ownership, skipping reap', {
           port, pid,
-          commandLine: wmicResult.trim().substring(0, 100),
+          error: tasklistError instanceof Error ? tasklistError.message : String(tasklistError),
         });
         return;
       }
-    } catch (error) {
-      // #2996: verification is mandatory - don't kill unverified processes
-      logger.warn('SYSTEM', 'Could not verify process ownership, skipping reap', {
+    }
+
+    if (!isOurWorker) {
+      logger.warn('SYSTEM', 'Port held by non-claude-mem process, skipping reap', {
         port, pid,
-        error: error instanceof Error ? error.message : String(error),
       });
       return;
     }
@@ -102,7 +123,7 @@ async function reapStalePortHolderOnWindows(port: number): Promise<void> {
     logger.warn('SYSTEM', 'Reaping stale claude-mem worker process holding port', { port, pid });
 
     // Kill the stale process
-    execSync(\	askkill /PID á64 /F /T\, {
+    execSync(`taskkill /PID ${pid} /F /T`, {
       encoding: 'utf-8',
       windowsHide: true,
       timeout: 5000,
