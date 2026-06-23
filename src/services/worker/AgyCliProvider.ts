@@ -375,14 +375,18 @@ export class AgyCliProvider {
     kind: 'init' | 'observation' | 'summary',
   ): Promise<void> {
     if (!result.response) {
-      logger.warn('SDK', `Empty Agy CLI ${kind} response — message already consumed, nothing recorded`, {
+      logger.warn('SDK', `Empty Agy CLI ${kind} response — nothing recorded`, {
         sessionId: session.sessionDbId,
       });
-      return;
+      // Init has no claimed buffer item. Observation and summary turns do, so
+      // forward their intentional empty response to the shared processor to
+      // confirm the claimed item and clear pending-work state.
+      if (kind === 'init') return;
+    } else {
+      session.conversationHistory.push({ role: 'assistant', content: result.response });
+      this.accountTokens(session, result.tokensUsed);
     }
 
-    session.conversationHistory.push({ role: 'assistant', content: result.response });
-    this.accountTokens(session, result.tokensUsed);
     await processAgentResponse(
       result.response,
       session,
