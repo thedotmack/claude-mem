@@ -41,7 +41,7 @@ async function reapStalePortHolderOnWindows(port: number): Promise<void> {
     });
 
     // Parse and filter lines: must match exact port number and be in LISTENING state
-    const portPattern = new RegExp(`\b${port}\b`);
+    const portPattern = new RegExp(`\\b${port}\\b`);
     const lines = netstatResult
       .split('\n')
       .filter(line => {
