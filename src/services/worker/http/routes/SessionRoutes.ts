@@ -93,7 +93,7 @@ export class SessionRoutes extends BaseRouteHandler {
     if (isOpenRouterSelected() && isOpenRouterAvailable()) {
       return 'openrouter';
     }
-    if (isAgyCliSelected() && isAgyCliAvailable()) {
+    if (isAgyCliSelected()) {
       return 'agy-cli';
     }
     return (isGeminiSelected() && isGeminiAvailable()) ? 'gemini' : 'claude';

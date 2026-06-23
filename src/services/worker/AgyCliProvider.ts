@@ -16,6 +16,7 @@ import { findAgyExecutable, hasAgyExecutable } from '../../shared/find-agy-execu
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 
 const DEFAULT_TIMEOUT_MS = 300_000;
+const ABORT_KILL_GRACE_MS = 1_000;
 const CONVERSATION_ID_PATTERN = /Created conversation\s+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
 
 export function extractAgyConversationId(logText: string): string | null {
@@ -127,9 +128,13 @@ function runAgyCli(opts: RunOptions): Promise<RunResult> {
     let stdout = '';
     let stderr = '';
     let settled = false;
+    let terminationError: unknown = null;
+    let killTimer: ReturnType<typeof setTimeout> | null = null;
+    let timer: ReturnType<typeof setTimeout>;
 
     const cleanup = () => {
       clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
       opts.signal.removeEventListener('abort', onAbort);
       try {
         if (existsSync(logPath)) unlinkSync(logPath);
@@ -151,27 +156,44 @@ function runAgyCli(opts: RunOptions): Promise<RunResult> {
         reject(error);
       }
     };
-    const onAbort = () => {
-      try { child.kill('SIGTERM'); } catch { /* best-effort */ }
-      rejectOnce(Object.assign(new Error('Agy CLI aborted'), { name: 'AbortError' }));
+    const requestTermination = (error: unknown, signal: NodeJS.Signals) => {
+      if (settled || terminationError) return;
+      terminationError = error;
+      try { child.kill(signal); } catch { /* close/error will settle if the process already exited */ }
+      if (signal === 'SIGTERM') {
+        killTimer = setTimeout(() => {
+          if (settled) return;
+          try { child.kill('SIGKILL'); } catch { /* best-effort escalation */ }
+        }, ABORT_KILL_GRACE_MS);
+      }
     };
-    const timer = setTimeout(() => {
-      try { child.kill('SIGKILL'); } catch { /* best-effort */ }
-      rejectOnce(classifyAgyCliError({
+    const onAbort = () => {
+      requestTermination(Object.assign(new Error('Agy CLI aborted'), { name: 'AbortError' }), 'SIGTERM');
+    };
+    timer = setTimeout(() => {
+      requestTermination(classifyAgyCliError({
         exitCode: null,
         stderr: `Agy CLI timed out after ${opts.timeoutMs}ms`,
         logText: readLog(logPath),
         cause: new Error('agy CLI timeout'),
-      }));
+      }), 'SIGKILL');
     }, opts.timeoutMs);
 
     opts.signal.addEventListener('abort', onAbort, { once: true });
     child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
     child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
     child.on('error', (error) => {
+      if (terminationError) {
+        rejectOnce(terminationError);
+        return;
+      }
       rejectOnce(classifyAgyCliError({ exitCode: null, stderr: error.message, logText: readLog(logPath), cause: error }));
     });
     child.on('close', (code) => {
+      if (terminationError) {
+        rejectOnce(terminationError);
+        return;
+      }
       const logText = readLog(logPath);
       if (code !== 0) {
         rejectOnce(classifyAgyCliError({ exitCode: code, stderr, logText, cause: new Error(`agy exited ${code}`) }));

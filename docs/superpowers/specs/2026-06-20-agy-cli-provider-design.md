@@ -39,6 +39,7 @@ The CLIs have incompatible invocation and output contracts. Reusing the provider
 - one-shot process execution with stdout, stderr, timeout, and abort handling;
 - unique log-file allocation and cleanup;
 - fresh conversation ID extraction using the exact `Created conversation <uuid>` log record;
+- persisted conversation restoration after worker restarts;
 - resume fallback: only a classified missing-conversation failure may create a replacement conversation;
 - response delivery through the existing `processAgentResponse` pipeline;
 - conservative token estimates because agy exposes no token counts.
@@ -58,12 +59,12 @@ Expose `agy-cli` in settings validation, the installer, and the viewer provider 
 
 ### Worker Routing
 
-Instantiate one `AgyCliProvider` in `WorkerService`, pass it to `SessionRoutes`, and select it only when `CLAUDE_MEM_PROVIDER` is exactly `agy-cli` and the executable resolves. Provider labels emitted to logs and response processing use `AgyCli`.
+Instantiate one `AgyCliProvider` in `WorkerService`, pass it to `SessionRoutes`, and select it whenever `CLAUDE_MEM_PROVIDER` is exactly `agy-cli`. Executable resolution failures remain on the Agy path and surface as configuration errors instead of silently falling back to Claude. Provider labels emitted to logs and response processing use `AgyCli`.
 
 ## Error Handling
 
 - Missing executable: unrecoverable configuration failure with an actionable install/path message.
-- Abort: propagate an `AbortError` after terminating the child.
+- Abort: send `SIGTERM`, escalate to `SIGKILL` after a grace period, wait for process exit, then propagate an `AbortError`.
 - Timeout: terminate the child and classify as transient.
 - Missing conversation: classify separately and retry once with a fresh conversation.
 - Authentication, permission, or quota failures: classify from stderr plus the agy log file; never infer failure from noisy authentication warnings when the process exits successfully.

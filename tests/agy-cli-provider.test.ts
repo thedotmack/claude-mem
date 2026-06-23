@@ -73,6 +73,159 @@ describe('AgyCliProvider', () => {
     });
   });
 
+  it('restores persisted Agy conversations after restart but clears them for SDK providers', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-agy-cli-restart-'));
+    try {
+      const dataDir = join(tempDir, 'data');
+      mkdirSync(dataDir, { recursive: true });
+      writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({
+        CLAUDE_MEM_PROVIDER: 'agy-cli',
+      }));
+
+      const output = execFileSync(process.execPath, ['--eval', `
+        const { writeFileSync } = await import('fs');
+        const { join } = await import('path');
+        const { SessionManager } = await import('./src/services/worker/SessionManager.ts');
+
+        const dbSession = {
+          id: 91,
+          content_session_id: 'content-restart',
+          memory_session_id: '44444444-4444-4444-8444-444444444444',
+          project: 'demo',
+          platform_source: 'codex',
+          user_prompt: 'continue after restart',
+          custom_title: null,
+          status: 'active',
+        };
+        const store = { getPromptNumberFromUserPrompts() { return 2; } };
+        const dbManager = {
+          getSessionById() { return dbSession; },
+          getSessionStore() { return store; },
+        };
+
+        const agySession = new SessionManager(dbManager).initializeSession(91, undefined, 2);
+        writeFileSync(join(process.env.CLAUDE_MEM_DATA_DIR, 'settings.json'), JSON.stringify({
+          CLAUDE_MEM_PROVIDER: 'claude',
+        }));
+        const claudeSession = new SessionManager(dbManager).initializeSession(91, undefined, 2);
+
+        console.log('RESULT ' + JSON.stringify({
+          agyMemorySessionId: agySession.memorySessionId,
+          claudeMemorySessionId: claudeSession.memorySessionId,
+        }));
+      `], {
+        cwd: process.cwd(),
+        env: { ...process.env, CLAUDE_MEM_DATA_DIR: dataDir },
+        encoding: 'utf8',
+      });
+
+      const resultLine = output.trim().split('\n').find((line) => line.startsWith('RESULT '));
+      expect(resultLine).toBeDefined();
+      const result = JSON.parse(resultLine!.slice('RESULT '.length));
+      expect(result.agyMemorySessionId).toBe('44444444-4444-4444-8444-444444444444');
+      expect(result.claudeMemorySessionId).toBeNull();
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('waits for process exit and escalates to SIGKILL when abort is ignored', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-agy-cli-abort-'));
+    try {
+      const dataDir = join(tempDir, 'data');
+      const binDir = join(tempDir, 'bin');
+      const pidFile = join(tempDir, 'agy.pid');
+      mkdirSync(dataDir, { recursive: true });
+      mkdirSync(binDir, { recursive: true });
+
+      const agyPath = join(binDir, 'agy');
+      writeFileSync(agyPath, `#!/usr/bin/env node
+const { writeFileSync } = require('fs');
+if (process.argv.includes('--version')) {
+  console.log('agy fake abort');
+  process.exit(0);
+}
+writeFileSync(process.env.CLAUDE_MEM_AGY_PID_FILE, String(process.pid));
+process.on('SIGTERM', () => {});
+setInterval(() => {}, 1000);
+`);
+      chmodSync(agyPath, 0o755);
+      writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({
+        CLAUDE_MEM_PROVIDER: 'agy-cli',
+        CLAUDE_MEM_MODE: 'code',
+        CLAUDE_MEM_AGY_CLI_PATH: agyPath,
+        CLAUDE_MEM_AGY_CLI_TIMEOUT_MS: '10000',
+      }));
+
+      const output = execFileSync(process.execPath, ['--eval', `
+        const { existsSync, readFileSync } = await import('fs');
+        const { setTimeout: sleep } = await import('timers/promises');
+        const { ModeManager } = await import('./src/services/domain/ModeManager.ts');
+        const { AgyCliProvider } = await import('./src/services/worker/AgyCliProvider.ts');
+
+        ModeManager.getInstance().loadMode('code');
+        const session = {
+          sessionDbId: 92,
+          memorySessionId: null,
+          forceInit: false,
+          lastPromptNumber: 1,
+          project: 'demo',
+          contentSessionId: 'content-abort',
+          userPrompt: 'abort this turn',
+          startTime: Date.now(),
+          earliestPendingTimestamp: null,
+          abortController: new AbortController(),
+          conversationHistory: [],
+          cumulativeInputTokens: 0,
+          cumulativeOutputTokens: 0,
+        };
+        const dbManager = {
+          getSessionStore() {
+            return {
+              ensureMemorySessionIdRegistered() {},
+              updateMemorySessionId() {},
+            };
+          },
+        };
+        const provider = new AgyCliProvider(dbManager, { async *getMessageIterator() {} });
+        const run = provider.startSession(session);
+        const deadline = Date.now() + 3000;
+        while (!existsSync(process.env.CLAUDE_MEM_AGY_PID_FILE) && Date.now() < deadline) {
+          await sleep(10);
+        }
+        if (!existsSync(process.env.CLAUDE_MEM_AGY_PID_FILE)) throw new Error('fake agy did not start');
+        const pid = Number(readFileSync(process.env.CLAUDE_MEM_AGY_PID_FILE, 'utf8'));
+        const abortAt = Date.now();
+        session.abortController.abort();
+        let errorName = '';
+        try { await run; } catch (error) { errorName = error?.name || ''; }
+        const elapsedMs = Date.now() - abortAt;
+        let alive = true;
+        try { process.kill(pid, 0); } catch { alive = false; }
+        console.log('RESULT ' + JSON.stringify({ errorName, elapsedMs, alive }));
+      `], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          CLAUDE_MEM_DATA_DIR: dataDir,
+          CLAUDE_MEM_AGY_PID_FILE: pidFile,
+        },
+        encoding: 'utf8',
+        timeout: 10_000,
+      });
+
+      const resultLine = output.trim().split('\n').find((line) => line.startsWith('RESULT '));
+      expect(resultLine).toBeDefined();
+      const result = JSON.parse(resultLine!.slice('RESULT '.length));
+      expect(result.errorName).toBe('AbortError');
+      expect(result.elapsedMs).toBeGreaterThanOrEqual(900);
+      expect(result.elapsedMs).toBeLessThan(5000);
+      expect(result.alive).toBe(false);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('creates an isolated conversation and re-resolves configured executable changes', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-agy-cli-provider-'));
     try {
