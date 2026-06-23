@@ -73,6 +73,54 @@ describe('AgyCliProvider', () => {
     });
   });
 
+  it('reports unavailable Agy status and rejects routing instead of falling back to Claude', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-agy-cli-unavailable-'));
+    try {
+      const dataDir = join(tempDir, 'data');
+      mkdirSync(dataDir, { recursive: true });
+      writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({
+        CLAUDE_MEM_PROVIDER: 'agy-cli',
+        CLAUDE_MEM_AGY_CLI_PATH: join(tempDir, 'missing-agy'),
+      }));
+
+      const output = execFileSync(process.execPath, ['--eval', `
+        const { getAiProviderStatus } = await import('./src/services/worker-service.ts');
+        const { SessionRoutes } = await import('./src/services/worker/http/routes/SessionRoutes.ts');
+
+        const status = getAiProviderStatus();
+        const routes = new SessionRoutes(
+          undefined, undefined, undefined, undefined, undefined,
+          undefined, undefined, undefined, undefined,
+        );
+        let selectedProvider = null;
+        let routingError = null;
+        try {
+          selectedProvider = routes.getSelectedProvider();
+        } catch (error) {
+          routingError = error instanceof Error ? error.message : String(error);
+        }
+        console.log('RESULT ' + JSON.stringify({ status, selectedProvider, routingError }));
+      `], {
+        cwd: process.cwd(),
+        env: { ...process.env, CLAUDE_MEM_DATA_DIR: dataDir },
+        encoding: 'utf8',
+      });
+
+      const resultLine = output.trim().split('\n').find((line) => line.startsWith('RESULT '));
+      expect(resultLine).toBeDefined();
+      const result = JSON.parse(resultLine!.slice('RESULT '.length));
+      expect(result.status).toEqual({
+        provider: 'agy-cli',
+        available: false,
+        error: 'Agy CLI provider selected but no working executable was found. Install `agy` or set CLAUDE_MEM_AGY_CLI_PATH.',
+      });
+      expect(result.selectedProvider).toBeNull();
+      expect(result.routingError).toBe(result.status.error);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('restores persisted Agy conversations after restart but clears them for SDK providers', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-agy-cli-restart-'));
     try {

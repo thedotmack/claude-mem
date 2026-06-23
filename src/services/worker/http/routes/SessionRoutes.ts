@@ -9,7 +9,12 @@ import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { ClaudeProvider } from '../../ClaudeProvider.js';
 import { GeminiProvider, isGeminiSelected, isGeminiAvailable } from '../../GeminiProvider.js';
-import { AgyCliProvider, isAgyCliSelected, isAgyCliAvailable } from '../../AgyCliProvider.js';
+import {
+  AGY_CLI_UNAVAILABLE_MESSAGE,
+  AgyCliProvider,
+  isAgyCliSelected,
+  isAgyCliAvailable,
+} from '../../AgyCliProvider.js';
 import { OpenRouterProvider, isOpenRouterSelected, isOpenRouterAvailable } from '../../OpenRouterProvider.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
@@ -84,7 +89,7 @@ export class SessionRoutes extends BaseRouteHandler {
         logger.debug('SESSION', 'Using Agy CLI agent');
         return this.agyCliAgent;
       }
-      throw new Error('Agy CLI provider selected but no working executable was found. Install `agy` or set CLAUDE_MEM_AGY_CLI_PATH.');
+      throw new Error(AGY_CLI_UNAVAILABLE_MESSAGE);
     }
     return this.sdkAgent;
   }
@@ -94,6 +99,9 @@ export class SessionRoutes extends BaseRouteHandler {
       return 'openrouter';
     }
     if (isAgyCliSelected()) {
+      if (!isAgyCliAvailable()) {
+        throw new Error(AGY_CLI_UNAVAILABLE_MESSAGE);
+      }
       return 'agy-cli';
     }
     return (isGeminiSelected() && isGeminiAvailable()) ? 'gemini' : 'claude';

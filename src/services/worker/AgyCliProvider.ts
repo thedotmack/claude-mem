@@ -19,6 +19,9 @@ const DEFAULT_TIMEOUT_MS = 300_000;
 const ABORT_KILL_GRACE_MS = 1_000;
 const CONVERSATION_ID_PATTERN = /Created conversation\s+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
 
+export const AGY_CLI_UNAVAILABLE_MESSAGE =
+  'Agy CLI provider selected but no working executable was found. Install `agy` or set CLAUDE_MEM_AGY_CLI_PATH.';
+
 export function extractAgyConversationId(logText: string): string | null {
   return CONVERSATION_ID_PATTERN.exec(logText)?.[1] ?? null;
 }

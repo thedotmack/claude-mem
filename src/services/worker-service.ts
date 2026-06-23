@@ -80,7 +80,12 @@ import { SSEBroadcaster } from './worker/SSEBroadcaster.js';
 import { ClaudeProvider, classifyClaudeError } from './worker/ClaudeProvider.js';
 import type { WorkerRef } from './worker/agents/types.js';
 import { GeminiProvider, classifyGeminiError, isGeminiSelected, isGeminiAvailable } from './worker/GeminiProvider.js';
-import { AgyCliProvider, isAgyCliSelected } from './worker/AgyCliProvider.js';
+import {
+  AGY_CLI_UNAVAILABLE_MESSAGE,
+  AgyCliProvider,
+  isAgyCliSelected,
+  isAgyCliAvailable,
+} from './worker/AgyCliProvider.js';
 import { OpenRouterProvider, classifyOpenRouterError, isOpenRouterSelected, isOpenRouterAvailable } from './worker/OpenRouterProvider.js';
 import { ClassifiedProviderError, isClassified, type ProviderErrorClass } from './worker/provider-errors.js';
 import { PaginationHelper } from './worker/PaginationHelper.js';
@@ -122,6 +127,30 @@ export function buildStatusOutput(status: 'ready' | 'error', message?: string): 
     status,
     ...(message && { message })
   };
+}
+
+export interface AiProviderStatus {
+  provider: 'claude' | 'gemini' | 'openrouter' | 'agy-cli';
+  available: boolean;
+  error?: string;
+}
+
+export function getAiProviderStatus(): AiProviderStatus {
+  if (isOpenRouterSelected() && isOpenRouterAvailable()) {
+    return { provider: 'openrouter', available: true };
+  }
+  if (isAgyCliSelected()) {
+    const available = isAgyCliAvailable();
+    return {
+      provider: 'agy-cli',
+      available,
+      ...(!available && { error: AGY_CLI_UNAVAILABLE_MESSAGE }),
+    };
+  }
+  if (isGeminiSelected() && isGeminiAvailable()) {
+    return { provider: 'gemini', available: true };
+  }
+  return { provider: 'claude', available: true };
 }
 
 // Closed enum for worker_stopped telemetry — definition (and its
@@ -259,12 +288,8 @@ export class WorkerService implements WorkerRef {
       onRestart: () => this.shutdown('restart'),
       workerPath: __filename,
       getAiStatus: () => {
-        let provider = 'claude';
-        if (isOpenRouterSelected() && isOpenRouterAvailable()) provider = 'openrouter';
-        else if (isAgyCliSelected()) provider = 'agy-cli';
-        else if (isGeminiSelected() && isGeminiAvailable()) provider = 'gemini';
         return {
-          provider,
+          ...getAiProviderStatus(),
           authMethod: getAuthMethodDescription(),
           lastInteraction: this.lastAiInteraction
             ? {
