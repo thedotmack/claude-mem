@@ -202,6 +202,38 @@ describe('ChromaMcpManager timeout and prewarm contract (#2897)', () => {
     expect(connectCalls).toBe(0);
   });
 
+  it('rejects with timed-out message when prewarm spawn never completes', async () => {
+    spawnImpl = () => new FakeChild(); // never emits 'close' — stuck cold-cache install
+
+    const mgr = ChromaMcpManager.getInstance() as any;
+    const killCalls: number[] = [];
+    const realKill = (ChromaMcpManager as any).killProcessTree;
+    (ChromaMcpManager as any).killProcessTree = async (pid: number) => { killCalls.push(pid); };
+
+    try {
+      await expect(
+        mgr.runPrewarm({ command: 'uvx', args: ['--help'], env: {}, cwd: '/tmp', timeoutMs: 50 })
+      ).rejects.toThrow('chroma-mcp prewarm timed out after 50ms');
+      expect(killCalls).toContain(42);
+    } finally {
+      (ChromaMcpManager as any).killProcessTree = realKill;
+    }
+  });
+
+  it('rejects with signal message when prewarm child exits with null code', async () => {
+    spawnImpl = () => {
+      const c = new FakeChild();
+      Promise.resolve().then(() => c.emit('close', null));
+      return c;
+    };
+    const mgr = ChromaMcpManager.getInstance();
+
+    await expect(mgr.callTool('chroma_list_collections', { limit: 1 })).rejects.toThrow(
+      'chroma-mcp prewarm terminated by signal'
+    );
+    expect(connectCalls).toBe(0);
+  });
+
   it('falls back to defaults for unrealistically small timeout settings', () => {
     currentSettings.CLAUDE_MEM_CHROMA_CONNECT_TIMEOUT_MS = '30';
     currentSettings.CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS = '30';

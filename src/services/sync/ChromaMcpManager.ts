@@ -693,6 +693,9 @@ export class ChromaMcpManager {
         settle(() => {
           if (code === 0) {
             resolve();
+          } else if (code === null) {
+            // killed by an external signal before our timeout fired
+            reject(new Error('chroma-mcp prewarm terminated by signal'));
           } else {
             reject(new Error(`chroma-mcp prewarm failed with exit code ${code}`));
           }
