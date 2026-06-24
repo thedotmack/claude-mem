@@ -216,7 +216,7 @@ export async function ensureWorkerStarted(
       logger.info('SYSTEM', 'Worker became healthy while waiting on live PID');
       return ready ? 'ready' : 'warming';
     }
-    logger.warn('SYSTEM', 'Live PID detected but worker did not become healthy before timeout—likely still starting');
+    logger.warn('SYSTEM', 'Live PID detected but worker did not become healthy before timeout — likely still starting');
     return 'warming';
   }
 

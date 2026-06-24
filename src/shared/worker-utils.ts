@@ -578,7 +578,7 @@ function getFailLoudThreshold(): number {
       }
     }
   } catch {
-    // settings unreadable—fall through to default
+    // settings unreadable — fall through to default
   }
 
   // 3. No explicit value found; use platform-specific fallback.
