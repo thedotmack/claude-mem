@@ -6,9 +6,14 @@ import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 import * as realSettingsDefaultsManager from '../../../src/shared/SettingsDefaultsManager.js';
 import * as realPaths from '../../../src/shared/paths.js';
 import * as realLogger from '../../../src/utils/logger.js';
+import * as realSupervisor from '../../../src/supervisor/index.js';
+import * as realEnvSanitizer from '../../../src/supervisor/env-sanitizer.js';
 const realSettingsSnapshot = { ...realSettingsDefaultsManager };
 const realPathsSnapshot = { ...realPaths };
 const realLoggerSnapshot = { ...realLogger };
+const realSupervisorSnapshot = { ...realSupervisor };
+const realEnvSanitizerSnapshot = { ...realEnvSanitizer };
+const realChildProcess = require('node:child_process');
 
 let currentSettings: Record<string, string> = {};
 
@@ -45,6 +50,10 @@ mock.module('../../../src/shared/SettingsDefaultsManager.js', () => ({
 
 mock.module('../../../src/shared/paths.js', () => ({
   USER_SETTINGS_PATH: '/tmp/fake-settings.json',
+  paths: {
+    chroma: () => '/tmp/fake-chroma',
+    combinedCerts: () => '/tmp/fake-combined-certs.pem',
+  },
 }));
 
 mock.module('../../../src/utils/logger.js', () => ({
@@ -57,12 +66,49 @@ mock.module('../../../src/utils/logger.js', () => ({
   },
 }));
 
+mock.module('../../../src/supervisor/index.js', () => ({
+  getSupervisor: () => ({
+    assertCanSpawn: () => {},
+    registerProcess: () => {},
+    unregisterProcess: () => {},
+  }),
+}));
+
+mock.module('../../../src/supervisor/env-sanitizer.js', () => ({
+  sanitizeEnv: (env: NodeJS.ProcessEnv) => env,
+}));
+
+mock.module('child_process', () => {
+  const original = require('node:child_process');
+  return {
+    ...original,
+    execFile: (
+      _cmd: string,
+      _args: string[],
+      _opts: unknown,
+      cb: (err: Error | null, result: { stdout: string; stderr: string }) => void
+    ) => {
+      cb(null, { stdout: '', stderr: '' });
+    },
+    spawn: (_command: string, _args: string[]) => {
+      const { EventEmitter } = require('node:events');
+      const child = Object.assign(new EventEmitter(), { pid: 42, stdout: null, stderr: null, unref: () => {} });
+      Promise.resolve().then(() => child.emit('close', 0));
+      return child;
+    },
+    execSync: () => '',
+  };
+});
+
 import { ChromaMcpManager } from '../../../src/services/sync/ChromaMcpManager.js';
 
 afterAll(() => {
   mock.module('../../../src/shared/SettingsDefaultsManager.js', () => realSettingsSnapshot);
   mock.module('../../../src/shared/paths.js', () => realPathsSnapshot);
   mock.module('../../../src/utils/logger.js', () => realLoggerSnapshot);
+  mock.module('../../../src/supervisor/index.js', () => realSupervisorSnapshot);
+  mock.module('../../../src/supervisor/env-sanitizer.js', () => realEnvSanitizerSnapshot);
+  mock.module('child_process', () => realChildProcess);
 });
 
 async function assertSslFlag(sslSetting: string | undefined, expectedValue: string) {

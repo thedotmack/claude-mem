@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 import * as realSettingsDefaultsManager from '../../../src/shared/SettingsDefaultsManager.js';
 import * as realPaths from '../../../src/shared/paths.js';
 import * as realLogger from '../../../src/utils/logger.js';
-import * as realSupervisor from '../../../src/supervisor/index.ts';
+import * as realSupervisor from '../../../src/supervisor/index.js';
 import * as realEnvSanitizer from '../../../src/supervisor/env-sanitizer.js';
 const realSettingsSnapshot = { ...realSettingsDefaultsManager };
 const realPathsSnapshot = { ...realPaths };
@@ -113,7 +113,7 @@ mock.module('../../../src/utils/logger.js', () => ({
 // Track tree-kill invocations and the transport whose subprocess was killed.
 const killTreeCalls: number[] = [];
 
-mock.module('../../../src/supervisor/index.ts', () => ({
+mock.module('../../../src/supervisor/index.js', () => ({
   getSupervisor: () => ({
     assertCanSpawn: () => {},
     registerProcess: () => {},
@@ -134,16 +134,19 @@ mock.module('child_process', () => {
     ...original,
     execFile: (
       cmd: string,
-      args: string[],
+      _args: string[],
       _opts: unknown,
       cb: (err: Error | null, stdout: { stdout: string; stderr: string }) => void
     ) => {
-      // Bun's promisify path will call this as if it were a Node-style callback.
-      if (cmd === 'pgrep') {
-        cb(null, { stdout: '', stderr: '' } as any);
-      } else {
-        cb(null, { stdout: '', stderr: '' } as any);
-      }
+      // pgrep (used by killProcessTree) returns no descendants so only the root pid is signaled.
+      void cmd;
+      cb(null, { stdout: '', stderr: '' } as any);
+    },
+    spawn: (_command: string, _args: string[]) => {
+      const { EventEmitter } = require('node:events');
+      const child = Object.assign(new EventEmitter(), { pid: 42, stdout: null, stderr: null, unref: () => {} });
+      Promise.resolve().then(() => child.emit('close', 0));
+      return child;
     },
     execSync: () => '',
   };
@@ -159,13 +162,15 @@ const stubbedProcessKill = ((pid: number, _signal?: string | number) => {
 process.kill = stubbedProcessKill;
 
 import { ChromaMcpManager } from '../../../src/services/sync/ChromaMcpManager.js';
+const realKillProcessTree = (ChromaMcpManager as any).killProcessTree;
 
 afterAll(() => {
   process.kill = realProcessKill;
+  (ChromaMcpManager as any).killProcessTree = realKillProcessTree;
   mock.module('../../../src/shared/SettingsDefaultsManager.js', () => realSettingsSnapshot);
   mock.module('../../../src/shared/paths.js', () => realPathsSnapshot);
   mock.module('../../../src/utils/logger.js', () => realLoggerSnapshot);
-  mock.module('../../../src/supervisor/index.ts', () => realSupervisorSnapshot);
+  mock.module('../../../src/supervisor/index.js', () => realSupervisorSnapshot);
   mock.module('../../../src/supervisor/env-sanitizer.js', () => realEnvSanitizerSnapshot);
   mock.module('child_process', () => realChildProcess);
 });
@@ -174,6 +179,9 @@ function resetState(): void {
   transportCount = 0;
   transportInstances.length = 0;
   killTreeCalls.length = 0;
+  (ChromaMcpManager as any).killProcessTree = async (pid: number) => {
+    killTreeCalls.push(pid);
+  };
   connectImpl = async () => {};
   callToolImpl = async () => ({ content: [{ type: 'text', text: '{}' }] });
 }
