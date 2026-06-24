@@ -84,6 +84,22 @@ describe('Plugin Distribution - Codex Marketplace', () => {
     expect(marketplace.plugins[0].source.path).toBe('./plugin');
   });
 
+  it('ships Codex hooks with only Codex-supported root keys', () => {
+    const codexHooks = readJson('plugin/hooks/codex-hooks.json');
+    expect(Object.keys(codexHooks).sort()).toEqual(['hooks']);
+  });
+
+  it('sets the Codex hook marker on every Codex command', () => {
+    for (const command of commandHooksFrom('plugin/hooks/codex-hooks.json')) {
+      expect(command).toContain('CLAUDE_MEM_CODEX_HOOK=1');
+    }
+  });
+
+  it('ships a single Codex SessionStart command', () => {
+    const codexHooks = readJson('plugin/hooks/codex-hooks.json');
+    expect(codexHooks.hooks.SessionStart[0].hooks).toHaveLength(1);
+  });
+
   it('MCP launcher can recover without plugin root environment variables', () => {
     const mcpPath = path.join(projectRoot, 'plugin/.mcp.json');
     const mcp = JSON.parse(readFileSync(mcpPath, 'utf-8'));
@@ -244,6 +260,17 @@ const claudeHook = (tail: string[], extra: Record<string, unknown> = {}) => buil
 const codexHook = (tail: string[]) => buildShellCommand({
   host: 'codex-cli', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
   trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found',
+  extraEnv: { CLAUDE_MEM_CODEX_HOOK: '1' },
+});
+const codexStartupHook = () => buildShellCommand({
+  host: 'codex-cli', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
+  trailingCommand: [
+    '_V=$(CLAUDE_MEM_CODEX_HOOK=1 node "$_P/scripts/version-check.js" || true);',
+    'if [ -n "$_V" ]; then printf \'%s\\n\' "$_V"; else',
+    'CLAUDE_MEM_CODEX_HOOK=1', ...ccTrailing('hook', 'codex', 'context'),
+    '; fi',
+  ],
+  notFoundMessage: 'claude-mem: plugin scripts not found',
 });
 
 const RULE_A_EXPECTATIONS: Record<string, Record<string, string>> = {
@@ -261,13 +288,7 @@ const RULE_A_EXPECTATIONS: Record<string, Record<string, string>> = {
     'Stop.0.0': claudeHook(['hook', 'claude-code', 'summarize']),
   },
   'plugin/hooks/codex-hooks.json': {
-    'SessionStart.0.0': buildShellCommand({
-      host: 'codex-cli', requireFile: 'version-check.js', extraEnv: { CLAUDE_MEM_CODEX_HOOK: '1' },
-      trailingCommand: ['node', '"$_P/scripts/version-check.js"'],
-      notFoundMessage: 'claude-mem: version-check.js not found',
-    }),
-    'SessionStart.0.1': codexHook(['start']),
-    'SessionStart.0.2': codexHook(['hook', 'codex', 'context']),
+    'SessionStart.0.0': codexStartupHook(),
     'UserPromptSubmit.0.0': codexHook(['hook', 'codex', 'session-init']),
     'PreToolUse.0.0': codexHook(['hook', 'codex', 'file-context']),
     'PostToolUse.0.0': codexHook(['hook', 'codex', 'observation']),

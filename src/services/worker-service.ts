@@ -109,18 +109,29 @@ import { KnowledgeAgent } from './worker/knowledge/KnowledgeAgent.js';
 
 export interface StatusOutput {
   continue: true;
-  suppressOutput: true;
+  suppressOutput?: true;
   status: 'ready' | 'error';
   message?: string;
 }
 
-export function buildStatusOutput(status: 'ready' | 'error', message?: string): StatusOutput {
-  return {
+export interface StatusOutputOptions {
+  includeSuppressOutput?: boolean;
+}
+
+export function buildStatusOutput(
+  status: 'ready' | 'error',
+  message?: string,
+  options: StatusOutputOptions = {}
+): StatusOutput {
+  const output: StatusOutput = {
     continue: true,
-    suppressOutput: true,
     status,
     ...(message && { message })
   };
+  if (options.includeSuppressOutput !== false) {
+    output.suppressOutput = true;
+  }
+  return output;
 }
 
 // Closed enum for worker_stopped telemetry — definition (and its
@@ -966,7 +977,9 @@ async function main() {
   const port = getWorkerPort();
 
   function exitWithStatus(status: 'ready' | 'error', message?: string): never {
-    const output = buildStatusOutput(status, message);
+    const output = buildStatusOutput(status, message, {
+      includeSuppressOutput: process.env.CLAUDE_MEM_CODEX_HOOK !== '1',
+    });
     console.log(JSON.stringify(output));
     process.exit(0);
   }
