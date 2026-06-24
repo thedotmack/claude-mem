@@ -219,15 +219,27 @@ export class DataRoutes extends BaseRouteHandler {
 
   private handleGetStats = this.wrapHandler((req: Request, res: Response): void => {
     const db = this.dbManager.getSessionStore().db;
+    const project = typeof req.query.project === 'string' ? req.query.project : undefined;
 
     const packageRoot = getPackageRoot();
     const packageJsonPath = path.join(packageRoot, 'package.json');
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
     const version = packageJson.version;
 
-    const totalObservations = db.prepare('SELECT COUNT(*) as count FROM observations').get() as { count: number };
-    const totalSessions = db.prepare('SELECT COUNT(*) as count FROM sdk_sessions').get() as { count: number };
-    const totalSummaries = db.prepare('SELECT COUNT(*) as count FROM session_summaries').get() as { count: number };
+    // When a project is supplied, scope the counts to it; the appended clause is
+    // a constant and the value is bound as a parameter, so there is no dynamic
+    // SQL. Status-line consumers pass ?project=<folder> to show per-project vs
+    // global counts.
+    const countWithOptionalProject = (baseSql: string): number => {
+      const sql = project ? `${baseSql} WHERE project = ?` : baseSql;
+      const stmt = db.prepare(sql);
+      const row = (project ? stmt.get(project) : stmt.get()) as { count: number };
+      return row.count;
+    };
+
+    const totalObservations = countWithOptionalProject('SELECT COUNT(*) as count FROM observations');
+    const totalSessions = countWithOptionalProject('SELECT COUNT(*) as count FROM sdk_sessions');
+    const totalSummaries = countWithOptionalProject('SELECT COUNT(*) as count FROM session_summaries');
     const firstObservationAt = getFirstObservationCreatedAt(db);
 
     const dbPath = paths.database();
@@ -251,9 +263,9 @@ export class DataRoutes extends BaseRouteHandler {
       database: {
         path: dbPath,
         size: dbSize,
-        observations: totalObservations.count,
-        sessions: totalSessions.count,
-        summaries: totalSummaries.count,
+        observations: totalObservations,
+        sessions: totalSessions,
+        summaries: totalSummaries,
         firstObservationAt
       }
     });
