@@ -198,7 +198,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
   }
 
   protected async query(history: ConversationMessage[], config: OpenRouterConfig): Promise<ProviderQueryResult> {
-    return this.queryOpenRouterMultiTurn(history, config.apiKey, config.model, config.apiUrl, config.siteUrl, config.appName);
+    return this.queryOpenRouterMultiTurn(history, config.apiKey, config.model, config.apiUrl, config.siteUrl, config.appName, config.extraBody);
   }
 
   private async queryOpenRouterMultiTurn(
@@ -207,7 +207,8 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     model: string,
     apiUrl: string,
     siteUrl?: string,
-    appName?: string
+    appName?: string,
+    extraBody?: Record<string, unknown>,
   ): Promise<ProviderQueryResult> {
     const truncatedHistory = this.truncateHistoryForOpenRouter(history);
     const messages = this.conversationToOpenAIMessages(truncatedHistory);
@@ -246,7 +247,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
             // User-defined extra body parameters merged last so they can
             // override any of the above. Used for provider-specific params
             // like thinking control (e.g. {"thinking":{"type":"disabled"}}).
-            ...(config.extraBody ?? {}),
+            ...(extraBody ?? {}),
           }),
           signal: attemptSignal,
         });
