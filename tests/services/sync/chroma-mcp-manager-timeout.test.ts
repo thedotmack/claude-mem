@@ -13,10 +13,35 @@ const realEnvSanitizerSnapshot = { ...realEnvSanitizer };
 const realChildProcess = require('node:child_process');
 
 let currentSettings: Record<string, string> = {};
-let execFileCalls: Array<{ command: string; args: string[]; timeout?: number }> = [];
+let spawnCalls: Array<{ command: string; args: string[] }> = [];
 let connectCalls = 0;
 let sequence: string[] = [];
 let connectImpl: () => Promise<void> = async () => {};
+
+class FakeChild {
+  pid = 42;
+  stdout = null;
+  stderr = null;
+  private _handlers: Map<string, ((...args: unknown[]) => void)[]> = new Map();
+
+  on(event: string, handler: (...args: unknown[]) => void): this {
+    if (!this._handlers.has(event)) this._handlers.set(event, []);
+    this._handlers.get(event)!.push(handler);
+    return this;
+  }
+
+  emit(event: string, ...args: unknown[]): void {
+    for (const handler of this._handlers.get(event) ?? []) handler(...args);
+  }
+
+  unref(): void {}
+}
+
+let spawnImpl: () => FakeChild = () => {
+  const c = new FakeChild();
+  Promise.resolve().then(() => c.emit('close', 0));
+  return c;
+};
 
 class FakeTransport {
   onclose: (() => void) | null = null;
@@ -95,25 +120,18 @@ mock.module('child_process', () => {
   const original = require('node:child_process');
   return {
     ...original,
-    execFile: (
-      command: string,
-      args: string[],
-      opts: { timeout?: number } | undefined,
-      cb: (err: Error | null, result: { stdout: string; stderr: string }) => void
-    ) => {
-      execFileCalls.push({ command, args, timeout: opts?.timeout });
+    spawn: (command: string, args: string[]) => {
+      spawnCalls.push({ command, args });
       sequence.push('prewarm');
-      cb(null, { stdout: '', stderr: '' });
+      return spawnImpl();
     },
     execSync: () => '',
   };
 });
 
 import { ChromaMcpManager } from '../../../src/services/sync/ChromaMcpManager.js';
-const realExecFileAsync = (ChromaMcpManager as any).execFileAsync;
 
 afterAll(() => {
-  (ChromaMcpManager as any).execFileAsync = realExecFileAsync;
   mock.module('../../../src/shared/SettingsDefaultsManager.js', () => realSettingsSnapshot);
   mock.module('../../../src/shared/paths.js', () => realPathsSnapshot);
   mock.module('../../../src/utils/logger.js', () => realLoggerSnapshot);
@@ -128,17 +146,13 @@ function resetState(): void {
     CLAUDE_MEM_CHROMA_CONNECT_TIMEOUT_MS: '1000',
     CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS: '2000',
   };
-  execFileCalls = [];
+  spawnCalls = [];
   connectCalls = 0;
   sequence = [];
-  (ChromaMcpManager as any).execFileAsync = async (
-    command: string,
-    args: string[],
-    opts: { timeout?: number } | undefined
-  ) => {
-    execFileCalls.push({ command, args, timeout: opts?.timeout });
-    sequence.push('prewarm');
-    return { stdout: '', stderr: '' };
+  spawnImpl = () => {
+    const c = new FakeChild();
+    Promise.resolve().then(() => c.emit('close', 0));
+    return c;
   };
   connectImpl = async () => {};
 }
@@ -155,8 +169,8 @@ describe('ChromaMcpManager timeout and prewarm contract (#2897)', () => {
     await mgr.callTool('chroma_list_collections', { limit: 1 });
 
     expect(sequence).toEqual(['prewarm', 'connect']);
-    expect(execFileCalls).toHaveLength(1);
-    expect(execFileCalls[0].args).toContain('--help');
+    expect(spawnCalls).toHaveLength(1);
+    expect(spawnCalls[0].args).toContain('--help');
   });
 
   it('uses distinct prewarm and connect timeout budgets', async () => {
@@ -169,19 +183,21 @@ describe('ChromaMcpManager timeout and prewarm contract (#2897)', () => {
       'MCP connection to chroma-mcp timed out after 1500ms'
     );
 
-    expect(execFileCalls).toHaveLength(1);
-    expect(execFileCalls[0].timeout).toBe(2500);
+    // Prewarm ran (spawn called) and completed; only the connect timed out.
+    expect(spawnCalls).toHaveLength(1);
+    expect(spawnCalls[0].args).toContain('--help');
   });
 
-  it('treats a killed prewarm child as a timeout', async () => {
-    (ChromaMcpManager as any).execFileAsync = async () => {
-      sequence.push('prewarm');
-      throw Object.assign(new Error('Command failed: uvx'), { killed: true });
+  it('reports a spawn error as prewarm failure', async () => {
+    spawnImpl = () => {
+      const c = new FakeChild();
+      Promise.resolve().then(() => c.emit('error', new Error('spawn uvx ENOENT')));
+      return c;
     };
     const mgr = ChromaMcpManager.getInstance();
 
     await expect(mgr.callTool('chroma_list_collections', { limit: 1 })).rejects.toThrow(
-      'chroma-mcp prewarm timed out after 2000ms'
+      'chroma-mcp prewarm failed: spawn uvx ENOENT'
     );
     expect(connectCalls).toBe(0);
   });
@@ -203,6 +219,6 @@ describe('ChromaMcpManager timeout and prewarm contract (#2897)', () => {
     await mgr.callTool('chroma_list_collections', { limit: 1 });
 
     expect(connectCalls).toBe(2);
-    expect(execFileCalls).toHaveLength(1);
+    expect(spawnCalls).toHaveLength(1);
   });
 });

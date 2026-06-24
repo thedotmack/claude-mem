@@ -1,7 +1,7 @@
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { execFile, execSync, type ChildProcess } from 'child_process';
+import { execFile, execSync, spawn, type ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
 import os from 'os';
@@ -55,7 +55,6 @@ const CHROMA_MCP_DEP_OVERRIDES: ReadonlyArray<string> = [
 
 export class ChromaMcpManager {
   private static instance: ChromaMcpManager | null = null;
-  private static readonly execFileAsync = execFileAsync;
   private client: Client | null = null;
   private transport: StdioClientTransport | null = null;
   private connected: boolean = false;
@@ -653,21 +652,58 @@ export class ChromaMcpManager {
       timeoutMs: spawnConfig.timeoutMs
     });
 
-    try {
-      await ChromaMcpManager.execFileAsync(spawnConfig.command, spawnConfig.args, {
-        env: spawnConfig.env,
-        cwd: spawnConfig.cwd,
-        timeout: spawnConfig.timeoutMs,
-        windowsHide: true,
+    // Use spawn (not execFile) so we can call killProcessTree on timeout.
+    // execFile's built-in timeout only sends SIGTERM to the direct uvx child;
+    // the uv/Python grandchildren spawned during a cold-cache install are
+    // orphaned. killProcessTree walks the full descendant set (POSIX pgrep -P
+    // recursion; Windows taskkill /T) before signaling.
+    const child = spawn(spawnConfig.command, spawnConfig.args, {
+      env: spawnConfig.env,
+      cwd: spawnConfig.cwd,
+      detached: true,   // POSIX: new process group so kill(-pgid) reaches entire tree
+      windowsHide: true,
+      stdio: 'pipe',
+    });
+    child.unref();      // don't prevent our process from exiting if prewarm is abandoned
+
+    const pid = child.pid;
+
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
+
+      const settle = (fn: () => void): void => {
+        if (settled) return;
+        settled = true;
+        fn();
+      };
+
+      const timer = setTimeout(() => {
+        settle(() => {
+          void (async () => {
+            if (pid != null) {
+              await ChromaMcpManager.killProcessTree(pid).catch(() => undefined);
+            }
+            reject(new Error(`chroma-mcp prewarm timed out after ${spawnConfig.timeoutMs}ms`));
+          })();
+        });
+      }, spawnConfig.timeoutMs);
+
+      child.on('close', (code) => {
+        clearTimeout(timer);
+        settle(() => {
+          if (code === 0) {
+            resolve();
+          } else {
+            reject(new Error(`chroma-mcp prewarm failed with exit code ${code}`));
+          }
+        });
       });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const killed = Boolean((error as NodeJS.ErrnoException & { killed?: boolean }).killed);
-      if (killed || /timed out/i.test(message)) {
-        throw new Error(`chroma-mcp prewarm timed out after ${spawnConfig.timeoutMs}ms`);
-      }
-      throw new Error(`chroma-mcp prewarm failed: ${message}`);
-    }
+
+      child.on('error', (error) => {
+        clearTimeout(timer);
+        settle(() => reject(new Error(`chroma-mcp prewarm failed: ${error.message}`)));
+      });
+    });
   }
 
   private readBoundedTimeoutSetting(
