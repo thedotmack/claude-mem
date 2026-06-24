@@ -29,7 +29,7 @@ export async function isPortInUse(port: number): Promise<boolean> {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 3000);
       try {
-        const response = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: controller.signal });
+        await fetch(`http://127.0.0.1:${port}/api/health`, { signal: controller.signal });
         clearTimeout(timeoutId);
       } finally {
         clearTimeout(timeoutId);
