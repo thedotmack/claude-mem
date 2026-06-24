@@ -198,6 +198,55 @@ export function setTomlFeatureEnabled(content: string, featureName: string, enab
   return setTomlBooleanInTable(content, '[features]', featureName, enabled);
 }
 
+function normalizeTomlHeader(line: string): string | null {
+  const match = line.trim().match(/^\[([^\]]+)\]\s*$/);
+  if (!match) return null;
+  return match[1].replace(/\s+/g, '').replace(/"/g, '');
+}
+
+function isLegacyMcpSearchHeader(normalizedHeader: string | null): boolean {
+  return normalizedHeader === 'mcp_servers.mcp-search';
+}
+
+function isLegacyMcpSearchChildHeader(normalizedHeader: string | null): boolean {
+  return typeof normalizedHeader === 'string' && normalizedHeader.startsWith('mcp_servers.mcp-search.');
+}
+
+function isClaudeMemMcpSearchBlock(block: string): boolean {
+  return /claude-mem/.test(block);
+}
+
+export function removeLegacyCodexMcpSearchConfig(content: string): string {
+  const lines = content.split('\n');
+  const blocks: Array<{ header: string | null; text: string }> = [];
+  let currentHeader: string | null = null;
+  let currentLines: string[] = [];
+
+  for (const line of lines) {
+    const header = normalizeTomlHeader(line);
+    if (header !== null) {
+      blocks.push({ header: currentHeader, text: currentLines.join('\n') });
+      currentHeader = header;
+      currentLines = [line];
+    } else {
+      currentLines.push(line);
+    }
+  }
+  blocks.push({ header: currentHeader, text: currentLines.join('\n') });
+
+  const removeLegacyMcpSearch = blocks.some(
+    (block) => isLegacyMcpSearchHeader(block.header) && isClaudeMemMcpSearchBlock(block.text),
+  );
+  if (!removeLegacyMcpSearch) return content;
+
+  const kept = blocks.filter((block) =>
+    !isLegacyMcpSearchHeader(block.header) && !isLegacyMcpSearchChildHeader(block.header)
+  );
+  // The stale claude-mem-owned server can have tool child tables; remove the
+  // whole subtree so Codex falls back to the plugin-managed MCP declaration.
+  return kept.map((block) => block.text).join('\n').replace(/^\n+/, '').replace(/\n{3,}/g, '\n\n');
+}
+
 function writeCodexPluginConfig(enabled: boolean): boolean {
   if (!enabled && !existsSync(CODEX_CONFIG_PATH)) return false;
   mkdirSync(CODEX_DIR, { recursive: true });
@@ -206,6 +255,7 @@ function writeCodexPluginConfig(enabled: boolean): boolean {
 
   if (enabled) {
     next = setTomlFeatureEnabled(next, 'hooks', true);
+    next = removeLegacyCodexMcpSearchConfig(next);
   }
   for (const legacyPluginId of LEGACY_CODEX_PLUGIN_IDS) {
     next = setTomlPluginEnabled(next, legacyPluginId, false);
