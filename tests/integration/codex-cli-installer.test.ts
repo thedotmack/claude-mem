@@ -104,6 +104,23 @@ describe('Codex CLI installer config repair', () => {
     expect(result).toContain('[features]\nhooks = true');
   });
 
+  it('does not add a leading newline when the stale config starts the file', () => {
+    const input = [
+      '[mcp_servers.mcp-search]',
+      'command = "node"',
+      'args = ["/tmp/claude-mem/scripts/mcp-server.cjs"]',
+      '',
+      '[features]',
+      'hooks = true',
+      '',
+    ].join('\n');
+
+    const result = removeLegacyCodexMcpSearchConfig(input);
+
+    expect(result.startsWith('\n')).toBe(false);
+    expect(result).toStartWith('[features]');
+  });
+
   it('preserves non-claude-mem mcp-search config', () => {
     const input = [
       '[mcp_servers.mcp-search]',

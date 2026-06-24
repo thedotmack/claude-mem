@@ -242,7 +242,9 @@ export function removeLegacyCodexMcpSearchConfig(content: string): string {
   const kept = blocks.filter((block) =>
     !isLegacyMcpSearchHeader(block.header) && !isLegacyMcpSearchChildHeader(block.header)
   );
-  return kept.map((block) => block.text).join('\n').replace(/\n{3,}/g, '\n\n');
+  // The stale claude-mem-owned server can have tool child tables; remove the
+  // whole subtree so Codex falls back to the plugin-managed MCP declaration.
+  return kept.map((block) => block.text).join('\n').replace(/^\n+/, '').replace(/\n{3,}/g, '\n\n');
 }
 
 function writeCodexPluginConfig(enabled: boolean): boolean {
