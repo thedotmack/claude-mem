@@ -175,6 +175,11 @@ export class SettingsDefaultsManager {
 
   static getInt(key: keyof SettingsDefaults): number {
     const value = this.get(key);
+    // #2996 (round 14): 'auto' is a sentinel for threshold defaults.
+    // Return a platform-appropriate numeric fallback instead of NaN.
+    if (value === 'auto') {
+      return process.platform === 'win32' ? 10 : 3;
+    }
     return parseInt(value, 10);
   }
 

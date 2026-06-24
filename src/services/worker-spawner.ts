@@ -40,8 +40,10 @@ async function reapStalePortHolderOnWindows(port: number): Promise<void> {
       timeout: 5000,
     });
 
-    // Parse and filter lines: must match exact port number and be in LISTENING state
-    const portPattern = new RegExp(`\\b${port}\\b`);
+    // Parse and filter lines: must match exact port field and be in LISTENING state
+    // #2996 (round 14): parse the actual port component from the local address
+    // instead of regex-searching the full address. A regex like \\b80\\b can
+    // falsely match "80" inside an IP like 192.168.80.1:1234, killing the wrong PID.
     const lines = netstatResult
       .split('\n')
       .filter(line => {
@@ -49,7 +51,9 @@ async function reapStalePortHolderOnWindows(port: number): Promise<void> {
         // netstat format: Protocol Local Address Foreign Address State PID
         if (parts.length < 5) return false;
         const [_proto, localAddr, _foreign, state, _pid] = parts;
-        return state === 'LISTENING' && portPattern.test(localAddr);
+        // Extract the port from the local address (e.g. "0.0.0.0:80" -> "80")
+        const portField = localAddr.split(':').pop();
+        return state === 'LISTENING' && parseInt(portField || '', 10) === port;
       });
 
     if (lines.length === 0) {
