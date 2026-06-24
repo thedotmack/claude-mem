@@ -643,6 +643,55 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       return handleObservationAdd(merged);
     },
   },
+  // Worker-runtime manual write. Unlike observation_add/memory_add (which are
+  // gated to server-beta and call /v1/memories), this talks to the worker's
+  // ungated POST /api/memory/save — writing straight to SQLite + Chroma. It is
+  // the only manual-write path available on the default `worker` runtime, where
+  // no server-beta server, API key, or project id is configured. Uses the same
+  // workerHttpRequest plumbing as search/timeline, so it shares the worker the
+  // MCP server already auto-starts in worker mode. No Bun-only imports.
+  {
+    name: 'memory_save',
+    description:
+      'Save a manual memory to the local worker (SQLite + Chroma) via POST /api/memory/save. ' +
+      'Worker-runtime path — does NOT require server-beta. Use this on the default worker runtime. ' +
+      'Params: text (required), title, project, metadata.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'The memory content to store' },
+        title: { type: 'string', description: 'Optional short title; auto-derived from text if omitted' },
+        project: { type: 'string', description: 'Project bucket; defaults to the worker default project if omitted' },
+        metadata: { type: 'object', additionalProperties: true },
+      },
+      required: ['text'],
+      additionalProperties: false,
+    },
+    handler: async (args: any) => {
+      try {
+        if (typeof args?.text !== 'string' || args.text.trim().length === 0) {
+          throw new Error('memory_save: "text" is required');
+        }
+        const body: Record<string, unknown> = { text: args.text };
+        if (typeof args.title === 'string' && args.title.trim()) body.title = args.title;
+        if (typeof args.project === 'string' && args.project.trim()) body.project = args.project;
+        if (args.metadata && typeof args.metadata === 'object') body.metadata = args.metadata;
+
+        const response = await workerHttpRequest('/api/memory/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!response.ok) {
+          const detail = await response.text().catch(() => '');
+          throw new Error(`worker /api/memory/save returned ${response.status}${detail ? `: ${detail}` : ''}`);
+        }
+        return formatJsonResult(await response.json());
+      } catch (error) {
+        return formatToolError(error);
+      }
+    },
+  },
   {
     name: 'memory_search',
     description: 'Compatibility alias for observation_search. Same FTS path; same /v1/search REST endpoint.',
