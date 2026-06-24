@@ -563,8 +563,9 @@ function getFailLoudThreshold(): number {
   }
 
   // 2. Read the raw settings file to check if user explicitly set the key.
-  // SettingsDefaultsManager.loadFromFile() writes defaults to disk when the
-  // file doesn't exist, making it impossible to distinguish default from explicit.
+  // If the value equals the default '3', treat it as auto-generated and fall
+  // through to platform-specific fallback. This handles legacy installs where
+  // loadFromFile() wrote '3' to disk automatically.
   try {
     if (existsSync(USER_SETTINGS_PATH)) {
       const raw = readFileSync(USER_SETTINGS_PATH, 'utf-8');
@@ -573,8 +574,13 @@ function getFailLoudThreshold(): number {
         ? { ...settings.env, ...settings }
         : settings;
       if ('CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD' in flatSettings) {
-        const parsed = parseInt(String(flatSettings.CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD), 10);
-        if (Number.isFinite(parsed) && parsed >= 1) return parsed;
+        const rawValue = String(flatSettings.CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD);
+        // If value is the default '3', it's likely auto-generated, not user-explicit.
+        // Fall through to platform fallback (10 on Windows, 3 elsewhere).
+        if (rawValue !== '3') {
+          const parsed = parseInt(rawValue, 10);
+          if (Number.isFinite(parsed) && parsed >= 1) return parsed;
+        }
       }
     }
   } catch {
