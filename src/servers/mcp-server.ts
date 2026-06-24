@@ -669,6 +669,18 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     },
     handler: async (args: any) => {
       try {
+        // Worker-only: this tool writes to the local worker's SQLite + Chroma.
+        // In server-beta mode main() skips worker auto-start, so posting here
+        // would either fail with a connection error or land the memory in a
+        // stray local worker instead of the selected server-beta backend —
+        // splitting manual memories across stores. Fail clearly and point the
+        // caller at the server-beta-backed tools instead.
+        if (selectRuntime() === 'server-beta') {
+          throw new Error(
+            'memory_save targets the worker runtime (POST /api/memory/save) and is unavailable when ' +
+            'CLAUDE_MEM_RUNTIME=server-beta. Use observation_add / memory_add, which write to the server-beta backend.'
+          );
+        }
         if (typeof args?.text !== 'string' || args.text.trim().length === 0) {
           throw new Error('memory_save: "text" is required');
         }
