@@ -134,16 +134,19 @@ mock.module('child_process', () => {
     ...original,
     execFile: (
       cmd: string,
-      args: string[],
+      _args: string[],
       _opts: unknown,
       cb: (err: Error | null, stdout: { stdout: string; stderr: string }) => void
     ) => {
-      // Bun's promisify path will call this as if it were a Node-style callback.
-      if (cmd === 'pgrep') {
-        cb(null, { stdout: '', stderr: '' } as any);
-      } else {
-        cb(null, { stdout: '', stderr: '' } as any);
-      }
+      // pgrep (used by killProcessTree) returns no descendants so only the root pid is signaled.
+      void cmd;
+      cb(null, { stdout: '', stderr: '' } as any);
+    },
+    spawn: (_command: string, _args: string[]) => {
+      const { EventEmitter } = require('node:events');
+      const child = Object.assign(new EventEmitter(), { pid: 42, stdout: null, stderr: null, unref: () => {} });
+      Promise.resolve().then(() => child.emit('close', 0));
+      return child;
     },
     execSync: () => '',
   };
@@ -160,12 +163,10 @@ process.kill = stubbedProcessKill;
 
 import { ChromaMcpManager } from '../../../src/services/sync/ChromaMcpManager.js';
 const realKillProcessTree = (ChromaMcpManager as any).killProcessTree;
-const realExecFileAsync = (ChromaMcpManager as any).execFileAsync;
 
 afterAll(() => {
   process.kill = realProcessKill;
   (ChromaMcpManager as any).killProcessTree = realKillProcessTree;
-  (ChromaMcpManager as any).execFileAsync = realExecFileAsync;
   mock.module('../../../src/shared/SettingsDefaultsManager.js', () => realSettingsSnapshot);
   mock.module('../../../src/shared/paths.js', () => realPathsSnapshot);
   mock.module('../../../src/utils/logger.js', () => realLoggerSnapshot);
@@ -181,7 +182,6 @@ function resetState(): void {
   (ChromaMcpManager as any).killProcessTree = async (pid: number) => {
     killTreeCalls.push(pid);
   };
-  (ChromaMcpManager as any).execFileAsync = async () => ({ stdout: '', stderr: '' });
   connectImpl = async () => {};
   callToolImpl = async () => ({ content: [{ type: 'text', text: '{}' }] });
 }

@@ -90,15 +90,19 @@ mock.module('child_process', () => {
     ) => {
       cb(null, { stdout: '', stderr: '' });
     },
+    spawn: (_command: string, _args: string[]) => {
+      const { EventEmitter } = require('node:events');
+      const child = Object.assign(new EventEmitter(), { pid: 42, stdout: null, stderr: null, unref: () => {} });
+      Promise.resolve().then(() => child.emit('close', 0));
+      return child;
+    },
     execSync: () => '',
   };
 });
 
 import { ChromaMcpManager } from '../../../src/services/sync/ChromaMcpManager.js';
-const realExecFileAsync = (ChromaMcpManager as any).execFileAsync;
 
 afterAll(() => {
-  (ChromaMcpManager as any).execFileAsync = realExecFileAsync;
   mock.module('../../../src/shared/SettingsDefaultsManager.js', () => realSettingsSnapshot);
   mock.module('../../../src/shared/paths.js', () => realPathsSnapshot);
   mock.module('../../../src/utils/logger.js', () => realLoggerSnapshot);
@@ -124,7 +128,6 @@ let mgr: ChromaMcpManager;
 describe('ChromaMcpManager SSL flag regression (#1286)', () => {
   beforeEach(async () => {
     await ChromaMcpManager.reset();
-    (ChromaMcpManager as any).execFileAsync = async () => ({ stdout: '', stderr: '' });
     capturedTransportOpts = null;
     currentSettings = {};
     mgr = ChromaMcpManager.getInstance();
