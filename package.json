@@ -149,6 +149,7 @@
     "zod-to-json-schema": "^3.25.2"
   },
   "overrides": {
+    "tree-sitter": "^0.25.0",
     "tmp": "^0.2.7"
   },
   "devDependencies": {
