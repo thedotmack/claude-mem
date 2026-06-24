@@ -4,7 +4,7 @@ import { z } from 'zod';
 import path from 'path';
 import { readFileSync, statSync, existsSync } from 'fs';
 import { logger } from '../../../../utils/logger.js';
-import { getPackageRoot, paths } from '../../../../shared/paths.js';
+import { getPackageRoot, paths, OBSERVER_SESSIONS_PROJECT } from '../../../../shared/paths.js';
 import { getWorkerPort } from '../../../../shared/worker-utils.js';
 import { PaginationHelper } from '../../PaginationHelper.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
@@ -226,21 +226,36 @@ export class DataRoutes extends BaseRouteHandler {
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
     const version = packageJson.version;
 
-    // When a project is supplied, scope the counts to it; the appended clause is
-    // a constant and the value is bound as a parameter, so there is no dynamic
-    // SQL. Status-line consumers pass ?project=<folder> to show per-project vs
-    // global counts.
-    const countWithOptionalProject = (baseSql: string): number => {
-      const sql = project ? `${baseSql} WHERE project = ?` : baseSql;
-      const stmt = db.prepare(sql);
-      const row = (project ? stmt.get(project) : stmt.get()) as { count: number };
+    // Mirror PaginationHelper's reader scoping so the status line's numbers match
+    // the dashboard list views exactly. With a project, observations/summaries
+    // also adopt worktree rows via merged_into_project (sessions have no such
+    // column); without one, the internal observer-sessions project is excluded —
+    // just as the readers do. `table` is a constant identifier (never user
+    // input) and every project value is a bound parameter, so there is no
+    // dynamic SQL. Status-line consumers pass ?project=<folder> to switch between
+    // per-project and global counts.
+    const countScoped = (table: string, hasMergedColumn: boolean): number => {
+      let where: string;
+      let params: string[];
+      if (project) {
+        where = hasMergedColumn
+          ? 'WHERE (project = ? OR merged_into_project = ?)'
+          : 'WHERE project = ?';
+        params = hasMergedColumn ? [project, project] : [project];
+      } else {
+        where = 'WHERE project != ?';
+        params = [OBSERVER_SESSIONS_PROJECT];
+      }
+      const row = db
+        .prepare(`SELECT COUNT(*) as count FROM ${table} ${where}`)
+        .get(...params) as { count: number };
       return row.count;
     };
 
-    const totalObservations = countWithOptionalProject('SELECT COUNT(*) as count FROM observations');
-    const totalSessions = countWithOptionalProject('SELECT COUNT(*) as count FROM sdk_sessions');
-    const totalSummaries = countWithOptionalProject('SELECT COUNT(*) as count FROM session_summaries');
-    const firstObservationAt = getFirstObservationCreatedAt(db);
+    const totalObservations = countScoped('observations', true);
+    const totalSessions = countScoped('sdk_sessions', false);
+    const totalSummaries = countScoped('session_summaries', true);
+    const firstObservationAt = getFirstObservationCreatedAt(db, project);
 
     const dbPath = paths.database();
     let dbSize = 0;
