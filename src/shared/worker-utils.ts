@@ -1,5 +1,7 @@
 import path from "path";
 import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync } from "fs";
+import { createRequire } from "module";
+import { ZOD_REQUIRED_SUBPATHS } from "./zod-required-subpaths.js";
 import { spawnHidden } from "./spawn.js";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
@@ -228,68 +230,51 @@ export function resolveWorkerScriptPath(): string | null {
 }
 
 /**
- * Walk up from `startDir` looking for `<dir>/node_modules/<pkg>/package.json`,
- * mirroring Node/Bun module resolution. Returns the package.json path or null.
- *
- * Resolution must NOT assume a single layout: marketplace installs put runtime
- * deps at the marketplace root (`<marketplace>/node_modules`) while the worker
- * script lives under `<marketplace>/plugin/scripts`; a hoisted dev `bun install`
- * puts them at the repo root. Hard-coding `<plugin>/node_modules` produced false
- * "broken deps" negatives in those layouts, so we walk up like the runtime does.
- */
-function findInstalledPackageJson(startDir: string, pkg: string): string | null {
-  let dir = startDir;
-  // Bounded walk: node_modules is always within a few levels of the worker
-  // script in every supported layout; the bound just avoids a pathological loop.
-  for (let i = 0; i < 8; i++) {
-    const candidate = path.join(dir, 'node_modules', ...pkg.split('/'), 'package.json');
-    if (existsSync(candidate)) return candidate;
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return null;
-}
-
-/**
  * Spawn-free preflight: can the worker we're about to (re)spawn actually boot?
  *
- * The bundled worker does a runtime `require('zod/v3')` (and requires
- * `shell-quote`), so a plugin whose node_modules never got those installed —
- * e.g. its install aborted on a failed native tree-sitter build — crashes
+ * The bundled worker requires `zod` (via the ZOD_REQUIRED_SUBPATHS exports —
+ * zod/v3, zod/v4, zod/v4-mini — pulled in transitively by the MCP / agent SDKs)
+ * and `shell-quote`. A plugin whose node_modules never got those fully installed
+ * — e.g. its install aborted on a failed native tree-sitter build — crashes
  * instantly on startup and never binds the port. Two callers use this:
  *  - the version recycler, so it never kills a HEALTHY worker to swap in a
  *    broken target (which turns a partial install into a total outage); and
  *  - the lazy-spawn path, so a down+broken install fails fast with an
  *    actionable reason instead of a silent ~15s cold-boot timeout.
  *
- * Checks the hard (non-optional) runtime deps: `zod` (with its `./v3` subpath)
- * and `shell-quote`. Resolution walks up from the worker script directory.
+ * Uses real `require.resolve` (honoring each package's `exports` map), mirroring
+ * the install-time check in setup-runtime.ts `verifyCriticalModules` — a present
+ * `zod` directory does NOT imply its subpath exports resolve. Resolution walks
+ * up from the worker script directory, so it works whether deps live at
+ * `<marketplace>/node_modules`, `<plugin>/node_modules`, or a hoisted dev root.
  */
 function checkInstalledWorkerDependencies(): { ok: boolean; reason?: string } {
   const scriptPath = resolveWorkerScriptPath();
   if (!scriptPath) {
     return { ok: false, reason: 'worker-service.cjs not found' };
   }
-  const scriptDir = path.dirname(scriptPath);
 
-  // zod — the bundle does require('zod/v3'), so the ./v3 subpath must exist too.
-  const zodPkgPath = findInstalledPackageJson(scriptDir, 'zod');
-  if (!zodPkgPath) {
-    return { ok: false, reason: 'zod not installed (no node_modules/zod found above the worker script)' };
+  // Candidate node_modules roots, walking up from the worker script. Mirrors
+  // Node/Bun resolution across every supported layout instead of assuming one.
+  const candidatePaths: string[] = [];
+  let dir = path.dirname(scriptPath);
+  for (let i = 0; i < 8; i++) {
+    candidatePaths.push(path.join(dir, 'node_modules'));
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
   }
-  try {
-    const pkg = JSON.parse(readFileSync(zodPkgPath, 'utf-8')) as { exports?: Record<string, unknown> };
-    if (!pkg.exports || pkg.exports['./v3'] === undefined) {
-      return { ok: false, reason: 'installed zod does not expose the ./v3 subpath the worker requires' };
+
+  const requireFromScript = createRequire(scriptPath);
+  // The full hard (non-optional) runtime set: every zod subpath the worker
+  // imports (shared with the installer so the two can't drift) plus shell-quote.
+  const required = [...ZOD_REQUIRED_SUBPATHS, 'shell-quote'];
+  for (const mod of required) {
+    try {
+      requireFromScript.resolve(mod, { paths: candidatePaths });
+    } catch {
+      return { ok: false, reason: `required runtime dependency not resolvable: ${mod}` };
     }
-  } catch (err: unknown) {
-    return { ok: false, reason: `unreadable zod package.json: ${err instanceof Error ? err.message : String(err)}` };
-  }
-
-  // shell-quote — also a required (non-optional) runtime dep.
-  if (!findInstalledPackageJson(scriptDir, 'shell-quote')) {
-    return { ok: false, reason: 'shell-quote not installed (no node_modules/shell-quote found above the worker script)' };
   }
 
   return { ok: true };

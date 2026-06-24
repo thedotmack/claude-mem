@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { exec, execSync, spawnSync } from 'child_process';
 import { createRequire } from 'module';
+import { ZOD_REQUIRED_SUBPATHS } from '../../shared/zod-required-subpaths.js';
 import { join } from 'path';
 import { homedir } from 'os';
 import { ErrorSeverity } from './error-taxonomy.js';
@@ -217,16 +218,6 @@ function installUv(): void {
     );
   }
 }
-
-/**
- * Subpath imports the bundled worker requires transitively (via
- * @modelcontextprotocol/sdk / @anthropic-ai/claude-agent-sdk). A stale/partial
- * install can leave the `zod` directory present while these subpath exports fail
- * to resolve — surfacing later as a runtime `Cannot find module 'zod/v3'`. We
- * assert them at install time so a broken closure fails LOUD here. Version-agnostic:
- * we resolve subpaths, never a pinned version.
- */
-const ZOD_REQUIRED_SUBPATHS = ['zod/v3', 'zod/v4', 'zod/v4-mini'] as const;
 
 export function verifyCriticalModules(targetDir: string): void {
   const pkg = JSON.parse(readFileSync(join(targetDir, 'package.json'), 'utf-8'));
