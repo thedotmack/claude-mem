@@ -202,7 +202,12 @@ export class SettingsDefaultsManager {
           if (!existsSync(dir)) {
             mkdirSync(dir, { recursive: true });
           }
-          writeFileSync(settingsPath, JSON.stringify(defaults, null, 2), 'utf-8');
+          // #2996: Strip CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD from auto-generated
+          // defaults so getFailLoudThreshold() can distinguish user-explicit values
+          // from defaults. Without this, loadFromFile() writes '3' to disk on first
+          // boot, and the platform-specific fallback (10 on Windows) is never reached.
+          const { CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: _stripped, ...defaultsForDisk } = defaults;
+          writeFileSync(settingsPath, JSON.stringify(defaultsForDisk, null, 2), 'utf-8');
           // stderr, never stdout: this fires on the first boot in a fresh data
           // dir, and CLI commands like `start` promise machine-readable JSON
           // on stdout to the hook framework.
