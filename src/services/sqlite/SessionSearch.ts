@@ -14,6 +14,7 @@ import {
   ObservationRow,
   UserPromptRow
 } from './types.js';
+import { enableIncrementalAutoVacuumIfFresh } from './autoVacuum.js';
 
 export class SessionSearch {
   private db: Database;
@@ -26,6 +27,9 @@ export class SessionSearch {
     } else {
       ensureDir(DATA_DIR);
       this.db = new Database(dbPathOrDb);
+      // Must precede journal_mode = WAL: auto_vacuum can only be switched on an
+      // empty database, before the first WAL-mode write locks the mode in.
+      enableIncrementalAutoVacuumIfFresh(this.db);
       this.db.run('PRAGMA journal_mode = WAL');
     }
 
