@@ -4,7 +4,7 @@ import { spawnHidden } from "./spawn.js";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
 import { SettingsDefaultsManager, type SettingsDefaults } from "./SettingsDefaultsManager.js";
-import { MARKETPLACE_ROOT, DATA_DIR } from "./paths.js";
+import { MARKETPLACE_ROOT, DATA_DIR, USER_SETTINGS_PATH } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
 import { validateWorkerPidFile } from "../supervisor/index.js";
 import { emitBlockingError } from "./hook-io.js";
@@ -566,10 +566,8 @@ function getFailLoudThreshold(): number {
   // SettingsDefaultsManager.loadFromFile() writes defaults to disk when the
   // file doesn't exist, making it impossible to distinguish default from explicit.
   try {
-    const { existsSync: _es, readFileSync: _rs } = require('fs');
-    const { USER_SETTINGS_PATH } = require('./paths.js');
-    if (_es(USER_SETTINGS_PATH)) {
-      const raw = _rs(USER_SETTINGS_PATH, 'utf-8');
+    if (existsSync(USER_SETTINGS_PATH)) {
+      const raw = readFileSync(USER_SETTINGS_PATH, 'utf-8');
       const settings = JSON.parse(raw.replace(/^\uFEFF/, ''));
       const flatSettings = settings.env && typeof settings.env === 'object'
         ? { ...settings.env, ...settings }

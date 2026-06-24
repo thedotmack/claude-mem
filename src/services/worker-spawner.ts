@@ -217,22 +217,7 @@ export async function ensureWorkerStarted(
       return ready ? 'ready' : 'warming';
     }
     logger.warn('SYSTEM', 'Live PID detected but worker did not become healthy before timeout—likely still starting');
-    // #2996: on Windows, a live-but-wedged worker holds the port without
-    // serving health. Try the stale-port reaper before giving up.
-    if (process.platform === 'win32') {
-      logger.info('SYSTEM', 'Attempting to reap stale live-PID worker', { port });
-      await reapStalePortHolderOnWindows(port);
-      const portFree = await waitForPortFree(port, 3000);
-      if (portFree) {
-        clearWorkerSpawnAttempted();
-        logger.info('SYSTEM', 'Port freed after reaping live-PID worker, proceeding with spawn');
-        // Fall through to spawn logic below (don't return 'warming')
-      } else {
-        return 'warming';
-      }
-    } else {
-      return 'warming';
-    }
+    return 'warming';
   }
 
   if (await waitForHealth(port, 1000)) {
