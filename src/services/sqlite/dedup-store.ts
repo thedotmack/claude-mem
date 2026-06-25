@@ -90,6 +90,101 @@ export function isFuzzyReady(db: Database, project: string, minDocs: number): bo
 }
 
 /**
+ * Idempotent backfill = the canonical "rebuild" for a project's IDF model (#3038,
+ * research Q-A/Q-C). Recomputes title_norm_key for every row (SQLite can't), then
+ * DELETE+INSERT rebuilds token_df and resets dedup_meta — all in one transaction,
+ * safe to re-run. This is how an EXISTING DB starts participating in dedup, and how
+ * post-deletion DF drift is reclaimed. Returns the project doc count.
+ */
+export function backfillProjectDedup(db: Database, project: string): number {
+  const rows = db.prepare('SELECT id, title FROM observations WHERE project = ?').all(project) as { id: number; title: string | null }[];
+  const updKey = db.prepare('UPDATE observations SET title_norm_key = ? WHERE id = ?');
+  const insDf = db.prepare('INSERT INTO token_df (project, token, df) VALUES (?, ?, ?)');
+  const tx = db.transaction(() => {
+    const dfMap = new Map<string, number>();
+    for (const r of rows) {
+      updKey.run(computeTitleNormKey(project, r.title), r.id);
+      for (const t of new Set(tokenizeWs(r.title))) dfMap.set(t, (dfMap.get(t) ?? 0) + 1);
+    }
+    db.prepare('DELETE FROM token_df WHERE project = ?').run(project);
+    for (const [t, df] of dfMap) insDf.run(project, t, df);
+    db.prepare(
+      'INSERT INTO dedup_meta (project, doc_count, last_rebuild_doc_count, deleted_since_rebuild) VALUES (?, ?, ?, 0) ' +
+      'ON CONFLICT(project) DO UPDATE SET doc_count = excluded.doc_count, last_rebuild_doc_count = excluded.last_rebuild_doc_count, deleted_since_rebuild = 0'
+    ).run(project, rows.length, rows.length);
+  });
+  tx();
+  return rows.length;
+}
+
+/**
+ * Full-corpus Tier-1 candidate sweep for an EXISTING project, via a bounded
+ * inverted index (research Q-C — NOT O(N^2)): only tokens appearing in 2..maxPostingDf
+ * rows form postings; pairs sharing >= minSharedTokens of them are classified.
+ * Persists review-only candidates (INSERT OR IGNORE). Returns the count persisted.
+ */
+export function sweepProjectCandidates(db: Database, project: string, cfg: DedupRuntimeConfig): number {
+  const rows = db.prepare(
+    'SELECT id, title FROM observations WHERE project = ? AND title IS NOT NULL ORDER BY id ASC'
+  ).all(project) as { id: number; title: string }[];
+  if (rows.length < 2) return 0;
+  const { idfFn, docCount } = buildProjectIdf(db, project);
+  const thresholds: ClassifyThresholds = {
+    cosineThreshold: cfg.cosineThreshold,
+    vetoThetaIdf: idf(cfg.idfVetoDf, docCount),
+    minSharedTokens: cfg.minSharedTokens,
+  };
+  const tokensPerRow = rows.map(r => new Set(tokenizeWs(r.title)));
+  const df = new Map<string, number>();
+  for (const set of tokensPerRow) for (const t of set) df.set(t, (df.get(t) ?? 0) + 1);
+  const maxPostingDf = Math.max(2, Math.ceil(Math.sqrt(rows.length)) * 4); // bound postings (skip ultra-common tokens)
+  const postings = new Map<string, number[]>();
+  tokensPerRow.forEach((set, i) => {
+    for (const t of set) {
+      const d = df.get(t)!;
+      if (d < 2 || d > maxPostingDf) continue;
+      let list = postings.get(t);
+      if (!list) { list = []; postings.set(t, list); }
+      list.push(i);
+    }
+  });
+  const shared = new Map<string, number>(); // "i:j" (i<j) -> shared discriminating-token count
+  for (const ids of postings.values()) {
+    for (let x = 0; x < ids.length; x++) for (let y = x + 1; y < ids.length; y++) {
+      const key = `${ids[x]}:${ids[y]}`;
+      shared.set(key, (shared.get(key) ?? 0) + 1);
+    }
+  }
+  const ins = db.prepare(
+    'INSERT OR IGNORE INTO observation_dedup_candidates ' +
+    '(observation_id, duplicate_of_id, project, method, score, status, created_at, created_at_epoch) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+  );
+  const nowIso = new Date().toISOString();
+  const nowEpoch = Date.now();
+  let count = 0;
+  for (const [key, sh] of shared) {
+    if (sh < cfg.minSharedTokens) continue;
+    const [i, j] = key.split(':').map(Number);
+    const c = classifyPair(rows[i].title, rows[j].title, idfFn, thresholds);
+    if (c.tier === 'candidate') {
+      ins.run(rows[j].id, rows[i].id, project, c.method, c.score, 'pending', nowIso, nowEpoch);
+      count++;
+    }
+  }
+  return count;
+}
+
+/** Run a full dedup-scan (backfill + sweep) over every project. Idempotent. */
+export function runDedupScan(db: Database, cfg: DedupRuntimeConfig): { project: string; docs: number; candidates: number }[] {
+  const projects = (db.prepare('SELECT DISTINCT project FROM observations').all() as { project: string }[]).map(r => r.project);
+  return projects.map(project => {
+    const docs = backfillProjectDedup(db, project);
+    const candidates = sweepProjectCandidates(db, project, cfg);
+    return { project, docs, candidates };
+  });
+}
+
+/**
  * Tier-1 (review-only) near-duplicate scan for a freshly-inserted observation.
  * Compares its title against up to `maxScan` recent same-project titles and
  * persists any 'candidate' verdicts into observation_dedup_candidates
