@@ -1,14 +1,16 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import { homedir } from 'os';
-import { getProjectName, getProjectContext } from '../../src/utils/project-name.js';
+import { getProjectName, getProjectContext, getDreamProjectName } from '../../src/utils/project-name.js';
+
+function homeBasename(): string {
+  return homedir().split(/[/\\]/).filter(Boolean).pop() ?? '';
+}
 
 describe('getProjectName', () => {
   describe('tilde expansion', () => {
     it('resolves bare ~ to home directory basename', () => {
-      const home = homedir();
-      const expected = home.split('/').pop() || home.split('\\').pop() || '';
-      expect(getProjectName('~')).toBe(expected);
+      expect(getProjectName('~')).toBe(homeBasename());
     });
 
     it('resolves ~/subpath to subpath', () => {
@@ -16,9 +18,7 @@ describe('getProjectName', () => {
     });
 
     it('resolves ~/ to home directory basename', () => {
-      const home = homedir();
-      const expected = home.split('/').pop() || home.split('\\').pop() || '';
-      expect(getProjectName('~/')).toBe(expected);
+      expect(getProjectName('~/')).toBe(homeBasename());
     });
   });
 
@@ -107,6 +107,10 @@ describe('getProjectName', () => {
       );
     });
   });
+
+  it('does not append :dream twice for already-dream project names', () => {
+    expect(getDreamProjectName('already:dream')).toBe('already:dream');
+  });
 });
 
 describe('getProjectContext', () => {
@@ -115,7 +119,7 @@ describe('getProjectContext', () => {
     expect(ctx.primary).toBe('my-project');
     expect(ctx.parent).toBeNull();
     expect(ctx.isWorktree).toBe(false);
-    expect(ctx.allProjects).toEqual(['my-project']);
+    expect(ctx.allProjects).toEqual([getDreamProjectName('my-project'), 'my-project']);
   });
 
   it('resolves ~ path correctly', () => {
@@ -129,6 +133,20 @@ describe('getProjectContext', () => {
     const ctx = getProjectContext(null);
     expect(ctx.primary).toBe('unknown-project');
     expect(ctx.parent).toBeNull();
+    expect(ctx.allProjects).toEqual([
+      getDreamProjectName('unknown-project'),
+      'unknown-project',
+    ]);
+  });
+
+  it('returns dream-aware fallback context for undefined', () => {
+    const ctx = getProjectContext(undefined);
+    expect(ctx.primary).toBe('unknown-project');
+    expect(ctx.parent).toBeNull();
+    expect(ctx.allProjects).toEqual([
+      getDreamProjectName('unknown-project'),
+      'unknown-project',
+    ]);
   });
 
   describe('worktree isolation', () => {
@@ -164,7 +182,12 @@ describe('getProjectContext', () => {
       expect(ctx.isWorktree).toBe(true);
       expect(ctx.primary).toBe('main-repo/my-worktree');
       expect(ctx.parent).toBe('main-repo');
-      expect(ctx.allProjects).toEqual(['main-repo', 'main-repo/my-worktree']);
+      expect(ctx.allProjects).toEqual([
+        getDreamProjectName('main-repo'),
+        getDreamProjectName('main-repo/my-worktree'),
+        'main-repo',
+        'main-repo/my-worktree'
+      ]);
     });
 
     it('write-path call sites resolve to composite name in worktrees', () => {

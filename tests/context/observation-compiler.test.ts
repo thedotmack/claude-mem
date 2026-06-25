@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { buildTimeline } from '../../src/services/context/ObservationCompiler.js';
+import { getPriorSessionMessages, queryObservationsMulti } from '../../src/services/context/ObservationCompiler.js';
 import type { Observation, SummaryTimelineItem } from '../../src/services/context/types.js';
 
 function createTestObservation(overrides: Partial<Observation> = {}): Observation {
@@ -131,5 +132,121 @@ describe('buildTimeline', () => {
 
       expect(timeline[0].type).toBe('summary');
       expect(timeline[1].type).toBe('observation');
+    });
+});
+
+describe('getPriorSessionMessages', () => {
+    it('skips dream rows when choosing the prior raw transcript session', () => {
+      const result = getPriorSessionMessages(
+        [
+          { memory_session_id: 'dream-session', project: 'proj:dream' } as Observation,
+          { memory_session_id: 'raw-session', project: 'proj' } as Observation,
+        ],
+        { showLastMessage: true } as any,
+        'current-session',
+        '/tmp/proj',
+      );
+
+      expect(result).toEqual({ assistantMessage: '' });
+    });
+});
+
+describe('queryObservationsMulti', () => {
+    it('keeps one raw project row when dream rows saturate the combined result window', () => {
+      const dreamRows = [
+        createTestObservation({ id: 1, project: 'proj:dream', created_at_epoch: 4000 }),
+        createTestObservation({ id: 2, project: 'proj:dream', created_at_epoch: 3000 }),
+      ];
+      const rawFallback = createTestObservation({ id: 3, project: 'proj', created_at_epoch: 1000 });
+      const calls: string[] = [];
+      const db = {
+        db: {
+          prepare: (sql: string) => ({
+            all: () => {
+              calls.push(sql);
+              return dreamRows;
+            },
+            get: () => {
+              calls.push(sql);
+              return rawFallback;
+            },
+          }),
+        },
+      };
+
+      const rows = queryObservationsMulti(
+        db as any,
+        ['proj:dream', 'proj'],
+        {
+          observationTypes: new Set(['discovery']),
+          observationConcepts: new Set(['concept1']),
+          totalObservationCount: 2,
+        } as any
+      );
+
+      expect(rows.map(row => row.id)).toEqual([1, 3]);
+    });
+
+    it('treats merged raw rows as raw context and skips redundant fallback replacement', () => {
+      const mergedRawRow = createTestObservation({
+        id: 7,
+        project: 'child:dream',
+        merged_into_project: 'parent',
+        created_at_epoch: 2500,
+      });
+      const oldFallback = createTestObservation({
+        id: 8,
+        project: 'parent',
+        created_at_epoch: 1000,
+      });
+      const db = {
+        db: {
+          prepare: () => ({
+            all: () => [mergedRawRow],
+            get: () => oldFallback,
+          }),
+        },
+      };
+
+      const rows = queryObservationsMulti(
+        db as any,
+        ['parent:dream', 'parent'],
+        {
+          observationTypes: new Set(['discovery']),
+          observationConcepts: new Set(['concept1']),
+          totalObservationCount: 1,
+        } as any
+      );
+
+      expect(rows.map(row => row.id)).toEqual([7]);
+    });
+
+    it('keeps dream rows ahead of newer raw rows while still returning raw context secondarily', () => {
+      const rows = [
+        createTestObservation({ id: 1, project: 'proj', created_at_epoch: 5000 }),
+        createTestObservation({ id: 2, project: 'proj', created_at_epoch: 4000 }),
+        createTestObservation({ id: 3, project: 'proj:dream', created_at_epoch: 1000 }),
+      ];
+      const fallback = createTestObservation({ id: 4, project: 'proj', created_at_epoch: 4500 });
+      const db = {
+        db: {
+          prepare: () => ({
+            all: () => rows,
+            get: () => fallback,
+          }),
+        },
+      };
+
+      const result = queryObservationsMulti(
+        db as any,
+        ['proj:dream', 'proj'],
+        {
+          observationTypes: new Set(['discovery']),
+          observationConcepts: new Set(['concept1']),
+          totalObservationCount: 2,
+        } as any
+      );
+
+      expect(result.map(row => row.id)).toEqual([3, 1]);
     });
 });

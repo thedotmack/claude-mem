@@ -10,6 +10,8 @@ import type { ContextInput, ContextConfig, Observation, SessionSummary } from '.
 import { loadContextConfig } from './ContextConfigLoader.js';
 import { calculateTokenEconomics } from './TokenCalculator.js';
 import {
+  countObservationsByProjects,
+  countSummariesByProjects,
   queryObservations,
   queryObservationsMulti,
   querySummaries,
@@ -59,6 +61,11 @@ function initializeDatabase(): SessionStore | null {
 
 function renderEmptyState(project: string, forHuman: boolean): string {
   return forHuman ? renderHumanEmptyState(project) : renderAgentEmptyState(project);
+}
+
+export function getPrimaryContextProject(projects: string[], fallback: string): string {
+  const rawProjects = projects.filter((candidate) => !candidate.endsWith(':dream'));
+  return rawProjects[rawProjects.length - 1] ?? fallback;
 }
 
 function buildContextOutput(
@@ -168,7 +175,7 @@ export async function generateContextWithStats(
   const context = getProjectContext(cwd);
 
   const projects = input?.projects?.length ? input.projects : context.allProjects;
-  const project = projects[projects.length - 1] ?? context.primary;
+  const project = getPrimaryContextProject(projects, context.primary);
 
   if (input?.full) {
     config.totalObservationCount = 999999;
@@ -181,12 +188,22 @@ export async function generateContextWithStats(
   }
 
   try {
-    const observations = projects.length > 1
-      ? queryObservationsMulti(db, projects, config)
-      : queryObservations(db, project, config);
-    const summaries = projects.length > 1
-      ? querySummariesMulti(db, projects, config)
-      : querySummaries(db, project, config);
+    const dreamProjects = projects.filter((candidate) => candidate.endsWith(':dream'));
+    const rawProjects = projects.filter((candidate) => !candidate.endsWith(':dream'));
+    const useDreamQueries = dreamProjects.length > 0 && (
+      countObservationsByProjects(db, dreamProjects) > 0 ||
+      countSummariesByProjects(db, dreamProjects) > 0
+    );
+    const queryProjects = useDreamQueries || rawProjects.length === 0 ? projects : rawProjects;
+    const useMultiQuery = queryProjects.length > 1;
+    const singleQueryProject = queryProjects[0] ?? project;
+
+    const observations = useMultiQuery
+      ? queryObservationsMulti(db, queryProjects, config)
+      : queryObservations(db, singleQueryProject, config);
+    const summaries = useMultiQuery
+      ? querySummariesMulti(db, queryProjects, config)
+      : querySummaries(db, singleQueryProject, config);
 
     if (observations.length === 0 && summaries.length === 0) {
       return { text: renderEmptyState(project, forHuman), stats: null };

@@ -46,7 +46,7 @@ mock.module('../../src/shared/worker-utils.js', () => ({
 
 mock.module('../../src/utils/project-name.js', () => ({
   getProjectName: () => 'test-project',
-  getProjectContext: () => ({ allProjects: ['test-project'] }),
+  getProjectContext: () => ({ allProjects: ['test-project:dream', 'test-project'] }),
 }));
 
 mock.module('../../src/utils/project-filter.js', () => ({
@@ -273,12 +273,14 @@ describe('fileContextHandler — #2094 (no Read mutation)', () => {
 
     const parsed = new URL(capturedUrl);
     const pathParams = parsed.searchParams.getAll('path');
+    const projectsParam = parsed.searchParams.get('projects');
     // Both candidate forms are sent so the worker can match however the path was
     // stored at PostToolUse time (absolute vs cwd-relative).
     const absoluteForm = testFile.split(/[\\/]/).join('/');
     expect(pathParams).toContain(absoluteForm);
     expect(pathParams).toContain('test.md'); // cwd-relative form
     expect(pathParams.length).toBeGreaterThanOrEqual(2);
+    expect(projectsParam).toBe('test-project:dream,test-project');
   });
 
   it('skips directories before querying file history', async () => {

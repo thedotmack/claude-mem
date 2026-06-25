@@ -44,6 +44,7 @@ export interface Observation {
   created_at: string;
   created_at_epoch: number;
   project?: string;
+  merged_into_project?: string | null;
 }
 
 export interface SessionSummary {
