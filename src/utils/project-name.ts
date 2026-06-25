@@ -1,6 +1,6 @@
 import { homedir } from 'os'
 import path from 'path';
-import { realpathSync } from 'fs';
+import { realpathSync, statSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { logger } from './logger.js';
 import { detectWorktree } from './worktree.js';
@@ -44,6 +44,16 @@ function samePath(a: string, b: string): boolean {
     : left === right;
 }
 
+// .git FILE (not dir) means this is a linked worktree root, not the main repo.
+function isLinkedWorktreeRoot(dir: string): boolean {
+  try { return statSync(path.join(dir, '.git')).isFile(); } catch { return false; }
+}
+
+// Treat cwd as an independent package only when it has its own package.json.
+function hasOwnPackageJson(dir: string): boolean {
+  try { return statSync(path.join(dir, 'package.json')).isFile(); } catch { return false; }
+}
+
 export function getProjectName(cwd: string | null | undefined): string {
   if (!cwd || cwd.trim() === '') {
     logger.warn('PROJECT_NAME', 'Empty cwd provided, using fallback', { cwd });
@@ -55,12 +65,14 @@ export function getProjectName(cwd: string | null | undefined): string {
   // #2663 — derive the project name from the git repo root when inside a repo so
   // the name is stable across subdirectories/worktrees. Fall back to the cwd
   // basename when not in a repo.
-  // #2882 — when cwd is a subdirectory of the repo root (monorepo package),
-  // use the cwd basename instead of the repo root basename.
+  // #2882 — when cwd is a package root inside a monorepo (has its own package.json)
+  // or a linked worktree root (has a .git file), use the cwd basename so each
+  // package/worktree gets an independent project name.
   const repoRoot = findGitRepoRoot(expanded);
-  const nameSource = repoRoot && samePath(expanded, repoRoot)
-    ? repoRoot
-    : expanded;
+  const isSubdir = repoRoot != null && !samePath(expanded, repoRoot);
+  const nameSource = isSubdir && (isLinkedWorktreeRoot(expanded) || hasOwnPackageJson(expanded))
+    ? expanded
+    : (repoRoot ?? expanded);
 
   const basename = path.basename(nameSource);
 
