@@ -538,6 +538,91 @@ describe("OpenCode plugin event contract", () => {
     }
   });
 
+  it("restarts init after bounded-map eviction drops a stale pending entry", async () => {
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const fetchResolvers: Array<() => void> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (((url: string | URL | Request, init?: RequestInit) => {
+      posts.push({
+        url: String(url),
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+
+      return new Promise<Response>((resolve) => {
+        fetchResolvers.push(() => {
+          resolve(new Response(JSON.stringify({ status: "queued" }), { status: 200 }));
+        });
+      });
+    }) as unknown) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const eventHook = plugin["event"];
+      const warmupPromises: Array<Promise<void>> = [];
+
+      for (let i = 0; i < 1000; i += 1) {
+        warmupPromises.push(
+          eventHook({
+            event: {
+              type: "message.part.updated",
+              properties: {
+                sessionID: `ses_eviction_${i}`,
+                message: { id: `msg_eviction_${i}`, role: "assistant", sessionID: `ses_eviction_${i}` },
+                parts: [{ type: "text", text: `partial ${i}` }],
+              },
+            },
+          }),
+        );
+      }
+
+      await Promise.resolve();
+      expect(posts.filter((post) => post.url.includes("/api/sessions/init"))).toHaveLength(1000);
+
+      const overflowPromise = eventHook({
+        event: {
+          type: "message.part.updated",
+          properties: {
+            sessionID: "ses_eviction_overflow",
+            message: { id: "msg_eviction_overflow", role: "assistant", sessionID: "ses_eviction_overflow" },
+            parts: [{ type: "text", text: "overflow partial" }],
+          },
+        },
+      });
+
+      await Promise.resolve();
+      expect(posts.filter((post) => post.url.includes("/api/sessions/init"))).toHaveLength(1001);
+
+      const revivedPromise = eventHook({
+        event: {
+          type: "message.updated",
+          properties: {
+            sessionID: "ses_eviction_0",
+            output: {
+              message: { role: "assistant", sessionID: "ses_eviction_0" },
+              parts: [{ type: "text", text: "assistant output after eviction" }],
+            },
+          },
+        },
+      });
+
+      await Promise.resolve();
+      expect(posts.filter((post) => post.url.includes("/api/sessions/init"))).toHaveLength(1002);
+
+      fetchResolvers.shift()?.();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(posts.filter((post) => post.url.includes("/api/sessions/observations"))).toHaveLength(0);
+
+      fetchResolvers[1000]?.();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(posts.filter((post) => post.url.includes("/api/sessions/observations"))).toHaveLength(1);
+
+      fetchResolvers.splice(0).forEach((resolve) => resolve());
+      await Promise.all([...warmupPromises, overflowPromise, revivedPromise]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("captures assistant output when message.updated uses properties.message and properties.parts", async () => {
     const posts: Array<{ url: string; body: unknown }> = [];
     const originalFetch = globalThis.fetch;

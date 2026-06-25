@@ -168,6 +168,7 @@ function getOrCreateContentSessionId(openCodeSessionId: string): string {
       if (oldestKey !== undefined) {
         contentSessionIdsByOpenCodeSessionId.delete(oldestKey);
         initializedSessionIds.delete(oldestKey);
+        pendingSessionInitializations.delete(oldestKey);
       } else {
         break;
       }
