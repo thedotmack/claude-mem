@@ -46,7 +46,12 @@ export function classifyPair(
   idfFn: (t: string) => number,
   thresholds: ClassifyThresholds
 ): PairClassification {
-  if (normalizeTitle(a) === normalizeTitle(b)) {
+  // Tier-0 requires a NON-EMPTY normal form: null/empty/whitespace/punctuation-only/
+  // emoji-only titles all normalize to '' and must NOT collapse into each other
+  // (that would silently auto-merge distinct observations — data loss). The Tier-1
+  // fall-through is already safe for these (empty tokens → cosine 0 → 'none').
+  const normA = normalizeTitle(a);
+  if (normA !== '' && normA === normalizeTitle(b)) {
     return { tier: 'exact', method: 'exact', score: 1 };
   }
   const ta = tokenizeWs(a);

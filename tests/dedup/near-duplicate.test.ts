@@ -41,3 +41,25 @@ describe('classifyPair against the golden fixture', () => {
     expect(r.tier).not.toBe('exact');
   });
 });
+
+describe('classifyPair: empty/symbolic titles must NOT false-merge (data-loss guard)', () => {
+  // normalizeTitle('') === normalizeTitle('🔵') === normalizeTitle('...') === '' —
+  // distinct observations whose titles normalize to empty must NEVER be Tier-0 'exact'.
+  // (This project uses emoji titles like 🔵/✅, so this is real, not theoretical.)
+  const cases: [string | null | undefined, string | null | undefined][] = [
+    ['...', '!!!'],
+    [null, ''],
+    ['🎉🎉', '***'],
+    ['   ', undefined],
+    ['🔵', '✅'],
+  ];
+  for (const [a, b] of cases) {
+    it(`does not merge ${JSON.stringify(a)} with ${JSON.stringify(b)}`, () => {
+      expect(classifyPair(a, b, idfFn, thresholds).tier).not.toBe('exact');
+    });
+  }
+
+  it('still merges two genuinely-equal non-empty titles', () => {
+    expect(classifyPair('On-Demand Checkpoint.', 'on demand checkpoint', idfFn, thresholds).tier).toBe('exact');
+  });
+});

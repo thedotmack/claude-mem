@@ -25,6 +25,14 @@ describe('normalizeTitle', () => {
     expect(normalizeTitle('')).toBe('');
     expect(normalizeTitle('   ')).toBe('');
   });
+
+  it('collapses punctuation-only and emoji-only titles to empty (precondition for the Tier-0 empty-guard)', () => {
+    // These are the inputs that make the empty-normal-form data-loss guard load-bearing.
+    expect(normalizeTitle('!!!')).toBe('');
+    expect(normalizeTitle('...')).toBe('');
+    expect(normalizeTitle('🔵')).toBe('');
+    expect(normalizeTitle('🎉🎉')).toBe('');
+  });
 });
 
 describe('tokenizeWs', () => {
