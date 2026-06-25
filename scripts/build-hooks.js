@@ -95,8 +95,7 @@ function shellTemplateManifest(buildShellCommand) {
           trailingCommand: ['node', '"$_P/scripts/version-check.js"'],
           notFoundMessage: 'claude-mem: version-check.js not found',
         }),
-        'SessionStart.0.0': claudeHook(['start'], { trailingJson: { continue: true, suppressOutput: true } }),
-        'SessionStart.0.1': claudeHook(['hook', 'claude-code', 'context']),
+        'SessionStart.0.0': claudeHook(['hook', 'claude-code', 'context']),
         'UserPromptSubmit.0.0': claudeHook(['hook', 'claude-code', 'session-init']),
         'PostToolUse.0.0': claudeHook(['hook', 'claude-code', 'observation']),
         'PreToolUse.0.0': claudeHook(['hook', 'claude-code', 'file-context']),
@@ -135,9 +134,7 @@ function hookCommandByPath(parsed, dottedPath) {
   return parsed.hooks?.[event]?.[Number(groupIdx)]?.hooks?.[Number(hookIdx)]?.command ?? null;
 }
 
-async function verifyShellTemplateCanonical() {
-  console.log('\n📋 Verifying Rule A shell templates match the canonical generator...');
-
+async function loadCanonicalBuildShellCommand() {
   // Compile src/build/hook-shell-template.ts in-memory and import it. The build
   // runs under Node, which can't import .ts directly, so we bundle to ESM and
   // load via a data: URL.
@@ -152,6 +149,97 @@ async function verifyShellTemplateCanonical() {
   const moduleSource = bundled.outputFiles[0].text;
   const dataUrl = 'data:text/javascript;base64,' + Buffer.from(moduleSource).toString('base64');
   const { buildShellCommand } = await import(dataUrl);
+  return buildShellCommand;
+}
+
+function renderManagedHookFiles(buildShellCommand) {
+  const manifest = shellTemplateManifest(buildShellCommand);
+  return {
+    'plugin/hooks/hooks.json': {
+      description: 'Claude-mem memory system hooks',
+      hooks: {
+        Setup: [{
+          matcher: '*',
+          hooks: [{ type: 'command', shell: 'bash', command: manifest['plugin/hooks/hooks.json'].commands['Setup.0.0'], timeout: 300 }],
+        }],
+        SessionStart: [{
+          matcher: 'startup|clear|compact',
+          hooks: [{ type: 'command', shell: 'bash', command: manifest['plugin/hooks/hooks.json'].commands['SessionStart.0.0'], timeout: 60 }],
+        }],
+        UserPromptSubmit: [{
+          hooks: [{ type: 'command', shell: 'bash', command: manifest['plugin/hooks/hooks.json'].commands['UserPromptSubmit.0.0'], timeout: 60 }],
+        }],
+        PostToolUse: [{
+          matcher: '*',
+          hooks: [{ type: 'command', shell: 'bash', command: manifest['plugin/hooks/hooks.json'].commands['PostToolUse.0.0'], timeout: 120 }],
+        }],
+        PreToolUse: [{
+          matcher: 'Read',
+          hooks: [{ type: 'command', shell: 'bash', command: manifest['plugin/hooks/hooks.json'].commands['PreToolUse.0.0'], timeout: 60 }],
+        }],
+        Stop: [{
+          hooks: [{ type: 'command', shell: 'bash', command: manifest['plugin/hooks/hooks.json'].commands['Stop.0.0'], timeout: 120 }],
+        }],
+      },
+    },
+    'plugin/hooks/codex-hooks.json': {
+      description: 'claude-mem Codex CLI hook integration',
+      hooks: {
+        SessionStart: [{
+          matcher: 'startup|resume',
+          hooks: [
+            { type: 'command', command: manifest['plugin/hooks/codex-hooks.json'].commands['SessionStart.0.0'], timeout: 5 },
+            { type: 'command', command: manifest['plugin/hooks/codex-hooks.json'].commands['SessionStart.0.1'], timeout: 60 },
+            {
+              type: 'command',
+              command: manifest['plugin/hooks/codex-hooks.json'].commands['SessionStart.0.2'],
+              timeout: 60,
+              statusMessage: 'Loading claude-mem context',
+            },
+          ],
+        }],
+        UserPromptSubmit: [{
+          hooks: [{ type: 'command', command: manifest['plugin/hooks/codex-hooks.json'].commands['UserPromptSubmit.0.0'], timeout: 60 }],
+        }],
+        PreToolUse: [{
+          matcher: '^Bash$|^mcp__.+__(read|view|cat)(_file|_files)?$',
+          hooks: [{ type: 'command', command: manifest['plugin/hooks/codex-hooks.json'].commands['PreToolUse.0.0'], timeout: 30 }],
+        }],
+        PostToolUse: [{
+          matcher: '.*',
+          hooks: [{ type: 'command', command: manifest['plugin/hooks/codex-hooks.json'].commands['PostToolUse.0.0'], timeout: 120 }],
+        }],
+        Stop: [{
+          hooks: [{ type: 'command', command: manifest['plugin/hooks/codex-hooks.json'].commands['Stop.0.0'], timeout: 60 }],
+        }],
+      },
+    },
+    'plugin/.mcp.json': {
+      mcpServers: {
+        'mcp-search': {
+          type: 'stdio',
+          command: 'node',
+          args: ['-e', manifest['plugin/.mcp.json'].command],
+        },
+      },
+    },
+  };
+}
+
+async function writeManagedHookFiles() {
+  console.log('\n📋 Regenerating host-managed hook files...');
+  const buildShellCommand = await loadCanonicalBuildShellCommand();
+  const files = renderManagedHookFiles(buildShellCommand);
+  for (const [filePath, content] of Object.entries(files)) {
+    fs.writeFileSync(filePath, `${JSON.stringify(content, null, 2)}\n`);
+  }
+  console.log('✓ Host-managed hook files regenerated from src/build/hook-shell-template.ts');
+}
+
+async function verifyShellTemplateCanonical() {
+  console.log('\n📋 Verifying Rule A shell templates match the canonical generator...');
+
+  const buildShellCommand = await loadCanonicalBuildShellCommand();
 
   const manifest = shellTemplateManifest(buildShellCommand);
 
@@ -604,6 +692,8 @@ async function buildHooks() {
     fs.mkdirSync(path.dirname(onboardingExplainerDst), { recursive: true });
     fs.copyFileSync(onboardingExplainerSrc, onboardingExplainerDst);
     console.log(`✓ Copied ${onboardingExplainerSrc} → ${onboardingExplainerDst}`);
+
+    await writeManagedHookFiles();
 
     console.log('\n📋 Verifying distribution files...');
     const validCodexHookEvents = new Set([

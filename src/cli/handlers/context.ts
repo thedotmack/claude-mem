@@ -34,7 +34,9 @@ export const contextHandler: EventHandler = {
       exitCode: HOOK_EXIT_CODES.SUCCESS,
     };
 
-    const contextResult = await executeWithWorkerFallback<string>(apiPath, 'GET');
+    const contextResult = await executeWithWorkerFallback<string>(apiPath, 'GET', undefined, {
+      allowLazySpawn: false,
+    });
     if (isWorkerFallback(contextResult)) {
       return emptyResult;
     }
@@ -62,7 +64,9 @@ export const contextHandler: EventHandler = {
 
     let coloredTimeline = '';
     if (showTerminalOutput) {
-      const colorResult = await executeWithWorkerFallback<string>(colorApiPath, 'GET');
+      const colorResult = await executeWithWorkerFallback<string>(colorApiPath, 'GET', undefined, {
+        allowLazySpawn: false,
+      });
       if (!isWorkerFallback(colorResult) && typeof colorResult === 'string') {
         coloredTimeline = colorResult.trim();
       }
