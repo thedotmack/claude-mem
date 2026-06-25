@@ -13,6 +13,11 @@ import {
 } from '../../types/database.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from './types.js';
 import { computeObservationContentHash } from './observations/store.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import {
+  computeTitleNormKey, findTier0Canonical, bumpTokenDf, isFuzzyReady, recordTier1Candidates,
+  type DedupRuntimeConfig,
+} from './dedup-store.js';
 import { parseFileList } from './observations/files.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources } from '../../shared/platform-source.js';
 import { findRecentDuplicateUserPrompt as findRecentDuplicateUserPromptRecord } from './prompts/get.js';
@@ -2216,6 +2221,31 @@ export class SessionStore {
     return result?.prompt_text ?? null;
   }
 
+  // #3038 — resolve the dedup knobs from settings (cheap; off by default).
+  private dedupConfig(): DedupRuntimeConfig & { enabled: boolean; minProjectDocs: number } {
+    return {
+      enabled: SettingsDefaultsManager.getBool('CLAUDE_MEM_DEDUP_ENABLED'),
+      cosineThreshold: Number(SettingsDefaultsManager.get('CLAUDE_MEM_DEDUP_COSINE_THRESHOLD')),
+      idfVetoDf: SettingsDefaultsManager.getInt('CLAUDE_MEM_DEDUP_IDF_VETO_DF'),
+      minSharedTokens: SettingsDefaultsManager.getInt('CLAUDE_MEM_DEDUP_MIN_SHARED_TOKENS'),
+      maxScan: SettingsDefaultsManager.getInt('CLAUDE_MEM_DEDUP_MAX_SCAN'),
+      minProjectDocs: SettingsDefaultsManager.getInt('CLAUDE_MEM_DEDUP_MIN_PROJECT_DOCS'),
+    };
+  }
+
+  // Forward IDF maintenance + Tier-1 candidate scan for a freshly-inserted observation.
+  private maintainDedupOnInsert(
+    project: string,
+    obsId: number,
+    title: string | null | undefined,
+    dedup: DedupRuntimeConfig & { minProjectDocs: number }
+  ): void {
+    bumpTokenDf(this.db, project, title);
+    if (isFuzzyReady(this.db, project, dedup.minProjectDocs)) {
+      recordTier1Candidates(this.db, project, obsId, title, dedup);
+    }
+  }
+
   storeObservation(
     memorySessionId: string,
     project: string,
@@ -2241,13 +2271,26 @@ export class SessionStore {
     const timestampIso = new Date(timestampEpoch).toISOString();
 
     const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
+    const dedup = this.dedupConfig();
+    const titleNormKey = computeTitleNormKey(project, observation.title);
+
+    // Tier-0 (#3038): an existing same-project row with an equal NORMALIZED title is a
+    // duplicate of any age — bump its occurrence_count and return it, no insert. Mirrors
+    // the content_hash ON CONFLICT DO NOTHING semantics but cross-session + normalization-aware.
+    if (dedup.enabled) {
+      const canonical = findTier0Canonical(this.db, project, titleNormKey);
+      if (canonical) {
+        this.db.prepare('UPDATE observations SET occurrence_count = occurrence_count + 1 WHERE id = ?').run(canonical.id);
+        return { id: canonical.id, createdAtEpoch: canonical.created_at_epoch };
+      }
+    }
 
     const stmt = this.db.prepare(`
       INSERT INTO observations
       (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
        files_read, files_modified, prompt_number, discovery_tokens, agent_type, agent_id, content_hash, created_at, created_at_epoch,
-       generated_by_model, metadata)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       generated_by_model, metadata, title_norm_key)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(memory_session_id, content_hash) DO NOTHING
       RETURNING id, created_at_epoch
     `);
@@ -2271,10 +2314,12 @@ export class SessionStore {
       timestampIso,
       timestampEpoch,
       generatedByModel || null,
-      observation.metadata ?? null
+      observation.metadata ?? null,
+      titleNormKey
     ) as { id: number; created_at_epoch: number } | null;
 
     if (inserted) {
+      if (dedup.enabled) this.maintainDedupOnInsert(project, inserted.id, observation.title, dedup);
       return { id: inserted.id, createdAtEpoch: inserted.created_at_epoch };
     }
 
@@ -2366,6 +2411,7 @@ export class SessionStore {
   ): { observationIds: number[]; summaryId: number | null; createdAtEpoch: number } {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
+    const dedup = this.dedupConfig();
 
     const storeTx = this.db.transaction(() => {
       const observationIds: number[] = [];
@@ -2374,8 +2420,8 @@ export class SessionStore {
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
          files_read, files_modified, prompt_number, discovery_tokens, agent_type, agent_id, content_hash, created_at, created_at_epoch,
-         generated_by_model)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         generated_by_model, title_norm_key)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(memory_session_id, content_hash) DO NOTHING
         RETURNING id
       `);
@@ -2385,6 +2431,19 @@ export class SessionStore {
 
       for (const observation of observations) {
         const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
+        const titleNormKey = computeTitleNormKey(project, observation.title);
+
+        // Tier-0 (#3038): cross-session normalized-title duplicate (incl. earlier items
+        // in THIS batch — already inserted and visible in-transaction) → bump + reuse.
+        if (dedup.enabled) {
+          const canonical = findTier0Canonical(this.db, project, titleNormKey);
+          if (canonical) {
+            this.db.prepare('UPDATE observations SET occurrence_count = occurrence_count + 1 WHERE id = ?').run(canonical.id);
+            observationIds.push(canonical.id);
+            continue;
+          }
+        }
+
         const inserted = obsStmt.get(
           memorySessionId,
           project,
@@ -2403,10 +2462,12 @@ export class SessionStore {
           contentHash,
           timestampIso,
           timestampEpoch,
-          generatedByModel || null
+          generatedByModel || null,
+          titleNormKey
         ) as { id: number } | null;
 
         if (inserted) {
+          if (dedup.enabled) this.maintainDedupOnInsert(project, inserted.id, observation.title, dedup);
           observationIds.push(inserted.id);
           continue;
         }

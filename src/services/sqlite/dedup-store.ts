@@ -12,7 +12,17 @@
 import { createHash } from 'crypto';
 import type { Database } from 'bun:sqlite';
 import { normalizeTitle, tokenizeWs } from '../dedup/normalize.js';
-import { buildIdfFn } from '../dedup/idf.js';
+import { buildIdfFn, idf } from '../dedup/idf.js';
+import { classifyPair, type ClassifyThresholds } from '../dedup/nearDuplicate.js';
+import { logger } from '../../utils/logger.js';
+
+/** Runtime dedup knobs resolved from settings. */
+export interface DedupRuntimeConfig {
+  cosineThreshold: number;
+  idfVetoDf: number;
+  minSharedTokens: number;
+  maxScan: number;
+}
 
 /**
  * Project-scoped exact-normalized-title key for O(1) Tier-0 lookup (#3038).
@@ -77,4 +87,51 @@ export function buildProjectIdf(db: Database, project: string): { idfFn: (t: str
 /** Cold-start gate: fuzzy Tier-1 is only trustworthy once the corpus is large enough. */
 export function isFuzzyReady(db: Database, project: string, minDocs: number): boolean {
   return getProjectDocCount(db, project) >= minDocs;
+}
+
+/**
+ * Tier-1 (review-only) near-duplicate scan for a freshly-inserted observation.
+ * Compares its title against up to `maxScan` recent same-project titles and
+ * persists any 'candidate' verdicts into observation_dedup_candidates
+ * (INSERT OR IGNORE — UNIQUE(observation_id,duplicate_of_id) dedups). NEVER
+ * merges. The full-corpus sweep is the offline dedup-scan command. Returns the
+ * number of candidates persisted.
+ */
+export function recordTier1Candidates(
+  db: Database,
+  project: string,
+  newObsId: number,
+  title: string | null | undefined,
+  cfg: DedupRuntimeConfig
+): number {
+  if (!title) return 0;
+  const { idfFn, docCount } = buildProjectIdf(db, project);
+  const thresholds: ClassifyThresholds = {
+    cosineThreshold: cfg.cosineThreshold,
+    vetoThetaIdf: idf(cfg.idfVetoDf, docCount),
+    minSharedTokens: cfg.minSharedTokens,
+  };
+  const rows = db.prepare(
+    'SELECT id, title FROM observations WHERE project = ? AND id != ? AND title IS NOT NULL ' +
+    'ORDER BY created_at_epoch DESC, id DESC LIMIT ?'
+  ).all(project, newObsId, cfg.maxScan) as { id: number; title: string }[];
+  if (rows.length === cfg.maxScan) {
+    logger.debug('DEDUP', `Tier-1 scan hit MAX_SCAN=${cfg.maxScan} for project ${project}; older rows covered by dedup-scan`);
+  }
+  const ins = db.prepare(
+    'INSERT OR IGNORE INTO observation_dedup_candidates ' +
+    '(observation_id, duplicate_of_id, project, method, score, status, created_at, created_at_epoch) ' +
+    'VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+  );
+  const nowIso = new Date().toISOString();
+  const nowEpoch = Date.now();
+  let count = 0;
+  for (const r of rows) {
+    const c = classifyPair(title, r.title, idfFn, thresholds);
+    if (c.tier === 'candidate') {
+      ins.run(newObsId, r.id, project, c.method, c.score, 'pending', nowIso, nowEpoch);
+      count++;
+    }
+  }
+  return count;
 }
