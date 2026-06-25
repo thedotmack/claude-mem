@@ -16,6 +16,7 @@ import { computeObservationContentHash } from './observations/store.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import {
   computeTitleNormKey, findTier0Canonical, bumpTokenDf, isFuzzyReady, recordTier1Candidates,
+  runDedupScan as runDedupScanAll,
   type DedupRuntimeConfig,
 } from './dedup-store.js';
 import { parseFileList } from './observations/files.js';
@@ -2231,6 +2232,35 @@ export class SessionStore {
       maxScan: SettingsDefaultsManager.getInt('CLAUDE_MEM_DEDUP_MAX_SCAN'),
       minProjectDocs: SettingsDefaultsManager.getInt('CLAUDE_MEM_DEDUP_MIN_PROJECT_DOCS'),
     };
+  }
+
+  // #3038 — read-only listing of Tier-1 near-duplicate candidates (joined to both titles).
+  listDedupCandidates(
+    project?: string,
+    limit = 100
+  ): Array<{
+    id: number; project: string; method: string; score: number; status: string; created_at_epoch: number;
+    observation_id: number; observation_title: string | null;
+    duplicate_of_id: number; duplicate_of_title: string | null;
+  }> {
+    const where = project ? 'WHERE c.project = ?' : '';
+    const params: SQLQueryBindings[] = project ? [project, limit] : [limit];
+    return this.db.prepare(`
+      SELECT c.id, c.project, c.method, c.score, c.status, c.created_at_epoch,
+             c.observation_id, o1.title AS observation_title,
+             c.duplicate_of_id, o2.title AS duplicate_of_title
+      FROM observation_dedup_candidates c
+      JOIN observations o1 ON o1.id = c.observation_id
+      JOIN observations o2 ON o2.id = c.duplicate_of_id
+      ${where}
+      ORDER BY c.score DESC, c.id DESC
+      LIMIT ?
+    `).all(...params) as any;
+  }
+
+  // #3038 — opt-in dedup-scan: backfill the IDF model + sweep all projects for candidates.
+  runDedupScan(): { project: string; docs: number; candidates: number }[] {
+    return runDedupScanAll(this.db, this.dedupConfig());
   }
 
   // Forward IDF maintenance + Tier-1 candidate scan for a freshly-inserted observation.

@@ -69,6 +69,26 @@ describe('dedup-scan: backfill + sweep (#3038)', () => {
     expect(candCount()).toBe(after1); // UNIQUE(observation_id,duplicate_of_id) guards
   });
 
+  it('listDedupCandidates returns candidates joined to both titles, project-scoped', () => {
+    seed(['build the worker service module', 'worker build the service module', 'distinct subject matter']);
+    backfillProjectDedup(store.db, 'p');
+    sweepProjectCandidates(store.db, 'p', CFG);
+    const list = store.listDedupCandidates('p');
+    expect(list.length).toBeGreaterThanOrEqual(1);
+    expect(list[0].observation_title).toBeTruthy();
+    expect(list[0].duplicate_of_title).toBeTruthy();
+    expect(list[0].method).toBe('idf_cosine');
+    expect(store.listDedupCandidates('other-project')).toEqual([]);
+  });
+
+  it('store.runDedupScan() backfills + sweeps all projects via configured knobs', () => {
+    process.env.CLAUDE_MEM_DEDUP_COSINE_THRESHOLD = '0.80';
+    seed(['build the worker service module', 'worker build the service module'], 'pp');
+    const report = store.runDedupScan();
+    expect(report.find((r: any) => r.project === 'pp')?.docs).toBe(2);
+    delete process.env.CLAUDE_MEM_DEDUP_COSINE_THRESHOLD;
+  });
+
   it('runDedupScan covers every project', () => {
     seed(['one alpha', 'two beta'], 'projA');
     seed(['three gamma', 'four delta'], 'projB');
