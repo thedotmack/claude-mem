@@ -1,7 +1,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import { homedir } from 'os';
-import { getProjectName, getProjectContext } from '../../src/utils/project-name.js';
+import { getProjectName, getProjectContext, parseOriginUrlToSlug } from '../../src/utils/project-name.js';
 
 describe('getProjectName', () => {
   describe('tilde expansion', () => {
@@ -173,5 +173,44 @@ describe('getProjectContext', () => {
       expect(project).not.toBe('main-repo');
       expect(project).not.toBe('my-worktree');
     });
+  });
+});
+
+describe('parseOriginUrlToSlug — CLAUDE_MEM_PROJECT_NAME_SOURCE=git-remote', () => {
+  it('parses scp-style ssh URLs', () => {
+    expect(parseOriginUrlToSlug('git@github.com:thedotmack/claude-mem.git')).toBe('thedotmack/claude-mem');
+  });
+
+  it('parses https URLs', () => {
+    expect(parseOriginUrlToSlug('https://github.com/thedotmack/claude-mem.git')).toBe('thedotmack/claude-mem');
+  });
+
+  it('parses ssh:// URLs', () => {
+    expect(parseOriginUrlToSlug('ssh://git@github.com/thedotmack/claude-mem.git')).toBe('thedotmack/claude-mem');
+  });
+
+  it('tolerates a missing .git suffix', () => {
+    expect(parseOriginUrlToSlug('https://github.com/thedotmack/claude-mem')).toBe('thedotmack/claude-mem');
+  });
+
+  it('tolerates a trailing slash', () => {
+    expect(parseOriginUrlToSlug('https://github.com/thedotmack/claude-mem/')).toBe('thedotmack/claude-mem');
+  });
+
+  it('takes the last two segments for nested groups (e.g. GitLab subgroups)', () => {
+    expect(parseOriginUrlToSlug('https://gitlab.com/group/subgroup/repo.git')).toBe('subgroup/repo');
+  });
+
+  it('handles self-hosted hosts with ports (scp-style)', () => {
+    expect(parseOriginUrlToSlug('git@frango:money-marathon/prolific.git')).toBe('money-marathon/prolific');
+  });
+
+  it('returns a single segment when that is all there is', () => {
+    expect(parseOriginUrlToSlug('git@github.com:solorepo.git')).toBe('solorepo');
+  });
+
+  it('returns null for empty / blank input', () => {
+    expect(parseOriginUrlToSlug('')).toBeNull();
+    expect(parseOriginUrlToSlug('   ')).toBeNull();
   });
 });
