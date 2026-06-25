@@ -836,6 +836,7 @@ function runServerBetaServiceCli(command: string, extraArgs: string[] = []): voi
 
   const child = spawn(process.execPath, [serverBetaScript, command, ...extraArgs], {
     stdio: 'inherit',
+    windowsHide: true,
     // Strip host CLI bleed-through (CLAUDE_CODE_*, including EFFORT_LEVEL) and
     // Anthropic credentials before handing env to the spawned daemon. The
     // daemon re-reads its own credentials from ~/.claude-mem/.env. See
