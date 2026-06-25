@@ -9,6 +9,7 @@ import { toError } from '../../utils/to-error.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor, validateWorkerPidFile, type ValidateWorkerPidStatus } from '../../supervisor/index.js';
 import { paths } from '../../shared/paths.js';
+import { waitForPortFree } from './HealthMonitor.js';
 
 const DATA_DIR = paths.dataDir();
 const PID_FILE = paths.workerPid();
@@ -502,5 +503,94 @@ export function touchPidFile(): void {
 
 export function cleanStalePidFile(): ValidateWorkerPidStatus {
   return validateWorkerPidFile({ logAlive: false });
+}
+
+async function findPortOwnerPid(port: number): Promise<number | null> {
+  try {
+    if (process.platform === 'win32') {
+      const cmd = `powershell -NoProfile -NonInteractive -Command "(Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1).OwningProcess"`;
+      const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND, windowsHide: true });
+      const pid = parseInt(stdout.trim(), 10);
+      return Number.isInteger(pid) && pid > 0 ? pid : null;
+    }
+    const { stdout } = await execAsync(`lsof -ti tcp:${port} -sTCP:LISTEN`, { timeout: 5000 });
+    const pid = parseInt((stdout.split('\n')[0] ?? '').trim(), 10);
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch (error: unknown) {
+    logger.debug('SYSTEM', 'Could not determine port owner PID', { port },
+      error instanceof Error ? error : new Error(String(error)));
+    return null;
+  }
+}
+
+async function getProcessCommandLine(pid: number): Promise<string | null> {
+  try {
+    if (process.platform === 'win32') {
+      const cmd = `powershell -NoProfile -NonInteractive -Command "(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').CommandLine"`;
+      const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND, windowsHide: true });
+      const line = stdout.trim();
+      return line.length > 0 ? line : null;
+    }
+    const { stdout } = await execAsync(`ps -p ${pid} -o args=`, { timeout: 5000 });
+    const line = stdout.trim();
+    return line.length > 0 ? line : null;
+  } catch (error: unknown) {
+    logger.debug('SYSTEM', 'Could not read process command line', { pid },
+      error instanceof Error ? error : new Error(String(error)));
+    return null;
+  }
+}
+
+function isOwnedByClaudeMem(pid: number, commandLine: string | null): boolean {
+  const recorded = readPidFile();
+  if (recorded && recorded.pid === pid) return true;
+  if (commandLine && /worker-service|claude-mem/i.test(commandLine)) return true;
+  return false;
+}
+
+async function terminateProcess(pid: number): Promise<boolean> {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    if (process.platform === 'win32') {
+      await execAsync(`taskkill /F /PID ${pid}`, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND, windowsHide: true });
+    } else {
+      process.kill(pid, 'SIGKILL');
+    }
+    return true;
+  } catch (error: unknown) {
+    logger.warn('SYSTEM', 'Failed to terminate process', { pid },
+      error instanceof Error ? error : new Error(String(error)));
+    return false;
+  }
+}
+
+/**
+ * When the worker port is held but no healthy worker answers, a stale/zombie
+ * claude-mem worker is most likely still bound to the socket. Identify the
+ * owning PID, confirm it belongs to claude-mem (recorded PID file OR a command
+ * line marker — never kill an unrelated process), terminate it, and wait for
+ * the port to free. Returns true only if the port is verifiably free afterward.
+ */
+export async function reclaimStaleWorkerPort(port: number): Promise<boolean> {
+  const pid = await findPortOwnerPid(port);
+  if (pid === null) {
+    logger.warn('SYSTEM', 'Port held but owning PID could not be determined — not reclaiming', { port });
+    return false;
+  }
+  const commandLine = await getProcessCommandLine(pid);
+  if (!isOwnedByClaudeMem(pid, commandLine)) {
+    logger.error('SYSTEM', 'Port held by a non-claude-mem process — refusing to kill', { port, pid, commandLine });
+    return false;
+  }
+  logger.warn('SYSTEM', 'Reclaiming port from unresponsive claude-mem worker', { port, pid });
+  if (!(await terminateProcess(pid))) return false;
+  const freed = await waitForPortFree(port, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
+  if (!freed) {
+    logger.error('SYSTEM', 'Terminated stale worker but port did not free in time', { port, pid });
+    return false;
+  }
+  removePidFile();
+  logger.info('SYSTEM', 'Stale worker terminated and port reclaimed', { port, pid });
+  return true;
 }
 
