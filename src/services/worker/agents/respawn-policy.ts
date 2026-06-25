@@ -1,6 +1,8 @@
 // src/services/worker/agents/respawn-policy.ts
+import { join } from 'path';
 import { logger } from '../../../utils/logger.js';
 import type { ObserverOutputClass } from '../../../sdk/output-classifier.js';
+import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 
 /**
  * Output classes that MAY be configured exempt from the respawn window.
@@ -131,4 +133,34 @@ export function evaluateRespawn(
     default:
       return assertNeverClass(cls);
   }
+}
+
+let cachedPolicy: RespawnPolicy | null = null;
+
+function respawnSettingsPath(): string {
+  // Call-time resolution (mirrors worker-utils.getWorkerSettingsPath) so test
+  // isolation via CLAUDE_MEM_DATA_DIR and runtime env overrides both work.
+  return join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
+}
+
+/**
+ * Resolve the respawn policy once from settings (env → settings.json, mirroring
+ * worker-utils' settings-backed timeout). Cached; call clearRespawnPolicyCache()
+ * in tests or after a settings change.
+ */
+export function getRespawnPolicy(): RespawnPolicy {
+  if (cachedPolicy !== null) {
+    return cachedPolicy;
+  }
+  const s = SettingsDefaultsManager.loadFromFile(respawnSettingsPath());
+  cachedPolicy = parseRespawnPolicy(
+    s.CLAUDE_MEM_INVALID_OUTPUT_EXEMPT_CLASSES,
+    s.CLAUDE_MEM_INVALID_OUTPUT_RESPAWN_THRESHOLD,
+    s.CLAUDE_MEM_INVALID_OUTPUT_WINDOW_MS,
+  );
+  return cachedPolicy;
+}
+
+export function clearRespawnPolicyCache(): void {
+  cachedPolicy = null;
 }

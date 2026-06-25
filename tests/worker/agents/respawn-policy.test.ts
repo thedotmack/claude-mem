@@ -1,5 +1,8 @@
 // tests/worker/agents/respawn-policy.test.ts
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { mkdirSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import {
   parseRespawnPolicy,
   isExemptableClass,
@@ -7,6 +10,8 @@ import {
   freshWindow,
   DEFAULT_RESPAWN_THRESHOLD,
   DEFAULT_RESPAWN_WINDOW_MS,
+  getRespawnPolicy,
+  clearRespawnPolicyCache,
 } from '../../../src/services/worker/agents/respawn-policy.js';
 
 describe('isExemptableClass', () => {
@@ -199,5 +204,47 @@ describe('evaluateRespawn', () => {
     r = evaluateRespawn('prose', r.window, p2, 1200);                       // fresh window → 1
     expect(r.shouldRespawn).toBe(false);
     expect(r.window.badCount).toBe(1);
+  });
+});
+
+describe('getRespawnPolicy', () => {
+  let tempDir: string;
+  const origDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+  const origThreshold = process.env.CLAUDE_MEM_INVALID_OUTPUT_RESPAWN_THRESHOLD;
+
+  beforeEach(() => {
+    tempDir = join(tmpdir(), `respawn-policy-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(tempDir, { recursive: true });
+    process.env.CLAUDE_MEM_DATA_DIR = tempDir;           // empty dir ⇒ no settings file ⇒ defaults
+    delete process.env.CLAUDE_MEM_INVALID_OUTPUT_RESPAWN_THRESHOLD;
+    clearRespawnPolicyCache();
+  });
+
+  afterEach(() => {
+    if (origDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+    else process.env.CLAUDE_MEM_DATA_DIR = origDataDir;
+    if (origThreshold === undefined) delete process.env.CLAUDE_MEM_INVALID_OUTPUT_RESPAWN_THRESHOLD;
+    else process.env.CLAUDE_MEM_INVALID_OUTPUT_RESPAWN_THRESHOLD = origThreshold;
+    rmSync(tempDir, { recursive: true, force: true });
+    clearRespawnPolicyCache();
+  });
+
+  it('returns defaults when unset', () => {
+    const p = getRespawnPolicy();
+    expect(p.threshold).toBe(3);
+    expect(p.windowMs).toBe(60000);
+    expect([...p.exemptClasses]).toEqual(['idle']);
+  });
+
+  it('reflects env override after cache clear', () => {
+    process.env.CLAUDE_MEM_INVALID_OUTPUT_RESPAWN_THRESHOLD = '7';
+    clearRespawnPolicyCache();
+    expect(getRespawnPolicy().threshold).toBe(7);
+  });
+
+  it('caches (a later env change without clear is not observed)', () => {
+    expect(getRespawnPolicy().threshold).toBe(3);
+    process.env.CLAUDE_MEM_INVALID_OUTPUT_RESPAWN_THRESHOLD = '9';
+    expect(getRespawnPolicy().threshold).toBe(3); // cached until clearRespawnPolicyCache()
   });
 });
