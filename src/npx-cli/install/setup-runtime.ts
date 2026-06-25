@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { exec, execSync, spawnSync } from 'child_process';
 import { createRequire } from 'module';
-import { join } from 'path';
+import { isAbsolute, join } from 'path';
 import { homedir } from 'os';
 import { ErrorSeverity } from './error-taxonomy.js';
 import { installerError, type InstallSummary } from './error-reporter.js';
@@ -96,7 +96,10 @@ function getBunVersion(): string | null {
   if (!bunPath) return null;
 
   try {
-    const [bvExe, bvArgs] = IS_WINDOWS
+    // Absolute paths bypass cmd.exe to avoid metacharacter splitting
+    // (e.g. & in C:\Users\A&B\.bun\bin\bun.exe). Short name 'bun' still
+    // needs cmd.exe /d /c for PATH resolution without shell:true (DEP0190).
+    const [bvExe, bvArgs] = IS_WINDOWS && !isAbsolute(bunPath)
       ? (['cmd.exe', ['/d', '/c', bunPath, '--version']] as const)
       : ([bunPath, ['--version']] as const);
     const result = spawnSync(bvExe, bvArgs, {
@@ -135,7 +138,7 @@ function getUvVersion(): string | null {
   if (!uvPath) return null;
 
   try {
-    const [uvExe, uvVersionArgs] = IS_WINDOWS
+    const [uvExe, uvVersionArgs] = IS_WINDOWS && !isAbsolute(uvPath)
       ? (['cmd.exe', ['/d', '/c', uvPath, '--version']] as const)
       : ([uvPath, ['--version']] as const);
     const result = spawnSync(uvExe, uvVersionArgs, {
