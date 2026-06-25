@@ -42,6 +42,30 @@ describe('classifyPair against the golden fixture', () => {
   });
 });
 
+describe('classifyPair: >=2 shared-token pre-filter (sparse-vector noise guard, research Q-D)', () => {
+  // One shared RARE token can dominate cosine to ~1.0 even when the titles are otherwise
+  // disjoint — a short-title false positive. Require >=2 shared non-trivial tokens first.
+  const DF2 = new Map<string, number>([
+    ['apifoo', 1], ['common1', 800], ['common2', 800], ['common3', 800], ['common4', 800],
+  ]);
+  const idf2 = buildIdfFn((t) => DF2.get(t) ?? 0, 1000);
+  const T = { cosineThreshold: 0.8, vetoThetaIdf: idf(10, 1000) };
+  const a = 'apifoo common1 common2';
+  const b = 'apifoo common3 common4';
+
+  it('rejects a pair sharing only ONE token even when cosine is high', () => {
+    expect(classifyPair(a, b, idf2, { ...T, minSharedTokens: 2 }).tier).toBe('none');
+  });
+
+  it('would otherwise classify it as candidate (proves the cosine was high — pre-filter is doing the work)', () => {
+    expect(classifyPair(a, b, idf2, { ...T, minSharedTokens: 1 }).tier).toBe('candidate');
+  });
+
+  it('defaults minSharedTokens to 2 when unspecified', () => {
+    expect(classifyPair(a, b, idf2, T).tier).toBe('none');
+  });
+});
+
 describe('classifyPair: empty/symbolic titles must NOT false-merge (data-loss guard)', () => {
   // normalizeTitle('') === normalizeTitle('🔵') === normalizeTitle('...') === '' —
   // distinct observations whose titles normalize to empty must NEVER be Tier-0 'exact'.

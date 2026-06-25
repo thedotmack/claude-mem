@@ -24,6 +24,12 @@ export interface ClassifyThresholds {
   cosineThreshold: number;
   /** A symmetric-difference token with idf above this vetoes the merge. */
   vetoThetaIdf: number;
+  /**
+   * Minimum count of shared tokens required before computing cosine. Short titles
+   * make cosine "jumpy" — a single shared rare token can dominate it to ~1.0 even
+   * when the titles are otherwise disjoint (sparse-vector noise). Defaults to 2.
+   */
+  minSharedTokens?: number;
 }
 
 export interface PairClassification {
@@ -56,6 +62,12 @@ export function classifyPair(
   }
   const ta = tokenizeWs(a);
   const tb = tokenizeWs(b);
+  // Sparse-vector noise guard: require >=N shared tokens before trusting cosine.
+  const minShared = thresholds.minSharedTokens ?? 2;
+  const setB = new Set(tb);
+  let shared = 0;
+  for (const t of new Set(ta)) if (setB.has(t)) shared++;
+  if (shared < minShared) return { tier: 'none', method: 'none', score: 0 };
   const score = tfidfCosine(ta, tb, idfFn);
   if (score >= thresholds.cosineThreshold && !vetoFires(ta, tb, idfFn, thresholds.vetoThetaIdf)) {
     return { tier: 'candidate', method: 'idf_cosine', score };
