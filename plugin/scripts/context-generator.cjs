@@ -531,11 +531,14 @@ ${o.stack}`:` ${o.message}`;else if(this.getLevel()===0&&typeof o=="object")try{
         `).run(t,e),d.customTitle&&this.db.prepare(`
           UPDATE sdk_sessions SET custom_title = ?
           WHERE content_session_id = ? AND custom_title IS NULL
-        `).run(d.customTitle,e),d.platformSource){let p=g.platform_source?.trim()?D(g.platform_source):void 0;if(!p)this.db.prepare(`
+        `).run(d.customTitle,e),d.platformSource){let p=g.platform_source?.trim()?D(g.platform_source):void 0;p?p!==d.platformSource&&this.db.prepare(`
+            UPDATE sdk_sessions SET platform_source = ?
+            WHERE content_session_id = ?
+          `).run(d.platformSource,e):this.db.prepare(`
             UPDATE sdk_sessions SET platform_source = ?
             WHERE content_session_id = ?
               AND COALESCE(platform_source, '') = ''
-          `).run(d.platformSource,e);else if(p!==d.platformSource)throw new Error(`Platform source conflict for session ${e}: existing=${p}, received=${d.platformSource}`)}return g.id}return this.db.prepare(`
+          `).run(d.platformSource,e)}return g.id}return this.db.prepare(`
       INSERT INTO sdk_sessions
       (content_session_id, memory_session_id, project, platform_source, user_prompt, custom_title, started_at, started_at_epoch, status)
       VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'active')

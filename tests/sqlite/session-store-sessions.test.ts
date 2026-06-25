@@ -104,11 +104,11 @@ describe('SessionStore session lifecycle', () => {
       expect(store.getSessionById(id)?.platform_source).toBe('codex');
     });
 
-    it('throws on an explicit platform_source conflict', () => {
-      store.createSDKSession('content-platform-3', 'project', 'prompt', undefined, 'codex');
-      expect(() =>
-        store.createSDKSession('content-platform-3', 'project', 'prompt', undefined, 'claude')
-      ).toThrow(/Platform source conflict/);
+    it('updates platform_source when an explicit conflicting value arrives', () => {
+      const id = store.createSDKSession('content-platform-3', 'project', 'prompt', undefined, 'codex');
+      store.createSDKSession('content-platform-3', 'project', 'prompt', undefined, 'claude');
+      store.createSDKSession('content-platform-3', 'project', 'prompt', undefined, 'cursor');
+      expect(store.getSessionById(id)?.platform_source).toBe('cursor');
     });
   });
 

@@ -1732,9 +1732,12 @@ export class SessionStore {
               AND COALESCE(platform_source, '') = ''
           `).run(resolved.platformSource, contentSessionId);
         } else if (storedPlatformSource !== resolved.platformSource) {
-          throw new Error(
-            `Platform source conflict for session ${contentSessionId}: existing=${storedPlatformSource}, received=${resolved.platformSource}`
-          );
+          // Cursor and Claude Code can share a content_session_id across IDEs;
+          // last-writer wins instead of dropping observations with HTTP 500.
+          this.db.prepare(`
+            UPDATE sdk_sessions SET platform_source = ?
+            WHERE content_session_id = ?
+          `).run(resolved.platformSource, contentSessionId);
         }
       }
       return existing.id;
