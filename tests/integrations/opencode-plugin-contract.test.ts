@@ -9,9 +9,7 @@ import {
 /**
  * Regression guard for plan-08 (OpenCode event-contract correctness).
  *
- * The old plugin subscribed to bus event names that do not exist in OpenCode
- * (`session.created`, `message.updated`, `session.compacted`, `file.edited`,
- * `session.deleted` on a `(name, payload)` switch) and parsed `data.items`
+ * The old plugin subscribed to phantom hook names and parsed `data.items`
  * instead of the worker's real `data.content` blocks — so it captured nothing
  * and search always returned "No results". These tests fail CI if either
  * contract regresses.
@@ -21,7 +19,6 @@ import {
 // key must be in this allowlist; a future typo (e.g. "session.created") fails.
 const REAL_OPENCODE_HOOK_NAMES = new Set<string>([
   "tool.execute.after",
-  "chat.message",
   "event",
   "experimental.session.compacting",
   "tool.execute.before",
@@ -32,10 +29,9 @@ const REAL_OPENCODE_HOOK_NAMES = new Set<string>([
   "tool",
 ]);
 
-// Bus event names the old code used that DO NOT exist in OpenCode's contract.
+// Hook or bus names the old code used that DO NOT exist in the relevant contract surface.
 const PHANTOM_BUS_EVENT_NAMES = [
   "session.created",
-  "message.updated",
   "session.compacted",
   "file.edited",
 ];
@@ -68,7 +64,6 @@ describe("OpenCode plugin event contract", () => {
 
     // The capture-critical hooks must be present.
     expect(hookKeys).toContain("tool.execute.after");
-    expect(hookKeys).toContain("chat.message");
     expect(hookKeys).toContain("experimental.session.compacting");
     expect(hookKeys).toContain("event");
   });
@@ -82,8 +77,9 @@ describe("OpenCode plugin event contract", () => {
   });
 
   it("only reacts to real bus event types", () => {
-    // session.idle / session.deleted are real OpenCode bus events; the phantom
-    // names must never appear in the reacted-to allowlist.
+    // The plugin must only switch on real OpenCode bus events.
+    expect(REAL_OPENCODE_EVENT_TYPES).toContain("message.updated");
+    expect(REAL_OPENCODE_EVENT_TYPES).toContain("message.part.updated");
     expect(REAL_OPENCODE_EVENT_TYPES).toContain("session.idle");
     expect(REAL_OPENCODE_EVENT_TYPES).toContain("session.deleted");
     for (const phantom of PHANTOM_BUS_EVENT_NAMES) {
@@ -117,6 +113,661 @@ describe("OpenCode plugin event contract", () => {
       const obsBody = obsPost!.body as Record<string, unknown>;
       expect(obsBody.tool_name).toBe("read");
       expect(obsBody.tool_response).toBe("file contents");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("awaits message.updated worker posts before the event hook resolves", async () => {
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const fetchResolvers: Array<() => void> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (((url: string | URL | Request, init?: RequestInit) => {
+      posts.push({
+        url: String(url),
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+
+      return new Promise<Response>((resolve) => {
+        fetchResolvers.push(() => {
+          resolve(new Response(JSON.stringify({ status: "queued" }), { status: 200 }));
+        });
+      });
+    }) as unknown) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const eventHook = plugin["event"];
+      let resolved = false;
+      const hookPromise = eventHook({
+        event: {
+          type: "message.updated",
+          properties: {
+            sessionID: "ses_2",
+            output: {
+              message: { role: "assistant", sessionID: "ses_2" },
+              parts: [{ type: "text", text: "assistant output" }],
+            },
+          },
+        },
+      }).then(() => {
+        resolved = true;
+      });
+
+      await Promise.resolve();
+      expect(posts).toHaveLength(1);
+      expect(posts[0]?.url).toContain("/api/sessions/init");
+      expect(resolved).toBe(false);
+
+      fetchResolvers.shift()?.();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(posts).toHaveLength(2);
+      expect(posts[1]?.url).toContain("/api/sessions/observations");
+      expect(resolved).toBe(false);
+
+      fetchResolvers.shift()?.();
+
+      await hookPromise;
+      expect(resolved).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("awaits message.part.updated session init without duplicating the assistant observation", async () => {
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const fetchResolvers: Array<() => void> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (((url: string | URL | Request, init?: RequestInit) => {
+      posts.push({
+        url: String(url),
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+
+      return new Promise<Response>((resolve) => {
+        fetchResolvers.push(() => {
+          resolve(new Response(JSON.stringify({ status: "queued" }), { status: 200 }));
+        });
+      });
+    }) as unknown) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const eventHook = plugin["event"];
+      let resolved = false;
+      const hookPromise = eventHook({
+        event: {
+          type: "message.part.updated",
+          properties: {
+            sessionID: "ses_3",
+            message: { id: "msg_1", role: "assistant", sessionID: "ses_3" },
+            parts: [{ type: "text", text: "partial assistant output" }],
+          },
+        },
+      }).then(() => {
+        resolved = true;
+      });
+
+      await Promise.resolve();
+      expect(posts).toHaveLength(1);
+      expect(posts[0]?.url).toContain("/api/sessions/init");
+      expect(resolved).toBe(false);
+
+      fetchResolvers.shift()?.();
+      await hookPromise;
+
+      expect(resolved).toBe(true);
+      expect(posts).toHaveLength(1);
+      expect(posts.some((post) => post.url.includes("/api/sessions/observations"))).toBe(false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("coalesces concurrent first-seen session init across event hooks", async () => {
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const fetchResolvers: Array<() => void> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (((url: string | URL | Request, init?: RequestInit) => {
+      posts.push({
+        url: String(url),
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+
+      return new Promise<Response>((resolve) => {
+        fetchResolvers.push(() => {
+          resolve(new Response(JSON.stringify({ status: "queued" }), { status: 200 }));
+        });
+      });
+    }) as unknown) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const eventHook = plugin["event"];
+
+      const partPromise = eventHook({
+        event: {
+          type: "message.part.updated",
+          properties: {
+            sessionID: "ses_race",
+            message: { id: "msg_partial", role: "assistant", sessionID: "ses_race" },
+            parts: [{ type: "text", text: "partial" }],
+          },
+        },
+      });
+      const updatedPromise = eventHook({
+        event: {
+          type: "message.updated",
+          properties: {
+            sessionID: "ses_race",
+            output: {
+              message: { role: "assistant", sessionID: "ses_race" },
+              parts: [{ type: "text", text: "final output" }],
+            },
+          },
+        },
+      });
+
+      await Promise.resolve();
+      expect(posts.filter((post) => post.url.includes("/api/sessions/init"))).toHaveLength(1);
+      expect(posts.filter((post) => post.url.includes("/api/sessions/observations"))).toHaveLength(0);
+
+      fetchResolvers.shift()?.();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(posts.filter((post) => post.url.includes("/api/sessions/init"))).toHaveLength(1);
+      expect(posts.filter((post) => post.url.includes("/api/sessions/observations"))).toHaveLength(1);
+
+      fetchResolvers.shift()?.();
+      await Promise.all([partPromise, updatedPromise]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("does not resurrect an initialized session after session.deleted races an in-flight init", async () => {
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const fetchResolvers: Array<() => void> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (((url: string | URL | Request, init?: RequestInit) => {
+      posts.push({
+        url: String(url),
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+
+      return new Promise<Response>((resolve) => {
+        fetchResolvers.push(() => {
+          resolve(new Response(JSON.stringify({ status: "queued" }), { status: 200 }));
+        });
+      });
+    }) as unknown) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const eventHook = plugin["event"];
+
+      const warmupPromise = eventHook({
+        event: {
+          type: "message.part.updated",
+          properties: {
+            sessionID: "ses_deleted_race",
+            message: { id: "msg_deleted_partial", role: "assistant", sessionID: "ses_deleted_race" },
+            parts: [{ type: "text", text: "partial" }],
+          },
+        },
+      });
+
+      await Promise.resolve();
+      expect(posts.filter((post) => post.url.includes("/api/sessions/init"))).toHaveLength(1);
+
+      await eventHook({
+        event: {
+          type: "session.deleted",
+          properties: { sessionID: "ses_deleted_race" },
+        },
+      });
+
+      fetchResolvers.shift()?.();
+      await warmupPromise;
+
+      const capturePromise = eventHook({
+        event: {
+          type: "message.updated",
+          properties: {
+            sessionID: "ses_deleted_race",
+            output: {
+              message: { role: "assistant", sessionID: "ses_deleted_race" },
+              parts: [{ type: "text", text: "assistant output after delete" }],
+            },
+          },
+        },
+      });
+
+      await Promise.resolve();
+      expect(posts.filter((post) => post.url.includes("/api/sessions/init"))).toHaveLength(2);
+      expect(posts.filter((post) => post.url.includes("/api/sessions/observations"))).toHaveLength(0);
+
+      fetchResolvers.shift()?.();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(posts.filter((post) => post.url.includes("/api/sessions/observations"))).toHaveLength(1);
+
+      fetchResolvers.shift()?.();
+      await capturePromise;
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("keeps a replacement pending init alive when session.deleted races the original init", async () => {
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const fetchResolvers: Array<() => void> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (((url: string | URL | Request, init?: RequestInit) => {
+      posts.push({
+        url: String(url),
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+
+      return new Promise<Response>((resolve) => {
+        fetchResolvers.push(() => {
+          resolve(new Response(JSON.stringify({ status: "queued" }), { status: 200 }));
+        });
+      });
+    }) as unknown) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const eventHook = plugin["event"];
+
+      const initAPromise = eventHook({
+        event: {
+          type: "message.part.updated",
+          properties: {
+            sessionID: "ses_replace_pending",
+            message: { id: "msg_a", role: "assistant", sessionID: "ses_replace_pending" },
+            parts: [{ type: "text", text: "partial A" }],
+          },
+        },
+      });
+
+      await Promise.resolve();
+      expect(posts.filter((post) => post.url.includes("/api/sessions/init"))).toHaveLength(1);
+
+      await eventHook({
+        event: {
+          type: "session.deleted",
+          properties: { sessionID: "ses_replace_pending" },
+        },
+      });
+
+      const initBPromise = eventHook({
+        event: {
+          type: "message.updated",
+          properties: {
+            sessionID: "ses_replace_pending",
+            output: {
+              message: { role: "assistant", sessionID: "ses_replace_pending" },
+              parts: [{ type: "text", text: "assistant output after replacement init" }],
+            },
+          },
+        },
+      });
+
+      await Promise.resolve();
+      expect(posts.filter((post) => post.url.includes("/api/sessions/init"))).toHaveLength(2);
+
+      // Resolve init A first; it must not delete init B's pending entry.
+      fetchResolvers.shift()?.();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(posts.filter((post) => post.url.includes("/api/sessions/observations"))).toHaveLength(0);
+
+      // Resolve init B; the observation should still wait on the replacement init.
+      fetchResolvers.shift()?.();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(posts.filter((post) => post.url.includes("/api/sessions/observations"))).toHaveLength(1);
+
+      fetchResolvers.shift()?.();
+      await Promise.all([initAPromise, initBPromise]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("does not treat a replacement session as initialized before its own init finishes", async () => {
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const fetchResolvers: Array<() => void> = [];
+    const replacementOutput = "assistant output after stale init";
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (((url: string | URL | Request, init?: RequestInit) => {
+      posts.push({
+        url: String(url),
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+
+      return new Promise<Response>((resolve) => {
+        fetchResolvers.push(() => {
+          resolve(new Response(JSON.stringify({ status: "queued" }), { status: 200 }));
+        });
+      });
+    }) as unknown) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const eventHook = plugin["event"];
+
+      const initAPromise = eventHook({
+        event: {
+          type: "message.part.updated",
+          properties: {
+            sessionID: "ses_replace_identity",
+            message: { id: "msg_init_a", role: "assistant", sessionID: "ses_replace_identity" },
+            parts: [{ type: "text", text: "partial A" }],
+          },
+        },
+      });
+
+      await Promise.resolve();
+      expect(posts.filter((post) => post.url.includes("/api/sessions/init"))).toHaveLength(1);
+
+      await eventHook({
+        event: {
+          type: "session.deleted",
+          properties: { sessionID: "ses_replace_identity" },
+        },
+      });
+
+      const initBPromise = eventHook({
+        event: {
+          type: "message.part.updated",
+          properties: {
+            sessionID: "ses_replace_identity",
+            message: { id: "msg_init_b", role: "assistant", sessionID: "ses_replace_identity" },
+            parts: [{ type: "text", text: "partial B" }],
+          },
+        },
+      });
+
+      await Promise.resolve();
+      expect(posts.filter((post) => post.url.includes("/api/sessions/init"))).toHaveLength(2);
+
+      fetchResolvers.shift()?.();
+      await initAPromise;
+
+      const capturePromise = eventHook({
+        event: {
+          type: "message.updated",
+          properties: {
+            sessionID: "ses_replace_identity",
+            output: {
+              message: { role: "assistant", sessionID: "ses_replace_identity" },
+              parts: [{ type: "text", text: replacementOutput }],
+            },
+          },
+        },
+      });
+
+      await Promise.resolve();
+      expect(
+        posts.filter((post) => {
+          if (!post.url.includes("/api/sessions/observations")) {
+            return false;
+          }
+          const body = post.body as { tool_response?: string } | null;
+          return body?.tool_response === replacementOutput;
+        }),
+      ).toHaveLength(0);
+
+      fetchResolvers.shift()?.();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(
+        posts.filter((post) => {
+          if (!post.url.includes("/api/sessions/observations")) {
+            return false;
+          }
+          const body = post.body as { tool_response?: string } | null;
+          return body?.tool_response === replacementOutput;
+        }),
+      ).toHaveLength(1);
+
+      fetchResolvers.shift()?.();
+      await Promise.all([initBPromise, capturePromise]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("restarts init after bounded-map eviction drops a stale pending entry", async () => {
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const fetchResolvers: Array<() => void> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (((url: string | URL | Request, init?: RequestInit) => {
+      posts.push({
+        url: String(url),
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+
+      return new Promise<Response>((resolve) => {
+        fetchResolvers.push(() => {
+          resolve(new Response(JSON.stringify({ status: "queued" }), { status: 200 }));
+        });
+      });
+    }) as unknown) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const eventHook = plugin["event"];
+      const warmupPromises: Array<Promise<void>> = [];
+
+      for (let i = 0; i < 1000; i += 1) {
+        warmupPromises.push(
+          eventHook({
+            event: {
+              type: "message.part.updated",
+              properties: {
+                sessionID: `ses_eviction_${i}`,
+                message: { id: `msg_eviction_${i}`, role: "assistant", sessionID: `ses_eviction_${i}` },
+                parts: [{ type: "text", text: `partial ${i}` }],
+              },
+            },
+          }),
+        );
+      }
+
+      await Promise.resolve();
+      expect(posts.filter((post) => post.url.includes("/api/sessions/init"))).toHaveLength(1000);
+
+      const overflowPromise = eventHook({
+        event: {
+          type: "message.part.updated",
+          properties: {
+            sessionID: "ses_eviction_overflow",
+            message: { id: "msg_eviction_overflow", role: "assistant", sessionID: "ses_eviction_overflow" },
+            parts: [{ type: "text", text: "overflow partial" }],
+          },
+        },
+      });
+
+      await Promise.resolve();
+      expect(posts.filter((post) => post.url.includes("/api/sessions/init"))).toHaveLength(1001);
+
+      const revivedPromise = eventHook({
+        event: {
+          type: "message.updated",
+          properties: {
+            sessionID: "ses_eviction_0",
+            output: {
+              message: { role: "assistant", sessionID: "ses_eviction_0" },
+              parts: [{ type: "text", text: "assistant output after eviction" }],
+            },
+          },
+        },
+      });
+
+      await Promise.resolve();
+      expect(posts.filter((post) => post.url.includes("/api/sessions/init"))).toHaveLength(1002);
+
+      fetchResolvers.shift()?.();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(posts.filter((post) => post.url.includes("/api/sessions/observations"))).toHaveLength(0);
+
+      fetchResolvers[1000]?.();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(posts.filter((post) => post.url.includes("/api/sessions/observations"))).toHaveLength(1);
+
+      fetchResolvers.splice(0).forEach((resolve) => resolve());
+      await Promise.all([...warmupPromises, overflowPromise, revivedPromise]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("captures assistant output when message.updated uses properties.message and properties.parts", async () => {
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      posts.push({
+        url: String(url),
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+      return new Response(JSON.stringify({ status: "queued" }), { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      await plugin["event"]({
+        event: {
+          type: "message.updated",
+          properties: {
+            sessionID: "ses_fallback_props",
+            message: { role: "assistant", sessionID: "ses_fallback_props" },
+            parts: [{ type: "text", text: "assistant fallback output" }],
+          },
+        },
+      });
+
+      const observationPost = posts.find((post) => post.url.includes("/api/sessions/observations"));
+      expect(observationPost).toBeTruthy();
+      expect((observationPost?.body as Record<string, unknown>).tool_response).toBe(
+        "assistant fallback output",
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("captures assistant output when message.updated uses top-level message and parts", async () => {
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      posts.push({
+        url: String(url),
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+      return new Response(JSON.stringify({ status: "queued" }), { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      await plugin["event"]({
+        event: {
+          type: "message.updated",
+          message: { role: "assistant", sessionID: "ses_fallback_top" },
+          parts: [{ type: "text", text: "assistant top-level fallback output" }],
+        },
+      });
+
+      const observationPost = posts.find((post) => post.url.includes("/api/sessions/observations"));
+      expect(observationPost).toBeTruthy();
+      expect((observationPost?.body as Record<string, unknown>).tool_response).toBe(
+        "assistant top-level fallback output",
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("warns when an awaited worker POST returns a non-OK status", async () => {
+    const originalFetch = globalThis.fetch;
+    const originalWarn = console.warn;
+    const warnCalls: string[] = [];
+    console.warn = ((message: string) => {
+      warnCalls.push(message);
+    }) as typeof console.warn;
+
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ error: "nope" }), { status: 503 })) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const toolAfter = plugin["tool.execute.after"];
+      await toolAfter(
+        { tool: "read", sessionID: "ses_4", callID: "c4" },
+        { title: "Read", output: "file contents", metadata: {}, args: { path: "/a" } },
+      );
+
+      expect(warnCalls.some((call) => call.includes("Worker POST /api/sessions/init returned 503"))).toBe(true);
+      expect(warnCalls.some((call) => call.includes("Worker POST /api/sessions/observations returned 503"))).toBe(false);
+    } finally {
+      globalThis.fetch = originalFetch;
+      console.warn = originalWarn;
+    }
+  });
+
+  it("retries session init after a non-OK init response instead of pinning the session initialized", async () => {
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const originalFetch = globalThis.fetch;
+    let initAttempts = 0;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const normalizedUrl = String(url);
+      posts.push({
+        url: normalizedUrl,
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+
+      if (normalizedUrl.includes("/api/sessions/init")) {
+        initAttempts += 1;
+        const status = initAttempts === 1 ? 503 : 200;
+        return new Response(JSON.stringify({ status: status === 200 ? "queued" : "retry" }), { status });
+      }
+
+      return new Response(JSON.stringify({ status: "queued" }), { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const eventHook = plugin["event"];
+
+      await eventHook({
+        event: {
+          type: "message.part.updated",
+          properties: {
+            sessionID: "ses_retry",
+            message: { id: "msg_retry_partial", role: "assistant", sessionID: "ses_retry" },
+            parts: [{ type: "text", text: "partial" }],
+          },
+        },
+      });
+
+      expect(posts.filter((post) => post.url.includes("/api/sessions/init"))).toHaveLength(1);
+      expect(posts.filter((post) => post.url.includes("/api/sessions/observations"))).toHaveLength(0);
+
+      await eventHook({
+        event: {
+          type: "message.updated",
+          properties: {
+            sessionID: "ses_retry",
+            output: {
+              message: { role: "assistant", sessionID: "ses_retry" },
+              parts: [{ type: "text", text: "assistant output after retry" }],
+            },
+          },
+        },
+      });
+
+      expect(posts.filter((post) => post.url.includes("/api/sessions/init"))).toHaveLength(2);
+      expect(posts.filter((post) => post.url.includes("/api/sessions/observations"))).toHaveLength(1);
     } finally {
       globalThis.fetch = originalFetch;
     }
