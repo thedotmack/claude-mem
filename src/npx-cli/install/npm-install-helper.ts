@@ -55,7 +55,7 @@ export function extractEresolveBlock(stderr: string): string {
 export function runNpmStrict(cwd: string, flags: string[], isFirstRun = true): Promise<NpmResult> {
   return new Promise((resolve) => {
     const [npmExe, npmFlags] = IS_WINDOWS
-      ? (['cmd.exe', ['/c', 'npm', ...flags]] as const)
+      ? (['cmd.exe', ['/d', '/c', 'npm', ...flags]] as const)
       : (['npm', flags] as const);
     const child = spawn(npmExe, npmFlags, {
       cwd,

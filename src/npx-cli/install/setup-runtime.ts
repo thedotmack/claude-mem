@@ -73,7 +73,7 @@ function markerPath(targetDir: string): string {
 function getBunPath(): string | null {
   try {
     const [bunExe, bunVersionArgs] = IS_WINDOWS
-      ? (['cmd.exe', ['/c', 'bun', '--version']] as const)
+      ? (['cmd.exe', ['/d', '/c', 'bun', '--version']] as const)
       : (['bun', ['--version']] as const);
     const result = spawnSync(bunExe, bunVersionArgs, {
       encoding: 'utf-8',
@@ -97,7 +97,7 @@ function getBunVersion(): string | null {
 
   try {
     const [bvExe, bvArgs] = IS_WINDOWS
-      ? (['cmd.exe', ['/c', bunPath, '--version']] as const)
+      ? (['cmd.exe', ['/d', '/c', bunPath, '--version']] as const)
       : ([bunPath, ['--version']] as const);
     const result = spawnSync(bvExe, bvArgs, {
       encoding: 'utf-8',
@@ -112,7 +112,7 @@ function getBunVersion(): string | null {
 function getUvPath(): string | null {
   try {
     const [uvExe, uvVersionArgs] = IS_WINDOWS
-      ? (['cmd.exe', ['/c', 'uv', '--version']] as const)
+      ? (['cmd.exe', ['/d', '/c', 'uv', '--version']] as const)
       : (['uv', ['--version']] as const);
     const result = spawnSync(uvExe, uvVersionArgs, {
       encoding: 'utf-8',
@@ -136,7 +136,7 @@ function getUvVersion(): string | null {
 
   try {
     const [uvExe, uvVersionArgs] = IS_WINDOWS
-      ? (['cmd.exe', ['/c', uvPath, '--version']] as const)
+      ? (['cmd.exe', ['/d', '/c', uvPath, '--version']] as const)
       : ([uvPath, ['--version']] as const);
     const result = spawnSync(uvExe, uvVersionArgs, {
       encoding: 'utf-8',
