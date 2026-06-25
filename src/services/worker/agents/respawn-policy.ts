@@ -69,6 +69,11 @@ export function parseRespawnPolicy(
       logger.warn('SYSTEM', `Unknown exempt output class "${tok}" — ignored`, { value: tok });
     }
   }
+  // `exemptClasses` is typed ReadonlySet (compile-time immutability). We do not
+  // Object.freeze it: freezing a Set blocks property writes but NOT Set.add/
+  // delete (they mutate internal slots), so it would give false runtime
+  // confidence. For this internal, freshly-constructed value the structural
+  // ReadonlySet guarantee is sufficient and intentional (design §9).
   return {
     exemptClasses: exemptClasses.size > 0
       ? exemptClasses

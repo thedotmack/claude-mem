@@ -27,7 +27,9 @@ describe('parseRespawnPolicy', () => {
 
   it('drops unknown class tokens but keeps valid ones', () => {
     const p = parseRespawnPolicy('idle, nonsense ,xml', '3', '60000');
-    expect([...p.exemptClasses]).toEqual(['idle']); // 'xml' not exemptable, 'nonsense' unknown
+    // Both dropped, for different reasons: 'xml' is a valid ObserverOutputClass
+    // but not in EXEMPTABLE_CLASSES; 'nonsense' is not a class at all.
+    expect([...p.exemptClasses]).toEqual(['idle']);
   });
 
   it('falls back to default exempt set when empty/all-invalid', () => {

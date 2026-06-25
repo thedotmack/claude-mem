@@ -166,9 +166,9 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_SERVER_BETA_URL: `http://127.0.0.1:${process.env.CLAUDE_MEM_SERVER_PORT ?? String(37877 + ((process.getuid?.() ?? 77) % 100))}`,  // Default server-beta runtime URL — UID-derived for multi-account isolation
     CLAUDE_MEM_SERVER_BETA_API_KEY: '',                     // Local hook API key, populated by installer when runtime=server-beta
     CLAUDE_MEM_SERVER_BETA_PROJECT_ID: '',                  // Default Postgres project_id used by hooks when runtime=server-beta
-    CLAUDE_MEM_INVALID_OUTPUT_EXEMPT_CLASSES: 'idle',        // #3032 — observer output classes exempt from the respawn window; 'idle' is benign ("nothing to say"). 'poisoned' is never exemptable.
-    CLAUDE_MEM_INVALID_OUTPUT_RESPAWN_THRESHOLD: '3',         // N non-exempt bad outputs within the window before kill+respawn. Bounds 1..=100.
-    CLAUDE_MEM_INVALID_OUTPUT_WINDOW_MS: '60000',            // Rolling burst window (systemd StartLimitIntervalSec / OTP period). Bounds 1000..=3_600_000.
+    CLAUDE_MEM_INVALID_OUTPUT_EXEMPT_CLASSES: 'idle',  // #3032 — observer output classes exempt from the respawn window; 'idle' is benign ("nothing to say"). 'poisoned' is never exemptable.
+    CLAUDE_MEM_INVALID_OUTPUT_RESPAWN_THRESHOLD: '3',  // N non-exempt bad outputs within the window before kill+respawn. Bounds 1..=100.
+    CLAUDE_MEM_INVALID_OUTPUT_WINDOW_MS: '60000',      // Rolling burst window (systemd StartLimitIntervalSec / OTP period). Bounds 1000..=3_600_000.
   };
 
   static getAllDefaults(): SettingsDefaults {
