@@ -23,6 +23,17 @@ const CHROMA_SUPERVISOR_ID = 'chroma-mcp';
 
 const CHROMA_MCP_PINNED_VERSION = '0.2.6';
 
+// chroma-mcp is pinned via uvx's canonical `tool@version` exact-pin form.
+// NOT `chroma-mcp==<ver>`: `==` in the uvx command position is undocumented
+// (uv's docs only teach `command@<version>`) and was reported to fail on a
+// Windows/uvx 0.11.19 setup with "Not a valid package or extra name" (#2939) —
+// killing the MCP connection and degrading semantic search to FTS5. `@` is the
+// documented, exact-only pin and works across every uvx version tested. Range
+// and extra specs still ride on `--with` (see CHROMA_MCP_DEP_OVERRIDES below).
+// Single source of truth: both the remote and local buildCommandArgs() branches
+// reference this constant so the pin syntax can never drift between call sites.
+const CHROMA_MCP_TOOL_SPEC = `chroma-mcp@${CHROMA_MCP_PINNED_VERSION}` as const;
+
 // Override transitive dep resolutions for chroma-mcp 0.2.6 (issue #2371).
 //
 // Why onnxruntime>=1.20: the shipped all-MiniLM-L6-v2 model has pytorch-2.0
@@ -215,7 +226,7 @@ export class ChromaMcpManager {
       const args = [
         '--python', pythonVersion,
         ...depOverrideFlags,
-        `chroma-mcp==${CHROMA_MCP_PINNED_VERSION}`,
+        CHROMA_MCP_TOOL_SPEC,
         '--client-type', 'http',
         '--host', chromaHost,
         '--port', chromaPort
@@ -241,7 +252,7 @@ export class ChromaMcpManager {
     return [
       '--python', pythonVersion,
       ...depOverrideFlags,
-      `chroma-mcp==${CHROMA_MCP_PINNED_VERSION}`,
+      CHROMA_MCP_TOOL_SPEC,
       '--client-type', 'persistent',
       '--data-dir', DEFAULT_CHROMA_DATA_DIR.replace(/\\/g, '/')
     ];
