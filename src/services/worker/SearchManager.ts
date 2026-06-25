@@ -32,6 +32,10 @@ export interface SearchTelemetryEnvelope {
   fallback_reason?: 'none' | 'chroma_connection' | 'chroma_error' | 'chroma_not_initialized';
 }
 
+interface SearchExecutionOptions {
+  semanticHydrationLimit?: number;
+}
+
 export class SearchManager {
   private orchestrator: SearchOrchestrator;
 
@@ -299,9 +303,20 @@ export class SearchManager {
     return normalized;
   }
 
-  async search(args: any, telemetryOut?: SearchTelemetryEnvelope): Promise<any> {
+  async search(args: any, telemetryOut?: SearchTelemetryEnvelope, executionOptions: SearchExecutionOptions = {}): Promise<any> {
     const normalized = this.normalizeParams(args);
-    const { query, type, obs_type, concepts, files, format, ...options } = normalized;
+    const { query, type, obs_type, concepts, files, format, semanticLimit: _ignoredPublicSemanticLimit, ...options } = normalized;
+    const requestedLimit = Math.max(
+      Number.parseInt(String(options.limit ?? SEARCH_CONSTANTS.DEFAULT_LIMIT), 10) || SEARCH_CONSTANTS.DEFAULT_LIMIT,
+      1
+    );
+    const semanticCandidateLimit = Math.min(
+      Math.max(requestedLimit, executionOptions.semanticHydrationLimit ?? SEARCH_CONSTANTS.CHROMA_BATCH_SIZE),
+      SEARCH_CONSTANTS.CHROMA_BATCH_SIZE
+    );
+    const semanticHydrationLimit = executionOptions.semanticHydrationLimit === undefined
+      ? requestedLimit
+      : semanticCandidateLimit;
     let observations: ObservationSearchResult[] = [];
     let sessions: SessionSummarySearchResult[] = [];
     let prompts: UserPromptSearchResult[] = [];
@@ -352,7 +367,7 @@ export class SearchManager {
       }
 
       try {
-        const chromaResults = await this.queryChroma(query, 100, whereFilter);
+        const chromaResults = await this.queryChroma(query, semanticCandidateLimit, whereFilter);
         chromaSucceeded = true; 
         logger.debug('SEARCH', 'ChromaDB returned semantic matches', { matchCount: chromaResults.ids.length });
 
@@ -402,7 +417,7 @@ export class SearchManager {
           }
 
           if (obsIds.length > 0) {
-            const obsOptions = { ...options, type: obs_type, concepts, files };
+            const obsOptions = { ...options, type: obs_type, concepts, files, limit: semanticHydrationLimit };
             observations = this.sessionStore.getObservationsByIds(obsIds, obsOptions);
           }
           if (sessionIds.length > 0) {
@@ -484,8 +499,11 @@ export class SearchManager {
     }
 
     if (format === 'json') {
+      const jsonObservations = executionOptions.semanticHydrationLimit
+        ? observations
+        : observations.slice(0, requestedLimit);
       return {
-        observations,
+        observations: jsonObservations,
         sessions,
         prompts,
         totalResults,

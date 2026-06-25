@@ -1491,7 +1491,7 @@ export class SessionStore {
     const { orderBy = 'date_desc', limit, project, type, concepts, files } = options;
     const preserveIdOrder = orderBy === 'relevance';
     const orderClause = preserveIdOrder ? '' : `ORDER BY created_at_epoch ${orderBy === 'date_asc' ? 'ASC' : 'DESC'}`;
-    const limitClause = limit ? `LIMIT ${limit}` : '';
+    const limitClause = limit && !preserveIdOrder ? `LIMIT ${limit}` : '';
 
     const placeholders = ids.map(() => '?').join(',');
     const params: any[] = [...ids];
@@ -1549,7 +1549,9 @@ export class SessionStore {
     if (!preserveIdOrder) return rows;
 
     const rowMap = new Map(rows.map(r => [r.id, r]));
-    return ids.map(id => rowMap.get(id)).filter((r): r is ObservationSearchResult => !!r);
+    const orderedRows = ids.map(id => rowMap.get(id)).filter((r): r is ObservationSearchResult => !!r);
+    // Relevance order comes from the caller, so apply any limit after reordering.
+    return limit ? orderedRows.slice(0, limit) : orderedRows;
   }
 
   getSummaryForSession(memorySessionId: string): {
