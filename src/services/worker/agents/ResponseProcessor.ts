@@ -24,6 +24,88 @@ import { instrument } from '../../telemetry/instrument.js';
  */
 export const INVALID_OUTPUT_RESPAWN_THRESHOLD = 3;
 
+const MAX_EMPTY_ACK_LENGTH = 200;
+const EMPTY_ACK_PREFIXES = [
+  'no observations to record',
+  'no new observations to record',
+  'no observations found',
+  'no new observations found',
+  'no observations',
+  'no new observations',
+] as const;
+const EMPTY_ACK_CONTENT_SIGNAL = /\b(?:but|however|although|except|identified|discovered|learned|recorded|captured|stored|noted|issue|bug|fix|error|failure)\b/;
+const EMPTY_ACK_NEUTRAL_REMAINDER_WORDS = new Set([
+  'at',
+  'this',
+  'time',
+  'for',
+  'batch',
+  'investigation',
+  'not',
+  'yet',
+  'started',
+  'no',
+  'tool',
+  'executions',
+  'or',
+  'technical',
+  'findings',
+  'have',
+  'been',
+  'provided',
+]);
+
+function hasEmptyAckPrefix(normalized: string, prefix: string): boolean {
+  if (normalized === prefix) {
+    return true;
+  }
+
+  if (!normalized.startsWith(prefix)) {
+    return false;
+  }
+
+  const nextChar = normalized.charAt(prefix.length);
+  return /[\s.,!?:;\-—–]/.test(nextChar);
+}
+
+function isNeutralEmptyAckRemainder(remainder: string): boolean {
+  const stripped = remainder.replace(/^[\s.,!?:;\-—–]+/, '').trim();
+  if (stripped.length === 0) {
+    return true;
+  }
+
+  const words = stripped.match(/[a-z]+/g);
+  if (!words || words.length === 0) {
+    return true;
+  }
+
+  return words.every(word => EMPTY_ACK_NEUTRAL_REMAINDER_WORDS.has(word));
+}
+
+function isRecognizedEmptyObserverAck(text: string, outputClass: ReturnType<typeof classifyObserverOutput>): boolean {
+  if (outputClass === 'idle') {
+    return true;
+  }
+
+  if (outputClass !== 'prose') {
+    return false;
+  }
+
+  const normalized = text.trim().toLowerCase();
+  if (normalized.length === 0 || normalized.length > MAX_EMPTY_ACK_LENGTH) {
+    return false;
+  }
+
+  const matchedPrefix = EMPTY_ACK_PREFIXES.find(prefix => hasEmptyAckPrefix(normalized, prefix));
+  if (!matchedPrefix) {
+    return false;
+  }
+
+  const remainder = normalized.slice(matchedPrefix.length);
+  return !EMPTY_ACK_CONTENT_SIGNAL.test(remainder) &&
+    isNeutralEmptyAckRemainder(remainder);
+}
+
 export async function processAgentResponse(
   text: string,
   session: ActiveSession,
@@ -57,6 +139,24 @@ export async function processAgentResponse(
     // (plan-11, #2485). Attach a preview for diagnostics.
     const outputClass = classifyObserverOutput(text);
     const preview = previewOutput(text);
+    const recognizedEmptyAck = isRecognizedEmptyObserverAck(text, outputClass);
+
+    if (recognizedEmptyAck) {
+      // Treat recognized empty acknowledgements as healthy output so a long
+      // run of valid no-op responses does not preserve stale respawn debt.
+      session.consecutiveInvalidOutputs = 0;
+
+      logger.warn('PARSER', `${agentName} returned non-XML empty-ack ${outputClass} response, confirming claimed batch without respawn`, {
+        sessionId: session.sessionDbId,
+        outputClass,
+        preview,
+        consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
+      });
+
+      await sessionManager.confirmClaimedMessages(session.sessionDbId);
+      session.earliestPendingTimestamp = null;
+      return;
+    }
 
     session.consecutiveInvalidOutputs = (session.consecutiveInvalidOutputs ?? 0) + 1;
 
