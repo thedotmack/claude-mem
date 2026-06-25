@@ -88,3 +88,47 @@ export function parseRespawnPolicy(
     ),
   };
 }
+
+function assertNeverClass(x: never): never {
+  throw new Error(`Unhandled ObserverOutputClass: ${String(x)}`);
+}
+
+/**
+ * Decide whether an observer output should trigger a session respawn,
+ * using a time-windowed burst counter (systemd StartLimitBurst / Erlang OTP
+ * intensity-period). `poisoned` → immediate; exempt classes → invisible; all
+ * other classes accumulate within `windowMs` until `threshold`. Pure; `now` is
+ * injected for testability. The window is anchored at the first bad output
+ * (badCount===0) and re-anchored when it expires.
+ */
+export function evaluateRespawn(
+  cls: ObserverOutputClass,
+  window: FailureWindow,
+  policy: RespawnPolicy,
+  now: number,
+): { window: FailureWindow; shouldRespawn: boolean } {
+  switch (cls) {
+    case 'poisoned':
+      return { window: freshWindow(), shouldRespawn: true };
+    case 'idle':
+    case 'prose':
+    case 'xml': {
+      // Exempt classes are invisible to the window. ('xml' is never exemptable,
+      // so an xml-tagged-but-unparseable output still counts — preserving the
+      // prior recovery behavior for malformed observation blocks.)
+      if (isExemptableClass(cls) && policy.exemptClasses.has(cls)) {
+        return { window, shouldRespawn: false };
+      }
+      const startFresh = window.badCount === 0 || (now - window.windowStart > policy.windowMs);
+      const base = startFresh ? { windowStart: now, badCount: 0 } : window;
+      const badCount = base.badCount + 1;
+      const shouldRespawn = badCount >= policy.threshold;
+      return {
+        window: shouldRespawn ? freshWindow() : { windowStart: base.windowStart, badCount },
+        shouldRespawn,
+      };
+    }
+    default:
+      return assertNeverClass(cls);
+  }
+}
