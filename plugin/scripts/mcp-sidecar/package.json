@@ -1,0 +1,15 @@
+{
+  "name": "claude-mem-sidecar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "MCP sidecar exposing claude-mem Resources + Prompts (Sprint 2 Phase 5)",
+  "bin": {
+    "claude-mem-sidecar": "./server.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^4.3.6"
+  },
+  "engines": { "bun": ">=1.0.0", "node": ">=18.0.0" }
+}
