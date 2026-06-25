@@ -11,6 +11,8 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
+import { clearDependencyStatus, recordDependencyStatus } from '../../shared/dependency-health.js';
+import { ChromaUnavailableError } from '../worker/search/errors.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -58,6 +60,7 @@ export class ChromaMcpManager {
   private connected: boolean = false;
   private lastConnectionFailureTimestamp: number = 0;
   private connecting: Promise<void> | null = null;
+  private static uvxAvailabilityProbe: ((command: string, env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null = null;
 
   private constructor() {}
 
@@ -75,7 +78,7 @@ export class ChromaMcpManager {
 
     const timeSinceLastFailure = Date.now() - this.lastConnectionFailureTimestamp;
     if (this.lastConnectionFailureTimestamp > 0 && timeSinceLastFailure < RECONNECT_BACKOFF_MS) {
-      throw new Error(`chroma-mcp connection in backoff (${Math.ceil((RECONNECT_BACKOFF_MS - timeSinceLastFailure) / 1000)}s remaining)`);
+      throw new ChromaUnavailableError(`chroma-mcp connection in backoff (${Math.ceil((RECONNECT_BACKOFF_MS - timeSinceLastFailure) / 1000)}s remaining)`);
     }
 
     if (this.connecting) {
@@ -110,7 +113,7 @@ export class ChromaMcpManager {
     await this.disposeCurrentSubprocess();
 
     const commandArgs = this.buildCommandArgs();
-    const spawnEnvironment = this.getSpawnEnv();
+    const uvxPreflightEnv = ChromaMcpManager.getUvxPreflightEnv();
     getSupervisor().assertCanSpawn('chroma mcp');
 
     // Spawn uvx DIRECTLY (no `cmd.exe /c` shell). On Windows, routing through
@@ -120,6 +123,15 @@ export class ChromaMcpManager {
     // PATHEXT-resolve a bare `uvx`) and bare `uvx` elsewhere (#2696).
     const uvxSpawnCommand = ChromaMcpManager.resolveUvxCommand();
     const uvxSpawnArgs = commandArgs;
+
+    if (!ChromaMcpManager.isUvxAvailable(uvxSpawnCommand, uvxPreflightEnv, process.platform)) {
+      const message = `uvx executable not found for chroma-mcp (${uvxSpawnCommand})`;
+      recordDependencyStatus('uvx', 'vector_search_unavailable', message);
+      throw new ChromaUnavailableError(message);
+    }
+
+    clearDependencyStatus('uvx');
+    const spawnEnvironment = this.getSpawnEnv(uvxPreflightEnv);
 
     logger.info('CHROMA_MCP', 'Connecting to chroma-mcp via MCP stdio', {
       command: uvxSpawnCommand,
@@ -726,6 +738,54 @@ export class ChromaMcpManager {
     return 'uvx.exe';
   }
 
+  private static isUvxAvailable(
+    command: string,
+    env: Record<string, string>,
+    platform: NodeJS.Platform,
+  ): boolean {
+    if (ChromaMcpManager.uvxAvailabilityProbe) {
+      return ChromaMcpManager.uvxAvailabilityProbe(command, env, platform);
+    }
+
+    const executableNames = platform === 'win32' && !command.toLowerCase().endsWith('.exe')
+      ? [command, `${command}.exe`]
+      : [command];
+
+    if (command.includes('/') || command.includes('\\')) {
+      return executableNames.some(candidate => {
+        try {
+          return fs.existsSync(candidate) && fs.statSync(candidate).isFile();
+        } catch {
+          return false;
+        }
+      });
+    }
+
+    const sep = platform === 'win32' ? ';' : ':';
+    const pathKey = Object.keys(env).find(k => k.toLowerCase() === 'path') ?? 'PATH';
+    const dirs = (env[pathKey] ?? '').split(sep).filter(Boolean);
+
+    for (const dir of dirs) {
+      for (const name of executableNames) {
+        const candidate = path.join(dir, name);
+        try {
+          if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+            return true;
+          }
+        } catch {
+          // Try the next PATH entry.
+        }
+      }
+    }
+    return false;
+  }
+
+  static setUvxAvailabilityProbeForTesting(
+    probe: ((command: string, env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null,
+  ): void {
+    ChromaMcpManager.uvxAvailabilityProbe = probe;
+  }
+
   private static ensureUvOnPath(env: Record<string, string>): void {
     const sep = process.platform === 'win32' ? ';' : ':';
     const pathKey = Object.keys(env).find(k => k.toLowerCase() === 'path') ?? 'PATH';
@@ -746,7 +806,7 @@ export class ChromaMcpManager {
     }
   }
 
-  private getSpawnEnv(): Record<string, string> {
+  private static getUvxPreflightEnv(): Record<string, string> {
     const baseEnv: Record<string, string> = {};
     for (const [key, value] of Object.entries(sanitizeEnv(process.env))) {
       if (value !== undefined) {
@@ -761,6 +821,11 @@ export class ChromaMcpManager {
     // Disable Chroma's anonymous telemetry — it issues background HTTP from
     // the embedding subprocess on every collection touch.
     if (!baseEnv.ANONYMIZED_TELEMETRY) baseEnv.ANONYMIZED_TELEMETRY = 'false';
+    return baseEnv;
+  }
+
+  private getSpawnEnv(preflightEnv?: Record<string, string>): Record<string, string> {
+    const baseEnv = preflightEnv ? { ...preflightEnv } : ChromaMcpManager.getUvxPreflightEnv();
 
     const combinedCertPath = this.getCombinedCertPath();
     if (!combinedCertPath) {

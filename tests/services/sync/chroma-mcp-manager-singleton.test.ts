@@ -14,6 +14,7 @@ const realLoggerSnapshot = { ...realLogger };
 const realSupervisorSnapshot = { ...realSupervisor };
 const realEnvSanitizerSnapshot = { ...realEnvSanitizer };
 const realChildProcess = require('node:child_process');
+const realProcessPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
 
 // Singleton enforcement regression coverage for issue #2313.
 //
@@ -112,6 +113,7 @@ mock.module('../../../src/utils/logger.js', () => ({
 
 // Track tree-kill invocations and the transport whose subprocess was killed.
 const killTreeCalls: number[] = [];
+let execSyncCalls = 0;
 
 mock.module('../../../src/supervisor/index.ts', () => ({
   getSupervisor: () => ({
@@ -145,7 +147,10 @@ mock.module('child_process', () => {
         cb(null, { stdout: '', stderr: '' } as any);
       }
     },
-    execSync: () => '',
+    execSync: () => {
+      execSyncCalls += 1;
+      return '';
+    },
   };
 });
 
@@ -159,9 +164,17 @@ const stubbedProcessKill = ((pid: number, _signal?: string | number) => {
 process.kill = stubbedProcessKill;
 
 import { ChromaMcpManager } from '../../../src/services/sync/ChromaMcpManager.js';
+import {
+  getDependencyStatus,
+  resetDependencyStatusesForTesting,
+} from '../../../src/shared/dependency-health.js';
 
 afterAll(() => {
+  ChromaMcpManager.setUvxAvailabilityProbeForTesting(null);
   process.kill = realProcessKill;
+  if (realProcessPlatform) {
+    Object.defineProperty(process, 'platform', realProcessPlatform);
+  }
   mock.module('../../../src/shared/SettingsDefaultsManager.js', () => realSettingsSnapshot);
   mock.module('../../../src/shared/paths.js', () => realPathsSnapshot);
   mock.module('../../../src/utils/logger.js', () => realLoggerSnapshot);
@@ -174,8 +187,14 @@ function resetState(): void {
   transportCount = 0;
   transportInstances.length = 0;
   killTreeCalls.length = 0;
+  execSyncCalls = 0;
   connectImpl = async () => {};
   callToolImpl = async () => ({ content: [{ type: 'text', text: '{}' }] });
+  ChromaMcpManager.setUvxAvailabilityProbeForTesting(() => true);
+  resetDependencyStatusesForTesting();
+  if (realProcessPlatform) {
+    Object.defineProperty(process, 'platform', realProcessPlatform);
+  }
 }
 
 describe('ChromaMcpManager singleton enforcement (#2313)', () => {
@@ -243,6 +262,44 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     // a stale one).
     await mgr.callTool('chroma_list_collections', { limit: 1 });
     expect(transportInstances.length).toBe(2);
+  });
+
+  it('classifies missing uvx before spawning chroma-mcp transport', async () => {
+    ChromaMcpManager.setUvxAvailabilityProbeForTesting(() => false);
+    const mgr = ChromaMcpManager.getInstance();
+
+    await expect(mgr.callTool('chroma_list_collections', { limit: 1 })).rejects.toThrow('uvx executable not found');
+
+    expect(transportInstances.length).toBe(0);
+    expect(transportCount).toBe(0);
+    expect(getDependencyStatus('uvx')?.kind).toBe('vector_search_unavailable');
+  });
+
+  it('checks uvx availability before macOS certificate discovery can invoke uvx', async () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin' });
+    ChromaMcpManager.setUvxAvailabilityProbeForTesting(() => false);
+    const mgr = ChromaMcpManager.getInstance();
+
+    await expect(mgr.callTool('chroma_list_collections', { limit: 1 })).rejects.toThrow('uvx executable not found');
+
+    expect(transportInstances.length).toBe(0);
+    expect(execSyncCalls).toBe(0);
+  });
+
+  it('clears stale uvx dependency status after successful availability preflight', async () => {
+    ChromaMcpManager.setUvxAvailabilityProbeForTesting(() => false);
+    const mgr = ChromaMcpManager.getInstance();
+
+    await expect(mgr.callTool('chroma_list_collections', { limit: 1 })).rejects.toThrow('uvx executable not found');
+    expect(getDependencyStatus('uvx')?.kind).toBe('vector_search_unavailable');
+
+    await ChromaMcpManager.reset();
+    ChromaMcpManager.setUvxAvailabilityProbeForTesting(() => true);
+    const repairedMgr = ChromaMcpManager.getInstance();
+
+    await repairedMgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(getDependencyStatus('uvx')).toBeNull();
   });
 });
 

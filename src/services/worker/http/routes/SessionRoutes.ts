@@ -24,6 +24,16 @@ import { instrument } from '../../../telemetry/instrument.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
 import { getUptimeSeconds } from '../../../../shared/uptime.js';
 import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../../../shared/user-prompts.js';
+import {
+  CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS,
+  clearDependencyStatus,
+  getDependencyStatus,
+  isDependencyStatusInCooldown,
+  recordDependencyStatus,
+} from '../../../../shared/dependency-health.js';
+import { findClaudeExecutable } from '../../../../shared/find-claude-executable.js';
+import { isClassified } from '../../provider-errors.js';
+import { classifyClaudeError } from '../../ClaudeProvider.js';
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
 
@@ -94,6 +104,41 @@ export class SessionRoutes extends BaseRouteHandler {
     const selectedProvider = this.getSelectedProvider();
 
     if (!session.generatorPromise) {
+      if (selectedProvider === 'claude') {
+        const claudeStatus = getDependencyStatus('claude_cli');
+        if (claudeStatus?.kind === 'setup_required') {
+          if (isDependencyStatusInCooldown(claudeStatus, CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS)) {
+            logger.warn('SESSION', 'Skipping Claude generator start until setup is repaired', {
+              sessionId: sessionDbId,
+              source,
+              dependency: claudeStatus.dependency,
+              status: claudeStatus.kind,
+              message: claudeStatus.message,
+            });
+            return;
+          }
+
+          try {
+            findClaudeExecutable('SDK');
+            clearDependencyStatus('claude_cli');
+            logger.info('SESSION', 'Claude setup dependency repaired; resuming generator start', {
+              sessionId: sessionDbId,
+              source,
+            });
+          } catch (error) {
+            const classified = classifyClaudeError(error);
+            if (classified.kind === 'setup_required') {
+              recordDependencyStatus('claude_cli', 'setup_required', classified.message);
+            }
+            logger.warn('SESSION', 'Claude setup dependency still unavailable after cooldown', {
+              sessionId: sessionDbId,
+              source,
+              error: classified.message,
+            });
+            return;
+          }
+        }
+      }
       await this.applyTierRouting(session);
       await this.startGeneratorWithProvider(session, selectedProvider, source);
       return;
@@ -144,7 +189,10 @@ export class SessionRoutes extends BaseRouteHandler {
 
     const myController = session.abortController;
 
-    session.generatorPromise = agent.startSession(session, this.workerService)
+    let skipGeneratorExitFinalization = false;
+    let generatorPromise: Promise<void>;
+
+    generatorPromise = agent.startSession(session, this.workerService)
       .catch(async error => {
         if (myController.signal.aborted) {
           logger.debug('HTTP', 'Generator catch: ignoring error after abort', { sessionId: session.sessionDbId });
@@ -152,6 +200,16 @@ export class SessionRoutes extends BaseRouteHandler {
         }
 
         const errorMsg = error instanceof Error ? error.message : String(error);
+        if (provider === 'claude' && isClassified(error) && error.kind === 'setup_required') {
+          skipGeneratorExitFinalization = true;
+          recordDependencyStatus('claude_cli', 'setup_required', error.message);
+          logger.warn('SESSION', 'Claude generator start requires setup; future Claude starts will be skipped until repaired', {
+            sessionId: session.sessionDbId,
+            provider,
+            error: error.message,
+          });
+          return;
+        }
 
         if (errorMsg.includes('code 143') || errorMsg.includes('signal SIGTERM')) {
           logger.warn('SESSION', 'Generator killed by external signal', {
@@ -201,6 +259,16 @@ export class SessionRoutes extends BaseRouteHandler {
         );
       })
       .finally(async () => {
+        if (skipGeneratorExitFinalization) {
+          if (session.generatorPromise === generatorPromise) {
+            session.generatorPromise = null;
+          }
+          if (session.currentProvider === provider) {
+            session.currentProvider = null;
+          }
+          return;
+        }
+
         const reason = session.abortReason ?? null;
         session.abortReason = null;  // consume the reason
         if (reason !== null) {
@@ -222,6 +290,7 @@ export class SessionRoutes extends BaseRouteHandler {
           completionHandler: this.completionHandler,
         });
       });
+    session.generatorPromise = generatorPromise;
   }
 
   setupRoutes(app: express.Application): void {

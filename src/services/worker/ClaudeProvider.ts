@@ -29,6 +29,7 @@ import { buildHardenedSdkOptions } from '../../sdk/hardened-options.js';
 import { ClassifiedProviderError } from './provider-errors.js';
 import { resolveTierAlias } from './model-aliases.js';
 import { telemetryBuffer } from '../telemetry/buffer.js';
+import { clearDependencyStatus, recordDependencyStatus } from '../../shared/dependency-health.js';
 
 /**
  * Module-scoped guard so the "effort parameter" hint only fires once per
@@ -57,11 +58,13 @@ export function classifyClaudeError(err: unknown): ClassifiedProviderError {
   // Executable / spawn issues — unrecoverable, no point retrying.
   if (
     message.includes('Claude executable not found') ||
+    message.includes('Every Claude CLI found is too old') ||
     message.includes('CLAUDE_CODE_PATH') ||
+    (message.includes('desktop app') && message.includes('headless mode')) ||
     message.includes('ENOENT') ||
     message.startsWith('spawn ')
   ) {
-    return new ClassifiedProviderError(message, { kind: 'unrecoverable', cause: err });
+    return new ClassifiedProviderError(message, { kind: 'setup_required', cause: err });
   }
 
   // Anthropic auth failures.
@@ -179,7 +182,18 @@ export class ClaudeProvider {
     const cwdTracker = { lastCwd: undefined as string | undefined };
 
     // Find and validate Claude executable (shared utility, closes #2222)
-    const claudePath = findClaudeExecutable('SDK');
+    let claudePath: string;
+    try {
+      claudePath = findClaudeExecutable('SDK');
+      clearDependencyStatus('claude_cli');
+    } catch (error) {
+      const classified = classifyClaudeError(error);
+      if (classified.kind === 'setup_required') {
+        recordDependencyStatus('claude_cli', 'setup_required', classified.message);
+        throw classified;
+      }
+      throw error;
+    }
 
     const modelId = session.modelOverride || this.getModelId();
     session.lastModelId = typeof modelId === 'string' ? modelId : undefined;

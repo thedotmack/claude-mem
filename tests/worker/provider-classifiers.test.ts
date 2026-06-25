@@ -198,15 +198,33 @@ describe('classifyClaudeError', () => {
     expect(err.kind).toBe('auth_invalid');
   });
 
-  it('classifies ENOENT spawn error as unrecoverable', () => {
+  it('classifies ENOENT spawn error as setup_required', () => {
     const spawnErr = Object.assign(new Error('spawn claude ENOENT'), { code: 'ENOENT' });
     const err = classifyClaudeError(spawnErr);
-    expect(err.kind).toBe('unrecoverable');
+    expect(err.kind).toBe('setup_required');
   });
 
-  it('classifies "Claude executable not found" as unrecoverable', () => {
+  it('classifies "Claude executable not found" as setup_required', () => {
     const err = classifyClaudeError(new Error('Claude executable not found at $CLAUDE_CODE_PATH'));
-    expect(err.kind).toBe('unrecoverable');
+    expect(err.kind).toBe('setup_required');
+  });
+
+  it('classifies too-old Claude CLI finder errors as setup_required', () => {
+    const err = classifyClaudeError(
+      new Error(
+        'Every Claude CLI found is too old for claude-mem (each rejects flags the memory agent passes on every spawn)'
+      )
+    );
+    expect(err.kind).toBe('setup_required');
+  });
+
+  it('classifies desktop app headless-mode setup error as setup_required', () => {
+    const err = classifyClaudeError(
+      new Error(
+        'Found desktop app at "/Applications/Claude.app" but it doesn\'t support headless mode. Install Claude Code CLI: npm install -g @anthropic-ai/claude-code'
+      )
+    );
+    expect(err.kind).toBe('setup_required');
   });
 
   it('classifies prompt-too-long as unrecoverable', () => {

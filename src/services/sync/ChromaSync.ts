@@ -5,6 +5,7 @@ import { ParsedObservation, ParsedSummary } from '../../sdk/parser.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
 import { parseFileList } from '../sqlite/observations/files.js';
+import { ChromaUnavailableError } from '../worker/search/errors.js';
 
 interface ChromaDocument {
   id: string;
@@ -231,7 +232,19 @@ export class ChromaSync {
       return 0;
     }
 
-    await this.ensureCollectionExists();
+    try {
+      await this.ensureCollectionExists();
+    } catch (error) {
+      if (error instanceof ChromaUnavailableError) {
+        logger.warn('CHROMA_SYNC', 'Chroma unavailable before write; leaving documents unsynced', {
+          collection: this.collectionName,
+          requested: documents.length,
+          error: error.message
+        });
+        return 0;
+      }
+      throw error;
+    }
 
     const chromaMcp = ChromaMcpManager.getInstance();
 
