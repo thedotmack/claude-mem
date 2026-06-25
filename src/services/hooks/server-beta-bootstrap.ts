@@ -130,29 +130,40 @@ export function persistServerBetaSettings(
     mkdirSync(dir, { recursive: true });
   }
 
-  let existing: Record<string, unknown> = {};
+  let document: Record<string, unknown> = {};
+  let envNested = false;
   if (existsSync(settingsPath)) {
     try {
-      existing = JSON.parse(readFileSync(settingsPath, 'utf-8')) as Record<string, unknown>;
+      document = JSON.parse(readFileSync(settingsPath, 'utf-8')) as Record<string, unknown>;
+      envNested = typeof document.env === 'object' && document.env !== null;
     } catch {
-      existing = {};
+      document = {};
     }
   }
-  // Settings file format: prefer the flat shape (modern). The migration in
-  // SettingsDefaultsManager.loadFromFile already collapses nested → flat.
-  const flat = (existing.env && typeof existing.env === 'object'
-    ? existing.env
-    : existing) as Record<string, unknown>;
+  // Settings file format: support both the flat shape (modern) and the
+  // env-nested shape (Claude-Code-style: { env: {...}, hooks: [...], ... }).
+  // The previous implementation extracted the env subtree into `flat` and
+  // wrote `flat` back as the whole file, silently dropping every non-env
+  // top-level key (hooks, permissions, apiKeyHelper, etc.) — matching the
+  // data-loss pattern fixed in mergeSettings (install.ts).
+  const target = envNested
+    ? (document.env as Record<string, unknown>)
+    : document;
 
-  flat.CLAUDE_MEM_SERVER_BETA_API_KEY = values.apiKey;
-  flat.CLAUDE_MEM_SERVER_BETA_PROJECT_ID = values.projectId;
+  target.CLAUDE_MEM_SERVER_BETA_API_KEY = values.apiKey;
+  target.CLAUDE_MEM_SERVER_BETA_PROJECT_ID = values.projectId;
   if (values.serverBaseUrl) {
-    flat.CLAUDE_MEM_SERVER_BETA_URL = values.serverBaseUrl;
+    target.CLAUDE_MEM_SERVER_BETA_URL = values.serverBaseUrl;
   }
 
-  writeFileSync(settingsPath, JSON.stringify(flat, null, 2), 'utf-8');
   // Hooks read this file on every invocation; restrict permissions so other
-  // local users cannot read the API key.
+  // local users cannot read the API key. Pass `mode: 0o600` to writeFileSync
+  // so the file is CREATED with restrictive permissions atomically — closing
+  // the TOCTOU window between writeFile and chmod where, on file creation,
+  // the API key plaintext was briefly world-readable. The chmod stays as a
+  // belt-and-braces fallback for the case where the file already existed
+  // with looser permissions before this write.
+  writeFileSync(settingsPath, JSON.stringify(document, null, 2), { encoding: 'utf-8', mode: 0o600 });
   try {
     chmodSync(settingsPath, 0o600);
   } catch {
