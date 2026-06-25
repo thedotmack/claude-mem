@@ -23,6 +23,7 @@
 import { createHash, randomBytes } from 'crypto';
 import { chmodSync, existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
+import { stripBom } from '../../utils/json-utils.js';
 import { createPostgresPool, type PostgresPool } from '../../storage/postgres/pool.js';
 import { parsePostgresConfig } from '../../storage/postgres/config.js';
 import { PostgresAuthRepository } from '../../storage/postgres/auth.js';
@@ -133,7 +134,7 @@ export function persistServerBetaSettings(
   let existing: Record<string, unknown> = {};
   if (existsSync(settingsPath)) {
     try {
-      existing = JSON.parse(readFileSync(settingsPath, 'utf-8')) as Record<string, unknown>;
+      existing = JSON.parse(stripBom(readFileSync(settingsPath, 'utf-8'))) as Record<string, unknown>;
     } catch {
       existing = {};
     }
