@@ -92,7 +92,7 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   // idle | shutdown | overflow | restart_guard | quota | poisoned | none).
   // Never model output, never raw abort strings.
   'invalid_output_class',
-  'consecutive_invalid_outputs',
+  'respawn_threshold',
   'respawn_triggered',
   'abort_reason',
   // Worker lifecycle health — previous_shutdown (crash | clean | unknown),

@@ -67,7 +67,7 @@ const COLLECTED_FIELDS = [
   'chroma_available whether vector search was reachable for a search',
   'fallback_reason  none / chroma_connection / chroma_error / chroma_not_initialized',
   'invalid_output_class   xml / idle / prose / poisoned (never the output)',
-  'consecutive_invalid_outputs   unusable outputs in a row before recovery',
+  'respawn_threshold      unusable-output threshold that triggered a respawn',
   'respawn_triggered      whether the compression agent was restarted',
   'abort_reason     idle / shutdown / overflow / restart_guard / quota / poisoned / none',
   'previous_shutdown      crash / clean / unknown (detected at worker start)',

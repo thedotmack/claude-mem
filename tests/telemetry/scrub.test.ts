@@ -153,14 +153,14 @@ describe('scrubProperties', () => {
   it('keeps the compression trust keys with primitive values', () => {
     const result = scrubProperties({
       invalid_output_class: 'poisoned',
-      consecutive_invalid_outputs: 3,
+      respawn_threshold: 3,
       respawn_triggered: true,
       abort_reason: 'restart_guard',
     });
 
     expect(Object.keys(result)).toHaveLength(4);
     expect(result.invalid_output_class).toBe('poisoned');
-    expect(result.consecutive_invalid_outputs).toBe(3);
+    expect(result.respawn_threshold).toBe(3);
     expect(result.respawn_triggered).toBe(true);
     expect(result.abort_reason).toBe('restart_guard');
   });

@@ -86,12 +86,8 @@ export async function processAgentResponse(
             outcome: 'invalid_output',
             invalid_output_class: outputClass,
             respawn_triggered: true,
-            // Replaces the old `consecutive_invalid_outputs` dimension. At respawn
-            // the windowed count has just hit the threshold (and evaluateRespawn
-            // resets the returned window to 0), so the threshold IS the count of
-            // non-exempt bad outputs that triggered this respawn, over window_ms.
+            // Replaces the old `consecutive_invalid_outputs` dimension.
             respawn_threshold: policy.threshold,
-            window_ms: policy.windowMs,
             provider: providerName,
             model: typeof modelId === 'string' && modelId ? modelId : 'unknown',
             ide: session.platformSource,

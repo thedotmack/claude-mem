@@ -37,7 +37,7 @@ mock.module('../../src/services/worker-service.js', () => ({
 }));
 
 import { SessionManager } from '../../src/services/worker/SessionManager.js';
-import { processAgentResponse, INVALID_OUTPUT_RESPAWN_THRESHOLD } from '../../src/services/worker/agents/ResponseProcessor.js';
+import { processAgentResponse } from '../../src/services/worker/agents/ResponseProcessor.js';
 import { DEFAULT_RESPAWN_THRESHOLD, clearRespawnPolicyCache } from '../../src/services/worker/agents/respawn-policy.js';
 import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
 import type { WorkerRef } from '../../src/services/worker/agents/types.js';

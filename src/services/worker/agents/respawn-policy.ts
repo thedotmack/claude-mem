@@ -38,6 +38,8 @@ export interface FailureWindow {
 }
 
 export function freshWindow(): FailureWindow {
+  // windowStart: 0 is a placeholder; it is never read for an expiry decision —
+  // the first non-exempt output re-anchors it via the `badCount === 0` branch in evaluateRespawn.
   return { windowStart: 0, badCount: 0 };
 }
 
