@@ -15,6 +15,7 @@ import { formatTime, groupByDate } from '../shared/timeline-formatting.js';
 import { isDirectChild } from '../shared/path-utils.js';
 import { logger } from '../utils/logger.js';
 import { paths } from '../shared/paths.js';
+import { applySqliteBusyTimeout } from '../services/sqlite/connection.js';
 
 const DB_PATH = paths.database();
 const SETTINGS_PATH = paths.settings();
@@ -323,7 +324,7 @@ function processAllFoldersForGeneration(
   dryRun: boolean,
   observationLimit: number
 ): number {
-  const db = new Database(DB_PATH, { readonly: true, create: false });
+  const db = applySqliteBusyTimeout(new Database(DB_PATH, { readonly: true, create: false }));
 
   let successCount = 0;
   let skipCount = 0;

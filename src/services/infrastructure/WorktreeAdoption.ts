@@ -5,6 +5,7 @@ import { spawnSync } from 'child_process';
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
+import { applySqliteBusyTimeout } from '../sqlite/connection.js';
 import { paths } from '../../shared/paths.js';
 
 const DEFAULT_DATA_DIR = paths.dataDir();
@@ -182,7 +183,7 @@ export async function adoptMergedWorktrees(opts: {
   let db: import('bun:sqlite').Database | null = null;
   try {
     const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
-    db = new Database(dbPath);
+    db = applySqliteBusyTimeout(new Database(dbPath));
 
     interface ColumnInfo { name: string }
     const obsColumns = db
@@ -329,7 +330,7 @@ export async function adoptMergedWorktreesForAllKnownRepos(opts: {
   let db: import('bun:sqlite').Database | null = null;
   try {
     const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
-    db = new Database(dbPath, { readonly: true });
+    db = applySqliteBusyTimeout(new Database(dbPath, { readonly: true }));
 
     const hasPending = db.prepare(
       "SELECT name FROM sqlite_master WHERE type='table' AND name='pending_messages'"

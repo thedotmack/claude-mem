@@ -1,5 +1,5 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite';
-import { DATA_DIR, DB_PATH, ensureDir, OBSERVER_SESSIONS_PROJECT } from '../../shared/paths.js';
+import { OBSERVER_SESSIONS_PROJECT, resolveDbPath } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import {
   TableColumnInfo,
@@ -17,6 +17,7 @@ import { parseFileList } from './observations/files.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources } from '../../shared/platform-source.js';
 import { findRecentDuplicateUserPrompt as findRecentDuplicateUserPromptRecord } from './prompts/get.js';
 import { normalizeStoredPromptText } from './prompt-storage.js';
+import { applySqliteBusyTimeout, ensureDatabaseParentDir } from './connection.js';
 
 function resolveCreateSessionArgs(
   customTitle?: string,
@@ -31,13 +32,11 @@ function resolveCreateSessionArgs(
 export class SessionStore {
   public db: Database;
 
-  constructor(dbPathOrDb: string | Database = DB_PATH) {
+  constructor(dbPathOrDb: string | Database = resolveDbPath()) {
     if (dbPathOrDb instanceof Database) {
       this.db = dbPathOrDb;
     } else {
-      if (dbPathOrDb !== ':memory:') {
-        ensureDir(DATA_DIR);
-      }
+      ensureDatabaseParentDir(dbPathOrDb);
       this.db = new Database(dbPathOrDb);
 
       this.db.run('PRAGMA journal_mode = WAL');
@@ -45,6 +44,7 @@ export class SessionStore {
       this.db.run('PRAGMA foreign_keys = ON');
       this.db.run('PRAGMA journal_size_limit = 4194304'); 
     }
+    applySqliteBusyTimeout(this.db);
 
     this.initializeSchema();
 
