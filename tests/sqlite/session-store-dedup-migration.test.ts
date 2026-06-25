@@ -26,6 +26,12 @@ describe('dedup schema migration (#3038)', () => {
     return store.storeObservation(mem, 'project', { ...OBS, title, narrative: `n-${title}` }, 1, 0, Date.now());
   }
 
+  it('adds observations.title_norm_key + its composite index', () => {
+    expect(cols(store, 'observations')).toContain('title_norm_key');
+    const idx = store.db.query("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_observations_title_norm'").get();
+    expect(!!idx).toBe(true);
+  });
+
   it('adds observations.occurrence_count defaulting to 1', () => {
     expect(cols(store, 'observations')).toContain('occurrence_count');
     const r = store1(session('m1'), 'Hello');

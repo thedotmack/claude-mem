@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
-import { bumpTokenDf, getProjectDocCount, buildProjectIdf, isFuzzyReady } from '../../src/services/sqlite/dedup-store.js';
+import { bumpTokenDf, getProjectDocCount, buildProjectIdf, isFuzzyReady, computeTitleNormKey, findTier0Canonical } from '../../src/services/sqlite/dedup-store.js';
 
 describe('dedup-store: token_df maintenance + IDF lookup (#3038)', () => {
   let store: any;
@@ -37,6 +37,26 @@ describe('dedup-store: token_df maintenance + IDF lookup (#3038)', () => {
     expect(docCount).toBe(21);
     expect(idfFn('raretoken')).toBeGreaterThan(idfFn('common'));
     expect(idfFn('never-seen')).toBeGreaterThan(idfFn('raretoken')); // df=0 -> highest
+  });
+
+  it('computeTitleNormKey: equal for normalization-equivalent titles, distinct per project, null for empty', () => {
+    expect(computeTitleNormKey('p', 'On-Demand Checkpoint.')).toBe(computeTitleNormKey('p', 'on demand checkpoint'));
+    expect(computeTitleNormKey('p1', 'same title')).not.toBe(computeTitleNormKey('p2', 'same title')); // project-scoped
+    expect(computeTitleNormKey('p', 'Added X')).not.toBe(computeTitleNormKey('p', 'Removed X'));
+    for (const empty of [null, '', '   ', '!!!', '🔵']) expect(computeTitleNormKey('p', empty)).toBeNull();
+  });
+
+  it('findTier0Canonical returns the oldest matching row, null on miss or null key', () => {
+    const id = store.createSDKSession('content-t0', 'project', 'prompt');
+    store.updateMemorySessionId(id, 'mem-t0');
+    const norm = computeTitleNormKey('project', 'Hardened Checkpoint!');
+    const o = { type: 'discovery', title: 'x', subtitle: null, facts: [], narrative: 'x', concepts: [], files_read: [], files_modified: [] };
+    store.db.prepare("UPDATE observations SET title_norm_key = ? WHERE id = ?")
+      .run(norm, store.storeObservation('mem-t0', 'project', o, 1, 0, Date.now()).id);
+    const hit = findTier0Canonical(store.db, 'project', norm);
+    expect(hit?.id).toBeGreaterThan(0);
+    expect(findTier0Canonical(store.db, 'project', computeTitleNormKey('project', 'totally different'))).toBeNull();
+    expect(findTier0Canonical(store.db, 'project', null)).toBeNull();
   });
 
   it('isFuzzyReady gates on the cold-start minimum doc count', () => {

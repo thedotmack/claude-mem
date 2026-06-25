@@ -139,6 +139,13 @@ export class SessionStore {
     if (!obsCols.some(c => c.name === 'occurrence_count')) {
       this.db.run('ALTER TABLE observations ADD COLUMN occurrence_count INTEGER NOT NULL DEFAULT 1');
     }
+    // Precomputed exact-normalized-title key for O(1) Tier-0 lookup (SQLite can't
+    // express the normalization itself). NON-unique index — dedup stays app-gated
+    // on CLAUDE_MEM_DEDUP_ENABLED so disabled = byte-identical legacy behavior.
+    if (!obsCols.some(c => c.name === 'title_norm_key')) {
+      this.db.run('ALTER TABLE observations ADD COLUMN title_norm_key TEXT');
+    }
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_title_norm ON observations(project, title_norm_key)');
 
     this.db.run(`
       CREATE TABLE IF NOT EXISTS token_df (

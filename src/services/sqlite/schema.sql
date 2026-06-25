@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS observations (
   generated_by_model   TEXT,
   metadata             TEXT,
   occurrence_count     INTEGER NOT NULL DEFAULT 1,  -- #3038: bumped on a Tier-0 exact-normalized-title merge
+  title_norm_key       TEXT,                        -- #3038: sha256(project + normalizeTitle); O(1) Tier-0 lookup (NULL when title normalizes to empty)
   created_at           TEXT    NOT NULL,
   created_at_epoch     INTEGER NOT NULL,
   FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id)
@@ -92,6 +93,7 @@ CREATE INDEX IF NOT EXISTS idx_observations_content_hash ON observations(content
 CREATE INDEX IF NOT EXISTS idx_observations_agent_type   ON observations(agent_type);
 CREATE INDEX IF NOT EXISTS idx_observations_agent_id     ON observations(agent_id);
 CREATE INDEX IF NOT EXISTS idx_observations_merged_into  ON observations(merged_into_project);
+CREATE INDEX IF NOT EXISTS idx_observations_title_norm   ON observations(project, title_norm_key);
 
 -- ─────────────────────────────────────────────────────────────────────
 -- session_summaries: one summary row per memory session.

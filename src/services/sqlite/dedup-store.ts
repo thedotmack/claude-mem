@@ -9,9 +9,39 @@
  * Kept as plain functions over a Database so they're unit-testable and keep the
  * already-large SessionStore lean.
  */
+import { createHash } from 'crypto';
 import type { Database } from 'bun:sqlite';
-import { tokenizeWs } from '../dedup/normalize.js';
+import { normalizeTitle, tokenizeWs } from '../dedup/normalize.js';
 import { buildIdfFn } from '../dedup/idf.js';
+
+/**
+ * Project-scoped exact-normalized-title key for O(1) Tier-0 lookup (#3038).
+ * SQLite cannot express `\p{L}`-aware normalization itself (ASCII-only lower(),
+ * no regexp_replace, no bun:sqlite custom functions), so we precompute the key
+ * in app code and store it in an indexed column — the same pattern as content_hash.
+ *
+ * Returns null when the title normalizes to empty (null/punctuation/emoji-only):
+ * those must NOT collapse into each other (data-loss guard), and a NULL key never
+ * matches via `title_norm_key = ?`.
+ */
+export function computeTitleNormKey(project: string, title: string | null | undefined): string | null {
+  const norm = normalizeTitle(title);
+  if (norm === '') return null;
+  return createHash('sha256').update(`${project}\x00${norm}`).digest('hex').slice(0, 32);
+}
+
+/** O(1) Tier-0 lookup: the existing canonical row for this (project, normalized-title), or null. */
+export function findTier0Canonical(
+  db: Database,
+  project: string,
+  normKey: string | null
+): { id: number; occurrence_count: number; created_at_epoch: number } | null {
+  if (normKey === null) return null;
+  return (db.prepare(
+    'SELECT id, occurrence_count, created_at_epoch FROM observations ' +
+    'WHERE project = ? AND title_norm_key = ? ORDER BY created_at_epoch ASC, id ASC LIMIT 1'
+  ).get(project, normKey) as { id: number; occurrence_count: number; created_at_epoch: number } | undefined) ?? null;
+}
 
 /** Record one new document: +1 df for each UNIQUE title token, +1 project doc_count. */
 export function bumpTokenDf(db: Database, project: string, title: string | null | undefined): void {
