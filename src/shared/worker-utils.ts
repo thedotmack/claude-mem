@@ -485,8 +485,21 @@ export async function ensureWorkerRunning(): Promise<boolean> {
 
 let aliveCache: boolean | null = null;
 
+/** Test-only: reset the ensureWorkerAliveOnce() cache (mirrors clearPortCache). */
+export function resetAliveCache(): void {
+  aliveCache = null;
+}
+
 export async function ensureWorkerAliveOnce(): Promise<boolean> {
   if (aliveCache !== null) return aliveCache;
+  // Opt-out: when CLAUDE_MEM_WORKER_AUTOSTART=false, hooks must NOT lazy-spawn
+  // the worker daemon. Lets server-beta-only or externally-managed deployments
+  // stop hook activity from resurrecting the worker. Default 'true' preserves
+  // existing behavior.
+  if ((loadFromFileOnce().CLAUDE_MEM_WORKER_AUTOSTART ?? 'true').trim().toLowerCase() === 'false') {
+    aliveCache = false;
+    return aliveCache;
+  }
   aliveCache = await ensureWorkerRunning();
   return aliveCache;
 }

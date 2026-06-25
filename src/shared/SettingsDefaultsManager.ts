@@ -82,6 +82,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_SERVER_BETA_URL: string;
   CLAUDE_MEM_SERVER_BETA_API_KEY: string;
   CLAUDE_MEM_SERVER_BETA_PROJECT_ID: string;
+  CLAUDE_MEM_WORKER_AUTOSTART: string;
 }
 
 export class SettingsDefaultsManager {
@@ -163,6 +164,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_SERVER_BETA_URL: `http://127.0.0.1:${process.env.CLAUDE_MEM_SERVER_PORT ?? String(37877 + ((process.getuid?.() ?? 77) % 100))}`,  // Default server-beta runtime URL — UID-derived for multi-account isolation
     CLAUDE_MEM_SERVER_BETA_API_KEY: '',                     // Local hook API key, populated by installer when runtime=server-beta
     CLAUDE_MEM_SERVER_BETA_PROJECT_ID: '',                  // Default Postgres project_id used by hooks when runtime=server-beta
+    CLAUDE_MEM_WORKER_AUTOSTART: 'true',                    // When 'false', hooks will NOT lazy-spawn the worker daemon. Default 'true' preserves existing behavior; opt-in for deployments that drive the worker out-of-band (e.g. server-beta-only, where worker-only features like the data viewer/corpus/semantic-injection are intentionally not used).
   };
 
   static getAllDefaults(): SettingsDefaults {
