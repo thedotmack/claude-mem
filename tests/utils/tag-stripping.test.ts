@@ -1,6 +1,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
-import { stripMemoryTagsFromPrompt, stripMemoryTagsFromJson, isInternalProtocolPayload } from '../../src/utils/tag-stripping.js';
+import { stripMemoryTagsFromPrompt, stripMemoryTagsFromJson, isInternalProtocolPayload, isInternalSystemPrompt } from '../../src/utils/tag-stripping.js';
 import { logger } from '../../src/utils/logger.js';
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
@@ -441,10 +441,38 @@ after`;
       const text = '<task-notification>a</task-notification> hello <task-notification>b</task-notification>';
       expect(isInternalProtocolPayload(text)).toBe(false);
     });
-
     it('returns false for two adjacent protocol blocks (deliberate: deny-list per single block, not concatenations)', () => {
       const text = '<task-notification>a</task-notification><task-notification>b</task-notification>';
       expect(isInternalProtocolPayload(text)).toBe(false);
+    });
+  });
+
+  describe('isInternalSystemPrompt', () => {
+    it('returns false for empty input', () => {
+      expect(isInternalSystemPrompt('')).toBe(false);
+    });
+
+    it('returns false for general user queries', () => {
+      expect(isInternalSystemPrompt('How do I run a backup?')).toBe(false);
+      expect(isInternalSystemPrompt('Memory Writing Agent is cool.')).toBe(false);
+      expect(isInternalSystemPrompt('Tell me about the task title generator.')).toBe(false);
+    });
+
+    it('returns true for Codex-app title generation prompt', () => {
+      expect(isInternalSystemPrompt('You are a helpful assistant. You will be presented with a user prompt, and your job is to provide a short title for a task.')).toBe(true);
+      expect(isInternalSystemPrompt('You are a helpful assistant. You will be presented with a user prompt, and your job is to provide a short title for a ta')).toBe(true);
+      expect(isInternalSystemPrompt('   You are a helpful assistant. You will be presented with a user prompt, and your job is to provide a short title for a task')).toBe(true);
+    });
+
+    it('returns true for Memory Writing Agent consolidation system prompt', () => {
+      expect(isInternalSystemPrompt('## Memory Writing Agent: Phase 2 (Consolidation)\n\nYou are a Memory Writing Agent.\n\nYour job: consolidate raw memories')).toBe(true);
+      expect(isInternalSystemPrompt('## Memory Writing Agent\n\nYour job: consolidate')).toBe(true);
+    });
+
+    it('returns true for Codex onboarding/suggestions prompt', () => {
+      expect(isInternalSystemPrompt('# Overview\n\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this local project.')).toBe(true);
+      expect(isInternalSystemPrompt('# Overview\r\n\r\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do')).toBe(true);
+      expect(isInternalSystemPrompt(' # Overview\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do')).toBe(true);
     });
   });
 });
