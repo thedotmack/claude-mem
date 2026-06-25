@@ -38,6 +38,26 @@ describe('storeObservation dedup integration (#3038)', () => {
     expect(occ).toBe(2);
   });
 
+  it('neither a Tier-0 merge NOR a content_hash retry grows token_df/doc_count (maintenance = real inserts only)', () => {
+    process.env.CLAUDE_MEM_DEDUP_ENABLED = 'true';
+    const t = Date.now();
+    store.storeObservation(session('s1'), 'p', obs('On-Demand Checkpoint.'), 1, 0, t);
+    const doc0 = (store.db.prepare("SELECT doc_count FROM dedup_meta WHERE project='p'").get() as any).doc_count;
+    const df0 = (store.db.prepare("SELECT COUNT(*) c FROM token_df WHERE project='p'").get() as any).c;
+    expect(doc0).toBe(1);
+    expect(df0).toBeGreaterThan(0);
+
+    store.storeObservation(session('s2'), 'p', obs('on demand checkpoint'), 1, 0, t + 1000); // Tier-0 merge
+    store.storeObservation('s1', 'p', obs('On-Demand Checkpoint.'), 1, 0, t);                  // content_hash retry
+
+    const doc1 = (store.db.prepare("SELECT doc_count FROM dedup_meta WHERE project='p'").get() as any).doc_count;
+    const df1 = (store.db.prepare("SELECT COUNT(*) c FROM token_df WHERE project='p'").get() as any).c;
+    expect(doc1).toBe(doc0); // merge + retry add no documents
+    expect(df1).toBe(df0);
+    const occ = (store.db.prepare('SELECT occurrence_count FROM observations LIMIT 1').get() as any).occurrence_count;
+    expect(occ).toBe(2); // exactly one merge bump (the retry did NOT bump)
+  });
+
   it('Tier-0: does NOT collapse the same normalized title across DIFFERENT projects', () => {
     process.env.CLAUDE_MEM_DEDUP_ENABLED = 'true';
     const t = Date.now();

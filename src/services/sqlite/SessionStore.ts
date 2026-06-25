@@ -13,7 +13,7 @@ import {
 } from '../../types/database.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from './types.js';
 import { computeObservationContentHash } from './observations/store.js';
-import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import {
   computeTitleNormKey, findTier0Canonical, bumpTokenDf, isFuzzyReady, recordTier1Candidates,
   runDedupScan as runDedupScanAll,
@@ -2223,14 +2223,20 @@ export class SessionStore {
   }
 
   // #3038 — resolve the dedup knobs from settings (cheap; off by default).
+  // Garbage/NaN values fall back to the safe defaults rather than disabling guards.
   private dedupConfig(): DedupRuntimeConfig & { enabled: boolean; minProjectDocs: number } {
+    const num = (key: keyof SettingsDefaults, fallback: number): number => {
+      const v = Number(SettingsDefaultsManager.get(key));
+      return Number.isFinite(v) ? v : fallback;
+    };
     return {
       enabled: SettingsDefaultsManager.getBool('CLAUDE_MEM_DEDUP_ENABLED'),
-      cosineThreshold: Number(SettingsDefaultsManager.get('CLAUDE_MEM_DEDUP_COSINE_THRESHOLD')),
-      idfVetoDf: SettingsDefaultsManager.getInt('CLAUDE_MEM_DEDUP_IDF_VETO_DF'),
-      minSharedTokens: SettingsDefaultsManager.getInt('CLAUDE_MEM_DEDUP_MIN_SHARED_TOKENS'),
-      maxScan: SettingsDefaultsManager.getInt('CLAUDE_MEM_DEDUP_MAX_SCAN'),
-      minProjectDocs: SettingsDefaultsManager.getInt('CLAUDE_MEM_DEDUP_MIN_PROJECT_DOCS'),
+      cosineThreshold: num('CLAUDE_MEM_DEDUP_COSINE_THRESHOLD', 0.8),
+      idfVetoDf: num('CLAUDE_MEM_DEDUP_IDF_VETO_DF', 10),
+      minSharedTokens: num('CLAUDE_MEM_DEDUP_MIN_SHARED_TOKENS', 2),
+      maxScan: num('CLAUDE_MEM_DEDUP_MAX_SCAN', 2000),
+      maxBackfillRows: num('CLAUDE_MEM_DEDUP_MAX_BACKFILL_ROWS', 50000),
+      minProjectDocs: num('CLAUDE_MEM_DEDUP_MIN_PROJECT_DOCS', 10),
     };
   }
 
@@ -2243,19 +2249,22 @@ export class SessionStore {
     observation_id: number; observation_title: string | null;
     duplicate_of_id: number; duplicate_of_title: string | null;
   }> {
-    const where = project ? 'WHERE c.project = ?' : '';
-    const params: SQLQueryBindings[] = project ? [project, limit] : [limit];
-    return this.db.prepare(`
-      SELECT c.id, c.project, c.method, c.score, c.status, c.created_at_epoch,
-             c.observation_id, o1.title AS observation_title,
-             c.duplicate_of_id, o2.title AS duplicate_of_title
-      FROM observation_dedup_candidates c
-      JOIN observations o1 ON o1.id = c.observation_id
-      JOIN observations o2 ON o2.id = c.duplicate_of_id
-      ${where}
-      ORDER BY c.score DESC, c.id DESC
-      LIMIT ?
-    `).all(...params) as any;
+    type Row = {
+      id: number; project: string; method: string; score: number; status: string; created_at_epoch: number;
+      observation_id: number; observation_title: string | null;
+      duplicate_of_id: number; duplicate_of_title: string | null;
+    };
+    // Two explicit prepared statements — no conditional SQL-fragment interpolation.
+    const select =
+      'SELECT c.id, c.project, c.method, c.score, c.status, c.created_at_epoch, ' +
+      'c.observation_id, o1.title AS observation_title, c.duplicate_of_id, o2.title AS duplicate_of_title ' +
+      'FROM observation_dedup_candidates c ' +
+      'JOIN observations o1 ON o1.id = c.observation_id ' +
+      'JOIN observations o2 ON o2.id = c.duplicate_of_id ';
+    const order = 'ORDER BY c.score DESC, c.id DESC LIMIT ?';
+    return project
+      ? this.db.prepare(`${select}WHERE c.project = ? ${order}`).all(project, limit) as Row[]
+      : this.db.prepare(`${select}${order}`).all(limit) as Row[];
   }
 
   // #3038 — opt-in dedup-scan: backfill the IDF model + sweep all projects for candidates.
@@ -2308,6 +2317,15 @@ export class SessionStore {
     // duplicate of any age — bump its occurrence_count and return it, no insert. Mirrors
     // the content_hash ON CONFLICT DO NOTHING semantics but cross-session + normalization-aware.
     if (dedup.enabled) {
+      // Retry idempotency: a redelivered identical (session, content_hash) must NOT
+      // bump occurrence_count — return the existing row, exactly as the legacy
+      // ON CONFLICT DO NOTHING path did. Only a genuinely-new observation that shares
+      // a normalized title (cross-session recurrence) counts as a Tier-0 occurrence.
+      const retry = this.db.prepare(
+        'SELECT id, created_at_epoch FROM observations WHERE memory_session_id = ? AND content_hash = ?'
+      ).get(memorySessionId, contentHash) as { id: number; created_at_epoch: number } | undefined;
+      if (retry) return { id: retry.id, createdAtEpoch: retry.created_at_epoch };
+
       const canonical = findTier0Canonical(this.db, project, titleNormKey);
       if (canonical) {
         this.db.prepare('UPDATE observations SET occurrence_count = occurrence_count + 1 WHERE id = ?').run(canonical.id);
@@ -2466,6 +2484,11 @@ export class SessionStore {
         // Tier-0 (#3038): cross-session normalized-title duplicate (incl. earlier items
         // in THIS batch — already inserted and visible in-transaction) → bump + reuse.
         if (dedup.enabled) {
+          // Retry idempotency (see storeObservation): identical (session, content_hash)
+          // redelivery returns the existing row without bumping occurrence_count.
+          const retry = lookupExistingStmt.get(memorySessionId, contentHash) as { id: number } | null;
+          if (retry) { observationIds.push(retry.id); continue; }
+
           const canonical = findTier0Canonical(this.db, project, titleNormKey);
           if (canonical) {
             this.db.prepare('UPDATE observations SET occurrence_count = occurrence_count + 1 WHERE id = ?').run(canonical.id);

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { backfillProjectDedup, sweepProjectCandidates, runDedupScan, computeTitleNormKey } from '../../src/services/sqlite/dedup-store.js';
 
-const CFG = { cosineThreshold: 0.8, idfVetoDf: 10, minSharedTokens: 2, maxScan: 2000 };
+const CFG = { cosineThreshold: 0.8, idfVetoDf: 10, minSharedTokens: 2, maxScan: 2000, maxBackfillRows: 50000 };
 
 describe('dedup-scan: backfill + sweep (#3038)', () => {
   let store: any;

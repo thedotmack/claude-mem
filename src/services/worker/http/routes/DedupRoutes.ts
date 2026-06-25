@@ -1,5 +1,6 @@
 import express, { Request, Response } from 'express';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
+import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import type { DatabaseManager } from '../../DatabaseManager.js';
 
 /**
@@ -9,8 +10,17 @@ import type { DatabaseManager } from '../../DatabaseManager.js';
  *  - POST /api/dedup/scan  — opt-in idempotent backfill of the IDF model +
  *    full-corpus candidate sweep across all projects.
  * Both are thin wrappers over tested SessionStore methods.
+ *
+ * Trust model: like every other worker route, these are guarded only by the
+ * worker's 127.0.0.1 binding + localhost CORS — any local process can reach
+ * them. GET candidates exposes observation titles project-wide; no per-route
+ * auth, consistent with DataRoutes/SearchRoutes/MemoryRoutes.
  */
 export class DedupRoutes extends BaseRouteHandler {
+  // Single-flight guard: the scan is an expensive full-corpus, event-loop-blocking
+  // operation; reject overlapping runs instead of compounding CPU/memory pressure.
+  private static scanInProgress = false;
+
   constructor(private dbManager: DatabaseManager) {
     super();
   }
@@ -29,7 +39,22 @@ export class DedupRoutes extends BaseRouteHandler {
   });
 
   private handleScan = this.wrapHandler(async (_req: Request, res: Response): Promise<void> => {
-    const scanned = this.dbManager.getSessionStore().runDedupScan();
-    res.json({ scanned });
+    // Scan MUTATES observation rows (title_norm_key) — gate on the feature flag so a
+    // disabled install stays byte-identical to legacy behavior.
+    if (!SettingsDefaultsManager.getBool('CLAUDE_MEM_DEDUP_ENABLED')) {
+      res.status(409).json({ error: 'dedup_disabled', message: 'Set CLAUDE_MEM_DEDUP_ENABLED=true before running a dedup scan.' });
+      return;
+    }
+    if (DedupRoutes.scanInProgress) {
+      res.status(409).json({ error: 'scan_in_progress', message: 'A dedup scan is already running.' });
+      return;
+    }
+    DedupRoutes.scanInProgress = true;
+    try {
+      const scanned = this.dbManager.getSessionStore().runDedupScan();
+      res.json({ scanned });
+    } finally {
+      DedupRoutes.scanInProgress = false;
+    }
   });
 }

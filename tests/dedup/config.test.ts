@@ -8,6 +8,7 @@ const DEDUP_KEYS = [
   'CLAUDE_MEM_DEDUP_MIN_SHARED_TOKENS',
   'CLAUDE_MEM_DEDUP_MIN_PROJECT_DOCS',
   'CLAUDE_MEM_DEDUP_MAX_SCAN',
+  'CLAUDE_MEM_DEDUP_MAX_BACKFILL_ROWS',
 ] as const;
 
 // Env isolation (lesson from #3056/#3058): never leak DEDUP overrides across tests.
@@ -30,6 +31,7 @@ describe('dedup settings defaults', () => {
     expect(d.CLAUDE_MEM_DEDUP_MIN_SHARED_TOKENS).toBe('2');
     expect(d.CLAUDE_MEM_DEDUP_MIN_PROJECT_DOCS).toBe('10');
     expect(d.CLAUDE_MEM_DEDUP_MAX_SCAN).toBe('2000');
+    expect(d.CLAUDE_MEM_DEDUP_MAX_BACKFILL_ROWS).toBe('50000');
   });
 
   it('is disabled by default via getBool', () => {

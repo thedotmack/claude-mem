@@ -95,6 +95,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_DEDUP_MIN_SHARED_TOKENS: string;      // require >= N shared tokens before computing cosine (sparse-vector guard)
   CLAUDE_MEM_DEDUP_MIN_PROJECT_DOCS: string;       // cold-start: skip fuzzy Tier-1 below N docs/project (IDF unreliable)
   CLAUDE_MEM_DEDUP_MAX_SCAN: string;               // cap Tier-1 candidate scan per insert (logged when hit)
+  CLAUDE_MEM_DEDUP_MAX_BACKFILL_ROWS: string;      // dedup-scan safety valve: skip a project larger than this (avoids OOM)
 }
 
 export class SettingsDefaultsManager {
@@ -189,6 +190,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_DEDUP_MIN_SHARED_TOKENS: '2',             // >=2 shared tokens before cosine (kills sparse-vector noise)
     CLAUDE_MEM_DEDUP_MIN_PROJECT_DOCS: '10',            // cold-start gate: IDF unreliable below ~10 docs/project
     CLAUDE_MEM_DEDUP_MAX_SCAN: '2000',                  // per-insert candidate-scan cap (logged when exceeded)
+    CLAUDE_MEM_DEDUP_MAX_BACKFILL_ROWS: '50000',        // dedup-scan skips a project with more rows than this (memory safety)
   };
 
   static getAllDefaults(): SettingsDefaults {
