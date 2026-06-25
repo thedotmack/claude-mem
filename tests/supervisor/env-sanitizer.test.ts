@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'bun:test';
 import { sanitizeEnv } from '../../src/supervisor/env-sanitizer.js';
 
@@ -48,6 +49,22 @@ describe('sanitizeEnv', () => {
     expect(result.CLAUDE_CODE_USE_VERTEX).toBe('1');
     expect(result.CLAUDE_CODE_SKIP_VERTEX_AUTH).toBe('1');
     expect(result.PATH).toBe('/usr/bin');
+  });
+
+  it('keeps Bedrock and Vertex skip-auth flags in shipped runtime bundles', () => {
+    const workerBundle = readFileSync(
+      new URL('../../plugin/scripts/worker-service.cjs', import.meta.url),
+      'utf-8'
+    );
+    const serverBetaBundle = readFileSync(
+      new URL('../../plugin/scripts/server-beta-service.cjs', import.meta.url),
+      'utf-8'
+    );
+
+    expect(workerBundle).toContain('CLAUDE_CODE_SKIP_BEDROCK_AUTH');
+    expect(workerBundle).toContain('CLAUDE_CODE_SKIP_VERTEX_AUTH');
+    expect(serverBetaBundle).toContain('CLAUDE_CODE_SKIP_BEDROCK_AUTH');
+    expect(serverBetaBundle).toContain('CLAUDE_CODE_SKIP_VERTEX_AUTH');
   });
 
   it('strips exact-match variables (CLAUDECODE, CLAUDE_CODE_SESSION, CLAUDE_CODE_ENTRYPOINT, MCP_SESSION_ID)', () => {
