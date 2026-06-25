@@ -96,6 +96,15 @@ describe('getProjectName', () => {
       expect(getProjectName(packageDir)).toBe('api');
     });
 
+    it('subdirectory inside a monorepo package shares the package basename', () => {
+      const { mkdirSync } = require('fs');
+      const { join } = require('path');
+      // api/package.json was created by the previous test; src/ has none
+      const packageSrcDir = join(repoRoot, 'packages', 'api', 'src');
+      mkdirSync(packageSrcDir, { recursive: true });
+      expect(getProjectName(packageSrcDir)).toBe('api');
+    });
+
     it('non-repo path falls back to basename(cwd)', () => {
       // A path that does not exist (and therefore cannot be in a repo) must
       // fall back to basename(cwd) rather than throwing or returning a root.
