@@ -1,5 +1,6 @@
 import { homedir } from 'os'
 import path from 'path';
+import { realpathSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { logger } from './logger.js';
 import { detectWorktree } from './worktree.js';
@@ -35,8 +36,9 @@ function findGitRepoRoot(dir: string): string | null {
 }
 
 function samePath(a: string, b: string): boolean {
-  const left = path.resolve(a);
-  const right = path.resolve(b);
+  const realOrResolve = (p: string) => { try { return realpathSync(path.resolve(p)); } catch { return path.resolve(p); } };
+  const left = realOrResolve(a);
+  const right = realOrResolve(b);
   return process.platform === 'win32'
     ? left.toLowerCase() === right.toLowerCase()
     : left === right;
