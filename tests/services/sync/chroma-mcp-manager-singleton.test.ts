@@ -272,7 +272,10 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
 
     expect(transportInstances.length).toBe(0);
     expect(transportCount).toBe(0);
-    expect(getDependencyStatus('uvx')?.kind).toBe('vector_search_unavailable');
+    expect(getDependencyStatus('uvx')).toMatchObject({
+      kind: 'vector_search_unavailable',
+      remediation: expect.stringContaining('uv/uvx'),
+    });
   });
 
   it('checks uvx availability before macOS certificate discovery can invoke uvx', async () => {

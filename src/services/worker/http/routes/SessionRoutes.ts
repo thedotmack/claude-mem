@@ -29,7 +29,7 @@ import {
   clearDependencyStatus,
   getDependencyStatus,
   isDependencyStatusInCooldown,
-  recordDependencyStatus,
+  recordClaudeCliSetupRequired,
 } from '../../../../shared/dependency-health.js';
 import { findClaudeExecutable } from '../../../../shared/find-claude-executable.js';
 import { isClassified } from '../../provider-errors.js';
@@ -128,7 +128,7 @@ export class SessionRoutes extends BaseRouteHandler {
           } catch (error) {
             const classified = classifyClaudeError(error);
             if (classified.kind === 'setup_required') {
-              recordDependencyStatus('claude_cli', 'setup_required', classified.message);
+              recordClaudeCliSetupRequired(classified.message);
             }
             logger.warn('SESSION', 'Claude setup dependency still unavailable after cooldown', {
               sessionId: sessionDbId,
@@ -202,7 +202,7 @@ export class SessionRoutes extends BaseRouteHandler {
         const errorMsg = error instanceof Error ? error.message : String(error);
         if (provider === 'claude' && isClassified(error) && error.kind === 'setup_required') {
           skipGeneratorExitFinalization = true;
-          recordDependencyStatus('claude_cli', 'setup_required', error.message);
+          recordClaudeCliSetupRequired(error.message);
           logger.warn('SESSION', 'Claude generator start requires setup; future Claude starts will be skipped until repaired', {
             sessionId: session.sessionDbId,
             provider,

@@ -11,7 +11,7 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
-import { clearDependencyStatus, recordDependencyStatus } from '../../shared/dependency-health.js';
+import { clearDependencyStatus, recordUvxVectorSearchUnavailable } from '../../shared/dependency-health.js';
 import { ChromaUnavailableError } from '../worker/search/errors.js';
 
 const execFileAsync = promisify(execFile);
@@ -126,7 +126,7 @@ export class ChromaMcpManager {
 
     if (!ChromaMcpManager.isUvxAvailable(uvxSpawnCommand, uvxPreflightEnv, process.platform)) {
       const message = `uvx executable not found for chroma-mcp (${uvxSpawnCommand})`;
-      recordDependencyStatus('uvx', 'vector_search_unavailable', message);
+      recordUvxVectorSearchUnavailable(message);
       throw new ChromaUnavailableError(message);
     }
 

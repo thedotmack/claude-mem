@@ -14,6 +14,7 @@ mock.module('../../src/shared/find-claude-executable.js', () => ({
 }));
 
 const { SessionRoutes } = await import('../../src/services/worker/http/routes/SessionRoutes.js');
+const { ClaudeProvider } = await import('../../src/services/worker/ClaudeProvider.js');
 
 function makeSession(): ActiveSession {
   return {
@@ -108,7 +109,10 @@ describe('Claude setup-required generator gate', () => {
     await session.generatorPromise;
 
     expect(starts).toBe(1);
-    expect(getDependencyStatus('claude_cli')?.kind).toBe('setup_required');
+    expect(getDependencyStatus('claude_cli')).toMatchObject({
+      kind: 'setup_required',
+      remediation: expect.stringContaining('Claude Code CLI'),
+    });
     expect(activeSession).toBe(session);
     expect(session.generatorPromise).toBeNull();
     expect(finalizerCalls).toBe(0);
@@ -139,5 +143,19 @@ describe('Claude setup-required generator gate', () => {
 
     expect(finalizerCalls).toBe(1);
     expect(removeSessionImmediateCalls).toBe(1);
+  });
+
+  it('records Claude CLI remediation when provider startup cannot find the executable', async () => {
+    findClaudeExecutableImpl = () => {
+      throw new Error('Claude executable not found');
+    };
+
+    const provider = new ClaudeProvider({} as any, {} as any);
+
+    await expect(provider.startSession(makeSession())).rejects.toThrow('Claude executable not found');
+    expect(getDependencyStatus('claude_cli')).toMatchObject({
+      kind: 'setup_required',
+      remediation: expect.stringContaining('Claude Code CLI'),
+    });
   });
 });

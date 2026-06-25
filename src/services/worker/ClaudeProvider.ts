@@ -29,7 +29,7 @@ import { buildHardenedSdkOptions } from '../../sdk/hardened-options.js';
 import { ClassifiedProviderError } from './provider-errors.js';
 import { resolveTierAlias } from './model-aliases.js';
 import { telemetryBuffer } from '../telemetry/buffer.js';
-import { clearDependencyStatus, recordDependencyStatus } from '../../shared/dependency-health.js';
+import { clearDependencyStatus, recordClaudeCliSetupRequired } from '../../shared/dependency-health.js';
 
 /**
  * Module-scoped guard so the "effort parameter" hint only fires once per
@@ -189,7 +189,7 @@ export class ClaudeProvider {
     } catch (error) {
       const classified = classifyClaudeError(error);
       if (classified.kind === 'setup_required') {
-        recordDependencyStatus('claude_cli', 'setup_required', classified.message);
+        recordClaudeCliSetupRequired(classified.message);
         throw classified;
       }
       throw error;

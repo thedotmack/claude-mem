@@ -21,10 +21,12 @@ import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
 
 import { ensureWorkerStarted as ensureWorkerStartedShared, type WorkerStartResult } from './worker-spawner.js';
 import { acquireSpawnLock, releaseSpawnLock } from '../shared/worker-spawn-gate.js';
+import { snapshotDependencyHealth, type DependencyHealthSnapshot } from '../shared/dependency-health.js';
 import { captureEvent, captureException, shutdownTelemetry, enableExceptionAutocaptureForWorker } from './telemetry/telemetry.js';
 import { telemetryBuffer } from './telemetry/buffer.js';
 import { collectInstallStats } from './telemetry/install-stats.js';
 import { runHistoricalBackfill } from './telemetry/backfill.js';
+import { runWorkerDependencyPreflight } from './worker/dependency-preflight.js';
 
 export { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
 import { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
@@ -263,6 +265,7 @@ export class WorkerService implements WorkerRef {
     this.server = new Server({
       getInitializationComplete: () => this.initializationCompleteFlag,
       getMcpReady: () => this.mcpReady,
+      getDependencyHealth: () => snapshotDependencyHealth(),
       onShutdown: (reason) => this.shutdown(reason ?? 'stop'),
       onRestart: () => this.shutdown('restart'),
       workerPath: __filename,
@@ -317,7 +320,13 @@ export class WorkerService implements WorkerRef {
     });
 
     this.server.app.use(['/api', '/v1'], async (req, res, next) => {
-      if (req.path === '/chroma/status' || req.path === '/health' || req.path === '/readiness' || req.path === '/version') {
+      if (
+        req.path === '/chroma/status' ||
+        req.path === '/health' ||
+        req.path === '/readiness' ||
+        req.path === '/version' ||
+        req.path === '/settings/dependency-health'
+      ) {
         next();
         return;
       }
@@ -440,6 +449,22 @@ export class WorkerService implements WorkerRef {
       const modeId = settings.CLAUDE_MEM_MODE;
       ModeManager.getInstance().loadMode(modeId);
       logger.info('SYSTEM', `Mode loaded: ${modeId}`);
+
+      const dependencyHealth = runWorkerDependencyPreflight({
+        settings,
+        classifyClaudeError,
+      });
+      if (dependencyHealth.degraded) {
+        logger.warn('SYSTEM', 'Dependency preflight found degraded optional setup', {
+          statuses: dependencyHealth.statuses.map(status => ({
+            dependency: status.dependency,
+            kind: status.kind,
+            message: status.message,
+          })),
+        });
+      } else {
+        logger.info('SYSTEM', 'Dependency preflight passed');
+      }
 
       if (settings.CLAUDE_MEM_MODE === 'local' || !settings.CLAUDE_MEM_MODE) {
         logger.info('WORKER', 'Checking for one-time Chroma migration...');
@@ -1138,6 +1163,10 @@ async function main() {
         if (typeof health.workerPath === 'string') {
           console.log(`  Worker path: ${health.workerPath}`);
         }
+        const dependencyHint = formatDependencyHealthHint(health);
+        if (dependencyHint) {
+          console.log(dependencyHint);
+        }
         printQueueStatusIfBullMq(health);
         process.exit(0);
       }
@@ -1391,12 +1420,13 @@ async function main() {
   }
 }
 
-interface WorkerHealthSnapshot {
+export interface WorkerHealthSnapshot {
   status?: unknown;
   pid?: unknown;
   version?: unknown;
   uptime?: unknown;
   workerPath?: unknown;
+  dependencies?: DependencyHealthSnapshot;
   queue?: {
     redis?: {
       status?: string;
@@ -1407,6 +1437,25 @@ interface WorkerHealthSnapshot {
       error?: string;
     };
   };
+}
+
+export function formatDependencyHealthHint(health: WorkerHealthSnapshot): string | null {
+  const dependencies = health.dependencies;
+  if (!dependencies?.degraded || dependencies.statuses.length === 0) {
+    return null;
+  }
+
+  const labels = dependencies.statuses.map(status => {
+    if (status.dependency === 'claude_cli' && status.kind === 'setup_required') {
+      return 'Claude CLI setup required';
+    }
+    if (status.dependency === 'uvx' && status.kind === 'vector_search_unavailable') {
+      return 'uvx unavailable for vector search';
+    }
+    return `${status.dependency}: ${status.kind}`;
+  });
+
+  return `  Dependencies: degraded (${labels.join(', ')}). Run npx claude-mem doctor or open Settings for remediation.`;
 }
 
 /**
