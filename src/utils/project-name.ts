@@ -47,9 +47,23 @@ function isLinkedWorktreeRoot(dir: string): boolean {
   try { return statSync(path.join(dir, '.git')).isFile(); } catch { return false; }
 }
 
-// Treat cwd as an independent package only when it has its own package.json.
-function hasOwnPackageJson(dir: string): boolean {
-  try { return statSync(path.join(dir, 'package.json')).isFile(); } catch { return false; }
+// Walk from start toward repoRoot, returning the nearest directory that has a
+// package.json. Stops when it reaches repoRoot (inclusive). Returns null when
+// no directory in the walk has package.json.
+function findNearestPackageRoot(start: string, repoRoot: string): string | null {
+  const resolve = (p: string) => { try { return realpathSync(path.resolve(p)); } catch { return path.resolve(p); } };
+  const rootReal = resolve(repoRoot);
+  const rootNorm = process.platform === 'win32' ? rootReal.toLowerCase() : rootReal;
+  let dir = path.resolve(start);
+  while (true) {
+    try { if (statSync(path.join(dir, 'package.json')).isFile()) return dir; } catch { /* not found */ }
+    const dirNorm = process.platform === 'win32' ? resolve(dir).toLowerCase() : resolve(dir);
+    if (dirNorm === rootNorm) break;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
 }
 
 export function getProjectName(cwd: string | null | undefined): string {
@@ -63,14 +77,16 @@ export function getProjectName(cwd: string | null | undefined): string {
   // #2663 — derive the project name from the git repo root when inside a repo so
   // the name is stable across subdirectories/worktrees. Fall back to the cwd
   // basename when not in a repo.
-  // #2882 — when cwd is a package root inside a monorepo (has its own package.json)
-  // or a linked worktree root (has a .git file), use the cwd basename so each
-  // package/worktree gets an independent project name.
+  // #2882 — when cwd is inside a monorepo package, use the nearest ancestor with
+  // package.json as the boundary so all sessions within a package share one name.
+  // Linked worktree roots (.git file) always use the cwd basename for correct
+  // parent/leaf composite naming.
   const repoRoot = findGitRepoRoot(expanded);
   const isSubdir = repoRoot != null && !samePath(expanded, repoRoot);
-  const nameSource = isSubdir && (isLinkedWorktreeRoot(expanded) || hasOwnPackageJson(expanded))
+  const nearestPkg = isSubdir ? findNearestPackageRoot(expanded, repoRoot!) : null;
+  const nameSource = isLinkedWorktreeRoot(expanded)
     ? expanded
-    : (repoRoot ?? expanded);
+    : (nearestPkg ?? repoRoot ?? expanded);
 
   const basename = path.basename(nameSource);
 
