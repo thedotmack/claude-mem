@@ -34,6 +34,14 @@ function findGitRepoRoot(dir: string): string | null {
   }
 }
 
+function samePath(a: string, b: string): boolean {
+  const left = path.resolve(a);
+  const right = path.resolve(b);
+  return process.platform === 'win32'
+    ? left.toLowerCase() === right.toLowerCase()
+    : left === right;
+}
+
 export function getProjectName(cwd: string | null | undefined): string {
   if (!cwd || cwd.trim() === '') {
     logger.warn('PROJECT_NAME', 'Empty cwd provided, using fallback', { cwd });
@@ -45,8 +53,12 @@ export function getProjectName(cwd: string | null | undefined): string {
   // #2663 — derive the project name from the git repo root when inside a repo so
   // the name is stable across subdirectories/worktrees. Fall back to the cwd
   // basename when not in a repo.
+  // #2882 — when cwd is a subdirectory of the repo root (monorepo package),
+  // use the cwd basename instead of the repo root basename.
   const repoRoot = findGitRepoRoot(expanded);
-  const nameSource = repoRoot ?? expanded;
+  const nameSource = repoRoot && samePath(expanded, repoRoot)
+    ? repoRoot
+    : expanded;
 
   const basename = path.basename(nameSource);
 

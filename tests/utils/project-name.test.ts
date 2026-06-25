@@ -79,12 +79,20 @@ describe('getProjectName', () => {
       rmSync(tmp, { recursive: true, force: true });
     });
 
-    it('deep subdirectory inside a repo yields the repo-root name', () => {
-      expect(getProjectName(nestedDir)).toBe('my-real-repo');
+    it('deep subdirectory inside a repo yields the cwd basename', () => {
+      expect(getProjectName(nestedDir)).toBe('nested');
     });
 
     it('repo root itself yields the repo-root name', () => {
       expect(getProjectName(repoRoot)).toBe('my-real-repo');
+    });
+
+    it('package directory inside a monorepo yields the package basename', () => {
+      const { mkdirSync } = require('fs');
+      const { join } = require('path');
+      const packageDir = join(repoRoot, 'packages', 'api');
+      mkdirSync(packageDir, { recursive: true });
+      expect(getProjectName(packageDir)).toBe('api');
     });
 
     it('non-repo path falls back to basename(cwd)', () => {
