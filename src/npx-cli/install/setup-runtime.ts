@@ -72,11 +72,14 @@ function markerPath(targetDir: string): string {
 
 function getBunPath(): string | null {
   try {
-    const result = spawnSync(IS_WINDOWS ? 'bun.cmd' : 'bun', ['--version'], {
+    const [bunExe, bunVersionArgs] = IS_WINDOWS
+      ? (['cmd.exe', ['/c', 'bun', '--version']] as const)
+      : (['bun', ['--version']] as const);
+    const result = spawnSync(bunExe, bunVersionArgs, {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
     });
-    if (result.status === 0) return IS_WINDOWS ? 'bun.cmd' : 'bun';
+    if (result.status === 0) return 'bun';
   } catch {
     // Not in PATH
   }
@@ -93,7 +96,10 @@ function getBunVersion(): string | null {
   if (!bunPath) return null;
 
   try {
-    const result = spawnSync(bunPath, ['--version'], {
+    const [bvExe, bvArgs] = IS_WINDOWS
+      ? (['cmd.exe', ['/c', bunPath, '--version']] as const)
+      : ([bunPath, ['--version']] as const);
+    const result = spawnSync(bvExe, bvArgs, {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -105,11 +111,14 @@ function getBunVersion(): string | null {
 
 function getUvPath(): string | null {
   try {
-    const result = spawnSync(IS_WINDOWS ? 'uv.cmd' : 'uv', ['--version'], {
+    const [uvExe, uvVersionArgs] = IS_WINDOWS
+      ? (['cmd.exe', ['/c', 'uv', '--version']] as const)
+      : (['uv', ['--version']] as const);
+    const result = spawnSync(uvExe, uvVersionArgs, {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
     });
-    if (result.status === 0) return IS_WINDOWS ? 'uv.cmd' : 'uv';
+    if (result.status === 0) return 'uv';
   } catch {
     // Not in PATH
   }
@@ -126,7 +135,10 @@ function getUvVersion(): string | null {
   if (!uvPath) return null;
 
   try {
-    const result = spawnSync(uvPath, ['--version'], {
+    const [uvExe, uvVersionArgs] = IS_WINDOWS
+      ? (['cmd.exe', ['/c', uvPath, '--version']] as const)
+      : ([uvPath, ['--version']] as const);
+    const result = spawnSync(uvExe, uvVersionArgs, {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
     });
