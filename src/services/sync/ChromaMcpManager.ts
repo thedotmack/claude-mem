@@ -1,4 +1,3 @@
-
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { execFile, execSync, type ChildProcess } from 'child_process';
@@ -215,7 +214,7 @@ export class ChromaMcpManager {
       const args = [
         '--python', pythonVersion,
         ...depOverrideFlags,
-        `chroma-mcp==${CHROMA_MCP_PINNED_VERSION}`,
+        `chroma-mcp@${CHROMA_MCP_PINNED_VERSION}`,
         '--client-type', 'http',
         '--host', chromaHost,
         '--port', chromaPort
@@ -241,7 +240,7 @@ export class ChromaMcpManager {
     return [
       '--python', pythonVersion,
       ...depOverrideFlags,
-      `chroma-mcp==${CHROMA_MCP_PINNED_VERSION}`,
+      `chroma-mcp@${CHROMA_MCP_PINNED_VERSION}`,
       '--client-type', 'persistent',
       '--data-dir', DEFAULT_CHROMA_DATA_DIR.replace(/\\/g, '/')
     ];
