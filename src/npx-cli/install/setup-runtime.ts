@@ -72,12 +72,11 @@ function markerPath(targetDir: string): string {
 
 function getBunPath(): string | null {
   try {
-    const result = spawnSync('bun', ['--version'], {
+    const result = spawnSync(IS_WINDOWS ? 'bun.cmd' : 'bun', ['--version'], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS,
     });
-    if (result.status === 0) return 'bun';
+    if (result.status === 0) return IS_WINDOWS ? 'bun.cmd' : 'bun';
   } catch {
     // Not in PATH
   }
@@ -97,7 +96,6 @@ function getBunVersion(): string | null {
     const result = spawnSync(bunPath, ['--version'], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS,
     });
     return result.status === 0 ? result.stdout.trim() : null;
   } catch {
@@ -107,12 +105,11 @@ function getBunVersion(): string | null {
 
 function getUvPath(): string | null {
   try {
-    const result = spawnSync('uv', ['--version'], {
+    const result = spawnSync(IS_WINDOWS ? 'uv.cmd' : 'uv', ['--version'], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS,
     });
-    if (result.status === 0) return 'uv';
+    if (result.status === 0) return IS_WINDOWS ? 'uv.cmd' : 'uv';
   } catch {
     // Not in PATH
   }
@@ -132,7 +129,6 @@ function getUvVersion(): string | null {
     const result = spawnSync(uvPath, ['--version'], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS,
     });
     return result.status === 0 ? result.stdout.trim() : null;
   } catch {

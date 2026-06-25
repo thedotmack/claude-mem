@@ -21,11 +21,10 @@ function bunCandidatePaths(): string[] {
 }
 
 export function resolveBunBinaryPath(): string | null {
-  const whichCommand = IS_WINDOWS ? 'where' : 'which';
+  const whichCommand = IS_WINDOWS ? 'where.exe' : 'which';
   const pathCheck = spawnSync(whichCommand, ['bun'], {
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
-    shell: IS_WINDOWS,
   });
 
   if (pathCheck.status === 0 && pathCheck.stdout.trim()) {
