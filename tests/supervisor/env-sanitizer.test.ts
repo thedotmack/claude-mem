@@ -60,11 +60,17 @@ describe('sanitizeEnv', () => {
       new URL('../../plugin/scripts/server-beta-service.cjs', import.meta.url),
       'utf-8'
     );
+    const mcpServerBundle = readFileSync(
+      new URL('../../plugin/scripts/mcp-server.cjs', import.meta.url),
+      'utf-8'
+    );
 
     expect(workerBundle).toContain('CLAUDE_CODE_SKIP_BEDROCK_AUTH');
     expect(workerBundle).toContain('CLAUDE_CODE_SKIP_VERTEX_AUTH');
     expect(serverBetaBundle).toContain('CLAUDE_CODE_SKIP_BEDROCK_AUTH');
     expect(serverBetaBundle).toContain('CLAUDE_CODE_SKIP_VERTEX_AUTH');
+    expect(mcpServerBundle).toContain('CLAUDE_CODE_SKIP_BEDROCK_AUTH');
+    expect(mcpServerBundle).toContain('CLAUDE_CODE_SKIP_VERTEX_AUTH');
   });
 
   it('strips exact-match variables (CLAUDECODE, CLAUDE_CODE_SESSION, CLAUDE_CODE_ENTRYPOINT, MCP_SESSION_ID)', () => {
