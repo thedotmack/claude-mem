@@ -1,5 +1,6 @@
 
 import type { Response } from 'express';
+import type { FailureWindow } from './worker/agents/respawn-policy.js';
 
 export interface ConversationMessage {
   role: 'user' | 'assistant';
@@ -26,12 +27,13 @@ export interface ActiveSession {
   currentProvider: 'claude' | 'gemini' | 'openrouter' | null;
   consecutiveRestarts: number;
   /**
-   * Consecutive non-XML (idle/prose/poisoned) observer outputs. Reset to 0 on a
-   * valid parse. When it reaches the recovery threshold the SDK session is
-   * killed and respawned so a poisoned session can't wedge the pipeline at zero
-   * (plan-11, #2485).
+   * Rolling time-window of non-exempt invalid observer outputs. When `badCount`
+   * reaches the configured threshold within `windowMs`, the SDK session is
+   * killed and respawned (time-windowed burst, systemd/OTP model). Reset to a
+   * fresh window on a valid parse, session create, and respawn. Replaces the
+   * old unbounded consecutive counter (#3032).
    */
-  consecutiveInvalidOutputs: number;
+  invalidOutputWindow: FailureWindow;
   forceInit?: boolean;
   idleTimedOut?: boolean;  
   lastGeneratorActivity: number;

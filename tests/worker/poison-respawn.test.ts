@@ -38,6 +38,7 @@ mock.module('../../src/services/worker-service.js', () => ({
 
 import { SessionManager } from '../../src/services/worker/SessionManager.js';
 import { processAgentResponse, INVALID_OUTPUT_RESPAWN_THRESHOLD } from '../../src/services/worker/agents/ResponseProcessor.js';
+import { DEFAULT_RESPAWN_THRESHOLD, clearRespawnPolicyCache } from '../../src/services/worker/agents/respawn-policy.js';
 import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
 import type { WorkerRef } from '../../src/services/worker/agents/types.js';
 
@@ -65,6 +66,7 @@ let spies: ReturnType<typeof spyOn>[] = [];
 
 describe('poison respawn (plan-11 #2485)', () => {
   beforeEach(() => {
+    clearRespawnPolicyCache();
     spies = [
       spyOn(logger, 'info').mockImplementation(() => {}),
       spyOn(logger, 'debug').mockImplementation(() => {}),
@@ -109,35 +111,45 @@ describe('poison respawn (plan-11 #2485)', () => {
     // Session still active (not deleted) and abort fired for a fresh spawn.
     expect(sm.getSession(1)).toBeDefined();
     expect(session.abortController.signal.aborted).toBe(true);
-    expect(session.consecutiveInvalidOutputs).toBe(0); // reset on respawn
+    expect(session.invalidOutputWindow.badCount).toBe(0); // reset on respawn
   });
 
-  it('respawns only after N consecutive prose/idle outputs, not on the first', async () => {
+  it('respawns after N prose outputs within the window, not on the first', async () => {
     const sm = new SessionManager(makeDbManager());
     const session = sm.initializeSession(2, 'do the thing', 1);
     session.memorySessionId = 'mem-2';
     await sm.queueObservation(2, {
       tool_name: 'Read', tool_input: {}, tool_response: {}, prompt_number: 1, toolUseId: 'tu-a',
     });
-
     const respawnSpy = spyOn(sm, 'respawnPoisonedSession');
 
-    // First (threshold - 1) prose responses must NOT respawn.
-    for (let i = 0; i < INVALID_OUTPUT_RESPAWN_THRESHOLD - 1; i++) {
-      await processAgentResponse(
-        'Just some prose, no XML here.',
-        session, makeDbManager(), sm, mockWorker, 0, null, 'TestAgent'
-      );
+    for (let i = 0; i < DEFAULT_RESPAWN_THRESHOLD - 1; i++) {
+      await processAgentResponse('Just some prose, no XML here.',
+        session, makeDbManager(), sm, mockWorker, 0, null, 'TestAgent');
     }
     expect(respawnSpy).not.toHaveBeenCalled();
-    expect(session.consecutiveInvalidOutputs).toBe(INVALID_OUTPUT_RESPAWN_THRESHOLD - 1);
+    expect(session.invalidOutputWindow.badCount).toBe(DEFAULT_RESPAWN_THRESHOLD - 1);
 
-    // The Nth invalid output crosses the threshold and triggers respawn.
-    await processAgentResponse(
-      'Still just prose.',
-      session, makeDbManager(), sm, mockWorker, 0, null, 'TestAgent'
-    );
+    await processAgentResponse('Still just prose.',
+      session, makeDbManager(), sm, mockWorker, 0, null, 'TestAgent');
     expect(respawnSpy).toHaveBeenCalledWith(2);
+  });
+
+  it('does NOT respawn on benign idle outputs (the poison-loop fix, #3032)', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(5, 'do the thing', 1);
+    session.memorySessionId = 'mem-5';
+    await sm.queueObservation(5, {
+      tool_name: 'Read', tool_input: {}, tool_response: {}, prompt_number: 1, toolUseId: 'tu-i',
+    });
+    const respawnSpy = spyOn(sm, 'respawnPoisonedSession');
+
+    // Empty string classifies as 'idle'. Far more than the threshold.
+    for (let i = 0; i < DEFAULT_RESPAWN_THRESHOLD + 3; i++) {
+      await processAgentResponse('', session, makeDbManager(), sm, mockWorker, 0, null, 'TestAgent');
+    }
+    expect(respawnSpy).not.toHaveBeenCalled();
+    expect(session.invalidOutputWindow.badCount).toBe(0);
   });
 
   it('respawnPoisonedSession preserves the buffer and resets context', async () => {
@@ -145,7 +157,7 @@ describe('poison respawn (plan-11 #2485)', () => {
     const session = sm.initializeSession(3, 'do the thing', 1);
     session.memorySessionId = 'mem-3';
     session.conversationHistory.push({ role: 'assistant', content: 'poisoned turn' });
-    session.consecutiveInvalidOutputs = 5;
+    session.invalidOutputWindow = { windowStart: Date.now(), badCount: 5 };
     await sm.queueObservation(3, {
       tool_name: 'Read', tool_input: {}, tool_response: {}, prompt_number: 1, toolUseId: 'tu-x',
     });
@@ -155,8 +167,30 @@ describe('poison respawn (plan-11 #2485)', () => {
     expect(sm.getMessageBuffer().getPendingCount(3)).toBe(1); // preserved
     expect(sm.getSession(3)).toBeDefined();
     expect(session.conversationHistory).toHaveLength(0);
-    expect(session.consecutiveInvalidOutputs).toBe(0);
+    expect(session.invalidOutputWindow.badCount).toBe(0);
     expect(session.memorySessionId).toBeNull();
     expect(session.abortController.signal.aborted).toBe(true);
+  });
+
+  it('a valid parse resets the failure window (positive path)', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(6, 'do the thing', 1);
+    // memorySessionId intentionally left null: the valid path resets the window,
+    // then returns at the `if (!session.memorySessionId)` gate before storage.
+    await sm.queueObservation(6, {
+      tool_name: 'Read', tool_input: {}, tool_response: {}, prompt_number: 1, toolUseId: 'tu-v',
+    });
+    const respawnSpy = spyOn(sm, 'respawnPoisonedSession');
+
+    await processAgentResponse('prose one', session, makeDbManager(), sm, mockWorker, 0, null, 'TestAgent');
+    await processAgentResponse('prose two', session, makeDbManager(), sm, mockWorker, 0, null, 'TestAgent');
+    expect(session.invalidOutputWindow.badCount).toBe(2);
+
+    const validXml =
+      '<observation><type>discovery</type><title>real</title><narrative>n</narrative></observation>';
+    await processAgentResponse(validXml, session, makeDbManager(), sm, mockWorker, 0, null, 'TestAgent');
+
+    expect(session.invalidOutputWindow.badCount).toBe(0); // reset on valid parse
+    expect(respawnSpy).not.toHaveBeenCalled();
   });
 });

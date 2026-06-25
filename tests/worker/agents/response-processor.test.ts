@@ -124,6 +124,10 @@ describe('ResponseProcessor', () => {
       claimedMessageIds: [],
       conversationHistory: [],
       currentProvider: 'claude',
+      consecutiveRestarts: 0,
+      invalidOutputWindow: { windowStart: 0, badCount: 0 },
+      lastGeneratorActivity: Date.now(),
+      platformSource: 'claude',
       ...overrides,
     } as ActiveSession;
   }

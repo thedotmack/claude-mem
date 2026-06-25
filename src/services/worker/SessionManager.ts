@@ -5,6 +5,7 @@ import { SessionMessageBuffer } from './SessionMessageBuffer.js';
 import { getSdkProcessForSession, ensureSdkProcessExit } from '../../supervisor/process-registry.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { telemetryBuffer } from '../telemetry/buffer.js';
+import { freshWindow } from './agents/respawn-policy.js';
 
 export class SessionManager {
   private dbManager: DatabaseManager;
@@ -123,7 +124,7 @@ export class SessionManager {
       conversationHistory: [],  // Initialize empty - will be populated by agents
       currentProvider: null,  // Will be set when generator starts
       consecutiveRestarts: 0,
-      consecutiveInvalidOutputs: 0,
+      invalidOutputWindow: freshWindow(),
       lastGeneratorActivity: Date.now(),  // Initialize for stale detection (Issue #1099)
       pendingAgentId: null,   // Subagent identity carried from the most recent claimed message
       pendingAgentType: null
@@ -259,7 +260,7 @@ export class SessionManager {
     logger.warn('SESSION', 'Respawning poisoned SDK session, preserving pending messages', {
       sessionId: sessionDbId,
       preservedPending,
-      consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
+      badCount: session.invalidOutputWindow.badCount,
     });
 
     // Re-yield anything claimed-but-unconfirmed so the fresh generator picks it up.
@@ -267,7 +268,7 @@ export class SessionManager {
 
     // Drop stale conversation context: the poisoned turns are what wedged it.
     session.conversationHistory = [];
-    session.consecutiveInvalidOutputs = 0;
+    session.invalidOutputWindow = freshWindow();
     session.memorySessionId = null;  // force a fresh SDK session id on respawn
 
     session.abortReason = 'poisoned';

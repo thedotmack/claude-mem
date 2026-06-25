@@ -16,13 +16,10 @@ import type { WorkerRef, StorageResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
 import { telemetryBuffer } from '../../telemetry/buffer.js';
 import { instrument } from '../../telemetry/instrument.js';
+import { evaluateRespawn, getRespawnPolicy, freshWindow, DEFAULT_RESPAWN_THRESHOLD } from './respawn-policy.js';
 
-/**
- * Consecutive non-XML observer outputs tolerated before we kill and respawn the
- * SDK session (plan-11, #2485). Idle and prose both count; poisoned triggers an
- * immediate respawn regardless of the count.
- */
-export const INVALID_OUTPUT_RESPAWN_THRESHOLD = 3;
+/** @deprecated default fallback; real value resolved via getRespawnPolicy(). */
+export const INVALID_OUTPUT_RESPAWN_THRESHOLD = DEFAULT_RESPAWN_THRESHOLD;
 
 export async function processAgentResponse(
   text: string,
@@ -53,34 +50,24 @@ export async function processAgentResponse(
     'claude';
 
   if (!parsed.valid) {
-    // Classify the non-XML output so a dropped batch is VISIBLE, not silent
-    // (plan-11, #2485). Attach a preview for diagnostics.
     const outputClass = classifyObserverOutput(text);
     const preview = previewOutput(text);
-
-    session.consecutiveInvalidOutputs = (session.consecutiveInvalidOutputs ?? 0) + 1;
+    const policy = getRespawnPolicy();
+    const { window, shouldRespawn } = evaluateRespawn(
+      outputClass, session.invalidOutputWindow, policy, processingStartedAt,
+    );
+    session.invalidOutputWindow = window;
 
     logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response — ignoring queued batch`, {
       sessionId: session.sessionDbId,
       outputClass,
       preview,
-      consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
+      badCount: window.badCount,
+      threshold: policy.threshold,
+      windowMs: policy.windowMs,
     });
 
-    // Recover from poison (plan-11, #2485): a poisoned closure string means the
-    // SDK session is wedged and will keep emitting garbage — respawn immediately.
-    // For idle/prose, only respawn after N consecutive invalid outputs so we
-    // don't churn the session on benign single-batch misses.
-    const mustRespawn =
-      outputClass === 'poisoned' ||
-      session.consecutiveInvalidOutputs >= INVALID_OUTPUT_RESPAWN_THRESHOLD;
-
-    if (mustRespawn) {
-      // Single instrumentation call: the local poison/respawn error line (full
-      // fidelity) and the scrubbed session_compressed rollup are one logical
-      // event. Respawn-gated telemetry ONLY (never per invalid output —
-      // volume). Closed enums and counts; the raw model output never leaves
-      // the box.
+    if (shouldRespawn) {
       instrument(
         'SESSION',
         'error',
@@ -88,8 +75,8 @@ export async function processAgentResponse(
         {
           sessionId: session.sessionDbId,
           outputClass,
-          consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
-          threshold: INVALID_OUTPUT_RESPAWN_THRESHOLD,
+          threshold: policy.threshold,
+          windowMs: policy.windowMs,
         },
         {
           event: 'session_compressed',
@@ -98,8 +85,13 @@ export async function processAgentResponse(
           props: {
             outcome: 'invalid_output',
             invalid_output_class: outputClass,
-            consecutive_invalid_outputs: session.consecutiveInvalidOutputs,
             respawn_triggered: true,
+            // Replaces the old `consecutive_invalid_outputs` dimension. At respawn
+            // the windowed count has just hit the threshold (and evaluateRespawn
+            // resets the returned window to 0), so the threshold IS the count of
+            // non-exempt bad outputs that triggered this respawn, over window_ms.
+            respawn_threshold: policy.threshold,
+            window_ms: policy.windowMs,
             provider: providerName,
             model: typeof modelId === 'string' && modelId ? modelId : 'unknown',
             ide: session.platformSource,
@@ -111,17 +103,13 @@ export async function processAgentResponse(
       return;
     }
 
-    // Plain-text skip responses are intentionally ignored. Re-queueing them
-    // creates an observer loop where the same low-signal batch is retried
-    // until the restart guard fires or the provider quota is exhausted.
     await sessionManager.confirmClaimedMessages(session.sessionDbId);
     session.earliestPendingTimestamp = null;
     return;
   }
 
-  // Valid parse — clear the invalid-output counter so transient misses don't
-  // accumulate toward a respawn across a healthy session.
-  session.consecutiveInvalidOutputs = 0;
+  // Valid parse — reset the failure window so transient misses don't accumulate.
+  session.invalidOutputWindow = freshWindow();
 
   if (!session.memorySessionId) {
     logger.warn('SDK', 'memorySessionId not yet captured; deferring storage until next round', {
