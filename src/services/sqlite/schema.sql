@@ -1,8 +1,7 @@
--- claude-mem SQLite schema
---
--- Authoritative shape of the database after all migrations have been
+-- Authoritative shape of the database after all migrations through
 -- applied. Fresh databases boot directly into this shape; existing
--- databases reach it via SessionStore's inline migration chain.
+-- databases reach it via SessionStore's inline migration chain
+-- (current tip includes legacy prompt bloat maintenance version 35).
 --
 -- Source of truth: src/services/sqlite/SessionStore.ts (constructor migrations).
 --
@@ -22,6 +21,8 @@ CREATE TABLE IF NOT EXISTS schema_versions (
 
 -- ─────────────────────────────────────────────────────────────────────
 -- sdk_sessions: one row per Claude/Codex session observed by claude-mem.
+-- user_prompt remains the active-session fallback; completed-session prompt
+-- history is canonical in user_prompts.
 -- ─────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS sdk_sessions (
   id                  INTEGER PRIMARY KEY AUTOINCREMENT,

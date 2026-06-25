@@ -68,6 +68,50 @@ describe('SessionStore', () => {
     expect(duplicate?.prompt_text.length).toBe(MAX_STORED_PROMPT_CHARS);
   });
 
+  it('should clear sdk_sessions.user_prompt when completed prompt history exists', () => {
+    const contentSessionId = 'completed-canonical-session-store';
+    const sessionId = store.createSDKSession(contentSessionId, 'test-project', 'Initial prompt');
+    store.saveUserPrompt(contentSessionId, 1, 'Initial prompt');
+
+    store.markSessionCompleted(sessionId);
+
+    const row = store.db.prepare(
+      'SELECT status, user_prompt FROM sdk_sessions WHERE id = ?'
+    ).get(sessionId) as { status: string; user_prompt: string | null };
+
+    expect(row.status).toBe('completed');
+    expect(row.user_prompt).toBeNull();
+  });
+
+  it('should preserve sdk_sessions.user_prompt when completed prompt history is absent', () => {
+    const contentSessionId = 'completed-fallback-session-store';
+    const sessionId = store.createSDKSession(contentSessionId, 'test-project', 'Initial prompt');
+
+    store.markSessionCompleted(sessionId);
+
+    const row = store.db.prepare(
+      'SELECT status, user_prompt FROM sdk_sessions WHERE id = ?'
+    ).get(sessionId) as { status: string; user_prompt: string | null };
+
+    expect(row.status).toBe('completed');
+    expect(row.user_prompt).toBe('Initial prompt');
+  });
+
+  it('should preserve sdk_sessions.user_prompt when first completed prompt history is absent', () => {
+    const contentSessionId = 'completed-partial-history-session-store';
+    const sessionId = store.createSDKSession(contentSessionId, 'test-project', 'Initial prompt');
+    store.saveUserPrompt(contentSessionId, 2, 'Follow-up prompt');
+
+    store.markSessionCompleted(sessionId);
+
+    const row = store.db.prepare(
+      'SELECT status, user_prompt FROM sdk_sessions WHERE id = ?'
+    ).get(sessionId) as { status: string; user_prompt: string | null };
+
+    expect(row.status).toBe('completed');
+    expect(row.user_prompt).toBe('Initial prompt');
+  });
+
   it('should hide only older duplicate prompts from paginated prompt results', () => {
     const contentSessionId = 'paginated-duplicate-session-store';
     store.createSDKSession(contentSessionId, 'test-project', 'initial prompt');
