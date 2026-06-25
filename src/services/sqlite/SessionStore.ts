@@ -80,6 +80,7 @@ export class SessionStore {
     this.ensureSDKSessionsPlatformContentIdentity();
     this.ensureUserPromptsSessionDbId();
     this.ensurePendingMessagesSessionToolUniqueIndex();
+    this.addDedupTables();
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -125,6 +126,64 @@ export class SessionStore {
     `).get(contentSessionId) as { id: number } | undefined;
 
     return row?.id ?? null;
+  }
+
+  // #3038 near-duplicate dedup: occurrence_count (Tier-0 merge bump), per-project
+  // token document-frequency (IDF model), dedup bookkeeping, and the Tier-1
+  // review-only candidates table. Pure DDL; the IDF model is filled forward on
+  // insert and (re)built by the opt-in dedup-scan, never a JS backfill here.
+  private addDedupTables(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(36) as SchemaVersion | undefined;
+
+    const obsCols = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    if (!obsCols.some(c => c.name === 'occurrence_count')) {
+      this.db.run('ALTER TABLE observations ADD COLUMN occurrence_count INTEGER NOT NULL DEFAULT 1');
+    }
+
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS token_df (
+        project TEXT    NOT NULL,
+        token   TEXT    NOT NULL,
+        df      INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (project, token)
+      )
+    `);
+
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS dedup_meta (
+        project                TEXT    PRIMARY KEY,
+        doc_count              INTEGER NOT NULL DEFAULT 0,
+        last_rebuild_doc_count INTEGER NOT NULL DEFAULT 0,
+        deleted_since_rebuild  INTEGER NOT NULL DEFAULT 0
+      )
+    `);
+
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS observation_dedup_candidates (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        observation_id   INTEGER NOT NULL,
+        duplicate_of_id  INTEGER NOT NULL,
+        project          TEXT    NOT NULL,
+        method           TEXT    NOT NULL CHECK(method IN ('exact', 'idf_cosine')),
+        score            REAL    NOT NULL,
+        status           TEXT    NOT NULL DEFAULT 'pending'
+                                 CHECK(status IN ('pending', 'merged', 'distinct', 'dismissed')),
+        created_at       TEXT    NOT NULL,
+        created_at_epoch INTEGER NOT NULL,
+        metadata         TEXT,
+        FOREIGN KEY (observation_id)  REFERENCES observations(id) ON DELETE CASCADE,
+        FOREIGN KEY (duplicate_of_id) REFERENCES observations(id) ON DELETE CASCADE,
+        UNIQUE(observation_id, duplicate_of_id)
+      )
+    `);
+
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_token_df_project ON token_df(project)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_dedup_candidates_project ON observation_dedup_candidates(project, status)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_dedup_candidates_obs ON observation_dedup_candidates(observation_id)');
+
+    if (!applied) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(36, new Date().toISOString());
+    }
   }
 
   private dropWorkerPidColumn(): void {

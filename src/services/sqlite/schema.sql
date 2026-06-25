@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS observations (
   merged_into_project  TEXT,
   generated_by_model   TEXT,
   metadata             TEXT,
+  occurrence_count     INTEGER NOT NULL DEFAULT 1,  -- #3038: bumped on a Tier-0 exact-normalized-title merge
   created_at           TEXT    NOT NULL,
   created_at_epoch     INTEGER NOT NULL,
   FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id)
@@ -187,3 +188,44 @@ CREATE TABLE IF NOT EXISTS observation_feedback (
 );
 CREATE INDEX IF NOT EXISTS idx_feedback_observation ON observation_feedback(observation_id);
 CREATE INDEX IF NOT EXISTS idx_feedback_signal      ON observation_feedback(signal_type);
+
+-- ─────────────────────────────────────────────────────────────────────
+-- #3038 near-duplicate dedup (opt-in, off by default).
+-- token_df: per-project token document-frequency = the IDF model. Filled
+--   forward on insert; (re)built by the opt-in dedup-scan, never a migration backfill.
+-- dedup_meta: per-project doc_count (cold-start gate) + drift-rebuild tracking.
+-- observation_dedup_candidates: Tier-1 review-only near-dup candidates (never auto-merged).
+-- ─────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS token_df (
+  project TEXT    NOT NULL,
+  token   TEXT    NOT NULL,
+  df      INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (project, token)
+);
+CREATE INDEX IF NOT EXISTS idx_token_df_project ON token_df(project);
+
+CREATE TABLE IF NOT EXISTS dedup_meta (
+  project                TEXT    PRIMARY KEY,
+  doc_count              INTEGER NOT NULL DEFAULT 0,
+  last_rebuild_doc_count INTEGER NOT NULL DEFAULT 0,
+  deleted_since_rebuild  INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS observation_dedup_candidates (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  observation_id   INTEGER NOT NULL,
+  duplicate_of_id  INTEGER NOT NULL,
+  project          TEXT    NOT NULL,
+  method           TEXT    NOT NULL CHECK(method IN ('exact', 'idf_cosine')),
+  score            REAL    NOT NULL,
+  status           TEXT    NOT NULL DEFAULT 'pending'
+                           CHECK(status IN ('pending', 'merged', 'distinct', 'dismissed')),
+  created_at       TEXT    NOT NULL,
+  created_at_epoch INTEGER NOT NULL,
+  metadata         TEXT,
+  FOREIGN KEY (observation_id)  REFERENCES observations(id) ON DELETE CASCADE,
+  FOREIGN KEY (duplicate_of_id) REFERENCES observations(id) ON DELETE CASCADE,
+  UNIQUE(observation_id, duplicate_of_id)
+);
+CREATE INDEX IF NOT EXISTS idx_dedup_candidates_project ON observation_dedup_candidates(project, status);
+CREATE INDEX IF NOT EXISTS idx_dedup_candidates_obs     ON observation_dedup_candidates(observation_id);
