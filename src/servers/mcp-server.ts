@@ -38,6 +38,7 @@ import {
   type SelectedRuntime,
   type ServerBetaRuntimeContext,
 } from '../services/hooks/runtime-selector.js';
+import { getAdvertisedMcpToolsForRuntime } from './mcp-tool-visibility.js';
 
 let mcpServerDirResolutionFailed = false;
 const mcpServerDir = (() => {
@@ -905,8 +906,9 @@ const server = new Server(
 );
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
+  const advertisedTools = getAdvertisedMcpToolsForRuntime(tools, selectRuntime());
   return {
-    tools: tools.map(tool => ({
+    tools: advertisedTools.map(tool => ({
       name: tool.name,
       description: tool.description,
       inputSchema: tool.inputSchema
