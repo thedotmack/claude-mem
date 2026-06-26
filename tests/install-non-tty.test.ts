@@ -152,7 +152,9 @@ describe('Install Non-TTY Support', () => {
         codexInstallerSource.indexOf('export async function installCodexCli'),
         codexInstallerSource.indexOf('export function uninstallCodexCli'),
       );
-      expect(installRegion).toContain("['plugin', 'add', CODEX_PLUGIN_ID]");
+      expect(installRegion).toContain("runCodex(['plugin', 'add', CODEX_PLUGIN_ID])");
+      expect(installRegion).toContain('Installed Codex plugin cache.');
+      expect(installRegion).not.toContain('runCodexBestEffort(');
       expect(installRegion).not.toContain("['plugin', 'marketplace', 'upgrade', MARKETPLACE_NAME]");
     });
 
