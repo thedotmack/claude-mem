@@ -20,6 +20,8 @@ import { PostgresObservationRepository } from '../../../storage/postgres/observa
 import { logger } from '../../../utils/logger.js';
 import { requirePostgresServerAuth } from '../../middleware/postgres-auth.js';
 import { requestIdMiddleware } from '../../middleware/request-id.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { createRecallMcpServer, type RecallBackend } from '../../mcp/recall-mcp-server.js';
 import type { ActiveServerBetaQueueManager } from '../../runtime/ActiveServerBetaQueueManager.js';
 import type { ServerBetaQueueManager } from '../../runtime/types.js';
 import { PostgresServerSessionsRepository } from '../../../storage/postgres/server-sessions.js';
@@ -28,6 +30,10 @@ import { IngestEventsService, type EnqueueOutcome } from '../../services/IngestE
 import { EndSessionService } from '../../services/EndSessionService.js';
 
 const SOURCE_ADAPTER_DEFAULT = 'api';
+
+declare const __DEFAULT_PACKAGE_VERSION__: string;
+const MCP_SERVER_VERSION =
+  typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
 
 export interface ServerV1PostgresRoutesOptions {
   pool: PostgresPool;
@@ -926,6 +932,45 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         }
       },
     ));
+
+    // Remote authenticated MCP endpoint. The "secure MCP link" a user pastes
+    // into Claude Code (or any MCP client) to recall their cloud memory:
+    //   claude mcp add --transport http claude-mem <base>/v1/mcp \
+    //     --header "Authorization: Bearer cm_..."
+    // Same readAuth (memories:read) + team/project scoping as /v1/search, so it
+    // reads identical data through identical guards. Stateless streamable-HTTP:
+    // one transport + server per request, bound to this key's team.
+    app.all('/v1/mcp', readAuth, this.asyncHandler(async (req, res) => {
+      const teamId = this.requireTeamId(req, res);
+      if (!teamId) return;
+      const projectScope = req.authContext?.projectId ?? null;
+      const repo = new PostgresObservationRepository(this.options.pool);
+      const assertProjectAllowed = (projectId: string): void => {
+        if (projectScope && projectScope !== projectId) {
+          throw new Error('API key is scoped to a different project');
+        }
+      };
+      const backend: RecallBackend = {
+        search: async ({ projectId, query, limit }) => {
+          assertProjectAllowed(projectId);
+          const rows = await repo.search({ projectId, teamId, query, limit });
+          return rows.map(serializeObservation);
+        },
+        recent: async ({ projectId, limit }) => {
+          assertProjectAllowed(projectId);
+          const rows = await repo.listByProject({ projectId, teamId, limit });
+          return rows.map(serializeObservation);
+        },
+      };
+      const server = createRecallMcpServer(backend, MCP_SERVER_VERSION);
+      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+      res.on('close', () => {
+        void transport.close();
+        void server.close();
+      });
+      await server.connect(transport);
+      await transport.handleRequest(req, res, req.body);
+    }));
   }
 
   private async auditRead(
