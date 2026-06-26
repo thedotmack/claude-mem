@@ -1,4 +1,5 @@
 import type { SelectedRuntime } from '../services/hooks/runtime-selector.js';
+import { logger } from '../utils/logger.js';
 
 export const SERVER_BETA_ONLY_TOOL_NAMES = [
   'observation_add',
@@ -20,5 +21,9 @@ export function getAdvertisedMcpToolsForRuntime<T extends { name: string }>(
   if (runtime === 'server-beta') {
     return [...allTools];
   }
+  logger.debug('SYSTEM', 'Filtering server-beta-only MCP tools from worker runtime advertisement', {
+    runtime,
+    hiddenToolCount: SERVER_BETA_ONLY_TOOL_NAMES.length,
+  });
   return allTools.filter((tool) => !serverBetaOnlyToolNameSet.has(tool.name));
 }
