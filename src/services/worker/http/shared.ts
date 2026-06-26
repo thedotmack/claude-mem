@@ -58,7 +58,9 @@ export interface ObservationPayload {
 export async function ingestObservation(payload: ObservationPayload): Promise<IngestResult> {
   const { sessionManager, dbManager, eventBroadcaster, ensureGeneratorRunning } = requireContext();
 
-  const platformSource = normalizePlatformSource(payload.platformSource);
+  const platformSource = payload.platformSource != null && String(payload.platformSource).trim()
+    ? normalizePlatformSource(payload.platformSource)
+    : undefined;
   const cwd = typeof payload.cwd === 'string' ? payload.cwd : '';
   const project = cwd.trim() ? getProjectContext(cwd).primary : '';
 

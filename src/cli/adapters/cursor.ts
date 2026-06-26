@@ -39,6 +39,7 @@ export const cursorAdapter: PlatformAdapter = {
     return {
       sessionId,
       cwd,
+      platform: 'cursor',
       prompt: r.prompt ?? r.query ?? r.input ?? r.message,
       toolName: isShellCommand ? 'Bash' : r.tool_name,
       toolInput: isShellCommand ? { command: r.command } : r.tool_input,
