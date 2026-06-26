@@ -2229,14 +2229,17 @@ export class SessionStore {
       const v = Number(SettingsDefaultsManager.get(key));
       return Number.isFinite(v) ? v : fallback;
     };
+    // Integer knobs are truncated — maxScan is bound as a SQL `LIMIT ?`, so a
+    // fractional misconfig must not reach the binding as a float (review N1).
+    const int = (key: keyof SettingsDefaults, fallback: number): number => Math.trunc(num(key, fallback));
     return {
       enabled: SettingsDefaultsManager.getBool('CLAUDE_MEM_DEDUP_ENABLED'),
       cosineThreshold: num('CLAUDE_MEM_DEDUP_COSINE_THRESHOLD', 0.8),
-      idfVetoDf: num('CLAUDE_MEM_DEDUP_IDF_VETO_DF', 10),
-      minSharedTokens: num('CLAUDE_MEM_DEDUP_MIN_SHARED_TOKENS', 2),
-      maxScan: num('CLAUDE_MEM_DEDUP_MAX_SCAN', 2000),
-      maxBackfillRows: num('CLAUDE_MEM_DEDUP_MAX_BACKFILL_ROWS', 50000),
-      minProjectDocs: num('CLAUDE_MEM_DEDUP_MIN_PROJECT_DOCS', 10),
+      idfVetoDf: int('CLAUDE_MEM_DEDUP_IDF_VETO_DF', 10),
+      minSharedTokens: int('CLAUDE_MEM_DEDUP_MIN_SHARED_TOKENS', 2),
+      maxScan: int('CLAUDE_MEM_DEDUP_MAX_SCAN', 2000),
+      maxBackfillRows: int('CLAUDE_MEM_DEDUP_MAX_BACKFILL_ROWS', 50000),
+      minProjectDocs: int('CLAUDE_MEM_DEDUP_MIN_PROJECT_DOCS', 10),
     };
   }
 
