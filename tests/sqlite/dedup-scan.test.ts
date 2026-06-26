@@ -63,10 +63,12 @@ describe('dedup-scan: backfill + sweep (#3038)', () => {
   it('sweep is idempotent (re-run does not duplicate candidate rows)', () => {
     seed(['build the worker service module', 'worker build the service module', 'totally distinct topic here']);
     backfillProjectDedup(store.db, 'p');
-    sweepProjectCandidates(store.db, 'p', CFG);
+    const firstReturned = sweepProjectCandidates(store.db, 'p', CFG);
     const after1 = candCount();
-    sweepProjectCandidates(store.db, 'p', CFG);
-    expect(candCount()).toBe(after1); // UNIQUE(observation_id,duplicate_of_id) guards
+    expect(firstReturned).toBe(after1); // count == rows actually persisted
+    const secondReturned = sweepProjectCandidates(store.db, 'p', CFG);
+    expect(candCount()).toBe(after1);   // UNIQUE(observation_id,duplicate_of_id) guards the data
+    expect(secondReturned).toBe(0);     // and the RETURN count reflects 0 newly-persisted (not ignored dups)
   });
 
   it('listDedupCandidates returns candidates joined to both titles, project-scoped', () => {

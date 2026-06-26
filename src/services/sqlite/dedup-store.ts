@@ -187,8 +187,9 @@ export function sweepProjectCandidates(db: Database, project: string, cfg: Dedup
     const [i, j] = key.split(':').map(Number);
     const c = classifyPair(rows[i].title, rows[j].title, idfFn, thresholds);
     if (c.tier === 'candidate') {
-      ins.run(rows[j].id, rows[i].id, project, c.method, c.score, 'pending', nowIso, nowEpoch);
-      count++;
+      // Count only rows actually persisted — INSERT OR IGNORE returns changes=0 on a
+      // UNIQUE conflict (already-flagged pair), so re-runs report 0, not a phantom count.
+      count += ins.run(rows[j].id, rows[i].id, project, c.method, c.score, 'pending', nowIso, nowEpoch).changes;
     }
   }
   return count;
@@ -240,8 +241,8 @@ export function recordTier1Candidates(
   for (const r of rows) {
     const c = classifyPair(title, r.title, idfFn, thresholds);
     if (c.tier === 'candidate') {
-      ins.run(newObsId, r.id, project, c.method, c.score, 'pending', nowIso, nowEpoch);
-      count++;
+      // Count only newly-persisted rows (INSERT OR IGNORE → changes=0 on a UNIQUE conflict).
+      count += ins.run(newObsId, r.id, project, c.method, c.score, 'pending', nowIso, nowEpoch).changes;
     }
   }
   return count;
