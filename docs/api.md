@@ -20,6 +20,7 @@ Available beta endpoints:
 - `PATCH /v1/memories/:id`
 - `POST /v1/search`
 - `POST /v1/context`
+- `ALL /v1/mcp` (remote MCP recall — see below)
 - `GET /v1/audit?projectId=<id>`
 
 When `CLAUDE_MEM_AUTH_MODE=api-key`, send `Authorization: Bearer <key>`. Read endpoints require `memories:read`; write endpoints require `memories:write`.
@@ -38,3 +39,30 @@ always populated (or `null` only when generation was explicitly disabled).
 The actual provider call happens in a separate BullMQ worker process
 (`claude-mem server worker start`); the HTTP path never blocks on a
 provider response.
+
+## Remote MCP endpoint
+
+`/v1/mcp` is a streamable-HTTP [MCP](https://modelcontextprotocol.io) server —
+the secure, authenticated link a user pastes into Claude Code (or any MCP
+client) to recall their cloud memory. It is read-only and authenticated by the
+same API key as the REST routes (`memories:read`); the key's team (and project,
+if the key is project-scoped) bound every read.
+
+Connect:
+
+```bash
+claude mcp add --transport http claude-mem <server-base>/v1/mcp \
+  --header "Authorization: Bearer cm_..."
+```
+
+Tools:
+
+- `search` — `{ projectId, query, limit? }` → matching observations (FTS, same
+  path as `POST /v1/search`).
+- `context` — `{ projectId, query, limit? }` → observations plus a concatenated
+  `context` string ready for prompt injection (same path as `POST /v1/context`).
+- `recent` — `{ projectId, limit? }` → the newest observations for a project.
+
+The transport is stateless: one MCP server + transport per request, so it needs
+no session affinity behind a load balancer. Mutating tools are intentionally
+absent — a pasted recall link cannot write.
