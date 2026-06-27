@@ -173,6 +173,18 @@ describe('POST /v1/mcp — remote authenticated MCP recall (streamable HTTP)', (
     await mcp.close();
   });
 
+  it('writes an audit_log row for an MCP read (parity with /v1/search)', async () => {
+    const mcp = await connectMcp(apiKeyRaw);
+    await mcp.callTool({ name: 'recent', arguments: { projectId, limit: 5 } });
+    await mcp.close();
+    const audit = await pool.query(
+      `SELECT details FROM audit_log WHERE team_id = $1 AND action = 'observation.read'`,
+      [teamId],
+    );
+    expect(audit.rows.length).toBeGreaterThan(0);
+    expect(audit.rows.some((r: { details: { via?: string } }) => r.details?.via === 'mcp')).toBe(true);
+  });
+
   it('rejects an unauthenticated connection (no key → 401)', async () => {
     const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/v1/mcp`));
     const mcp = new Client({ name: 'noauth', version: '0' }, { capabilities: {} });

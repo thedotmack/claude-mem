@@ -937,10 +937,10 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     // into Claude Code (or any MCP client) to recall their cloud memory:
     //   claude mcp add --transport http claude-mem <base>/v1/mcp \
     //     --header "Authorization: Bearer cm_..."
-    // Same readAuth (memories:read) + team/project scoping as /v1/search, so it
-    // reads identical data through identical guards. Stateless streamable-HTTP:
-    // one transport + server per request, bound to this key's team.
-    app.all('/v1/mcp', readAuth, this.asyncHandler(async (req, res) => {
+    // Same readAuth (memories:read) + team/project scoping + audit trail as
+    // /v1/search, so it reads identical data through identical guards. Stateless
+    // streamable-HTTP: one transport + server per request, bound to this key's team.
+    const mcpHandler = this.asyncHandler(async (req, res) => {
       const teamId = this.requireTeamId(req, res);
       if (!teamId) return;
       const projectScope = req.authContext?.projectId ?? null;
@@ -954,11 +954,20 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         search: async ({ projectId, query, limit }) => {
           assertProjectAllowed(projectId);
           const rows = await repo.search({ projectId, teamId, query, limit });
+          // Audit the read, same as POST /v1/search — the MCP path is no exception.
+          await this.auditRead(req, 'observation.read', null, projectId, {
+            mode: 'search', via: 'mcp', query, limit,
+            resultCount: rows.length, observationIds: rows.map(o => o.id),
+          });
           return rows.map(serializeObservation);
         },
         recent: async ({ projectId, limit }) => {
           assertProjectAllowed(projectId);
           const rows = await repo.listByProject({ projectId, teamId, limit });
+          await this.auditRead(req, 'observation.read', null, projectId, {
+            mode: 'recent', via: 'mcp', limit,
+            resultCount: rows.length, observationIds: rows.map(o => o.id),
+          });
           return rows.map(serializeObservation);
         },
       };
@@ -970,7 +979,12 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       });
       await server.connect(transport);
       await transport.handleRequest(req, res, req.body);
-    }));
+    });
+    // MCP streamable-HTTP only uses POST (JSON-RPC) and GET (SSE). Scope the
+    // route to those instead of app.all, so DELETE/PUT/PATCH/OPTIONS don't run
+    // auth + transport only to be rejected.
+    app.post('/v1/mcp', readAuth, mcpHandler);
+    app.get('/v1/mcp', readAuth, mcpHandler);
   }
 
   private async auditRead(
