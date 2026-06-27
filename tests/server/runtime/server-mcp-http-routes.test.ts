@@ -173,16 +173,20 @@ describe('POST /v1/mcp — remote authenticated MCP recall (streamable HTTP)', (
     await mcp.close();
   });
 
-  it('writes an audit_log row for an MCP read (parity with /v1/search)', async () => {
+  it('writes audit_log rows for MCP reads, with the right mode per tool', async () => {
     const mcp = await connectMcp(apiKeyRaw);
     await mcp.callTool({ name: 'recent', arguments: { projectId, limit: 5 } });
+    await mcp.callTool({ name: 'context', arguments: { projectId, query: 'login bug' } });
     await mcp.close();
     const audit = await pool.query(
       `SELECT details FROM audit_log WHERE team_id = $1 AND action = 'observation.read'`,
       [teamId],
     );
-    expect(audit.rows.length).toBeGreaterThan(0);
-    expect(audit.rows.some((r: { details: { via?: string } }) => r.details?.via === 'mcp')).toBe(true);
+    const modes = audit.rows.map((r: { details: { via?: string; mode?: string } }) =>
+      r.details?.via === 'mcp' ? r.details?.mode : null,
+    ).filter(Boolean);
+    expect(modes).toContain('recent');
+    expect(modes).toContain('context');
   });
 
   it('rejects an unauthenticated connection (no key → 401)', async () => {

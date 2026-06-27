@@ -14,18 +14,24 @@ import { createRecallMcpServer, type RecallBackend } from '../../../src/server/m
 
 interface Recorded {
   search: Array<{ projectId: string; query: string; limit: number }>;
+  context: Array<{ projectId: string; query: string; limit: number }>;
   recent: Array<{ projectId: string; limit: number }>;
 }
 
 function makeBackend(overrides: Partial<RecallBackend> = {}): { backend: RecallBackend; calls: Recorded } {
-  const calls: Recorded = { search: [], recent: [] };
+  const calls: Recorded = { search: [], context: [], recent: [] };
+  const observations = [
+    { id: 'o1', content: 'alpha' },
+    { id: 'o2', content: 'beta' },
+  ];
   const backend: RecallBackend = {
     search: async (args) => {
       calls.search.push(args);
-      return [
-        { id: 'o1', content: 'alpha' },
-        { id: 'o2', content: 'beta' },
-      ];
+      return observations;
+    },
+    context: async (args) => {
+      calls.context.push(args);
+      return observations;
     },
     recent: async (args) => {
       calls.recent.push(args);
@@ -69,9 +75,12 @@ describe('createRecallMcpServer', () => {
     await client.close();
   });
 
-  it('context packs the observation contents into a joined string', async () => {
-    const client = await connectClient(makeBackend().backend);
+  it('context routes through backend.context and packs a joined string', async () => {
+    const { backend, calls } = makeBackend();
+    const client = await connectClient(backend);
     const res = await client.callTool({ name: 'context', arguments: { projectId: 'p1', query: 'hi' } });
+    expect(calls.context).toHaveLength(1);
+    expect(calls.search).toHaveLength(0);
     expect(JSON.parse(textOf(res)).context).toBe('alpha\n\nbeta');
     await client.close();
   });

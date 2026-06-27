@@ -24,7 +24,10 @@ import {
 export interface RecallBackend {
   // Returns serialized observations (already shaped by serializeObservation),
   // scoped to the caller's team. Throws if `projectId` is outside the key's scope.
+  // `search` and `context` query identically; they are separate methods so the
+  // route can audit each tool under its own mode (search vs context).
   search(args: { projectId: string; query: string; limit: number }): Promise<unknown[]>;
+  context(args: { projectId: string; query: string; limit: number }): Promise<unknown[]>;
   recent(args: { projectId: string; limit: number }): Promise<unknown[]>;
 }
 
@@ -117,7 +120,7 @@ export function createRecallMcpServer(backend: RecallBackend, version: string): 
         return jsonResult({ observations });
       }
       if (name === 'context') {
-        const observations = await backend.search({
+        const observations = await backend.context({
           projectId: requireString(args, 'projectId'),
           query: requireString(args, 'query'),
           limit: clampLimit(args.limit, CONTEXT_LIMIT),

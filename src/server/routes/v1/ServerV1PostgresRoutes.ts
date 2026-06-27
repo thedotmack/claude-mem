@@ -961,6 +961,15 @@ export class ServerV1PostgresRoutes implements RouteHandler {
           });
           return rows.map(serializeObservation);
         },
+        context: async ({ projectId, query, limit }) => {
+          assertProjectAllowed(projectId);
+          const rows = await repo.search({ projectId, teamId, query, limit });
+          await this.auditRead(req, 'observation.read', null, projectId, {
+            mode: 'context', via: 'mcp', query, limit,
+            resultCount: rows.length, observationIds: rows.map(o => o.id),
+          });
+          return rows.map(serializeObservation);
+        },
         recent: async ({ projectId, limit }) => {
           assertProjectAllowed(projectId);
           const rows = await repo.listByProject({ projectId, teamId, limit });
