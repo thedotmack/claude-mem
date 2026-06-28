@@ -156,6 +156,11 @@ interface SSENewObservationEvent {
 
 type ConnectionState = "disconnected" | "connected" | "reconnecting";
 
+const DETAILED_FEED_TYPES = new Set(["security_alert", "security_note", "bugfix", "decision"]);
+const COMPACT_FEED_MAX_CHARS = 900;
+const DETAILED_FEED_MAX_CHARS = 2200;
+const DETAILED_FACT_LIMIT = 5;
+
 interface FeedEmojiConfig {
   primary?: string;
   claudeCode?: string;
@@ -397,11 +402,50 @@ function formatObservationMessage(
 ): string {
   const title = observation.title || "Untitled";
   const source = getSourceLabel(observation.project);
-  let message = `${source}\n**${title}**`;
+  const isDetailed = DETAILED_FEED_TYPES.has(observation.type);
+  const parts = [`${source}\n**${title}**`];
   if (observation.subtitle) {
-    message += `\n${observation.subtitle}`;
+    parts.push(truncateText(observation.subtitle, isDetailed ? 500 : 260));
   }
-  return message;
+
+  if (!isDetailed) {
+    return truncateText(parts.join("\n"), COMPACT_FEED_MAX_CHARS);
+  }
+
+  if (observation.narrative) {
+    parts.push(`Narrative\n${truncateText(observation.narrative, 900)}`);
+  }
+
+  const facts = parseStringArray(observation.facts).slice(0, DETAILED_FACT_LIMIT);
+  if (facts.length > 0) {
+    parts.push(`Facts\n${facts.map((fact) => `- ${truncateText(fact, 320)}`).join("\n")}`);
+  }
+
+  const concepts = parseStringArray(observation.concepts).slice(0, 8);
+  if (concepts.length > 0) {
+    parts.push(`Concepts: ${concepts.join(", ")}`);
+  }
+
+  return truncateText(parts.join("\n\n"), DETAILED_FEED_MAX_CHARS);
+}
+
+function truncateText(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  const hardLimit = Math.max(0, maxChars - 3);
+  const truncated = value.slice(0, hardLimit);
+  const lastWhitespace = truncated.search(/\s+\S*$/);
+  const boundary = lastWhitespace > Math.floor(hardLimit * 0.65) ? lastWhitespace : hardLimit;
+  return `${truncated.slice(0, boundary).trimEnd()}...`;
+}
+
+function parseStringArray(value: string | null | undefined): string[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
 }
 
 const CHANNEL_SEND_MAP: Record<string, { namespace: string; functionName: string }> = {

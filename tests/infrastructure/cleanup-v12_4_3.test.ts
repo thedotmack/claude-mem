@@ -1,5 +1,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
+import * as fs from 'fs';
 import { mkdtempSync, rmSync, existsSync, writeFileSync, mkdirSync, readFileSync, readdirSync } from 'fs';
 import path from 'path';
 import { tmpdir } from 'os';
@@ -159,6 +160,54 @@ describe('runOneTimeV12_4_3Cleanup', () => {
     runOneTimeV12_4_3Cleanup(tmpDataDir);
     const backupsAfterSecond = readdirSync(path.join(tmpDataDir, 'backups'));
     expect(backupsAfterSecond).toEqual(backupsAfterFirst);
+  });
+
+  it('proceeds with cleanup when statfsSync returns non-credible values (Bun darwin-x64 #31133)', () => {
+    // Reproduce the Bun 1.3.14 darwin-x64 statfs misalignment: bsize comes back
+    // as 0 and the other fields are shifted by one slot.
+    // Before the defensive patch, this caused the cleanup to compute
+    // free = bavail * bsize = 0 and skip with a misleading "Insufficient disk"
+    // error. After the patch, the gate should be bypassed with a WARN and the
+    // cleanup should run to completion.
+    const dbPath = path.join(tmpDataDir, 'claude-mem.db');
+    seedDatabase(dbPath, { observerSessions: 2, stuckCount: 10 });
+
+    const statfsSpy = spyOn(fs, 'statfsSync').mockImplementation(() => ({
+      type: 0,
+      bsize: 0, // ← the bug: should be 4096 on APFS
+      blocks: 4096,
+      bfree: 1048576,
+      bavail: 977028249,
+      files: 0,
+      ffree: 0,
+    }) as unknown as ReturnType<typeof fs.statfsSync>);
+
+    try {
+      runOneTimeV12_4_3Cleanup(tmpDataDir);
+    } finally {
+      statfsSpy.mockRestore();
+    }
+
+    const markerPath = path.join(tmpDataDir, '.cleanup-v12.4.3-applied');
+    expect(existsSync(markerPath)).toBe(true);
+    const payload = JSON.parse(readFileSync(markerPath, 'utf8'));
+    expect(payload.counts.observerSessions).toBe(2);
+    expect(payload.counts.stuckPendingMessages).toBe(10);
+    expect(payload.backupPath).toBeTruthy();
+    expect(existsSync(payload.backupPath)).toBe(true);
+
+    // Guard against the spy silently failing to intercept the named ESM import
+    // inside CleanupV12_4_3.ts. If the production code is still calling the
+    // real statfsSync (which returns ~1 TB free on this machine), the cleanup
+    // still completes and every assertion above passes vacuously. The WARN
+    // log line is only emitted on the defensive branch, so asserting on it
+    // disambiguates "spy worked, defensive branch fired" from "spy silently
+    // bypassed, normal branch fired".
+    expect(logger.warn).toHaveBeenCalledWith(
+      'SYSTEM',
+      expect.stringContaining('non-credible'),
+      expect.objectContaining({ bsize: 0 }),
+    );
   });
 
   it('honors CLAUDE_MEM_SKIP_CLEANUP_V12_4_3=1 by exiting without writing the marker', () => {

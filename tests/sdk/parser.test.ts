@@ -1,5 +1,7 @@
-import { describe, it, expect } from 'bun:test';
+import { afterEach, beforeEach, describe, it, expect } from 'bun:test';
+
 import { ModeManager } from '../../src/services/domain/ModeManager.js';
+
 import { parseAgentXml } from '../../src/sdk/parser.js';
 
 // Load the real bundled `code` mode rather than mocking ModeManager. The
@@ -17,6 +19,19 @@ function expectObservation(raw: string) {
   if (result.summary !== null) throw new Error('expected observation result, got a summary');
   return result.observations;
 }
+
+beforeEach(() => {
+  const modeManager = ModeManager.getInstance() as unknown as { activeMode: unknown };
+  modeManager.activeMode = {
+    observation_types: [{ id: 'bugfix' }, { id: 'discovery' }, { id: 'refactor' }],
+    observation_concepts: [],
+  };
+});
+
+afterEach(() => {
+  const modeManager = ModeManager.getInstance() as unknown as { activeMode: unknown };
+  modeManager.activeMode = null;
+});
 
 describe('parseAgentXml — observations', () => {
   it('returns a populated observation when title is present', () => {

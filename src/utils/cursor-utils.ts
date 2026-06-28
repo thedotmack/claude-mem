@@ -2,6 +2,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from 'fs';
 import { join, basename } from 'path';
 import { logger } from './logger.js';
+import { toBmpSafe } from './bmp-safe.js';
 
 export interface CursorProjectRegistry {
   [projectName: string]: {
@@ -76,7 +77,7 @@ description: "Claude-mem context from past sessions (auto-updated)"
 
 The following context is from claude-mem, a persistent memory system that tracks your coding sessions.
 
-${context}
+${toBmpSafe(context)}
 
 ---
 *Updated after last session. Use claude-mem's MCP search tools for more detailed queries.*

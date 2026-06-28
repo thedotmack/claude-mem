@@ -34,6 +34,7 @@ export interface CreatePostgresAgentEventInput {
   projectId: string;
   teamId: string;
   serverSessionId?: string | null;
+  contentSessionId?: string | null;
   sourceAdapter: string;
   sourceEventId?: string | null;
   eventType: string;
@@ -150,6 +151,7 @@ export function buildAgentEventIdempotencyKey(input: {
   sourceAdapter: string;
   sourceEventId?: string | null;
   serverSessionId?: string | null;
+  contentSessionId?: string | null;
   eventType: string;
   occurredAt: Date | string | number;
   payload?: JsonValue;
@@ -163,11 +165,15 @@ export function buildAgentEventIdempotencyKey(input: {
     ])}`;
   }
 
+  // Use contentSessionId (stable, client-provided) over serverSessionId, which is
+  // resolved lazily at ingest and can be NULL on a first delivery but non-NULL on a
+  // retry — that would drift the key and create duplicate events. Falls back to
+  // serverSessionId for events that don't carry a contentSessionId.
   return `agent_event:v1:${deterministicKey([
     input.teamId,
     input.projectId,
     input.sourceAdapter,
-    input.serverSessionId ?? null,
+    input.contentSessionId ?? input.serverSessionId ?? null,
     input.eventType,
     new Date(input.occurredAt).toISOString(),
     canonicalJson(input.payload ?? {})

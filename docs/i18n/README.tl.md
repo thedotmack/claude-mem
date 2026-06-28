@@ -54,10 +54,10 @@
     <img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/version-6.5.0-green.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-13.4.0-green.svg" alt="Version">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg" alt="Node">
+    <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg" alt="Node">
   </a>
   <a href="https://github.com/thedotmack/awesome-claude-code">
     <img src="https://awesome.re/mentioned-badge.svg" alt="Mentioned in Awesome Claude Code">
@@ -232,7 +232,7 @@ Tingnan ang **[Dokumentasyon ng Mga Beta Feature](https://docs.claude-mem.ai/bet
 
 ## Mga Pangangailangan ng Sistema
 
-- **Node.js**: 18.0.0 o mas mataas
+- **Node.js**: 20.0.0 o mas mataas
 - **Claude Code**: Pinakabagong bersyon na may plugin support
 - **Bun**: JavaScript runtime at process manager (auto-installed kung wala)
 - **uv**: Python package manager para sa vector search (auto-installed kung wala)

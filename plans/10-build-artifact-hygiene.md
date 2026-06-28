@@ -29,7 +29,18 @@ There is no enforced discipline on the contents, size, or correctness of publish
 
 The matrix lives in CI. An artifact-hygiene regression must fail CI before a user can install it.
 
+## Recluster note (2026-06-04)
+
+Issue #2730 (`Cannot find module 'zod/v3'`) is tracked **here**, not plan-04. Discovery
+(see `plans/10-build-artifact-hygiene-EXECUTION.md` Phase 0) found the root cause is a
+*shipped-artifact* defect — no lockfile is committed, zod is external to the worker bundle,
+and the unpinned `bun install` plus an auto-update that never re-installs leave `node_modules/zod`
+stale/missing. That is "what we ship," i.e. this master. The Wave-0 execution slice for #2730
+lives in `plans/10-build-artifact-hygiene-EXECUTION.md`.
+
 ## Out of scope
 
-- Missing-runtime-dependency-on-install (node_modules / zod not shipped) → plan-04 (install/dependency completeness).
-- Worker runtime crashes → plan-03.
+- Missing-runtime-dependency-on-install (node_modules / zod not shipped) — **moved into this plan**
+  (see Recluster note above); the original routing to plan-04 predated the no-lockfile root cause.
+- WHEN the dependency install runs on auto-update (hint-only vs. auto-reinstall) → plan-03.
+- Worker runtime crashes unrelated to dependency resolution → plan-03.

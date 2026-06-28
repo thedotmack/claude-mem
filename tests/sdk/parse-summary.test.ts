@@ -1,5 +1,7 @@
-import { describe, it, expect } from 'bun:test';
+import { afterEach, beforeEach, describe, it, expect } from 'bun:test';
+
 import { ModeManager } from '../../src/services/domain/ModeManager.js';
+
 import { parseAgentXml } from '../../src/sdk/parser.js';
 
 // Load the real bundled `code` mode rather than mocking ModeManager. The
@@ -12,6 +14,19 @@ import { parseAgentXml } from '../../src/sdk/parser.js';
 ModeManager.getInstance().loadMode('code');
 
 describe('parseAgentXml — summaries', () => {
+  beforeEach(() => {
+    const modeManager = ModeManager.getInstance() as unknown as { activeMode: unknown };
+    modeManager.activeMode = {
+      observation_types: [{ id: 'bugfix' }, { id: 'discovery' }, { id: 'refactor' }],
+      observation_concepts: [],
+    };
+  });
+
+  afterEach(() => {
+    const modeManager = ModeManager.getInstance() as unknown as { activeMode: unknown };
+    modeManager.activeMode = null;
+  });
+
   it('returns invalid when response is plain text (no XML)', () => {
     const result = parseAgentXml('Some plain text response without any XML tags');
     expect(result.valid).toBe(false);

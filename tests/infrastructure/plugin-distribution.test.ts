@@ -129,21 +129,24 @@ describe('Plugin Distribution - hooks.json Integrity', () => {
 });
 
 describe('Plugin Distribution - Startup Root Resolution', () => {
-  it('MCP startup commands should have config-dir based non-empty fallbacks', () => {
-    for (const relativePath of ['plugin/.mcp.json']) {
-      const command = mcpStartupCommandFrom(relativePath);
+  it('MCP startup command resolves the plugin root cross-platform (#2792)', () => {
+    // The launcher is now a cross-platform `node -e` payload (no `sh`), so it
+    // spawns on Windows without Git Bash. It must still resolve the plugin root
+    // with config-dir + env fallbacks and try cache roots before marketplaces.
+    const command = mcpStartupCommandFrom('plugin/.mcp.json');
 
-      expect(command).toContain('${CLAUDE_CONFIG_DIR:-$HOME/.claude}');
-      expect(command).toContain('_E="${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}"');
-      expect(command).toContain('while IFS= read -r _R');
-      expect(command).toContain('$_C/plugins/marketplaces/thedotmack/plugin');
-      expect(command).toContain('$_C/plugins/cache/thedotmack/claude-mem');
-      expect(command).toContain('[ -f "$_Q/scripts/mcp-server.cjs" ]');
-      expect(command).not.toContain('"/scripts/mcp-server.cjs"');
-      expect(command.indexOf('$_C/plugins/cache/thedotmack/claude-mem')).toBeLessThan(
-        command.indexOf('$_C/plugins/marketplaces/thedotmack/plugin')
-      );
-    }
+    expect(command).toContain('CLAUDE_CONFIG_DIR');
+    expect(command).toContain('.claude');
+    expect(command).toContain('CLAUDE_PLUGIN_ROOT');
+    expect(command).toContain('PLUGIN_ROOT');
+    expect(command).toContain('plugins/marketplaces/thedotmack/plugin');
+    expect(command).toContain('plugins/cache/thedotmack/claude-mem');
+    expect(command).toContain('mcp-server.cjs');
+    // No bare absolute "/scripts/..." path leaks through.
+    expect(command).not.toContain('"/scripts/mcp-server.cjs"');
+    expect(command.indexOf('plugins/cache/thedotmack/claude-mem')).toBeLessThan(
+      command.indexOf('plugins/marketplaces/thedotmack/plugin')
+    );
   });
 
   it('Codex hook commands should have config-dir based non-empty fallbacks', () => {
@@ -273,8 +276,9 @@ const RULE_A_EXPECTATIONS: Record<string, Record<string, string>> = {
 };
 
 const MCP_EXPECTED = buildShellCommand({
+  // The mcp Node launcher derives its spawn target from requireFile; it ignores
+  // trailingCommand, so none is passed (see buildMcpNodeLauncher).
   host: 'mcp', requireFile: 'mcp-server.cjs',
-  trailingCommand: ['exec', 'node', '"$_P/scripts/mcp-server.cjs"'],
   notFoundMessage: 'claude-mem: mcp server not found',
   mcpExtraCandidates: ['$PWD/plugin', '$PWD'],
   mcpExtraCacheRoots: [
@@ -308,14 +312,16 @@ describe('Spawn-Contract Templating - Rule A generator parity', () => {
     // The placeholder may appear only inside the _E="${CLAUDE_PLUGIN_ROOT:-...}"
     // expansion, never as a bare `${CLAUDE_PLUGIN_ROOT}` token that would reach
     // the binary unsubstituted.
-    const all = [
-      ...Object.values(RULE_A_EXPECTATIONS).flatMap((c) => Object.values(c)),
-      MCP_EXPECTED,
-    ];
-    for (const command of all) {
+    const shCommands = Object.values(RULE_A_EXPECTATIONS).flatMap((c) => Object.values(c));
+    for (const command of shCommands) {
       expect(command).not.toMatch(/\$\{CLAUDE_PLUGIN_ROOT\}(?!:-)/);
       expect(command).toContain('_E="${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}"');
     }
+    // The MCP node launcher reads env vars directly — it has no `${...}` shell
+    // tokens at all, so a raw placeholder can never reach the binary.
+    expect(MCP_EXPECTED).not.toContain('${CLAUDE_PLUGIN_ROOT}');
+    expect(MCP_EXPECTED).toContain('process.env.CLAUDE_PLUGIN_ROOT');
+    expect(MCP_EXPECTED).toContain('process.env.PLUGIN_ROOT');
   });
 });
 

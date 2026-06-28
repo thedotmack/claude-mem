@@ -276,13 +276,20 @@ function simulateInstall(_ide: string, scenario: Scenario): Outcome {
 describe('cross-IDE failure matrix (12 IDEs x 4 scenarios)', () => {
   const scenarios: Scenario[] = ['happy', 'eresolve', 'missing-uv', 'missing-bun'];
 
+  let prevMatrixDataDir: string | undefined;
   beforeEach(() => {
+    prevMatrixDataDir = process.env.CLAUDE_MEM_DATA_DIR;
     process.env.CLAUDE_MEM_DATA_DIR = mkdtempSync(join(tmpdir(), 'cm-matrix-'));
   });
   afterEach(() => {
     const dir = process.env.CLAUDE_MEM_DATA_DIR;
     if (dir) rmSync(dir, { recursive: true, force: true });
-    delete process.env.CLAUDE_MEM_DATA_DIR;
+    // Restore (not delete): the preload tripwire (tests/preload.ts) pins a
+    // per-run default temp dir, and unconditionally deleting the env var
+    // would expose later test files to the real ~/.claude-mem fallback in
+    // call-time resolvers.
+    if (prevMatrixDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+    else process.env.CLAUDE_MEM_DATA_DIR = prevMatrixDataDir;
   });
 
   it('produces 48 cells (12 IDEs x 4 scenarios)', () => {

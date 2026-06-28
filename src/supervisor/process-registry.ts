@@ -636,9 +636,17 @@ export function spawnSdkProcess(
   const pid = child.pid;
   const pgid = pid; 
 
+  // Keep the tail of stderr so a non-zero exit can say WHY at WARN level.
+  // Without this, a CLI that dies at flag parsing ("error: unknown option…")
+  // logs only an opaque {code=1} and the real cause is invisible unless the
+  // worker happens to run at DEBUG.
+  const STDERR_TAIL_MAX_CHARS = 2048;
+  let stderrTail = '';
   if (child.stderr) {
     child.stderr.on('data', (data: Buffer) => {
-      logger.debug('SDK_SPAWN', `[session-${sessionDbId}] stderr: ${data.toString().trim()}`);
+      const text = data.toString();
+      stderrTail = (stderrTail + text).slice(-STDERR_TAIL_MAX_CHARS);
+      logger.debug('SDK_SPAWN', `[session-${sessionDbId}] stderr: ${text.trim()}`);
     });
   }
 
@@ -651,11 +659,22 @@ export function spawnSdkProcess(
     pgid,
   }, child);
 
-  child.on('exit', (code: number | null, signal: string | null) => {
-    if (code !== 0) {
-      logger.warn('SDK_SPAWN', `[session-${sessionDbId}] Claude process exited`, { code, signal, pid });
-    }
+  child.on('exit', () => {
     registry.unregister(recordId);
+  });
+
+  // 'close', not 'exit': 'exit' can fire while piped stderr still holds
+  // buffered data, truncating the tail. 'close' waits for all stdio to drain.
+  child.on('close', (code: number | null, signal: string | null) => {
+    if (code !== 0) {
+      const tail = stderrTail.trim();
+      logger.warn('SDK_SPAWN', `[session-${sessionDbId}] Claude process exited`, {
+        code,
+        signal,
+        pid,
+        ...(tail ? { stderrTail: tail } : {}),
+      });
+    }
   });
 
   if (!child.stdin || !child.stdout || !child.stderr) {

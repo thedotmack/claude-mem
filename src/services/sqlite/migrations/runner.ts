@@ -538,6 +538,11 @@ export class MigrationRunner {
 
     this.db.run('DROP TABLE IF EXISTS observations_new');
 
+    const observationsCols = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const observationsHasContentHash = observationsCols.some(c => c.name === 'content_hash');
+    const contentHashColumnSQL = observationsHasContentHash ? ',\n        content_hash TEXT' : '';
+    const contentHashSelectSQL = observationsHasContentHash ? ', content_hash' : '';
+
     this.db.run(`
       CREATE TABLE observations_new (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -555,7 +560,7 @@ export class MigrationRunner {
         prompt_number INTEGER,
         discovery_tokens INTEGER DEFAULT 0,
         created_at TEXT NOT NULL,
-        created_at_epoch INTEGER NOT NULL,
+        created_at_epoch INTEGER NOT NULL${contentHashColumnSQL},
         FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
       )
     `);
@@ -564,7 +569,7 @@ export class MigrationRunner {
       INSERT INTO observations_new
       SELECT id, memory_session_id, project, text, type, title, subtitle, facts,
              narrative, concepts, files_read, files_modified, prompt_number,
-             discovery_tokens, created_at, created_at_epoch
+             discovery_tokens, created_at, created_at_epoch${contentHashSelectSQL}
       FROM observations
     `);
 
@@ -935,10 +940,24 @@ export class MigrationRunner {
     this.db.run('BEGIN TRANSACTION');
     try {
       this.db.run(`
+        UPDATE observations
+           SET content_hash = '__null_migration_' || id || '__'
+         WHERE content_hash IS NULL
+      `);
+
+      this.db.run(`
         DELETE FROM observations
-         WHERE id NOT IN (
-           SELECT MIN(id) FROM observations
-            GROUP BY memory_session_id, content_hash
+         WHERE id IN (
+           SELECT id
+             FROM (
+               SELECT id,
+                      ROW_NUMBER() OVER (
+                        PARTITION BY memory_session_id, content_hash
+                        ORDER BY id
+                      ) AS duplicate_rank
+                 FROM observations
+             )
+            WHERE duplicate_rank > 1
          )
       `);
 

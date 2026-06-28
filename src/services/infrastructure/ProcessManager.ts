@@ -167,6 +167,51 @@ export function removePidFile(): void {
   }
 }
 
+/**
+ * Owner-or-dead guarded PID-file removal (Phase 5, worker-restart plan).
+ *
+ * Deletes the PID file only when the recorded pid is `expectedOwnerPid` (the
+ * worker the caller just shut down, or the caller itself) OR is no longer
+ * alive. A live, different pid means a restart successor has already written
+ * its own file — blind deletion here is exactly the clobber that made
+ * `status` report a healthy worker as not running.
+ *
+ * Malformed files split two ways. Unparseable JSON cannot prove ownership and
+ * is left in place (the safe default): readPidFile() parses it to null so it
+ * never gates a start, and the next worker boot overwrites or cleans it
+ * (validateWorkerPidFile). Parseable JSON with a missing/invalid `pid` field
+ * (e.g. `{"port":37777}`) is treated as a DEAD owner and deleted:
+ * recorded.pid is undefined, so isProcessAlive() returns false and the
+ * owner-or-dead guard falls through to removal. (The supervisor-side
+ * removeOwnedPidFile spares pid-less files instead — that divergence is
+ * intentional: this helper may delete dead leftovers, the shutdown cascade
+ * only ever deletes its own file.)
+ */
+export function removePidFileIfOwner(expectedOwnerPid: number | null): void {
+  if (!existsSync(PID_FILE)) return;
+
+  const recorded = readPidFile();
+  if (recorded === null) {
+    logger.debug('SYSTEM', 'PID file unreadable — leaving it (cannot prove ownership)', {
+      path: PID_FILE,
+      expectedOwnerPid
+    });
+    return;
+  }
+
+  const ownedByStoppedWorker = expectedOwnerPid !== null && recorded.pid === expectedOwnerPid;
+  if (!ownedByStoppedWorker && isProcessAlive(recorded.pid)) {
+    logger.debug('SYSTEM', 'PID file belongs to a live, different worker (restart successor?) — leaving it', {
+      path: PID_FILE,
+      recordedPid: recorded.pid,
+      expectedOwnerPid
+    });
+    return;
+  }
+
+  removePidFile();
+}
+
 export function getPlatformTimeout(baseMs: number): number {
   const WINDOWS_MULTIPLIER = 2.0;
   return process.platform === 'win32' ? Math.round(baseMs * WINDOWS_MULTIPLIER) : baseMs;

@@ -14,10 +14,10 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { getWorkerPort, workerHttpRequest } from '../shared/worker-utils.js';
+import { getWorkerPort, workerHttpRequest, resolveWorkerScriptPath } from '../shared/worker-utils.js';
 import { ensureWorkerStarted } from '../services/worker-spawner.js';
 import { searchCodebase, formatSearchResults } from '../services/smart-file-read/search.js';
-import { parseFile, formatFoldedView, unfoldSymbol } from '../services/smart-file-read/parser.js';
+import { parseFile, formatFoldedView, unfoldSymbol, findProjectRoot } from '../services/smart-file-read/parser.js';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -49,7 +49,12 @@ const mcpServerDir = (() => {
     return process.cwd();
   }
 })();
-const WORKER_SCRIPT_PATH = resolve(mcpServerDir, 'worker-service.cjs');
+// Prefer the canonical marketplace copy of the worker bundle (same
+// marketplace-first candidates as the hook launcher) over this server's own
+// directory: an MCP server still running out of a stale plugin cache dir
+// would otherwise auto-spawn a stale worker. The own-dir resolution stays as
+// the fallback for installs without a marketplace copy.
+const WORKER_SCRIPT_PATH = resolveWorkerScriptPath() ?? resolve(mcpServerDir, 'worker-service.cjs');
 
 function errorIfWorkerScriptMissing(): void {
   if (!mcpServerDirResolutionFailed) return;
@@ -729,13 +734,14 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     handler: async (args: any) => {
       const filePath = resolve(args.file_path);
       const content = await readFile(filePath, 'utf-8');
-      const unfolded = unfoldSymbol(content, filePath, args.symbol_name);
+      const projectRoot = findProjectRoot(filePath) ?? process.cwd();
+      const unfolded = unfoldSymbol(content, filePath, args.symbol_name, projectRoot);
       if (unfolded) {
         return {
           content: [{ type: 'text' as const, text: unfolded }]
         };
       }
-      const parsed = parseFile(content, filePath);
+      const parsed = parseFile(content, filePath, projectRoot);
       if (parsed.symbols.length > 0) {
         const available = parsed.symbols.map(s => `  - ${s.name} (${s.kind})`).join('\n');
         return {
@@ -769,7 +775,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     handler: async (args: any) => {
       const filePath = resolve(args.file_path);
       const content = await readFile(filePath, 'utf-8');
-      const parsed = parseFile(content, filePath);
+      const parsed = parseFile(content, filePath, findProjectRoot(filePath) ?? process.cwd());
       if (parsed.symbols.length > 0) {
         return {
           content: [{ type: 'text' as const, text: formatFoldedView(parsed) }]

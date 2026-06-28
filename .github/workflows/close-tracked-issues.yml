@@ -1,0 +1,123 @@
+name: Close Tracked Issues
+
+# When a "tracking" issue is closed, close every issue listed under its
+# "### Issues" section. Tracking issues consolidate several duplicate bug
+# reports that share one root cause; closing the tracker resolves them all.
+# PRs listed under "### PRs" are intentionally left untouched — those are
+# fixes to be merged, not closed.
+
+on:
+  issues:
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'Tracking issue number to fan-out close from'
+        required: true
+        type: number
+
+jobs:
+  close-tracked:
+    runs-on: ubuntu-latest
+    if: |
+      (github.event_name == 'issues' && contains(github.event.issue.labels.*.name, 'tracking')) ||
+      github.event_name == 'workflow_dispatch'
+
+    permissions:
+      issues: write
+      contents: read
+
+    steps:
+      - name: Close issues tracked by this tracker
+        uses: actions/github-script@v8
+        with:
+          script: |
+            // Resolve the tracking issue (dispatch passes a number; event gives the payload).
+            let tracker;
+            if (context.eventName === 'workflow_dispatch') {
+              const { data } = await github.rest.issues.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.inputs.issue_number,
+              });
+              tracker = data;
+            } else {
+              tracker = context.payload.issue;
+            }
+
+            // The `issues: closed` trigger guarantees a closed tracker. The manual
+            // workflow_dispatch path bypasses that, and its only valid use is to
+            // re-run the fan-out on a tracker that is *already* closed (e.g. a prior
+            // run failed, or issues were added to the list after it closed). Refuse
+            // to close children while the tracker is still open — otherwise a stray
+            // dispatch on any issue with an "### Issues" section would bulk-close it.
+            if (context.eventName === 'workflow_dispatch' && tracker.state !== 'closed') {
+              console.log(`Tracker #${tracker.number} is open — refusing to fan-out close. `
+                + `Close the tracker first, then re-dispatch.`);
+              return;
+            }
+
+            const body = tracker.body || '';
+            console.log(`Tracker #${tracker.number}: ${tracker.title}`);
+
+            // Isolate the "### Issues" section so we don't pick up PR numbers
+            // from the "### PRs" block. The section runs until the next heading of
+            // any level (#{2,} covers H2-H6) or end of body.
+            const match = body.match(/###\s+Issues\s*\n([\s\S]*?)(?=\n#{2,}\s|\n*$)/i);
+            if (!match) {
+              console.log('No "### Issues" section found; nothing to close.');
+              return;
+            }
+
+            // Collect every #NNNN referenced in that block, de-duplicated.
+            const numbers = [...new Set(
+              [...match[1].matchAll(/#(\d+)/g)].map((m) => parseInt(m[1], 10))
+            )].filter((n) => n !== tracker.number);
+
+            if (numbers.length === 0) {
+              console.log('No issue references found in the Issues section.');
+              return;
+            }
+            console.log(`Tracked issues: ${numbers.map((n) => `#${n}`).join(', ')}`);
+
+            for (const issue_number of numbers) {
+              try {
+                const { data: target } = await github.rest.issues.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number,
+                });
+
+                // Skip pull requests (the REST issues API returns them too).
+                if (target.pull_request) {
+                  console.log(`#${issue_number} is a PR — skipping.`);
+                  continue;
+                }
+                if (target.state === 'closed') {
+                  console.log(`#${issue_number} already closed — skipping.`);
+                  continue;
+                }
+
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number,
+                  body: `Resolved via tracking issue #${tracker.number}, which has been closed. `
+                    + `This report shared a root cause with others consolidated there — `
+                    + `closing as part of that group. See #${tracker.number} for the details.`,
+                });
+
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number,
+                  state: 'closed',
+                  state_reason: 'completed',
+                });
+
+                console.log(`Closed #${issue_number}.`);
+              } catch (error) {
+                // One bad reference shouldn't abort the rest of the fan-out.
+                console.log(`Failed to close #${issue_number}: ${error.message}`);
+              }
+            }

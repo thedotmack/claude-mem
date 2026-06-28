@@ -19,10 +19,31 @@ import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { getProjectContext } from '../../../../utils/project-name.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 import { handleGeneratorExit } from '../../session/GeneratorExitHandler.js';
+import { telemetryBuffer } from '../../../telemetry/buffer.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
 import { getUptimeSeconds } from '../../../../shared/uptime.js';
+import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../../../shared/user-prompts.js';
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
+
+/**
+ * Collapse session.abortReason onto a closed telemetry enum. The raw value can
+ * carry free text after a colon (e.g. 'quota:<provider message>') — never emit
+ * it verbatim. Unknown or absent reasons map to 'none'.
+ */
+function normalizeAbortReason(
+  reason: string | null | undefined
+): 'idle' | 'shutdown' | 'overflow' | 'restart_guard' | 'quota' | 'poisoned' | 'none' {
+  switch ((reason ?? '').split(':')[0]) {
+    case 'idle': return 'idle';
+    case 'shutdown': return 'shutdown';
+    case 'overflow': return 'overflow';
+    case 'restart-guard': return 'restart_guard';
+    case 'quota': return 'quota';
+    case 'poisoned': return 'poisoned';
+    default: return 'none';
+  }
+}
 
 export class SessionRoutes extends BaseRouteHandler {
   constructor(
@@ -116,6 +137,9 @@ export class SessionRoutes extends BaseRouteHandler {
 
     session.currentProvider = provider;
     session.lastGeneratorActivity = Date.now();
+    // Providers refine this per-prompt ('init'|'ingest'|'summarize'); this is
+    // the fallback when a generator dies before dispatching its first prompt.
+    session.lastGeneratorSource = source;
 
     const myController = session.abortController;
 
@@ -146,10 +170,38 @@ export class SessionRoutes extends BaseRouteHandler {
           provider: provider,
           error: errorMsg
         }, error);
+        // No abort_reason here: every site that sets abortReason aborts the
+        // controller on its next line, so aborted generators either resolve
+        // normally (quota/overflow break) or hit the signal-aborted early
+        // return above — this catch only ever sees non-abort rejections.
+        telemetryBuffer.record('session_compressed', {
+          outcome: 'error',
+          provider,
+          // Providers seed lastModelId when they start; 'unknown' covers a
+          // generator that died before resolving its model.
+          model: session.lastModelId ?? 'unknown',
+          error_category: 'provider_error',
+          hook: session.lastGeneratorSource,
+          ide: session.platformSource,
+        });
       })
       .finally(async () => {
         const reason = session.abortReason ?? null;
         session.abortReason = null;  // consume the reason
+        if (reason !== null) {
+          // Abort accounting lives HERE, where the reason is consumed — the
+          // ONLY point every abort flow (idle / shutdown / overflow / quota /
+          // poisoned) passes through. Emit the closed enum, never the raw
+          // string ('quota:…' carries a window suffix).
+          telemetryBuffer.record('session_compressed', {
+            outcome: 'aborted',
+            provider,
+            model: session.lastModelId ?? 'unknown',
+            abort_reason: normalizeAbortReason(reason),
+            hook: session.lastGeneratorSource,
+            ide: session.platformSource,
+          });
+        }
         await handleGeneratorExit(session, reason, {
           sessionManager: this.sessionManager,
           completionHandler: this.completionHandler,
@@ -257,14 +309,14 @@ export class SessionRoutes extends BaseRouteHandler {
     const sessionDbId = store.createSDKSession(contentSessionId, '', '', undefined, platformSource);
     const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId);
 
-    const userPrompt = PrivacyCheckValidator.checkUserPromptPrivacy(
+    const privacy = PrivacyCheckValidator.checkUserPromptPrivacy(
       store,
       contentSessionId,
       promptNumber,
       'summarize',
       sessionDbId
     );
-    if (!userPrompt) {
+    if (!privacy.allow) {
       res.json({ status: 'skipped', reason: 'private' });
       return;
     }
@@ -381,6 +433,31 @@ export class SessionRoutes extends BaseRouteHandler {
         promptNumber,
         skipped: true,
         reason: 'private'
+      });
+      return;
+    }
+
+    const duplicatePrompt = store.findRecentDuplicateUserPrompt(
+      contentSessionId,
+      cleanedPrompt,
+      USER_PROMPT_DEDUPE_WINDOW_MS
+    );
+
+    if (duplicatePrompt) {
+      const contextInjected = this.sessionManager.getSession(sessionDbId) !== undefined;
+      logger.debug('SESSION', 'Duplicate user prompt skipped', {
+        sessionId: sessionDbId,
+        promptNumber: duplicatePrompt.prompt_number,
+        duplicatePromptId: duplicatePrompt.id,
+        contextInjected
+      });
+
+      res.json({
+        sessionDbId,
+        promptNumber: duplicatePrompt.prompt_number,
+        skipped: true,
+        reason: 'duplicate',
+        contextInjected
       });
       return;
     }

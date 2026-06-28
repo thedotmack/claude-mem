@@ -26,6 +26,10 @@ describe('plugin/scripts/version-check.js install marker compatibility', () => {
     );
     mkdirSync(tempDir, { recursive: true });
     writeFileSync(join(tempDir, 'package.json'), JSON.stringify({ version: '12.4.4' }));
+    // Pre-create node_modules so version-check's Setup-phase dependency
+    // auto-install (gh #2649) short-circuits — these tests are about
+    // .install-version marker compatibility, not dependency materialisation.
+    mkdirSync(join(tempDir, 'node_modules'), { recursive: true });
   });
 
   afterEach(() => {

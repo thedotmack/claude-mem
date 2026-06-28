@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import path from 'path';
 import { z } from 'zod';
 import { SearchManager } from '../../SearchManager.js';
+import type { SearchTelemetryEnvelope } from '../../SearchManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
@@ -12,6 +13,8 @@ import { countObservationsByProjects } from '../../../context/ObservationCompile
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from '../../../sqlite/types.js';
+import { captureEvent } from '../../../telemetry/telemetry.js';
+import { telemetryBuffer } from '../../../telemetry/buffer.js';
 
 const ONBOARDING_EXPLAINER_PATH: string = path.resolve(__dirname, '../skills/how-it-works/onboarding-explainer.md');
 
@@ -38,39 +41,6 @@ const cachedOnboardingExplainer: string | null = (() => {
 // enough that toggling CLAUDE_MEM_WELCOME_HINT_ENABLED is responsive in
 // practice and long enough to absorb hook bursts.
 const SETTINGS_CACHE_TTL_MS = 5000;
-let cachedSettings: ReturnType<typeof SettingsDefaultsManager.loadFromFile> | null = null;
-let cachedSettingsAt = 0;
-
-function getCachedSettings(): ReturnType<typeof SettingsDefaultsManager.loadFromFile> {
-  const now = Date.now();
-  if (cachedSettings && now - cachedSettingsAt < SETTINGS_CACHE_TTL_MS) {
-    return cachedSettings;
-  }
-  cachedSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-  cachedSettingsAt = now;
-  return cachedSettings;
-}
-
-// Memoize the "this project has observations" answer per project. Observation
-// counts are monotonically increasing — once a project hits >0 it stays >0,
-// so we never need to re-query that combination again. Only cache the positive
-// result; zero counts have to be re-checked because new observations may land.
-const projectsKnownNonEmpty = new Set<string>();
-
-function projectsHaveObservations(
-  sessionStore: ReturnType<SearchManager['getSessionStore']>,
-  projects: string[],
-): boolean {
-  if (projects.every(p => projectsKnownNonEmpty.has(p))) {
-    return true;
-  }
-  const observationCount = countObservationsByProjects(sessionStore, projects);
-  if (observationCount > 0) {
-    for (const p of projects) projectsKnownNonEmpty.add(p);
-    return true;
-  }
-  return false;
-}
 
 const WELCOME_HINT_TEMPLATE = `# claude-mem status
 
@@ -93,13 +63,78 @@ const semanticContextSchema = z.object({
 }).passthrough();
 
 export class SearchRoutes extends BaseRouteHandler {
+  private cachedSettings: ReturnType<typeof SettingsDefaultsManager.loadFromFile> | null = null;
+  private cachedSettingsAt = 0;
+  // Scope this cache to the route instance so separate server/test instances do
+  // not inherit each other's positive observation state through shared modules.
+  private readonly projectsKnownNonEmpty = new Set<string>();
+
   constructor(
     private searchManager: SearchManager
   ) {
     super();
   }
 
+  private getCachedSettings(): ReturnType<typeof SettingsDefaultsManager.loadFromFile> {
+    const now = Date.now();
+    if (this.cachedSettings && now - this.cachedSettingsAt < SETTINGS_CACHE_TTL_MS) {
+      return this.cachedSettings;
+    }
+    // Keep env overrides out of the cache so toggles remain request-local and
+    // tests do not inherit a transient process.env value for the next 5 seconds.
+    this.cachedSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, false);
+    this.cachedSettingsAt = now;
+    return this.cachedSettings;
+  }
+
+  private projectsHaveObservations(
+    sessionStore: ReturnType<SearchManager['getSessionStore']>,
+    projects: string[],
+  ): boolean {
+    if (projects.every(p => this.projectsKnownNonEmpty.has(p))) {
+      return true;
+    }
+    const observationCount = countObservationsByProjects(sessionStore, projects);
+    if (observationCount > 0) {
+      for (const p of projects) this.projectsKnownNonEmpty.add(p);
+      return true;
+    }
+    return false;
+  }
+
   setupRoutes(app: express.Application): void {
+    // One telemetry site for every /api/search* endpoint (unified + dedicated
+    // variants), so search adoption is not undercounted. /api/search/help is
+    // documentation, not a search. Properties are the endpoint name (OUR route
+    // segment, bounded to a known enum), outcome, and latency — never query
+    // text (see docs/public/telemetry.mdx).
+    const KNOWN_SEARCH_ENDPOINTS = new Set([
+      'unified', 'observations', 'sessions', 'prompts', 'by-concept', 'by-file', 'by-type',
+    ]);
+    app.use('/api/search', (req: Request, res: Response, next: express.NextFunction) => {
+      if (req.path !== '/help') {
+        const searchStartedAt = Date.now();
+        const segment = req.path === '/' ? 'unified' : req.path.slice(1).split('/')[0];
+        const endpoint = KNOWN_SEARCH_ENDPOINTS.has(segment) ? segment : 'other';
+        res.once('finish', () => {
+          // res.locals.searchTelemetry is the retrieval-quality envelope
+          // (result_count, search_strategy, chroma_available, fallback_reason)
+          // populated by SearchManager.search() and stashed by the handler —
+          // counts/booleans/enums only, never response-body introspection.
+          captureEvent('search_performed', {
+            endpoint,
+            outcome: res.statusCode < 400 ? 'ok' : 'error',
+            duration_ms: Date.now() - searchStartedAt,
+            ...(res.locals.searchTelemetry ?? {}),
+          });
+        });
+      }
+      next();
+    });
+
+    // context_injected is captured inside handleContextInject so the event can
+    // carry the depth/economics stats computed during generation.
+
     app.get('/api/search', this.handleUnifiedSearch.bind(this));
     app.get('/api/timeline', this.handleUnifiedTimeline.bind(this));
     app.get('/api/decisions', this.handleDecisions.bind(this));
@@ -125,7 +160,13 @@ export class SearchRoutes extends BaseRouteHandler {
   }
 
   private handleUnifiedSearch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const result = await this.searchManager.search(req.query);
+    // Mutable telemetry sink: SearchManager.search() fills it with the
+    // retrieval-quality envelope; the /api/search middleware spreads it into
+    // search_performed on response finish. Stashed before the await so the
+    // envelope survives even if response serialization fails afterwards.
+    const searchTelemetry: SearchTelemetryEnvelope = {};
+    res.locals.searchTelemetry = searchTelemetry;
+    const result = await this.searchManager.search(req.query, searchTelemetry);
     res.json(result);
   });
 
@@ -351,7 +392,7 @@ export class SearchRoutes extends BaseRouteHandler {
       return;
     }
 
-    const settings = getCachedSettings();
+    const settings = this.getCachedSettings();
     // Env always wins over cached settings (mirrors SettingsDefaultsManager
     // applyEnvOverrides semantics). Reading process.env is free, so honoring it
     // here keeps the welcome-hint toggle responsive without waiting out the
@@ -362,8 +403,8 @@ export class SearchRoutes extends BaseRouteHandler {
       const sessionStore = this.searchManager.getSessionStore();
       // Memoized: skips the COUNT(*) query once any project in the set has
       // observations. Hot-path: PostToolUse fires after every Read/Edit.
-      if (!projectsHaveObservations(sessionStore, projects)) {
-        const port = settings.CLAUDE_MEM_WORKER_PORT;
+      if (!this.projectsHaveObservations(sessionStore, projects)) {
+        const port = process.env.CLAUDE_MEM_WORKER_PORT ?? settings.CLAUDE_MEM_WORKER_PORT;
         const viewerUrl = `http://localhost:${port}`;
         const hintBody = WELCOME_HINT_TEMPLATE.replace('{viewer_url}', viewerUrl);
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -372,23 +413,47 @@ export class SearchRoutes extends BaseRouteHandler {
       }
     }
 
-    const { generateContext } = await import('../../../context-generator.js');
+    const { generateContextWithStats } = await import('../../../context-generator.js');
 
-    const primaryProject = projects[projects.length - 1]; 
+    const primaryProject = projects[projects.length - 1];
     const cwd = `/context/${primaryProject}`;
 
-    const contextText = await generateContext(
-      {
-        session_id: 'context-inject-' + Date.now(),
-        cwd: cwd,
-        projects: projects,
-        full
-      },
-      forHuman
-    );
+    const injectStartedAt = Date.now();
+    let contextResult: Awaited<ReturnType<typeof generateContextWithStats>>;
+    try {
+      contextResult = await generateContextWithStats(
+        {
+          session_id: 'context-inject-' + Date.now(),
+          cwd: cwd,
+          projects: projects,
+          full
+        },
+        forHuman
+      );
+    } catch (error) {
+      telemetryBuffer.record('context_injected', {
+        outcome: 'error',
+        duration_ms: Date.now() - injectStartedAt,
+      });
+      throw error;
+    }
+
+    // Stats are counts/enums computed alongside rendering (ContextInjectStats);
+    // mode/provider snapshot the settings the injection ran under. Empty-state
+    // responses (stats === null) injected no memory and are not counted.
+    if (contextResult.stats) {
+      const settingsSnapshot = this.getCachedSettings();
+      telemetryBuffer.record('context_injected', {
+        outcome: 'ok',
+        duration_ms: Date.now() - injectStartedAt,
+        mode: settingsSnapshot.CLAUDE_MEM_MODE,
+        provider: settingsSnapshot.CLAUDE_MEM_PROVIDER,
+        ...contextResult.stats,
+      });
+    }
 
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.send(contextText);
+    res.send(contextResult.text);
   });
 
   private handleSemanticContext = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {

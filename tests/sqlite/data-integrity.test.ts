@@ -1,6 +1,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { ClaudeMemDatabase } from '../../src/services/sqlite/Database.js';
+import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import {
   storeObservation,
   computeObservationContentHash,
@@ -11,7 +12,7 @@ import {
 } from '../../src/services/sqlite/Sessions.js';
 import { storeObservations } from '../../src/services/sqlite/transactions.js';
 import type { ObservationInput } from '../../src/services/sqlite/observations/types.js';
-import type { Database } from 'bun:sqlite';
+import { Database } from 'bun:sqlite';
 
 function createObservationInput(overrides: Partial<ObservationInput> = {}): ObservationInput {
   return {
@@ -31,6 +32,97 @@ function createSessionWithMemoryId(db: Database, contentSessionId: string, memor
   const sessionId = createSDKSession(db, contentSessionId, project, 'initial prompt');
   updateMemorySessionId(db, sessionId, memorySessionId);
   return memorySessionId;
+}
+
+function seedLegacyContentHashScenario(db: Database): void {
+  db.run(`
+    CREATE TABLE IF NOT EXISTS schema_versions (
+      id INTEGER PRIMARY KEY,
+      version INTEGER UNIQUE NOT NULL,
+      applied_at TEXT NOT NULL
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS sdk_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      content_session_id TEXT UNIQUE NOT NULL,
+      memory_session_id TEXT UNIQUE,
+      project TEXT NOT NULL,
+      platform_source TEXT NOT NULL DEFAULT 'claude',
+      user_prompt TEXT,
+      started_at TEXT NOT NULL,
+      started_at_epoch INTEGER NOT NULL,
+      completed_at TEXT,
+      completed_at_epoch INTEGER,
+      status TEXT CHECK(status IN ('active', 'completed', 'failed')) NOT NULL DEFAULT 'active'
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS observations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      memory_session_id TEXT NOT NULL,
+      project TEXT NOT NULL,
+      text TEXT,
+      type TEXT NOT NULL,
+      title TEXT,
+      subtitle TEXT,
+      facts TEXT,
+      narrative TEXT,
+      concepts TEXT,
+      files_read TEXT,
+      files_modified TEXT,
+      prompt_number INTEGER,
+      discovery_tokens INTEGER DEFAULT 0,
+      created_at TEXT NOT NULL,
+      created_at_epoch INTEGER NOT NULL,
+      content_hash TEXT,
+      FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE
+    )
+  `);
+
+  const now = new Date().toISOString();
+  const epoch = Date.now();
+  db.prepare(`
+    INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
+    VALUES (?, ?, ?, ?, ?, 'active')
+  `).run('content-a', 'session-a', 'legacy-project', now, epoch);
+  db.prepare(`
+    INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
+    VALUES (?, ?, ?, ?, ?, 'active')
+  `).run('content-b', 'session-b', 'legacy-project', now, epoch + 1);
+
+  db.prepare('INSERT INTO schema_versions (version, applied_at) VALUES (?, ?)').run(22, now);
+
+  db.prepare(`
+    INSERT INTO observations (memory_session_id, project, type, created_at, created_at_epoch, content_hash)
+    VALUES (?, ?, 'discovery', ?, ?, ?)
+  `).run('session-a', 'legacy-project', now, epoch, null);
+  db.prepare(`
+    INSERT INTO observations (memory_session_id, project, type, created_at, created_at_epoch, content_hash)
+    VALUES (?, ?, 'discovery', ?, ?, ?)
+  `).run('session-a', 'legacy-project', now, epoch + 1, null);
+  db.prepare(`
+    INSERT INTO observations (memory_session_id, project, type, created_at, created_at_epoch, content_hash)
+    VALUES (?, ?, 'discovery', ?, ?, ?)
+  `).run('session-a', 'legacy-project', now, epoch + 2, null);
+  db.prepare(`
+    INSERT INTO observations (memory_session_id, project, type, created_at, created_at_epoch, content_hash)
+    VALUES (?, ?, 'discovery', ?, ?, ?)
+  `).run('session-b', 'legacy-project', now, epoch + 3, null);
+  db.prepare(`
+    INSERT INTO observations (memory_session_id, project, type, created_at, created_at_epoch, content_hash)
+    VALUES (?, ?, 'discovery', ?, ?, ?)
+  `).run('session-b', 'legacy-project', now, epoch + 4, null);
+  db.prepare(`
+    INSERT INTO observations (memory_session_id, project, type, created_at, created_at_epoch, content_hash)
+    VALUES (?, ?, 'discovery', ?, ?, ?)
+  `).run('session-a', 'legacy-project', now, epoch + 5, 'non-null-duplicate');
+  db.prepare(`
+    INSERT INTO observations (memory_session_id, project, type, created_at, created_at_epoch, content_hash)
+    VALUES (?, ?, 'discovery', ?, ?, ?)
+  `).run('session-a', 'legacy-project', now, epoch + 6, 'non-null-duplicate');
 }
 
 describe('TRIAGE-03: Data Integrity', () => {
@@ -144,6 +236,48 @@ describe('TRIAGE-03: Data Integrity', () => {
 
       expect(row.project).toBeTruthy();
       expect(row.project.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('Migration parity', () => {
+    it('SessionStore should preserve legacy NULL content_hash rows while deduplicating non-NULL duplicates', () => {
+      const legacyDb = new Database(':memory:');
+      try {
+        seedLegacyContentHashScenario(legacyDb);
+        new SessionStore(legacyDb);
+
+        const totals = legacyDb.prepare('SELECT COUNT(*) as count FROM observations').get() as { count: number };
+        expect(totals.count).toBe(6);
+
+        const remainingNulls = legacyDb.prepare('SELECT COUNT(*) as count FROM observations WHERE content_hash IS NULL').get() as { count: number };
+        expect(remainingNulls.count).toBe(0);
+
+        const sessionANulls = legacyDb.prepare(`
+          SELECT COUNT(*) as count
+            FROM observations
+           WHERE memory_session_id = 'session-a'
+             AND content_hash GLOB '__null_migration_*__'
+        `).get() as { count: number };
+        expect(sessionANulls.count).toBe(3);
+
+        const sessionBNulls = legacyDb.prepare(`
+          SELECT COUNT(*) as count
+            FROM observations
+           WHERE memory_session_id = 'session-b'
+             AND content_hash GLOB '__null_migration_*__'
+        `).get() as { count: number };
+        expect(sessionBNulls.count).toBe(2);
+
+        const duplicateHashRows = legacyDb.prepare(`
+          SELECT COUNT(*) as count
+            FROM observations
+           WHERE memory_session_id = 'session-a'
+             AND content_hash = 'non-null-duplicate'
+        `).get() as { count: number };
+        expect(duplicateHashRows.count).toBe(1);
+      } finally {
+        legacyDb.close();
+      }
     });
   });
 });

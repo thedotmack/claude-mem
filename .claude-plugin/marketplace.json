@@ -4,13 +4,12 @@
     "name": "Alex Newman"
   },
   "metadata": {
-    "description": "Plugins by Alex Newman (thedotmack)",
-    "homepage": "https://github.com/thedotmack/claude-mem"
+    "description": "Plugins by Alex Newman (thedotmack)"
   },
   "plugins": [
     {
       "name": "claude-mem",
-      "version": "13.4.0",
+      "version": "13.6.2",
       "source": "./plugin",
       "description": "Persistent memory system for Claude Code - context compression across sessions"
     }

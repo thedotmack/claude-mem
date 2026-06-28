@@ -52,7 +52,10 @@ function getQueueSetting(key: keyof SettingsDefaults): string {
     return process.env[key]!;
   }
   if (existsSync(USER_SETTINGS_PATH)) {
-    return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH)[key];
+    const value = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, false)[key];
+    if (value !== undefined) {
+      return value;
+    }
   }
   return SettingsDefaultsManager.get(key);
 }

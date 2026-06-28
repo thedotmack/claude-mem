@@ -824,6 +824,9 @@ describe("SSE stream integration", () => {
         type: "discovery",
         project: "test",
         prompt_number: 1,
+        narrative: "Discovery observations should keep routine feed messages compact.",
+        facts: JSON.stringify(["Routine detail should not be shown"]),
+        concepts: JSON.stringify(["compact-feed"]),
         created_at_epoch: Date.now(),
       },
       timestamp: Date.now(),
@@ -840,6 +843,57 @@ describe("SSE stream integration", () => {
     assert.equal(sentMessages[0].to, "12345");
     assert.ok(sentMessages[0].text.includes("Test Observation"));
     assert.ok(sentMessages[0].text.includes("Found something interesting"));
+    assert.ok(!sentMessages[0].text.includes("Narrative"));
+    assert.ok(!sentMessages[0].text.includes("Routine detail should not be shown"));
+    assert.ok(!sentMessages[0].text.includes("compact-feed"));
+    assert.ok(sentMessages[0].text.length <= 900);
+
+    await getService().stop({});
+  });
+
+  it("keeps important feed messages more complete", async () => {
+    const { api, sentMessages, getService } = createMockApi({
+      workerPort: serverPort,
+      observationFeed: { enabled: true, channel: "telegram", to: "12345" },
+    });
+    claudeMemPlugin(api);
+
+    await getService().start({});
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    for (const res of serverResponses) {
+      res.write(
+        `data: ${JSON.stringify({
+          type: "new_observation",
+          observation: {
+            id: 2,
+            title: "Important Bugfix",
+            subtitle: "Fixed a regression",
+            type: "bugfix",
+            project: "test",
+            prompt_number: 1,
+            narrative: "This fuller context should stay visible for important feed messages.",
+            facts: JSON.stringify([
+              "Important fact one is preserved",
+              "Important fact two is preserved",
+              "Important fact three is preserved",
+            ]),
+            concepts: JSON.stringify(["important-feed"]),
+            created_at_epoch: Date.now(),
+          },
+          timestamp: Date.now(),
+        })}\n\n`
+      );
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    assert.equal(sentMessages.length, 1);
+    assert.ok(sentMessages[0].text.includes("Narrative"));
+    assert.ok(sentMessages[0].text.includes("This fuller context should stay visible"));
+    assert.ok(sentMessages[0].text.includes("Important fact three is preserved"));
+    assert.ok(sentMessages[0].text.includes("Concepts: important-feed"));
+    assert.ok(sentMessages[0].text.length <= 2200);
 
     await getService().stop({});
   });

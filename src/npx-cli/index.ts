@@ -26,6 +26,7 @@ ${pc.bold('Install Commands')} (no Bun required):
   ${pc.cyan('npx claude-mem install --provider claude|gemini|openrouter')}   Set LLM provider non-interactively
   ${pc.cyan('npx claude-mem install --model <id>')}   Set Claude model (when provider=claude)
   ${pc.cyan('npx claude-mem install --no-auto-start')}   Skip worker auto-start at the end
+  ${pc.cyan('npx claude-mem install --disable-auto-memory')}   Explicitly disable Claude Code native auto-memory
   ${pc.cyan('npx claude-mem install --runtime worker|server')}   Select runtime non-interactively (server brings up Docker pg+redis, generates an API key, injects the IDE MCP config)
   ${pc.cyan('npx claude-mem install --runtime server --server-url <url>')}   Point the server runtime at a specific base URL
   ${pc.cyan('npx claude-mem repair')}                Repair runtime (re-runs Bun/uv setup and bun install in plugin cache)
@@ -39,6 +40,7 @@ ${pc.bold('Runtime Commands')} (requires Bun, delegates to installed plugin):
   ${pc.cyan('npx claude-mem restart')}              Restart worker service
   ${pc.cyan('npx claude-mem status')}               Show worker status
   ${pc.cyan('npx claude-mem doctor')}               Diagnose install/runtime health (bun, uv, worker)
+  ${pc.cyan('npx claude-mem telemetry status|enable|disable')}   Manage anonymous telemetry (on by default, opt-out)
   ${pc.cyan('npx claude-mem server start')}         Start server service
   ${pc.cyan('npx claude-mem server stop')}          Stop server service
   ${pc.cyan('npx claude-mem server restart')}       Restart server service
@@ -91,6 +93,7 @@ function parseInstallOptions(argv: string[]): InstallOptions {
     provider: provider as InstallOptions['provider'],
     model: readFlag(argv, '--model'),
     noAutoStart: argv.includes('--no-auto-start'),
+    disableAutoMemory: argv.includes('--disable-auto-memory'),
     runtime: runtime as InstallOptions['runtime'],
     serverUrl: readFlag(argv, '--server-url'),
   };
@@ -163,6 +166,12 @@ async function main(): Promise<void> {
     case 'doctor': {
       const { runDoctorCommand } = await import('./commands/doctor.js');
       await runDoctorCommand();
+      break;
+    }
+
+    case 'telemetry': {
+      const { runTelemetryCommand } = await import('./commands/telemetry.js');
+      await runTelemetryCommand(args.slice(1));
       break;
     }
 

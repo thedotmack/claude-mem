@@ -53,10 +53,10 @@
     <img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/version-6.5.0-green.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-13.4.0-green.svg" alt="Version">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg" alt="Node">
+    <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg" alt="Node">
   </a>
   <a href="https://github.com/thedotmack/awesome-claude-code">
     <img src="https://awesome.re/mentioned-badge.svg" alt="Mentioned in Awesome Claude Code">
@@ -220,7 +220,7 @@ Endless Mode के विवरण और इसे आज़माने क�
 
 ## सिस्टम आवश्यकताएं
 
-- **Node.js**: 18.0.0 या उच्चतर
+- **Node.js**: 20.0.0 या उच्चतर
 - **Claude Code**: प्लगइन समर्थन के साथ नवीनतम संस्करण
 - **Bun**: JavaScript रनटाइम और प्रोसेस मैनेजर (यदि गायब हो तो ऑटो-इंस्टॉल)
 - **uv**: वेक्टर खोज के लिए Python पैकेज मैनेजर (यदि गायब हो तो ऑटो-इंस्टॉल)

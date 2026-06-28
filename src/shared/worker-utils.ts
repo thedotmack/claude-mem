@@ -1,14 +1,20 @@
 import path from "path";
 import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync } from "fs";
-import { execSync } from "child_process";
 import { spawnHidden } from "./spawn.js";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
-import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
+import { SettingsDefaultsManager, type SettingsDefaults } from "./SettingsDefaultsManager.js";
 import { MARKETPLACE_ROOT, DATA_DIR } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
 import { validateWorkerPidFile } from "../supervisor/index.js";
 import { emitBlockingError } from "./hook-io.js";
+import { captureCliEvent } from "../services/telemetry/cli-telemetry.js";
+import { checkVersionMatch } from "../services/infrastructure/index.js";
+// Imported from ProcessManager.js directly (not the infrastructure barrel):
+// tests mock the barrel module wholesale, and the resolver must stay real.
+// ProcessManager imports nothing from worker-utils, so no cycle.
+import { resolveWorkerRuntimePath } from "../services/infrastructure/ProcessManager.js";
+import { acquireSpawnLock, releaseSpawnLock } from "./worker-spawn-gate.js";
 
 function readTimeoutEnv(
   envName: string,
@@ -46,6 +52,8 @@ const HOOK_READINESS_TIMEOUT_MS = readTimeoutEnv(
   { min: 0, max: 300000 }
 );
 
+const API_REQUEST_TIMEOUT_BOUNDS = { min: 500, max: 300000 } as const;
+
 export function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs: number): Promise<Response> {
   return new Promise((resolve, reject) => {
     const timeoutId = setTimeout(
@@ -61,14 +69,69 @@ export function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs:
 
 let cachedPort: number | null = null;
 let cachedHost: string | null = null;
+let cachedSettings: SettingsDefaults | null = null;
+let cachedApiRequestTimeoutMs: number | null = null;
+
+function getWorkerSettingsPath(): string {
+  return path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
+}
+
+function getWorkerSettings(): SettingsDefaults {
+  if (cachedSettings !== null) {
+    return cachedSettings;
+  }
+
+  cachedSettings = SettingsDefaultsManager.loadFromFile(getWorkerSettingsPath());
+  return cachedSettings;
+}
+
+function parseBoundedTimeout(
+  rawValue: string | undefined,
+  bounds: { min: number; max: number }
+): number | null {
+  if (!rawValue) return null;
+  const parsed = parseInt(rawValue, 10);
+  if (Number.isFinite(parsed) && parsed >= bounds.min && parsed <= bounds.max) {
+    return parsed;
+  }
+  return null;
+}
+
+function readSettingsBackedTimeout(
+  settingName: keyof SettingsDefaults,
+  defaultValue: number,
+  bounds: { min: number; max: number }
+): number {
+  const envVal = process.env[settingName];
+  if (envVal !== undefined) {
+    const parsed = parseBoundedTimeout(envVal, bounds);
+    if (parsed !== null) {
+      return parsed;
+    }
+    logger.warn('SYSTEM', `Invalid ${settingName}, using default`, {
+      value: envVal, min: bounds.min, max: bounds.max
+    });
+    return defaultValue;
+  }
+
+  const settingsValue = getWorkerSettings()[settingName];
+  const parsed = parseBoundedTimeout(settingsValue, bounds);
+  if (parsed !== null) {
+    return parsed;
+  }
+
+  logger.warn('SYSTEM', `Invalid ${settingName} in settings.json, using default`, {
+    value: settingsValue, min: bounds.min, max: bounds.max
+  });
+  return defaultValue;
+}
 
 export function getWorkerPort(): number {
   if (cachedPort !== null) {
     return cachedPort;
   }
 
-  const settingsPath = path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
-  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+  const settings = getWorkerSettings();
   cachedPort = parseInt(settings.CLAUDE_MEM_WORKER_PORT, 10);
   return cachedPort;
 }
@@ -78,15 +141,29 @@ export function getWorkerHost(): string {
     return cachedHost;
   }
 
-  const settingsPath = path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
-  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+  const settings = getWorkerSettings();
   cachedHost = settings.CLAUDE_MEM_WORKER_HOST;
   return cachedHost;
+}
+
+export function getWorkerApiRequestTimeoutMs(): number {
+  if (cachedApiRequestTimeoutMs !== null) {
+    return cachedApiRequestTimeoutMs;
+  }
+
+  cachedApiRequestTimeoutMs = readSettingsBackedTimeout(
+    'CLAUDE_MEM_API_TIMEOUT_MS',
+    getTimeout(HOOK_TIMEOUTS.API_REQUEST),
+    API_REQUEST_TIMEOUT_BOUNDS
+  );
+  return cachedApiRequestTimeoutMs;
 }
 
 export function clearPortCache(): void {
   cachedPort = null;
   cachedHost = null;
+  cachedSettings = null;
+  cachedApiRequestTimeoutMs = null;
 }
 
 export function buildWorkerUrl(apiPath: string): string {
@@ -103,7 +180,7 @@ export function workerHttpRequest(
   } = {}
 ): Promise<Response> {
   const method = options.method ?? 'GET';
-  const timeoutMs = options.timeoutMs ?? API_REQUEST_TIMEOUT_MS;
+  const timeoutMs = options.timeoutMs ?? getWorkerApiRequestTimeoutMs();
 
   const url = buildWorkerUrl(apiPath);
   const init: RequestInit = { method };
@@ -130,65 +207,13 @@ async function isWorkerReady(): Promise<boolean> {
   return response.ok;
 }
 
-function getPluginVersion(): string {
-  try {
-    const packageJsonPath = path.join(MARKETPLACE_ROOT, 'package.json');
-    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
-    return packageJson.version;
-  } catch (error: unknown) {
-    const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
-    if (code === 'ENOENT' || code === 'EBUSY') {
-      logger.debug('SYSTEM', 'Could not read plugin version (shutdown race)', { code });
-      return 'unknown';
-    }
-    throw error;
-  }
-}
-
-async function getWorkerVersion(): Promise<string> {
-  const response = await workerHttpRequest('/api/version', { timeoutMs: HEALTH_CHECK_TIMEOUT_MS });
-  if (!response.ok) {
-    throw new Error(`Failed to get worker version: ${response.status}`);
-  }
-  const data = await response.json() as { version: string };
-  return data.version;
-}
-
-async function checkWorkerVersion(): Promise<void> {
-  let pluginVersion: string;
-  try {
-    pluginVersion = getPluginVersion();
-  } catch (error: unknown) {
-    logger.debug('SYSTEM', 'Version check failed reading plugin version', {
-      error: error instanceof Error ? error.message : String(error)
-    });
-    return;
-  }
-
-  if (pluginVersion === 'unknown') return;
-
-  let workerVersion: string;
-  try {
-    workerVersion = await getWorkerVersion();
-  } catch (error: unknown) {
-    logger.debug('SYSTEM', 'Version check failed reading worker version', {
-      error: error instanceof Error ? error.message : String(error)
-    });
-    return;
-  }
-
-  if (workerVersion === 'unknown') return;
-
-  if (pluginVersion !== workerVersion) {
-    logger.debug('SYSTEM', 'Version check', {
-      pluginVersion,
-      workerVersion,
-      note: 'Mismatch will be auto-restarted by worker-service start command'
-    });
-  }
-}
-
-function resolveWorkerScriptPath(): string | null {
+/**
+ * Canonical worker-script resolver: the marketplace install first, then the
+ * dev-tree copy under cwd. Exported so other launchers (e.g. the MCP server)
+ * prefer the same marketplace copy instead of spawning a stale cache-dir
+ * bundle.
+ */
+export function resolveWorkerScriptPath(): string | null {
   const candidates = [
     path.join(MARKETPLACE_ROOT, 'plugin', 'scripts', 'worker-service.cjs'),
     path.join(process.cwd(), 'plugin', 'scripts', 'worker-service.cjs'),
@@ -197,26 +222,6 @@ function resolveWorkerScriptPath(): string | null {
     if (existsSync(candidate)) return candidate;
   }
   return null;
-}
-
-function resolveBunRuntime(): string | null {
-  if (process.env.BUN && existsSync(process.env.BUN)) return process.env.BUN;
-
-  try {
-    const cmd = process.platform === 'win32' ? 'where bun' : 'which bun';
-    const output = execSync(cmd, {
-      stdio: ['ignore', 'pipe', 'ignore'],
-      encoding: 'utf-8',
-      windowsHide: true,
-    });
-    const firstMatch = output
-      .split(/\r?\n/)
-      .map(line => line.trim())
-      .find(line => line.length > 0);
-    return firstMatch || null;
-  } catch {
-    return null;
-  }
 }
 
 async function waitForWorkerPort(options: { attempts: number; backoffMs: number }): Promise<boolean> {
@@ -257,6 +262,62 @@ async function waitForWorkerReadiness(timeoutMs: number = HOOK_READINESS_TIMEOUT
   return false;
 }
 
+/**
+ * Read the version the worker self-reports on GET /api/health. The payload
+ * carries pid/version even on a 503 (degraded queue) response, so the body is
+ * parsed regardless of status — same contract as restart-verify.ts. Returns
+ * null when the worker is unreachable or the payload is malformed.
+ */
+async function fetchWorkerHealthVersion(): Promise<string | null> {
+  try {
+    const response = await workerHttpRequest('/api/health', { timeoutMs: HEALTH_CHECK_TIMEOUT_MS });
+    const body = await response.json() as { version?: unknown };
+    return typeof body.version === 'string' ? body.version : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * After POSTing /api/admin/restart, the OLD worker spawns its own successor
+ * once its port closes (runShutdownSequence in src/services/worker-shutdown.ts;
+ * plans/2026-06-10-worker-restart-single-source-of-truth.md). Wait for that
+ * successor — a worker answering /api/health with the installed plugin's
+ * version — instead of immediately lazy-spawning into the dying worker
+ * (the old behavior, which caused the spawn ping-pong).
+ */
+async function waitForRecycledWorker(
+  pluginVersion: string,
+  timeoutMs: number = HOOK_READINESS_TIMEOUT_MS
+): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const observedVersion = await fetchWorkerHealthVersion();
+    if (observedVersion === pluginVersion) return true;
+
+    const remainingMs = timeoutMs - (Date.now() - start);
+    if (remainingMs <= 0) break;
+    await new Promise<void>(resolve => setTimeout(resolve, Math.min(500, remainingMs)));
+  }
+  return false;
+}
+
+/**
+ * Amplifier guard: a hook recycles a stale worker AT MOST once per
+ * invocation. If the worker that became ready still reports a mismatched
+ * version, warn and return — the NEXT hook event retries. Recycling again in
+ * the same invocation re-creates the restart storm.
+ */
+async function warnIfVersionStillMismatched(expectedPluginVersion: string): Promise<void> {
+  const observedVersion = await fetchWorkerHealthVersion();
+  if (observedVersion !== null && observedVersion !== expectedPluginVersion) {
+    logger.warn('SYSTEM', 'Worker is ready but still reports a stale version; not recycling again in this hook invocation (one recycle per hook event)', {
+      pluginVersion: expectedPluginVersion,
+      workerVersion: observedVersion,
+    });
+  }
+}
+
 async function isWorkerPortAlive(): Promise<boolean> {
   let healthy: boolean;
   try {
@@ -270,23 +331,80 @@ async function isWorkerPortAlive(): Promise<boolean> {
   if (!healthy) return false;
 
   const pidStatus = validateWorkerPidFile({ logAlive: false });
-  if (pidStatus === 'missing') return true;     
-  if (pidStatus === 'alive') return true;       
-  return false;                                 
+  if (pidStatus === 'missing') return true;
+  if (pidStatus === 'alive') return true;
+  return false;
 }
 
 export async function ensureWorkerRunning(): Promise<boolean> {
+  // Installed-plugin version captured when the alive branch runs, so every
+  // post-readiness path below can run the one-shot amplifier check
+  // (warnIfVersionStillMismatched). Stays null when no worker was alive
+  // (plain cold-start lazy-spawn — no recycle happened, nothing to amplify)
+  // or when the plugin version is unreadable ('unknown').
+  let expectedPluginVersion: string | null = null;
+
   if (await isWorkerPortAlive()) {
-    await checkWorkerVersion();
-    const ready = await waitForWorkerReadiness();
-    if (!ready) {
-      logger.warn('SYSTEM', 'Worker is healthy but not ready; skipping hook API call');
-      return false;
+    // A worker is already alive. If it is a DIFFERENT version than the
+    // installed plugin (e.g. the user upgraded but the previous worker is
+    // still squatting the port), recycle it so the current version takes
+    // over — otherwise the stale worker keeps serving indefinitely.
+    const { matches, pluginVersion, workerVersion } = await checkVersionMatch(getWorkerPort());
+    if (pluginVersion !== 'unknown') {
+      expectedPluginVersion = pluginVersion;
     }
-    return true;
+    if (matches) {
+      const ready = await waitForWorkerReadiness();
+      if (!ready) {
+        logger.warn('SYSTEM', 'Worker is healthy but not ready; skipping hook API call');
+        return false;
+      }
+      if (expectedPluginVersion !== null) {
+        await warnIfVersionStillMismatched(expectedPluginVersion);
+      }
+      return true;
+    }
+
+    logger.info('SYSTEM', 'Worker version mismatch — recycling stale worker', {
+      pluginVersion,
+      workerVersion,
+    });
+    try {
+      await workerHttpRequest('/api/admin/restart', {
+        method: 'POST',
+        timeoutMs: HEALTH_CHECK_TIMEOUT_MS,
+      });
+      // Do NOT lazy-spawn immediately after the POST — the old worker is
+      // still dying and owns the port, so a spawn here races the corpse (the
+      // observed restart ping-pong). The dying worker spawns its own
+      // successor once its port closes (worker-shutdown.ts; see
+      // plans/2026-06-10-worker-restart-single-source-of-truth.md); wait for
+      // that successor and only fall through to lazy-spawn as the safety net
+      // when it never appears.
+      if (await waitForRecycledWorker(pluginVersion)) {
+        const ready = await waitForWorkerReadiness();
+        if (!ready) {
+          logger.warn('SYSTEM', 'Recycled worker appeared but did not become ready; skipping hook API call');
+          return false;
+        }
+        if (expectedPluginVersion !== null) {
+          await warnIfVersionStillMismatched(expectedPluginVersion);
+        }
+        return true;
+      }
+      logger.warn('SYSTEM', 'No successor worker appeared after recycle; falling through to lazy-spawn', {
+        pluginVersion,
+        workerVersion,
+      });
+    } catch (error: unknown) {
+      logger.debug('SYSTEM', 'Worker restart request failed; falling through to lazy-spawn', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    // Fall through to (re)spawn + readiness wait below.
   }
 
-  const runtimePath = resolveBunRuntime();
+  const runtimePath = resolveWorkerRuntimePath();
   const scriptPath = resolveWorkerScriptPath();
 
   if (!runtimePath) {
@@ -298,34 +416,66 @@ export async function ensureWorkerRunning(): Promise<boolean> {
     return false;
   }
 
-  logger.info('SYSTEM', 'Worker not running — lazy-spawning', { runtimePath, scriptPath });
-
+  // Spawn gate (worker-spawn-gate.ts): only ONE gated launcher — hook, MCP
+  // server, or the CLI restart fallback — may spawn at a time. (The dying
+  // worker's restart handoff in worker-shutdown.ts is deliberately NOT gated:
+  // it is the primary spawner on restart, and hooks wait for its successor.)
+  // Losing the lock never fails the hook; the loser skips its spawn and waits
+  // for the winner's worker on the existing port/readiness waits below. The
+  // winner holds the lock through the port-open wait (the spawn isn't "done"
+  // until the worker owns the port) and releases in finally on every exit
+  // path.
+  const spawnLockHeld = acquireSpawnLock();
   try {
-    const proc = spawnHidden(runtimePath, [scriptPath, '--daemon'], {
-      detached: true,
-      stdio: ['ignore', 'ignore', 'ignore'],
-    });
-    proc.unref();
-  } catch (error: unknown) {
-    if (error instanceof Error) {
-      logger.error('SYSTEM', 'Lazy-spawn of worker failed', { runtimePath, scriptPath }, error);
-    } else {
-      logger.error('SYSTEM', 'Lazy-spawn of worker failed (non-Error)', {
-        runtimePath, scriptPath, error: String(error),
-      });
-    }
-    return false;
-  }
+    if (spawnLockHeld) {
+      logger.info('SYSTEM', 'Worker not running — lazy-spawning', { runtimePath, scriptPath });
 
-  const alive = await waitForWorkerPort({ attempts: 3, backoffMs: 250 });
-  if (!alive) {
-    logger.warn('SYSTEM', 'Worker port did not open after lazy-spawn within 3 attempts');
-    return false;
+      try {
+        const proc = spawnHidden(runtimePath, [scriptPath, '--daemon'], {
+          detached: true,
+          stdio: ['ignore', 'ignore', 'ignore'],
+        });
+        proc.unref();
+      } catch (error: unknown) {
+        if (error instanceof Error) {
+          logger.error('SYSTEM', 'Lazy-spawn of worker failed', { runtimePath, scriptPath }, error);
+        } else {
+          logger.error('SYSTEM', 'Lazy-spawn of worker failed (non-Error)', {
+            runtimePath, scriptPath, error: String(error),
+          });
+        }
+        return false;
+      }
+    } else {
+      logger.info('SYSTEM', 'Another launcher holds the spawn lock — skipping lazy-spawn and waiting for its worker');
+    }
+
+    // Cold boot (#2795): on the first session after a reboot the SessionStart
+    // `start` hook is booting the daemon in parallel, and a cold macOS+Chroma
+    // worker needs ~7s to bind. The old 3-attempt/250ms budget (~0.75s) expired
+    // long before that, so the context (and session-init) hooks raced boot and
+    // soft-failed to empty — dropping memory injection and the user_prompts row
+    // (the upstream trigger for #2794). Wait up to ~15.5s (≈ POST_SPAWN_WAIT) so
+    // whichever worker wins the port is seen before we give up.
+    const alive = await waitForWorkerPort({ attempts: 6, backoffMs: 500 });
+    if (!alive) {
+      logger.warn('SYSTEM', spawnLockHeld
+        ? 'Worker port did not open after lazy-spawn within the cold-boot wait (~15s)'
+        : 'Spawn-lock holder\'s worker port did not open within the cold-boot wait (~15s)');
+      return false;
+    }
+  } finally {
+    if (spawnLockHeld) releaseSpawnLock();
   }
   const ready = await waitForWorkerReadiness();
   if (!ready) {
     logger.warn('SYSTEM', 'Worker lazy-spawned but did not become ready before hook readiness timeout');
     return false;
+  }
+  // Amplifier guard: even if the worker that won the port is still stale,
+  // never recycle a second time in the same hook invocation.
+  if (expectedPluginVersion !== null) {
+    await warnIfVersionStillMismatched(expectedPluginVersion);
   }
   return true;
 }
@@ -399,7 +549,35 @@ function getFailLoudThreshold(): number {
   return FAIL_LOUD_DEFAULT_THRESHOLD;
 }
 
-function recordWorkerUnreachable(): number {
+/**
+ * Closed enum of hook handler names allowed as the `hook_type` telemetry
+ * property. Mirrors the scrub whitelist comment (scrub.ts), the CLI
+ * disclosure (npx-cli/commands/telemetry.ts), and docs/public/telemetry.mdx —
+ * never widen one without the others. Events outside this set (user-message,
+ * file-edit) simply omit hook_type.
+ */
+const TELEMETRY_HOOK_TYPES = ['context', 'session-init', 'observation', 'summarize', 'file-context'] as const;
+export type TelemetryHookType = (typeof TELEMETRY_HOOK_TYPES)[number];
+
+let activeHookType: TelemetryHookType | null = null;
+
+/**
+ * Record which hook event this short-lived hook process is executing, so the
+ * fail-loud counter can tag its threshold-gated hook_failed telemetry.
+ * Called once at hookCommand entry; values outside the closed enum are
+ * dropped (never free text).
+ */
+export function setActiveHookType(event: string): void {
+  activeHookType = (TELEMETRY_HOOK_TYPES as readonly string[]).includes(event)
+    ? (event as TelemetryHookType)
+    : null;
+}
+
+export function getActiveHookType(): TelemetryHookType | null {
+  return activeHookType;
+}
+
+export async function recordWorkerUnreachable(): Promise<number> {
   const state = readHookFailureState();
   const next: HookFailureState = {
     consecutiveFailures: state.consecutiveFailures + 1,
@@ -409,6 +587,23 @@ function recordWorkerUnreachable(): number {
 
   const threshold = getFailLoudThreshold();
   if (next.consecutiveFailures >= threshold) {
+    // hook_failed distress signal. Gated to the failure that JUST reached the
+    // threshold (`===`, not `>=`): the stderr warning below repeats on every
+    // failure past the threshold, but telemetry emits once per failure streak
+    // to bound volume. MUST be awaited BEFORE emitBlockingError — it calls
+    // process.exit(2) immediately, which would kill a fire-and-forget POST
+    // mid-flight. captureCliEvent never throws and is hard-capped at 2s, so
+    // this cannot hang the fail-loud path. Closed-enum/count props only —
+    // never error text. Transport is the direct CLI POST, never the worker
+    // API (the defining failure here IS "worker unreachable").
+    if (next.consecutiveFailures === threshold) {
+      await captureCliEvent('hook_failed', {
+        ...(activeHookType !== null ? { hook_type: activeHookType } : {}),
+        error_mode: 'worker_unavailable',
+        consecutive_failures: next.consecutiveFailures,
+        threshold_tripped: true,
+      });
+    }
     // #2292 fix: BLOCKING_FEEDBACK. emitBlockingError flushes the Phase 2
     // stderr buffer (so preceding logger.warn lines also surface) and writes
     // via the bypass channel + exits 2. Previously this raw process.stderr.write
@@ -422,7 +617,7 @@ function recordWorkerUnreachable(): number {
 
 function resetWorkerFailureCounter(): void {
   const state = readHookFailureState();
-  if (state.consecutiveFailures === 0) return;       
+  if (state.consecutiveFailures === 0) return;
   writeHookFailureStateAtomic({ consecutiveFailures: 0, lastFailureAt: 0 });
 }
 
@@ -452,7 +647,7 @@ export async function executeWithWorkerFallback<T = unknown>(
 ): Promise<WorkerCallResult<T>> {
   const alive = await ensureWorkerAliveOnce();
   if (!alive) {
-    recordWorkerUnreachable();
+    await recordWorkerUnreachable();
     return { continue: true, reason: 'worker_unreachable', [WORKER_FALLBACK_BRAND]: true };
   }
 

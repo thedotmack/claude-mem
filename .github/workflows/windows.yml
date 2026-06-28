@@ -13,7 +13,11 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    # Pinned to windows-2022 (VS2022 / v17). The windows-latest image moved to
+    # windows-2025, which ships Visual Studio 18 — npm's bundled node-gyp@11.5.0
+    # can't detect it ("unknown version undefined") and native tree-sitter
+    # rebuilds fail during `npm install`. Revisit when node-gyp gains VS18 support.
+    runs-on: windows-2022
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4

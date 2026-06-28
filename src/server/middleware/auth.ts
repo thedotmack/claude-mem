@@ -33,7 +33,11 @@ export function requireServerAuth(
   return (req: Request, res: Response, next: NextFunction) => {
     const authMode = options.authMode ?? process.env.CLAUDE_MEM_AUTH_MODE ?? 'api-key';
     const authorization = req.header('authorization') ?? '';
-    const rawKey = parseBearerToken(authorization);
+    const xApiKey = req.header('x-api-key')?.trim() ?? '';
+    // Bearer is canonical; raw X-Api-Key is a fallback so clients using
+    // @better-auth/api-key defaults (e.g. the worker bundle shipped from the
+    // Windows-canary line) authenticate without a per-client custom config.
+    const rawKey = parseBearerToken(authorization) || xApiKey || null;
 
     const allowLocalDevBypass = options.allowLocalDevBypass ?? process.env.CLAUDE_MEM_ALLOW_LOCAL_DEV_BYPASS === '1';
     if (
@@ -58,7 +62,10 @@ export function requireServerAuth(
     }
 
     if (!rawKey) {
-      res.status(401).json({ error: 'Unauthorized', message: 'Missing bearer API key' });
+      res.status(401).json({
+        error: 'Unauthorized',
+        message: 'Missing API key (Authorization: Bearer <key> or X-Api-Key: <key>)',
+      });
       return;
     }
 

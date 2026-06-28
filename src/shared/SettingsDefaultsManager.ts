@@ -2,12 +2,14 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
+import { HOOK_TIMEOUTS, getTimeout } from './hook-constants.js';
 
 export interface SettingsDefaults {
   CLAUDE_MEM_MODEL: string;
   CLAUDE_MEM_CONTEXT_OBSERVATIONS: string;
   CLAUDE_MEM_WORKER_PORT: string;
   CLAUDE_MEM_WORKER_HOST: string;
+  CLAUDE_MEM_API_TIMEOUT_MS: string;
   CLAUDE_MEM_SKIP_TOOLS: string;
   CLAUDE_MEM_PROVIDER: string;  
   CLAUDE_MEM_CLAUDE_AUTH_METHOD: string;  
@@ -94,6 +96,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
     CLAUDE_MEM_WORKER_PORT: String(37700 + ((process.getuid?.() ?? 77) % 100)),
     CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
+    CLAUDE_MEM_API_TIMEOUT_MS: String(getTimeout(HOOK_TIMEOUTS.API_REQUEST)),
     CLAUDE_MEM_SKIP_TOOLS: 'ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion',
     CLAUDE_MEM_PROVIDER: 'claude',  // Default to Claude
     CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription',  // Default to logged-in Claude SDK auth (not API key)
@@ -202,7 +205,7 @@ export class SettingsDefaultsManager {
     return result;
   }
 
-  static loadFromFile(settingsPath: string): SettingsDefaults {
+  static loadFromFile(settingsPath: string, applyEnvOverrides = true): SettingsDefaults {
     try {
       if (!existsSync(settingsPath)) {
         const defaults = this.getAllDefaults();
@@ -212,15 +215,21 @@ export class SettingsDefaultsManager {
             mkdirSync(dir, { recursive: true });
           }
           writeFileSync(settingsPath, JSON.stringify(defaults, null, 2), 'utf-8');
-          console.log('[SETTINGS] Created settings file with defaults:', settingsPath);
+          // stderr, never stdout: this fires on the first boot in a fresh data
+          // dir, and CLI commands like `start` promise machine-readable JSON
+          // on stdout to the hook framework.
+          console.warn('[SETTINGS] Created settings file with defaults:', settingsPath);
         } catch (error: unknown) {
           console.warn('[SETTINGS] Failed to create settings file, using in-memory defaults:', settingsPath, error instanceof Error ? error.message : String(error));
         }
-        return this.applyEnvOverrides(defaults);
+        return applyEnvOverrides ? this.applyEnvOverrides(defaults) : defaults;
       }
 
       const settingsData = readFileSync(settingsPath, 'utf-8');
-      const settings = JSON.parse(settingsData);
+      // Strip UTF-8 BOM if present — Windows tools (editors, formatters, CLI
+      // hooks) may prepend U+FEFF which Bun's JSON.parse rejects silently,
+      // causing a full fallback to defaults and breaking server-beta routing.
+      const settings = JSON.parse(settingsData.replace(/^\uFEFF/, ''));
 
       let flatSettings = settings;
       if (settings.env && typeof settings.env === 'object') {
@@ -228,7 +237,8 @@ export class SettingsDefaultsManager {
 
         try {
           writeFileSync(settingsPath, JSON.stringify(flatSettings, null, 2), 'utf-8');
-          console.log('[SETTINGS] Migrated settings file from nested to flat schema:', settingsPath);
+          // stderr, never stdout — same JSON-on-stdout contract as above.
+          console.warn('[SETTINGS] Migrated settings file from nested to flat schema:', settingsPath);
         } catch (error: unknown) {
           console.warn('[SETTINGS] Failed to auto-migrate settings file:', settingsPath, error instanceof Error ? error.message : String(error));
           // Continue with in-memory migration even if write fails
@@ -242,10 +252,11 @@ export class SettingsDefaultsManager {
         }
       }
 
-      return this.applyEnvOverrides(result);
+      return applyEnvOverrides ? this.applyEnvOverrides(result) : result;
     } catch (error: unknown) {
       console.warn('[SETTINGS] Failed to load settings, using defaults:', settingsPath, error instanceof Error ? error.message : String(error));
-      return this.applyEnvOverrides(this.getAllDefaults());
+      const defaults = this.getAllDefaults();
+      return applyEnvOverrides ? this.applyEnvOverrides(defaults) : defaults;
     }
   }
 }
