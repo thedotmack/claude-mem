@@ -23,6 +23,7 @@ import { requestIdMiddleware } from '../../middleware/request-id.js';
 import { requireRateLimit, requireMonthlyQuota } from '../../middleware/rate-limit.js';
 import { meterRequests } from '../../middleware/usage-metering.js';
 import { PostgresUsageRepository } from '../../../storage/postgres/usage.js';
+import { createHash, randomBytes } from 'node:crypto';
 import type { ActiveServerBetaQueueManager } from '../../runtime/ActiveServerBetaQueueManager.js';
 import type { ServerBetaQueueManager } from '../../runtime/types.js';
 import { PostgresServerSessionsRepository } from '../../../storage/postgres/server-sessions.js';
@@ -31,6 +32,17 @@ import { IngestEventsService, type EnqueueOutcome } from '../../services/IngestE
 import { EndSessionService } from '../../services/EndSessionService.js';
 
 const SOURCE_ADAPTER_DEFAULT = 'api';
+
+// The MCP link base: CLAUDE_MEM_PUBLIC_URL in prod (behind a proxy/LB), else
+// derived from the request host so the connect command points at this server.
+function mcpConnectUrl(req: Request): string {
+  const base = (process.env.CLAUDE_MEM_PUBLIC_URL ?? `${req.protocol}://${req.get('host') ?? 'localhost'}`)
+    .replace(/\/+$/, '');
+  return `${base}/v1/mcp`;
+}
+function mcpConnectCommand(mcpUrl: string, key: string): string {
+  return `claude mcp add --transport http claude-mem ${mcpUrl} --header "Authorization: Bearer ${key}"`;
+}
 
 export interface ServerV1PostgresRoutesOptions {
   pool: PostgresPool;
@@ -167,6 +179,58 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       const monthStart = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1));
       const usage = await new PostgresUsageRepository(this.options.pool).summarize({ teamId, since: monthStart });
       res.status(200).json({ since: monthStart.toISOString(), usage });
+    }));
+
+    // POST /v1/keys — mint a READ-ONLY, optionally-expiring API key for the
+    // caller's team and return the ready-to-paste connect command. Gated by
+    // writeAuth: minting a lesser (read) key requires you can already write the
+    // team's memory, which avoids a read key escalating into more keys. The raw
+    // key is shown exactly once.
+    app.post('/v1/keys', writeAuth, this.handleCreate(
+      z.object({
+        label: z.string().max(120).optional(),
+        expiresInDays: z.number().int().positive().max(365).optional(),
+      }),
+      async (req, res, body) => {
+        const teamId = this.requireTeamId(req, res);
+        if (!teamId) return;
+        const raw = `cm_${randomBytes(24).toString('hex')}`;
+        const keyHash = createHash('sha256').update(raw).digest('hex');
+        const expiresAt = body.expiresInDays
+          ? new Date(Date.now() + body.expiresInDays * 86_400_000)
+          : null;
+        const key = await new PostgresAuthRepository(this.options.pool).createApiKey({
+          keyHash,
+          teamId,
+          projectId: req.authContext?.projectId ?? null,
+          actorId: req.authContext?.apiKeyId ?? 'api',
+          scopes: ['memories:read'],
+          expiresAt,
+        });
+        void body.label; // reserved for when api_keys grows a label column
+        const mcpUrl = mcpConnectUrl(req);
+        res.status(201).json({
+          id: key.id,
+          apiKey: raw, // shown ONCE — store it now
+          scopes: ['memories:read'],
+          expiresAt: expiresAt?.toISOString() ?? null,
+          mcpUrl,
+          connectCommand: mcpConnectCommand(mcpUrl, raw),
+        });
+      },
+    ));
+
+    // GET /v1/connect — the paste-ready MCP connect command (placeholder key, so
+    // a GET never mints). Use POST /v1/keys to get a real read-only key.
+    app.get('/v1/connect', readAuth, this.asyncHandler(async (req, res) => {
+      const teamId = this.requireTeamId(req, res);
+      if (!teamId) return;
+      const mcpUrl = mcpConnectUrl(req);
+      res.status(200).json({
+        mcpUrl,
+        connectCommand: mcpConnectCommand(mcpUrl, '<YOUR_API_KEY>'),
+        hint: 'POST /v1/keys (write scope) to mint a read-only key for this link.',
+      });
     }));
 
     // POST /v1/events — single event with optional async generation

@@ -20,6 +20,8 @@ Available beta endpoints:
 - `PATCH /v1/memories/:id`
 - `POST /v1/search`
 - `POST /v1/context`
+- `POST /v1/keys`
+- `GET /v1/connect`
 - `GET /v1/usage`
 - `GET /v1/audit?projectId=<id>`
 
@@ -43,6 +45,30 @@ default) means no rate limit, no quota, and no metering, so behavior is unchange
 ```json
 { "since": "2026-06-01T00:00:00.000Z", "usage": { "request": 1280, "observation": 44 } }
 ```
+
+## Connecting an MCP client (key issuance + connect)
+
+- `POST /v1/keys` (**write** scope) mints a **read-only** API key for the caller's
+  team and returns the paste-ready connect command. The raw key is shown **once**.
+  Body: `{ "expiresInDays"?: number }`. Minting requires write scope so a read key
+  can't escalate into more keys.
+
+  ```json
+  {
+    "id": "...", "apiKey": "cm_...", "scopes": ["memories:read"], "expiresAt": null,
+    "mcpUrl": "https://<host>/v1/mcp",
+    "connectCommand": "claude mcp add --transport http claude-mem https://<host>/v1/mcp --header \"Authorization: Bearer cm_...\""
+  }
+  ```
+
+- `GET /v1/connect` (read scope) returns the same command with a `<YOUR_API_KEY>`
+  placeholder (a GET never mints). `mcpUrl` is built from `CLAUDE_MEM_PUBLIC_URL`
+  (recommended behind a proxy) or the request host.
+
+> Cold-start note: minting the team's *first* key still needs a session-gated path
+> (web dashboard). better-auth's `apiKey()` plugin exists but writes to a separate
+> store than the Postgres `api_keys` these routes authenticate against — wiring the
+> better-auth org → Server Beta team mapping is the remaining piece.
 
 ## Event generation semantics
 
