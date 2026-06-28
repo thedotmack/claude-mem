@@ -453,32 +453,36 @@ function isCmemProvider(value: unknown): value is ServerGenerationProvider {
 }
 
 /**
- * Build a {@link ServerGenerationProvider} from an explicit
- * {@link CmemProviderConfig} object. Mirrors the env-driven dispatch in
- * `src/server/runtime/create-server-service.ts:247-279`.
+ * Instantiate the concrete {@link ServerGenerationProvider} for a resolved
+ * `{ apiKey, model?, provider?, baseUrl? }`. Shared by the config-object and
+ * env-driven resolution paths. Mirrors the dispatch in
+ * `src/server/runtime/create-server-service.ts:261-279`.
  */
-function buildProviderFromConfig(config: CmemProviderConfig): ServerGenerationProvider {
-  const kind = (config.provider ?? 'claude').toLowerCase();
+function instantiateProvider(opts: {
+  apiKey: string;
+  model?: string;
+  provider?: string;
+  baseUrl?: string;
+}): ServerGenerationProvider {
+  const kind = (opts.provider ?? 'claude').toLowerCase();
   if (kind === 'claude' || kind === 'anthropic') {
-    const opts: ClaudeObservationProviderOptions = { apiKey: config.apiKey };
-    if (config.model) opts.model = config.model;
-    return new ClaudeObservationProvider(opts);
+    const o: ClaudeObservationProviderOptions = { apiKey: opts.apiKey };
+    if (opts.model) o.model = opts.model;
+    return new ClaudeObservationProvider(o);
   }
   if (kind === 'gemini') {
-    const opts: { apiKey: string; model?: string } = { apiKey: config.apiKey };
-    if (config.model) opts.model = config.model;
-    return new GeminiObservationProvider(opts);
+    const o: { apiKey: string; model?: string } = { apiKey: opts.apiKey };
+    if (opts.model) o.model = opts.model;
+    return new GeminiObservationProvider(o);
   }
   if (kind === 'openrouter') {
-    const opts: { apiKey: string; model?: string; baseUrl?: string } = {
-      apiKey: config.apiKey,
-    };
-    if (config.model) opts.model = config.model;
-    if (config.baseUrl) opts.baseUrl = config.baseUrl;
-    return new OpenRouterObservationProvider(opts);
+    const o: { apiKey: string; model?: string; baseUrl?: string } = { apiKey: opts.apiKey };
+    if (opts.model) o.model = opts.model;
+    if (opts.baseUrl) o.baseUrl = opts.baseUrl;
+    return new OpenRouterObservationProvider(o);
   }
   throw new Error(
-    `cmem-sdk: unsupported provider kind "${config.provider ?? 'claude'}". ` +
+    `cmem-sdk: unsupported provider kind "${opts.provider ?? 'claude'}". ` +
       `Expected one of: "claude", "gemini", "openrouter".`
   );
 }
@@ -486,7 +490,7 @@ function buildProviderFromConfig(config: CmemProviderConfig): ServerGenerationPr
 /**
  * Env-driven provider resolution. Mirrors
  * `buildServerGenerationProviderFromEnv()` in
- * `src/server/runtime/create-server-service.ts:247-279`. Returns `null`
+ * `src/server/runtime/create-server-service.ts:261-279`. Returns `null`
  * when no provider can be resolved from the environment — callers surface
  * a clear error at `generate()` time instead of failing at construction.
  */
@@ -497,37 +501,24 @@ function buildProviderFromEnv(): ServerGenerationProvider | null {
     if (explicit === 'claude' || explicit === 'anthropic' || explicit === '') {
       const apiKey =
         process.env.ANTHROPIC_API_KEY ?? process.env.CLAUDE_MEM_ANTHROPIC_API_KEY ?? '';
-      if (!apiKey) {
-        // No explicit env var demanded claude; fall through to the next
-        // candidate so an installer that only set GEMINI_API_KEY still works.
-        if (explicit === '') {
-          // continue to gemini/openrouter scan below
-        } else {
-          return null;
-        }
-      } else {
-        const opts: ClaudeObservationProviderOptions = { apiKey };
-        if (model) opts.model = model;
-        return new ClaudeObservationProvider(opts);
-      }
+      if (apiKey) return instantiateProvider({ apiKey, model, provider: 'claude' });
+      // No claude key. If claude was explicitly demanded, give up; if the
+      // provider was unset (''), fall through to the gemini/openrouter scan so
+      // an installer that only set GEMINI_API_KEY still works.
+      if (explicit !== '') return null;
     }
     if (explicit === 'gemini' || (explicit === '' && process.env.GEMINI_API_KEY)) {
       const apiKey = process.env.GEMINI_API_KEY ?? process.env.CLAUDE_MEM_GEMINI_API_KEY ?? '';
       if (!apiKey) return null;
-      const opts: { apiKey: string; model?: string } = { apiKey };
-      if (model) opts.model = model;
-      return new GeminiObservationProvider(opts);
+      return instantiateProvider({ apiKey, model, provider: 'gemini' });
     }
     if (explicit === 'openrouter' || (explicit === '' && process.env.OPENROUTER_API_KEY)) {
       const apiKey =
         process.env.OPENROUTER_API_KEY ?? process.env.CLAUDE_MEM_OPENROUTER_API_KEY ?? '';
       if (!apiKey) return null;
-      const opts: { apiKey: string; model?: string; baseUrl?: string } = { apiKey };
-      if (model) opts.model = model;
       const baseUrl =
         process.env.CLAUDE_MEM_OPENROUTER_BASE_URL ?? process.env.OPENROUTER_BASE_URL;
-      if (baseUrl) opts.baseUrl = baseUrl;
-      return new OpenRouterObservationProvider(opts);
+      return instantiateProvider({ apiKey, model, provider: 'openrouter', baseUrl });
     }
   } catch {
     return null;
@@ -539,7 +530,7 @@ function buildProviderFromEnv(): ServerGenerationProvider | null {
  * Resolve a {@link ServerGenerationProvider} from {@link CmemClientOptions.provider}.
  * Three branches, in order:
  *   1. Already-constructed provider → return as-is.
- *   2. {@link CmemProviderConfig} → instantiate via {@link buildProviderFromConfig}.
+ *   2. {@link CmemProviderConfig} → instantiate via {@link instantiateProvider}.
  *   3. `undefined` → fall back to {@link buildProviderFromEnv}.
  * Returns `null` only when env resolution found nothing — `generate()` then
  * surfaces a clear "no provider configured" error.
@@ -554,7 +545,7 @@ function resolveProvider(
     return optionsProvider;
   }
   // Must be CmemProviderConfig.
-  return buildProviderFromConfig(optionsProvider);
+  return instantiateProvider(optionsProvider);
 }
 
 /**
@@ -642,17 +633,18 @@ async function resolveTenancy(
 }
 
 /**
- * Mirror the per-tenant collection name that `new ChromaSync(projectId)`
- * builds (`ChromaSync.ts:108-114`). We pin the same sanitization so the
- * raw-callTool path in {@link CmemClient.search} and the
- * `ChromaSync.ensureCollectionExists()` path operate on the same
- * collection. Plan §6 line 246: per-tenant `cm__<projectId>`.
+ * Copy each `keys` entry from `source` to `target` only when it is defined.
+ * Keeps the optional-field plumbing on `mapCaptureEvent` / `startSession`
+ * one line each under `exactOptionalPropertyTypes`.
  */
-function chromaCollectionName(projectId: string): string {
-  const sanitized = projectId
-    .replace(/[^a-zA-Z0-9._-]/g, '_')
-    .replace(/[^a-zA-Z0-9]+$/, '');
-  return `cm__${sanitized || 'unknown'}`;
+function assignDefined(
+  target: Record<string, unknown>,
+  source: Record<string, unknown>,
+  keys: readonly string[],
+): void {
+  for (const key of keys) {
+    if (source[key] !== undefined) target[key] = source[key];
+  }
 }
 
 /**
@@ -720,8 +712,7 @@ async function indexObservationsToChroma(
  *   2. Idempotent schema bootstrap.
  *   3. Repository facade.
  *   4. Tenancy resolution (`teamId`+`projectId`).
- *   5. Chroma (REQUIRED) — `ChromaSync(projectId).ensureCollectionExists()`
- *      plus a `ChromaMcpManager.isHealthy()` belt-and-suspenders probe.
+ *   5. Chroma (REQUIRED) — `ChromaSync(projectId).ensureCollectionExists()`.
  *      If `uvx chroma-mcp` cannot start, `createCmemClient` REJECTS and
  *      cleans up the SDK-owned pool before throwing.
  *
@@ -786,16 +777,11 @@ export async function createCmemClient(options: CmemClientOptions): Promise<Cmem
 
   // 5. Chroma — REQUIRED. ensureCollectionExists boots the chroma-mcp
   //    subprocess (via ChromaMcpManager) and creates the per-project
-  //    collection; isHealthy() is the belt-and-suspenders check that the
-  //    manager itself is responsive afterwards.
+  //    collection. It rethrows any error other than "already exists", so a
+  //    subprocess that can't start surfaces here and rejects construction.
   const chromaSync = new ChromaSync(projectId);
   try {
     await chromaSync.ensureCollectionExists();
-    const mgr = ChromaMcpManager.getInstance();
-    const healthy = await mgr.isHealthy();
-    if (!healthy) {
-      throw new Error('chroma-mcp manager reports unhealthy after init');
-    }
   } catch (err) {
     // Clean up everything the SDK owns before rejecting.
     await chromaSync.close().catch(() => {});
@@ -842,18 +828,12 @@ export async function createCmemClient(options: CmemClientOptions): Promise<Cmem
       payload: event.payload as CreatePostgresAgentEventInput['payload'],
       occurredAt: event.occurredAt ?? new Date(),
     };
-    if (event.sourceEventId !== undefined) {
-      input.sourceEventId = event.sourceEventId;
-    }
-    if (event.serverSessionId !== undefined) {
-      input.serverSessionId = event.serverSessionId;
-    }
-    if (event.platformSource !== undefined) {
-      input.platformSource = event.platformSource;
-    }
-    if (event.metadata !== undefined) {
-      input.metadata = event.metadata as CreatePostgresAgentEventInput['metadata'];
-    }
+    assignDefined(input as unknown as Record<string, unknown>, event as unknown as Record<string, unknown>, [
+      'sourceEventId',
+      'serverSessionId',
+      'platformSource',
+      'metadata',
+    ]);
     return input;
   }
 
@@ -975,17 +955,15 @@ export async function createCmemClient(options: CmemClientOptions): Promise<Cmem
       //   'agent_event' source type — the SDK only ever produces
       //   'agent_event' jobs via capture(), but we still scope the load
       //   by tenancy.
-      const events = lockedJob.agentEventId
-        ? (async () => {
-            const ev = await repos.agentEvents.getByIdForScope({
-              id: lockedJob!.agentEventId!,
-              projectId,
-              teamId,
-            });
-            return ev ? [ev] : [];
-          })()
-        : Promise.resolve([]);
-      const loadedEvents = await events;
+      const loadedEvents = [];
+      if (lockedJob.agentEventId) {
+        const ev = await repos.agentEvents.getByIdForScope({
+          id: lockedJob.agentEventId,
+          projectId,
+          teamId,
+        });
+        if (ev) loadedEvents.push(ev);
+      }
 
       // Step 3: load the project for the prompt's `projectName`.
       const project = await repos.projects.getByIdForTeam(projectId, teamId);
@@ -994,25 +972,19 @@ export async function createCmemClient(options: CmemClientOptions): Promise<Cmem
       //   ProviderObservationGenerator.ts:200-209 — no BullMQ payload, no
       //   AbortSignal (consumers control their own timeouts via the
       //   provider's fetchImpl), no scope/revocation audit.
-      let providerResult: ServerGenerationResult;
-      try {
-        providerResult = await provider.generate({
-          job: lockedJob,
-          events: loadedEvents,
-          project: {
-            projectId,
-            teamId,
-            serverSessionId: lockedJob.serverSessionId,
-            projectName: project?.name ?? null,
-          },
-        });
-      } catch (err) {
-        // Provider crashed before we could persist. Leave the row in
-        // 'processing' so a future caller can either retry or admin-resolve
-        // it; we surface the underlying error verbatim so the caller can
-        // classify (transient vs auth_invalid vs unrecoverable).
-        throw err;
-      }
+      // A provider crash propagates verbatim. The row stays in 'processing'
+      // so a future caller can retry or admin-resolve it, and the caller can
+      // classify the error (transient vs auth_invalid vs unrecoverable).
+      const providerResult: ServerGenerationResult = await provider.generate({
+        job: lockedJob,
+        events: loadedEvents,
+        project: {
+          projectId,
+          teamId,
+          serverSessionId: lockedJob.serverSessionId,
+          projectName: project?.name ?? null,
+        },
+      });
 
       // Step 5: persist via processGeneratedResponse (the single Postgres
       //   transaction that writes observations + observation_sources,
@@ -1119,7 +1091,7 @@ export async function createCmemClient(options: CmemClientOptions): Promise<Cmem
           ],
         };
         const raw = (await mgr.callTool('chroma_query_documents', {
-          collection_name: chromaCollectionName(projectId),
+          collection_name: chromaSync.getCollectionName(),
           query_texts: [query],
           n_results: limit,
           where: whereFilter,
@@ -1140,10 +1112,8 @@ export async function createCmemClient(options: CmemClientOptions): Promise<Cmem
         // because semantic distance is the whole reason we called Chroma.
         // listByProject would reorder by created_at and undo that.
         const hydrated: PostgresObservation[] = [];
-        const seen = new Set<string>();
         for (const docId of docIds) {
-          if (typeof docId !== 'string' || seen.has(docId)) continue;
-          seen.add(docId);
+          if (typeof docId !== 'string') continue;
           const obs = await repos.observations.getByIdForScope({
             id: docId,
             projectId,
@@ -1206,26 +1176,14 @@ export async function createCmemClient(options: CmemClientOptions): Promise<Cmem
         projectId,
         teamId,
       };
-      if (input.externalSessionId !== undefined) {
-        createInput.externalSessionId = input.externalSessionId;
-      }
-      if (input.contentSessionId !== undefined) {
-        createInput.contentSessionId = input.contentSessionId;
-      }
-      if (input.agentId !== undefined) {
-        createInput.agentId = input.agentId;
-      }
-      if (input.agentType !== undefined) {
-        createInput.agentType = input.agentType;
-      }
-      if (input.platformSource !== undefined) {
-        createInput.platformSource = input.platformSource;
-      }
-      if (input.metadata !== undefined) {
-        createInput.metadata = input.metadata as Parameters<
-          typeof repos.sessions.create
-        >[0]['metadata'];
-      }
+      assignDefined(createInput as unknown as Record<string, unknown>, input as unknown as Record<string, unknown>, [
+        'externalSessionId',
+        'contentSessionId',
+        'agentId',
+        'agentType',
+        'platformSource',
+        'metadata',
+      ]);
       const session = await repos.sessions.create(createInput);
       return { serverSessionId: session.id };
     },

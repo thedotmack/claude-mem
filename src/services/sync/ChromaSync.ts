@@ -116,6 +116,11 @@ export class ChromaSync {
     this.collectionName = `cm__${sanitized || 'unknown'}`;
   }
 
+  /** Public: cmem-sdk reuses the per-tenant collection name for raw queries. */
+  public getCollectionName(): string {
+    return this.collectionName;
+  }
+
   // Public: cmem-sdk requires Chroma at construction. Plan §3 line 192.
   public async ensureCollectionExists(): Promise<void> {
     if (this.collectionCreated) {
