@@ -25,11 +25,16 @@ export function useHealth(): WorkerHealth | null {
         return response.json();
       })
       .then((data: Partial<WorkerHealth>) => {
-        if (!cancelled && typeof data.version === 'string') {
+        if (
+          !cancelled &&
+          typeof data.version === 'string' &&
+          typeof data.pid === 'number' &&
+          typeof data.uptime === 'number'
+        ) {
           setHealth({
             version: data.version,
-            pid: Number(data.pid),
-            uptime: Number(data.uptime),
+            pid: data.pid,
+            uptime: data.uptime,
           });
         }
       })

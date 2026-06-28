@@ -16,8 +16,9 @@ function formatUptime(seconds: number): string {
   if (d) parts.push(`${d}d`);
   if (h) parts.push(`${h}h`);
   if (m) parts.push(`${m}m`);
-  if (!d && !h) parts.push(`${s}s`);
-  return parts.join(' ');
+  // Show seconds only below the hour mark, and never a bare "0s" alongside minutes.
+  if (s && !d && !h) parts.push(`${s}s`);
+  return parts.length ? parts.join(' ') : '0s';
 }
 
 interface HeaderProps {
