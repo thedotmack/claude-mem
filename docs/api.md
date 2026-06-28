@@ -20,9 +20,29 @@ Available beta endpoints:
 - `PATCH /v1/memories/:id`
 - `POST /v1/search`
 - `POST /v1/context`
+- `GET /v1/usage`
 - `GET /v1/audit?projectId=<id>`
 
 When `CLAUDE_MEM_AUTH_MODE=api-key`, send `Authorization: Bearer <key>`. Read endpoints require `memories:read`; write endpoints require `memories:write`.
+
+## Rate limiting, quota, and usage metering
+
+These paid-readiness guards run after auth and are **opt-in via env** — unset (the
+default) means no rate limit, no quota, and no metering, so behavior is unchanged.
+
+- `CLAUDE_MEM_RATE_LIMIT_PER_MIN` — max requests per API key per minute. Over the
+  limit returns `429` with `Retry-After` (and `X-RateLimit-*` headers). Fail-open.
+- `CLAUDE_MEM_MONTHLY_REQUEST_CAP` — max requests per team per calendar month
+  (UTC). At the cap, returns `402 quota_exceeded`. Fail-open.
+- `CLAUDE_MEM_USAGE_METERING=1` — record one `request` usage event per
+  authenticated call (fire-and-forget). Token/observation metering writes to the
+  same `usage_events` table from the generation worker.
+
+`GET /v1/usage` returns the caller team's per-kind totals for the current month:
+
+```json
+{ "since": "2026-06-01T00:00:00.000Z", "usage": { "request": 1280, "observation": 44 } }
+```
 
 ## Event generation semantics
 

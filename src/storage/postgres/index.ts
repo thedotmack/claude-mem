@@ -11,6 +11,8 @@ import { PostgresObservationRepository, PostgresObservationSourcesRepository } f
 import { PostgresProjectsRepository } from './projects.js';
 import { PostgresServerSessionsRepository } from './server-sessions.js';
 import { PostgresTeamsRepository } from './teams.js';
+import { PostgresUsageRepository } from './usage.js';
+import { PostgresRateLimitRepository } from './rate-limit.js';
 
 export * from './agent-events.js';
 export * from './auth.js';
@@ -19,9 +21,11 @@ export * from './generation-jobs.js';
 export * from './observations.js';
 export * from './pool.js';
 export * from './projects.js';
+export * from './rate-limit.js';
 export * from './schema.js';
 export * from './server-sessions.js';
 export * from './teams.js';
+export * from './usage.js';
 export type * from './utils.js';
 
 export interface PostgresStorageRepositories {
@@ -34,6 +38,8 @@ export interface PostgresStorageRepositories {
   observationSources: PostgresObservationSourcesRepository;
   observationGenerationJobs: PostgresObservationGenerationJobRepository;
   observationGenerationJobEvents: PostgresObservationGenerationJobEventsRepository;
+  usage: PostgresUsageRepository;
+  rateLimits: PostgresRateLimitRepository;
 }
 
 export function createPostgresStorageRepositories(client: PostgresQueryable): PostgresStorageRepositories {
@@ -46,6 +52,8 @@ export function createPostgresStorageRepositories(client: PostgresQueryable): Po
     observations: new PostgresObservationRepository(client),
     observationSources: new PostgresObservationSourcesRepository(client),
     observationGenerationJobs: new PostgresObservationGenerationJobRepository(client),
-    observationGenerationJobEvents: new PostgresObservationGenerationJobEventsRepository(client)
+    observationGenerationJobEvents: new PostgresObservationGenerationJobEventsRepository(client),
+    usage: new PostgresUsageRepository(client),
+    rateLimits: new PostgresRateLimitRepository(client)
   };
 }

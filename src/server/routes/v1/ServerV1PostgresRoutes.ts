@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import type { Application, Request, Response } from 'express';
+import type { Application, Request, RequestHandler, Response } from 'express';
 import { z, type ZodTypeAny } from 'zod';
 import type { RouteHandler } from '../../../services/server/Server.js';
 import { CreateAgentEventSchema } from '../../../core/schemas/agent-event.js';
@@ -20,6 +20,9 @@ import { PostgresObservationRepository } from '../../../storage/postgres/observa
 import { logger } from '../../../utils/logger.js';
 import { requirePostgresServerAuth } from '../../middleware/postgres-auth.js';
 import { requestIdMiddleware } from '../../middleware/request-id.js';
+import { requireRateLimit, requireMonthlyQuota } from '../../middleware/rate-limit.js';
+import { meterRequests } from '../../middleware/usage-metering.js';
+import { PostgresUsageRepository } from '../../../storage/postgres/usage.js';
 import type { ActiveServerBetaQueueManager } from '../../runtime/ActiveServerBetaQueueManager.js';
 import type { ServerBetaQueueManager } from '../../runtime/types.js';
 import { PostgresServerSessionsRepository } from '../../../storage/postgres/server-sessions.js';
@@ -133,16 +136,38 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     // an inbound X-Request-Id header) so registering it multiple times for
     // overlapping route trees would still produce one canonical id per req.
     app.use('/v1', requestIdMiddleware());
-    const writeAuth = requirePostgresServerAuth(this.options.pool, {
+    const baseWrite = requirePostgresServerAuth(this.options.pool, {
       authMode: this.options.authMode,
       allowLocalDevBypass: this.options.allowLocalDevBypass,
       requiredScopes: ['memories:write'],
     });
-    const readAuth = requirePostgresServerAuth(this.options.pool, {
+    const baseRead = requirePostgresServerAuth(this.options.pool, {
       authMode: this.options.authMode,
       allowLocalDevBypass: this.options.allowLocalDevBypass,
       requiredScopes: ['memories:read'],
     });
+    // Paid-readiness guards, all opt-in via env so default behavior is unchanged
+    // (empty array → readAuth/writeAuth are just the base auth). Express accepts
+    // a middleware array wherever a single handler goes, so the per-route
+    // registrations below need no changes. Order after auth: rate limit → quota
+    // → meter, so the request is counted only once it's admitted.
+    const guards: RequestHandler[] = [];
+    const ratePerMin = Number(process.env.CLAUDE_MEM_RATE_LIMIT_PER_MIN ?? '0');
+    if (ratePerMin > 0) guards.push(requireRateLimit(this.options.pool, { windowSec: 60, max: ratePerMin }));
+    const monthlyCap = Number(process.env.CLAUDE_MEM_MONTHLY_REQUEST_CAP ?? '0');
+    if (monthlyCap > 0) guards.push(requireMonthlyQuota(this.options.pool, { kind: 'request', cap: monthlyCap }));
+    if (process.env.CLAUDE_MEM_USAGE_METERING === '1') guards.push(meterRequests(this.options.pool));
+    const writeAuth: RequestHandler[] = [baseWrite, ...guards];
+    const readAuth: RequestHandler[] = [baseRead, ...guards];
+
+    // GET /v1/usage — per-kind usage totals for the caller's team this month.
+    app.get('/v1/usage', readAuth, this.asyncHandler(async (req, res) => {
+      const teamId = this.requireTeamId(req, res);
+      if (!teamId) return;
+      const monthStart = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1));
+      const usage = await new PostgresUsageRepository(this.options.pool).summarize({ teamId, since: monthStart });
+      res.status(200).json({ since: monthStart.toISOString(), usage });
+    }));
 
     // POST /v1/events — single event with optional async generation
     app.post('/v1/events', writeAuth, this.asyncHandler(async (req, res) => {
