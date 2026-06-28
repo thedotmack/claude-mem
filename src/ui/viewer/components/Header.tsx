@@ -3,6 +3,22 @@ import { ThemeToggle } from './ThemeToggle';
 import { ThemePreference } from '../hooks/useTheme';
 import { GitHubStarsButton } from './GitHubStarsButton';
 import { useSpinningFavicon } from '../hooks/useSpinningFavicon';
+import { useHealth } from '../hooks/useHealth';
+
+/** Format a seconds count as a compact human-readable duration (e.g. "2h 14m"). */
+function formatUptime(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return 'unknown';
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  const parts: string[] = [];
+  if (d) parts.push(`${d}d`);
+  if (h) parts.push(`${h}h`);
+  if (m) parts.push(`${m}m`);
+  if (!d && !h) parts.push(`${s}s`);
+  return parts.join(' ');
+}
 
 interface HeaderProps {
   projects: string[];
@@ -28,11 +44,15 @@ export function Header({
   onShowHelp
 }: HeaderProps) {
   useSpinningFavicon(isProcessing);
+  const health = useHealth();
+  const headerTitle = health
+    ? `version: ${health.version}\npid: ${health.pid}\nuptime: ${formatUptime(health.uptime)}`
+    : undefined;
 
   return (
     <div className="header">
       <div className="header-main">
-        <h1>
+        <h1 title={headerTitle}>
           <div style={{ position: 'relative', display: 'inline-block' }}>
             <img src="claude-mem-logomark.webp" alt="" className={`logomark ${isProcessing ? 'spinning' : ''}`} />
             {queueDepth > 0 && (
