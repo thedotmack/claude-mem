@@ -481,6 +481,22 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       additionalProperties: true
     },
     handler: async (args: any) => {
+      // In server-beta runtime the local worker /api/search reads the local SQLite via
+      // the Chroma-backed SearchOrchestrator. When the install runs server-beta (where
+      // generated observations live in Postgres, not local SQLite) and Chroma is not
+      // configured, observation text queries return empty — so `search` silently yields
+      // 0 observations even though the data is in PG. Route text queries to the PG-backed
+      // /v1/search (same path as observation_search) when server-beta is available; fall
+      // back to the worker for worker-mode or filter-only (no text) queries.
+      const sb = resolveServerBetaToolContext();
+      if (sb && sb.available && typeof args?.query === 'string' && args.query.trim().length > 0) {
+        const request: ServerBetaSearchObservationsRequest = {
+          projectId: sb.projectId,
+          query: args.query,
+          ...(args.limit !== undefined ? { limit: args.limit } : {}),
+        };
+        return formatJsonResult(await sb.client.searchObservations(request));
+      }
       const endpoint = TOOL_ENDPOINT_MAP['search'];
       return await callWorkerAPI(endpoint, args);
     }
