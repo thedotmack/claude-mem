@@ -56,8 +56,8 @@ export interface SettingsDefaults {
   CLAUDE_MEM_TIER_ROUTING_ENABLED: string;
   CLAUDE_MEM_TIER_SIMPLE_MODEL: string;
   CLAUDE_MEM_TIER_SUMMARY_MODEL: string;
-  CLAUDE_MEM_TIER_FAST_MODEL: string;        // #2289 — resolved by $TIER:fast in CLAUDE_MEM_MODEL
-  CLAUDE_MEM_TIER_SMART_MODEL: string;       // #2289 — resolved by $TIER:smart in CLAUDE_MEM_MODEL
+  CLAUDE_MEM_TIER_FAST_MODEL: string;        // #2289 —resolved by $TIER:fast in CLAUDE_MEM_MODEL
+  CLAUDE_MEM_TIER_SMART_MODEL: string;       // #2289 —resolved by $TIER:smart in CLAUDE_MEM_MODEL
   CLAUDE_MEM_CHROMA_ENABLED: string;   
   CLAUDE_MEM_CHROMA_MODE: string;      
   CLAUDE_MEM_CHROMA_HOST: string;
@@ -101,7 +101,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_GEMINI_MAX_TOKENS: '100000',  // Max estimated tokens (~100k safety limit)
     CLAUDE_MEM_OPENROUTER_API_KEY: '',  // Empty by default, can be set via UI or env
     CLAUDE_MEM_OPENROUTER_MODEL: 'xiaomi/mimo-v2-flash:free',  // Default OpenRouter model (free tier)
-    CLAUDE_MEM_OPENROUTER_BASE_URL: '',  // #2382/#2590/#2622/#2393 — optional OpenAI-compatible base URL (e.g. https://api.deepseek.com, http://localhost:1234/v1). Empty = default OpenRouter endpoint.
+    CLAUDE_MEM_OPENROUTER_BASE_URL: '',  // #2382/#2590/#2622/#2393 —optional OpenAI-compatible base URL (e.g. https://api.deepseek.com, http://localhost:1234/v1). Empty = default OpenRouter endpoint.
     CLAUDE_MEM_OPENROUTER_SITE_URL: '',  // Optional: for OpenRouter analytics
     CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',  // App name for OpenRouter analytics
     CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: '20',  // Max messages in context window
@@ -128,17 +128,17 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH: join(homedir(), '.claude-mem', 'transcript-watch.json'),
     CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION: 'false',
     CLAUDE_MEM_MAX_CONCURRENT_AGENTS: '2',  // Max concurrent Claude SDK agent subprocesses
-    CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: '3',  // Plan 05 Phase 8 — escalate to exit code 2 after N consecutive worker-unreachable hook invocations
+    CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: 'auto',  // Plan 05 Phase 8 —escalate to exit code 2 after N consecutive worker-unreachable hook invocations
     CLAUDE_MEM_EXCLUDED_PROJECTS: '',  // Comma-separated glob patterns for excluded project paths
     CLAUDE_MEM_FOLDER_MD_EXCLUDE: '[]',  // JSON array of folder paths to exclude from CLAUDE.md generation
-    CLAUDE_MEM_FOLDER_MD_SKELETON_DENYLIST: '[]',  // #2400 — JSON array of glob patterns; when a folder matches AND its generated CLAUDE.md would be empty/skeleton, skip injection (avoids polluting non-content dirs with empty skeletons). Default [] preserves existing behavior.
+    CLAUDE_MEM_FOLDER_MD_SKELETON_DENYLIST: '[]',  // #2400 —JSON array of glob patterns; when a folder matches AND its generated CLAUDE.md would be empty/skeleton, skip injection (avoids polluting non-content dirs with empty skeletons). Default [] preserves existing behavior.
     CLAUDE_MEM_SEMANTIC_INJECT: 'false',             // Inject relevant past observations on every UserPromptSubmit (experimental, disabled by default)
     CLAUDE_MEM_SEMANTIC_INJECT_LIMIT: '5',           // Top-N most relevant observations to inject per prompt
     CLAUDE_MEM_TIER_ROUTING_ENABLED: 'true',         // Route observations to models by complexity
-    CLAUDE_MEM_TIER_SIMPLE_MODEL: 'haiku', // Portable tier alias — works across Direct API, Bedrock, Vertex, Azure (see #1463)
+    CLAUDE_MEM_TIER_SIMPLE_MODEL: 'haiku', // Portable tier alias —works across Direct API, Bedrock, Vertex, Azure (see #1463)
     CLAUDE_MEM_TIER_SUMMARY_MODEL: '',                // Empty = use default model for summaries
-    CLAUDE_MEM_TIER_FAST_MODEL: 'haiku',              // #2289 — $TIER:fast resolves here (portable alias)
-    CLAUDE_MEM_TIER_SMART_MODEL: 'sonnet',            // #2289 — $TIER:smart resolves here (portable alias)
+    CLAUDE_MEM_TIER_FAST_MODEL: 'haiku',              // #2289 —$TIER:fast resolves here (portable alias)
+    CLAUDE_MEM_TIER_SMART_MODEL: 'sonnet',            // #2289 —$TIER:smart resolves here (portable alias)
     CLAUDE_MEM_CHROMA_ENABLED: 'true',         // Set to 'false' to disable Chroma and use SQLite-only search
     CLAUDE_MEM_CHROMA_MODE: 'local',           // 'local' uses persistent chroma-mcp via uvx, 'remote' connects to existing server
     CLAUDE_MEM_CHROMA_HOST: '127.0.0.1',
@@ -160,7 +160,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_QUEUE_REDIS_PREFIX: `claude_mem_${process.env.CLAUDE_MEM_WORKER_PORT ?? String(37700 + ((process.getuid?.() ?? 77) % 100))}`,
     CLAUDE_MEM_AUTH_MODE: 'api-key',
     CLAUDE_MEM_RUNTIME: 'worker',
-    CLAUDE_MEM_SERVER_BETA_URL: `http://127.0.0.1:${process.env.CLAUDE_MEM_SERVER_PORT ?? String(37877 + ((process.getuid?.() ?? 77) % 100))}`,  // Default server-beta runtime URL — UID-derived for multi-account isolation
+    CLAUDE_MEM_SERVER_BETA_URL: `http://127.0.0.1:${process.env.CLAUDE_MEM_SERVER_PORT ?? String(37877 + ((process.getuid?.() ?? 77) % 100))}`,  // Default server-beta runtime URL —UID-derived for multi-account isolation
     CLAUDE_MEM_SERVER_BETA_API_KEY: '',                     // Local hook API key, populated by installer when runtime=server-beta
     CLAUDE_MEM_SERVER_BETA_PROJECT_ID: '',                  // Default Postgres project_id used by hooks when runtime=server-beta
   };
@@ -175,6 +175,11 @@ export class SettingsDefaultsManager {
 
   static getInt(key: keyof SettingsDefaults): number {
     const value = this.get(key);
+    // #2996 (round 14): 'auto' is a sentinel for threshold defaults.
+    // Return a platform-appropriate numeric fallback instead of NaN.
+    if (value === 'auto') {
+      return process.platform === 'win32' ? 10 : 3;
+    }
     return parseInt(value, 10);
   }
 
@@ -202,6 +207,10 @@ export class SettingsDefaultsManager {
           if (!existsSync(dir)) {
             mkdirSync(dir, { recursive: true });
           }
+          // #2996: Write all defaults to disk (including CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD).
+          // getFailLoudThreshold() distinguishes user-explicit values from defaults by
+          // checking if the value equals the default ('3') and falling through to platform
+          // fallback if so. This preserves the file contract (file = getAllDefaults()).
           writeFileSync(settingsPath, JSON.stringify(defaults, null, 2), 'utf-8');
           // stderr, never stdout: this fires on the first boot in a fresh data
           // dir, and CLI commands like `start` promise machine-readable JSON
@@ -214,7 +223,7 @@ export class SettingsDefaultsManager {
       }
 
       const settingsData = readFileSync(settingsPath, 'utf-8');
-      // Strip UTF-8 BOM if present — Windows tools (editors, formatters, CLI
+      // Strip UTF-8 BOM if present —Windows tools (editors, formatters, CLI
       // hooks) may prepend U+FEFF which Bun's JSON.parse rejects silently,
       // causing a full fallback to defaults and breaking server-beta routing.
       const settings = JSON.parse(settingsData.replace(/^\uFEFF/, ''));
@@ -225,7 +234,7 @@ export class SettingsDefaultsManager {
 
         try {
           writeFileSync(settingsPath, JSON.stringify(flatSettings, null, 2), 'utf-8');
-          // stderr, never stdout — same JSON-on-stdout contract as above.
+          // stderr, never stdout —same JSON-on-stdout contract as above.
           console.warn('[SETTINGS] Migrated settings file from nested to flat schema:', settingsPath);
         } catch (error: unknown) {
           console.warn('[SETTINGS] Failed to auto-migrate settings file:', settingsPath, error instanceof Error ? error.message : String(error));
@@ -248,3 +257,4 @@ export class SettingsDefaultsManager {
     }
   }
 }
+

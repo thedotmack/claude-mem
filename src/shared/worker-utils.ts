@@ -4,7 +4,7 @@ import { spawnHidden } from "./spawn.js";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
 import { SettingsDefaultsManager, type SettingsDefaults } from "./SettingsDefaultsManager.js";
-import { MARKETPLACE_ROOT, DATA_DIR } from "./paths.js";
+import { MARKETPLACE_ROOT, DATA_DIR, USER_SETTINGS_PATH } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
 import { validateWorkerPidFile } from "../supervisor/index.js";
 import { emitBlockingError } from "./hook-io.js";
@@ -496,7 +496,20 @@ interface HookFailureState {
   lastFailureAt: number;
 }
 
-const FAIL_LOUD_DEFAULT_THRESHOLD = 3;
+// #2996: Platform-specific fail-loud threshold
+// This constant is the FALLBACK when settings.json has no explicit value.
+// SettingsDefaultsManager keeps the default at '3' for backward compatibility
+// (so existing settings.json files aren't affected), but on Windows we want
+// a higher threshold (10) to handle zombie worker recovery.
+// Windows (all versions: 10, 11, and future): TCP port conflicts are common due to
+// zombie worker processes that hold ports after crashes. Multi-window Claude Code
+// sessions frequently trigger this. A higher threshold (10) gives the worker ~30-60s
+// to self-heal before blocking prompts.
+// Linux/macOS: Port conflicts are rare (SO_REUSEADDR behavior is more permissive,
+// process cleanup is cleaner). The original threshold (3) provides faster failure
+// detection for genuine worker issues.
+// Note: process.platform === 'win32' matches Windows 10, 11, and all future versions.
+const FAIL_LOUD_DEFAULT_THRESHOLD = process.platform === 'win32' ? 10 : 3;
 
 function getStateDir(): string {
   return path.join(DATA_DIR, 'state');
@@ -541,14 +554,40 @@ function writeHookFailureStateAtomic(state: HookFailureState): void {
 }
 
 function getFailLoudThreshold(): number {
+  // #2996: distinguish user-explicit threshold from SettingsDefaultsManager defaults.
+  // 1. Check environment variable first (highest priority).
+  const envRaw = process.env.CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD;
+  if (envRaw !== undefined) {
+    const envParsed = parseInt(envRaw, 10);
+    if (Number.isFinite(envParsed) && envParsed >= 1) return envParsed;
+  }
+
+  // 2. Read the raw settings file to check if user explicitly set the key.
+  // 'auto' is the sentinel default written by SettingsDefaultsManager.
+  // Any other value (including legacy "3" from older defaults) is treated
+  // as user-explicit and used directly.
   try {
-    const settings = loadFromFileOnce();
-    const raw = settings.CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD;
-    const parsed = parseInt(raw, 10);
-    if (Number.isFinite(parsed) && parsed >= 1) return parsed;
+    if (existsSync(USER_SETTINGS_PATH)) {
+      const raw = readFileSync(USER_SETTINGS_PATH, 'utf-8');
+      const settings = JSON.parse(raw.replace(/^\uFEFF/, ''));
+      const flatSettings = settings.env && typeof settings.env === 'object'
+        ? { ...settings.env, ...settings }
+        : settings;
+      if ('CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD' in flatSettings) {
+        const rawValue = String(flatSettings.CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD);
+        // 'auto' is the sentinel default — fall through to platform fallback.
+        // Any other value (including '3') is treated as user-explicit.
+        if (rawValue !== 'auto') {
+          const parsed = parseInt(rawValue, 10);
+          if (Number.isFinite(parsed) && parsed >= 1) return parsed;
+        }
+      }
+    }
   } catch {
     // settings unreadable — fall through to default
   }
+
+  // 3. No explicit value found; use platform-specific fallback.
   return FAIL_LOUD_DEFAULT_THRESHOLD;
 }
 
