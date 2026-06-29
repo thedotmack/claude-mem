@@ -1,5 +1,6 @@
 import { join } from 'path';
 import { mkdirSync, writeFileSync } from 'fs';
+import { createHash } from 'crypto';
 import { PostHog } from 'posthog-node';
 import type { Database } from 'bun:sqlite';
 import { resolveDataDir } from '../../shared/paths.js';
@@ -60,6 +61,34 @@ export const PROJECT_EPOCH_FLOOR = Date.parse('2024-01-01T00:00:00Z');
 const BACKFILL_NAMESPACE = '8a9c2f4e-31b7-5d68-9c4a-f02e6d5b8a17';
 
 const BACKFILL_MARKER_FILENAME = 'backfill.json';
+
+function uuidBytes(uuid: string): Buffer {
+  return Buffer.from(uuid.replaceAll('-', ''), 'hex');
+}
+
+function formatUuid(bytes: Buffer): string {
+  const hex = bytes.toString('hex');
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    hex.slice(12, 16),
+    hex.slice(16, 20),
+    hex.slice(20, 32),
+  ].join('-');
+}
+
+function uuidV5(name: string, namespace: string): string {
+  const bytes = createHash('sha1')
+    .update(uuidBytes(namespace))
+    .update(name, 'utf8')
+    .digest()
+    .subarray(0, 16);
+
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+
+  return formatUuid(bytes);
+}
 
 /**
  * Schema version of the backfill payload. Bump this whenever the rollup gains
@@ -431,7 +460,7 @@ export function findFirstActivityEpochMs(db: Database): number | null {
  * (toDate(timestamp), event, distinct_id, uuid).
  */
 export function deterministicEventUuid(installId: string, event: string, day: string): string {
-  return Bun.randomUUIDv5(`${installId}|${event}|${day}`, BACKFILL_NAMESPACE);
+  return uuidV5(`${installId}|${event}|${day}`, BACKFILL_NAMESPACE);
 }
 
 /**

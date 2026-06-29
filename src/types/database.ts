@@ -53,6 +53,7 @@ export interface SessionSummaryRecord {
 
 export interface UserPromptRecord {
   id: number;
+  session_db_id?: number | null;
   content_session_id: string;
   prompt_number: number;
   prompt_text: string;
@@ -64,6 +65,7 @@ export interface UserPromptRecord {
 
 export interface LatestPromptResult {
   id: number;
+  session_db_id?: number | null;
   content_session_id: string;
   memory_session_id: string;
   project: string;
@@ -72,4 +74,3 @@ export interface LatestPromptResult {
   prompt_text: string;
   created_at_epoch: number;
 }
-

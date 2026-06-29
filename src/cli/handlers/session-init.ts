@@ -3,15 +3,21 @@
 // console.* / process.exit. logger.* calls are DIAGNOSTIC; thrown errors are
 // caught by hookCommand and routed through emitBlockingError.
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
-import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker-utils.js';
+import {
+  executeWithWorkerFallback as defaultExecuteWithWorkerFallback,
+  isWorkerFallback as defaultIsWorkerFallback,
+} from '../../shared/worker-utils.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { logger } from '../../utils/logger.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
-import { shouldTrackProject } from '../../shared/should-track-project.js';
-import { loadFromFileOnce } from '../../shared/hook-settings.js';
+import { shouldTrackProject as defaultShouldTrackProject } from '../../shared/should-track-project.js';
+import { loadFromFileOnce as defaultLoadFromFileOnce } from '../../shared/hook-settings.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { isInternalProtocolPayload } from '../../utils/tag-stripping.js';
-import { resolveRuntimeContext, logServerFallback } from '../../services/hooks/runtime-selector.js';
+import {
+  resolveRuntimeContext as defaultResolveRuntimeContext,
+  logServerFallback as defaultLogServerFallback,
+} from '../../services/hooks/runtime-selector.js';
 import { isServerClientError } from '../../services/hooks/server-client.js';
 
 interface SessionInitResponse {
@@ -27,6 +33,23 @@ interface SemanticContextResponse {
   count: number;
 }
 
+const defaultDependencies = {
+  executeWithWorkerFallback: defaultExecuteWithWorkerFallback,
+  isWorkerFallback: defaultIsWorkerFallback,
+  loadFromFileOnce: defaultLoadFromFileOnce,
+  resolveRuntimeContext: defaultResolveRuntimeContext,
+  logServerFallback: defaultLogServerFallback,
+  shouldTrackProject: defaultShouldTrackProject,
+};
+
+let dependencies = defaultDependencies;
+
+export function setSessionInitDependenciesForTesting(
+  overrides: Partial<typeof defaultDependencies> = {},
+): void {
+  dependencies = { ...defaultDependencies, ...overrides };
+}
+
 export const sessionInitHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
     const { sessionId, prompt: rawPrompt } = input;
@@ -37,7 +60,7 @@ export const sessionInitHandler: EventHandler = {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
-    if (!shouldTrackProject(cwd)) {
+    if (!dependencies.shouldTrackProject(cwd)) {
       logger.info('HOOK', 'Project excluded from tracking', { cwd });
       return { continue: true, suppressOutput: true };
     }
@@ -53,8 +76,11 @@ export const sessionInitHandler: EventHandler = {
 
     const project = getProjectContext(cwd).primary;
     const platformSource = normalizePlatformSource(input.platform);
+    const settings = dependencies.loadFromFileOnce();
+    const semanticInject =
+      String(settings.CLAUDE_MEM_SEMANTIC_INJECT).toLowerCase() === 'true';
 
-    const runtime = resolveRuntimeContext();
+    const runtime = dependencies.resolveRuntimeContext();
     // Phase 1a (cmem-sdk rename): `runtime.runtime` is the canonical `'server'`
     // value. Legacy `'server-beta'` is normalized inside `selectRuntime()`.
     if (runtime.runtime === 'server') {
@@ -78,7 +104,7 @@ export const sessionInitHandler: EventHandler = {
         return { continue: true, suppressOutput: true };
       } catch (error: unknown) {
         if (isServerClientError(error) && error.isFallbackEligible()) {
-          logServerFallback(error.kind, {
+          dependencies.logServerFallback(error.kind, {
             status: error.status,
             message: error.message,
             route: '/v1/sessions/start',
@@ -95,7 +121,7 @@ export const sessionInitHandler: EventHandler = {
 
     logger.debug('HOOK', 'session-init: Calling /api/sessions/init', { contentSessionId: sessionId, project });
 
-    const initResult = await executeWithWorkerFallback<SessionInitResponse>(
+    const initResult = await dependencies.executeWithWorkerFallback<SessionInitResponse>(
       '/api/sessions/init',
       'POST',
       {
@@ -106,7 +132,7 @@ export const sessionInitHandler: EventHandler = {
       },
     );
 
-    if (isWorkerFallback(initResult)) {
+    if (dependencies.isWorkerFallback(initResult)) {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
@@ -129,19 +155,16 @@ export const sessionInitHandler: EventHandler = {
       return { continue: true, suppressOutput: true };
     }
 
-    const settings = loadFromFileOnce();
-    const semanticInject =
-      String(settings.CLAUDE_MEM_SEMANTIC_INJECT).toLowerCase() === 'true';
     let additionalContext = '';
 
     if (semanticInject && prompt && prompt.length >= 20 && prompt !== '[media prompt]') {
       const limit = settings.CLAUDE_MEM_SEMANTIC_INJECT_LIMIT || '5';
-      const semanticResult = await executeWithWorkerFallback<SemanticContextResponse>(
+      const semanticResult = await dependencies.executeWithWorkerFallback<SemanticContextResponse>(
         '/api/context/semantic',
         'POST',
-        { q: prompt, project, limit },
+        { q: prompt, project, limit, platformSource },
       );
-      if (!isWorkerFallback(semanticResult) && semanticResult?.context) {
+      if (!dependencies.isWorkerFallback(semanticResult) && semanticResult?.context) {
         logger.debug('HOOK', `Semantic injection: ${semanticResult.count} observations for prompt`, { sessionId: sessionDbId, count: semanticResult.count });
         additionalContext = semanticResult.context;
       }
@@ -165,3 +188,9 @@ export const sessionInitHandler: EventHandler = {
     return { continue: true, suppressOutput: true };
   }
 };
+
+function parseSemanticInjectLimit(value: string | number): number {
+  const parsed = typeof value === 'number' ? value : Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 5;
+  return parsed;
+}

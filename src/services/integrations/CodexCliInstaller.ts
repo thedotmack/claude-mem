@@ -1,6 +1,11 @@
 import path from 'path';
 import { homedir } from 'os';
-import { execFileSync, spawnSync, type SpawnSyncReturns } from 'child_process';
+import {
+  execFileSync,
+  spawnSync,
+  type SpawnSyncOptionsWithStringEncoding,
+  type SpawnSyncReturns,
+} from 'child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { logger } from '../../utils/logger.js';
@@ -21,6 +26,14 @@ const REQUIRED_MARKETPLACE_FILES = [
   path.join('plugin', 'hooks', 'codex-hooks.json'),
   path.join('plugin', 'skills', 'mem-search', 'SKILL.md'),
 ];
+const WINDOWS_CODEX_EXTENSIONS = new Set(['.cmd', '.exe', '.bat', '.com']);
+const WINDOWS_CODEX_CMD_EXTENSIONS = new Set(['.cmd', '.bat']);
+
+type CodexSpawnInvocation = {
+  command: string;
+  args: string[];
+  options: SpawnSyncOptionsWithStringEncoding;
+};
 
 function commandExists(command: string): boolean {
   try {
@@ -80,32 +93,78 @@ function resolvePluginMarketplaceRoot(preferredRoot?: string): string {
   throw new Error('Could not locate a Codex marketplace root with .agents/plugins/marketplace.json and plugin/.codex-plugin/plugin.json. Run npx claude-mem@latest install from the package or repo root.');
 }
 
+function lookupCodexOnWindows(): string | null {
+  try {
+    const stdout = execFileSync('where', ['codex'], {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+    });
+    const candidates = stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    return candidates.find((candidate) => WINDOWS_CODEX_EXTENSIONS.has(path.extname(candidate).toLowerCase()))
+      ?? candidates[0]
+      ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function quoteCmdArgument(value: string): string {
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
+export function resolveCodexCommand(
+  platform: NodeJS.Platform = process.platform,
+  windowsLookup: () => string | null = lookupCodexOnWindows,
+): string {
+  if (platform !== 'win32') return 'codex';
+  return windowsLookup() ?? 'codex.cmd';
+}
+
+export function resolveCodexSpawnInvocation(
+  args: string[],
+  platform: NodeJS.Platform = process.platform,
+  windowsLookup: () => string | null = lookupCodexOnWindows,
+): CodexSpawnInvocation {
+  const resolvedCommand = resolveCodexCommand(platform, windowsLookup);
+  const options: SpawnSyncOptionsWithStringEncoding = {
+    encoding: 'utf-8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    ...(platform === 'win32' ? { windowsHide: true } : {}),
+  };
+
+  if (
+    platform === 'win32'
+    && WINDOWS_CODEX_CMD_EXTENSIONS.has(path.extname(resolvedCommand).toLowerCase())
+  ) {
+    return {
+      command: 'cmd.exe',
+      args: ['/d', '/s', '/c', [resolvedCommand, ...args].map(quoteCmdArgument).join(' ')],
+      options,
+    };
+  }
+
+  return {
+    command: resolvedCommand,
+    args,
+    options,
+  };
+}
+
 /**
  * Spawn the `codex` CLI.
  *
  * Issue #2695: on Windows `codex` is installed as `codex.cmd` (a PATH shim).
- * `child_process.spawnSync('codex', args)` without a shell does NOT consult
- * PATHEXT, so it can only find an extension-less `codex` and throws ENOENT.
- * Setting `shell: true` makes Windows resolve the `.cmd`/`.exe`/`.bat` shim
- * via cmd.exe (the same workaround bun-runner.js uses for `where bun`). Under
- * a shell the args are re-tokenized, so we quote each one to preserve paths
- * containing spaces. On POSIX we keep the direct (no-shell) exec.
+ * `child_process.spawnSync('codex', args)` without a shell does not consult
+ * PATHEXT, so resolve the shim first. Native executables run directly; .cmd
+ * and .bat shims use an explicit cmd.exe wrapper without shell:true.
  */
 export function codexSpawn(args: string[]): SpawnSyncReturns<string> {
-  const isWindows = process.platform === 'win32';
-  if (isWindows) {
-    const quotedArgs = args.map((arg) => `"${arg.replace(/"/g, '\\"')}"`);
-    return spawnSync('codex', quotedArgs, {
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      shell: true,
-      windowsHide: true,
-    });
-  }
-  return spawnSync('codex', args, {
-    encoding: 'utf-8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  const invocation = resolveCodexSpawnInvocation(args);
+  return spawnSync(invocation.command, invocation.args, invocation.options);
 }
 
 function runCodex(args: string[]): void {

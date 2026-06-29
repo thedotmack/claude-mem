@@ -17,6 +17,11 @@ mock.module('../../src/services/worker/http/middleware.js', () => ({
 
 import { Server } from '../../src/services/server/Server.js';
 import type { ServerOptions } from '../../src/services/server/Server.js';
+import { WorkerService } from '../../src/services/worker-service.js';
+import {
+  recordDependencyStatus,
+  resetDependencyStatusesForTesting,
+} from '../../src/shared/dependency-health.js';
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
 
@@ -26,6 +31,7 @@ describe('Worker API Endpoints Integration', () => {
   let mockOptions: ServerOptions;
 
   beforeEach(() => {
+    resetDependencyStatusesForTesting();
     loggerSpies = [
       spyOn(logger, 'info').mockImplementation(() => {}),
       spyOn(logger, 'debug').mockImplementation(() => {}),
@@ -50,6 +56,7 @@ describe('Worker API Endpoints Integration', () => {
   });
 
   afterEach(async () => {
+    resetDependencyStatusesForTesting();
     loggerSpies.forEach(spy => spy.mockRestore());
 
     if (server && server.getHttpServer()) {
@@ -105,6 +112,35 @@ describe('Worker API Endpoints Integration', () => {
         expect(body.initialized).toBe(false);
         expect(body.mcpReady).toBe(false);
       });
+
+      it('includes dependency health and stays HTTP 200 for dependency-only degradation', async () => {
+        recordDependencyStatus(
+          'uvx',
+          'vector_search_unavailable',
+          'uvx executable not found on effective PATH for vector search',
+          'Install uv and restart claude-mem',
+        );
+
+        server = new Server(mockOptions);
+        await server.listen(testPort, '127.0.0.1');
+
+        const response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
+        expect(response.status).toBe(200);
+
+        const body = await response.json();
+        expect(body.status).toBe('ok');
+        expect(body.dependencies).toMatchObject({
+          degraded: true,
+          statuses: [
+            {
+              dependency: 'uvx',
+              kind: 'vector_search_unavailable',
+              message: 'uvx executable not found on effective PATH for vector search',
+              remediation: 'Install uv and restart claude-mem',
+            },
+          ],
+        });
+      });
     });
 
     describe('GET /api/readiness', () => {
@@ -155,9 +191,72 @@ describe('Worker API Endpoints Integration', () => {
         expect(typeof body.version).toBe('string');
       });
     });
+
+    describe('GET /api/settings/dependency-health', () => {
+      it('passes through WorkerService initialization guard while initialization is incomplete', async () => {
+        recordDependencyStatus(
+          'claude_cli',
+          'setup_required',
+          'Claude executable not found',
+          'Install Claude Code CLI',
+        );
+
+        const worker = new WorkerService();
+        expect((worker as any).initializationCompleteFlag).toBe(false);
+        server = (worker as unknown as { server: Server }).server;
+        await server.listen(testPort, '127.0.0.1');
+
+        const guardedResponse = await fetch(`http://127.0.0.1:${testPort}/api/settings`);
+        expect(guardedResponse.status).toBe(503);
+
+        const response = await fetch(`http://127.0.0.1:${testPort}/api/settings/dependency-health`);
+        expect(response.status).toBe(200);
+
+        const body = await response.json();
+        expect(body).toMatchObject({
+          degraded: true,
+          statuses: [
+            {
+              dependency: 'claude_cli',
+              kind: 'setup_required',
+              message: 'Claude executable not found',
+              remediation: 'Install Claude Code CLI',
+            },
+          ],
+        });
+      });
+    });
   });
 
   describe('Error Handling', () => {
+    it('includes dependency health in admin doctor output', async () => {
+      recordDependencyStatus(
+        'claude_cli',
+        'setup_required',
+        'Claude executable not found',
+        'Install Claude Code CLI',
+      );
+
+      server = new Server(mockOptions);
+      await server.listen(testPort, '127.0.0.1');
+
+      const response = await fetch(`http://127.0.0.1:${testPort}/api/admin/doctor`);
+      expect(response.status).toBe(200);
+
+      const body = await response.json();
+      expect(body.health.dependencies).toMatchObject({
+        degraded: true,
+        statuses: [
+          {
+            dependency: 'claude_cli',
+            kind: 'setup_required',
+            message: 'Claude executable not found',
+            remediation: 'Install Claude Code CLI',
+          },
+        ],
+      });
+    });
+
     describe('404 Not Found', () => {
       it('should return 404 for unknown GET routes', async () => {
         server = new Server(mockOptions);

@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'bun:test';
-import { classifyObserverOutput, previewOutput } from '../../src/sdk/output-classifier.js';
+import {
+  classifyObserverOutput,
+  isQuotaLimitedObserverOutput,
+  previewOutput,
+} from '../../src/sdk/output-classifier.js';
 
 describe('classifyObserverOutput (plan-11 #2485)', () => {
   it('classifies valid <observation> XML as xml', () => {
@@ -35,16 +39,38 @@ describe('classifyObserverOutput (plan-11 #2485)', () => {
     expect(classifyObserverOutput('Skipping — repeated log scan with no new findings.')).toBe('prose');
   });
 
-  it('classifies "session exhausted" closure string as poisoned', () => {
-    expect(classifyObserverOutput('This session has been exhausted, I cannot continue.')).toBe('poisoned');
+  it('classifies former poison marker strings as ordinary prose', () => {
+    expect(classifyObserverOutput('This session has been exhausted, I cannot continue.')).toBe('prose');
+    expect(classifyObserverOutput('Error: prompt is too long for this model.')).toBe('prose');
+    expect(classifyObserverOutput('I hit the context window, so there is no XML.')).toBe('prose');
   });
 
-  it('classifies "prompt is too long" closure as poisoned', () => {
-    expect(classifyObserverOutput('Error: prompt is too long for this model.')).toBe('poisoned');
+  it('does not let former poison markers override XML-shaped output', () => {
+    expect(classifyObserverOutput('session exhausted <observation></observation>')).toBe('xml');
+  });
+});
+
+describe('isQuotaLimitedObserverOutput', () => {
+  it('detects Claude weekly-limit prose', () => {
+    expect(
+      isQuotaLimitedObserverOutput('Claude usage limit reached. Your weekly limit will reset soon.'),
+    ).toBe(true);
   });
 
-  it('poison detection takes precedence over a stray tag', () => {
-    expect(classifyObserverOutput('session exhausted <observation></observation>')).toBe('poisoned');
+  it('detects subscription quota prose', () => {
+    expect(
+      isQuotaLimitedObserverOutput('Your subscription quota has been exhausted. Please try again after it resets.'),
+    ).toBe(true);
+  });
+
+  it('does not treat context-window prose as quota prose', () => {
+    expect(
+      isQuotaLimitedObserverOutput('I hit the context window and cannot produce valid XML.'),
+    ).toBe(false);
+  });
+
+  it('does not treat ordinary observer prose as quota prose', () => {
+    expect(isQuotaLimitedObserverOutput('No observations to record.')).toBe(false);
   });
 });
 

@@ -342,11 +342,11 @@ function executeCwdRemap(dbPath: string, effectiveDataDir: string, markerPath: s
     const sessionRows = db.prepare(`
       SELECT s.id AS session_id, s.memory_session_id, s.project AS old_project, p.cwd
       FROM sdk_sessions s
-      JOIN pending_messages p ON p.content_session_id = s.content_session_id
+      JOIN pending_messages p ON p.session_db_id = s.id
       WHERE p.cwd IS NOT NULL AND p.cwd != ''
         AND p.id = (
           SELECT MIN(p2.id) FROM pending_messages p2
-          WHERE p2.content_session_id = s.content_session_id
+          WHERE p2.session_db_id = s.id
             AND p2.cwd IS NOT NULL AND p2.cwd != ''
         )
     `).all() as Array<{ session_id: number; memory_session_id: string | null; old_project: string; cwd: string }>;
@@ -503,4 +503,3 @@ export function touchPidFile(): void {
 export function cleanStalePidFile(): ValidateWorkerPidStatus {
   return validateWorkerPidFile({ logAlive: false });
 }
-

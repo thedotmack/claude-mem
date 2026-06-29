@@ -96,6 +96,7 @@ export const summarizeHandler: EventHandler = {
           projectId: runtime.projectId,
           serverSessionId,
           contentSessionId: sessionId,
+          platformSource,
           sourceType: 'hook',
           eventType: 'assistant_message',
           occurredAtEpoch: Date.now(),

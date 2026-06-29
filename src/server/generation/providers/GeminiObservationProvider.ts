@@ -31,6 +31,96 @@ interface GeminiResponse {
   error?: { code?: number; status?: string; message?: string };
 }
 
+export type GeminiBadRequestCategory =
+  | 'role_sequence'
+  | 'context_limit'
+  | 'model_unsupported'
+  | 'api_key'
+  | 'unknown_bad_request';
+
+export function categorizeGeminiBadRequest(bodyText: string): GeminiBadRequestCategory {
+  const lower = bodyText.toLowerCase();
+
+  if (
+    lower.includes('api key not valid') ||
+    lower.includes('api_key_invalid') ||
+    lower.includes('api key expired') ||
+    lower.includes('invalid api key')
+  ) {
+    return 'api_key';
+  }
+
+  if (
+    lower.includes('please ensure that multiturn requests alternate') ||
+    lower.includes('alternate between user and model') ||
+    lower.includes('first content should be with role') ||
+    (lower.includes('contents') && lower.includes('role') && (lower.includes('user') || lower.includes('model')))
+  ) {
+    return 'role_sequence';
+  }
+
+  if (
+    lower.includes('context limit') ||
+    lower.includes('context length') ||
+    lower.includes('too many tokens') ||
+    lower.includes('input is too long') ||
+    lower.includes('prompt is too long') ||
+    lower.includes('request payload size exceeds') ||
+    (lower.includes('token') && (lower.includes('exceed') || lower.includes('maximum') || lower.includes('limit')))
+  ) {
+    return 'context_limit';
+  }
+
+  if (
+    lower.includes('model not found') ||
+    lower.includes('model_unsupported') ||
+    lower.includes('unsupported model') ||
+    lower.includes('not supported for generatecontent') ||
+    lower.includes('not supported by this model') ||
+    (lower.includes('model') && lower.includes('not supported')) ||
+    (lower.includes('models/') && lower.includes('not found'))
+  ) {
+    return 'model_unsupported';
+  }
+
+  return 'unknown_bad_request';
+}
+
+interface ClassifyGeminiServerErrorInput {
+  status?: number;
+  bodyText?: string;
+  headers?: Headers | { get(name: string): string | null };
+  cause: unknown;
+}
+
+function isQuotaBody(bodyText: string): boolean {
+  const lower = bodyText.toLowerCase();
+  return (
+    lower.includes('quota exceeded') ||
+    lower.includes('insufficient credits') ||
+    lower.includes('insufficient_quota') ||
+    lower.includes('resource_exhausted')
+  );
+}
+
+export function classifyGeminiServerError(input: ClassifyGeminiServerErrorInput): ServerClassifiedProviderError {
+  const status = input.status;
+  const bodyText = input.bodyText ?? '';
+
+  if (status === 400 && !isQuotaBody(bodyText)) {
+    const category = categorizeGeminiBadRequest(bodyText);
+    return new ServerClassifiedProviderError(`Gemini bad request: ${category}`, {
+      kind: 'unrecoverable',
+      cause: new Error('Gemini HTTP error (status 400)'),
+    });
+  }
+
+  return classifyHttpProviderError({
+    ...input,
+    providerLabel: 'Gemini',
+  });
+}
+
 export class GeminiObservationProvider implements ServerGenerationProvider {
   readonly providerLabel = 'gemini' as const;
   private readonly apiKey: string;
@@ -81,20 +171,18 @@ export class GeminiObservationProvider implements ServerGenerationProvider {
         signal,
       });
     } catch (networkError) {
-      throw classifyHttpProviderError({
+      throw classifyGeminiServerError({
         cause: networkError,
-        providerLabel: 'Gemini',
       });
     }
 
     if (!response.ok) {
       const bodyText = await safeReadBody(response);
-      throw classifyHttpProviderError({
+      throw classifyGeminiServerError({
         status: response.status,
         bodyText,
         headers: response.headers,
-        cause: new Error(`Gemini API error: ${response.status} - ${bodyText}`),
-        providerLabel: 'Gemini',
+        cause: new Error(`Gemini HTTP error (status ${response.status})`),
       });
     }
 
@@ -109,12 +197,11 @@ export class GeminiObservationProvider implements ServerGenerationProvider {
     }
 
     if (data.error) {
-      throw classifyHttpProviderError({
+      throw classifyGeminiServerError({
         status: response.status,
         bodyText: `${data.error.status ?? ''} ${data.error.message ?? ''}`,
         headers: response.headers,
-        cause: new Error(`Gemini API error: ${data.error.status} - ${data.error.message}`),
-        providerLabel: 'Gemini',
+        cause: new Error(`Gemini HTTP error (status ${response.status})`),
       });
     }
 

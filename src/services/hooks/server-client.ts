@@ -13,6 +13,7 @@
 
 import { fetchWithTimeout } from '../../shared/worker-utils.js';
 import { HOOK_TIMEOUTS, getTimeout } from '../../shared/hook-constants.js';
+import { normalizePlatformSource } from '../../shared/platform-source.js';
 
 const DEFAULT_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.API_REQUEST);
 
@@ -85,6 +86,7 @@ export interface ServerRecordEventRequest {
   serverSessionId?: string | null;
   contentSessionId?: string | null;
   memorySessionId?: string | null;
+  platformSource?: string | null;
   sourceType: 'hook' | 'worker' | 'provider' | 'server' | 'api';
   eventType: string;
   payload?: unknown;
@@ -153,6 +155,7 @@ export interface ServerSearchObservationsRequest {
   projectId: string;
   query: string;
   limit?: number;
+  platformSource?: string | null;
 }
 
 export interface ServerSearchObservationsResponse {
@@ -170,6 +173,7 @@ export interface ServerContextObservationsRequest {
   projectId: string;
   query: string;
   limit?: number;
+  platformSource?: string | null;
 }
 
 export interface ServerContextObservationsResponse {
@@ -300,12 +304,13 @@ export class ServerClient {
   }
 
   buildSearchPayload(
-    input: { projectId: string; query: string; limit?: number },
+    input: { projectId: string; query: string; limit?: number; platformSource?: string | null },
   ): Record<string, unknown> {
     return {
       projectId: input.projectId,
       query: input.query,
       ...(input.limit !== undefined ? { limit: input.limit } : {}),
+      ...(input.platformSource !== undefined ? { platformSource: normalizePlatformSourceField(input.platformSource) } : {}),
     };
   }
 
@@ -316,7 +321,7 @@ export class ServerClient {
       ...(input.contentSessionId !== undefined ? { contentSessionId: input.contentSessionId } : {}),
       ...(input.agentId !== undefined ? { agentId: input.agentId } : {}),
       ...(input.agentType !== undefined ? { agentType: input.agentType } : {}),
-      ...(input.platformSource !== undefined ? { platformSource: input.platformSource } : {}),
+      ...(input.platformSource !== undefined ? { platformSource: normalizePlatformSourceField(input.platformSource) } : {}),
       ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
     };
   }
@@ -330,6 +335,7 @@ export class ServerClient {
       ...(input.serverSessionId !== undefined ? { serverSessionId: input.serverSessionId } : {}),
       ...(input.contentSessionId !== undefined ? { contentSessionId: input.contentSessionId } : {}),
       ...(input.memorySessionId !== undefined ? { memorySessionId: input.memorySessionId } : {}),
+      ...(input.platformSource !== undefined ? { platformSource: normalizePlatformSourceField(input.platformSource) } : {}),
       ...(input.payload !== undefined ? { payload: input.payload } : {}),
     };
   }
@@ -404,6 +410,10 @@ export function isServerClientError(error: unknown): error is ServerClientError 
 
 function stripTrailingSlash(url: string): string {
   return url.replace(/\/+$/, '');
+}
+
+function normalizePlatformSourceField(value: string | null): string | null {
+  return typeof value === 'string' ? normalizePlatformSource(value) : null;
 }
 
 function truncate(text: string, max: number): string {

@@ -7,8 +7,10 @@
 -- Source of truth: src/services/sqlite/SessionStore.ts (constructor migrations).
 --
 -- Invariants enforced here (Plan 01):
---   * pending_messages.UNIQUE(content_session_id, tool_use_id) — replaces
+--   * pending_messages.UNIQUE(session_db_id, tool_use_id) — replaces
 --     in-memory pendingTools Map for ingestion pairing (Plan 03 also depends).
+--   * sdk_sessions.UNIQUE(platform_source, content_session_id) — raw content
+--     session ids are only unique within a client/platform.
 --   * pending_messages only needs pending/processing status for current
 --     claim handling; worker_pid and stale-reset epoch columns are legacy.
 --   * observations.UNIQUE(memory_session_id, content_hash) — replaces the
@@ -25,7 +27,7 @@ CREATE TABLE IF NOT EXISTS schema_versions (
 -- ─────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS sdk_sessions (
   id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-  content_session_id  TEXT    UNIQUE NOT NULL,
+  content_session_id  TEXT    NOT NULL,
   memory_session_id   TEXT    UNIQUE,
   project             TEXT    NOT NULL,
   platform_source     TEXT    NOT NULL DEFAULT 'claude',
@@ -46,6 +48,8 @@ CREATE INDEX IF NOT EXISTS idx_sdk_sessions_project          ON sdk_sessions(pro
 CREATE INDEX IF NOT EXISTS idx_sdk_sessions_status           ON sdk_sessions(status);
 CREATE INDEX IF NOT EXISTS idx_sdk_sessions_started          ON sdk_sessions(started_at_epoch DESC);
 CREATE INDEX IF NOT EXISTS idx_sdk_sessions_platform_source  ON sdk_sessions(platform_source);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_sdk_sessions_platform_content
+  ON sdk_sessions(platform_source, content_session_id);
 
 -- ─────────────────────────────────────────────────────────────────────
 -- observations: structured memory rows extracted from SDK output.
@@ -118,7 +122,7 @@ CREATE INDEX IF NOT EXISTS idx_summaries_merged_into          ON session_summari
 
 -- ─────────────────────────────────────────────────────────────────────
 -- pending_messages: persistent work queue for SDK messages.
--- UNIQUE(content_session_id, tool_use_id) preserves ingestion pairing without
+-- UNIQUE(session_db_id, tool_use_id) preserves ingestion pairing without
 -- any legacy worker_pid or stale-reset epoch column.
 -- ─────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS pending_messages (
@@ -146,7 +150,7 @@ CREATE INDEX IF NOT EXISTS idx_pending_messages_session        ON pending_messag
 CREATE INDEX IF NOT EXISTS idx_pending_messages_status         ON pending_messages(status);
 CREATE INDEX IF NOT EXISTS idx_pending_messages_claude_session ON pending_messages(content_session_id);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_pending_session_tool
-  ON pending_messages(content_session_id, tool_use_id)
+  ON pending_messages(session_db_id, tool_use_id)
   WHERE tool_use_id IS NOT NULL;
 
 -- ─────────────────────────────────────────────────────────────────────
@@ -154,17 +158,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_pending_session_tool
 -- ─────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS user_prompts (
   id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_db_id      INTEGER,
   content_session_id TEXT    NOT NULL,
   prompt_number      INTEGER NOT NULL,
   prompt_text        TEXT    NOT NULL,
   created_at         TEXT    NOT NULL,
   created_at_epoch   INTEGER NOT NULL,
-  FOREIGN KEY(content_session_id) REFERENCES sdk_sessions(content_session_id) ON DELETE CASCADE
+  FOREIGN KEY(session_db_id) REFERENCES sdk_sessions(id) ON DELETE CASCADE
 );
+CREATE INDEX IF NOT EXISTS idx_user_prompts_session        ON user_prompts(session_db_id);
 CREATE INDEX IF NOT EXISTS idx_user_prompts_claude_session ON user_prompts(content_session_id);
 CREATE INDEX IF NOT EXISTS idx_user_prompts_created        ON user_prompts(created_at_epoch DESC);
 CREATE INDEX IF NOT EXISTS idx_user_prompts_prompt_number  ON user_prompts(prompt_number);
-CREATE INDEX IF NOT EXISTS idx_user_prompts_lookup         ON user_prompts(content_session_id, prompt_number);
+CREATE INDEX IF NOT EXISTS idx_user_prompts_lookup         ON user_prompts(session_db_id, prompt_number);
+CREATE INDEX IF NOT EXISTS idx_user_prompts_content_lookup ON user_prompts(content_session_id, prompt_number);
 
 -- ─────────────────────────────────────────────────────────────────────
 -- observation_feedback: usage-signal tracking for tier routing.

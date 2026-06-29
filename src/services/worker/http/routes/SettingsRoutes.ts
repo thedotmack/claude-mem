@@ -13,6 +13,7 @@ import { validateBody } from '../middleware/validateBody.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { clearPortCache } from '../../../../shared/worker-utils.js';
 import { flushResponseThen } from '../../../server/flushResponseThen.js';
+import { snapshotDependencyHealth } from '../../../../shared/dependency-health.js';
 
 const toggleMcpSchema = z.object({
   enabled: z.boolean(),
@@ -32,6 +33,7 @@ export class SettingsRoutes extends BaseRouteHandler {
   setupRoutes(app: express.Application): void {
     app.get('/api/settings', this.handleGetSettings.bind(this));
     app.post('/api/settings', this.handleUpdateSettings.bind(this));
+    app.get('/api/settings/dependency-health', this.handleGetDependencyHealth.bind(this));
 
     app.get('/api/mcp/status', this.handleGetMcpStatus.bind(this));
     app.post('/api/mcp/toggle', validateBody(toggleMcpSchema), this.handleToggleMcp.bind(this));
@@ -46,6 +48,10 @@ export class SettingsRoutes extends BaseRouteHandler {
     this.ensureSettingsFile(settingsPath);
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
     res.json(settings);
+  });
+
+  private handleGetDependencyHealth = this.wrapHandler((_req: Request, res: Response): void => {
+    res.json(snapshotDependencyHealth());
   });
 
   private handleUpdateSettings = this.wrapHandler((req: Request, res: Response): void => {

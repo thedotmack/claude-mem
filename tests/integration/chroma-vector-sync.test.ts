@@ -280,10 +280,8 @@ describe('ChromaSync Vector Sync Integration', () => {
         new URL('../../src/services/sync/ChromaMcpManager.ts', import.meta.url)
       ).text();
 
-      expect(sourceFile).toContain('this.transport.close()');
-
+      expect(sourceFile).toContain('await this.disposeCurrentSubprocess()');
       expect(sourceFile).toContain('this.transport = null');
-
       expect(sourceFile).toContain('this.connected = false');
     });
 
@@ -299,7 +297,7 @@ describe('ChromaSync Vector Sync Integration', () => {
         new URL('../../src/services/sync/ChromaMcpManager.ts', import.meta.url)
       ).text();
 
-      expect(sourceFile).toContain('await this.transport.close()');
+      expect(sourceFile).toContain('await this.disposeCurrentSubprocess()');
       expect(sourceFile).toContain('this.transport = null');
       expect(sourceFile).toContain('this.connected = false');
     });

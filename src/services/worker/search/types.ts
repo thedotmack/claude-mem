@@ -17,6 +17,7 @@ export interface ChromaMetadata {
   doc_type: ChromaDocType;
   memory_session_id: string;
   project: string;
+  platform_source?: string;
   created_at_epoch: number;
   type?: string;
   title?: string;

@@ -222,6 +222,7 @@ export interface SessionSummaryRow {
 
 export interface UserPromptRow {
   id: number;
+  session_db_id?: number | null;
   content_session_id: string;
   prompt_number: number;
   prompt_text: string;

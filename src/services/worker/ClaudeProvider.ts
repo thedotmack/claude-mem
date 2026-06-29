@@ -29,6 +29,7 @@ import { buildHardenedSdkOptions } from '../../sdk/hardened-options.js';
 import { ClassifiedProviderError } from './provider-errors.js';
 import { resolveTierAlias } from './model-aliases.js';
 import { telemetryBuffer } from '../telemetry/buffer.js';
+import { clearDependencyStatus, recordClaudeCliSetupRequired } from '../../shared/dependency-health.js';
 
 /**
  * Module-scoped guard so the "effort parameter" hint only fires once per
@@ -57,11 +58,13 @@ export function classifyClaudeError(err: unknown): ClassifiedProviderError {
   // Executable / spawn issues — unrecoverable, no point retrying.
   if (
     message.includes('Claude executable not found') ||
+    message.includes('Every Claude CLI found is too old') ||
     message.includes('CLAUDE_CODE_PATH') ||
+    (message.includes('desktop app') && message.includes('headless mode')) ||
     message.includes('ENOENT') ||
     message.startsWith('spawn ')
   ) {
-    return new ClassifiedProviderError(message, { kind: 'unrecoverable', cause: err });
+    return new ClassifiedProviderError(message, { kind: 'setup_required', cause: err });
   }
 
   // Anthropic auth failures.
@@ -169,17 +172,22 @@ export class ClaudeProvider {
     this.sessionManager = sessionManager;
   }
 
-  private resetSessionForFreshStart(session: ActiveSession): void {
-    this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, null);
-    session.memorySessionId = null;
-    session.forceInit = true;
-  }
-
   async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
     const cwdTracker = { lastCwd: undefined as string | undefined };
 
     // Find and validate Claude executable (shared utility, closes #2222)
-    const claudePath = findClaudeExecutable('SDK');
+    let claudePath: string;
+    try {
+      claudePath = findClaudeExecutable('SDK');
+      clearDependencyStatus('claude_cli');
+    } catch (error) {
+      const classified = classifyClaudeError(error);
+      if (classified.kind === 'setup_required') {
+        recordClaudeCliSetupRequired(classified.message);
+        throw classified;
+      }
+      throw error;
+    }
 
     const modelId = session.modelOverride || this.getModelId();
     session.lastModelId = typeof modelId === 'string' ? modelId : undefined;
@@ -308,15 +316,6 @@ export class ClaudeProvider {
             ? content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
             : typeof content === 'string' ? content : '';
 
-          if (textContent.includes('prompt is too long') ||
-              textContent.includes('context window')) {
-            logger.error('SDK', 'Context overflow detected - terminating session and forcing fresh start');
-            this.resetSessionForFreshStart(session);
-            session.abortReason = 'overflow';
-            session.abortController.abort();
-            return;
-          }
-
           const responseSize = textContent.length;
 
           const tokensBeforeResponse = session.cumulativeInputTokens + session.cumulativeOutputTokens;
@@ -362,14 +361,6 @@ export class ClaudeProvider {
               sessionId: session.sessionDbId,
               promptNumber: session.lastPromptNumber
             }, truncatedResponse);
-          }
-
-          if (typeof textContent === 'string' && textContent.includes('Prompt is too long')) {
-            this.resetSessionForFreshStart(session);
-            logger.error('SDK', 'Context overflow — cleared memorySessionId so next spawn starts fresh', {
-              sessionDbId: session.sessionDbId
-            });
-            throw new Error('Claude session context overflow: prompt is too long');
           }
 
           if (typeof textContent === 'string' && textContent.includes('Invalid API key')) {

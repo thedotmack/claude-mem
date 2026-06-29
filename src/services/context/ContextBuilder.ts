@@ -5,6 +5,7 @@ import { unlinkSync } from 'fs';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
+import { normalizePlatformSource } from '../../shared/platform-source.js';
 
 import type { ContextInput, ContextConfig, Observation, SessionSummary } from './types.js';
 import { loadContextConfig } from './ContextConfigLoader.js';
@@ -181,12 +182,15 @@ export async function generateContextWithStats(
   }
 
   try {
+    const platformSource = input?.platformSource
+      ? normalizePlatformSource(input.platformSource)
+      : undefined;
     const observations = projects.length > 1
-      ? queryObservationsMulti(db, projects, config)
-      : queryObservations(db, project, config);
+      ? queryObservationsMulti(db, projects, config, platformSource)
+      : queryObservations(db, project, config, platformSource);
     const summaries = projects.length > 1
-      ? querySummariesMulti(db, projects, config)
-      : querySummaries(db, project, config);
+      ? querySummariesMulti(db, projects, config, platformSource)
+      : querySummaries(db, project, config, platformSource);
 
     if (observations.length === 0 && summaries.length === 0) {
       return { text: renderEmptyState(project, forHuman), stats: null };

@@ -11,6 +11,7 @@ import {
   toEpoch,
   toJsonObject
 } from './utils.js';
+import { normalizePlatformSourceOrNull } from '../../shared/platform-source.js';
 
 export interface PostgresAgentEvent {
   id: string;
@@ -72,6 +73,7 @@ export class PostgresAgentEventsRepository {
       await assertSessionOwnership(this.client, input.serverSessionId, input.projectId, input.teamId);
     }
     const idempotencyKey = buildAgentEventIdempotencyKey(input);
+    const platformSource = normalizePlatformSourceOrNull(input.platformSource);
     const row = await queryOne<AgentEventRow>(
       this.client,
       `
@@ -94,7 +96,7 @@ export class PostgresAgentEventsRepository {
         input.sourceEventId ?? null,
         idempotencyKey,
         input.eventType,
-        input.platformSource ?? null,
+        platformSource,
         JSON.stringify(input.payload ?? {}),
         JSON.stringify(input.metadata ?? {}),
         new Date(input.occurredAt)
@@ -145,14 +147,19 @@ export function buildAgentEventIdempotencyKey(input: {
   serverSessionId?: string | null;
   contentSessionId?: string | null;
   eventType: string;
+  platformSource?: string | null;
   occurredAt: Date | string | number;
   payload?: JsonValue;
 }): string {
+  const platformSource = normalizePlatformSourceOrNull(input.platformSource);
+  const platformScope = platformSource ? [platformSource] : [];
+
   if (input.sourceEventId) {
     return `agent_event:v1:${deterministicKey([
       input.teamId,
       input.projectId,
       input.sourceAdapter,
+      ...platformScope,
       input.sourceEventId
     ])}`;
   }
@@ -165,6 +172,7 @@ export function buildAgentEventIdempotencyKey(input: {
     input.teamId,
     input.projectId,
     input.sourceAdapter,
+    ...platformScope,
     input.contentSessionId ?? input.serverSessionId ?? null,
     input.eventType,
     new Date(input.occurredAt).toISOString(),
