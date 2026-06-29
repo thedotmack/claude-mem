@@ -36,6 +36,9 @@ default) means no rate limit, no quota, and no metering, so behavior is unchange
   limit returns `429` with `Retry-After` (and `X-RateLimit-*` headers). Fail-open.
 - `CLAUDE_MEM_MONTHLY_REQUEST_CAP` — max requests per team per calendar month
   (UTC). At the cap, returns `402 quota_exceeded`. Fail-open.
+- `CLAUDE_MEM_MONTHLY_TOKEN_CAP` — max provider tokens per team per month. Gates
+  **writes only** (ingestion drives generation = token spend); reads stay
+  available so a team over budget can still recall. `402` at the cap. Fail-open.
 - `CLAUDE_MEM_USAGE_METERING=1` — record one `request` usage event per
   authenticated call (fire-and-forget). Token/observation metering writes to the
   same `usage_events` table from the generation worker.

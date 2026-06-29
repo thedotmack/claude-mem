@@ -169,7 +169,12 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     const monthlyCap = Number(process.env.CLAUDE_MEM_MONTHLY_REQUEST_CAP ?? '0');
     if (monthlyCap > 0) guards.push(requireMonthlyQuota(this.options.pool, { kind: 'request', cap: monthlyCap }));
     if (process.env.CLAUDE_MEM_USAGE_METERING === '1') guards.push(meterRequests(this.options.pool));
-    const writeAuth: RequestHandler[] = [baseWrite, ...guards];
+    // A monthly TOKEN cap gates writes only (ingestion drives generation = token
+    // spend); reads stay available so a team over budget can still recall.
+    const writeGuards: RequestHandler[] = [...guards];
+    const tokenCap = Number(process.env.CLAUDE_MEM_MONTHLY_TOKEN_CAP ?? '0');
+    if (tokenCap > 0) writeGuards.push(requireMonthlyQuota(this.options.pool, { kind: 'tokens', cap: tokenCap }));
+    const writeAuth: RequestHandler[] = [baseWrite, ...writeGuards];
     const readAuth: RequestHandler[] = [baseRead, ...guards];
 
     // GET /v1/usage — per-kind usage totals for the caller's team this month.
