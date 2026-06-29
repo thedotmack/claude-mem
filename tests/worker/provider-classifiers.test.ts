@@ -232,6 +232,11 @@ describe('classifyClaudeError', () => {
     expect(err.kind).toBe('unrecoverable');
   });
 
+  it('classifies structured context-window errors as unrecoverable', () => {
+    const err = classifyClaudeError(new Error('Claude SDK error: context window exceeded'));
+    expect(err.kind).toBe('unrecoverable');
+  });
+
   it('classifies status=429 as rate_limit', () => {
     const sdkErr = Object.assign(new Error('rate limited'), { status: 429 });
     const err = classifyClaudeError(sdkErr);

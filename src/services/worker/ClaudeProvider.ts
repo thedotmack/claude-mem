@@ -172,12 +172,6 @@ export class ClaudeProvider {
     this.sessionManager = sessionManager;
   }
 
-  private resetSessionForFreshStart(session: ActiveSession): void {
-    this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, null);
-    session.memorySessionId = null;
-    session.forceInit = true;
-  }
-
   async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
     const cwdTracker = { lastCwd: undefined as string | undefined };
 
@@ -322,15 +316,6 @@ export class ClaudeProvider {
             ? content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
             : typeof content === 'string' ? content : '';
 
-          if (textContent.includes('prompt is too long') ||
-              textContent.includes('context window')) {
-            logger.error('SDK', 'Context overflow detected - terminating session and forcing fresh start');
-            this.resetSessionForFreshStart(session);
-            session.abortReason = 'overflow';
-            session.abortController.abort();
-            return;
-          }
-
           const responseSize = textContent.length;
 
           const tokensBeforeResponse = session.cumulativeInputTokens + session.cumulativeOutputTokens;
@@ -376,14 +361,6 @@ export class ClaudeProvider {
               sessionId: session.sessionDbId,
               promptNumber: session.lastPromptNumber
             }, truncatedResponse);
-          }
-
-          if (typeof textContent === 'string' && textContent.includes('Prompt is too long')) {
-            this.resetSessionForFreshStart(session);
-            logger.error('SDK', 'Context overflow — cleared memorySessionId so next spawn starts fresh', {
-              sessionDbId: session.sessionDbId
-            });
-            throw new Error('Claude session context overflow: prompt is too long');
           }
 
           if (typeof textContent === 'string' && textContent.includes('Invalid API key')) {
