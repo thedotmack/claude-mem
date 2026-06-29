@@ -1,5 +1,8 @@
-import { describe, it, expect, mock } from 'bun:test';
+import { afterAll, describe, it, expect, mock } from 'bun:test';
 import { ChromaUnavailableError } from '../../../src/services/worker/search/errors.js';
+import * as realChromaMcpManager from '../../../src/services/sync/ChromaMcpManager.js';
+
+const realChromaMcpManagerSnapshot = { ...realChromaMcpManager };
 
 let callCount = 0;
 
@@ -15,6 +18,10 @@ mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
 }));
 
 import { ChromaSync } from '../../../src/services/sync/ChromaSync.js';
+
+afterAll(() => {
+  mock.module('../../../src/services/sync/ChromaMcpManager.js', () => realChromaMcpManagerSnapshot);
+});
 
 describe('ChromaSync unavailable degradation', () => {
   it('returns without throwing when collection creation hits known unavailable state', async () => {
