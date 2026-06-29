@@ -70,7 +70,7 @@ describe('server beta postgres schema bootstrap', () => {
       }
     };
 
-    await bootstrapServerBetaPostgresSchema(client);
+    await bootstrapServerPostgresSchema(client);
 
     const schemaSql = queries.find(query => query.includes('CREATE TABLE IF NOT EXISTS server_sessions'));
     expect(schemaSql).toBeDefined();

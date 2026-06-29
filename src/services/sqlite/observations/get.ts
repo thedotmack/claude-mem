@@ -2,6 +2,7 @@
 import { Database } from 'bun:sqlite';
 import type { ObservationRecord } from '../../../types/database.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../../shared/platform-source.js';
+import { logger } from '../../../utils/logger.js';
 
 export function getObservationsByFilePath(
   db: Database,
@@ -22,6 +23,7 @@ export function getObservationsByFilePath(
     new Set((Array.isArray(filePath) ? filePath : [filePath]).filter(p => typeof p === 'string' && p.length > 0))
   );
   if (candidatePaths.length === 0) {
+    logger.debug('DB', 'Skipping observation file lookup with no candidate paths');
     return [];
   }
 

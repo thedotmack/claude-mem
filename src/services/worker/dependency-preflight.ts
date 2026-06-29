@@ -3,6 +3,7 @@ import os from 'os';
 import fs from 'fs';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { findClaudeExecutable as defaultFindClaudeExecutable } from '../../shared/find-claude-executable.js';
+import { logger } from '../../utils/logger.js';
 import {
   clearDependencyStatus,
   recordClaudeCliSetupRequired,
@@ -174,6 +175,9 @@ export function runWorkerDependencyPreflight(options: WorkerDependencyPreflightO
     if (hasExecutableOnPath(uvxCommand, options)) {
       clearDependencyStatus('uvx');
     } else {
+      logger.warn('WORKER', 'uvx executable not found during worker dependency preflight', {
+        command: uvxCommand,
+      });
       recordUvxVectorSearchUnavailable(
         `uvx executable not found on effective PATH for vector search (${uvxCommand})`,
       );
