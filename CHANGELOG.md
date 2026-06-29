@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.9.1] - 2026-06-29
+
+## What's Changed
+
+Patch release shipping the platform-source recovery work merged in #3088, plus dependency and Codex hardening.
+
+### Fixes
+- **codex:** load startup context through MCP, with HTTP fallback to the worker
+- **codex:** avoid shell spawning the Codex installer
+- **recovery:** scope memories by platform source
+- **observer:** drop invalid prose and pause on quota
+- **chroma:** prewarm uvx and harden shutdown
+- **deps:** surface dependency-health preflight and degrade gracefully when CLI deps are missing
+- **telemetry:** replace Bun UUIDv5 dependency
+
+### Tests
+- Stabilize session init after the server rename
+- Restore Chroma MCP mock to prevent cross-suite leakage
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v13.9.0...v13.9.1
+
 ## [13.9.0] - 2026-06-29
 
 ## Highlights
