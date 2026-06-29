@@ -423,7 +423,10 @@ export class SearchRoutes extends BaseRouteHandler {
         // this warning briefly can ignore it — it self-clears as soon as the
         // first observation lands.
         const credEnv = loadClaudeMemEnv();
-        const hasCreds = credEnv.ANTHROPIC_API_KEY || credEnv.ANTHROPIC_AUTH_TOKEN;
+        const hasCreds = credEnv.ANTHROPIC_API_KEY
+          || credEnv.ANTHROPIC_AUTH_TOKEN
+          || credEnv.GEMINI_API_KEY
+          || credEnv.OPENROUTER_API_KEY;
         if (!hasCreds) {
           const credWarning = [
             '⚠️  claude-mem credentials not configured — observations cannot be generated.',

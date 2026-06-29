@@ -287,4 +287,40 @@ describe('SearchRoutes Welcome Hint', () => {
     expect(body).not.toContain('⚠️');
     expect(body).not.toContain('credentials not configured');
   });
+
+  it('omits credential warning when .env has GEMINI_API_KEY', async () => {
+    mockClaudeMemEnv = { GEMINI_API_KEY: 'test-gemini-key' };
+
+    const routes = new SearchRoutes(mockSearchManager);
+    const handler = captureContextInjectHandler(routes);
+
+    const res = createMockRes();
+    const req = { query: { projects: '/path/to/empty-project' } } as unknown as Request;
+
+    handler(req, res as unknown as Response);
+    await new Promise(resolve => setImmediate(resolve));
+
+    const body = (res.send as any).mock.calls[0][0] as string;
+    expect(body).toContain('# claude-mem status');
+    expect(body).not.toContain('⚠️');
+    expect(body).not.toContain('credentials not configured');
+  });
+
+  it('omits credential warning when .env has OPENROUTER_API_KEY', async () => {
+    mockClaudeMemEnv = { OPENROUTER_API_KEY: 'test-openrouter-key' };
+
+    const routes = new SearchRoutes(mockSearchManager);
+    const handler = captureContextInjectHandler(routes);
+
+    const res = createMockRes();
+    const req = { query: { projects: '/path/to/empty-project' } } as unknown as Request;
+
+    handler(req, res as unknown as Response);
+    await new Promise(resolve => setImmediate(resolve));
+
+    const body = (res.send as any).mock.calls[0][0] as string;
+    expect(body).toContain('# claude-mem status');
+    expect(body).not.toContain('⚠️');
+    expect(body).not.toContain('credentials not configured');
+  });
 });
