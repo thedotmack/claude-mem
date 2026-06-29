@@ -50,18 +50,6 @@ export interface ServerGenerationWorkerManager {
   close(): Promise<void>;
 }
 
-export interface ServerProviderRegistry {
-  readonly kind: 'provider-registry';
-  getHealth(): ServerBoundaryHealth;
-  close(): Promise<void>;
-}
-
-export interface ServerEventBroadcaster {
-  readonly kind: 'event-broadcaster';
-  getHealth(): ServerBoundaryHealth;
-  close(): Promise<void>;
-}
-
 export interface ServerServiceGraph {
   runtime: ServerRuntimeName;
   postgres: {
@@ -71,16 +59,12 @@ export interface ServerServiceGraph {
   authMode: ServerAuthMode;
   queueManager: ServerQueueManager;
   generationWorkerManager: ServerGenerationWorkerManager;
-  providerRegistry: ServerProviderRegistry;
-  eventBroadcaster: ServerEventBroadcaster;
   storage: PostgresStorageRepositories;
 }
 
 abstract class DisabledServerBoundary {
   abstract readonly kind: ServerQueueManager['kind']
-    | ServerGenerationWorkerManager['kind']
-    | ServerProviderRegistry['kind']
-    | ServerEventBroadcaster['kind'];
+    | ServerGenerationWorkerManager['kind'];
 
   constructor(private readonly reason: string) {}
 
@@ -97,12 +81,4 @@ export class DisabledServerQueueManager extends DisabledServerBoundary implement
 
 export class DisabledServerGenerationWorkerManager extends DisabledServerBoundary implements ServerGenerationWorkerManager {
   readonly kind = 'generation-worker-manager' as const;
-}
-
-export class DisabledServerProviderRegistry extends DisabledServerBoundary implements ServerProviderRegistry {
-  readonly kind = 'provider-registry' as const;
-}
-
-export class DisabledServerEventBroadcaster extends DisabledServerBoundary implements ServerEventBroadcaster {
-  readonly kind = 'event-broadcaster' as const;
 }

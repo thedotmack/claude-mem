@@ -13,10 +13,9 @@ export interface NormalizedHookInput {
   permissionMode?: string;
   model?: string;
   sessionSource?: 'startup' | 'resume' | 'clear';
-  filePath?: string;   
-  edits?: unknown[];   
-  metadata?: Record<string, unknown>;
-  agentId?: string;      
+  filePath?: string;
+  edits?: unknown[];
+  agentId?: string;
   agentType?: string;    
 }
 

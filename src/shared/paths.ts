@@ -63,10 +63,6 @@ export function getProjectArchiveDir(projectName: string): string {
   return join(ARCHIVES_DIR, projectName);
 }
 
-export function getWorkerSocketPath(sessionId: number): string {
-  return join(DATA_DIR, `worker-${sessionId}.sock`);
-}
-
 export function ensureDir(dirPath: string): void {
   mkdirSync(dirPath, { recursive: true });
 }
@@ -114,16 +110,6 @@ export function getPackageRoot(): string {
 export function getPackageCommandsDir(): string {
   const packageRoot = getPackageRoot();
   return join(packageRoot, 'commands');
-}
-
-export function createBackupFilename(originalPath: string): string {
-  const timestamp = new Date()
-    .toISOString()
-    .replace(/[:.]/g, '-')
-    .replace('T', '_')
-    .slice(0, 19);
-
-  return `${originalPath}.backup.${timestamp}`;
 }
 
 export const paths = {

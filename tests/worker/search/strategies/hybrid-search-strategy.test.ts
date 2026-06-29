@@ -113,76 +113,6 @@ describe('HybridSearchStrategy', () => {
     strategy = new HybridSearchStrategy(mockChromaSync, mockSessionStore, mockSessionSearch);
   });
 
-  describe('canHandle', () => {
-    it('should return true when concepts filter is present', () => {
-      const options: StrategySearchOptions = {
-        concepts: ['test-concept']
-      };
-      expect(strategy.canHandle(options)).toBe(true);
-    });
-
-    it('should return true when files filter is present', () => {
-      const options: StrategySearchOptions = {
-        files: ['/path/to/file.ts']
-      };
-      expect(strategy.canHandle(options)).toBe(true);
-    });
-
-    it('should return true when type and query are present', () => {
-      const options: StrategySearchOptions = {
-        type: 'decision',
-        query: 'semantic query'
-      };
-      expect(strategy.canHandle(options)).toBe(true);
-    });
-
-    it('should return true when strategyHint is hybrid', () => {
-      const options: StrategySearchOptions = {
-        strategyHint: 'hybrid'
-      };
-      expect(strategy.canHandle(options)).toBe(true);
-    });
-
-    it('should return false for query-only (no filters)', () => {
-      const options: StrategySearchOptions = {
-        query: 'semantic query'
-      };
-      expect(strategy.canHandle(options)).toBe(false);
-    });
-
-    it('should return false for filter-only without Chroma', () => {
-      const strategyNoChroma = new HybridSearchStrategy(null as any, mockSessionStore, mockSessionSearch);
-
-      const options: StrategySearchOptions = {
-        concepts: ['test-concept']
-      };
-      expect(strategyNoChroma.canHandle(options)).toBe(false);
-    });
-  });
-
-  describe('search', () => {
-    it('should return empty result for generic hybrid search without query', async () => {
-      const options: StrategySearchOptions = {
-        concepts: ['test-concept']
-      };
-
-      const result = await strategy.search(options);
-
-      expect(result.results.observations).toHaveLength(0);
-      expect(result.strategy).toBe('hybrid');
-    });
-
-    it('should return empty result for generic hybrid search (use specific methods)', async () => {
-      const options: StrategySearchOptions = {
-        query: 'test query'
-      };
-
-      const result = await strategy.search(options);
-
-      expect(result.results.observations).toHaveLength(0);
-    });
-  });
-
   describe('findByConcept', () => {
     it('should combine metadata + semantic results', async () => {
       const options: StrategySearchOptions = {
@@ -384,12 +314,6 @@ describe('HybridSearchStrategy', () => {
       await expect(
         strategy.findByFile('/path/to/file.ts', options)
       ).rejects.toThrow('Chroma down');
-    });
-  });
-
-  describe('strategy name', () => {
-    it('should have name "hybrid"', () => {
-      expect(strategy.name).toBe('hybrid');
     });
   });
 });

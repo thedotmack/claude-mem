@@ -46,8 +46,6 @@ export interface ServerRuntimeState {
   boundaries: {
     queueManager: ReturnType<ServerServiceGraph['queueManager']['getHealth']>;
     generationWorkerManager: ReturnType<ServerServiceGraph['generationWorkerManager']['getHealth']>;
-    providerRegistry: ReturnType<ServerServiceGraph['providerRegistry']['getHealth']>;
-    eventBroadcaster: ReturnType<ServerServiceGraph['eventBroadcaster']['getHealth']>;
   };
 }
 
@@ -76,8 +74,6 @@ class ServerRuntimeInfoRoutes implements RouteHandler {
         boundaries: {
           queueManager: this.graph.queueManager.getHealth(),
           generationWorkerManager: this.graph.generationWorkerManager.getHealth(),
-          providerRegistry: this.graph.providerRegistry.getHealth(),
-          eventBroadcaster: this.graph.eventBroadcaster.getHealth(),
         },
         queueLanes,
       });
@@ -244,8 +240,6 @@ export class ServerService {
       await Promise.all([
         this.graph.queueManager.close(),
         this.graph.generationWorkerManager.close(),
-        this.graph.providerRegistry.close(),
-        this.graph.eventBroadcaster.close(),
       ]);
       await this.graph.postgres.pool.end();
     } finally {
@@ -273,8 +267,6 @@ export class ServerService {
       boundaries: {
         queueManager: this.graph.queueManager.getHealth(),
         generationWorkerManager: this.graph.generationWorkerManager.getHealth(),
-        providerRegistry: this.graph.providerRegistry.getHealth(),
-        eventBroadcaster: this.graph.eventBroadcaster.getHealth(),
       },
     };
   }

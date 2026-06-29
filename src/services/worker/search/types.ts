@@ -12,12 +12,6 @@ export const SEARCH_CONSTANTS = {
 
 export type ChromaDocType = 'observation' | 'session_summary' | 'user_prompt';
 
-export interface ChromaQueryResult {
-  ids: number[];
-  distances: number[];
-  metadatas: ChromaMetadata[];
-}
-
 export interface ChromaMetadata {
   sqlite_id: number;
   doc_type: ChromaDocType;

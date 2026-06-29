@@ -66,8 +66,6 @@ const COLLECTED_FIELDS = [
   'result_count     how many results a search returned (never the query)',
   'chroma_available whether vector search was reachable for a search',
   'fallback_reason  none / chroma_connection / chroma_error / chroma_not_initialized',
-  'fabrication_detected   whether compression output cited nonexistent commits',
-  'fabricated_count how many nonexistent commit hashes (count, never hashes)',
   'invalid_output_class   xml / idle / prose / poisoned (never the output)',
   'consecutive_invalid_outputs   unusable outputs in a row before recovery',
   'respawn_triggered      whether the compression agent was restarted',

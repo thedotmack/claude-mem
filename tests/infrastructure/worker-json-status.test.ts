@@ -78,11 +78,19 @@ describe('worker-json-status', () => {
         expect(buildStatusOutput('error', 'msg').continue).toBe(true);
       });
 
-      it('should always include suppressOutput: true', () => {
+      it('includes suppressOutput: true by default', () => {
         expect(buildStatusOutput('ready').suppressOutput).toBe(true);
         expect(buildStatusOutput('error').suppressOutput).toBe(true);
         expect(buildStatusOutput('ready', 'msg').suppressOutput).toBe(true);
         expect(buildStatusOutput('error', 'msg').suppressOutput).toBe(true);
+      });
+
+      it('can omit suppressOutput for Codex hook compatibility', () => {
+        const result = buildStatusOutput('ready', undefined, { includeSuppressOutput: false });
+
+        expect(result.continue).toBe(true);
+        expect(result.status).toBe('ready');
+        expect(result).not.toHaveProperty('suppressOutput');
       });
     });
 

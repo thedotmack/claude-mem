@@ -15,8 +15,7 @@
  */
 
 import { spawn } from 'child_process';
-
-const IS_WINDOWS = process.platform === 'win32';
+import { IS_WINDOWS } from '../utils/paths.js';
 
 const TIMEOUT_FIRST_RUN_MS = 5 * 60 * 1000;
 const TIMEOUT_SUBSEQUENT_MS = 2 * 60 * 1000;

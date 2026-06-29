@@ -112,7 +112,6 @@ export type {
   CreateAgentEvent,
   AgentEventSourceType,
 } from '../core/schemas/agent-event.js';
-export type { ContextPack } from '../core/schemas/context-pack.js';
 export type { ServerSession, CreateServerSession, ServerSessionStatus } from '../core/schemas/session.js';
 export type { Project, CreateProject } from '../core/schemas/project.js';
 export type { Team, CreateTeam, TeamMember, CreateTeamMember, TeamRole } from '../core/schemas/team.js';

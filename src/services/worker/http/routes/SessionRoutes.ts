@@ -20,6 +20,7 @@ import { getProjectContext } from '../../../../utils/project-name.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 import { handleGeneratorExit } from '../../session/GeneratorExitHandler.js';
 import { telemetryBuffer } from '../../../telemetry/buffer.js';
+import { instrument } from '../../../telemetry/instrument.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
 import { getUptimeSeconds } from '../../../../shared/uptime.js';
 import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../../../shared/user-prompts.js';
@@ -165,25 +166,39 @@ export class SessionRoutes extends BaseRouteHandler {
         // No retry: the generator failed, the in-RAM batch is dropped, and the
         // transcript is the recovery path. The next observation ingest will
         // start a fresh generator via ensureGeneratorRunning.
-        logger.error('SESSION', `Generator failed`, {
-          sessionId: session.sessionDbId,
-          provider: provider,
-          error: errorMsg
-        }, error);
+        //
+        // Single instrumentation call: the local error line (full fidelity)
+        // and the scrubbed session_compressed rollup are one logical event.
         // No abort_reason here: every site that sets abortReason aborts the
         // controller on its next line, so aborted generators either resolve
         // normally (quota/overflow break) or hit the signal-aborted early
         // return above — this catch only ever sees non-abort rejections.
-        telemetryBuffer.record('session_compressed', {
-          outcome: 'error',
-          provider,
-          // Providers seed lastModelId when they start; 'unknown' covers a
-          // generator that died before resolving its model.
-          model: session.lastModelId ?? 'unknown',
-          error_category: 'provider_error',
-          hook: session.lastGeneratorSource,
-          ide: session.platformSource,
-        });
+        instrument(
+          'SESSION',
+          'error',
+          `Generator failed`,
+          {
+            sessionId: session.sessionDbId,
+            provider,
+            error: errorMsg,
+            data: error,
+          },
+          {
+            event: 'session_compressed',
+            rollup: 'session',
+            sessionDbId: session.sessionDbId,
+            props: {
+              outcome: 'error',
+              provider,
+              // Providers seed lastModelId when they start; 'unknown' covers a
+              // generator that died before resolving its model.
+              model: session.lastModelId ?? 'unknown',
+              error_category: 'provider_error',
+              hook: session.lastGeneratorSource,
+              ide: session.platformSource,
+            },
+          }
+        );
       })
       .finally(async () => {
         const reason = session.abortReason ?? null;
@@ -193,7 +208,7 @@ export class SessionRoutes extends BaseRouteHandler {
           // ONLY point every abort flow (idle / shutdown / overflow / quota /
           // poisoned) passes through. Emit the closed enum, never the raw
           // string ('quota:…' carries a window suffix).
-          telemetryBuffer.record('session_compressed', {
+          telemetryBuffer.record('session_compressed', session.sessionDbId, {
             outcome: 'aborted',
             provider,
             model: session.lastModelId ?? 'unknown',

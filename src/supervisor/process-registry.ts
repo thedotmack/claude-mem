@@ -46,6 +46,18 @@ export function isPidAlive(pid: number): boolean {
   }
 }
 
+// Poll until every record's pid is gone or the timeout elapses. Shared by the
+// reapSession wait phase and shutdown.ts's SIGTERM grace period.
+export async function waitForExit(records: ManagedProcessRecord[], timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (records.every(record => !isPidAlive(record.pid))) {
+      return;
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+}
+
 export interface PidInfo {
   pid: number;
   port: number;
@@ -324,12 +336,7 @@ export class ProcessRegistry {
       }
     }
 
-    const deadline = Date.now() + REAP_SESSION_SIGTERM_TIMEOUT_MS;
-    while (Date.now() < deadline) {
-      const survivors = aliveRecords.filter(r => isPidAlive(r.pid));
-      if (survivors.length === 0) break;
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
+    await waitForExit(aliveRecords, REAP_SESSION_SIGTERM_TIMEOUT_MS);
 
     const survivors = aliveRecords.filter(r => isPidAlive(r.pid));
     for (const record of survivors) {

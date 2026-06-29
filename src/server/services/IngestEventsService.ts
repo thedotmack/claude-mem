@@ -63,7 +63,6 @@ export interface IngestEventsServiceOptions {
   // row stays `queued` and Phase 3 startup reconciliation will publish it.
   resolveEventQueue: () => EventQueueLike | null;
   sessionPolicy?: ServerSessionGenerationPolicy;
-  sessionDebounceWindowMs?: number;
 }
 
 export interface EventQueueLike {
@@ -239,9 +238,6 @@ export class IngestEventsService {
     const policyOptions: { policy?: ServerSessionGenerationPolicy; debounceWindowMs?: number } = {};
     if (this.options.sessionPolicy !== undefined) {
       policyOptions.policy = this.options.sessionPolicy;
-    }
-    if (this.options.sessionDebounceWindowMs !== undefined) {
-      policyOptions.debounceWindowMs = this.options.sessionDebounceWindowMs;
     }
     const decision = buildEnqueueEventDecision(
       {

@@ -4,6 +4,55 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.8.0] - 2026-06-21
+
+## Telemetry: observation volume on per-session rollups
+
+Carries generation-side observation volume and type mix on the `observer_turn_rollup` event so cache-value KPIs survive the migration off the legacy per-occurrence `session_compressed` / `context_injected` streams.
+
+### What's new
+- **`observer_turn_rollup`** now sums `observations_created` and the `obs_type_*` family (bugfix / discovery / decision / refactor / other) across every compression turn in a session. Paired with `total_cost_usd`, this makes **cost-per-observation** and **observation-type-by-model** derivable from the rollup alone.
+- **`context_injected_rollup`** carries `total_observations_injected` and `total_tokens_saved_vs_naive` — context-cache value (observations served × cost/obs) is now derivable from the rollup.
+- `scrub.ts` whitelist extended for the new aggregate keys; all values are counts/sums only — never names, prompt text, or raw strings.
+- Public `telemetry.mdx` docs updated to document the new rollup fields.
+
+### Merge notes
+- Merged latest `main` (Ponytail audit, v13.7.1), which removed fabrication tracking; the now-stale `fabrication_count` / `fabricated_count` references were dropped from code and docs accordingly.
+
+Full changes: https://github.com/thedotmack/claude-mem/pull/3017
+
+## [13.7.1] - 2026-06-21
+
+Cleanup + reliability release. No new user-facing features.
+
+## Fixed
+- **Node version floor corrected.** `engines.node` now requires `>=20.12.0` to match the stdlib `util.parseEnv` adopted during the audit. It previously advertised `>=20.0.0`, where `util.parseEnv` is `undefined` — causing silent credential-load failures (and a hard throw in `saveClaudeMemEnv`) on Node 20.0–20.11. Fixed in both the npm package and the generated plugin manifest. (#3021)
+
+## Changed (internal)
+- **Ponytail audit — −10.4k lines** of dead/redundant code removed across 8 slices (worker HTTP routes, agents, session/rate-limit, search pipeline, providers, storage/shared).
+- **Provider refactor.** New `OpenAICompatibleProvider` base class unifies the Gemini and OpenRouter session lifecycle; per-provider behavior preserved via abstract flags (`requireNonEmptyToTruncate`, `forwardEmptyMessageResponse`).
+- **Infra deduplication.** Consolidated `parseRetryAfterMs` (3→1), `waitForExit` (2→1), request-auth helpers (2→1), and `resolveQueue` (2→1); a `CREDENTIAL_KEYS` loop replaces three duplicated copy blocks.
+- **Worker-restart hardening** via a single-spawn gate.
+- **Deterministic dependency closure** for the bundled plugin runtime.
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v13.7.0...v13.7.1
+
+## [13.7.0] - 2026-06-20
+
+## PostHog telemetry overhaul
+
+A ground-up rebuild of claude-mem's telemetry — per-session rollups, unified instrumentation, and real (redacted) error tracking. Grounded in live PostHog data: the raw-event volume was confirmed to be **legacy-fleet decay** (raw `session_compressed` fell ~75% in two days as installs updated), so this is the proper rebuild, not a hotfix.
+
+### What's new
+- **Per-session rollups** — `observer_turn_rollup` is now emitted **once per session at session end** (`rollup_reason` = session_end | worker_shutdown | safety_flush, plus `window_seq`) instead of per 5-minute wall-clock window. Memory-bounded with a safety sweep; drains correctly on worker shutdown.
+- **Unified instrumentation** — a single `instrument()` path fans out to the local logger (full fidelity) and telemetry (scrubbed/rolled-up). The logger stays telemetry-free.
+- **Redacted error tracking** — real error messages + trimmed stacks now reach PostHog as `$exception` events, consent-gated, profile-less, and fingerprint rate-limited. An allow-then-redact scrubber strips home dirs, absolute paths, DB connection-string credentials, URL userinfo, emails, API tokens (sk-/phc-/ghp-/AWS AKIA/JWT), hex, and IPv4; messages cap at 500 chars, stacks at ~2KB. Autocapture is fully redacted (on-disk source context is stripped, never sent).
+- **New kill-switch** — `CLAUDE_MEM_TELEMETRY_ERRORS=0` disables error capture independently of analytics.
+- **Docs** — `telemetry.mdx` rewritten to document the new model, the error-tracking opt-in + one-way-door note, and the opt-out switches.
+
+### Privacy
+This release begins collecting redacted error messages/stacks (a deliberate, consent-gated shift from whitelist-only telemetry). Raw paths, prompts, project names, source code, and model output are still never collected. Opt out of all telemetry with `CLAUDE_MEM_TELEMETRY=0` / `DO_NOT_TRACK=1`, or errors-only with `CLAUDE_MEM_TELEMETRY_ERRORS=0`.
+
 ## [13.6.2] - 2026-06-17
 
 ## What's Changed

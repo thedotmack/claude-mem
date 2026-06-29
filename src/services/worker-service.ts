@@ -21,7 +21,7 @@ import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
 
 import { ensureWorkerStarted as ensureWorkerStartedShared, type WorkerStartResult } from './worker-spawner.js';
 import { acquireSpawnLock, releaseSpawnLock } from '../shared/worker-spawn-gate.js';
-import { captureEvent, shutdownTelemetry } from './telemetry/telemetry.js';
+import { captureEvent, captureException, shutdownTelemetry, enableExceptionAutocaptureForWorker } from './telemetry/telemetry.js';
 import { telemetryBuffer } from './telemetry/buffer.js';
 import { collectInstallStats } from './telemetry/install-stats.js';
 import { runHistoricalBackfill } from './telemetry/backfill.js';
@@ -109,18 +109,29 @@ import { KnowledgeAgent } from './worker/knowledge/KnowledgeAgent.js';
 
 export interface StatusOutput {
   continue: true;
-  suppressOutput: true;
+  suppressOutput?: true;
   status: 'ready' | 'error';
   message?: string;
 }
 
-export function buildStatusOutput(status: 'ready' | 'error', message?: string): StatusOutput {
-  return {
+export interface StatusOutputOptions {
+  includeSuppressOutput?: boolean;
+}
+
+export function buildStatusOutput(
+  status: 'ready' | 'error',
+  message?: string,
+  options: StatusOutputOptions = {}
+): StatusOutput {
+  const output: StatusOutput = {
     continue: true,
-    suppressOutput: true,
     status,
     ...(message && { message })
   };
+  if (options.includeSuppressOutput !== false) {
+    output.suppressOutput = true;
+  }
+  return output;
 }
 
 // Closed enum for worker_stopped telemetry — definition (and its
@@ -375,6 +386,15 @@ export class WorkerService implements WorkerRef {
   async start(): Promise<void> {
     const port = getWorkerPort();
     const host = getWorkerHost();
+
+    // Phase 3 telemetry: bridge logged errors into PostHog Error Tracking
+    // WITHOUT the logger importing telemetry (no import cycle). captureException
+    // enforces consent + kill-switch + rate-limit internally and never throws.
+    // enableExceptionAutocaptureForWorker() must run BEFORE the first capture
+    // constructs the client, since enableExceptionAutocapture is read at
+    // construction — so it is set here at the very top of worker start.
+    enableExceptionAutocaptureForWorker();
+    logger.setErrorSink((err) => captureException(err));
 
     // Must run before startSupervisor(): its validateWorkerPidFile() removes
     // the dead previous run's stale PID file, which crash detection needs.
@@ -966,7 +986,9 @@ async function main() {
   const port = getWorkerPort();
 
   function exitWithStatus(status: 'ready' | 'error', message?: string): never {
-    const output = buildStatusOutput(status, message);
+    const output = buildStatusOutput(status, message, {
+      includeSuppressOutput: process.env.CLAUDE_MEM_CODEX_HOOK !== '1',
+    });
     console.log(JSON.stringify(output));
     process.exit(0);
   }

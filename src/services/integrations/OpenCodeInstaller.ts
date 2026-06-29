@@ -178,21 +178,6 @@ export function injectContextIntoAgentsMd(contextContent: string): number {
   }
 }
 
-export async function syncContextToAgentsMd(
-  port: number,
-  project: string,
-): Promise<void> {
-  try {
-    await fetchAndInjectOpenCodeContext(port, project);
-  } catch (error) {
-    if (error instanceof Error) {
-      logger.debug('WORKER', 'Worker not available during context sync', {}, error);
-    } else {
-      logger.debug('WORKER', 'Worker not available during context sync', {}, new Error(String(error)));
-    }
-  }
-}
-
 async function fetchRealContextFromWorker(): Promise<string | null> {
   const workerPort = getWorkerPort();
   const healthResponse = await fetch(`http://127.0.0.1:${workerPort}/api/readiness`);
@@ -205,21 +190,6 @@ async function fetchRealContextFromWorker(): Promise<string | null> {
 
   const realContext = await contextResponse.text();
   return realContext && realContext.trim() ? realContext : null;
-}
-
-async function fetchAndInjectOpenCodeContext(port: number, project: string): Promise<void> {
-  const response = await fetch(
-    `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(project)}`,
-  );
-  if (!response.ok) return;
-
-  const contextText = await response.text();
-  if (contextText && contextText.trim()) {
-    const injectResult = injectContextIntoAgentsMd(contextText);
-    if (injectResult !== 0) {
-      logger.warn('OPENCODE', 'Failed to inject context into AGENTS.md during sync');
-    }
-  }
 }
 
 function writeOrRemoveCleanedAgentsMd(agentsMdPath: string, trimmedContent: string): void {

@@ -2,9 +2,7 @@ import { afterEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import pg from 'pg';
 import { ServerService } from '../../src/server/runtime/ServerService.js';
 import {
-  DisabledServerEventBroadcaster,
   DisabledServerGenerationWorkerManager,
-  DisabledServerProviderRegistry,
   DisabledServerQueueManager,
   type ServerServiceGraph,
 } from '../../src/server/runtime/types.js';
@@ -284,8 +282,6 @@ function createStubGraph(): ServerServiceGraph {
     authMode: 'local-dev',
     queueManager: new DisabledServerQueueManager('test'),
     generationWorkerManager: new DisabledServerGenerationWorkerManager('test'),
-    providerRegistry: new DisabledServerProviderRegistry('test'),
-    eventBroadcaster: new DisabledServerEventBroadcaster('test'),
     storage: {} as any,
   };
 }
@@ -304,8 +300,6 @@ function createPostgresGraph(pool: pg.Pool, authMode: 'api-key' | 'local-dev'): 
     authMode,
     queueManager: new DisabledServerQueueManager('phase 4 integration test'),
     generationWorkerManager: new DisabledServerGenerationWorkerManager('test'),
-    providerRegistry: new DisabledServerProviderRegistry('test'),
-    eventBroadcaster: new DisabledServerEventBroadcaster('test'),
     storage: createPostgresStorageRepositories(pool as any),
   };
 }

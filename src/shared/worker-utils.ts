@@ -54,17 +54,20 @@ const HOOK_READINESS_TIMEOUT_MS = readTimeoutEnv(
 
 const API_REQUEST_TIMEOUT_BOUNDS = { min: 500, max: 300000 } as const;
 
-export function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs: number): Promise<Response> {
-  return new Promise((resolve, reject) => {
-    const timeoutId = setTimeout(
-      () => reject(new Error(`Request timed out after ${timeoutMs}ms`)),
-      timeoutMs
-    );
-    fetch(url, init).then(
-      response => { clearTimeout(timeoutId); resolve(response); },
-      err => { clearTimeout(timeoutId); reject(err); }
-    );
-  });
+export async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs: number): Promise<Response> {
+  try {
+    // AbortSignal.timeout (Node 18+) replaces the manual setTimeout/clearTimeout
+    // race. On expiry it aborts with a TimeoutError DOMException.
+    return await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+  } catch (err: unknown) {
+    // Preserve the historical timeout-error message ("...timed out...") that
+    // callers match on (hook-command.ts, server-beta-client.ts) — the
+    // DOMException text is runtime-dependent, so normalize it here.
+    if (err instanceof DOMException && err.name === 'TimeoutError') {
+      throw new Error(`Request timed out after ${timeoutMs}ms`);
+    }
+    throw err;
+  }
 }
 
 let cachedPort: number | null = null;

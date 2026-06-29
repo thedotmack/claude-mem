@@ -103,14 +103,6 @@ export class PostgresAgentEventsRepository {
     return mapAgentEventRow(row!);
   }
 
-  async createMany(inputs: CreatePostgresAgentEventInput[]): Promise<PostgresAgentEvent[]> {
-    const events: PostgresAgentEvent[] = [];
-    for (const input of inputs) {
-      events.push(await this.create(input));
-    }
-    return events;
-  }
-
   async getByIdForScope(input: {
     id: string;
     projectId: string;

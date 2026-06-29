@@ -91,8 +91,6 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   // 'xml' means XML-shaped output that still failed to parse; abort_reason:
   // idle | shutdown | overflow | restart_guard | quota | poisoned | none).
   // Never model output, never raw abort strings.
-  'fabrication_detected',
-  'fabricated_count',
   'invalid_output_class',
   'consecutive_invalid_outputs',
   'respawn_triggered',
@@ -140,7 +138,7 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'subagent_obs_count',
   // Rollup events emitted by TelemetryBuffer (buffer.ts) — aggregate fields
   // that replace the high-volume per-event stream with 5-minute windows.
-  // session_compressed_rollup aggregation fields:
+  // observer_turn_rollup aggregation fields:
   'total_tokens_input',
   'total_tokens_output',
   'total_cost_usd',
@@ -151,11 +149,27 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'outcomes_aborted',
   'outcomes_invalid_output',
   'top_model',
-  'fabrication_count',
   'window_start_ts',
+  // Phase 2 per-session rollup: rollup_reason is a closed enum
+  // (session_end | worker_shutdown | safety_flush) explaining why the session's
+  // single observer_turn_rollup was emitted; window_seq is the partial-flush
+  // sequence number (0 for a normal one-shot session, incrementing only when a
+  // long-lived session trips the safety sweep). Enum + integer only.
+  'rollup_reason',
+  'window_seq',
   // context_injected_rollup aggregation fields:
   'total_tokens',
   'avg_tokens',
+  // Per-session/window observation volume folded into the rollups so the
+  // context-cache-value and observation-type metrics survive the retirement of
+  // the legacy per-occurrence streams. observations_created (generation side,
+  // observer_turn_rollup) pairs with total_cost_usd to derive cost-per-obs;
+  // total_observations_injected (injection side, context_injected_rollup) is the
+  // cache-reuse count; total_tokens_saved_vs_naive is the windowed savings sum.
+  // The obs_type_* family is already whitelisted above (shared key names).
+  'observations_created',
+  'total_observations_injected',
+  'total_tokens_saved_vs_naive',
 ]);
 
 const MAX_STRING_LENGTH = 200;

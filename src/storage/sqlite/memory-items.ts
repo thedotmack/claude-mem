@@ -164,11 +164,6 @@ export class MemoryItemsRepository {
     return row ? mapMemoryItemRow(row) : null;
   }
 
-  getByLegacyObservationId(legacyObservationId: number): MemoryItem | null {
-    const row = this.db.prepare('SELECT * FROM memory_items WHERE legacy_observation_id = ?').get(legacyObservationId) as MemoryItemRow | null;
-    return row ? mapMemoryItemRow(row) : null;
-  }
-
   update(id: string, input: Partial<CreateMemoryItem>): MemoryItem | null {
     const existing = this.getById(id);
     if (!existing) {

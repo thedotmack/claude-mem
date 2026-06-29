@@ -6,8 +6,7 @@ import { homedir } from 'os';
 import { ErrorSeverity } from './error-taxonomy.js';
 import { installerError, type InstallSummary } from './error-reporter.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
-
-const IS_WINDOWS = process.platform === 'win32';
+import { IS_WINDOWS } from '../utils/paths.js';
 
 const INSTALL_TIMEOUT_MS = (() => {
   const override = process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS;
