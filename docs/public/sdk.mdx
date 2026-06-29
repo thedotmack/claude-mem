@@ -228,10 +228,12 @@ A few specific failure modes are worth knowing about:
   transition is `queued → processing`; the SDK enforces it via
   `transitionStatus`.
 
-- **Parse error.** If the generation provider returns text that
-  `parseAgentXml` cannot understand, `client.generate(...)` rejects with
-  a `"generation parse error"` message. The job row stays in
-  `processing` so an operator can inspect the raw provider output.
+- **Parse error / provider failure.** If the provider throws, or returns
+  text that `parseAgentXml` cannot understand, `client.generate(...)`
+  rejects. Before re-throwing, the SDK transitions the job to the terminal
+  `failed` status and records the cause in the row's `last_error` — so the
+  job is left in a diagnosable terminal state rather than stuck in
+  `processing` (which the `queued`-only claim guard could never reclaim).
 
 The SDK does not retry on its own — caller-side retry logic, queueing,
 or scheduling is yours to add. The point of the SDK is to make the

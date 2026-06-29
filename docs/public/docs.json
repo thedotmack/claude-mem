@@ -94,7 +94,8 @@
         "group": "SDK & Embedding",
         "icon": "code",
         "pages": [
-          "sdk"
+          "sdk",
+          "sdk/cmem-sdk"
         ]
       },
       {
