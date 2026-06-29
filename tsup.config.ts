@@ -21,6 +21,8 @@ export default defineConfig({
   // against the installed `claude-mem` package's prod deps.
   external: [
     'pg',
+    'zod',
+    '@modelcontextprotocol/sdk',
     '@anthropic-ai/sdk',
     /^node:/,
   ],

@@ -968,49 +968,74 @@ export async function createCmemClient(options: CmemClientOptions): Promise<Cmem
       // Step 3: load the project for the prompt's `projectName`.
       const project = await repos.projects.getByIdForTeam(projectId, teamId);
 
-      // Step 4: call the provider. The lifted core mirrors
-      //   ProviderObservationGenerator.ts:200-209 — no BullMQ payload, no
-      //   AbortSignal (consumers control their own timeouts via the
-      //   provider's fetchImpl), no scope/revocation audit.
-      // A provider crash propagates verbatim. The row stays in 'processing'
-      // so a future caller can retry or admin-resolve it, and the caller can
-      // classify the error (transient vs auth_invalid vs unrecoverable).
-      const providerResult: ServerGenerationResult = await provider.generate({
-        job: lockedJob,
-        events: loadedEvents,
-        project: {
-          projectId,
-          teamId,
-          serverSessionId: lockedJob.serverSessionId,
-          projectName: project?.name ?? null,
-        },
-      });
+      // Steps 4–5: call the provider and persist. Both can throw while the
+      //   row is in 'processing', and generate()'s queued-only guard can
+      //   never reclaim a 'processing' row — so any failure here is marked
+      //   terminally 'failed' (a legal processing→failed transition) before
+      //   re-throwing. That leaves a diagnosable row with the error recorded
+      //   in last_error instead of one stuck in 'processing' forever.
+      let providerResult: ServerGenerationResult;
+      let outcome: Extract<
+        Awaited<ReturnType<typeof processGeneratedResponse>>,
+        { kind: 'completed' }
+      >;
+      try {
+        // Step 4: call the provider. The lifted core mirrors
+        //   ProviderObservationGenerator.ts:200-209 — no BullMQ payload, no
+        //   AbortSignal (consumers control their own timeouts via the
+        //   provider's fetchImpl), no scope/revocation audit.
+        providerResult = await provider.generate({
+          job: lockedJob,
+          events: loadedEvents,
+          project: {
+            projectId,
+            teamId,
+            serverSessionId: lockedJob.serverSessionId,
+            projectName: project?.name ?? null,
+          },
+        });
 
-      // Step 5: persist via processGeneratedResponse (the single Postgres
-      //   transaction that writes observations + observation_sources,
-      //   then transitions processing → completed). Mirrors
-      //   ProviderObservationGenerator.ts:211-227 minus the
-      //   session_summary branch (SDK currently captures only agent_event
-      //   jobs) and minus the BullMQ identity-context fields.
-      const persistInput: Parameters<typeof processGeneratedResponse>[0] = {
-        pool,
-        job: lockedJob,
-        rawText: providerResult.rawText,
-        providerLabel: providerResult.providerLabel,
-        sourceAdapter: 'sdk',
-      };
-      if (providerResult.modelId !== undefined) {
-        persistInput.modelId = providerResult.modelId;
-      }
-      const outcome = await processGeneratedResponse(persistInput);
+        // Step 5: persist via processGeneratedResponse (the single Postgres
+        //   transaction that writes observations + observation_sources,
+        //   then transitions processing → completed). Mirrors
+        //   ProviderObservationGenerator.ts:211-227 minus the
+        //   session_summary branch (SDK currently captures only agent_event
+        //   jobs) and minus the BullMQ identity-context fields.
+        const persistInput: Parameters<typeof processGeneratedResponse>[0] = {
+          pool,
+          job: lockedJob,
+          rawText: providerResult.rawText,
+          providerLabel: providerResult.providerLabel,
+          sourceAdapter: 'sdk',
+        };
+        if (providerResult.modelId !== undefined) {
+          persistInput.modelId = providerResult.modelId;
+        }
+        const persisted = await processGeneratedResponse(persistInput);
 
-      if (outcome.kind === 'parse_error') {
-        // The provider returned text we couldn't parse; mark a clear error
-        // for the caller. The job row is left in 'processing' so an admin
-        // can investigate. Mirrors ProviderObservationGenerator.ts:229-238.
-        throw new Error(
-          `cmem-sdk: generation parse error for job ${outcome.jobId}: ${outcome.reason}`
-        );
+        if (persisted.kind === 'parse_error') {
+          // The provider returned text we couldn't parse. Surface a clear
+          // error; the catch below transitions the row to 'failed'.
+          throw new Error(
+            `cmem-sdk: generation parse error for job ${persisted.jobId}: ${persisted.reason}`
+          );
+        }
+        outcome = persisted;
+      } catch (err) {
+        await repos.observationGenerationJobs
+          .transitionStatus({
+            id: jobId,
+            projectId,
+            teamId,
+            status: 'failed',
+            lastError: { message: err instanceof Error ? err.message : String(err) },
+          })
+          .catch(() => {
+            // The row was already moved on (e.g. completed inside step 5's
+            // own transaction, or claimed by another worker). Nothing to
+            // recover; preserve the original error for the caller.
+          });
+        throw err;
       }
 
       // Step 6 (Phase 6): index the freshly-persisted observations into
@@ -1060,14 +1085,16 @@ export async function createCmemClient(options: CmemClientOptions): Promise<Cmem
 
       // Empty-query path — no semantic intent to express. Mirror the
       // SearchManager filter-only branch (SearchManager.ts:165-176) by
-      // returning the most recent observations for this tenant.
+      // returning the most recent observations for this tenant. Chroma is
+      // never consulted here, so `chroma: false` (it is NOT degraded — this
+      // is the intended filter-only behavior, not a Chroma failure).
       if (query.trim().length === 0) {
         const observations = await repos.observations.listByProject({
           projectId,
           teamId,
           limit,
         });
-        return { observations, chroma: true, degraded: false };
+        return { observations, chroma: false, degraded: false };
       }
 
       // Default path — Chroma semantic. Per plan §6 line 240:
