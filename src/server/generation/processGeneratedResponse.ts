@@ -14,6 +14,7 @@ import {
   type PostgresObservationGenerationJob,
 } from '../../storage/postgres/generation-jobs.js';
 import { PostgresAuthRepository } from '../../storage/postgres/auth.js';
+import { PostgresUsageRepository } from '../../storage/postgres/usage.js';
 import {
   withPostgresTransaction,
   type PostgresPool,
@@ -57,6 +58,8 @@ export interface ProcessGeneratedResponseInput {
   apiKeyId?: string | null;
   actorId?: string | null;
   sourceAdapter?: string | null;
+  // Provider tokens this job spent (from the generate() result), for cost metering.
+  tokensUsed?: number;
 }
 
 export async function processGeneratedResponse(
@@ -252,6 +255,39 @@ export async function processGeneratedResponse(
         jobId: fresh.id,
         error: auditError instanceof Error ? auditError.message : String(auditError),
       });
+    }
+
+    // Cost/usage metering (opt-in). Records the provider tokens this job spent
+    // and the observations it produced, so per-team usage feeds quotas + billing
+    // (the $/1M-token pricing model). Best-effort like the audit row above — a
+    // metering hiccup must not fail generation.
+    if (process.env.CLAUDE_MEM_USAGE_METERING === '1') {
+      try {
+        const usageRepo = new PostgresUsageRepository(client);
+        if (input.tokensUsed && input.tokensUsed > 0) {
+          await usageRepo.record({
+            teamId: fresh.teamId,
+            projectId: fresh.projectId,
+            kind: 'tokens',
+            quantity: input.tokensUsed,
+            metadata: { jobId: fresh.id, provider: input.providerLabel, model: input.modelId ?? null },
+          });
+        }
+        if (persisted.length > 0) {
+          await usageRepo.record({
+            teamId: fresh.teamId,
+            projectId: fresh.projectId,
+            kind: 'observation',
+            quantity: persisted.length,
+            metadata: { jobId: fresh.id },
+          });
+        }
+      } catch (usageError) {
+        logger.warn('SYSTEM', 'usage metering record failed during generation', {
+          jobId: fresh.id,
+          error: usageError instanceof Error ? usageError.message : String(usageError),
+        });
+      }
     }
 
     return {
