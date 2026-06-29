@@ -15,6 +15,7 @@ import { PostgresTeamsRepository } from './teams.js';
 export * from './agent-events.js';
 export * from './auth.js';
 export * from './config.js';
+export * from './data-deletion.js';
 export * from './generation-jobs.js';
 export * from './observations.js';
 export * from './pool.js';
