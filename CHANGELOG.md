@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.9.0] - 2026-06-29
+
+## Highlights
+
+### 🚀 New: \`claude-mem/sdk\` (cmem-sdk)
+A fully in-process capture → compress → semantic-search pipeline with **no HTTP worker and no Redis**. Import \`createCmemClient\` from \`claude-mem/sdk\`, point it at Postgres + a running \`uvx chroma-mcp\` + an LLM provider, and call \`capture\`/\`generate\`/\`search\`/\`context\`/session methods directly.
+
+- New reference docs: **CMEM-SDK Reference** under *SDK & Embedding*.
+- Bundle keeps \`pg\`, \`zod\`, \`@modelcontextprotocol/sdk\`, and \`@anthropic-ai/sdk\` external so consumers resolve them against the installed package.
+
+### ♻️ Server runtime rename
+\`server-beta\` → \`server\` across the runtime, with intentional back-compat aliases for existing settings files. Removed inert \`ProviderRegistry\`/\`EventBroadcaster\` boundaries and consolidated the queue resolver.
+
+### 🐛 Fixes
+- \`generate()\`: a provider crash or parse error no longer leaves a job stuck in \`processing\`; it is transitioned to terminal \`failed\` with \`last_error\` recorded before re-throwing.
+- \`search()\`: empty-query path now reports \`chroma: false\` (filter-only, not degraded) instead of falsely claiming a Chroma result.
+- CI: the docker e2e job now calls the renamed \`e2e:server:docker\` script.
+- Docs: corrected \`sdk.mdx\`'s stale parse-error behavior note.
+
+**Full PR:** #3077
+
 ## [13.8.0] - 2026-06-21
 
 ## Telemetry: observation volume on per-session rollups
