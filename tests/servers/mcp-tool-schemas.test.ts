@@ -105,9 +105,11 @@ describe('MCP tool inputSchema declarations', () => {
     expect(memoryContext).toContain('handleObservationContext');
   });
 
-  it('mcp-server skips worker auto-start when runtime=server-beta (anti-pattern guard)', async () => {
+  it('mcp-server skips worker auto-start when runtime=server (anti-pattern guard)', async () => {
     const src = await Bun.file(mcpServerPath).text();
-    expect(src).toContain("selectRuntime() === 'server-beta'");
+    // Phase 1a (cmem-sdk rename): canonical runtime literal is `'server'`.
+    // `selectRuntime()` normalizes the legacy `'server-beta'` to `'server'`.
+    expect(src).toContain("selectRuntime() === 'server'");
     expect(src).toContain('skipping worker auto-start');
   });
 

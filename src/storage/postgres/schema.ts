@@ -2,9 +2,12 @@
 
 import type { PostgresQueryable } from './utils.js';
 
-export const SERVER_BETA_POSTGRES_SCHEMA_VERSION = 1;
+export const SERVER_POSTGRES_SCHEMA_VERSION = 1;
 
-export const SERVER_BETA_POSTGRES_TABLES = [
+// Phase 1b (cmem-sdk rename): the TS constant is renamed but the table-name
+// strings remain on `server_beta_*` since they are persisted DDL identifiers.
+// Plan §1d will migrate the table names in a coordinated DDL change.
+export const SERVER_POSTGRES_TABLES = [
   'server_beta_schema_migrations',
   'teams',
   'projects',
@@ -19,11 +22,11 @@ export const SERVER_BETA_POSTGRES_TABLES = [
   'observation_generation_job_events'
 ] as const;
 
-export async function bootstrapServerBetaPostgresSchema(client: PostgresQueryable): Promise<void> {
+export async function bootstrapServerPostgresSchema(client: PostgresQueryable): Promise<void> {
   if (isPostgresPool(client)) {
     const poolClient = await client.connect();
     try {
-      await bootstrapServerBetaPostgresSchema(poolClient);
+      await bootstrapServerPostgresSchema(poolClient);
     } finally {
       poolClient.release();
     }
@@ -39,7 +42,7 @@ export async function bootstrapServerBetaPostgresSchema(client: PostgresQueryabl
         VALUES ($1, $2)
         ON CONFLICT (version) DO NOTHING
       `,
-      [SERVER_BETA_POSTGRES_SCHEMA_VERSION, 'phase 1 postgres observation storage foundation']
+      [SERVER_POSTGRES_SCHEMA_VERSION, 'phase 1 postgres observation storage foundation']
     );
     await client.query('COMMIT');
   } catch (error) {

@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import pg from 'pg';
 import {
-  SERVER_BETA_POSTGRES_TABLES,
-  bootstrapServerBetaPostgresSchema,
+  SERVER_POSTGRES_TABLES,
+  bootstrapServerPostgresSchema,
   buildObservationGenerationKey,
   createPostgresStorageRepositories,
   type PostgresPoolClient,
@@ -35,7 +35,7 @@ describe('server beta postgres schema bootstrap', () => {
       }
     };
 
-    await bootstrapServerBetaPostgresSchema(pool);
+    await bootstrapServerPostgresSchema(pool);
 
     expect(queries[0]).toBe('BEGIN');
     expect(queries.at(-1)).toBe('COMMIT');
@@ -55,7 +55,7 @@ describe('server beta postgres schema bootstrap', () => {
       }
     } as unknown as PostgresPoolClient;
 
-    await bootstrapServerBetaPostgresSchema(client);
+    await bootstrapServerPostgresSchema(client);
 
     expect(queries[0]).toBe('BEGIN');
     expect(queries.at(-1)).toBe('COMMIT');
@@ -78,7 +78,7 @@ describe('server beta postgres observation storage', () => {
     schemaName = `cm_pg_test_${crypto.randomUUID().replaceAll('-', '_')}`;
     await client.query(`CREATE SCHEMA ${quoteIdentifier(schemaName)}`);
     await client.query(`SET search_path TO ${quoteIdentifier(schemaName)}`);
-    await bootstrapServerBetaPostgresSchema(client);
+    await bootstrapServerPostgresSchema(client);
     storage = createPostgresStorageRepositories(client);
   });
 
@@ -90,7 +90,7 @@ describe('server beta postgres observation storage', () => {
   });
 
   it('creates the Phase 1 schema idempotently', async () => {
-    await bootstrapServerBetaPostgresSchema(client);
+    await bootstrapServerPostgresSchema(client);
 
     const result = await client.query<{ table_name: string }>(
       `
@@ -102,7 +102,7 @@ describe('server beta postgres observation storage', () => {
     );
     const tables = new Set(result.rows.map(row => row.table_name));
 
-    for (const table of SERVER_BETA_POSTGRES_TABLES) {
+    for (const table of SERVER_POSTGRES_TABLES) {
       expect(tables.has(table)).toBe(true);
     }
   });

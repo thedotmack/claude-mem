@@ -115,9 +115,12 @@ export function getPackageCommandsDir(): string {
 export const paths = {
   dataDir: () => DATA_DIR,
   workerPid: () => join(DATA_DIR, 'worker.pid'),
-  serverBetaPid: () => join(DATA_DIR, '.server-beta.pid'),
-  serverBetaPort: () => join(DATA_DIR, '.server-beta.port'),
-  serverBetaRuntime: () => join(DATA_DIR, '.server-beta.runtime.json'),
+  // Phase 1b: identifier renamed to `server*`; the on-disk file basenames
+  // remain `.server-beta.*` so existing installations keep finding their
+  // pid/port/runtime state. Plan §1d will migrate the basenames.
+  serverPid: () => join(DATA_DIR, '.server-beta.pid'),
+  serverPort: () => join(DATA_DIR, '.server-beta.port'),
+  serverRuntime: () => join(DATA_DIR, '.server-beta.runtime.json'),
   settings: () => join(DATA_DIR, 'settings.json'),
   database: () => join(DATA_DIR, 'claude-mem.db'),
   chroma: () => join(DATA_DIR, 'chroma'),

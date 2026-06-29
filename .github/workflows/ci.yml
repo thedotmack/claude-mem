@@ -113,4 +113,4 @@ jobs:
         run: docker compose version
 
       - name: Server-runtime Docker e2e
-        run: npm run e2e:server-beta:docker
+        run: npm run e2e:server:docker

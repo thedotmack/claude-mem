@@ -15,12 +15,12 @@ import { ServerV1PostgresRoutes } from '../../src/server/routes/v1/ServerV1Postg
 import { SessionsObservationsAdapter } from '../../src/server/compat/SessionsObservationsAdapter.js';
 import { SessionsSummarizeAdapter } from '../../src/server/compat/SessionsSummarizeAdapter.js';
 import {
-  bootstrapServerBetaPostgresSchema,
+  bootstrapServerPostgresSchema,
   createPostgresStorageRepositories,
   type PostgresPoolClient,
   type PostgresStorageRepositories,
 } from '../../src/storage/postgres/index.js';
-import { DisabledServerBetaQueueManager } from '../../src/server/runtime/types.js';
+import { DisabledServerQueueManager } from '../../src/server/runtime/types.js';
 import { logger } from '../../src/utils/logger.js';
 
 const testDatabaseUrl = process.env.CLAUDE_MEM_TEST_POSTGRES_URL;
@@ -67,7 +67,7 @@ describe('Phase 9 compat adapters', () => {
     schemaName = `cm_phase9_${crypto.randomUUID().replaceAll('-', '_')}`;
     await client.query(`CREATE SCHEMA ${quoteIdentifier(schemaName)}`);
     await client.query(`SET search_path TO ${quoteIdentifier(schemaName)}`);
-    await bootstrapServerBetaPostgresSchema(client);
+    await bootstrapServerPostgresSchema(client);
     pool.on('connect', (poolClient) => {
       poolClient.query(`SET search_path TO ${quoteIdentifier(schemaName)}`).catch(() => {});
     });
@@ -113,7 +113,7 @@ describe('Phase 9 compat adapters', () => {
     });
     const v1Routes = new ServerV1PostgresRoutes({
       pool: pool as never,
-      queueManager: new DisabledServerBetaQueueManager('disabled in tests'),
+      queueManager: new DisabledServerQueueManager('disabled in tests'),
       authMode: 'api-key',
       runtime: 'server-beta',
       sessionPolicy: 'per-event',

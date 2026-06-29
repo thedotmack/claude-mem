@@ -19,7 +19,7 @@ import { Server, type ServerOptions } from '../../src/services/server/Server.js'
 import { ServerV1Routes } from '../../src/server/routes/v1/ServerV1Routes.js';
 import { ServerViewerRoutes } from '../../src/server/runtime/ServerViewerRoutes.js';
 import { createServerApiKey, DEFAULT_LOCAL_API_KEY_SCOPES } from '../../src/server/auth/sqlite-api-key-service.js';
-import { loadServerBetaMode } from '../../src/server/runtime/create-server-beta-service.js';
+import { loadServerMode } from '../../src/server/runtime/create-server-service.js';
 import { ModeManager } from '../../src/services/domain/ModeManager.js';
 import { logger } from '../../src/utils/logger.js';
 
@@ -78,9 +78,9 @@ describe('server runtime in-process smoke (#2550)', () => {
   });
 
   it('loads a mode at boot (the #2443 guard succeeds)', () => {
-    // loadServerBetaMode() is the exact boot guard the real server calls; it
+    // loadServerMode() is the exact boot guard the real server calls; it
     // throws if no mode can be loaded.
-    expect(() => loadServerBetaMode()).not.toThrow();
+    expect(() => loadServerMode()).not.toThrow();
     expect(ModeManager.getInstance().getActiveMode()).toBeDefined();
   });
 

@@ -779,7 +779,13 @@ function mergeSettings(updates: Record<string, string>): boolean {
 type ProviderId = 'claude' | 'gemini' | 'openrouter';
 type ClaudeAccessMode = 'subscription' | 'api-key';
 type ClaudeApiMode = 'direct' | 'gateway';
-type RuntimeId = 'worker' | 'server-beta';
+// Phase 1d: Persisted DB literals (`server_beta_schema_migrations`, job_type
+// enums, `server-beta-worker` lockedBy marker) are intentionally preserved in
+// the source code; runtime-selector dual-accepts both `'server'` and
+// `'server-beta'` settings values, but the installer writes the new canonical
+// form `'server'` going forward (settings keys: CLAUDE_MEM_SERVER_{URL,
+// API_KEY,PROJECT_ID}).
+type RuntimeId = 'worker' | 'server';
 
 function readRawStoredAuthMethod(): 'subscription' | 'api-key' | 'gateway' | undefined {
   try {
@@ -816,9 +822,9 @@ async function promptRuntime(options: InstallOptions): Promise<RuntimeId> {
       log.error(`Unknown --runtime: ${options.runtime}. Allowed: worker, server`);
       process.exit(1);
     }
-    if (requested === 'server-beta') {
+    if (requested === 'server') {
       await setupServerRuntimeNonInteractive(options);
-      return 'server-beta';
+      return 'server';
     }
     mergeSettings({ CLAUDE_MEM_RUNTIME: 'worker' });
     return 'worker';
@@ -833,7 +839,7 @@ async function promptRuntime(options: InstallOptions): Promise<RuntimeId> {
     message: 'Which runtime should claude-mem start after install?',
     options: [
       { value: 'worker', label: 'Worker', hint: 'stable compatibility path' },
-      { value: 'server-beta', label: 'Server (beta)', hint: 'REST V1, API keys, team-ready storage' },
+      { value: 'server', label: 'Server (beta)', hint: 'REST V1, API keys, team-ready storage' },
     ],
     initialValue: 'worker',
   });
@@ -847,8 +853,8 @@ async function promptRuntime(options: InstallOptions): Promise<RuntimeId> {
     CLAUDE_MEM_RUNTIME: selected,
   });
 
-  if (selected === 'server-beta') {
-    await maybeBootstrapServerBetaApiKey();
+  if (selected === 'server') {
+    await maybeBootstrapServerApiKey();
   }
   return selected;
 }
@@ -858,7 +864,7 @@ async function promptRuntime(options: InstallOptions): Promise<RuntimeId> {
 // effects the plan describes. Docker stack bring-up is config-only here (we log
 // the command an operator must run / a CI provisioner executes); key generation
 // reuses the same bootstrap path as the interactive flow (createServerApiKey +
-// DEFAULT_LOCAL_API_KEY_SCOPES via server-beta-bootstrap), and the IDE MCP
+// DEFAULT_LOCAL_API_KEY_SCOPES via server-bootstrap), and the IDE MCP
 // config target is recorded in settings so hooks resolve the server runtime.
 async function setupServerRuntimeNonInteractive(options: InstallOptions): Promise<void> {
   const serverBaseUrl = (options.serverUrl ?? '').trim() || DEFAULT_SERVER_RUNTIME_BASE_URL;
@@ -880,14 +886,14 @@ async function setupServerRuntimeNonInteractive(options: InstallOptions): Promis
   );
 
   if (plan.generateApiKey) {
-    await maybeBootstrapServerBetaApiKey();
+    await maybeBootstrapServerApiKey();
   }
   for (const note of plan.notes) {
     log.warn(note);
   }
 }
 
-async function maybeBootstrapServerBetaApiKey(): Promise<void> {
+async function maybeBootstrapServerApiKey(): Promise<void> {
   // Only attempt if Postgres is configured. Without DATABASE_URL we cannot
   // reach the api_keys table — the operator must configure the server first
   // and rerun `claude-mem server keys rotate`.
@@ -899,11 +905,11 @@ async function maybeBootstrapServerBetaApiKey(): Promise<void> {
     return;
   }
   try {
-    const { bootstrapServerBetaApiKey, persistServerBetaSettings } = await import(
-      '../../services/hooks/server-beta-bootstrap.js'
+    const { bootstrapServerApiKey, persistServerSettings } = await import(
+      '../../services/hooks/server-bootstrap.js'
     );
-    const result = await bootstrapServerBetaApiKey();
-    persistServerBetaSettings(USER_SETTINGS_PATH, {
+    const result = await bootstrapServerApiKey();
+    persistServerSettings(USER_SETTINGS_PATH, {
       apiKey: result.rawKey,
       projectId: result.projectId,
     });
@@ -913,7 +919,7 @@ async function maybeBootstrapServerBetaApiKey(): Promise<void> {
     );
   } catch (error: unknown) {
     log.warn(
-      `Failed to bootstrap server-beta API key: ${error instanceof Error ? error.message : String(error)}. `
+      `Failed to bootstrap server API key: ${error instanceof Error ? error.message : String(error)}. `
         + 'Hooks will fall back to the worker until you run `npx claude-mem server keys rotate`.',
     );
   }
@@ -1671,13 +1677,13 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   // `claude-mem server start`), NOT the worker-service spawner. Skip the
   // worker-only autostart entirely so the server runtime never invokes the
   // worker path (#2543).
-  const autoStartSkipped = !isInteractive || options.noAutoStart || selectedRuntime === 'server-beta';
+  const autoStartSkipped = !isInteractive || options.noAutoStart || selectedRuntime === 'server';
 
   await runTasks([
     {
-      title: selectedRuntime === 'server-beta' ? 'Starting server beta daemon' : 'Starting worker daemon',
+      title: selectedRuntime === 'server' ? 'Starting server daemon' : 'Starting worker daemon',
       task: async (message) => {
-        if (selectedRuntime === 'server-beta') {
+        if (selectedRuntime === 'server') {
           return `Server runtime selected — start it with ${pc.bold('npx claude-mem server start')} ${pc.dim('(or via Docker compose)')}`;
         }
         if (autoStartSkipped) {
@@ -1689,7 +1695,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
         const marketplaceScriptPath = join(marketplaceDirectory(), 'plugin', 'scripts', 'worker-service.cjs');
         const cacheScriptPath = join(pluginCacheDirectory(version), 'scripts', 'worker-service.cjs');
         const scriptPath = existsSync(marketplaceScriptPath) ? marketplaceScriptPath : cacheScriptPath;
-        // selectedRuntime is narrowed to 'worker' here: the server-beta case
+        // selectedRuntime is narrowed to 'worker' here: the server case
         // returned above and never reaches the worker-service spawner.
         message(`Spawning worker on port ${port}...`);
         workerStartResult = await ensureWorkerStarted(port, scriptPath);
@@ -1778,8 +1784,8 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
 
   const finalWorkerState = workerStartResult as WorkerStartResult;
   const workerAlive = finalWorkerState !== 'dead' || workerReady;
-  const runtimeLabel = selectedRuntime === 'server-beta' ? 'Server beta' : 'Worker';
-  const runtimeStartCommand = selectedRuntime === 'server-beta' ? 'npx claude-mem server start' : 'npx claude-mem start';
+  const runtimeLabel = selectedRuntime === 'server' ? 'Server' : 'Worker';
+  const runtimeStartCommand = selectedRuntime === 'server' ? 'npx claude-mem server start' : 'npx claude-mem start';
   const workerHeadline = autoStartSkipped
     ? `${pc.yellow('!')} ${runtimeLabel} autostart skipped — start it manually with ${pc.bold(runtimeStartCommand)}`
     : workerReady || finalWorkerState === 'ready'
