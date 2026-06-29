@@ -20,6 +20,8 @@ Available beta endpoints:
 - `PATCH /v1/memories/:id`
 - `POST /v1/search`
 - `POST /v1/context`
+- `DELETE /v1/memories/:id`
+- `DELETE /v1/projects/:projectId/memory`
 - `GET /v1/audit?projectId=<id>`
 
 When `CLAUDE_MEM_AUTH_MODE=api-key`, send `Authorization: Bearer <key>`. Read endpoints require `memories:read`; write endpoints require `memories:write`.
@@ -38,3 +40,11 @@ always populated (or `null` only when generation was explicitly disabled).
 The actual provider call happens in a separate BullMQ worker process
 (`claude-mem server worker start`); the HTTP path never blocks on a
 provider response.
+
+## Data deletion (forget)
+
+Right-to-erasure. Both require **write** scope and are scoped to the caller's team.
+
+- `DELETE /v1/memories/:id` — delete a single observation (its sources cascade). `404` if it doesn't exist for the team.
+- `DELETE /v1/projects/:projectId/memory` — purge ALL captured content for a project (observations, agent events, sessions, generation jobs); keeps the project shell. Returns per-table `counts`. Both are audited (`observation.deleted` / `project.memory_purged`).
+
