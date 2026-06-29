@@ -485,11 +485,23 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       // the Chroma-backed SearchOrchestrator. When the install runs server-beta (where
       // generated observations live in Postgres, not local SQLite) and Chroma is not
       // configured, observation text queries return empty — so `search` silently yields
-      // 0 observations even though the data is in PG. Route text queries to the PG-backed
-      // /v1/search (same path as observation_search) when server-beta is available; fall
-      // back to the worker for worker-mode or filter-only (no text) queries.
+      // 0 observations even though the data is in PG.
+      //
+      // Route to the PG-backed /v1/search (same path as observation_search) ONLY when it
+      // can serve the request faithfully: server-beta is available, there is a text query,
+      // the result type is observations (or unspecified), and no filter /v1/search cannot
+      // honor is set. /v1/search is observations-only and takes only { projectId, query,
+      // limit } — so prompt/session-typed queries and platformSource/project/obs_type/date/
+      // offset/orderBy filters must keep the worker path (which applies them), otherwise we
+      // would silently drop the filter or mis-route the query.
       const sb = resolveServerBetaToolContext();
-      if (sb && sb.available && typeof args?.query === 'string' && args.query.trim().length > 0) {
+      const hasText = typeof args?.query === 'string' && args.query.trim().length > 0;
+      const typeIsObservations = args?.type === undefined || args?.type === 'observations';
+      const hasUnsupportedFilter =
+        args?.platformSource !== undefined || args?.project !== undefined ||
+        args?.obs_type !== undefined || args?.dateStart !== undefined ||
+        args?.dateEnd !== undefined || args?.offset !== undefined || args?.orderBy !== undefined;
+      if (sb && sb.available && hasText && typeIsObservations && !hasUnsupportedFilter) {
         const request: ServerBetaSearchObservationsRequest = {
           projectId: sb.projectId,
           query: args.query,
