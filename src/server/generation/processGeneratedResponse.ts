@@ -79,7 +79,7 @@ export async function processGeneratedResponse(
   const skipped = parsed.summary?.skipped === true;
   const privateContentDetected = skipped || observationsToWrite.length === 0;
 
-  return await withPostgresTransaction(input.pool, async (client) => {
+  const outcome = await withPostgresTransaction(input.pool, async (client) => {
     const obsRepo = new PostgresObservationRepository(client);
     const sourcesRepo = new PostgresObservationSourcesRepository(client);
     const jobsRepo = new PostgresObservationGenerationJobRepository(client);
@@ -257,39 +257,6 @@ export async function processGeneratedResponse(
       });
     }
 
-    // Cost/usage metering (opt-in). Records the provider tokens this job spent
-    // and the observations it produced, so per-team usage feeds quotas + billing
-    // (the $/1M-token pricing model). Best-effort like the audit row above — a
-    // metering hiccup must not fail generation.
-    if (process.env.CLAUDE_MEM_USAGE_METERING === '1') {
-      try {
-        const usageRepo = new PostgresUsageRepository(client);
-        if (input.tokensUsed && input.tokensUsed > 0) {
-          await usageRepo.record({
-            teamId: fresh.teamId,
-            projectId: fresh.projectId,
-            kind: 'tokens',
-            quantity: input.tokensUsed,
-            metadata: { jobId: fresh.id, provider: input.providerLabel, model: input.modelId ?? null },
-          });
-        }
-        if (persisted.length > 0) {
-          await usageRepo.record({
-            teamId: fresh.teamId,
-            projectId: fresh.projectId,
-            kind: 'observation',
-            quantity: persisted.length,
-            metadata: { jobId: fresh.id },
-          });
-        }
-      } catch (usageError) {
-        logger.warn('SYSTEM', 'usage metering record failed during generation', {
-          jobId: fresh.id,
-          error: usageError instanceof Error ? usageError.message : String(usageError),
-        });
-      }
-    }
-
     return {
       kind: 'completed' as const,
       jobId: fresh.id,
@@ -297,6 +264,40 @@ export async function processGeneratedResponse(
       privateContentDetected,
     };
   });
+
+  // Cost/usage metering — AFTER the transaction commits, so a metering insert
+  // failure can NEVER roll back the observation + job writes (Greptile #3078: a
+  // failed insert aborts the tx, and the catch can't un-abort it). Opt-in;
+  // best-effort (logged); awaited so callers observe usage consistently.
+  if (outcome.kind === 'completed' && process.env.CLAUDE_MEM_USAGE_METERING === '1') {
+    try {
+      const usageRepo = new PostgresUsageRepository(input.pool);
+      if (input.tokensUsed && input.tokensUsed > 0) {
+        await usageRepo.record({
+          teamId: input.job.teamId,
+          projectId: input.job.projectId,
+          kind: 'tokens',
+          quantity: input.tokensUsed,
+          metadata: { jobId: input.job.id, provider: input.providerLabel, model: input.modelId ?? null },
+        });
+      }
+      if (outcome.observations.length > 0) {
+        await usageRepo.record({
+          teamId: input.job.teamId,
+          projectId: input.job.projectId,
+          kind: 'observation',
+          quantity: outcome.observations.length,
+          metadata: { jobId: input.job.id },
+        });
+      }
+    } catch (usageError) {
+      logger.warn('SYSTEM', 'usage metering record failed (post-commit)', {
+        jobId: input.job.id,
+        error: usageError instanceof Error ? usageError.message : String(usageError),
+      });
+    }
+  }
+  return outcome;
 }
 
 export interface MarkGenerationFailedInput {
