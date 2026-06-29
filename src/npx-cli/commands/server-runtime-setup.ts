@@ -15,19 +15,19 @@
 
 import { DEFAULT_LOCAL_API_KEY_SCOPES } from '../../server/auth/sqlite-api-key-service.js';
 
-export type InstallRuntimeId = 'worker' | 'server-beta';
+export type InstallRuntimeId = 'worker' | 'server';
 
 /**
  * Normalize the user-supplied `--runtime <value>` flag to a canonical runtime
- * id. Accepts the friendly alias `server` (what an operator types) in addition
- * to the canonical `server-beta`, and the default `worker`. Returns null for an
- * unknown value so the caller can fail fast with a clear error.
+ * id. Accepts the legacy alias `server-beta` (what existing scripts emit) in
+ * addition to the canonical `server`, and the default `worker`. Returns null
+ * for an unknown value so the caller can fail fast with a clear error.
  */
 export function normalizeRuntimeFlag(value: string | undefined): InstallRuntimeId | null {
   if (value === undefined) return 'worker';
   const normalized = value.trim().toLowerCase();
   if (normalized === '' || normalized === 'worker') return 'worker';
-  if (normalized === 'server' || normalized === 'server-beta') return 'server-beta';
+  if (normalized === 'server' || normalized === 'server-beta') return 'server';
   return null;
 }
 
@@ -53,9 +53,9 @@ export interface ServerRuntimeInstallInputs {
 }
 
 export interface ServerRuntimeInstallPlan {
-  runtime: 'server-beta';
+  runtime: 'server';
   /** Settings to persist to ~/.claude-mem/settings.json so hooks select the server runtime. */
-  settings: { CLAUDE_MEM_RUNTIME: 'server-beta'; CLAUDE_MEM_SERVER_BETA_URL: string };
+  settings: { CLAUDE_MEM_RUNTIME: 'server'; CLAUDE_MEM_SERVER_URL: string };
   /** Bring up the bundled pg + redis/valkey compose stack. */
   bringUpDockerStack: boolean;
   /** Generate an initial API key (only possible once the DB is reachable). */
@@ -83,7 +83,7 @@ export interface ServerRuntimeMcpConfig {
  * This is the unit-testable core of #2543. It never touches the worker-only
  * install path: it only describes the server-runtime steps. The caller is
  * responsible for executing the plan (Docker up, key gen, MCP write) and for
- * NOT invoking the worker autostart when runtime === 'server-beta'.
+ * NOT invoking the worker autostart when runtime === 'server'.
  */
 export function planServerRuntimeInstall(inputs: ServerRuntimeInstallInputs): ServerRuntimeInstallPlan {
   const serverBaseUrl = inputs.serverBaseUrl.trim();
@@ -101,10 +101,10 @@ export function planServerRuntimeInstall(inputs: ServerRuntimeInstallInputs): Se
   }
 
   return {
-    runtime: 'server-beta',
+    runtime: 'server',
     settings: {
-      CLAUDE_MEM_RUNTIME: 'server-beta',
-      CLAUDE_MEM_SERVER_BETA_URL: serverBaseUrl,
+      CLAUDE_MEM_RUNTIME: 'server',
+      CLAUDE_MEM_SERVER_URL: serverBaseUrl,
     },
     bringUpDockerStack: manageDockerStack,
     generateApiKey: inputs.hasDatabaseUrl,
@@ -151,8 +151,14 @@ export interface ServerRuntimeUninstallPlan {
   settingsKeysToClear: readonly string[];
 }
 
+// Phase 1d back-compat: also clear the legacy CLAUDE_MEM_SERVER_BETA_*
+// settings keys so an uninstall fully tears down installs done before the
+// rename.
 export const SERVER_RUNTIME_SETTINGS_KEYS: readonly string[] = Object.freeze([
   'CLAUDE_MEM_RUNTIME',
+  'CLAUDE_MEM_SERVER_URL',
+  'CLAUDE_MEM_SERVER_API_KEY',
+  'CLAUDE_MEM_SERVER_PROJECT_ID',
   'CLAUDE_MEM_SERVER_BETA_URL',
   'CLAUDE_MEM_SERVER_BETA_API_KEY',
   'CLAUDE_MEM_SERVER_BETA_PROJECT_ID',
@@ -169,7 +175,7 @@ export const SERVER_RUNTIME_SETTINGS_KEYS: readonly string[] = Object.freeze([
 export function planServerRuntimeUninstall(
   inputs: ServerRuntimeUninstallInputs,
 ): ServerRuntimeUninstallPlan {
-  const isServerRuntime = inputs.selectedRuntime === 'server-beta';
+  const isServerRuntime = inputs.selectedRuntime === 'server';
   if (!isServerRuntime) {
     return {
       isServerRuntime: false,

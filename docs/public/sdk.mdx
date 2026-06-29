@@ -1,0 +1,246 @@
+---
+title: "Using claude-mem in your app (SDK)"
+description: "Embed claude-mem's capture, compression, and search engine directly into your Node app — no worker, no HTTP daemon, no Redis."
+---
+
+`claude-mem/sdk` is the in-process programmatic interface to the same
+capture-and-compression engine that powers the Claude Code plugin. It is
+the only supported way to embed claude-mem in your own Node application:
+capture an event, run inline AI compression, and search the resulting
+observations — **all in one process, with no worker, daemon, or message
+queue.**
+
+## Headline
+
+```
+import { createCmemClient } from 'claude-mem/sdk';
+
+const client = await createCmemClient({ databaseUrl });
+await client.captureAndGenerate({ sourceAdapter: 'my-app', eventType: 'demo', payload });
+const results = await client.search({ query: 'OAuth' });
+await client.close();
+```
+
+Three pieces of state live behind the curtain — Postgres, Chroma, and the
+generation provider — and every one of them runs in the calling process.
+No `claude-mem worker start`, no `claude-mem server start`, no Redis,
+no Express HTTP layer.
+
+## Quick start
+
+Install (the SDK ships in the same `claude-mem` package the plugin uses):
+
+```bash
+npm install claude-mem
+```
+
+Then a minimal end-to-end script:
+
+```js
+// example.mjs — capture, generate, search, close.
+import { createCmemClient } from 'claude-mem/sdk';
+
+const client = await createCmemClient({
+  databaseUrl: process.env.CLAUDE_MEM_SERVER_DATABASE_URL,
+});
+
+const captured = await client.captureAndGenerate({
+  sourceAdapter: 'my-app',
+  eventType: 'demo',
+  payload: {
+    content: 'Implementing OAuth flow with PKCE for native CLI clients.',
+  },
+});
+console.log('observations:', captured.result.observations);
+
+const results = await client.search({ query: 'OAuth', limit: 5 });
+console.log('search hits:', results.observations);
+
+await client.close();
+```
+
+Run it:
+
+```bash
+CLAUDE_MEM_SERVER_DATABASE_URL=postgres://user:pass@host:5432/db \
+ANTHROPIC_API_KEY=sk-ant-... \
+  node example.mjs
+```
+
+A runnable copy of this script lives at `examples/sdk-node/` in the
+[claude-mem repository](https://github.com/thedotmack/claude-mem/tree/main/examples/sdk-node).
+
+## `createCmemClient` options
+
+| Option        | Type                                  | Default                                         | Notes                                                                                                              |
+|---------------|---------------------------------------|-------------------------------------------------|--------------------------------------------------------------------------------------------------------------------|
+| `databaseUrl` | `string`                              | `process.env.CLAUDE_MEM_SERVER_DATABASE_URL`    | Required if `pool` is not supplied. The SDK creates and owns the pool when this is set.                            |
+| `pool`        | `pg.Pool`                             | —                                               | A consumer-supplied `pg.Pool`. The SDK does NOT close it on `client.close()`.                                      |
+| `teamId`      | `string` (UUID)                       | bootstrapped default                            | Tenant team id. If omitted, the SDK creates a "default" team and persists the id to `$CLAUDE_MEM_DATA_DIR/sdk-tenant.json`. |
+| `projectId`   | `string` (UUID)                       | bootstrapped default                            | Tenant project id. Same bootstrap rules as `teamId`.                                                               |
+| `teamName`    | `string`                              | `'default'`                                     | Used only when the SDK has to create a default team.                                                                |
+| `projectName` | `string`                              | `'default'`                                     | Used only when the SDK has to create a default project.                                                             |
+| `provider`    | `CmemProvider \| CmemProviderConfig`  | env-driven (see [Provider configuration](#provider-configuration)) | A pre-built provider, a `{ apiKey, model?, provider? }` config, or omit to resolve from environment.   |
+| `chroma`      | `ChromaOptions`                       | `{}`                                            | Tuning only (collection prefix, `mcpPath`). **There is no `enabled: false` toggle** — Chroma is required.          |
+
+Anything else (HTTP server, BullMQ, Redis, better-auth) belongs to the
+worker/server runtimes — none of it is part of the SDK.
+
+## Architecture
+
+```
+consumer app
+  └─ import { createCmemClient } from 'claude-mem/sdk'
+       ├─ Postgres (pg)         — capture, observations, sessions, jobs (system of record)
+       ├─ in-process generation — provider.generate() → parseAgentXml → processGeneratedResponse
+       ├─ Chroma (REQUIRED)     — semantic index over the SAME observations, via uvx chroma-mcp
+       └─ search                — Chroma semantic (primary). Postgres FTS exists ONLY as a runtime
+                                  safety net for transient Chroma failure; it is NOT a feature toggle.
+```
+
+The SDK is a thin glue layer over the same modules the server runtime
+uses: `src/storage/postgres/*` for Postgres I/O, `src/server/generation/*`
+for inline compression, and `src/services/sync/ChromaSync` for the
+semantic index. Everything that the server runtime's HTTP/queue/auth
+shell adds is intentionally absent here.
+
+## Chroma is required
+
+`createCmemClient` will reject if `uvx chroma-mcp` cannot start. There is
+no `chroma.enabled = false` toggle. claude-mem without semantic search is
+broken — observations are unsearchable in the way users actually search
+them.
+
+To use the SDK, install [`uv`](https://docs.astral.sh/uv/):
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+`uvx` then resolves the `chroma-mcp` Python package on first SDK launch
+and caches it. You do not need to install Chroma separately — the SDK
+spawns the local `chroma-mcp` subprocess for you.
+
+If the subprocess dies between `createCmemClient` and a later
+`client.search`, the `search` call falls through to Postgres full-text
+search and returns `{ chroma: false, degraded: true }`. A
+`logger.error('CHROMA', …)` is emitted so an operator can investigate.
+The next cold-start `createCmemClient` will reject again until
+`uvx chroma-mcp` can launch.
+
+## Tenancy
+
+Every SDK call writes against a `(teamId, projectId)` tenant scope. You
+have two options:
+
+1. **Pass explicit IDs (recommended for production).** Allocate a team
+   and project once in your application bootstrap and store the UUIDs
+   somewhere you control. Pass them to every `createCmemClient` call:
+
+   ```js
+   const client = await createCmemClient({
+     databaseUrl,
+     teamId: 'aaaa…',
+     projectId: 'bbbb…',
+   });
+   ```
+
+2. **Let the SDK bootstrap a default.** If you omit `teamId` /
+   `projectId`, the SDK creates a `"default"` team + project on first
+   run and persists the resolved UUIDs to
+   `$CLAUDE_MEM_DATA_DIR/sdk-tenant.json`. Subsequent runs reuse the
+   same IDs from disk. This is fine for local development and
+   single-tenant CLIs; it is not appropriate for multi-tenant servers.
+
+Either way, all writes (`capture`, `generate`, `startSession`,
+`captureAndGenerate`) are tenant-scoped and reads
+(`search`, `context`, `repos.observations.listByProject`) only return
+rows belonging to that `(teamId, projectId)` pair.
+
+## Provider configuration
+
+The SDK resolves a generation provider in this order:
+
+1. **`options.provider = aPreBuiltProvider`** — anything implementing
+   `ServerGenerationProvider` (i.e. has `providerLabel: 'claude' |
+   'gemini' | 'openrouter'` and an async `.generate(context)` method).
+   Useful for tests where you want to feed deterministic XML.
+
+2. **`options.provider = { apiKey, model?, provider? }`** — the SDK
+   instantiates the matching concrete provider. Defaults to
+   `provider: 'claude'`.
+
+3. **Environment** — when `options.provider` is `undefined`, the SDK
+   reads:
+   - `CLAUDE_MEM_SERVER_PROVIDER` (`'claude'`, `'gemini'`, `'openrouter'`)
+   - `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` / `OPENROUTER_API_KEY`
+   - `CLAUDE_MEM_SERVER_MODEL` (optional model id override)
+
+If none of the above resolves to a usable provider, `createCmemClient`
+still succeeds (capture, search, and `repos` access keep working) but
+`client.generate(...)` will reject with a clear "no generation provider
+is configured" error.
+
+## Lifecycle (`close()`)
+
+`client.close()`:
+
+- Calls `chromaSync.close()` and shuts down the per-process
+  `uvx chroma-mcp` subprocess.
+- Closes the Postgres pool **only if the SDK owns it** (i.e. you
+  constructed via `databaseUrl`, not `pool`).
+- Is idempotent — calling it twice is a no-op.
+
+After `close()`, every method on the client (including `capture`,
+`search`, `generate`, `startSession`, `endSession`) throws
+`"cmem-sdk: client is closed"`. There is no reopen — construct a new
+client.
+
+If you supplied your own `pg.Pool`, the SDK never touches its lifecycle.
+Your code owns the open/close.
+
+## Error handling
+
+A few specific failure modes are worth knowing about:
+
+- **Chroma init failure.** `createCmemClient` rejects with a message
+  including `"chroma-mcp could not start"`. The error is fatal at
+  construction; there is no half-working fallback client. Install `uv`
+  / `uvx`, then retry.
+
+- **No provider configured.** `client.generate(jobId)` or
+  `client.captureAndGenerate(...)` rejects with `"no generation provider
+  is configured"`. The fix is to pass `options.provider` or set
+  `ANTHROPIC_API_KEY`/`GEMINI_API_KEY`/`OPENROUTER_API_KEY`.
+
+- **Transient Chroma failure (FTS fallback).** `client.search({...})`
+  returns `{ observations, chroma: false, degraded: true, error }` when
+  the running `chroma-mcp` subprocess dies mid-request. The SDK
+  re-issues the search against Postgres full-text search so the call
+  still returns hits — but the result is explicitly marked degraded so
+  your code can decide whether to retry, surface a banner, or fail the
+  caller's own request. `client.context({...})` propagates the
+  `degraded` flag identically.
+
+- **Job not claimable.** `client.generate(jobId)` rejects with `"is not
+  claimable (status=...)"` if the job has already been claimed by
+  another worker, already completed, or terminally failed. The legal
+  transition is `queued → processing`; the SDK enforces it via
+  `transitionStatus`.
+
+- **Parse error / provider failure.** If the provider throws, or returns
+  text that `parseAgentXml` cannot understand, `client.generate(...)`
+  rejects. Before re-throwing, the SDK transitions the job to the terminal
+  `failed` status and records the cause in the row's `last_error` — so the
+  job is left in a diagnosable terminal state rather than stuck in
+  `processing` (which the `queued`-only claim guard could never reclaim).
+
+The SDK does not retry on its own — caller-side retry logic, queueing,
+or scheduling is yours to add. The point of the SDK is to make the
+underlying primitives accessible in-process; orchestration is a
+deliberately out-of-scope concern.
+
+## See also
+
+- [`examples/sdk-node/`](https://github.com/thedotmack/claude-mem/tree/main/examples/sdk-node) — the runnable demo of the headline requirement.
+- The implementation plan: `plans/2026-05-25-cmem-sdk-and-server-rename.md`.

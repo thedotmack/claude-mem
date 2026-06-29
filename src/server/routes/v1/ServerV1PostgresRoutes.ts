@@ -20,8 +20,8 @@ import { PostgresObservationRepository } from '../../../storage/postgres/observa
 import { logger } from '../../../utils/logger.js';
 import { requirePostgresServerAuth } from '../../middleware/postgres-auth.js';
 import { requestIdMiddleware } from '../../middleware/request-id.js';
-import type { ActiveServerBetaQueueManager } from '../../runtime/ActiveServerBetaQueueManager.js';
-import type { ServerBetaQueueManager } from '../../runtime/types.js';
+import type { ActiveServerQueueManager } from '../../runtime/ActiveServerQueueManager.js';
+import type { ServerQueueManager } from '../../runtime/types.js';
 import { PostgresServerSessionsRepository } from '../../../storage/postgres/server-sessions.js';
 import type { ServerSessionGenerationPolicy } from '../../runtime/SessionGenerationPolicy.js';
 import { IngestEventsService, type EnqueueOutcome } from '../../services/IngestEventsService.js';
@@ -32,7 +32,7 @@ const SOURCE_ADAPTER_DEFAULT = 'api';
 
 export interface ServerV1PostgresRoutesOptions {
   pool: PostgresPool;
-  queueManager: ServerBetaQueueManager;
+  queueManager: ServerQueueManager;
   authMode?: string;
   runtime?: string;
   allowLocalDevBypass?: boolean;
@@ -40,8 +40,8 @@ export interface ServerV1PostgresRoutesOptions {
   // When the manager is the disabled adapter, enqueue is silently skipped and
   // the outbox row stays in `queued` state for startup reconciliation to
   // pick up — never claim observations were generated.
-  getEventQueue?: () => ReturnType<ActiveServerBetaQueueManager['getQueue']> | null;
-  getSummaryQueue?: () => ReturnType<ActiveServerBetaQueueManager['getQueue']> | null;
+  getEventQueue?: () => ReturnType<ActiveServerQueueManager['getQueue']> | null;
+  getSummaryQueue?: () => ReturnType<ActiveServerQueueManager['getQueue']> | null;
   sessionPolicy?: ServerSessionGenerationPolicy;
 }
 
@@ -958,12 +958,12 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     }
   }
 
-  private resolveQueue(lane: 'summary' | 'event'): ReturnType<ActiveServerBetaQueueManager['getQueue']> | null {
+  private resolveQueue(lane: 'summary' | 'event'): ReturnType<ActiveServerQueueManager['getQueue']> | null {
     const override = lane === 'summary' ? this.options.getSummaryQueue : this.options.getEventQueue;
     if (override) {
       return override();
     }
-    const manager = this.options.queueManager as Partial<ActiveServerBetaQueueManager>;
+    const manager = this.options.queueManager as Partial<ActiveServerQueueManager>;
     if (typeof manager.getQueue === 'function') {
       try {
         return manager.getQueue(lane);

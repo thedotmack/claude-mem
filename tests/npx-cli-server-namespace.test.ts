@@ -24,11 +24,11 @@ describe('npx CLI server namespace', () => {
   });
 
   it('routes server lifecycle commands while keeping reserved commands nonzero failures', () => {
-    expect(serverSource).toContain('runServerBetaLifecycleCommand(subCommand)');
-    expect(serverSource).toContain('runServerBetaStartCommand()');
-    expect(serverSource).toContain('runServerBetaStopCommand()');
-    expect(serverSource).toContain('runServerBetaRestartCommand()');
-    expect(serverSource).toContain('runServerBetaStatusCommand()');
+    expect(serverSource).toContain('runServerLifecycleCommand(subCommand)');
+    expect(serverSource).toContain('runServerStartCommand()');
+    expect(serverSource).toContain('runServerStopCommand()');
+    expect(serverSource).toContain('runServerRestartCommand()');
+    expect(serverSource).toContain('runServerStatusCommand()');
     expect(serverSource).toContain("'logs'");
     expect(serverSource).toContain("'doctor'");
     expect(serverSource).toContain("'migrate'");
@@ -44,7 +44,7 @@ describe('npx CLI server namespace', () => {
     expect(workerServiceSource).toContain('lifecycleCommands.has(maybeSubCommand)');
     expect(workerServiceSource).toContain('command: `server-${maybeSubCommand}`');
     expect(workerServiceSource).toContain("case 'server-start'");
-    expect(workerServiceSource).toContain('runServerBetaServiceCli(command.slice');
+    expect(workerServiceSource).toContain('runServerServiceCli(command.slice');
     expect(workerServiceSource).toContain('serverCommands.has(maybeSubCommand)');
     expect(workerServiceSource).toContain("case 'server-api-key'");
     expect(workerServiceSource).toContain('runServerApiKeyCli(commandArgs)');

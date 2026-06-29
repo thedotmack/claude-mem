@@ -4,6 +4,15 @@ import { ModeManager } from '../../src/services/domain/ModeManager.js';
 
 import { parseAgentXml } from '../../src/sdk/parser.js';
 
+// Load the real bundled `code` mode rather than mocking ModeManager. The
+// previous `mock.module(...)` replaced ModeManager process-globally and was
+// never restored, so its partial stub (no `loadMode`) leaked into other test
+// files in the same `bun test` run — notably the SDK integration tests, whose
+// createCmemClient() calls `ModeManager.getInstance().loadMode('code')`. The
+// real `code` mode is a superset of the types these tests exercise, so the
+// assertions below are unchanged.
+ModeManager.getInstance().loadMode('code');
+
 describe('parseAgentXml — summaries', () => {
   beforeEach(() => {
     const modeManager = ModeManager.getInstance() as unknown as { activeMode: unknown };

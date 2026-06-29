@@ -91,6 +91,14 @@
         ]
       },
       {
+        "group": "SDK & Embedding",
+        "icon": "code",
+        "pages": [
+          "sdk",
+          "sdk/cmem-sdk"
+        ]
+      },
+      {
         "group": "Architecture",
         "icon": "diagram-project",
         "pages": [

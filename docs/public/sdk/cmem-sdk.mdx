@@ -1,0 +1,379 @@
+---
+title: "CMEM-SDK Reference"
+description: "Complete API reference for claude-mem/sdk — the in-process capture → compress → semantic-search pipeline. No HTTP worker, no Redis, no daemon."
+---
+
+`claude-mem/sdk` (the CMEM-SDK) is the in-process programmatic interface to
+the same capture-and-compression engine that powers the Claude Code plugin.
+You call it as a library, in your own Node process: capture an event,
+run inline AI compression, and search the resulting observations with
+semantic search — **all in one process, with no worker, daemon, message
+queue, or HTTP layer.**
+
+This page is the complete API reference. For a narrative walkthrough and a
+runnable example, see [Using claude-mem in your app](/sdk).
+
+## What it is and when to use it
+
+The SDK is a thin glue layer over the same modules the claude-mem server
+runtime uses — `src/storage/postgres/*` for I/O, `src/server/generation/*`
+for compression, and `ChromaSync` for the semantic index — minus the HTTP
+server, BullMQ queue, Redis, and auth shell that the server runtime adds.
+
+Reach for the SDK when you want to embed claude-mem's memory primitives
+directly inside a Node application (a CLI, a bot, a custom agent) and you
+want to control the lifecycle yourself. If instead you want the background
+daemon that the Claude Code plugin uses, run the worker/server — not the SDK.
+
+Three pieces of state live behind the client, and **all of them run in or
+from the calling process**:
+
+| Dependency           | Required? | How it runs                                                                                  |
+|----------------------|-----------|----------------------------------------------------------------------------------------------|
+| **Postgres**         | Yes       | Reached via `CLAUDE_MEM_SERVER_DATABASE_URL`, `options.databaseUrl`, or a supplied `pg.Pool`. System of record. |
+| **Chroma**           | Yes       | A local `uvx chroma-mcp` subprocess the SDK spawns for you. Powers semantic search.          |
+| **LLM provider**     | For `generate()` only | Claude / Gemini / OpenRouter, via API key. Capture and search work without it. |
+
+<Warning>
+Chroma is **required**. `createCmemClient` rejects at construction if
+`uvx chroma-mcp` cannot start. There is no `chroma.enabled = false` toggle —
+claude-mem without semantic search is considered broken.
+</Warning>
+
+## Installation
+
+The SDK ships inside the same `claude-mem` package the plugin uses:
+
+```bash
+npm install claude-mem
+```
+
+Import from the `claude-mem/sdk` subpath export:
+
+```ts
+import { createCmemClient } from 'claude-mem/sdk';
+```
+
+SDK consumers pull only four runtime dependencies — `pg`, `zod`,
+`@modelcontextprotocol/sdk`, and `@anthropic-ai/sdk`. The worker/server's
+heavy dependencies (Express, BullMQ, ioredis, React, the agent SDK) are
+bundled into the worker artifacts and are **not** downloaded by SDK
+consumers.
+
+### Peer requirements
+
+Before the first `createCmemClient` call succeeds you need all three of:
+
+1. **A reachable Postgres**, via `CLAUDE_MEM_SERVER_DATABASE_URL` (or
+   `options.databaseUrl`, or a `options.pool` you build yourself). The SDK
+   bootstraps its schema idempotently on connect.
+2. **`uv` / `uvx` on `PATH`.** The SDK spawns `uvx chroma-mcp` for the
+   semantic index. Install it once:
+
+   ```bash
+   curl -LsSf https://astral.sh/uv/install.sh | sh
+   ```
+
+   You do not install Chroma separately — `uvx` resolves and caches the
+   `chroma-mcp` Python package on first launch.
+3. **A provider API key** — only if you call `generate()` /
+   `captureAndGenerate()`. Set `ANTHROPIC_API_KEY` (default provider) or
+   pass `options.provider`. See [Provider configuration](#provider-configuration).
+
+## Quickstart
+
+### Environment-driven
+
+The least-config form. Postgres and the provider come from environment
+variables.
+
+```ts
+import { createCmemClient } from 'claude-mem/sdk';
+
+// Reads CLAUDE_MEM_SERVER_DATABASE_URL and (for generate) ANTHROPIC_API_KEY.
+const client = await createCmemClient({});
+
+const { result } = await client.captureAndGenerate({
+  sourceAdapter: 'my-app',
+  eventType: 'note',
+  payload: { content: 'Implementing OAuth with PKCE for native CLI clients.' },
+});
+console.log('observations:', result.observations);
+
+const hits = await client.search({ query: 'OAuth', limit: 5 });
+console.log('search hits:', hits.observations);
+
+await client.close();
+```
+
+Run it:
+
+```bash
+CLAUDE_MEM_SERVER_DATABASE_URL=postgres://user:pass@host:5432/db \
+ANTHROPIC_API_KEY=sk-ant-... \
+  node example.mjs
+```
+
+### Explicit options
+
+For production, pass everything explicitly — an existing pool, fixed tenant
+IDs, and a provider config — so nothing depends on ambient environment or
+the on-disk tenant file.
+
+```ts
+import { Pool } from 'pg';
+import { createCmemClient } from 'claude-mem/sdk';
+
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+
+const client = await createCmemClient({
+  pool,                       // SDK will NOT close this on client.close()
+  teamId: 'aaaaaaaa-...',     // explicit tenant scope
+  projectId: 'bbbbbbbb-...',
+  provider: {
+    apiKey: process.env.ANTHROPIC_API_KEY!,
+    provider: 'claude',
+    model: 'claude-sonnet-4-6',
+  },
+});
+```
+
+### The full lifecycle
+
+```ts
+// 1. Group related captures under a session (optional).
+const { serverSessionId } = await client.startSession({
+  agentId: 'user-123',
+  platformSource: 'my-app',
+});
+
+// 2a. Capture now, compress later.
+const { agentEventId, generationJobId } = await client.capture({
+  sourceAdapter: 'my-app',
+  eventType: 'tool-use',
+  payload: { tool: 'bash', command: 'npm test' },
+  serverSessionId,
+  sourceEventId: 'evt-0001',   // idempotency key (recommended)
+});
+const gen = await client.generate(generationJobId);
+
+// 2b. Or do both in one call.
+const both = await client.captureAndGenerate({
+  sourceAdapter: 'my-app',
+  eventType: 'message',
+  payload: { content: 'Switched the cache layer from Redis to in-memory LRU.' },
+  serverSessionId,
+});
+
+// 3. Search the compressed observations.
+const found = await client.search({ query: 'cache layer', limit: 10 });
+
+// 4. Get a ready-to-inject context blob (search + join).
+const ctx = await client.context({ query: 'cache layer' });
+console.log(ctx.context); // observations' content joined with "\n\n"
+
+// 5. End the session (idempotent) and close the client.
+await client.endSession(serverSessionId);
+await client.close();
+```
+
+`capture()` writes an `agent_events` row plus a `queued`
+`observation_generation_jobs` row — **but never runs generation by
+itself**. The SDK never enqueues to Redis/BullMQ, so the job stays `queued`
+until you call `generate(jobId)`. `captureAndGenerate()` is sugar that does
+both in sequence.
+
+## Client method reference
+
+`createCmemClient(options): Promise<CmemClient>`. Every method below rejects
+with `"cmem-sdk: client is closed"` after `close()` has been called.
+
+| Method | Parameters | Returns | Notes |
+|--------|------------|---------|-------|
+| `capture` | `event: CmemCaptureEvent` | `Promise<CmemCaptureResult>` — `{ agentEventId, generationJobId }` | Writes one event + one `queued` job in one tx. No generation runs. |
+| `captureBatch` | `events: CmemCaptureEvent[]` | `Promise<CmemCaptureResult[]>` | All rows in a single Postgres transaction. Empty array returns `[]`. |
+| `generate` | `jobId: string` | `Promise<CmemGenerateResult>` | Runs the inline compression pipeline for a `queued` job: provider call → persist observations → index into Chroma. |
+| `captureAndGenerate` | `event: CmemCaptureEvent` | `Promise<CmemCaptureAndGenerateResult>` — `{ agentEventId, generationJobId, result }` | `capture()` then `generate()`. |
+| `search` | `{ query: string; limit?: number }` | `Promise<CmemSearchResponse>` | Semantic search via Chroma. `limit` defaults to `10`. See [search behavior](#search-and-context-behavior). |
+| `context` | `{ query: string; limit?: number }` | `Promise<CmemContextResponse>` | Same as `search`, plus the observations' content joined into one `\n\n`-delimited string. |
+| `startSession` | `input?: CmemStartSessionInput` | `Promise<CmemSessionInfo>` — `{ serverSessionId }` | Begins a server session to group later captures. |
+| `endSession` | `serverSessionId: string` | `Promise<void>` | Idempotent. Rejects only if the id isn't found in the tenant scope. |
+| `close` | — | `Promise<void>` | Shuts down `chroma-mcp` and closes the pool **only if the SDK owns it**. Idempotent. |
+
+The client also exposes read-only fields for advanced use:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `teamId` | `string` | Resolved tenant team UUID. |
+| `projectId` | `string` | Resolved tenant project UUID. |
+| `repos` | `PostgresStorageRepositories` | Direct repository facade over the Postgres storage layer (e.g. `client.repos.observations.listByProject(...)`). |
+| `pool` | `pg.Pool` | The underlying pool the SDK is using. |
+| `chromaSync` | `ChromaSync` | The constructed semantic-sync engine. |
+
+## Input and response types
+
+### `CmemCaptureEvent`
+
+The friendly capture shape accepted by `capture` / `captureBatch` /
+`captureAndGenerate`. `projectId` and `teamId` are added by the SDK from the
+resolved tenancy — you never pass them.
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `sourceAdapter` | `string` | Yes | Source-system label, e.g. `'my-bot'`. |
+| `eventType` | `string` | Yes | Event tag, e.g. `'message'`, `'tool-use'`. |
+| `payload` | `Record<string, unknown>` | Yes | Free-form; JSON-serialized. |
+| `occurredAt` | `Date \| string \| number` | No | Defaults to `new Date()`. |
+| `sourceEventId` | `string` | No | Idempotency key for dedup. Recommended. |
+| `serverSessionId` | `string` | No | Session id from `startSession`. |
+| `platformSource` | `string` | No | e.g. `'claude-code'`, `'opencode'`. |
+| `metadata` | `Record<string, unknown>` | No | Defaults to `{}`. |
+
+### `CmemStartSessionInput`
+
+All fields optional: `externalSessionId`, `contentSessionId` (both used for
+idempotent dedup), `agentId`, `agentType`, `platformSource`, `metadata`.
+
+### Response shapes
+
+```ts
+interface CmemCaptureResult {
+  agentEventId: string;
+  generationJobId: string;       // the queued job; pass to generate()
+}
+
+interface CmemGenerateResult {
+  jobId: string;
+  observations: PostgresObservation[];  // [] is a normal "nothing to record" outcome
+  providerLabel: string;                // 'claude' | 'gemini' | 'openrouter'
+  modelId?: string;
+  privateContentDetected: boolean;      // true on a privacy/skip signal
+}
+
+interface CmemCaptureAndGenerateResult {
+  agentEventId: string;
+  generationJobId: string;
+  result: CmemGenerateResult;
+}
+
+interface CmemSearchResponse {
+  observations: PostgresObservation[];
+  chroma: boolean;               // true = came from the semantic engine
+  degraded: boolean;             // true = fell back to Postgres FTS
+  error?: { message: string };   // only on the degraded branch
+}
+
+interface CmemContextResponse {
+  observations: PostgresObservation[];
+  context: string;               // observations' content joined with "\n\n"
+  degraded: boolean;
+}
+```
+
+An empty `observations: []` from `generate()` is **not an error** — the
+provider can legitimately decide there is nothing worth recording (a
+privacy-skipped batch, a `<skip_summary />` response). The job is marked
+`completed` either way.
+
+## Provider configuration
+
+`options.provider` accepts three shapes, resolved in this order:
+
+1. **A pre-built provider** — anything implementing `CmemProvider` (alias
+   for the server's `ServerGenerationProvider`: a `providerLabel` string and
+   an async `.generate(context)`). Useful for tests with deterministic XML.
+2. **A `CmemProviderConfig`** — the SDK instantiates the concrete provider
+   for you:
+
+   ```ts
+   interface CmemProviderConfig {
+     apiKey: string;                                  // required
+     model?: string;                                  // e.g. 'claude-sonnet-4-6'
+     provider?: 'claude' | 'gemini' | 'openrouter';   // defaults to 'claude'
+     baseUrl?: string;                                // OpenRouter-only
+   }
+   ```
+3. **`undefined`** — env-driven resolution (see the
+   [env reference](#environment-variable-reference)). Defaults to Claude when
+   `ANTHROPIC_API_KEY` is set.
+
+If none resolves to a usable provider, `createCmemClient` still succeeds —
+capture, search, and `repos` keep working — but `generate()` rejects with a
+clear `"no generation provider is configured"` error.
+
+## Search and context behavior
+
+`search()` (and `context()`, which calls it) has three runtime states:
+
+| Condition | `chroma` | `degraded` | Behavior |
+|-----------|----------|------------|----------|
+| Non-empty query, Chroma healthy | `true` | `false` | Semantic search via Chroma, results in distance rank order, hydrated from Postgres. This is the intended path. |
+| **Empty query** (`''` or whitespace) | `false` | `false` | Filter-only: returns the most recent observations for the tenant. Chroma is never consulted — this is **not** a degraded state. |
+| Non-empty query, Chroma died mid-request | `false` | `true` | Runtime safety net: re-runs the query against Postgres full-text search, sets `error`, and emits a `logger.error('CHROMA', …)` so an operator can investigate. |
+
+The degraded FTS fallback is a **runtime state, not a config toggle** — a
+healthy run never enters it. Your code can branch on `degraded` to retry,
+show a banner, or fail the caller's request. `context()` propagates
+`degraded` identically.
+
+## Error and edge behavior
+
+- **Chroma is required at construction.** `createCmemClient` rejects with a
+  message including `"chroma-mcp could not start"` if `uvx chroma-mcp`
+  can't launch. There is no half-working fallback client — install `uv`,
+  then retry. On rejection the SDK cleans up any pool it owns before
+  throwing.
+
+- **A failed `generate()` marks the job `failed` (terminal).** Any failure
+  during generation — the provider call, persistence, or a parse error on
+  the provider's output — transitions the `observation_generation_jobs` row
+  from `processing` to the terminal `failed` status (with the error recorded
+  in `last_error`) and then rethrows. The row is **not** left stuck in
+  `processing`, and `generate()` will never reclaim a `failed` job — you must
+  re-capture to produce a fresh `queued` job.
+
+- **Job not claimable.** `generate(jobId)` rejects with
+  `"is not claimable (status=...)"` if the job isn't in `queued` status —
+  already claimed by another worker, already completed, or terminally
+  failed. The only legal first transition is `queued → processing`.
+
+- **No provider configured.** `generate()` / `captureAndGenerate()` reject
+  with `"no generation provider is configured"`. Pass `options.provider` or
+  set a provider API key env var.
+
+- **After `close()`.** Every method throws `"cmem-sdk: client is closed"`.
+  There is no reopen — construct a new client. `close()` itself is
+  idempotent. If you supplied your own `pg.Pool`, the SDK never touches its
+  lifecycle.
+
+The SDK does not retry on its own. Caller-side retry, queueing, and
+scheduling are deliberately out of scope.
+
+## Environment variable reference
+
+| Variable | Used for | Notes |
+|----------|----------|-------|
+| `CLAUDE_MEM_SERVER_DATABASE_URL` | Postgres connection | Fallback when neither `options.databaseUrl` nor `options.pool` is given. |
+| `CLAUDE_MEM_DATA_DIR` | Data directory | Defaults to `$HOME/.claude-mem`. Holds `sdk-tenant.json` (the persisted bootstrap tenant) and Chroma data. |
+| `CLAUDE_MEM_SERVER_PROVIDER` | Provider selection | `'claude'`, `'gemini'`, or `'openrouter'`. Empty/unset falls through to whichever API key is present. |
+| `CLAUDE_MEM_SERVER_MODEL` | Model override | Optional model id for the env-resolved provider. |
+| `ANTHROPIC_API_KEY` | Claude API key | Also accepts `CLAUDE_MEM_ANTHROPIC_API_KEY`. Default provider when set. |
+| `GEMINI_API_KEY` | Gemini API key | Also accepts `CLAUDE_MEM_GEMINI_API_KEY`. |
+| `OPENROUTER_API_KEY` | OpenRouter API key | Also accepts `CLAUDE_MEM_OPENROUTER_API_KEY`. |
+| `CLAUDE_MEM_OPENROUTER_BASE_URL` | OpenRouter base URL | Also accepts `OPENROUTER_BASE_URL`. OpenRouter only. |
+
+### Tenancy resolution
+
+Every SDK call is scoped to a `(teamId, projectId)` pair. Pass both
+explicitly in production. If you omit them, the SDK creates a `"default"`
+team + project on first run and persists the resolved UUIDs to
+`$CLAUDE_MEM_DATA_DIR/sdk-tenant.json`, reusing them on subsequent runs —
+fine for local development and single-tenant CLIs, not for multi-tenant
+servers.
+
+## See also
+
+- [Using claude-mem in your app](/sdk) — narrative walkthrough and a runnable example.
+- [`examples/sdk-node/`](https://github.com/thedotmack/claude-mem/tree/main/examples/sdk-node) — the runnable demo.
+</content>
+</invoke>

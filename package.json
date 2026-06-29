@@ -1,6 +1,6 @@
 {
   "name": "claude-mem",
-  "version": "13.8.1",
+  "version": "13.9.0",
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "keywords": [
     "claude",
@@ -63,7 +63,9 @@
   },
   "scripts": {
     "dev": "npm run build-and-sync",
-    "build": "node scripts/sync-plugin-manifests.js && node scripts/build-hooks.js && node scripts/gen-plugin-lockfile.cjs",
+    "build": "node scripts/sync-plugin-manifests.js && node scripts/build-hooks.js && node scripts/gen-plugin-lockfile.cjs && npm run build:sdk && npm run check:sdk-bundle",
+    "build:sdk": "tsup",
+    "check:sdk-bundle": "node scripts/check-sdk-bundle.cjs",
     "build-and-sync": "npm run build && npm run sync-marketplace && (cd ~/.claude/plugins/marketplaces/thedotmack && npm run worker:restart)",
     "sync-marketplace": "node scripts/sync-marketplace.cjs",
     "sync-marketplace:force": "node scripts/sync-marketplace.cjs --force",
@@ -109,7 +111,7 @@
     "test:context": "bun test tests/context/",
     "test:infra": "bun test tests/infrastructure/",
     "test:server": "bun test tests/server/",
-    "e2e:server-beta:docker": "bash scripts/e2e-server-beta-docker.sh",
+    "e2e:server:docker": "bash scripts/e2e-server-docker.sh",
     "check:postinstall-allowlist": "node scripts/check-postinstall-allowlist.js",
     "smoke:clean-room": "node scripts/smoke-clean-room.cjs",
     "prepublishOnly": "npm run build && node scripts/check-postinstall-allowlist.js",
@@ -125,12 +127,20 @@
     "2fa": false
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.172",
     "@better-auth/api-key": "^1.6.16",
-    "@clack/prompts": "^1.3.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "ansi-to-html": "^0.7.2",
     "better-auth": "^1.6.16",
+    "pg": "^8.20.0",
+    "zod": "^4.4.3"
+  },
+  "//dependencies-note": "Only deps that survive the bundler as live `import`/`require` in a shipped artifact live here — pg + zod + @modelcontextprotocol/sdk back `claude-mem/sdk`; better-auth (+ api-key) is the server-runtime auth surface. Everything else (express, bullmq, ioredis, react, react-dom, cors, dompurify, handlebars, @clack/prompts, ansi-to-html, glob, picocolors, posthog-node, shell-quote, yaml, zod-to-json-schema, @anthropic-ai/claude-agent-sdk) is esbuild-inlined into the worker/server/npx bundles, so it is a build-time devDependency and is NOT downloaded by `claude-mem/sdk` consumers. Verify with scripts/check-sdk-bundle.cjs + the dep scan before promoting anything back.",
+  "overrides": {
+    "tmp": "^0.2.7"
+  },
+  "devDependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.172",
+    "@clack/prompts": "^1.3.0",
+    "ansi-to-html": "^0.7.2",
     "bullmq": "^5.76.6",
     "cors": "^2.8.6",
     "dompurify": "^3.4.9",
@@ -138,20 +148,13 @@
     "glob": "^13.0.6",
     "handlebars": "^4.7.9",
     "ioredis": "^5.10.1",
-    "pg": "^8.20.0",
     "picocolors": "^1.1.1",
     "posthog-node": "^5.36.15",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "shell-quote": "^1.8.3",
     "yaml": "^2.8.4",
-    "zod": "^4.4.3",
-    "zod-to-json-schema": "^3.25.2"
-  },
-  "overrides": {
-    "tmp": "^0.2.7"
-  },
-  "devDependencies": {
+    "zod-to-json-schema": "^3.25.2",
     "@derekstride/tree-sitter-sql": "^0.3.11",
     "@tree-sitter-grammars/tree-sitter-lua": "^0.4.1",
     "@tree-sitter-grammars/tree-sitter-markdown": "^0.3.2",
@@ -192,6 +195,7 @@
     "tree-sitter-swift": "^0.7.1",
     "tree-sitter-typescript": "^0.23.2",
     "ts-prune": "^0.10.3",
+    "tsup": "^8.5.1",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3",
     "unified": "^11.0.5",

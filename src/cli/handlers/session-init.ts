@@ -11,8 +11,8 @@ import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { isInternalProtocolPayload } from '../../utils/tag-stripping.js';
-import { resolveRuntimeContext, logServerBetaFallback } from '../../services/hooks/runtime-selector.js';
-import { isServerBetaClientError } from '../../services/hooks/server-beta-client.js';
+import { resolveRuntimeContext, logServerFallback } from '../../services/hooks/runtime-selector.js';
+import { isServerClientError } from '../../services/hooks/server-client.js';
 
 interface SessionInitResponse {
   sessionDbId: number;
@@ -58,7 +58,9 @@ export const sessionInitHandler: EventHandler = {
       String(settings.CLAUDE_MEM_SEMANTIC_INJECT).toLowerCase() === 'true';
 
     const runtime = resolveRuntimeContext();
-    if (runtime.runtime === 'server-beta') {
+    // Phase 1a (cmem-sdk rename): `runtime.runtime` is the canonical `'server'`
+    // value. Legacy `'server-beta'` is normalized inside `selectRuntime()`.
+    if (runtime.runtime === 'server') {
       try {
         await runtime.client.startSession({
           projectId: runtime.projectId,
@@ -69,54 +71,24 @@ export const sessionInitHandler: EventHandler = {
           platformSource,
           metadata: { project, prompt },
         });
-        logger.info('HOOK', 'session-init: server-beta session started', {
+        logger.info('HOOK', 'session-init: server session started', {
           contentSessionId: sessionId,
           project,
         });
-        let additionalContext = '';
-        if (semanticInject && prompt && prompt.length >= 20 && prompt !== '[media prompt]') {
-          try {
-            const semanticResult = await runtime.client.contextObservations({
-              projectId: runtime.projectId,
-              query: prompt,
-              limit: parseSemanticInjectLimit(settings.CLAUDE_MEM_SEMANTIC_INJECT_LIMIT || '5'),
-              platformSource,
-            });
-            if (semanticResult?.context) {
-              logger.debug('HOOK', `Server-beta semantic injection: ${semanticResult.observations.length} observations for prompt`, {
-                contentSessionId: sessionId,
-                count: semanticResult.observations.length,
-              });
-              additionalContext = semanticResult.context;
-            }
-          } catch (error: unknown) {
-            logger.warn('HOOK', 'session-init: server-beta semantic context failed; continuing without injection', {
-              error: error instanceof Error ? error.message : String(error),
-              route: '/v1/context',
-            });
-          }
-        }
-        if (additionalContext) {
-          return {
-            continue: true,
-            suppressOutput: true,
-            hookSpecificOutput: {
-              hookEventName: 'UserPromptSubmit',
-              additionalContext
-            }
-          };
-        }
+        // Server does not currently support the same context-injection
+        // protocol as the worker. Skip semantic injection in server mode
+        // until the server context endpoint exists.
         return { continue: true, suppressOutput: true };
       } catch (error: unknown) {
-        if (isServerBetaClientError(error) && error.isFallbackEligible()) {
-          logServerBetaFallback(error.kind, {
+        if (isServerClientError(error) && error.isFallbackEligible()) {
+          logServerFallback(error.kind, {
             status: error.status,
             message: error.message,
             route: '/v1/sessions/start',
           });
           // fall through to worker fallback
         } else {
-          logger.error('HOOK', 'Server beta session-start failed (non-recoverable)', {
+          logger.error('HOOK', 'Server session-start failed (non-recoverable)', {
             error: error instanceof Error ? error.message : String(error),
           });
           return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };

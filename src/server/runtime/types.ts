@@ -2,30 +2,30 @@
 
 import type { PostgresPool, PostgresStorageRepositories } from '../../storage/postgres/index.js';
 
-export type ServerBetaRuntimeName = 'server-beta';
-export type ServerBetaAuthMode = 'api-key' | 'local-dev' | 'disabled';
+export type ServerRuntimeName = 'server-beta';
+export type ServerAuthMode = 'api-key' | 'local-dev' | 'disabled';
 export type DisabledBoundaryStatus = 'disabled';
-export type ServerBetaBoundaryStatus = 'disabled' | 'active' | 'errored';
+export type ServerBoundaryStatus = 'disabled' | 'active' | 'errored';
 
-export interface ServerBetaBootstrapStatus {
+export interface ServerBootstrapStatus {
   initialized: boolean;
   schemaVersion: number | null;
   appliedAt: string | null;
   error?: string;
 }
 
-export interface ServerBetaBoundaryHealth {
-  status: ServerBetaBoundaryStatus;
+export interface ServerBoundaryHealth {
+  status: ServerBoundaryStatus;
   reason: string;
   details?: Record<string, unknown>;
 }
 
 // Phase 12 — per-lane queue metric snapshot. Returned by
-// ActiveServerBetaQueueManager.getLaneMetrics so /api/health and /v1/info
+// ActiveServerQueueManager.getLaneMetrics so /api/health and /v1/info
 // can publish current waiting/active/completed/failed/delayed/stalled counts
 // for each generation lane. `unavailable` is set when Redis was unreachable
 // at sample time so /api/health still responds rather than 500'ing.
-export interface ServerBetaQueueLaneMetric {
+export interface ServerQueueLaneMetric {
   kind: string;
   name: string;
   waiting: number;
@@ -38,47 +38,47 @@ export interface ServerBetaQueueLaneMetric {
   unavailableReason?: string;
 }
 
-export interface ServerBetaQueueManager {
+export interface ServerQueueManager {
   readonly kind: 'queue-manager';
-  getHealth(): ServerBetaBoundaryHealth;
+  getHealth(): ServerBoundaryHealth;
   close(): Promise<void>;
 }
 
-export interface ServerBetaGenerationWorkerManager {
+export interface ServerGenerationWorkerManager {
   readonly kind: 'generation-worker-manager';
-  getHealth(): ServerBetaBoundaryHealth;
+  getHealth(): ServerBoundaryHealth;
   close(): Promise<void>;
 }
 
-export interface ServerBetaServiceGraph {
-  runtime: ServerBetaRuntimeName;
+export interface ServerServiceGraph {
+  runtime: ServerRuntimeName;
   postgres: {
     pool: PostgresPool;
-    bootstrap: ServerBetaBootstrapStatus;
+    bootstrap: ServerBootstrapStatus;
   };
-  authMode: ServerBetaAuthMode;
-  queueManager: ServerBetaQueueManager;
-  generationWorkerManager: ServerBetaGenerationWorkerManager;
+  authMode: ServerAuthMode;
+  queueManager: ServerQueueManager;
+  generationWorkerManager: ServerGenerationWorkerManager;
   storage: PostgresStorageRepositories;
 }
 
-abstract class DisabledServerBetaBoundary {
-  abstract readonly kind: ServerBetaQueueManager['kind']
-    | ServerBetaGenerationWorkerManager['kind'];
+abstract class DisabledServerBoundary {
+  abstract readonly kind: ServerQueueManager['kind']
+    | ServerGenerationWorkerManager['kind'];
 
   constructor(private readonly reason: string) {}
 
-  getHealth(): ServerBetaBoundaryHealth {
+  getHealth(): ServerBoundaryHealth {
     return { status: 'disabled' as const, reason: this.reason };
   }
 
   async close(): Promise<void> {}
 }
 
-export class DisabledServerBetaQueueManager extends DisabledServerBetaBoundary implements ServerBetaQueueManager {
+export class DisabledServerQueueManager extends DisabledServerBoundary implements ServerQueueManager {
   readonly kind = 'queue-manager' as const;
 }
 
-export class DisabledServerBetaGenerationWorkerManager extends DisabledServerBetaBoundary implements ServerBetaGenerationWorkerManager {
+export class DisabledServerGenerationWorkerManager extends DisabledServerBoundary implements ServerGenerationWorkerManager {
   readonly kind = 'generation-worker-manager' as const;
 }
