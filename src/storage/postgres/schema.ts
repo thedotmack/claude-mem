@@ -151,7 +151,6 @@ CREATE TABLE IF NOT EXISTS server_sessions (
   last_generated_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE (project_id, external_session_id),
   FOREIGN KEY (project_id, team_id) REFERENCES projects(id, team_id) ON DELETE CASCADE
 );
 
@@ -256,6 +255,7 @@ CREATE TABLE IF NOT EXISTS observation_generation_job_events (
 
 CREATE INDEX IF NOT EXISTS idx_agent_events_project_session ON agent_events(project_id, server_session_id, occurred_at);
 ALTER TABLE server_sessions ADD COLUMN IF NOT EXISTS idempotency_key TEXT;
+ALTER TABLE server_sessions DROP CONSTRAINT IF EXISTS server_sessions_project_id_external_session_id_key;
 -- #2560 — platform_source on agent_events (consistent with server_sessions and
 -- the plan-09 scoping): which platform produced the event (claude-code,
 -- opencode, cursor, ...). Idempotent so an existing DB upgrades in place.
@@ -272,10 +272,16 @@ ALTER TABLE observation_generation_jobs DROP CONSTRAINT IF EXISTS observation_ge
 CREATE UNIQUE INDEX IF NOT EXISTS idx_server_sessions_project_idempotency
   ON server_sessions(project_id, idempotency_key)
   WHERE idempotency_key IS NOT NULL;
--- Supports the session linkage lookup on the /v1/events ingest path
--- (WHERE content_session_id = $1 AND project_id = $2 ...).
-CREATE INDEX IF NOT EXISTS idx_server_sessions_content_session
-  ON server_sessions(project_id, content_session_id)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_server_sessions_external_session_legacy
+  ON server_sessions(project_id, external_session_id)
+  WHERE external_session_id IS NOT NULL AND platform_source IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_server_sessions_external_session_platform
+  ON server_sessions(project_id, platform_source, external_session_id)
+  WHERE external_session_id IS NOT NULL AND platform_source IS NOT NULL;
+DROP INDEX IF EXISTS idx_server_sessions_content_session;
+-- Supports platform-aware session linkage lookup on the /v1/events ingest path.
+CREATE INDEX IF NOT EXISTS idx_server_sessions_content_session_platform
+  ON server_sessions(team_id, project_id, platform_source, content_session_id, started_at DESC)
   WHERE content_session_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_observations_generation_key_scope
   ON observations(team_id, project_id, generation_key)

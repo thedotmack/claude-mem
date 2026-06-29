@@ -26,6 +26,7 @@ import { PostgresServerSessionsRepository } from '../../../storage/postgres/serv
 import type { ServerSessionGenerationPolicy } from '../../runtime/SessionGenerationPolicy.js';
 import { IngestEventsService, type EnqueueOutcome } from '../../services/IngestEventsService.js';
 import { EndSessionService } from '../../services/EndSessionService.js';
+import { normalizePlatformSource, normalizePlatformSourceOrNull } from '../../../shared/platform-source.js';
 
 const SOURCE_ADAPTER_DEFAULT = 'api';
 
@@ -165,27 +166,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
 
       const insertInput = this.toAgentEventInput(body, teamId);
-      // Link events to their session: clients send `contentSessionId` on /v1/events
-      // but not `serverSessionId`, leaving tool_use events unlinked. The session was
-      // already registered via /v1/sessions/start, so resolve it here (scoped by
-      // project+team — no cross-tenant linkage).
-      if (!insertInput.serverSessionId && body.contentSessionId) {
-        // Best-effort: a lookup failure (transient DB/pool error) must not fail
-        // ingestion — fall through and store the event unlinked (prior behavior).
-        try {
-          const linkedId = await new PostgresServerSessionsRepository(this.options.pool)
-            .findIdByContentSessionId({
-              contentSessionId: body.contentSessionId,
-              projectId: body.projectId,
-              teamId,
-            });
-          if (linkedId) insertInput.serverSessionId = linkedId;
-        } catch (err) {
-          logger.warn('HTTP', 'session linkage lookup failed; storing event unlinked', {
-            error: err instanceof Error ? err.message : String(err),
-          });
-        }
-      }
+      await this.applyContentSessionLinks([insertInput], [req.body], teamId);
       let event: PostgresAgentEvent;
       let outbox: PostgresObservationGenerationJob | null = null;
       let enqueueState: EnqueueOutcome = 'skipped';
@@ -264,6 +245,11 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       }
 
       const inputs = result.data.map(item => this.toAgentEventInput(item, teamId));
+      await this.applyContentSessionLinks(
+        inputs,
+        Array.isArray(req.body) ? req.body : result.data,
+        teamId,
+      );
 
       let inserted: { event: PostgresAgentEvent; outbox: PostgresObservationGenerationJob | null }[] = [];
       let enqueueResults: EnqueueOutcome[] = [];
@@ -663,7 +649,8 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     }));
 
     // POST /v1/sessions/start — create-or-find a server_session, idempotent
-    // on (project_id, external_session_id). Body matches the worker
+    // on platform-scoped external session identity when platformSource is set.
+    // Body matches the worker
     // /v1/sessions/start payload but stores into Postgres server_sessions.
     app.post('/v1/sessions/start', writeAuth, this.handleCreate(
       z.object({
@@ -680,12 +667,14 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         if (!teamId) return;
         if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
         const repo = new PostgresServerSessionsRepository(this.options.pool);
+        const platformSource = normalizePlatformSourceOrNull(body.platformSource);
         try {
           if (body.externalSessionId) {
             const existing = await repo.findByExternalIdForScope({
               externalSessionId: body.externalSessionId,
               projectId: body.projectId,
               teamId,
+              platformSource,
             });
             if (existing) {
               res.status(200).json({ session: serializeSession(existing) });
@@ -701,15 +690,15 @@ export class ServerV1PostgresRoutes implements RouteHandler {
               contentSessionId: body.contentSessionId ?? null,
               agentId: body.agentId ?? null,
               agentType: body.agentType ?? null,
-              platformSource: body.platformSource ?? null,
+              platformSource,
               metadata: (body.metadata ?? {}) as Record<string, unknown>,
             });
           } catch (error) {
             // Concurrent /v1/sessions/start with the same externalSessionId
             // can race past the findByExternalIdForScope check; the second
-            // insert hits the (project_id, external_session_id) unique
-            // constraint. Refetch and return the row inserted by the winner
-            // so legacy clients never see a spurious 500.
+            // insert can hit a platform-scoped unique constraint. Refetch and
+            // return the row inserted by the winner so legacy clients never
+            // see a spurious 500.
             if (
               body.externalSessionId &&
               (error as { code?: string } | null)?.code === '23505'
@@ -718,6 +707,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
                 externalSessionId: body.externalSessionId,
                 projectId: body.projectId,
                 teamId,
+                platformSource,
               });
               if (racedRow) {
                 res.status(200).json({ session: serializeSession(racedRow) });
@@ -855,11 +845,13 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         projectId: z.string().min(1),
         query: z.string().min(1),
         limit: z.number().int().positive().max(100).optional(),
+        platformSource: z.string().min(1).nullable().optional(),
       }),
       async (req, res, body) => {
         const teamId = this.requireTeamId(req, res);
         if (!teamId) return;
         if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
+        const platformSource = normalizePlatformSourceOrNull(body.platformSource);
         try {
           const repo = new PostgresObservationRepository(this.options.pool);
           const results = await repo.search({
@@ -867,11 +859,13 @@ export class ServerV1PostgresRoutes implements RouteHandler {
             teamId,
             query: body.query,
             limit: body.limit ?? 20,
+            platformSource,
           });
           await this.auditRead(req, 'observation.read', null, body.projectId, {
             mode: 'search',
             query: body.query,
             limit: body.limit ?? 20,
+            platformSource,
             resultCount: results.length,
             observationIds: results.map(o => o.id),
           });
@@ -893,11 +887,13 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         projectId: z.string().min(1),
         query: z.string().min(1),
         limit: z.number().int().positive().max(50).optional(),
+        platformSource: z.string().min(1).nullable().optional(),
       }),
       async (req, res, body) => {
         const teamId = this.requireTeamId(req, res);
         if (!teamId) return;
         if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
+        const platformSource = normalizePlatformSourceOrNull(body.platformSource);
         try {
           const repo = new PostgresObservationRepository(this.options.pool);
           const results = await repo.search({
@@ -905,6 +901,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
             teamId,
             query: body.query,
             limit: body.limit ?? 10,
+            platformSource,
           });
           const context = results
             .map(observation => observation.content)
@@ -914,6 +911,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
             mode: 'context',
             query: body.query,
             limit: body.limit ?? 10,
+            platformSource,
             resultCount: results.length,
             observationIds: results.map(o => o.id),
           });
@@ -989,7 +987,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         ? ((body as Record<string, unknown>).sourceEventId as string)
         : null,
       eventType: body.eventType,
-      platformSource: body.platformSource ?? null,
+      platformSource: normalizePlatformSourceOrNull(body.platformSource),
       payload: (body.payload ?? {}) as object,
       metadata: typeof (body as Record<string, unknown>).metadata === 'object'
         && (body as Record<string, unknown>).metadata !== null
@@ -1006,6 +1004,59 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       return null;
     }
     return teamId;
+  }
+
+  private async applyContentSessionLinks(
+    inputs: CreatePostgresAgentEventInput[],
+    rawBodies: unknown[],
+    teamId: string,
+  ): Promise<void> {
+    const repo = new PostgresServerSessionsRepository(this.options.pool);
+    const lookups = new Map<string, Promise<string | null>>();
+
+    await Promise.all(inputs.map(async (input, index) => {
+      if (input.serverSessionId || !input.contentSessionId) return;
+
+      const platformScope = this.sessionLookupPlatformScope(rawBodies[index]);
+      const hasPlatformScope = Object.prototype.hasOwnProperty.call(platformScope, 'platformSource');
+      const cacheKey = JSON.stringify([
+        input.projectId,
+        teamId,
+        input.contentSessionId,
+        hasPlatformScope,
+        hasPlatformScope ? platformScope.platformSource ?? null : null,
+      ]);
+      let lookup = lookups.get(cacheKey);
+      if (!lookup) {
+        lookup = repo.findIdByContentSessionId({
+          contentSessionId: input.contentSessionId,
+          projectId: input.projectId,
+          teamId,
+          ...platformScope,
+        }).catch((err: unknown) => {
+          logger.warn('HTTP', 'session linkage lookup failed; storing event unlinked', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          return null;
+        });
+        lookups.set(cacheKey, lookup);
+      }
+
+      const linkedId = await lookup;
+      if (linkedId) input.serverSessionId = linkedId;
+    }));
+  }
+
+  private sessionLookupPlatformScope(body: unknown): { platformSource?: string | null } {
+    if (!body || typeof body !== 'object') return {};
+    if (!Object.prototype.hasOwnProperty.call(body, 'platformSource')) return {};
+
+    const value = (body as { platformSource?: unknown }).platformSource;
+    return {
+      platformSource: typeof value === 'string'
+        ? normalizePlatformSource(value)
+        : null,
+    };
   }
 
   private ensureProjectAllowed(req: Request, res: Response, projectId: string): boolean {

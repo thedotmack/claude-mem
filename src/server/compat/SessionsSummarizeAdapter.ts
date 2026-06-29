@@ -21,6 +21,7 @@ import { logger } from '../../utils/logger.js';
 import { requirePostgresServerAuth } from '../middleware/postgres-auth.js';
 import { EndSessionService } from '../services/EndSessionService.js';
 import { resolveServerSession } from './SessionsObservationsAdapter.js';
+import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
 
 const summarizeSchema = z.object({
   contentSessionId: z.string().min(1),
@@ -75,12 +76,17 @@ export class SessionsSummarizeAdapter implements RouteHandler {
       }
 
       try {
+        const platformSource = normalizePlatformSource(
+          typeof parsed.data.platformSource === 'string'
+            ? parsed.data.platformSource
+            : DEFAULT_PLATFORM_SOURCE,
+        );
         const session = await resolveServerSession({
           pool: this.options.pool,
           teamId,
           projectId,
           contentSessionId: parsed.data.contentSessionId,
-          platformSource: typeof parsed.data.platformSource === 'string' ? parsed.data.platformSource : null,
+          platformSource,
           agentId: null,
           agentType: null,
         });

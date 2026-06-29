@@ -44,7 +44,9 @@ export class ServerSessionRuntimeRepository {
 
   /**
    * Find or create the canonical Server beta session row for an external
-   * session id. Idempotent on (project_id, external_session_id).
+   * session id. Idempotent on the platform-scoped external session identity
+   * when platformSource is supplied; legacy no-platform sessions stay scoped
+   * to a null platform source.
    *
    * Anti-pattern guard: this MUST NOT consult worker `ActiveSession` or any
    * legacy SessionStore. server_sessions is the canonical model.
@@ -54,6 +56,7 @@ export class ServerSessionRuntimeRepository {
       externalSessionId: input.externalSessionId,
       projectId: input.projectId,
       teamId: input.teamId,
+      platformSource: input.platformSource ?? null,
     });
     if (existing) {
       return existing;
@@ -80,11 +83,13 @@ export class ServerSessionRuntimeRepository {
 
   async findByExternalId(input: {
     externalSessionId: string;
+    platformSource?: string | null;
   } & ServerSessionScope): Promise<PostgresServerSession | null> {
     return this.repo.findByExternalIdForScope({
       externalSessionId: input.externalSessionId,
       projectId: input.projectId,
       teamId: input.teamId,
+      platformSource: input.platformSource ?? null,
     });
   }
 

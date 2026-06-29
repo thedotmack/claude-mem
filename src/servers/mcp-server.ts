@@ -38,6 +38,7 @@ import {
   type SelectedRuntime,
   type ServerBetaRuntimeContext,
 } from '../services/hooks/runtime-selector.js';
+import { normalizePlatformSource } from '../shared/platform-source.js';
 
 let mcpServerDirResolutionFailed = false;
 const mcpServerDir = (() => {
@@ -103,6 +104,52 @@ async function callWorkerAPI(
     return data;
   } catch (error: unknown) {
     logger.error('SYSTEM', '← Worker API error', { endpoint }, error instanceof Error ? error : new Error(String(error)));
+    return {
+      content: [{
+        type: 'text' as const,
+        text: `Error calling Worker API: ${error instanceof Error ? error.message : String(error)}`
+      }],
+      isError: true
+    };
+  }
+}
+
+async function callWorkerAPIText(
+  endpoint: string,
+  params: Record<string, any>
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+  logger.debug('SYSTEM', '→ Worker API text', undefined, { endpoint, params });
+
+  const searchParams = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null) {
+      searchParams.append(key, String(value));
+    }
+  }
+
+  const apiPath = `${endpoint}?${searchParams}`;
+
+  try {
+    const response = await workerHttpRequest(apiPath);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Worker API error (${response.status}): ${errorText}`);
+    }
+
+    const text = await response.text();
+
+    logger.debug('SYSTEM', '← Worker API text success', undefined, { endpoint });
+
+    return {
+      content: [{
+        type: 'text' as const,
+        text,
+      }],
+    };
+  } catch (error: unknown) {
+    logger.error('SYSTEM', '← Worker API text error', { endpoint }, error instanceof Error ? error : new Error(String(error)));
     return {
       content: [{
         type: 'text' as const,
@@ -287,11 +334,16 @@ interface ObservationRecordEventArgs {
   serverSessionId?: string | null;
   contentSessionId?: string | null;
   memorySessionId?: string | null;
+  platformSource?: string | null;
   sourceType?: 'hook' | 'worker' | 'provider' | 'server' | 'api';
   eventType: string;
   payload?: unknown;
   occurredAtEpoch?: number;
   generate?: boolean;
+}
+
+function normalizeMcpPlatformSource(value: string | null): string | null {
+  return typeof value === 'string' ? normalizePlatformSource(value) : null;
 }
 
 async function handleObservationRecordEvent(
@@ -311,6 +363,7 @@ async function handleObservationRecordEvent(
       ...(args.serverSessionId !== undefined ? { serverSessionId: args.serverSessionId } : {}),
       ...(args.contentSessionId !== undefined ? { contentSessionId: args.contentSessionId } : {}),
       ...(args.memorySessionId !== undefined ? { memorySessionId: args.memorySessionId } : {}),
+      ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
       ...(args.payload !== undefined ? { payload: args.payload } : {}),
       ...(args.generate !== undefined ? { generate: args.generate } : {}),
     };
@@ -325,6 +378,7 @@ interface ObservationSearchArgs {
   projectId?: string;
   query: string;
   limit?: number;
+  platformSource?: string | null;
 }
 
 async function handleObservationSearch(
@@ -340,6 +394,7 @@ async function handleObservationSearch(
       projectId,
       query: args.query,
       ...(args.limit !== undefined ? { limit: args.limit } : {}),
+      ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
     };
     const response = await ctx.client.searchObservations(request);
     return formatJsonResult(response);
@@ -352,6 +407,7 @@ interface ObservationContextArgs {
   projectId?: string;
   query: string;
   limit?: number;
+  platformSource?: string | null;
 }
 
 async function handleObservationContext(
@@ -367,6 +423,7 @@ async function handleObservationContext(
       projectId,
       query: args.query,
       ...(args.limit !== undefined ? { limit: args.limit } : {}),
+      ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
     };
     const response = await ctx.client.contextObservations(request);
     return formatJsonResult(response);
@@ -378,6 +435,54 @@ async function handleObservationContext(
 interface ObservationGenerationStatusArgs {
   jobId?: string;
   job_id?: string;
+}
+
+interface SessionStartContextArgs {
+  project?: string;
+  projects?: string[] | string;
+  platformSource?: string | null;
+  full?: boolean;
+  colors?: boolean;
+}
+
+function normalizeProjectsArg(args: SessionStartContextArgs): string[] {
+  if (Array.isArray(args.projects)) {
+    return args.projects
+      .map(project => typeof project === 'string' ? project.trim() : '')
+      .filter(Boolean);
+  }
+  if (typeof args.projects === 'string') {
+    return args.projects
+      .split(',')
+      .map(project => project.trim())
+      .filter(Boolean);
+  }
+  if (typeof args.project === 'string' && args.project.trim().length > 0) {
+    return [args.project.trim()];
+  }
+  return [];
+}
+
+async function handleSessionStartContext(
+  args: SessionStartContextArgs,
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+  const projects = normalizeProjectsArg(args);
+  if (projects.length === 0) {
+    return {
+      content: [{
+        type: 'text' as const,
+        text: 'session_start_context: "project" or "projects" is required',
+      }],
+      isError: true,
+    };
+  }
+
+  return callWorkerAPIText('/api/context/inject', {
+    projects: projects.join(','),
+    ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
+    ...(args.full !== undefined ? { full: args.full } : {}),
+    ...(args.colors !== undefined ? { colors: args.colors } : {}),
+  });
 }
 
 async function handleObservationGenerationStatus(
@@ -523,6 +628,28 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       return await callWorkerAPIPost('/api/observations/batch', args);
     }
   },
+  {
+    name: 'session_start_context',
+    description: 'Render the exact worker-mode SessionStart context for a project. Calls /api/context/inject and returns the same text hooks inject at startup. Params: project OR projects, platformSource, full, colors.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project: { type: 'string', description: 'Project name, e.g. claude-mem/night-parsnip' },
+        projects: {
+          oneOf: [
+            { type: 'array', items: { type: 'string' } },
+            { type: 'string' },
+          ],
+          description: 'Project chain for context injection. Array or comma-separated string; last project is treated as primary.',
+        },
+        platformSource: { type: 'string', description: 'Optional platform source filter, e.g. claude, codex, cursor' },
+        full: { type: 'boolean', description: 'When true, request full context instead of configured limits' },
+        colors: { type: 'boolean', description: 'When true, request human terminal-color formatting' },
+      },
+      additionalProperties: false,
+    },
+    handler: async (args: any) => handleSessionStartContext(args ?? {}),
+  },
   // Phase 8 — observation_* tools backed by server-beta REST core.
   // These are the canonical names. memory_* tools below are kept as
   // compatibility aliases that delegate to these handlers, so existing
@@ -556,6 +683,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
         serverSessionId: { type: 'string' },
         contentSessionId: { type: 'string' },
         memorySessionId: { type: 'string' },
+        platformSource: { type: 'string', description: 'Optional platform source for session linkage and event scoping' },
         payload: { description: 'Event payload (any JSON value)' },
         occurredAtEpoch: { type: 'number', description: 'Unix epoch millis (defaults to now)' },
         generate: { type: 'boolean', description: 'If false, skip generation job (default: true)' },
@@ -567,12 +695,13 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'observation_search',
-    description: 'Full-text search across generated observations using server-beta\'s GIN tsvector index (Phase 1). Calls /v1/search. Server-beta runtime only. Params: query (required), projectId (optional), limit (default 20, max 100).',
+    description: 'Full-text search across generated observations using server-beta\'s GIN tsvector index (Phase 1). Calls /v1/search. Server-beta runtime only. Params: query (required), projectId (optional), platformSource, limit (default 20, max 100).',
     inputSchema: {
       type: 'object',
       properties: {
         projectId: { type: 'string' },
         query: { type: 'string', description: 'Search query (required)' },
+        platformSource: { type: 'string', description: 'Optional platform source filter, e.g. claude, codex, cursor' },
         limit: { type: 'number', description: 'Max results (default 20, max 100)' },
       },
       required: ['query'],
@@ -588,6 +717,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       properties: {
         projectId: { type: 'string' },
         query: { type: 'string', description: 'Search query (required)' },
+        platformSource: { type: 'string', description: 'Optional platform source filter, e.g. claude, codex, cursor' },
         limit: { type: 'number', description: 'Max observations (default 10, max 50)' },
       },
       required: ['query'],
@@ -651,6 +781,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       properties: {
         projectId: { type: 'string' },
         query: { type: 'string' },
+        platformSource: { type: 'string' },
         limit: { type: 'number' },
       },
       required: ['projectId', 'query'],
@@ -666,6 +797,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       properties: {
         projectId: { type: 'string' },
         query: { type: 'string' },
+        platformSource: { type: 'string' },
         limit: { type: 'number' },
       },
       required: ['projectId', 'query'],

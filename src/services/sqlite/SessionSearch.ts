@@ -14,6 +14,7 @@ import {
   ObservationRow,
   UserPromptRow
 } from './types.js';
+import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
 
 export class SessionSearch {
   private db: Database;
@@ -168,9 +169,9 @@ export class SessionSearch {
     // codex/other-agent search.
     if (filters.platformSource) {
       conditions.push(
-        `COALESCE((SELECT s2.platform_source FROM sdk_sessions s2 WHERE s2.memory_session_id = ${tableAlias}.memory_session_id), 'claude') = ?`
+        `COALESCE(NULLIF((SELECT s2.platform_source FROM sdk_sessions s2 WHERE s2.memory_session_id = ${tableAlias}.memory_session_id), ''), '${DEFAULT_PLATFORM_SOURCE}') = ?`
       );
-      params.push(filters.platformSource);
+      params.push(normalizePlatformSource(filters.platformSource));
     }
 
     if (filters.type) {
@@ -454,6 +455,13 @@ export class SessionSearch {
       sessionParams.push(sessionFilters.project);
     }
 
+    if (sessionFilters.platformSource) {
+      baseConditions.push(
+        `COALESCE(NULLIF((SELECT s2.platform_source FROM sdk_sessions s2 WHERE s2.memory_session_id = s.memory_session_id), ''), '${DEFAULT_PLATFORM_SOURCE}') = ?`
+      );
+      sessionParams.push(normalizePlatformSource(sessionFilters.platformSource));
+    }
+
     if (sessionFilters.dateRange) {
       const { start, end } = sessionFilters.dateRange;
       if (start) {
@@ -527,6 +535,11 @@ export class SessionSearch {
       params.push(filters.project);
     }
 
+    if (filters.platformSource) {
+      baseConditions.push(`COALESCE(NULLIF(s.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}') = ?`);
+      params.push(normalizePlatformSource(filters.platformSource));
+    }
+
     if (filters.dateRange) {
       const { start, end } = filters.dateRange;
       if (start) {
@@ -552,9 +565,13 @@ export class SessionSearch {
         : 'ORDER BY up.created_at_epoch DESC';
 
       const sql = `
-        SELECT up.*
+        SELECT
+          up.*,
+          s.project,
+          s.memory_session_id,
+          COALESCE(NULLIF(s.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}') as platform_source
         FROM user_prompts up
-        JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
+        JOIN sdk_sessions s ON up.session_db_id = s.id
         ${whereClause}
         ${orderClause}
         LIMIT ? OFFSET ?
@@ -574,9 +591,13 @@ export class SessionSearch {
       : 'ORDER BY up.created_at_epoch DESC';
 
     const sql = `
-      SELECT up.*
+      SELECT
+        up.*,
+        s.project,
+        s.memory_session_id,
+        COALESCE(NULLIF(s.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}') as platform_source
       FROM user_prompts up
-      JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
+      JOIN sdk_sessions s ON up.session_db_id = s.id
       ${whereClause}
       ${orderClause}
       LIMIT ? OFFSET ?

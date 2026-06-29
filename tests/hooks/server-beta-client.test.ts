@@ -89,6 +89,7 @@ describe('ServerBetaClient', () => {
     expect(captured[0]?.headers['content-type']).toBe('application/json');
     expect((captured[0]?.body as Record<string, unknown>).projectId).toBe('p1');
     expect((captured[0]?.body as Record<string, unknown>).externalSessionId).toBe('ext');
+    expect((captured[0]?.body as Record<string, unknown>).platformSource).toBe('claude');
     expect(result.session.id).toBe('sess-1');
   });
 
@@ -98,6 +99,7 @@ describe('ServerBetaClient', () => {
     const result = await client.recordEvent({
       projectId: 'p1',
       contentSessionId: 'cs1',
+      platformSource: 'Codex CLI',
       sourceType: 'hook',
       eventType: 'tool_use',
       occurredAtEpoch: 1234,
@@ -107,6 +109,7 @@ describe('ServerBetaClient', () => {
     expect((captured[0]?.body as Record<string, unknown>).eventType).toBe('tool_use');
     expect((captured[0]?.body as Record<string, unknown>).sourceType).toBe('hook');
     expect((captured[0]?.body as Record<string, unknown>).occurredAtEpoch).toBe(1234);
+    expect((captured[0]?.body as Record<string, unknown>).platformSource).toBe('codex');
     expect(result.event.id).toBe('e1');
   });
 
@@ -232,10 +235,12 @@ describe('ServerBetaClient', () => {
       projectId: 'p1',
       query: 'login bug',
       limit: 5,
+      platformSource: 'Codex CLI',
     });
     expect(captured[0]?.url).toBe('http://localhost:9999/v1/search');
     expect((captured[0]?.body as Record<string, unknown>).query).toBe('login bug');
     expect((captured[0]?.body as Record<string, unknown>).limit).toBe(5);
+    expect((captured[0]?.body as Record<string, unknown>).platformSource).toBe('codex');
     expect(result.observations[0]?.id).toBe('o1');
   });
 
@@ -248,8 +253,9 @@ describe('ServerBetaClient', () => {
       { status: 200 },
     ));
     const client = new ServerBetaClient({ serverBaseUrl: 'http://localhost:9999', apiKey: 'cmem_test' });
-    const result = await client.contextObservations({ projectId: 'p1', query: 'q' });
+    const result = await client.contextObservations({ projectId: 'p1', query: 'q', platformSource: 'Cursor' });
     expect(captured[0]?.url).toBe('http://localhost:9999/v1/context');
+    expect((captured[0]?.body as Record<string, unknown>).platformSource).toBe('cursor');
     expect(result.context).toBe('a\n\nb');
     expect(result.observations).toHaveLength(2);
   });
@@ -295,6 +301,33 @@ describe('ServerBetaClient', () => {
       projectId: 'p',
       query: 'q',
       limit: 7,
+    });
+    expect(client.buildSearchPayload({ projectId: 'p', query: 'q', platformSource: 'Codex CLI' })).toEqual({
+      projectId: 'p',
+      query: 'q',
+      platformSource: 'codex',
+    });
+    expect(client.buildEventPayload({
+      projectId: 'p',
+      sourceType: 'hook',
+      eventType: 'tool_use',
+      occurredAtEpoch: 1,
+      platformSource: 'Claude Code',
+    })).toEqual({
+      projectId: 'p',
+      sourceType: 'hook',
+      eventType: 'tool_use',
+      occurredAtEpoch: 1,
+      platformSource: 'claude',
+    });
+    expect(client.buildStartSessionPayload({
+      projectId: 'p',
+      externalSessionId: 'ext',
+      platformSource: 'Cursor',
+    })).toEqual({
+      projectId: 'p',
+      externalSessionId: 'ext',
+      platformSource: 'cursor',
     });
   });
 });

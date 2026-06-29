@@ -21,6 +21,57 @@ const mockMode = {
   observation_concepts: []
 };
 
+function makeSession(overrides: Record<string, unknown> = {}) {
+  return {
+    sessionDbId: 1,
+    contentSessionId: 'test-session',
+    memorySessionId: 'mem-session-123',
+    project: 'test-project',
+    userPrompt: 'test prompt',
+    conversationHistory: [],
+    lastPromptNumber: 1,
+    cumulativeInputTokens: 0,
+    cumulativeOutputTokens: 0,
+    pendingMessages: [],
+    abortController: new AbortController(),
+    generatorPromise: null,
+    currentProvider: null,
+    startTime: Date.now(),
+    ...overrides,
+  } as any;
+}
+
+function mockGeminiLimits(maxContextMessages: string) {
+  loadFromFileSpy.mockImplementation(() => ({
+    ...SettingsDefaultsManager.getAllDefaults(),
+    CLAUDE_MEM_GEMINI_API_KEY: 'test-api-key',
+    CLAUDE_MEM_GEMINI_MODEL: 'gemini-2.5-flash-lite',
+    CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'false',
+    CLAUDE_MEM_GEMINI_MAX_CONTEXT_MESSAGES: maxContextMessages,
+    CLAUDE_MEM_GEMINI_MAX_TOKENS: '100000',
+    CLAUDE_MEM_DATA_DIR: '/tmp/claude-mem-test',
+  }));
+}
+
+function mockSuccessfulGeminiFetch() {
+  global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
+    candidates: [{ content: { parts: [{ text: 'response' }] } }]
+  }))));
+}
+
+function sentGeminiContents() {
+  return JSON.parse((global.fetch as any).mock.calls[0][1].body).contents;
+}
+
+function expectAlternatingGeminiRoles(contents: Array<{ role: string }>) {
+  expect(contents.length).toBeGreaterThan(0);
+  expect(contents[0].role).toBe('user');
+
+  for (let i = 1; i < contents.length; i++) {
+    expect(contents[i].role).not.toBe(contents[i - 1].role);
+  }
+}
+
 let loadFromFileSpy: ReturnType<typeof spyOn>;
 let getSpy: ReturnType<typeof spyOn>;
 let modeManagerSpy: ReturnType<typeof spyOn>;
@@ -191,6 +242,78 @@ describe('GeminiProvider', () => {
     expect(body.contents[2].role).toBe('user');
   });
 
+  it('repairs truncated history that would otherwise start with a model turn', async () => {
+    mockGeminiLimits('2');
+
+    const session = makeSession({
+      userPrompt: 'current user prompt',
+      lastPromptNumber: 2,
+      conversationHistory: [
+        { role: 'user', content: 'old user turn' },
+        { role: 'assistant', content: 'assistant turn kept by truncation' },
+      ],
+    });
+
+    mockSuccessfulGeminiFetch();
+
+    await agent.startSession(session);
+
+    const contents = sentGeminiContents();
+    expectAlternatingGeminiRoles(contents);
+    expect(contents[0].role).toBe('user');
+    expect(contents[0].parts[0].text).toContain('current user prompt');
+    expect(contents.map((content: any) => content.parts[0].text).join('\n')).not.toContain('assistant turn kept by truncation');
+  });
+
+  it('keeps Gemini roles alternating with odd and even context message limits', async () => {
+    const history = [
+      { role: 'user', content: 'u0' },
+      { role: 'assistant', content: 'm1' },
+      { role: 'user', content: 'u2' },
+      { role: 'assistant', content: 'm3' },
+      { role: 'user', content: 'u4' },
+      { role: 'assistant', content: 'm5' },
+    ];
+
+    for (const maxContextMessages of ['4', '5']) {
+      mockGeminiLimits(maxContextMessages);
+      mockSuccessfulGeminiFetch();
+
+      await agent.startSession(makeSession({
+        userPrompt: `current prompt ${maxContextMessages}`,
+        lastPromptNumber: 2,
+        conversationHistory: history.map(message => ({ ...message })),
+      }));
+
+      const contents = sentGeminiContents();
+      expectAlternatingGeminiRoles(contents);
+      expect(contents[contents.length - 1].role).toBe('user');
+      expect(contents[contents.length - 1].parts[0].text).toContain(`current prompt ${maxContextMessages}`);
+    }
+  });
+
+  it('merges adjacent same-role messages instead of sending repeated Gemini roles', async () => {
+    const session = makeSession({
+      conversationHistory: [
+        { role: 'user', content: 'first user turn' },
+        { role: 'user', content: 'second user turn' },
+        { role: 'assistant', content: 'model turn' },
+      ],
+    });
+
+    mockSuccessfulGeminiFetch();
+
+    await agent.startSession(session);
+
+    const contents = sentGeminiContents();
+    expectAlternatingGeminiRoles(contents);
+    expect(contents).toHaveLength(3);
+    expect(contents[0].role).toBe('user');
+    expect(contents[0].parts[0].text).toBe('first user turn\n\nsecond user turn');
+    expect(contents[1].role).toBe('model');
+    expect(contents[2].role).toBe('user');
+  });
+
   it('should process observations and store them', async () => {
     const session = {
       sessionDbId: 1,
@@ -275,13 +398,57 @@ describe('GeminiProvider', () => {
       startTime: Date.now(),
     } as any;
 
-    global.fetch = mock(() => Promise.resolve(new Response('Invalid argument', { status: 400 })));
+    global.fetch = mock(() => Promise.resolve(new Response('Invalid argument RAW_PROVIDER_BODY', { status: 400 })));
 
     // F4 classifyGeminiError surfaces 400 as a classified `unrecoverable` error
-    // with a stable message ("Gemini bad request (status 400)") rather than
-    // forwarding the raw upstream body. The original cause is preserved on
-    // `.cause` for diagnostics — see classifyGeminiError in GeminiProvider.ts.
-    await expect(agent.startSession(session)).rejects.toThrow('Gemini bad request (status 400)');
+    // with a stable category rather than forwarding the raw upstream body.
+    try {
+      await agent.startSession(session);
+      throw new Error('expected Gemini bad request to throw');
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe('Gemini bad request: unknown_bad_request');
+      expect((error as Error).message).not.toContain('RAW_PROVIDER_BODY');
+    }
+  });
+
+  it('redacts non-400 Gemini response body from thrown message and cause', async () => {
+    const rawBody = 'RAW_PROVIDER_BODY with credential sk-secret';
+    const session = {
+      sessionDbId: 1,
+      contentSessionId: 'test-session',
+      memorySessionId: 'mem-session-123',
+      project: 'test-project',
+      userPrompt: 'test prompt',
+      conversationHistory: [],
+      lastPromptNumber: 1,
+      cumulativeInputTokens: 0,
+      cumulativeOutputTokens: 0,
+      pendingMessages: [],
+      abortController: new AbortController(),
+      generatorPromise: null,
+      currentProvider: null,
+      startTime: Date.now(),
+    } as any;
+
+    global.fetch = mock(() => Promise.resolve(new Response(rawBody, {
+      status: 418,
+      headers: { 'x-goog-request-id': 'gemini-request-1' },
+    })));
+
+    try {
+      await agent.startSession(session);
+      throw new Error('expected Gemini fallback error to throw');
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe('Gemini API error (status 418)');
+      expect((error as Error).message).not.toContain(rawBody);
+      const cause = (error as Error & { cause?: unknown }).cause;
+      expect(cause).toBeInstanceOf(Error);
+      expect((cause as Error).message).toContain('status 418');
+      expect((cause as Error).message).toContain('gemini-request-1');
+      expect((cause as Error).message).not.toContain(rawBody);
+    }
   });
 
   it('should respect rate limits when rate limiting enabled', async () => {

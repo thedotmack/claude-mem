@@ -346,12 +346,12 @@ export class SessionRoutes extends BaseRouteHandler {
       tool_input,
       tool_response,
       cwd,
-      platformSource,
       agentId,
       agentType,
       tool_use_id,
       toolUseId,
     } = req.body;
+    const platformSource = this.getPlatformSourceFromRequest(req);
 
     const result = await ingestObservation({
       contentSessionId,
@@ -380,7 +380,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
   private handleSummarizeByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { contentSessionId, last_assistant_message, agentId } = req.body;
-    const platformSource = normalizePlatformSource(req.body.platformSource);
+    const platformSource = this.getPlatformSourceFromRequest(req);
 
     if (agentId) {
       res.json({ status: 'skipped', reason: 'subagent_context' });
@@ -390,7 +390,7 @@ export class SessionRoutes extends BaseRouteHandler {
     const store = this.dbManager.getSessionStore();
 
     const sessionDbId = store.createSDKSession(contentSessionId, '', '', undefined, platformSource);
-    const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId);
+    const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId);
 
     const privacy = PrivacyCheckValidator.checkUserPromptPrivacy(
       store,
@@ -416,15 +416,38 @@ export class SessionRoutes extends BaseRouteHandler {
     res.json({ status: 'queued' });
   });
 
+  private static firstString(value: unknown): string | undefined {
+    if (Array.isArray(value)) {
+      return SessionRoutes.firstString(value[0]);
+    }
+    return typeof value === 'string' && value.trim() ? value : undefined;
+  }
+
+  private getPlatformSourceFromRequest(req: Request): string {
+    const body = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
+    const header = req.get?.('x-platform-source')
+      ?? req.get?.('x-claude-mem-platform-source');
+    const rawPlatformSource =
+      SessionRoutes.firstString(req.query.platformSource)
+      ?? SessionRoutes.firstString(req.query.platform_source)
+      ?? SessionRoutes.firstString(body.platformSource)
+      ?? SessionRoutes.firstString(body.platform_source)
+      ?? SessionRoutes.firstString(header);
+
+    return normalizePlatformSource(rawPlatformSource);
+  }
+
   private handleStatusByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const contentSessionId = req.query.contentSessionId as string;
+    const contentSessionId = SessionRoutes.firstString(req.query.contentSessionId)
+      ?? SessionRoutes.firstString(req.query.content_session_id);
 
     if (!contentSessionId) {
       return this.badRequest(res, 'Missing contentSessionId query parameter');
     }
 
     const store = this.dbManager.getSessionStore();
-    const sessionDbId = store.createSDKSession(contentSessionId, '', '');
+    const platformSource = this.getPlatformSourceFromRequest(req);
+    const sessionDbId = store.createSDKSession(contentSessionId, '', '', undefined, platformSource);
     const session = this.sessionManager.getSession(sessionDbId);
 
     if (!session) {
@@ -448,7 +471,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
     const project = req.body.project || 'unknown';
     const rawPrompt = typeof req.body.prompt === 'string' ? req.body.prompt : undefined;
-    const platformSource = normalizePlatformSource(req.body.platformSource);
+    const platformSource = this.getPlatformSourceFromRequest(req);
     const customTitle = req.body.customTitle || undefined;
 
     if (rawPrompt && isInternalProtocolPayload(rawPrompt)) {
@@ -492,7 +515,7 @@ export class SessionRoutes extends BaseRouteHandler {
       sessionId: sessionDbId
     });
 
-    const currentCount = store.getPromptNumberFromUserPrompts(contentSessionId);
+    const currentCount = store.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId);
     const promptNumber = currentCount + 1;
 
     const memorySessionId = dbSession?.memory_session_id || null;
@@ -523,7 +546,8 @@ export class SessionRoutes extends BaseRouteHandler {
     const duplicatePrompt = store.findRecentDuplicateUserPrompt(
       contentSessionId,
       cleanedPrompt,
-      USER_PROMPT_DEDUPE_WINDOW_MS
+      USER_PROMPT_DEDUPE_WINDOW_MS,
+      sessionDbId
     );
 
     if (duplicatePrompt) {
@@ -545,7 +569,7 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
-    store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt);
+    store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt, sessionDbId);
 
     const contextInjected = this.sessionManager.getSession(sessionDbId) !== undefined;
 
@@ -559,7 +583,7 @@ export class SessionRoutes extends BaseRouteHandler {
       const sdkPrompt = cleanedPrompt.startsWith('/') ? cleanedPrompt.substring(1) : cleanedPrompt;
       const session = this.sessionManager.initializeSession(sessionDbId, sdkPrompt, promptNumber);
 
-      const latestPrompt = store.getLatestUserPrompt(session.contentSessionId);
+      const latestPrompt = store.getLatestUserPrompt(session.contentSessionId, sessionDbId);
 
       if (latestPrompt) {
         this.eventBroadcaster.broadcastNewPrompt({
@@ -580,7 +604,8 @@ export class SessionRoutes extends BaseRouteHandler {
           latestPrompt.project,
           promptText,
           latestPrompt.prompt_number,
-          latestPrompt.created_at_epoch
+          latestPrompt.created_at_epoch,
+          latestPrompt.platform_source
         ).then(() => {
           const chromaDuration = Date.now() - chromaStart;
           const truncatedPrompt = promptText.length > 60

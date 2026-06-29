@@ -66,6 +66,7 @@ export const observationHandler: EventHandler = {
         await runtime.client.recordEvent({
           projectId: runtime.projectId,
           contentSessionId: sessionId,
+          platformSource,
           sourceType: 'hook',
           eventType: 'tool_use',
           occurredAtEpoch: Date.now(),

@@ -179,7 +179,7 @@ export class PaginationHelper {
         up.created_at,
         up.created_at_epoch
       FROM user_prompts up
-      JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
+      JOIN sdk_sessions s ON up.session_db_id = s.id
     `;
     const params: any[] = [];
 
@@ -202,7 +202,7 @@ export class PaginationHelper {
       NOT EXISTS (
         SELECT 1
         FROM user_prompts duplicate
-        WHERE duplicate.content_session_id = up.content_session_id
+        WHERE duplicate.session_db_id = up.session_db_id
           AND duplicate.prompt_text = up.prompt_text
           AND (
             duplicate.created_at_epoch > up.created_at_epoch

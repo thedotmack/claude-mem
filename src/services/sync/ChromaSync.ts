@@ -6,6 +6,7 @@ import { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
 import { parseFileList } from '../sqlite/observations/files.js';
 import { ChromaUnavailableError } from '../worker/search/errors.js';
+import { normalizePlatformSource } from '../../shared/platform-source.js';
 
 interface ChromaDocument {
   id: string;
@@ -18,6 +19,7 @@ interface StoredObservation {
   memory_session_id: string;
   project: string;
   merged_into_project: string | null;
+  platform_source?: string | null;
   text: string | null;
   type: string;
   title: string | null;
@@ -36,6 +38,7 @@ interface StoredSummary {
   memory_session_id: string;
   project: string;
   merged_into_project: string | null;
+  platform_source?: string | null;
   request: string | null;
   investigated: string | null;
   learned: string | null;
@@ -54,6 +57,7 @@ interface StoredUserPrompt {
   created_at_epoch: number;
   memory_session_id: string;
   project: string;
+  platform_source: string;
 }
 
 export class ChromaSync {
@@ -109,6 +113,9 @@ export class ChromaSync {
       memory_session_id: obs.memory_session_id,
       project: obs.project,
       merged_into_project: obs.merged_into_project ?? null,
+      platform_source: obs.platform_source
+        ? normalizePlatformSource(obs.platform_source)
+        : normalizePlatformSource(undefined),
       created_at_epoch: obs.created_at_epoch,
       type: obs.type || 'discovery',
       title: obs.title || 'Untitled'
@@ -163,6 +170,9 @@ export class ChromaSync {
       memory_session_id: summary.memory_session_id,
       project: summary.project,
       merged_into_project: summary.merged_into_project ?? null,
+      platform_source: summary.platform_source
+        ? normalizePlatformSource(summary.platform_source)
+        : normalizePlatformSource(undefined),
       created_at_epoch: summary.created_at_epoch,
       prompt_number: summary.prompt_number || 0
     };
@@ -317,13 +327,15 @@ export class ChromaSync {
     project: string,
     obs: ParsedObservation,
     promptNumber: number,
-    createdAtEpoch: number
+    createdAtEpoch: number,
+    platformSource?: string
   ): Promise<void> {
     const stored: StoredObservation = {
       id: observationId,
       memory_session_id: memorySessionId,
       project: project,
       merged_into_project: null,
+      platform_source: platformSource ? normalizePlatformSource(platformSource) : normalizePlatformSource(undefined),
       text: null, // Legacy field, not used
       type: obs.type,
       title: obs.title,
@@ -369,13 +381,15 @@ export class ChromaSync {
     project: string,
     summary: ParsedSummary,
     promptNumber: number,
-    createdAtEpoch: number
+    createdAtEpoch: number,
+    platformSource?: string
   ): Promise<void> {
     const stored: StoredSummary = {
       id: summaryId,
       memory_session_id: memorySessionId,
       project: project,
       merged_into_project: null,
+      platform_source: platformSource ? normalizePlatformSource(platformSource) : normalizePlatformSource(undefined),
       request: summary.request,
       investigated: summary.investigated,
       learned: summary.learned,
@@ -417,6 +431,7 @@ export class ChromaSync {
         doc_type: 'user_prompt',
         memory_session_id: prompt.memory_session_id,
         project: prompt.project,
+        platform_source: prompt.platform_source,
         created_at_epoch: prompt.created_at_epoch,
         prompt_number: prompt.prompt_number
       }
@@ -429,7 +444,8 @@ export class ChromaSync {
     project: string,
     promptText: string,
     promptNumber: number,
-    createdAtEpoch: number
+    createdAtEpoch: number,
+    platformSource?: string
   ): Promise<void> {
     const stored: StoredUserPrompt = {
       id: promptId,
@@ -438,7 +454,8 @@ export class ChromaSync {
       prompt_text: promptText,
       created_at_epoch: createdAtEpoch,
       memory_session_id: memorySessionId,
-      project: project
+      project: project,
+      platform_source: normalizePlatformSource(platformSource)
     };
 
     const document = this.formatUserPromptDoc(stored);
@@ -590,9 +607,13 @@ export class ChromaSync {
     watermark: number
   ): Promise<ChromaDocument[]> {
     const observations = db.db.prepare(`
-      SELECT * FROM observations
-      WHERE project = ? AND id > ?
-      ORDER BY id ASC
+      SELECT
+        o.*,
+        COALESCE(NULLIF(s.platform_source, ''), 'claude') as platform_source
+      FROM observations o
+      LEFT JOIN sdk_sessions s ON s.memory_session_id = o.memory_session_id
+      WHERE o.project = ? AND o.id > ?
+      ORDER BY o.id ASC
     `).all(backfillProject, watermark) as StoredObservation[];
 
     if (observations.length === 0) {
@@ -690,9 +711,13 @@ export class ChromaSync {
     watermark: number
   ): Promise<ChromaDocument[]> {
     const summaries = db.db.prepare(`
-      SELECT * FROM session_summaries
-      WHERE project = ? AND id > ?
-      ORDER BY id ASC
+      SELECT
+        ss.*,
+        COALESCE(NULLIF(s.platform_source, ''), 'claude') as platform_source
+      FROM session_summaries ss
+      LEFT JOIN sdk_sessions s ON s.memory_session_id = ss.memory_session_id
+      WHERE ss.project = ? AND ss.id > ?
+      ORDER BY ss.id ASC
     `).all(backfillProject, watermark) as StoredSummary[];
 
     if (summaries.length === 0) {
@@ -779,9 +804,10 @@ export class ChromaSync {
       SELECT
         up.*,
         s.project,
-        s.memory_session_id
+        s.memory_session_id,
+        COALESCE(NULLIF(s.platform_source, ''), 'claude') as platform_source
       FROM user_prompts up
-      JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
+      JOIN sdk_sessions s ON up.session_db_id = s.id
       WHERE s.project = ? AND up.id > ?
       ORDER BY up.id ASC
     `).all(backfillProject, watermark) as StoredUserPrompt[];
@@ -793,7 +819,7 @@ export class ChromaSync {
     const totalPromptCount = db.db.prepare(`
       SELECT COUNT(*) as count
       FROM user_prompts up
-      JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
+      JOIN sdk_sessions s ON up.session_db_id = s.id
       WHERE s.project = ?
     `).get(backfillProject) as { count: number };
 

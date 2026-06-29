@@ -26,6 +26,7 @@ import { logger } from '../../utils/logger.js';
 import { requirePostgresServerAuth } from '../middleware/postgres-auth.js';
 import { IngestEventsService } from '../services/IngestEventsService.js';
 import type { CreatePostgresAgentEventInput } from '../../storage/postgres/agent-events.js';
+import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
 
 const COMPAT_SOURCE_ADAPTER = 'claude-code-compat';
 const COMPAT_EVENT_TYPE = 'tool_use';
@@ -84,12 +85,17 @@ export class SessionsObservationsAdapter implements RouteHandler {
       }
 
       try {
+        const platformSource = normalizePlatformSource(
+          typeof parsed.data.platformSource === 'string'
+            ? parsed.data.platformSource
+            : DEFAULT_PLATFORM_SOURCE,
+        );
         const session = await resolveServerSession({
           pool: this.options.pool,
           teamId,
           projectId,
           contentSessionId: parsed.data.contentSessionId,
-          platformSource: typeof parsed.data.platformSource === 'string' ? parsed.data.platformSource : null,
+          platformSource,
           agentId: typeof parsed.data.agentId === 'string' ? parsed.data.agentId : null,
           agentType: typeof parsed.data.agentType === 'string' ? parsed.data.agentType : null,
         });
@@ -107,14 +113,14 @@ export class SessionsObservationsAdapter implements RouteHandler {
           eventType: COMPAT_EVENT_TYPE,
           // #2560 — persist platform_source on the event row (not just inside
           // payload) so plan-09 scoping/queries can filter by platform.
-          platformSource: typeof parsed.data.platformSource === 'string' ? parsed.data.platformSource : null,
+          platformSource,
           payload: {
             contentSessionId: parsed.data.contentSessionId,
             tool_name: parsed.data.tool_name,
             tool_input: parsed.data.tool_input ?? null,
             tool_response: parsed.data.tool_response ?? null,
             cwd: parsed.data.cwd ?? null,
-            platformSource: parsed.data.platformSource ?? null,
+            platformSource,
             agentId: parsed.data.agentId ?? null,
             agentType: parsed.data.agentType ?? null,
             toolUseId,
@@ -157,15 +163,15 @@ export class SessionsObservationsAdapter implements RouteHandler {
 }
 
 /**
- * Look up an existing server_session by (project, team, externalSessionId)
- * or create one if missing. Idempotent: re-issuing for the same content
- * session returns the existing row.
+ * Look up an existing server_session by platform-scoped
+ * (project, team, externalSessionId) or create one if missing. Idempotent:
+ * re-issuing for the same platform/content session returns the existing row.
  *
  * Concurrent compat callers can race here — both observe `existing===null`
  * and both call `repo.create`, where the second will hit one of two unique
- * constraints (`(project_id, idempotency_key)` covered by ON CONFLICT, or
- * `(project_id, external_session_id)` which is NOT covered). Catch the
- * unique-violation and re-fetch so the caller never sees a 500.
+ * constraints (`(project_id, idempotency_key)` covered by ON CONFLICT, or a
+ * platform-scoped external_session_id index). Catch the unique-violation and
+ * re-fetch so the caller never sees a 500.
  */
 export async function resolveServerSession(input: {
   pool: PostgresPool;
@@ -177,10 +183,14 @@ export async function resolveServerSession(input: {
   agentType: string | null;
 }): Promise<{ id: string; projectId: string; teamId: string }> {
   const repo = new PostgresServerSessionsRepository(input.pool);
+  const platformSource = input.platformSource
+    ? normalizePlatformSource(input.platformSource)
+    : null;
   const existing = await repo.findByExternalIdForScope({
     externalSessionId: input.contentSessionId,
     projectId: input.projectId,
     teamId: input.teamId,
+    platformSource,
   });
   if (existing) {
     return { id: existing.id, projectId: existing.projectId, teamId: existing.teamId };
@@ -193,18 +203,19 @@ export async function resolveServerSession(input: {
       contentSessionId: input.contentSessionId,
       agentId: input.agentId,
       agentType: input.agentType,
-      platformSource: input.platformSource,
+      platformSource,
     });
     return { id: created.id, projectId: created.projectId, teamId: created.teamId };
   } catch (error) {
     // Postgres unique_violation. A concurrent compat call inserted the row
-    // for this (project, external_session_id) before we could; re-fetch
-    // and return that row instead of bubbling a 500 to the legacy client.
+    // for this platform-scoped external session before we could; re-fetch and
+    // return that row instead of bubbling a 500 to the legacy client.
     if ((error as { code?: string } | null)?.code === '23505') {
       const racedRow = await repo.findByExternalIdForScope({
         externalSessionId: input.contentSessionId,
         projectId: input.projectId,
         teamId: input.teamId,
+        platformSource,
       });
       if (racedRow) {
         return { id: racedRow.id, projectId: racedRow.projectId, teamId: racedRow.teamId };

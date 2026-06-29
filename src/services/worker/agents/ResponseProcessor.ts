@@ -280,6 +280,11 @@ async function syncAndBroadcastObservations(
   agentName: string,
   projectRoot?: string
 ): Promise<void> {
+  const memorySessionId = session.memorySessionId;
+  if (!memorySessionId) {
+    return;
+  }
+
   // Dedupe observation IDs before sync/broadcast: storeObservations may collapse
   // multiple parsed observations onto the same row via content_hash, producing
   // duplicate IDs. Syncing them 1:1 triggers repeated Chroma "IDs already exist"
@@ -301,11 +306,12 @@ async function syncAndBroadcastObservations(
 
     dbManager.getChromaSync()?.syncObservation(
       obsId,
-      session.contentSessionId,
+      memorySessionId,
       session.project,
       obs,
       session.lastPromptNumber,
-      result.createdAtEpoch
+      result.createdAtEpoch,
+      session.platformSource
     ).then(() => {
       const chromaDuration = Date.now() - chromaStart;
       logger.debug('CHROMA', 'Observation synced', {
@@ -378,16 +384,21 @@ async function syncAndBroadcastSummary(
   if (!summaryForStore || !result.summaryId) {
     return;
   }
+  const memorySessionId = session.memorySessionId;
+  if (!memorySessionId) {
+    return;
+  }
 
   const chromaStart = Date.now();
 
   dbManager.getChromaSync()?.syncSummary(
     result.summaryId,
-    session.contentSessionId,
+    memorySessionId,
     session.project,
     summaryForStore,
     session.lastPromptNumber,
-    result.createdAtEpoch
+    result.createdAtEpoch,
+    session.platformSource
   ).then(() => {
     const chromaDuration = Date.now() - chromaStart;
     logger.debug('CHROMA', 'Summary synced', {

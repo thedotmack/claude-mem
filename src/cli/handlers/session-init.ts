@@ -53,6 +53,9 @@ export const sessionInitHandler: EventHandler = {
 
     const project = getProjectContext(cwd).primary;
     const platformSource = normalizePlatformSource(input.platform);
+    const settings = loadFromFileOnce();
+    const semanticInject =
+      String(settings.CLAUDE_MEM_SEMANTIC_INJECT).toLowerCase() === 'true';
 
     const runtime = resolveRuntimeContext();
     if (runtime.runtime === 'server-beta') {
@@ -70,9 +73,39 @@ export const sessionInitHandler: EventHandler = {
           contentSessionId: sessionId,
           project,
         });
-        // Server-beta does not currently support the same context-injection
-        // protocol as the worker. Skip semantic injection in server-beta mode
-        // until the server-beta context endpoint exists.
+        let additionalContext = '';
+        if (semanticInject && prompt && prompt.length >= 20 && prompt !== '[media prompt]') {
+          try {
+            const semanticResult = await runtime.client.contextObservations({
+              projectId: runtime.projectId,
+              query: prompt,
+              limit: parseSemanticInjectLimit(settings.CLAUDE_MEM_SEMANTIC_INJECT_LIMIT || '5'),
+              platformSource,
+            });
+            if (semanticResult?.context) {
+              logger.debug('HOOK', `Server-beta semantic injection: ${semanticResult.observations.length} observations for prompt`, {
+                contentSessionId: sessionId,
+                count: semanticResult.observations.length,
+              });
+              additionalContext = semanticResult.context;
+            }
+          } catch (error: unknown) {
+            logger.warn('HOOK', 'session-init: server-beta semantic context failed; continuing without injection', {
+              error: error instanceof Error ? error.message : String(error),
+              route: '/v1/context',
+            });
+          }
+        }
+        if (additionalContext) {
+          return {
+            continue: true,
+            suppressOutput: true,
+            hookSpecificOutput: {
+              hookEventName: 'UserPromptSubmit',
+              additionalContext
+            }
+          };
+        }
         return { continue: true, suppressOutput: true };
       } catch (error: unknown) {
         if (isServerBetaClientError(error) && error.isFallbackEligible()) {
@@ -127,9 +160,6 @@ export const sessionInitHandler: EventHandler = {
       return { continue: true, suppressOutput: true };
     }
 
-    const settings = loadFromFileOnce();
-    const semanticInject =
-      String(settings.CLAUDE_MEM_SEMANTIC_INJECT).toLowerCase() === 'true';
     let additionalContext = '';
 
     if (semanticInject && prompt && prompt.length >= 20 && prompt !== '[media prompt]') {
@@ -137,7 +167,7 @@ export const sessionInitHandler: EventHandler = {
       const semanticResult = await executeWithWorkerFallback<SemanticContextResponse>(
         '/api/context/semantic',
         'POST',
-        { q: prompt, project, limit },
+        { q: prompt, project, limit, platformSource },
       );
       if (!isWorkerFallback(semanticResult) && semanticResult?.context) {
         logger.debug('HOOK', `Semantic injection: ${semanticResult.count} observations for prompt`, { sessionId: sessionDbId, count: semanticResult.count });
@@ -163,3 +193,9 @@ export const sessionInitHandler: EventHandler = {
     return { continue: true, suppressOutput: true };
   }
 };
+
+function parseSemanticInjectLimit(value: string | number): number {
+  const parsed = typeof value === 'number' ? value : Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 5;
+  return parsed;
+}

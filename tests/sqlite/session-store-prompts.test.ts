@@ -55,6 +55,58 @@ describe('SessionStore prompts', () => {
     });
   });
 
+  describe('importUserPrompt', () => {
+    it('uses platform context when raw content_session_id overlaps', () => {
+      const contentSessionId = 'shared-import-content-id';
+      const claudeSessionDbId = store.createSDKSession(contentSessionId, 'claude-project', 'claude prompt', undefined, 'claude');
+      const cursorSessionDbId = store.createSDKSession(contentSessionId, 'cursor-project', 'cursor prompt', undefined, 'cursor');
+      const createdAt = new Date().toISOString();
+
+      const cursorImport = store.importUserPrompt({
+        content_session_id: contentSessionId,
+        platform_source: 'cursor',
+        prompt_number: 1,
+        prompt_text: 'cursor imported prompt',
+        created_at: createdAt,
+        created_at_epoch: 1,
+      });
+      const claudeImport = store.importUserPrompt({
+        content_session_id: contentSessionId,
+        platform_source: 'claude',
+        prompt_number: 1,
+        prompt_text: 'claude imported prompt',
+        created_at: createdAt,
+        created_at_epoch: 2,
+      });
+      const cursorDuplicate = store.importUserPrompt({
+        content_session_id: contentSessionId,
+        platform_source: 'cursor',
+        prompt_number: 1,
+        prompt_text: 'cursor duplicate prompt',
+        created_at: createdAt,
+        created_at_epoch: 3,
+      });
+
+      expect(cursorImport.imported).toBe(true);
+      expect(claudeImport.imported).toBe(true);
+      expect(cursorDuplicate.imported).toBe(false);
+      expect(cursorDuplicate.id).toBe(cursorImport.id);
+
+      const rows = store.db.prepare(`
+        SELECT up.prompt_text, up.session_db_id, s.platform_source
+        FROM user_prompts up
+        JOIN sdk_sessions s ON up.session_db_id = s.id
+        WHERE up.content_session_id = ?
+        ORDER BY s.platform_source
+      `).all(contentSessionId) as Array<{ prompt_text: string; session_db_id: number; platform_source: string }>;
+
+      expect(rows).toEqual([
+        { prompt_text: 'claude imported prompt', session_db_id: claudeSessionDbId, platform_source: 'claude' },
+        { prompt_text: 'cursor imported prompt', session_db_id: cursorSessionDbId, platform_source: 'cursor' },
+      ]);
+    });
+  });
+
   describe('findRecentDuplicateUserPrompt', () => {
     it('finds a duplicate within the window', () => {
       const session = createSession('duplicate-prompt-session');

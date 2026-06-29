@@ -223,6 +223,18 @@ describe('SQLiteSearchStrategy', () => {
       const callArgs = mockSessionSearch.findByConcept.mock.calls[0];
       expect(callArgs[1].limit).toBe(20); 
     });
+
+    it('should pass platformSource to findByConcept', () => {
+      const options: StrategySearchOptions = {
+        platformSource: 'cursor'
+      };
+
+      strategy.findByConcept('test-concept', options);
+
+      expect(mockSessionSearch.findByConcept).toHaveBeenCalledWith('test-concept', expect.objectContaining({
+        platformSource: 'cursor'
+      }));
+    });
   });
 
   describe('findByType', () => {
@@ -263,6 +275,18 @@ describe('SQLiteSearchStrategy', () => {
         orderBy: 'date_asc'
       });
     });
+
+    it('should pass platformSource to findByType', () => {
+      const options: StrategySearchOptions = {
+        platformSource: 'cursor'
+      };
+
+      strategy.findByType('feature', options);
+
+      expect(mockSessionSearch.findByType).toHaveBeenCalledWith('feature', expect.objectContaining({
+        platformSource: 'cursor'
+      }));
+    });
   });
 
   describe('findByFile', () => {
@@ -294,6 +318,18 @@ describe('SQLiteSearchStrategy', () => {
         dateRange: { end: '2025-12-31' },
         orderBy: 'date_desc'
       });
+    });
+
+    it('should pass platformSource to findByFile', () => {
+      const options: StrategySearchOptions = {
+        platformSource: 'cursor'
+      };
+
+      strategy.findByFile('/src/index.ts', options);
+
+      expect(mockSessionSearch.findByFile).toHaveBeenCalledWith('/src/index.ts', expect.objectContaining({
+        platformSource: 'cursor'
+      }));
     });
   });
 });

@@ -18,6 +18,12 @@ import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources }
 import { findRecentDuplicateUserPrompt as findRecentDuplicateUserPromptRecord } from './prompts/get.js';
 import { normalizeStoredPromptText } from './prompt-storage.js';
 
+interface IndexColumnInfo {
+  seqno: number;
+  cid: number;
+  name: string;
+}
+
 function resolveCreateSessionArgs(
   customTitle?: string,
   platformSource?: string
@@ -71,6 +77,54 @@ export class SessionStore {
     this.dropDeadPendingMessagesColumns();
     this.ensurePendingMessagesToolUseIdColumn();
     this.dropWorkerPidColumn();
+    this.ensureSDKSessionsPlatformContentIdentity();
+    this.ensureUserPromptsSessionDbId();
+    this.ensurePendingMessagesSessionToolUniqueIndex();
+  }
+
+  private getIndexColumns(indexName: string): string[] {
+    return (this.db.query(`PRAGMA index_info(${JSON.stringify(indexName)})`).all() as IndexColumnInfo[])
+      .map(col => col.name);
+  }
+
+  private hasUniqueIndexOnColumns(table: string, columns: string[]): boolean {
+    const indexes = this.db.query(`PRAGMA index_list(${table})`).all() as IndexInfo[];
+    return indexes.some(index => {
+      if (index.unique !== 1) return false;
+      const indexColumns = this.getIndexColumns(index.name);
+      return indexColumns.length === columns.length
+        && indexColumns.every((column, i) => column === columns[i]);
+    });
+  }
+
+  private resolvePromptSessionDbId(contentSessionId: string, sessionDbId?: number, platformSource?: string): number | null {
+    if (sessionDbId !== undefined) return sessionDbId;
+
+    const normalizedPlatformSource = platformSource ? normalizePlatformSource(platformSource) : undefined;
+    if (normalizedPlatformSource) {
+      const row = this.db.prepare(`
+        SELECT id
+        FROM sdk_sessions
+        WHERE COALESCE(NULLIF(platform_source, ''), ?) = ?
+          AND content_session_id = ?
+        LIMIT 1
+      `).get(DEFAULT_PLATFORM_SOURCE, normalizedPlatformSource, contentSessionId) as { id: number } | undefined;
+
+      return row?.id ?? null;
+    }
+
+    const row = this.db.prepare(`
+      SELECT id
+      FROM sdk_sessions
+      WHERE content_session_id = ?
+      ORDER BY CASE COALESCE(NULLIF(platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}')
+        WHEN '${DEFAULT_PLATFORM_SOURCE}' THEN 0
+        ELSE 1
+      END, id
+      LIMIT 1
+    `).get(contentSessionId) as { id: number } | undefined;
+
+    return row?.id ?? null;
   }
 
   private dropWorkerPidColumn(): void {
@@ -93,6 +147,253 @@ export class SessionStore {
 
     if (!applied) {
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(32, new Date().toISOString());
+    }
+  }
+
+  private ensureSDKSessionsPlatformContentIdentity(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(33) as SchemaVersion | undefined;
+    const hasGlobalContentUnique = this.hasUniqueIndexOnColumns('sdk_sessions', ['content_session_id']);
+    const hasCompositeUnique = this.hasUniqueIndexOnColumns('sdk_sessions', ['platform_source', 'content_session_id']);
+    const columns = this.db.query('PRAGMA table_info(sdk_sessions)').all() as TableColumnInfo[];
+    const hasPlatformSource = columns.some(col => col.name === 'platform_source');
+
+    if (applied && !hasGlobalContentUnique && hasCompositeUnique && hasPlatformSource) return;
+
+    if (!hasPlatformSource) {
+      this.db.run(`ALTER TABLE sdk_sessions ADD COLUMN platform_source TEXT NOT NULL DEFAULT '${DEFAULT_PLATFORM_SOURCE}'`);
+    }
+
+    this.db.run(`
+      UPDATE sdk_sessions
+      SET platform_source = '${DEFAULT_PLATFORM_SOURCE}'
+      WHERE platform_source IS NULL OR platform_source = ''
+    `);
+
+    if (hasGlobalContentUnique) {
+      this.db.run('PRAGMA foreign_keys = OFF');
+      this.db.run('BEGIN TRANSACTION');
+      try {
+        this.db.run('DROP TABLE IF EXISTS sdk_sessions_new');
+        this.db.run(`
+          CREATE TABLE sdk_sessions_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            content_session_id TEXT NOT NULL,
+            memory_session_id TEXT UNIQUE,
+            project TEXT NOT NULL,
+            platform_source TEXT NOT NULL DEFAULT '${DEFAULT_PLATFORM_SOURCE}',
+            user_prompt TEXT,
+            started_at TEXT NOT NULL,
+            started_at_epoch INTEGER NOT NULL,
+            completed_at TEXT,
+            completed_at_epoch INTEGER,
+            status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'completed', 'failed')),
+            worker_port INTEGER,
+            prompt_counter INTEGER DEFAULT 0,
+            custom_title TEXT
+          )
+        `);
+        this.db.run(`
+          INSERT INTO sdk_sessions_new (
+            id, content_session_id, memory_session_id, project, platform_source,
+            user_prompt, started_at, started_at_epoch, completed_at, completed_at_epoch,
+            status, worker_port, prompt_counter, custom_title
+          )
+          SELECT
+            id, content_session_id, memory_session_id, project,
+            COALESCE(NULLIF(platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}'),
+            user_prompt, started_at, started_at_epoch, completed_at, completed_at_epoch,
+            status, worker_port, prompt_counter, custom_title
+          FROM sdk_sessions
+        `);
+        this.db.run('DROP TABLE sdk_sessions');
+        this.db.run('ALTER TABLE sdk_sessions_new RENAME TO sdk_sessions');
+        this.db.run('CREATE INDEX IF NOT EXISTS idx_sdk_sessions_claude_id ON sdk_sessions(content_session_id)');
+        this.db.run('CREATE INDEX IF NOT EXISTS idx_sdk_sessions_sdk_id ON sdk_sessions(memory_session_id)');
+        this.db.run('CREATE INDEX IF NOT EXISTS idx_sdk_sessions_project ON sdk_sessions(project)');
+        this.db.run('CREATE INDEX IF NOT EXISTS idx_sdk_sessions_status ON sdk_sessions(status)');
+        this.db.run('CREATE INDEX IF NOT EXISTS idx_sdk_sessions_started ON sdk_sessions(started_at_epoch DESC)');
+        this.db.run('CREATE INDEX IF NOT EXISTS idx_sdk_sessions_platform_source ON sdk_sessions(platform_source)');
+        this.db.run('CREATE UNIQUE INDEX IF NOT EXISTS ux_sdk_sessions_platform_content ON sdk_sessions(platform_source, content_session_id)');
+        if (!applied) {
+          this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(33, new Date().toISOString());
+        }
+        this.db.run('COMMIT');
+      } catch (error) {
+        this.db.run('ROLLBACK');
+        throw error;
+      } finally {
+        this.db.run('PRAGMA foreign_keys = ON');
+      }
+      return;
+    }
+
+    this.db.run('CREATE UNIQUE INDEX IF NOT EXISTS ux_sdk_sessions_platform_content ON sdk_sessions(platform_source, content_session_id)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_sdk_sessions_platform_source ON sdk_sessions(platform_source)');
+
+    if (!applied) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(33, new Date().toISOString());
+    }
+  }
+
+  private ensureUserPromptsSessionDbId(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(34) as SchemaVersion | undefined;
+    const tables = this.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='user_prompts'").all() as TableNameRow[];
+    if (tables.length === 0) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(34, new Date().toISOString());
+      return;
+    }
+
+    const cols = this.db.query('PRAGMA table_info(user_prompts)').all() as TableColumnInfo[];
+    const hasSessionDbId = cols.some(col => col.name === 'session_db_id');
+    const fks = this.db.query('PRAGMA foreign_key_list(user_prompts)').all() as Array<{ table: string; from: string; to: string }>;
+    const hasContentSessionFk = fks.some(fk => fk.table === 'sdk_sessions' && fk.from === 'content_session_id');
+
+    if (applied && hasSessionDbId && !hasContentSessionFk) return;
+
+    const hasFTS = (this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='user_prompts_fts'").all() as { name: string }[]).length > 0;
+    const sessionDbIdSelect = hasSessionDbId
+      ? `COALESCE(up.session_db_id, (
+          SELECT s.id FROM sdk_sessions s
+          WHERE s.content_session_id = up.content_session_id
+          ORDER BY CASE COALESCE(NULLIF(s.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}')
+            WHEN '${DEFAULT_PLATFORM_SOURCE}' THEN 0
+            ELSE 1
+          END, s.id
+          LIMIT 1
+        ))`
+      : `(
+          SELECT s.id FROM sdk_sessions s
+          WHERE s.content_session_id = up.content_session_id
+          ORDER BY CASE COALESCE(NULLIF(s.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}')
+            WHEN '${DEFAULT_PLATFORM_SOURCE}' THEN 0
+            ELSE 1
+          END, s.id
+          LIMIT 1
+        )`;
+
+    this.db.run('PRAGMA foreign_keys = OFF');
+    this.db.run('BEGIN TRANSACTION');
+    try {
+      this.db.run('DROP TRIGGER IF EXISTS user_prompts_ai');
+      this.db.run('DROP TRIGGER IF EXISTS user_prompts_ad');
+      this.db.run('DROP TRIGGER IF EXISTS user_prompts_au');
+      this.db.run('DROP TABLE IF EXISTS user_prompts_new');
+      this.db.run(`
+        CREATE TABLE user_prompts_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_db_id INTEGER,
+          content_session_id TEXT NOT NULL,
+          prompt_number INTEGER NOT NULL,
+          prompt_text TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          created_at_epoch INTEGER NOT NULL,
+          FOREIGN KEY(session_db_id) REFERENCES sdk_sessions(id) ON DELETE CASCADE
+        )
+      `);
+      this.db.run(`
+        INSERT INTO user_prompts_new (
+          id, session_db_id, content_session_id, prompt_number,
+          prompt_text, created_at, created_at_epoch
+        )
+        SELECT
+          up.id,
+          ${sessionDbIdSelect},
+          up.content_session_id,
+          up.prompt_number,
+          up.prompt_text,
+          up.created_at,
+          up.created_at_epoch
+        FROM user_prompts up
+      `);
+      this.db.run('DROP TABLE user_prompts');
+      this.db.run('ALTER TABLE user_prompts_new RENAME TO user_prompts');
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_user_prompts_session ON user_prompts(session_db_id)');
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_user_prompts_claude_session ON user_prompts(content_session_id)');
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_user_prompts_created ON user_prompts(created_at_epoch DESC)');
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_user_prompts_prompt_number ON user_prompts(prompt_number)');
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_user_prompts_lookup ON user_prompts(session_db_id, prompt_number)');
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_user_prompts_content_lookup ON user_prompts(content_session_id, prompt_number)');
+
+      if (hasFTS) {
+        this.db.run(`
+          CREATE TRIGGER user_prompts_ai AFTER INSERT ON user_prompts BEGIN
+            INSERT INTO user_prompts_fts(rowid, prompt_text)
+            VALUES (new.id, new.prompt_text);
+          END;
+
+          CREATE TRIGGER user_prompts_ad AFTER DELETE ON user_prompts BEGIN
+            INSERT INTO user_prompts_fts(user_prompts_fts, rowid, prompt_text)
+            VALUES('delete', old.id, old.prompt_text);
+          END;
+
+          CREATE TRIGGER user_prompts_au AFTER UPDATE ON user_prompts BEGIN
+            INSERT INTO user_prompts_fts(user_prompts_fts, rowid, prompt_text)
+            VALUES('delete', old.id, old.prompt_text);
+            INSERT INTO user_prompts_fts(rowid, prompt_text)
+            VALUES (new.id, new.prompt_text);
+          END;
+        `);
+        this.db.run("INSERT INTO user_prompts_fts(user_prompts_fts) VALUES('rebuild')");
+      }
+
+      if (!applied) {
+        this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(34, new Date().toISOString());
+      }
+      this.db.run('COMMIT');
+    } catch (error) {
+      this.db.run('ROLLBACK');
+      throw error;
+    } finally {
+      this.db.run('PRAGMA foreign_keys = ON');
+    }
+  }
+
+  private ensurePendingMessagesSessionToolUniqueIndex(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(35) as SchemaVersion | undefined;
+    const tables = this.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='pending_messages'").all() as TableNameRow[];
+    if (tables.length === 0) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(35, new Date().toISOString());
+      return;
+    }
+
+    const hasExpectedIndex = this.hasUniqueIndexOnColumns('pending_messages', ['session_db_id', 'tool_use_id']);
+    if (applied && hasExpectedIndex) return;
+
+    this.db.run('BEGIN TRANSACTION');
+    try {
+      this.db.run('DROP INDEX IF EXISTS ux_pending_session_tool');
+      this.db.run(`
+        DELETE FROM pending_messages
+         WHERE id IN (
+           SELECT id
+             FROM (
+               SELECT id,
+                      ROW_NUMBER() OVER (
+                        PARTITION BY session_db_id, tool_use_id
+                        ORDER BY CASE status
+                          WHEN 'processing' THEN 0
+                          WHEN 'pending' THEN 1
+                          ELSE 2
+                        END, id
+                      ) AS duplicate_rank
+                 FROM pending_messages
+                WHERE tool_use_id IS NOT NULL
+             )
+            WHERE duplicate_rank > 1
+           )
+      `);
+      this.db.run(`
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_pending_session_tool
+        ON pending_messages(session_db_id, tool_use_id)
+        WHERE tool_use_id IS NOT NULL
+      `);
+      if (!applied) {
+        this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(35, new Date().toISOString());
+      }
+      this.db.run('COMMIT');
+    } catch (error) {
+      this.db.run('ROLLBACK');
+      throw error;
     }
   }
 
@@ -142,7 +443,7 @@ export class SessionStore {
     this.db.run(`
       CREATE TABLE IF NOT EXISTS sdk_sessions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        content_session_id TEXT UNIQUE NOT NULL,
+        content_session_id TEXT NOT NULL,
         memory_session_id TEXT UNIQUE,
         project TEXT NOT NULL,
         platform_source TEXT NOT NULL DEFAULT 'claude',
@@ -159,6 +460,8 @@ export class SessionStore {
       CREATE INDEX IF NOT EXISTS idx_sdk_sessions_project ON sdk_sessions(project);
       CREATE INDEX IF NOT EXISTS idx_sdk_sessions_status ON sdk_sessions(status);
       CREATE INDEX IF NOT EXISTS idx_sdk_sessions_started ON sdk_sessions(started_at_epoch DESC);
+      CREATE INDEX IF NOT EXISTS idx_sdk_sessions_platform_source ON sdk_sessions(platform_source);
+      CREATE UNIQUE INDEX IF NOT EXISTS ux_sdk_sessions_platform_content ON sdk_sessions(platform_source, content_session_id);
 
       CREATE TABLE IF NOT EXISTS observations (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -412,18 +715,21 @@ export class SessionStore {
     this.db.run(`
       CREATE TABLE user_prompts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_db_id INTEGER,
         content_session_id TEXT NOT NULL,
         prompt_number INTEGER NOT NULL,
         prompt_text TEXT NOT NULL,
         created_at TEXT NOT NULL,
         created_at_epoch INTEGER NOT NULL,
-        FOREIGN KEY(content_session_id) REFERENCES sdk_sessions(content_session_id) ON DELETE CASCADE
+        FOREIGN KEY(session_db_id) REFERENCES sdk_sessions(id) ON DELETE CASCADE
       );
 
+      CREATE INDEX idx_user_prompts_session ON user_prompts(session_db_id);
       CREATE INDEX idx_user_prompts_claude_session ON user_prompts(content_session_id);
       CREATE INDEX idx_user_prompts_created ON user_prompts(created_at_epoch DESC);
       CREATE INDEX idx_user_prompts_prompt_number ON user_prompts(prompt_number);
-      CREATE INDEX idx_user_prompts_lookup ON user_prompts(content_session_id, prompt_number);
+      CREATE INDEX idx_user_prompts_lookup ON user_prompts(session_db_id, prompt_number);
+      CREATE INDEX idx_user_prompts_content_lookup ON user_prompts(content_session_id, prompt_number);
     `);
 
     const ftsCreateSQL = `
@@ -939,7 +1245,7 @@ export class SessionStore {
              FROM (
                SELECT id,
                       ROW_NUMBER() OVER (
-                        PARTITION BY content_session_id, tool_use_id
+                        PARTITION BY session_db_id, tool_use_id
                         ORDER BY CASE status
                           WHEN 'processing' THEN 0
                           WHEN 'pending' THEN 1
@@ -956,7 +1262,7 @@ export class SessionStore {
         -- tool_use_id is optional for summaries and legacy rows; enforce de-dupe
         -- only for rows that came from a concrete tool-use event.
         CREATE UNIQUE INDEX IF NOT EXISTS ux_pending_session_tool
-        ON pending_messages(content_session_id, tool_use_id)
+        ON pending_messages(session_db_id, tool_use_id)
         WHERE tool_use_id IS NOT NULL
       `);
 
@@ -1290,7 +1596,7 @@ export class SessionStore {
         up.created_at,
         up.created_at_epoch
       FROM user_prompts up
-      LEFT JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
+      LEFT JOIN sdk_sessions s ON up.session_db_id = s.id
       ORDER BY up.created_at_epoch DESC
       LIMIT ?
     `);
@@ -1377,7 +1683,7 @@ export class SessionStore {
     };
   }
 
-  getLatestUserPrompt(contentSessionId: string): {
+  getLatestUserPrompt(contentSessionId: string, sessionDbId?: number): {
     id: number;
     content_session_id: string;
     memory_session_id: string;
@@ -1387,6 +1693,9 @@ export class SessionStore {
     prompt_text: string;
     created_at_epoch: number;
   } | undefined {
+    const resolvedSessionDbId = this.resolvePromptSessionDbId(contentSessionId, sessionDbId);
+    const whereClause = resolvedSessionDbId !== null ? 'up.session_db_id = ?' : 'up.content_session_id = ?';
+    const param = resolvedSessionDbId !== null ? resolvedSessionDbId : contentSessionId;
     const stmt = this.db.prepare(`
       SELECT
         up.*,
@@ -1394,35 +1703,45 @@ export class SessionStore {
         s.project,
         COALESCE(s.platform_source, '${DEFAULT_PLATFORM_SOURCE}') as platform_source
       FROM user_prompts up
-      JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
-      WHERE up.content_session_id = ?
+      JOIN sdk_sessions s ON up.session_db_id = s.id
+      WHERE ${whereClause}
       ORDER BY up.created_at_epoch DESC
       LIMIT 1
     `);
 
-    return stmt.get(contentSessionId) as LatestPromptResult | undefined;
+    return stmt.get(param) as LatestPromptResult | undefined;
   }
 
   findRecentDuplicateUserPrompt(
     contentSessionId: string,
     promptText: string,
-    windowMs: number
+    windowMs: number,
+    sessionDbId?: number
   ): LatestPromptResult | undefined {
     return findRecentDuplicateUserPromptRecord(
       this.db,
       contentSessionId,
       normalizeStoredPromptText(promptText),
-      windowMs
+      windowMs,
+      this.resolvePromptSessionDbId(contentSessionId, sessionDbId) ?? undefined
     );
   }
 
-  getRecentSessionsWithStatus(project: string, limit: number = 3): Array<{
+  getRecentSessionsWithStatus(project: string, limit: number = 3, platformSource?: string): Array<{
     memory_session_id: string | null;
     status: string;
     started_at: string;
     user_prompt: string | null;
     has_summary: boolean;
   }> {
+    const params: any[] = [project];
+    let platformClause = '';
+    if (platformSource) {
+      platformClause = `AND COALESCE(NULLIF(s.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}') = ?`;
+      params.push(normalizePlatformSource(platformSource));
+    }
+    params.push(limit);
+
     const stmt = this.db.prepare(`
       SELECT * FROM (
         SELECT
@@ -1435,6 +1754,7 @@ export class SessionStore {
         FROM sdk_sessions s
         LEFT JOIN session_summaries sum ON s.memory_session_id = sum.memory_session_id
         WHERE s.project = ? AND s.memory_session_id IS NOT NULL
+        ${platformClause}
         GROUP BY s.memory_session_id
         ORDER BY s.started_at_epoch DESC
         LIMIT ?
@@ -1442,7 +1762,7 @@ export class SessionStore {
       ORDER BY started_at_epoch ASC
     `);
 
-    return stmt.all(project, limit) as Array<{
+    return stmt.all(...params) as Array<{
       memory_session_id: string | null;
       status: string;
       started_at: string;
@@ -1451,20 +1771,35 @@ export class SessionStore {
     }>;
   }
 
-  getObservationsForSession(memorySessionId: string): Array<{
+  getObservationsForSession(memorySessionId: string, platformSource?: string): Array<{
     title: string;
     subtitle: string;
     type: string;
     prompt_number: number | null;
   }> {
+    const params: any[] = [memorySessionId];
+    let platformClause = '';
+    if (platformSource) {
+      platformClause = `
+        AND EXISTS (
+          SELECT 1
+          FROM sdk_sessions s
+          WHERE s.memory_session_id = observations.memory_session_id
+            AND COALESCE(NULLIF(s.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}') = ?
+        )
+      `;
+      params.push(normalizePlatformSource(platformSource));
+    }
+
     const stmt = this.db.prepare(`
       SELECT title, subtitle, type, prompt_number
       FROM observations
       WHERE memory_session_id = ?
+      ${platformClause}
       ORDER BY created_at_epoch ASC
     `);
 
-    return stmt.all(memorySessionId) as Array<{
+    return stmt.all(...params) as Array<{
       title: string;
       subtitle: string;
       type: string;
@@ -1472,43 +1807,60 @@ export class SessionStore {
     }>;
   }
 
-  getObservationById(id: number): ObservationRecord | null {
+  getObservationById(id: number, platformSource?: string): ObservationRecord | null {
+    if (!platformSource) {
+      const stmt = this.db.prepare(`
+        SELECT *
+        FROM observations
+        WHERE id = ?
+      `);
+
+      return stmt.get(id) as ObservationRecord | undefined || null;
+    }
+
     const stmt = this.db.prepare(`
-      SELECT *
-      FROM observations
-      WHERE id = ?
+      SELECT o.*
+      FROM observations o
+      LEFT JOIN sdk_sessions s ON s.memory_session_id = o.memory_session_id
+      WHERE o.id = ?
+        AND COALESCE(NULLIF(s.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}') = ?
     `);
 
-    return stmt.get(id) as ObservationRecord | undefined || null;
+    return stmt.get(id, normalizePlatformSource(platformSource)) as ObservationRecord | undefined || null;
   }
 
   getObservationsByIds(
     ids: number[],
-    options: { orderBy?: 'date_desc' | 'date_asc' | 'relevance'; limit?: number; project?: string; type?: string | string[]; concepts?: string | string[]; files?: string | string[] } = {}
+    options: { orderBy?: 'date_desc' | 'date_asc' | 'relevance'; limit?: number; project?: string; platformSource?: string; type?: string | string[]; concepts?: string | string[]; files?: string | string[] } = {}
   ): ObservationSearchResult[] {
     if (ids.length === 0) return [];
 
-    const { orderBy = 'date_desc', limit, project, type, concepts, files } = options;
+    const { orderBy = 'date_desc', limit, project, platformSource, type, concepts, files } = options;
     const preserveIdOrder = orderBy === 'relevance';
-    const orderClause = preserveIdOrder ? '' : `ORDER BY created_at_epoch ${orderBy === 'date_asc' ? 'ASC' : 'DESC'}`;
-    const limitClause = limit ? `LIMIT ${limit}` : '';
+    const orderClause = preserveIdOrder ? '' : `ORDER BY o.created_at_epoch ${orderBy === 'date_asc' ? 'ASC' : 'DESC'}`;
+    const limitClause = limit && !preserveIdOrder ? `LIMIT ${limit}` : '';
 
     const placeholders = ids.map(() => '?').join(',');
     const params: any[] = [...ids];
     const additionalConditions: string[] = [];
 
     if (project) {
-      additionalConditions.push('project = ?');
+      additionalConditions.push('o.project = ?');
       params.push(project);
+    }
+
+    if (platformSource) {
+      additionalConditions.push(`COALESCE(NULLIF(s.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}') = ?`);
+      params.push(normalizePlatformSource(platformSource));
     }
 
     if (type) {
       if (Array.isArray(type)) {
         const typePlaceholders = type.map(() => '?').join(',');
-        additionalConditions.push(`type IN (${typePlaceholders})`);
+        additionalConditions.push(`o.type IN (${typePlaceholders})`);
         params.push(...type);
       } else {
-        additionalConditions.push('type = ?');
+        additionalConditions.push('o.type = ?');
         params.push(type);
       }
     }
@@ -1516,7 +1868,7 @@ export class SessionStore {
     if (concepts) {
       const conceptsList = Array.isArray(concepts) ? concepts : [concepts];
       const conceptConditions = conceptsList.map(() =>
-        'EXISTS (SELECT 1 FROM json_each(concepts) WHERE value = ?)'
+        'EXISTS (SELECT 1 FROM json_each(o.concepts) WHERE value = ?)'
       );
       params.push(...conceptsList);
       additionalConditions.push(`(${conceptConditions.join(' OR ')})`);
@@ -1525,7 +1877,7 @@ export class SessionStore {
     if (files) {
       const filesList = Array.isArray(files) ? files : [files];
       const fileConditions = filesList.map(() => {
-        return '(EXISTS (SELECT 1 FROM json_each(files_read) WHERE value LIKE ?) OR EXISTS (SELECT 1 FROM json_each(files_modified) WHERE value LIKE ?))';
+        return '(EXISTS (SELECT 1 FROM json_each(o.files_read) WHERE value LIKE ?) OR EXISTS (SELECT 1 FROM json_each(o.files_modified) WHERE value LIKE ?))';
       });
       filesList.forEach(file => {
         params.push(`%${file}%`, `%${file}%`);
@@ -1534,12 +1886,13 @@ export class SessionStore {
     }
 
     const whereClause = additionalConditions.length > 0
-      ? `WHERE id IN (${placeholders}) AND ${additionalConditions.join(' AND ')}`
-      : `WHERE id IN (${placeholders})`;
+      ? `WHERE o.id IN (${placeholders}) AND ${additionalConditions.join(' AND ')}`
+      : `WHERE o.id IN (${placeholders})`;
 
     const stmt = this.db.prepare(`
-      SELECT *
-      FROM observations
+      SELECT o.*
+      FROM observations o
+      LEFT JOIN sdk_sessions s ON s.memory_session_id = o.memory_session_id
       ${whereClause}
       ${orderClause}
       ${limitClause}
@@ -1549,10 +1902,11 @@ export class SessionStore {
     if (!preserveIdOrder) return rows;
 
     const rowMap = new Map(rows.map(r => [r.id, r]));
-    return ids.map(id => rowMap.get(id)).filter((r): r is ObservationSearchResult => !!r);
+    const ordered = ids.map(id => rowMap.get(id)).filter((r): r is ObservationSearchResult => !!r);
+    return limit ? ordered.slice(0, limit) : ordered;
   }
 
-  getSummaryForSession(memorySessionId: string): {
+  getSummaryForSession(memorySessionId: string, platformSource?: string): {
     request: string | null;
     investigated: string | null;
     learned: string | null;
@@ -1565,6 +1919,20 @@ export class SessionStore {
     created_at: string;
     created_at_epoch: number;
   } | null {
+    const params: any[] = [memorySessionId];
+    let platformClause = '';
+    if (platformSource) {
+      platformClause = `
+        AND EXISTS (
+          SELECT 1
+          FROM sdk_sessions sdk
+          WHERE sdk.memory_session_id = session_summaries.memory_session_id
+            AND COALESCE(NULLIF(sdk.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}') = ?
+        )
+      `;
+      params.push(normalizePlatformSource(platformSource));
+    }
+
     const stmt = this.db.prepare(`
       SELECT
         request, investigated, learned, completed, next_steps,
@@ -1572,11 +1940,12 @@ export class SessionStore {
         created_at_epoch
       FROM session_summaries
       WHERE memory_session_id = ?
+      ${platformClause}
       ORDER BY created_at_epoch DESC
       LIMIT 1
     `);
 
-    return (stmt.get(memorySessionId) as {
+    return (stmt.get(...params) as {
       request: string | null;
       investigated: string | null;
       learned: string | null;
@@ -1682,7 +2051,15 @@ export class SessionStore {
     return stmt.all(...memorySessionIds) as any[];
   }
 
-  getPromptNumberFromUserPrompts(contentSessionId: string): number {
+  getPromptNumberFromUserPrompts(contentSessionId: string, sessionDbId?: number): number {
+    const resolvedSessionDbId = this.resolvePromptSessionDbId(contentSessionId, sessionDbId);
+    if (resolvedSessionDbId !== null) {
+      const result = this.db.prepare(`
+        SELECT COUNT(*) as count FROM user_prompts WHERE session_db_id = ?
+      `).get(resolvedSessionDbId) as { count: number };
+      return result.count;
+    }
+
     const result = this.db.prepare(`
       SELECT COUNT(*) as count FROM user_prompts WHERE content_session_id = ?
     `).get(contentSessionId) as { count: number };
@@ -1703,70 +2080,65 @@ export class SessionStore {
     const storedUserPrompt = normalizeStoredPromptText(userPrompt);
 
     const existing = this.db.prepare(`
-      SELECT id, platform_source FROM sdk_sessions WHERE content_session_id = ?
-    `).get(contentSessionId) as { id: number; platform_source: string | null } | undefined;
+      SELECT id, platform_source
+      FROM sdk_sessions
+      WHERE COALESCE(NULLIF(platform_source, ''), ?) = ?
+        AND content_session_id = ?
+    `).get(DEFAULT_PLATFORM_SOURCE, normalizedPlatformSource, contentSessionId) as { id: number; platform_source: string | null } | undefined;
 
     if (existing) {
       if (project) {
         this.db.prepare(`
           UPDATE sdk_sessions SET project = ?
-          WHERE content_session_id = ? AND (project IS NULL OR project = '')
-        `).run(project, contentSessionId);
+          WHERE id = ? AND (project IS NULL OR project = '')
+        `).run(project, existing.id);
       }
       if (resolved.customTitle) {
         this.db.prepare(`
           UPDATE sdk_sessions SET custom_title = ?
-          WHERE content_session_id = ? AND custom_title IS NULL
-        `).run(resolved.customTitle, contentSessionId);
-      }
-
-      if (resolved.platformSource) {
-        const storedPlatformSource = existing.platform_source?.trim()
-          ? normalizePlatformSource(existing.platform_source)
-          : undefined;
-
-        if (!storedPlatformSource) {
-          this.db.prepare(`
-            UPDATE sdk_sessions SET platform_source = ?
-            WHERE content_session_id = ?
-              AND COALESCE(platform_source, '') = ''
-          `).run(resolved.platformSource, contentSessionId);
-        } else if (storedPlatformSource !== resolved.platformSource) {
-          throw new Error(
-            `Platform source conflict for session ${contentSessionId}: existing=${storedPlatformSource}, received=${resolved.platformSource}`
-          );
-        }
+          WHERE id = ? AND custom_title IS NULL
+        `).run(resolved.customTitle, existing.id);
       }
       return existing.id;
     }
 
-    this.db.prepare(`
+    const result = this.db.prepare(`
       INSERT INTO sdk_sessions
       (content_session_id, memory_session_id, project, platform_source, user_prompt, custom_title, started_at, started_at_epoch, status)
       VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'active')
     `).run(contentSessionId, project, normalizedPlatformSource, storedUserPrompt, resolved.customTitle || null, now.toISOString(), nowEpoch);
 
-    const row = this.db.prepare('SELECT id FROM sdk_sessions WHERE content_session_id = ?')
-      .get(contentSessionId) as { id: number };
-    return row.id;
+    return Number(result.lastInsertRowid);
   }
 
-  saveUserPrompt(contentSessionId: string, promptNumber: number, promptText: string): number {
+  saveUserPrompt(contentSessionId: string, promptNumber: number, promptText: string, sessionDbId?: number): number {
     const now = new Date();
     const nowEpoch = now.getTime();
     const storedPromptText = normalizeStoredPromptText(promptText);
+    const resolvedSessionDbId = this.resolvePromptSessionDbId(contentSessionId, sessionDbId);
 
     const stmt = this.db.prepare(`
       INSERT INTO user_prompts
-      (content_session_id, prompt_number, prompt_text, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?)
+      (session_db_id, content_session_id, prompt_number, prompt_text, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?)
     `);
 
-    const result = stmt.run(contentSessionId, promptNumber, storedPromptText, now.toISOString(), nowEpoch);
+    const result = stmt.run(resolvedSessionDbId, contentSessionId, promptNumber, storedPromptText, now.toISOString(), nowEpoch);
     return result.lastInsertRowid as number;
   }
 
-  getUserPrompt(contentSessionId: string, promptNumber: number): string | null {
+  getUserPrompt(contentSessionId: string, promptNumber: number, sessionDbId?: number): string | null {
+    const resolvedSessionDbId = this.resolvePromptSessionDbId(contentSessionId, sessionDbId);
+    if (resolvedSessionDbId !== null) {
+      const result = this.db.prepare(`
+        SELECT prompt_text
+        FROM user_prompts
+        WHERE session_db_id = ? AND prompt_number = ?
+        LIMIT 1
+      `).get(resolvedSessionDbId, promptNumber) as { prompt_text: string } | undefined;
+      return result?.prompt_text ?? null;
+    }
+
     const stmt = this.db.prepare(`
       SELECT prompt_text
       FROM user_prompts
@@ -2016,25 +2388,37 @@ export class SessionStore {
 
   getSessionSummariesByIds(
     ids: number[],
-    options: { orderBy?: 'date_desc' | 'date_asc' | 'relevance'; limit?: number; project?: string } = {}
+    options: { orderBy?: 'date_desc' | 'date_asc' | 'relevance'; limit?: number; project?: string; platformSource?: string } = {}
   ): SessionSummarySearchResult[] {
     if (ids.length === 0) return [];
 
-    const { orderBy = 'date_desc', limit, project } = options;
+    const { orderBy = 'date_desc', limit, project, platformSource } = options;
     const preserveIdOrder = orderBy === 'relevance';
-    const orderClause = preserveIdOrder ? '' : `ORDER BY created_at_epoch ${orderBy === 'date_asc' ? 'ASC' : 'DESC'}`;
-    const limitClause = limit ? `LIMIT ${limit}` : '';
+    const orderClause = preserveIdOrder ? '' : `ORDER BY ss.created_at_epoch ${orderBy === 'date_asc' ? 'ASC' : 'DESC'}`;
+    const limitClause = limit && !preserveIdOrder ? `LIMIT ${limit}` : '';
     const placeholders = ids.map(() => '?').join(',');
     const params: any[] = [...ids];
+    const additionalConditions: string[] = [];
 
-    const whereClause = project
-      ? `WHERE id IN (${placeholders}) AND project = ?`
-      : `WHERE id IN (${placeholders})`;
-    if (project) params.push(project);
+    if (project) {
+      additionalConditions.push('ss.project = ?');
+      params.push(project);
+    }
+
+    if (platformSource) {
+      additionalConditions.push(`COALESCE(NULLIF(s.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}') = ?`);
+      params.push(normalizePlatformSource(platformSource));
+    }
+
+    const additionalFilter = additionalConditions.length > 0
+      ? `AND ${additionalConditions.join(' AND ')}`
+      : '';
 
     const stmt = this.db.prepare(`
-      SELECT * FROM session_summaries
-      ${whereClause}
+      SELECT ss.*
+      FROM session_summaries ss
+      LEFT JOIN sdk_sessions s ON s.memory_session_id = ss.memory_session_id
+      WHERE ss.id IN (${placeholders}) ${additionalFilter}
       ${orderClause}
       ${limitClause}
     `);
@@ -2043,33 +2427,47 @@ export class SessionStore {
     if (!preserveIdOrder) return rows;
 
     const rowMap = new Map(rows.map(r => [r.id, r]));
-    return ids.map(id => rowMap.get(id)).filter((r): r is SessionSummarySearchResult => !!r);
+    const ordered = ids.map(id => rowMap.get(id)).filter((r): r is SessionSummarySearchResult => !!r);
+    return limit ? ordered.slice(0, limit) : ordered;
   }
 
   getUserPromptsByIds(
     ids: number[],
-    options: { orderBy?: 'date_desc' | 'date_asc' | 'relevance'; limit?: number; project?: string } = {}
+    options: { orderBy?: 'date_desc' | 'date_asc' | 'relevance'; limit?: number; project?: string; platformSource?: string } = {}
   ): UserPromptRecord[] {
     if (ids.length === 0) return [];
 
-    const { orderBy = 'date_desc', limit, project } = options;
+    const { orderBy = 'date_desc', limit, project, platformSource } = options;
     const preserveIdOrder = orderBy === 'relevance';
     const orderClause = preserveIdOrder ? '' : `ORDER BY up.created_at_epoch ${orderBy === 'date_asc' ? 'ASC' : 'DESC'}`;
     const limitClause = limit ? `LIMIT ${limit}` : '';
     const placeholders = ids.map(() => '?').join(',');
     const params: any[] = [...ids];
+    const additionalConditions: string[] = [];
 
-    const projectFilter = project ? 'AND s.project = ?' : '';
-    if (project) params.push(project);
+    if (project) {
+      additionalConditions.push('s.project = ?');
+      params.push(project);
+    }
+
+    if (platformSource) {
+      additionalConditions.push(`COALESCE(NULLIF(s.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}') = ?`);
+      params.push(normalizePlatformSource(platformSource));
+    }
+
+    const additionalFilter = additionalConditions.length > 0
+      ? `AND ${additionalConditions.join(' AND ')}`
+      : '';
 
     const stmt = this.db.prepare(`
       SELECT
         up.*,
         s.project,
-        s.memory_session_id
+        s.memory_session_id,
+        COALESCE(NULLIF(s.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}') as platform_source
       FROM user_prompts up
-      JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
-      WHERE up.id IN (${placeholders}) ${projectFilter}
+      JOIN sdk_sessions s ON up.session_db_id = s.id
+      WHERE up.id IN (${placeholders}) ${additionalFilter}
       ${orderClause}
       ${limitClause}
     `);
@@ -2085,13 +2483,14 @@ export class SessionStore {
     anchorEpoch: number,
     depthBefore: number = 10,
     depthAfter: number = 10,
-    project?: string
+    project?: string,
+    platformSource?: string
   ): {
     observations: any[];
     sessions: any[];
     prompts: any[];
   } {
-    return this.getTimelineAroundObservation(null, anchorEpoch, depthBefore, depthAfter, project);
+    return this.getTimelineAroundObservation(null, anchorEpoch, depthBefore, depthAfter, project, platformSource);
   }
 
   getTimelineAroundObservation(
@@ -2099,37 +2498,61 @@ export class SessionStore {
     anchorEpoch: number,
     depthBefore: number = 10,
     depthAfter: number = 10,
-    project?: string
+    project?: string,
+    platformSource?: string
   ): {
     observations: any[];
     sessions: any[];
     prompts: any[];
   } {
-    const projectFilter = project ? 'AND project = ?' : '';
-    const projectParams = project ? [project] : [];
+    const normalizedPlatformSource = platformSource ? normalizePlatformSource(platformSource) : undefined;
+    const buildScope = (rowAlias: string, sessionAlias: string): { clause: string; params: any[] } => {
+      const conditions: string[] = [];
+      const params: any[] = [];
+
+      if (project) {
+        conditions.push(`${rowAlias}.project = ?`);
+        params.push(project);
+      }
+
+      if (normalizedPlatformSource) {
+        conditions.push(`COALESCE(NULLIF(${sessionAlias}.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}') = ?`);
+        params.push(normalizedPlatformSource);
+      }
+
+      return {
+        clause: conditions.length > 0 ? `AND ${conditions.join(' AND ')}` : '',
+        params
+      };
+    };
+    const observationScope = buildScope('o', 'src');
+    const summaryScope = buildScope('ss', 'src');
+    const promptScope = buildScope('s', 's');
 
     let startEpoch: number;
     let endEpoch: number;
 
     if (anchorObservationId !== null) {
       const beforeQuery = `
-        SELECT id, created_at_epoch
-        FROM observations
-        WHERE id <= ? ${projectFilter}
-        ORDER BY id DESC
+        SELECT o.id, o.created_at_epoch
+        FROM observations o
+        LEFT JOIN sdk_sessions src ON src.memory_session_id = o.memory_session_id
+        WHERE o.id <= ? ${observationScope.clause}
+        ORDER BY o.id DESC
         LIMIT ?
       `;
       const afterQuery = `
-        SELECT id, created_at_epoch
-        FROM observations
-        WHERE id >= ? ${projectFilter}
-        ORDER BY id ASC
+        SELECT o.id, o.created_at_epoch
+        FROM observations o
+        LEFT JOIN sdk_sessions src ON src.memory_session_id = o.memory_session_id
+        WHERE o.id >= ? ${observationScope.clause}
+        ORDER BY o.id ASC
         LIMIT ?
       `;
 
       try {
-        const beforeRecords = this.db.prepare(beforeQuery).all(anchorObservationId, ...projectParams, depthBefore + 1) as Array<{id: number; created_at_epoch: number}>;
-        const afterRecords = this.db.prepare(afterQuery).all(anchorObservationId, ...projectParams, depthAfter + 1) as Array<{id: number; created_at_epoch: number}>;
+        const beforeRecords = this.db.prepare(beforeQuery).all(anchorObservationId, ...observationScope.params, depthBefore + 1) as Array<{id: number; created_at_epoch: number}>;
+        const afterRecords = this.db.prepare(afterQuery).all(anchorObservationId, ...observationScope.params, depthAfter + 1) as Array<{id: number; created_at_epoch: number}>;
 
         if (beforeRecords.length === 0 && afterRecords.length === 0) {
           return { observations: [], sessions: [], prompts: [] };
@@ -2147,23 +2570,25 @@ export class SessionStore {
       }
     } else {
       const beforeQuery = `
-        SELECT created_at_epoch
-        FROM observations
-        WHERE created_at_epoch <= ? ${projectFilter}
-        ORDER BY created_at_epoch DESC
+        SELECT o.created_at_epoch
+        FROM observations o
+        LEFT JOIN sdk_sessions src ON src.memory_session_id = o.memory_session_id
+        WHERE o.created_at_epoch <= ? ${observationScope.clause}
+        ORDER BY o.created_at_epoch DESC
         LIMIT ?
       `;
       const afterQuery = `
-        SELECT created_at_epoch
-        FROM observations
-        WHERE created_at_epoch >= ? ${projectFilter}
-        ORDER BY created_at_epoch ASC
+        SELECT o.created_at_epoch
+        FROM observations o
+        LEFT JOIN sdk_sessions src ON src.memory_session_id = o.memory_session_id
+        WHERE o.created_at_epoch >= ? ${observationScope.clause}
+        ORDER BY o.created_at_epoch ASC
         LIMIT ?
       `;
 
       try {
-        const beforeRecords = this.db.prepare(beforeQuery).all(anchorEpoch, ...projectParams, depthBefore) as Array<{created_at_epoch: number}>;
-        const afterRecords = this.db.prepare(afterQuery).all(anchorEpoch, ...projectParams, depthAfter + 1) as Array<{created_at_epoch: number}>;
+        const beforeRecords = this.db.prepare(beforeQuery).all(anchorEpoch, ...observationScope.params, depthBefore) as Array<{created_at_epoch: number}>;
+        const afterRecords = this.db.prepare(afterQuery).all(anchorEpoch, ...observationScope.params, depthAfter + 1) as Array<{created_at_epoch: number}>;
 
         if (beforeRecords.length === 0 && afterRecords.length === 0) {
           return { observations: [], sessions: [], prompts: [] };
@@ -2182,30 +2607,32 @@ export class SessionStore {
     }
 
     const obsQuery = `
-      SELECT *
-      FROM observations
-      WHERE created_at_epoch >= ? AND created_at_epoch <= ? ${projectFilter}
-      ORDER BY created_at_epoch ASC
+      SELECT o.*
+      FROM observations o
+      LEFT JOIN sdk_sessions src ON src.memory_session_id = o.memory_session_id
+      WHERE o.created_at_epoch >= ? AND o.created_at_epoch <= ? ${observationScope.clause}
+      ORDER BY o.created_at_epoch ASC
     `;
 
     const sessQuery = `
-      SELECT *
-      FROM session_summaries
-      WHERE created_at_epoch >= ? AND created_at_epoch <= ? ${projectFilter}
-      ORDER BY created_at_epoch ASC
+      SELECT ss.*
+      FROM session_summaries ss
+      LEFT JOIN sdk_sessions src ON src.memory_session_id = ss.memory_session_id
+      WHERE ss.created_at_epoch >= ? AND ss.created_at_epoch <= ? ${summaryScope.clause}
+      ORDER BY ss.created_at_epoch ASC
     `;
 
     const promptQuery = `
-      SELECT up.*, s.project, s.memory_session_id
+      SELECT up.*, s.project, s.memory_session_id, COALESCE(NULLIF(s.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}') as platform_source
       FROM user_prompts up
-      JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
-      WHERE up.created_at_epoch >= ? AND up.created_at_epoch <= ? ${projectFilter.replace('project', 's.project')}
+      JOIN sdk_sessions s ON up.session_db_id = s.id
+      WHERE up.created_at_epoch >= ? AND up.created_at_epoch <= ? ${promptScope.clause}
       ORDER BY up.created_at_epoch ASC
     `;
 
-    const observations = this.db.prepare(obsQuery).all(startEpoch, endEpoch, ...projectParams) as ObservationRecord[];
-    const sessions = this.db.prepare(sessQuery).all(startEpoch, endEpoch, ...projectParams) as SessionSummaryRecord[];
-    const prompts = this.db.prepare(promptQuery).all(startEpoch, endEpoch, ...projectParams) as UserPromptRecord[];
+    const observations = this.db.prepare(obsQuery).all(startEpoch, endEpoch, ...observationScope.params) as ObservationRecord[];
+    const sessions = this.db.prepare(sessQuery).all(startEpoch, endEpoch, ...summaryScope.params) as SessionSummaryRecord[];
+    const prompts = this.db.prepare(promptQuery).all(startEpoch, endEpoch, ...promptScope.params) as UserPromptRecord[];
 
     return {
       observations,
@@ -2225,6 +2652,7 @@ export class SessionStore {
         prompt_number: p.prompt_number,
         prompt_text: p.prompt_text,
         project: p.project,
+        platform_source: p.platform_source,
         created_at: p.created_at,
         created_at_epoch: p.created_at_epoch
       }))
@@ -2249,9 +2677,9 @@ export class SessionStore {
         s.project,
         p.created_at,
         p.created_at_epoch
-      FROM user_prompts p
-      LEFT JOIN sdk_sessions s ON p.content_session_id = s.content_session_id
-      WHERE p.id = ?
+	      FROM user_prompts p
+	      LEFT JOIN sdk_sessions s ON p.session_db_id = s.id
+	      WHERE p.id = ?
       LIMIT 1
     `);
 
@@ -2287,9 +2715,9 @@ export class SessionStore {
         s.project,
         p.created_at,
         p.created_at_epoch
-      FROM user_prompts p
-      LEFT JOIN sdk_sessions s ON p.content_session_id = s.content_session_id
-      WHERE p.id IN (${placeholders})
+	      FROM user_prompts p
+	      LEFT JOIN sdk_sessions s ON p.session_db_id = s.id
+	      WHERE p.id IN (${placeholders})
       ORDER BY p.created_at_epoch DESC
     `);
 
@@ -2343,9 +2771,11 @@ export class SessionStore {
     completed_at_epoch: number | null;
     status: string;
   }): { imported: boolean; id: number } {
+    const normalizedPlatformSource = normalizePlatformSource(session.platform_source);
     const existing = this.db.prepare(
-      'SELECT id FROM sdk_sessions WHERE content_session_id = ?'
-    ).get(session.content_session_id) as { id: number } | undefined;
+      `SELECT id FROM sdk_sessions
+       WHERE platform_source = ? AND content_session_id = ?`
+    ).get(normalizedPlatformSource, session.content_session_id) as { id: number } | undefined;
 
     if (existing) {
       return { imported: false, id: existing.id };
@@ -2359,10 +2789,10 @@ export class SessionStore {
     `);
 
     const result = stmt.run(
-      session.content_session_id,
-      session.memory_session_id,
-      session.project,
-      normalizePlatformSource(session.platform_source),
+	      session.content_session_id,
+	      session.memory_session_id,
+	      session.project,
+	      normalizedPlatformSource,
       session.user_prompt,
       session.started_at,
       session.started_at_epoch,
@@ -2499,16 +2929,48 @@ export class SessionStore {
   }
 
   importUserPrompt(prompt: {
+    session_db_id?: number | null;
     content_session_id: string;
+    platform_source?: string | null;
     prompt_number: number;
     prompt_text: string;
     created_at: string;
     created_at_epoch: number;
   }): { imported: boolean; id: number } {
+    let sessionDbId: number | null = null;
+    const normalizedPlatformSource = prompt.platform_source
+      ? normalizePlatformSource(prompt.platform_source)
+      : undefined;
+
+    if (typeof prompt.session_db_id === 'number') {
+      const explicitSession = this.db.prepare(`
+        SELECT id, content_session_id, COALESCE(NULLIF(platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}') as platform_source
+        FROM sdk_sessions
+        WHERE id = ?
+        LIMIT 1
+      `).get(prompt.session_db_id) as { id: number; content_session_id: string; platform_source: string } | undefined;
+
+      if (
+        explicitSession
+        && explicitSession.content_session_id === prompt.content_session_id
+        && (!normalizedPlatformSource || normalizePlatformSource(explicitSession.platform_source) === normalizedPlatformSource)
+      ) {
+        sessionDbId = explicitSession.id;
+      }
+    }
+
+    if (sessionDbId === null) {
+      sessionDbId = this.resolvePromptSessionDbId(
+        prompt.content_session_id,
+        undefined,
+        normalizedPlatformSource
+      );
+    }
+
     const existing = this.db.prepare(`
       SELECT id FROM user_prompts
-      WHERE content_session_id = ? AND prompt_number = ?
-    `).get(prompt.content_session_id, prompt.prompt_number) as { id: number } | undefined;
+      WHERE ${sessionDbId !== null ? 'session_db_id = ?' : 'content_session_id = ?'} AND prompt_number = ?
+    `).get(sessionDbId ?? prompt.content_session_id, prompt.prompt_number) as { id: number } | undefined;
 
     if (existing) {
       return { imported: false, id: existing.id };
@@ -2516,12 +2978,13 @@ export class SessionStore {
 
     const stmt = this.db.prepare(`
       INSERT INTO user_prompts (
-        content_session_id, prompt_number, prompt_text,
+        session_db_id, content_session_id, prompt_number, prompt_text,
         created_at, created_at_epoch
-      ) VALUES (?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
+      sessionDbId,
       prompt.content_session_id,
       prompt.prompt_number,
       prompt.prompt_text,
