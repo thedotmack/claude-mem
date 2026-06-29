@@ -28,11 +28,15 @@ export function requireRateLimit(pool: PostgresPool, opts: { windowSec: number; 
     if (!subject) return next(); // unauthenticated / local-dev bypass: nothing to limit
     try {
       const start = floorToWindow(Date.now(), opts.windowSec);
+      const resetMs = start.getTime() + opts.windowSec * 1000;
       const result = await repo.hit({ subjectId: subject, windowStart: start, limit: opts.max });
       res.setHeader('X-RateLimit-Limit', String(opts.max));
       res.setHeader('X-RateLimit-Remaining', String(Math.max(0, opts.max - result.count)));
+      // Unix-seconds reset time — the conventional companion to Retry-After that
+      // most client libraries read to schedule automatic retries.
+      res.setHeader('X-RateLimit-Reset', String(Math.ceil(resetMs / 1000)));
       if (!result.allowed) {
-        const retryAfter = Math.max(1, Math.ceil((start.getTime() + opts.windowSec * 1000 - Date.now()) / 1000));
+        const retryAfter = Math.max(1, Math.ceil((resetMs - Date.now()) / 1000));
         res.setHeader('Retry-After', String(retryAfter));
         return res.status(429).json({
           error: 'rate_limited',

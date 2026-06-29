@@ -120,6 +120,7 @@ describe('paid-readiness (usage metering, rate limit, quota)', () => {
     expect(blocked.out.nexted).toBe(false);
     expect(blocked.out.status).toBe(429);
     expect(blocked.headers['Retry-After']).toBeDefined();
+    expect(blocked.headers['X-RateLimit-Reset']).toBeDefined();
   });
 
   it('rate limiter skips requests with no api key (local-dev)', async () => {
