@@ -13,6 +13,7 @@ import { SSEBroadcaster } from '../../SSEBroadcaster.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
+import { requireLocalhost } from '../middleware.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 import { getObservationsByFilePath } from '../../../sqlite/observations/get.js';
 import { getFirstObservationCreatedAt } from '../../../sqlite/observations/recent.js';
@@ -99,12 +100,12 @@ export class DataRoutes extends BaseRouteHandler {
     app.post('/api/sdk-sessions/batch', validateBody(sdkSessionsBatchSchema), this.handleGetSdkSessionsByIds.bind(this));
     app.get('/api/prompt/:id', this.handleGetPromptById.bind(this));
 
-    app.get('/api/stats', this.handleGetStats.bind(this));
+    app.get('/api/stats', requireLocalhost, this.handleGetStats.bind(this));
     app.get('/api/projects', this.handleGetProjects.bind(this));
 
     app.get('/api/processing-status', this.handleGetProcessingStatus.bind(this));
 
-    app.post('/api/import', validateBody(importSchema), this.handleImport.bind(this));
+    app.post('/api/import', requireLocalhost, validateBody(importSchema), this.handleImport.bind(this));
   }
 
   private handleGetObservations = this.wrapHandler((req: Request, res: Response): void => {
