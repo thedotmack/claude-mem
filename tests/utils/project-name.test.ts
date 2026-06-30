@@ -145,6 +145,18 @@ describe('getProjectName', () => {
       expect(getProjectName(serviceDir)).toBe('my-real-repo');
     });
 
+    it('manifest-less monorepos still split plain subdirectories when nested package roots exist', () => {
+      const { mkdirSync, rmSync, writeFileSync } = require('fs');
+      const { join } = require('path');
+      const automationDir = join(repoRoot, 'automation');
+      const packageDir = join(repoRoot, 'packages', 'api');
+      mkdirSync(automationDir, { recursive: true });
+      mkdirSync(packageDir, { recursive: true });
+      rmSync(join(repoRoot, 'package.json'), { force: true });
+      writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name: 'api' }));
+      expect(getProjectName(automationDir)).toBe('my-real-repo/automation');
+    });
+
     it('package directory inside a monorepo yields the repo-relative package key', () => {
       const { mkdirSync, writeFileSync } = require('fs');
       const { join } = require('path');

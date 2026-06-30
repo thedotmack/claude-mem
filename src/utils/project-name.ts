@@ -1,6 +1,6 @@
 import { homedir } from 'os'
 import path from 'path';
-import { readFileSync, realpathSync, statSync } from 'fs';
+import { readdirSync, readFileSync, realpathSync, statSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { logger } from './logger.js';
 import { detectWorktree } from './worktree.js';
@@ -95,11 +95,70 @@ function toProjectPath(relativePath: string): string {
   return relativePath.split(path.sep).filter(Boolean).join('/');
 }
 
+function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
+  return typeof error === 'object' && error !== null && 'code' in error;
+}
+
+function hasNestedPackageJson(repoRoot: string): boolean {
+  const root = resolvePath(repoRoot);
+  const pending = [root];
+
+  while (pending.length > 0) {
+    const dir = pending.pop()!;
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (entry.name === '.git' || entry.name === 'node_modules') {
+        continue;
+      }
+
+      const entryPath = path.join(dir, entry.name);
+
+      if (entry.isFile() && entry.name === 'package.json' && !samePath(dir, root)) {
+        return true;
+      }
+
+      if (entry.isDirectory()) {
+        pending.push(entryPath);
+      }
+    }
+  }
+
+  return false;
+}
+
 function shouldUseTopLevelSubprojectFallback(repoRoot: string): boolean {
+  const rootPackageJson = path.join(repoRoot, 'package.json');
+  let rootManifestState: 'file' | 'missing' | 'unreadable' = 'file';
+
+  try {
+    if (!statSync(rootPackageJson).isFile()) {
+      rootManifestState = 'unreadable';
+    }
+  } catch (error) {
+    rootManifestState = isErrnoException(error) && error.code === 'ENOENT'
+      ? 'missing'
+      : 'unreadable';
+  }
+
+  if (rootManifestState === 'missing') {
+    return hasNestedPackageJson(repoRoot);
+  }
+
+  if (rootManifestState === 'unreadable') {
+    return false;
+  }
+
   try {
     const packageJson = JSON.parse(readFileSync(path.join(repoRoot, 'package.json'), 'utf-8'));
-    if (Array.isArray(packageJson.workspaces)) return packageJson.workspaces.length > 0;
-    return Array.isArray(packageJson.workspaces?.packages) && packageJson.workspaces.packages.length > 0;
+    return Array.isArray(packageJson.workspaces)
+      ? packageJson.workspaces.length > 0
+      : Array.isArray(packageJson.workspaces?.packages) && packageJson.workspaces.packages.length > 0;
   } catch {
     return false;
   }
