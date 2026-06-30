@@ -147,6 +147,18 @@ describe('Install Non-TTY Support', () => {
       expect(installSource).toContain('installCodexCli(marketplaceDirectory())');
     });
 
+    it('writes an install marker into the marketplace plugin before Codex cache registration', () => {
+      const installFlowRegion = installSource.slice(
+        installSource.indexOf('const tasks: TaskDescriptor[] = ['),
+        installSource.indexOf('const failedIDEs = await setupIDEs'),
+      );
+      expect(installSource).toContain('function writeMarketplaceInstallMarker');
+      expect(installSource).toContain("writeInstallMarker(join(marketplaceDirectory(), 'plugin'), version, bunVersion, uvVersion)");
+      expect(installFlowRegion).toContain('writeMarketplaceInstallMarker(version, bunVersion, uvVersion)');
+      expect(installSource.indexOf('writeMarketplaceInstallMarker(version, bunVersion, uvVersion)'))
+        .toBeLessThan(installSource.indexOf('const failedIDEs = await setupIDEs'));
+    });
+
     it('refreshes Codex marketplace cache after registration', () => {
       const installRegion = codexInstallerSource.slice(
         codexInstallerSource.indexOf('export async function installCodexCli'),
