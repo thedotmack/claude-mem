@@ -19,7 +19,9 @@ export const SERVER_POSTGRES_TABLES = [
   'observation_generation_jobs',
   'observations',
   'observation_sources',
-  'observation_generation_job_events'
+  'observation_generation_job_events',
+  'usage_events',
+  'rate_limit_counters'
 ] as const;
 
 export async function bootstrapServerPostgresSchema(client: PostgresQueryable): Promise<void> {
@@ -304,4 +306,27 @@ CREATE INDEX IF NOT EXISTS idx_observation_jobs_event ON observation_generation_
 CREATE INDEX IF NOT EXISTS idx_observation_jobs_source ON observation_generation_jobs(source_type, source_id);
 CREATE INDEX IF NOT EXISTS idx_observation_job_events_job_created ON observation_generation_job_events(generation_job_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_audit_log_scope_created ON audit_log(project_id, team_id, created_at);
+
+-- Usage metering: append-only per-team usage, aggregated for quotas + billing.
+-- kind is open-ended ('request', 'tokens_in', 'tokens_out', 'observation', ...).
+CREATE TABLE IF NOT EXISTS usage_events (
+  id TEXT PRIMARY KEY,
+  team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+  kind TEXT NOT NULL,
+  quantity BIGINT NOT NULL DEFAULT 1,
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_usage_events_team_created ON usage_events(team_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_usage_events_team_kind_created ON usage_events(team_id, kind, created_at);
+
+-- Fixed-window rate-limit counters. subject_id is the api key id (per-key limit).
+CREATE TABLE IF NOT EXISTS rate_limit_counters (
+  subject_id TEXT NOT NULL,
+  window_start TIMESTAMPTZ NOT NULL,
+  count BIGINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (subject_id, window_start)
+);
+CREATE INDEX IF NOT EXISTS idx_rate_limit_counters_window ON rate_limit_counters(window_start);
 `;
