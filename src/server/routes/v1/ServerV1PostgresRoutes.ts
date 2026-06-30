@@ -22,6 +22,8 @@ import { requirePostgresServerAuth } from '../../middleware/postgres-auth.js';
 import { requestIdMiddleware } from '../../middleware/request-id.js';
 import type { ActiveServerQueueManager } from '../../runtime/ActiveServerQueueManager.js';
 import type { ServerQueueManager } from '../../runtime/types.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { createRecallMcpServer, type RecallBackend } from '../../mcp/recall-mcp-server.js';
 import { PostgresServerSessionsRepository } from '../../../storage/postgres/server-sessions.js';
 import type { ServerSessionGenerationPolicy } from '../../runtime/SessionGenerationPolicy.js';
 import { IngestEventsService, type EnqueueOutcome } from '../../services/IngestEventsService.js';
@@ -29,6 +31,10 @@ import { EndSessionService } from '../../services/EndSessionService.js';
 import { normalizePlatformSource, normalizePlatformSourceOrNull } from '../../../shared/platform-source.js';
 
 const SOURCE_ADAPTER_DEFAULT = 'api';
+
+declare const __DEFAULT_PACKAGE_VERSION__: string;
+const MCP_SERVER_VERSION =
+  typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
 
 export interface ServerV1PostgresRoutesOptions {
   pool: PostgresPool;
@@ -924,6 +930,68 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         }
       },
     ));
+
+    // Remote authenticated MCP endpoint. The "secure MCP link" a user pastes
+    // into Claude Code (or any MCP client) to recall their cloud memory:
+    //   claude mcp add --transport http claude-mem <base>/v1/mcp \
+    //     --header "Authorization: Bearer cm_..."
+    // Same readAuth (memories:read) + team/project scoping + audit trail as
+    // /v1/search, so it reads identical data through identical guards. Stateless
+    // streamable-HTTP: one transport + server per request, bound to this key's team.
+    const mcpHandler = this.asyncHandler(async (req, res) => {
+      const teamId = this.requireTeamId(req, res);
+      if (!teamId) return;
+      const projectScope = req.authContext?.projectId ?? null;
+      const repo = new PostgresObservationRepository(this.options.pool);
+      const assertProjectAllowed = (projectId: string): void => {
+        if (projectScope && projectScope !== projectId) {
+          throw new Error('API key is scoped to a different project');
+        }
+      };
+      const backend: RecallBackend = {
+        search: async ({ projectId, query, limit }) => {
+          assertProjectAllowed(projectId);
+          const rows = await repo.search({ projectId, teamId, query, limit });
+          // Audit the read, same as POST /v1/search — the MCP path is no exception.
+          await this.auditRead(req, 'observation.read', null, projectId, {
+            mode: 'search', via: 'mcp', query, limit,
+            resultCount: rows.length, observationIds: rows.map(o => o.id),
+          });
+          return rows.map(serializeObservation);
+        },
+        context: async ({ projectId, query, limit }) => {
+          assertProjectAllowed(projectId);
+          const rows = await repo.search({ projectId, teamId, query, limit });
+          await this.auditRead(req, 'observation.read', null, projectId, {
+            mode: 'context', via: 'mcp', query, limit,
+            resultCount: rows.length, observationIds: rows.map(o => o.id),
+          });
+          return rows.map(serializeObservation);
+        },
+        recent: async ({ projectId, limit }) => {
+          assertProjectAllowed(projectId);
+          const rows = await repo.listByProject({ projectId, teamId, limit });
+          await this.auditRead(req, 'observation.read', null, projectId, {
+            mode: 'recent', via: 'mcp', limit,
+            resultCount: rows.length, observationIds: rows.map(o => o.id),
+          });
+          return rows.map(serializeObservation);
+        },
+      };
+      const server = createRecallMcpServer(backend, MCP_SERVER_VERSION);
+      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+      res.on('close', () => {
+        void transport.close();
+        void server.close();
+      });
+      await server.connect(transport);
+      await transport.handleRequest(req, res, req.body);
+    });
+    // MCP streamable-HTTP only uses POST (JSON-RPC) and GET (SSE). Scope the
+    // route to those instead of app.all, so DELETE/PUT/PATCH/OPTIONS don't run
+    // auth + transport only to be rejected.
+    app.post('/v1/mcp', readAuth, mcpHandler);
+    app.get('/v1/mcp', readAuth, mcpHandler);
   }
 
   private async auditRead(
