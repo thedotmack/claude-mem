@@ -96,12 +96,34 @@ describe('getProjectName', () => {
       expect(getProjectName(automationDir)).toBe('my-real-repo/automation');
     });
 
-    it('nested paths inside a plain subdirectory share the top-level subproject key', () => {
-      const { mkdirSync } = require('fs');
+    it('plain subdirectories inside a single-package repo stay on the repo-root key', () => {
+      const { mkdirSync, writeFileSync } = require('fs');
       const { join } = require('path');
+      const srcDir = join(repoRoot, 'src', 'routes');
+      mkdirSync(srcDir, { recursive: true });
+      writeFileSync(join(repoRoot, 'package.json'), JSON.stringify({ name: 'my-real-repo' }));
+      expect(getProjectName(srcDir)).toBe('my-real-repo');
+    });
+
+    it('nested paths inside a plain subdirectory share the top-level subproject key', () => {
+      const { mkdirSync, rmSync } = require('fs');
+      const { join } = require('path');
+      rmSync(join(repoRoot, 'package.json'), { force: true });
       const scriptsDir = join(repoRoot, 'automation', 'scripts', 'build');
       mkdirSync(scriptsDir, { recursive: true });
       expect(getProjectName(scriptsDir)).toBe('my-real-repo/automation');
+    });
+
+    it('workspace roots still split plain subdirectories to repo-relative keys', () => {
+      const { mkdirSync, writeFileSync } = require('fs');
+      const { join } = require('path');
+      const automationDir = join(repoRoot, 'workspace-automation');
+      mkdirSync(automationDir, { recursive: true });
+      writeFileSync(
+        join(repoRoot, 'package.json'),
+        JSON.stringify({ name: 'my-real-repo', workspaces: ['packages/*'] })
+      );
+      expect(getProjectName(automationDir)).toBe('my-real-repo/workspace-automation');
     });
 
     it('package directory inside a monorepo yields the repo-relative package key', () => {
