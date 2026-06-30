@@ -25,6 +25,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_OPENROUTER_APP_NAME: string;
   CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: string;
   CLAUDE_MEM_OPENROUTER_MAX_TOKENS: string;
+  CLAUDE_MEM_OPENROUTER_EXTRA_BODY: string;
   CLAUDE_MEM_DATA_DIR: string;
   CLAUDE_MEM_LOG_LEVEL: string;
   CLAUDE_MEM_PYTHON_VERSION: string;
@@ -113,6 +114,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',  // App name for OpenRouter analytics
     CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: '20',  // Max messages in context window
     CLAUDE_MEM_OPENROUTER_MAX_TOKENS: '100000',  // Max estimated tokens (~100k safety limit)
+    CLAUDE_MEM_OPENROUTER_EXTRA_BODY: '',  // JSON object merged into request body (e.g. {"thinking":{"type":"disabled"}})
     CLAUDE_MEM_DATA_DIR: join(homedir(), '.claude-mem'),
     CLAUDE_MEM_LOG_LEVEL: 'INFO',
     CLAUDE_MEM_PYTHON_VERSION: '3.13',

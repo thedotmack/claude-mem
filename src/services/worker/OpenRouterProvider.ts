@@ -136,6 +136,7 @@ interface OpenRouterConfig {
   apiUrl: string;
   siteUrl?: string;
   appName?: string;
+  extraBody?: Record<string, unknown>;
 }
 
 export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfig> {
@@ -197,7 +198,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
   }
 
   protected async query(history: ConversationMessage[], config: OpenRouterConfig): Promise<ProviderQueryResult> {
-    return this.queryOpenRouterMultiTurn(history, config.apiKey, config.model, config.apiUrl, config.siteUrl, config.appName);
+    return this.queryOpenRouterMultiTurn(history, config.apiKey, config.model, config.apiUrl, config.siteUrl, config.appName, config.extraBody);
   }
 
   private async queryOpenRouterMultiTurn(
@@ -206,7 +207,8 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     model: string,
     apiUrl: string,
     siteUrl?: string,
-    appName?: string
+    appName?: string,
+    extraBody?: Record<string, unknown>,
   ): Promise<ProviderQueryResult> {
     const truncatedHistory = this.truncateHistoryForOpenRouter(history);
     const messages = this.conversationToOpenAIMessages(truncatedHistory);
@@ -242,6 +244,10 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
             // Only sent to openrouter.ai — strict custom gateways may reject
             // unknown body fields.
             ...(apiUrl.includes('openrouter.ai') ? { usage: { include: true } } : {}),
+            // User-defined extra body parameters merged last so they can
+            // override any of the above. Used for provider-specific params
+            // like thinking control (e.g. {"thinking":{"type":"disabled"}}).
+            ...(extraBody ?? {}),
           }),
           signal: attemptSignal,
         });
@@ -350,7 +356,25 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     const siteUrl = settings.CLAUDE_MEM_OPENROUTER_SITE_URL || '';
     const appName = settings.CLAUDE_MEM_OPENROUTER_APP_NAME || 'claude-mem';
 
-    return { apiKey, model, apiUrl, siteUrl, appName };
+    // Parse optional extra body parameters (JSON string). Merged into the
+    // request body last so users can override defaults or add provider-specific
+    // fields like thinking control: {"thinking":{"type":"disabled"}}.
+    let extraBody: Record<string, unknown> | undefined;
+    const extraBodyRaw = settings.CLAUDE_MEM_OPENROUTER_EXTRA_BODY;
+    if (extraBodyRaw) {
+      try {
+        const parsed = JSON.parse(extraBodyRaw);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          extraBody = parsed as Record<string, unknown>;
+        } else {
+          logger.warn('SDK', 'CLAUDE_MEM_OPENROUTER_EXTRA_BODY must be a JSON object, ignoring');
+        }
+      } catch {
+        logger.warn('SDK', 'CLAUDE_MEM_OPENROUTER_EXTRA_BODY is not valid JSON, ignoring');
+      }
+    }
+
+    return { apiKey, model, apiUrl, siteUrl, appName, extraBody };
   }
 }
 
