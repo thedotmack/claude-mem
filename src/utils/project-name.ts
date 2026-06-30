@@ -1,6 +1,6 @@
 import { homedir } from 'os'
 import path from 'path';
-import { realpathSync, statSync } from 'fs';
+import { readFileSync, realpathSync, statSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { logger } from './logger.js';
 import { detectWorktree } from './worktree.js';
@@ -95,6 +95,16 @@ function toProjectPath(relativePath: string): string {
   return relativePath.split(path.sep).filter(Boolean).join('/');
 }
 
+function shouldUseTopLevelSubprojectFallback(repoRoot: string): boolean {
+  try {
+    const packageJson = JSON.parse(readFileSync(path.join(repoRoot, 'package.json'), 'utf-8'));
+    if (Array.isArray(packageJson.workspaces)) return packageJson.workspaces.length > 0;
+    return Array.isArray(packageJson.workspaces?.packages) && packageJson.workspaces.packages.length > 0;
+  } catch {
+    return true;
+  }
+}
+
 export function getProjectName(cwd: string | null | undefined): string {
   if (!cwd || cwd.trim() === '') {
     logger.warn('PROJECT_NAME', 'Empty cwd provided, using fallback', { cwd });
@@ -114,9 +124,12 @@ export function getProjectName(cwd: string | null | undefined): string {
       return path.basename(repoRoot);
     }
 
-    const subprojectRoot =
-      findNearestPackageRoot(expanded, repoRoot) ??
-      findTopLevelSubprojectRoot(expanded, repoRoot);
+    const packageRoot = findNearestPackageRoot(expanded, repoRoot);
+    if (!packageRoot && !shouldUseTopLevelSubprojectFallback(repoRoot)) {
+      return path.basename(repoRoot);
+    }
+
+    const subprojectRoot = packageRoot ?? findTopLevelSubprojectRoot(expanded, repoRoot);
     const relativeBoundary = toProjectPath(
       path.relative(resolvePath(repoRoot), resolvePath(subprojectRoot))
     );
