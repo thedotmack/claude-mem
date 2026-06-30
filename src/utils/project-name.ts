@@ -35,13 +35,21 @@ function findGitRepoRoot(dir: string): string | null {
   }
 }
 
+function resolvePath(p: string): string {
+  try {
+    return realpathSync(path.resolve(p));
+  } catch {
+    return path.resolve(p);
+  }
+}
+
+function normalizePath(p: string): string {
+  const resolved = resolvePath(p);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
 function samePath(a: string, b: string): boolean {
-  const realOrResolve = (p: string) => { try { return realpathSync(path.resolve(p)); } catch { return path.resolve(p); } };
-  const left = realOrResolve(a);
-  const right = realOrResolve(b);
-  return process.platform === 'win32'
-    ? left.toLowerCase() === right.toLowerCase()
-    : left === right;
+  return normalizePath(a) === normalizePath(b);
 }
 
 // .git FILE (not dir) means this is a linked worktree root, not the main repo.
@@ -49,23 +57,42 @@ function isLinkedWorktreeRoot(dir: string): boolean {
   try { return statSync(path.join(dir, '.git')).isFile(); } catch { return false; }
 }
 
-// Walk from start toward repoRoot, returning the nearest directory that has a
-// package.json. Stops when it reaches repoRoot (inclusive). Returns null when
-// no directory in the walk has package.json.
-function findNearestPackageRoot(start: string, repoRoot: string): string | null {
-  const resolve = (p: string) => { try { return realpathSync(path.resolve(p)); } catch { return path.resolve(p); } };
-  const rootReal = resolve(repoRoot);
-  const rootNorm = process.platform === 'win32' ? rootReal.toLowerCase() : rootReal;
+function findEnclosingLinkedWorktreeRoot(start: string): string | null {
   let dir = path.resolve(start);
   while (true) {
-    try { if (statSync(path.join(dir, 'package.json')).isFile()) return dir; } catch { /* not found */ }
-    const dirNorm = process.platform === 'win32' ? resolve(dir).toLowerCase() : resolve(dir);
-    if (dirNorm === rootNorm) break;
+    if (isLinkedWorktreeRoot(dir)) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+// Walk from start toward repoRoot, excluding the repo root itself.
+function findNearestPackageRoot(start: string, repoRoot: string): string | null {
+  let dir = resolvePath(start);
+  while (true) {
+    if (samePath(dir, repoRoot)) break;
+    try {
+      if (statSync(path.join(dir, 'package.json')).isFile()) return dir;
+    } catch {
+      // No package.json at this level.
+    }
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
   return null;
+}
+
+function findTopLevelSubprojectRoot(start: string, repoRoot: string): string {
+  const root = resolvePath(repoRoot);
+  const relative = path.relative(root, resolvePath(start));
+  const [firstSegment] = relative.split(path.sep).filter(Boolean);
+  return firstSegment ? path.join(root, firstSegment) : resolvePath(start);
+}
+
+function toProjectPath(relativePath: string): string {
+  return relativePath.split(path.sep).filter(Boolean).join('/');
 }
 
 export function getProjectName(cwd: string | null | undefined): string {
@@ -75,22 +102,28 @@ export function getProjectName(cwd: string | null | undefined): string {
   }
 
   const expanded = expandTilde(cwd)
+  const linkedWorktreeRoot = findEnclosingLinkedWorktreeRoot(expanded);
 
-  // #2663 — derive the project name from the git repo root when inside a repo so
-  // the name is stable across subdirectories/worktrees. Fall back to the cwd
-  // basename when not in a repo.
-  // #2882 — when cwd is inside a monorepo package, use the nearest ancestor with
-  // package.json as the boundary so all sessions within a package share one name.
-  // Linked worktree roots (.git file) always use the cwd basename for correct
-  // parent/leaf composite naming.
+  if (linkedWorktreeRoot) {
+    return path.basename(linkedWorktreeRoot);
+  }
+
   const repoRoot = findGitRepoRoot(expanded);
-  const isSubdir = repoRoot != null && !samePath(expanded, repoRoot);
-  const nearestPkg = isSubdir ? findNearestPackageRoot(expanded, repoRoot!) : null;
-  const nameSource = isLinkedWorktreeRoot(expanded)
-    ? expanded
-    : (nearestPkg ?? repoRoot ?? expanded);
+  if (repoRoot) {
+    if (samePath(expanded, repoRoot)) {
+      return path.basename(repoRoot);
+    }
 
-  const basename = path.basename(nameSource);
+    const subprojectRoot =
+      findNearestPackageRoot(expanded, repoRoot) ??
+      findTopLevelSubprojectRoot(expanded, repoRoot);
+    const relativeBoundary = toProjectPath(
+      path.relative(resolvePath(repoRoot), resolvePath(subprojectRoot))
+    );
+    return `${path.basename(repoRoot)}/${relativeBoundary}`;
+  }
+
+  const basename = path.basename(expanded);
 
   if (basename === '') {
     const isWindows = process.platform === 'win32';
@@ -125,10 +158,18 @@ export function getProjectContext(cwd: string | null | undefined): ProjectContex
   }
 
   const expandedCwd = expandTilde(cwd);
-  const worktreeInfo = detectWorktree(expandedCwd);
+  const linkedWorktreeRoot = findEnclosingLinkedWorktreeRoot(expandedCwd);
+  const repoRoot = findGitRepoRoot(expandedCwd) ?? linkedWorktreeRoot;
+  const directWorktreeInfo = detectWorktree(expandedCwd);
+  const worktreeInfo = directWorktreeInfo.isWorktree
+    ? directWorktreeInfo
+    : (linkedWorktreeRoot ? detectWorktree(linkedWorktreeRoot) : directWorktreeInfo);
 
   if (worktreeInfo.isWorktree && worktreeInfo.parentProjectName) {
-    const composite = `${worktreeInfo.parentProjectName}/${cwdProjectName}`;
+    const worktreeName = linkedWorktreeRoot
+      ? path.basename(linkedWorktreeRoot)
+      : cwdProjectName;
+    const composite = `${worktreeInfo.parentProjectName}/${worktreeName}`;
     return {
       primary: composite,
       parent: worktreeInfo.parentProjectName,
