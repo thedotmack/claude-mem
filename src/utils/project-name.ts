@@ -1,5 +1,6 @@
 import { homedir } from 'os'
 import path from 'path';
+import { readdirSync, readFileSync, realpathSync, statSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { logger } from './logger.js';
 import { detectWorktree } from './worktree.js';
@@ -32,6 +33,135 @@ function findGitRepoRoot(dir: string): string | null {
   }
 }
 
+function resolvePath(p: string): string {
+  try {
+    return realpathSync(path.resolve(p));
+  } catch {
+    return path.resolve(p);
+  }
+}
+
+function normalizePath(p: string): string {
+  const resolved = resolvePath(p);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+function samePath(a: string, b: string): boolean {
+  return normalizePath(a) === normalizePath(b);
+}
+
+// .git FILE (not dir) means this is a linked worktree root, not the main repo.
+function isLinkedWorktreeRoot(dir: string): boolean {
+  try { return statSync(path.join(dir, '.git')).isFile(); } catch { return false; }
+}
+
+function findEnclosingLinkedWorktreeRoot(start: string): string | null {
+  let dir = path.resolve(start);
+  while (true) {
+    if (isLinkedWorktreeRoot(dir)) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+// Walk from start toward repoRoot, excluding the repo root itself.
+function findNearestPackageRoot(start: string, repoRoot: string): string | null {
+  let dir = resolvePath(start);
+  while (true) {
+    if (samePath(dir, repoRoot)) break;
+    try {
+      if (statSync(path.join(dir, 'package.json')).isFile()) return dir;
+    } catch {
+      // No package.json at this level.
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+
+function findTopLevelSubprojectRoot(start: string, repoRoot: string): string {
+  const root = resolvePath(repoRoot);
+  const relative = path.relative(root, resolvePath(start));
+  const [firstSegment] = relative.split(path.sep).filter(Boolean);
+  return firstSegment ? path.join(root, firstSegment) : resolvePath(start);
+}
+
+function toProjectPath(relativePath: string): string {
+  return relativePath.split(path.sep).filter(Boolean).join('/');
+}
+
+function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
+  return typeof error === 'object' && error !== null && 'code' in error;
+}
+
+function hasNestedPackageJson(repoRoot: string): boolean {
+  const root = resolvePath(repoRoot);
+  const pending = [root];
+
+  while (pending.length > 0) {
+    const dir = pending.pop()!;
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (entry.name === '.git' || entry.name === 'node_modules') {
+        continue;
+      }
+
+      const entryPath = path.join(dir, entry.name);
+
+      if (entry.isFile() && entry.name === 'package.json' && !samePath(dir, root)) {
+        return true;
+      }
+
+      if (entry.isDirectory()) {
+        pending.push(entryPath);
+      }
+    }
+  }
+
+  return false;
+}
+
+function shouldUseTopLevelSubprojectFallback(repoRoot: string): boolean {
+  const rootPackageJson = path.join(repoRoot, 'package.json');
+  let rootManifestState: 'file' | 'missing' | 'unreadable' = 'file';
+
+  try {
+    if (!statSync(rootPackageJson).isFile()) {
+      rootManifestState = 'unreadable';
+    }
+  } catch (error) {
+    rootManifestState = isErrnoException(error) && error.code === 'ENOENT'
+      ? 'missing'
+      : 'unreadable';
+  }
+
+  if (rootManifestState === 'missing') {
+    return hasNestedPackageJson(repoRoot);
+  }
+
+  if (rootManifestState === 'unreadable') {
+    return false;
+  }
+
+  try {
+    const packageJson = JSON.parse(readFileSync(path.join(repoRoot, 'package.json'), 'utf-8'));
+    return Array.isArray(packageJson.workspaces)
+      ? packageJson.workspaces.length > 0
+      : Array.isArray(packageJson.workspaces?.packages) && packageJson.workspaces.packages.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 export function getProjectName(cwd: string | null | undefined): string {
   if (!cwd || cwd.trim() === '') {
     logger.warn('PROJECT_NAME', 'Empty cwd provided, using fallback', { cwd });
@@ -39,14 +169,31 @@ export function getProjectName(cwd: string | null | undefined): string {
   }
 
   const expanded = expandTilde(cwd)
+  const linkedWorktreeRoot = findEnclosingLinkedWorktreeRoot(expanded);
 
-  // #2663 — derive the project name from the git repo root when inside a repo so
-  // the name is stable across subdirectories/worktrees. Fall back to the cwd
-  // basename when not in a repo.
+  if (linkedWorktreeRoot) {
+    return path.basename(linkedWorktreeRoot);
+  }
+
   const repoRoot = findGitRepoRoot(expanded);
-  const nameSource = repoRoot ?? expanded;
+  if (repoRoot) {
+    if (samePath(expanded, repoRoot)) {
+      return path.basename(repoRoot);
+    }
 
-  const basename = path.basename(nameSource);
+    const packageRoot = findNearestPackageRoot(expanded, repoRoot);
+    if (!packageRoot && !shouldUseTopLevelSubprojectFallback(repoRoot)) {
+      return path.basename(repoRoot);
+    }
+
+    const subprojectRoot = packageRoot ?? findTopLevelSubprojectRoot(expanded, repoRoot);
+    const relativeBoundary = toProjectPath(
+      path.relative(resolvePath(repoRoot), resolvePath(subprojectRoot))
+    );
+    return `${path.basename(repoRoot)}/${relativeBoundary}`;
+  }
+
+  const basename = path.basename(expanded);
 
   if (basename === '') {
     const isWindows = process.platform === 'win32';
@@ -81,10 +228,18 @@ export function getProjectContext(cwd: string | null | undefined): ProjectContex
   }
 
   const expandedCwd = expandTilde(cwd);
-  const worktreeInfo = detectWorktree(expandedCwd);
+  const linkedWorktreeRoot = findEnclosingLinkedWorktreeRoot(expandedCwd);
+  const repoRoot = findGitRepoRoot(expandedCwd) ?? linkedWorktreeRoot;
+  const directWorktreeInfo = detectWorktree(expandedCwd);
+  const worktreeInfo = directWorktreeInfo.isWorktree
+    ? directWorktreeInfo
+    : (linkedWorktreeRoot ? detectWorktree(linkedWorktreeRoot) : directWorktreeInfo);
 
   if (worktreeInfo.isWorktree && worktreeInfo.parentProjectName) {
-    const composite = `${worktreeInfo.parentProjectName}/${cwdProjectName}`;
+    const worktreeName = linkedWorktreeRoot
+      ? path.basename(linkedWorktreeRoot)
+      : cwdProjectName;
+    const composite = `${worktreeInfo.parentProjectName}/${worktreeName}`;
     return {
       primary: composite,
       parent: worktreeInfo.parentProjectName,
