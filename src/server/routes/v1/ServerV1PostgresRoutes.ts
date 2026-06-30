@@ -17,6 +17,7 @@ import {
 } from '../../../storage/postgres/generation-jobs.js';
 import { PostgresAuthRepository } from '../../../storage/postgres/auth.js';
 import { PostgresObservationRepository } from '../../../storage/postgres/observations.js';
+import { PostgresProjectsRepository } from '../../../storage/postgres/projects.js';
 import { logger } from '../../../utils/logger.js';
 import { requirePostgresServerAuth } from '../../middleware/postgres-auth.js';
 import { PostgresDataDeletionRepository } from '../../../storage/postgres/data-deletion.js';
@@ -1127,6 +1128,16 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       const projectId = String(req.params.projectId);
       if (!this.ensureProjectAllowed(req, res, projectId)) return;
       try {
+        // ensureProjectAllowed only checks a key's *optional* project scope, so a
+        // team-scoped key could otherwise purge any projectId. Confirm the project
+        // belongs to this team before purging, and 404 if it doesn't — without this
+        // a cross-team or nonexistent projectId returns 200 with zero counts,
+        // misreporting an unauthorized purge as success.
+        const project = await new PostgresProjectsRepository(this.options.pool).getByIdForTeam(projectId, teamId);
+        if (!project) {
+          res.status(404).json({ error: 'not_found' });
+          return;
+        }
         const counts = await new PostgresDataDeletionRepository(this.options.pool)
           .purgeProjectMemory({ projectId, teamId });
         await this.auditWrite(req, 'project.memory_purged', projectId, projectId, { ...counts, via: 'api' });

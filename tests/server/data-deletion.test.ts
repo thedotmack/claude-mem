@@ -125,12 +125,17 @@ describe('data deletion (forget)', () => {
     expect(await countObs(otherTeamProject)).toBe(1); // other team untouched
   });
 
-  it('a team-A key cannot purge another team\'s project (deletes nothing)', async () => {
+  it('a team-A key cannot purge another team\'s project (404, deletes nothing)', async () => {
+    // The project isn't owned by team A, so the route must 404 rather than report
+    // a successful purge of zero rows — otherwise an unauthorized purge looks "done".
     const r = await fetch(url(`/v1/projects/${otherTeamProject}/memory`), { method: 'DELETE', headers: auth() });
-    expect(r.status).toBe(200);
-    const body = await r.json() as { counts: { observations: number } };
-    expect(body.counts.observations).toBe(0);
+    expect(r.status).toBe(404);
     expect(await countObs(otherTeamProject)).toBe(1); // still there
+  });
+
+  it('purging a nonexistent project 404s', async () => {
+    const r = await fetch(url(`/v1/projects/${randomUUID()}/memory`), { method: 'DELETE', headers: auth() });
+    expect(r.status).toBe(404);
   });
 
   it('deletes a single observation, then 404s on repeat', async () => {

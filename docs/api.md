@@ -123,4 +123,4 @@ absent — a pasted recall link cannot write.
 Right-to-erasure. Both require **write** scope and are scoped to the caller's team.
 
 - `DELETE /v1/memories/:id` — delete a single observation (its sources cascade). `404` if it doesn't exist for the team.
-- `DELETE /v1/projects/:projectId/memory` — purge ALL captured content for a project (observations, agent events, sessions, generation jobs); keeps the project shell. Returns per-table `counts`. Both are audited (`observation.deleted` / `project.memory_purged`).
+- `DELETE /v1/projects/:projectId/memory` — purge ALL captured content for a project (observations, agent events, sessions, generation jobs); keeps the project shell. Returns per-table `counts`. `404` if the project doesn't belong to the team. Both are audited (`observation.deleted` / `project.memory_purged`).
