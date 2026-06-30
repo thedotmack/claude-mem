@@ -74,6 +74,14 @@ describe('SettingsDefaultsManager', () => {
           expect(parsed).toHaveProperty(key);
         }
       });
+
+      it('should create the settings file with owner-only permissions', () => {
+        if (process.platform === 'win32') return;
+
+        SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
+      });
     });
 
     describe('directory does not exist', () => {
@@ -139,6 +147,20 @@ describe('SettingsDefaultsManager', () => {
 
         const afterContent = readFileSync(settingsPath, 'utf-8');
         expect(afterContent).toBe(originalContent);
+      });
+
+      it('should tighten existing settings file permissions when loading', () => {
+        if (process.platform === 'win32') return;
+
+        const customSettings = {
+          CLAUDE_MEM_MODEL: 'owner-only-after-load',
+        };
+        writeFileSync(settingsPath, JSON.stringify(customSettings, null, 2), { mode: 0o644 });
+        chmodSync(settingsPath, 0o644);
+
+        SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
       });
 
       it('should handle all settings keys correctly', () => {
@@ -234,6 +256,17 @@ describe('SettingsDefaultsManager', () => {
         const parsed = JSON.parse(content);
         expect(parsed.env).toBeUndefined();
         expect(parsed.CLAUDE_MEM_MODEL).toBe('migrated-model');
+      });
+
+      it('should tighten settings file permissions when migration rewrites it', () => {
+        if (process.platform === 'win32') return;
+
+        writeFileSync(settingsPath, JSON.stringify({ env: { CLAUDE_MEM_MODEL: 'nested-model' } }));
+        chmodSync(settingsPath, 0o644);
+
+        SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
       });
     });
 
@@ -421,6 +454,11 @@ describe('SettingsDefaultsManager', () => {
       expect(defaults.CLAUDE_MEM_PROVIDER).toBeDefined();
       expect(defaults.CLAUDE_MEM_GEMINI_API_KEY).toBeDefined();
       expect(defaults.CLAUDE_MEM_OPENROUTER_API_KEY).toBeDefined();
+      expect(defaults.CLAUDE_MEM_CODEX_MODEL).toBe('gpt-5.3-codex-spark');
+      expect(defaults.CLAUDE_MEM_CODEX_PATH).toBe('codex');
+      expect(defaults.CLAUDE_MEM_CODEX_REASONING_EFFORT).toBe('');
+      expect(defaults.CLAUDE_MEM_CODEX_MAX_CONTEXT_MESSAGES).toBe('20');
+      expect(defaults.CLAUDE_MEM_CODEX_MAX_TOKENS).toBe('100000');
 
       expect(defaults.CLAUDE_MEM_DATA_DIR).toBeDefined();
       expect(defaults.CLAUDE_MEM_LOG_LEVEL).toBeDefined();
