@@ -3,17 +3,19 @@
  * Spawn-env discipline CI check (plan 06 — worker env isolation).
  *
  * Every subprocess spawn that hands an env block to its child MUST sanitize
- * that env with sanitizeEnv(...) before passing it (and, for SDK/credential
- * paths, buildIsolatedEnv*). Handing raw `process.env` to a child lets host
- * CLI bleed-through (CLAUDE_CODE_EFFORT_LEVEL → #2357) and stray Anthropic
- * credentials (ANTHROPIC_BASE_URL → #2375) leak into the subprocess.
+ * that env with sanitizeEnv(...) or a narrower spawn-specific allowlist before
+ * passing it (and, for SDK/credential paths, buildIsolatedEnv*). Handing raw
+ * `process.env` to a child lets host CLI bleed-through
+ * (CLAUDE_CODE_EFFORT_LEVEL → #2357) and stray credentials
+ * (ANTHROPIC_BASE_URL → #2375) leak into the subprocess.
  *
  * Rule: any spawn(...) / spawnSync(...) / spawnHidden(...) call whose argument
  * window passes an `env:` option referencing `process.env` MUST also reference
- * `sanitizeEnv` within the same window. Spawns that omit `env:` (inherit the
- * parent env implicitly — e.g. install-time `git`/`npm`/`bun --version`) are
- * out of scope: they are not the credential-bearing worker/SDK boundary and
- * the parent shell is their trust boundary.
+ * `sanitizeEnv` or a spawn-specific allowlist within the same window. Spawns
+ * that omit `env:` (inherit the parent env implicitly — e.g. install-time
+ * `git`/`npm`/`bun --version`) are out of scope: they are not the
+ * credential-bearing worker/SDK boundary and the parent shell is their trust
+ * boundary.
  *
  * Pure CJS (no compile step) so it can run before tsc. Exposes findViolations
  * for the bun test in tests/env-isolation.test.ts; exits non-zero with
@@ -77,8 +79,9 @@ function findViolations() {
       const referencesProcessEnv = /process\s*\.\s*env/.test(window);
       if (!passesEnvOption || !referencesProcessEnv) return;
 
-      // The env block must be sanitized.
-      if (!/sanitizeEnv\s*\(/.test(window)) {
+      // The env block must be sanitized. buildCodexExecEnv is stricter than
+      // sanitizeEnv: it passes an allowlist of OS/Codex path variables only.
+      if (!/(sanitizeEnv|buildCodexExecEnv)\s*\(/.test(window)) {
         violations.push({
           file: path.relative(REPO_ROOT, file),
           line: i + 1,
@@ -95,7 +98,7 @@ function run() {
     console.log('spawn-env discipline: OK (all env-bearing spawns sanitize process.env)');
     return 0;
   }
-  console.error('spawn-env discipline VIOLATIONS — wrap the env block in sanitizeEnv(...) before spawning:');
+  console.error('spawn-env discipline VIOLATIONS — wrap the env block in sanitizeEnv(...) or a spawn-specific allowlist before spawning:');
   for (const v of violations) {
     console.error(`  ${v.file}:${v.line}  spawn passes raw process.env without sanitizeEnv`);
   }

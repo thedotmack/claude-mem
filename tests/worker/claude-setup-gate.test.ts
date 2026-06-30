@@ -47,7 +47,6 @@ afterAll(() => {
   findClaudeExecutableImpl = realFindClaudeExecutable;
   mock.module('../../src/shared/find-claude-executable.js', () => realFindClaudeExecutableSnapshot);
 });
-
 const { SessionRoutes } = await import('../../src/services/worker/http/routes/SessionRoutes.js');
 const { ClaudeProvider } = await import('../../src/services/worker/ClaudeProvider.js');
 
@@ -128,6 +127,7 @@ describe('Claude setup-required generator gate', () => {
       sessionManager as any,
       {} as any,
       claudeProvider as any,
+      { startSession: async () => {} } as any,
       { startSession: async () => {} } as any,
       { startSession: async () => {} } as any,
       {} as any,
