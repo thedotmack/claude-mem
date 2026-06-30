@@ -99,7 +99,7 @@ function shouldUseTopLevelSubprojectFallback(repoRoot: string): boolean {
     if (Array.isArray(packageJson.workspaces)) return packageJson.workspaces.length > 0;
     return Array.isArray(packageJson.workspaces?.packages) && packageJson.workspaces.packages.length > 0;
   } catch {
-    return true;
+    return false;
   }
 }
 
