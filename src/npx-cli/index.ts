@@ -23,8 +23,8 @@ ${pc.bold('Install Commands')} (no Bun required):
   ${pc.cyan('npx claude-mem')}                     Interactive install
   ${pc.cyan('npx claude-mem install')}              Interactive install
   ${pc.cyan('npx claude-mem install --ide <id>')}   Install for specific IDE
-  ${pc.cyan('npx claude-mem install --provider claude|gemini|openrouter')}   Set LLM provider non-interactively
-  ${pc.cyan('npx claude-mem install --model <id>')}   Set Claude model (when provider=claude)
+  ${pc.cyan('npx claude-mem install --provider claude|codex|gemini|openrouter')}   Set LLM provider non-interactively
+  ${pc.cyan('npx claude-mem install --model <id>')}   Set provider model (Claude/Codex)
   ${pc.cyan('npx claude-mem install --no-auto-start')}   Skip worker auto-start at the end
   ${pc.cyan('npx claude-mem install --disable-auto-memory')}   Explicitly disable Claude Code native auto-memory
   ${pc.cyan('npx claude-mem install --runtime worker|server')}   Select runtime non-interactively (server brings up Docker pg+redis, generates an API key, injects the IDE MCP config)
@@ -79,8 +79,8 @@ function readFlag(argv: string[], name: string): string | undefined {
 
 function parseInstallOptions(argv: string[]): InstallOptions {
   const provider = readFlag(argv, '--provider');
-  if (provider !== undefined && provider !== 'claude' && provider !== 'gemini' && provider !== 'openrouter') {
-    console.error(`Unknown --provider: ${provider}. Allowed: claude, gemini, openrouter`);
+  if (provider !== undefined && provider !== 'claude' && provider !== 'codex' && provider !== 'gemini' && provider !== 'openrouter') {
+    console.error(`Unknown --provider: ${provider}. Allowed: claude, codex, gemini, openrouter`);
     process.exit(1);
   }
   const runtime = readFlag(argv, '--runtime');

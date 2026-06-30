@@ -2,7 +2,7 @@
 import express, { Request, Response } from 'express';
 import { z } from 'zod';
 import path from 'path';
-import { readFileSync, writeFileSync, existsSync, renameSync, mkdirSync } from 'fs';
+import { readFileSync, existsSync, renameSync, mkdirSync } from 'fs';
 import { getPackageRoot, paths } from '../../../../shared/paths.js';
 import { logger } from '../../../../utils/logger.js';
 import { SettingsManager } from '../../SettingsManager.js';
@@ -10,7 +10,7 @@ import { getBranchInfo, switchBranch, pullUpdates } from '../../BranchManager.js
 import { ModeManager } from '../../../domain/ModeManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
-import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
+import { SettingsDefaultsManager, writeSettingsFileSecure } from '../../../../shared/SettingsDefaultsManager.js';
 import { clearPortCache } from '../../../../shared/worker-utils.js';
 import { flushResponseThen } from '../../../server/flushResponseThen.js';
 import { snapshotDependencyHealth } from '../../../../shared/dependency-health.js';
@@ -83,49 +83,51 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
-    const settingKeys = [
-      'CLAUDE_MEM_MODEL',
-      'CLAUDE_MEM_CONTEXT_OBSERVATIONS',
-      'CLAUDE_MEM_WORKER_PORT',
-      'CLAUDE_MEM_WORKER_HOST',
-      'CLAUDE_MEM_PROVIDER',
-      'CLAUDE_MEM_CLAUDE_AUTH_METHOD',
-      'CLAUDE_MEM_GEMINI_API_KEY',
-      'CLAUDE_MEM_GEMINI_MODEL',
-      'CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED',
-      'CLAUDE_MEM_GEMINI_MAX_CONTEXT_MESSAGES',
-      'CLAUDE_MEM_GEMINI_MAX_TOKENS',
-      'CLAUDE_MEM_OPENROUTER_API_KEY',
-      'CLAUDE_MEM_OPENROUTER_MODEL',
-      'CLAUDE_MEM_OPENROUTER_SITE_URL',
-      'CLAUDE_MEM_OPENROUTER_APP_NAME',
-      'CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES',
-      'CLAUDE_MEM_OPENROUTER_MAX_TOKENS',
-      'CLAUDE_MEM_DATA_DIR',
-      'CLAUDE_MEM_LOG_LEVEL',
-      'CLAUDE_MEM_PYTHON_VERSION',
-      'CLAUDE_CODE_PATH',
-      'CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS',
-      'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
-      'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT',
-      'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT',
-      'CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES',
-      'CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS',
-      'CLAUDE_MEM_CONTEXT_FULL_COUNT',
-      'CLAUDE_MEM_CONTEXT_FULL_FIELD',
-      'CLAUDE_MEM_CONTEXT_SESSION_COUNT',
-      'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
-      'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
-      'CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED',
-    ];
+    const requestedSettings = req.body as Record<string, unknown>;
+    settings = {
+      ...settings,
+      ...(requestedSettings.CLAUDE_MEM_MODEL !== undefined ? { CLAUDE_MEM_MODEL: requestedSettings.CLAUDE_MEM_MODEL } : {}),
+      ...(requestedSettings.CLAUDE_MEM_CONTEXT_OBSERVATIONS !== undefined ? { CLAUDE_MEM_CONTEXT_OBSERVATIONS: requestedSettings.CLAUDE_MEM_CONTEXT_OBSERVATIONS } : {}),
+      ...(requestedSettings.CLAUDE_MEM_WORKER_PORT !== undefined ? { CLAUDE_MEM_WORKER_PORT: requestedSettings.CLAUDE_MEM_WORKER_PORT } : {}),
+      ...(requestedSettings.CLAUDE_MEM_WORKER_HOST !== undefined ? { CLAUDE_MEM_WORKER_HOST: requestedSettings.CLAUDE_MEM_WORKER_HOST } : {}),
+      ...(requestedSettings.CLAUDE_MEM_PROVIDER !== undefined ? { CLAUDE_MEM_PROVIDER: requestedSettings.CLAUDE_MEM_PROVIDER } : {}),
+      ...(requestedSettings.CLAUDE_MEM_CLAUDE_AUTH_METHOD !== undefined ? { CLAUDE_MEM_CLAUDE_AUTH_METHOD: requestedSettings.CLAUDE_MEM_CLAUDE_AUTH_METHOD } : {}),
+      ...(requestedSettings.CLAUDE_MEM_GEMINI_API_KEY !== undefined ? { CLAUDE_MEM_GEMINI_API_KEY: requestedSettings.CLAUDE_MEM_GEMINI_API_KEY } : {}),
+      ...(requestedSettings.CLAUDE_MEM_GEMINI_MODEL !== undefined ? { CLAUDE_MEM_GEMINI_MODEL: requestedSettings.CLAUDE_MEM_GEMINI_MODEL } : {}),
+      ...(requestedSettings.CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED !== undefined ? { CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: requestedSettings.CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED } : {}),
+      ...(requestedSettings.CLAUDE_MEM_GEMINI_MAX_CONTEXT_MESSAGES !== undefined ? { CLAUDE_MEM_GEMINI_MAX_CONTEXT_MESSAGES: requestedSettings.CLAUDE_MEM_GEMINI_MAX_CONTEXT_MESSAGES } : {}),
+      ...(requestedSettings.CLAUDE_MEM_GEMINI_MAX_TOKENS !== undefined ? { CLAUDE_MEM_GEMINI_MAX_TOKENS: requestedSettings.CLAUDE_MEM_GEMINI_MAX_TOKENS } : {}),
+      ...(requestedSettings.CLAUDE_MEM_OPENROUTER_API_KEY !== undefined ? { CLAUDE_MEM_OPENROUTER_API_KEY: requestedSettings.CLAUDE_MEM_OPENROUTER_API_KEY } : {}),
+      ...(requestedSettings.CLAUDE_MEM_OPENROUTER_MODEL !== undefined ? { CLAUDE_MEM_OPENROUTER_MODEL: requestedSettings.CLAUDE_MEM_OPENROUTER_MODEL } : {}),
+      ...(requestedSettings.CLAUDE_MEM_OPENROUTER_SITE_URL !== undefined ? { CLAUDE_MEM_OPENROUTER_SITE_URL: requestedSettings.CLAUDE_MEM_OPENROUTER_SITE_URL } : {}),
+      ...(requestedSettings.CLAUDE_MEM_OPENROUTER_APP_NAME !== undefined ? { CLAUDE_MEM_OPENROUTER_APP_NAME: requestedSettings.CLAUDE_MEM_OPENROUTER_APP_NAME } : {}),
+      ...(requestedSettings.CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES !== undefined ? { CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: requestedSettings.CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES } : {}),
+      ...(requestedSettings.CLAUDE_MEM_OPENROUTER_MAX_TOKENS !== undefined ? { CLAUDE_MEM_OPENROUTER_MAX_TOKENS: requestedSettings.CLAUDE_MEM_OPENROUTER_MAX_TOKENS } : {}),
+      ...(requestedSettings.CLAUDE_MEM_CODEX_MODEL !== undefined ? { CLAUDE_MEM_CODEX_MODEL: requestedSettings.CLAUDE_MEM_CODEX_MODEL } : {}),
+      ...(requestedSettings.CLAUDE_MEM_CODEX_PATH !== undefined ? { CLAUDE_MEM_CODEX_PATH: requestedSettings.CLAUDE_MEM_CODEX_PATH } : {}),
+      ...(requestedSettings.CLAUDE_MEM_CODEX_REASONING_EFFORT !== undefined ? { CLAUDE_MEM_CODEX_REASONING_EFFORT: requestedSettings.CLAUDE_MEM_CODEX_REASONING_EFFORT } : {}),
+      ...(requestedSettings.CLAUDE_MEM_CODEX_MAX_CONTEXT_MESSAGES !== undefined ? { CLAUDE_MEM_CODEX_MAX_CONTEXT_MESSAGES: requestedSettings.CLAUDE_MEM_CODEX_MAX_CONTEXT_MESSAGES } : {}),
+      ...(requestedSettings.CLAUDE_MEM_CODEX_MAX_TOKENS !== undefined ? { CLAUDE_MEM_CODEX_MAX_TOKENS: requestedSettings.CLAUDE_MEM_CODEX_MAX_TOKENS } : {}),
+      ...(requestedSettings.CLAUDE_MEM_CODEX_TIMEOUT_MS !== undefined ? { CLAUDE_MEM_CODEX_TIMEOUT_MS: requestedSettings.CLAUDE_MEM_CODEX_TIMEOUT_MS } : {}),
+      ...(requestedSettings.CLAUDE_MEM_DATA_DIR !== undefined ? { CLAUDE_MEM_DATA_DIR: requestedSettings.CLAUDE_MEM_DATA_DIR } : {}),
+      ...(requestedSettings.CLAUDE_MEM_LOG_LEVEL !== undefined ? { CLAUDE_MEM_LOG_LEVEL: requestedSettings.CLAUDE_MEM_LOG_LEVEL } : {}),
+      ...(requestedSettings.CLAUDE_MEM_PYTHON_VERSION !== undefined ? { CLAUDE_MEM_PYTHON_VERSION: requestedSettings.CLAUDE_MEM_PYTHON_VERSION } : {}),
+      ...(requestedSettings.CLAUDE_CODE_PATH !== undefined ? { CLAUDE_CODE_PATH: requestedSettings.CLAUDE_CODE_PATH } : {}),
+      ...(requestedSettings.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS !== undefined ? { CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: requestedSettings.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS } : {}),
+      ...(requestedSettings.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS !== undefined ? { CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: requestedSettings.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS } : {}),
+      ...(requestedSettings.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT !== undefined ? { CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT: requestedSettings.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT } : {}),
+      ...(requestedSettings.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT !== undefined ? { CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT: requestedSettings.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT } : {}),
+      ...(requestedSettings.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES !== undefined ? { CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES: requestedSettings.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES } : {}),
+      ...(requestedSettings.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS !== undefined ? { CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS: requestedSettings.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS } : {}),
+      ...(requestedSettings.CLAUDE_MEM_CONTEXT_FULL_COUNT !== undefined ? { CLAUDE_MEM_CONTEXT_FULL_COUNT: requestedSettings.CLAUDE_MEM_CONTEXT_FULL_COUNT } : {}),
+      ...(requestedSettings.CLAUDE_MEM_CONTEXT_FULL_FIELD !== undefined ? { CLAUDE_MEM_CONTEXT_FULL_FIELD: requestedSettings.CLAUDE_MEM_CONTEXT_FULL_FIELD } : {}),
+      ...(requestedSettings.CLAUDE_MEM_CONTEXT_SESSION_COUNT !== undefined ? { CLAUDE_MEM_CONTEXT_SESSION_COUNT: requestedSettings.CLAUDE_MEM_CONTEXT_SESSION_COUNT } : {}),
+      ...(requestedSettings.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY !== undefined ? { CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: requestedSettings.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY } : {}),
+      ...(requestedSettings.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE !== undefined ? { CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: requestedSettings.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE } : {}),
+      ...(requestedSettings.CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED !== undefined ? { CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: requestedSettings.CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED } : {}),
+    };
 
-    for (const key of settingKeys) {
-      if (req.body[key] !== undefined) {
-        settings[key] = req.body[key];
-      }
-    }
-
-    writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
+    writeSettingsFileSecure(settingsPath, settings);
 
     clearPortCache();
 
@@ -191,9 +193,9 @@ export class SettingsRoutes extends BaseRouteHandler {
 
   private validateSettings(settings: any): { valid: boolean; error?: string } {
     if (settings.CLAUDE_MEM_PROVIDER) {
-    const validProviders = ['claude', 'gemini', 'openrouter'];
-    if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
-      return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", or "openrouter"' };
+      const validProviders = ['claude', 'gemini', 'openrouter', 'codex'];
+      if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
+        return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", "openrouter", or "codex"' };
       }
     }
 
@@ -310,6 +312,34 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
+    if (settings.CLAUDE_MEM_CODEX_MAX_CONTEXT_MESSAGES) {
+      const count = parseInt(settings.CLAUDE_MEM_CODEX_MAX_CONTEXT_MESSAGES, 10);
+      if (isNaN(count) || count < 1 || count > 100) {
+        return { valid: false, error: 'CLAUDE_MEM_CODEX_MAX_CONTEXT_MESSAGES must be between 1 and 100' };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_CODEX_MAX_TOKENS) {
+      const tokens = parseInt(settings.CLAUDE_MEM_CODEX_MAX_TOKENS, 10);
+      if (isNaN(tokens) || tokens < 1000 || tokens > 1000000) {
+        return { valid: false, error: 'CLAUDE_MEM_CODEX_MAX_TOKENS must be between 1000 and 1000000' };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_CODEX_REASONING_EFFORT) {
+      const validEfforts = ['minimal', 'low', 'medium', 'high', 'xhigh'];
+      if (!validEfforts.includes(String(settings.CLAUDE_MEM_CODEX_REASONING_EFFORT).toLowerCase())) {
+        return { valid: false, error: 'CLAUDE_MEM_CODEX_REASONING_EFFORT must be one of: minimal, low, medium, high, xhigh' };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_CODEX_TIMEOUT_MS) {
+      const timeout = parseInt(settings.CLAUDE_MEM_CODEX_TIMEOUT_MS, 10);
+      if (isNaN(timeout) || timeout < 10000 || timeout > 600000) {
+        return { valid: false, error: 'CLAUDE_MEM_CODEX_TIMEOUT_MS must be between 10000 and 600000' };
+      }
+    }
+
     if (settings.CLAUDE_MEM_OPENROUTER_SITE_URL) {
       try {
         new URL(settings.CLAUDE_MEM_OPENROUTER_SITE_URL);
@@ -353,7 +383,7 @@ export class SettingsRoutes extends BaseRouteHandler {
         mkdirSync(dir, { recursive: true });
       }
 
-      writeFileSync(settingsPath, JSON.stringify(defaults, null, 2), 'utf-8');
+      writeSettingsFileSecure(settingsPath, defaults);
       logger.info('SETTINGS', 'Created settings file with defaults', { settingsPath });
     }
   }

@@ -121,6 +121,7 @@ function buildRoutes(store: SessionStore, overrides: Record<string, unknown> = {
     { startSession: async () => {} } as any,
     { startSession: async () => {} } as any,
     { startSession: async () => {} } as any,
+    { startSession: async () => {} } as any,
     eventBroadcaster,
     {} as any,
     {} as any,
