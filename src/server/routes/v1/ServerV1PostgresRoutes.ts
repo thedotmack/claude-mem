@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import type { Application, Request, Response } from 'express';
+import type { Application, Request, RequestHandler, Response } from 'express';
 import { z, type ZodTypeAny } from 'zod';
 import type { RouteHandler } from '../../../services/server/Server.js';
 import { CreateAgentEventSchema } from '../../../core/schemas/agent-event.js';
@@ -24,6 +24,10 @@ import type { ActiveServerQueueManager } from '../../runtime/ActiveServerQueueMa
 import type { ServerQueueManager } from '../../runtime/types.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createRecallMcpServer, type RecallBackend } from '../../mcp/recall-mcp-server.js';
+import { requireRateLimit, requireMonthlyQuota } from '../../middleware/rate-limit.js';
+import { meterRequests } from '../../middleware/usage-metering.js';
+import { PostgresUsageRepository } from '../../../storage/postgres/usage.js';
+import { createHash, randomBytes } from 'node:crypto';
 import { PostgresServerSessionsRepository } from '../../../storage/postgres/server-sessions.js';
 import type { ServerSessionGenerationPolicy } from '../../runtime/SessionGenerationPolicy.js';
 import { IngestEventsService, type EnqueueOutcome } from '../../services/IngestEventsService.js';
@@ -35,6 +39,17 @@ const SOURCE_ADAPTER_DEFAULT = 'api';
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 const MCP_SERVER_VERSION =
   typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
+
+// The MCP link base: CLAUDE_MEM_PUBLIC_URL in prod (behind a proxy/LB), else
+// derived from the request host so the connect command points at this server.
+function mcpConnectUrl(req: Request): string {
+  const base = (process.env.CLAUDE_MEM_PUBLIC_URL ?? `${req.protocol}://${req.get('host') ?? 'localhost'}`)
+    .replace(/\/+$/, '');
+  return `${base}/v1/mcp`;
+}
+function mcpConnectCommand(mcpUrl: string, key: string): string {
+  return `claude mcp add --transport http claude-mem ${mcpUrl} --header "Authorization: Bearer ${key}"`;
+}
 
 export interface ServerV1PostgresRoutesOptions {
   pool: PostgresPool;
@@ -140,16 +155,95 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     // an inbound X-Request-Id header) so registering it multiple times for
     // overlapping route trees would still produce one canonical id per req.
     app.use('/v1', requestIdMiddleware());
-    const writeAuth = requirePostgresServerAuth(this.options.pool, {
+    const baseWrite = requirePostgresServerAuth(this.options.pool, {
       authMode: this.options.authMode,
       allowLocalDevBypass: this.options.allowLocalDevBypass,
       requiredScopes: ['memories:write'],
     });
-    const readAuth = requirePostgresServerAuth(this.options.pool, {
+    const baseRead = requirePostgresServerAuth(this.options.pool, {
       authMode: this.options.authMode,
       allowLocalDevBypass: this.options.allowLocalDevBypass,
       requiredScopes: ['memories:read'],
     });
+    // Paid-readiness guards, all opt-in via env so default behavior is unchanged
+    // (empty array → readAuth/writeAuth are just the base auth). Express accepts
+    // a middleware array wherever a single handler goes, so the per-route
+    // registrations below need no changes. Order after auth: rate limit → quota
+    // → meter, so the request is counted only once it's admitted.
+    const guards: RequestHandler[] = [];
+    const ratePerMin = Number(process.env.CLAUDE_MEM_RATE_LIMIT_PER_MIN ?? '0');
+    if (ratePerMin > 0) guards.push(requireRateLimit(this.options.pool, { windowSec: 60, max: ratePerMin }));
+    const monthlyCap = Number(process.env.CLAUDE_MEM_MONTHLY_REQUEST_CAP ?? '0');
+    if (monthlyCap > 0) guards.push(requireMonthlyQuota(this.options.pool, { kind: 'request', cap: monthlyCap }));
+    if (process.env.CLAUDE_MEM_USAGE_METERING === '1') guards.push(meterRequests(this.options.pool));
+    // A monthly TOKEN cap gates writes only (ingestion drives generation = token
+    // spend); reads stay available so a team over budget can still recall.
+    const writeGuards: RequestHandler[] = [...guards];
+    const tokenCap = Number(process.env.CLAUDE_MEM_MONTHLY_TOKEN_CAP ?? '0');
+    if (tokenCap > 0) writeGuards.push(requireMonthlyQuota(this.options.pool, { kind: 'tokens', cap: tokenCap }));
+    const writeAuth: RequestHandler[] = [baseWrite, ...writeGuards];
+    const readAuth: RequestHandler[] = [baseRead, ...guards];
+
+    // GET /v1/usage — per-kind usage totals for the caller's team this month.
+    app.get('/v1/usage', readAuth, this.asyncHandler(async (req, res) => {
+      const teamId = this.requireTeamId(req, res);
+      if (!teamId) return;
+      const monthStart = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1));
+      const usage = await new PostgresUsageRepository(this.options.pool).summarize({ teamId, since: monthStart });
+      res.status(200).json({ since: monthStart.toISOString(), usage });
+    }));
+
+    // POST /v1/keys — mint a READ-ONLY, optionally-expiring API key for the
+    // caller's team and return the ready-to-paste connect command. Gated by
+    // writeAuth: minting a lesser (read) key requires you can already write the
+    // team's memory, which avoids a read key escalating into more keys. The raw
+    // key is shown exactly once.
+    app.post('/v1/keys', writeAuth, this.handleCreate(
+      z.object({
+        label: z.string().max(120).optional(),
+        expiresInDays: z.number().int().positive().max(365).optional(),
+      }),
+      async (req, res, body) => {
+        const teamId = this.requireTeamId(req, res);
+        if (!teamId) return;
+        const raw = `cm_${randomBytes(24).toString('hex')}`;
+        const keyHash = createHash('sha256').update(raw).digest('hex');
+        const expiresAt = body.expiresInDays
+          ? new Date(Date.now() + body.expiresInDays * 86_400_000)
+          : null;
+        const key = await new PostgresAuthRepository(this.options.pool).createApiKey({
+          keyHash,
+          teamId,
+          projectId: req.authContext?.projectId ?? null,
+          actorId: req.authContext?.apiKeyId ?? 'api',
+          scopes: ['memories:read'],
+          expiresAt,
+        });
+        void body.label; // reserved for when api_keys grows a label column
+        const mcpUrl = mcpConnectUrl(req);
+        res.status(201).json({
+          id: key.id,
+          apiKey: raw, // shown ONCE — store it now
+          scopes: ['memories:read'],
+          expiresAt: expiresAt?.toISOString() ?? null,
+          mcpUrl,
+          connectCommand: mcpConnectCommand(mcpUrl, raw),
+        });
+      },
+    ));
+
+    // GET /v1/connect — the paste-ready MCP connect command (placeholder key, so
+    // a GET never mints). Use POST /v1/keys to get a real read-only key.
+    app.get('/v1/connect', readAuth, this.asyncHandler(async (req, res) => {
+      const teamId = this.requireTeamId(req, res);
+      if (!teamId) return;
+      const mcpUrl = mcpConnectUrl(req);
+      res.status(200).json({
+        mcpUrl,
+        connectCommand: mcpConnectCommand(mcpUrl, '<YOUR_API_KEY>'),
+        hint: 'POST /v1/keys (write scope) to mint a read-only key for this link.',
+      });
+    }));
 
     // POST /v1/events — single event with optional async generation
     app.post('/v1/events', writeAuth, this.asyncHandler(async (req, res) => {
