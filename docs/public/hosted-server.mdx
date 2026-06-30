@@ -1,0 +1,251 @@
+---
+title: "Hosted Server (Beta)"
+description: "Remote authenticated MCP recall, usage metering + quotas, and data deletion — how claude-mem's cloud server works today."
+---
+
+# Hosted Server (Beta)
+
+<Warning>
+**This is early and moving fast.** The hosted server's capture, recall, metering,
+and deletion paths described below are real and tested, but the **UX and developer
+experience around them are still being built** — there's no polished dashboard,
+onboarding flow, or self-serve signup yet. Expect the *plumbing* to be solid and
+the *paving* to be unfinished. Routes, env var names, and the first-key bootstrap
+flow may shift as we wire up the dashboard. Pin a version if you're integrating.
+</Warning>
+
+The hosted server is the cloud side of claude-mem: a Postgres-backed HTTP service
+(`/v1`) plus a separate BullMQ generation worker. Where the local plugin keeps
+memory in `~/.claude-mem/claude-mem.db` on your machine, the hosted server keeps
+it per **team** and per **project** in Postgres, and exposes it back to any MCP
+client over an authenticated link.
+
+Three capabilities landed together and are documented here:
+
+<CardGroup cols={3}>
+  <Card title="Remote MCP recall" icon="plug">
+    Paste an authenticated link into Claude Code to recall your cloud memory —
+    read-only, team/project-scoped.
+  </Card>
+  <Card title="Paid-readiness" icon="gauge">
+    Opt-in rate limiting, monthly request/token quotas, and usage metering —
+    the guards a paid tier needs.
+  </Card>
+  <Card title="Data deletion" icon="trash">
+    Right-to-erasure: forget a single memory, or purge everything captured for a
+    project.
+  </Card>
+</CardGroup>
+
+## The shape of the system
+
+```
+ Claude Code (or any MCP client)
+        │  Authorization: Bearer cm_...
+        ▼
+ ┌─────────────────────────────┐        ┌──────────────────────────┐
+ │  HTTP server  (/v1)          │  jobs  │  BullMQ generation worker │
+ │  - auth (api-key mode)       ├───────▶│  claude-mem server         │
+ │  - rate limit / quota / meter │        │    worker start            │
+ │  - REST + /v1/mcp recall      │        │  - provider call           │
+ │  - data deletion              │        │  - writes observations     │
+ └──────────────┬───────────────┘        └────────────┬─────────────┘
+                │                                       │
+                ▼                                       ▼
+        ┌───────────────────────────────────────────────────┐
+        │  Postgres  (teams, projects, observations,         │
+        │  agent_events, server_sessions, generation jobs,   │
+        │  api_keys, usage_events, audit_log)                │
+        └───────────────────────────────────────────────────┘
+```
+
+Every row is scoped by `(team_id, project_id)`. An API key carries a **team**
+(always) and an optional **project** scope; that scoping bounds every read,
+write, and delete.
+
+### Authentication
+
+Set `CLAUDE_MEM_AUTH_MODE=api-key` and send `Authorization: Bearer <key>` on every
+request. Scopes gate access:
+
+- **Read** endpoints (search, context, recall, usage) require `memories:read`.
+- **Write** endpoints (ingest, key issuance, deletion) require `memories:write`.
+
+Keys are stored as SHA-256 hashes in the `api_keys` table; the raw `cm_...` value
+is shown exactly once, at mint time.
+
+## Remote authenticated MCP recall
+
+`/v1/mcp` is a streamable-HTTP [MCP](https://modelcontextprotocol.io) server. It's
+the secure link a user pastes into Claude Code to recall their cloud memory. It is
+**read-only** and authenticated by the same API key as the REST routes
+(`memories:read`); the key's team — and project, if the key is project-scoped —
+bounds every read.
+
+```bash
+claude mcp add --transport http claude-mem <server-base>/v1/mcp \
+  --header "Authorization: Bearer cm_..."
+```
+
+Three tools are exposed, each mirroring an existing REST path:
+
+| Tool      | Arguments                          | Returns |
+|-----------|------------------------------------|---------|
+| `search`  | `{ projectId, query, limit? }`     | Matching observations (full-text search). |
+| `context` | `{ projectId, query, limit? }`     | Observations **plus** a concatenated `context` string ready for prompt injection. |
+| `recent`  | `{ projectId, limit? }`            | The newest observations for a project. |
+
+<Note>
+The transport is **stateless** — one MCP server + transport per request — so it
+needs no session affinity behind a load balancer. Mutating tools are
+intentionally absent: a pasted recall link can never write or delete. Every read
+is written to `audit_log` as an `observation.read` event, the same as
+`POST /v1/search`.
+</Note>
+
+## Connecting a client: key issuance + connect
+
+Two routes turn "I have a server" into "Claude Code is recalling my cloud memory":
+
+- **`POST /v1/keys`** (requires `memories:write`) mints a **read-only** API key for
+  the caller's team and returns a paste-ready connect command. The raw key appears
+  **once**. Body: `{ "expiresInDays"?: number }`. Minting requires write scope so a
+  read-only key can't escalate itself into more keys.
+
+  ```json
+  {
+    "id": "...",
+    "apiKey": "cm_...",
+    "scopes": ["memories:read"],
+    "expiresAt": null,
+    "mcpUrl": "https://<host>/v1/mcp",
+    "connectCommand": "claude mcp add --transport http claude-mem https://<host>/v1/mcp --header \"Authorization: Bearer cm_...\""
+  }
+  ```
+
+- **`GET /v1/connect`** (requires `memories:read`) returns the same command with a
+  `<YOUR_API_KEY>` placeholder — a GET never mints. The `mcpUrl` is built from
+  `CLAUDE_MEM_PUBLIC_URL` (recommended when behind a proxy or load balancer) or,
+  failing that, the request host.
+
+<Warning>
+**First-key bootstrap is the rough edge.** Minting a team's *very first* key still
+needs a session-gated path (a web dashboard), because `POST /v1/keys` itself
+requires a write-scoped key. better-auth's `apiKey()` plugin exists but writes to
+a different store than the Postgres `api_keys` these routes authenticate against —
+wiring the better-auth org → team mapping is the remaining piece, and the biggest
+part of the devex work still ahead.
+</Warning>
+
+## Paid-readiness: rate limiting, quotas, metering
+
+These guards run **after** auth and are **opt-in via environment variables**. Unset
+(the default) means no rate limit, no quota, and no metering — behavior is
+identical to a server without them. Every guard **fails open**: a backing-store
+error never blocks a legitimate request.
+
+| Env var | Effect | Response when exceeded |
+|---------|--------|------------------------|
+| `CLAUDE_MEM_RATE_LIMIT_PER_MIN` | Max requests per **API key** per minute. | `429` with `Retry-After` and `X-RateLimit-*` headers. |
+| `CLAUDE_MEM_MONTHLY_REQUEST_CAP` | Max requests per **team** per calendar month (UTC). | `402 quota_exceeded`. |
+| `CLAUDE_MEM_MONTHLY_TOKEN_CAP` | Max provider **tokens** per team per month. Gates **writes only** — reads stay open so a team over budget can still recall. | `402` at the cap. |
+| `CLAUDE_MEM_USAGE_METERING=1` | Records one `request` usage event per authenticated call (fire-and-forget). | — |
+
+Token and observation metering is written to the same `usage_events` table from
+the generation worker, so usage reflects real provider spend, not just HTTP calls.
+
+`GET /v1/usage` returns the caller team's per-kind totals for the current month:
+
+```json
+{ "since": "2026-06-01T00:00:00.000Z", "usage": { "request": 1280, "observation": 44 } }
+```
+
+<Note>
+"Gates writes only" is deliberate: ingestion is what drives generation, which is
+what costs tokens. A team that blows its token budget can still **read** its
+existing memory — you never lock someone out of their own data over billing.
+</Note>
+
+## Data deletion (forget)
+
+Right-to-erasure. Both routes require `memories:write` and are scoped to the
+caller's team. Both write an `audit_log` entry.
+
+- **`DELETE /v1/memories/:id`** — delete a single observation; its
+  `observation_sources` cascade. Returns `404` if no such observation exists for
+  the team. Audited as `observation.deleted`.
+
+- **`DELETE /v1/projects/:projectId/memory`** — purge **all** captured content for
+  a project in one transaction: observations, raw agent events, server sessions,
+  and generation jobs. The project shell (config/membership) is kept so the team
+  can keep using it. Returns per-table `counts`. Returns `404` if the project
+  doesn't belong to the team. Audited as `project.memory_purged`.
+
+  ```json
+  { "purged": true, "projectId": "...", "counts": { "observations": 42, "agentEvents": 17, "sessions": 3, "jobs": 17 } }
+  ```
+
+<Note>
+Deletion is team-scoped at the SQL layer, so a key can only ever erase its own
+team's data — a cross-team or nonexistent `projectId` returns `404` rather than a
+misleading success.
+</Note>
+
+## Event generation semantics
+
+Ingestion (`POST /v1/events`) accepts two query flags that control observation
+generation:
+
+- `generate=false` — write the event but do **not** enqueue a generation job.
+- `wait=true` — return the `generationJob` descriptor so callers can poll
+  `GET /v1/jobs/:id` for completion.
+
+Without `wait=true`, the response includes the new event row plus a best-effort
+`generationJob` field. With `wait=true`, that field is always populated (or `null`
+only when generation was explicitly disabled). The actual provider call happens in
+the separate BullMQ worker (`claude-mem server worker start`) — the HTTP path
+**never blocks** on a provider response.
+
+## Endpoint reference
+
+All endpoints are mounted under `/v1`; legacy worker routes remain under `/api`.
+
+```
+GET    /healthz
+GET    /v1/info
+GET    /v1/projects
+POST   /v1/projects
+GET    /v1/projects/:id
+POST   /v1/sessions/start
+POST   /v1/sessions/:id/end
+GET    /v1/sessions/:id
+POST   /v1/events                 # ?generate= ?wait=
+POST   /v1/events/batch
+GET    /v1/events/:id
+POST   /v1/memories
+GET    /v1/memories/:id
+PATCH  /v1/memories/:id
+DELETE /v1/memories/:id           # forget one observation
+POST   /v1/search
+POST   /v1/context
+ALL    /v1/mcp                    # remote authenticated MCP recall
+POST   /v1/keys                   # mint a read-only key (write scope)
+GET    /v1/connect                # connect command with key placeholder
+GET    /v1/usage                  # current-month usage totals
+DELETE /v1/projects/:projectId/memory   # purge a whole project
+GET    /v1/audit?projectId=<id>
+```
+
+## What's solid vs. what's coming
+
+<Note>
+**Solid today:** Postgres-backed multi-tenant storage, api-key auth with
+read/write scopes, the `/v1/mcp` recall link, opt-in rate limiting + quotas +
+metering, and audited data deletion. All covered by the Postgres-gated e2e suite.
+
+**Still being built (UX / devex):** a web dashboard for the first-key bootstrap and
+key management, self-serve onboarding, a billing/plan UI on top of the metering
+primitives, and a smoother "connect Claude Code to my cloud memory" flow than
+pasting a CLI command. These are the next focus — the primitives above are the
+foundation they'll sit on.
+</Note>

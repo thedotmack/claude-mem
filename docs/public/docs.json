@@ -91,6 +91,13 @@
         ]
       },
       {
+        "group": "Hosted Server",
+        "icon": "cloud",
+        "pages": [
+          "hosted-server"
+        ]
+      },
+      {
         "group": "SDK & Embedding",
         "icon": "code",
         "pages": [
