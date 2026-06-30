@@ -19,6 +19,7 @@ import { PostgresAuthRepository } from '../../../storage/postgres/auth.js';
 import { PostgresObservationRepository } from '../../../storage/postgres/observations.js';
 import { logger } from '../../../utils/logger.js';
 import { requirePostgresServerAuth } from '../../middleware/postgres-auth.js';
+import { PostgresDataDeletionRepository } from '../../../storage/postgres/data-deletion.js';
 import { requestIdMiddleware } from '../../middleware/request-id.js';
 import type { ActiveServerQueueManager } from '../../runtime/ActiveServerQueueManager.js';
 import type { ServerQueueManager } from '../../runtime/types.js';
@@ -1086,6 +1087,54 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     // auth + transport only to be rejected.
     app.post('/v1/mcp', readAuth, mcpHandler);
     app.get('/v1/mcp', readAuth, mcpHandler);
+
+    // DELETE /v1/memories/:id — forget a single observation (sources cascade).
+    app.delete('/v1/memories/:id', writeAuth, this.asyncHandler(async (req, res) => {
+      const teamId = this.requireTeamId(req, res);
+      if (!teamId) return;
+      const id = String(req.params.id);
+      const projectScope = req.authContext?.projectId ?? null;
+      try {
+        const deletion = new PostgresDataDeletionRepository(this.options.pool);
+        // Project-scoped key deletes within its project; a team-scoped key
+        // matches by id + team across the team's projects.
+        let deleted: boolean;
+        if (projectScope) {
+          deleted = await deletion.deleteObservation({ id, projectId: projectScope, teamId });
+        } else {
+          const byTeam = await this.options.pool.query(
+            `DELETE FROM observations WHERE id = $1 AND team_id = $2`,
+            [id, teamId],
+          );
+          deleted = (byTeam.rowCount ?? 0) > 0;
+        }
+        if (!deleted) {
+          res.status(404).json({ error: 'not_found' });
+          return;
+        }
+        await this.auditWrite(req, 'observation.deleted', id, projectScope, { via: 'api' });
+        res.status(200).json({ deleted: true, id });
+      } catch (error) {
+        this.handleDbError(error, res, 'observation.delete');
+      }
+    }));
+
+    // DELETE /v1/projects/:projectId/memory — forget EVERYTHING captured for a
+    // project (observations, raw events, sessions, jobs). Keeps the project shell.
+    app.delete('/v1/projects/:projectId/memory', writeAuth, this.asyncHandler(async (req, res) => {
+      const teamId = this.requireTeamId(req, res);
+      if (!teamId) return;
+      const projectId = String(req.params.projectId);
+      if (!this.ensureProjectAllowed(req, res, projectId)) return;
+      try {
+        const counts = await new PostgresDataDeletionRepository(this.options.pool)
+          .purgeProjectMemory({ projectId, teamId });
+        await this.auditWrite(req, 'project.memory_purged', projectId, projectId, { ...counts, via: 'api' });
+        res.status(200).json({ purged: true, projectId, counts });
+      } catch (error) {
+        this.handleDbError(error, res, 'project.purge');
+      }
+    }));
   }
 
   private async auditRead(

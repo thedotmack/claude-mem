@@ -24,6 +24,8 @@ Available beta endpoints:
 - `POST /v1/keys`
 - `GET /v1/connect`
 - `GET /v1/usage`
+- `DELETE /v1/memories/:id`
+- `DELETE /v1/projects/:projectId/memory`
 - `GET /v1/audit?projectId=<id>`
 
 When `CLAUDE_MEM_AUTH_MODE=api-key`, send `Authorization: Bearer <key>`. Read endpoints require `memories:read`; write endpoints require `memories:write`.
@@ -115,3 +117,10 @@ Tools:
 The transport is stateless: one MCP server + transport per request, so it needs
 no session affinity behind a load balancer. Mutating tools are intentionally
 absent — a pasted recall link cannot write.
+
+## Data deletion (forget)
+
+Right-to-erasure. Both require **write** scope and are scoped to the caller's team.
+
+- `DELETE /v1/memories/:id` — delete a single observation (its sources cascade). `404` if it doesn't exist for the team.
+- `DELETE /v1/projects/:projectId/memory` — purge ALL captured content for a project (observations, agent events, sessions, generation jobs); keeps the project shell. Returns per-table `counts`. Both are audited (`observation.deleted` / `project.memory_purged`).
