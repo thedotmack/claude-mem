@@ -48,6 +48,22 @@ function hasSearchableContent(body: {
   );
 }
 
+const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
+function rateLimitMiddleware(req: Request, res: Response, next: () => void): void {
+  const key = req.ip ?? 'unknown';
+  const now = Date.now();
+  const entry = rateLimitMap.get(key);
+  if (!entry || now > entry.resetAt) {
+    rateLimitMap.set(key, { count: 1, resetAt: now + 60_000 });
+  } else if (entry.count >= 100) {
+    res.status(429).json({ error: 'TooManyRequests', message: 'Rate limit exceeded' });
+    return;
+  } else {
+    entry.count++;
+  }
+  next();
+}
+
 export interface ServerV1RoutesOptions {
   getDatabase: () => Database;
   authMode?: string;
@@ -59,6 +75,8 @@ export class ServerV1Routes implements RouteHandler {
   constructor(private readonly options: ServerV1RoutesOptions) {}
 
   setupRoutes(app: Application): void {
+    app.use(rateLimitMiddleware);
+
     const readAuth = requireServerAuth(this.options.getDatabase, {
       authMode: this.options.authMode,
       allowLocalDevBypass: this.options.allowLocalDevBypass,
