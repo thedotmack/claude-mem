@@ -25,7 +25,8 @@ function findBun() {
     ? spawnSync('where bun', {
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'pipe'],
-        shell: true
+        shell: true,
+        windowsHide: true
       })
     : spawnSync('which', ['bun'], {
         encoding: 'utf-8',
