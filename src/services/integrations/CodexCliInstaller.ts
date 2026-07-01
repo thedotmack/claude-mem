@@ -10,6 +10,12 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { logger } from '../../utils/logger.js';
 import { paths } from '../../shared/paths.js';
+import {
+  ensureTreeSitterCliBinary,
+  getBunVersion,
+  getUvVersion,
+  writeInstallMarker,
+} from '../../npx-cli/install/setup-runtime.js';
 
 const CODEX_DIR = path.join(homedir(), '.codex');
 const CODEX_AGENTS_MD_PATH = path.join(CODEX_DIR, 'AGENTS.md');
@@ -91,6 +97,69 @@ function resolvePluginMarketplaceRoot(preferredRoot?: string): string {
   }
 
   throw new Error('Could not locate a Codex marketplace root with .agents/plugins/marketplace.json and plugin/.codex-plugin/plugin.json. Run npx claude-mem@latest install from the package or repo root.');
+}
+
+function readCodexPluginVersion(marketplaceRoot: string): string {
+  const manifestPath = path.join(marketplaceRoot, 'plugin', '.codex-plugin', 'plugin.json');
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as { version?: unknown };
+  if (typeof manifest.version !== 'string' || manifest.version.length === 0) {
+    throw new Error(`Codex plugin manifest has no version: ${manifestPath}`);
+  }
+  return manifest.version;
+}
+
+export function resolveCodexPluginCacheDirectory(
+  marketplaceRoot: string,
+  codexDir: string = CODEX_DIR,
+): string {
+  return path.join(
+    codexDir,
+    'plugins',
+    'cache',
+    MARKETPLACE_NAME,
+    'claude-mem',
+    readCodexPluginVersion(marketplaceRoot),
+  );
+}
+
+type CodexPluginCacheInstallOptions = {
+  codexDir?: string;
+  runBestEffort?: typeof runCodexBestEffort;
+  ensureRuntime?: typeof ensureTreeSitterCliBinary;
+};
+
+export async function installCodexPluginCache(
+  marketplaceRoot: string,
+  options: CodexPluginCacheInstallOptions = {},
+): Promise<void> {
+  const runBestEffort = options.runBestEffort ?? runCodexBestEffort;
+  const ensureRuntime = options.ensureRuntime ?? ensureTreeSitterCliBinary;
+  const installed = runBestEffort(
+    ['plugin', 'add', CODEX_PLUGIN_ID],
+    'Installed plugin from the local Codex marketplace.',
+    'Could not install claude-mem from the local Codex marketplace',
+  );
+  if (!installed) {
+    throw new Error('Codex plugin cache could not be installed');
+  }
+
+  const codexCacheDir = resolveCodexPluginCacheDirectory(
+    marketplaceRoot,
+    options.codexDir,
+  );
+  await ensureRuntime(codexCacheDir);
+
+  // Write the install marker only after the runtime is provisioned, so
+  // `.install-version` is a truthful "runtime ready" signal rather than an
+  // optimistic one copied before `plugin add`. Without it, version-check.js
+  // emits a misleading "runtime not yet set up" hint for a working Codex cache.
+  writeInstallMarker(
+    codexCacheDir,
+    readCodexPluginVersion(marketplaceRoot),
+    getBunVersion() ?? '',
+    getUvVersion() ?? '',
+  );
+  console.log('  Smart-explore Tree-sitter runtime ready.');
 }
 
 function lookupCodexOnWindows(): string | null {
@@ -478,11 +547,7 @@ export async function installCodexCli(marketplaceRootOverride?: string): Promise
     console.log(`  Registering Codex plugin marketplace: ${marketplaceRoot}`);
     registerCodexMarketplace(marketplaceRoot);
     enableCodexPluginConfig();
-    runCodexBestEffort(
-      ['plugin', 'marketplace', 'upgrade', MARKETPLACE_NAME],
-      'Refreshed Codex marketplace and installed plugin cache.',
-      'Could not refresh Codex marketplace cache; reinstall or upgrade claude-mem from /plugins if Codex still uses old MCP config',
-    );
+    await installCodexPluginCache(marketplaceRoot);
     if (!cleanupLegacyCodexAgentsMdContext()) {
       console.warn(`  Native Codex hooks registered, but failed to remove legacy AGENTS.md context from ${CODEX_AGENTS_MD_PATH}.`);
     }
