@@ -147,13 +147,23 @@ describe('Install Non-TTY Support', () => {
       expect(installSource).toContain('installCodexCli(marketplaceDirectory())');
     });
 
-    it('refreshes Codex marketplace cache after registration', () => {
+    it('installs the Codex plugin cache after local marketplace registration', () => {
       const installRegion = codexInstallerSource.slice(
         codexInstallerSource.indexOf('export async function installCodexCli'),
         codexInstallerSource.indexOf('export function uninstallCodexCli'),
       );
-      expect(installRegion).toContain("['plugin', 'marketplace', 'upgrade', MARKETPLACE_NAME]");
-      expect(installRegion).toContain('installed plugin cache');
+      expect(installRegion).toContain("runCodex(['plugin', 'add', CODEX_PLUGIN_ID])");
+      expect(installRegion).toContain('Installed Codex plugin cache.');
+      expect(installRegion).not.toContain('runCodexBestEffort(');
+      expect(installRegion).not.toContain("['plugin', 'marketplace', 'upgrade', MARKETPLACE_NAME]");
+    });
+
+    it('copies the install marker into the bundled marketplace plugin before Codex installs it', () => {
+      const runtimeSetupRegion = installSource.slice(
+        installSource.indexOf("title: 'Setting up runtime"),
+        installSource.indexOf("return `Runtime ready"),
+      );
+      expect(runtimeSetupRegion).toContain("writeInstallMarker(join(marketplaceDirectory(), 'plugin'), version, bunVersion, uvVersion)");
     });
 
     it('replaces stale Codex marketplace registrations from a different source', () => {
