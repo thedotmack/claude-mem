@@ -54,10 +54,12 @@ export function extractEresolveBlock(stderr: string): string {
 // the spinner mid-frame and the install looks stalled.
 export function runNpmStrict(cwd: string, flags: string[], isFirstRun = true): Promise<NpmResult> {
   return new Promise((resolve) => {
-    const child = spawn('npm', flags, {
+    const [npmExe, npmFlags] = IS_WINDOWS
+      ? (['cmd.exe', ['/d', '/c', 'npm', ...flags]] as const)
+      : (['npm', flags] as const);
+    const child = spawn(npmExe, npmFlags, {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
-      ...(IS_WINDOWS ? { shell: process.env.ComSpec ?? 'cmd.exe' } : {}),
     });
 
     let stdout = '';

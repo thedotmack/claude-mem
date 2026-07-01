@@ -25,10 +25,12 @@ interface CheckResult {
 
 function probeVersion(bin: string): string | null {
   try {
-    const result = spawnSync(bin, ['--version'], {
+    const [probeExe, probeArgs] = IS_WINDOWS
+      ? (['cmd.exe', ['/d', '/c', bin, '--version']] as const)
+      : ([bin, ['--version']] as const);
+    const result = spawnSync(probeExe, probeArgs, {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS,
     });
     return result.status === 0 ? result.stdout.trim() : null;
   } catch {
