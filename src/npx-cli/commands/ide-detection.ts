@@ -104,6 +104,14 @@ export function detectInstalledIDEs(): IDEInfo[] {
       hint: 'MCP-based integration',
     },
     {
+      id: 'antigravity-cli',
+      label: 'Antigravity CLI',
+      detected:
+        existsSync(join(home, '.gemini', 'antigravity-cli')) || isCommandInPath('agy'),
+      supported: true,
+      hint: 'hooks + context injection',
+    },
+    {
       id: 'goose',
       label: 'Goose',
       detected:

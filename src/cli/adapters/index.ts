@@ -1,4 +1,5 @@
 import type { PlatformAdapter } from '../types.js';
+import { antigravityCliAdapter } from './antigravity-cli.js';
 import { claudeCodeAdapter } from './claude-code.js';
 import { codexAdapter } from './codex.js';
 import { cursorAdapter } from './cursor.js';
@@ -13,10 +14,12 @@ export function getPlatformAdapter(platform: string): PlatformAdapter {
     case 'cursor': return cursorAdapter;
     case 'gemini':
     case 'gemini-cli': return geminiCliAdapter;
+    case 'antigravity':
+    case 'antigravity-cli': return antigravityCliAdapter;
     case 'windsurf': return windsurfAdapter;
     case 'raw': return rawAdapter;
     default: return rawAdapter;
   }
 }
 
-export { claudeCodeAdapter, codexAdapter, cursorAdapter, geminiCliAdapter, rawAdapter, windsurfAdapter };
+export { antigravityCliAdapter, claudeCodeAdapter, codexAdapter, cursorAdapter, geminiCliAdapter, rawAdapter, windsurfAdapter };

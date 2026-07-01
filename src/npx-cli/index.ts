@@ -59,8 +59,8 @@ ${pc.bold('Runtime Commands')} (requires Bun, delegates to installed plugin):
 
 ${pc.bold('IDE Identifiers')}:
   claude-code, cursor, gemini-cli, opencode, openclaw,
-  windsurf, codex-cli, copilot-cli, antigravity, goose,
-  roo-code, warp
+  windsurf, codex-cli, copilot-cli, antigravity, antigravity-cli,
+  goose, roo-code, warp
 `);
 }
 
