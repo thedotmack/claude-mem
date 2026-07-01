@@ -49,7 +49,6 @@ import {
 import { runOneTimeV12_4_3Cleanup } from './infrastructure/CleanupV12_4_3.js';
 import {
   isPortInUse,
-  isPortBindable,
   waitForHealth,
   waitForReadiness,
   waitForPortFree,
@@ -1393,48 +1392,6 @@ async function main() {
           startedAt: existingPidInfo.startedAt
         });
         process.exit(0);
-      }
-
-      // Third gate: neither a healthy worker (checked above) nor a bindable port.
-      // A worker that exited uncleanly can leave a stale, orphaned LISTEN socket
-      // holding the port — especially on Windows, where the socket can outlive
-      // its now-dead PID. isPortInUse() is health-based and blind to this, so the
-      // gate above passes; server.listen() would then reject with an unactionable
-      // EADDRINUSE and the daemon would die with a bare "port in use". Probe real
-      // bindability, retry briefly (such sockets often clear on their own), then
-      // fail with actionable guidance instead of a cryptic error.
-      const host = getWorkerHost();
-      if (!(await isPortBindable(port, host))) {
-        const STALE_SOCKET_RETRIES = 5;
-        const STALE_SOCKET_RETRY_DELAY_MS = 1000;
-        let bindable = false;
-        for (let attempt = 1; attempt <= STALE_SOCKET_RETRIES; attempt++) {
-          await new Promise(r => setTimeout(r, STALE_SOCKET_RETRY_DELAY_MS));
-          // A real worker may have won the port while we waited — defer to it
-          // exactly like the duplicate gate above (exit 0 = success).
-          if (await isPortInUse(port)) {
-            logger.info('SYSTEM', 'Healthy worker claimed the port during stale-socket wait, exiting as duplicate', { port });
-            process.exit(0);
-          }
-          if (await isPortBindable(port, host)) {
-            bindable = true;
-            break;
-          }
-          logger.warn('SYSTEM', 'Port held by a stale socket, retrying before giving up', {
-            port,
-            attempt,
-            maxAttempts: STALE_SOCKET_RETRIES
-          });
-        }
-        if (!bindable) {
-          logger.failure('SYSTEM',
-            `Worker cannot bind port ${port}: it is held by a stale socket with no healthy worker behind it — ` +
-            `an orphaned listener left by a previous worker that exited uncleanly (common on Windows, where the ` +
-            `socket can outlive its dead PID). Reboot to release the socket, or set CLAUDE_MEM_WORKER_PORT to a ` +
-            `free port in ~/.claude-mem/settings.json.`,
-            { port });
-          process.exit(1);
-        }
       }
 
       process.on('unhandledRejection', (reason) => {

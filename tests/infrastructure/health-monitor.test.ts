@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:te
 import net from 'net';
 import {
   isPortInUse,
-  isPortBindable,
+  probePortBind,
   waitForHealth,
   waitForPortFree,
   getInstalledPluginVersion,
@@ -81,11 +81,11 @@ describe('HealthMonitor', () => {
     });
   });
 
-  describe('isPortBindable', () => {
-    // Unlike isPortInUse (health-based on Windows), this probes a real bind, so
-    // it detects a stale/orphaned socket that holds the port with nothing
-    // healthy behind it — the case server.listen() rejects with EADDRINUSE.
-    it('should return true when a real bind succeeds (port free)', async () => {
+  describe('probePortBind', () => {
+    // Unlike isPortInUse (health-based on Windows), this probes a real bind and
+    // returns the failing error code — so callers can tell the stale-socket case
+    // (EADDRINUSE) apart from genuine config errors (EADDRNOTAVAIL / EACCES).
+    it('should return null when a real bind succeeds (port free)', async () => {
       const closeMock = mock((cb: Function) => cb());
       const createServerMock = mock(() => ({
         once: mock((event: string, cb: Function) => {
@@ -96,14 +96,14 @@ describe('HealthMonitor', () => {
       }));
       const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
 
-      const result = await isPortBindable(39999);
+      const result = await probePortBind(39999);
 
-      expect(result).toBe(true);
+      expect(result).toBeNull();
       expect(closeMock).toHaveBeenCalled();
       spy.mockRestore();
     });
 
-    it('should return false when the port is bound (EADDRINUSE) — stale socket', async () => {
+    it('should return "EADDRINUSE" when the port is bound (stale socket)', async () => {
       const createServerMock = mock(() => ({
         once: mock((event: string, cb: Function) => {
           if (event === 'error') setTimeout(() => cb({ code: 'EADDRINUSE' }), 0);
@@ -112,25 +112,27 @@ describe('HealthMonitor', () => {
       }));
       const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
 
-      const result = await isPortBindable(37777);
+      const result = await probePortBind(37777);
 
-      expect(result).toBe(false);
+      expect(result).toBe('EADDRINUSE');
       spy.mockRestore();
     });
 
-    it('should return false on any bind error (e.g. EACCES)', async () => {
-      const createServerMock = mock(() => ({
-        once: mock((event: string, cb: Function) => {
-          if (event === 'error') setTimeout(() => cb({ code: 'EACCES' }), 0);
-        }),
-        listen: mock(() => {})
-      }));
-      const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
+    it('should preserve non-conflict bind errors (e.g. EADDRNOTAVAIL, EACCES)', async () => {
+      for (const code of ['EADDRNOTAVAIL', 'EACCES']) {
+        const createServerMock = mock(() => ({
+          once: mock((event: string, cb: Function) => {
+            if (event === 'error') setTimeout(() => cb({ code }), 0);
+          }),
+          listen: mock(() => {})
+        }));
+        const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
 
-      const result = await isPortBindable(80);
+        const result = await probePortBind(80, '203.0.113.1');
 
-      expect(result).toBe(false);
-      spy.mockRestore();
+        expect(result).toBe(code);
+        spy.mockRestore();
+      }
     });
   });
 
