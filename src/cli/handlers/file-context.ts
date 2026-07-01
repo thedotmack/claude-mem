@@ -106,17 +106,7 @@ function formatFileTimeline(
     return aEpoch - bEpoch;
   });
 
-  const now = new Date();
-  const currentDate = now.toLocaleDateString('en-CA'); 
-  const currentTime = now.toLocaleTimeString('en-US', {
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true
-  }).toLowerCase().replace(' ', '');
-  const currentTimezone = now.toLocaleTimeString('en-US', { timeZoneName: 'short' }).split(' ').pop();
-
   const lines: string[] = [
-    `Current: ${currentDate} ${currentTime} ${currentTimezone}`,
     `This file has prior observations — supplementary context follows. The Read result below is the full requested section.`,
     `- **Need details on a past observation?** get_observations([IDs]) — ~300 tokens each.`,
     `- **Need a structural map first?** smart_outline("${safePath}") — line numbers only, cheaper than re-reading.`,
