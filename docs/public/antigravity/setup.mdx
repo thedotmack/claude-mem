@@ -1,0 +1,81 @@
+---
+title: "Antigravity Setup"
+description: "Add claude-mem's memory search tools to Google Antigravity"
+---
+
+# Antigravity Setup
+
+> **Search your claude-mem memory from inside [Antigravity](https://antigravity.google).**
+
+Antigravity is an MCP-only integration: claude-mem registers its **memory search tools** (an MCP server) so the Antigravity agent can query the observations, decisions, and patterns captured across your sessions.
+
+<Info>
+**What this does — and doesn't.** Antigravity does not expose lifecycle hooks, so claude-mem does **not** capture observations *from* Antigravity sessions. It gives Antigravity **read access** to memory captured by your hook-enabled tools (e.g. Claude Code) that share the same local worker. Capture stays with those tools; Antigravity gets search.
+</Info>
+
+## Prerequisites
+
+- [Antigravity](https://antigravity.google) installed (CLI `agy` and/or the desktop IDE)
+- [Node.js](https://nodejs.org/) 18+
+- The `~/.gemini` directory exists (created by Antigravity / Gemini CLI on first run)
+- A running claude-mem worker with some memory in it (install claude-mem in Claude Code first if you have no observations yet)
+
+## Installation
+
+```bash
+npx claude-mem install
+```
+
+The installer will:
+
+1. Detect Antigravity
+2. Prompt you to select **Antigravity** from the IDE picker
+3. Write the claude-mem MCP server into **`~/.gemini/config/mcp_config.json`** — the path Antigravity reads for MCP servers
+
+<Note>
+Antigravity reads MCP servers from `~/.gemini/config/mcp_config.json` (shared with the Gemini CLI config home, resolved by Antigravity's bundled Cascade language server). It is **not** `~/.gemini/antigravity/mcp_config.json`.
+</Note>
+
+## Verify installation
+
+Restart Antigravity, then ask the agent to use the claude-mem `search` tool — for example:
+
+```
+Use the claude-mem MCP server to search memory for "<a topic from a past session>".
+```
+
+You should get back matching observations. You can also confirm the entry was written:
+
+```bash
+cat ~/.gemini/config/mcp_config.json
+```
+
+Look for a `claude-mem` entry under `mcpServers`.
+
+## What you get
+
+The claude-mem MCP server exposes its memory **search tools** (search, timeline, observation lookup) to the Antigravity agent, so it can pull relevant history into a session on demand.
+
+## Troubleshooting
+
+### The claude-mem tools don't appear
+
+1. Confirm the entry exists in `~/.gemini/config/mcp_config.json` under `mcpServers`.
+2. Fully restart Antigravity after installing.
+3. Re-run the installer: `npx claude-mem install`.
+
+### Search returns nothing
+
+You need existing memory to search. Run at least one claude-mem-enabled session in a hook-capable tool (e.g. Claude Code) first, and make sure the worker is running:
+
+```bash
+npx claude-mem status
+```
+
+## Uninstalling
+
+```bash
+npx claude-mem uninstall
+```
+
+This removes the claude-mem entry from `~/.gemini/config/mcp_config.json`.

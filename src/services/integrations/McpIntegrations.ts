@@ -130,10 +130,10 @@ const COPILOT_CLI_CONFIG: McpInstallerConfig = {
   },
 };
 
-const ANTIGRAVITY_CONFIG: McpInstallerConfig = {
+export const ANTIGRAVITY_CONFIG: McpInstallerConfig = {
   ideId: 'antigravity',
   ideLabel: 'Antigravity',
-  configPath: path.join(homedir(), '.gemini', 'antigravity', 'mcp_config.json'),
+  configPath: path.join(homedir(), '.gemini', 'config', 'mcp_config.json'),
   configKey: 'mcpServers',
   contextFile: {
     path: path.join(process.cwd(), '.agents', 'rules', 'claude-mem-context.md'),

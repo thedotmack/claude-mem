@@ -66,6 +66,13 @@
         ]
       },
       {
+        "group": "Antigravity Integration",
+        "icon": "rocket",
+        "pages": [
+          "antigravity/setup"
+        ]
+      },
+      {
         "group": "Best Practices",
         "icon": "lightbulb",
         "pages": [
