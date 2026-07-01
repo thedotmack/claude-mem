@@ -7,6 +7,7 @@ Practical guide based on 23 days of production usage with 3,400+ observations ac
 | Setting | Default | Recommended | Why |
 |---------|---------|-------------|-----|
 | CLAUDE_MEM_MAX_CONCURRENT_AGENTS | 2 | 3 | Better throughput without overload |
+| CLAUDE_MEM_TOTAL_PROCESS_HARD_CAP | 10 | 10 | Absolute ceiling on concurrent SDK subprocesses, above the per-session pool. Raise only for high-throughput batch backfill against a local model. |
 | CLAUDE_MEM_SEMANTIC_INJECT | true | true | Relevant context >> recent context |
 | CLAUDE_MEM_SEMANTIC_INJECT_LIMIT | 5 | 5 | Sweet spot for token cost vs coverage |
 | CLAUDE_MEM_TIER_ROUTING_ENABLED | true | true | ~52% cost savings, no quality loss |

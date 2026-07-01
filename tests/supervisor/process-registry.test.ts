@@ -2,7 +2,12 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
-import { createProcessRegistry, isPidAlive } from '../../src/supervisor/process-registry.js';
+import {
+  createProcessRegistry,
+  isPidAlive,
+  resolveTotalProcessHardCap,
+  DEFAULT_TOTAL_PROCESS_HARD_CAP,
+} from '../../src/supervisor/process-registry.js';
 
 function makeTempDir(): string {
   return path.join(tmpdir(), `claude-mem-supervisor-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -410,6 +415,36 @@ describe('supervisor ProcessRegistry', () => {
       expect(reaped).toBe(0);
 
       expect(registry.getAll()).toHaveLength(1);
+    });
+  });
+
+  describe('resolveTotalProcessHardCap', () => {
+    it('parses a positive integer', () => {
+      expect(resolveTotalProcessHardCap('25')).toBe(25);
+    });
+
+    it('falls back to the default when undefined', () => {
+      expect(resolveTotalProcessHardCap(undefined)).toBe(DEFAULT_TOTAL_PROCESS_HARD_CAP);
+    });
+
+    it('falls back to the default when empty', () => {
+      expect(resolveTotalProcessHardCap('')).toBe(DEFAULT_TOTAL_PROCESS_HARD_CAP);
+    });
+
+    it('falls back to the default when zero', () => {
+      expect(resolveTotalProcessHardCap('0')).toBe(DEFAULT_TOTAL_PROCESS_HARD_CAP);
+    });
+
+    it('falls back to the default when negative', () => {
+      expect(resolveTotalProcessHardCap('-5')).toBe(DEFAULT_TOTAL_PROCESS_HARD_CAP);
+    });
+
+    it('falls back to the default when unparseable', () => {
+      expect(resolveTotalProcessHardCap('lots')).toBe(DEFAULT_TOTAL_PROCESS_HARD_CAP);
+    });
+
+    it('takes the leading integer of a mixed string (parseInt semantics)', () => {
+      expect(resolveTotalProcessHardCap('32abc')).toBe(32);
     });
   });
 });
