@@ -1,0 +1,90 @@
+---
+title: "Transcript Backfill"
+description: "Import historical Claude Code session transcripts into memory, with a zero-spend dry-run cost gate (#2690)"
+---
+
+# Transcript Backfill
+
+`claude-mem transcript ingest` imports **historical Claude Code session
+transcripts** (`~/.claude/projects/<encoded-cwd>/*.jsonl`) into your memory
+database, so memory you accumulated before installing claude-mem (or in projects
+it never watched) still becomes searchable.
+
+Unlike [memory ingest](/usage/memory-ingest), which stores already-distilled
+markdown directly with no model, transcript backfill **replays raw session
+JSONL through the observation generator**. Each tool use is re-observed with
+*historical framing* (the generator is told this is a past replay, so it records
+rather than narrates as if live) and paced turns. This is the spend path: it
+runs generation (e.g. Haiku), so always dry-run first.
+
+## Usage
+
+Always **dry-run first** — it parses, normalizes, and counts everything,
+including a token + cost estimate, with **zero spend**:
+
+```bash
+# Estimate what a directory of sessions would produce, no spend
+claude-mem transcript ingest --source ~/.claude/projects/-home-you-code-app --dry-run
+
+# Single session file
+claude-mem transcript ingest --source ~/.claude/projects/-home-you-code-app/<session>.jsonl --dry-run
+
+# Include subagent sessions in the estimate
+claude-mem transcript ingest --source <dir> --include-subagents --dry-run
+```
+
+Then run the real ingest (drives the worker over HTTP; long-running for large
+histories):
+
+```bash
+claude-mem transcript ingest --source <dir>
+claude-mem transcript ingest --source <dir> --include-subagents
+```
+
+### Flags
+
+| Flag | Effect |
+|------|--------|
+| `--source <dir\|file>` | Required. A directory of `*.jsonl` sessions, or a single session file. |
+| `--dry-run` | Zero-spend scan + parse + count + token/cost estimate. Run this first. |
+| `--include-subagents` | Also ingest subagent sessions (`agent-<id>`), not just parent sessions. |
+
+## Dry-run cost estimate
+
+The dry-run reports, per session and in total, how many observations and
+summaries a real ingest would generate, plus an estimated input/output token
+count and cost. The estimate is **explicit and tunable, not a billing
+guarantee**: treat the input-token figure as a **floor**, because the worker's
+generator may prepend per-session conversation history to each call, and the
+estimate uses list pricing (set to 0 if your worker runs generation on a
+subscription rather than metered API).
+
+## Idempotency (and an important caveat)
+
+Re-running the same backfill is safe: already-ingested transcript content is
+content-hash deduplicated and reported as `already-indexed`; only new
+sessions/turns are generated.
+
+```
+INGESTED: 142 new, 318 already-indexed, 0 failed
+```
+
+**Caveat — do not backfill sessions claude-mem already captured live.** The dedup
+is a content hash of the *generated* observation text. A backfill regenerates
+observations independently of the real-time capture, so the text won't match and
+you will get **duplicate** observations for that session. Backfill is intended
+for history claude-mem never saw (pre-install, or projects it didn't watch), not
+for re-importing sessions that were observed live.
+
+## How it runs
+
+- **`--dry-run`** runs entirely client-side (scan + normalize + count). No
+  worker, no DB writes, no model calls.
+- The **real ingest** drives the worker daemon over HTTP
+  (`POST /api/transcript/ingest`), because generation needs the worker's ingest
+  context. It is not time-limited; large histories can take a while.
+
+## Related
+
+- [Memory Ingest](/usage/memory-ingest) — the zero-spend sibling for
+  already-distilled auto-memory markdown (no generation).

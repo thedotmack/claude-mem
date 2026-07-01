@@ -25,6 +25,14 @@ interface SessionState {
 export class TranscriptEventProcessor {
   private sessions = new Map<string, SessionState>();
 
+  /**
+   * @param options.backfill when true, observations queued by this processor are
+   * marked as backfill (#2690): the worker then uses historical prompt framing
+   * and paced one-observation-per-turn generation. Live transcript watching
+   * constructs the processor without it, so live behavior is unchanged.
+   */
+  constructor(private readonly options: { backfill?: boolean } = {}) {}
+
   async processEntry(
     entry: unknown,
     watch: WatchTarget,
@@ -246,6 +254,7 @@ export class TranscriptEventProcessor {
 
     const result = await ingestObservation({
       contentSessionId: session.sessionId,
+      backfill: this.options.backfill,
       cwd: session.cwd ?? process.cwd(),
       toolName,
       toolInput: this.maybeParseJson(fields.toolInput),
