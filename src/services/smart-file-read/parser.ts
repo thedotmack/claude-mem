@@ -480,16 +480,27 @@ function getQueryFile(queryKey: string): string {
 }
 
 let cachedBinPath: string | null = null;
+let treeSitterCacheDir: string | null = null;
 
 function getTreeSitterBin(): string {
   if (cachedBinPath) return cachedBinPath;
 
   try {
     const pkgPath = _require.resolve("tree-sitter-cli/package.json");
-    const binPath = join(dirname(pkgPath), "tree-sitter");
-    if (existsSync(binPath)) {
-      cachedBinPath = binPath;
-      return binPath;
+    const pkgDir = dirname(pkgPath);
+    // tree-sitter-cli's install.js writes `tree-sitter.exe` on Windows and an
+    // extensionless `tree-sitter` elsewhere. Checking only the extensionless
+    // name discards a valid Windows binary and falls through to a bare-PATH
+    // lookup that usually fails, producing silent 0-symbol results (#2910 / #1247).
+    const candidates = process.platform === "win32"
+      ? ["tree-sitter.exe", "tree-sitter"]
+      : ["tree-sitter"];
+    for (const name of candidates) {
+      const binPath = join(pkgDir, name);
+      if (existsSync(binPath)) {
+        cachedBinPath = binPath;
+        return binPath;
+      }
     }
   } catch {
     // [ANTI-PATTERN IGNORED]: tree-sitter-cli not in node_modules is expected; falls back to PATH
@@ -497,6 +508,13 @@ function getTreeSitterBin(): string {
 
   cachedBinPath = "tree-sitter";
   return cachedBinPath;
+}
+
+function getTreeSitterCacheDir(): string {
+  if (!treeSitterCacheDir) {
+    treeSitterCacheDir = mkdtempSync(join(tmpdir(), "claude-mem-tree-sitter-cache-"));
+  }
+  return treeSitterCacheDir;
 }
 
 interface RawCapture {
@@ -526,7 +544,15 @@ function runBatchQuery(queryFile: string, sourceFiles: string[], grammarPath: st
 
   let output: string;
   try {
-    output = execFileSync(bin, execArgs, { encoding: "utf-8", timeout: 30000, stdio: ["pipe", "pipe", "pipe"] });
+    output = execFileSync(bin, execArgs, {
+      encoding: "utf-8",
+      timeout: 30000,
+      stdio: ["pipe", "pipe", "pipe"],
+      // `tree-sitter query -p` compiles grammars and writes lock/library files
+      // below XDG_CACHE_HOME. Agent sandboxes commonly make the user's home
+      // read-only, so use a process-local writable cache instead.
+      env: { ...process.env, XDG_CACHE_HOME: getTreeSitterCacheDir() },
+    });
   } catch (error) {
     logger.debug('WORKER', `tree-sitter query failed for ${sourceFiles.length} file(s)`, undefined, error instanceof Error ? error : undefined);
     return new Map();
