@@ -386,6 +386,14 @@ See [Development Guide](https://docs.claude-mem.ai/development) for contribution
 
 ---
 
+## Related Resources
+
+Complementary Claude Code tools and indexes:
+
+- [Vexilo · A field guide to Claude Code](https://vexilo.app/?lang=en) — Visual interactive index of 31 agents · 99 commands · 123 skills · 13 rules, organized around the 5-step workflow (Research → Plan → Test-first → Security → Commit). One-click "Teach Claude this handbook" feeds the whole index into a local Claude session in 30 seconds. ([companion repo](https://github.com/lilhawk7077/claude-code-resources))
+
+---
+
 ## License
 
 Claude-Mem is licensed under the Apache License 2.0.
