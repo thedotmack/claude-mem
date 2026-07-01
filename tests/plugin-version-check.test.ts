@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdirSync, writeFileSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -65,5 +65,31 @@ describe('plugin/scripts/version-check.js install marker compatibility', () => {
     expect(result.stderr).toContain(
       'claude-mem: upgraded to v12.4.4 - run: npx claude-mem@latest install',
     );
+  });
+
+  // Marketplace-only installs never invoke the npx CLI installer that writes
+  // .install-version, so a missing marker used to permanently emit "runtime
+  // not yet set up" on every Setup run — even though ensurePluginDependencies()
+  // already materialized the real deps for this exact install (#3092).
+  it('self-heals a missing install marker instead of emitting an unresolvable hint', () => {
+    const markerPath = join(tempDir, '.install-version');
+    expect(existsSync(markerPath)).toBe(false);
+
+    const result = runVersionCheck(tempDir);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(existsSync(markerPath)).toBe(true);
+    expect(JSON.parse(readFileSync(markerPath, 'utf-8'))).toEqual({ version: '12.4.4' });
+  });
+
+  it('does not re-nag on the run immediately after self-healing a missing marker', () => {
+    runVersionCheck(tempDir);
+
+    const result = runVersionCheck(tempDir);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toBe('');
   });
 });

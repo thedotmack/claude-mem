@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from 'child_process';
-import { existsSync, readFileSync, rmSync } from 'fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -178,7 +178,19 @@ try {
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
   const markerPath = join(ROOT, '.install-version');
   if (!existsSync(markerPath)) {
-    emitUpgradeHint('claude-mem: runtime not yet set up - run: npx claude-mem@latest install');
+    // Marketplace-only installs never invoke the npx CLI installer that
+    // writes this marker (only `npx claude-mem@latest install` does), so
+    // this branch fired the "runtime not yet set up" hint on every single
+    // Setup run — even though ensurePluginDependencies() above already
+    // materialized the real runtime deps for this exact install. Self-heal
+    // instead of nagging with advice that can't be acted on for these
+    // installs: stamp the marker with the version that's actually running,
+    // since executing this script IS that version's setup (#3092).
+    try {
+      writeFileSync(markerPath, JSON.stringify({ version: pkg.version }));
+    } catch {
+      emitUpgradeHint('claude-mem: runtime not yet set up - run: npx claude-mem@latest install');
+    }
     process.exit(0);
   }
   const markerVersion = readInstallMarkerVersion(markerPath);
