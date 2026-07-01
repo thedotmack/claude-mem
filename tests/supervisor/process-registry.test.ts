@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
-import { createProcessRegistry, isPidAlive } from '../../src/supervisor/process-registry.js';
+import { createProcessRegistry, isPidAlive, normalizeSpawnSdkArgs } from '../../src/supervisor/process-registry.js';
 
 function makeTempDir(): string {
   return path.join(tmpdir(), `claude-mem-supervisor-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -358,6 +358,29 @@ describe('supervisor ProcessRegistry', () => {
 
       expect(registry1.getAll()).toHaveLength(1);
       expect(registry2.getAll()).toHaveLength(0);
+    });
+  });
+
+  describe('normalizeSpawnSdkArgs', () => {
+    it('appends explicit extra args after SDK args', () => {
+      expect(normalizeSpawnSdkArgs(['--print', 'json'], ['--no-session-persistence'])).toEqual([
+        '--print',
+        'json',
+        '--no-session-persistence',
+      ]);
+    });
+
+    it('strips empty placeholder flags before appending extra args', () => {
+      expect(normalizeSpawnSdkArgs([
+        '--append-system-prompt',
+        '',
+        '--resume',
+        'session-123',
+      ], ['--no-session-persistence'])).toEqual([
+        '--resume',
+        'session-123',
+        '--no-session-persistence',
+      ]);
     });
   });
 
