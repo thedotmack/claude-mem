@@ -94,8 +94,6 @@ export function classifyOpenRouterError(input: {
   );
 }
 
-const DEFAULT_MAX_CONTEXT_MESSAGES = 20;
-const DEFAULT_MAX_ESTIMATED_TOKENS = 100000;
 const CHARS_PER_TOKEN_ESTIMATE = 4;
 
 interface OpenAIMessage {
@@ -141,7 +139,6 @@ interface OpenRouterConfig {
 export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfig> {
   protected readonly providerName = 'OpenRouter';
   protected readonly syntheticIdPrefix = 'openrouter';
-  protected readonly requireNonEmptyToTruncate = false;
   protected readonly forwardEmptyMessageResponse = true;
 
   constructor(dbManager: DatabaseManager, sessionManager: SessionManager) {
@@ -182,13 +179,6 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     };
   }
 
-  protected truncateHistoryForOpenRouter(history: ConversationMessage[]): ConversationMessage[] {
-    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-    const MAX_CONTEXT_MESSAGES = parseInt(settings.CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES) || DEFAULT_MAX_CONTEXT_MESSAGES;
-    const MAX_ESTIMATED_TOKENS = parseInt(settings.CLAUDE_MEM_OPENROUTER_MAX_TOKENS) || DEFAULT_MAX_ESTIMATED_TOKENS;
-    return this.truncateHistory(history, MAX_CONTEXT_MESSAGES, MAX_ESTIMATED_TOKENS);
-  }
-
   private conversationToOpenAIMessages(history: ConversationMessage[]): OpenAIMessage[] {
     return history.map(msg => ({
       role: msg.role === 'assistant' ? 'assistant' : 'user',
@@ -208,13 +198,12 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     siteUrl?: string,
     appName?: string
   ): Promise<ProviderQueryResult> {
-    const truncatedHistory = this.truncateHistoryForOpenRouter(history);
-    const messages = this.conversationToOpenAIMessages(truncatedHistory);
-    const totalChars = truncatedHistory.reduce((sum, m) => sum + m.content.length, 0);
-    const estimatedTokens = this.estimateTokens(truncatedHistory.map(m => m.content).join(''));
+    const messages = this.conversationToOpenAIMessages(history);
+    const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
+    const estimatedTokens = this.estimateTokens(history.map(m => m.content).join(''));
 
     logger.debug('SDK', `Querying OpenRouter multi-turn (${model})`, {
-      turns: truncatedHistory.length,
+      turns: history.length,
       totalChars,
       estimatedTokens
     });
@@ -310,7 +299,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
         outputTokens: realOutputTokens || 0,
         totalTokens: tokensUsed,
         ...(costUsd !== undefined ? { costUSD: costUsd.toFixed(6) } : {}),
-        messagesInContext: truncatedHistory.length
+        messagesInContext: history.length
       });
 
       if (tokensUsed > 50000) {

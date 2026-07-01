@@ -985,8 +985,6 @@ write_settings() {
       CLAUDE_MEM_OPENROUTER_MODEL: 'xiaomi/mimo-v2-flash:free',
       CLAUDE_MEM_OPENROUTER_SITE_URL: '',
       CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',
-      CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: '20',
-      CLAUDE_MEM_OPENROUTER_MAX_TOKENS: '100000',
       CLAUDE_MEM_DATA_DIR: path.join(homedir, '.claude-mem'),
       CLAUDE_MEM_LOG_LEVEL: 'INFO',
       CLAUDE_MEM_PYTHON_VERSION: '3.13',

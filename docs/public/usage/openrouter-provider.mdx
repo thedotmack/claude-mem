@@ -74,8 +74,6 @@ All free models support:
 | `CLAUDE_MEM_PROVIDER` | `claude`, `gemini`, `openrouter` | `claude` | AI provider for observation extraction |
 | `CLAUDE_MEM_OPENROUTER_API_KEY` | string | — | Your OpenRouter API key |
 | `CLAUDE_MEM_OPENROUTER_MODEL` | string | `xiaomi/mimo-v2-flash:free` | Model identifier (see list above) |
-| `CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES` | number | `20` | Max messages in conversation history |
-| `CLAUDE_MEM_OPENROUTER_MAX_TOKENS` | number | `100000` | Token budget safety limit |
 | `CLAUDE_MEM_OPENROUTER_SITE_URL` | string | — | Optional: URL for analytics attribution |
 | `CLAUDE_MEM_OPENROUTER_APP_NAME` | string | `claude-mem` | Optional: App name for analytics |
 
@@ -134,21 +132,10 @@ The settings file takes precedence over the environment variable.
 
 ## Context Window Management
 
-OpenRouter agent implements intelligent context management to prevent runaway costs:
-
-### Automatic Truncation
-
-The agent uses a sliding window strategy:
-1. Checks if message count exceeds `MAX_CONTEXT_MESSAGES` (default: 20)
-2. Checks if estimated tokens exceed `MAX_TOKENS` (default: 100,000)
-3. If limits exceeded, keeps most recent messages only
-4. Logs warnings with dropped message counts
-
-### Token Estimation
-
-- Conservative estimate: 1 token ≈ 4 characters
-- Used for proactive context management
-- Actual usage logged from API response
+The full conversation history is sent to the model on each request. claude-mem does
+**not** apply any client-side truncation or message-count cap — the provider and model
+own their own context window. If you need to bound context for a specific model, choose a
+model with an appropriate context length or manage limits at the OpenRouter/provider level.
 
 ### Cost Tracking
 
@@ -244,12 +231,12 @@ Verify the model ID is correct:
 - Use the `:free` suffix for free model variants
 - Model IDs are case-sensitive
 
-### High Token Usage Warning
+### High Token Usage
 
-If you see warnings about high token usage (>50,000 per request):
-- Reduce `CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES`
-- Reduce `CLAUDE_MEM_OPENROUTER_MAX_TOKENS`
-- Consider a model with larger context window
+If a session accumulates a large conversation history, requests can grow. To keep
+per-request cost down:
+- Choose a model with pricing suited to your usage
+- Consider a model with a larger context window if you hit provider-side limits
 
 ### Connection Errors
 

@@ -114,8 +114,6 @@ const GEMINI_RPM_LIMITS: Record<GeminiModel, number> = {
 
 let lastRequestTime = 0;
 
-const DEFAULT_MAX_CONTEXT_MESSAGES = 20;
-const DEFAULT_MAX_ESTIMATED_TOKENS = 100000;
 const GEMINI_EMPTY_HISTORY_FALLBACK = 'Continue the memory observation request.';
 
 export type GeminiBadRequestCategory =
@@ -222,7 +220,6 @@ interface GeminiConfig {
 export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
   protected readonly providerName = 'Gemini';
   protected readonly syntheticIdPrefix = 'gemini';
-  protected readonly requireNonEmptyToTruncate = true;
   protected readonly forwardEmptyMessageResponse = false;
 
   constructor(dbManager: DatabaseManager, sessionManager: SessionManager) {
@@ -247,13 +244,6 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
     return typeof result.inputTokens === 'number' && typeof result.outputTokens === 'number'
       ? { input: result.inputTokens, output: result.outputTokens }
       : null;
-  }
-
-  protected truncateHistoryForGemini(history: ConversationMessage[]): ConversationMessage[] {
-    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-    const MAX_CONTEXT_MESSAGES = parseInt(settings.CLAUDE_MEM_GEMINI_MAX_CONTEXT_MESSAGES) || DEFAULT_MAX_CONTEXT_MESSAGES;
-    const MAX_ESTIMATED_TOKENS = parseInt(settings.CLAUDE_MEM_GEMINI_MAX_TOKENS) || DEFAULT_MAX_ESTIMATED_TOKENS;
-    return this.truncateHistory(history, MAX_CONTEXT_MESSAGES, MAX_ESTIMATED_TOKENS);
   }
 
   private conversationToGeminiContents(history: ConversationMessage[]): GeminiContent[] {
@@ -309,13 +299,11 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
     model: GeminiModel,
     rateLimitingEnabled: boolean
   ): Promise<ProviderQueryResult> {
-    const truncatedHistory = this.truncateHistoryForGemini(history);
-    const contents = this.conversationToGeminiContents(truncatedHistory);
-    const totalChars = truncatedHistory.reduce((sum, m) => sum + m.content.length, 0);
+    const contents = this.conversationToGeminiContents(history);
+    const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
 
     logger.debug('SDK', `Querying Gemini multi-turn (${model})`, {
-      turns: truncatedHistory.length,
-      totalTurns: history.length,
+      turns: history.length,
       totalChars
     });
 
