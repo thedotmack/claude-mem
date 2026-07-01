@@ -8,27 +8,35 @@ import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManage
 describe('SettingsDefaultsManager', () => {
   let tempDir: string;
   let settingsPath: string;
-  let prevDataDirEnv: string | undefined;
+  let savedDefaultKeyEnv: Record<string, string | undefined>;
 
   beforeEach(() => {
     tempDir = join(tmpdir(), `settings-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     mkdirSync(tempDir, { recursive: true });
     settingsPath = join(tempDir, 'settings.json');
 
-    // The preload tripwire (tests/preload.ts) pins CLAUDE_MEM_DATA_DIR for
-    // the whole run, and loadFromFile applies env overrides on top of file
-    // values — which would make every loadFromFile result diverge from
-    // getAllDefaults()'s hardcoded ~/.claude-mem default. These tests are
-    // about file > defaults behavior on an EXPLICIT settingsPath (no real
-    // data-dir I/O happens here), so drop the env override for their
-    // duration and restore it after.
-    prevDataDirEnv = process.env.CLAUDE_MEM_DATA_DIR;
-    delete process.env.CLAUDE_MEM_DATA_DIR;
+    // loadFromFile applies env overrides on top of file/defaults, so ANY
+    // settings-default key present in process.env makes its result diverge
+    // from getAllDefaults(). On a dev machine this is not just the
+    // CLAUDE_MEM_DATA_DIR pinned by the preload tripwire (tests/preload.ts) —
+    // a running claude-mem install also exports e.g. CLAUDE_MEM_API_TIMEOUT_MS,
+    // which silently broke these tests on contributor boxes while passing in a
+    // clean CI env. These tests cover file > defaults behavior on an EXPLICIT
+    // settingsPath (no real data-dir I/O), so strip EVERY default key from the
+    // env for their duration and restore after — robust to whichever
+    // CLAUDE_MEM_* vars the host happens to export.
+    savedDefaultKeyEnv = {};
+    for (const key of Object.keys(SettingsDefaultsManager.getAllDefaults())) {
+      savedDefaultKeyEnv[key] = process.env[key];
+      delete process.env[key];
+    }
   });
 
   afterEach(() => {
-    if (prevDataDirEnv === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
-    else process.env.CLAUDE_MEM_DATA_DIR = prevDataDirEnv;
+    for (const [key, value] of Object.entries(savedDefaultKeyEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     try {
       rmSync(tempDir, { recursive: true, force: true });
     } catch {
