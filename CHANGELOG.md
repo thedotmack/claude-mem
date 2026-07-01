@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.9.2] - 2026-07-01
+
+## Bug Fix
+
+**Removed client-side context truncation from the provider layer.**
+
+The `OpenAICompatibleProvider` applied a sliding-window truncation to conversation history — a hardcoded 20-message cap and a 100k-token "safety" limit layered on top of the model's own context window. In practice it fired on message count alone, dropping conversation messages at ~12k tokens (nowhere near the token limit) and silently corrupting history, mislabeled as "runaway cost" prevention. This broke setups whose real model context window bore no relation to those hardcoded assumptions.
+
+The full conversation history is now sent to the provider, which owns its own context window.
+
+### Removed
+- `OpenAICompatibleProvider.truncateHistory()` and the `requireNonEmptyToTruncate` flag
+- `truncateHistoryForOpenRouter` / `truncateHistoryForGemini` wrappers and their message/token constants
+- `CLAUDE_MEM_{GEMINI,OPENROUTER}_MAX_CONTEXT_MESSAGES` / `_MAX_TOKENS` settings, defaults, and validation
+- Related tests, docs, and installer references
+
+Merged in #3096. Verified: `tsc` clean, 2248 tests passing, build-and-sync clean.
+
 ## [13.9.1] - 2026-06-29
 
 ## What's Changed
