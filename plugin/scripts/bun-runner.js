@@ -93,6 +93,28 @@ if (args.length === 0) {
 
 args[0] = fixBrokenScriptPath(args[0]);
 
+// Lifecycle commands manage the long-lived worker daemon; every other invocation
+// is a hook payload whose runtime blocks the Claude Code event that spawned it
+// (UserPromptSubmit, PostToolUse, ...). A wedged worker on one of those must never
+// hang the user's prompt — see the watchdog below.
+const LIFECYCLE_COMMANDS = ['start', 'stop', 'restart', 'status'];
+const isLifecycle = LIFECYCLE_COMMANDS.some(cmd => args.includes(cmd));
+
+// Kill the child and everything it spawned. On Windows the child is a cmd.exe
+// wrapper (shell:true), so child.kill() leaves the real `bun` grandchild running
+// — the orphan pileup that stacks up one hung worker per prompt. taskkill /T /F
+// tears down the whole tree.
+function killChildTree(child) {
+  if (!child || child.killed) return;
+  if (IS_WINDOWS && child.pid) {
+    try {
+      spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+      return;
+    } catch {}
+  }
+  try { child.kill(); } catch {}
+}
+
 const bunPath = findBun();
 
 if (!bunPath) {
@@ -145,6 +167,32 @@ if (IS_WINDOWS) {
 
 const child = spawn(spawnCmd, spawnArgs, spawnOptions);
 
+// Watchdog: a hook payload invocation must never block its Claude Code event for
+// longer than this. If the worker wedges (e.g. a stuck daemon connection on
+// Windows), kill the process tree and exit 0 — honoring the exit-0 strategy, with
+// the runner-errors log as the durable signal. Lifecycle commands are exempt: the
+// daemon they start is meant to outlive this launcher.
+let watchdog = null;
+if (!isLifecycle) {
+  const timeoutMs = Number(process.env.CLAUDE_MEM_HOOK_TIMEOUT_MS) || 8000;
+  watchdog = setTimeout(() => {
+    try {
+      const dataDir = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
+      const logsDir = join(dataDir, 'logs');
+      mkdirSync(logsDir, { recursive: true });
+      appendFileSync(
+        join(logsDir, 'runner-errors.log'),
+        `[bun-runner] worker hook exceeded ${timeoutMs}ms — killed to unblock prompt\n` +
+        `  script: ${args[0]}\n` +
+        `  timestamp: ${new Date().toISOString()}\n\n`
+      );
+    } catch {}
+    killChildTree(child);
+    process.exit(0);
+  }, timeoutMs);
+  if (watchdog.unref) watchdog.unref();
+}
+
 if (child.stdin) {
   if (stdinData && stdinData.length > 0) {
     child.stdin.write(stdinData);
@@ -154,9 +202,6 @@ if (child.stdin) {
     // they manage the worker daemon, not hook payloads.  Killing the child here
     // prevents the daemon from starting/stopping on platforms where Claude Code
     // doesn't pipe a payload for SessionStart (e.g. Windows CC ≤ 2.1.145).
-    const lifecycleCommands = ['start', 'stop', 'restart', 'status'];
-    const isLifecycle = lifecycleCommands.some(cmd => args.includes(cmd));
-
     if (isLifecycle) {
       // Lifecycle commands don't need stdin — close pipe and let child run.
       try { child.stdin.end(); } catch {}
@@ -231,6 +276,7 @@ child.on('error', (err) => {
 });
 
 child.on('close', (code, signal) => {
+  if (watchdog) clearTimeout(watchdog);
   if ((signal || code > 128) && args.includes('start')) {
     process.exit(0);
   }
