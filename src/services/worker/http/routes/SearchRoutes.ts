@@ -11,6 +11,7 @@ import { logger } from '../../../../utils/logger.js';
 import { groupByDate } from '../../../../shared/timeline-formatting.js';
 import { countObservationsByProjects } from '../../../context/ObservationCompiler.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
+import { loadClaudeMemEnv } from '../../../../shared/EnvManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from '../../../sqlite/types.js';
@@ -412,7 +413,45 @@ export class SearchRoutes extends BaseRouteHandler {
       if (!this.projectsHaveObservations(sessionStore, projects, platformSource)) {
         const port = process.env.CLAUDE_MEM_WORKER_PORT ?? settings.CLAUDE_MEM_WORKER_PORT;
         const viewerUrl = `http://localhost:${port}`;
-        const hintBody = WELCOME_HINT_TEMPLATE.replace('{viewer_url}', viewerUrl);
+        let hintBody = WELCOME_HINT_TEMPLATE.replace('{viewer_url}', viewerUrl);
+
+        // Surface missing credentials at session start (#3027).
+        //
+        // Marketplace installs never create ~/.claude-mem/.env, so non-OAuth
+        // users (DeepSeek, OpenRouter, custom gateways) get silent failures
+        // — the SDK subprocess has no credentials, every observation attempt
+        // returns "Not logged in", and 0 observations are ever stored.
+        //
+        // We intentionally do NOT try to detect Anthropic OAuth here: the
+        // OAuth token lives in the platform keychain and is only read at SDK
+        // spawn time (buildIsolatedEnvWithFreshOAuth, async). There is no
+        // reliable sync signal in the worker process. OAuth users who see
+        // this warning briefly can ignore it — it self-clears as soon as the
+        // first observation lands.
+        const credEnv = loadClaudeMemEnv();
+        const hasCreds = credEnv.ANTHROPIC_API_KEY
+          || credEnv.ANTHROPIC_AUTH_TOKEN
+          || credEnv.GEMINI_API_KEY
+          || credEnv.OPENROUTER_API_KEY;
+        if (!hasCreds) {
+          const credWarning = [
+            '⚠️  claude-mem credentials not configured — observations cannot be generated.',
+            'Anthropic OAuth users can ignore this message.',
+            '',
+            'Create ~/.claude-mem/.env with your API credentials:',
+            '```',
+            '# For custom gateways (DeepSeek, BigModel, etc.):',
+            'ANTHROPIC_AUTH_TOKEN=your-token',
+            'ANTHROPIC_BASE_URL=https://your-api-endpoint',
+            '',
+            '# Or for direct Anthropic API:',
+            'ANTHROPIC_API_KEY=your-key',
+            '```',
+            'Then restart Claude Code. See https://docs.claude-mem.ai/configuration',
+          ].join('\n');
+          hintBody = credWarning + '\n\n' + hintBody;
+        }
+
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
         res.send(hintBody);
         return;
