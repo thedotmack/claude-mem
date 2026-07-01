@@ -51,6 +51,29 @@ export async function isPortInUse(port: number): Promise<boolean> {
   });
 }
 
+/**
+ * True bind-availability probe: attempts an actual bind (net.createServer) on
+ * the given host and reports whether it succeeded.
+ *
+ * This differs from isPortInUse() in an important way. On Windows isPortInUse()
+ * is health-based — it only asks whether a *healthy* worker answers /api/health
+ * — so it cannot see a port that is bound at the OS level with nothing serving
+ * behind it. That happens when a worker exits uncleanly and leaves a stale,
+ * orphaned LISTEN socket that can outlive its now-dead PID. isPortBindable()
+ * catches exactly that case: it returns false whenever server.listen() would
+ * reject with EADDRINUSE, regardless of whether anything healthy is listening.
+ */
+export async function isPortBindable(port: number, host: string = '127.0.0.1'): Promise<boolean> {
+  return new Promise((resolve) => {
+    const probe = net.createServer();
+    probe.once('error', () => resolve(false));
+    probe.once('listening', () => {
+      probe.close(() => resolve(true));
+    });
+    probe.listen(port, host);
+  });
+}
+
 async function pollEndpointUntilOk(
   port: number,
   endpointPath: string,
