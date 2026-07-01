@@ -133,6 +133,23 @@ describe('setup-runtime install marker', () => {
       writeFileSync(join(tempDir, '.install-version'), '1.0.0\n');
       expect(isInstallCurrent(tempDir, '1.0.0')).toBe(false);
     });
+
+    it('returns false when tree-sitter-cli is declared but its binary is unusable', () => {
+      const bunVersion = probeBunVersion();
+      if (!bunVersion) {
+        return;
+      }
+      mkdirSync(join(tempDir, 'node_modules'), { recursive: true });
+      // Plugin declares tree-sitter-cli, but no working executable is present —
+      // e.g. a prior install wrote the marker and later lost the binary. The
+      // fast path must not treat this stale cache as current.
+      writeFileSync(
+        join(tempDir, 'package.json'),
+        JSON.stringify({ dependencies: { 'tree-sitter-cli': '^0.26.5' } }),
+      );
+      writeInstallMarker(tempDir, '1.0.0', bunVersion, '0.1.0');
+      expect(isInstallCurrent(tempDir, '1.0.0')).toBe(false);
+    });
   });
 
   describe('platform remediation strings (Phase 5)', () => {

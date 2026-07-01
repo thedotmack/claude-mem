@@ -527,7 +527,8 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
   try {
     await ensureTreeSitterCliBinary(targetDir);
   } catch (error) {
-    throw new Error(`tree-sitter-cli setup failed in ${targetDir}\n${describeExecError(error)}`);
+    const err = error instanceof Error ? error : new Error(String(error));
+    throw new Error(`tree-sitter-cli setup failed in ${targetDir}\n${describeExecError(err)}`);
   }
 
   verifyCriticalModules(targetDir);
@@ -569,6 +570,19 @@ export function writeInstallMarker(
   writeFileSync(markerPath(targetDir), JSON.stringify(payload));
 }
 
+function pluginDeclaresTreeSitterCli(targetDir: string): boolean {
+  try {
+    const pkg = JSON.parse(readFileSync(join(targetDir, 'package.json'), 'utf-8'));
+    return Object.keys(pkg.dependencies || {}).includes('tree-sitter-cli');
+  } catch {
+    // [ANTI-PATTERN IGNORED]: a missing or unparseable package.json in an
+    // incomplete/partial install is an expected negative — treat it as "does
+    // not declare tree-sitter-cli" so the caller re-provisions rather than
+    // throwing.
+    return false;
+  }
+}
+
 export function isInstallCurrent(targetDir: string, expectedVersion: string): boolean {
   if (!existsSync(join(targetDir, 'node_modules'))) return false;
   const marker = readInstallMarker(targetDir);
@@ -578,5 +592,13 @@ export function isInstallCurrent(targetDir: string, expectedVersion: string): bo
   if (currentBun && !marker.bun) return false;
   if (!currentBun && marker.bun) return false;
   if (currentBun && marker.bun && currentBun !== marker.bun) return false;
+  // A present marker is not sufficient if the smart-explore runtime it vouches
+  // for is missing. A prior install can write .install-version and later lose
+  // (or never have downloaded) the tree-sitter-cli executable; without this
+  // check the install fast path treats that cache as current and skips the
+  // provisioning/validation that would repair it, leaving smart-explore broken.
+  if (pluginDeclaresTreeSitterCli(targetDir) && !isTreeSitterCliBinaryUsable(targetDir)) {
+    return false;
+  }
   return true;
 }
