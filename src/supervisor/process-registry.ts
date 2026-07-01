@@ -6,6 +6,37 @@ import { logger } from '../utils/logger.js';
 import { sanitizeEnv } from './env-sanitizer.js';
 import { paths } from '../shared/paths.js';
 
+function parseCmdFile(cmdPath: string): { node: string; script: string } | null {
+  try {
+    const content = readFileSync(cmdPath, 'utf-8');
+    const match = content.match(/"%_prog%"\s+"([^"]+)"/);
+    if (!match || !match[1]) {
+      return null;
+    }
+
+    let scriptPath = match[1];
+    const cmdDir = path.dirname(cmdPath);
+    if (scriptPath.startsWith('%~dp0\\') || scriptPath.startsWith('%dp0\\')) {
+      scriptPath = scriptPath.replace(/^%~?dp0\\/, cmdDir + '\\');
+    } else if (scriptPath.startsWith('%~dp0') || scriptPath.startsWith('%dp0')) {
+      scriptPath = scriptPath.replace(/^%~?dp0/, cmdDir);
+    }
+
+    scriptPath = scriptPath.replace(/\\/g, path.sep);
+
+    if (!existsSync(scriptPath)) {
+      return null;
+    }
+
+    const localNodePath = path.join(cmdDir, 'node.exe');
+    const node = existsSync(localNodePath) ? localNodePath : 'node';
+
+    return { node, script: scriptPath };
+  } catch {
+    return null;
+  }
+}
+
 const REAP_SESSION_SIGTERM_TIMEOUT_MS = 5_000;
 const REAP_SESSION_SIGKILL_TIMEOUT_MS = 1_000;
 
@@ -65,10 +96,6 @@ export interface PidInfo {
   startToken?: string;
 }
 
-// Windows lacks a cheap /proc-style start-time read and `ps lstart`, so we
-// shell to PowerShell's CIM (wmic is removed on Windows 11). The lookup is
-// ~100-300ms, so cache per-pid for 5s to avoid re-shelling when the same PID
-// is validated repeatedly within one spawn-decision window.
 const WINDOWS_START_TOKEN_CACHE_TTL_MS = 5_000;
 const windowsStartTokenCache = new Map<number, { token: string | null; capturedAtMs: number }>();
 
@@ -80,9 +107,6 @@ function captureWindowsStartToken(pid: number): string | null {
 
   let token: string | null = null;
   try {
-    // CreationDate is a CIM DATETIME (yyyyMMddHHmmss.ffffff±UTCoffset) that is
-    // unique-enough per (pid, boot) to detect PID reuse. `-NoProfile` keeps it
-    // fast; sanitizeEnv keeps the spawn-env discipline uniform (#2357/#2375).
     const result = spawnSync(
       'powershell.exe',
       [
@@ -142,8 +166,6 @@ export function captureProcessStartToken(pid: number): string | null {
     const result = spawnSync('ps', ['-p', String(pid), '-o', 'lstart='], {
       encoding: 'utf-8',
       timeout: 2000,
-      // Uniform spawn-env discipline: sanitize even for read-only system
-      // binaries so the spawn-env CI check stays a single rule (#2357/#2375).
       env: { ...sanitizeEnv(process.env), LC_ALL: 'C', LANG: 'C' }
     });
     if (result.status !== 0) return null;
@@ -593,7 +615,6 @@ export function spawnSdkProcess(
 ): { process: SpawnedSdkProcess; pid: number; pgid: number } | null {
   const registry = getProcessRegistry();
 
-  const useCmdWrapper = process.platform === 'win32' && options.command.endsWith('.cmd');
   const env = sanitizeEnv(options.env ?? process.env);
 
   const filteredArgs: string[] = [];
@@ -608,16 +629,12 @@ export function spawnSdkProcess(
   }
 
   const isWin = process.platform === 'win32';
-  const child = useCmdWrapper
-    ? spawnHidden('cmd.exe', ['/d', '/c', options.command, ...filteredArgs], {
-        cwd: options.cwd,
-        env,
-        detached: !isWin,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        signal: options.signal,
-        windowsHide: true,
-      })
-    : spawnHidden(options.command, filteredArgs, {
+  let child: ChildProcess;
+
+  if (isWin && options.command.endsWith('.cmd')) {
+    const parsed = parseCmdFile(options.command);
+    if (parsed) {
+      child = spawnHidden(parsed.node, [parsed.script, ...filteredArgs], {
         cwd: options.cwd,
         env,
         detached: !isWin,
@@ -625,6 +642,26 @@ export function spawnSdkProcess(
         signal: options.signal,
         windowsHide: true,
       });
+    } else {
+      child = spawnHidden('cmd.exe', ['/d', '/c', options.command, ...filteredArgs], {
+        cwd: options.cwd,
+        env,
+        detached: !isWin,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        signal: options.signal,
+        windowsHide: true,
+      });
+    }
+  } else {
+    child = spawnHidden(options.command, filteredArgs, {
+      cwd: options.cwd,
+      env,
+      detached: !isWin,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      signal: options.signal,
+      windowsHide: true,
+    });
+  }
 
   child.on('error', (err: Error) => {
     logger.warn('SDK_SPAWN', `[session-${sessionDbId}] child emitted error event`, {
@@ -643,10 +680,6 @@ export function spawnSdkProcess(
   const pid = child.pid;
   const pgid = pid; 
 
-  // Keep the tail of stderr so a non-zero exit can say WHY at WARN level.
-  // Without this, a CLI that dies at flag parsing ("error: unknown option…")
-  // logs only an opaque {code=1} and the real cause is invisible unless the
-  // worker happens to run at DEBUG.
   const STDERR_TAIL_MAX_CHARS = 2048;
   let stderrTail = '';
   if (child.stderr) {
@@ -670,8 +703,6 @@ export function spawnSdkProcess(
     registry.unregister(recordId);
   });
 
-  // 'close', not 'exit': 'exit' can fire while piped stderr still holds
-  // buffered data, truncating the tail. 'close' waits for all stdio to drain.
   child.on('close', (code: number | null, signal: string | null) => {
     if (code !== 0) {
       const tail = stderrTail.trim();
