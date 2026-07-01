@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { exec, execSync, spawnSync } from 'child_process';
+import * as childProcess from 'child_process';
 import { createRequire } from 'module';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -72,7 +72,7 @@ function markerPath(targetDir: string): string {
 
 function getBunPath(): string | null {
   try {
-    const result = spawnSync('bun', ['--version'], {
+    const result = childProcess.spawnSync('bun', ['--version'], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: IS_WINDOWS,
@@ -94,7 +94,7 @@ function getBunVersion(): string | null {
   if (!bunPath) return null;
 
   try {
-    const result = spawnSync(bunPath, ['--version'], {
+    const result = childProcess.spawnSync(bunPath, ['--version'], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: IS_WINDOWS,
@@ -107,7 +107,7 @@ function getBunVersion(): string | null {
 
 function getUvPath(): string | null {
   try {
-    const result = spawnSync('uv', ['--version'], {
+    const result = childProcess.spawnSync('uv', ['--version'], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: IS_WINDOWS,
@@ -129,7 +129,7 @@ function getUvVersion(): string | null {
   if (!uvPath) return null;
 
   try {
-    const result = spawnSync(uvPath, ['--version'], {
+    const result = childProcess.spawnSync(uvPath, ['--version'], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: IS_WINDOWS,
@@ -157,13 +157,13 @@ function describeExecError(error: unknown): string {
 function installBun(): void {
   try {
     if (IS_WINDOWS) {
-      execSync('powershell -c "irm bun.sh/install.ps1 | iex"', {
+      childProcess.execSync('powershell -c "irm bun.sh/install.ps1 | iex"', {
         stdio: 'pipe',
         timeout: INSTALL_TIMEOUT_MS,
         shell: process.env.ComSpec ?? 'cmd.exe',
       });
     } else {
-      execSync('curl -fsSL https://bun.sh/install | bash', {
+      childProcess.execSync('curl -fsSL https://bun.sh/install | bash', {
         stdio: 'pipe',
         timeout: INSTALL_TIMEOUT_MS,
         shell: '/bin/bash',
@@ -189,13 +189,13 @@ function installBun(): void {
 function installUv(): void {
   try {
     if (IS_WINDOWS) {
-      execSync('powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"', {
+      childProcess.execSync('powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"', {
         stdio: 'pipe',
         timeout: INSTALL_TIMEOUT_MS,
         shell: process.env.ComSpec ?? 'cmd.exe',
       });
     } else {
-      execSync('curl -LsSf https://astral.sh/uv/install.sh | sh', {
+      childProcess.execSync('curl -LsSf https://astral.sh/uv/install.sh | sh', {
         stdio: 'pipe',
         timeout: INSTALL_TIMEOUT_MS,
         shell: '/bin/bash',
@@ -404,30 +404,82 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
     throw new Error(`installPluginDependencies: no package.json at ${targetDir}`);
   }
 
-  const bunCmd = IS_WINDOWS && bunPath.includes(' ') ? `"${bunPath}"` : bunPath;
+  const installArgs = getPluginDependencyInstallArgs();
 
   try {
     // Per CHANGELOG v12.6.1 -> v12.6.2: tree-sitter-swift's nested
     // tree-sitter-cli postinstall downloads a Rust binary and can hang the
-    // install. Bun honors trustedDependencies; npm does not. We additionally
-    // pass --ignore-scripts as belt-and-suspenders and bound it with a timeout.
-    // Async exec (not execSync): a blocked event loop freezes the installer's
+    // install. Bun honors trustedDependencies; npm does not, so we rely on Bun's
+    // trustedDependencies gate here and still bound the install with a timeout.
+    // Async spawn (not spawnSync): a blocked event loop freezes the installer's
     // clack spinner for the duration of the install, which reads as a stall.
     await new Promise<void>((resolve, reject) => {
-      exec(`${bunCmd} install --frozen-lockfile --ignore-scripts`, {
+      const child = childProcess.spawn(bunPath, installArgs, {
         cwd: targetDir,
-        timeout: INSTALL_TIMEOUT_MS,
-        maxBuffer: 16 * 1024 * 1024,
-        ...(IS_WINDOWS ? { shell: process.env.ComSpec ?? 'cmd.exe' } : {}),
-      }, (error, stdout, stderr) =>
-        // exec errors don't carry stdio; attach so describeExecError can report it.
-        error ? reject(Object.assign(error, { stdout, stderr })) : resolve());
+        shell: false,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+
+      const stdoutChunks: Buffer[] = [];
+      const stderrChunks: Buffer[] = [];
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        child.kill();
+      }, INSTALL_TIMEOUT_MS);
+
+      child.stdout.on('data', (chunk: Buffer) => {
+        stdoutChunks.push(chunk);
+      });
+      child.stderr.on('data', (chunk: Buffer) => {
+        stderrChunks.push(chunk);
+      });
+
+      child.on('error', (error) => {
+        clearTimeout(timer);
+        reject(Object.assign(error, {
+          stdout: Buffer.concat(stdoutChunks).toString('utf-8'),
+          stderr: Buffer.concat(stderrChunks).toString('utf-8'),
+        }));
+      });
+
+      child.on('close', (code, signal) => {
+        clearTimeout(timer);
+        if (code === 0) {
+          resolve();
+          return;
+        }
+
+        if (timedOut) {
+          reject(Object.assign(
+            new Error(`bun install timed out after ${INSTALL_TIMEOUT_MS}ms`),
+            {
+              stdout: Buffer.concat(stdoutChunks).toString('utf-8'),
+              stderr: Buffer.concat(stderrChunks).toString('utf-8'),
+            },
+          ));
+          return;
+        }
+
+        const signalSuffix = signal ? ` (signal: ${signal})` : '';
+        reject(Object.assign(
+          new Error(`bun install exited with code ${code ?? 'null'}${signalSuffix}`),
+          {
+            stdout: Buffer.concat(stdoutChunks).toString('utf-8'),
+            stderr: Buffer.concat(stderrChunks).toString('utf-8'),
+          },
+        ));
+      });
     });
   } catch (error) {
     throw new Error(`bun install failed in ${targetDir}\n${describeExecError(error)}`);
   }
 
   verifyCriticalModules(targetDir);
+}
+
+export function getPluginDependencyInstallArgs(): string[] {
+  return ['install', '--frozen-lockfile'];
 }
 
 export function readInstallMarker(targetDir: string): MarkerSchema | null {
