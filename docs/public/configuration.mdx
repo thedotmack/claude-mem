@@ -64,6 +64,33 @@ Use [LiteLLM Gateway](configuration/litellm-gateway) when you want `CLAUDE_MEM_P
 | `CLAUDE_MEM_PYTHON_VERSION`   | `3.13`                          | Python version for chroma-mcp         |
 | `CLAUDE_CODE_PATH`            | _(auto-detect)_                 | Path to Claude Code CLI (for Windows) |
 
+### Near-Duplicate Deduplication
+
+Opt-in (off by default) dedup of observations whose titles describe the same recurring
+work but are worded slightly differently, so `content_hash` (byte-identical only) misses them.
+Two deterministic tiers:
+
+- **Tier 0 — exact-normalized-title** → safe silent auto-merge: a new observation whose
+  title matches an existing one after lowercasing / whitespace-collapse / punctuation-strip
+  is collapsed onto the existing row and its `occurrence_count` is bumped (cross-session).
+- **Tier 1 — IDF-weighted similarity** → *review-only* near-duplicate **candidates** are
+  recorded in `observation_dedup_candidates` (never auto-merged), so distinct work that
+  differs only in one rare token (`rdlp-api` vs `rdlp-plugin`) is never silently destroyed.
+
+| Setting                              | Default | Description                           |
+|--------------------------------------|---------|---------------------------------------|
+| `CLAUDE_MEM_DEDUP_ENABLED`           | `false` | Master switch. Off = byte-identical legacy behavior |
+| `CLAUDE_MEM_DEDUP_COSINE_THRESHOLD`  | `0.80`  | Min IDF-weighted cosine for a Tier-1 candidate |
+| `CLAUDE_MEM_DEDUP_IDF_VETO_DF`       | `10`    | A title token in ≤ N project rows is "discriminating" and vetoes a merge |
+| `CLAUDE_MEM_DEDUP_MIN_SHARED_TOKENS` | `2`     | Require ≥ N shared tokens before scoring (kills sparse-vector noise) |
+| `CLAUDE_MEM_DEDUP_MIN_PROJECT_DOCS`  | `10`    | Cold-start gate: skip Tier-1 below N docs/project (IDF unreliable) |
+| `CLAUDE_MEM_DEDUP_MAX_SCAN`          | `2000`  | Per-insert Tier-1 candidate-scan cap |
+| `CLAUDE_MEM_DEDUP_MAX_BACKFILL_ROWS` | `50000` | `dedup-scan` skips a project larger than this (memory safety) |
+
+After enabling on an existing database, run a one-time scan to backfill the IDF model and
+surface accumulated near-duplicates: `POST /api/dedup/scan` (worker, localhost-only).
+Review candidates via `GET /api/dedup/candidates?project=<name>`.
+
 ## Model Configuration
 
 Configure which Claude model compresses your observations (only applies when `CLAUDE_MEM_PROVIDER=claude`).

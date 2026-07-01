@@ -85,6 +85,13 @@ export interface SettingsDefaults {
   CLAUDE_MEM_SERVER_BETA_URL: string;
   CLAUDE_MEM_SERVER_BETA_API_KEY: string;
   CLAUDE_MEM_SERVER_BETA_PROJECT_ID: string;
+  CLAUDE_MEM_DEDUP_ENABLED: string;                // #3038 — near-duplicate dedup (off by default; probabilistic)
+  CLAUDE_MEM_DEDUP_COSINE_THRESHOLD: string;       // Tier-1 IDF-cosine threshold (0.80 = empirical short-title sweet spot)
+  CLAUDE_MEM_DEDUP_IDF_VETO_DF: string;            // token in <= N project records is "discriminating" (vetoes a merge)
+  CLAUDE_MEM_DEDUP_MIN_SHARED_TOKENS: string;      // require >= N shared tokens before computing cosine (sparse-vector guard)
+  CLAUDE_MEM_DEDUP_MIN_PROJECT_DOCS: string;       // cold-start: skip fuzzy Tier-1 below N docs/project (IDF unreliable)
+  CLAUDE_MEM_DEDUP_MAX_SCAN: string;               // cap Tier-1 candidate scan per insert (logged when hit)
+  CLAUDE_MEM_DEDUP_MAX_BACKFILL_ROWS: string;      // dedup-scan safety valve: skip a project larger than this (avoids OOM)
 }
 
 export class SettingsDefaultsManager {
@@ -169,6 +176,13 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_SERVER_BETA_URL: `http://127.0.0.1:${process.env.CLAUDE_MEM_SERVER_PORT ?? String(37877 + ((process.getuid?.() ?? 77) % 100))}`,  // Legacy server-beta runtime URL — UID-derived for multi-account isolation
     CLAUDE_MEM_SERVER_BETA_API_KEY: '',                     // Legacy local hook API key (read as fallback when CLAUDE_MEM_SERVER_API_KEY unset)
     CLAUDE_MEM_SERVER_BETA_PROJECT_ID: '',                  // Legacy Postgres project_id (read as fallback when CLAUDE_MEM_SERVER_PROJECT_ID unset)
+    CLAUDE_MEM_DEDUP_ENABLED: 'false',                      // #3038 — opt-in; Tier-0 exact auto-merge + Tier-1 review-only candidates
+    CLAUDE_MEM_DEDUP_COSINE_THRESHOLD: '0.80',             // empirical near-dup sweet spot for short titles (F1≈0.95)
+    CLAUDE_MEM_DEDUP_IDF_VETO_DF: '10',                   // token in <=10 project records vetoes the merge (Fellegi-Sunter blocking key)
+    CLAUDE_MEM_DEDUP_MIN_SHARED_TOKENS: '2',             // >=2 shared tokens before cosine (kills sparse-vector noise)
+    CLAUDE_MEM_DEDUP_MIN_PROJECT_DOCS: '10',            // cold-start gate: IDF unreliable below ~10 docs/project
+    CLAUDE_MEM_DEDUP_MAX_SCAN: '2000',                  // per-insert candidate-scan cap (logged when exceeded)
+    CLAUDE_MEM_DEDUP_MAX_BACKFILL_ROWS: '50000',        // dedup-scan skips a project with more rows than this (memory safety)
   };
 
   static getAllDefaults(): SettingsDefaults {

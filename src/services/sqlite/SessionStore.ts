@@ -13,6 +13,12 @@ import {
 } from '../../types/database.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from './types.js';
 import { computeObservationContentHash } from './observations/store.js';
+import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
+import {
+  computeTitleNormKey, findTier0Canonical, bumpTokenDf, isFuzzyReady, recordTier1Candidates,
+  runDedupScan as runDedupScanAll,
+  type DedupRuntimeConfig,
+} from './dedup-store.js';
 import { parseFileList } from './observations/files.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources } from '../../shared/platform-source.js';
 import { findRecentDuplicateUserPrompt as findRecentDuplicateUserPromptRecord } from './prompts/get.js';
@@ -80,6 +86,7 @@ export class SessionStore {
     this.ensureSDKSessionsPlatformContentIdentity();
     this.ensureUserPromptsSessionDbId();
     this.ensurePendingMessagesSessionToolUniqueIndex();
+    this.addDedupTables();
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -125,6 +132,71 @@ export class SessionStore {
     `).get(contentSessionId) as { id: number } | undefined;
 
     return row?.id ?? null;
+  }
+
+  // #3038 near-duplicate dedup: occurrence_count (Tier-0 merge bump), per-project
+  // token document-frequency (IDF model), dedup bookkeeping, and the Tier-1
+  // review-only candidates table. Pure DDL; the IDF model is filled forward on
+  // insert and (re)built by the opt-in dedup-scan, never a JS backfill here.
+  private addDedupTables(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(36) as SchemaVersion | undefined;
+
+    const obsCols = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    if (!obsCols.some(c => c.name === 'occurrence_count')) {
+      this.db.run('ALTER TABLE observations ADD COLUMN occurrence_count INTEGER NOT NULL DEFAULT 1');
+    }
+    // Precomputed exact-normalized-title key for O(1) Tier-0 lookup (SQLite can't
+    // express the normalization itself). NON-unique index — dedup stays app-gated
+    // on CLAUDE_MEM_DEDUP_ENABLED so disabled = byte-identical legacy behavior.
+    if (!obsCols.some(c => c.name === 'title_norm_key')) {
+      this.db.run('ALTER TABLE observations ADD COLUMN title_norm_key TEXT');
+    }
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_title_norm ON observations(project, title_norm_key)');
+
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS token_df (
+        project TEXT    NOT NULL,
+        token   TEXT    NOT NULL,
+        df      INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (project, token)
+      )
+    `);
+
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS dedup_meta (
+        project                TEXT    PRIMARY KEY,
+        doc_count              INTEGER NOT NULL DEFAULT 0,
+        last_rebuild_doc_count INTEGER NOT NULL DEFAULT 0,
+        deleted_since_rebuild  INTEGER NOT NULL DEFAULT 0
+      )
+    `);
+
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS observation_dedup_candidates (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        observation_id   INTEGER NOT NULL,
+        duplicate_of_id  INTEGER NOT NULL,
+        project          TEXT    NOT NULL,
+        method           TEXT    NOT NULL CHECK(method IN ('exact', 'idf_cosine')),
+        score            REAL    NOT NULL,
+        status           TEXT    NOT NULL DEFAULT 'pending'
+                                 CHECK(status IN ('pending', 'merged', 'distinct', 'dismissed')),
+        created_at       TEXT    NOT NULL,
+        created_at_epoch INTEGER NOT NULL,
+        metadata         TEXT,
+        FOREIGN KEY (observation_id)  REFERENCES observations(id) ON DELETE CASCADE,
+        FOREIGN KEY (duplicate_of_id) REFERENCES observations(id) ON DELETE CASCADE,
+        UNIQUE(observation_id, duplicate_of_id)
+      )
+    `);
+
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_token_df_project ON token_df(project)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_dedup_candidates_project ON observation_dedup_candidates(project, status)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_dedup_candidates_obs ON observation_dedup_candidates(observation_id)');
+
+    if (!applied) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(36, new Date().toISOString());
+    }
   }
 
   private dropWorkerPidColumn(): void {
@@ -2150,6 +2222,72 @@ export class SessionStore {
     return result?.prompt_text ?? null;
   }
 
+  // #3038 — resolve the dedup knobs from settings (cheap; off by default).
+  // Garbage/NaN values fall back to the safe defaults rather than disabling guards.
+  private dedupConfig(): DedupRuntimeConfig & { enabled: boolean; minProjectDocs: number } {
+    const num = (key: keyof SettingsDefaults, fallback: number): number => {
+      const v = Number(SettingsDefaultsManager.get(key));
+      return Number.isFinite(v) ? v : fallback;
+    };
+    // Integer knobs are truncated — maxScan is bound as a SQL `LIMIT ?`, so a
+    // fractional misconfig must not reach the binding as a float (review N1).
+    const int = (key: keyof SettingsDefaults, fallback: number): number => Math.trunc(num(key, fallback));
+    return {
+      enabled: SettingsDefaultsManager.getBool('CLAUDE_MEM_DEDUP_ENABLED'),
+      cosineThreshold: num('CLAUDE_MEM_DEDUP_COSINE_THRESHOLD', 0.8),
+      idfVetoDf: int('CLAUDE_MEM_DEDUP_IDF_VETO_DF', 10),
+      minSharedTokens: int('CLAUDE_MEM_DEDUP_MIN_SHARED_TOKENS', 2),
+      maxScan: int('CLAUDE_MEM_DEDUP_MAX_SCAN', 2000),
+      maxBackfillRows: int('CLAUDE_MEM_DEDUP_MAX_BACKFILL_ROWS', 50000),
+      minProjectDocs: int('CLAUDE_MEM_DEDUP_MIN_PROJECT_DOCS', 10),
+    };
+  }
+
+  // #3038 — read-only listing of Tier-1 near-duplicate candidates (joined to both titles).
+  listDedupCandidates(
+    project?: string,
+    limit = 100
+  ): Array<{
+    id: number; project: string; method: string; score: number; status: string; created_at_epoch: number;
+    observation_id: number; observation_title: string | null;
+    duplicate_of_id: number; duplicate_of_title: string | null;
+  }> {
+    type Row = {
+      id: number; project: string; method: string; score: number; status: string; created_at_epoch: number;
+      observation_id: number; observation_title: string | null;
+      duplicate_of_id: number; duplicate_of_title: string | null;
+    };
+    // Two explicit prepared statements — no conditional SQL-fragment interpolation.
+    const select =
+      'SELECT c.id, c.project, c.method, c.score, c.status, c.created_at_epoch, ' +
+      'c.observation_id, o1.title AS observation_title, c.duplicate_of_id, o2.title AS duplicate_of_title ' +
+      'FROM observation_dedup_candidates c ' +
+      'JOIN observations o1 ON o1.id = c.observation_id ' +
+      'JOIN observations o2 ON o2.id = c.duplicate_of_id ';
+    const order = 'ORDER BY c.score DESC, c.id DESC LIMIT ?';
+    return project
+      ? this.db.prepare(`${select}WHERE c.project = ? ${order}`).all(project, limit) as Row[]
+      : this.db.prepare(`${select}${order}`).all(limit) as Row[];
+  }
+
+  // #3038 — opt-in dedup-scan: backfill the IDF model + sweep all projects for candidates.
+  runDedupScan(): { project: string; docs: number; candidates: number }[] {
+    return runDedupScanAll(this.db, this.dedupConfig());
+  }
+
+  // Forward IDF maintenance + Tier-1 candidate scan for a freshly-inserted observation.
+  private maintainDedupOnInsert(
+    project: string,
+    obsId: number,
+    title: string | null | undefined,
+    dedup: DedupRuntimeConfig & { minProjectDocs: number }
+  ): void {
+    bumpTokenDf(this.db, project, title);
+    if (isFuzzyReady(this.db, project, dedup.minProjectDocs)) {
+      recordTier1Candidates(this.db, project, obsId, title, dedup);
+    }
+  }
+
   storeObservation(
     memorySessionId: string,
     project: string,
@@ -2175,13 +2313,35 @@ export class SessionStore {
     const timestampIso = new Date(timestampEpoch).toISOString();
 
     const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
+    const dedup = this.dedupConfig();
+    const titleNormKey = computeTitleNormKey(project, observation.title);
+
+    // Tier-0 (#3038): an existing same-project row with an equal NORMALIZED title is a
+    // duplicate of any age — bump its occurrence_count and return it, no insert. Mirrors
+    // the content_hash ON CONFLICT DO NOTHING semantics but cross-session + normalization-aware.
+    if (dedup.enabled) {
+      // Retry idempotency: a redelivered identical (session, content_hash) must NOT
+      // bump occurrence_count — return the existing row, exactly as the legacy
+      // ON CONFLICT DO NOTHING path did. Only a genuinely-new observation that shares
+      // a normalized title (cross-session recurrence) counts as a Tier-0 occurrence.
+      const retry = this.db.prepare(
+        'SELECT id, created_at_epoch FROM observations WHERE memory_session_id = ? AND content_hash = ?'
+      ).get(memorySessionId, contentHash) as { id: number; created_at_epoch: number } | undefined;
+      if (retry) return { id: retry.id, createdAtEpoch: retry.created_at_epoch };
+
+      const canonical = findTier0Canonical(this.db, project, titleNormKey);
+      if (canonical) {
+        this.db.prepare('UPDATE observations SET occurrence_count = occurrence_count + 1 WHERE id = ?').run(canonical.id);
+        return { id: canonical.id, createdAtEpoch: canonical.created_at_epoch };
+      }
+    }
 
     const stmt = this.db.prepare(`
       INSERT INTO observations
       (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
        files_read, files_modified, prompt_number, discovery_tokens, agent_type, agent_id, content_hash, created_at, created_at_epoch,
-       generated_by_model, metadata)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       generated_by_model, metadata, title_norm_key)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(memory_session_id, content_hash) DO NOTHING
       RETURNING id, created_at_epoch
     `);
@@ -2205,10 +2365,12 @@ export class SessionStore {
       timestampIso,
       timestampEpoch,
       generatedByModel || null,
-      observation.metadata ?? null
+      observation.metadata ?? null,
+      titleNormKey
     ) as { id: number; created_at_epoch: number } | null;
 
     if (inserted) {
+      if (dedup.enabled) this.maintainDedupOnInsert(project, inserted.id, observation.title, dedup);
       return { id: inserted.id, createdAtEpoch: inserted.created_at_epoch };
     }
 
@@ -2300,6 +2462,7 @@ export class SessionStore {
   ): { observationIds: number[]; summaryId: number | null; createdAtEpoch: number } {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
+    const dedup = this.dedupConfig();
 
     const storeTx = this.db.transaction(() => {
       const observationIds: number[] = [];
@@ -2308,8 +2471,8 @@ export class SessionStore {
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
          files_read, files_modified, prompt_number, discovery_tokens, agent_type, agent_id, content_hash, created_at, created_at_epoch,
-         generated_by_model)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         generated_by_model, title_norm_key)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(memory_session_id, content_hash) DO NOTHING
         RETURNING id
       `);
@@ -2319,6 +2482,24 @@ export class SessionStore {
 
       for (const observation of observations) {
         const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
+        const titleNormKey = computeTitleNormKey(project, observation.title);
+
+        // Tier-0 (#3038): cross-session normalized-title duplicate (incl. earlier items
+        // in THIS batch — already inserted and visible in-transaction) → bump + reuse.
+        if (dedup.enabled) {
+          // Retry idempotency (see storeObservation): identical (session, content_hash)
+          // redelivery returns the existing row without bumping occurrence_count.
+          const retry = lookupExistingStmt.get(memorySessionId, contentHash) as { id: number } | null;
+          if (retry) { observationIds.push(retry.id); continue; }
+
+          const canonical = findTier0Canonical(this.db, project, titleNormKey);
+          if (canonical) {
+            this.db.prepare('UPDATE observations SET occurrence_count = occurrence_count + 1 WHERE id = ?').run(canonical.id);
+            observationIds.push(canonical.id);
+            continue;
+          }
+        }
+
         const inserted = obsStmt.get(
           memorySessionId,
           project,
@@ -2337,10 +2518,12 @@ export class SessionStore {
           contentHash,
           timestampIso,
           timestampEpoch,
-          generatedByModel || null
+          generatedByModel || null,
+          titleNormKey
         ) as { id: number } | null;
 
         if (inserted) {
+          if (dedup.enabled) this.maintainDedupOnInsert(project, inserted.id, observation.title, dedup);
           observationIds.push(inserted.id);
           continue;
         }
