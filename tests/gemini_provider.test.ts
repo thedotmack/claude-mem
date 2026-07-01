@@ -41,14 +41,12 @@ function makeSession(overrides: Record<string, unknown> = {}) {
   } as any;
 }
 
-function mockGeminiLimits(maxContextMessages: string) {
+function mockGeminiConfig() {
   loadFromFileSpy.mockImplementation(() => ({
     ...SettingsDefaultsManager.getAllDefaults(),
     CLAUDE_MEM_GEMINI_API_KEY: 'test-api-key',
     CLAUDE_MEM_GEMINI_MODEL: 'gemini-2.5-flash-lite',
     CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'false',
-    CLAUDE_MEM_GEMINI_MAX_CONTEXT_MESSAGES: maxContextMessages,
-    CLAUDE_MEM_GEMINI_MAX_TOKENS: '100000',
     CLAUDE_MEM_DATA_DIR: '/tmp/claude-mem-test',
   }));
 }
@@ -242,30 +240,7 @@ describe('GeminiProvider', () => {
     expect(body.contents[2].role).toBe('user');
   });
 
-  it('repairs truncated history that would otherwise start with a model turn', async () => {
-    mockGeminiLimits('2');
-
-    const session = makeSession({
-      userPrompt: 'current user prompt',
-      lastPromptNumber: 2,
-      conversationHistory: [
-        { role: 'user', content: 'old user turn' },
-        { role: 'assistant', content: 'assistant turn kept by truncation' },
-      ],
-    });
-
-    mockSuccessfulGeminiFetch();
-
-    await agent.startSession(session);
-
-    const contents = sentGeminiContents();
-    expectAlternatingGeminiRoles(contents);
-    expect(contents[0].role).toBe('user');
-    expect(contents[0].parts[0].text).toContain('current user prompt');
-    expect(contents.map((content: any) => content.parts[0].text).join('\n')).not.toContain('assistant turn kept by truncation');
-  });
-
-  it('keeps Gemini roles alternating with odd and even context message limits', async () => {
+  it('keeps Gemini roles alternating for full conversation history', async () => {
     const history = [
       { role: 'user', content: 'u0' },
       { role: 'assistant', content: 'm1' },
@@ -275,12 +250,12 @@ describe('GeminiProvider', () => {
       { role: 'assistant', content: 'm5' },
     ];
 
-    for (const maxContextMessages of ['4', '5']) {
-      mockGeminiLimits(maxContextMessages);
+    for (const label of ['a', 'b']) {
+      mockGeminiConfig();
       mockSuccessfulGeminiFetch();
 
       await agent.startSession(makeSession({
-        userPrompt: `current prompt ${maxContextMessages}`,
+        userPrompt: `current prompt ${label}`,
         lastPromptNumber: 2,
         conversationHistory: history.map(message => ({ ...message })),
       }));
@@ -288,7 +263,7 @@ describe('GeminiProvider', () => {
       const contents = sentGeminiContents();
       expectAlternatingGeminiRoles(contents);
       expect(contents[contents.length - 1].role).toBe('user');
-      expect(contents[contents.length - 1].parts[0].text).toContain(`current prompt ${maxContextMessages}`);
+      expect(contents[contents.length - 1].parts[0].text).toContain(`current prompt ${label}`);
     }
   });
 
@@ -487,81 +462,6 @@ describe('GeminiProvider', () => {
     } finally {
       global.setTimeout = originalSetTimeout;
     }
-  });
-
-  describe('conversation history truncation', () => {
-    it('should truncate history when message count exceeds limit', async () => {
-      const history: any[] = [];
-      for (let i = 0; i < 25; i++) {
-        history.push({ role: i % 2 === 0 ? 'user' : 'assistant', content: `message ${i}` });
-      }
-
-      const session = {
-        sessionDbId: 1,
-        contentSessionId: 'test-session',
-        memorySessionId: 'mem-session-123',
-        project: 'test-project',
-        userPrompt: 'test prompt',
-        conversationHistory: history,
-        lastPromptNumber: 2,
-        cumulativeInputTokens: 0,
-        cumulativeOutputTokens: 0,
-        pendingMessages: [],
-        abortController: new AbortController(),
-        generatorPromise: null,
-        currentProvider: null,
-        startTime: Date.now(),
-      } as any;
-
-      global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
-        candidates: [{ content: { parts: [{ text: 'response' }] } }]
-      }))));
-
-      await agent.startSession(session);
-
-      const body = JSON.parse((global.fetch as any).mock.calls[0][1].body);
-      expect(body.contents.length).toBeLessThanOrEqual(20);
-    });
-
-    it('should always keep at least the newest message even if it exceeds token limit', async () => {
-      loadFromFileSpy.mockImplementation(() => ({
-        ...SettingsDefaultsManager.getAllDefaults(),
-        CLAUDE_MEM_GEMINI_API_KEY: 'test-api-key',
-        CLAUDE_MEM_GEMINI_MODEL: 'gemini-2.5-flash-lite',
-        CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'false',
-        CLAUDE_MEM_GEMINI_MAX_CONTEXT_MESSAGES: '20',
-        CLAUDE_MEM_GEMINI_MAX_TOKENS: '1000',  // Very low: ~250 chars
-        CLAUDE_MEM_DATA_DIR: '/tmp/claude-mem-test',
-      }));
-
-      const largeContent = 'x'.repeat(8000);  
-
-      const session = {
-        sessionDbId: 1,
-        contentSessionId: 'test-session',
-        memorySessionId: 'mem-session-123',
-        project: 'test-project',
-        userPrompt: largeContent,
-        conversationHistory: [],
-        lastPromptNumber: 1,
-        cumulativeInputTokens: 0,
-        cumulativeOutputTokens: 0,
-        pendingMessages: [],
-        abortController: new AbortController(),
-        generatorPromise: null,
-        currentProvider: null,
-        startTime: Date.now(),
-      } as any;
-
-      global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
-        candidates: [{ content: { parts: [{ text: 'response' }] } }]
-      }))));
-
-      await agent.startSession(session);
-
-      const body = JSON.parse((global.fetch as any).mock.calls[0][1].body);
-      expect(body.contents.length).toBeGreaterThanOrEqual(1);
-    });
   });
 
   describe('gemini-3-flash-preview model support', () => {
