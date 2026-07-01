@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+## Bug Fix
+
+**Worker's Chroma backfill failed on every startup — `sqlite/SessionStore.js` and `sqlite/observations/files.js` missing from the bundle (#3092).**
+
+`ChromaSync.ts` loads `SessionStore` and `parseFileList` through a runtime `createRequire(import.meta.url)(...)` call instead of a static `import`, so the cmem-sdk (tsup) build doesn't follow them and drag `bun:sqlite` into SDK consumers. But the worker's esbuild bundle doesn't follow that same indirection either, so `worker-service.cjs` shipped without these two modules — every worker startup logged `Backfill failed (non-blocking)` from a `Cannot find module '../sqlite/SessionStore.js'` error, and Chroma vector-search backfill silently never ran.
+
+`scripts/build-hooks.js` now emits both modules as loose files next to the worker bundle (`plugin/sqlite/SessionStore.js`, `plugin/sqlite/observations/files.js`), and `plugin/sqlite` is added to the npm `files` whitelist so the published package actually ships them.
+
+### Added
+- `tests/worker-service-lazy-sqlite-modules.test.ts` — regression test asserting both modules are emitted and resolve the same way `ChromaSync.ts` requires them at runtime
+
 ## [13.9.2] - 2026-07-01
 
 ## Bug Fix
