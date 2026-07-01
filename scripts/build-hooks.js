@@ -349,6 +349,34 @@ async function buildHooks() {
       );
     }
 
+    // worker-service reaches SessionStore + parseFileList through a runtime
+    // `createRequire(import.meta.url)(...)` call (see ChromaSync.ts), not a
+    // static `import` — intentionally, so tsup's cmem-sdk build doesn't
+    // follow them and drag `bun:sqlite` into SDK consumers. But that same
+    // indirection means esbuild's worker-service bundle above does NOT
+    // statically resolve — and therefore does not inline — these modules.
+    // They must be emitted as loose files next to the bundle so the
+    // runtime `require('../sqlite/...')` calls actually resolve (#3092).
+    console.log(`\n🔧 Building lazy-loaded SQLite modules for worker-service...`);
+    const LAZY_SQLITE_MODULES = [
+      { source: 'src/services/sqlite/SessionStore.ts', outfile: `${hooksDir}/../sqlite/SessionStore.js` },
+      { source: 'src/services/sqlite/observations/files.ts', outfile: `${hooksDir}/../sqlite/observations/files.js` },
+    ];
+    for (const mod of LAZY_SQLITE_MODULES) {
+      await build({
+        entryPoints: [mod.source],
+        bundle: true,
+        platform: 'node',
+        target: 'node18',
+        format: 'cjs',
+        outfile: mod.outfile,
+        minify: true,
+        logLevel: 'error',
+        external: ['bun:sqlite'],
+      });
+    }
+    console.log(`✓ Lazy SQLite modules built (${LAZY_SQLITE_MODULES.map((m) => path.relative(hooksDir, m.outfile)).join(', ')})`);
+
     console.log(`\n🔧 Building server beta service...`);
     await build({
       entryPoints: [SERVER_SERVICE.source],
