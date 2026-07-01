@@ -10,12 +10,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 **Setup hook always printed "runtime not yet set up" for marketplace-only installs (#3092).**
 
-`.install-version` is only ever written by `npx claude-mem@latest install`. Installs made purely through the Claude Code plugin marketplace never run that installer, so the marker never existed and `version-check.js` printed the same misleading "runtime not yet set up - run: npx claude-mem@latest install" hint on every Setup hook — even though `ensurePluginDependencies()` earlier in the same script had already materialized the real runtime deps for that exact install. Worse, `npx claude-mem@latest` resolves to a stale, version-mismatched npm release, so the suggested fix didn't even work.
+`.install-version` is only ever written by `npx claude-mem@latest install`. Installs made purely through the Claude Code plugin marketplace never run that installer, so the marker never existed and `version-check.js` printed the same misleading "runtime not yet set up - run: npx claude-mem@latest install" hint on every Setup hook. Worse, `npx claude-mem@latest` resolves to a stale, version-mismatched npm release, so the suggested fix didn't even work.
 
-`version-check.js` now self-heals a missing marker by stamping it with the currently-installed version instead of emitting that hint, since by the time this code runs the runtime genuinely is set up.
+A missing marker isn't always a fresh install, though: `ContextBuilder.ts` deliberately deletes it after an `ERR_DLOPEN_FAILED` to signal "native module needs rebuilding." `ensurePluginDependencies()` only reinstalled when `node_modules` was entirely missing, so that signal never actually triggered a reinstall of an already-present-but-broken `node_modules` — the marker just kept nagging until the user manually reinstalled.
+
+`version-check.js` now checks marker presence before calling `ensurePluginDependencies()`, and forces a real reinstall (clearing `node_modules` first) whenever the marker is missing, regardless of whether `node_modules` already exists. The marker is only self-healed with the current version if that reinstall actually succeeds — otherwise the original hint stays, so a genuinely broken install still has a visible, actionable signal.
 
 ### Added
-- Two cases in `tests/plugin-version-check.test.ts` covering the missing-marker self-heal and the no-renag-on-next-run behavior
+- Three cases in `tests/plugin-version-check-ensure-deps.test.ts` covering the forced reinstall (clearing stale `node_modules`), the marker self-heal on success, and no self-heal on failure
 
 ## [13.9.2] - 2026-07-01
 

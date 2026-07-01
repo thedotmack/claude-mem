@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { spawn } from 'child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 
@@ -62,7 +62,11 @@ function runVersionCheck(pluginRoot: string, fakeBinDir: string): Promise<{ stde
 
 type BunBehavior = 'success' | 'partial-then-fail';
 
-function makeFreshPlugin(name: string, bunBehavior: BunBehavior = 'success'): { pluginRoot: string; fakeBinDir: string } {
+function makeFreshPlugin(
+  name: string,
+  bunBehavior: BunBehavior = 'success',
+  { writeMarker = true } = {},
+): { pluginRoot: string; fakeBinDir: string } {
   const pluginRoot = join(tmpRoot, name);
   mkdirSync(pluginRoot, { recursive: true });
   writeFileSync(join(pluginRoot, 'package.json'), JSON.stringify({
@@ -70,7 +74,9 @@ function makeFreshPlugin(name: string, bunBehavior: BunBehavior = 'success'): { 
     version: '0.0.0',
     dependencies: { zod: '^3.0.0' },
   }));
-  writeFileSync(join(pluginRoot, '.install-version'), JSON.stringify({ version: '0.0.0' }));
+  if (writeMarker) {
+    writeFileSync(join(pluginRoot, '.install-version'), JSON.stringify({ version: '0.0.0' }));
+  }
 
   const fakeBinDir = join(pluginRoot, '.bin');
   mkdirSync(fakeBinDir, { recursive: true });
@@ -168,4 +174,58 @@ describe.skipIf(SKIP_NON_UNIX)('version-check Setup-phase ensurePluginDependenci
     // absence proves the install path was not taken.
     expect(existsSync(join(pluginRoot, FAKE_INSTALLED_MARKER_REL))).toBe(false);
   });
+});
+
+describe.skipIf(SKIP_NON_UNIX)('version-check missing-marker forced reinstall (#3092)', () => {
+  // ContextBuilder.ts deletes .install-version after an ERR_DLOPEN_FAILED to
+  // signal "native module needs rebuilding" — node_modules exists but is
+  // broken. A missing marker must NOT be treated as "already installed";
+  // ensurePluginDependencies() must clear node_modules and reinstall for
+  // real, and the marker should only be self-healed if that succeeds.
+
+  test('forces a reinstall (clearing existing node_modules) when the marker is missing', async () => {
+    const { pluginRoot, fakeBinDir } = makeFreshPlugin('plugin-missing-marker-force', 'success', { writeMarker: false });
+    // Simulate a broken-but-present node_modules from a prior install whose
+    // native module now fails to load (the ContextBuilder.ts scenario) —
+    // a stale file the fake "success" bun script does not itself create.
+    mkdirSync(join(pluginRoot, 'node_modules', 'zod', 'v3'), { recursive: true });
+    writeFileSync(join(pluginRoot, 'node_modules', 'zod', 'v3', 'stale-broken-binary'), 'stale');
+    expect(existsSync(join(pluginRoot, '.install-version'))).toBe(false);
+
+    const { stderr, code } = await runVersionCheck(pluginRoot, fakeBinDir);
+
+    expect(code).toBe(0);
+    // The forced path must actually invoke bun, not skip because
+    // node_modules already existed.
+    expect(stderr).toContain(INSTALL_DIAGNOSTIC);
+    expect(stderr).toContain(INSTALL_SUCCESS_DIAGNOSTIC);
+    expect(existsSync(join(pluginRoot, FAKE_INSTALLED_MARKER_REL))).toBe(true);
+    // The stale pre-existing file must be gone — proof node_modules was
+    // actually cleared before reinstalling, not left in place.
+    expect(existsSync(join(pluginRoot, 'node_modules', 'zod', 'v3', 'stale-broken-binary'))).toBe(false);
+  }, SPAWN_TIMEOUT_MS + 5000);
+
+  test('self-heals the marker with the current version after a successful forced reinstall', async () => {
+    const { pluginRoot, fakeBinDir } = makeFreshPlugin('plugin-missing-marker-self-heal', 'success', { writeMarker: false });
+    mkdirSync(join(pluginRoot, 'node_modules'), { recursive: true });
+
+    const { code } = await runVersionCheck(pluginRoot, fakeBinDir);
+
+    expect(code).toBe(0);
+    const markerPath = join(pluginRoot, '.install-version');
+    expect(existsSync(markerPath)).toBe(true);
+    expect(JSON.parse(readFileSync(markerPath, 'utf-8'))).toEqual({ version: '0.0.0' });
+  }, SPAWN_TIMEOUT_MS + 5000);
+
+  test('does not self-heal the marker (and keeps the actionable hint) if the forced reinstall fails', async () => {
+    const { pluginRoot, fakeBinDir } = makeFreshPlugin('plugin-missing-marker-force-fail', 'partial-then-fail', { writeMarker: false });
+    mkdirSync(join(pluginRoot, 'node_modules'), { recursive: true });
+
+    const { stderr, code } = await runVersionCheck(pluginRoot, fakeBinDir);
+
+    expect(code).toBe(0);
+    expect(stderr).toContain(INSTALL_FAILURE_DIAGNOSTIC);
+    expect(stderr).toContain('claude-mem: runtime not yet set up - run: npx claude-mem@latest install');
+    expect(existsSync(join(pluginRoot, '.install-version'))).toBe(false);
+  }, SPAWN_TIMEOUT_MS + 5000);
 });

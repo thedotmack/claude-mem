@@ -55,21 +55,44 @@ function findBun() {
 // has a 300s timeout (vs 60s for SessionStart), runs once per Claude
 // Code launch, and is the only standalone hook script — the natural
 // place to materialise plugin runtime state.
-function ensurePluginDependencies(pluginRoot) {
-  if (!existsSync(join(pluginRoot, 'package.json'))) return;
+//
+// Returns one of: 'no-package-json' | 'already-installed' | 'bun-not-found'
+// | 'install-error' | 'install-failed' | 'installed'. Callers use this to
+// decide whether it's safe to treat the runtime as verified (#3092).
+function ensurePluginDependencies(pluginRoot, { force = false } = {}) {
+  if (!existsSync(join(pluginRoot, 'package.json'))) return 'no-package-json';
+
+  const nodeModulesPath = join(pluginRoot, NODE_MODULES_DIRNAME);
 
   // Guard on node_modules (package-manager marker) rather than a specific
   // package, so the check stays correct if dependencies are later renamed.
-  if (existsSync(join(pluginRoot, NODE_MODULES_DIRNAME))) return;
+  // `force` bypasses this guard and clears any existing node_modules first
+  // instead of trusting it — used when the .install-version marker is
+  // missing. A missing marker can mean a fresh marketplace-only install
+  // (node_modules is missing too, so this is a no-op either way) OR
+  // ContextBuilder.ts deliberately deleting the marker after an
+  // ERR_DLOPEN_FAILED to signal a native module needs rebuilding — in that
+  // case node_modules exists but is broken, and the non-forced guard below
+  // would wrongly treat it as fine and skip reinstalling it (#3092).
+  if (force) {
+    try {
+      rmSync(nodeModulesPath, { recursive: true, force: true });
+    } catch (rmErr) {
+      const rmReason = rmErr && rmErr.message ? rmErr.message : String(rmErr);
+      console.error(`${VERSION_CHECK_LOG_PREFIX} failed to clear node_modules before forced reinstall (${rmReason})`);
+    }
+  } else if (existsSync(nodeModulesPath)) {
+    return 'already-installed';
+  }
 
   const bunPath = findBun();
   if (!bunPath) {
     console.error(`${VERSION_CHECK_LOG_PREFIX} bun not found on PATH; cannot auto-install plugin dependencies`);
-    return;
+    return 'bun-not-found';
   }
 
   // Progress diagnostic so users understand the (one-time) Setup hang.
-  console.error(`${VERSION_CHECK_LOG_PREFIX} installing plugin dependencies (first run, one-time)...`);
+  console.error(`${VERSION_CHECK_LOG_PREFIX} installing plugin dependencies (${force ? 'forced reinstall' : 'first run, one-time'})...`);
 
   let result;
   try {
@@ -83,7 +106,7 @@ function ensurePluginDependencies(pluginRoot) {
   } catch (err) {
     const reason = err && err.message ? err.message : String(err);
     console.error(`${VERSION_CHECK_LOG_PREFIX} bun install threw (${reason}); worker may crash with missing module errors`);
-    return;
+    return 'install-error';
   }
 
   // spawnSync does NOT throw on a failed child. Three distinct failure
@@ -112,17 +135,19 @@ function ensurePluginDependencies(pluginRoot) {
     // partial dir so the next Setup invocation can retry automatically
     // (gh #2650 review).
     try {
-      rmSync(join(pluginRoot, NODE_MODULES_DIRNAME), { recursive: true, force: true });
+      rmSync(nodeModulesPath, { recursive: true, force: true });
     } catch (rmErr) {
       const rmReason = rmErr && rmErr.message ? rmErr.message : String(rmErr);
       console.error(`${VERSION_CHECK_LOG_PREFIX} failed to clean up partial node_modules (${rmReason}); next Setup run may skip retry`);
     }
-  } else {
-    // Close the diagnostic loop: a Setup hook that can block for up to
-    // 120s needs an explicit completion line so users can distinguish a
-    // hung install from one that finished silently (gh #2650 review).
-    console.error(`${VERSION_CHECK_LOG_PREFIX} plugin dependencies installed successfully`);
+    return 'install-failed';
   }
+
+  // Close the diagnostic loop: a Setup hook that can block for up to
+  // 120s needs an explicit completion line so users can distinguish a
+  // hung install from one that finished silently (gh #2650 review).
+  console.error(`${VERSION_CHECK_LOG_PREFIX} plugin dependencies installed successfully`);
+  return 'installed';
 }
 
 function resolveRoot() {
@@ -141,7 +166,12 @@ function resolveRoot() {
 const ROOT = resolveRoot();
 if (!ROOT) process.exit(0);
 
-ensurePluginDependencies(ROOT);
+// Check marker presence BEFORE ensurePluginDependencies() so a missing
+// marker can force a real reinstall (bypassing the node_modules-exists
+// guard) rather than just being cosmetically re-stamped afterward (#3092).
+const MARKER_PATH = join(ROOT, '.install-version');
+const markerExistedBeforeInstall = existsSync(MARKER_PATH);
+const installOutcome = ensurePluginDependencies(ROOT, { force: !markerExistedBeforeInstall });
 
 function emitUpgradeHint(message) {
   if (process.env.CLAUDE_MEM_CODEX_HOOK === '1') {
@@ -176,19 +206,26 @@ function readInstallMarkerVersion(markerPath) {
 
 try {
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
-  const markerPath = join(ROOT, '.install-version');
-  if (!existsSync(markerPath)) {
+  const markerPath = MARKER_PATH;
+  if (!markerExistedBeforeInstall) {
     // Marketplace-only installs never invoke the npx CLI installer that
     // writes this marker (only `npx claude-mem@latest install` does), so
     // this branch fired the "runtime not yet set up" hint on every single
-    // Setup run — even though ensurePluginDependencies() above already
-    // materialized the real runtime deps for this exact install. Self-heal
-    // instead of nagging with advice that can't be acted on for these
-    // installs: stamp the marker with the version that's actually running,
-    // since executing this script IS that version's setup (#3092).
-    try {
-      writeFileSync(markerPath, JSON.stringify({ version: pkg.version }));
-    } catch {
+    // Setup run for those installs. But a missing marker can also mean
+    // ContextBuilder.ts deliberately deleted it after an ERR_DLOPEN_FAILED
+    // to force a native-module rebuild — silently re-stamping the marker
+    // without actually fixing anything would erase that signal while the
+    // plugin stays broken. ensurePluginDependencies() above was called with
+    // force:true specifically to tell them apart: only self-heal the marker
+    // when that forced (re)install actually succeeded; otherwise keep the
+    // nag so the user still has a visible, actionable signal (#3092).
+    if (installOutcome === 'installed') {
+      try {
+        writeFileSync(markerPath, JSON.stringify({ version: pkg.version }));
+      } catch {
+        emitUpgradeHint('claude-mem: runtime not yet set up - run: npx claude-mem@latest install');
+      }
+    } else {
       emitUpgradeHint('claude-mem: runtime not yet set up - run: npx claude-mem@latest install');
     }
     process.exit(0);
