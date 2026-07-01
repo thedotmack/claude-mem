@@ -15,6 +15,7 @@ import {
   UserPromptRow
 } from './types.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
+import { NOT_DISMISSED_SQL } from './observations/dismiss-filter.js';
 
 export class SessionSearch {
   private db: Database;
@@ -258,6 +259,7 @@ export class SessionSearch {
         SELECT o.*, o.discovery_tokens
         FROM observations o
         WHERE ${filterClause}
+          AND ${NOT_DISMISSED_SQL}
         ${orderClause}
         LIMIT ? OFFSET ?
       `;
@@ -276,6 +278,7 @@ export class SessionSearch {
         JOIN observations_fts ON observations_fts.rowid = o.id
         WHERE observations_fts MATCH ?
         ${filterClause ? 'AND ' + filterClause : ''}
+          AND ${NOT_DISMISSED_SQL}
         ${orderClause}
         LIMIT ? OFFSET ?
       `;

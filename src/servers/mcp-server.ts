@@ -207,6 +207,41 @@ async function callWorkerAPIPost(
   }
 }
 
+async function callWorkerAPIDelete(
+  endpoint: string
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+  logger.debug('HTTP', 'Worker API request (DELETE)', undefined, { endpoint });
+
+  try {
+    const response = await workerHttpRequest(endpoint, { method: 'DELETE' });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Worker API error (${response.status}): ${errorText}`);
+    }
+
+    const data = await response.json();
+
+    logger.debug('HTTP', 'Worker API success (DELETE)', undefined, { endpoint });
+
+    return {
+      content: [{
+        type: 'text' as const,
+        text: JSON.stringify(data, null, 2)
+      }]
+    };
+  } catch (error: unknown) {
+    logger.error('HTTP', 'Worker API error (DELETE)', { endpoint }, error instanceof Error ? error : new Error(String(error)));
+    return {
+      content: [{
+        type: 'text' as const,
+        text: `Error calling Worker API: ${error instanceof Error ? error.message : String(error)}`
+      }],
+      isError: true
+    };
+  }
+}
+
 async function verifyWorkerConnection(): Promise<boolean> {
   try {
     const response = await workerHttpRequest('/api/health');
@@ -630,6 +665,46 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     },
     handler: async (args: any) => {
       return await callWorkerAPIPost('/api/observations/batch', args);
+    }
+  },
+  {
+    name: 'observation_dismiss',
+    description: "Stop an observation from surfacing proactively (file-context banner, search, session-start injection) WITHOUT deleting it — get_observations([id]) still returns it. Reversible via observation_undismiss. Requires the worker setting CLAUDE_MEM_ALLOW_DISMISS=true (disabled by default). Params: id (required), reason (optional).",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number', description: 'Observation id to dismiss (required)' },
+        reason: { type: 'string', description: 'Optional free-text reason, stored on the feedback row' }
+      },
+      required: ['id'],
+      additionalProperties: false
+    },
+    handler: async (args: any) => {
+      const id = Number(args?.id);
+      if (!Number.isInteger(id) || id <= 0) {
+        return { content: [{ type: 'text' as const, text: 'observation_dismiss requires an integer "id".' }], isError: true };
+      }
+      const body = typeof args?.reason === 'string' && args.reason.trim() ? { reason: args.reason } : {};
+      return await callWorkerAPIPost(`/api/observations/${id}/dismiss`, body);
+    }
+  },
+  {
+    name: 'observation_undismiss',
+    description: "Reverse observation_dismiss — the observation resumes surfacing. Requires the worker setting CLAUDE_MEM_ALLOW_DISMISS=true (disabled by default). Params: id (required).",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number', description: 'Observation id to undismiss (required)' }
+      },
+      required: ['id'],
+      additionalProperties: false
+    },
+    handler: async (args: any) => {
+      const id = Number(args?.id);
+      if (!Number.isInteger(id) || id <= 0) {
+        return { content: [{ type: 'text' as const, text: 'observation_undismiss requires an integer "id".' }], isError: true };
+      }
+      return await callWorkerAPIDelete(`/api/observations/${id}/dismiss`);
     }
   },
   {

@@ -20,6 +20,9 @@ function captureRoute(routes: DataRoutes, method: Method, targetPath: string): (
   const app = {
     get: method === 'get' ? register : mock(() => {}),
     post: method === 'post' ? register : mock(() => {}),
+    // DataRoutes also registers a DELETE route (observation undismiss); provide
+    // a stub so setupRoutes doesn't throw. Mirrors data-routes-coercion.test.ts.
+    delete: mock(() => {}),
   };
 
   routes.setupRoutes(app as any);
