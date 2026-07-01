@@ -5,5 +5,6 @@ export const API_ENDPOINTS = {
   SETTINGS: '/api/settings',
   STATS: '/api/stats',
   PROCESSING_STATUS: '/api/processing-status',
+  HEALTH: '/api/health',
   STREAM: '/stream',
 } as const;
