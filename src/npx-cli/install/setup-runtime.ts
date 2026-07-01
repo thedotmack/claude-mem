@@ -67,7 +67,15 @@ const LEGACY_VERSION_MARKER_RE =
   /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
 function markerPath(targetDir: string): string {
-  return join(targetDir, '.install-version');
+  return join(resolveInstallTargetDir(targetDir), '.install-version');
+}
+
+function resolveInstallTargetDir(targetDir: string): string {
+  const bundledPluginRoot = join(targetDir, 'plugin');
+  if (existsSync(join(bundledPluginRoot, 'package.json'))) {
+    return bundledPluginRoot;
+  }
+  return targetDir;
 }
 
 function getBunPath(): string | null {
@@ -467,7 +475,8 @@ export function writeInstallMarker(
 }
 
 export function isInstallCurrent(targetDir: string, expectedVersion: string): boolean {
-  if (!existsSync(join(targetDir, 'node_modules'))) return false;
+  const installDir = resolveInstallTargetDir(targetDir);
+  if (!existsSync(join(installDir, 'node_modules'))) return false;
   const marker = readInstallMarker(targetDir);
   if (!marker) return false;
   if (marker.version !== expectedVersion) return false;

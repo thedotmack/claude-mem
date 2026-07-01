@@ -72,6 +72,24 @@ describe('setup-runtime install marker', () => {
       const marker = readInstallMarker(tempDir);
       expect(marker).toEqual({ version: '12.4.4' });
     });
+
+    it('reads the marker from plugin/.install-version when given a marketplace root', () => {
+      mkdirSync(join(tempDir, 'plugin'), { recursive: true });
+      writeFileSync(join(tempDir, 'plugin', 'package.json'), JSON.stringify({ name: 'claude-mem' }));
+      writeFileSync(
+        join(tempDir, 'plugin', '.install-version'),
+        JSON.stringify({ version: '13.9.2', bun: '1.3.11', uv: '0.11.14', installedAt: '2026-07-01T00:00:00.000Z' }),
+      );
+
+      const marker = readInstallMarker(tempDir);
+
+      expect(marker).toEqual({
+        version: '13.9.2',
+        bun: '1.3.11',
+        uv: '0.11.14',
+        installedAt: '2026-07-01T00:00:00.000Z',
+      });
+    });
   });
 
   describe('writeInstallMarker', () => {
@@ -93,6 +111,16 @@ describe('setup-runtime install marker', () => {
       writeInstallMarker(tempDir, '1.0.0', '1.0.0', '0.1.0');
       const parsed = JSON.parse(readFileSync(join(tempDir, '.install-version'), 'utf-8'));
       expect(Object.keys(parsed).sort()).toEqual(['bun', 'installedAt', 'uv', 'version'].sort());
+    });
+
+    it('writes the marker into plugin/.install-version when targetDir is a marketplace root', () => {
+      mkdirSync(join(tempDir, 'plugin'), { recursive: true });
+      writeFileSync(join(tempDir, 'plugin', 'package.json'), JSON.stringify({ name: 'claude-mem' }));
+
+      writeInstallMarker(tempDir, '13.9.2', '1.3.11', '0.11.14');
+
+      expect(existsSync(join(tempDir, 'plugin', '.install-version'))).toBe(true);
+      expect(existsSync(join(tempDir, '.install-version'))).toBe(false);
     });
   });
 
