@@ -173,4 +173,18 @@ describe('DataRoutes — dismiss write gate (CLAUDE_MEM_ALLOW_DISMISS)', () => {
     expect(mockUndismiss).toHaveBeenCalledWith(7);
     expect(jsonSpy).toHaveBeenCalledWith(expect.objectContaining({ success: true, id: 7, dismissed: false }));
   });
+
+  it('DELETE undismiss mirrors the POST existence check — 404 and no write when the observation is not visible in the requesting platform scope (greptile P1)', () => {
+    process.env.CLAUDE_MEM_ALLOW_DISMISS = 'true';
+    // The store's platform-scoped lookup returns null for this requester,
+    // e.g. an x-platform-source that does not own the observation.
+    mockGetObservationById = mock(() => null);
+    const handler = undismissHandler();
+    const { req, res, statusSpy } = createMockReqRes({ id: '7' });
+    handler(req as Request, res as Response);
+
+    expect(mockGetObservationById).toHaveBeenCalled();
+    expect(statusSpy).toHaveBeenCalledWith(404);
+    expect(mockUndismiss).not.toHaveBeenCalled();
+  });
 });

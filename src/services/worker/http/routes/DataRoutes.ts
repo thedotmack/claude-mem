@@ -223,6 +223,17 @@ export class DataRoutes extends BaseRouteHandler {
     if (id === null) return;
 
     const store = this.dbManager.getSessionStore();
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+
+    // Mirror the POST existence check: without it, a caller with a different
+    // x-platform-source could undismiss an observation outside its platform
+    // scope by id and make it surface again there (greptile P1).
+    const observation = store.getObservationById(id, platformSource);
+    if (!observation) {
+      this.notFound(res, `Observation #${id} not found`);
+      return;
+    }
+
     store.undismissObservation(id);
 
     res.json({ success: true, id, dismissed: false });
