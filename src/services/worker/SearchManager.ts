@@ -77,8 +77,8 @@ export class SearchManager {
    * dual-project ($or: project + merged_into_project) scoping used by every
    * single-type hybrid search path.
    */
-  private buildDocTypeWhereFilter(docType: string, project?: string): Record<string, any> {
-    let whereFilter: Record<string, any> = { doc_type: docType };
+  private buildDocTypeWhereFilter(docType: string, project?: string, platformSource?: string): Record<string, any> {
+    const filters: Array<Record<string, any>> = [{ doc_type: docType }];
     if (project) {
       const projectFilter = {
         $or: [
@@ -86,9 +86,34 @@ export class SearchManager {
           { merged_into_project: project }
         ]
       };
-      whereFilter = { $and: [whereFilter, projectFilter] };
+      filters.push(projectFilter);
     }
-    return whereFilter;
+    if (platformSource) {
+      filters.push({ platform_source: normalizePlatformSource(platformSource) });
+    }
+    return filters.length === 1 ? filters[0] : { $and: filters };
+  }
+
+  private buildObservationWhereFilter(
+    filters: { project?: string; platformSource?: string },
+    type?: string
+  ): Record<string, any> {
+    const whereFilters: Array<Record<string, any>> = [{ doc_type: 'observation' }];
+    if (type) {
+      whereFilters.push({ type });
+    }
+    if (filters.project) {
+      whereFilters.push({
+        $or: [
+          { project: filters.project },
+          { merged_into_project: filters.project }
+        ]
+      });
+    }
+    if (filters.platformSource) {
+      whereFilters.push({ platform_source: normalizePlatformSource(filters.platformSource) });
+    }
+    return whereFilters.length === 1 ? whereFilters[0] : { $and: whereFilters };
   }
 
   /**
@@ -101,9 +126,10 @@ export class SearchManager {
     query: string,
     docType: string,
     project: string | undefined,
+    platformSource: string | undefined,
     hydrate: (ids: number[]) => T[]
   ): Promise<T[]> {
-    const whereFilter = this.buildDocTypeWhereFilter(docType, project);
+    const whereFilter = this.buildDocTypeWhereFilter(docType, project, platformSource);
     const chromaResults = await this.queryChroma(query, 100, whereFilter);
     logger.debug('SEARCH', 'Chroma returned semantic matches', { matchCount: chromaResults?.ids?.length ?? 0 });
 
@@ -123,9 +149,9 @@ export class SearchManager {
     return [];
   }
 
-  private async searchChromaForTimeline(query: string, ninetyDaysAgo: number, project?: string): Promise<ObservationSearchResult[]> {
-    return this.hybridSemanticHydrate(query, 'observation', project, (ids) =>
-      this.sessionStore.getObservationsByIds(ids, { orderBy: 'date_desc', limit: 1, project })
+  private async searchChromaForTimeline(query: string, project?: string, platformSource?: string): Promise<ObservationSearchResult[]> {
+    return this.hybridSemanticHydrate(query, 'observation', project, platformSource, (ids) =>
+      this.sessionStore.getObservationsByIds(ids, { orderBy: 'date_desc', limit: 1, project, platformSource })
     );
   }
 
@@ -306,6 +332,7 @@ export class SearchManager {
     let sessions: SessionSummarySearchResult[] = [];
     let prompts: UserPromptSearchResult[] = [];
     let chromaFailed = false;
+    let platformScopedChromaZeroFallback = false;
     let chromaFailureReason: { message: string; isConnectionError: boolean } | null = null;
 
     const searchObservations = !type || type === 'observations';
@@ -330,26 +357,33 @@ export class SearchManager {
       let chromaSucceeded = false;
       logger.debug('SEARCH', 'Using ChromaDB semantic search', { typeFilter: type || 'all' });
 
-      let whereFilter: Record<string, any> | undefined;
+      const whereFilters: Array<Record<string, any>> = [];
       if (type === 'observations') {
-        whereFilter = { doc_type: 'observation' };
+        whereFilters.push({ doc_type: 'observation' });
       } else if (type === 'sessions') {
-        whereFilter = { doc_type: 'session_summary' };
+        whereFilters.push({ doc_type: 'session_summary' });
       } else if (type === 'prompts') {
-        whereFilter = { doc_type: 'user_prompt' };
+        whereFilters.push({ doc_type: 'user_prompt' });
       }
 
       if (options.project) {
-        const projectFilter = {
+        whereFilters.push({
           $or: [
             { project: options.project },
             { merged_into_project: options.project }
           ]
-        };
-        whereFilter = whereFilter
-          ? { $and: [whereFilter, projectFilter] }
-          : projectFilter;
+        });
       }
+
+      if (options.platformSource) {
+        whereFilters.push({ platform_source: normalizePlatformSource(options.platformSource) });
+      }
+
+      const whereFilter = whereFilters.length === 0
+        ? undefined
+        : whereFilters.length === 1
+          ? whereFilters[0]
+          : { $and: whereFilters };
 
       try {
         const chromaResults = await this.queryChroma(query, 100, whereFilter);
@@ -406,13 +440,38 @@ export class SearchManager {
             observations = this.sessionStore.getObservationsByIds(obsIds, obsOptions);
           }
           if (sessionIds.length > 0) {
-            sessions = this.sessionStore.getSessionSummariesByIds(sessionIds, { orderBy: 'date_desc', limit: options.limit, project: options.project });
+            sessions = this.sessionStore.getSessionSummariesByIds(sessionIds, {
+              orderBy: 'date_desc',
+              limit: options.limit,
+              project: options.project,
+              platformSource: options.platformSource
+            });
           }
           if (promptIds.length > 0) {
-            prompts = this.sessionStore.getUserPromptsByIds(promptIds, { orderBy: 'date_desc', limit: options.limit, project: options.project });
+            prompts = this.sessionStore.getUserPromptsByIds(promptIds, {
+              orderBy: 'date_desc',
+              limit: options.limit,
+              project: options.project,
+              platformSource: options.platformSource
+            });
           }
         } else {
-          logger.debug('SEARCH', 'ChromaDB found no matches (final result, no FTS5 fallback)', {});
+          if (options.platformSource) {
+            logger.debug('SEARCH', 'Platform-scoped ChromaDB search found no matches; falling back to scoped FTS5 search', {});
+            platformScopedChromaZeroFallback = true;
+
+            if (searchObservations) {
+              observations = this.sessionSearch.searchObservations(query, { ...options, type: obs_type, concepts, files });
+            }
+            if (searchSessions) {
+              sessions = this.sessionSearch.searchSessions(query, options);
+            }
+            if (searchPrompts) {
+              prompts = this.sessionSearch.searchUserPrompts(query, options);
+            }
+          } else {
+            logger.debug('SEARCH', 'ChromaDB found no matches (final result, no FTS5 fallback)', {});
+          }
         }
       } catch (chromaError) {
         const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
@@ -467,11 +526,16 @@ export class SearchManager {
         searchStrategy = 'filter_only';
         fallbackReason = 'none';
       } else if (this.chromaSync) {
-        // PATH 2: Chroma semantic search, degrading to FTS5 on error
-        searchStrategy = chromaFailed ? 'fts' : 'chroma';
-        fallbackReason = chromaFailed
-          ? (chromaFailureReason?.isConnectionError ? 'chroma_connection' : 'chroma_error')
-          : 'none';
+        // PATH 2: Chroma semantic search, degrading to FTS5 on error or
+        // platform-scoped zeroes caused by pre-platform Chroma metadata.
+        searchStrategy = chromaFailed || platformScopedChromaZeroFallback ? 'fts' : 'chroma';
+        if (chromaFailed) {
+          fallbackReason = chromaFailureReason?.isConnectionError ? 'chroma_connection' : 'chroma_error';
+        } else if (platformScopedChromaZeroFallback) {
+          fallbackReason = 'chroma_error';
+        } else {
+          fallbackReason = 'none';
+        }
       } else {
         // PATH 3: FTS5 keyword search (Chroma not initialized)
         searchStrategy = 'fts';
@@ -611,7 +675,8 @@ export class SearchManager {
   }
 
   async timeline(args: any): Promise<any> {
-    const { anchor, query, depth_before, depth_after, project } = args;
+    const normalized = this.normalizeParams(args);
+    const { anchor, query, depth_before, depth_after, project, platformSource } = normalized;
     const depthBefore = depth_before != null ? Number(depth_before) : 10;
     const depthAfter = depth_after != null ? Number(depth_after) : 10;
     const anchorAsNumber = this.parseNumericAnchor(anchor);
@@ -646,9 +711,8 @@ export class SearchManager {
 
       if (this.chromaSync) {
         logger.debug('SEARCH', 'Using hybrid semantic search for timeline query', {});
-        const ninetyDaysAgo = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
         try {
-          results = await this.searchChromaForTimeline(query, ninetyDaysAgo, project);
+          results = await this.searchChromaForTimeline(query, project, platformSource);
         } catch (chromaError) {
           const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
           logger.error('WORKER', 'Chroma search failed for timeline, continuing without semantic results', {}, errorObject);
@@ -657,7 +721,7 @@ export class SearchManager {
 
       if (results.length === 0) {
         try {
-          const ftsResults = this.sessionSearch.searchObservations(query, { project, limit: 1 });
+          const ftsResults = this.sessionSearch.searchObservations(query, { project, platformSource, limit: 1 });
           if (ftsResults.length > 0) {
             results = ftsResults;
           }
@@ -679,11 +743,11 @@ export class SearchManager {
       anchorId = topResult.id;
       anchorEpoch = topResult.created_at_epoch;
       logger.debug('SEARCH', 'Query mode: Using observation as timeline anchor', { observationId: topResult.id });
-      timelineData = this.sessionStore.getTimelineAroundObservation(topResult.id, topResult.created_at_epoch, depthBefore, depthAfter, project);
+      timelineData = this.sessionStore.getTimelineAroundObservation(topResult.id, topResult.created_at_epoch, depthBefore, depthAfter, project, platformSource);
     }
     // MODE 2: Anchor-based timeline
     else if (anchorAsNumber !== null) {
-      const obs = this.sessionStore.getObservationById(anchorAsNumber);
+      const obs = this.sessionStore.getObservationsByIds([anchorAsNumber], { project, platformSource, limit: 1 })[0] ?? null;
       if (!obs) {
         return {
           content: [{
@@ -695,12 +759,12 @@ export class SearchManager {
       }
       anchorId = anchorAsNumber;
       anchorEpoch = obs.created_at_epoch;
-      timelineData = this.sessionStore.getTimelineAroundObservation(anchorAsNumber, anchorEpoch, depthBefore, depthAfter, project);
+      timelineData = this.sessionStore.getTimelineAroundObservation(anchorAsNumber, anchorEpoch, depthBefore, depthAfter, project, platformSource);
     } else if (typeof anchor === 'string') {
       if (anchor.startsWith('S') || anchor.startsWith('#S')) {
         const sessionId = anchor.replace(/^#?S/, '');
         const sessionNum = parseInt(sessionId, 10);
-        const sessions = this.sessionStore.getSessionSummariesByIds([sessionNum]);
+        const sessions = this.sessionStore.getSessionSummariesByIds([sessionNum], { project, platformSource });
         if (sessions.length === 0) {
           return {
             content: [{
@@ -712,7 +776,7 @@ export class SearchManager {
         }
         anchorEpoch = sessions[0].created_at_epoch;
         anchorId = `S${sessionNum}`;
-        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project);
+        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project, platformSource);
       } else {
         const date = new Date(anchor);
         if (isNaN(date.getTime())) {
@@ -726,7 +790,7 @@ export class SearchManager {
         }
         anchorEpoch = date.getTime();
         anchorId = anchor;
-        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project);
+        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project, platformSource);
       }
     } else {
       return {
@@ -790,7 +854,11 @@ export class SearchManager {
       if (query) {
         logger.debug('SEARCH', 'Using Chroma semantic search with type=decision filter', {});
         try {
-          const chromaResults = await this.queryChroma(query, Math.min((filters.limit || 20) * 2, 100), { type: 'decision' });
+          const chromaResults = await this.queryChroma(
+            query,
+            Math.min((filters.limit || 20) * 2, 100),
+            this.buildObservationWhereFilter(filters, 'decision')
+          );
           const obsIds = chromaResults.ids;
 
           if (obsIds.length > 0) {
@@ -808,7 +876,11 @@ export class SearchManager {
         if (metadataResults.length > 0) {
           const ids = metadataResults.map(obs => obs.id);
           try {
-            const chromaResults = await this.queryChroma('decision', Math.min(ids.length, 100));
+            const chromaResults = await this.queryChroma(
+              'decision',
+              Math.min(ids.length, 100),
+              this.buildObservationWhereFilter(filters)
+            );
 
             const rankedIds: number[] = [];
             for (const chromaId of chromaResults.ids) {
@@ -818,7 +890,12 @@ export class SearchManager {
             }
 
             if (rankedIds.length > 0) {
-              results = this.sessionStore.getObservationsByIds(rankedIds, { limit: filters.limit || 20 });
+              results = this.sessionStore.getObservationsByIds(rankedIds, {
+                orderBy: 'relevance',
+                limit: filters.limit || 20,
+                project: filters.project,
+                platformSource: filters.platformSource
+              });
               results.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
             }
           } catch (chromaError) {
@@ -871,7 +948,11 @@ export class SearchManager {
       if (allIds.size > 0) {
         const idsArray = Array.from(allIds);
         try {
-          const chromaResults = await this.queryChroma('what changed', Math.min(idsArray.length, 100));
+          const chromaResults = await this.queryChroma(
+            'what changed',
+            Math.min(idsArray.length, 100),
+            this.buildObservationWhereFilter(filters)
+          );
 
           const rankedIds: number[] = [];
           for (const chromaId of chromaResults.ids) {
@@ -881,7 +962,12 @@ export class SearchManager {
           }
 
           if (rankedIds.length > 0) {
-            results = this.sessionStore.getObservationsByIds(rankedIds, { limit: filters.limit || 20 });
+            results = this.sessionStore.getObservationsByIds(rankedIds, {
+              orderBy: 'relevance',
+              limit: filters.limit || 20,
+              project: filters.project,
+              platformSource: filters.platformSource
+            });
             results.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
           }
         } catch (chromaError) {
@@ -940,7 +1026,11 @@ export class SearchManager {
 
       if (metadataResults.length > 0) {
         const ids = metadataResults.map(obs => obs.id);
-        const chromaResults = await this.queryChroma('how it works architecture', Math.min(ids.length, 100));
+        const chromaResults = await this.queryChroma(
+          'how it works architecture',
+          Math.min(ids.length, 100),
+          this.buildObservationWhereFilter(filters)
+        );
 
         const rankedIds: number[] = [];
         for (const chromaId of chromaResults.ids) {
@@ -950,7 +1040,12 @@ export class SearchManager {
         }
 
         if (rankedIds.length > 0) {
-          results = this.sessionStore.getObservationsByIds(rankedIds, { limit: filters.limit || 20 });
+          results = this.sessionStore.getObservationsByIds(rankedIds, {
+            orderBy: 'relevance',
+            limit: filters.limit || 20,
+            project: filters.project,
+            platformSource: filters.platformSource
+          });
           results.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
         }
       }
@@ -989,8 +1084,13 @@ export class SearchManager {
       logger.debug('SEARCH', 'Using hybrid semantic search (Chroma + SQLite)', {});
       try {
         const limit = options.limit || 20;
-        results = await this.hybridSemanticHydrate(query, 'observation', options.project, (ids) =>
-          this.sessionStore.getObservationsByIds(ids, { orderBy: 'date_desc', limit, project: options.project })
+        results = await this.hybridSemanticHydrate(query, 'observation', options.project, options.platformSource, (ids) =>
+          this.sessionStore.getObservationsByIds(ids, {
+            orderBy: 'date_desc',
+            limit,
+            project: options.project,
+            platformSource: options.platformSource
+          })
         );
       } catch (chromaError) {
         const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
@@ -1038,8 +1138,13 @@ export class SearchManager {
       logger.debug('SEARCH', 'Using hybrid semantic search for sessions', {});
       try {
         const limit = options.limit || 20;
-        results = await this.hybridSemanticHydrate(query, 'session_summary', options.project, (ids) =>
-          this.sessionStore.getSessionSummariesByIds(ids, { orderBy: 'date_desc', limit, project: options.project })
+        results = await this.hybridSemanticHydrate(query, 'session_summary', options.project, options.platformSource, (ids) =>
+          this.sessionStore.getSessionSummariesByIds(ids, {
+            orderBy: 'date_desc',
+            limit,
+            project: options.project,
+            platformSource: options.platformSource
+          })
         );
       } catch (chromaError) {
         const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
@@ -1087,8 +1192,13 @@ export class SearchManager {
       logger.debug('SEARCH', 'Using hybrid semantic search for user prompts', {});
       try {
         const limit = options.limit || 20;
-        results = await this.hybridSemanticHydrate(query, 'user_prompt', options.project, (ids) =>
-          this.sessionStore.getUserPromptsByIds(ids, { orderBy: 'date_desc', limit, project: options.project })
+        results = await this.hybridSemanticHydrate(query, 'user_prompt', options.project, options.platformSource, (ids) =>
+          this.sessionStore.getUserPromptsByIds(ids, {
+            orderBy: 'date_desc',
+            limit,
+            project: options.project,
+            platformSource: options.platformSource
+          })
         );
       } catch (chromaError) {
         const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
@@ -1128,10 +1238,13 @@ export class SearchManager {
   }
 
   async getRecentContext(args: any): Promise<any> {
-    const project = args.project || getProjectContext(process.cwd()).primary;
-    const limit = args.limit || 3;
+    const normalized = this.normalizeParams(args);
+    const project = normalized.project || getProjectContext(process.cwd()).primary;
+    const parsedLimit = parseInt(String(normalized.limit ?? '3'), 10);
+    const limit = parsedLimit > 0 ? parsedLimit : 3;
+    const { platformSource } = normalized;
 
-    const sessions = this.sessionStore.getRecentSessionsWithStatus(project, limit);
+    const sessions = this.sessionStore.getRecentSessionsWithStatus(project, limit, platformSource);
 
     if (sessions.length === 0) {
       return {
@@ -1155,7 +1268,7 @@ export class SearchManager {
       lines.push('');
 
       if (session.has_summary) {
-        const summary = this.sessionStore.getSummaryForSession(session.memory_session_id);
+        const summary = this.sessionStore.getSummaryForSession(session.memory_session_id, platformSource);
         if (summary) {
           const promptLabel = summary.prompt_number ? ` (Prompt #${summary.prompt_number})` : '';
           lines.push(`**Summary${promptLabel}**`);
@@ -1207,7 +1320,7 @@ export class SearchManager {
           lines.push(`**Request:** ${session.user_prompt}`);
         }
 
-        const observations = this.sessionStore.getObservationsForSession(session.memory_session_id);
+        const observations = this.sessionStore.getObservationsForSession(session.memory_session_id, platformSource);
         if (observations.length > 0) {
           lines.push('');
           lines.push(`**Observations (${observations.length}):**`);
@@ -1251,7 +1364,8 @@ export class SearchManager {
   }
 
   async getContextTimeline(args: any): Promise<any> {
-    const { anchor, depth_before, depth_after, project } = args;
+    const normalized = this.normalizeParams(args);
+    const { anchor, depth_before, depth_after, project, platformSource } = normalized;
     const depthBefore = depth_before != null ? Number(depth_before) : 10;
     const depthAfter = depth_after != null ? Number(depth_after) : 10;
     const cwd = process.cwd();
@@ -1260,7 +1374,7 @@ export class SearchManager {
 
     let timelineData;
     if (typeof anchor === 'number') {
-      const obs = this.sessionStore.getObservationById(anchor);
+      const obs = this.sessionStore.getObservationsByIds([anchor], { project, platformSource, limit: 1 })[0] ?? null;
       if (!obs) {
         return {
           content: [{
@@ -1271,12 +1385,12 @@ export class SearchManager {
         };
       }
       anchorEpoch = obs.created_at_epoch;
-      timelineData = this.sessionStore.getTimelineAroundObservation(anchor, anchorEpoch, depthBefore, depthAfter, project);
+      timelineData = this.sessionStore.getTimelineAroundObservation(anchor, anchorEpoch, depthBefore, depthAfter, project, platformSource);
     } else if (typeof anchor === 'string') {
       if (anchor.startsWith('S') || anchor.startsWith('#S')) {
         const sessionId = anchor.replace(/^#?S/, '');
         const sessionNum = parseInt(sessionId, 10);
-        const sessions = this.sessionStore.getSessionSummariesByIds([sessionNum]);
+        const sessions = this.sessionStore.getSessionSummariesByIds([sessionNum], { project, platformSource });
         if (sessions.length === 0) {
           return {
             content: [{
@@ -1288,7 +1402,7 @@ export class SearchManager {
         }
         anchorEpoch = sessions[0].created_at_epoch;
         anchorId = `S${sessionNum}`;
-        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project);
+        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project, platformSource);
       } else {
         const date = new Date(anchor);
         if (isNaN(date.getTime())) {
@@ -1301,7 +1415,7 @@ export class SearchManager {
           };
         }
         anchorEpoch = date.getTime(); 
-        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project);
+        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project, platformSource);
       }
     } else {
       return {
@@ -1348,7 +1462,8 @@ export class SearchManager {
   }
 
   async getTimelineByQuery(args: any): Promise<any> {
-    const { query, mode = 'auto', depth_before, depth_after, limit = 5, project } = args;
+    const normalized = this.normalizeParams(args);
+    const { query, mode = 'auto', depth_before, depth_after, limit = 5, project, platformSource } = normalized;
     const depthBefore = depth_before != null ? Number(depth_before) : 10;
     const depthAfter = depth_after != null ? Number(depth_after) : 10;
     const cwd = process.cwd();
@@ -1358,8 +1473,13 @@ export class SearchManager {
     if (this.chromaSync) {
       logger.debug('SEARCH', 'Using hybrid semantic search for timeline query', {});
       try {
-        results = await this.hybridSemanticHydrate(query, 'observation', project, (ids) =>
-          this.sessionStore.getObservationsByIds(ids, { orderBy: 'date_desc', limit: mode === 'auto' ? 1 : limit, project })
+        results = await this.hybridSemanticHydrate(query, 'observation', project, platformSource, (ids) =>
+          this.sessionStore.getObservationsByIds(ids, {
+            orderBy: 'date_desc',
+            limit: mode === 'auto' ? 1 : limit,
+            project,
+            platformSource
+          })
         );
       } catch (chromaError) {
         const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
@@ -1369,7 +1489,7 @@ export class SearchManager {
 
     if (results.length === 0) {
       try {
-        const ftsResults = this.sessionSearch.searchObservations(query, { project, limit: mode === 'auto' ? 1 : limit });
+        const ftsResults = this.sessionSearch.searchObservations(query, { project, platformSource, limit: mode === 'auto' ? 1 : limit });
         if (ftsResults.length > 0) {
           results = ftsResults;
         }
@@ -1428,7 +1548,8 @@ export class SearchManager {
         topResult.created_at_epoch,
         depthBefore,
         depthAfter,
-        project
+        project,
+        platformSource
       );
 
       const items: TimelineItem[] = [

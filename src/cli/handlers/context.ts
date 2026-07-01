@@ -15,6 +15,34 @@ import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { logger } from '../../utils/logger.js';
 import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { readStaleMarker } from '../../shared/oauth-token.js';
+import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { callMcpToolOnce } from '../../shared/mcp-client.js';
+
+async function fetchSessionStartContextViaMcp(args: {
+  projects: string[];
+  platformSource?: string;
+  colors?: boolean;
+}): Promise<string | null> {
+  try {
+    const result = await callMcpToolOnce('session_start_context', {
+      projects: args.projects,
+      ...(args.platformSource ? { platformSource: args.platformSource } : {}),
+      ...(args.colors !== undefined ? { colors: args.colors } : {}),
+    });
+    if (result.isError) {
+      logger.warn('HOOK', 'MCP session_start_context returned an error; falling back to worker HTTP', {
+        preview: result.text.slice(0, 200),
+      });
+      return null;
+    }
+    return result.text.trim();
+  } catch (error: unknown) {
+    logger.warn('HOOK', 'MCP session_start_context failed; falling back to worker HTTP', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
 
 export const contextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
@@ -26,7 +54,13 @@ export const contextHandler: EventHandler = {
     const showTerminalOutput = settings.CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT === 'true';
 
     const projectsParam = context.allProjects.join(',');
-    const apiPath = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}`;
+    const normalizedPlatformSource = input.platform
+      ? normalizePlatformSource(input.platform)
+      : undefined;
+    const platformSourceParam = input.platform
+      ? `&platformSource=${encodeURIComponent(normalizedPlatformSource!)}`
+      : '';
+    const apiPath = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}${platformSourceParam}`;
     const colorApiPath = input.platform === 'claude-code' ? `${apiPath}&colors=true` : apiPath;
 
     const emptyResult: HookResult = {
@@ -34,19 +68,30 @@ export const contextHandler: EventHandler = {
       exitCode: HOOK_EXIT_CODES.SUCCESS,
     };
 
-    const contextResult = await executeWithWorkerFallback<string>(apiPath, 'GET');
-    if (isWorkerFallback(contextResult)) {
-      return emptyResult;
-    }
-
     let additionalContext: string;
-    if (typeof contextResult === 'string') {
-      additionalContext = contextResult.trim();
-    } else if (contextResult === undefined) {
-      additionalContext = '';
+    const mcpContextResult = input.platform === 'codex'
+      ? await fetchSessionStartContextViaMcp({
+          projects: context.allProjects,
+          ...(normalizedPlatformSource ? { platformSource: normalizedPlatformSource } : {}),
+        })
+      : null;
+
+    if (mcpContextResult !== null) {
+      additionalContext = mcpContextResult;
     } else {
-      logger.warn('HOOK', 'Context response was not a string', { type: typeof contextResult });
-      return emptyResult;
+      const contextResult = await executeWithWorkerFallback<string>(apiPath, 'GET');
+      if (isWorkerFallback(contextResult)) {
+        return emptyResult;
+      }
+
+      if (typeof contextResult === 'string') {
+        additionalContext = contextResult.trim();
+      } else if (contextResult === undefined) {
+        additionalContext = '';
+      } else {
+        logger.warn('HOOK', 'Context response was not a string', { type: typeof contextResult });
+        return emptyResult;
+      }
     }
 
     // Issue #2215: surface stale OAuth token marker as a session-start hint.
@@ -62,9 +107,20 @@ export const contextHandler: EventHandler = {
 
     let coloredTimeline = '';
     if (showTerminalOutput) {
-      const colorResult = await executeWithWorkerFallback<string>(colorApiPath, 'GET');
-      if (!isWorkerFallback(colorResult) && typeof colorResult === 'string') {
-        coloredTimeline = colorResult.trim();
+      const mcpColorResult = input.platform === 'codex'
+        ? await fetchSessionStartContextViaMcp({
+            projects: context.allProjects,
+            ...(normalizedPlatformSource ? { platformSource: normalizedPlatformSource } : {}),
+            colors: true,
+          })
+        : null;
+      if (mcpColorResult !== null) {
+        coloredTimeline = mcpColorResult;
+      } else {
+        const colorResult = await executeWithWorkerFallback<string>(colorApiPath, 'GET');
+        if (!isWorkerFallback(colorResult) && typeof colorResult === 'string') {
+          coloredTimeline = colorResult.trim();
+        }
       }
     }
 

@@ -10,8 +10,8 @@ import { stripMemoryTagsFromPrompt } from '../../utils/tag-stripping.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
-import { resolveRuntimeContext, logServerBetaFallback } from '../../services/hooks/runtime-selector.js';
-import { isServerBetaClientError } from '../../services/hooks/server-beta-client.js';
+import { resolveRuntimeContext, logServerFallback } from '../../services/hooks/runtime-selector.js';
+import { isServerClientError } from '../../services/hooks/server-client.js';
 
 export const summarizeHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
@@ -76,7 +76,9 @@ export const summarizeHandler: EventHandler = {
     const platformSource = normalizePlatformSource(input.platform);
 
     const runtime = resolveRuntimeContext();
-    if (runtime.runtime === 'server-beta') {
+    // Phase 1a (cmem-sdk rename): `runtime.runtime` is the canonical `'server'`
+    // value. Legacy `'server-beta'` is normalized inside `selectRuntime()`.
+    if (runtime.runtime === 'server') {
       try {
         // Resolve the server_session_id idempotently. /v1/sessions/start is
         // idempotent on (projectId, externalSessionId) and returns the
@@ -94,6 +96,7 @@ export const summarizeHandler: EventHandler = {
           projectId: runtime.projectId,
           serverSessionId,
           contentSessionId: sessionId,
+          platformSource,
           sourceType: 'hook',
           eventType: 'assistant_message',
           occurredAtEpoch: Date.now(),
@@ -103,18 +106,18 @@ export const summarizeHandler: EventHandler = {
           },
         });
         await runtime.client.endSession({ sessionId: serverSessionId });
-        logger.debug('HOOK', 'Summary request queued via server-beta');
+        logger.debug('HOOK', 'Summary request queued via server');
         return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
       } catch (error: unknown) {
-        if (isServerBetaClientError(error) && error.isFallbackEligible()) {
-          logServerBetaFallback(error.kind, {
+        if (isServerClientError(error) && error.isFallbackEligible()) {
+          logServerFallback(error.kind, {
             status: error.status,
             message: error.message,
             route: '/v1/sessions/end',
           });
           // fall through to worker fallback
         } else {
-          logger.error('HOOK', 'Server beta summarize failed (non-recoverable)', {
+          logger.error('HOOK', 'Server summarize failed (non-recoverable)', {
             error: error instanceof Error ? error.message : String(error),
           });
           return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };

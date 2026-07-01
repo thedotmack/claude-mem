@@ -6,12 +6,12 @@ import { createHash, randomBytes } from 'crypto';
 import { Server } from '../../../src/services/server/Server.js';
 import { ServerV1PostgresRoutes } from '../../../src/server/routes/v1/ServerV1PostgresRoutes.js';
 import {
-  bootstrapServerBetaPostgresSchema,
+  bootstrapServerPostgresSchema,
   createPostgresStorageRepositories,
   type PostgresPoolClient,
   type PostgresStorageRepositories,
 } from '../../../src/storage/postgres/index.js';
-import { DisabledServerBetaQueueManager } from '../../../src/server/runtime/types.js';
+import { DisabledServerQueueManager } from '../../../src/server/runtime/types.js';
 import { logger } from '../../../src/utils/logger.js';
 
 const testDatabaseUrl = process.env.CLAUDE_MEM_TEST_POSTGRES_URL;
@@ -57,7 +57,7 @@ describe('ServerV1PostgresRoutes Phase 6 session endpoints', () => {
     schemaName = `cm_phase6_routes_${crypto.randomUUID().replaceAll('-', '_')}`;
     await client.query(`CREATE SCHEMA ${quoteIdentifier(schemaName)}`);
     await client.query(`SET search_path TO ${quoteIdentifier(schemaName)}`);
-    await bootstrapServerBetaPostgresSchema(client);
+    await bootstrapServerPostgresSchema(client);
     pool.on('connect', (poolClient) => {
       poolClient.query(`SET search_path TO ${quoteIdentifier(schemaName)}`).catch(() => {});
     });
@@ -92,7 +92,7 @@ describe('ServerV1PostgresRoutes Phase 6 session endpoints', () => {
     });
     server.registerRoutes(new ServerV1PostgresRoutes({
       pool: pool as never,
-      queueManager: new DisabledServerBetaQueueManager('disabled in tests'),
+      queueManager: new DisabledServerQueueManager('disabled in tests'),
       authMode: 'api-key',
       runtime: 'server-beta',
       sessionPolicy: 'per-event',
@@ -141,7 +141,7 @@ describe('ServerV1PostgresRoutes Phase 6 session endpoints', () => {
     });
   }
 
-  it('POST /v1/sessions/start is idempotent on (project_id, external_session_id)', async () => {
+  it('POST /v1/sessions/start is idempotent on legacy no-platform external_session_id', async () => {
     const a = await authedFetch('/v1/sessions/start', {
       method: 'POST',
       body: JSON.stringify({ projectId, externalSessionId: 'ext-1' }),
@@ -155,6 +155,43 @@ describe('ServerV1PostgresRoutes Phase 6 session endpoints', () => {
     expect(b.status).toBe(200);
     const bJson = await b.json();
     expect(bJson.session.id).toBe(aJson.session.id);
+  });
+
+  it('POST /v1/sessions/start scopes external_session_id by normalized platformSource', async () => {
+    const cursor = await authedFetch('/v1/sessions/start', {
+      method: 'POST',
+      body: JSON.stringify({ projectId, externalSessionId: 'shared-ext', platformSource: 'Cursor' }),
+    });
+    expect(cursor.status).toBe(201);
+    const cursorJson = await cursor.json();
+    expect(cursorJson.session.platformSource).toBe('cursor');
+
+    const cursorAgain = await authedFetch('/v1/sessions/start', {
+      method: 'POST',
+      body: JSON.stringify({ projectId, externalSessionId: 'shared-ext', platformSource: 'cursor-cli' }),
+    });
+    expect(cursorAgain.status).toBe(200);
+    const cursorAgainJson = await cursorAgain.json();
+    expect(cursorAgainJson.session.id).toBe(cursorJson.session.id);
+
+    const codex = await authedFetch('/v1/sessions/start', {
+      method: 'POST',
+      body: JSON.stringify({ projectId, externalSessionId: 'shared-ext', platformSource: 'Codex CLI' }),
+    });
+    expect(codex.status).toBe(201);
+    const codexJson = await codex.json();
+    expect(codexJson.session.platformSource).toBe('codex');
+    expect(codexJson.session.id).not.toBe(cursorJson.session.id);
+
+    const legacy = await authedFetch('/v1/sessions/start', {
+      method: 'POST',
+      body: JSON.stringify({ projectId, externalSessionId: 'shared-ext' }),
+    });
+    expect(legacy.status).toBe(201);
+    const legacyJson = await legacy.json();
+    expect(legacyJson.session.platformSource).toBeNull();
+    expect(legacyJson.session.id).not.toBe(cursorJson.session.id);
+    expect(legacyJson.session.id).not.toBe(codexJson.session.id);
   });
 
   it('POST /v1/sessions/:id/end enqueues exactly one summary job, idempotent on re-end', async () => {
@@ -222,5 +259,205 @@ describe('ServerV1PostgresRoutes Phase 6 session endpoints', () => {
     });
     expect(eventResp.status).toBe(201);
     expect(enqueuedEventJobs.length).toBe(1);
+  });
+
+  it('POST /v1/events links by normalized platformSource when resolving contentSessionId', async () => {
+    const cursorStart = await authedFetch('/v1/sessions/start', {
+      method: 'POST',
+      body: JSON.stringify({
+        projectId,
+        externalSessionId: 'shared-content-link',
+        contentSessionId: 'shared-content-link',
+        platformSource: 'Cursor',
+      }),
+    });
+    const cursorSession = (await cursorStart.json()).session;
+    await authedFetch('/v1/sessions/start', {
+      method: 'POST',
+      body: JSON.stringify({
+        projectId,
+        externalSessionId: 'shared-content-link',
+        contentSessionId: 'shared-content-link',
+        platformSource: 'Codex CLI',
+      }),
+    });
+
+    const eventResp = await authedFetch('/v1/events', {
+      method: 'POST',
+      body: JSON.stringify({
+        projectId,
+        contentSessionId: 'shared-content-link',
+        platformSource: 'cursor-cli',
+        sourceType: 'api',
+        eventType: 'tool_use',
+        payload: { tool: 'Read' },
+        occurredAtEpoch: Date.now(),
+      }),
+    });
+    expect(eventResp.status).toBe(201);
+    const eventJson = await eventResp.json();
+    expect(eventJson.event.serverSessionId).toBe(cursorSession.id);
+    expect(eventJson.event.platformSource).toBe('cursor');
+  });
+
+  it('POST /v1/events with explicit platformSource null links only the legacy contentSessionId session', async () => {
+    const legacyStart = await authedFetch('/v1/sessions/start', {
+      method: 'POST',
+      body: JSON.stringify({
+        projectId,
+        externalSessionId: 'explicit-null-content-link',
+        contentSessionId: 'explicit-null-content-link',
+        platformSource: null,
+      }),
+    });
+    const legacySession = (await legacyStart.json()).session;
+    await authedFetch('/v1/sessions/start', {
+      method: 'POST',
+      body: JSON.stringify({
+        projectId,
+        externalSessionId: 'explicit-null-content-link',
+        contentSessionId: 'explicit-null-content-link',
+        platformSource: 'Cursor',
+      }),
+    });
+
+    const eventResp = await authedFetch('/v1/events?generate=false', {
+      method: 'POST',
+      body: JSON.stringify({
+        projectId,
+        contentSessionId: 'explicit-null-content-link',
+        platformSource: null,
+        sourceType: 'api',
+        eventType: 'tool_use',
+        payload: { tool: 'LegacyNull' },
+        occurredAtEpoch: Date.now(),
+      }),
+    });
+    expect(eventResp.status).toBe(201);
+    const eventJson = await eventResp.json();
+    expect(eventJson.event.serverSessionId).toBe(legacySession.id);
+    expect(eventJson.event.platformSource).toBeNull();
+  });
+
+  it('POST /v1/events/batch links each event by normalized platformSource without requiring a session match', async () => {
+    const cursorStart = await authedFetch('/v1/sessions/start', {
+      method: 'POST',
+      body: JSON.stringify({
+        projectId,
+        externalSessionId: 'batch-shared-content',
+        contentSessionId: 'batch-shared-content',
+        platformSource: 'Cursor',
+      }),
+    });
+    const cursorSession = (await cursorStart.json()).session;
+    const codexStart = await authedFetch('/v1/sessions/start', {
+      method: 'POST',
+      body: JSON.stringify({
+        projectId,
+        externalSessionId: 'batch-shared-content',
+        contentSessionId: 'batch-shared-content',
+        platformSource: 'Codex CLI',
+      }),
+    });
+    const codexSession = (await codexStart.json()).session;
+
+    const batchResp = await authedFetch('/v1/events/batch?generate=false', {
+      method: 'POST',
+      body: JSON.stringify([
+        {
+          projectId,
+          contentSessionId: 'batch-shared-content',
+          platformSource: 'cursor-cli',
+          sourceType: 'api',
+          eventType: 'tool_use',
+          payload: { index: 1 },
+          occurredAtEpoch: Date.now(),
+        },
+        {
+          projectId,
+          contentSessionId: 'batch-shared-content',
+          platformSource: 'Codex',
+          sourceType: 'api',
+          eventType: 'tool_use',
+          payload: { index: 2 },
+          occurredAtEpoch: Date.now() + 1,
+        },
+        {
+          projectId,
+          contentSessionId: 'missing-batch-content-session',
+          platformSource: 'cursor',
+          sourceType: 'api',
+          eventType: 'tool_use',
+          payload: { index: 3 },
+          occurredAtEpoch: Date.now() + 2,
+        },
+      ]),
+    });
+    expect(batchResp.status).toBe(201);
+    const batchJson = await batchResp.json();
+    expect(batchJson.events.map((item: { event: { serverSessionId: string | null } }) => item.event.serverSessionId)).toEqual([
+      cursorSession.id,
+      codexSession.id,
+      null,
+    ]);
+    expect(batchJson.events.map((item: { event: { platformSource: string | null } }) => item.event.platformSource)).toEqual([
+      'cursor',
+      'codex',
+      'cursor',
+    ]);
+  });
+
+  it('POST /v1/search and /v1/context normalize platformSource filters', async () => {
+    const cursorSession = await storage.sessions.create({
+      projectId,
+      teamId,
+      externalSessionId: 'cursor-search-session',
+      platformSource: 'cursor',
+    });
+    const codexSession = await storage.sessions.create({
+      projectId,
+      teamId,
+      externalSessionId: 'codex-search-session',
+      platformSource: 'codex',
+    });
+    await storage.observations.create({
+      projectId,
+      teamId,
+      serverSessionId: cursorSession.id,
+      content: 'platformscoped cursor observation',
+    });
+    await storage.observations.create({
+      projectId,
+      teamId,
+      serverSessionId: codexSession.id,
+      content: 'platformscoped codex observation',
+    });
+
+    const search = await authedFetch('/v1/search', {
+      method: 'POST',
+      body: JSON.stringify({
+        projectId,
+        query: 'platformscoped',
+        platformSource: 'Cursor CLI',
+      }),
+    });
+    expect(search.status).toBe(200);
+    const searchJson = await search.json();
+    expect(searchJson.observations.map((item: { content: string }) => item.content)).toEqual([
+      'platformscoped cursor observation',
+    ]);
+
+    const context = await authedFetch('/v1/context', {
+      method: 'POST',
+      body: JSON.stringify({
+        projectId,
+        query: 'platformscoped',
+        platformSource: 'Cursor',
+      }),
+    });
+    expect(context.status).toBe(200);
+    const contextJson = await context.json();
+    expect(contextJson.context).toContain('platformscoped cursor observation');
+    expect(contextJson.context).not.toContain('platformscoped codex observation');
   });
 });

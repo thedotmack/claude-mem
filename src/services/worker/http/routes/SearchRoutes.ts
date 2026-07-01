@@ -12,6 +12,7 @@ import { groupByDate } from '../../../../shared/timeline-formatting.js';
 import { countObservationsByProjects } from '../../../context/ObservationCompiler.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
+import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from '../../../sqlite/types.js';
 import { captureEvent } from '../../../telemetry/telemetry.js';
 import { telemetryBuffer } from '../../../telemetry/buffer.js';
@@ -60,6 +61,8 @@ const semanticContextSchema = z.object({
   q: z.string().optional(),
   project: z.string().optional(),
   limit: z.union([z.string(), z.number()]).optional(),
+  platformSource: z.string().optional(),
+  platform_source: z.string().optional(),
 }).passthrough();
 
 export class SearchRoutes extends BaseRouteHandler {
@@ -90,13 +93,15 @@ export class SearchRoutes extends BaseRouteHandler {
   private projectsHaveObservations(
     sessionStore: ReturnType<SearchManager['getSessionStore']>,
     projects: string[],
+    platformSource?: string,
   ): boolean {
-    if (projects.every(p => this.projectsKnownNonEmpty.has(p))) {
+    const cacheKey = platformSource ? `${platformSource}\0${projects.join('\0')}` : projects.join('\0');
+    if (this.projectsKnownNonEmpty.has(cacheKey)) {
       return true;
     }
-    const observationCount = countObservationsByProjects(sessionStore, projects);
+    const observationCount = countObservationsByProjects(sessionStore, projects, platformSource);
     if (observationCount > 0) {
-      for (const p of projects) this.projectsKnownNonEmpty.add(p);
+      this.projectsKnownNonEmpty.add(cacheKey);
       return true;
     }
     return false;
@@ -166,49 +171,49 @@ export class SearchRoutes extends BaseRouteHandler {
     // envelope survives even if response serialization fails afterwards.
     const searchTelemetry: SearchTelemetryEnvelope = {};
     res.locals.searchTelemetry = searchTelemetry;
-    const result = await this.searchManager.search(req.query, searchTelemetry);
+    const result = await this.searchManager.search(this.queryWithPlatformSource(req), searchTelemetry);
     res.json(result);
   });
 
   private handleUnifiedTimeline = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const result = await this.searchManager.timeline(req.query);
+    const result = await this.searchManager.timeline(this.queryWithPlatformSource(req));
     res.json(result);
   });
 
   private handleDecisions = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const result = await this.searchManager.decisions(req.query);
+    const result = await this.searchManager.decisions(this.queryWithPlatformSource(req));
     res.json(result);
   });
 
   private handleChanges = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const result = await this.searchManager.changes(req.query);
+    const result = await this.searchManager.changes(this.queryWithPlatformSource(req));
     res.json(result);
   });
 
   private handleHowItWorks = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const result = await this.searchManager.howItWorks(req.query);
+    const result = await this.searchManager.howItWorks(this.queryWithPlatformSource(req));
     res.json(result);
   });
 
   private handleSearchObservations = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const result = await this.searchManager.searchObservations(req.query);
+    const result = await this.searchManager.searchObservations(this.queryWithPlatformSource(req));
     res.json(result);
   });
 
   private handleSearchSessions = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const result = await this.searchManager.searchSessions(req.query);
+    const result = await this.searchManager.searchSessions(this.queryWithPlatformSource(req));
     res.json(result);
   });
 
   private handleSearchPrompts = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const result = await this.searchManager.searchUserPrompts(req.query);
+    const result = await this.searchManager.searchUserPrompts(this.queryWithPlatformSource(req));
     res.json(result);
   });
 
   private handleSearchByConcept = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const orchestrator = this.searchManager.getOrchestrator();
     const formatter = this.searchManager.getFormatter();
-    const query = req.query as Record<string, any>;
+    const query = this.queryWithPlatformSource(req);
     const rawConcept = query.concepts ?? query.concept;
     const concept = Array.isArray(rawConcept) ? rawConcept[0] : rawConcept;
     const strategyResult = await orchestrator.findByConcept(concept, query);
@@ -237,7 +242,7 @@ export class SearchRoutes extends BaseRouteHandler {
   private handleSearchByFile = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const orchestrator = this.searchManager.getOrchestrator();
     const formatter = this.searchManager.getFormatter();
-    const query = req.query as Record<string, any>;
+    const query = this.queryWithPlatformSource(req);
     const rawFilePath = query.filePath ?? query.files;
     const filePath = Array.isArray(rawFilePath)
       ? rawFilePath[0]
@@ -310,7 +315,7 @@ export class SearchRoutes extends BaseRouteHandler {
   private handleSearchByType = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const orchestrator = this.searchManager.getOrchestrator();
     const formatter = this.searchManager.getFormatter();
-    const query = req.query as Record<string, any>;
+    const query = this.queryWithPlatformSource(req);
     const rawType = query.type;
     const type = (typeof rawType === 'string' && rawType.includes(','))
       ? rawType.split(',').map((s: string) => s.trim()).filter(Boolean)
@@ -341,12 +346,12 @@ export class SearchRoutes extends BaseRouteHandler {
   });
 
   private handleGetRecentContext = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const result = await this.searchManager.getRecentContext(req.query);
+    const result = await this.searchManager.getRecentContext(this.queryWithPlatformSource(req));
     res.json(result);
   });
 
   private handleGetContextTimeline = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const result = await this.searchManager.getContextTimeline(req.query);
+    const result = await this.searchManager.getContextTimeline(this.queryWithPlatformSource(req));
     res.json(result);
   });
 
@@ -379,6 +384,7 @@ export class SearchRoutes extends BaseRouteHandler {
     const projectsParam = (req.query.projects as string) || (req.query.project as string);
     const forHuman = req.query.colors === 'true';
     const full = req.query.full === 'true';
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
 
     if (!projectsParam) {
       this.badRequest(res, 'Project(s) parameter is required');
@@ -403,7 +409,7 @@ export class SearchRoutes extends BaseRouteHandler {
       const sessionStore = this.searchManager.getSessionStore();
       // Memoized: skips the COUNT(*) query once any project in the set has
       // observations. Hot-path: PostToolUse fires after every Read/Edit.
-      if (!this.projectsHaveObservations(sessionStore, projects)) {
+      if (!this.projectsHaveObservations(sessionStore, projects, platformSource)) {
         const port = process.env.CLAUDE_MEM_WORKER_PORT ?? settings.CLAUDE_MEM_WORKER_PORT;
         const viewerUrl = `http://localhost:${port}`;
         const hintBody = WELCOME_HINT_TEMPLATE.replace('{viewer_url}', viewerUrl);
@@ -426,6 +432,7 @@ export class SearchRoutes extends BaseRouteHandler {
           session_id: 'context-inject-' + Date.now(),
           cwd: cwd,
           projects: projects,
+          ...(platformSource ? { platformSource } : {}),
           full
         },
         forHuman
@@ -460,9 +467,10 @@ export class SearchRoutes extends BaseRouteHandler {
   });
 
   private handleSemanticContext = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const query = (req.body?.q || req.query.q) as string;
-    const project = (req.body?.project || req.query.project) as string;
+    const query = SearchRoutes.firstString(req.body?.q) ?? SearchRoutes.firstString(req.query.q) ?? '';
+    const project = SearchRoutes.firstString(req.body?.project) ?? SearchRoutes.firstString(req.query.project);
     const limit = Math.min(Math.max(parseInt(String(req.body?.limit || req.query.limit || '5'), 10) || 5, 1), 20);
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
 
     if (!query || query.length < 20) {
       res.json({ context: '', count: 0 });
@@ -472,11 +480,16 @@ export class SearchRoutes extends BaseRouteHandler {
     let result: any;
     try {
       result = await this.searchManager.search({
-        query, type: 'observations', project, limit: String(limit), format: 'json'
+        query,
+        type: 'observations',
+        project,
+        limit: String(limit),
+        format: 'json',
+        ...(platformSource ? { platformSource } : {}),
       });
     } catch (error) {
       const normalizedError = error instanceof Error ? error : new Error(String(error));
-      logger.error('HTTP', 'Semantic context query failed', { query, project }, normalizedError);
+      logger.error('HTTP', 'Semantic context query failed', { query, project, platformSource }, normalizedError);
       res.json({ context: '', count: 0 });
       return;
     }
@@ -498,6 +511,38 @@ export class SearchRoutes extends BaseRouteHandler {
     res.json({ context: lines.join('\n'), count: observations.length });
   });
 
+  private static firstString(value: unknown): string | undefined {
+    if (Array.isArray(value)) {
+      return SearchRoutes.firstString(value[0]);
+    }
+    return typeof value === 'string' && value.trim() ? value : undefined;
+  }
+
+  private getOptionalPlatformSourceFromRequest(req: Request): string | undefined {
+    const body = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
+    const header = req.get?.('x-platform-source')
+      ?? req.get?.('x-claude-mem-platform-source');
+    const rawPlatformSource =
+      SearchRoutes.firstString(req.query.platformSource)
+      ?? SearchRoutes.firstString(req.query.platform_source)
+      ?? SearchRoutes.firstString(body.platformSource)
+      ?? SearchRoutes.firstString(body.platform_source)
+      ?? SearchRoutes.firstString(header);
+
+    return rawPlatformSource ? normalizePlatformSource(rawPlatformSource) : undefined;
+  }
+
+  private queryWithPlatformSource(req: Request): Record<string, any> {
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+    if (!platformSource) {
+      return req.query as Record<string, any>;
+    }
+    return {
+      ...(req.query as Record<string, any>),
+      platformSource,
+    };
+  }
+
   private handleOnboardingExplainer = this.wrapHandler((_req: Request, res: Response): void => {
     if (cachedOnboardingExplainer === null) {
       res.status(404).json({ error: 'Onboarding explainer not available' });
@@ -508,7 +553,7 @@ export class SearchRoutes extends BaseRouteHandler {
   });
 
   private handleGetTimelineByQuery = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const result = await this.searchManager.getTimelineByQuery(req.query);
+    const result = await this.searchManager.getTimelineByQuery(this.queryWithPlatformSource(req));
     res.json(result);
   });
 

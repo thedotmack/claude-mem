@@ -3,7 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import pg from 'pg';
 import {
-  bootstrapServerBetaPostgresSchema,
+  bootstrapServerPostgresSchema,
   createPostgresStorageRepositories,
   type PostgresPoolClient,
   type PostgresStorageRepositories,
@@ -12,6 +12,7 @@ import {
   processGeneratedResponse,
   markGenerationFailed,
 } from '../../../src/server/generation/processGeneratedResponse.js';
+import { ModeManager } from '../../../src/services/domain/ModeManager.js';
 
 const testDatabaseUrl = process.env.CLAUDE_MEM_TEST_POSTGRES_URL;
 
@@ -35,11 +36,14 @@ describe('processGeneratedResponse + markGenerationFailed', () => {
   let jobId: string;
 
   beforeEach(async () => {
+    // The generation path reads the active ModeManager mode; load it so this
+    // file runs standalone instead of relying on another test file's side effect.
+    ModeManager.getInstance().loadMode('code');
     client = await pool.connect();
     schemaName = `cm_phase5_${crypto.randomUUID().replaceAll('-', '_')}`;
     await client.query(`CREATE SCHEMA ${quoteIdentifier(schemaName)}`);
     await client.query(`SET search_path TO ${quoteIdentifier(schemaName)}`);
-    await bootstrapServerBetaPostgresSchema(client);
+    await bootstrapServerPostgresSchema(client);
     storage = createPostgresStorageRepositories(client);
 
     const team = await storage.teams.create({ name: 'team-a' });
@@ -143,6 +147,61 @@ describe('processGeneratedResponse + markGenerationFailed', () => {
     expect(sources[0]!.sourceType).toBe('agent_event');
     expect(sources[0]!.sourceId).toBe(eventId);
     expect(sources[0]!.generationJobId).toBe(jobId);
+  });
+
+  it('records token + observation usage when metering is enabled', async () => {
+    const prev = process.env.CLAUDE_MEM_USAGE_METERING;
+    process.env.CLAUDE_MEM_USAGE_METERING = '1';
+    try {
+      const xml = `
+        <observation>
+          <type>discovery</type>
+          <title>Metered</title>
+          <facts><fact>token metering</fact></facts>
+        </observation>
+      `;
+      await storage.observationGenerationJobs.transitionStatus({ id: jobId, projectId, teamId, status: 'processing' });
+      const fresh = (await reloadJob())!;
+      const outcome = await processGeneratedResponse({
+        pool: pool as unknown as Parameters<typeof processGeneratedResponse>[0]['pool'],
+        job: fresh,
+        rawText: xml,
+        providerLabel: 'fake',
+        modelId: 'fake-1',
+        tokensUsed: 1234,
+      });
+      expect(outcome.kind).toBe('completed');
+
+      const usage = await pool.query(
+        `SELECT kind, SUM(quantity)::bigint AS total FROM usage_events WHERE team_id = $1 GROUP BY kind`,
+        [teamId],
+      );
+      const byKind: Record<string, number> = {};
+      for (const r of usage.rows) byKind[r.kind] = Number(r.total);
+      expect(byKind.tokens).toBe(1234);
+      expect(byKind.observation).toBe(1);
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDE_MEM_USAGE_METERING;
+      else process.env.CLAUDE_MEM_USAGE_METERING = prev;
+    }
+  });
+
+  it('does NOT record usage when metering is disabled', async () => {
+    const prev = process.env.CLAUDE_MEM_USAGE_METERING;
+    delete process.env.CLAUDE_MEM_USAGE_METERING;
+    try {
+      const xml = `<observation><type>discovery</type><title>x</title><facts><fact>f</fact></facts></observation>`;
+      await storage.observationGenerationJobs.transitionStatus({ id: jobId, projectId, teamId, status: 'processing' });
+      const fresh = (await reloadJob())!;
+      await processGeneratedResponse({
+        pool: pool as unknown as Parameters<typeof processGeneratedResponse>[0]['pool'],
+        job: fresh, rawText: xml, providerLabel: 'fake', modelId: 'fake-1', tokensUsed: 999,
+      });
+      const n = await pool.query(`SELECT count(*)::int AS n FROM usage_events WHERE team_id = $1`, [teamId]);
+      expect(n.rows[0]?.n).toBe(0);
+    } finally {
+      if (prev !== undefined) process.env.CLAUDE_MEM_USAGE_METERING = prev;
+    }
   });
 
   it('replaying the same job yields exactly one observation (idempotency)', async () => {

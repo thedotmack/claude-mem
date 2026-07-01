@@ -8,8 +8,8 @@ import { logger } from '../../utils/logger.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
-import { resolveRuntimeContext, logServerBetaFallback } from '../../services/hooks/runtime-selector.js';
-import { isServerBetaClientError } from '../../services/hooks/server-beta-client.js';
+import { resolveRuntimeContext, logServerFallback } from '../../services/hooks/runtime-selector.js';
+import { isServerClientError } from '../../services/hooks/server-client.js';
 
 async function dispatchToWorker(
   input: NormalizedHookInput,
@@ -61,11 +61,15 @@ export const observationHandler: EventHandler = {
     }
 
     const runtime = resolveRuntimeContext();
-    if (runtime.runtime === 'server-beta') {
+    // Phase 1a (cmem-sdk rename): `runtime.runtime` is the canonical `'server'`
+    // value. `runtime-selector.selectRuntime()` continues to accept the legacy
+    // `'server-beta'` literal in settings.json and normalizes it to `'server'`.
+    if (runtime.runtime === 'server') {
       try {
         await runtime.client.recordEvent({
           projectId: runtime.projectId,
           contentSessionId: sessionId,
+          platformSource,
           sourceType: 'hook',
           eventType: 'tool_use',
           occurredAtEpoch: Date.now(),
@@ -79,14 +83,14 @@ export const observationHandler: EventHandler = {
             platformSource,
           },
         });
-        logger.debug('HOOK', 'Observation sent successfully via server-beta', { toolName });
+        logger.debug('HOOK', 'Observation sent successfully via server', { toolName });
         return { continue: true, suppressOutput: true };
       } catch (error: unknown) {
-        if (isServerBetaClientError(error) && error.isFallbackEligible()) {
-          logServerBetaFallback(error.kind, { status: error.status, message: error.message, route: '/v1/events' });
+        if (isServerClientError(error) && error.isFallbackEligible()) {
+          logServerFallback(error.kind, { status: error.status, message: error.message, route: '/v1/events' });
           // fall through to worker fallback
         } else {
-          logger.error('HOOK', 'Server beta event failed (non-recoverable)', {
+          logger.error('HOOK', 'Server event failed (non-recoverable)', {
             error: error instanceof Error ? error.message : String(error),
           });
           return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };

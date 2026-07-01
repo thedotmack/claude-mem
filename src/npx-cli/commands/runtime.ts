@@ -30,8 +30,16 @@ function workerServiceScriptPath(): string {
   return join(marketplaceDirectory(), 'plugin', 'scripts', 'worker-service.cjs');
 }
 
-function serverBetaServiceScriptPath(): string {
-  return join(marketplaceDirectory(), 'plugin', 'scripts', 'server-beta-service.cjs');
+function serverServiceScriptPath(): string {
+  // Plan §1c line 149: prefer the renamed `server-service.cjs`, but fall
+  // back to the legacy `server-beta-service.cjs` for installed plugin
+  // caches that pre-date the rename (forced reinstall not required).
+  const scriptsDir = join(marketplaceDirectory(), 'plugin', 'scripts');
+  const renamed = join(scriptsDir, 'server-service.cjs');
+  if (existsSync(renamed)) {
+    return renamed;
+  }
+  return join(scriptsDir, 'server-beta-service.cjs');
 }
 
 /**
@@ -71,13 +79,13 @@ function spawnBunWorkerCommand(command: string, extraArgs: string[] = []): void 
   spawnPlugin(bunPath, [workerScript, command, ...extraArgs]);
 }
 
-function spawnBunServerBetaCommand(command: string, extraArgs: string[] = []): void {
+function spawnBunServerCommand(command: string, extraArgs: string[] = []): void {
   ensureInstalledOrExit();
   const bunPath = resolveBunOrExit();
-  const serverScript = serverBetaServiceScriptPath();
+  const serverScript = serverServiceScriptPath();
 
   if (!existsSync(serverScript)) {
-    console.error(pc.red(`Server beta script not found at: ${serverScript}`));
+    console.error(pc.red(`Server script not found at: ${serverScript}`));
     console.error('The installation may be corrupted. Try: npx claude-mem install');
     process.exit(1);
   }
@@ -85,27 +93,27 @@ function spawnBunServerBetaCommand(command: string, extraArgs: string[] = []): v
   spawnPlugin(bunPath, [serverScript, command, ...extraArgs]);
 }
 
-export function runServerBetaStartCommand(): void {
-  spawnBunServerBetaCommand('start');
+export function runServerStartCommand(): void {
+  spawnBunServerCommand('start');
 }
 
-export function runServerBetaStopCommand(): void {
-  spawnBunServerBetaCommand('stop');
+export function runServerStopCommand(): void {
+  spawnBunServerCommand('stop');
 }
 
-export function runServerBetaRestartCommand(): void {
-  spawnBunServerBetaCommand('restart');
+export function runServerRestartCommand(): void {
+  spawnBunServerCommand('restart');
 }
 
-export function runServerBetaStatusCommand(): void {
-  spawnBunServerBetaCommand('status');
+export function runServerStatusCommand(): void {
+  spawnBunServerCommand('status');
 }
 
 // Phase 10 — start the BullMQ generation worker (no HTTP). Use this in
 // Compose to scale generation horizontally while a single (or multiple)
-// HTTP-only server-beta replicas serve writes/reads.
-export function runServerBetaWorkerStartCommand(): void {
-  spawnBunServerBetaCommand('worker', ['start']);
+// HTTP-only server replicas serve writes/reads.
+export function runServerWorkerStartCommand(): void {
+  spawnBunServerCommand('worker', ['start']);
 }
 
 export function runStartCommand(): void {

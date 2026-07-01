@@ -44,8 +44,6 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
   protected abstract readonly providerName: string;
   /** Prefix for the synthetic memorySessionId (e.g. 'gemini', 'openrouter'). */
   protected abstract readonly syntheticIdPrefix: string;
-  /** Gemini guards its truncation loop with `truncated.length > 0`; OpenRouter does not. */
-  protected abstract readonly requireNonEmptyToTruncate: boolean;
   /**
    * When a query returns empty content for an observation/summary message:
    * OpenRouter still calls processAgentResponse('') (forwards the empty batch
@@ -283,37 +281,4 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     throw error;
   }
 
-  protected truncateHistory(history: ConversationMessage[], maxContextMessages: number, maxEstimatedTokens: number): ConversationMessage[] {
-    if (history.length <= maxContextMessages) {
-      const totalTokens = history.reduce((sum, m) => sum + this.estimateTokens(m.content), 0);
-      if (totalTokens <= maxEstimatedTokens) {
-        return history;
-      }
-    }
-
-    const truncated: ConversationMessage[] = [];
-    let tokenCount = 0;
-
-    for (let i = history.length - 1; i >= 0; i--) {
-      const msg = history[i];
-      const msgTokens = this.estimateTokens(msg.content);
-
-      const overLimit = truncated.length >= maxContextMessages || tokenCount + msgTokens > maxEstimatedTokens;
-      if ((!this.requireNonEmptyToTruncate || truncated.length > 0) && overLimit) {
-        logger.warn('SDK', 'Context window truncated to prevent runaway costs', {
-          originalMessages: history.length,
-          keptMessages: truncated.length,
-          droppedMessages: i + 1,
-          estimatedTokens: tokenCount,
-          tokenLimit: maxEstimatedTokens
-        });
-        break;
-      }
-
-      truncated.unshift(msg);
-      tokenCount += msgTokens;
-    }
-
-    return truncated;
-  }
 }

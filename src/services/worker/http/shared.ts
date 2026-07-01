@@ -90,7 +90,7 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
   let promptNumber: number;
   try {
     sessionDbId = store.createSDKSession(payload.contentSessionId, project, '', undefined, platformSource);
-    promptNumber = store.getPromptNumberFromUserPrompts(payload.contentSessionId);
+    promptNumber = store.getPromptNumberFromUserPrompts(payload.contentSessionId, sessionDbId);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.error('INGEST', 'Observation session resolution failed', {

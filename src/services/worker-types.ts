@@ -26,10 +26,9 @@ export interface ActiveSession {
   currentProvider: 'claude' | 'gemini' | 'openrouter' | null;
   consecutiveRestarts: number;
   /**
-   * Consecutive non-XML (idle/prose/poisoned) observer outputs. Reset to 0 on a
-   * valid parse. When it reaches the recovery threshold the SDK session is
-   * killed and respawned so a poisoned session can't wedge the pipeline at zero
-   * (plan-11, #2485).
+   * Legacy invalid-output counter. Ordinary non-XML observer output is now
+   * confirmed as a no-op and resets this to 0 so skip acknowledgements never
+   * accumulate respawn debt.
    */
   consecutiveInvalidOutputs: number;
   forceInit?: boolean;

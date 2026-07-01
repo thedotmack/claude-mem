@@ -15,12 +15,12 @@ import { ServerV1PostgresRoutes } from '../../src/server/routes/v1/ServerV1Postg
 import { SessionsObservationsAdapter } from '../../src/server/compat/SessionsObservationsAdapter.js';
 import { SessionsSummarizeAdapter } from '../../src/server/compat/SessionsSummarizeAdapter.js';
 import {
-  bootstrapServerBetaPostgresSchema,
+  bootstrapServerPostgresSchema,
   createPostgresStorageRepositories,
   type PostgresPoolClient,
   type PostgresStorageRepositories,
 } from '../../src/storage/postgres/index.js';
-import { DisabledServerBetaQueueManager } from '../../src/server/runtime/types.js';
+import { DisabledServerQueueManager } from '../../src/server/runtime/types.js';
 import { logger } from '../../src/utils/logger.js';
 
 const testDatabaseUrl = process.env.CLAUDE_MEM_TEST_POSTGRES_URL;
@@ -67,7 +67,7 @@ describe('Phase 9 compat adapters', () => {
     schemaName = `cm_phase9_${crypto.randomUUID().replaceAll('-', '_')}`;
     await client.query(`CREATE SCHEMA ${quoteIdentifier(schemaName)}`);
     await client.query(`SET search_path TO ${quoteIdentifier(schemaName)}`);
-    await bootstrapServerBetaPostgresSchema(client);
+    await bootstrapServerPostgresSchema(client);
     pool.on('connect', (poolClient) => {
       poolClient.query(`SET search_path TO ${quoteIdentifier(schemaName)}`).catch(() => {});
     });
@@ -113,7 +113,7 @@ describe('Phase 9 compat adapters', () => {
     });
     const v1Routes = new ServerV1PostgresRoutes({
       pool: pool as never,
-      queueManager: new DisabledServerBetaQueueManager('disabled in tests'),
+      queueManager: new DisabledServerQueueManager('disabled in tests'),
       authMode: 'api-key',
       runtime: 'server-beta',
       sessionPolicy: 'per-event',
@@ -198,7 +198,7 @@ describe('Phase 9 compat adapters', () => {
 
     // Confirm the event row landed and references the new server_session.
     const eventRows = await client.query(
-      `SELECT id, source_adapter, event_type, server_session_id, payload
+      `SELECT id, source_adapter, event_type, server_session_id, platform_source, payload
        FROM agent_events WHERE id = $1`,
       [body.eventId],
     );
@@ -207,12 +207,20 @@ describe('Phase 9 compat adapters', () => {
       source_adapter: string;
       event_type: string;
       server_session_id: string;
+      platform_source: string;
       payload: { tool_name: string };
     };
     expect(evt.source_adapter).toBe('claude-code-compat');
     expect(evt.event_type).toBe('tool_use');
     expect(evt.server_session_id).toBe(body.serverSessionId);
+    expect(evt.platform_source).toBe('claude');
     expect(evt.payload.tool_name).toBe('Read');
+
+    const sessionRows = await client.query(
+      `SELECT platform_source FROM server_sessions WHERE id = $1`,
+      [body.serverSessionId],
+    );
+    expect((sessionRows.rows[0] as { platform_source: string }).platform_source).toBe('claude');
 
     // Outbox row was created.
     const outboxRows = await client.query(
@@ -259,8 +267,51 @@ describe('Phase 9 compat adapters', () => {
     const b2 = await r2.json();
 
     expect(b1.serverSessionId).toBe(b2.serverSessionId);
+    const sessionRows = await client.query(
+      `SELECT platform_source FROM server_sessions WHERE id = $1`,
+      [b1.serverSessionId],
+    );
+    expect((sessionRows.rows[0] as { platform_source: string }).platform_source).toBe('claude');
     // Two events, two outbox rows.
     expect(enqueuedEventJobs.length).toBe(2);
+  });
+
+  it('POST /api/sessions/observations scopes same contentSessionId by normalized platformSource', async () => {
+    const claude = await authedFetch(projectScopedApiKey, '/api/sessions/observations', {
+      method: 'POST',
+      body: JSON.stringify({
+        contentSessionId: 'cc-platform-shared-session',
+        tool_name: 'Read',
+        platformSource: 'claude-code',
+      }),
+    });
+    const claudeBody = await claude.json();
+
+    const cursor = await authedFetch(projectScopedApiKey, '/api/sessions/observations', {
+      method: 'POST',
+      body: JSON.stringify({
+        contentSessionId: 'cc-platform-shared-session',
+        tool_name: 'Read',
+        platformSource: 'Cursor',
+      }),
+    });
+    const cursorBody = await cursor.json();
+
+    expect(claude.status).toBe(200);
+    expect(cursor.status).toBe(200);
+    expect(cursorBody.serverSessionId).not.toBe(claudeBody.serverSessionId);
+
+    const sessionRows = await client.query(
+      `SELECT id, platform_source FROM server_sessions WHERE content_session_id = $1 ORDER BY platform_source`,
+      ['cc-platform-shared-session'],
+    );
+    expect(sessionRows.rows.map(row => ({
+      id: (row as { id: string }).id,
+      platform_source: (row as { platform_source: string }).platform_source,
+    }))).toEqual([
+      { id: claudeBody.serverSessionId, platform_source: 'claude' },
+      { id: cursorBody.serverSessionId, platform_source: 'cursor' },
+    ]);
   });
 
   it('POST /api/sessions/summarize ends server_session and enqueues summary job (legacy response shape)', async () => {

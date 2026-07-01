@@ -4,6 +4,66 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.9.2] - 2026-07-01
+
+## Bug Fix
+
+**Removed client-side context truncation from the provider layer.**
+
+The `OpenAICompatibleProvider` applied a sliding-window truncation to conversation history — a hardcoded 20-message cap and a 100k-token "safety" limit layered on top of the model's own context window. In practice it fired on message count alone, dropping conversation messages at ~12k tokens (nowhere near the token limit) and silently corrupting history, mislabeled as "runaway cost" prevention. This broke setups whose real model context window bore no relation to those hardcoded assumptions.
+
+The full conversation history is now sent to the provider, which owns its own context window.
+
+### Removed
+- `OpenAICompatibleProvider.truncateHistory()` and the `requireNonEmptyToTruncate` flag
+- `truncateHistoryForOpenRouter` / `truncateHistoryForGemini` wrappers and their message/token constants
+- `CLAUDE_MEM_{GEMINI,OPENROUTER}_MAX_CONTEXT_MESSAGES` / `_MAX_TOKENS` settings, defaults, and validation
+- Related tests, docs, and installer references
+
+Merged in #3096. Verified: `tsc` clean, 2248 tests passing, build-and-sync clean.
+
+## [13.9.1] - 2026-06-29
+
+## What's Changed
+
+Patch release shipping the platform-source recovery work merged in #3088, plus dependency and Codex hardening.
+
+### Fixes
+- **codex:** load startup context through MCP, with HTTP fallback to the worker
+- **codex:** avoid shell spawning the Codex installer
+- **recovery:** scope memories by platform source
+- **observer:** drop invalid prose and pause on quota
+- **chroma:** prewarm uvx and harden shutdown
+- **deps:** surface dependency-health preflight and degrade gracefully when CLI deps are missing
+- **telemetry:** replace Bun UUIDv5 dependency
+
+### Tests
+- Stabilize session init after the server rename
+- Restore Chroma MCP mock to prevent cross-suite leakage
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v13.9.0...v13.9.1
+
+## [13.9.0] - 2026-06-29
+
+## Highlights
+
+### 🚀 New: \`claude-mem/sdk\` (cmem-sdk)
+A fully in-process capture → compress → semantic-search pipeline with **no HTTP worker and no Redis**. Import \`createCmemClient\` from \`claude-mem/sdk\`, point it at Postgres + a running \`uvx chroma-mcp\` + an LLM provider, and call \`capture\`/\`generate\`/\`search\`/\`context\`/session methods directly.
+
+- New reference docs: **CMEM-SDK Reference** under *SDK & Embedding*.
+- Bundle keeps \`pg\`, \`zod\`, \`@modelcontextprotocol/sdk\`, and \`@anthropic-ai/sdk\` external so consumers resolve them against the installed package.
+
+### ♻️ Server runtime rename
+\`server-beta\` → \`server\` across the runtime, with intentional back-compat aliases for existing settings files. Removed inert \`ProviderRegistry\`/\`EventBroadcaster\` boundaries and consolidated the queue resolver.
+
+### 🐛 Fixes
+- \`generate()\`: a provider crash or parse error no longer leaves a job stuck in \`processing\`; it is transitioned to terminal \`failed\` with \`last_error\` recorded before re-throwing.
+- \`search()\`: empty-query path now reports \`chroma: false\` (filter-only, not degraded) instead of falsely claiming a Chroma result.
+- CI: the docker e2e job now calls the renamed \`e2e:server:docker\` script.
+- Docs: corrected \`sdk.mdx\`'s stale parse-error behavior note.
+
+**Full PR:** #3077
+
 ## [13.8.0] - 2026-06-21
 
 ## Telemetry: observation volume on per-session rollups

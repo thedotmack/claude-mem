@@ -15,9 +15,10 @@ describe('server-runtime-setup — install planning (#2543)', () => {
     expect(normalizeRuntimeFlag(undefined)).toBe('worker');
     expect(normalizeRuntimeFlag('')).toBe('worker');
     expect(normalizeRuntimeFlag('worker')).toBe('worker');
-    expect(normalizeRuntimeFlag('server')).toBe('server-beta');
-    expect(normalizeRuntimeFlag('server-beta')).toBe('server-beta');
-    expect(normalizeRuntimeFlag('SERVER')).toBe('server-beta');
+    expect(normalizeRuntimeFlag('server')).toBe('server');
+    // Phase 1d: legacy literal accepted, normalized to canonical 'server'.
+    expect(normalizeRuntimeFlag('server-beta')).toBe('server');
+    expect(normalizeRuntimeFlag('SERVER')).toBe('server');
     expect(normalizeRuntimeFlag('bogus')).toBeNull();
   });
 
@@ -28,9 +29,9 @@ describe('server-runtime-setup — install planning (#2543)', () => {
     });
 
     // Settings flip hooks to the server runtime.
-    expect(plan.runtime).toBe('server-beta');
-    expect(plan.settings.CLAUDE_MEM_RUNTIME).toBe('server-beta');
-    expect(plan.settings.CLAUDE_MEM_SERVER_BETA_URL).toBe('http://127.0.0.1:37877');
+    expect(plan.runtime).toBe('server');
+    expect(plan.settings.CLAUDE_MEM_RUNTIME).toBe('server');
+    expect(plan.settings.CLAUDE_MEM_SERVER_URL).toBe('http://127.0.0.1:37877');
 
     // Docker stack brought up by default.
     expect(plan.bringUpDockerStack).toBe(true);
@@ -86,16 +87,18 @@ describe('server-runtime-setup — uninstall planning / runtime dispatch (#2568)
   });
 
   it('server runtime with managed stack: tears down Docker and clears server settings', () => {
-    const plan = planServerRuntimeUninstall({ selectedRuntime: 'server-beta', dockerStackManaged: true });
+    const plan = planServerRuntimeUninstall({ selectedRuntime: 'server', dockerStackManaged: true });
     expect(plan.isServerRuntime).toBe(true);
     expect(plan.tearDownDockerStack).toBe(true);
     expect(plan.clearServerSettings).toBe(true);
     expect(plan.settingsKeysToClear).toEqual(SERVER_RUNTIME_SETTINGS_KEYS);
+    // Phase 1d back-compat: legacy CLAUDE_MEM_SERVER_BETA_* keys are also cleared.
     expect(plan.settingsKeysToClear).toContain('CLAUDE_MEM_SERVER_BETA_API_KEY');
+    expect(plan.settingsKeysToClear).toContain('CLAUDE_MEM_SERVER_API_KEY');
   });
 
   it('server runtime with externally-managed stack: clears settings but leaves Docker', () => {
-    const plan = planServerRuntimeUninstall({ selectedRuntime: 'server-beta', dockerStackManaged: false });
+    const plan = planServerRuntimeUninstall({ selectedRuntime: 'server', dockerStackManaged: false });
     expect(plan.isServerRuntime).toBe(true);
     expect(plan.tearDownDockerStack).toBe(false);
     expect(plan.clearServerSettings).toBe(true);

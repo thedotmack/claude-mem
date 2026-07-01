@@ -201,13 +201,20 @@ describe('Install Non-TTY Support', () => {
         .toBeLessThan(installRegion.indexOf('registerCodexMarketplace(marketplaceRoot)'));
     });
 
-    it('resolves codex.cmd on Windows via a shell-aware spawn (#2695)', () => {
+    it('resolves codex.cmd on Windows without shell argument re-tokenization (#2695)', () => {
       const codexSpawnRegion = codexInstallerSource.slice(
-        codexInstallerSource.indexOf('export function codexSpawn'),
+        codexInstallerSource.indexOf('export function resolveCodexSpawnInvocation'),
         codexInstallerSource.indexOf('function runCodex'),
       );
-      expect(codexSpawnRegion).toContain("process.platform === 'win32'");
-      expect(codexSpawnRegion).toContain('shell: true');
+      const resolverRegion = codexInstallerSource.slice(
+        codexInstallerSource.indexOf('export function resolveCodexCommand'),
+        codexInstallerSource.indexOf('/**\n * Spawn the `codex` CLI.'),
+      );
+      expect(codexSpawnRegion).toContain("platform === 'win32'");
+      expect(codexSpawnRegion).toContain("command: 'cmd.exe'");
+      expect(codexSpawnRegion).toContain("args: ['/d', '/s', '/c', [resolvedCommand, ...args].map(quoteCmdArgument).join(' ')]");
+      expect(codexSpawnRegion).not.toContain('shell: true');
+      expect(resolverRegion).toContain("'codex.cmd'");
     });
 
     it('removes legacy Codex AGENTS context only after marketplace registration succeeds', () => {
@@ -269,7 +276,10 @@ describe('Install Non-TTY Support', () => {
 
   describe('runtime selection', () => {
     it('offers Server (beta) while keeping worker as the default runtime', () => {
-      expect(installSource).toContain("'server-beta'");
+      // Phase 1d: installer writes the new canonical `'server'` runtime value.
+      // The legacy `'server-beta'` value is still accepted by
+      // runtime-selector.ts for existing installs, but new writes use 'server'.
+      expect(installSource).toContain("value: 'server'");
       expect(installSource).toContain('Server (beta)');
       expect(installSource).toContain("initialValue: 'worker'");
       expect(installSource).toContain('CLAUDE_MEM_RUNTIME');

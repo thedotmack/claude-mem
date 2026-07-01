@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import type { Application, Request, Response } from 'express';
+import type { Application, Request, RequestHandler, Response } from 'express';
 import { z, type ZodTypeAny } from 'zod';
 import type { RouteHandler } from '../../../services/server/Server.js';
 import { CreateAgentEventSchema } from '../../../core/schemas/agent-event.js';
@@ -17,21 +17,45 @@ import {
 } from '../../../storage/postgres/generation-jobs.js';
 import { PostgresAuthRepository } from '../../../storage/postgres/auth.js';
 import { PostgresObservationRepository } from '../../../storage/postgres/observations.js';
+import { PostgresProjectsRepository } from '../../../storage/postgres/projects.js';
 import { logger } from '../../../utils/logger.js';
 import { requirePostgresServerAuth } from '../../middleware/postgres-auth.js';
+import { PostgresDataDeletionRepository } from '../../../storage/postgres/data-deletion.js';
 import { requestIdMiddleware } from '../../middleware/request-id.js';
-import type { ActiveServerBetaQueueManager } from '../../runtime/ActiveServerBetaQueueManager.js';
-import type { ServerBetaQueueManager } from '../../runtime/types.js';
+import type { ActiveServerQueueManager } from '../../runtime/ActiveServerQueueManager.js';
+import type { ServerQueueManager } from '../../runtime/types.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { createRecallMcpServer, type RecallBackend } from '../../mcp/recall-mcp-server.js';
+import { requireRateLimit, requireMonthlyQuota } from '../../middleware/rate-limit.js';
+import { meterRequests } from '../../middleware/usage-metering.js';
+import { PostgresUsageRepository } from '../../../storage/postgres/usage.js';
+import { createHash, randomBytes } from 'node:crypto';
 import { PostgresServerSessionsRepository } from '../../../storage/postgres/server-sessions.js';
 import type { ServerSessionGenerationPolicy } from '../../runtime/SessionGenerationPolicy.js';
 import { IngestEventsService, type EnqueueOutcome } from '../../services/IngestEventsService.js';
 import { EndSessionService } from '../../services/EndSessionService.js';
+import { normalizePlatformSource, normalizePlatformSourceOrNull } from '../../../shared/platform-source.js';
 
 const SOURCE_ADAPTER_DEFAULT = 'api';
 
+declare const __DEFAULT_PACKAGE_VERSION__: string;
+const MCP_SERVER_VERSION =
+  typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
+
+// The MCP link base: CLAUDE_MEM_PUBLIC_URL in prod (behind a proxy/LB), else
+// derived from the request host so the connect command points at this server.
+function mcpConnectUrl(req: Request): string {
+  const base = (process.env.CLAUDE_MEM_PUBLIC_URL ?? `${req.protocol}://${req.get('host') ?? 'localhost'}`)
+    .replace(/\/+$/, '');
+  return `${base}/v1/mcp`;
+}
+function mcpConnectCommand(mcpUrl: string, key: string): string {
+  return `claude mcp add --transport http claude-mem ${mcpUrl} --header "Authorization: Bearer ${key}"`;
+}
+
 export interface ServerV1PostgresRoutesOptions {
   pool: PostgresPool;
-  queueManager: ServerBetaQueueManager;
+  queueManager: ServerQueueManager;
   authMode?: string;
   runtime?: string;
   allowLocalDevBypass?: boolean;
@@ -39,8 +63,8 @@ export interface ServerV1PostgresRoutesOptions {
   // When the manager is the disabled adapter, enqueue is silently skipped and
   // the outbox row stays in `queued` state for startup reconciliation to
   // pick up — never claim observations were generated.
-  getEventQueue?: () => ReturnType<ActiveServerBetaQueueManager['getQueue']> | null;
-  getSummaryQueue?: () => ReturnType<ActiveServerBetaQueueManager['getQueue']> | null;
+  getEventQueue?: () => ReturnType<ActiveServerQueueManager['getQueue']> | null;
+  getSummaryQueue?: () => ReturnType<ActiveServerQueueManager['getQueue']> | null;
   sessionPolicy?: ServerSessionGenerationPolicy;
 }
 
@@ -133,16 +157,95 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     // an inbound X-Request-Id header) so registering it multiple times for
     // overlapping route trees would still produce one canonical id per req.
     app.use('/v1', requestIdMiddleware());
-    const writeAuth = requirePostgresServerAuth(this.options.pool, {
+    const baseWrite = requirePostgresServerAuth(this.options.pool, {
       authMode: this.options.authMode,
       allowLocalDevBypass: this.options.allowLocalDevBypass,
       requiredScopes: ['memories:write'],
     });
-    const readAuth = requirePostgresServerAuth(this.options.pool, {
+    const baseRead = requirePostgresServerAuth(this.options.pool, {
       authMode: this.options.authMode,
       allowLocalDevBypass: this.options.allowLocalDevBypass,
       requiredScopes: ['memories:read'],
     });
+    // Paid-readiness guards, all opt-in via env so default behavior is unchanged
+    // (empty array → readAuth/writeAuth are just the base auth). Express accepts
+    // a middleware array wherever a single handler goes, so the per-route
+    // registrations below need no changes. Order after auth: rate limit → quota
+    // → meter, so the request is counted only once it's admitted.
+    const guards: RequestHandler[] = [];
+    const ratePerMin = Number(process.env.CLAUDE_MEM_RATE_LIMIT_PER_MIN ?? '0');
+    if (ratePerMin > 0) guards.push(requireRateLimit(this.options.pool, { windowSec: 60, max: ratePerMin }));
+    const monthlyCap = Number(process.env.CLAUDE_MEM_MONTHLY_REQUEST_CAP ?? '0');
+    if (monthlyCap > 0) guards.push(requireMonthlyQuota(this.options.pool, { kind: 'request', cap: monthlyCap }));
+    if (process.env.CLAUDE_MEM_USAGE_METERING === '1') guards.push(meterRequests(this.options.pool));
+    // A monthly TOKEN cap gates writes only (ingestion drives generation = token
+    // spend); reads stay available so a team over budget can still recall.
+    const writeGuards: RequestHandler[] = [...guards];
+    const tokenCap = Number(process.env.CLAUDE_MEM_MONTHLY_TOKEN_CAP ?? '0');
+    if (tokenCap > 0) writeGuards.push(requireMonthlyQuota(this.options.pool, { kind: 'tokens', cap: tokenCap }));
+    const writeAuth: RequestHandler[] = [baseWrite, ...writeGuards];
+    const readAuth: RequestHandler[] = [baseRead, ...guards];
+
+    // GET /v1/usage — per-kind usage totals for the caller's team this month.
+    app.get('/v1/usage', readAuth, this.asyncHandler(async (req, res) => {
+      const teamId = this.requireTeamId(req, res);
+      if (!teamId) return;
+      const monthStart = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1));
+      const usage = await new PostgresUsageRepository(this.options.pool).summarize({ teamId, since: monthStart });
+      res.status(200).json({ since: monthStart.toISOString(), usage });
+    }));
+
+    // POST /v1/keys — mint a READ-ONLY, optionally-expiring API key for the
+    // caller's team and return the ready-to-paste connect command. Gated by
+    // writeAuth: minting a lesser (read) key requires you can already write the
+    // team's memory, which avoids a read key escalating into more keys. The raw
+    // key is shown exactly once.
+    app.post('/v1/keys', writeAuth, this.handleCreate(
+      z.object({
+        label: z.string().max(120).optional(),
+        expiresInDays: z.number().int().positive().max(365).optional(),
+      }),
+      async (req, res, body) => {
+        const teamId = this.requireTeamId(req, res);
+        if (!teamId) return;
+        const raw = `cm_${randomBytes(24).toString('hex')}`;
+        const keyHash = createHash('sha256').update(raw).digest('hex');
+        const expiresAt = body.expiresInDays
+          ? new Date(Date.now() + body.expiresInDays * 86_400_000)
+          : null;
+        const key = await new PostgresAuthRepository(this.options.pool).createApiKey({
+          keyHash,
+          teamId,
+          projectId: req.authContext?.projectId ?? null,
+          actorId: req.authContext?.apiKeyId ?? 'api',
+          scopes: ['memories:read'],
+          expiresAt,
+        });
+        void body.label; // reserved for when api_keys grows a label column
+        const mcpUrl = mcpConnectUrl(req);
+        res.status(201).json({
+          id: key.id,
+          apiKey: raw, // shown ONCE — store it now
+          scopes: ['memories:read'],
+          expiresAt: expiresAt?.toISOString() ?? null,
+          mcpUrl,
+          connectCommand: mcpConnectCommand(mcpUrl, raw),
+        });
+      },
+    ));
+
+    // GET /v1/connect — the paste-ready MCP connect command (placeholder key, so
+    // a GET never mints). Use POST /v1/keys to get a real read-only key.
+    app.get('/v1/connect', readAuth, this.asyncHandler(async (req, res) => {
+      const teamId = this.requireTeamId(req, res);
+      if (!teamId) return;
+      const mcpUrl = mcpConnectUrl(req);
+      res.status(200).json({
+        mcpUrl,
+        connectCommand: mcpConnectCommand(mcpUrl, '<YOUR_API_KEY>'),
+        hint: 'POST /v1/keys (write scope) to mint a read-only key for this link.',
+      });
+    }));
 
     // POST /v1/events — single event with optional async generation
     app.post('/v1/events', writeAuth, this.asyncHandler(async (req, res) => {
@@ -165,27 +268,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
 
       const insertInput = this.toAgentEventInput(body, teamId);
-      // Link events to their session: clients send `contentSessionId` on /v1/events
-      // but not `serverSessionId`, leaving tool_use events unlinked. The session was
-      // already registered via /v1/sessions/start, so resolve it here (scoped by
-      // project+team — no cross-tenant linkage).
-      if (!insertInput.serverSessionId && body.contentSessionId) {
-        // Best-effort: a lookup failure (transient DB/pool error) must not fail
-        // ingestion — fall through and store the event unlinked (prior behavior).
-        try {
-          const linkedId = await new PostgresServerSessionsRepository(this.options.pool)
-            .findIdByContentSessionId({
-              contentSessionId: body.contentSessionId,
-              projectId: body.projectId,
-              teamId,
-            });
-          if (linkedId) insertInput.serverSessionId = linkedId;
-        } catch (err) {
-          logger.warn('HTTP', 'session linkage lookup failed; storing event unlinked', {
-            error: err instanceof Error ? err.message : String(err),
-          });
-        }
-      }
+      await this.applyContentSessionLinks([insertInput], [req.body], teamId);
       let event: PostgresAgentEvent;
       let outbox: PostgresObservationGenerationJob | null = null;
       let enqueueState: EnqueueOutcome = 'skipped';
@@ -264,6 +347,11 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       }
 
       const inputs = result.data.map(item => this.toAgentEventInput(item, teamId));
+      await this.applyContentSessionLinks(
+        inputs,
+        Array.isArray(req.body) ? req.body : result.data,
+        teamId,
+      );
 
       let inserted: { event: PostgresAgentEvent; outbox: PostgresObservationGenerationJob | null }[] = [];
       let enqueueResults: EnqueueOutcome[] = [];
@@ -663,7 +751,8 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     }));
 
     // POST /v1/sessions/start — create-or-find a server_session, idempotent
-    // on (project_id, external_session_id). Body matches the worker
+    // on platform-scoped external session identity when platformSource is set.
+    // Body matches the worker
     // /v1/sessions/start payload but stores into Postgres server_sessions.
     app.post('/v1/sessions/start', writeAuth, this.handleCreate(
       z.object({
@@ -680,12 +769,14 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         if (!teamId) return;
         if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
         const repo = new PostgresServerSessionsRepository(this.options.pool);
+        const platformSource = normalizePlatformSourceOrNull(body.platformSource);
         try {
           if (body.externalSessionId) {
             const existing = await repo.findByExternalIdForScope({
               externalSessionId: body.externalSessionId,
               projectId: body.projectId,
               teamId,
+              platformSource,
             });
             if (existing) {
               res.status(200).json({ session: serializeSession(existing) });
@@ -701,15 +792,15 @@ export class ServerV1PostgresRoutes implements RouteHandler {
               contentSessionId: body.contentSessionId ?? null,
               agentId: body.agentId ?? null,
               agentType: body.agentType ?? null,
-              platformSource: body.platformSource ?? null,
+              platformSource,
               metadata: (body.metadata ?? {}) as Record<string, unknown>,
             });
           } catch (error) {
             // Concurrent /v1/sessions/start with the same externalSessionId
             // can race past the findByExternalIdForScope check; the second
-            // insert hits the (project_id, external_session_id) unique
-            // constraint. Refetch and return the row inserted by the winner
-            // so legacy clients never see a spurious 500.
+            // insert can hit a platform-scoped unique constraint. Refetch and
+            // return the row inserted by the winner so legacy clients never
+            // see a spurious 500.
             if (
               body.externalSessionId &&
               (error as { code?: string } | null)?.code === '23505'
@@ -718,6 +809,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
                 externalSessionId: body.externalSessionId,
                 projectId: body.projectId,
                 teamId,
+                platformSource,
               });
               if (racedRow) {
                 res.status(200).json({ session: serializeSession(racedRow) });
@@ -855,11 +947,13 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         projectId: z.string().min(1),
         query: z.string().min(1),
         limit: z.number().int().positive().max(100).optional(),
+        platformSource: z.string().min(1).nullable().optional(),
       }),
       async (req, res, body) => {
         const teamId = this.requireTeamId(req, res);
         if (!teamId) return;
         if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
+        const platformSource = normalizePlatformSourceOrNull(body.platformSource);
         try {
           const repo = new PostgresObservationRepository(this.options.pool);
           const results = await repo.search({
@@ -867,11 +961,13 @@ export class ServerV1PostgresRoutes implements RouteHandler {
             teamId,
             query: body.query,
             limit: body.limit ?? 20,
+            platformSource,
           });
           await this.auditRead(req, 'observation.read', null, body.projectId, {
             mode: 'search',
             query: body.query,
             limit: body.limit ?? 20,
+            platformSource,
             resultCount: results.length,
             observationIds: results.map(o => o.id),
           });
@@ -893,11 +989,13 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         projectId: z.string().min(1),
         query: z.string().min(1),
         limit: z.number().int().positive().max(50).optional(),
+        platformSource: z.string().min(1).nullable().optional(),
       }),
       async (req, res, body) => {
         const teamId = this.requireTeamId(req, res);
         if (!teamId) return;
         if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
+        const platformSource = normalizePlatformSourceOrNull(body.platformSource);
         try {
           const repo = new PostgresObservationRepository(this.options.pool);
           const results = await repo.search({
@@ -905,6 +1003,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
             teamId,
             query: body.query,
             limit: body.limit ?? 10,
+            platformSource,
           });
           const context = results
             .map(observation => observation.content)
@@ -914,6 +1013,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
             mode: 'context',
             query: body.query,
             limit: body.limit ?? 10,
+            platformSource,
             resultCount: results.length,
             observationIds: results.map(o => o.id),
           });
@@ -926,6 +1026,126 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         }
       },
     ));
+
+    // Remote authenticated MCP endpoint. The "secure MCP link" a user pastes
+    // into Claude Code (or any MCP client) to recall their cloud memory:
+    //   claude mcp add --transport http claude-mem <base>/v1/mcp \
+    //     --header "Authorization: Bearer cm_..."
+    // Same readAuth (memories:read) + team/project scoping + audit trail as
+    // /v1/search, so it reads identical data through identical guards. Stateless
+    // streamable-HTTP: one transport + server per request, bound to this key's team.
+    const mcpHandler = this.asyncHandler(async (req, res) => {
+      const teamId = this.requireTeamId(req, res);
+      if (!teamId) return;
+      const projectScope = req.authContext?.projectId ?? null;
+      const repo = new PostgresObservationRepository(this.options.pool);
+      const assertProjectAllowed = (projectId: string): void => {
+        if (projectScope && projectScope !== projectId) {
+          throw new Error('API key is scoped to a different project');
+        }
+      };
+      const backend: RecallBackend = {
+        search: async ({ projectId, query, limit }) => {
+          assertProjectAllowed(projectId);
+          const rows = await repo.search({ projectId, teamId, query, limit });
+          // Audit the read, same as POST /v1/search — the MCP path is no exception.
+          await this.auditRead(req, 'observation.read', null, projectId, {
+            mode: 'search', via: 'mcp', query, limit,
+            resultCount: rows.length, observationIds: rows.map(o => o.id),
+          });
+          return rows.map(serializeObservation);
+        },
+        context: async ({ projectId, query, limit }) => {
+          assertProjectAllowed(projectId);
+          const rows = await repo.search({ projectId, teamId, query, limit });
+          await this.auditRead(req, 'observation.read', null, projectId, {
+            mode: 'context', via: 'mcp', query, limit,
+            resultCount: rows.length, observationIds: rows.map(o => o.id),
+          });
+          return rows.map(serializeObservation);
+        },
+        recent: async ({ projectId, limit }) => {
+          assertProjectAllowed(projectId);
+          const rows = await repo.listByProject({ projectId, teamId, limit });
+          await this.auditRead(req, 'observation.read', null, projectId, {
+            mode: 'recent', via: 'mcp', limit,
+            resultCount: rows.length, observationIds: rows.map(o => o.id),
+          });
+          return rows.map(serializeObservation);
+        },
+      };
+      const server = createRecallMcpServer(backend, MCP_SERVER_VERSION);
+      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+      res.on('close', () => {
+        void transport.close();
+        void server.close();
+      });
+      await server.connect(transport);
+      await transport.handleRequest(req, res, req.body);
+    });
+    // MCP streamable-HTTP only uses POST (JSON-RPC) and GET (SSE). Scope the
+    // route to those instead of app.all, so DELETE/PUT/PATCH/OPTIONS don't run
+    // auth + transport only to be rejected.
+    app.post('/v1/mcp', readAuth, mcpHandler);
+    app.get('/v1/mcp', readAuth, mcpHandler);
+
+    // DELETE /v1/memories/:id — forget a single observation (sources cascade).
+    app.delete('/v1/memories/:id', writeAuth, this.asyncHandler(async (req, res) => {
+      const teamId = this.requireTeamId(req, res);
+      if (!teamId) return;
+      const id = String(req.params.id);
+      const projectScope = req.authContext?.projectId ?? null;
+      try {
+        const deletion = new PostgresDataDeletionRepository(this.options.pool);
+        // Project-scoped key deletes within its project; a team-scoped key
+        // matches by id + team across the team's projects.
+        let deleted: boolean;
+        if (projectScope) {
+          deleted = await deletion.deleteObservation({ id, projectId: projectScope, teamId });
+        } else {
+          const byTeam = await this.options.pool.query(
+            `DELETE FROM observations WHERE id = $1 AND team_id = $2`,
+            [id, teamId],
+          );
+          deleted = (byTeam.rowCount ?? 0) > 0;
+        }
+        if (!deleted) {
+          res.status(404).json({ error: 'not_found' });
+          return;
+        }
+        await this.auditWrite(req, 'observation.deleted', id, projectScope, { via: 'api' });
+        res.status(200).json({ deleted: true, id });
+      } catch (error) {
+        this.handleDbError(error, res, 'observation.delete');
+      }
+    }));
+
+    // DELETE /v1/projects/:projectId/memory — forget EVERYTHING captured for a
+    // project (observations, raw events, sessions, jobs). Keeps the project shell.
+    app.delete('/v1/projects/:projectId/memory', writeAuth, this.asyncHandler(async (req, res) => {
+      const teamId = this.requireTeamId(req, res);
+      if (!teamId) return;
+      const projectId = String(req.params.projectId);
+      if (!this.ensureProjectAllowed(req, res, projectId)) return;
+      try {
+        // ensureProjectAllowed only checks a key's *optional* project scope, so a
+        // team-scoped key could otherwise purge any projectId. Confirm the project
+        // belongs to this team before purging, and 404 if it doesn't — without this
+        // a cross-team or nonexistent projectId returns 200 with zero counts,
+        // misreporting an unauthorized purge as success.
+        const project = await new PostgresProjectsRepository(this.options.pool).getByIdForTeam(projectId, teamId);
+        if (!project) {
+          res.status(404).json({ error: 'not_found' });
+          return;
+        }
+        const counts = await new PostgresDataDeletionRepository(this.options.pool)
+          .purgeProjectMemory({ projectId, teamId });
+        await this.auditWrite(req, 'project.memory_purged', projectId, projectId, { ...counts, via: 'api' });
+        res.status(200).json({ purged: true, projectId, counts });
+      } catch (error) {
+        this.handleDbError(error, res, 'project.purge');
+      }
+    }));
   }
 
   private async auditRead(
@@ -960,12 +1180,12 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     }
   }
 
-  private resolveQueue(lane: 'summary' | 'event'): ReturnType<ActiveServerBetaQueueManager['getQueue']> | null {
+  private resolveQueue(lane: 'summary' | 'event'): ReturnType<ActiveServerQueueManager['getQueue']> | null {
     const override = lane === 'summary' ? this.options.getSummaryQueue : this.options.getEventQueue;
     if (override) {
       return override();
     }
-    const manager = this.options.queueManager as Partial<ActiveServerBetaQueueManager>;
+    const manager = this.options.queueManager as Partial<ActiveServerQueueManager>;
     if (typeof manager.getQueue === 'function') {
       try {
         return manager.getQueue(lane);
@@ -989,7 +1209,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         ? ((body as Record<string, unknown>).sourceEventId as string)
         : null,
       eventType: body.eventType,
-      platformSource: body.platformSource ?? null,
+      platformSource: normalizePlatformSourceOrNull(body.platformSource),
       payload: (body.payload ?? {}) as object,
       metadata: typeof (body as Record<string, unknown>).metadata === 'object'
         && (body as Record<string, unknown>).metadata !== null
@@ -1006,6 +1226,59 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       return null;
     }
     return teamId;
+  }
+
+  private async applyContentSessionLinks(
+    inputs: CreatePostgresAgentEventInput[],
+    rawBodies: unknown[],
+    teamId: string,
+  ): Promise<void> {
+    const repo = new PostgresServerSessionsRepository(this.options.pool);
+    const lookups = new Map<string, Promise<string | null>>();
+
+    await Promise.all(inputs.map(async (input, index) => {
+      if (input.serverSessionId || !input.contentSessionId) return;
+
+      const platformScope = this.sessionLookupPlatformScope(rawBodies[index]);
+      const hasPlatformScope = Object.prototype.hasOwnProperty.call(platformScope, 'platformSource');
+      const cacheKey = JSON.stringify([
+        input.projectId,
+        teamId,
+        input.contentSessionId,
+        hasPlatformScope,
+        hasPlatformScope ? platformScope.platformSource ?? null : null,
+      ]);
+      let lookup = lookups.get(cacheKey);
+      if (!lookup) {
+        lookup = repo.findIdByContentSessionId({
+          contentSessionId: input.contentSessionId,
+          projectId: input.projectId,
+          teamId,
+          ...platformScope,
+        }).catch((err: unknown) => {
+          logger.warn('HTTP', 'session linkage lookup failed; storing event unlinked', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          return null;
+        });
+        lookups.set(cacheKey, lookup);
+      }
+
+      const linkedId = await lookup;
+      if (linkedId) input.serverSessionId = linkedId;
+    }));
+  }
+
+  private sessionLookupPlatformScope(body: unknown): { platformSource?: string | null } {
+    if (!body || typeof body !== 'object') return {};
+    if (!Object.prototype.hasOwnProperty.call(body, 'platformSource')) return {};
+
+    const value = (body as { platformSource?: unknown }).platformSource;
+    return {
+      platformSource: typeof value === 'string'
+        ? normalizePlatformSource(value)
+        : null,
+    };
   }
 
   private ensureProjectAllowed(req: Request, res: Response, projectId: string): boolean {

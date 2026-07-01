@@ -24,6 +24,16 @@ import { instrument } from '../../../telemetry/instrument.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
 import { getUptimeSeconds } from '../../../../shared/uptime.js';
 import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../../../shared/user-prompts.js';
+import {
+  CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS,
+  clearDependencyStatus,
+  getDependencyStatus,
+  isDependencyStatusInCooldown,
+  recordClaudeCliSetupRequired,
+} from '../../../../shared/dependency-health.js';
+import { findClaudeExecutable } from '../../../../shared/find-claude-executable.js';
+import { isClassified } from '../../provider-errors.js';
+import { classifyClaudeError } from '../../ClaudeProvider.js';
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
 
@@ -34,14 +44,13 @@ const MAX_USER_PROMPT_BYTES = 256 * 1024;
  */
 function normalizeAbortReason(
   reason: string | null | undefined
-): 'idle' | 'shutdown' | 'overflow' | 'restart_guard' | 'quota' | 'poisoned' | 'none' {
+): 'idle' | 'shutdown' | 'overflow' | 'restart_guard' | 'quota' | 'none' {
   switch ((reason ?? '').split(':')[0]) {
     case 'idle': return 'idle';
     case 'shutdown': return 'shutdown';
     case 'overflow': return 'overflow';
     case 'restart-guard': return 'restart_guard';
     case 'quota': return 'quota';
-    case 'poisoned': return 'poisoned';
     default: return 'none';
   }
 }
@@ -94,6 +103,41 @@ export class SessionRoutes extends BaseRouteHandler {
     const selectedProvider = this.getSelectedProvider();
 
     if (!session.generatorPromise) {
+      if (selectedProvider === 'claude') {
+        const claudeStatus = getDependencyStatus('claude_cli');
+        if (claudeStatus?.kind === 'setup_required') {
+          if (isDependencyStatusInCooldown(claudeStatus, CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS)) {
+            logger.warn('SESSION', 'Skipping Claude generator start until setup is repaired', {
+              sessionId: sessionDbId,
+              source,
+              dependency: claudeStatus.dependency,
+              status: claudeStatus.kind,
+              message: claudeStatus.message,
+            });
+            return;
+          }
+
+          try {
+            findClaudeExecutable('SDK');
+            clearDependencyStatus('claude_cli');
+            logger.info('SESSION', 'Claude setup dependency repaired; resuming generator start', {
+              sessionId: sessionDbId,
+              source,
+            });
+          } catch (error) {
+            const classified = classifyClaudeError(error);
+            if (classified.kind === 'setup_required') {
+              recordClaudeCliSetupRequired(classified.message);
+            }
+            logger.warn('SESSION', 'Claude setup dependency still unavailable after cooldown', {
+              sessionId: sessionDbId,
+              source,
+              error: classified.message,
+            });
+            return;
+          }
+        }
+      }
       await this.applyTierRouting(session);
       await this.startGeneratorWithProvider(session, selectedProvider, source);
       return;
@@ -144,7 +188,10 @@ export class SessionRoutes extends BaseRouteHandler {
 
     const myController = session.abortController;
 
-    session.generatorPromise = agent.startSession(session, this.workerService)
+    let skipGeneratorExitFinalization = false;
+    let generatorPromise: Promise<void>;
+
+    generatorPromise = agent.startSession(session, this.workerService)
       .catch(async error => {
         if (myController.signal.aborted) {
           logger.debug('HTTP', 'Generator catch: ignoring error after abort', { sessionId: session.sessionDbId });
@@ -152,6 +199,16 @@ export class SessionRoutes extends BaseRouteHandler {
         }
 
         const errorMsg = error instanceof Error ? error.message : String(error);
+        if (provider === 'claude' && isClassified(error) && error.kind === 'setup_required') {
+          skipGeneratorExitFinalization = true;
+          recordClaudeCliSetupRequired(error.message);
+          logger.warn('SESSION', 'Claude generator start requires setup; future Claude starts will be skipped until repaired', {
+            sessionId: session.sessionDbId,
+            provider,
+            error: error.message,
+          });
+          return;
+        }
 
         if (errorMsg.includes('code 143') || errorMsg.includes('signal SIGTERM')) {
           logger.warn('SESSION', 'Generator killed by external signal', {
@@ -201,12 +258,22 @@ export class SessionRoutes extends BaseRouteHandler {
         );
       })
       .finally(async () => {
+        if (skipGeneratorExitFinalization) {
+          if (session.generatorPromise === generatorPromise) {
+            session.generatorPromise = null;
+          }
+          if (session.currentProvider === provider) {
+            session.currentProvider = null;
+          }
+          return;
+        }
+
         const reason = session.abortReason ?? null;
         session.abortReason = null;  // consume the reason
         if (reason !== null) {
           // Abort accounting lives HERE, where the reason is consumed — the
-          // ONLY point every abort flow (idle / shutdown / overflow / quota /
-          // poisoned) passes through. Emit the closed enum, never the raw
+          // ONLY point every abort flow (idle / shutdown / overflow / quota)
+          // passes through. Emit the closed enum, never the raw
           // string ('quota:…' carries a window suffix).
           telemetryBuffer.record('session_compressed', session.sessionDbId, {
             outcome: 'aborted',
@@ -222,6 +289,7 @@ export class SessionRoutes extends BaseRouteHandler {
           completionHandler: this.completionHandler,
         });
       });
+    session.generatorPromise = generatorPromise;
   }
 
   setupRoutes(app: express.Application): void {
@@ -278,12 +346,12 @@ export class SessionRoutes extends BaseRouteHandler {
       tool_input,
       tool_response,
       cwd,
-      platformSource,
       agentId,
       agentType,
       tool_use_id,
       toolUseId,
     } = req.body;
+    const platformSource = this.getPlatformSourceFromRequest(req);
 
     const result = await ingestObservation({
       contentSessionId,
@@ -312,7 +380,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
   private handleSummarizeByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { contentSessionId, last_assistant_message, agentId } = req.body;
-    const platformSource = normalizePlatformSource(req.body.platformSource);
+    const platformSource = this.getPlatformSourceFromRequest(req);
 
     if (agentId) {
       res.json({ status: 'skipped', reason: 'subagent_context' });
@@ -322,7 +390,7 @@ export class SessionRoutes extends BaseRouteHandler {
     const store = this.dbManager.getSessionStore();
 
     const sessionDbId = store.createSDKSession(contentSessionId, '', '', undefined, platformSource);
-    const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId);
+    const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId);
 
     const privacy = PrivacyCheckValidator.checkUserPromptPrivacy(
       store,
@@ -348,15 +416,38 @@ export class SessionRoutes extends BaseRouteHandler {
     res.json({ status: 'queued' });
   });
 
+  private static firstString(value: unknown): string | undefined {
+    if (Array.isArray(value)) {
+      return SessionRoutes.firstString(value[0]);
+    }
+    return typeof value === 'string' && value.trim() ? value : undefined;
+  }
+
+  private getPlatformSourceFromRequest(req: Request): string {
+    const body = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
+    const header = req.get?.('x-platform-source')
+      ?? req.get?.('x-claude-mem-platform-source');
+    const rawPlatformSource =
+      SessionRoutes.firstString(req.query.platformSource)
+      ?? SessionRoutes.firstString(req.query.platform_source)
+      ?? SessionRoutes.firstString(body.platformSource)
+      ?? SessionRoutes.firstString(body.platform_source)
+      ?? SessionRoutes.firstString(header);
+
+    return normalizePlatformSource(rawPlatformSource);
+  }
+
   private handleStatusByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const contentSessionId = req.query.contentSessionId as string;
+    const contentSessionId = SessionRoutes.firstString(req.query.contentSessionId)
+      ?? SessionRoutes.firstString(req.query.content_session_id);
 
     if (!contentSessionId) {
       return this.badRequest(res, 'Missing contentSessionId query parameter');
     }
 
     const store = this.dbManager.getSessionStore();
-    const sessionDbId = store.createSDKSession(contentSessionId, '', '');
+    const platformSource = this.getPlatformSourceFromRequest(req);
+    const sessionDbId = store.createSDKSession(contentSessionId, '', '', undefined, platformSource);
     const session = this.sessionManager.getSession(sessionDbId);
 
     if (!session) {
@@ -380,7 +471,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
     const project = req.body.project || 'unknown';
     const rawPrompt = typeof req.body.prompt === 'string' ? req.body.prompt : undefined;
-    const platformSource = normalizePlatformSource(req.body.platformSource);
+    const platformSource = this.getPlatformSourceFromRequest(req);
     const customTitle = req.body.customTitle || undefined;
 
     if (rawPrompt && isInternalProtocolPayload(rawPrompt)) {
@@ -424,7 +515,7 @@ export class SessionRoutes extends BaseRouteHandler {
       sessionId: sessionDbId
     });
 
-    const currentCount = store.getPromptNumberFromUserPrompts(contentSessionId);
+    const currentCount = store.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId);
     const promptNumber = currentCount + 1;
 
     const memorySessionId = dbSession?.memory_session_id || null;
@@ -455,7 +546,8 @@ export class SessionRoutes extends BaseRouteHandler {
     const duplicatePrompt = store.findRecentDuplicateUserPrompt(
       contentSessionId,
       cleanedPrompt,
-      USER_PROMPT_DEDUPE_WINDOW_MS
+      USER_PROMPT_DEDUPE_WINDOW_MS,
+      sessionDbId
     );
 
     if (duplicatePrompt) {
@@ -477,7 +569,7 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
-    store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt);
+    store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt, sessionDbId);
 
     const contextInjected = this.sessionManager.getSession(sessionDbId) !== undefined;
 
@@ -491,7 +583,7 @@ export class SessionRoutes extends BaseRouteHandler {
       const sdkPrompt = cleanedPrompt.startsWith('/') ? cleanedPrompt.substring(1) : cleanedPrompt;
       const session = this.sessionManager.initializeSession(sessionDbId, sdkPrompt, promptNumber);
 
-      const latestPrompt = store.getLatestUserPrompt(session.contentSessionId);
+      const latestPrompt = store.getLatestUserPrompt(session.contentSessionId, sessionDbId);
 
       if (latestPrompt) {
         this.eventBroadcaster.broadcastNewPrompt({
@@ -512,7 +604,8 @@ export class SessionRoutes extends BaseRouteHandler {
           latestPrompt.project,
           promptText,
           latestPrompt.prompt_number,
-          latestPrompt.created_at_epoch
+          latestPrompt.created_at_epoch,
+          latestPrompt.platform_source
         ).then(() => {
           const chromaDuration = Date.now() - chromaStart;
           const truncatedPrompt = promptText.length > 60

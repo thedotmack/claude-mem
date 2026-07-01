@@ -40,6 +40,21 @@ describe('MCP tool inputSchema declarations', () => {
     expect(getObsSection).toContain("required:");
   });
 
+  it('session_start_context exposes worker SessionStart renderer parameters', async () => {
+    const src = await Bun.file(mcpServerPath).text();
+    const section = src.slice(
+      src.indexOf("name: 'session_start_context'"),
+      src.indexOf("name: 'observation_add'"),
+    );
+    expect(section).toContain('/api/context/inject');
+    expect(section).toContain('handleSessionStartContext');
+    expect(section).toContain('project:');
+    expect(section).toContain('projects:');
+    expect(section).toContain('platformSource:');
+    expect(section).toContain('full:');
+    expect(section).toContain('colors:');
+  });
+
   // Phase 8 — observation_* tools backed by server-beta REST core.
   it('observation_add tool declares content as required', async () => {
     const src = await Bun.file(mcpServerPath).text();
@@ -59,6 +74,7 @@ describe('MCP tool inputSchema declarations', () => {
       src.indexOf("name: 'observation_search'"),
     );
     expect(section).toContain('eventType:');
+    expect(section).toContain('platformSource:');
     expect(section).toContain("required: ['eventType']");
     expect(section).toContain('handleObservationRecordEvent');
   });
@@ -70,6 +86,7 @@ describe('MCP tool inputSchema declarations', () => {
       src.indexOf("name: 'observation_context'"),
     );
     expect(section).toContain('query:');
+    expect(section).toContain('platformSource:');
     expect(section).toContain('limit:');
     expect(section).toContain("required: ['query']");
     expect(section).toContain('handleObservationSearch');
@@ -82,6 +99,7 @@ describe('MCP tool inputSchema declarations', () => {
       src.indexOf("name: 'observation_generation_status'"),
     );
     expect(section).toContain("required: ['query']");
+    expect(section).toContain('platformSource:');
     expect(section).toContain('handleObservationContext');
   });
 
@@ -91,6 +109,17 @@ describe('MCP tool inputSchema declarations', () => {
     expect(section).toContain('jobId:');
     expect(section).toContain("required: ['jobId']");
     expect(section).toContain('handleObservationGenerationStatus');
+  });
+
+  it('server-beta observation MCP handlers normalize platformSource args', async () => {
+    const src = await Bun.file(mcpServerPath).text();
+    const handlers = src.slice(
+      src.indexOf('function normalizeMcpPlatformSource'),
+      src.indexOf('interface ObservationGenerationStatusArgs'),
+    );
+    expect(src).toContain("import { normalizePlatformSource } from '../shared/platform-source.js'");
+    expect(handlers).toContain('normalizePlatformSource(value)');
+    expect(handlers).toContain('platformSource: normalizeMcpPlatformSource(args.platformSource)');
   });
 
   it('memory_* compatibility aliases delegate to observation handlers', async () => {
@@ -105,9 +134,11 @@ describe('MCP tool inputSchema declarations', () => {
     expect(memoryContext).toContain('handleObservationContext');
   });
 
-  it('mcp-server skips worker auto-start when runtime=server-beta (anti-pattern guard)', async () => {
+  it('mcp-server skips worker auto-start when runtime=server (anti-pattern guard)', async () => {
     const src = await Bun.file(mcpServerPath).text();
-    expect(src).toContain("selectRuntime() === 'server-beta'");
+    // Phase 1a (cmem-sdk rename): canonical runtime literal is `'server'`.
+    // `selectRuntime()` normalizes the legacy `'server-beta'` to `'server'`.
+    expect(src).toContain("selectRuntime() === 'server'");
     expect(src).toContain('skipping worker auto-start');
   });
 

@@ -12,6 +12,7 @@ import { isPidAlive } from '../../supervisor/process-registry.js';
 import { ENV_PREFIXES, ENV_EXACT_MATCHES } from '../../supervisor/env-sanitizer.js';
 import { flushResponseThen } from './flushResponseThen.js';
 import { getUptimeSeconds } from '../../shared/uptime.js';
+import { snapshotDependencyHealth, type DependencyHealthSnapshot } from '../../shared/dependency-health.js';
 import { globalRateLimitStore } from '../worker/RateLimitStore.js';
 import type { ObservationQueueHealth } from '../../server/queue/queue-health-types.js';
 
@@ -87,6 +88,7 @@ export interface ServerOptions {
   workerPath: string;
   runtime?: string;
   getAiStatus: () => AiStatus;
+  getDependencyHealth?: () => DependencyHealthSnapshot;
   preBodyParserRoutes?: RouteHandler[];
   getQueueHealth?: () => ObservationQueueHealth | null | Promise<ObservationQueueHealth | null>;
   // #2572 — when true, install a minimal set of hardening response headers
@@ -214,6 +216,9 @@ export class Server {
         ? await this.options.getQueueHealth()
         : null;
       const queueDegraded = queueHealth?.engine === 'bullmq' && queueHealth.redis.status === 'error';
+      const dependencyHealth = this.options.getDependencyHealth
+        ? this.options.getDependencyHealth()
+        : snapshotDependencyHealth();
       res.status(queueDegraded ? 503 : 200).json({
         status: queueDegraded ? 'degraded' : 'ok',
         ...(this.options.runtime ? { runtime: this.options.runtime } : {}),
@@ -227,6 +232,7 @@ export class Server {
         initialized: this.options.getInitializationComplete(),
         mcpReady: this.options.getMcpReady(),
         ai: this.options.getAiStatus(),
+        dependencies: dependencyHealth,
         rateLimits: globalRateLimitStore.getMostRecentByWindow(),
         ...(queueHealth ? { queue: queueHealth } : {}),
       });
@@ -348,6 +354,9 @@ export class Server {
         health: {
           deadProcessPids,
           envClean,
+          dependencies: this.options.getDependencyHealth
+            ? this.options.getDependencyHealth()
+            : snapshotDependencyHealth(),
         },
       });
     });

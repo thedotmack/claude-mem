@@ -3,7 +3,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import pg from 'pg';
 import {
-  bootstrapServerBetaPostgresSchema,
+  bootstrapServerPostgresSchema,
   createPostgresStorageRepositories,
   PostgresServerSessionsRepository,
   type PostgresPoolClient,
@@ -99,7 +99,7 @@ describe('ServerSessionRuntimeRepository + Postgres', () => {
     schemaName = `cm_phase6_${crypto.randomUUID().replaceAll('-', '_')}`;
     await client.query(`CREATE SCHEMA ${quoteIdentifier(schemaName)}`);
     await client.query(`SET search_path TO ${quoteIdentifier(schemaName)}`);
-    await bootstrapServerBetaPostgresSchema(client);
+    await bootstrapServerPostgresSchema(client);
     storage = createPostgresStorageRepositories(client);
     runtime = new ServerSessionRuntimeRepository({ client });
 
@@ -124,7 +124,7 @@ describe('ServerSessionRuntimeRepository + Postgres', () => {
     await pool.end();
   });
 
-  it('getActiveSession is idempotent on (project_id, external_session_id)', async () => {
+  it('getActiveSession is idempotent on legacy no-platform external_session_id', async () => {
     const a = await runtime.getActiveSession({
       teamId,
       projectId,
@@ -137,6 +137,32 @@ describe('ServerSessionRuntimeRepository + Postgres', () => {
     });
     expect(a.id).toBe(b.id);
     expect(a.externalSessionId).toBe('ext-1');
+  });
+
+  it('getActiveSession scopes external_session_id by normalized platformSource', async () => {
+    const cursor = await runtime.getActiveSession({
+      teamId,
+      projectId,
+      externalSessionId: 'shared-ext-runtime',
+      platformSource: 'Cursor',
+    });
+    const cursorAgain = await runtime.getActiveSession({
+      teamId,
+      projectId,
+      externalSessionId: 'shared-ext-runtime',
+      platformSource: 'cursor-cli',
+    });
+    const codex = await runtime.getActiveSession({
+      teamId,
+      projectId,
+      externalSessionId: 'shared-ext-runtime',
+      platformSource: 'Codex CLI',
+    });
+
+    expect(cursorAgain.id).toBe(cursor.id);
+    expect(cursor.platformSource).toBe('cursor');
+    expect(codex.platformSource).toBe('codex');
+    expect(codex.id).not.toBe(cursor.id);
   });
 
   it('endSession is idempotent and never duplicates summary jobs', async () => {

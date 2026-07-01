@@ -1,7 +1,7 @@
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { execFile, execSync, type ChildProcess } from 'child_process';
+import { execFile, execSync, spawn, type ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
 import os from 'os';
@@ -11,15 +11,22 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
+import { clearDependencyStatus, recordUvxVectorSearchUnavailable } from '../../shared/dependency-health.js';
+import { ChromaUnavailableError } from '../worker/search/errors.js';
 
 const execFileAsync = promisify(execFile);
 
 const CHROMA_MCP_CLIENT_NAME = 'claude-mem-chroma';
 const CHROMA_MCP_CLIENT_VERSION = '1.0.0';
 const MCP_CONNECTION_TIMEOUT_MS = 30_000;
+const DEFAULT_CHROMA_PREWARM_TIMEOUT_MS = 120_000;
+const CHROMA_PREWARM_TIMEOUT_SETTING = 'CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS';
+const CHROMA_PREWARM_TIMEOUT_BOUNDS = { min: 1, max: 600_000 } as const;
+const CHROMA_PREWARM_REAP_TIMEOUT_MS = 1_000;
 const RECONNECT_BACKOFF_MS = 10_000;
 const DEFAULT_CHROMA_DATA_DIR = paths.chroma();
 const CHROMA_SUPERVISOR_ID = 'chroma-mcp';
+const CHROMA_OUTPUT_TAIL_MAX_CHARS = 2048;
 
 const CHROMA_MCP_PINNED_VERSION = '0.2.6';
 
@@ -51,6 +58,13 @@ const CHROMA_MCP_DEP_OVERRIDES: ReadonlyArray<string> = [
 // `onnxruntime>=1.20` / `protobuf<7`, so cmd.exe parsed them as redirection and
 // died with "The directory name is invalid" in ~10ms — killing semantic search.
 
+class ChromaMcpConnectionCancelledError extends Error {
+  constructor(message = 'chroma-mcp connection cancelled during shutdown') {
+    super(message);
+    this.name = 'ChromaMcpConnectionCancelledError';
+  }
+}
+
 export class ChromaMcpManager {
   private static instance: ChromaMcpManager | null = null;
   private client: Client | null = null;
@@ -58,6 +72,10 @@ export class ChromaMcpManager {
   private connected: boolean = false;
   private lastConnectionFailureTimestamp: number = 0;
   private connecting: Promise<void> | null = null;
+  private activePrewarmChild: ChildProcess | null = null;
+  private connectionGeneration: number = 0;
+  private intentionallyClosingTransports = new WeakSet<object>();
+  private static uvxAvailabilityProbe: ((command: string, env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null = null;
 
   private constructor() {}
 
@@ -75,7 +93,7 @@ export class ChromaMcpManager {
 
     const timeSinceLastFailure = Date.now() - this.lastConnectionFailureTimestamp;
     if (this.lastConnectionFailureTimestamp > 0 && timeSinceLastFailure < RECONNECT_BACKOFF_MS) {
-      throw new Error(`chroma-mcp connection in backoff (${Math.ceil((RECONNECT_BACKOFF_MS - timeSinceLastFailure) / 1000)}s remaining)`);
+      throw new ChromaUnavailableError(`chroma-mcp connection in backoff (${Math.ceil((RECONNECT_BACKOFF_MS - timeSinceLastFailure) / 1000)}s remaining)`);
     }
 
     if (this.connecting) {
@@ -87,6 +105,10 @@ export class ChromaMcpManager {
     try {
       await this.connecting;
     } catch (error) {
+      if (error instanceof ChromaMcpConnectionCancelledError) {
+        logger.debug('CHROMA_MCP', 'Connection attempt cancelled during shutdown');
+        throw error;
+      }
       this.lastConnectionFailureTimestamp = Date.now();
       if (error instanceof Error) {
         logger.error('CHROMA_MCP', 'Connection attempt failed', {}, error);
@@ -100,6 +122,8 @@ export class ChromaMcpManager {
   }
 
   private async connectInternal(): Promise<void> {
+    const connectionGeneration = this.connectionGeneration;
+
     // Singleton invariant (#2313): kill any pre-existing chroma-mcp subprocess
     // tree before spawning a new one. The MCP SDK's transport.close() only
     // signals the direct child (uvx); on Linux the grandchildren (uv, python,
@@ -108,9 +132,10 @@ export class ChromaMcpManager {
     // tree-kill primitive used by stop() so reconnect can never leave
     // orphans behind.
     await this.disposeCurrentSubprocess();
+    this.assertConnectionNotCancelled(connectionGeneration);
 
     const commandArgs = this.buildCommandArgs();
-    const spawnEnvironment = this.getSpawnEnv();
+    const uvxPreflightEnv = ChromaMcpManager.getUvxPreflightEnv();
     getSupervisor().assertCanSpawn('chroma mcp');
 
     // Spawn uvx DIRECTLY (no `cmd.exe /c` shell). On Windows, routing through
@@ -120,6 +145,19 @@ export class ChromaMcpManager {
     // PATHEXT-resolve a bare `uvx`) and bare `uvx` elsewhere (#2696).
     const uvxSpawnCommand = ChromaMcpManager.resolveUvxCommand();
     const uvxSpawnArgs = commandArgs;
+
+    if (!ChromaMcpManager.isUvxAvailable(uvxSpawnCommand, uvxPreflightEnv, process.platform)) {
+      const message = `uvx executable not found for chroma-mcp (${uvxSpawnCommand})`;
+      recordUvxVectorSearchUnavailable(message);
+      throw new ChromaUnavailableError(message);
+    }
+
+    const spawnEnvironment = this.getSpawnEnv(uvxPreflightEnv);
+
+    await this.prewarmChromaMcp(uvxSpawnCommand, uvxSpawnArgs, spawnEnvironment, connectionGeneration);
+    this.assertConnectionNotCancelled(connectionGeneration);
+
+    clearDependencyStatus('uvx');
 
     logger.info('CHROMA_MCP', 'Connecting to chroma-mcp via MCP stdio', {
       command: uvxSpawnCommand,
@@ -133,6 +171,7 @@ export class ChromaMcpManager {
       cwd: os.homedir(),
       stderr: 'pipe'
     });
+    const transportStderrTail = ChromaMcpManager.captureOutputTail(this.transport.stderr);
 
     this.client = new Client(
       { name: CHROMA_MCP_CLIENT_NAME, version: CHROMA_MCP_CLIENT_VERSION },
@@ -150,10 +189,23 @@ export class ChromaMcpManager {
 
     try {
       await Promise.race([mcpConnectionPromise, timeoutPromise]);
+      this.assertConnectionNotCancelled(connectionGeneration);
     } catch (connectionError) {
       clearTimeout(timeoutId!);
+      if (
+        connectionError instanceof ChromaMcpConnectionCancelledError ||
+        this.connectionGeneration !== connectionGeneration
+      ) {
+        logger.debug('CHROMA_MCP', 'MCP connection cancelled during shutdown');
+        await this.disposeCurrentSubprocess();
+        throw connectionError instanceof ChromaMcpConnectionCancelledError
+          ? connectionError
+          : new ChromaMcpConnectionCancelledError();
+      }
+      const stderrTail = transportStderrTail();
       logger.warn('CHROMA_MCP', 'Connection failed, killing subprocess tree to prevent zombie', {
-        error: connectionError instanceof Error ? connectionError.message : String(connectionError)
+        error: connectionError instanceof Error ? connectionError.message : String(connectionError),
+        ...(stderrTail ? { stderrTail } : {})
       });
       // Tree-kill (not just transport.close) so failed-connect descendants
       // can't survive on Linux (#2313).
@@ -172,6 +224,13 @@ export class ChromaMcpManager {
     this.transport.onclose = () => {
       if (this.transport !== currentTransport) {
         logger.debug('CHROMA_MCP', 'Ignoring stale onclose from previous transport');
+        return;
+      }
+      if (
+        this.connectionGeneration !== connectionGeneration ||
+        this.intentionallyClosingTransports.has(currentTransport as unknown as object)
+      ) {
+        logger.debug('CHROMA_MCP', 'Ignoring onclose from intentionally closed transport');
         return;
       }
       logger.warn('CHROMA_MCP', 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff');
@@ -197,12 +256,17 @@ export class ChromaMcpManager {
     };
   }
 
+  private assertConnectionNotCancelled(connectionGeneration: number): void {
+    if (this.connectionGeneration !== connectionGeneration) {
+      throw new ChromaMcpConnectionCancelledError();
+    }
+  }
+
   private buildCommandArgs(): string[] {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const chromaMode = settings.CLAUDE_MEM_CHROMA_MODE || 'local';
     const pythonVersion = process.env.CLAUDE_MEM_PYTHON_VERSION || settings.CLAUDE_MEM_PYTHON_VERSION || '3.13';
-
-    const depOverrideFlags = CHROMA_MCP_DEP_OVERRIDES.flatMap(spec => ['--with', spec]);
+    const launcherPrefix = ChromaMcpManager.buildLauncherPrefix(pythonVersion);
 
     if (chromaMode === 'remote') {
       const chromaHost = settings.CLAUDE_MEM_CHROMA_HOST || '127.0.0.1';
@@ -213,9 +277,7 @@ export class ChromaMcpManager {
       const chromaApiKey = settings.CLAUDE_MEM_CHROMA_API_KEY || '';
 
       const args = [
-        '--python', pythonVersion,
-        ...depOverrideFlags,
-        `chroma-mcp==${CHROMA_MCP_PINNED_VERSION}`,
+        ...launcherPrefix,
         '--client-type', 'http',
         '--host', chromaHost,
         '--port', chromaPort
@@ -239,12 +301,185 @@ export class ChromaMcpManager {
     }
 
     return [
-      '--python', pythonVersion,
-      ...depOverrideFlags,
-      `chroma-mcp==${CHROMA_MCP_PINNED_VERSION}`,
+      ...launcherPrefix,
       '--client-type', 'persistent',
       '--data-dir', DEFAULT_CHROMA_DATA_DIR.replace(/\\/g, '/')
     ];
+  }
+
+  private static buildLauncherPrefix(pythonVersion: string): string[] {
+    const depOverrideFlags = CHROMA_MCP_DEP_OVERRIDES.flatMap(spec => ['--with', spec]);
+    return [
+      '--python', pythonVersion,
+      ...depOverrideFlags,
+      '--from', `chroma-mcp==${CHROMA_MCP_PINNED_VERSION}`,
+      'chroma-mcp',
+    ];
+  }
+
+  private static buildPrewarmCommandArgs(commandArgs: string[]): string[] {
+    const executableIndex = commandArgs.indexOf('chroma-mcp');
+    const launcherPrefix = executableIndex >= 0
+      ? commandArgs.slice(0, executableIndex + 1)
+      : commandArgs;
+    return [...launcherPrefix, '--help'];
+  }
+
+  private static parseBoundedTimeoutMs(rawValue: string | undefined): number | null {
+    if (!rawValue) {
+      return null;
+    }
+    const parsed = Number.parseInt(rawValue, 10);
+    if (
+      Number.isFinite(parsed) &&
+      parsed >= CHROMA_PREWARM_TIMEOUT_BOUNDS.min &&
+      parsed <= CHROMA_PREWARM_TIMEOUT_BOUNDS.max
+    ) {
+      return parsed;
+    }
+    return null;
+  }
+
+  private static getChromaPrewarmTimeoutMs(): number {
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const envValue = process.env[CHROMA_PREWARM_TIMEOUT_SETTING];
+    const settingsValue = settings[CHROMA_PREWARM_TIMEOUT_SETTING];
+
+    const parsed = ChromaMcpManager.parseBoundedTimeoutMs(envValue ?? settingsValue);
+    if (parsed !== null) {
+      return parsed;
+    }
+
+    if (envValue !== undefined || settingsValue) {
+      logger.warn('CHROMA_MCP', `Invalid ${CHROMA_PREWARM_TIMEOUT_SETTING}, using default`, {
+        value: envValue ?? settingsValue,
+        min: CHROMA_PREWARM_TIMEOUT_BOUNDS.min,
+        max: CHROMA_PREWARM_TIMEOUT_BOUNDS.max
+      });
+    }
+    return DEFAULT_CHROMA_PREWARM_TIMEOUT_MS;
+  }
+
+  private static captureOutputTail(
+    stream: { on(event: 'data', listener: (chunk: Buffer | string | Uint8Array) => void): unknown } | null | undefined,
+  ): () => string {
+    let tail = '';
+    stream?.on('data', (chunk: Buffer | string | Uint8Array) => {
+      const text = Buffer.isBuffer(chunk)
+        ? chunk.toString()
+        : chunk instanceof Uint8Array
+          ? Buffer.from(chunk).toString()
+          : String(chunk);
+      tail = (tail + text).slice(-CHROMA_OUTPUT_TAIL_MAX_CHARS);
+    });
+    return () => tail.trim();
+  }
+
+  private async prewarmChromaMcp(
+    command: string,
+    commandArgs: string[],
+    env: Record<string, string>,
+    connectionGeneration: number,
+  ): Promise<void> {
+    this.assertConnectionNotCancelled(connectionGeneration);
+
+    const args = ChromaMcpManager.buildPrewarmCommandArgs(commandArgs);
+    const timeoutMs = ChromaMcpManager.getChromaPrewarmTimeoutMs();
+
+    logger.info('CHROMA_MCP', 'Prewarming chroma-mcp uvx environment', {
+      command,
+      args: args.join(' '),
+      timeoutMs
+    });
+
+    const child = spawn(command, args, {
+      cwd: os.homedir(),
+      env,
+      shell: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: process.platform === 'win32',
+    });
+    this.activePrewarmChild = child;
+
+    const stdoutTail = ChromaMcpManager.captureOutputTail(child.stdout);
+    const stderrTail = ChromaMcpManager.captureOutputTail(child.stderr);
+
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    const exitPromise = new Promise<void>((resolve, reject) => {
+      child.once('error', (error) => {
+        if (this.connectionGeneration !== connectionGeneration) {
+          reject(new ChromaMcpConnectionCancelledError());
+          return;
+        }
+        reject(error);
+      });
+      child.once('close', (code: number | null, signal: NodeJS.Signals | null) => {
+        if (this.connectionGeneration !== connectionGeneration) {
+          reject(new ChromaMcpConnectionCancelledError());
+          return;
+        }
+        if (code === 0) {
+          resolve();
+          return;
+        }
+        reject(new Error(`chroma-mcp prewarm exited with code ${code ?? 'null'}${signal ? ` signal ${signal}` : ''}`));
+      });
+    });
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(
+        () => reject(new Error(`chroma-mcp prewarm timed out after ${timeoutMs}ms`)),
+        timeoutMs
+      );
+    });
+
+    try {
+      await Promise.race([exitPromise, timeoutPromise]);
+      this.assertConnectionNotCancelled(connectionGeneration);
+      logger.debug('CHROMA_MCP', 'chroma-mcp uvx prewarm completed');
+    } catch (error) {
+      if (error instanceof ChromaMcpConnectionCancelledError) {
+        logger.debug('CHROMA_MCP', 'chroma-mcp uvx prewarm cancelled during shutdown');
+        throw error;
+      }
+      this.assertConnectionNotCancelled(connectionGeneration);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const pid = child.pid;
+      const stdout = stdoutTail();
+      const stderr = stderrTail();
+      logger.warn('CHROMA_MCP', 'chroma-mcp uvx prewarm failed', {
+        command,
+        args: args.join(' '),
+        timeoutMs,
+        ...(pid ? { pid } : {}),
+        error: errorMessage,
+        ...(stdout ? { stdoutTail: stdout } : {}),
+        ...(stderr ? { stderrTail: stderr } : {})
+      });
+
+      if (pid) {
+        try {
+          await ChromaMcpManager.killProcessTree(pid);
+        } catch (killError) {
+          logger.debug('CHROMA_MCP', 'prewarm process tree kill finished (best-effort)', {
+            pid,
+            error: killError instanceof Error ? killError.message : String(killError)
+          });
+        }
+      } else {
+        try { child.kill('SIGKILL'); } catch { /* already dead */ }
+      }
+
+      const unavailableMessage = `chroma-mcp prewarm failed: ${errorMessage}`;
+      recordUvxVectorSearchUnavailable(unavailableMessage);
+      throw new ChromaUnavailableError(unavailableMessage, error instanceof Error ? error : undefined);
+    } finally {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+      if (this.activePrewarmChild === child) {
+        this.activePrewarmChild = null;
+      }
+    }
   }
 
   async callTool(toolName: string, toolArguments: Record<string, unknown>): Promise<unknown> {
@@ -394,6 +629,13 @@ export class ChromaMcpManager {
    * subprocess (no-op in that case).
    */
   private async disposeCurrentSubprocess(): Promise<void> {
+    await this.disposeActivePrewarm();
+
+    const closingTransport = this.transport;
+    if (closingTransport) {
+      this.intentionallyClosingTransports.add(closingTransport as unknown as object);
+    }
+
     const chromaProcess = (this.transport as unknown as { _process?: ChildProcess })?._process;
     const trackedPid = chromaProcess?.pid;
 
@@ -408,8 +650,8 @@ export class ChromaMcpManager {
       }
     }
 
-    if (this.transport) {
-      try { await this.transport.close(); } catch { /* already dead */ }
+    if (closingTransport) {
+      try { await closingTransport.close(); } catch { /* already dead */ }
     }
     if (this.client) {
       try { await this.client.close(); } catch { /* already dead */ }
@@ -422,6 +664,59 @@ export class ChromaMcpManager {
     this.client = null;
     this.transport = null;
     this.connected = false;
+  }
+
+  private async disposeActivePrewarm(): Promise<void> {
+    const prewarmChild = this.activePrewarmChild;
+    if (!prewarmChild) {
+      return;
+    }
+    if (this.activePrewarmChild === prewarmChild) {
+      this.activePrewarmChild = null;
+    }
+
+    const pid = prewarmChild.pid;
+    if (pid) {
+      try {
+        await ChromaMcpManager.killProcessTree(pid);
+      } catch (error) {
+        logger.warn('CHROMA_MCP', 'failed to kill in-flight chroma-mcp prewarm tree (best-effort)', {
+          pid,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+
+    try {
+      prewarmChild.kill('SIGKILL');
+    } catch {
+      // Already dead.
+    }
+
+    await ChromaMcpManager.waitForChildClose(prewarmChild, CHROMA_PREWARM_REAP_TIMEOUT_MS);
+  }
+
+  private static async waitForChildClose(child: ChildProcess, timeoutMs: number): Promise<void> {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      return;
+    }
+
+    await new Promise<void>((resolve) => {
+      let timeoutId: ReturnType<typeof setTimeout> | null = null;
+      const finish = () => {
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+          timeoutId = null;
+        }
+        child.off('close', finish);
+        child.off('exit', finish);
+        resolve();
+      };
+
+      timeoutId = setTimeout(finish, timeoutMs);
+      child.once('close', finish);
+      child.once('exit', finish);
+    });
   }
 
   /**
@@ -437,7 +732,9 @@ export class ChromaMcpManager {
    * pattern from shutdown.ts (Principle 5: OS-supervised teardown).
    */
   async stop(): Promise<void> {
-    if (!this.client && !this.transport) {
+    this.connectionGeneration += 1;
+
+    if (!this.client && !this.transport && !this.activePrewarmChild) {
       logger.debug('CHROMA_MCP', 'No active MCP connection to stop');
       this.connecting = null;
       return;
@@ -726,6 +1023,54 @@ export class ChromaMcpManager {
     return 'uvx.exe';
   }
 
+  private static isUvxAvailable(
+    command: string,
+    env: Record<string, string>,
+    platform: NodeJS.Platform,
+  ): boolean {
+    if (ChromaMcpManager.uvxAvailabilityProbe) {
+      return ChromaMcpManager.uvxAvailabilityProbe(command, env, platform);
+    }
+
+    const executableNames = platform === 'win32' && !command.toLowerCase().endsWith('.exe')
+      ? [command, `${command}.exe`]
+      : [command];
+
+    if (command.includes('/') || command.includes('\\')) {
+      return executableNames.some(candidate => {
+        try {
+          return fs.existsSync(candidate) && fs.statSync(candidate).isFile();
+        } catch {
+          return false;
+        }
+      });
+    }
+
+    const sep = platform === 'win32' ? ';' : ':';
+    const pathKey = Object.keys(env).find(k => k.toLowerCase() === 'path') ?? 'PATH';
+    const dirs = (env[pathKey] ?? '').split(sep).filter(Boolean);
+
+    for (const dir of dirs) {
+      for (const name of executableNames) {
+        const candidate = path.join(dir, name);
+        try {
+          if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+            return true;
+          }
+        } catch {
+          // Try the next PATH entry.
+        }
+      }
+    }
+    return false;
+  }
+
+  static setUvxAvailabilityProbeForTesting(
+    probe: ((command: string, env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null,
+  ): void {
+    ChromaMcpManager.uvxAvailabilityProbe = probe;
+  }
+
   private static ensureUvOnPath(env: Record<string, string>): void {
     const sep = process.platform === 'win32' ? ';' : ':';
     const pathKey = Object.keys(env).find(k => k.toLowerCase() === 'path') ?? 'PATH';
@@ -746,7 +1091,7 @@ export class ChromaMcpManager {
     }
   }
 
-  private getSpawnEnv(): Record<string, string> {
+  private static getUvxPreflightEnv(): Record<string, string> {
     const baseEnv: Record<string, string> = {};
     for (const [key, value] of Object.entries(sanitizeEnv(process.env))) {
       if (value !== undefined) {
@@ -761,6 +1106,11 @@ export class ChromaMcpManager {
     // Disable Chroma's anonymous telemetry — it issues background HTTP from
     // the embedding subprocess on every collection touch.
     if (!baseEnv.ANONYMIZED_TELEMETRY) baseEnv.ANONYMIZED_TELEMETRY = 'false';
+    return baseEnv;
+  }
+
+  private getSpawnEnv(preflightEnv?: Record<string, string>): Record<string, string> {
+    const baseEnv = preflightEnv ? { ...preflightEnv } : ChromaMcpManager.getUvxPreflightEnv();
 
     const combinedCertPath = this.getCombinedCertPath();
     if (!combinedCertPath) {

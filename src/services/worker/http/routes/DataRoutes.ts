@@ -51,6 +51,8 @@ const observationsBatchSchema = z.object({
   orderBy: z.enum(['date_desc', 'date_asc']).optional(),
   limit: z.number().int().positive().optional(),
   project: z.string().optional(),
+  platformSource: z.string().optional(),
+  platform_source: z.string().optional(),
 }).passthrough();
 
 const sdkSessionsBatchSchema = z.preprocess((value) => {
@@ -128,7 +130,8 @@ export class DataRoutes extends BaseRouteHandler {
     if (id === null) return;
 
     const store = this.dbManager.getSessionStore();
-    const observation = store.getObservationById(id);
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+    const observation = store.getObservationById(id, platformSource);
 
     if (!observation) {
       this.notFound(res, `Observation #${id} not found`);
@@ -155,9 +158,10 @@ export class DataRoutes extends BaseRouteHandler {
     const projects = projectsParam ? projectsParam.split(',').filter(Boolean) : undefined;
     const parsedLimit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
     const limit = Number.isFinite(parsedLimit) && parsedLimit! > 0 ? parsedLimit : undefined;
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
 
     const db = this.dbManager.getSessionStore().db;
-    const observations = getObservationsByFilePath(db, candidatePaths, { projects, limit });
+    const observations = getObservationsByFilePath(db, candidatePaths, { projects, limit, platformSource });
 
     res.json({ observations, count: observations.length });
   });
@@ -171,7 +175,8 @@ export class DataRoutes extends BaseRouteHandler {
     }
 
     const store = this.dbManager.getSessionStore();
-    const observations = store.getObservationsByIds(ids, { orderBy, limit, project });
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+    const observations = store.getObservationsByIds(ids, { orderBy, limit, project, platformSource });
 
     res.json(observations);
   });
@@ -181,7 +186,9 @@ export class DataRoutes extends BaseRouteHandler {
     if (id === null) return;
 
     const store = this.dbManager.getSessionStore();
-    const sessions = store.getSessionSummariesByIds([id]);
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+    const project = DataRoutes.firstString(req.query.project);
+    const sessions = store.getSessionSummariesByIds([id], { project, platformSource });
 
     if (sessions.length === 0) {
       this.notFound(res, `Session #${id} not found`);
@@ -204,7 +211,9 @@ export class DataRoutes extends BaseRouteHandler {
     if (id === null) return;
 
     const store = this.dbManager.getSessionStore();
-    const prompts = store.getUserPromptsByIds([id]);
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+    const project = DataRoutes.firstString(req.query.project);
+    const prompts = store.getUserPromptsByIds([id], { project, platformSource });
 
     if (prompts.length === 0) {
       this.notFound(res, `Prompt #${id} not found`);
@@ -258,8 +267,7 @@ export class DataRoutes extends BaseRouteHandler {
 
   private handleGetProjects = this.wrapHandler((req: Request, res: Response): void => {
     const store = this.dbManager.getSessionStore();
-    const rawPlatformSource = req.query.platformSource as string | undefined;
-    const platformSource = rawPlatformSource ? normalizePlatformSource(rawPlatformSource) : undefined;
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
 
     if (platformSource) {
       const projects = store.getAllProjects(platformSource);
@@ -284,10 +292,30 @@ export class DataRoutes extends BaseRouteHandler {
     const offset = parseInt(req.query.offset as string, 10) || 0;
     const limit = Math.min(parseInt(req.query.limit as string, 10) || 20, 100); 
     const project = req.query.project as string | undefined;
-    const rawPlatformSource = req.query.platformSource as string | undefined;
-    const platformSource = rawPlatformSource ? normalizePlatformSource(rawPlatformSource) : undefined;
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
 
     return { offset, limit, project, platformSource };
+  }
+
+  private static firstString(value: unknown): string | undefined {
+    if (Array.isArray(value)) {
+      return DataRoutes.firstString(value[0]);
+    }
+    return typeof value === 'string' && value.trim() ? value : undefined;
+  }
+
+  private getOptionalPlatformSourceFromRequest(req: Request): string | undefined {
+    const body = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
+    const header = req.get?.('x-platform-source')
+      ?? req.get?.('x-claude-mem-platform-source');
+    const rawPlatformSource =
+      DataRoutes.firstString(req.query.platformSource)
+      ?? DataRoutes.firstString(req.query.platform_source)
+      ?? DataRoutes.firstString(body.platformSource)
+      ?? DataRoutes.firstString(body.platform_source)
+      ?? DataRoutes.firstString(header);
+
+    return rawPlatformSource ? normalizePlatformSource(rawPlatformSource) : undefined;
   }
 
   private handleImport = this.wrapHandler((req: Request, res: Response): void => {
@@ -305,10 +333,26 @@ export class DataRoutes extends BaseRouteHandler {
     };
 
     const store = this.dbManager.getSessionStore();
+    const sessionContextByKey = new Map<string, { id: number; platformSource: string }>();
+    const sessionContextsByContentId = new Map<string, Array<{ id: number; platformSource: string }>>();
+    const sessionContextKey = (platformSource: string, contentSessionId: string): string =>
+      `${platformSource}\0${contentSessionId}`;
+    const rememberSessionContext = (session: any, id: number): void => {
+      if (!session || typeof session !== 'object' || typeof session.content_session_id !== 'string') {
+        return;
+      }
+      const platformSource = normalizePlatformSource(session.platform_source);
+      const context = { id, platformSource };
+      sessionContextByKey.set(sessionContextKey(platformSource, session.content_session_id), context);
+      const existing = sessionContextsByContentId.get(session.content_session_id) ?? [];
+      existing.push(context);
+      sessionContextsByContentId.set(session.content_session_id, existing);
+    };
 
     if (Array.isArray(sessions)) {
       for (const session of sessions) {
         const result = store.importSdkSession(session);
+        rememberSessionContext(session, result.id);
         if (result.imported) {
           stats.sessionsImported++;
         } else {
@@ -353,6 +397,15 @@ export class DataRoutes extends BaseRouteHandler {
         };
 
         const syncOne = async ({ id, obs }: { id: number; obs: any }) => {
+          const sourceRow = store.db.prepare(`
+            SELECT COALESCE(NULLIF(platform_source, ''), 'claude') as platform_source
+            FROM sdk_sessions
+            WHERE memory_session_id = ?
+            LIMIT 1
+          `).get(obs.memory_session_id) as { platform_source?: string } | undefined;
+          const platformSource = typeof obs.platform_source === 'string'
+            ? normalizePlatformSource(obs.platform_source)
+            : normalizePlatformSource(sourceRow?.platform_source);
           const parsedObs = {
             type: obs.type || 'discovery',
             title: obs.title || null,
@@ -370,7 +423,8 @@ export class DataRoutes extends BaseRouteHandler {
             obs.project,
             parsedObs,
             obs.prompt_number || 0,
-            obs.created_at_epoch
+            obs.created_at_epoch,
+            platformSource
           ).catch(err => {
             logger.error('CHROMA', 'Import ChromaDB sync failed', { id }, err as Error);
           });
@@ -389,7 +443,41 @@ export class DataRoutes extends BaseRouteHandler {
 
     if (Array.isArray(prompts)) {
       for (const prompt of prompts) {
-        const result = store.importUserPrompt(prompt);
+        let promptToImport = prompt;
+        if (prompt && typeof prompt === 'object' && !Array.isArray(prompt)) {
+          const promptRecord = prompt as Record<string, unknown>;
+          const contentSessionId = typeof promptRecord.content_session_id === 'string'
+            ? promptRecord.content_session_id
+            : undefined;
+          const explicitPlatformSource = typeof promptRecord.platform_source === 'string'
+            ? normalizePlatformSource(promptRecord.platform_source)
+            : undefined;
+
+          if (contentSessionId) {
+            let sessionContext: { id: number; platformSource: string } | undefined;
+            if (explicitPlatformSource) {
+              sessionContext = sessionContextByKey.get(sessionContextKey(explicitPlatformSource, contentSessionId));
+            } else {
+              const candidates = sessionContextsByContentId.get(contentSessionId) ?? [];
+              sessionContext = candidates.length === 1 ? candidates[0] : undefined;
+            }
+
+            if (sessionContext) {
+              promptToImport = {
+                ...promptRecord,
+                session_db_id: sessionContext.id,
+                platform_source: explicitPlatformSource ?? sessionContext.platformSource,
+              };
+            } else if (explicitPlatformSource) {
+              promptToImport = {
+                ...promptRecord,
+                platform_source: explicitPlatformSource,
+              };
+            }
+          }
+        }
+
+        const result = store.importUserPrompt(promptToImport as any);
         if (result.imported) {
           stats.promptsImported++;
         } else {

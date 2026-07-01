@@ -1,7 +1,11 @@
 
 import { logger } from '../../../utils/logger.js';
 import { parseAgentXml, type ParsedObservation, type ParsedSummary } from '../../../sdk/parser.js';
-import { classifyObserverOutput, previewOutput } from '../../../sdk/output-classifier.js';
+import {
+  classifyObserverOutput,
+  isQuotaLimitedObserverOutput,
+  previewOutput,
+} from '../../../sdk/output-classifier.js';
 import { ingestSummary } from '../http/shared.js';
 import { updateCursorContextForProject } from '../../integrations/CursorHooksInstaller.js';
 import { notifyTelegram } from '../../integrations/TelegramNotifier.js';
@@ -15,14 +19,6 @@ import type { SessionManager } from '../SessionManager.js';
 import type { WorkerRef, StorageResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
 import { telemetryBuffer } from '../../telemetry/buffer.js';
-import { instrument } from '../../telemetry/instrument.js';
-
-/**
- * Consecutive non-XML observer outputs tolerated before we kill and respawn the
- * SDK session (plan-11, #2485). Idle and prose both count; poisoned triggers an
- * immediate respawn regardless of the count.
- */
-export const INVALID_OUTPUT_RESPAWN_THRESHOLD = 3;
 
 export async function processAgentResponse(
   text: string,
@@ -53,12 +49,32 @@ export async function processAgentResponse(
     'claude';
 
   if (!parsed.valid) {
-    // Classify the non-XML output so a dropped batch is VISIBLE, not silent
-    // (plan-11, #2485). Attach a preview for diagnostics.
+    if (isQuotaLimitedObserverOutput(text)) {
+      session.consecutiveInvalidOutputs = 0;
+
+      logger.warn('PARSER', `${agentName} returned quota-limit prose — pausing generator and preserving queued batch`, {
+        sessionId: session.sessionDbId,
+        outputClass: 'prose',
+        preview: previewOutput(text),
+      });
+
+      await sessionManager.resetProcessingToPending(session.sessionDbId);
+      session.abortReason = 'quota:observer_text';
+      try {
+        session.abortController.abort();
+      } catch {
+        // best-effort; AbortController.abort() should not throw in normal use.
+      }
+      worker?.broadcastProcessingStatus?.();
+      return;
+    }
+
+    // Classify the non-XML output so a dropped batch is visible, not silent.
+    // Ordinary idle/prose is a claimed no-op batch: confirm it and do not build
+    // any respawn debt from repeated skip acknowledgements.
     const outputClass = classifyObserverOutput(text);
     const preview = previewOutput(text);
-
-    session.consecutiveInvalidOutputs = (session.consecutiveInvalidOutputs ?? 0) + 1;
+    session.consecutiveInvalidOutputs = 0;
 
     logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response — ignoring queued batch`, {
       sessionId: session.sessionDbId,
@@ -67,53 +83,8 @@ export async function processAgentResponse(
       consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
     });
 
-    // Recover from poison (plan-11, #2485): a poisoned closure string means the
-    // SDK session is wedged and will keep emitting garbage — respawn immediately.
-    // For idle/prose, only respawn after N consecutive invalid outputs so we
-    // don't churn the session on benign single-batch misses.
-    const mustRespawn =
-      outputClass === 'poisoned' ||
-      session.consecutiveInvalidOutputs >= INVALID_OUTPUT_RESPAWN_THRESHOLD;
-
-    if (mustRespawn) {
-      // Single instrumentation call: the local poison/respawn error line (full
-      // fidelity) and the scrubbed session_compressed rollup are one logical
-      // event. Respawn-gated telemetry ONLY (never per invalid output —
-      // volume). Closed enums and counts; the raw model output never leaves
-      // the box.
-      instrument(
-        'SESSION',
-        'error',
-        `${agentName} session poisoned — killing and respawning, pending messages preserved`,
-        {
-          sessionId: session.sessionDbId,
-          outputClass,
-          consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
-          threshold: INVALID_OUTPUT_RESPAWN_THRESHOLD,
-        },
-        {
-          event: 'session_compressed',
-          rollup: 'session',
-          sessionDbId: session.sessionDbId,
-          props: {
-            outcome: 'invalid_output',
-            invalid_output_class: outputClass,
-            consecutive_invalid_outputs: session.consecutiveInvalidOutputs,
-            respawn_triggered: true,
-            provider: providerName,
-            model: typeof modelId === 'string' && modelId ? modelId : 'unknown',
-            ide: session.platformSource,
-            hook: session.lastGeneratorSource,
-          },
-        }
-      );
-      await sessionManager.respawnPoisonedSession(session.sessionDbId);
-      return;
-    }
-
     // Plain-text skip responses are intentionally ignored. Re-queueing them
-    // creates an observer loop where the same low-signal batch is retried
-    // until the restart guard fires or the provider quota is exhausted.
+    // creates an observer loop where the same low-signal batch is retried.
     await sessionManager.confirmClaimedMessages(session.sessionDbId);
     session.earliestPendingTimestamp = null;
     return;
@@ -309,6 +280,11 @@ async function syncAndBroadcastObservations(
   agentName: string,
   projectRoot?: string
 ): Promise<void> {
+  const memorySessionId = session.memorySessionId;
+  if (!memorySessionId) {
+    return;
+  }
+
   // Dedupe observation IDs before sync/broadcast: storeObservations may collapse
   // multiple parsed observations onto the same row via content_hash, producing
   // duplicate IDs. Syncing them 1:1 triggers repeated Chroma "IDs already exist"
@@ -330,11 +306,12 @@ async function syncAndBroadcastObservations(
 
     dbManager.getChromaSync()?.syncObservation(
       obsId,
-      session.contentSessionId,
+      memorySessionId,
       session.project,
       obs,
       session.lastPromptNumber,
-      result.createdAtEpoch
+      result.createdAtEpoch,
+      session.platformSource
     ).then(() => {
       const chromaDuration = Date.now() - chromaStart;
       logger.debug('CHROMA', 'Observation synced', {
@@ -407,16 +384,21 @@ async function syncAndBroadcastSummary(
   if (!summaryForStore || !result.summaryId) {
     return;
   }
+  const memorySessionId = session.memorySessionId;
+  if (!memorySessionId) {
+    return;
+  }
 
   const chromaStart = Date.now();
 
   dbManager.getChromaSync()?.syncSummary(
     result.summaryId,
-    session.contentSessionId,
+    memorySessionId,
     session.project,
     summaryForStore,
     session.lastPromptNumber,
-    result.createdAtEpoch
+    result.createdAtEpoch,
+    session.platformSource
   ).then(() => {
     const chromaDuration = Date.now() - chromaStart;
     logger.debug('CHROMA', 'Summary synced', {

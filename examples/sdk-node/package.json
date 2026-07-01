@@ -1,0 +1,16 @@
+{
+  "name": "claude-mem-sdk-node-example",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Plain-Node example proving claude-mem/sdk runs capture -> generate -> search in-process, no worker.",
+  "dependencies": {
+    "claude-mem": "file:../.."
+  },
+  "scripts": {
+    "start": "node index.mjs"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

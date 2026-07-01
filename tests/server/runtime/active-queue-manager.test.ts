@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, mock } from 'bun:test';
-import { ActiveServerBetaQueueManager } from '../../../src/server/runtime/ActiveServerBetaQueueManager.js';
+import { ActiveServerQueueManager } from '../../../src/server/runtime/ActiveServerQueueManager.js';
 import { ServerJobQueue } from '../../../src/server/jobs/ServerJobQueue.js';
 import type {
   ServerGenerationJobKind,
@@ -48,18 +48,18 @@ function buildStubQueues(): {
   return { queues, closedNames };
 }
 
-describe('ActiveServerBetaQueueManager', () => {
+describe('ActiveServerQueueManager', () => {
   afterEach(() => {
     mock.restore();
   });
 
   it('refuses construction when engine is not bullmq', () => {
-    expect(() => new ActiveServerBetaQueueManager(sqliteConfig)).toThrow(/CLAUDE_MEM_QUEUE_ENGINE=bullmq/);
+    expect(() => new ActiveServerQueueManager(sqliteConfig)).toThrow(/CLAUDE_MEM_QUEUE_ENGINE=bullmq/);
   });
 
   it('reports active health with all four lanes when constructed against bullmq', () => {
     const { queues } = buildStubQueues();
-    const manager = new ActiveServerBetaQueueManager(bullmqConfig, queues);
+    const manager = new ActiveServerQueueManager(bullmqConfig, queues);
     const health = manager.getHealth();
     expect(health.status).toBe('active');
     expect(health.details?.engine).toBe('bullmq');
@@ -69,14 +69,14 @@ describe('ActiveServerBetaQueueManager', () => {
 
   it('exposes per-kind queues via getQueue', () => {
     const { queues } = buildStubQueues();
-    const manager = new ActiveServerBetaQueueManager(bullmqConfig, queues);
+    const manager = new ActiveServerQueueManager(bullmqConfig, queues);
     expect(manager.getQueue('event')).toBe(queues.get('event'));
     expect(manager.getQueue('summary')).toBe(queues.get('summary'));
   });
 
   it('closes every queue on close() and reports errored health afterwards', async () => {
     const { queues, closedNames } = buildStubQueues();
-    const manager = new ActiveServerBetaQueueManager(bullmqConfig, queues);
+    const manager = new ActiveServerQueueManager(bullmqConfig, queues);
     await manager.close();
     expect(closedNames.sort()).toEqual(['event', 'event-batch', 'reindex', 'summary']);
     expect(manager.getHealth().status).toBe('errored');

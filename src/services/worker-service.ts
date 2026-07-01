@@ -21,10 +21,12 @@ import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
 
 import { ensureWorkerStarted as ensureWorkerStartedShared, type WorkerStartResult } from './worker-spawner.js';
 import { acquireSpawnLock, releaseSpawnLock } from '../shared/worker-spawn-gate.js';
+import { snapshotDependencyHealth, type DependencyHealthSnapshot } from '../shared/dependency-health.js';
 import { captureEvent, captureException, shutdownTelemetry, enableExceptionAutocaptureForWorker } from './telemetry/telemetry.js';
 import { telemetryBuffer } from './telemetry/buffer.js';
 import { collectInstallStats } from './telemetry/install-stats.js';
 import { runHistoricalBackfill } from './telemetry/backfill.js';
+import { runWorkerDependencyPreflight } from './worker/dependency-preflight.js';
 
 export { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
 import { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
@@ -263,6 +265,7 @@ export class WorkerService implements WorkerRef {
     this.server = new Server({
       getInitializationComplete: () => this.initializationCompleteFlag,
       getMcpReady: () => this.mcpReady,
+      getDependencyHealth: () => snapshotDependencyHealth(),
       onShutdown: (reason) => this.shutdown(reason ?? 'stop'),
       onRestart: () => this.shutdown('restart'),
       workerPath: __filename,
@@ -317,7 +320,13 @@ export class WorkerService implements WorkerRef {
     });
 
     this.server.app.use(['/api', '/v1'], async (req, res, next) => {
-      if (req.path === '/chroma/status' || req.path === '/health' || req.path === '/readiness' || req.path === '/version') {
+      if (
+        req.path === '/chroma/status' ||
+        req.path === '/health' ||
+        req.path === '/readiness' ||
+        req.path === '/version' ||
+        req.path === '/settings/dependency-health'
+      ) {
         next();
         return;
       }
@@ -440,6 +449,22 @@ export class WorkerService implements WorkerRef {
       const modeId = settings.CLAUDE_MEM_MODE;
       ModeManager.getInstance().loadMode(modeId);
       logger.info('SYSTEM', `Mode loaded: ${modeId}`);
+
+      const dependencyHealth = runWorkerDependencyPreflight({
+        settings,
+        classifyClaudeError,
+      });
+      if (dependencyHealth.degraded) {
+        logger.warn('SYSTEM', 'Dependency preflight found degraded optional setup', {
+          statuses: dependencyHealth.statuses.map(status => ({
+            dependency: status.dependency,
+            kind: status.kind,
+            message: status.message,
+          })),
+        });
+      } else {
+        logger.info('SYSTEM', 'Dependency preflight passed');
+      }
 
       if (settings.CLAUDE_MEM_MODE === 'local' || !settings.CLAUDE_MEM_MODE) {
         logger.info('WORKER', 'Checking for one-time Chroma migration...');
@@ -826,15 +851,24 @@ function printWorkerAliasHelp(): never {
   process.exit(1);
 }
 
-function runServerBetaServiceCli(command: string, extraArgs: string[] = []): void {
-  const serverBetaScript = path.join(__dirname, 'server-beta-service.cjs');
-  if (!existsSync(serverBetaScript)) {
-    console.error(`Server beta script not found at: ${serverBetaScript}`);
-    console.error('Rebuild or reinstall claude-mem so server-beta-service.cjs is available.');
-    process.exit(1);
+function runServerServiceCli(command: string, extraArgs: string[] = []): void {
+  // Plan §1c line 149: try the post-rename script first, then fall back
+  // to the legacy `server-beta-service.cjs` so users running against an
+  // already-installed plugin cache (built before the rename) continue to
+  // dispatch without a forced reinstall.
+  let serverScript = path.join(__dirname, 'server-service.cjs');
+  if (!existsSync(serverScript)) {
+    const legacyScript = path.join(__dirname, 'server-beta-service.cjs');
+    if (existsSync(legacyScript)) {
+      serverScript = legacyScript;
+    } else {
+      console.error(`Server script not found at: ${serverScript}`);
+      console.error('Rebuild or reinstall claude-mem so server-service.cjs is available.');
+      process.exit(1);
+    }
   }
 
-  const child = spawn(process.execPath, [serverBetaScript, command, ...extraArgs], {
+  const child = spawn(process.execPath, [serverScript, command, ...extraArgs], {
     stdio: 'inherit',
     // Strip host CLI bleed-through (CLAUDE_CODE_*, including EFFORT_LEVEL) and
     // Anthropic credentials before handing env to the spawned daemon. The
@@ -843,7 +877,7 @@ function runServerBetaServiceCli(command: string, extraArgs: string[] = []): voi
     env: sanitizeEnv(process.env),
   });
   child.on('error', (error) => {
-    console.error(`Failed to start server beta command: ${error.message}`);
+    console.error(`Failed to start server command: ${error.message}`);
     process.exit(1);
   });
   child.on('close', (exitCode) => {
@@ -1138,6 +1172,10 @@ async function main() {
         if (typeof health.workerPath === 'string') {
           console.log(`  Worker path: ${health.workerPath}`);
         }
+        const dependencyHint = formatDependencyHealthHint(health);
+        if (dependencyHint) {
+          console.log(dependencyHint);
+        }
         printQueueStatusIfBullMq(health);
         process.exit(0);
       }
@@ -1157,7 +1195,7 @@ async function main() {
     case 'server-stop':
     case 'server-restart':
     case 'server-status': {
-      runServerBetaServiceCli(command.slice('server-'.length));
+      runServerServiceCli(command.slice('server-'.length));
       break;
     }
 
@@ -1185,16 +1223,16 @@ async function main() {
       break;
     }
 
-    // #2572 — `keys`/`jobs` are server-beta (Postgres) operability commands.
-    // Delegate to the server-beta script so they read the Postgres backend the
+    // #2572 — `keys`/`jobs` are server (Postgres) operability commands.
+    // Delegate to the server script so they read the Postgres backend the
     // server runtime actually uses, instead of the SQLite worker store.
     case 'server-keys': {
-      runServerBetaServiceCli('server', ['keys', ...commandArgs]);
+      runServerServiceCli('server', ['keys', ...commandArgs]);
       break;
     }
 
     case 'server-jobs': {
-      runServerBetaServiceCli('server', ['jobs', ...commandArgs]);
+      runServerServiceCli('server', ['jobs', ...commandArgs]);
       break;
     }
 
@@ -1391,12 +1429,13 @@ async function main() {
   }
 }
 
-interface WorkerHealthSnapshot {
+export interface WorkerHealthSnapshot {
   status?: unknown;
   pid?: unknown;
   version?: unknown;
   uptime?: unknown;
   workerPath?: unknown;
+  dependencies?: DependencyHealthSnapshot;
   queue?: {
     redis?: {
       status?: string;
@@ -1407,6 +1446,25 @@ interface WorkerHealthSnapshot {
       error?: string;
     };
   };
+}
+
+export function formatDependencyHealthHint(health: WorkerHealthSnapshot): string | null {
+  const dependencies = health.dependencies;
+  if (!dependencies?.degraded || dependencies.statuses.length === 0) {
+    return null;
+  }
+
+  const labels = dependencies.statuses.map(status => {
+    if (status.dependency === 'claude_cli' && status.kind === 'setup_required') {
+      return 'Claude CLI setup required';
+    }
+    if (status.dependency === 'uvx' && status.kind === 'vector_search_unavailable') {
+      return 'uvx unavailable for vector search';
+    }
+    return `${status.dependency}: ${status.kind}`;
+  });
+
+  return `  Dependencies: degraded (${labels.join(', ')}). Run npx claude-mem doctor or open Settings for remediation.`;
 }
 
 /**

@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import pg from 'pg';
 import {
-  SERVER_BETA_POSTGRES_TABLES,
-  bootstrapServerBetaPostgresSchema,
+  SERVER_POSTGRES_TABLES,
+  bootstrapServerPostgresSchema,
   buildObservationGenerationKey,
   createPostgresStorageRepositories,
   type PostgresPoolClient,
@@ -35,7 +35,7 @@ describe('server beta postgres schema bootstrap', () => {
       }
     };
 
-    await bootstrapServerBetaPostgresSchema(pool);
+    await bootstrapServerPostgresSchema(pool);
 
     expect(queries[0]).toBe('BEGIN');
     expect(queries.at(-1)).toBe('COMMIT');
@@ -55,10 +55,31 @@ describe('server beta postgres schema bootstrap', () => {
       }
     } as unknown as PostgresPoolClient;
 
-    await bootstrapServerBetaPostgresSchema(client);
+    await bootstrapServerPostgresSchema(client);
 
     expect(queries[0]).toBe('BEGIN');
     expect(queries.at(-1)).toBe('COMMIT');
+  });
+
+  it('bootstraps platform-scoped server session identity indexes', async () => {
+    const queries: string[] = [];
+    const client = {
+      async query(text: string) {
+        queries.push(text);
+        return { rows: [], rowCount: 0 };
+      }
+    };
+
+    await bootstrapServerPostgresSchema(client);
+
+    const schemaSql = queries.find(query => query.includes('CREATE TABLE IF NOT EXISTS server_sessions'));
+    expect(schemaSql).toBeDefined();
+    expect(schemaSql).not.toContain('UNIQUE (project_id, external_session_id)');
+    expect(schemaSql).toContain('DROP CONSTRAINT IF EXISTS server_sessions_project_id_external_session_id_key');
+    expect(schemaSql).toContain('idx_server_sessions_external_session_legacy');
+    expect(schemaSql).toContain('idx_server_sessions_external_session_platform');
+    expect(schemaSql).toContain('DROP INDEX IF EXISTS idx_server_sessions_content_session');
+    expect(schemaSql).toContain('idx_server_sessions_content_session_platform');
   });
 });
 
@@ -78,7 +99,7 @@ describe('server beta postgres observation storage', () => {
     schemaName = `cm_pg_test_${crypto.randomUUID().replaceAll('-', '_')}`;
     await client.query(`CREATE SCHEMA ${quoteIdentifier(schemaName)}`);
     await client.query(`SET search_path TO ${quoteIdentifier(schemaName)}`);
-    await bootstrapServerBetaPostgresSchema(client);
+    await bootstrapServerPostgresSchema(client);
     storage = createPostgresStorageRepositories(client);
   });
 
@@ -90,7 +111,7 @@ describe('server beta postgres observation storage', () => {
   });
 
   it('creates the Phase 1 schema idempotently', async () => {
-    await bootstrapServerBetaPostgresSchema(client);
+    await bootstrapServerPostgresSchema(client);
 
     const result = await client.query<{ table_name: string }>(
       `
@@ -102,7 +123,7 @@ describe('server beta postgres observation storage', () => {
     );
     const tables = new Set(result.rows.map(row => row.table_name));
 
-    for (const table of SERVER_BETA_POSTGRES_TABLES) {
+    for (const table of SERVER_POSTGRES_TABLES) {
       expect(tables.has(table)).toBe(true);
     }
   });
@@ -355,6 +376,43 @@ describe('server beta postgres observation storage', () => {
     expect(second.id).toBe(first.id);
     expect(second.idempotencyKey).toBe(first.idempotencyKey);
     expect(second.idempotencyKey).not.toBeNull();
+  });
+
+  it('scopes external session identity by normalized platform source when supplied', async () => {
+    const { project } = await createFixtureScope(storage);
+    const externalSessionId = 'shared-external-session-id';
+
+    const cursor = await storage.sessions.create({
+      projectId: project.id,
+      teamId: project.teamId,
+      externalSessionId,
+      platformSource: 'Cursor',
+    });
+    const cursorAgain = await storage.sessions.create({
+      projectId: project.id,
+      teamId: project.teamId,
+      externalSessionId,
+      platformSource: 'cursor-cli',
+    });
+    const codex = await storage.sessions.create({
+      projectId: project.id,
+      teamId: project.teamId,
+      externalSessionId,
+      platformSource: 'Codex CLI',
+    });
+    const legacy = await storage.sessions.create({
+      projectId: project.id,
+      teamId: project.teamId,
+      externalSessionId,
+    });
+
+    expect(cursorAgain.id).toBe(cursor.id);
+    expect(cursor.platformSource).toBe('cursor');
+    expect(codex.platformSource).toBe('codex');
+    expect(legacy.platformSource).toBeNull();
+    expect(codex.id).not.toBe(cursor.id);
+    expect(legacy.id).not.toBe(cursor.id);
+    expect(legacy.id).not.toBe(codex.id);
   });
 
   it('exposes scoped getters for auth-visible project resources', async () => {
