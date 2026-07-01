@@ -45,7 +45,8 @@
   <a href="docs/i18n/README.hu.md">🇭🇺 Magyar</a> •
   <a href="docs/i18n/README.fi.md">🇫🇮 Suomi</a> •
   <a href="docs/i18n/README.da.md">🇩🇰 Dansk</a> •
-  <a href="docs/i18n/README.no.md">🇳🇴 Norsk</a>
+  <a href="docs/i18n/README.no.md">🇳🇴 Norsk</a> •
+  <a href="docs/i18n/README.ne.md">🇳🇵 नेपाली</a>
 </p>
 
 <h4 align="center">Persistent memory compression system built for <a href="https://claude.com/claude-code" target="_blank">Claude Code</a>.</h4>
