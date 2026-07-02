@@ -41,7 +41,8 @@
   <a href="README.hu.md">🇭🇺 Magyar</a> •
   <a href="README.fi.md">🇫🇮 Suomi</a> •
   <a href="README.da.md">🇩🇰 Dansk</a> •
-  <a href="README.no.md">🇳🇴 Norsk</a>
+  <a href="README.no.md">🇳🇴 Norsk</a> •
+  <a href="README.ta.md">🇮🇳 தமிழ்</a>
 </p>
 
 <h4 align="center">أداة إضافية لـ <a href="https://claude.com/claude-code" target="_blank">Claude Code</a> تعمل على أتمتة تسجيل معلومات الجلسات السابقه، وضغطها, ثم حقن السياق ذي الصلة في الجلسات المستقبلية.
