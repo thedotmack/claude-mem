@@ -129,24 +129,32 @@ export function instrument(
   // failure can never propagate. Consent is enforced by the capture sinks.
   if (!telemetry) return;
   try {
-    const scrubbed = scrubProperties(telemetry.props ?? {});
-    const rollup = telemetry.rollup ?? 'none';
-
-    if (rollup !== 'none') {
-      const bufferEvent = ROLLUP_BUFFER_EVENT[rollup];
-      // The buffer gates on consent internally via its eventual captureEvent
-      // flush. record() takes the (already-scrubbed) props bag. The
-      // session-scoped path requires a sessionDbId accumulator key; the
-      // hook-scoped (context_injected) path is time-windowed and passes null.
-      const sessionDbId = rollup === 'session'
-        ? (typeof telemetry.sessionDbId === 'number' ? telemetry.sessionDbId : null)
-        : null;
-      telemetryBuffer.record(bufferEvent, sessionDbId, scrubbed);
-      return;
-    }
-
-    captureEvent(telemetry.event, scrubbed, telemetry.person ? { person: true } : undefined);
+    fanOutTelemetry(telemetry);
   } catch {
     // Telemetry must never break or block the worker. Swallow everything.
   }
+}
+
+/**
+ * Scrub + route one telemetry descriptor to the right capture sink. Called
+ * ONLY from instrument()'s swallow-all try/catch — may throw freely here.
+ */
+function fanOutTelemetry(telemetry: TelemetryDescriptor): void {
+  const scrubbed = scrubProperties(telemetry.props ?? {});
+  const rollup = telemetry.rollup ?? 'none';
+
+  if (rollup !== 'none') {
+    const bufferEvent = ROLLUP_BUFFER_EVENT[rollup];
+    // The buffer gates on consent internally via its eventual captureEvent
+    // flush. record() takes the (already-scrubbed) props bag. The
+    // session-scoped path requires a sessionDbId accumulator key; the
+    // hook-scoped (context_injected) path is time-windowed and passes null.
+    const sessionDbId = rollup === 'session'
+      ? (typeof telemetry.sessionDbId === 'number' ? telemetry.sessionDbId : null)
+      : null;
+    telemetryBuffer.record(bufferEvent, sessionDbId, scrubbed);
+    return;
+  }
+
+  captureEvent(telemetry.event, scrubbed, telemetry.person ? { person: true } : undefined);
 }

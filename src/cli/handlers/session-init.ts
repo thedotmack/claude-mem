@@ -17,6 +17,7 @@ import { isInternalProtocolPayload } from '../../utils/tag-stripping.js';
 import {
   resolveRuntimeContext as defaultResolveRuntimeContext,
   logServerFallback as defaultLogServerFallback,
+  type ServerRuntimeContext,
 } from '../../services/hooks/runtime-selector.js';
 import { isServerClientError } from '../../services/hooks/server-client.js';
 
@@ -85,19 +86,7 @@ export const sessionInitHandler: EventHandler = {
     // value. Legacy `'server-beta'` is normalized inside `selectRuntime()`.
     if (runtime.runtime === 'server') {
       try {
-        await runtime.client.startSession({
-          projectId: runtime.projectId,
-          externalSessionId: sessionId,
-          contentSessionId: sessionId,
-          agentId: input.agentId ?? null,
-          agentType: input.agentType ?? null,
-          platformSource,
-          metadata: { project, prompt },
-        });
-        logger.info('HOOK', 'session-init: server session started', {
-          contentSessionId: sessionId,
-          project,
-        });
+        await startServerSession(runtime, input, sessionId, platformSource, project, prompt);
         // Server does not currently support the same context-injection
         // protocol as the worker. Skip semantic injection in server mode
         // until the server context endpoint exists.
@@ -188,6 +177,29 @@ export const sessionInitHandler: EventHandler = {
     return { continue: true, suppressOutput: true };
   }
 };
+
+async function startServerSession(
+  runtime: ServerRuntimeContext,
+  input: NormalizedHookInput,
+  sessionId: string,
+  platformSource: string,
+  project: string,
+  prompt: string,
+): Promise<void> {
+  await runtime.client.startSession({
+    projectId: runtime.projectId,
+    externalSessionId: sessionId,
+    contentSessionId: sessionId,
+    agentId: input.agentId ?? null,
+    agentType: input.agentType ?? null,
+    platformSource,
+    metadata: { project, prompt },
+  });
+  logger.info('HOOK', 'session-init: server session started', {
+    contentSessionId: sessionId,
+    project,
+  });
+}
 
 function parseSemanticInjectLimit(value: string | number): number {
   const parsed = typeof value === 'number' ? value : Number.parseInt(value, 10);

@@ -138,6 +138,10 @@ function runProbe(candidate: string, args: readonly string[]): { stdout: string 
     const firstLine = String(stderr ?? (error instanceof Error ? error.message : error))
       .split('\n')[0]
       .trim();
+    // Probe failures are expected classification signals (stale CLI, desktop
+    // app, broken install); callers warn on or surface the detail, so this
+    // stays at debug with the full error for deep troubleshooting.
+    logger.debug('SDK', `Probe of "${candidate}" failed: ${firstLine || 'probe failed'}`, { args: [...args] }, error);
     return { error: firstLine || 'probe failed' };
   }
 }

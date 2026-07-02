@@ -91,6 +91,10 @@ export function extractLastMessageFromJsonl(
     try {
       line = JSON.parse(rawLine);
     } catch {
+      // [ANTI-PATTERN IGNORED]: malformed/truncated JSONL lines are expected (crash mid-write,
+      // partial flush) and this fires per bad line while scanning backwards over the whole
+      // transcript; recovery is to skip the line and keep scanning, so logging each one would
+      // flood the log with noise for a documented, tolerated condition.
       continue;
     }
     const lineRole = line.type ?? line.role;

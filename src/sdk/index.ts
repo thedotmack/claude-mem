@@ -27,7 +27,10 @@ import {
   createPostgresStorageRepositories,
   type PostgresStorageRepositories,
 } from '../storage/postgres/index.js';
-import type { CreatePostgresAgentEventInput } from '../storage/postgres/agent-events.js';
+import type {
+  CreatePostgresAgentEventInput,
+  PostgresAgentEvent,
+} from '../storage/postgres/agent-events.js';
 import { ChromaSync, type ChromaDocument } from '../services/sync/ChromaSync.js';
 import { ChromaMcpManager } from '../services/sync/ChromaMcpManager.js';
 import { logger } from '../utils/logger.js';
@@ -497,30 +500,50 @@ function buildProviderFromEnv(): ServerGenerationProvider | null {
   const explicit = (process.env.CLAUDE_MEM_SERVER_PROVIDER ?? '').trim().toLowerCase();
   const model = process.env.CLAUDE_MEM_SERVER_MODEL;
   try {
-    if (explicit === 'claude' || explicit === 'anthropic' || explicit === '') {
-      const apiKey =
-        process.env.ANTHROPIC_API_KEY ?? process.env.CLAUDE_MEM_ANTHROPIC_API_KEY ?? '';
-      if (apiKey) return instantiateProvider({ apiKey, model, provider: 'claude' });
-      // No claude key. If claude was explicitly demanded, give up; if the
-      // provider was unset (''), fall through to the gemini/openrouter scan so
-      // an installer that only set GEMINI_API_KEY still works.
-      if (explicit !== '') return null;
-    }
-    if (explicit === 'gemini' || (explicit === '' && process.env.GEMINI_API_KEY)) {
-      const apiKey = process.env.GEMINI_API_KEY ?? process.env.CLAUDE_MEM_GEMINI_API_KEY ?? '';
-      if (!apiKey) return null;
-      return instantiateProvider({ apiKey, model, provider: 'gemini' });
-    }
-    if (explicit === 'openrouter' || (explicit === '' && process.env.OPENROUTER_API_KEY)) {
-      const apiKey =
-        process.env.OPENROUTER_API_KEY ?? process.env.CLAUDE_MEM_OPENROUTER_API_KEY ?? '';
-      if (!apiKey) return null;
-      const baseUrl =
-        process.env.CLAUDE_MEM_OPENROUTER_BASE_URL ?? process.env.OPENROUTER_BASE_URL;
-      return instantiateProvider({ apiKey, model, provider: 'openrouter', baseUrl });
-    }
-  } catch {
+    return scanEnvForProvider(explicit, model);
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn(
+      'SDK',
+      'env-driven provider resolution failed; generate() will reject until a provider is configured',
+      { provider: explicit || '(unset)' },
+      err,
+    );
     return null;
+  }
+}
+
+/**
+ * The env scan behind {@link buildProviderFromEnv}: pick the provider kind
+ * from CLAUDE_MEM_SERVER_PROVIDER (or key presence when unset) and
+ * instantiate it. Returns `null` when no matching API key is set; throws
+ * only when a provider constructor rejects (caught by the caller).
+ */
+function scanEnvForProvider(
+  explicit: string,
+  model: string | undefined
+): ServerGenerationProvider | null {
+  if (explicit === 'claude' || explicit === 'anthropic' || explicit === '') {
+    const apiKey =
+      process.env.ANTHROPIC_API_KEY ?? process.env.CLAUDE_MEM_ANTHROPIC_API_KEY ?? '';
+    if (apiKey) return instantiateProvider({ apiKey, model, provider: 'claude' });
+    // No claude key. If claude was explicitly demanded, give up; if the
+    // provider was unset (''), fall through to the gemini/openrouter scan so
+    // an installer that only set GEMINI_API_KEY still works.
+    if (explicit !== '') return null;
+  }
+  if (explicit === 'gemini' || (explicit === '' && process.env.GEMINI_API_KEY)) {
+    const apiKey = process.env.GEMINI_API_KEY ?? process.env.CLAUDE_MEM_GEMINI_API_KEY ?? '';
+    if (!apiKey) return null;
+    return instantiateProvider({ apiKey, model, provider: 'gemini' });
+  }
+  if (explicit === 'openrouter' || (explicit === '' && process.env.OPENROUTER_API_KEY)) {
+    const apiKey =
+      process.env.OPENROUTER_API_KEY ?? process.env.CLAUDE_MEM_OPENROUTER_API_KEY ?? '';
+    if (!apiKey) return null;
+    const baseUrl =
+      process.env.CLAUDE_MEM_OPENROUTER_BASE_URL ?? process.env.OPENROUTER_BASE_URL;
+    return instantiateProvider({ apiKey, model, provider: 'openrouter', baseUrl });
   }
   return null;
 }
@@ -687,17 +710,18 @@ async function indexObservationsToChroma(
   });
   try {
     await chromaSync.addDocuments(docs);
-  } catch (err) {
+  } catch (error) {
     // addDocuments swallows per-batch errors internally and returns a
-    // count; an outer throw means something more fundamental (ensure
-    // collection / connect) failed. Log + continue: the observations are
+    // count; an outer failure means something more fundamental (ensure
+    // collection / connect) broke. Log + continue: the observations are
     // still persisted in Postgres, search will degrade to FTS until the
     // operator restarts chroma-mcp.
+    const err = error instanceof Error ? error : new Error(String(error));
     logger.error(
       'CHROMA',
       'observation indexing failed after generate(); observations are persisted but unsearchable in Chroma until reindex',
       { projectId: scope.projectId, teamId: scope.teamId, observationCount: observations.length },
-      err as Error,
+      err,
     );
   }
 }
@@ -750,11 +774,14 @@ export async function createCmemClient(options: CmemClientOptions): Promise<Cmem
   // 2. Idempotent schema bootstrap.
   try {
     await bootstrapServerPostgresSchema(pool);
-  } catch (err) {
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
     if (ownsPool) {
-      await closePostgresPool(pool).catch(() => {});
+      await closePostgresPool(pool).catch(closeErr => {
+        logger.warn('SDK', 'Postgres pool cleanup failed while unwinding schema bootstrap error', { bootstrapError: err.message }, closeErr as Error);
+      });
     }
-    throw err;
+    throw error;
   }
 
   // 3. Repository facade.
@@ -767,11 +794,14 @@ export async function createCmemClient(options: CmemClientOptions): Promise<Cmem
     const tenancy = await resolveTenancy(options, pool);
     teamId = tenancy.teamId;
     projectId = tenancy.projectId;
-  } catch (err) {
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
     if (ownsPool) {
-      await closePostgresPool(pool).catch(() => {});
+      await closePostgresPool(pool).catch(closeErr => {
+        logger.warn('SDK', 'Postgres pool cleanup failed while unwinding tenancy resolution error', { tenancyError: err.message }, closeErr as Error);
+      });
     }
-    throw err;
+    throw error;
   }
 
   // 5. Chroma — REQUIRED. ensureCollectionExists boots the chroma-mcp
@@ -783,9 +813,13 @@ export async function createCmemClient(options: CmemClientOptions): Promise<Cmem
     await chromaSync.ensureCollectionExists();
   } catch (err) {
     // Clean up everything the SDK owns before rejecting.
-    await chromaSync.close().catch(() => {});
+    await chromaSync.close().catch(closeErr => {
+      logger.warn('SDK', 'ChromaSync cleanup failed while unwinding Chroma bootstrap error', {}, closeErr as Error);
+    });
     if (ownsPool) {
-      await closePostgresPool(pool).catch(() => {});
+      await closePostgresPool(pool).catch(closeErr => {
+        logger.warn('SDK', 'Postgres pool cleanup failed while unwinding Chroma bootstrap error', {}, closeErr as Error);
+      });
     }
     const underlying = err instanceof Error ? err.message : String(err);
     throw new Error(
@@ -954,7 +988,7 @@ export async function createCmemClient(options: CmemClientOptions): Promise<Cmem
       //   'agent_event' source type — the SDK only ever produces
       //   'agent_event' jobs via capture(), but we still scope the load
       //   by tenancy.
-      const loadedEvents = [];
+      const loadedEvents: PostgresAgentEvent[] = [];
       if (lockedJob.agentEventId) {
         const ev = await repos.agentEvents.getByIdForScope({
           id: lockedJob.agentEventId,
@@ -973,23 +1007,28 @@ export async function createCmemClient(options: CmemClientOptions): Promise<Cmem
       //   terminally 'failed' (a legal processing→failed transition) before
       //   re-throwing. That leaves a diagnosable row with the error recorded
       //   in last_error instead of one stuck in 'processing' forever.
-      let providerResult: ServerGenerationResult;
-      let outcome: Extract<
-        Awaited<ReturnType<typeof processGeneratedResponse>>,
-        { kind: 'completed' }
-      >;
-      try {
+      // `const` capture of the claimed row so the closure below keeps the
+      // non-null narrowing (`lockedJob` is a `let`, which TS widens back to
+      // nullable inside closures).
+      const claimedJob = lockedJob;
+      const runProviderAndPersist = async (): Promise<{
+        providerResult: ServerGenerationResult;
+        outcome: Extract<
+          Awaited<ReturnType<typeof processGeneratedResponse>>,
+          { kind: 'completed' }
+        >;
+      }> => {
         // Step 4: call the provider. The lifted core mirrors
         //   ProviderObservationGenerator.ts:200-209 — no BullMQ payload, no
         //   AbortSignal (consumers control their own timeouts via the
         //   provider's fetchImpl), no scope/revocation audit.
-        providerResult = await provider.generate({
-          job: lockedJob,
+        const generated = await provider.generate({
+          job: claimedJob,
           events: loadedEvents,
           project: {
             projectId,
             teamId,
-            serverSessionId: lockedJob.serverSessionId,
+            serverSessionId: claimedJob.serverSessionId,
             projectName: project?.name ?? null,
           },
         });
@@ -1002,13 +1041,13 @@ export async function createCmemClient(options: CmemClientOptions): Promise<Cmem
         //   jobs) and minus the BullMQ identity-context fields.
         const persistInput: Parameters<typeof processGeneratedResponse>[0] = {
           pool,
-          job: lockedJob,
-          rawText: providerResult.rawText,
-          providerLabel: providerResult.providerLabel,
+          job: claimedJob,
+          rawText: generated.rawText,
+          providerLabel: generated.providerLabel,
           sourceAdapter: 'sdk',
         };
-        if (providerResult.modelId !== undefined) {
-          persistInput.modelId = providerResult.modelId;
+        if (generated.modelId !== undefined) {
+          persistInput.modelId = generated.modelId;
         }
         const persisted = await processGeneratedResponse(persistInput);
 
@@ -1019,7 +1058,16 @@ export async function createCmemClient(options: CmemClientOptions): Promise<Cmem
             `cmem-sdk: generation parse error for job ${persisted.jobId}: ${persisted.reason}`
           );
         }
-        outcome = persisted;
+        return { providerResult: generated, outcome: persisted };
+      };
+
+      let providerResult: ServerGenerationResult;
+      let outcome: Extract<
+        Awaited<ReturnType<typeof processGeneratedResponse>>,
+        { kind: 'completed' }
+      >;
+      try {
+        ({ providerResult, outcome } = await runProviderAndPersist());
       } catch (err) {
         await repos.observationGenerationJobs
           .transitionStatus({
@@ -1104,7 +1152,7 @@ export async function createCmemClient(options: CmemClientOptions): Promise<Cmem
       // silently drop our UUID-shaped doc ids. ChromaSync still owns the
       // collection lifecycle (ensureCollectionExists / close); only the
       // query parse differs.
-      try {
+      const runChromaSemanticSearch = async (): Promise<CmemSearchResponse> => {
         await chromaSync.ensureCollectionExists();
         const mgr = ChromaMcpManager.getInstance();
         // Per-tenant `where` filter: doc metadata carries projectId + teamId
@@ -1148,18 +1196,23 @@ export async function createCmemClient(options: CmemClientOptions): Promise<Cmem
           if (obs) hydrated.push(obs);
         }
         return { observations: hydrated, chroma: true, degraded: false };
-      } catch (err) {
+      };
+
+      try {
+        return await runChromaSemanticSearch();
+      } catch (error) {
         // Runtime safety net — Chroma transiently died (subprocess exit,
         // ECONNREFUSED, etc.). Mirrors SearchManager.ts:255's catch-and-
         // degrade-once pattern. This is NOT a feature toggle: a successful
         // run never enters this branch. We log loudly so an operator can
         // investigate the uvx chroma-mcp subprocess. See plan §6 line 242
         // and the 2026-05-29 correction log.
+        const err = error instanceof Error ? error : new Error(String(error));
         logger.error(
           'CHROMA',
           'semantic search failed; returning degraded FTS results — investigate uvx chroma-mcp',
           { projectId, teamId, query },
-          err as Error,
+          err,
         );
         const observations = await repos.observations.search({
           projectId,
@@ -1237,9 +1290,13 @@ export async function createCmemClient(options: CmemClientOptions): Promise<Cmem
         return;
       }
       closed = true;
-      await chromaSync.close().catch(() => {});
+      await chromaSync.close().catch(closeErr => {
+        logger.warn('SDK', 'ChromaSync shutdown failed during client close()', {}, closeErr as Error);
+      });
       if (ownsPool) {
-        await closePostgresPool(pool).catch(() => {});
+        await closePostgresPool(pool).catch(closeErr => {
+          logger.warn('SDK', 'Postgres pool shutdown failed during client close()', {}, closeErr as Error);
+        });
       }
     },
   };

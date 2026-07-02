@@ -175,6 +175,30 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
 const MAX_STRING_LENGTH = 200;
 
 /**
+ * Copies whitelisted primitive values from props into scrubbed, truncating
+ * strings to MAX_STRING_LENGTH. Extracted so scrubProperties' try stays small.
+ */
+function copyAllowedProperties(
+  props: Record<string, unknown>,
+  scrubbed: Record<string, string | number | boolean>
+): void {
+  if (!props || typeof props !== 'object') return;
+  for (const key of Object.keys(props)) {
+    if (!ALLOWED_PROPERTY_KEYS.has(key)) continue;
+    const value = props[key];
+    if (typeof value === 'string') {
+      scrubbed[key] = value.length > MAX_STRING_LENGTH ? value.slice(0, MAX_STRING_LENGTH) : value;
+    } else if (typeof value === 'number' && Number.isFinite(value)) {
+      scrubbed[key] = value;
+    } else if (typeof value === 'boolean') {
+      scrubbed[key] = value;
+    }
+    // Everything else (objects, arrays, functions, null, undefined,
+    // NaN/Infinity, symbols, bigints) is dropped silently.
+  }
+}
+
+/**
  * Filters properties down to whitelisted keys with primitive values only.
  * Strings are truncated to 200 chars. Objects, arrays, functions, null,
  * undefined, and non-finite numbers are dropped. Pure, never throws.
@@ -184,20 +208,7 @@ export function scrubProperties(
 ): Record<string, string | number | boolean> {
   const scrubbed: Record<string, string | number | boolean> = {};
   try {
-    if (!props || typeof props !== 'object') return scrubbed;
-    for (const key of Object.keys(props)) {
-      if (!ALLOWED_PROPERTY_KEYS.has(key)) continue;
-      const value = props[key];
-      if (typeof value === 'string') {
-        scrubbed[key] = value.length > MAX_STRING_LENGTH ? value.slice(0, MAX_STRING_LENGTH) : value;
-      } else if (typeof value === 'number' && Number.isFinite(value)) {
-        scrubbed[key] = value;
-      } else if (typeof value === 'boolean') {
-        scrubbed[key] = value;
-      }
-      // Everything else (objects, arrays, functions, null, undefined,
-      // NaN/Infinity, symbols, bigints) is dropped silently.
-    }
+    copyAllowedProperties(props, scrubbed);
   } catch {
     // Never throw from the scrubber — worst case we send fewer properties
   }

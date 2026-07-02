@@ -30,7 +30,9 @@ function readSelectedRuntime(): InstallRuntimeId {
   try {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     return normalizeRuntimeFlag(settings.CLAUDE_MEM_RUNTIME) ?? 'worker';
-  } catch {
+  } catch (error: unknown) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    console.warn('[uninstall] Could not read selected runtime from settings, defaulting to worker:', err);
     return 'worker';
   }
 }

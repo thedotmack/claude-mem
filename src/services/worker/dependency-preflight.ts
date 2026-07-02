@@ -36,7 +36,10 @@ export interface WorkerDependencyPreflightOptions {
 function defaultPathExists(filePath: string): boolean {
   try {
     return fs.existsSync(filePath);
-  } catch {
+  } catch (error) {
+    logger.warn('WORKER', 'existsSync failed during dependency preflight path check', {
+      filePath,
+    }, error instanceof Error ? error : new Error(String(error)));
     return false;
   }
 }
@@ -45,6 +48,7 @@ function defaultIsFile(filePath: string): boolean {
   try {
     return fs.statSync(filePath).isFile();
   } catch {
+    // [ANTI-PATTERN IGNORED]: statSync fails with ENOENT for every non-existent candidate while probing PATH directories for executables; treating the miss as "not a file" is the expected recovery.
     return false;
   }
 }
@@ -160,10 +164,14 @@ export function runWorkerDependencyPreflight(options: WorkerDependencyPreflightO
       findClaudeExecutable();
       clearDependencyStatus('claude_cli');
     } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
       const classified = options.classifyClaudeError(error);
       const message = classified.kind === 'setup_required'
         ? classified.message
-        : `Claude CLI preflight failed: ${error instanceof Error ? error.message : String(error)}`;
+        : `Claude CLI preflight failed: ${err.message}`;
+      logger.warn('WORKER', 'Claude CLI dependency preflight failed', {
+        kind: classified.kind,
+      }, err);
       recordClaudeCliSetupRequired(message);
     }
   } else {

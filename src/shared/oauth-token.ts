@@ -9,7 +9,7 @@
  * injected days later cause 401s.
  */
 
-import { execFile, type ExecFileException } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs';
 import { userInfo } from 'os';
@@ -57,6 +57,8 @@ export function decodeJwtExpMs(token: string): number | undefined {
       return payload.exp * 1000;
     }
   } catch {
+    // [ANTI-PATTERN IGNORED]: tokens are not guaranteed to be JWTs; base64/JSON
+    // decode failure is expected for opaque tokens and the fallback is undefined.
     return undefined;
   }
   return undefined;
@@ -78,25 +80,27 @@ function isExpired(expiresAtMs: number | undefined): boolean {
  */
 async function readMacOsKeychain(): Promise<OAuthTokenResult> {
   const account = userInfo().username;
+  let stdout: string;
   try {
-    const { stdout } = await execFileAsync(
+    ({ stdout } = await execFileAsync(
       'security',
       ['find-generic-password', '-s', KEYCHAIN_SERVICE_NAME, '-a', account, '-w'],
       { timeout: READ_TIMEOUT_MS, windowsHide: true },
-    );
-    const raw = stdout.trim();
-    if (!raw) {
-      return { kind: 'absent', reason: 'macOS keychain returned empty value for "Claude Code-credentials"' };
-    }
-    return parseKeychainPayload(raw);
+    ));
   } catch (error) {
-    const err = error as ExecFileException;
+    const err = error instanceof Error ? error : new Error(String(error));
     // `security` exits non-zero when the entry doesn't exist — fail-fast as absent.
+    logger.warn('OAUTH', 'macOS keychain lookup failed', { service: KEYCHAIN_SERVICE_NAME, account }, err);
     return {
       kind: 'absent',
-      reason: `macOS keychain lookup failed for service "${KEYCHAIN_SERVICE_NAME}" (account=${account}): ${err.message ?? String(err)}`,
+      reason: `macOS keychain lookup failed for service "${KEYCHAIN_SERVICE_NAME}" (account=${account}): ${err.message}`,
     };
   }
+  const raw = stdout.trim();
+  if (!raw) {
+    return { kind: 'absent', reason: 'macOS keychain returned empty value for "Claude Code-credentials"' };
+  }
+  return parseKeychainPayload(raw);
 }
 
 /**
@@ -149,24 +153,26 @@ async function readWindowsCredentialManager(): Promise<OAuthTokenResult> {
     exit 1
   `.trim();
 
+  let stdout: string;
   try {
-    const { stdout } = await execFileAsync(
+    ({ stdout } = await execFileAsync(
       'powershell.exe',
       ['-NoProfile', '-NonInteractive', '-Command', psScript],
       { timeout: READ_TIMEOUT_MS, windowsHide: true },
-    );
-    const raw = stdout.trim();
-    if (!raw) {
-      return { kind: 'absent', reason: 'Windows Credential Manager has no entry for "Claude Code-credentials"' };
-    }
-    return parseKeychainPayload(raw);
+    ));
   } catch (error) {
-    const err = error as ExecFileException;
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('OAUTH', 'Windows Credential Manager read failed', { service: KEYCHAIN_SERVICE_NAME }, err);
     return {
       kind: 'absent',
-      reason: `Windows Credential Manager read failed: ${err.message ?? String(err)}`,
+      reason: `Windows Credential Manager read failed: ${err.message}`,
     };
   }
+  const raw = stdout.trim();
+  if (!raw) {
+    return { kind: 'absent', reason: 'Windows Credential Manager has no entry for "Claude Code-credentials"' };
+  }
+  return parseKeychainPayload(raw);
 }
 
 /**
@@ -176,24 +182,26 @@ async function readWindowsCredentialManager(): Promise<OAuthTokenResult> {
  */
 async function readLinuxLibsecret(): Promise<OAuthTokenResult> {
   const account = userInfo().username;
+  let stdout: string;
   try {
-    const { stdout } = await execFileAsync(
+    ({ stdout } = await execFileAsync(
       'secret-tool',
       ['lookup', 'service', KEYCHAIN_SERVICE_NAME, 'account', account],
       { timeout: READ_TIMEOUT_MS, windowsHide: true },
-    );
-    const raw = stdout.trim();
-    if (!raw) {
-      return { kind: 'absent', reason: 'Linux libsecret returned empty value for "Claude Code-credentials"' };
-    }
-    return parseKeychainPayload(raw);
+    ));
   } catch (error) {
-    const err = error as ExecFileException;
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('OAUTH', 'Linux libsecret lookup failed', { service: KEYCHAIN_SERVICE_NAME, account }, err);
     return {
       kind: 'absent',
-      reason: `Linux libsecret lookup failed (is secret-tool installed?): ${err.message ?? String(err)}`,
+      reason: `Linux libsecret lookup failed (is secret-tool installed?): ${err.message}`,
     };
   }
+  const raw = stdout.trim();
+  if (!raw) {
+    return { kind: 'absent', reason: 'Linux libsecret returned empty value for "Claude Code-credentials"' };
+  }
+  return parseKeychainPayload(raw);
 }
 
 /**
@@ -205,7 +213,9 @@ function parseKeychainPayload(raw: string): OAuthTokenResult {
   try {
     payload = JSON.parse(raw);
   } catch {
-    // Some Claude Desktop versions might store a bare token instead of JSON.
+    // [ANTI-PATTERN IGNORED]: the keychain blob is JSON-parsed opportunistically —
+    // some Claude Desktop versions store a bare token instead of JSON, so parse
+    // failure is expected and recovery is the token-shape fallback below.
     if (raw.startsWith('sk-ant-') || raw.split('.').length === 3) {
       const expFromJwt = decodeJwtExpMs(raw);
       if (isExpired(expFromJwt)) {
@@ -356,7 +366,9 @@ export function readStaleMarker(): string | undefined {
     const markerPath = join(paths.dataDir(), 'oauth-stale.marker');
     if (!existsSync(markerPath)) return undefined;
     return readFileSync(markerPath, 'utf-8');
-  } catch {
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('OAUTH', 'Failed to read oauth-stale marker', {}, err);
     return undefined;
   }
 }

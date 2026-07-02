@@ -173,53 +173,12 @@ export class SessionStore {
       this.db.run('PRAGMA foreign_keys = OFF');
       this.db.run('BEGIN TRANSACTION');
       try {
-        this.db.run('DROP TABLE IF EXISTS sdk_sessions_new');
-        this.db.run(`
-          CREATE TABLE sdk_sessions_new (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            content_session_id TEXT NOT NULL,
-            memory_session_id TEXT UNIQUE,
-            project TEXT NOT NULL,
-            platform_source TEXT NOT NULL DEFAULT '${DEFAULT_PLATFORM_SOURCE}',
-            user_prompt TEXT,
-            started_at TEXT NOT NULL,
-            started_at_epoch INTEGER NOT NULL,
-            completed_at TEXT,
-            completed_at_epoch INTEGER,
-            status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'completed', 'failed')),
-            worker_port INTEGER,
-            prompt_counter INTEGER DEFAULT 0,
-            custom_title TEXT
-          )
-        `);
-        this.db.run(`
-          INSERT INTO sdk_sessions_new (
-            id, content_session_id, memory_session_id, project, platform_source,
-            user_prompt, started_at, started_at_epoch, completed_at, completed_at_epoch,
-            status, worker_port, prompt_counter, custom_title
-          )
-          SELECT
-            id, content_session_id, memory_session_id, project,
-            COALESCE(NULLIF(platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}'),
-            user_prompt, started_at, started_at_epoch, completed_at, completed_at_epoch,
-            status, worker_port, prompt_counter, custom_title
-          FROM sdk_sessions
-        `);
-        this.db.run('DROP TABLE sdk_sessions');
-        this.db.run('ALTER TABLE sdk_sessions_new RENAME TO sdk_sessions');
-        this.db.run('CREATE INDEX IF NOT EXISTS idx_sdk_sessions_claude_id ON sdk_sessions(content_session_id)');
-        this.db.run('CREATE INDEX IF NOT EXISTS idx_sdk_sessions_sdk_id ON sdk_sessions(memory_session_id)');
-        this.db.run('CREATE INDEX IF NOT EXISTS idx_sdk_sessions_project ON sdk_sessions(project)');
-        this.db.run('CREATE INDEX IF NOT EXISTS idx_sdk_sessions_status ON sdk_sessions(status)');
-        this.db.run('CREATE INDEX IF NOT EXISTS idx_sdk_sessions_started ON sdk_sessions(started_at_epoch DESC)');
-        this.db.run('CREATE INDEX IF NOT EXISTS idx_sdk_sessions_platform_source ON sdk_sessions(platform_source)');
-        this.db.run('CREATE UNIQUE INDEX IF NOT EXISTS ux_sdk_sessions_platform_content ON sdk_sessions(platform_source, content_session_id)');
-        if (!applied) {
-          this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(33, new Date().toISOString());
-        }
+        this.rebuildSdkSessionsWithCompositeIdentity(applied);
         this.db.run('COMMIT');
       } catch (error) {
         this.db.run('ROLLBACK');
+        const err = error instanceof Error ? error : new Error(String(error));
+        logger.error('DB', 'Failed to rebuild sdk_sessions with composite identity, rolled back', {}, err);
         throw error;
       } finally {
         this.db.run('PRAGMA foreign_keys = ON');
@@ -230,6 +189,53 @@ export class SessionStore {
     this.db.run('CREATE UNIQUE INDEX IF NOT EXISTS ux_sdk_sessions_platform_content ON sdk_sessions(platform_source, content_session_id)');
     this.db.run('CREATE INDEX IF NOT EXISTS idx_sdk_sessions_platform_source ON sdk_sessions(platform_source)');
 
+    if (!applied) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(33, new Date().toISOString());
+    }
+  }
+
+  private rebuildSdkSessionsWithCompositeIdentity(applied: SchemaVersion | undefined): void {
+    this.db.run('DROP TABLE IF EXISTS sdk_sessions_new');
+    this.db.run(`
+      CREATE TABLE sdk_sessions_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        content_session_id TEXT NOT NULL,
+        memory_session_id TEXT UNIQUE,
+        project TEXT NOT NULL,
+        platform_source TEXT NOT NULL DEFAULT '${DEFAULT_PLATFORM_SOURCE}',
+        user_prompt TEXT,
+        started_at TEXT NOT NULL,
+        started_at_epoch INTEGER NOT NULL,
+        completed_at TEXT,
+        completed_at_epoch INTEGER,
+        status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'completed', 'failed')),
+        worker_port INTEGER,
+        prompt_counter INTEGER DEFAULT 0,
+        custom_title TEXT
+      )
+    `);
+    this.db.run(`
+      INSERT INTO sdk_sessions_new (
+        id, content_session_id, memory_session_id, project, platform_source,
+        user_prompt, started_at, started_at_epoch, completed_at, completed_at_epoch,
+        status, worker_port, prompt_counter, custom_title
+      )
+      SELECT
+        id, content_session_id, memory_session_id, project,
+        COALESCE(NULLIF(platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}'),
+        user_prompt, started_at, started_at_epoch, completed_at, completed_at_epoch,
+        status, worker_port, prompt_counter, custom_title
+      FROM sdk_sessions
+    `);
+    this.db.run('DROP TABLE sdk_sessions');
+    this.db.run('ALTER TABLE sdk_sessions_new RENAME TO sdk_sessions');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_sdk_sessions_claude_id ON sdk_sessions(content_session_id)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_sdk_sessions_sdk_id ON sdk_sessions(memory_session_id)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_sdk_sessions_project ON sdk_sessions(project)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_sdk_sessions_status ON sdk_sessions(status)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_sdk_sessions_started ON sdk_sessions(started_at_epoch DESC)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_sdk_sessions_platform_source ON sdk_sessions(platform_source)');
+    this.db.run('CREATE UNIQUE INDEX IF NOT EXISTS ux_sdk_sessions_platform_content ON sdk_sessions(platform_source, content_session_id)');
     if (!applied) {
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(33, new Date().toISOString());
     }
@@ -274,77 +280,83 @@ export class SessionStore {
     this.db.run('PRAGMA foreign_keys = OFF');
     this.db.run('BEGIN TRANSACTION');
     try {
-      this.db.run('DROP TRIGGER IF EXISTS user_prompts_ai');
-      this.db.run('DROP TRIGGER IF EXISTS user_prompts_ad');
-      this.db.run('DROP TRIGGER IF EXISTS user_prompts_au');
-      this.db.run('DROP TABLE IF EXISTS user_prompts_new');
-      this.db.run(`
-        CREATE TABLE user_prompts_new (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          session_db_id INTEGER,
-          content_session_id TEXT NOT NULL,
-          prompt_number INTEGER NOT NULL,
-          prompt_text TEXT NOT NULL,
-          created_at TEXT NOT NULL,
-          created_at_epoch INTEGER NOT NULL,
-          FOREIGN KEY(session_db_id) REFERENCES sdk_sessions(id) ON DELETE CASCADE
-        )
-      `);
-      this.db.run(`
-        INSERT INTO user_prompts_new (
-          id, session_db_id, content_session_id, prompt_number,
-          prompt_text, created_at, created_at_epoch
-        )
-        SELECT
-          up.id,
-          ${sessionDbIdSelect},
-          up.content_session_id,
-          up.prompt_number,
-          up.prompt_text,
-          up.created_at,
-          up.created_at_epoch
-        FROM user_prompts up
-      `);
-      this.db.run('DROP TABLE user_prompts');
-      this.db.run('ALTER TABLE user_prompts_new RENAME TO user_prompts');
-      this.db.run('CREATE INDEX IF NOT EXISTS idx_user_prompts_session ON user_prompts(session_db_id)');
-      this.db.run('CREATE INDEX IF NOT EXISTS idx_user_prompts_claude_session ON user_prompts(content_session_id)');
-      this.db.run('CREATE INDEX IF NOT EXISTS idx_user_prompts_created ON user_prompts(created_at_epoch DESC)');
-      this.db.run('CREATE INDEX IF NOT EXISTS idx_user_prompts_prompt_number ON user_prompts(prompt_number)');
-      this.db.run('CREATE INDEX IF NOT EXISTS idx_user_prompts_lookup ON user_prompts(session_db_id, prompt_number)');
-      this.db.run('CREATE INDEX IF NOT EXISTS idx_user_prompts_content_lookup ON user_prompts(content_session_id, prompt_number)');
-
-      if (hasFTS) {
-        this.db.run(`
-          CREATE TRIGGER user_prompts_ai AFTER INSERT ON user_prompts BEGIN
-            INSERT INTO user_prompts_fts(rowid, prompt_text)
-            VALUES (new.id, new.prompt_text);
-          END;
-
-          CREATE TRIGGER user_prompts_ad AFTER DELETE ON user_prompts BEGIN
-            INSERT INTO user_prompts_fts(user_prompts_fts, rowid, prompt_text)
-            VALUES('delete', old.id, old.prompt_text);
-          END;
-
-          CREATE TRIGGER user_prompts_au AFTER UPDATE ON user_prompts BEGIN
-            INSERT INTO user_prompts_fts(user_prompts_fts, rowid, prompt_text)
-            VALUES('delete', old.id, old.prompt_text);
-            INSERT INTO user_prompts_fts(rowid, prompt_text)
-            VALUES (new.id, new.prompt_text);
-          END;
-        `);
-        this.db.run("INSERT INTO user_prompts_fts(user_prompts_fts) VALUES('rebuild')");
-      }
-
-      if (!applied) {
-        this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(34, new Date().toISOString());
-      }
+      this.rebuildUserPromptsWithSessionDbId(applied, sessionDbIdSelect, hasFTS);
       this.db.run('COMMIT');
     } catch (error) {
       this.db.run('ROLLBACK');
+      const err = error instanceof Error ? error : new Error(String(error));
+      logger.error('DB', 'Failed to rebuild user_prompts with session_db_id, rolled back', {}, err);
       throw error;
     } finally {
       this.db.run('PRAGMA foreign_keys = ON');
+    }
+  }
+
+  private rebuildUserPromptsWithSessionDbId(applied: SchemaVersion | undefined, sessionDbIdSelect: string, hasFTS: boolean): void {
+    this.db.run('DROP TRIGGER IF EXISTS user_prompts_ai');
+    this.db.run('DROP TRIGGER IF EXISTS user_prompts_ad');
+    this.db.run('DROP TRIGGER IF EXISTS user_prompts_au');
+    this.db.run('DROP TABLE IF EXISTS user_prompts_new');
+    this.db.run(`
+      CREATE TABLE user_prompts_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_db_id INTEGER,
+        content_session_id TEXT NOT NULL,
+        prompt_number INTEGER NOT NULL,
+        prompt_text TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        created_at_epoch INTEGER NOT NULL,
+        FOREIGN KEY(session_db_id) REFERENCES sdk_sessions(id) ON DELETE CASCADE
+      )
+    `);
+    this.db.run(`
+      INSERT INTO user_prompts_new (
+        id, session_db_id, content_session_id, prompt_number,
+        prompt_text, created_at, created_at_epoch
+      )
+      SELECT
+        up.id,
+        ${sessionDbIdSelect},
+        up.content_session_id,
+        up.prompt_number,
+        up.prompt_text,
+        up.created_at,
+        up.created_at_epoch
+      FROM user_prompts up
+    `);
+    this.db.run('DROP TABLE user_prompts');
+    this.db.run('ALTER TABLE user_prompts_new RENAME TO user_prompts');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_user_prompts_session ON user_prompts(session_db_id)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_user_prompts_claude_session ON user_prompts(content_session_id)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_user_prompts_created ON user_prompts(created_at_epoch DESC)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_user_prompts_prompt_number ON user_prompts(prompt_number)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_user_prompts_lookup ON user_prompts(session_db_id, prompt_number)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_user_prompts_content_lookup ON user_prompts(content_session_id, prompt_number)');
+
+    if (hasFTS) {
+      this.db.run(`
+        CREATE TRIGGER user_prompts_ai AFTER INSERT ON user_prompts BEGIN
+          INSERT INTO user_prompts_fts(rowid, prompt_text)
+          VALUES (new.id, new.prompt_text);
+        END;
+
+        CREATE TRIGGER user_prompts_ad AFTER DELETE ON user_prompts BEGIN
+          INSERT INTO user_prompts_fts(user_prompts_fts, rowid, prompt_text)
+          VALUES('delete', old.id, old.prompt_text);
+        END;
+
+        CREATE TRIGGER user_prompts_au AFTER UPDATE ON user_prompts BEGIN
+          INSERT INTO user_prompts_fts(user_prompts_fts, rowid, prompt_text)
+          VALUES('delete', old.id, old.prompt_text);
+          INSERT INTO user_prompts_fts(rowid, prompt_text)
+          VALUES (new.id, new.prompt_text);
+        END;
+      `);
+      this.db.run("INSERT INTO user_prompts_fts(user_prompts_fts) VALUES('rebuild')");
+    }
+
+    if (!applied) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(34, new Date().toISOString());
     }
   }
 
@@ -361,39 +373,45 @@ export class SessionStore {
 
     this.db.run('BEGIN TRANSACTION');
     try {
-      this.db.run('DROP INDEX IF EXISTS ux_pending_session_tool');
-      this.db.run(`
-        DELETE FROM pending_messages
-         WHERE id IN (
-           SELECT id
-             FROM (
-               SELECT id,
-                      ROW_NUMBER() OVER (
-                        PARTITION BY session_db_id, tool_use_id
-                        ORDER BY CASE status
-                          WHEN 'processing' THEN 0
-                          WHEN 'pending' THEN 1
-                          ELSE 2
-                        END, id
-                      ) AS duplicate_rank
-                 FROM pending_messages
-                WHERE tool_use_id IS NOT NULL
-             )
-            WHERE duplicate_rank > 1
-           )
-      `);
-      this.db.run(`
-        CREATE UNIQUE INDEX IF NOT EXISTS ux_pending_session_tool
-        ON pending_messages(session_db_id, tool_use_id)
-        WHERE tool_use_id IS NOT NULL
-      `);
-      if (!applied) {
-        this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(35, new Date().toISOString());
-      }
+      this.recreatePendingSessionToolUniqueIndex(applied);
       this.db.run('COMMIT');
     } catch (error) {
       this.db.run('ROLLBACK');
+      const err = error instanceof Error ? error : new Error(String(error));
+      logger.error('DB', 'Failed to recreate ux_pending_session_tool index, rolled back', {}, err);
       throw error;
+    }
+  }
+
+  private recreatePendingSessionToolUniqueIndex(applied: SchemaVersion | undefined): void {
+    this.db.run('DROP INDEX IF EXISTS ux_pending_session_tool');
+    this.db.run(`
+      DELETE FROM pending_messages
+       WHERE id IN (
+         SELECT id
+           FROM (
+             SELECT id,
+                    ROW_NUMBER() OVER (
+                      PARTITION BY session_db_id, tool_use_id
+                      ORDER BY CASE status
+                        WHEN 'processing' THEN 0
+                        WHEN 'pending' THEN 1
+                        ELSE 2
+                      END, id
+                    ) AS duplicate_rank
+               FROM pending_messages
+              WHERE tool_use_id IS NOT NULL
+           )
+          WHERE duplicate_rank > 1
+         )
+    `);
+    this.db.run(`
+      CREATE UNIQUE INDEX IF NOT EXISTS ux_pending_session_tool
+      ON pending_messages(session_db_id, tool_use_id)
+      WHERE tool_use_id IS NOT NULL
+    `);
+    if (!applied) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(35, new Date().toISOString());
     }
   }
 
@@ -1238,40 +1256,46 @@ export class SessionStore {
 
     this.db.run('BEGIN TRANSACTION');
     try {
-      this.db.run(`
-        DELETE FROM pending_messages
-         WHERE id IN (
-           SELECT id
-             FROM (
-               SELECT id,
-                      ROW_NUMBER() OVER (
-                        PARTITION BY session_db_id, tool_use_id
-                        ORDER BY CASE status
-                          WHEN 'processing' THEN 0
-                          WHEN 'pending' THEN 1
-                          ELSE 2
-                        END, id
-                      ) AS duplicate_rank
-                 FROM pending_messages
-                WHERE tool_use_id IS NOT NULL
-             )
-            WHERE duplicate_rank > 1
-           )
-      `);
-      this.db.run(`
-        -- tool_use_id is optional for summaries and legacy rows; enforce de-dupe
-        -- only for rows that came from a concrete tool-use event.
-        CREATE UNIQUE INDEX IF NOT EXISTS ux_pending_session_tool
-        ON pending_messages(session_db_id, tool_use_id)
-        WHERE tool_use_id IS NOT NULL
-      `);
-
-      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(28, new Date().toISOString());
+      this.dedupePendingMessagesByToolUseId();
       this.db.run('COMMIT');
     } catch (error) {
       this.db.run('ROLLBACK');
+      const err = error instanceof Error ? error : new Error(String(error));
+      logger.error('DB', 'Failed to de-dupe pending_messages by tool_use_id, rolled back', {}, err);
       throw error;
     }
+  }
+
+  private dedupePendingMessagesByToolUseId(): void {
+    this.db.run(`
+      DELETE FROM pending_messages
+       WHERE id IN (
+         SELECT id
+           FROM (
+             SELECT id,
+                    ROW_NUMBER() OVER (
+                      PARTITION BY session_db_id, tool_use_id
+                      ORDER BY CASE status
+                        WHEN 'processing' THEN 0
+                        WHEN 'pending' THEN 1
+                        ELSE 2
+                      END, id
+                    ) AS duplicate_rank
+               FROM pending_messages
+              WHERE tool_use_id IS NOT NULL
+           )
+          WHERE duplicate_rank > 1
+         )
+    `);
+    this.db.run(`
+      -- tool_use_id is optional for summaries and legacy rows; enforce de-dupe
+      -- only for rows that came from a concrete tool-use event.
+      CREATE UNIQUE INDEX IF NOT EXISTS ux_pending_session_tool
+      ON pending_messages(session_db_id, tool_use_id)
+      WHERE tool_use_id IS NOT NULL
+    `);
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(28, new Date().toISOString());
   }
 
   private addObservationsUniqueContentHashIndex(): void {
@@ -1288,37 +1312,43 @@ export class SessionStore {
 
     this.db.run('BEGIN TRANSACTION');
     try {
-      this.db.run(`
-        UPDATE observations
-           SET content_hash = '__null_migration_' || id || '__'
-         WHERE content_hash IS NULL
-      `);
-
-      this.db.run(`
-        DELETE FROM observations
-         WHERE id IN (
-           SELECT id
-             FROM (
-               SELECT id,
-                      ROW_NUMBER() OVER (
-                        PARTITION BY memory_session_id, content_hash
-                        ORDER BY id
-                      ) AS duplicate_rank
-                 FROM observations
-             )
-            WHERE duplicate_rank > 1
-         )
-      `);
-      this.db.run(`
-        CREATE UNIQUE INDEX IF NOT EXISTS ux_observations_session_hash
-        ON observations(memory_session_id, content_hash)
-      `);
-      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(29, new Date().toISOString());
+      this.dedupeObservationsByContentHash();
       this.db.run('COMMIT');
     } catch (error) {
       this.db.run('ROLLBACK');
+      const err = error instanceof Error ? error : new Error(String(error));
+      logger.error('DB', 'Failed to de-dupe observations by content_hash, rolled back', {}, err);
       throw error;
     }
+  }
+
+  private dedupeObservationsByContentHash(): void {
+    this.db.run(`
+      UPDATE observations
+         SET content_hash = '__null_migration_' || id || '__'
+       WHERE content_hash IS NULL
+    `);
+
+    this.db.run(`
+      DELETE FROM observations
+       WHERE id IN (
+         SELECT id
+           FROM (
+             SELECT id,
+                    ROW_NUMBER() OVER (
+                      PARTITION BY memory_session_id, content_hash
+                      ORDER BY id
+                    ) AS duplicate_rank
+               FROM observations
+           )
+          WHERE duplicate_rank > 1
+       )
+    `);
+    this.db.run(`
+      CREATE UNIQUE INDEX IF NOT EXISTS ux_observations_session_hash
+      ON observations(memory_session_id, content_hash)
+    `);
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(29, new Date().toISOString());
   }
 
   private addObservationsMetadataColumn(): void {

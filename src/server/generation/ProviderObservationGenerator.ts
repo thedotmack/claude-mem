@@ -89,6 +89,9 @@ export class ProviderObservationGenerator {
           correlationId,
           issues: error.issues,
         });
+      } else {
+        const err = error instanceof Error ? error : new Error(String(error));
+        logger.error('SYSTEM', 'unexpected error validating job payload', { correlationId }, err);
       }
       throw error;
     }
@@ -194,65 +197,7 @@ export class ProviderObservationGenerator {
     });
 
     try {
-      const events = await this.loadEvents(fresh, payload);
-      const project = await this.loadProject(fresh);
-
-      const result = await this.options.provider.generate({
-        job: fresh,
-        events,
-        project: {
-          projectId: fresh.projectId,
-          teamId: fresh.teamId,
-          serverSessionId: fresh.serverSessionId,
-          projectName: project?.name ?? null,
-        },
-      });
-
-      const persistInput = {
-        pool: this.options.pool,
-        job: fresh,
-        rawText: result.rawText,
-        modelId: result.modelId,
-        providerLabel: result.providerLabel,
-        tokensUsed: result.tokensUsed,
-        // Phase 11 — flow identity context from BullMQ payload into the
-        // persistence layer so observations and audit rows carry the same
-        // generation_job_id reference back through to the original API key.
-        apiKeyId: payload.api_key_id,
-        actorId: payload.actor_id,
-        sourceAdapter: payload.source_adapter,
-        ...(this.options.workerId !== undefined ? { workerId: this.options.workerId } : {}),
-      };
-      const outcome: ProcessGeneratedResponseOutcome = fresh.sourceType === 'session_summary'
-        ? await processSessionSummaryResponse(persistInput)
-        : await processGeneratedResponse(persistInput);
-
-      if (outcome.kind === 'parse_error') {
-        await markGenerationFailed({
-          pool: this.options.pool,
-          job: fresh,
-          reason: outcome.reason,
-          classification: 'parse_error',
-          retryable: false,
-          ...(this.options.workerId !== undefined ? { workerId: this.options.workerId } : {}),
-        });
-        throw new Error(`generation parse error: ${outcome.reason}`);
-      }
-
-      logger.info('SYSTEM', 'generation completed', {
-        correlationId,
-        jobId: outcome.jobId,
-        bullmqJobId: job.id ?? null,
-        requestId: payloadRequestId,
-        observationCount: outcome.observations.length,
-        privateContentDetected: outcome.privateContentDetected,
-      });
-
-      return {
-        jobId: outcome.jobId,
-        status: 'completed',
-        observationCount: outcome.observations.length,
-      };
+      return await this.generateAndPersist(job, payload, fresh, correlationId, payloadRequestId);
     } catch (error) {
       const classified = error instanceof ServerClassifiedProviderError ? error : null;
       const retryable = classified
@@ -268,6 +213,77 @@ export class ProviderObservationGenerator {
       });
       throw error;
     }
+  }
+
+  // Steps 3+4 of the job pipeline: call the provider with the reloaded
+  // context, then persist + link + advance the outbox. Failures propagate to
+  // process()'s catch, which routes them through markGenerationFailed.
+  private async generateAndPersist(
+    job: Job<ServerGenerationJobPayload>,
+    payload: ServerGenerationJobPayload,
+    fresh: PostgresObservationGenerationJob,
+    correlationId: string,
+    payloadRequestId: string | null,
+  ): Promise<{ jobId: string; status: 'completed'; observationCount: number }> {
+    const events = await this.loadEvents(fresh, payload);
+    const project = await this.loadProject(fresh);
+
+    const result = await this.options.provider.generate({
+      job: fresh,
+      events,
+      project: {
+        projectId: fresh.projectId,
+        teamId: fresh.teamId,
+        serverSessionId: fresh.serverSessionId,
+        projectName: project?.name ?? null,
+      },
+    });
+
+    const persistInput = {
+      pool: this.options.pool,
+      job: fresh,
+      rawText: result.rawText,
+      modelId: result.modelId,
+      providerLabel: result.providerLabel,
+      tokensUsed: result.tokensUsed,
+      // Phase 11 — flow identity context from BullMQ payload into the
+      // persistence layer so observations and audit rows carry the same
+      // generation_job_id reference back through to the original API key.
+      apiKeyId: payload.api_key_id,
+      actorId: payload.actor_id,
+      sourceAdapter: payload.source_adapter,
+      ...(this.options.workerId !== undefined ? { workerId: this.options.workerId } : {}),
+    };
+    const outcome: ProcessGeneratedResponseOutcome = fresh.sourceType === 'session_summary'
+      ? await processSessionSummaryResponse(persistInput)
+      : await processGeneratedResponse(persistInput);
+
+    if (outcome.kind === 'parse_error') {
+      await markGenerationFailed({
+        pool: this.options.pool,
+        job: fresh,
+        reason: outcome.reason,
+        classification: 'parse_error',
+        retryable: false,
+        ...(this.options.workerId !== undefined ? { workerId: this.options.workerId } : {}),
+      });
+      throw new Error(`generation parse error: ${outcome.reason}`);
+    }
+
+    logger.info('SYSTEM', 'generation completed', {
+      correlationId,
+      jobId: outcome.jobId,
+      bullmqJobId: job.id ?? null,
+      requestId: payloadRequestId,
+      observationCount: outcome.observations.length,
+      privateContentDetected: outcome.privateContentDetected,
+    });
+
+    return {
+      jobId: outcome.jobId,
+      status: 'completed',
+      observationCount: outcome.observations.length,
+    };
   }
 
   // Phase 11 — load the outbox row by id WITHOUT a scope filter so we can
@@ -422,23 +438,35 @@ export class ProviderObservationGenerator {
     details?: Record<string, unknown>;
   }): Promise<void> {
     try {
-      const repo = new PostgresAuthRepository(this.options.pool);
-      await repo.createAuditLog({
-        teamId: input.teamId,
-        projectId: input.projectId,
-        actorId: input.actorId,
-        apiKeyId: input.apiKeyId,
-        action: input.action,
-        resourceType: 'observation_generation_job',
-        resourceId: input.resourceId,
-        details: input.details ?? {},
-      });
+      await this.insertAuditLog(input);
     } catch (auditError) {
       logger.warn('SYSTEM', 'audit_log insert failed in ProviderObservationGenerator', {
         action: input.action,
         error: auditError instanceof Error ? auditError.message : String(auditError),
       });
     }
+  }
+
+  private async insertAuditLog(input: {
+    teamId: string | null;
+    projectId: string | null;
+    apiKeyId: string | null;
+    actorId: string | null;
+    action: string;
+    resourceId: string | null;
+    details?: Record<string, unknown>;
+  }): Promise<void> {
+    const repo = new PostgresAuthRepository(this.options.pool);
+    await repo.createAuditLog({
+      teamId: input.teamId,
+      projectId: input.projectId,
+      actorId: input.actorId,
+      apiKeyId: input.apiKeyId,
+      action: input.action,
+      resourceType: 'observation_generation_job',
+      resourceId: input.resourceId,
+      details: input.details ?? {},
+    });
   }
 
   private async lockOutbox(

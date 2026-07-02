@@ -125,6 +125,7 @@ export class SessionRoutes extends BaseRouteHandler {
               source,
             });
           } catch (error) {
+            const err = error instanceof Error ? error : new Error(String(error));
             const classified = classifyClaudeError(error);
             if (classified.kind === 'setup_required') {
               recordClaudeCliSetupRequired(classified.message);
@@ -133,7 +134,7 @@ export class SessionRoutes extends BaseRouteHandler {
               sessionId: sessionDbId,
               source,
               error: classified.message,
-            });
+            }, err);
             return;
           }
         }

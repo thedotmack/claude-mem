@@ -17,6 +17,7 @@
  */
 
 import { getWorkerHost, fetchWithTimeout } from '../shared/worker-utils.js';
+import { logger } from '../utils/logger.js';
 
 interface HealthSnapshot {
   pid?: unknown;
@@ -62,9 +63,35 @@ export async function getCurrentWorkerPid(port: number, timeoutMs: number = 2000
   try {
     const health = await fetchHealthSnapshot(port, timeoutMs);
     return typeof health.pid === 'number' ? health.pid : null;
-  } catch {
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.debug('SYSTEM', 'No reachable worker while capturing pre-restart pid', { port }, err);
     return null;
   }
+}
+
+/**
+ * One verification poll: fetch the health snapshot and check it against the
+ * old pid and expected version. Returns the observed payload summary plus the
+ * verified pid/version when the new worker proved itself, or null otherwise.
+ */
+async function pollHealthOnce(
+  port: number,
+  timeoutMs: number,
+  oldPid: number | null,
+  expectedVersion: string
+): Promise<{ lastObserved: string; verified: { pid: number; version: string } | null }> {
+  const health = await fetchHealthSnapshot(port, timeoutMs);
+  const lastObserved = `last health payload: ${JSON.stringify({ pid: health.pid, version: health.version })}`;
+  if (
+    typeof health.pid === 'number' &&
+    health.pid !== oldPid &&
+    typeof health.version === 'string' &&
+    health.version === expectedVersion
+  ) {
+    return { lastObserved, verified: { pid: health.pid, version: health.version } };
+  }
+  return { lastObserved, verified: null };
 }
 
 /**
@@ -91,19 +118,16 @@ export async function verifyRestartedWorker(
 
   while (Date.now() < deadline) {
     try {
-      const health = await fetchHealthSnapshot(port, requestTimeoutMs);
-      lastObserved = `last health payload: ${JSON.stringify({ pid: health.pid, version: health.version })}`;
+      const poll = await pollHealthOnce(port, requestTimeoutMs, oldPid, expectedVersion);
+      lastObserved = poll.lastObserved;
       lastPollSawHealth = true;
-      if (
-        typeof health.pid === 'number' &&
-        health.pid !== oldPid &&
-        typeof health.version === 'string' &&
-        health.version === expectedVersion
-      ) {
-        return { ok: true, pid: health.pid, version: health.version };
+      if (poll.verified) {
+        return { ok: true, pid: poll.verified.pid, version: poll.verified.version };
       }
     } catch (error) {
-      lastObserved = `connection error: ${error instanceof Error ? error.message : String(error)}`;
+      const err = error instanceof Error ? error : new Error(String(error));
+      logger.debug('SYSTEM', 'Health poll failed while verifying restarted worker', { port }, err);
+      lastObserved = `connection error: ${err.message}`;
       lastPollSawHealth = false;
     }
     await new Promise(resolve => setTimeout(resolve, pollIntervalMs));

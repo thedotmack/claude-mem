@@ -293,6 +293,29 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
     return this.queryGeminiMultiTurn(history, config.apiKey, config.model, config.rateLimitingEnabled);
   }
 
+  private fetchGenerateContent(
+    url: string,
+    contents: GeminiContent[],
+    priorRequestId: string | null,
+    attemptSignal: AbortSignal
+  ): Promise<Response> {
+    return fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(priorRequestId ? { 'x-claude-mem-prior-request-id': priorRequestId } : {}),
+      },
+      body: JSON.stringify({
+        contents,
+        generationConfig: {
+          temperature: 0.3,  // Lower temperature for structured extraction
+          maxOutputTokens: 4096,
+        },
+      }),
+      signal: attemptSignal,
+    });
+  }
+
   private async queryGeminiMultiTurn(
     history: ConversationMessage[],
     apiKey: string,
@@ -317,25 +340,12 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
     const data = await withRetry<GeminiResponse>(async (attemptSignal) => {
       let response: Response;
       try {
-        response = await fetch(url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(priorRequestId ? { 'x-claude-mem-prior-request-id': priorRequestId } : {}),
-          },
-          body: JSON.stringify({
-            contents,
-            generationConfig: {
-              temperature: 0.3,  // Lower temperature for structured extraction
-              maxOutputTokens: 4096,
-            },
-          }),
-          signal: attemptSignal,
-        });
+        response = await this.fetchGenerateContent(url, contents, priorRequestId, attemptSignal);
       } catch (networkError: unknown) {
         // Network failures, aborts, DNS, etc.
+        const err = networkError instanceof Error ? networkError : new Error(String(networkError));
         throw classifyGeminiError({
-          cause: networkError,
+          cause: err,
         });
       }
 

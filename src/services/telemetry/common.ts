@@ -5,6 +5,7 @@
  */
 
 import os from 'os';
+import { logger } from '../../utils/logger.js';
 
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 const packageVersion =
@@ -94,7 +95,9 @@ function detectWsl(): boolean {
   if (process.platform !== 'linux') return false;
   try {
     return Boolean(process.env.WSL_DISTRO_NAME) || os.release().toLowerCase().includes('microsoft');
-  } catch {
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SYSTEM', 'Telemetry: WSL detection failed; reporting is_wsl=false', undefined, err);
     return false;
   }
 }

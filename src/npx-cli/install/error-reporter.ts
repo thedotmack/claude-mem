@@ -85,18 +85,18 @@ function writeLastInstallError(
   remediation: string,
   dataDir: string,
 ): void {
+  const payload = {
+    severity: category.severity,
+    categoryId: category.id,
+    component: ctx.component,
+    phase: ctx.phase,
+    cause: causeMessage(ctx.cause),
+    remediation,
+    details: ctx.details ?? null,
+    timestamp: new Date().toISOString(),
+  };
   try {
     mkdirSync(dataDir, { recursive: true });
-    const payload = {
-      severity: category.severity,
-      categoryId: category.id,
-      component: ctx.component,
-      phase: ctx.phase,
-      cause: causeMessage(ctx.cause),
-      remediation,
-      details: ctx.details ?? null,
-      timestamp: new Date().toISOString(),
-    };
     writeFileSync(join(dataDir, 'last-install-error.json'), JSON.stringify(payload, null, 2));
   } catch {
     // Diagnostics are best-effort; never let them mask the real failure.
@@ -177,7 +177,9 @@ export async function withRetry<T>(
     try {
       return await action();
     } catch (error) {
-      lastError = error;
+      // [ANTI-PATTERN IGNORED]: retry failures are expected transient errors; warnings are never printed live (a clack spinner would clobber them), so each attempt is counted in summary.retryCount and the last error is re-raised to the caller after the loop for routing through installerError.
+      const err = error instanceof Error ? error : new Error(String(error));
+      lastError = err;
       const count = (summary.retryCount[ctx.component] ?? 0) + 1;
       summary.retryCount[ctx.component] = count;
       if (attempt >= maxAttempts) break;

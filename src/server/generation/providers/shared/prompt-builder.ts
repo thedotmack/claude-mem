@@ -3,6 +3,7 @@
 import { ModeManager } from '../../../../services/domain/ModeManager.js';
 import type { ModeConfig, ObservationType } from '../../../../services/domain/types.js';
 import { stripTags } from '../../../../utils/tag-stripping.js';
+import { logger } from '../../../../utils/logger.js';
 import type { PostgresAgentEvent } from '../../../../storage/postgres/agent-events.js';
 import type { ServerGenerationContext } from './types.js';
 
@@ -133,7 +134,11 @@ function buildEventBlock(event: PostgresAgentEvent): EventBlockResult {
 function loadActiveModeOrFallback(): ModeConfig | { observation_types: ReadonlyArray<Pick<ObservationType, 'id'>> } {
   try {
     return ModeManager.getInstance().getActiveMode();
-  } catch {
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SDK', 'Failed to load active mode; using fallback observation types', {
+      fallbackTypes: FALLBACK_OBSERVATION_TYPES.map(t => t.id),
+    }, err);
     return { observation_types: FALLBACK_OBSERVATION_TYPES } as unknown as ModeConfig;
   }
 }

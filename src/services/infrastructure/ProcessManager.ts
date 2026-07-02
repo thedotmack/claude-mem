@@ -5,7 +5,6 @@ import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, rmSync,
 import { execSync, spawnSync } from 'child_process';
 import { spawnHidden } from '../../shared/spawn.js';
 import { logger } from '../../utils/logger.js';
-import { toError } from '../../utils/to-error.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor, validateWorkerPidFile, type ValidateWorkerPidStatus } from '../../supervisor/index.js';
 import { paths } from '../../shared/paths.js';
@@ -424,11 +423,12 @@ export function spawnDaemon(
       });
       return 0;
     } catch (error: unknown) {
+      const err = error instanceof Error ? error : new Error(String(error));
       logger.error(
         'SYSTEM',
         'Failed to spawn worker daemon on Windows',
         { runtimePath },
-        toError(error)
+        err
       );
       return undefined;
     }

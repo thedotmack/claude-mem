@@ -28,6 +28,7 @@
  */
 
 import os from 'os';
+import { logger } from '../../utils/logger.js';
 
 /** Max characters kept for the redacted error message. */
 export const MESSAGE_MAX_CHARS = 500;
@@ -66,7 +67,9 @@ export function capRawInput(text: unknown): string {
       if (text === null || text === undefined) return '';
       try {
         text = String(text);
-      } catch {
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        logger.warn('SYSTEM', 'error-scrub: String() coercion of non-string input failed', undefined, err);
         return '';
       }
     }
@@ -90,7 +93,9 @@ export function redactHomeDir(text: string): string {
   let home = '';
   try {
     home = os.homedir() || '';
-  } catch {
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SYSTEM', 'error-scrub: os.homedir() failed; skipping home-dir redaction', undefined, err);
     home = '';
   }
   if (!home) return text;
@@ -99,8 +104,10 @@ export function redactHomeDir(text: string): string {
   const escaped = home.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   try {
     return text.replace(new RegExp(escaped, 'g'), '~');
-  } catch {
+  } catch (error) {
     // If the constructed RegExp is somehow invalid, fall back to split/join.
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SYSTEM', 'error-scrub: home-dir RegExp replace failed; using split/join fallback', undefined, err);
     return text.split(home).join('~');
   }
 }
@@ -125,9 +132,26 @@ export function redactAbsolutePaths(text: string): string {
     out = out.replace(/[A-Za-z]:\\(?:[^\s\\:"'()]+\\)*([^\s\\:"'()]+)/g, '$1');
     // Windows UNC paths: \\server\share\file
     out = out.replace(/\\\\[^\s\\:"'()]+(?:\\[^\s\\:"'()]+)*\\([^\s\\:"'()]+)/g, '$1');
-  } catch {
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SYSTEM', 'error-scrub: absolute-path redaction failed; keeping original text', undefined, err);
     return text;
   }
+  return out;
+}
+
+/**
+ * Per-match rewriter for redactUrlQueryStrings: strips userinfo
+ * (user:pass@ → [REDACTED]@) and drops everything from the first ? or #.
+ * Extracted so the try block in redactUrlQueryStrings stays narrow.
+ */
+function stripUrlUserinfoAndQuery(match: string): string {
+  let out = match.replace(/[?#].*$/, '');
+  // Strip userinfo: scheme://USERINFO@host → scheme://[REDACTED]@host.
+  out = out.replace(
+    /^([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/@\s]+@/,
+    `$1${REDACTED}@`
+  );
   return out;
 }
 
@@ -149,23 +173,70 @@ export function redactUrlQueryStrings(text: string): string {
   try {
     // Match ANY scheme:// URL (http, ws, postgres, redis, mongodb+srv, amqp, …)
     // up to the next whitespace/quote/paren. A scheme is letters/digits with
-    // optional + . - (e.g. mongodb+srv). For each match: strip userinfo
-    // (user:pass@ → [REDACTED]@) and drop everything from the first ? or #.
+    // optional + . - (e.g. mongodb+srv).
     return text.replace(
       /\b[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s"'()]+/g,
-      match => {
-        let out = match.replace(/[?#].*$/, '');
-        // Strip userinfo: scheme://USERINFO@host → scheme://[REDACTED]@host.
-        out = out.replace(
-          /^([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/@\s]+@/,
-          `$1${REDACTED}@`
-        );
-        return out;
-      }
+      stripUrlUserinfoAndQuery
     );
-  } catch {
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SYSTEM', 'error-scrub: URL query-string redaction failed; keeping original text', undefined, err);
     return text;
   }
+}
+
+/**
+ * The actual secret-masking pass for redactSecrets, extracted so the try block
+ * in redactSecrets stays narrow. All the quantifier-bounding notes below still
+ * apply; any regex-engine failure is guarded by redactSecrets itself.
+ */
+function applySecretRedactions(text: string): string {
+  let out = text;
+  // Emails. Quantifiers are BOUNDED ({1,64} local / {1,255} domain / {2,24}
+  // TLD) so a long run of local-part chars with no '@' (or a giant domain run)
+  // cannot drive O(n²) backtracking. The bounds exceed RFC 5321 limits
+  // (local ≤ 64, domain ≤ 255) so every real address still matches.
+  out = out.replace(/[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,24}/g, REDACTED);
+  // JWTs: three base64url segments separated by dots (header.payload.sig).
+  // Each segment is BOUNDED ({10,512}) so a long dot-free base64 run cannot
+  // backtrack quadratically chasing the required dots. Real JWT segments are
+  // far under 512 chars.
+  out = out.replace(/\b[A-Za-z0-9_-]{10,512}\.[A-Za-z0-9_-]{10,512}\.[A-Za-z0-9_-]{10,512}\b/g, REDACTED);
+  // Provider keys with known prefixes (sk-, phc_, pk-, rk_, ghp_, xoxb-, ...)
+  // followed by a run of token chars. Prefix list kept broad but anchored.
+  // Upper-bounded ({8,512}) to stay linear on adversarial runs.
+  out = out.replace(
+    /\b(?:sk|pk|rk|ak|phc|phx|ph|ghp|gho|ghs|xox[bpasr])[-_][A-Za-z0-9_-]{8,512}\b/gi,
+    REDACTED
+  );
+  // Bearer tokens: "Bearer <token>".
+  out = out.replace(/\bBearer\s+[A-Za-z0-9._-]{8,512}\b/gi, REDACTED);
+  // AWS access key IDs: AKIA/ASIA/AGPA/AIDA/AROA/ANPA/ANVA/AIPA + 16 base32.
+  out = out.replace(/\b(?:AKIA|ASIA|AGPA|AIDA|AROA|ANPA|ANVA|AIPA)[0-9A-Z]{16}\b/g, REDACTED);
+  // Long hex blobs (sha/uuid-without-dashes/api hashes): 24+ hex chars.
+  // Upper-bounded ({24,4096}) so an enormous hex run stays linear.
+  out = out.replace(/\b[0-9a-fA-F]{24,4096}\b/g, REDACTED);
+  // UUIDs.
+  out = out.replace(
+    /\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b/g,
+    REDACTED
+  );
+  // Generic high-entropy tokens: 32+ chars of base64url-ish alphabet that
+  // contain at least one digit (avoids redacting ordinary long words).
+  // The "contains a digit" requirement is a lookahead that previously scanned
+  // the WHOLE run from every position → O(n²) on a long digit-free run. It is
+  // now bounded ([...]{0,4096}) and the run itself is bounded ({32,4096}) so
+  // the work per position is capped and total work stays linear in practice.
+  out = out.replace(/\b(?=[A-Za-z0-9+/_-]{0,4096}\d)[A-Za-z0-9+/_-]{32,4096}={0,2}\b/g, REDACTED);
+  // IPv4 addresses (internal IPs/hostnames leak in network errors). Each
+  // octet is constrained to 0-255 so 4-part dotted quads match but ordinary
+  // 3-part version numbers (1.2.3) do NOT. Word-boundaried both sides so a
+  // longer dotted token (e.g. a 5-part version) is left alone.
+  out = out.replace(
+    /\b(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}\b/g,
+    REDACTED
+  );
+  return out;
 }
 
 /**
@@ -178,53 +249,10 @@ export function redactUrlQueryStrings(text: string): string {
 export function redactSecrets(text: string): string {
   if (typeof text !== 'string' || text.length === 0) return text ?? '';
   try {
-    let out = text;
-    // Emails. Quantifiers are BOUNDED ({1,64} local / {1,255} domain / {2,24}
-    // TLD) so a long run of local-part chars with no '@' (or a giant domain run)
-    // cannot drive O(n²) backtracking. The bounds exceed RFC 5321 limits
-    // (local ≤ 64, domain ≤ 255) so every real address still matches.
-    out = out.replace(/[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,24}/g, REDACTED);
-    // JWTs: three base64url segments separated by dots (header.payload.sig).
-    // Each segment is BOUNDED ({10,512}) so a long dot-free base64 run cannot
-    // backtrack quadratically chasing the required dots. Real JWT segments are
-    // far under 512 chars.
-    out = out.replace(/\b[A-Za-z0-9_-]{10,512}\.[A-Za-z0-9_-]{10,512}\.[A-Za-z0-9_-]{10,512}\b/g, REDACTED);
-    // Provider keys with known prefixes (sk-, phc_, pk-, rk_, ghp_, xoxb-, ...)
-    // followed by a run of token chars. Prefix list kept broad but anchored.
-    // Upper-bounded ({8,512}) to stay linear on adversarial runs.
-    out = out.replace(
-      /\b(?:sk|pk|rk|ak|phc|phx|ph|ghp|gho|ghs|xox[bpasr])[-_][A-Za-z0-9_-]{8,512}\b/gi,
-      REDACTED
-    );
-    // Bearer tokens: "Bearer <token>".
-    out = out.replace(/\bBearer\s+[A-Za-z0-9._-]{8,512}\b/gi, REDACTED);
-    // AWS access key IDs: AKIA/ASIA/AGPA/AIDA/AROA/ANPA/ANVA/AIPA + 16 base32.
-    out = out.replace(/\b(?:AKIA|ASIA|AGPA|AIDA|AROA|ANPA|ANVA|AIPA)[0-9A-Z]{16}\b/g, REDACTED);
-    // Long hex blobs (sha/uuid-without-dashes/api hashes): 24+ hex chars.
-    // Upper-bounded ({24,4096}) so an enormous hex run stays linear.
-    out = out.replace(/\b[0-9a-fA-F]{24,4096}\b/g, REDACTED);
-    // UUIDs.
-    out = out.replace(
-      /\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b/g,
-      REDACTED
-    );
-    // Generic high-entropy tokens: 32+ chars of base64url-ish alphabet that
-    // contain at least one digit (avoids redacting ordinary long words).
-    // The "contains a digit" requirement is a lookahead that previously scanned
-    // the WHOLE run from every position → O(n²) on a long digit-free run. It is
-    // now bounded ([...]{0,4096}) and the run itself is bounded ({32,4096}) so
-    // the work per position is capped and total work stays linear in practice.
-    out = out.replace(/\b(?=[A-Za-z0-9+/_-]{0,4096}\d)[A-Za-z0-9+/_-]{32,4096}={0,2}\b/g, REDACTED);
-    // IPv4 addresses (internal IPs/hostnames leak in network errors). Each
-    // octet is constrained to 0-255 so 4-part dotted quads match but ordinary
-    // 3-part version numbers (1.2.3) do NOT. Word-boundaried both sides so a
-    // longer dotted token (e.g. a 5-part version) is left alone.
-    out = out.replace(
-      /\b(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}\b/g,
-      REDACTED
-    );
-    return out;
-  } catch {
+    return applySecretRedactions(text);
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SYSTEM', 'error-scrub: secret redaction failed; keeping original text', undefined, err);
     return text;
   }
 }
@@ -234,7 +262,9 @@ export function collapseWhitespace(text: string): string {
   if (typeof text !== 'string' || text.length === 0) return text ?? '';
   try {
     return text.replace(/[ \t\f\v]+/g, ' ').replace(/ *\n */g, '\n').trim();
-  } catch {
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SYSTEM', 'error-scrub: whitespace collapse failed; keeping original text', undefined, err);
     return text;
   }
 }
@@ -266,9 +296,33 @@ export function scrubMessage(message: unknown): string {
     return redacted.length > MESSAGE_MAX_CHARS
       ? redacted.slice(0, MESSAGE_MAX_CHARS)
       : redacted;
-  } catch {
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SYSTEM', 'error-scrub: message scrub failed; emitting empty message', undefined, err);
     return '';
   }
+}
+
+/**
+ * Core redaction pass for scrubStack, extracted so the try block in scrubStack
+ * stays narrow. Any failure is guarded by scrubStack itself.
+ */
+function redactStackText(stack: string): string {
+  // Cap raw input BEFORE splitting/redaction so neither the split nor any
+  // per-line redactText regex nor the defensive redactSecrets pass below can
+  // ever see more than MAX_RAW_INPUT_CHARS. Keeping only the top frames and
+  // the existing STACK_MAX_CHARS cap still apply to the final emitted size.
+  const capped = capRawInput(stack);
+  const lines = capped.split('\n');
+  // Keep header + top frames. STACK_MAX_FRAMES counts frame lines; the header
+  // line (lines[0]) is kept additionally when present.
+  const kept = lines.slice(0, STACK_MAX_FRAMES + 1);
+  const redacted = kept
+    .map(line => redactText(line).replace(/[ \t]+/g, ' ').trimEnd())
+    .join('\n')
+    .trim();
+  // Secrets can span the joined text; run one more secret pass defensively.
+  return redactSecrets(redacted);
 }
 
 /**
@@ -280,25 +334,13 @@ export function scrubMessage(message: unknown): string {
 export function scrubStack(stack: unknown): string {
   try {
     if (typeof stack !== 'string' || stack.length === 0) return '';
-    // Cap raw input BEFORE splitting/redaction so neither the split nor any
-    // per-line redactText regex nor the defensive redactSecrets pass below can
-    // ever see more than MAX_RAW_INPUT_CHARS. Keeping only the top frames and
-    // the existing STACK_MAX_CHARS cap still apply to the final emitted size.
-    const capped = capRawInput(stack);
-    const lines = capped.split('\n');
-    // Keep header + top frames. STACK_MAX_FRAMES counts frame lines; the header
-    // line (lines[0]) is kept additionally when present.
-    const kept = lines.slice(0, STACK_MAX_FRAMES + 1);
-    const redacted = kept
-      .map(line => redactText(line).replace(/[ \t]+/g, ' ').trimEnd())
-      .join('\n')
-      .trim();
-    // Secrets can span the joined text; run one more secret pass defensively.
-    const finalText = redactSecrets(redacted);
+    const finalText = redactStackText(stack);
     return finalText.length > STACK_MAX_CHARS
       ? finalText.slice(0, STACK_MAX_CHARS)
       : finalText;
-  } catch {
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SYSTEM', 'error-scrub: stack scrub failed; emitting empty stack', undefined, err);
     return '';
   }
 }
@@ -369,7 +411,9 @@ function safeReadField(err: unknown, field: 'message' | 'stack'): string {
       try {
         const value = (err as Record<string, unknown>)[field];
         if (typeof value === 'string') return value;
-      } catch {
+      } catch (error) {
+        const readErr = error instanceof Error ? error : new Error(String(error));
+        logger.warn('SYSTEM', `error-scrub: reading .${field} off thrown value failed (hostile getter)`, undefined, readErr);
         return '';
       }
     }
@@ -396,7 +440,9 @@ export function scrubError(err: unknown): ScrubbedError {
         else if (err !== null && err !== undefined && !(err instanceof Error)) {
           rawMessage = String(err);
         }
-      } catch {
+      } catch (error) {
+        const coercionErr = error instanceof Error ? error : new Error(String(error));
+        logger.warn('SYSTEM', 'error-scrub: stringifying non-Error thrown value failed', undefined, coercionErr);
         rawMessage = '';
       }
     }
@@ -426,15 +472,25 @@ export function scrubError(err: unknown): ScrubbedError {
 export function messageTemplate(message: unknown): string {
   try {
     const base = typeof message === 'string' ? message : '';
-    return base
-      .replace(/\[REDACTED\]/g, '§')
-      .replace(/'[^']*'/g, "'§'")
-      .replace(/"[^"]*"/g, '"§"')
-      .replace(/\b\d+\b/g, '§')
-      .replace(/[ \t]+/g, ' ')
-      .trim()
-      .slice(0, 200);
-  } catch {
+    return applyTemplateNormalization(base);
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SYSTEM', 'error-scrub: message templating failed; emitting empty template', undefined, err);
     return '';
   }
+}
+
+/**
+ * The replacement chain for messageTemplate, extracted so the try block in
+ * messageTemplate stays narrow. Any failure is guarded by messageTemplate.
+ */
+function applyTemplateNormalization(base: string): string {
+  return base
+    .replace(/\[REDACTED\]/g, '§')
+    .replace(/'[^']*'/g, "'§'")
+    .replace(/"[^"]*"/g, '"§"')
+    .replace(/\b\d+\b/g, '§')
+    .replace(/[ \t]+/g, ' ')
+    .trim()
+    .slice(0, 200);
 }
