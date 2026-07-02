@@ -76,8 +76,8 @@ export class HybridSearchStrategy {
     sessions: SessionSummarySearchResult[];
     usedChroma: boolean;
   }> {
-    const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project, platformSource, dateRange, orderBy } = options;
-    const filterOptions = { limit, project, platformSource, dateRange, orderBy };
+    const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project, platformSource, dateRange, orderBy, isFolder } = options;
+    const filterOptions = { limit, project, platformSource, dateRange, orderBy, isFolder };
 
     logger.debug('SEARCH', 'HybridSearchStrategy: findByFile', { filePath });
 
@@ -154,6 +154,12 @@ export class HybridSearchStrategy {
     const rankedIds = this.intersectWithRanking(metadataIds, chromaResults.ids);
 
     if (rankedIds.length > 0) {
+      for (const id of metadataIds) {
+        if (!rankedIds.includes(id)) {
+          rankedIds.push(id);
+        }
+      }
+
       const observations = this.sessionStore.getObservationsByIds(rankedIds, {
         orderBy: 'relevance',
         limit: options.limit,
@@ -165,15 +171,11 @@ export class HybridSearchStrategy {
       return { observations, sessions, usedChroma: true };
     }
 
-    if (options.platformSource) {
-      return {
-        observations: this.sortMetadataFallback(fallbackObservations, options.limit, options.orderBy),
-        sessions,
-        usedChroma: false
-      };
-    }
-
-    return { observations: [], sessions, usedChroma: false };
+    return {
+      observations: this.sortMetadataFallback(fallbackObservations, options.limit, options.orderBy),
+      sessions,
+      usedChroma: false
+    };
   }
 
   private sortMetadataFallback(
