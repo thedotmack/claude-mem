@@ -9,7 +9,7 @@ import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { resolveRuntimeContext, logServerFallback } from '../../services/hooks/runtime-selector.js';
-import { isServerClientError } from '../../services/hooks/server-client.js';
+import { isServerClientError, type ServerRecordEventRequest } from '../../services/hooks/server-client.js';
 
 async function dispatchToWorker(
   input: NormalizedHookInput,
@@ -65,24 +65,25 @@ export const observationHandler: EventHandler = {
     // value. `runtime-selector.selectRuntime()` continues to accept the legacy
     // `'server-beta'` literal in settings.json and normalizes it to `'server'`.
     if (runtime.runtime === 'server') {
-      try {
-        await runtime.client.recordEvent({
-          projectId: runtime.projectId,
-          contentSessionId: sessionId,
+      const event: ServerRecordEventRequest = {
+        projectId: runtime.projectId,
+        contentSessionId: sessionId,
+        platformSource,
+        sourceType: 'hook',
+        eventType: 'tool_use',
+        occurredAtEpoch: Date.now(),
+        payload: {
+          tool_name: toolName,
+          tool_input: toolInput,
+          tool_response: toolResponse,
+          cwd,
+          agentId: input.agentId,
+          agentType: input.agentType,
           platformSource,
-          sourceType: 'hook',
-          eventType: 'tool_use',
-          occurredAtEpoch: Date.now(),
-          payload: {
-            tool_name: toolName,
-            tool_input: toolInput,
-            tool_response: toolResponse,
-            cwd,
-            agentId: input.agentId,
-            agentType: input.agentType,
-            platformSource,
-          },
-        });
+        },
+      };
+      try {
+        await runtime.client.recordEvent(event);
         logger.debug('HOOK', 'Observation sent successfully via server', { toolName });
         return { continue: true, suppressOutput: true };
       } catch (error: unknown) {

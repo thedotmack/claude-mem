@@ -325,6 +325,126 @@ export class SearchManager {
     return normalized;
   }
 
+  /**
+   * PATH 2 body for search(): Chroma semantic query -> date-window filter ->
+   * SQLite hydration, with a scoped FTS5 fallback when a platform-scoped
+   * query matches nothing in Chroma. Extracted so search()'s try block stays
+   * narrow; any error here is handled by search()'s Chroma-failure fallback.
+   */
+  private async performChromaSemanticSearch(
+    query: string,
+    whereFilter: Record<string, any> | undefined,
+    options: any,
+    scope: {
+      obs_type: any;
+      concepts: any;
+      files: any;
+      searchObservations: boolean;
+      searchSessions: boolean;
+      searchPrompts: boolean;
+    }
+  ): Promise<{
+    observations: ObservationSearchResult[];
+    sessions: SessionSummarySearchResult[];
+    prompts: UserPromptSearchResult[];
+    platformScopedChromaZeroFallback: boolean;
+  }> {
+    const { obs_type, concepts, files, searchObservations, searchSessions, searchPrompts } = scope;
+    let observations: ObservationSearchResult[] = [];
+    let sessions: SessionSummarySearchResult[] = [];
+    let prompts: UserPromptSearchResult[] = [];
+    let platformScopedChromaZeroFallback = false;
+
+    const chromaResults = await this.queryChroma(query, 100, whereFilter);
+    logger.debug('SEARCH', 'ChromaDB returned semantic matches', { matchCount: chromaResults.ids.length });
+
+    if (chromaResults.ids.length > 0) {
+      const { dateRange } = options;
+      let startEpoch: number | undefined;
+      let endEpoch: number | undefined;
+
+      if (dateRange) {
+        if (dateRange.start) {
+          startEpoch = typeof dateRange.start === 'number'
+            ? dateRange.start
+            : new Date(dateRange.start).getTime();
+        }
+        if (dateRange.end) {
+          endEpoch = typeof dateRange.end === 'number'
+            ? dateRange.end
+            : new Date(dateRange.end).getTime();
+        }
+      } else {
+        startEpoch = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
+      }
+
+      const recentMetadata = chromaResults.metadatas.map((meta, idx) => ({
+        id: chromaResults.ids[idx],
+        meta,
+        isRecent: meta && meta.created_at_epoch != null
+          && (!startEpoch || meta.created_at_epoch >= startEpoch)
+          && (!endEpoch || meta.created_at_epoch <= endEpoch)
+      })).filter(item => item.isRecent);
+
+      logger.debug('SEARCH', dateRange ? 'Results within user date range' : 'Results within 90-day window', { count: recentMetadata.length });
+
+      const obsIds: number[] = [];
+      const sessionIds: number[] = [];
+      const promptIds: number[] = [];
+
+      for (const item of recentMetadata) {
+        const docType = item.meta?.doc_type;
+        if (docType === 'observation' && searchObservations) {
+          obsIds.push(item.id);
+        } else if (docType === 'session_summary' && searchSessions) {
+          sessionIds.push(item.id);
+        } else if (docType === 'user_prompt' && searchPrompts) {
+          promptIds.push(item.id);
+        }
+      }
+
+      if (obsIds.length > 0) {
+        const obsOptions = { ...options, type: obs_type, concepts, files };
+        observations = this.sessionStore.getObservationsByIds(obsIds, obsOptions);
+      }
+      if (sessionIds.length > 0) {
+        sessions = this.sessionStore.getSessionSummariesByIds(sessionIds, {
+          orderBy: 'date_desc',
+          limit: options.limit,
+          project: options.project,
+          platformSource: options.platformSource
+        });
+      }
+      if (promptIds.length > 0) {
+        prompts = this.sessionStore.getUserPromptsByIds(promptIds, {
+          orderBy: 'date_desc',
+          limit: options.limit,
+          project: options.project,
+          platformSource: options.platformSource
+        });
+      }
+    } else {
+      if (options.platformSource) {
+        logger.debug('SEARCH', 'Platform-scoped ChromaDB search found no matches; falling back to scoped FTS5 search', {});
+        platformScopedChromaZeroFallback = true;
+
+        if (searchObservations) {
+          observations = this.sessionSearch.searchObservations(query, { ...options, type: obs_type, concepts, files });
+        }
+        if (searchSessions) {
+          sessions = this.sessionSearch.searchSessions(query, options);
+        }
+        if (searchPrompts) {
+          prompts = this.sessionSearch.searchUserPrompts(query, options);
+        }
+      } else {
+        logger.debug('SEARCH', 'ChromaDB found no matches (final result, no FTS5 fallback)', {});
+      }
+    }
+
+    return { observations, sessions, prompts, platformScopedChromaZeroFallback };
+  }
+
   async search(args: any, telemetryOut?: SearchTelemetryEnvelope): Promise<any> {
     const normalized = this.normalizeParams(args);
     const { query, type, obs_type, concepts, files, format, ...options } = normalized;
@@ -386,93 +506,9 @@ export class SearchManager {
           : { $and: whereFilters };
 
       try {
-        const chromaResults = await this.queryChroma(query, 100, whereFilter);
-        chromaSucceeded = true; 
-        logger.debug('SEARCH', 'ChromaDB returned semantic matches', { matchCount: chromaResults.ids.length });
-
-        if (chromaResults.ids.length > 0) {
-          const { dateRange } = options;
-          let startEpoch: number | undefined;
-          let endEpoch: number | undefined;
-
-          if (dateRange) {
-            if (dateRange.start) {
-              startEpoch = typeof dateRange.start === 'number'
-                ? dateRange.start
-                : new Date(dateRange.start).getTime();
-            }
-            if (dateRange.end) {
-              endEpoch = typeof dateRange.end === 'number'
-                ? dateRange.end
-                : new Date(dateRange.end).getTime();
-            }
-          } else {
-            startEpoch = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
-          }
-
-          const recentMetadata = chromaResults.metadatas.map((meta, idx) => ({
-            id: chromaResults.ids[idx],
-            meta,
-            isRecent: meta && meta.created_at_epoch != null
-              && (!startEpoch || meta.created_at_epoch >= startEpoch)
-              && (!endEpoch || meta.created_at_epoch <= endEpoch)
-          })).filter(item => item.isRecent);
-
-          logger.debug('SEARCH', dateRange ? 'Results within user date range' : 'Results within 90-day window', { count: recentMetadata.length });
-
-          const obsIds: number[] = [];
-          const sessionIds: number[] = [];
-          const promptIds: number[] = [];
-
-          for (const item of recentMetadata) {
-            const docType = item.meta?.doc_type;
-            if (docType === 'observation' && searchObservations) {
-              obsIds.push(item.id);
-            } else if (docType === 'session_summary' && searchSessions) {
-              sessionIds.push(item.id);
-            } else if (docType === 'user_prompt' && searchPrompts) {
-              promptIds.push(item.id);
-            }
-          }
-
-          if (obsIds.length > 0) {
-            const obsOptions = { ...options, type: obs_type, concepts, files };
-            observations = this.sessionStore.getObservationsByIds(obsIds, obsOptions);
-          }
-          if (sessionIds.length > 0) {
-            sessions = this.sessionStore.getSessionSummariesByIds(sessionIds, {
-              orderBy: 'date_desc',
-              limit: options.limit,
-              project: options.project,
-              platformSource: options.platformSource
-            });
-          }
-          if (promptIds.length > 0) {
-            prompts = this.sessionStore.getUserPromptsByIds(promptIds, {
-              orderBy: 'date_desc',
-              limit: options.limit,
-              project: options.project,
-              platformSource: options.platformSource
-            });
-          }
-        } else {
-          if (options.platformSource) {
-            logger.debug('SEARCH', 'Platform-scoped ChromaDB search found no matches; falling back to scoped FTS5 search', {});
-            platformScopedChromaZeroFallback = true;
-
-            if (searchObservations) {
-              observations = this.sessionSearch.searchObservations(query, { ...options, type: obs_type, concepts, files });
-            }
-            if (searchSessions) {
-              sessions = this.sessionSearch.searchSessions(query, options);
-            }
-            if (searchPrompts) {
-              prompts = this.sessionSearch.searchUserPrompts(query, options);
-            }
-          } else {
-            logger.debug('SEARCH', 'ChromaDB found no matches (final result, no FTS5 fallback)', {});
-          }
-        }
+        const chromaOutcome = await this.performChromaSemanticSearch(query, whereFilter, options, { obs_type, concepts, files, searchObservations, searchSessions, searchPrompts });
+        chromaSucceeded = true;
+        ({ observations, sessions, prompts, platformScopedChromaZeroFallback } = chromaOutcome);
       } catch (chromaError) {
         const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
         chromaFailureReason = {
@@ -845,6 +881,43 @@ export class SearchManager {
     };
   }
 
+  /**
+   * Re-rank metadata-filtered observation ids by Chroma semantic relevance
+   * and hydrate the ranked rows from SQLite. Returns [] when Chroma finds no
+   * overlap with the candidate ids; callers own their metadata fallback.
+   */
+  private async rankObservationsBySemanticRelevance(
+    semanticQuery: string,
+    candidateIds: number[],
+    filters: { limit?: number; project?: string; platformSource?: string }
+  ): Promise<ObservationSearchResult[]> {
+    const chromaResults = await this.queryChroma(
+      semanticQuery,
+      Math.min(candidateIds.length, 100),
+      this.buildObservationWhereFilter(filters)
+    );
+
+    const rankedIds: number[] = [];
+    for (const chromaId of chromaResults.ids) {
+      if (candidateIds.includes(chromaId) && !rankedIds.includes(chromaId)) {
+        rankedIds.push(chromaId);
+      }
+    }
+
+    if (rankedIds.length === 0) {
+      return [];
+    }
+
+    const results = this.sessionStore.getObservationsByIds(rankedIds, {
+      orderBy: 'relevance',
+      limit: filters.limit || 20,
+      project: filters.project,
+      platformSource: filters.platformSource
+    });
+    results.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
+    return results;
+  }
+
   async decisions(args: any): Promise<any> {
     const normalized = this.normalizeParams(args);
     const { query, ...filters } = normalized;
@@ -854,11 +927,7 @@ export class SearchManager {
       if (query) {
         logger.debug('SEARCH', 'Using Chroma semantic search with type=decision filter', {});
         try {
-          const chromaResults = await this.queryChroma(
-            query,
-            Math.min((filters.limit || 20) * 2, 100),
-            this.buildObservationWhereFilter(filters, 'decision')
-          );
+          const chromaResults = await this.queryChroma(query, Math.min((filters.limit || 20) * 2, 100), this.buildObservationWhereFilter(filters, 'decision'));
           const obsIds = chromaResults.ids;
 
           if (obsIds.length > 0) {
@@ -876,28 +945,7 @@ export class SearchManager {
         if (metadataResults.length > 0) {
           const ids = metadataResults.map(obs => obs.id);
           try {
-            const chromaResults = await this.queryChroma(
-              'decision',
-              Math.min(ids.length, 100),
-              this.buildObservationWhereFilter(filters)
-            );
-
-            const rankedIds: number[] = [];
-            for (const chromaId of chromaResults.ids) {
-              if (ids.includes(chromaId) && !rankedIds.includes(chromaId)) {
-                rankedIds.push(chromaId);
-              }
-            }
-
-            if (rankedIds.length > 0) {
-              results = this.sessionStore.getObservationsByIds(rankedIds, {
-                orderBy: 'relevance',
-                limit: filters.limit || 20,
-                project: filters.project,
-                platformSource: filters.platformSource
-              });
-              results.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
-            }
+            results = await this.rankObservationsBySemanticRelevance('decision', ids, filters);
           } catch (chromaError) {
             const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
             logger.error('WORKER', 'Chroma semantic ranking failed for decisions, falling back to metadata search', {}, errorObject);
@@ -948,28 +996,7 @@ export class SearchManager {
       if (allIds.size > 0) {
         const idsArray = Array.from(allIds);
         try {
-          const chromaResults = await this.queryChroma(
-            'what changed',
-            Math.min(idsArray.length, 100),
-            this.buildObservationWhereFilter(filters)
-          );
-
-          const rankedIds: number[] = [];
-          for (const chromaId of chromaResults.ids) {
-            if (idsArray.includes(chromaId) && !rankedIds.includes(chromaId)) {
-              rankedIds.push(chromaId);
-            }
-          }
-
-          if (rankedIds.length > 0) {
-            results = this.sessionStore.getObservationsByIds(rankedIds, {
-              orderBy: 'relevance',
-              limit: filters.limit || 20,
-              project: filters.project,
-              platformSource: filters.platformSource
-            });
-            results.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
-          }
+          results = await this.rankObservationsBySemanticRelevance('what changed', idsArray, filters);
         } catch (chromaError) {
           const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
           logger.error('WORKER', 'Chroma search failed for changes, falling back to metadata search', {}, errorObject);
@@ -1085,12 +1112,7 @@ export class SearchManager {
       try {
         const limit = options.limit || 20;
         results = await this.hybridSemanticHydrate(query, 'observation', options.project, options.platformSource, (ids) =>
-          this.sessionStore.getObservationsByIds(ids, {
-            orderBy: 'date_desc',
-            limit,
-            project: options.project,
-            platformSource: options.platformSource
-          })
+          this.sessionStore.getObservationsByIds(ids, { orderBy: 'date_desc', limit, project: options.project, platformSource: options.platformSource })
         );
       } catch (chromaError) {
         const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
@@ -1139,12 +1161,7 @@ export class SearchManager {
       try {
         const limit = options.limit || 20;
         results = await this.hybridSemanticHydrate(query, 'session_summary', options.project, options.platformSource, (ids) =>
-          this.sessionStore.getSessionSummariesByIds(ids, {
-            orderBy: 'date_desc',
-            limit,
-            project: options.project,
-            platformSource: options.platformSource
-          })
+          this.sessionStore.getSessionSummariesByIds(ids, { orderBy: 'date_desc', limit, project: options.project, platformSource: options.platformSource })
         );
       } catch (chromaError) {
         const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
@@ -1193,12 +1210,7 @@ export class SearchManager {
       try {
         const limit = options.limit || 20;
         results = await this.hybridSemanticHydrate(query, 'user_prompt', options.project, options.platformSource, (ids) =>
-          this.sessionStore.getUserPromptsByIds(ids, {
-            orderBy: 'date_desc',
-            limit,
-            project: options.project,
-            platformSource: options.platformSource
-          })
+          this.sessionStore.getUserPromptsByIds(ids, { orderBy: 'date_desc', limit, project: options.project, platformSource: options.platformSource })
         );
       } catch (chromaError) {
         const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));

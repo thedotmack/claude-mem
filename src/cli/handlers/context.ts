@@ -18,24 +18,32 @@ import { readStaleMarker } from '../../shared/oauth-token.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { callMcpToolOnce } from '../../shared/mcp-client.js';
 
+async function requestSessionStartContext(args: {
+  projects: string[];
+  platformSource?: string;
+  colors?: boolean;
+}): Promise<string | null> {
+  const result = await callMcpToolOnce('session_start_context', {
+    projects: args.projects,
+    ...(args.platformSource ? { platformSource: args.platformSource } : {}),
+    ...(args.colors !== undefined ? { colors: args.colors } : {}),
+  });
+  if (result.isError) {
+    logger.warn('HOOK', 'MCP session_start_context returned an error; falling back to worker HTTP', {
+      preview: result.text.slice(0, 200),
+    });
+    return null;
+  }
+  return result.text.trim();
+}
+
 async function fetchSessionStartContextViaMcp(args: {
   projects: string[];
   platformSource?: string;
   colors?: boolean;
 }): Promise<string | null> {
   try {
-    const result = await callMcpToolOnce('session_start_context', {
-      projects: args.projects,
-      ...(args.platformSource ? { platformSource: args.platformSource } : {}),
-      ...(args.colors !== undefined ? { colors: args.colors } : {}),
-    });
-    if (result.isError) {
-      logger.warn('HOOK', 'MCP session_start_context returned an error; falling back to worker HTTP', {
-        preview: result.text.slice(0, 200),
-      });
-      return null;
-    }
-    return result.text.trim();
+    return await requestSessionStartContext(args);
   } catch (error: unknown) {
     logger.warn('HOOK', 'MCP session_start_context failed; falling back to worker HTTP', {
       error: error instanceof Error ? error.message : String(error),

@@ -26,8 +26,10 @@ function findGitRepoRoot(dir: string): string | null {
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();
     return root || null;
-  } catch {
+  } catch (error: unknown) {
+    const err = error instanceof Error ? error : new Error(String(error));
     // Not a git repo, git not installed, or dir does not exist — fall back to basename.
+    logger.debug('PROJECT_NAME', 'git rev-parse failed, falling back to basename', { dir }, err);
     return null;
   }
 }

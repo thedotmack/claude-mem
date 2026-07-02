@@ -45,8 +45,9 @@ const mcpServerDir = (() => {
   if (typeof __dirname !== 'undefined') return __dirname;
   try {
     return dirname(fileURLToPath(import.meta.url));
-  } catch {
+  } catch (error) {
     mcpServerDirResolutionFailed = true;
+    logger.warn('SYSTEM', 'mcp-server: failed to resolve module directory from import.meta.url, falling back to process.cwd()', undefined, error instanceof Error ? error : new Error(String(error)));
     return process.cwd();
   }
 })();
@@ -114,6 +115,29 @@ async function callWorkerAPI(
   }
 }
 
+async function executeWorkerTextRequest(
+  endpoint: string,
+  apiPath: string
+): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+  const response = await workerHttpRequest(apiPath);
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Worker API error (${response.status}): ${errorText}`);
+  }
+
+  const text = await response.text();
+
+  logger.debug('SYSTEM', '← Worker API text success', undefined, { endpoint });
+
+  return {
+    content: [{
+      type: 'text' as const,
+      text,
+    }],
+  };
+}
+
 async function callWorkerAPIText(
   endpoint: string,
   params: Record<string, any>
@@ -131,23 +155,7 @@ async function callWorkerAPIText(
   const apiPath = `${endpoint}?${searchParams}`;
 
   try {
-    const response = await workerHttpRequest(apiPath);
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Worker API error (${response.status}): ${errorText}`);
-    }
-
-    const text = await response.text();
-
-    logger.debug('SYSTEM', '← Worker API text success', undefined, { endpoint });
-
-    return {
-      content: [{
-        type: 'text' as const,
-        text,
-      }],
-    };
+    return await executeWorkerTextRequest(endpoint, apiPath);
   } catch (error: unknown) {
     logger.error('SYSTEM', '← Worker API text error', { endpoint }, error instanceof Error ? error : new Error(String(error)));
     return {
@@ -310,25 +318,33 @@ interface ObservationAddArgs {
   metadata?: Record<string, unknown>;
 }
 
+async function executeObservationAdd(
+  args: ObservationAddArgs,
+): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+  const ctx = requireServerForObservationTool('observation_add');
+  if (typeof args?.content !== 'string' || args.content.trim().length === 0) {
+    throw new Error('observation_add: "content" is required');
+  }
+  const projectId = args.projectId && args.projectId.trim().length > 0 ? args.projectId : ctx.projectId;
+  const request: ServerAddObservationRequest = {
+    projectId,
+    content: args.content,
+    ...(args.serverSessionId !== undefined ? { serverSessionId: args.serverSessionId } : {}),
+    ...(args.kind !== undefined ? { kind: args.kind } : {}),
+    ...(args.metadata !== undefined ? { metadata: args.metadata } : {}),
+  };
+  const response = await ctx.client.addObservation(request);
+  return formatJsonResult(response);
+}
+
 async function handleObservationAdd(
   args: ObservationAddArgs,
 ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
   try {
-    const ctx = requireServerForObservationTool('observation_add');
-    if (typeof args?.content !== 'string' || args.content.trim().length === 0) {
-      throw new Error('observation_add: "content" is required');
-    }
-    const projectId = args.projectId && args.projectId.trim().length > 0 ? args.projectId : ctx.projectId;
-    const request: ServerAddObservationRequest = {
-      projectId,
-      content: args.content,
-      ...(args.serverSessionId !== undefined ? { serverSessionId: args.serverSessionId } : {}),
-      ...(args.kind !== undefined ? { kind: args.kind } : {}),
-      ...(args.metadata !== undefined ? { metadata: args.metadata } : {}),
-    };
-    const response = await ctx.client.addObservation(request);
-    return formatJsonResult(response);
+    return await executeObservationAdd(args);
   } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SYSTEM', 'observation_add failed', undefined, err);
     return formatToolError(error);
   }
 }
@@ -350,30 +366,38 @@ function normalizeMcpPlatformSource(value: string | null): string | null {
   return typeof value === 'string' ? normalizePlatformSource(value) : null;
 }
 
+async function executeObservationRecordEvent(
+  args: ObservationRecordEventArgs,
+): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+  const ctx = requireServerForObservationTool('observation_record_event');
+  if (typeof args?.eventType !== 'string' || args.eventType.trim().length === 0) {
+    throw new Error('observation_record_event: "eventType" is required');
+  }
+  const projectId = args.projectId && args.projectId.trim().length > 0 ? args.projectId : ctx.projectId;
+  const request: ServerRecordEventRequest = {
+    projectId,
+    sourceType: args.sourceType ?? 'api',
+    eventType: args.eventType,
+    occurredAtEpoch: typeof args.occurredAtEpoch === 'number' ? args.occurredAtEpoch : Date.now(),
+    ...(args.serverSessionId !== undefined ? { serverSessionId: args.serverSessionId } : {}),
+    ...(args.contentSessionId !== undefined ? { contentSessionId: args.contentSessionId } : {}),
+    ...(args.memorySessionId !== undefined ? { memorySessionId: args.memorySessionId } : {}),
+    ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
+    ...(args.payload !== undefined ? { payload: args.payload } : {}),
+    ...(args.generate !== undefined ? { generate: args.generate } : {}),
+  };
+  const response = await ctx.client.recordEvent(request);
+  return formatJsonResult(response);
+}
+
 async function handleObservationRecordEvent(
   args: ObservationRecordEventArgs,
 ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
   try {
-    const ctx = requireServerForObservationTool('observation_record_event');
-    if (typeof args?.eventType !== 'string' || args.eventType.trim().length === 0) {
-      throw new Error('observation_record_event: "eventType" is required');
-    }
-    const projectId = args.projectId && args.projectId.trim().length > 0 ? args.projectId : ctx.projectId;
-    const request: ServerRecordEventRequest = {
-      projectId,
-      sourceType: args.sourceType ?? 'api',
-      eventType: args.eventType,
-      occurredAtEpoch: typeof args.occurredAtEpoch === 'number' ? args.occurredAtEpoch : Date.now(),
-      ...(args.serverSessionId !== undefined ? { serverSessionId: args.serverSessionId } : {}),
-      ...(args.contentSessionId !== undefined ? { contentSessionId: args.contentSessionId } : {}),
-      ...(args.memorySessionId !== undefined ? { memorySessionId: args.memorySessionId } : {}),
-      ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
-      ...(args.payload !== undefined ? { payload: args.payload } : {}),
-      ...(args.generate !== undefined ? { generate: args.generate } : {}),
-    };
-    const response = await ctx.client.recordEvent(request);
-    return formatJsonResult(response);
+    return await executeObservationRecordEvent(args);
   } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SYSTEM', 'observation_record_event failed', undefined, err);
     return formatToolError(error);
   }
 }
@@ -385,24 +409,32 @@ interface ObservationSearchArgs {
   platformSource?: string | null;
 }
 
+async function executeObservationSearch(
+  args: ObservationSearchArgs,
+): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+  const ctx = requireServerForObservationTool('observation_search');
+  if (typeof args?.query !== 'string' || args.query.trim().length === 0) {
+    throw new Error('observation_search: "query" is required');
+  }
+  const projectId = args.projectId && args.projectId.trim().length > 0 ? args.projectId : ctx.projectId;
+  const request: ServerSearchObservationsRequest = {
+    projectId,
+    query: args.query,
+    ...(args.limit !== undefined ? { limit: args.limit } : {}),
+    ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
+  };
+  const response = await ctx.client.searchObservations(request);
+  return formatJsonResult(response);
+}
+
 async function handleObservationSearch(
   args: ObservationSearchArgs,
 ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
   try {
-    const ctx = requireServerForObservationTool('observation_search');
-    if (typeof args?.query !== 'string' || args.query.trim().length === 0) {
-      throw new Error('observation_search: "query" is required');
-    }
-    const projectId = args.projectId && args.projectId.trim().length > 0 ? args.projectId : ctx.projectId;
-    const request: ServerSearchObservationsRequest = {
-      projectId,
-      query: args.query,
-      ...(args.limit !== undefined ? { limit: args.limit } : {}),
-      ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
-    };
-    const response = await ctx.client.searchObservations(request);
-    return formatJsonResult(response);
+    return await executeObservationSearch(args);
   } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SYSTEM', 'observation_search failed', undefined, err);
     return formatToolError(error);
   }
 }
@@ -414,24 +446,32 @@ interface ObservationContextArgs {
   platformSource?: string | null;
 }
 
+async function executeObservationContext(
+  args: ObservationContextArgs,
+): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+  const ctx = requireServerForObservationTool('observation_context');
+  if (typeof args?.query !== 'string' || args.query.trim().length === 0) {
+    throw new Error('observation_context: "query" is required');
+  }
+  const projectId = args.projectId && args.projectId.trim().length > 0 ? args.projectId : ctx.projectId;
+  const request: ServerContextObservationsRequest = {
+    projectId,
+    query: args.query,
+    ...(args.limit !== undefined ? { limit: args.limit } : {}),
+    ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
+  };
+  const response = await ctx.client.contextObservations(request);
+  return formatJsonResult(response);
+}
+
 async function handleObservationContext(
   args: ObservationContextArgs,
 ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
   try {
-    const ctx = requireServerForObservationTool('observation_context');
-    if (typeof args?.query !== 'string' || args.query.trim().length === 0) {
-      throw new Error('observation_context: "query" is required');
-    }
-    const projectId = args.projectId && args.projectId.trim().length > 0 ? args.projectId : ctx.projectId;
-    const request: ServerContextObservationsRequest = {
-      projectId,
-      query: args.query,
-      ...(args.limit !== undefined ? { limit: args.limit } : {}),
-      ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
-    };
-    const response = await ctx.client.contextObservations(request);
-    return formatJsonResult(response);
+    return await executeObservationContext(args);
   } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SYSTEM', 'observation_context failed', undefined, err);
     return formatToolError(error);
   }
 }
@@ -501,6 +541,8 @@ async function handleObservationGenerationStatus(
     const response = await ctx.client.getJobStatus(jobId);
     return formatJsonResult(response);
   } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SYSTEM', 'observation_generation_status failed', undefined, err);
     return formatToolError(error);
   }
 }
@@ -1128,29 +1170,34 @@ function cleanup(reason: string = 'shutdown') {
 process.on('SIGTERM', cleanup);
 process.on('SIGINT', cleanup);
 
+function detectMissingMarketplaceMarker(): void {
+  const home = homedir();
+  const marketplaceCandidates = [
+    resolve(home, '.claude', 'plugins', 'marketplaces', 'thedotmack'),
+    resolve(home, '.config', 'claude', 'plugins', 'marketplaces', 'thedotmack'),
+  ];
+  const present = marketplaceCandidates.some(p => p && existsSync(p));
+  const cacheCandidates = [
+    resolve(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem'),
+    resolve(home, '.config', 'claude', 'plugins', 'cache', 'thedotmack', 'claude-mem'),
+  ];
+  const cachePresent = cacheCandidates.some(p => p && existsSync(p));
+  const cacheRoot = cacheCandidates[0];
+
+  if (!present && cachePresent) {
+    logger.error(
+      'SYSTEM',
+      'claude-mem MCP started but no marketplace directory was found at ~/.claude/plugins/marketplaces/thedotmack or the XDG equivalent. The IDE plugin loader needs that directory to fire claude-mem hooks (SessionStart, PostToolUse, Stop, etc.). Without it, MCP search will work but no new memories will be captured. To self-heal, run: node ~/.claude/plugins/cache/thedotmack/claude-mem/*/scripts/smart-install.js (or reinstall the plugin from the marketplace).',
+      { marketplaceCandidates, cacheRoot }
+    );
+  }
+}
+
 function checkMarketplaceMarker(): void {
   try {
-    const home = homedir();
-    const marketplaceCandidates = [
-      resolve(home, '.claude', 'plugins', 'marketplaces', 'thedotmack'),
-      resolve(home, '.config', 'claude', 'plugins', 'marketplaces', 'thedotmack'),
-    ];
-    const present = marketplaceCandidates.some(p => p && existsSync(p));
-    const cacheCandidates = [
-      resolve(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem'),
-      resolve(home, '.config', 'claude', 'plugins', 'cache', 'thedotmack', 'claude-mem'),
-    ];
-    const cachePresent = cacheCandidates.some(p => p && existsSync(p));
-    const cacheRoot = cacheCandidates[0];
-
-    if (!present && cachePresent) {
-      logger.error(
-        'SYSTEM',
-        'claude-mem MCP started but no marketplace directory was found at ~/.claude/plugins/marketplaces/thedotmack or the XDG equivalent. The IDE plugin loader needs that directory to fire claude-mem hooks (SessionStart, PostToolUse, Stop, etc.). Without it, MCP search will work but no new memories will be captured. To self-heal, run: node ~/.claude/plugins/cache/thedotmack/claude-mem/*/scripts/smart-install.js (or reinstall the plugin from the marketplace).',
-        { marketplaceCandidates, cacheRoot }
-      );
-    }
-  } catch {
+    detectMissingMarketplaceMarker();
+  } catch (error) {
+    logger.warn('SYSTEM', 'checkMarketplaceMarker failed (non-fatal startup check)', undefined, error instanceof Error ? error : new Error(String(error)));
   }
 }
 

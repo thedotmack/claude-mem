@@ -53,33 +53,38 @@ export function useSettings() {
       });
   }, []);
 
+  const submitSettings = async (newSettings: Settings) => {
+    const response = await authFetch(API_ENDPOINTS.SETTINGS, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newSettings)
+    });
+
+    if (!response.ok) {
+      setSaveStatus(`✗ Error: ${response.status === 401 ? 'Unauthorized' : response.statusText}`);
+      setIsSaving(false);
+      return;
+    }
+
+    const result = await response.json();
+
+    if (result.success) {
+      setSettings(newSettings);
+      setSaveStatus('✓ Saved');
+      setTimeout(() => setSaveStatus(''), TIMING.SAVE_STATUS_DISPLAY_DURATION_MS);
+    } else {
+      setSaveStatus(`✗ Error: ${result.error}`);
+    }
+  };
+
   const saveSettings = async (newSettings: Settings) => {
     setIsSaving(true);
     setSaveStatus('Saving...');
 
     try {
-      const response = await authFetch(API_ENDPOINTS.SETTINGS, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newSettings)
-      });
-
-      if (!response.ok) {
-        setSaveStatus(`✗ Error: ${response.status === 401 ? 'Unauthorized' : response.statusText}`);
-        setIsSaving(false);
-        return;
-      }
-
-      const result = await response.json();
-
-      if (result.success) {
-        setSettings(newSettings);
-        setSaveStatus('✓ Saved');
-        setTimeout(() => setSaveStatus(''), TIMING.SAVE_STATUS_DISPLAY_DURATION_MS);
-      } else {
-        setSaveStatus(`✗ Error: ${result.error}`);
-      }
+      await submitSettings(newSettings);
     } catch (error) {
+      console.error('Failed to save settings:', error);
       setSaveStatus(`✗ Error: ${error instanceof Error ? error.message : 'Network error'}`);
     }
 

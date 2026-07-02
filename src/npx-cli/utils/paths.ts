@@ -130,7 +130,10 @@ export function writeJsonFileAtomic(filepath: string, data: any): void {
     if (lstatSync(filepath).isSymbolicLink()) {
       try {
         resolved = realpathSync(filepath);
-      } catch {
+      } catch (realpathErr) {
+        // Dangling symlink (target missing) — resolve one level manually.
+        const realpathError = realpathErr instanceof Error ? realpathErr : new Error(String(realpathErr));
+        console.warn(`claude-mem: realpathSync failed for ${filepath}, resolving symlink manually:`, realpathError);
         const linkTarget = readlinkSync(filepath);
         resolved = resolve(dirname(filepath), linkTarget);
       }
@@ -187,8 +190,10 @@ export function writeJsonFileAtomic(filepath: string, data: any): void {
       try {
         dirFd = openSync(dir, 'r');
         fsyncSync(dirFd);
-      } catch {
+      } catch (dirSyncErr) {
         // Best-effort durability.
+        const dirSyncError = dirSyncErr instanceof Error ? dirSyncErr : new Error(String(dirSyncErr));
+        console.warn(`claude-mem: directory fsync failed for ${dir}:`, dirSyncError);
       } finally {
         if (dirFd !== undefined) {
           try { closeSync(dirFd); } catch { /* ignore */ }

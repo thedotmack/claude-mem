@@ -133,19 +133,7 @@ export class TranscriptWatcher {
 
     try {
       const watcher = fsWatch(watchRoot, { recursive: true, persistent: true }, (event, name) => {
-        if (!name) return;
-        const changed = resolvePath(watchRoot, name).replace(/\\/g, '/');
-        const existingTailer = this.tailers.get(changed);
-        if (existingTailer) {
-          existingTailer.poke();
-          return;
-        }
-        const matches = this.resolveWatchFiles(resolvedPath);
-        for (const filePath of matches) {
-          if (!this.tailers.has(filePath)) {
-            void this.addTailer(filePath, watch, schema);
-          }
-        }
+        this.handleRootWatchEvent(watchRoot, resolvedPath, watch, schema, name);
       });
       this.rootWatchers.push(watcher);
       logger.info('TRANSCRIPT', 'Watching transcript root recursively', { watch: watch.name, watchRoot });
@@ -157,13 +145,36 @@ export class TranscriptWatcher {
     }
   }
 
+  private handleRootWatchEvent(
+    watchRoot: string,
+    resolvedPath: string,
+    watch: WatchTarget,
+    schema: TranscriptSchema,
+    name: string | null
+  ): void {
+    if (!name) return;
+    const changed = resolvePath(watchRoot, name).replace(/\\/g, '/');
+    const existingTailer = this.tailers.get(changed);
+    if (existingTailer) {
+      existingTailer.poke();
+      return;
+    }
+    const matches = this.resolveWatchFiles(resolvedPath);
+    for (const filePath of matches) {
+      if (!this.tailers.has(filePath)) {
+        void this.addTailer(filePath, watch, schema);
+      }
+    }
+  }
+
   private deepestNonGlobAncestor(inputPath: string): string {
     if (!this.hasGlob(inputPath)) {
       if (existsSync(inputPath)) {
         try {
           const stat = statSync(inputPath);
           return stat.isDirectory() ? inputPath : resolvePath(inputPath, '..');
-        } catch {
+        } catch (error: unknown) {
+          logger.debug('TRANSCRIPT', 'Failed to stat watch path ancestor, falling back to parent directory', { path: inputPath }, error instanceof Error ? error : new Error(String(error)));
           return resolvePath(inputPath, '..');
         }
       }

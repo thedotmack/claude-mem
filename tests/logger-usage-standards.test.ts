@@ -30,6 +30,7 @@ const EXCLUDED_PATTERNS = [
   /services\/transcripts\/transcript-watcher-entry\.ts$/,  // CLI process entry point: console.error on fatal startup error goes to a visible stderr (own process, not a background service)
   /npx-cli\/commands\//,  // npx CLI subcommands (install/uninstall/runtime/server/etc) emit user-visible terminal output
   /npx-cli\/install\//,  // npx CLI install-time modules (error-reporter/setup-runtime/etc) emit user-visible terminal output during `npx claude-mem install`
+  /npx-cli\/banner\.ts$/,  // npx CLI banner animation runs only on an interactive TTY; console.warn on frame-decode failure is user-visible terminal output
   /server\/runtime\/ServerService\.ts$/,  // server CLI entry point (status/usage output, process.exit)
   /integrations\/McpIntegrations\.ts$/,  // CLI installer for MCP integrations (interactive install output)
   /errors\.ts$/,  // Error class/type definitions (pure data, no logic to instrument)

@@ -228,41 +228,45 @@ export function uninstallGeminiCliHooks(): number {
   }
 
   try {
-    const settings = readGeminiSettings();
-    if (!settings.hooks) {
-      console.log('  No hooks found in Gemini CLI settings — nothing to uninstall.');
-      return 0;
-    }
-
-    let removedCount = 0;
-
-    for (const [eventName, groups] of Object.entries(settings.hooks)) {
-      const filteredGroups = groups
-        .map(group => {
-          const remainingHooks = group.hooks.filter(hook => hook.name !== HOOK_NAME);
-          removedCount += group.hooks.length - remainingHooks.length;
-          return { ...group, hooks: remainingHooks };
-        })
-        .filter(group => group.hooks.length > 0);
-
-      if (filteredGroups.length > 0) {
-        settings.hooks[eventName] = filteredGroups;
-      } else {
-        delete settings.hooks[eventName];
-      }
-    }
-
-    if (Object.keys(settings.hooks).length === 0) {
-      delete settings.hooks;
-    }
-
-    writeSettingsAndCleanupGeminiContext(settings, removedCount);
-    return 0;
+    return removeGeminiHooksFromSettings();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`\nUninstallation failed: ${message}`);
     return 1;
   }
+}
+
+function removeGeminiHooksFromSettings(): number {
+  const settings = readGeminiSettings();
+  if (!settings.hooks) {
+    console.log('  No hooks found in Gemini CLI settings — nothing to uninstall.');
+    return 0;
+  }
+
+  let removedCount = 0;
+
+  for (const [eventName, groups] of Object.entries(settings.hooks)) {
+    const filteredGroups = groups
+      .map(group => {
+        const remainingHooks = group.hooks.filter(hook => hook.name !== HOOK_NAME);
+        removedCount += group.hooks.length - remainingHooks.length;
+        return { ...group, hooks: remainingHooks };
+      })
+      .filter(group => group.hooks.length > 0);
+
+    if (filteredGroups.length > 0) {
+      settings.hooks[eventName] = filteredGroups;
+    } else {
+      delete settings.hooks[eventName];
+    }
+  }
+
+  if (Object.keys(settings.hooks).length === 0) {
+    delete settings.hooks;
+  }
+
+  writeSettingsAndCleanupGeminiContext(settings, removedCount);
+  return 0;
 }
 
 function writeSettingsAndCleanupGeminiContext(

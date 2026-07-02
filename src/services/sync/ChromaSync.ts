@@ -311,6 +311,11 @@ export class ChromaSync {
         });
         return 0;
       }
+      const err = error instanceof Error ? error : new Error(String(error));
+      logger.error('CHROMA_SYNC', 'Unexpected error ensuring collection before write', {
+        collection: this.collectionName,
+        requested: documents.length
+      }, err);
       throw error;
     }
 
@@ -955,8 +960,8 @@ export class ChromaSync {
       const errorMessage = error instanceof Error ? error.message : String(error);
 
       const isConnectionError =
-        errorMessage.includes('ECONNREFUSED') || 
-        errorMessage.includes('ENOTFOUND') || 
+        errorMessage.includes('ECONNREFUSED') || // [ANTI-PATTERN IGNORED]: ChromaMcpManager.callTool re-wraps transport failures as plain Errors, so the Node error code only survives in the message text; the full error object is logged below.
+        errorMessage.includes('ENOTFOUND') || // [ANTI-PATTERN IGNORED]: same MCP transport re-wrapping as above; no structured code field is available on the re-wrapped error.
         errorMessage.includes('fetch failed') || 
         errorMessage.includes('subprocess closed') || 
         errorMessage.includes('timed out'); 

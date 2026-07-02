@@ -181,12 +181,13 @@ export class ClaudeProvider {
       claudePath = findClaudeExecutable('SDK');
       clearDependencyStatus('claude_cli');
     } catch (error) {
-      const classified = classifyClaudeError(error);
+      const err = error instanceof Error ? error : new Error(String(error));
+      const classified = classifyClaudeError(err);
       if (classified.kind === 'setup_required') {
         recordClaudeCliSetupRequired(classified.message);
         throw classified;
       }
-      throw error;
+      throw err;
     }
 
     const modelId = session.modelOverride || this.getModelId();

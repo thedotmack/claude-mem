@@ -119,6 +119,7 @@ export function loadUserGrammars(projectRoot: string): UserGrammarConfig {
     const content = readFileSync(configPath, "utf-8");
     rawConfig = JSON.parse(content);
   } catch {
+    // [ANTI-PATTERN IGNORED]: .claude-mem.json is an optional per-project config; most projects have no such file, so a read/JSON-parse failure here is the expected common case and recovery is the empty grammar config
     userGrammarCache.set(projectRoot, EMPTY_USER_GRAMMAR_CONFIG);
     return EMPTY_USER_GRAMMAR_CONFIG;
   }
@@ -232,6 +233,7 @@ function resolveGrammarPath(language: string): string | null {
     const packageJsonPath = _require.resolve(pkg + "/package.json");
     return dirname(packageJsonPath);
   } catch {
+    // [ANTI-PATTERN IGNORED]: grammar package not installed is expected for unsupported languages; caller falls back to user grammars or a symbol-less folded view
     return null;
   }
 }

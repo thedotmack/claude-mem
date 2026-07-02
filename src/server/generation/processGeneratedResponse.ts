@@ -176,25 +176,26 @@ export async function processGeneratedResponse(
       // generation_job_id reference so the audit chain (event_received →
       // generation_job.queued → generation_job.processing → observation.
       // created → observation.read) can be reconstructed.
+      const observationAuditEntry = {
+        teamId: fresh.teamId,
+        projectId: fresh.projectId,
+        actorId: input.actorId ?? null,
+        apiKeyId: input.apiKeyId ?? null,
+        action: 'observation.created',
+        resourceType: 'observation',
+        resourceId: observation.id,
+        details: {
+          generationJobId: fresh.id,
+          sourceType: fresh.sourceType,
+          sourceId: fresh.sourceId,
+          provider: input.providerLabel,
+          model: input.modelId ?? null,
+          sourceAdapter: input.sourceAdapter ?? null,
+          parsedObservationIndex: index,
+        },
+      };
       try {
-        await auditRepo.createAuditLog({
-          teamId: fresh.teamId,
-          projectId: fresh.projectId,
-          actorId: input.actorId ?? null,
-          apiKeyId: input.apiKeyId ?? null,
-          action: 'observation.created',
-          resourceType: 'observation',
-          resourceId: observation.id,
-          details: {
-            generationJobId: fresh.id,
-            sourceType: fresh.sourceType,
-            sourceId: fresh.sourceId,
-            provider: input.providerLabel,
-            model: input.modelId ?? null,
-            sourceAdapter: input.sourceAdapter ?? null,
-            parsedObservationIndex: index,
-          },
-        });
+        await auditRepo.createAuditLog(observationAuditEntry);
       } catch (auditError) {
         logger.warn('SYSTEM', 'audit_log observation.created insert failed', {
           observationId: observation.id,
@@ -230,24 +231,25 @@ export async function processGeneratedResponse(
     // Audit log — best-effort; failure here would already be inside the
     // transaction so any insert error rolls everything back. We accept
     // that to keep the pipeline observable end-to-end.
+    const jobCompletedAuditEntry = {
+      teamId: fresh.teamId,
+      projectId: fresh.projectId,
+      actorId: input.actorId ?? null,
+      apiKeyId: input.apiKeyId ?? null,
+      action: 'generation_job.completed',
+      resourceType: 'observation_generation_job',
+      resourceId: fresh.id,
+      details: {
+        generationJobId: fresh.id,
+        provider: input.providerLabel,
+        model: input.modelId ?? null,
+        observationCount: persisted.length,
+        observationIds: persisted.map(o => o.id),
+        sourceAdapter: input.sourceAdapter ?? null,
+      },
+    };
     try {
-      await auditRepo.createAuditLog({
-        teamId: fresh.teamId,
-        projectId: fresh.projectId,
-        actorId: input.actorId ?? null,
-        apiKeyId: input.apiKeyId ?? null,
-        action: 'generation_job.completed',
-        resourceType: 'observation_generation_job',
-        resourceId: fresh.id,
-        details: {
-          generationJobId: fresh.id,
-          provider: input.providerLabel,
-          model: input.modelId ?? null,
-          observationCount: persisted.length,
-          observationIds: persisted.map(o => o.id),
-          sourceAdapter: input.sourceAdapter ?? null,
-        },
-      });
+      await auditRepo.createAuditLog(jobCompletedAuditEntry);
     } catch (auditError) {
       // The audit log table may not have a metadata column on older
       // schemas; swallow rather than failing generation.
@@ -271,25 +273,7 @@ export async function processGeneratedResponse(
   // best-effort (logged); awaited so callers observe usage consistently.
   if (outcome.kind === 'completed' && process.env.CLAUDE_MEM_USAGE_METERING === '1') {
     try {
-      const usageRepo = new PostgresUsageRepository(input.pool);
-      if (input.tokensUsed && input.tokensUsed > 0) {
-        await usageRepo.record({
-          teamId: input.job.teamId,
-          projectId: input.job.projectId,
-          kind: 'tokens',
-          quantity: input.tokensUsed,
-          metadata: { jobId: input.job.id, provider: input.providerLabel, model: input.modelId ?? null },
-        });
-      }
-      if (outcome.observations.length > 0) {
-        await usageRepo.record({
-          teamId: input.job.teamId,
-          projectId: input.job.projectId,
-          kind: 'observation',
-          quantity: outcome.observations.length,
-          metadata: { jobId: input.job.id },
-        });
-      }
+      await recordUsageMetering(input, outcome.observations.length);
     } catch (usageError) {
       logger.warn('SYSTEM', 'usage metering record failed (post-commit)', {
         jobId: input.job.id,
@@ -461,25 +445,26 @@ export async function processSessionSummaryResponse(
         });
 
         // Phase 11 — observation.created audit for the summary observation.
+        const summaryAuditEntry = {
+          teamId: fresh.teamId,
+          projectId: fresh.projectId,
+          actorId: input.actorId ?? null,
+          apiKeyId: input.apiKeyId ?? null,
+          action: 'observation.created',
+          resourceType: 'observation',
+          resourceId: observation.id,
+          details: {
+            generationJobId: fresh.id,
+            sourceType: 'session_summary',
+            sourceId: fresh.sourceId,
+            provider: input.providerLabel,
+            model: input.modelId ?? null,
+            sourceAdapter: input.sourceAdapter ?? null,
+            kind: 'summary',
+          },
+        };
         try {
-          await auditRepo.createAuditLog({
-            teamId: fresh.teamId,
-            projectId: fresh.projectId,
-            actorId: input.actorId ?? null,
-            apiKeyId: input.apiKeyId ?? null,
-            action: 'observation.created',
-            resourceType: 'observation',
-            resourceId: observation.id,
-            details: {
-              generationJobId: fresh.id,
-              sourceType: 'session_summary',
-              sourceId: fresh.sourceId,
-              provider: input.providerLabel,
-              model: input.modelId ?? null,
-              sourceAdapter: input.sourceAdapter ?? null,
-              kind: 'summary',
-            },
-          });
+          await auditRepo.createAuditLog(summaryAuditEntry);
         } catch (auditError) {
           logger.warn('SYSTEM', 'audit_log observation.created (summary) insert failed', {
             observationId: observation.id,
@@ -512,25 +497,26 @@ export async function processSessionSummaryResponse(
       },
     });
 
+    const summaryJobCompletedAuditEntry = {
+      teamId: fresh.teamId,
+      projectId: fresh.projectId,
+      actorId: input.actorId ?? null,
+      apiKeyId: input.apiKeyId ?? null,
+      action: 'generation_job.completed',
+      resourceType: 'observation_generation_job',
+      resourceId: fresh.id,
+      details: {
+        generationJobId: fresh.id,
+        provider: input.providerLabel,
+        model: input.modelId ?? null,
+        observationCount: persisted.length,
+        observationIds: persisted.map(o => o.id),
+        sourceAdapter: input.sourceAdapter ?? null,
+        sourceType: 'session_summary',
+      },
+    };
     try {
-      await auditRepo.createAuditLog({
-        teamId: fresh.teamId,
-        projectId: fresh.projectId,
-        actorId: input.actorId ?? null,
-        apiKeyId: input.apiKeyId ?? null,
-        action: 'generation_job.completed',
-        resourceType: 'observation_generation_job',
-        resourceId: fresh.id,
-        details: {
-          generationJobId: fresh.id,
-          provider: input.providerLabel,
-          model: input.modelId ?? null,
-          observationCount: persisted.length,
-          observationIds: persisted.map(o => o.id),
-          sourceAdapter: input.sourceAdapter ?? null,
-          sourceType: 'session_summary',
-        },
-      });
+      await auditRepo.createAuditLog(summaryJobCompletedAuditEntry);
     } catch (auditError) {
       logger.warn('SYSTEM', 'audit log insert failed during summary generation', {
         jobId: fresh.id,
@@ -545,6 +531,33 @@ export async function processSessionSummaryResponse(
       privateContentDetected,
     };
   });
+}
+
+// Post-commit usage metering writes (tokens + observation counts). Extracted
+// so the caller's try block stays narrow; any insert failure surfaces there.
+async function recordUsageMetering(
+  input: ProcessGeneratedResponseInput,
+  observationCount: number,
+): Promise<void> {
+  const usageRepo = new PostgresUsageRepository(input.pool);
+  if (input.tokensUsed && input.tokensUsed > 0) {
+    await usageRepo.record({
+      teamId: input.job.teamId,
+      projectId: input.job.projectId,
+      kind: 'tokens',
+      quantity: input.tokensUsed,
+      metadata: { jobId: input.job.id, provider: input.providerLabel, model: input.modelId ?? null },
+    });
+  }
+  if (observationCount > 0) {
+    await usageRepo.record({
+      teamId: input.job.teamId,
+      projectId: input.job.projectId,
+      kind: 'observation',
+      quantity: observationCount,
+      metadata: { jobId: input.job.id },
+    });
+  }
 }
 
 function renderSummaryContent(summary: ParsedSummary): string {

@@ -33,19 +33,22 @@ export function platformUvRemediation(): string {
 function userHasOptedOutOfVectorSearch(): boolean {
   // Read the settings file directly (the value is not in the typed defaults).
   // Honors both a top-level key and an `env`-nested key.
+  let raw: unknown;
   try {
     if (!existsSync(USER_SETTINGS_PATH)) return false;
-    const raw: unknown = JSON.parse(readFileSync(USER_SETTINGS_PATH, 'utf-8'));
-    if (!raw || typeof raw !== 'object') return false;
-    const record = raw as Record<string, unknown>;
-    const envBlock = (record.env && typeof record.env === 'object')
-      ? (record.env as Record<string, unknown>)
-      : {};
-    const value = record.CLAUDE_MEM_DISABLE_VECTOR_SEARCH ?? envBlock.CLAUDE_MEM_DISABLE_VECTOR_SEARCH;
-    return value === true || value === 'true' || value === '1';
-  } catch {
+    raw = JSON.parse(readFileSync(USER_SETTINGS_PATH, 'utf-8'));
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    console.warn(`claude-mem: could not read ${USER_SETTINGS_PATH} while checking vector-search opt-out:`, err);
     return false;
   }
+  if (!raw || typeof raw !== 'object') return false;
+  const record = raw as Record<string, unknown>;
+  const envBlock = (record.env && typeof record.env === 'object')
+    ? (record.env as Record<string, unknown>)
+    : {};
+  const value = record.CLAUDE_MEM_DISABLE_VECTOR_SEARCH ?? envBlock.CLAUDE_MEM_DISABLE_VECTOR_SEARCH;
+  return value === true || value === 'true' || value === '1';
 }
 
 const BUN_COMMON_PATHS = IS_WINDOWS
@@ -100,7 +103,9 @@ function getBunVersion(): string | null {
       shell: IS_WINDOWS,
     });
     return result.status === 0 ? result.stdout.trim() : null;
-  } catch {
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    console.warn('claude-mem: bun --version probe failed:', err);
     return null;
   }
 }
@@ -135,7 +140,9 @@ function getUvVersion(): string | null {
       shell: IS_WINDOWS,
     });
     return result.status === 0 ? result.stdout.trim() : null;
-  } catch {
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    console.warn('claude-mem: uv --version probe failed:', err);
     return null;
   }
 }
@@ -154,66 +161,78 @@ function describeExecError(error: unknown): string {
   return String(error);
 }
 
+/** Run the platform-specific Bun installer, then confirm the binary is resolvable. */
+function runBunInstaller(): void {
+  if (IS_WINDOWS) {
+    execSync('powershell -c "irm bun.sh/install.ps1 | iex"', {
+      stdio: 'pipe',
+      timeout: INSTALL_TIMEOUT_MS,
+      shell: process.env.ComSpec ?? 'cmd.exe',
+    });
+  } else {
+    execSync('curl -fsSL https://bun.sh/install | bash', {
+      stdio: 'pipe',
+      timeout: INSTALL_TIMEOUT_MS,
+      shell: '/bin/bash',
+    });
+  }
+
+  if (!isBunInstalled()) {
+    throw new Error(
+      'Bun installation completed but binary not found. Please restart your terminal and try again.',
+    );
+  }
+}
+
 function installBun(): void {
   try {
-    if (IS_WINDOWS) {
-      execSync('powershell -c "irm bun.sh/install.ps1 | iex"', {
-        stdio: 'pipe',
-        timeout: INSTALL_TIMEOUT_MS,
-        shell: process.env.ComSpec ?? 'cmd.exe',
-      });
-    } else {
-      execSync('curl -fsSL https://bun.sh/install | bash', {
-        stdio: 'pipe',
-        timeout: INSTALL_TIMEOUT_MS,
-        shell: '/bin/bash',
-      });
-    }
-
-    if (!isBunInstalled()) {
-      throw new Error(
-        'Bun installation completed but binary not found. Please restart your terminal and try again.',
-      );
-    }
+    runBunInstaller();
   } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
     const manualInstructions = IS_WINDOWS
       ? '  - winget install Oven-sh.Bun\n  - Or: powershell -c "irm bun.sh/install.ps1 | iex"'
       : '  - curl -fsSL https://bun.sh/install | bash\n  - Or: brew install oven-sh/bun/bun';
     throw new Error(
       `Failed to install Bun. Please install manually:\n${manualInstructions}\nThen restart your terminal and try again.\n` +
-        `Underlying error: ${describeExecError(error)}`,
+        `Underlying error: ${describeExecError(err)}`,
+    );
+  }
+}
+
+/** Run the platform-specific uv installer, then confirm the binary is resolvable. */
+function runUvInstaller(): void {
+  if (IS_WINDOWS) {
+    execSync('powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"', {
+      stdio: 'pipe',
+      timeout: INSTALL_TIMEOUT_MS,
+      shell: process.env.ComSpec ?? 'cmd.exe',
+    });
+  } else {
+    execSync('curl -LsSf https://astral.sh/uv/install.sh | sh', {
+      stdio: 'pipe',
+      timeout: INSTALL_TIMEOUT_MS,
+      shell: '/bin/bash',
+    });
+  }
+
+  if (!isUvInstalled()) {
+    throw new Error(
+      'uv installation completed but binary not found. Please restart your terminal and try again.',
     );
   }
 }
 
 function installUv(): void {
   try {
-    if (IS_WINDOWS) {
-      execSync('powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"', {
-        stdio: 'pipe',
-        timeout: INSTALL_TIMEOUT_MS,
-        shell: process.env.ComSpec ?? 'cmd.exe',
-      });
-    } else {
-      execSync('curl -LsSf https://astral.sh/uv/install.sh | sh', {
-        stdio: 'pipe',
-        timeout: INSTALL_TIMEOUT_MS,
-        shell: '/bin/bash',
-      });
-    }
-
-    if (!isUvInstalled()) {
-      throw new Error(
-        'uv installation completed but binary not found. Please restart your terminal and try again.',
-      );
-    }
+    runUvInstaller();
   } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
     const manualInstructions = IS_WINDOWS
       ? '  - winget install astral-sh.uv\n  - Or: powershell -c "irm https://astral.sh/uv/install.ps1 | iex"'
       : '  - curl -LsSf https://astral.sh/uv/install.sh | sh\n  - Or: brew install uv (macOS)';
     throw new Error(
       `Failed to install uv. Please install manually:\n${manualInstructions}\nThen restart your terminal and try again.\n` +
-        `Underlying error: ${describeExecError(error)}`,
+        `Underlying error: ${describeExecError(err)}`,
     );
   }
 }
@@ -245,6 +264,9 @@ export function verifyCriticalModules(targetDir: string): void {
     try {
       requireFromTarget.resolve(dep, { paths: resolvePaths });
     } catch {
+      // [ANTI-PATTERN IGNORED]: bare-name resolve failure is the probed signal here
+      // (expected for bin-only packages); genuinely missing deps are collected in
+      // `unresolvable` and surfaced as a loud install failure after the loop.
       // Bare-name resolution can fail for a perfectly-installed package that has
       // no importable entry point — e.g. bin-only packages like `tree-sitter-cli`
       // (package.json has `bin` but no `main`/`module`/`exports`/`index.js`).
@@ -267,6 +289,9 @@ export function verifyCriticalModules(targetDir: string): void {
       try {
         requireFromTarget.resolve(subpath, { paths: resolvePaths });
       } catch {
+        // [ANTI-PATTERN IGNORED]: subpath resolve failure is the condition being
+        // probed; it is collected in `unresolvable` and surfaced as a loud
+        // install failure below.
         unresolvable.push(subpath);
       }
     }
@@ -293,10 +318,12 @@ export async function ensureBun(summary?: InstallSummary): Promise<{ bunPath: st
     try {
       installBun();
     } catch (error: unknown) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      // installerError(ABORT) reports the cause loudly and always throws.
       installerError(ErrorSeverity.ABORT, {
         component: 'bun-install',
         phase: 'setup-runtime',
-        cause: error,
+        cause: err,
         remediation: platformBunRemediation(),
       }, sum);
     }
@@ -342,18 +369,20 @@ export async function ensureUv(
     try {
       installUv();
     } catch (error: unknown) {
+      const err = error instanceof Error ? error : new Error(String(error));
       if (options.allowVectorSearchOptOut && userHasOptedOutOfVectorSearch()) {
         installerError(ErrorSeverity.WARN_CONTINUE, {
           component: 'uv-install',
           phase: 'setup-runtime',
-          cause: error,
+          cause: err,
         }, sum);
         return { uvPath: '', version: 'unknown' };
       }
+      // installerError(ABORT) reports the cause loudly and always throws.
       installerError(ErrorSeverity.ABORT, {
         component: 'uv-install',
         phase: 'setup-runtime',
-        cause: error,
+        cause: err,
         remediation: platformUvRemediation(),
       }, sum);
     }
@@ -406,14 +435,14 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
 
   const bunCmd = IS_WINDOWS && bunPath.includes(' ') ? `"${bunPath}"` : bunPath;
 
-  try {
-    // Per CHANGELOG v12.6.1 -> v12.6.2: tree-sitter-swift's nested
-    // tree-sitter-cli postinstall downloads a Rust binary and can hang the
-    // install. Bun honors trustedDependencies; npm does not. We additionally
-    // pass --ignore-scripts as belt-and-suspenders and bound it with a timeout.
-    // Async exec (not execSync): a blocked event loop freezes the installer's
-    // clack spinner for the duration of the install, which reads as a stall.
-    await new Promise<void>((resolve, reject) => {
+  // Per CHANGELOG v12.6.1 -> v12.6.2: tree-sitter-swift's nested
+  // tree-sitter-cli postinstall downloads a Rust binary and can hang the
+  // install. Bun honors trustedDependencies; npm does not. We additionally
+  // pass --ignore-scripts as belt-and-suspenders and bound it with a timeout.
+  // Async exec (not execSync): a blocked event loop freezes the installer's
+  // clack spinner for the duration of the install, which reads as a stall.
+  const runBunInstall = (): Promise<void> =>
+    new Promise<void>((resolve, reject) => {
       exec(`${bunCmd} install --frozen-lockfile --ignore-scripts`, {
         cwd: targetDir,
         timeout: INSTALL_TIMEOUT_MS,
@@ -423,8 +452,12 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
         // exec errors don't carry stdio; attach so describeExecError can report it.
         error ? reject(Object.assign(error, { stdout, stderr })) : resolve());
     });
+
+  try {
+    await runBunInstall();
   } catch (error) {
-    throw new Error(`bun install failed in ${targetDir}\n${describeExecError(error)}`);
+    const err = error instanceof Error ? error : new Error(String(error));
+    throw new Error(`bun install failed in ${targetDir}\n${describeExecError(err)}`);
   }
 
   verifyCriticalModules(targetDir);

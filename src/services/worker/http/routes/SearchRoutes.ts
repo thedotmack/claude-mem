@@ -425,25 +425,25 @@ export class SearchRoutes extends BaseRouteHandler {
     const cwd = `/context/${primaryProject}`;
 
     const injectStartedAt = Date.now();
+    const injectRequest = {
+      session_id: 'context-inject-' + Date.now(),
+      cwd: cwd,
+      projects: projects,
+      ...(platformSource ? { platformSource } : {}),
+      full
+    };
     let contextResult: Awaited<ReturnType<typeof generateContextWithStats>>;
     try {
-      contextResult = await generateContextWithStats(
-        {
-          session_id: 'context-inject-' + Date.now(),
-          cwd: cwd,
-          projects: projects,
-          ...(platformSource ? { platformSource } : {}),
-          full
-        },
-        forHuman
-      );
+      contextResult = await generateContextWithStats(injectRequest, forHuman);
     } catch (error) {
+      const normalizedError = error instanceof Error ? error : new Error(String(error));
       // context_injected is HOOK-level (no sessionDbId in scope) → null key,
       // routed to the 5-minute time-window rollup, NOT the per-session path.
       telemetryBuffer.record('context_injected', null, {
         outcome: 'error',
         duration_ms: Date.now() - injectStartedAt,
       });
+      logger.error('HTTP', 'Context injection failed', { projects, platformSource, full }, normalizedError);
       throw error;
     }
 

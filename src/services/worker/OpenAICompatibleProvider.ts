@@ -113,24 +113,8 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       return this.handleSessionError(error, session, worker);
     }
 
-    let lastCwd: string | undefined;
-
     try {
-      for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
-        session.pendingAgentId = message.agentId ?? null;
-        session.pendingAgentType = message.agentType ?? null;
-
-        if (message.cwd) {
-          lastCwd = message.cwd;
-        }
-        const originalTimestamp = session.earliestPendingTimestamp;
-
-        if (message.type === 'observation') {
-          await this.processObservationMessage(session, message, worker, config, originalTimestamp, lastCwd);
-        } else if (message.type === 'summarize') {
-          await this.processSummaryMessage(session, message, worker, config, mode, originalTimestamp, lastCwd);
-        }
-      }
+      await this.runMessageLoop(session, worker, config, mode);
     } catch (error: unknown) {
       if (error instanceof Error) {
         logger.error('SDK', `${this.providerName} message loop failed`, { sessionId: session.sessionDbId, model }, error);
@@ -146,6 +130,31 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       duration: `${(sessionDuration / 1000).toFixed(1)}s`,
       historyLength: session.conversationHistory.length
     });
+  }
+
+  private async runMessageLoop(
+    session: ActiveSession,
+    worker: WorkerRef | undefined,
+    config: TConfig,
+    mode: ModeConfig
+  ): Promise<void> {
+    let lastCwd: string | undefined;
+
+    for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
+      session.pendingAgentId = message.agentId ?? null;
+      session.pendingAgentType = message.agentType ?? null;
+
+      if (message.cwd) {
+        lastCwd = message.cwd;
+      }
+      const originalTimestamp = session.earliestPendingTimestamp;
+
+      if (message.type === 'observation') {
+        await this.processObservationMessage(session, message, worker, config, originalTimestamp, lastCwd);
+      } else if (message.type === 'summarize') {
+        await this.processSummaryMessage(session, message, worker, config, mode, originalTimestamp, lastCwd);
+      }
+    }
   }
 
   private async handleInitResponse(

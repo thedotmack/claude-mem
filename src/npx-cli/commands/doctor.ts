@@ -31,9 +31,21 @@ function probeVersion(bin: string): string | null {
       shell: IS_WINDOWS,
     });
     return result.status === 0 ? result.stdout.trim() : null;
-  } catch {
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    console.warn(`[doctor] Failed to probe \`${bin} --version\`:`, err);
     return null;
   }
+}
+
+async function probeWorkerHealth(workerPort: string): Promise<{ status: CheckStatus; detail: string }> {
+  const res = await fetch(`http://127.0.0.1:${workerPort}/api/health`, {
+    signal: AbortSignal.timeout(3000),
+  });
+  if (res.ok) {
+    return { status: 'ok', detail: `healthy at http://127.0.0.1:${workerPort}` };
+  }
+  return { status: 'warn', detail: `reachable but unhealthy (HTTP ${res.status}) on port ${workerPort}` };
 }
 
 export async function runDoctorCommand(): Promise<void> {
@@ -82,16 +94,9 @@ export async function runDoctorCommand(): Promise<void> {
   let workerStatus: CheckStatus = 'fail';
   let workerDetail = `no response on port ${workerPort} — start with \`npx claude-mem start\``;
   try {
-    const res = await fetch(`http://127.0.0.1:${workerPort}/api/health`, {
-      signal: AbortSignal.timeout(3000),
-    });
-    if (res.ok) {
-      workerStatus = 'ok';
-      workerDetail = `healthy at http://127.0.0.1:${workerPort}`;
-    } else {
-      workerStatus = 'warn';
-      workerDetail = `reachable but unhealthy (HTTP ${res.status}) on port ${workerPort}`;
-    }
+    const worker = await probeWorkerHealth(workerPort);
+    workerStatus = worker.status;
+    workerDetail = worker.detail;
   } catch {
     // leave as fail
   }

@@ -1,6 +1,7 @@
 import { dirname, join } from 'path';
 import { mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'fs';
 import { resolveDataDir } from './paths.js';
+import { logger } from '../utils/logger.js';
 
 /**
  * Cross-launcher spawn lockfile (Phase 4 of
@@ -69,13 +70,15 @@ export function acquireSpawnLock(): boolean {
       writeFileSync(lockPath, payload, { flag: 'wx' });
       return true;
     } catch (error: unknown) {
-      const code = (error as NodeJS.ErrnoException)?.code;
+      const err = error instanceof Error ? error : new Error(String(error));
+      const code = (err as NodeJS.ErrnoException).code;
       if (code !== 'EEXIST') {
         // Not contention — the filesystem refused the lock outright (EACCES,
         // EROFS, ...). Fail OPEN: the lock is a collision guard, not a
         // correctness gate, and a broken lock mechanism must degrade to the
         // pre-lock behavior (spawn anyway), never suppress every spawn
         // forever. releaseSpawnLock() is a no-op when no file was written.
+        logger.warn('SYSTEM', 'Spawn lock write failed for a non-contention reason; failing open (spawning unlocked)', { lockPath, code }, err);
         return true;
       }
       if (attempt > 0) {

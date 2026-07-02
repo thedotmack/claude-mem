@@ -11,7 +11,44 @@ import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { resolveRuntimeContext, logServerFallback } from '../../services/hooks/runtime-selector.js';
+import type { ServerRuntimeContext } from '../../services/hooks/runtime-selector.js';
 import { isServerClientError } from '../../services/hooks/server-client.js';
+
+async function summarizeViaServer(
+  runtime: ServerRuntimeContext,
+  sessionId: string,
+  lastAssistantMessage: string,
+  platformSource: string,
+): Promise<HookResult> {
+  // Resolve the server_session_id idempotently. /v1/sessions/start is
+  // idempotent on (projectId, externalSessionId) and returns the
+  // existing row when present.
+  const startResult = await runtime.client.startSession({
+    projectId: runtime.projectId,
+    externalSessionId: sessionId,
+    contentSessionId: sessionId,
+    platformSource,
+  });
+  const serverSessionId = startResult.session.id;
+  // Record the last assistant message as an event before closing the
+  // session so it lands in the generation pipeline.
+  await runtime.client.recordEvent({
+    projectId: runtime.projectId,
+    serverSessionId,
+    contentSessionId: sessionId,
+    platformSource,
+    sourceType: 'hook',
+    eventType: 'assistant_message',
+    occurredAtEpoch: Date.now(),
+    payload: {
+      last_assistant_message: lastAssistantMessage,
+      platformSource,
+    },
+  });
+  await runtime.client.endSession({ sessionId: serverSessionId });
+  logger.debug('HOOK', 'Summary request queued via server');
+  return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+}
 
 export const summarizeHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
@@ -80,34 +117,7 @@ export const summarizeHandler: EventHandler = {
     // value. Legacy `'server-beta'` is normalized inside `selectRuntime()`.
     if (runtime.runtime === 'server') {
       try {
-        // Resolve the server_session_id idempotently. /v1/sessions/start is
-        // idempotent on (projectId, externalSessionId) and returns the
-        // existing row when present.
-        const startResult = await runtime.client.startSession({
-          projectId: runtime.projectId,
-          externalSessionId: sessionId,
-          contentSessionId: sessionId,
-          platformSource,
-        });
-        const serverSessionId = startResult.session.id;
-        // Record the last assistant message as an event before closing the
-        // session so it lands in the generation pipeline.
-        await runtime.client.recordEvent({
-          projectId: runtime.projectId,
-          serverSessionId,
-          contentSessionId: sessionId,
-          platformSource,
-          sourceType: 'hook',
-          eventType: 'assistant_message',
-          occurredAtEpoch: Date.now(),
-          payload: {
-            last_assistant_message: lastAssistantMessage,
-            platformSource,
-          },
-        });
-        await runtime.client.endSession({ sessionId: serverSessionId });
-        logger.debug('HOOK', 'Summary request queued via server');
-        return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+        return await summarizeViaServer(runtime, sessionId, lastAssistantMessage, platformSource);
       } catch (error: unknown) {
         if (isServerClientError(error) && error.isFallbackEligible()) {
           logServerFallback(error.kind, {

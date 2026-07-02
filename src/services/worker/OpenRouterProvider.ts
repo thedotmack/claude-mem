@@ -190,6 +190,40 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     return this.queryOpenRouterMultiTurn(history, config.apiKey, config.model, config.apiUrl, config.siteUrl, config.appName);
   }
 
+  /** POST the chat-completions request. Extracted so the retry try block stays narrow. */
+  private fetchChatCompletion(
+    apiUrl: string,
+    apiKey: string,
+    model: string,
+    messages: OpenAIMessage[],
+    siteUrl: string | undefined,
+    appName: string | undefined,
+    priorRequestId: string | null,
+    attemptSignal: AbortSignal
+  ): Promise<Response> {
+    return fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'HTTP-Referer': siteUrl || 'https://github.com/thedotmack/claude-mem',
+        'X-Title': appName || 'claude-mem',
+        'Content-Type': 'application/json',
+        ...(priorRequestId ? { 'x-claude-mem-prior-request-id': priorRequestId } : {}),
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        temperature: 0.3,  // Lower temperature for structured extraction
+        max_tokens: 4096,
+        // Ask openrouter.ai for usage accounting (token counts + cost).
+        // Only sent to openrouter.ai — strict custom gateways may reject
+        // unknown body fields.
+        ...(apiUrl.includes('openrouter.ai') ? { usage: { include: true } } : {}),
+      }),
+      signal: attemptSignal,
+    });
+  }
+
   private async queryOpenRouterMultiTurn(
     history: ConversationMessage[],
     apiKey: string,
@@ -213,29 +247,10 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     const data = await withRetry<OpenRouterResponse>(async (attemptSignal) => {
       let response: Response;
       try {
-        response = await fetch(apiUrl, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${apiKey}`,
-            'HTTP-Referer': siteUrl || 'https://github.com/thedotmack/claude-mem',
-            'X-Title': appName || 'claude-mem',
-            'Content-Type': 'application/json',
-            ...(priorRequestId ? { 'x-claude-mem-prior-request-id': priorRequestId } : {}),
-          },
-          body: JSON.stringify({
-            model,
-            messages,
-            temperature: 0.3,  // Lower temperature for structured extraction
-            max_tokens: 4096,
-            // Ask openrouter.ai for usage accounting (token counts + cost).
-            // Only sent to openrouter.ai — strict custom gateways may reject
-            // unknown body fields.
-            ...(apiUrl.includes('openrouter.ai') ? { usage: { include: true } } : {}),
-          }),
-          signal: attemptSignal,
-        });
+        response = await this.fetchChatCompletion(apiUrl, apiKey, model, messages, siteUrl, appName, priorRequestId, attemptSignal);
       } catch (networkError: unknown) {
-        throw classifyOpenRouterError({ cause: networkError });
+        const err = networkError instanceof Error ? networkError : new Error(String(networkError));
+        throw classifyOpenRouterError({ cause: err });
       }
 
       const requestId = response.headers.get('x-request-id') ?? response.headers.get('x-openrouter-request-id');

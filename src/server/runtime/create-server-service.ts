@@ -258,32 +258,40 @@ function buildServerGenerationProviderFromEnv(): ServerGenerationProvider | null
   const provider = (process.env.CLAUDE_MEM_SERVER_PROVIDER ?? '').trim().toLowerCase();
   if (!provider) return null;
   try {
-    if (provider === 'claude' || provider === 'anthropic') {
-      const apiKey = process.env.ANTHROPIC_API_KEY ?? process.env.CLAUDE_MEM_ANTHROPIC_API_KEY ?? '';
-      if (!apiKey) return null;
-      const opts: { apiKey: string; model?: string } = { apiKey };
-      if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
-      return new ClaudeObservationProvider(opts);
-    }
-    if (provider === 'gemini') {
-      const apiKey = process.env.GEMINI_API_KEY ?? process.env.CLAUDE_MEM_GEMINI_API_KEY ?? '';
-      if (!apiKey) return null;
-      const opts: { apiKey: string; model?: string } = { apiKey };
-      if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
-      return new GeminiObservationProvider(opts);
-    }
-    if (provider === 'openrouter') {
-      const apiKey = process.env.OPENROUTER_API_KEY ?? process.env.CLAUDE_MEM_OPENROUTER_API_KEY ?? '';
-      if (!apiKey) return null;
-      const opts: { apiKey: string; model?: string; baseUrl?: string } = { apiKey };
-      if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
-      // #2382/#2590/#2622/#2393 — optional OpenAI-compatible base URL.
-      const baseUrl = process.env.CLAUDE_MEM_OPENROUTER_BASE_URL ?? process.env.OPENROUTER_BASE_URL;
-      if (baseUrl) opts.baseUrl = baseUrl;
-      return new OpenRouterObservationProvider(opts);
-    }
-  } catch {
+    return instantiateServerGenerationProvider(provider);
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    // Surface the construction failure so operators can see why generation is
+    // disabled instead of silently getting a null provider.
+    logger.warn('SYSTEM', 'server: failed to construct generation provider from env; generation disabled', { provider }, err);
     return null;
+  }
+}
+
+function instantiateServerGenerationProvider(provider: string): ServerGenerationProvider | null {
+  if (provider === 'claude' || provider === 'anthropic') {
+    const apiKey = process.env.ANTHROPIC_API_KEY ?? process.env.CLAUDE_MEM_ANTHROPIC_API_KEY ?? '';
+    if (!apiKey) return null;
+    const opts: { apiKey: string; model?: string } = { apiKey };
+    if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
+    return new ClaudeObservationProvider(opts);
+  }
+  if (provider === 'gemini') {
+    const apiKey = process.env.GEMINI_API_KEY ?? process.env.CLAUDE_MEM_GEMINI_API_KEY ?? '';
+    if (!apiKey) return null;
+    const opts: { apiKey: string; model?: string } = { apiKey };
+    if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
+    return new GeminiObservationProvider(opts);
+  }
+  if (provider === 'openrouter') {
+    const apiKey = process.env.OPENROUTER_API_KEY ?? process.env.CLAUDE_MEM_OPENROUTER_API_KEY ?? '';
+    if (!apiKey) return null;
+    const opts: { apiKey: string; model?: string; baseUrl?: string } = { apiKey };
+    if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
+    // #2382/#2590/#2622/#2393 — optional OpenAI-compatible base URL.
+    const baseUrl = process.env.CLAUDE_MEM_OPENROUTER_BASE_URL ?? process.env.OPENROUTER_BASE_URL;
+    if (baseUrl) opts.baseUrl = baseUrl;
+    return new OpenRouterObservationProvider(opts);
   }
   return null;
 }

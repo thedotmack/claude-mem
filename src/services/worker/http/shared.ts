@@ -175,6 +175,9 @@ export async function ingestSummary(payload: SummaryPayload): Promise<IngestResu
       sessionDbId = dbManager.getSessionStore().createSDKSession(payload.contentSessionId, project, '', undefined, platformSource);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      logger.error('INGEST', 'Summary session resolution failed', {
+        contentSessionId: payload.contentSessionId,
+      }, error instanceof Error ? error : new Error(message));
       return { ok: false, reason: message, status: 500 };
     }
 

@@ -26,6 +26,7 @@
 import { createHash, randomBytes } from 'crypto';
 import { chmodSync, existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
+import { logger } from '../../utils/logger.js';
 import { createPostgresPool, type PostgresPool } from '../../storage/postgres/pool.js';
 import { parsePostgresConfig } from '../../storage/postgres/config.js';
 import { PostgresAuthRepository } from '../../storage/postgres/auth.js';
@@ -137,7 +138,9 @@ export function persistServerSettings(
   if (existsSync(settingsPath)) {
     try {
       existing = JSON.parse(readFileSync(settingsPath, 'utf-8')) as Record<string, unknown>;
-    } catch {
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      logger.warn('HOOK', 'Failed to read existing settings file; starting fresh', { settingsPath }, err);
       existing = {};
     }
   }

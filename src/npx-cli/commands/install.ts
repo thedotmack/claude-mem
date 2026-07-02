@@ -55,19 +55,25 @@ function detectInstallMethod(): string {
  * Claude Code releases, so this is key for diagnosing installs whose worker
  * never starts. Missing binary or timeout → undefined (dropped by scrubber).
  */
+function readClaudeCodeVersionOutput(): string | undefined {
+  const result = spawnSync('claude', ['--version'], {
+    timeout: 5000,
+    windowsHide: true,
+    shell: process.platform === 'win32',
+    encoding: 'utf-8',
+  });
+  const output = (result.stdout ?? '').trim();
+  if (!output) return undefined;
+  // "2.0.14 (Claude Code)" → "2.0.14"
+  return output.split(/\s+/)[0].slice(0, 40) || undefined;
+}
+
 function detectClaudeCodeVersion(): string | undefined {
   try {
-    const result = spawnSync('claude', ['--version'], {
-      timeout: 5000,
-      windowsHide: true,
-      shell: process.platform === 'win32',
-      encoding: 'utf-8',
-    });
-    const output = (result.stdout ?? '').trim();
-    if (!output) return undefined;
-    // "2.0.14 (Claude Code)" → "2.0.14"
-    return output.split(/\s+/)[0].slice(0, 40) || undefined;
-  } catch {
+    return readClaudeCodeVersionOutput();
+  } catch (error: unknown) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    console.warn('[install] Could not detect Claude Code version:', err);
     return undefined;
   }
 }
@@ -504,6 +510,7 @@ function applyClaudeCodePathSetupIfNeeded(): void {
     try {
       existing = readFileSync(configFile, 'utf-8');
     } catch (error: unknown) {
+      // [ANTI-PATTERN IGNORED]: the failure is already surfaced to the user via the interactive-aware log.warn wrapper below (p.log.warn in a TTY, console.warn otherwise); a raw console call here would double-print.
       log.warn(`Could not read ${configFile}: ${error instanceof Error ? error.message : String(error)}`);
     }
   } else {
@@ -523,6 +530,7 @@ function applyClaudeCodePathSetupIfNeeded(): void {
       writeFileSync(configFile, existing + block, 'utf-8');
       log.success(`Added Claude Code to PATH in ${configFile}`);
     } catch (error: unknown) {
+      // [ANTI-PATTERN IGNORED]: the failure is already surfaced to the user via the interactive-aware log.warn wrapper below (p.log.warn in a TTY, console.warn otherwise), together with the manual remediation command.
       log.warn(`Could not update ${configFile}: ${error instanceof Error ? error.message : String(error)}`);
       log.info(`Run manually: echo '${exportLine}' >> ${configFile}`);
       return;
@@ -572,6 +580,7 @@ async function installClaudeCode(): Promise<boolean> {
         try {
           applyClaudeCodePathSetupIfNeeded();
         } catch (error: unknown) {
+          // [ANTI-PATTERN IGNORED]: the failure is already surfaced to the user via the interactive-aware log.warn wrapper below (p.log.warn in a TTY, console.warn otherwise); PATH setup is best-effort after a successful install.
           log.warn(`Could not auto-apply PATH setup: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
@@ -796,6 +805,7 @@ function readRawStoredAuthMethod(): 'subscription' | 'api-key' | 'gateway' | und
     if (value === 'subscription' || value === 'api-key' || value === 'gateway') return value;
     return undefined;
   } catch {
+    // [ANTI-PATTERN IGNORED]: settings.json is optional and may be absent or hand-edited into invalid JSON; falling back to env-based auth detection in resolveClaudeAuthMethod is the designed recovery.
     return undefined;
   }
 }
@@ -905,24 +915,29 @@ async function maybeBootstrapServerApiKey(): Promise<void> {
     return;
   }
   try {
-    const { bootstrapServerApiKey, persistServerSettings } = await import(
-      '../../services/hooks/server-bootstrap.js'
-    );
-    const result = await bootstrapServerApiKey();
-    persistServerSettings(USER_SETTINGS_PATH, {
-      apiKey: result.rawKey,
-      projectId: result.projectId,
-    });
-    log.info(
-      `Provisioned local hook API key (project=${result.projectId.slice(0, 8)}…). `
-        + 'Settings saved with mode 0600.',
-    );
+    await bootstrapAndPersistServerApiKey();
   } catch (error: unknown) {
+    // [ANTI-PATTERN IGNORED]: the failure is already surfaced to the user via the interactive-aware log.warn wrapper below (p.log.warn in a TTY, console.warn otherwise), including the manual remediation command.
     log.warn(
       `Failed to bootstrap server API key: ${error instanceof Error ? error.message : String(error)}. `
         + 'Hooks will fall back to the worker until you run `npx claude-mem server keys rotate`.',
     );
   }
+}
+
+async function bootstrapAndPersistServerApiKey(): Promise<void> {
+  const { bootstrapServerApiKey, persistServerSettings } = await import(
+    '../../services/hooks/server-bootstrap.js'
+  );
+  const result = await bootstrapServerApiKey();
+  persistServerSettings(USER_SETTINGS_PATH, {
+    apiKey: result.rawKey,
+    projectId: result.projectId,
+  });
+  log.info(
+    `Provisioned local hook API key (project=${result.projectId.slice(0, 8)}…). `
+      + 'Settings saved with mode 0600.',
+  );
 }
 
 async function promptProvider(options: InstallOptions): Promise<ProviderId> {
@@ -1006,6 +1021,7 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
           new URL(value);
           return undefined;
         } catch {
+          // [ANTI-PATTERN IGNORED]: a URL parse failure here just means the user typed an invalid gateway URL; the recovery is the inline validation message the prompt displays on every attempt.
           return 'Enter a valid URL, for example http://localhost:4000';
         }
       },
@@ -1253,41 +1269,51 @@ interface StoredSignup {
   sent: boolean;
 }
 
+function parseStoredSignup(): StoredSignup | null {
+  if (!existsSync(USER_SETTINGS_PATH)) return null;
+  const raw = JSON.parse(readFileSync(USER_SETTINGS_PATH, 'utf-8')) as Record<string, unknown>;
+  const flat = (raw.env && typeof raw.env === 'object' ? raw.env : raw) as Record<string, unknown>;
+  const email = typeof flat.CLAUDE_MEM_ONLINE_SIGNUP_EMAIL === 'string' ? flat.CLAUDE_MEM_ONLINE_SIGNUP_EMAIL : '';
+  if (!email) return null;
+  return {
+    email,
+    note: typeof flat.CLAUDE_MEM_ONLINE_SIGNUP_NOTE === 'string' ? flat.CLAUDE_MEM_ONLINE_SIGNUP_NOTE : '',
+    sent: flat.CLAUDE_MEM_ONLINE_SIGNUP_SENT === 'true',
+  };
+}
+
 function readStoredSignup(): StoredSignup | null {
   try {
-    if (!existsSync(USER_SETTINGS_PATH)) return null;
-    const raw = JSON.parse(readFileSync(USER_SETTINGS_PATH, 'utf-8')) as Record<string, unknown>;
-    const flat = (raw.env && typeof raw.env === 'object' ? raw.env : raw) as Record<string, unknown>;
-    const email = typeof flat.CLAUDE_MEM_ONLINE_SIGNUP_EMAIL === 'string' ? flat.CLAUDE_MEM_ONLINE_SIGNUP_EMAIL : '';
-    if (!email) return null;
-    return {
-      email,
-      note: typeof flat.CLAUDE_MEM_ONLINE_SIGNUP_NOTE === 'string' ? flat.CLAUDE_MEM_ONLINE_SIGNUP_NOTE : '',
-      sent: flat.CLAUDE_MEM_ONLINE_SIGNUP_SENT === 'true',
-    };
+    return parseStoredSignup();
   } catch {
+    // [ANTI-PATTERN IGNORED]: settings.json is optional and may be missing or hand-edited into invalid JSON; treating that as "no stored signup" simply re-asks the opt-in, the designed recovery for this never-blocking marketing flow.
     return null;
   }
+}
+
+async function postSignup(payload: { email: string; note: string; version: string }, signal: AbortSignal): Promise<boolean> {
+  const res = await fetch(SIGNUP_ENDPOINT, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      email: payload.email,
+      note: payload.note,
+      version: payload.version,
+      platform: process.platform,
+      source: 'npx-installer',
+    }),
+    signal,
+  });
+  return res.ok;
 }
 
 async function submitOnlineSignup(payload: { email: string; note: string; version: string }): Promise<boolean> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 5000);
   try {
-    const res = await fetch(SIGNUP_ENDPOINT, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        email: payload.email,
-        note: payload.note,
-        version: payload.version,
-        platform: process.platform,
-        source: 'npx-installer',
-      }),
-      signal: controller.signal,
-    });
-    return res.ok;
+    return await postSignup(payload, controller.signal);
   } catch {
+    // [ANTI-PATTERN IGNORED]: network/timeout failures of this optional waitlist POST are expected offline; the caller persists the email locally and retries silently on the next install run.
     return false;
   } finally {
     clearTimeout(timer);
@@ -1414,10 +1440,11 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
   try {
     await runInstallCommandInner(options, summary);
   } catch (error: unknown) {
-    if (error instanceof InstallAbortError) {
-      // error.category.id is OUR taxonomy id (error-taxonomy.ts), never a message.
+    const err = error instanceof Error ? error : new Error(String(error));
+    if (err instanceof InstallAbortError) {
+      // err.category.id is OUR taxonomy id (error-taxonomy.ts), never a message.
       await captureCliEvent('install_failed', {
-        error_category: error.category.id,
+        error_category: err.category.id,
         interactive: isInteractive,
         install_method: detectInstallMethod(),
         claude_code_version: detectClaudeCodeVersion(),
@@ -1426,15 +1453,15 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
       // remediation headline and exit non-zero. ABORT must never reach the
       // "Installation Complete" path.
       flushSummary(summary, (line) => (isInteractive ? p.log.message(line) : console.error(`  ${line}`)));
-      const headline = `Installation Aborted: ${error.category.id}`;
+      const headline = `Installation Aborted: ${err.category.id}`;
       if (isInteractive) {
         p.log.error(headline);
-        p.log.error(error.remediation);
+        p.log.error(err.remediation);
         p.outro(pc.red('claude-mem installation aborted.'));
       } else {
         console.error(`\n  ${headline}`);
-        console.error(`  ${error.remediation}`);
-        console.error(`  ${error.message}`);
+        console.error(`  ${err.remediation}`);
+        console.error(`  ${err.message}`);
       }
       process.exit(1);
     }
@@ -1536,12 +1563,9 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
       shutdownSpinner?.start('Stopping running worker (so we can overwrite cleanly)…');
       try {
         const result = await shutdownWorkerAndWait(installPort, 10000);
+        const stopMessage = result.workerWasRunning ? 'Stopped running worker before overwrite.' : 'No worker running — proceeding.';
         if (shutdownSpinner) {
-          shutdownSpinner.stop(
-            result.workerWasRunning
-              ? 'Stopped running worker before overwrite.'
-              : 'No worker running — proceeding.',
-          );
+          shutdownSpinner.stop(stopMessage);
         } else if (result.workerWasRunning) {
           log.info('Stopped running worker before overwrite.');
         }
@@ -1662,10 +1686,12 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     } catch (error: unknown) {
       // Don't fail the install over this — WARN_CONTINUE via the central handler.
       autoMemoryStatus = 'failed';
+      const err = error instanceof Error ? error : new Error(String(error));
+      // [ANTI-PATTERN IGNORED]: recorded via installerError(WARN_CONTINUE) and flushed after the spinners; a direct console call would be clobbered by the clack UI.
       installerError(ErrorSeverity.WARN_CONTINUE, {
         component: 'auto-memory',
         phase: 'post-ide',
-        cause: error,
+        cause: err,
       }, summary);
     }
   } else if (autoMemoryChoice === 'leave-enabled') {

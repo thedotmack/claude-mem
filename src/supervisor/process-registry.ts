@@ -72,6 +72,32 @@ export interface PidInfo {
 const WINDOWS_START_TOKEN_CACHE_TTL_MS = 5_000;
 const windowsStartTokenCache = new Map<number, { token: string | null; capturedAtMs: number }>();
 
+function queryWindowsCreationDate(pid: number): string | null {
+  // CreationDate is a CIM DATETIME (yyyyMMddHHmmss.ffffff±UTCoffset) that is
+  // unique-enough per (pid, boot) to detect PID reuse. `-NoProfile` keeps it
+  // fast; sanitizeEnv keeps the spawn-env discipline uniform (#2357/#2375).
+  const result = spawnSync(
+    'powershell.exe',
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `(Get-CimInstance Win32_Process -Filter \"ProcessId=${pid}\").CreationDate.ToString('yyyyMMddHHmmss.ffffff')`
+    ],
+    {
+      encoding: 'utf-8',
+      timeout: 5000,
+      windowsHide: true,
+      env: { ...sanitizeEnv(process.env), LC_ALL: 'C', LANG: 'C' }
+    }
+  );
+  if (result.status === 0) {
+    const trimmed = result.stdout.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  return null;
+}
+
 function captureWindowsStartToken(pid: number): string | null {
   const cached = windowsStartTokenCache.get(pid);
   if (cached && Date.now() - cached.capturedAtMs < WINDOWS_START_TOKEN_CACHE_TTL_MS) {
@@ -80,28 +106,7 @@ function captureWindowsStartToken(pid: number): string | null {
 
   let token: string | null = null;
   try {
-    // CreationDate is a CIM DATETIME (yyyyMMddHHmmss.ffffff±UTCoffset) that is
-    // unique-enough per (pid, boot) to detect PID reuse. `-NoProfile` keeps it
-    // fast; sanitizeEnv keeps the spawn-env discipline uniform (#2357/#2375).
-    const result = spawnSync(
-      'powershell.exe',
-      [
-        '-NoProfile',
-        '-NonInteractive',
-        '-Command',
-        `(Get-CimInstance Win32_Process -Filter \"ProcessId=${pid}\").CreationDate.ToString('yyyyMMddHHmmss.ffffff')`
-      ],
-      {
-        encoding: 'utf-8',
-        timeout: 5000,
-        windowsHide: true,
-        env: { ...sanitizeEnv(process.env), LC_ALL: 'C', LANG: 'C' }
-      }
-    );
-    if (result.status === 0) {
-      const trimmed = result.stdout.trim();
-      token = trimmed.length > 0 ? trimmed : null;
-    }
+    token = queryWindowsCreationDate(pid);
   } catch (error: unknown) {
     logger.debug('SYSTEM', 'captureProcessStartToken: powershell CIM lookup failed', {
       pid,
@@ -711,6 +716,22 @@ export function spawnSdkProcess(
   return { process: spawned, pid, pgid };
 }
 
+function sigtermDuplicateSdkProcess(record: ManagedProcessRecord, sessionDbId: number): void {
+  if (typeof record.pgid === 'number') {
+    if (process.platform !== 'win32') {
+      process.kill(-record.pgid, 'SIGTERM');
+    } else {
+      process.kill(record.pid, 'SIGTERM');
+    }
+  } else {
+    process.kill(record.pid, 'SIGTERM');
+  }
+  logger.warn('PROCESS', `Killing duplicate SDK process PID ${record.pid} before spawning new one for session ${sessionDbId}`, {
+    existingPid: record.pid,
+    sessionDbId,
+  });
+}
+
 export function createSdkSpawnFactory(sessionDbId: number) {
   return (spawnOptions: SpawnSdkOptions): SpawnedSdkProcess => {
     const registry = getProcessRegistry();
@@ -719,19 +740,7 @@ export function createSdkSpawnFactory(sessionDbId: number) {
     for (const record of existing) {
       if (!isPidAlive(record.pid)) continue;
       try {
-        if (typeof record.pgid === 'number') {
-          if (process.platform !== 'win32') {
-            process.kill(-record.pgid, 'SIGTERM');
-          } else {
-            process.kill(record.pid, 'SIGTERM');
-          }
-        } else {
-          process.kill(record.pid, 'SIGTERM');
-        }
-        logger.warn('PROCESS', `Killing duplicate SDK process PID ${record.pid} before spawning new one for session ${sessionDbId}`, {
-          existingPid: record.pid,
-          sessionDbId,
-        });
+        sigtermDuplicateSdkProcess(record, sessionDbId);
       } catch (error: unknown) {
         const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
         if (code !== 'ESRCH') {

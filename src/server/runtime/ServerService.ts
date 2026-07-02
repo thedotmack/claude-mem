@@ -231,9 +231,11 @@ export class ServerService {
         try {
           await this.server.close();
         } catch (error: unknown) {
-          if ((error as NodeJS.ErrnoException)?.code !== 'ERR_SERVER_NOT_RUNNING') {
+          const err = error instanceof Error ? error : new Error(String(error));
+          if ((err as NodeJS.ErrnoException).code !== 'ERR_SERVER_NOT_RUNNING') {
             throw error;
           }
+          logger.warn('SYSTEM', 'Server was already stopped when close was requested', {}, err);
         }
         this.server = null;
       }
@@ -905,7 +907,9 @@ function readServerPidFile(): PidInfo | null {
   }
   try {
     return JSON.parse(readFileSync(paths.serverPid(), 'utf-8')) as PidInfo;
-  } catch {
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SYSTEM', 'Failed to read server PID file', { path: paths.serverPid() }, err);
     return null;
   }
 }
@@ -916,7 +920,9 @@ function readServerRuntimeState(): ServerRuntimeState | null {
   }
   try {
     return JSON.parse(readFileSync(paths.serverRuntime(), 'utf-8')) as ServerRuntimeState;
-  } catch {
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SYSTEM', 'Failed to read server runtime state file', { path: paths.serverRuntime() }, err);
     return null;
   }
 }
