@@ -318,10 +318,11 @@ export async function updateFolderClaudeMdFiles(
   });
 
   for (const folderPath of folderPaths) {
+    const queryPath = projectRoot ? path.relative(projectRoot, folderPath) : folderPath;
     let response: Response;
     try {
       response = await workerHttpRequest(
-        `/api/search/by-file?filePath=${encodeURIComponent(folderPath)}&limit=${limit}&project=${encodeURIComponent(project)}&isFolder=true`
+        `/api/search/by-file?filePath=${encodeURIComponent(queryPath)}&limit=${limit}&project=${encodeURIComponent(project)}&isFolder=true`
       );
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
