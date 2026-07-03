@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.9.3] - 2026-07-03
+
+## Changes
+
+- fix: eliminate all 331 error-handling anti-patterns detected by scanner (#3119)
+- chore: repo-wide over-engineering cleanup — ponytail audit wave 1 & 2 (#3120)
+  - Removed dead code, unused dependencies, and unused cmem-sdk client surface
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v13.9.2...v13.9.3
+
 ## [13.9.2] - 2026-07-01
 
 ## Bug Fix
