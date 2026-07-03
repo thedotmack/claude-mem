@@ -47,11 +47,6 @@ export function detectInstalledIDEs(): IDEInfo[] {
       hint: 'recommended',
     },
     {
-      id: 'gemini-cli',
-      label: 'Gemini CLI',
-      detected: existsSync(join(home, '.gemini')),
-    },
-    {
       id: 'opencode',
       label: 'OpenCode',
       detected:

@@ -355,10 +355,6 @@ export async function runUninstallCommand(): Promise<void> {
   ]);
 
   const ideCleanups: Array<{ label: string; fn: () => Promise<number> | number }> = [
-    { label: 'Gemini CLI hooks', fn: async () => {
-      const { uninstallGeminiCliHooks } = await import('../../services/integrations/GeminiCliHooksInstaller.js');
-      return uninstallGeminiCliHooks();
-    }},
     { label: 'Windsurf hooks', fn: async () => {
       const { uninstallWindsurfHooks } = await import('../../services/integrations/WindsurfHooksInstaller.js');
       return uninstallWindsurfHooks();

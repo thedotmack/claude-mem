@@ -320,23 +320,6 @@ function makeIDETask(ideId: string, summary: InstallSummary): TaskDescriptor | n
       };
     }
 
-    case 'gemini-cli': {
-      return {
-        title: 'Gemini CLI: installing hooks',
-        task: async (message) => {
-          message('Loading Gemini CLI installer…');
-          const { installGeminiCliHooks } = await import('../../services/integrations/GeminiCliHooksInstaller.js');
-          message('Installing Gemini CLI hooks…');
-          const { result, output } = await bufferConsole(() => installGeminiCliHooks());
-          if (result !== 0) {
-            recordFailure('Gemini CLI: hook installation failed', output);
-            return `Gemini CLI: hook installation failed ${styleText('red', 'FAIL')}`;
-          }
-          return `Gemini CLI: hooks installed ${styleText('green', 'OK')}`;
-        },
-      };
-    }
-
     case 'opencode': {
       return {
         title: 'OpenCode: installing plugin',

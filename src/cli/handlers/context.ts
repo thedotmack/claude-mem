@@ -132,12 +132,8 @@ export const contextHandler: EventHandler = {
       }
     }
 
-    const platform = input.platform;
-
-    const displayContent = coloredTimeline || (platform === 'gemini-cli' || platform === 'gemini' ? additionalContext : '');
-
-    const systemMessage = showTerminalOutput && displayContent
-      ? `${displayContent}\n\nView Observations Live @ http://localhost:${port}`
+    const systemMessage = showTerminalOutput && coloredTimeline
+      ? `${coloredTimeline}\n\nView Observations Live @ http://localhost:${port}`
       : undefined;
 
     return {
