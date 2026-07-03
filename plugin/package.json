@@ -19,7 +19,6 @@
     "tree-sitter-kotlin": "^0.3.8",
     "tree-sitter-swift": "^0.7.1",
     "tree-sitter-php": "^0.24.2",
-    "tree-sitter-elixir": "^0.3.5",
     "@tree-sitter-grammars/tree-sitter-lua": "^0.4.1",
     "tree-sitter-scala": "^0.24.0",
     "tree-sitter-bash": "^0.25.1",
