@@ -42,9 +42,7 @@ function buildStubQueues(): {
 
   const queues = new Map<ServerGenerationJobKind, ServerJobQueue<ServerGenerationJobPayload>>();
   queues.set('event', make('event'));
-  queues.set('event-batch', make('event-batch'));
   queues.set('summary', make('summary'));
-  queues.set('reindex', make('reindex'));
   return { queues, closedNames };
 }
 
@@ -57,14 +55,14 @@ describe('ActiveServerQueueManager', () => {
     expect(() => new ActiveServerQueueManager(sqliteConfig)).toThrow(/CLAUDE_MEM_QUEUE_ENGINE=bullmq/);
   });
 
-  it('reports active health with all four lanes when constructed against bullmq', () => {
+  it('reports active health with both lanes when constructed against bullmq', () => {
     const { queues } = buildStubQueues();
     const manager = new ActiveServerQueueManager(bullmqConfig, queues);
     const health = manager.getHealth();
     expect(health.status).toBe('active');
     expect(health.details?.engine).toBe('bullmq');
     const lanes = health.details?.lanes as Array<{ kind: string; name: string }> | undefined;
-    expect(lanes?.map((l) => l.kind).sort()).toEqual(['event', 'event-batch', 'reindex', 'summary']);
+    expect(lanes?.map((l) => l.kind).sort()).toEqual(['event', 'summary']);
   });
 
   it('exposes per-kind queues via getQueue', () => {
@@ -78,7 +76,7 @@ describe('ActiveServerQueueManager', () => {
     const { queues, closedNames } = buildStubQueues();
     const manager = new ActiveServerQueueManager(bullmqConfig, queues);
     await manager.close();
-    expect(closedNames.sort()).toEqual(['event', 'event-batch', 'reindex', 'summary']);
+    expect(closedNames.sort()).toEqual(['event', 'summary']);
     expect(manager.getHealth().status).toBe('errored');
   });
 });

@@ -39,7 +39,6 @@ import {
   readPidFile,
   removePidFileIfOwner,
   getPlatformTimeout,
-  runOneTimeChromaMigration,
   runOneTimeCwdRemap,
   cleanStalePidFile,
   verifyPidFileOwnership,
@@ -69,7 +68,6 @@ import {
 import { ServerV1Routes } from '../server/routes/v1/ServerV1Routes.js';
 
 import {
-  updateCursorContextForProject,
   handleCursorCommand
 } from './integrations/CursorHooksInstaller.js';
 import {
@@ -469,11 +467,6 @@ export class WorkerService implements WorkerRef {
         logger.info('SYSTEM', 'Dependency preflight passed');
       }
 
-      if (settings.CLAUDE_MEM_MODE === 'local' || !settings.CLAUDE_MEM_MODE) {
-        logger.info('WORKER', 'Checking for one-time Chroma migration...');
-        runOneTimeChromaMigration();
-      }
-
       logger.info('WORKER', 'Checking for one-time CWD remap...');
       runOneTimeCwdRemap();
 
@@ -523,15 +516,9 @@ export class WorkerService implements WorkerRef {
       this.server.registerRoutes(this.searchRoutes);
       logger.info('WORKER', 'SearchManager initialized and search routes registered');
 
-      const { SearchOrchestrator } = await import('./worker/search/SearchOrchestrator.js');
-      const corpusSearchOrchestrator = new SearchOrchestrator(
-        this.dbManager.getSessionSearch(),
-        this.dbManager.getSessionStore(),
-        this.dbManager.getChromaSync()
-      );
       const corpusBuilder = new CorpusBuilder(
         this.dbManager.getSessionStore(),
-        corpusSearchOrchestrator,
+        searchManager.getOrchestrator(),
         this.corpusStore
       );
       const knowledgeAgent = new KnowledgeAgent(this.corpusStore);
@@ -818,7 +805,7 @@ export function parseWorkerServiceCommand(argv: string[]): ParsedWorkerCommand {
     if (maybeSubCommand && lifecycleCommands.has(maybeSubCommand)) {
       return { command: `server-${maybeSubCommand}`, args: rest };
     }
-    const serverCommands = new Set(['logs', 'doctor', 'migrate', 'export', 'import', 'api-key', 'keys', 'jobs']);
+    const serverCommands = new Set(['api-key', 'keys', 'jobs']);
     return {
       command: maybeSubCommand && serverCommands.has(maybeSubCommand) ? `server-${maybeSubCommand}` : 'server-help',
       args: rest,
@@ -839,15 +826,9 @@ export function parseWorkerServiceCommand(argv: string[]): ParsedWorkerCommand {
   };
 }
 
-function printServerCommandUnsupported(command: string): never {
-  console.error(`Server command not implemented yet: ${command}`);
-  console.error('This worker bundle accepts the CLI route, but no backend API exists for it yet.');
-  process.exit(1);
-}
-
 function printServerCommandHelp(): never {
   console.error('Usage: worker-service server <command>');
-  console.error('Commands: start, stop, restart, status, logs, doctor, migrate, export, import, api-key create|list|revoke');
+  console.error('Commands: start, stop, restart, status, api-key create|list|revoke');
   process.exit(1);
 }
 
@@ -1201,15 +1182,6 @@ async function main() {
     case 'server-restart':
     case 'server-status': {
       runServerServiceCli(command.slice('server-'.length));
-      break;
-    }
-
-    case 'server-logs':
-    case 'server-doctor':
-    case 'server-migrate':
-    case 'server-export':
-    case 'server-import': {
-      printServerCommandUnsupported(command.replace('-', ' '));
       break;
     }
 

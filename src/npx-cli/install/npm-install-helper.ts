@@ -17,8 +17,7 @@
 import { spawn } from 'child_process';
 import { IS_WINDOWS } from '../utils/paths.js';
 
-const TIMEOUT_FIRST_RUN_MS = 5 * 60 * 1000;
-const TIMEOUT_SUBSEQUENT_MS = 2 * 60 * 1000;
+const TIMEOUT_MS = 5 * 60 * 1000;
 
 export interface NpmResult {
   code: number;
@@ -27,10 +26,10 @@ export interface NpmResult {
   timedOut: boolean;
 }
 
-export function resolveInstallTimeoutMs(isFirstRun: boolean): number {
+export function resolveInstallTimeoutMs(): number {
   const override = process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS;
   if (override && Number.isFinite(Number(override))) return Number(override);
-  return isFirstRun ? TIMEOUT_FIRST_RUN_MS : TIMEOUT_SUBSEQUENT_MS;
+  return TIMEOUT_MS;
 }
 
 /** Detect an npm ERESOLVE peer-dependency conflict in captured stderr. */
@@ -52,7 +51,7 @@ export function extractEresolveBlock(stderr: string): string {
 // Async (spawn, not spawnSync) so the installer's clack spinner keeps
 // animating during a multi-minute npm install — a blocked event loop freezes
 // the spinner mid-frame and the install looks stalled.
-export function runNpmStrict(cwd: string, flags: string[], isFirstRun = true): Promise<NpmResult> {
+export function runNpmStrict(cwd: string, flags: string[]): Promise<NpmResult> {
   return new Promise((resolve) => {
     const child = spawn('npm', flags, {
       cwd,
@@ -68,7 +67,7 @@ export function runNpmStrict(cwd: string, flags: string[], isFirstRun = true): P
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill('SIGTERM');
-    }, resolveInstallTimeoutMs(isFirstRun));
+    }, resolveInstallTimeoutMs());
 
     child.stdout?.on('data', (d: Buffer) => { stdout += d.toString(); });
     child.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });

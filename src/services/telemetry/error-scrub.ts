@@ -12,7 +12,9 @@
  *     tokens, JWTs, long hex blobs.
  *
  * HARD RULES baked in (do not regress):
- *   - PURE and NEVER THROWS. Every public function is wrapped so hostile input
+ *   - PURE and NEVER THROWS. Every public function either is wrapped
+ *     (scrubError/scrubMessage/scrubStack) or is a literal-regex pipeline on
+ *     guarded string input that cannot throw, so hostile input
  *     (null/undefined/circular/non-Error/objects with throwing getters) yields
  *     a safe fallback, never an exception. This module sits on the telemetry
  *     fire-and-forget path and must obey the "telemetry never throws" invariant.
@@ -123,36 +125,14 @@ export function redactHomeDir(text: string): string {
  */
 export function redactAbsolutePaths(text: string): string {
   if (typeof text !== 'string' || text.length === 0) return text ?? '';
-  let out = text;
-  try {
+  return text
     // POSIX absolute paths: a leading '/' followed by at least one segment.
     // Stop at whitespace, quotes, parens, or colon (stack frames use `:line`).
-    out = out.replace(/(?<![~\w])\/(?:[^\s/:"'()]+\/)+([^\s/:"'()]+)/g, '$1');
+    .replace(/(?<![~\w])\/(?:[^\s/:"'()]+\/)+([^\s/:"'()]+)/g, '$1')
     // Windows drive-absolute paths: C:\foo\bar\baz.ts
-    out = out.replace(/[A-Za-z]:\\(?:[^\s\\:"'()]+\\)*([^\s\\:"'()]+)/g, '$1');
+    .replace(/[A-Za-z]:\\(?:[^\s\\:"'()]+\\)*([^\s\\:"'()]+)/g, '$1')
     // Windows UNC paths: \\server\share\file
-    out = out.replace(/\\\\[^\s\\:"'()]+(?:\\[^\s\\:"'()]+)*\\([^\s\\:"'()]+)/g, '$1');
-  } catch (error) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    logger.warn('SYSTEM', 'error-scrub: absolute-path redaction failed; keeping original text', undefined, err);
-    return text;
-  }
-  return out;
-}
-
-/**
- * Per-match rewriter for redactUrlQueryStrings: strips userinfo
- * (user:pass@ → [REDACTED]@) and drops everything from the first ? or #.
- * Extracted so the try block in redactUrlQueryStrings stays narrow.
- */
-function stripUrlUserinfoAndQuery(match: string): string {
-  let out = match.replace(/[?#].*$/, '');
-  // Strip userinfo: scheme://USERINFO@host → scheme://[REDACTED]@host.
-  out = out.replace(
-    /^([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/@\s]+@/,
-    `$1${REDACTED}@`
-  );
-  return out;
+    .replace(/\\\\[^\s\\:"'()]+(?:\\[^\s\\:"'()]+)*\\([^\s\\:"'()]+)/g, '$1');
 }
 
 /**
@@ -170,27 +150,26 @@ function stripUrlUserinfoAndQuery(match: string): string {
  */
 export function redactUrlQueryStrings(text: string): string {
   if (typeof text !== 'string' || text.length === 0) return text ?? '';
-  try {
-    // Match ANY scheme:// URL (http, ws, postgres, redis, mongodb+srv, amqp, …)
-    // up to the next whitespace/quote/paren. A scheme is letters/digits with
-    // optional + . - (e.g. mongodb+srv).
-    return text.replace(
-      /\b[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s"'()]+/g,
-      stripUrlUserinfoAndQuery
-    );
-  } catch (error) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    logger.warn('SYSTEM', 'error-scrub: URL query-string redaction failed; keeping original text', undefined, err);
-    return text;
-  }
+  // Match ANY scheme:// URL (http, ws, postgres, redis, mongodb+srv, amqp, …)
+  // up to the next whitespace/quote/paren. A scheme is letters/digits with
+  // optional + . - (e.g. mongodb+srv). Per match: drop everything from the
+  // first ? or #, then strip userinfo (scheme://user:pass@ → [REDACTED]@).
+  return text.replace(/\b[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s"'()]+/g, match =>
+    match
+      .replace(/[?#].*$/, '')
+      .replace(/^([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/@\s]+@/, `$1${REDACTED}@`)
+  );
 }
 
 /**
- * The actual secret-masking pass for redactSecrets, extracted so the try block
- * in redactSecrets stays narrow. All the quantifier-bounding notes below still
- * apply; any regex-engine failure is guarded by redactSecrets itself.
+ * Masks secret-shaped substrings: emails, OpenAI-style `sk-...` keys, PostHog
+ * `phc_...` keys, JWTs, AWS access key IDs (AKIA…), long hex blobs, generic
+ * high-entropy tokens, and IPv4 addresses. Each match becomes [REDACTED]. Order
+ * within is least-greedy-first so a JWT isn't partially eaten by the generic
+ * token rule. Pure / never throws.
  */
-function applySecretRedactions(text: string): string {
+export function redactSecrets(text: string): string {
+  if (typeof text !== 'string' || text.length === 0) return text ?? '';
   let out = text;
   // Emails. Quantifiers are BOUNDED ({1,64} local / {1,255} domain / {2,24}
   // TLD) so a long run of local-part chars with no '@' (or a giant domain run)
@@ -239,34 +218,10 @@ function applySecretRedactions(text: string): string {
   return out;
 }
 
-/**
- * Masks secret-shaped substrings: emails, OpenAI-style `sk-...` keys, PostHog
- * `phc_...` keys, JWTs, AWS access key IDs (AKIA…), long hex blobs, generic
- * high-entropy tokens, and IPv4 addresses. Each match becomes [REDACTED]. Order
- * within is least-greedy-first so a JWT isn't partially eaten by the generic
- * token rule. Pure / never throws.
- */
-export function redactSecrets(text: string): string {
-  if (typeof text !== 'string' || text.length === 0) return text ?? '';
-  try {
-    return applySecretRedactions(text);
-  } catch (error) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    logger.warn('SYSTEM', 'error-scrub: secret redaction failed; keeping original text', undefined, err);
-    return text;
-  }
-}
-
 /** Collapses runs of whitespace to single spaces and trims. Pure. */
 export function collapseWhitespace(text: string): string {
   if (typeof text !== 'string' || text.length === 0) return text ?? '';
-  try {
-    return text.replace(/[ \t\f\v]+/g, ' ').replace(/ *\n */g, '\n').trim();
-  } catch (error) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    logger.warn('SYSTEM', 'error-scrub: whitespace collapse failed; keeping original text', undefined, err);
-    return text;
-  }
+  return text.replace(/[ \t\f\v]+/g, ' ').replace(/ *\n */g, '\n').trim();
 }
 
 /**
@@ -304,28 +259,6 @@ export function scrubMessage(message: unknown): string {
 }
 
 /**
- * Core redaction pass for scrubStack, extracted so the try block in scrubStack
- * stays narrow. Any failure is guarded by scrubStack itself.
- */
-function redactStackText(stack: string): string {
-  // Cap raw input BEFORE splitting/redaction so neither the split nor any
-  // per-line redactText regex nor the defensive redactSecrets pass below can
-  // ever see more than MAX_RAW_INPUT_CHARS. Keeping only the top frames and
-  // the existing STACK_MAX_CHARS cap still apply to the final emitted size.
-  const capped = capRawInput(stack);
-  const lines = capped.split('\n');
-  // Keep header + top frames. STACK_MAX_FRAMES counts frame lines; the header
-  // line (lines[0]) is kept additionally when present.
-  const kept = lines.slice(0, STACK_MAX_FRAMES + 1);
-  const redacted = kept
-    .map(line => redactText(line).replace(/[ \t]+/g, ' ').trimEnd())
-    .join('\n')
-    .trim();
-  // Secrets can span the joined text; run one more secret pass defensively.
-  return redactSecrets(redacted);
-}
-
-/**
  * Redacts a stack trace: keeps only the top STACK_MAX_FRAMES lines, redacts
  * each (paths/secrets), then caps the whole thing at STACK_MAX_CHARS. The first
  * line of a JS stack is the "Name: message" header; we keep it and the frame
@@ -334,7 +267,20 @@ function redactStackText(stack: string): string {
 export function scrubStack(stack: unknown): string {
   try {
     if (typeof stack !== 'string' || stack.length === 0) return '';
-    const finalText = redactStackText(stack);
+    // Cap raw input BEFORE splitting/redaction so neither the split nor any
+    // per-line redactText regex nor the defensive redactSecrets pass below can
+    // ever see more than MAX_RAW_INPUT_CHARS. Keeping only the top frames and
+    // the existing STACK_MAX_CHARS cap still apply to the final emitted size.
+    const lines = capRawInput(stack).split('\n');
+    // Keep header + top frames. STACK_MAX_FRAMES counts frame lines; the header
+    // line (lines[0]) is kept additionally when present.
+    const redacted = lines
+      .slice(0, STACK_MAX_FRAMES + 1)
+      .map(line => redactText(line).replace(/[ \t]+/g, ' ').trimEnd())
+      .join('\n')
+      .trim();
+    // Secrets can span the joined text; run one more secret pass defensively.
+    const finalText = redactSecrets(redacted);
     return finalText.length > STACK_MAX_CHARS
       ? finalText.slice(0, STACK_MAX_CHARS)
       : finalText;
@@ -470,21 +416,7 @@ export function scrubError(err: unknown): ScrubbedError {
  * and remaining hex blobs with stable tokens. Pure / never throws.
  */
 export function messageTemplate(message: unknown): string {
-  try {
-    const base = typeof message === 'string' ? message : '';
-    return applyTemplateNormalization(base);
-  } catch (error) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    logger.warn('SYSTEM', 'error-scrub: message templating failed; emitting empty template', undefined, err);
-    return '';
-  }
-}
-
-/**
- * The replacement chain for messageTemplate, extracted so the try block in
- * messageTemplate stays narrow. Any failure is guarded by messageTemplate.
- */
-function applyTemplateNormalization(base: string): string {
+  const base = typeof message === 'string' ? message : '';
   return base
     .replace(/\[REDACTED\]/g, '§')
     .replace(/'[^']*'/g, "'§'")

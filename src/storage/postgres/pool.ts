@@ -34,17 +34,6 @@ export function getSharedPostgresPool(options: { requireDatabaseUrl?: boolean } 
   return sharedPool;
 }
 
-export async function checkPostgresHealth(pool: PostgresPool): Promise<boolean> {
-  try {
-    await pool.query('SELECT 1');
-    return true;
-  } catch (error) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    logger.warn('DB', 'Postgres health check failed', {}, err);
-    return false;
-  }
-}
-
 export async function withPostgresTransaction<T>(
   pool: PostgresPool,
   fn: (client: PostgresPoolClient) => Promise<T>

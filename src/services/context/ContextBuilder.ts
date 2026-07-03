@@ -11,9 +11,7 @@ import type { ContextInput, ContextConfig, Observation, SessionSummary } from '.
 import { loadContextConfig } from './ContextConfigLoader.js';
 import { calculateTokenEconomics } from './TokenCalculator.js';
 import {
-  queryObservations,
   queryObservationsMulti,
-  querySummaries,
   querySummariesMulti,
   getPriorSessionMessages,
   prepareSummariesForTimeline,
@@ -185,12 +183,9 @@ export async function generateContextWithStats(
     const platformSource = input?.platformSource
       ? normalizePlatformSource(input.platformSource)
       : undefined;
-    const observations = projects.length > 1
-      ? queryObservationsMulti(db, projects, config, platformSource)
-      : queryObservations(db, project, config, platformSource);
-    const summaries = projects.length > 1
-      ? querySummariesMulti(db, projects, config, platformSource)
-      : querySummaries(db, project, config, platformSource);
+    const queryProjects = projects.length > 1 ? projects : [project];
+    const observations = queryObservationsMulti(db, queryProjects, config, platformSource);
+    const summaries = querySummariesMulti(db, queryProjects, config, platformSource);
 
     if (observations.length === 0 && summaries.length === 0) {
       return { text: renderEmptyState(project, forHuman), stats: null };

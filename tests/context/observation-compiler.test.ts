@@ -3,9 +3,7 @@ import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import {
   buildTimeline,
   countObservationsByProjects,
-  queryObservations,
   queryObservationsMulti,
-  querySummaries,
   querySummariesMulti,
 } from '../../src/services/context/ObservationCompiler.js';
 import type { ContextConfig, Observation, SummaryTimelineItem } from '../../src/services/context/types.js';
@@ -234,11 +232,11 @@ describe('context compiler platform scoping', () => {
         createdAtEpoch: 1_700_000_001_000,
       });
 
-      const codexObservations = queryObservations(store, 'context-platform-project', config, 'codex');
+      const codexObservations = queryObservationsMulti(store, ['context-platform-project'], config, 'codex');
       expect(codexObservations.map(obs => obs.title)).toEqual(['CODEX_CONTEXT_OBS']);
       expect(codexObservations[0].platform_source).toBe('codex');
 
-      const codexSummaries = querySummaries(store, 'context-platform-project', config, 'codex');
+      const codexSummaries = querySummariesMulti(store, ['context-platform-project'], config, 'codex');
       expect(codexSummaries.map(summary => summary.request)).toEqual(['CODEX_CONTEXT_SUMMARY']);
       expect(codexSummaries[0].platform_source).toBe('codex');
 

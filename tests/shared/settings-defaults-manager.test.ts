@@ -346,16 +346,6 @@ describe('SettingsDefaultsManager', () => {
     });
   });
 
-  describe('getBool', () => {
-    it('should return true for "true" string', () => {
-      expect(SettingsDefaultsManager.getBool('CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT')).toBe(true);
-    });
-
-    it('should return false for non-"true" string', () => {
-      expect(SettingsDefaultsManager.getBool('CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE')).toBe(false);
-    });
-  });
-
   describe('environment variable overrides', () => {
     const originalEnv: Record<string, string | undefined> = {};
 

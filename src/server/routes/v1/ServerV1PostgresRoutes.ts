@@ -31,7 +31,6 @@ import { meterRequests } from '../../middleware/usage-metering.js';
 import { PostgresUsageRepository } from '../../../storage/postgres/usage.js';
 import { createHash, randomBytes } from 'node:crypto';
 import { PostgresServerSessionsRepository } from '../../../storage/postgres/server-sessions.js';
-import type { ServerSessionGenerationPolicy } from '../../runtime/SessionGenerationPolicy.js';
 import { IngestEventsService, type EnqueueOutcome } from '../../services/IngestEventsService.js';
 import { EndSessionService } from '../../services/EndSessionService.js';
 import { normalizePlatformSource, normalizePlatformSourceOrNull } from '../../../shared/platform-source.js';
@@ -57,7 +56,6 @@ export interface ServerV1PostgresRoutesOptions {
   pool: PostgresPool;
   queueManager: ServerQueueManager;
   authMode?: string;
-  runtime?: string;
   allowLocalDevBypass?: boolean;
   // Queue lookup is exposed as a function so tests can swap the queue manager.
   // When the manager is the disabled adapter, enqueue is silently skipped and
@@ -65,7 +63,6 @@ export interface ServerV1PostgresRoutesOptions {
   // pick up — never claim observations were generated.
   getEventQueue?: () => ReturnType<ActiveServerQueueManager['getQueue']> | null;
   getSummaryQueue?: () => ReturnType<ActiveServerQueueManager['getQueue']> | null;
-  sessionPolicy?: ServerSessionGenerationPolicy;
 }
 
 interface BatchPreValidationFailure {
@@ -123,14 +120,10 @@ export class ServerV1PostgresRoutes implements RouteHandler {
   private readonly endSession: EndSessionService;
 
   constructor(private readonly options: ServerV1PostgresRoutesOptions) {
-    const ingestOpts: ConstructorParameters<typeof IngestEventsService>[0] = {
+    this.ingestEvents = new IngestEventsService({
       pool: options.pool,
       resolveEventQueue: () => this.resolveQueue('event') as never,
-    };
-    if (options.sessionPolicy !== undefined) {
-      ingestOpts.sessionPolicy = options.sessionPolicy;
-    }
-    this.ingestEvents = new IngestEventsService(ingestOpts);
+    });
     this.endSession = new EndSessionService({
       pool: options.pool,
       resolveSummaryQueue: () => this.resolveQueue('summary') as never,
@@ -430,42 +423,14 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       if (!teamId) return;
       const id = this.routeParam(req.params.id);
       const eventsRepo = new PostgresAgentEventsRepository(this.options.pool);
-      // Look up the event by joining team scope. We need to resolve via list
-      // approach since getByIdForScope requires projectId. Instead, look up
-      // by scanning the teams' projects: do a direct tenant-scoped query.
-      const result = await this.options.pool.query(
-        `SELECT * FROM agent_events WHERE id = $1 AND team_id = $2`,
-        [id, teamId],
-      );
-      const row = result.rows[0] as undefined | {
-        id: string;
-        project_id: string;
-        team_id: string;
-        server_session_id: string | null;
-        source_adapter: string;
-        source_event_id: string | null;
-        idempotency_key: string;
-        event_type: string;
-        payload: unknown;
-        metadata: unknown;
-        occurred_at: Date;
-        received_at: Date;
-        created_at: Date;
-      };
-      if (!row) {
-        res.status(404).json({ error: 'NotFound', message: 'Event not found' });
-        return;
-      }
-      if (!this.ensureProjectAllowed(req, res, row.project_id)) return;
-      const fullEvent = await eventsRepo.getByIdForScope({
-        id: row.id,
-        projectId: row.project_id,
+      const fullEvent = await this.loadScopedById(req, res, {
+        id,
         teamId,
+        table: 'agent_events',
+        notFound: 'Event not found',
+        load: (projectId) => eventsRepo.getByIdForScope({ id, projectId, teamId }),
       });
-      if (!fullEvent) {
-        res.status(404).json({ error: 'NotFound', message: 'Event not found' });
-        return;
-      }
+      if (!fullEvent) return;
       res.json({ event: serializeEvent(fullEvent) });
     }));
 
@@ -505,7 +470,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         [eventRow.id, teamId, eventRow.project_id],
       );
 
-      await this.auditRead(req, 'observation.read', eventRow.id, eventRow.project_id, {
+      await this.auditWrite(req, 'observation.read', eventRow.id, eventRow.project_id, {
         mode: 'event_observations',
         eventId: eventRow.id,
         resultCount: obsResult.rows.length,
@@ -554,7 +519,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         this.handleDbError(err, res, 'team.jobs.list');
         return;
       }
-      await this.auditRead(req, 'observation.read', null, callerProjectId, {
+      await this.auditWrite(req, 'observation.read', null, callerProjectId, {
         mode: 'team_jobs',
         teamId: callerTeamId,
         projectId: callerProjectId,
@@ -618,7 +583,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         this.handleDbError(err, res, 'project.jobs.list');
         return;
       }
-      await this.auditRead(req, 'observation.read', null, projectId, {
+      await this.auditWrite(req, 'observation.read', null, projectId, {
         mode: 'project_jobs',
         teamId,
         projectId,
@@ -673,7 +638,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         this.handleDbError(err, res, 'jobs.list');
         return;
       }
-      await this.auditRead(req, 'observation.read', null, callerProjectId, {
+      await this.auditWrite(req, 'observation.read', null, callerProjectId, {
         mode: 'jobs_list',
         teamId,
         projectId: callerProjectId,
@@ -700,29 +665,16 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       const teamId = this.requireTeamId(req, res);
       if (!teamId) return;
       const id = this.routeParam(req.params.id);
-      // Scope-first lookup. We resolve project_id via the row itself, then
-      // re-validate against the api key's project scope. A row that does not
-      // match team_id is reported as 404 to avoid revealing existence across
-      // tenants.
-      const result = await this.options.pool.query(
-        `SELECT * FROM observation_generation_jobs WHERE id = $1 AND team_id = $2`,
-        [id, teamId],
-      );
-      const row = result.rows[0] as undefined | { project_id: string };
-      if (!row) {
-        res.status(404).json({ error: 'NotFound', message: 'Generation job not found' });
-        return;
-      }
-      if (req.authContext?.projectId && req.authContext.projectId !== row.project_id) {
-        res.status(404).json({ error: 'NotFound', message: 'Generation job not found' });
-        return;
-      }
       const repo = new PostgresObservationGenerationJobRepository(this.options.pool);
-      const job = await repo.getByIdForScope({ id, projectId: row.project_id, teamId });
-      if (!job) {
-        res.status(404).json({ error: 'NotFound', message: 'Generation job not found' });
-        return;
-      }
+      const job = await this.loadScopedById(req, res, {
+        id,
+        teamId,
+        table: 'observation_generation_jobs',
+        notFound: 'Generation job not found',
+        scopeMismatch: 'not-found',
+        load: (projectId) => repo.getByIdForScope({ id, projectId, teamId }),
+      });
+      if (!job) return;
       res.json({ generationJob: serializeGenerationJobStatus(job) });
     }));
 
@@ -847,22 +799,15 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       const teamId = this.requireTeamId(req, res);
       if (!teamId) return;
       const id = this.routeParam(req.params.id);
-      const result = await this.options.pool.query(
-        `SELECT id, project_id FROM server_sessions WHERE id = $1 AND team_id = $2`,
-        [id, teamId],
-      );
-      const row = result.rows[0] as undefined | { id: string; project_id: string };
-      if (!row) {
-        res.status(404).json({ error: 'NotFound', message: 'Session not found' });
-        return;
-      }
-      if (!this.ensureProjectAllowed(req, res, row.project_id)) return;
       const repo = new PostgresServerSessionsRepository(this.options.pool);
-      const session = await repo.getByIdForScope({ id, projectId: row.project_id, teamId });
-      if (!session) {
-        res.status(404).json({ error: 'NotFound', message: 'Session not found' });
-        return;
-      }
+      const session = await this.loadScopedById(req, res, {
+        id,
+        teamId,
+        table: 'server_sessions',
+        notFound: 'Session not found',
+        load: (projectId) => repo.getByIdForScope({ id, projectId, teamId }),
+      });
+      if (!session) return;
       res.json({ session: serializeSession(session) });
     }));
 
@@ -875,23 +820,21 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       const teamId = this.requireTeamId(req, res);
       if (!teamId) return;
       const id = this.routeParam(req.params.id);
-      const result = await this.options.pool.query(
-        `SELECT id, project_id FROM server_sessions WHERE id = $1 AND team_id = $2`,
-        [id, teamId],
-      );
-      const row = result.rows[0] as undefined | { id: string; project_id: string };
-      if (!row) {
-        res.status(404).json({ error: 'NotFound', message: 'Session not found' });
-        return;
-      }
-      if (!this.ensureProjectAllowed(req, res, row.project_id)) return;
+      const projectId = await this.loadScopedById(req, res, {
+        id,
+        teamId,
+        table: 'server_sessions',
+        notFound: 'Session not found',
+        load: async (rowProjectId) => rowProjectId,
+      });
+      if (!projectId) return;
 
       let endedSession: Awaited<ReturnType<PostgresServerSessionsRepository['endSession']>> = null;
       let summaryOutbox: PostgresObservationGenerationJob | null = null;
       let enqueueState: EnqueueOutcome = 'skipped';
       const endInput = {
         sessionId: id,
-        projectId: row.project_id,
+        projectId,
         teamId,
         source: 'http_post_v1_sessions_end',
         apiKeyId: req.authContext?.apiKeyId ?? null,
@@ -992,7 +935,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
           this.handleDbError(err, res, 'observation.search');
           return;
         }
-        await this.auditRead(req, 'observation.read', null, body.projectId, {
+        await this.auditWrite(req, 'observation.read', null, body.projectId, {
           mode: 'search',
           query: body.query,
           limit: body.limit ?? 20,
@@ -1042,7 +985,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
           .map(observation => observation.content)
           .filter(text => typeof text === 'string' && text.length > 0)
           .join('\n\n');
-        await this.auditRead(req, 'observation.read', null, body.projectId, {
+        await this.auditWrite(req, 'observation.read', null, body.projectId, {
           mode: 'context',
           query: body.query,
           limit: body.limit ?? 10,
@@ -1079,7 +1022,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
           assertProjectAllowed(projectId);
           const rows = await repo.search({ projectId, teamId, query, limit });
           // Audit the read, same as POST /v1/search — the MCP path is no exception.
-          await this.auditRead(req, 'observation.read', null, projectId, {
+          await this.auditWrite(req, 'observation.read', null, projectId, {
             mode: 'search', via: 'mcp', query, limit,
             resultCount: rows.length, observationIds: rows.map(o => o.id),
           });
@@ -1088,7 +1031,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         context: async ({ projectId, query, limit }) => {
           assertProjectAllowed(projectId);
           const rows = await repo.search({ projectId, teamId, query, limit });
-          await this.auditRead(req, 'observation.read', null, projectId, {
+          await this.auditWrite(req, 'observation.read', null, projectId, {
             mode: 'context', via: 'mcp', query, limit,
             resultCount: rows.length, observationIds: rows.map(o => o.id),
           });
@@ -1097,7 +1040,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         recent: async ({ projectId, limit }) => {
           assertProjectAllowed(projectId);
           const rows = await repo.listByProject({ projectId, teamId, limit });
-          await this.auditRead(req, 'observation.read', null, projectId, {
+          await this.auditWrite(req, 'observation.read', null, projectId, {
             mode: 'recent', via: 'mcp', limit,
             resultCount: rows.length, observationIds: rows.map(o => o.id),
           });
@@ -1168,16 +1111,6 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         this.handleDbError(err, res, 'project.purge');
       }
     }));
-  }
-
-  private async auditRead(
-    req: Request,
-    action: string,
-    targetId: string | null,
-    projectId: string | null,
-    details?: Record<string, unknown>,
-  ): Promise<void> {
-    return this.auditWrite(req, action, targetId, projectId, details);
   }
 
   // Phase 11 — resolve actor identity for audit. We look up the api_keys row
@@ -1311,6 +1244,48 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       return false;
     }
     return true;
+  }
+
+  // Shared scoped-id lookup for the /:id routes. Resolves the row's project
+  // via a team-scoped probe (404 cross-tenant to avoid revealing existence),
+  // enforces the api key's project scope, then loads the full row. Routes
+  // that must not disclose sibling-project existence pass
+  // scopeMismatch: 'not-found' to answer 404 instead of 403.
+  private async loadScopedById<T>(
+    req: Request,
+    res: Response,
+    input: {
+      id: string;
+      teamId: string;
+      table: 'agent_events' | 'server_sessions' | 'observation_generation_jobs';
+      notFound: string;
+      scopeMismatch?: 'not-found';
+      load: (projectId: string) => Promise<T | null>;
+    },
+  ): Promise<T | null> {
+    const probe = await this.options.pool.query(
+      `SELECT project_id FROM ${input.table} WHERE id = $1 AND team_id = $2`,
+      [input.id, input.teamId],
+    );
+    const row = probe.rows[0] as undefined | { project_id: string };
+    if (!row) {
+      res.status(404).json({ error: 'NotFound', message: input.notFound });
+      return null;
+    }
+    if (input.scopeMismatch === 'not-found') {
+      if (req.authContext?.projectId && req.authContext.projectId !== row.project_id) {
+        res.status(404).json({ error: 'NotFound', message: input.notFound });
+        return null;
+      }
+    } else if (!this.ensureProjectAllowed(req, res, row.project_id)) {
+      return null;
+    }
+    const loaded = await input.load(row.project_id);
+    if (!loaded) {
+      res.status(404).json({ error: 'NotFound', message: input.notFound });
+      return null;
+    }
+    return loaded;
   }
 
   // Scoped single-observation delete for DELETE /v1/memories/:id.
@@ -1460,26 +1435,16 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       return null;
     }
     // Scope check first — same NotFound disclosure as the rest of the routes.
-    const lookup = await this.options.pool.query(
-      `SELECT * FROM observation_generation_jobs WHERE id = $1 AND team_id = $2`,
-      [id, teamId],
-    );
-    const row = lookup.rows[0] as undefined | { project_id: string };
-    if (!row) {
-      res.status(404).json({ error: 'NotFound', message: 'Generation job not found' });
-      return null;
-    }
-    if (req.authContext?.projectId && req.authContext.projectId !== row.project_id) {
-      res.status(404).json({ error: 'NotFound', message: 'Generation job not found' });
-      return null;
-    }
-
     const repo = new PostgresObservationGenerationJobRepository(this.options.pool);
-    const current = await repo.getByIdForScope({ id, projectId: row.project_id, teamId });
-    if (!current) {
-      res.status(404).json({ error: 'NotFound', message: 'Generation job not found' });
-      return null;
-    }
+    const current = await this.loadScopedById(req, res, {
+      id,
+      teamId,
+      table: 'observation_generation_jobs',
+      notFound: 'Generation job not found',
+      scopeMismatch: 'not-found',
+      load: (projectId) => repo.getByIdForScope({ id, projectId, teamId }),
+    });
+    if (!current) return null;
 
     // Idempotent fast-path: already queued -> emit audit only, no DB writes.
     if (current.status === 'queued') {
@@ -1562,7 +1527,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         WHERE id = $1 AND project_id = $2 AND team_id = $3
         RETURNING *
       `,
-      [id, row.project_id, teamId, JSON.stringify(newPayload)],
+      [id, current.projectId, teamId, JSON.stringify(newPayload)],
     );
     const updatedRow = updated.rows[0];
     if (!updatedRow) {
@@ -1574,7 +1539,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     const eventsRepo = new PostgresObservationGenerationJobEventsRepository(this.options.pool);
     await eventsRepo.append({
       generationJobId: id,
-      projectId: row.project_id,
+      projectId: current.projectId,
       teamId,
       eventType: 'queued',
       statusAfter: 'queued',
@@ -1607,7 +1572,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       }
     }
 
-    const refreshed = await repo.getByIdForScope({ id, projectId: row.project_id, teamId });
+    const refreshed = await repo.getByIdForScope({ id, projectId: current.projectId, teamId });
     if (!refreshed) {
       res.status(404).json({ error: 'NotFound', message: 'Generation job not found' });
       return null;
@@ -1638,25 +1603,16 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       res.status(400).json({ error: 'ValidationError', message: 'job id required' });
       return null;
     }
-    const lookup = await this.options.pool.query(
-      `SELECT * FROM observation_generation_jobs WHERE id = $1 AND team_id = $2`,
-      [id, teamId],
-    );
-    const row = lookup.rows[0] as undefined | { project_id: string };
-    if (!row) {
-      res.status(404).json({ error: 'NotFound', message: 'Generation job not found' });
-      return null;
-    }
-    if (req.authContext?.projectId && req.authContext.projectId !== row.project_id) {
-      res.status(404).json({ error: 'NotFound', message: 'Generation job not found' });
-      return null;
-    }
     const repo = new PostgresObservationGenerationJobRepository(this.options.pool);
-    const current = await repo.getByIdForScope({ id, projectId: row.project_id, teamId });
-    if (!current) {
-      res.status(404).json({ error: 'NotFound', message: 'Generation job not found' });
-      return null;
-    }
+    const current = await this.loadScopedById(req, res, {
+      id,
+      teamId,
+      table: 'observation_generation_jobs',
+      notFound: 'Generation job not found',
+      scopeMismatch: 'not-found',
+      load: (projectId) => repo.getByIdForScope({ id, projectId, teamId }),
+    });
+    if (!current) return null;
     if (current.status === 'cancelled') {
       await this.auditWrite(req, 'generation_job.cancelled_by_operator', current.id, current.projectId, {
         outcome: 'noop_already_cancelled',
@@ -1681,7 +1637,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         WHERE id = $1 AND project_id = $2 AND team_id = $3
         RETURNING *
       `,
-      [id, row.project_id, teamId],
+      [id, current.projectId, teamId],
     );
     const updatedRow = updateResult.rows[0];
     if (!updatedRow) {
@@ -1692,7 +1648,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     const eventsRepo = new PostgresObservationGenerationJobEventsRepository(this.options.pool);
     await eventsRepo.append({
       generationJobId: id,
-      projectId: row.project_id,
+      projectId: current.projectId,
       teamId,
       eventType: 'cancelled',
       statusAfter: 'cancelled',
@@ -1716,7 +1672,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       }
     }
 
-    const refreshed = await repo.getByIdForScope({ id, projectId: row.project_id, teamId });
+    const refreshed = await repo.getByIdForScope({ id, projectId: current.projectId, teamId });
     if (!refreshed) {
       res.status(404).json({ error: 'NotFound', message: 'Generation job not found' });
       return null;

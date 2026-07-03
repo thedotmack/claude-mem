@@ -813,9 +813,6 @@ export async function createCmemClient(options: CmemClientOptions): Promise<Cmem
     await chromaSync.ensureCollectionExists();
   } catch (err) {
     // Clean up everything the SDK owns before rejecting.
-    await chromaSync.close().catch(closeErr => {
-      logger.warn('SDK', 'ChromaSync cleanup failed while unwinding Chroma bootstrap error', {}, closeErr as Error);
-    });
     if (ownsPool) {
       await closePostgresPool(pool).catch(closeErr => {
         logger.warn('SDK', 'Postgres pool cleanup failed while unwinding Chroma bootstrap error', {}, closeErr as Error);
@@ -1290,9 +1287,6 @@ export async function createCmemClient(options: CmemClientOptions): Promise<Cmem
         return;
       }
       closed = true;
-      await chromaSync.close().catch(closeErr => {
-        logger.warn('SDK', 'ChromaSync shutdown failed during client close()', {}, closeErr as Error);
-      });
       if (ownsPool) {
         await closePostgresPool(pool).catch(closeErr => {
           logger.warn('SDK', 'Postgres pool shutdown failed during client close()', {}, closeErr as Error);

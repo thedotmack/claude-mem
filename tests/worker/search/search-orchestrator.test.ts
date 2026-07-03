@@ -49,7 +49,7 @@ describe('SearchOrchestrator platform-scoped Chroma zero fallback', () => {
     expect(queryChroma).toHaveBeenCalledWith(
       'legacy docs',
       100,
-      { $and: [{ doc_type: 'observation' }, { project: 'orchestrator-project' }, { platform_source: 'cursor' }] },
+      { $and: [{ doc_type: 'observation' }, { $or: [{ project: 'orchestrator-project' }, { merged_into_project: 'orchestrator-project' }] }, { platform_source: 'cursor' }] },
     );
     expect(searchObservations).toHaveBeenCalledWith('legacy docs', expect.objectContaining({
       project: 'orchestrator-project',

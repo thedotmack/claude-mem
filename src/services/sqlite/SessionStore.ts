@@ -13,7 +13,6 @@ import {
 } from '../../types/database.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from './types.js';
 import { computeObservationContentHash } from './observations/store.js';
-import { parseFileList } from './observations/files.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources } from '../../shared/platform-source.js';
 import { findRecentDuplicateUserPrompt as findRecentDuplicateUserPromptRecord } from './prompts/get.js';
 import { normalizeStoredPromptText } from './prompt-storage.js';
@@ -24,14 +23,44 @@ interface IndexColumnInfo {
   name: string;
 }
 
-function resolveCreateSessionArgs(
-  customTitle?: string,
-  platformSource?: string
-): { customTitle?: string; platformSource?: string } {
-  return {
-    customTitle,
-    platformSource: platformSource ? normalizePlatformSource(platformSource) : undefined
-  };
+interface RecentSessionStatusRow {
+  memory_session_id: string | null;
+  status: string;
+  started_at: string;
+  user_prompt: string | null;
+  has_summary: boolean;
+}
+
+interface SessionObservationRow {
+  title: string;
+  subtitle: string;
+  type: string;
+  prompt_number: number | null;
+}
+
+interface SummaryDetailRow {
+  request: string | null;
+  investigated: string | null;
+  learned: string | null;
+  completed: string | null;
+  next_steps: string | null;
+  files_read: string | null;
+  files_edited: string | null;
+  notes: string | null;
+  prompt_number: number | null;
+  created_at: string;
+  created_at_epoch: number;
+}
+
+interface SdkSessionDetailRow {
+  id: number;
+  content_session_id: string;
+  memory_session_id: string | null;
+  project: string;
+  platform_source: string;
+  user_prompt: string;
+  custom_title: string | null;
+  status: string;
 }
 
 export class SessionStore {
@@ -63,7 +92,6 @@ export class SessionStore {
     this.ensureDiscoveryTokensColumn();
     this.createPendingMessagesTable();
     this.renameSessionIdColumns();
-    this.repairSessionIdColumnRename();
     this.addFailedAtEpochColumn();
     this.addOnUpdateCascadeToForeignKeys();
     this.addObservationContentHashColumn();
@@ -908,13 +936,6 @@ export class SessionStore {
     }
   }
 
-  private repairSessionIdColumnRename(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(19) as SchemaVersion | undefined;
-    if (applied) return;
-
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(19, new Date().toISOString());
-  }
-
   private addFailedAtEpochColumn(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(20) as SchemaVersion | undefined;
     if (applied) return;
@@ -1417,232 +1438,6 @@ export class SessionStore {
     }
   }
 
-  getRecentSummaries(project: string, limit: number = 10): Array<{
-    request: string | null;
-    investigated: string | null;
-    learned: string | null;
-    completed: string | null;
-    next_steps: string | null;
-    files_read: string | null;
-    files_edited: string | null;
-    notes: string | null;
-    prompt_number: number | null;
-    created_at: string;
-  }> {
-    const stmt = this.db.prepare(`
-      SELECT
-        request, investigated, learned, completed, next_steps,
-        files_read, files_edited, notes, prompt_number, created_at
-      FROM session_summaries
-      WHERE project = ?
-      ORDER BY created_at_epoch DESC
-      LIMIT ?
-    `);
-
-    return stmt.all(project, limit) as Array<{
-      request: string | null;
-      investigated: string | null;
-      learned: string | null;
-      completed: string | null;
-      next_steps: string | null;
-      files_read: string | null;
-      files_edited: string | null;
-      notes: string | null;
-      prompt_number: number | null;
-      created_at: string;
-    }>;
-  }
-
-  getRecentSummariesWithSessionInfo(project: string, limit: number = 3): Array<{
-    memory_session_id: string;
-    request: string | null;
-    learned: string | null;
-    completed: string | null;
-    next_steps: string | null;
-    prompt_number: number | null;
-    created_at: string;
-  }> {
-    const stmt = this.db.prepare(`
-      SELECT
-        memory_session_id, request, learned, completed, next_steps,
-        prompt_number, created_at
-      FROM session_summaries
-      WHERE project = ?
-      ORDER BY created_at_epoch DESC
-      LIMIT ?
-    `);
-
-    return stmt.all(project, limit) as Array<{
-      memory_session_id: string;
-      request: string | null;
-      learned: string | null;
-      completed: string | null;
-      next_steps: string | null;
-      prompt_number: number | null;
-      created_at: string;
-    }>;
-  }
-
-  getRecentObservations(project: string, limit: number = 20): Array<{
-    type: string;
-    text: string;
-    prompt_number: number | null;
-    created_at: string;
-  }> {
-    const stmt = this.db.prepare(`
-      SELECT type, text, prompt_number, created_at
-      FROM observations
-      WHERE project = ?
-      ORDER BY created_at_epoch DESC
-      LIMIT ?
-    `);
-
-    return stmt.all(project, limit) as Array<{
-      type: string;
-      text: string;
-      prompt_number: number | null;
-      created_at: string;
-    }>;
-  }
-
-  getAllRecentObservations(limit: number = 100): Array<{
-    id: number;
-    type: string;
-    title: string | null;
-    subtitle: string | null;
-    text: string;
-    project: string;
-    platform_source: string;
-    prompt_number: number | null;
-    created_at: string;
-    created_at_epoch: number;
-  }> {
-    const stmt = this.db.prepare(`
-      SELECT
-        o.id,
-        o.type,
-        o.title,
-        o.subtitle,
-        o.text,
-        o.project,
-        COALESCE(s.platform_source, '${DEFAULT_PLATFORM_SOURCE}') as platform_source,
-        o.prompt_number,
-        o.created_at,
-        o.created_at_epoch
-      FROM observations o
-      LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
-      ORDER BY o.created_at_epoch DESC
-      LIMIT ?
-    `);
-
-    return stmt.all(limit) as Array<{
-      id: number;
-      type: string;
-      title: string | null;
-      subtitle: string | null;
-      text: string;
-      project: string;
-      platform_source: string;
-      prompt_number: number | null;
-      created_at: string;
-      created_at_epoch: number;
-    }>;
-  }
-
-  getAllRecentSummaries(limit: number = 50): Array<{
-    id: number;
-    request: string | null;
-    investigated: string | null;
-    learned: string | null;
-    completed: string | null;
-    next_steps: string | null;
-    files_read: string | null;
-    files_edited: string | null;
-    notes: string | null;
-    project: string;
-    platform_source: string;
-    prompt_number: number | null;
-    created_at: string;
-    created_at_epoch: number;
-  }> {
-    const stmt = this.db.prepare(`
-      SELECT
-        ss.id,
-        ss.request,
-        ss.investigated,
-        ss.learned,
-        ss.completed,
-        ss.next_steps,
-        ss.files_read,
-        ss.files_edited,
-        ss.notes,
-        ss.project,
-        COALESCE(s.platform_source, '${DEFAULT_PLATFORM_SOURCE}') as platform_source,
-        ss.prompt_number,
-        ss.created_at,
-        ss.created_at_epoch
-      FROM session_summaries ss
-      LEFT JOIN sdk_sessions s ON ss.memory_session_id = s.memory_session_id
-      ORDER BY ss.created_at_epoch DESC
-      LIMIT ?
-    `);
-
-    return stmt.all(limit) as Array<{
-      id: number;
-      request: string | null;
-      investigated: string | null;
-      learned: string | null;
-      completed: string | null;
-      next_steps: string | null;
-      files_read: string | null;
-      files_edited: string | null;
-      notes: string | null;
-      project: string;
-      platform_source: string;
-      prompt_number: number | null;
-      created_at: string;
-      created_at_epoch: number;
-    }>;
-  }
-
-  getAllRecentUserPrompts(limit: number = 100): Array<{
-    id: number;
-    content_session_id: string;
-    project: string;
-    platform_source: string;
-    prompt_number: number;
-    prompt_text: string;
-    created_at: string;
-    created_at_epoch: number;
-  }> {
-    const stmt = this.db.prepare(`
-      SELECT
-        up.id,
-        up.content_session_id,
-        s.project,
-        COALESCE(s.platform_source, '${DEFAULT_PLATFORM_SOURCE}') as platform_source,
-        up.prompt_number,
-        up.prompt_text,
-        up.created_at,
-        up.created_at_epoch
-      FROM user_prompts up
-      LEFT JOIN sdk_sessions s ON up.session_db_id = s.id
-      ORDER BY up.created_at_epoch DESC
-      LIMIT ?
-    `);
-
-    return stmt.all(limit) as Array<{
-      id: number;
-      content_session_id: string;
-      project: string;
-      platform_source: string;
-      prompt_number: number;
-      prompt_text: string;
-      created_at: string;
-      created_at_epoch: number;
-    }>;
-  }
-
   getAllProjects(platformSource?: string): string[] {
     const normalizedPlatformSource = platformSource ? normalizePlatformSource(platformSource) : undefined;
     let query = `
@@ -1713,16 +1508,7 @@ export class SessionStore {
     };
   }
 
-  getLatestUserPrompt(contentSessionId: string, sessionDbId?: number): {
-    id: number;
-    content_session_id: string;
-    memory_session_id: string;
-    project: string;
-    platform_source: string;
-    prompt_number: number;
-    prompt_text: string;
-    created_at_epoch: number;
-  } | undefined {
+  getLatestUserPrompt(contentSessionId: string, sessionDbId?: number): LatestPromptResult | undefined {
     const resolvedSessionDbId = this.resolvePromptSessionDbId(contentSessionId, sessionDbId);
     const whereClause = resolvedSessionDbId !== null ? 'up.session_db_id = ?' : 'up.content_session_id = ?';
     const param = resolvedSessionDbId !== null ? resolvedSessionDbId : contentSessionId;
@@ -1757,13 +1543,7 @@ export class SessionStore {
     );
   }
 
-  getRecentSessionsWithStatus(project: string, limit: number = 3, platformSource?: string): Array<{
-    memory_session_id: string | null;
-    status: string;
-    started_at: string;
-    user_prompt: string | null;
-    has_summary: boolean;
-  }> {
+  getRecentSessionsWithStatus(project: string, limit: number = 3, platformSource?: string): RecentSessionStatusRow[] {
     const params: any[] = [project];
     let platformClause = '';
     if (platformSource) {
@@ -1792,21 +1572,10 @@ export class SessionStore {
       ORDER BY started_at_epoch ASC
     `);
 
-    return stmt.all(...params) as Array<{
-      memory_session_id: string | null;
-      status: string;
-      started_at: string;
-      user_prompt: string | null;
-      has_summary: boolean;
-    }>;
+    return stmt.all(...params) as RecentSessionStatusRow[];
   }
 
-  getObservationsForSession(memorySessionId: string, platformSource?: string): Array<{
-    title: string;
-    subtitle: string;
-    type: string;
-    prompt_number: number | null;
-  }> {
+  getObservationsForSession(memorySessionId: string, platformSource?: string): SessionObservationRow[] {
     const params: any[] = [memorySessionId];
     let platformClause = '';
     if (platformSource) {
@@ -1829,12 +1598,7 @@ export class SessionStore {
       ORDER BY created_at_epoch ASC
     `);
 
-    return stmt.all(...params) as Array<{
-      title: string;
-      subtitle: string;
-      type: string;
-      prompt_number: number | null;
-    }>;
+    return stmt.all(...params) as SessionObservationRow[];
   }
 
   getObservationById(id: number, platformSource?: string): ObservationRecord | null {
@@ -1936,19 +1700,7 @@ export class SessionStore {
     return limit ? ordered.slice(0, limit) : ordered;
   }
 
-  getSummaryForSession(memorySessionId: string, platformSource?: string): {
-    request: string | null;
-    investigated: string | null;
-    learned: string | null;
-    completed: string | null;
-    next_steps: string | null;
-    files_read: string | null;
-    files_edited: string | null;
-    notes: string | null;
-    prompt_number: number | null;
-    created_at: string;
-    created_at_epoch: number;
-  } | null {
+  getSummaryForSession(memorySessionId: string, platformSource?: string): SummaryDetailRow | null {
     const params: any[] = [memorySessionId];
     let platformClause = '';
     if (platformSource) {
@@ -1975,61 +1727,10 @@ export class SessionStore {
       LIMIT 1
     `);
 
-    return (stmt.get(...params) as {
-      request: string | null;
-      investigated: string | null;
-      learned: string | null;
-      completed: string | null;
-      next_steps: string | null;
-      files_read: string | null;
-      files_edited: string | null;
-      notes: string | null;
-      prompt_number: number | null;
-      created_at: string;
-      created_at_epoch: number;
-    } | null) || null;
+    return (stmt.get(...params) as SummaryDetailRow | null) || null;
   }
 
-  getFilesForSession(memorySessionId: string): {
-    filesRead: string[];
-    filesModified: string[];
-  } {
-    const stmt = this.db.prepare(`
-      SELECT files_read, files_modified
-      FROM observations
-      WHERE memory_session_id = ?
-    `);
-
-    const rows = stmt.all(memorySessionId) as Array<{
-      files_read: string | null;
-      files_modified: string | null;
-    }>;
-
-    const filesReadSet = new Set<string>();
-    const filesModifiedSet = new Set<string>();
-
-    for (const row of rows) {
-      parseFileList(row.files_read).forEach(f => filesReadSet.add(f));
-
-      parseFileList(row.files_modified).forEach(f => filesModifiedSet.add(f));
-    }
-
-    return {
-      filesRead: Array.from(filesReadSet),
-      filesModified: Array.from(filesModifiedSet)
-    };
-  }
-
-  getSessionById(id: number): {
-    id: number;
-    content_session_id: string;
-    memory_session_id: string | null;
-    project: string;
-    platform_source: string;
-    user_prompt: string;
-    custom_title: string | null;
-    status: string;
-  } | null {
+  getSessionById(id: number): SdkSessionDetailRow | null {
     const stmt = this.db.prepare(`
       SELECT id, content_session_id, memory_session_id, project,
              COALESCE(platform_source, '${DEFAULT_PLATFORM_SOURCE}') as platform_source,
@@ -2039,16 +1740,7 @@ export class SessionStore {
       LIMIT 1
     `);
 
-    return (stmt.get(id) as {
-      id: number;
-      content_session_id: string;
-      memory_session_id: string | null;
-      project: string;
-      platform_source: string;
-      user_prompt: string;
-      custom_title: string | null;
-      status: string;
-    } | null) || null;
+    return (stmt.get(id) as SdkSessionDetailRow | null) || null;
   }
 
   getSdkSessionsBySessionIds(memorySessionIds: string[]): {
@@ -2105,8 +1797,7 @@ export class SessionStore {
   ): number {
     const now = new Date();
     const nowEpoch = now.getTime();
-    const resolved = resolveCreateSessionArgs(customTitle, platformSource);
-    const normalizedPlatformSource = resolved.platformSource ?? DEFAULT_PLATFORM_SOURCE;
+    const normalizedPlatformSource = platformSource ? normalizePlatformSource(platformSource) : DEFAULT_PLATFORM_SOURCE;
     const storedUserPrompt = normalizeStoredPromptText(userPrompt);
 
     const existing = this.db.prepare(`
@@ -2123,11 +1814,11 @@ export class SessionStore {
           WHERE id = ? AND (project IS NULL OR project = '')
         `).run(project, existing.id);
       }
-      if (resolved.customTitle) {
+      if (customTitle) {
         this.db.prepare(`
           UPDATE sdk_sessions SET custom_title = ?
           WHERE id = ? AND custom_title IS NULL
-        `).run(resolved.customTitle, existing.id);
+        `).run(customTitle, existing.id);
       }
       return existing.id;
     }
@@ -2136,7 +1827,7 @@ export class SessionStore {
       INSERT INTO sdk_sessions
       (content_session_id, memory_session_id, project, platform_source, user_prompt, custom_title, started_at, started_at_epoch, status)
       VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'active')
-    `).run(contentSessionId, project, normalizedPlatformSource, storedUserPrompt, resolved.customTitle || null, now.toISOString(), nowEpoch);
+    `).run(contentSessionId, project, normalizedPlatformSource, storedUserPrompt, customTitle || null, now.toISOString(), nowEpoch);
 
     return Number(result.lastInsertRowid);
   }
@@ -2201,57 +1892,18 @@ export class SessionStore {
     overrideTimestampEpoch?: number,
     generatedByModel?: string
   ): { id: number; createdAtEpoch: number } {
-    const timestampEpoch = overrideTimestampEpoch ?? Date.now();
-    const timestampIso = new Date(timestampEpoch).toISOString();
-
-    const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
-
-    const stmt = this.db.prepare(`
-      INSERT INTO observations
-      (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-       files_read, files_modified, prompt_number, discovery_tokens, agent_type, agent_id, content_hash, created_at, created_at_epoch,
-       generated_by_model, metadata)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(memory_session_id, content_hash) DO NOTHING
-      RETURNING id, created_at_epoch
-    `);
-
-    const inserted = stmt.get(
+    const result = this.storeObservations(
       memorySessionId,
       project,
-      observation.type,
-      observation.title,
-      observation.subtitle,
-      JSON.stringify(observation.facts),
-      observation.narrative,
-      JSON.stringify(observation.concepts),
-      JSON.stringify(observation.files_read),
-      JSON.stringify(observation.files_modified),
-      promptNumber || null,
+      [observation],
+      null,
+      promptNumber,
       discoveryTokens,
-      observation.agent_type ?? null,
-      observation.agent_id ?? null,
-      contentHash,
-      timestampIso,
-      timestampEpoch,
-      generatedByModel || null,
-      observation.metadata ?? null
-    ) as { id: number; created_at_epoch: number } | null;
+      overrideTimestampEpoch,
+      generatedByModel
+    );
 
-    if (inserted) {
-      return { id: inserted.id, createdAtEpoch: inserted.created_at_epoch };
-    }
-
-    const existing = this.db.prepare(
-      'SELECT id, created_at_epoch FROM observations WHERE memory_session_id = ? AND content_hash = ?'
-    ).get(memorySessionId, contentHash) as { id: number; created_at_epoch: number } | null;
-
-    if (!existing) {
-      throw new Error(
-        `storeObservation: ON CONFLICT without existing row for content_hash=${contentHash}`
-      );
-    }
-    return { id: existing.id, createdAtEpoch: existing.created_at_epoch };
+    return { id: result.observationIds[0], createdAtEpoch: result.createdAtEpoch };
   }
 
   storeSummary(
@@ -2314,6 +1966,7 @@ export class SessionStore {
       files_modified: string[];
       agent_type?: string | null;
       agent_id?: string | null;
+      metadata?: string | null;
     }>,
     summary: {
       request: string;
@@ -2338,8 +1991,8 @@ export class SessionStore {
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
          files_read, files_modified, prompt_number, discovery_tokens, agent_type, agent_id, content_hash, created_at, created_at_epoch,
-         generated_by_model)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         generated_by_model, metadata)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(memory_session_id, content_hash) DO NOTHING
         RETURNING id
       `);
@@ -2367,7 +2020,8 @@ export class SessionStore {
           contentHash,
           timestampIso,
           timestampEpoch,
-          generatedByModel || null
+          generatedByModel || null,
+          observation.metadata ?? null
         ) as { id: number } | null;
 
         if (inserted) {
@@ -2687,79 +2341,6 @@ export class SessionStore {
         created_at_epoch: p.created_at_epoch
       }))
     };
-  }
-
-  getPromptById(id: number): {
-    id: number;
-    content_session_id: string;
-    prompt_number: number;
-    prompt_text: string;
-    project: string;
-    created_at: string;
-    created_at_epoch: number;
-  } | null {
-    const stmt = this.db.prepare(`
-      SELECT
-        p.id,
-        p.content_session_id,
-        p.prompt_number,
-        p.prompt_text,
-        s.project,
-        p.created_at,
-        p.created_at_epoch
-	      FROM user_prompts p
-	      LEFT JOIN sdk_sessions s ON p.session_db_id = s.id
-	      WHERE p.id = ?
-      LIMIT 1
-    `);
-
-    return (stmt.get(id) as {
-      id: number;
-      content_session_id: string;
-      prompt_number: number;
-      prompt_text: string;
-      project: string;
-      created_at: string;
-      created_at_epoch: number;
-    } | null) || null;
-  }
-
-  getPromptsByIds(ids: number[]): Array<{
-    id: number;
-    content_session_id: string;
-    prompt_number: number;
-    prompt_text: string;
-    project: string;
-    created_at: string;
-    created_at_epoch: number;
-  }> {
-    if (ids.length === 0) return [];
-
-    const placeholders = ids.map(() => '?').join(',');
-    const stmt = this.db.prepare(`
-      SELECT
-        p.id,
-        p.content_session_id,
-        p.prompt_number,
-        p.prompt_text,
-        s.project,
-        p.created_at,
-        p.created_at_epoch
-	      FROM user_prompts p
-	      LEFT JOIN sdk_sessions s ON p.session_db_id = s.id
-	      WHERE p.id IN (${placeholders})
-      ORDER BY p.created_at_epoch DESC
-    `);
-
-    return stmt.all(...ids) as Array<{
-      id: number;
-      content_session_id: string;
-      prompt_number: number;
-      prompt_text: string;
-      project: string;
-      created_at: string;
-      created_at_epoch: number;
-    }>;
   }
 
   getOrCreateManualSession(project: string): string {

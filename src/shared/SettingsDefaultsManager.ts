@@ -184,11 +184,6 @@ export class SettingsDefaultsManager {
     return parseInt(value, 10);
   }
 
-  static getBool(key: keyof SettingsDefaults): boolean {
-    const value: unknown = this.get(key);
-    return value === 'true' || value === true;
-  }
-
   private static applyEnvOverrides(settings: SettingsDefaults): SettingsDefaults {
     const result = { ...settings };
     for (const key of Object.keys(this.DEFAULTS) as Array<keyof SettingsDefaults>) {

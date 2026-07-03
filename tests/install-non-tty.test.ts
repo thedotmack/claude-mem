@@ -96,7 +96,7 @@ describe('Install Non-TTY Support', () => {
 
     it('parses the explicit --disable-auto-memory flag for non-interactive installs', () => {
       expect(readFileSync(join(__dirname, '..', 'src', 'npx-cli', 'index.ts'), 'utf-8'))
-        .toContain("disableAutoMemory: argv.includes('--disable-auto-memory')");
+        .toContain("disableAutoMemory: values['disable-auto-memory'] === true");
     });
 
     it('documents the explicit --disable-auto-memory install flag in help output', () => {
@@ -247,7 +247,6 @@ describe('Install Non-TTY Support', () => {
     });
 
     it('does not seed new Codex transcript watcher configs with AGENTS context injection', () => {
-      expect(transcriptConfigSource).toContain("name: 'codex'");
       const sampleConfigRegion = transcriptConfigSource.slice(
         transcriptConfigSource.indexOf('export const SAMPLE_CONFIG'),
         transcriptConfigSource.indexOf('stateFile: DEFAULT_STATE_PATH'),
@@ -297,7 +296,7 @@ describe('Install Non-TTY Support', () => {
 
     it('addresses privacy: everything stays local', () => {
       expect(installSource).toContain('Everything stays in ');
-      expect(installSource).toContain("pc.cyan('~/.claude-mem')");
+      expect(installSource).toContain("styleText('cyan', '~/.claude-mem')");
     });
 
     it('keeps /learn-codebase as the optional front-load path', () => {

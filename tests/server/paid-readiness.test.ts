@@ -9,7 +9,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import pg from 'pg';
-import { createHash, randomBytes, randomUUID } from 'crypto';
+import { randomUUID } from 'crypto';
 import type { NextFunction, Request, Response } from 'express';
 import { Server } from '../../src/services/server/Server.js';
 import { ServerV1PostgresRoutes } from '../../src/server/routes/v1/ServerV1PostgresRoutes.js';
@@ -24,16 +24,9 @@ import { DisabledServerQueueManager } from '../../src/server/runtime/types.js';
 import { requireRateLimit, requireMonthlyQuota } from '../../src/server/middleware/rate-limit.js';
 import { meterRequests } from '../../src/server/middleware/usage-metering.js';
 import { logger } from '../../src/utils/logger.js';
+import { quoteIdentifier, newApiKey } from '../sdk/pg-isolation.js';
 
 const testDatabaseUrl = process.env.CLAUDE_MEM_TEST_POSTGRES_URL;
-
-function quoteIdentifier(name: string): string {
-  return `"${name.replaceAll('"', '""')}"`;
-}
-function newApiKey(): { raw: string; hash: string } {
-  const raw = `cm_${randomBytes(24).toString('hex')}`;
-  return { raw, hash: createHash('sha256').update(raw).digest('hex') };
-}
 
 // Minimal Express req/res/next doubles for middleware unit tests.
 function fakeCtx(authContext: Record<string, unknown>) {
@@ -174,7 +167,7 @@ describe('paid-readiness (usage metering, rate limit, quota)', () => {
     });
     server.registerRoutes(new ServerV1PostgresRoutes({
       pool: pool as never, queueManager: new DisabledServerQueueManager('disabled'),
-      authMode: 'api-key', runtime: 'server-beta', sessionPolicy: 'per-event',
+      authMode: 'api-key',
     }));
     server.finalizeRoutes();
     await server.listen(0, '127.0.0.1');

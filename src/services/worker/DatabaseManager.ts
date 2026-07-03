@@ -32,10 +32,7 @@ export class DatabaseManager {
   }
 
   async close(): Promise<void> {
-    if (this.chromaSync) {
-      await this.chromaSync.close();
-      this.chromaSync = null;
-    }
+    this.chromaSync = null;
 
     this.sessionStore = null;
     this.sessionSearch = null;

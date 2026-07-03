@@ -3,7 +3,7 @@
 import { existsSync } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { ModeManager } from '../../services/domain/ModeManager.js';
-import { createPostgresStorageRepositories, getSharedPostgresPool, SERVER_POSTGRES_SCHEMA_VERSION } from '../../storage/postgres/index.js';
+import { getSharedPostgresPool, SERVER_POSTGRES_SCHEMA_VERSION } from '../../storage/postgres/index.js';
 import { bootstrapServerPostgresSchema } from '../../storage/postgres/schema.js';
 import type { PostgresPool } from '../../storage/postgres/pool.js';
 import { getRedisQueueConfig } from '../queue/redis-config.js';
@@ -177,20 +177,6 @@ export function loadServerMode(): void {
 export async function createServerService(
   options: CreateServerServiceOptions = {},
 ): Promise<ServerService> {
-  // Generation prompt-builder requires an active mode; the server runtime never
-  // went through the plugin setup path that loads one, so we do it here
-  // explicitly.
-  try {
-    ModeManager.getInstance().loadMode('code');
-  } catch (err) {
-    // Mode files are optional, but surface failures (e.g. malformed JSON in a
-    // CLAUDE_MEM_MODES_DIR file) so an operator can diagnose why custom types
-    // aren't appearing instead of silently falling back to the defaults.
-    logger.warn('SYSTEM', 'server: failed to load mode at startup (mode files optional)', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-
   if (!options.skipEnvValidation) {
     validateServerEnv();
   }
@@ -221,7 +207,6 @@ export async function createServerService(
     authMode: options.authMode ?? parseAuthMode(process.env.CLAUDE_MEM_AUTH_MODE),
     queueManager,
     generationWorkerManager,
-    storage: createPostgresStorageRepositories(pool),
   };
 
   if (generationWorkerManager instanceof ActiveServerGenerationWorkerManager) {
