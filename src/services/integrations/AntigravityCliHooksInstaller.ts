@@ -60,10 +60,9 @@ const RULES_CONTEXT_PATH = path.join(homedir(), '.agents', 'rules', 'claude-mem-
 const HOOK_NAME = 'claude-mem';
 const HOOK_TIMEOUT_MS = 10000;
 
-// 8 confirmed-live hook events (B0) — a superset of the 7 the removed Gemini
-// CLI installer used. SessionEnd was found live on disk but absent from the
-// old installer's source map; it is included here since B0 proved it's a
-// valid, real event name.
+// 7 confirmed-live hook events (B0). SessionEnd is deliberately excluded:
+// 'session-complete' has no handler in src/cli/handlers/index.ts — it was
+// removed on purpose (see CHANGELOG.md:777) since the worker self-completes.
 const ANTIGRAVITY_EVENT_TO_INTERNAL_EVENT: Record<string, string> = {
   'SessionStart': 'context',
   'BeforeAgent': 'session-init',
@@ -72,7 +71,6 @@ const ANTIGRAVITY_EVENT_TO_INTERNAL_EVENT: Record<string, string> = {
   'AfterTool': 'observation',
   'Notification': 'observation',
   'PreCompress': 'summarize',
-  'SessionEnd': 'session-complete',
 };
 
 function buildHookCommand(

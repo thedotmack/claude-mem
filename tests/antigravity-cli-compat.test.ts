@@ -4,7 +4,7 @@ import { antigravityCliAdapter } from '../src/cli/adapters/antigravity-cli.js';
 
 const INSTALLER_PATH = 'src/services/integrations/AntigravityCliHooksInstaller.ts';
 
-describe('AntigravityCliHooksInstaller - event mapping (B0-confirmed 8-event map)', () => {
+describe('AntigravityCliHooksInstaller - event mapping (B0-confirmed 7-event map)', () => {
   const src = readFileSync(INSTALLER_PATH, 'utf-8');
 
   it('maps SessionStart to context', () => {
@@ -26,8 +26,8 @@ describe('AntigravityCliHooksInstaller - event mapping (B0-confirmed 8-event map
     expect(src).toContain("'PreCompress': 'summarize'");
   });
 
-  it('maps SessionEnd to session-complete (the 8th event, confirmed live on disk in B0 — absent from the removed Gemini CLI installer)', () => {
-    expect(src).toContain("'SessionEnd': 'session-complete'");
+  it('should not map SessionEnd (session-complete has no handler; worker self-completes)', () => {
+    expect(src).not.toContain("'SessionEnd':");
   });
 
   it('uses the antigravity-cli hook command string, not gemini-cli', () => {
