@@ -216,6 +216,19 @@ async function main(): Promise<void> {
       break;
     }
 
+    case 'memory': {
+      const subCommand = args[1]?.toLowerCase();
+      if (subCommand === 'ingest') {
+        const { runMemoryIngestCommand } = await import('./commands/runtime.js');
+        runMemoryIngestCommand(args.slice(2));
+      } else {
+        console.error(pc.red(`Unknown memory subcommand: ${subCommand ?? '(none)'}`));
+        console.error(`Usage: npx claude-mem memory ingest [--source <dir> | --all] [--dry-run] [--require-cwd]`);
+        process.exit(1);
+      }
+      break;
+    }
+
     default: {
       console.error(styleText('red', `Unknown command: ${command}`));
       console.error(`Run ${styleText('bold', 'npx claude-mem --help')} for usage information.`);

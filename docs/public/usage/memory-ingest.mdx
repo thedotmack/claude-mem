@@ -1,0 +1,115 @@
+---
+title: "Memory Ingest"
+description: "Import Claude Code's auto-memory markdown files directly into claude-mem as observations — no model spend"
+---
+
+# Memory Ingest
+
+Claude Code maintains its own **auto-memory** — markdown it distills for itself — under:
+
+```
+~/.claude/projects/<encoded-cwd>/memory/MEMORY.md   (a link-only index)
+~/.claude/projects/<encoded-cwd>/memory/<topic>.md  (distilled prose, one fact per file)
+```
+
+`<encoded-cwd>` is the repo's absolute path with every `/` replaced by `-` (e.g.
+`/home/you/code/app` → `-home-you-code-app`).
+
+`claude-mem memory ingest` imports those topic files **directly** into your
+memory database as observations.
+
+## Why it doesn't cost anything
+
+Auto-memory is **already distilled** — each topic file is the same *kind* of
+artifact the observation generator produces. So memory-ingest does **not** run
+the Haiku generation pipeline. It stores each file's prose directly through
+claude-mem's existing observation seam (content-hash dedup + Chroma sync).
+Re-running generation on already-distilled prose would be lossy and pay for
+negative value.
+
+The `MEMORY.md` index is skipped — it's just links and carries no knowledge of
+its own.
+
+## Usage
+
+Always **dry-run first** — it's a zero-spend, DB-free scan + count:
+
+```bash
+# Scan the current repo's memory dir and report what would be stored
+npx claude-mem memory ingest --dry-run
+
+# Sweep every project under ~/.claude/projects/*/memory/
+npx claude-mem memory ingest --all --dry-run
+```
+
+Then run the real ingest:
+
+```bash
+# Ingest the current repo's memory (default source = cwd)
+npx claude-mem memory ingest
+
+# Ingest from an explicit directory
+npx claude-mem memory ingest --source ~/.claude/projects/-home-you-code-app/memory
+
+# Ingest everything
+npx claude-mem memory ingest --all
+```
+
+### Flags
+
+| Flag | Effect |
+|------|--------|
+| *(none)* | Source = the current repo's memory dir, resolved from `cwd`. |
+| `--source <dir>` | Ingest from an explicit `memory/` directory. |
+| `--all` | Sweep every `~/.claude/projects/*/memory/` directory. |
+| `--dry-run` | Zero-spend parse + count only. No worker, no DB writes. Run this first. |
+| `--require-cwd` | Skip orphaned project dirs whose originating `cwd` cannot be resolved (instead of ingesting them under a fallback project). |
+
+## How it runs
+
+- **`--dry-run`** is pure parse + count — it runs entirely in the CLI process,
+  touches no worker and no database, and spends nothing.
+- The **real ingest** stores into the SQLite observation database, which lives
+  in the worker. The CLI starts the worker if needed and drives the import over
+  HTTP (`POST /api/memory/ingest`), mirroring how transcript ingest and
+  summaries reach the worker. Bulk imports are not time-limited.
+
+## Frontmatter
+
+Topic files carry a small YAML frontmatter block, which is preserved as
+observation metadata:
+
+```markdown
+---
+name: recent-work
+description: "What was done in the most recent session"
+metadata:
+  node_type: memory
+  type: project
+  originSessionId: 74e59070-...
+---
+
+<the distilled prose — stored as the observation body>
+```
+
+`metadata.type` (e.g. `project`, `feedback`, `reference`, `user`) and
+`metadata.originSessionId` are carried through; files without frontmatter are
+stored using their body as-is.
+
+## Idempotency
+
+Ingest is safe to re-run. Observations are content-hash deduplicated on insert,
+so already-imported files are reported as `already-imported` and skipped — only
+new or changed files are stored.
+
+The summary line reports the outcome:
+
+```
+MEMORY INGEST: 12 stored, 38 already-imported, 0 skipped, 0 failed, of 50 files across 1 dirs
+```
+
+## Related
+
+- [Memory Export/Import](/usage/export-import) — share memory sets between installations.
+- Transcript backfill (`claude-mem transcript ingest`) — the sibling path that
+  imports raw Claude Code session JSONL and *does* run generation.
