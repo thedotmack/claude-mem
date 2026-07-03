@@ -66,6 +66,15 @@
         ]
       },
       {
+        "group": "Kiro CLI Integration",
+        "icon": "terminal",
+        "pages": [
+          "kiro-cli/setup",
+          "kiro-cli/parity",
+          "kiro-cli/troubleshooting"
+        ]
+      },
+      {
         "group": "Best Practices",
         "icon": "lightbulb",
         "pages": [

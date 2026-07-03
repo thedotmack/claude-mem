@@ -1,0 +1,18 @@
+{
+  "hook_event_name": "postToolUse",
+  "cwd": "/tmp/kiro-e2e-project",
+  "tool_name": "execute_bash",
+  "tool_input": {
+    "command": "npm test -- --filter auth"
+  },
+  "tool_response": {
+    "success": true,
+    "result": [
+      {
+        "exit_status": "0",
+        "stdout": "12 tests passed\n",
+        "stderr": ""
+      }
+    ]
+  }
+}

@@ -47,6 +47,13 @@ export const observationHandler: EventHandler = {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
+    if (!sessionId) {
+      // Mirrors session-init/summarize: without a session id the worker would
+      // create an orphaned session row keyed on undefined.
+      logger.warn('HOOK', 'observation: No sessionId provided, skipping');
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
+
     const toolStr = logger.formatTool(toolName, toolInput);
 
     logger.dataIn('HOOK', `PostToolUse: ${toolStr}`, {});

@@ -1,0 +1,48 @@
+---
+title: "Kiro CLI Feature Parity"
+description: "What claude-mem keeps, degrades, and drops on Kiro CLI compared to Claude Code"
+---
+
+# Feature Parity: Kiro CLI vs Claude Code
+
+Claude-mem on Kiro CLI keeps the full pipeline — capture, AI compression, storage, search, injection — with a handful of host-imposed differences documented here.
+
+## Hook mapping
+
+| Claude Code | Kiro CLI | Status |
+|---|---|---|
+| `SessionStart` → context injection | `agentSpawn` (stdout injected into context) | ✅ Full — raw text instead of JSON envelope |
+| `UserPromptSubmit` → session init + semantic inject | `userPromptSubmit` (stdout injected) | ✅ Full |
+| `PostToolUse` → observation capture | `postToolUse`, matcher `*` | ✅ Full — Kiro tool names mapped (`fs_write`→`Write`, `fs_read`→`Read`, `execute_bash`→`Bash`) |
+| `Stop` → session summary | `stop` (`assistant_response` in payload) | ✅ Full — **better**: no transcript parsing needed |
+| `Setup` → version check + dep bootstrap | Silent cached `agentSpawn` hook + install-time `bun install` | ⚠️ Degraded — runs on agent activation instead of install events |
+| `PreToolUse: Read` → per-file context | — | ❌ Blocked — Kiro does not inject `preToolUse` stdout |
+| `SessionEnd` / `PreCompact` / `SubagentStop` | — | ❌ No Kiro equivalent |
+
+## Full parity (no user-visible difference)
+
+Observation capture and compression, session summaries, session-start memory injection, per-prompt semantic injection, MCP search tools (`search`, `timeline`, `get_observations`, corpus tools, `smart_*` tree-sitter tools), the web viewer + SSE live feed, Chroma semantic search, modes, project exclusion, privacy tags, Telegram notifications, and all worker-side features — these are host-independent and work unchanged.
+
+**Skills:** Kiro implements the same Agent Skills standard (SKILL.md), so all skills install verbatim and appear as slash commands. Skills that orchestrate Claude Code subagents (`do`, `make-plan`, `babysit`, `standup`) load fine but their subagent steps depend on Kiro's delegate/subagent capabilities; `version-bump` is Claude-Code-plugin-specific.
+
+## Degraded, with compensation
+
+| Feature | Gap | Compensation |
+|---|---|---|
+| Per-file context on `Read` | `preToolUse` stdout is not injected; exit 2 would *block* the tool, which claude-mem never does | Per-prompt semantic injection is **enabled by default on Kiro installs** — relevant observations (including file-scoped ones) arrive with each prompt |
+| Post-`/compact` re-injection | No compaction lifecycle event | Same: the next `userPromptSubmit` re-injects semantically relevant context |
+| Subagent attribution | Kiro hook payloads carry no `agent_id`/`agent_type` | Observations from delegated sessions are recorded unattributed; revisit when Kiro ships its official subagents tool |
+| Terminal hints (`systemMessage`) | Hooks have no user-visible output channel | Viewer URL is printed at install time and by `npx claude-mem status` |
+| Transcript watcher | Kiro provides no `transcript_path` | Not needed — `stop` delivers `assistant_response` directly |
+| Auto-update | No plugin/marketplace system in Kiro CLI ([kirodotdev/Kiro#8578](https://github.com/kirodotdev/Kiro/issues/8578)) | `npx claude-mem update`, then re-run the Kiro install (idempotent) |
+
+## Safety invariants (why the port is shaped this way)
+
+- **Raw stdout, not JSON:** Kiro injects hook stdout verbatim. The Kiro adapter emits plain text for context and *nothing at all* otherwise — a JSON envelope would pollute your agent's context.
+- **Silent `stop` hook:** Kiro parses `stop` stdout for a `{"decision": "block"}` override that forces the conversation to continue. Claude-mem's stop hook is unit-tested to emit zero bytes.
+- **Never exit 2:** on Kiro, a `preToolUse` hook exiting 2 blocks your tool call. Claude-mem hooks soft-fail with exit 0 when the worker is unreachable.
+- **Explicit `timeout_ms`:** Kiro's 30s default is too short for a cold worker start; the installed hooks carry 60–120s timeouts (300s for the silent self-heal hook that restores plugin dependencies), with a dedicated warm-up hook first.
+
+## Verified against
+
+kiro.dev CLI docs plus a **live payload capture on kiro-cli 2.11.0** (July 2026) — see `tests/fixtures/kiro/README.md` for the captured contract, including two deviations from the docs the port handles: the session UUID arrives as the `KIRO_SESSION_ID` environment variable (no `session_id` payload field), and `fs_read` batches reads in an `operations` array. If behaviour changes after a Kiro upgrade, re-run the probe in `tests/fixtures/kiro/probe/` and file an issue with the captured payloads.

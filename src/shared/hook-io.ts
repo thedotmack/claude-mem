@@ -107,12 +107,20 @@ export function emitDiagnostic(line: string): void {
 }
 
 /**
- * Emit the model-bound JSON payload to stdout. Calls adapter.formatOutput and
- * JSON.stringify exactly once. Throws if called twice in the same emitter
- * lifetime (guards against double-emit corrupting the stdout JSON stream).
+ * Emit the model-bound payload to stdout. Calls adapter.formatOutput exactly
+ * once. Throws if called twice in the same emitter lifetime (guards against
+ * double-emit corrupting the stdout stream).
  *
- * Uses console.log (not process.stdout.write) on purpose: the trailing newline
- * is what Claude Code's / Codex's hook parser expects.
+ * Two output modes, selected by what formatOutput returns:
+ * - object → JSON envelope (Claude Code, Codex, Gemini, Cursor). Uses
+ *   console.log (not process.stdout.write) on purpose: the trailing newline is
+ *   what those hosts' hook parsers expect.
+ * - string → raw text (Kiro CLI). Kiro injects hook stdout verbatim into model
+ *   context on agentSpawn/userPromptSubmit, so a JSON envelope would be
+ *   injected as garbage. An empty string means "no injection" and MUST produce
+ *   zero stdout bytes — on Kiro's `stop` event any stdout is parsed for a
+ *   `{"decision":"block"}` override, so silence is the only safe success
+ *   signal.
  */
 export function emitModelContext(adapter: PlatformAdapter, result: HookResult): void {
   if (moduleHasEmitted) {
@@ -120,6 +128,12 @@ export function emitModelContext(adapter: PlatformAdapter, result: HookResult): 
   }
   moduleHasEmitted = true;
   const output = adapter.formatOutput(result);
+  if (typeof output === 'string') {
+    if (output.length > 0) {
+      console.log(output);
+    }
+    return;
+  }
   console.log(JSON.stringify(output));
 }
 

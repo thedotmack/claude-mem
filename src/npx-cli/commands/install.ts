@@ -371,6 +371,23 @@ function makeIDETask(ideId: string, summary: InstallSummary): TaskDescriptor | n
       };
     }
 
+    case 'kiro-cli': {
+      return {
+        title: 'Kiro CLI: installing agent hooks + MCP + skills',
+        task: async (message) => {
+          message('Loading Kiro CLI installer…');
+          const { installKiroCliIntegration } = await import('../../services/integrations/KiroCliInstaller.js');
+          message('Patching Kiro agent configs…');
+          const { result, output } = await bufferConsole(() => installKiroCliIntegration());
+          if (result !== 0) {
+            recordFailure('Kiro CLI: integration setup failed', output);
+            return `Kiro CLI: integration setup failed ${styleText('red', 'FAIL')}`;
+          }
+          return `Kiro CLI: agent hooks + MCP + skills installed ${styleText('green', 'OK')}`;
+        },
+      };
+    }
+
     case 'codex-cli': {
       return {
         title: 'Codex CLI: registering hooks marketplace',

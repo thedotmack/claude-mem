@@ -7,7 +7,7 @@ import { SettingsDefaultsManager, type SettingsDefaults } from "./SettingsDefaul
 import { MARKETPLACE_ROOT, DATA_DIR } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
 import { validateWorkerPidFile } from "../supervisor/index.js";
-import { emitBlockingError } from "./hook-io.js";
+import { emitBlockingError, emitDiagnostic } from "./hook-io.js";
 import { captureCliEvent } from "../services/telemetry/cli-telemetry.js";
 import { checkVersionMatch } from "../services/infrastructure/index.js";
 // Imported from ProcessManager.js directly (not the infrastructure barrel):
@@ -591,6 +591,22 @@ export function getActiveHookType(): TelemetryHookType | null {
   return activeHookType;
 }
 
+let activePlatform: string | null = null;
+
+/**
+ * Record the host platform for the current hook invocation. On Kiro CLI,
+ * exit 2 has host-side semantics claude-mem must never trigger (preToolUse
+ * exit 2 blocks the user's tool call), so the fail-loud paths degrade to
+ * stderr diagnostics + exit 0 there. Called once at hookCommand entry.
+ */
+export function setActivePlatform(platform: string): void {
+  activePlatform = platform;
+}
+
+export function activePlatformNeverBlocks(): boolean {
+  return activePlatform === 'kiro' || activePlatform === 'kiro-cli';
+}
+
 export async function recordWorkerUnreachable(): Promise<number> {
   const state = readHookFailureState();
   const next: HookFailureState = {
@@ -622,9 +638,14 @@ export async function recordWorkerUnreachable(): Promise<number> {
     // stderr buffer (so preceding logger.warn lines also surface) and writes
     // via the bypass channel + exits 2. Previously this raw process.stderr.write
     // was swallowed by hookCommand's blanket no-op, so the user/model never saw it.
-    emitBlockingError(
-      `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks.`
-    );
+    // Never-block platforms (Kiro) get the same message as a diagnostic and
+    // return normally — exit 2 there would block the host's tool call.
+    const failLoudMessage = `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks.`;
+    if (activePlatformNeverBlocks()) {
+      emitDiagnostic(`${failLoudMessage}\n`);
+    } else {
+      emitBlockingError(failLoudMessage);
+    }
   }
   return next.consecutiveFailures;
 }

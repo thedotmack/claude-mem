@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "agentSpawn",
+  "cwd": "/tmp/kiro-e2e-project",
+  "prompt": "Fix the login timeout bug in the auth service"
+}

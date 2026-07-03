@@ -375,6 +375,10 @@ export async function runUninstallCommand(): Promise<void> {
       const { uninstallAntigravityCliHooks } = await import('../../services/integrations/AntigravityCliHooksInstaller.js');
       return uninstallAntigravityCliHooks();
     }},
+    { label: 'Kiro CLI integration', fn: async () => {
+      const { uninstallKiroCliIntegration } = await import('../../services/integrations/KiroCliInstaller.js');
+      return uninstallKiroCliIntegration();
+    }},
   ];
 
   for (const { label, fn } of ideCleanups) {

@@ -1,0 +1,10 @@
+{
+  "hook_event_name": "postToolUse",
+  "cwd": "/tmp/kiro-e2e-project",
+  "tool_name": "@git/git_status",
+  "tool_input": {},
+  "tool_response": {
+    "success": true,
+    "result": ["On branch main, working tree clean"]
+  }
+}
