@@ -275,7 +275,7 @@ data:
           metadata = excluded.metadata,
           updated_at = now()
         RETURNING *
-      `,[r,e.projectId,e.teamId,e.externalSessionId??null,i,e.contentSessionId??null,e.agentId??null,e.agentType??null,n,e.generationStatus??"idle",JSON.stringify(e.metadata??{})]);return ls(s)}async getByIdForScope(e){let r=await ie(this.client,"SELECT * FROM server_sessions WHERE id = $1 AND project_id = $2 AND team_id = $3",[e.id,e.projectId,e.teamId]);return r?ls(r):null}async listByProject(e,r){return(await this.client.query(`
+      `,[r,e.projectId,e.teamId,e.externalSessionId??null,i,e.contentSessionId??null,e.agentId??null,e.agentType??null,n,e.generationStatus??"idle",JSON.stringify(e.metadata??{})]);return us(s)}async getByIdForScope(e){let r=await ie(this.client,"SELECT * FROM server_sessions WHERE id = $1 AND project_id = $2 AND team_id = $3",[e.id,e.projectId,e.teamId]);return r?us(r):null}async listByProject(e,r){return(await this.client.query(`
         SELECT * FROM server_sessions
         WHERE project_id = $1 AND team_id = $2
         ORDER BY started_at DESC
@@ -305,19 +305,19 @@ data:
             updated_at = CASE WHEN ended_at IS NULL THEN now() ELSE updated_at END
         WHERE id = $1 AND project_id = $2 AND team_id = $3
         RETURNING *
-      `,[e.id,e.projectId,e.teamId]);return r?ls(r):null}async markGenerationStarted(e){let r=await ie(this.client,`
+      `,[e.id,e.projectId,e.teamId]);return r?us(r):null}async markGenerationStarted(e){let r=await ie(this.client,`
         UPDATE server_sessions
         SET generation_status = 'processing', updated_at = now()
         WHERE id = $1 AND project_id = $2 AND team_id = $3
         RETURNING *
-      `,[e.id,e.projectId,e.teamId]);return r?ls(r):null}async markGenerationCompleted(e){let r=await ie(this.client,`
+      `,[e.id,e.projectId,e.teamId]);return r?us(r):null}async markGenerationCompleted(e){let r=await ie(this.client,`
         UPDATE server_sessions
         SET generation_status = 'completed',
             last_generated_at = now(),
             updated_at = now()
         WHERE id = $1 AND project_id = $2 AND team_id = $3
         RETURNING *
-      `,[e.id,e.projectId,e.teamId]);return r?ls(r):null}async markGenerationFailed(e){let r=await ie(this.client,`
+      `,[e.id,e.projectId,e.teamId]);return r?us(r):null}async markGenerationFailed(e){let r=await ie(this.client,`
         UPDATE server_sessions
         SET generation_status = 'failed',
             metadata = jsonb_set(
@@ -329,7 +329,7 @@ data:
             updated_at = now()
         WHERE id = $1 AND project_id = $2 AND team_id = $3
         RETURNING *
-      `,[e.id,e.projectId,e.teamId,e.error??null]);return r?ls(r):null}async listUnprocessedEvents(e){let r=e.limit??500;return(await this.client.query(`
+      `,[e.id,e.projectId,e.teamId,e.error??null]);return r?us(r):null}async listUnprocessedEvents(e){let r=e.limit??500;return(await this.client.query(`
         SELECT e.*
         FROM agent_events e
         WHERE e.server_session_id = $1
@@ -699,8 +699,7 @@ local function storeDeduplicatedNextJob(deduplicationOpts, currentDebounceJobId,
         local activeItems = rcall('LRANGE', activeKey, 0, -1)
         if checkItemInList(activeItems, currentDebounceJobId) then
             local deduplicationNextKey = prefix .. "dn:" .. deduplicationId
-            local fields = {'name', jobName, 'data', jobData, 'opts', cjson.encode(fullOpts),
-                'jid', jobId}
+            local fields = {'name', jobName, 'data', jobData, 'opts', cjson.encode(fullOpts)}
             if parentKey then
                 fields[#fields+1] = 'pk'
                 fields[#fields+1] = parentKey
@@ -717,7 +716,6 @@ local function storeDeduplicatedNextJob(deduplicationOpts, currentDebounceJobId,
                 fields[#fields+1] = 'rjk'
                 fields[#fields+1] = repeatJobKey
             end
-            rcall('DEL', deduplicationNextKey)
             rcall('HSET', deduplicationNextKey, unpack(fields))
             -- Ensure the dedup key does not expire while the job is active,
             -- so subsequent adds always hit the dedup path and never bypass
@@ -1817,8 +1815,7 @@ local function storeDeduplicatedNextJob(deduplicationOpts, currentDebounceJobId,
         local activeItems = rcall('LRANGE', activeKey, 0, -1)
         if checkItemInList(activeItems, currentDebounceJobId) then
             local deduplicationNextKey = prefix .. "dn:" .. deduplicationId
-            local fields = {'name', jobName, 'data', jobData, 'opts', cjson.encode(fullOpts),
-                'jid', jobId}
+            local fields = {'name', jobName, 'data', jobData, 'opts', cjson.encode(fullOpts)}
             if parentKey then
                 fields[#fields+1] = 'pk'
                 fields[#fields+1] = parentKey
@@ -1835,7 +1832,6 @@ local function storeDeduplicatedNextJob(deduplicationOpts, currentDebounceJobId,
                 fields[#fields+1] = 'rjk'
                 fields[#fields+1] = repeatJobKey
             end
-            rcall('DEL', deduplicationNextKey)
             rcall('HSET', deduplicationNextKey, unpack(fields))
             -- Ensure the dedup key does not expire while the job is active,
             -- so subsequent adds always hit the dedup path and never bypass
@@ -2318,8 +2314,7 @@ local function storeDeduplicatedNextJob(deduplicationOpts, currentDebounceJobId,
         local activeItems = rcall('LRANGE', activeKey, 0, -1)
         if checkItemInList(activeItems, currentDebounceJobId) then
             local deduplicationNextKey = prefix .. "dn:" .. deduplicationId
-            local fields = {'name', jobName, 'data', jobData, 'opts', cjson.encode(fullOpts),
-                'jid', jobId}
+            local fields = {'name', jobName, 'data', jobData, 'opts', cjson.encode(fullOpts)}
             if parentKey then
                 fields[#fields+1] = 'pk'
                 fields[#fields+1] = parentKey
@@ -2336,7 +2331,6 @@ local function storeDeduplicatedNextJob(deduplicationOpts, currentDebounceJobId,
                 fields[#fields+1] = 'rjk'
                 fields[#fields+1] = repeatJobKey
             end
-            rcall('DEL', deduplicationNextKey)
             rcall('HSET', deduplicationNextKey, unpack(fields))
             -- Ensure the dedup key does not expire while the job is active,
             -- so subsequent adds always hit the dedup path and never bypass
@@ -3080,8 +3074,7 @@ local function storeDeduplicatedNextJob(deduplicationOpts, currentDebounceJobId,
         local activeItems = rcall('LRANGE', activeKey, 0, -1)
         if checkItemInList(activeItems, currentDebounceJobId) then
             local deduplicationNextKey = prefix .. "dn:" .. deduplicationId
-            local fields = {'name', jobName, 'data', jobData, 'opts', cjson.encode(fullOpts),
-                'jid', jobId}
+            local fields = {'name', jobName, 'data', jobData, 'opts', cjson.encode(fullOpts)}
             if parentKey then
                 fields[#fields+1] = 'pk'
                 fields[#fields+1] = parentKey
@@ -3098,7 +3091,6 @@ local function storeDeduplicatedNextJob(deduplicationOpts, currentDebounceJobId,
                 fields[#fields+1] = 'rjk'
                 fields[#fields+1] = repeatJobKey
             end
-            rcall('DEL', deduplicationNextKey)
             rcall('HSET', deduplicationNextKey, unpack(fields))
             -- Ensure the dedup key does not expire while the job is active,
             -- so subsequent adds always hit the dedup path and never bypass
@@ -5068,7 +5060,6 @@ return 0
       KEYS[6] 'paused', (LIST)
       KEYS[7] 'marker'
       KEYS[8] 'event stream' (STREAM)
-      KEYS[9] 'repeat' key
       ARGV[1]  Max stalled job count
       ARGV[2]  queue.toKey('')
       ARGV[3]  timestamp
@@ -5171,7 +5162,6 @@ local metaKey = KEYS[5]
 local pausedKey = KEYS[6]
 local markerKey = KEYS[7]
 local eventStreamKey = KEYS[8]
-local repeatKey = KEYS[9]
 local maxStalledJobCount = tonumber(ARGV[1])
 local queueKeyPrefix = ARGV[2]
 local timestamp = ARGV[3]
@@ -5203,19 +5193,12 @@ if (#stalling > 0) then
                     -- If this job has been stalled too many times, such as if it crashes the worker, then fail it.
                     local stalledCount = rcall("HINCRBY", jobKey, "stc", 1)
                     -- Check if this is a repeatable job by looking at job options
-                    local jobSchedulerId = rcall("HGET", jobKey, "rjk")
+                    local jobOpts = rcall("HGET", jobKey, "opts")
                     local isRepeatableJob = false
-                    if jobSchedulerId then
-                        local schedulerKey = repeatKey .. ":" .. jobSchedulerId
-                        if rcall("EXISTS", schedulerKey) == 1 then
+                    if jobOpts then
+                        local opts = cjson.decode(jobOpts)
+                        if opts and opts["repeat"] then
                             isRepeatableJob = true
-                        else
-                            -- TODO: remove this check in v6, as it is only needed for legacy repeatable jobs
-                            -- that stored the scheduler id in the job key but did not create the scheduler hash key
-                            local prevMillis = rcall("ZSCORE", repeatKey, jobSchedulerId)
-                            if prevMillis then
-                                isRepeatableJob = true
-                            end
                         end
                     end
                     -- Only fail job if it exceeds stall limit AND is not a repeatable job
@@ -6692,16 +6675,8 @@ local function requeueDeduplicatedJob(prefix, deduplicationId, eventStreamKey,
   local deduplicationNextKey = prefix .. "dn:" .. deduplicationId
   if rcall("EXISTS", deduplicationNextKey) == 1 then
     local nextData = rcall("HMGET", deduplicationNextKey,
-        "name", "data", "opts", "pk", "pd", "pdk", "rjk", "jid")
-    -- Always increment the counter to keep it monotonic
-    local nextId = rcall("INCR", prefix .. "id") .. ""
-    local storedJobId = nextData[8] -- index 8 = "jid" (8th field in the HMGET call above)
-    local newJobId
-    if storedJobId then
-      newJobId = storedJobId
-    else
-      newJobId = nextId
-    end
+        "name", "data", "opts", "pk", "pd", "pdk", "rjk")
+    local newJobId = rcall("INCR", prefix .. "id") .. ""
     local newJobIdKey = prefix .. newJobId
     local newOpts = cjson.decode(nextData[3])
     local deduplicationKey = prefix .. "de:" .. deduplicationId
@@ -8696,7 +8671,7 @@ if rcall("EXISTS", jobKey) == 1 then
     if parentKey and rcall("EXISTS", parentKey) == 1 then
       if ARGV[4] == "failed" then
         if rcall("ZREM", parentKey .. ":unsuccessful", jobKey) == 1 or
-          rcall("HDEL", parentKey .. ":failed", jobKey) == 1 then
+          rcall("ZREM", parentKey .. ":failed", jobKey) == 1 then
           rcall("SADD", parentKey .. ":dependencies", jobKey)
         end
       else
@@ -9655,7 +9630,7 @@ CREATE INDEX IF NOT EXISTS idx_rate_limit_counters_window ON rate_limit_counters
          FROM api_keys
          ${b}
          ORDER BY created_at DESC
-         LIMIT $${g.length-1} OFFSET $${g.length}`,g);console.log(JSON.stringify({teamId:l,limit:p,offset:f,count:v.rows.length,keys:v.rows.map(E=>({id:E.id,teamId:E.team_id,projectId:E.project_id,scopes:E.scopes,status:E.revoked_at?"revoked":"active",lastUsedAt:E.last_used_at?.toISOString()??null,expiresAt:E.expires_at?.toISOString()??null,createdAt:E.created_at.toISOString()}))},null,2));return}if(e==="revoke"){let l=t[1];l||(console.error("Usage: server-service server api-key revoke <id>"),process.exit(1)),(await o.query(`UPDATE api_keys SET revoked_at = now()
+         LIMIT $${g.length-1} OFFSET $${g.length}`,g);console.log(JSON.stringify({teamId:l,limit:d,offset:f,count:v.rows.length,keys:v.rows.map(E=>({id:E.id,teamId:E.team_id,projectId:E.project_id,scopes:E.scopes,status:E.revoked_at?"revoked":"active",lastUsedAt:E.last_used_at?.toISOString()??null,expiresAt:E.expires_at?.toISOString()??null,createdAt:E.created_at.toISOString()}))},null,2));return}if(e==="revoke"){let l=t[1];l||(console.error("Usage: server-service server api-key revoke <id>"),process.exit(1)),(await o.query(`UPDATE api_keys SET revoked_at = now()
          WHERE id = $1 AND revoked_at IS NULL
          RETURNING id`,[l])).rowCount===0&&(console.error(`API key not found or already revoked: ${l}`),process.exit(1)),console.log(JSON.stringify({id:l,status:"revoked"},null,2));return}console.error(`Unknown server api-key subcommand: ${e??"(none)"}`),console.error("Usage: server-service server api-key create|list|revoke|migrate-scopes"),process.exit(1)}async function JB(t){let e=t[0]&&!t[0].startsWith("--")?t[0]:void 0,r=CT(t);e||(console.error("Usage: server-service server api-key migrate-scopes <id> [--scope a,b]"),process.exit(1));let n=(r.scope??r.scopes??bke.join(",")).split(",").map(o=>o.trim()).filter(Boolean),{getSharedPostgresPool:i}=await Promise.resolve().then(()=>(jd(),ab));(await i({requireDatabaseUrl:!0}).query(`UPDATE api_keys
        SET scopes = $2::jsonb, updated_at = now()
@@ -9738,7 +9713,6 @@ on-finished/index.js:
    * MIT Licensed
    *)
 
-content-type/dist/index.js:
 content-type/dist/index.js:
 content-type/index.js:
   (*!

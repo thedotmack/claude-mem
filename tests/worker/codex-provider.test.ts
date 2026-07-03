@@ -3,6 +3,7 @@ import { existsSync, rmSync, statSync } from 'fs';
 import {
   buildCodexExecEnv,
   buildCodexExecArgs,
+  buildCodexObservationPrompt,
   classifyCodexExecError,
   createCodexExecWorkDir,
   normalizeCodexExecutablePath,
@@ -209,5 +210,23 @@ describe('buildCodexExecEnv', () => {
     expect(env.NO_PROXY).toBeUndefined();
     expect(env.CUSTOM_TOKEN).toBeUndefined();
     expect(env.SSH_AUTH_SOCK).toBeUndefined();
+  });
+});
+
+describe('buildCodexObservationPrompt', () => {
+  it('adds anti-fragmentation rules for Codex observation generation', () => {
+    const prompt = buildCodexObservationPrompt({
+      id: 1,
+      tool_name: 'Bash',
+      tool_input: JSON.stringify({ cmd: 'git diff --stat' }),
+      tool_output: JSON.stringify({ output: 'file.ts | 137 ++++++++++++++++-----------' }),
+      created_at_epoch: Date.now(),
+      cwd: '/repo',
+    });
+
+    expect(prompt).toContain('at most 3 <observation>...</observation> blocks');
+    expect(prompt).toContain('Prefer one observation per tool use');
+    expect(prompt).toContain('Every emitted observation must include a non-empty <narrative>');
+    expect(prompt).toContain('Do not split a single command output');
   });
 });
