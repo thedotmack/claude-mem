@@ -1,5 +1,4 @@
 export type DependencyStatusKind =
-  | 'ok'
   | 'setup_required'
   | 'vector_search_unavailable';
 
@@ -32,7 +31,7 @@ export interface DependencyHealthSnapshot {
 
 export function recordDependencyStatus(
   dependency: DependencyName,
-  kind: Exclude<DependencyStatusKind, 'ok'>,
+  kind: DependencyStatusKind,
   message: string,
   remediation?: string,
 ): DependencyStatus {
@@ -63,15 +62,6 @@ export function getDependencyStatus(dependency: DependencyName): DependencyStatu
   return statuses.get(dependency) ?? null;
 }
 
-export function isDependencyBlocked(
-  dependency: DependencyName,
-  kind?: Exclude<DependencyStatusKind, 'ok'>,
-): boolean {
-  const status = getDependencyStatus(dependency);
-  if (!status) return false;
-  return kind ? status.kind === kind : status.kind !== 'ok';
-}
-
 export function isDependencyStatusInCooldown(
   status: DependencyStatus,
   cooldownMs: number,
@@ -85,7 +75,7 @@ export function snapshotDependencyHealth(): DependencyHealthSnapshot {
     .map(status => ({ ...status }))
     .sort((a, b) => a.dependency.localeCompare(b.dependency));
   return {
-    degraded: currentStatuses.some(status => status.kind !== 'ok'),
+    degraded: currentStatuses.length > 0,
     statuses: currentStatuses,
   };
 }

@@ -47,10 +47,6 @@ export async function captureCliEvent(
     }
 
     const apiKey = getTelemetryApiKey();
-    if (!apiKey) {
-      return;
-    }
-
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), CAPTURE_TIMEOUT_MS);
     try {

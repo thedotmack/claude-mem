@@ -33,9 +33,4 @@ export class PostgresRateLimitRepository {
     const count = Number(res.rows[0]?.count ?? 0);
     return { allowed: count <= input.limit, count, limit: input.limit, windowStart: input.windowStart };
   }
-
-  /** Best-effort cleanup of expired windows. Call off the hot path. */
-  async prune(before: Date): Promise<void> {
-    await this.client.query(`DELETE FROM rate_limit_counters WHERE window_start < $1`, [before]);
-  }
 }

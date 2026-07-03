@@ -24,7 +24,6 @@ function makeSession(): ActiveSession {
     project: 'project',
     platformSource: 'claude',
     userPrompt: 'prompt',
-    pendingMessages: [],
     abortController: new AbortController(),
     generatorPromise: null,
     lastPromptNumber: 1,

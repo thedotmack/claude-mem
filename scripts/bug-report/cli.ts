@@ -7,7 +7,7 @@ import * as path from "path";
 import * as os from "os";
 import * as readline from "readline";
 import { exec } from "child_process";
-import { promisify } from "util";
+import { promisify, parseArgs } from "util";
 
 const execAsync = promisify(exec);
 
@@ -18,36 +18,28 @@ interface CliArgs {
   help: boolean;
 }
 
-function parseArgs(): CliArgs {
-  const args = process.argv.slice(2);
-  const parsed: CliArgs = {
-    verbose: false,
-    noLogs: false,
-    help: false,
-  };
+function parseCliArgs(): CliArgs {
+  try {
+    const { values } = parseArgs({
+      args: process.argv.slice(2),
+      options: {
+        help: { type: "boolean", short: "h", default: false },
+        verbose: { type: "boolean", short: "v", default: false },
+        "no-logs": { type: "boolean", default: false },
+        output: { type: "string", short: "o" },
+      },
+    });
 
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    switch (arg) {
-      case "-h":
-      case "--help":
-        parsed.help = true;
-        break;
-      case "-v":
-      case "--verbose":
-        parsed.verbose = true;
-        break;
-      case "--no-logs":
-        parsed.noLogs = true;
-        break;
-      case "-o":
-      case "--output":
-        parsed.output = args[++i];
-        break;
-    }
+    return {
+      output: values.output,
+      verbose: values.verbose,
+      noLogs: values["no-logs"],
+      help: values.help,
+    };
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
   }
-
-  return parsed;
 }
 
 function printHelp(): void {
@@ -127,7 +119,7 @@ async function promptMultiline(prompt: string): Promise<string> {
 }
 
 async function main() {
-  const args = parseArgs();
+  const args = parseCliArgs();
 
   if (args.help) {
     printHelp();

@@ -53,7 +53,7 @@ function userHasOptedOutOfVectorSearch(): boolean {
 
 const BUN_COMMON_PATHS = IS_WINDOWS
   ? [join(homedir(), '.bun', 'bin', 'bun.exe')]
-  : [join(homedir(), '.bun', 'bin', 'bun'), '/usr/local/bin/bun', '/opt/homebrew/bin/bun'];
+  : [join(homedir(), '.bun', 'bin', 'bun'), '/usr/local/bin/bun', '/opt/homebrew/bin/bun', '/home/linuxbrew/.linuxbrew/bin/bun'];
 
 const UV_COMMON_PATHS = IS_WINDOWS
   ? [join(homedir(), '.local', 'bin', 'uv.exe'), join(homedir(), '.cargo', 'bin', 'uv.exe')]
@@ -73,7 +73,7 @@ function markerPath(targetDir: string): string {
   return join(targetDir, '.install-version');
 }
 
-function getBunPath(): string | null {
+export function getBunPath(): string | null {
   try {
     const result = spawnSync('bun', ['--version'], {
       encoding: 'utf-8',
@@ -306,7 +306,7 @@ export function verifyCriticalModules(targetDir: string): void {
 
 /** Build an ephemeral summary so callers (e.g. repair) may omit it. */
 function summaryOrEphemeral(summary?: InstallSummary): InstallSummary {
-  return summary ?? { warnings: [], failedIDEs: [], retryCount: {} };
+  return summary ?? { warnings: [], failedIDEs: [] };
 }
 
 export async function ensureBun(summary?: InstallSummary): Promise<{ bunPath: string; version: string }> {

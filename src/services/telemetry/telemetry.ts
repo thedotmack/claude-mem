@@ -457,10 +457,6 @@ function captureExceptionInner(
     return;
   }
 
-  if (!getTelemetryApiKey()) {
-    return;
-  }
-
   // Pass a redacted Error (not the raw one) so the SDK never re-derives an
   // un-redacted stack/message: the SDK reads .message/.stack/.name off the
   // object we hand it.
@@ -480,9 +476,7 @@ function captureExceptionInner(
  *   2. Whitelist scrub — only allowed primitive properties survive.
  *   3. Debug mode (CLAUDE_MEM_TELEMETRY_DEBUG=1) — print payload to stderr,
  *      send nothing.
- *   4. No API key configured — no-op (telemetry ships dark until the
- *      publishable token lands).
- *   5. posthog.capture() — SDK queues in memory and batches in background.
+ *   4. posthog.capture() — SDK queues in memory and batches in background.
  *
  * Two event classes (opts.person):
  *   - Lifecycle events (worker_started, install_*) pass person: true. They are
@@ -539,10 +533,6 @@ function captureEventInner(
     // worker in the foreground; repo logger standards forbid console.* in
     // background services (tests/logger-usage-standards.test.ts).
     process.stderr.write('[telemetry] ' + JSON.stringify({ event, properties }) + '\n');
-    return;
-  }
-
-  if (!getTelemetryApiKey()) {
     return;
   }
 

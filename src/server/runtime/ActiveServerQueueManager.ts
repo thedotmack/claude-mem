@@ -24,7 +24,7 @@ import type {
 // `start(kind, processor)` once provider generation is ready. Until then,
 // the queues exist as transports for `enqueueOutbox` to publish into.
 
-const QUEUE_KINDS: ServerGenerationJobKind[] = ['event', 'event-batch', 'summary', 'reindex'];
+const QUEUE_KINDS: ServerGenerationJobKind[] = ['event', 'summary'];
 
 export class ActiveServerQueueManager implements ServerQueueManager {
   readonly kind = 'queue-manager' as const;

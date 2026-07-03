@@ -44,6 +44,7 @@ const EXCLUDED_PATTERNS = [
   /sdk\/output-classifier\.ts$/,  // Pure, side-effect-free output classifier; logging happens at the ResponseProcessor call site with full session context
   /build\/hook-shell-template\.ts$/,  // Pure build-time shell-string generator (no runtime/observability surface); drift is enforced by build-hooks.js + plugin-distribution.test.ts
   /worker\/model-aliases\.ts$/,  // Pure $TIER alias resolver (#2289); side-effect-free passthrough, logging happens at the request-time call site
+  /worker\/TimelineService\.ts$/,  // Pure filterByDepth helper after dead-code removal; no side effects (mirrors FallbackErrorHandler)
 ];
 
 const HIGH_PRIORITY_PATTERNS = [
@@ -64,7 +65,6 @@ interface FileAnalysis {
   hasLoggerImport: boolean;
   usesConsoleLog: boolean;
   consoleLogLines: number[];
-  loggerCallCount: number;
   isHighPriority: boolean;
 }
 
@@ -114,16 +114,12 @@ function analyzeFile(filePath: string): FileAnalysis {
     }
   });
 
-  const loggerCallMatches = content.match(/logger\.(debug|info|warn|error|success|failure|timing|dataIn|dataOut|happyPathError)\(/g);
-  const loggerCallCount = loggerCallMatches ? loggerCallMatches.length : 0;
-
   return {
     path: filePath,
     relativePath,
     hasLoggerImport,
     usesConsoleLog: consoleLogLines.length > 0,
     consoleLogLines,
-    loggerCallCount,
     isHighPriority: isHighPriority(filePath),
   };
 }
@@ -175,30 +171,5 @@ describe("Logger Usage Standards", () => {
         `These files should import and use logger for debugging and observability.`
       );
     }
-  });
-
-  it("should report logger coverage statistics", () => {
-    const withLogger = relevantFiles.filter(f => f.hasLoggerImport);
-    const withoutLogger = relevantFiles.filter(f => !f.hasLoggerImport);
-    const totalCalls = relevantFiles.reduce((sum, f) => sum + f.loggerCallCount, 0);
-
-    const coverage = ((withLogger.length / relevantFiles.length) * 100).toFixed(1);
-
-    console.log("\n📊 Logger Coverage Report:");
-    console.log(`  Total files analyzed: ${relevantFiles.length}`);
-    console.log(`  Files with logger: ${withLogger.length} (${coverage}%)`);
-    console.log(`  Files without logger: ${withoutLogger.length}`);
-    console.log(`  Total logger calls: ${totalCalls}`);
-    console.log(`  Excluded files: ${allFiles.length - relevantFiles.length}`);
-
-    if (withoutLogger.length > 0) {
-      console.log("\n📝 Files without logger:");
-      withoutLogger.forEach(f => {
-        const priority = f.isHighPriority ? "🔴 HIGH" : "  ";
-        console.log(`  ${priority} ${f.relativePath}`);
-      });
-    }
-
-    expect(withLogger.length).toBeGreaterThan(0);
   });
 });

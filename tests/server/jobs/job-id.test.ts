@@ -23,7 +23,7 @@ describe('buildServerJobId', () => {
       { ...baseParts, project_id: 'project_other' },
       { ...baseParts, source_type: 'observation_reindex' },
       { ...baseParts, source_id: 'evt_002' },
-      { ...baseParts, kind: 'reindex' as const }
+      { ...baseParts, kind: 'summary' as const }
     ];
     for (const variant of variants) {
       expect(buildServerJobId(variant)).not.toBe(baseId);
@@ -42,12 +42,8 @@ describe('buildServerJobId', () => {
 
   it('uses different prefixes per kind', () => {
     const event = buildServerJobId({ ...baseParts, kind: 'event' });
-    const batch = buildServerJobId({ ...baseParts, kind: 'event-batch' });
     const summary = buildServerJobId({ ...baseParts, kind: 'summary' });
-    const reindex = buildServerJobId({ ...baseParts, kind: 'reindex' });
     expect(event.startsWith('evt_')).toBe(true);
-    expect(batch.startsWith('evtb_')).toBe(true);
     expect(summary.startsWith('sum_')).toBe(true);
-    expect(reindex.startsWith('rdx_')).toBe(true);
   });
 });

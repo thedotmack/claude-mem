@@ -96,14 +96,6 @@ export class ProviderObservationGenerator {
       throw error;
     }
 
-    if (payload.kind !== 'event' && payload.kind !== 'event-batch' && payload.kind !== 'summary') {
-      logger.warn('SYSTEM', 'unsupported job kind for ProviderObservationGenerator', {
-        correlationId,
-        kind: payload.kind,
-      });
-      throw new Error(`unsupported job kind: ${payload.kind}`);
-    }
-
     // Phase 11 — anti-bypass guard. We MUST NOT trust BullMQ payload data
     // for tenant scope. Reload the canonical outbox row keyed by id only
     // (no scope filter), then compare its team_id/project_id to the
@@ -515,8 +507,6 @@ export class ProviderObservationGenerator {
   ): Promise<NonNullable<Awaited<ReturnType<PostgresAgentEventsRepository['getByIdForScope']>>>[]> {
     const repo = new PostgresAgentEventsRepository(this.options.pool);
 
-    type Event = NonNullable<Awaited<ReturnType<PostgresAgentEventsRepository['getByIdForScope']>>>;
-
     if (job.sourceType === 'session_summary') {
       // Summary jobs feed the provider every event tied to the server_session
       // that hasn't already been collapsed into a completed event-generation
@@ -542,19 +532,6 @@ export class ProviderObservationGenerator {
         teamId: job.teamId,
       });
       return event ? [event] : [];
-    }
-
-    if (payload.kind === 'event-batch') {
-      const out: Event[] = [];
-      for (const id of payload.agent_event_ids) {
-        const event = await repo.getByIdForScope({
-          id,
-          projectId: job.projectId,
-          teamId: job.teamId,
-        });
-        if (event) out.push(event);
-      }
-      return out;
     }
 
     return [];

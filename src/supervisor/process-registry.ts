@@ -275,10 +275,6 @@ export class ProcessRegistry {
     return this.runtimeProcesses.get(id);
   }
 
-  getByPid(pid: number): ManagedProcessRecord[] {
-    return this.getAll().filter(record => record.pid === pid);
-  }
-
   pruneDeadEntries(): number {
     this.initialize();
 

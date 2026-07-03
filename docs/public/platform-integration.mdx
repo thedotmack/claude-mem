@@ -443,42 +443,10 @@ GET /api/timeline?anchor=123&depth_before=10&depth_after=10&project=my-project
 ]
 ```
 
-#### Semantic Shortcuts
-
-<CardGroup cols={3}>
-  <Card title="Decisions" icon="check-circle">
-    ```http
-    GET /api/decisions?format=index&limit=20
-    ```
-  </Card>
-  <Card title="Changes" icon="code-commit">
-    ```http
-    GET /api/changes?format=index&limit=20
-    ```
-  </Card>
-  <Card title="How It Works" icon="lightbulb">
-    ```http
-    GET /api/how-it-works?format=index&limit=20
-    ```
-  </Card>
-</CardGroup>
-
-#### Search by Concept
-
-```http
-GET /api/search/by-concept?concept=discovery&format=index&limit=10&project=my-project
-```
-
 #### Search by File Path
 
 ```http
 GET /api/search/by-file?filePath=src/services/worker-service.ts&format=index&limit=10
-```
-
-#### Search by Type
-
-```http
-GET /api/search/by-type?type=bugfix&format=index&limit=10
 ```
 
 #### Get Recent Context
@@ -561,41 +529,6 @@ Body: { "enabled": true }
 ```
 </CodeGroup>
 
-#### Git Branch Operations
-
-<Tabs>
-  <Tab title="Get Status">
-    ```http
-    GET /api/branch/status
-    ```
-    ```json
-    {
-      "current": "main",
-      "remote": "origin/main",
-      "ahead": 0,
-      "behind": 0
-    }
-    ```
-  </Tab>
-  <Tab title="Switch Branch">
-    ```http
-    POST /api/branch/switch
-    Body: { "branch": "feature/new-feature" }
-    ```
-    ```json
-    { "success": true }
-    ```
-  </Tab>
-  <Tab title="Update Branch">
-    ```http
-    POST /api/branch/update
-    ```
-    ```json
-    { "success": true, "updated": boolean }
-    ```
-  </Tab>
-</Tabs>
-
 ### Viewer & Real-Time Updates (ViewerRoutes)
 
 #### Health Check
@@ -672,19 +605,6 @@ interface PendingMessage {
 ### Database Entities
 
 <Tabs>
-  <Tab title="SDK Session">
-    ```typescript
-    interface SDKSessionRow {
-      id: number;
-      claude_session_id: string;
-      sdk_session_id: string;
-      project: string;
-      user_prompt: string;
-      created_at_epoch: number;
-      completed_at_epoch?: number;
-    }
-    ```
-  </Tab>
   <Tab title="Observation">
     ```typescript
     interface ObservationRow {

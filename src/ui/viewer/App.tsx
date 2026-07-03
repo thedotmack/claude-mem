@@ -6,7 +6,6 @@ import { LogsDrawer } from './components/LogsModal';
 import { WelcomeCard, getStoredWelcomeDismissed, setStoredWelcomeDismissed } from './components/WelcomeCard';
 import { useSSE } from './hooks/useSSE';
 import { useSettings } from './hooks/useSettings';
-import { useStats } from './hooks/useStats';
 import { usePagination } from './hooks/usePagination';
 import { useTheme } from './hooks/useTheme';
 import { Observation, Summary, UserPrompt } from './types';
@@ -21,9 +20,8 @@ export function App() {
   const [paginatedSummaries, setPaginatedSummaries] = useState<Summary[]>([]);
   const [paginatedPrompts, setPaginatedPrompts] = useState<UserPrompt[]>([]);
 
-  const { observations, summaries, prompts, projects, isProcessing, queueDepth, isConnected } = useSSE();
+  const { observations, summaries, prompts, projects, isProcessing, queueDepth } = useSSE();
   const { settings, saveSettings, isSaving, saveStatus } = useSettings();
-  const { refreshStats } = useStats();
   const { preference, setThemePreference } = useTheme();
   const pagination = usePagination(currentFilter);
 
@@ -93,15 +91,9 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentFilter]);
 
-  useEffect(() => {
-    refreshStats();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [observations.length]);
-
   return (
     <>
       <Header
-        isConnected={isConnected}
         projects={projects}
         currentFilter={currentFilter}
         onFilterChange={setCurrentFilter}

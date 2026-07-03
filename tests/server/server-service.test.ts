@@ -282,7 +282,6 @@ function createStubGraph(): ServerServiceGraph {
     authMode: 'local-dev',
     queueManager: new DisabledServerQueueManager('test'),
     generationWorkerManager: new DisabledServerGenerationWorkerManager('test'),
-    storage: {} as any,
   };
 }
 
@@ -300,6 +299,5 @@ function createPostgresGraph(pool: pg.Pool, authMode: 'api-key' | 'local-dev'): 
     authMode,
     queueManager: new DisabledServerQueueManager('phase 4 integration test'),
     generationWorkerManager: new DisabledServerGenerationWorkerManager('test'),
-    storage: createPostgresStorageRepositories(pool as any),
   };
 }

@@ -212,10 +212,10 @@ describe('Hook Execution E2E', () => {
       server = new Server(mockOptions);
       await server.listen(testPort, '127.0.0.1');
 
-      const { stripMemoryTagsFromPrompt } = await import('../../src/utils/tag-stripping.js');
+      const { stripMemoryTags } = await import('../../src/utils/tag-stripping.js');
 
       const privatePrompt = '<private>secret command</private>';
-      const cleanedPrompt = stripMemoryTagsFromPrompt(privatePrompt);
+      const cleanedPrompt = stripMemoryTags(privatePrompt);
 
       const shouldSkip = !cleanedPrompt || cleanedPrompt.trim() === '';
       expect(shouldSkip).toBe(true);
@@ -225,10 +225,10 @@ describe('Hook Execution E2E', () => {
       server = new Server(mockOptions);
       await server.listen(testPort, '127.0.0.1');
 
-      const { stripMemoryTagsFromPrompt } = await import('../../src/utils/tag-stripping.js');
+      const { stripMemoryTags } = await import('../../src/utils/tag-stripping.js');
 
       const mixedPrompt = '<private>my password is secret123</private> Help me write a function';
-      const cleanedPrompt = stripMemoryTagsFromPrompt(mixedPrompt);
+      const cleanedPrompt = stripMemoryTags(mixedPrompt);
 
       const shouldSkip = !cleanedPrompt || cleanedPrompt.trim() === '';
       expect(shouldSkip).toBe(false);

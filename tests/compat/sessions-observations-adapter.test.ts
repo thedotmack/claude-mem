@@ -9,7 +9,6 @@
 
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import pg from 'pg';
-import { createHash, randomBytes } from 'crypto';
 import { Server } from '../../src/services/server/Server.js';
 import { ServerV1PostgresRoutes } from '../../src/server/routes/v1/ServerV1PostgresRoutes.js';
 import { SessionsObservationsAdapter } from '../../src/server/compat/SessionsObservationsAdapter.js';
@@ -22,18 +21,9 @@ import {
 } from '../../src/storage/postgres/index.js';
 import { DisabledServerQueueManager } from '../../src/server/runtime/types.js';
 import { logger } from '../../src/utils/logger.js';
+import { quoteIdentifier, newApiKey } from '../sdk/pg-isolation.js';
 
 const testDatabaseUrl = process.env.CLAUDE_MEM_TEST_POSTGRES_URL;
-
-function quoteIdentifier(name: string): string {
-  return `"${name.replaceAll('"', '""')}"`;
-}
-
-function newApiKey(): { raw: string; hash: string } {
-  const raw = `cm_${randomBytes(24).toString('hex')}`;
-  const hash = createHash('sha256').update(raw).digest('hex');
-  return { raw, hash };
-}
 
 describe('Phase 9 compat adapters', () => {
   if (!testDatabaseUrl) {
@@ -115,8 +105,6 @@ describe('Phase 9 compat adapters', () => {
       pool: pool as never,
       queueManager: new DisabledServerQueueManager('disabled in tests'),
       authMode: 'api-key',
-      runtime: 'server-beta',
-      sessionPolicy: 'per-event',
       getEventQueue: () => ({
         async add(jobId: string, payload: unknown) {
           enqueuedEventJobs.push({ id: jobId, payload });

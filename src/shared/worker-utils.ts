@@ -40,12 +40,6 @@ const HEALTH_CHECK_TIMEOUT_MS = readTimeoutEnv(
   { min: 500, max: 300000 }
 );
 
-const API_REQUEST_TIMEOUT_MS = readTimeoutEnv(
-  'CLAUDE_MEM_API_TIMEOUT_MS',
-  getTimeout(HOOK_TIMEOUTS.API_REQUEST),
-  { min: 500, max: 300000 }
-);
-
 const HOOK_READINESS_TIMEOUT_MS = readTimeoutEnv(
   'CLAUDE_MEM_HOOK_READINESS_TIMEOUT_MS',
   getTimeout(HOOK_TIMEOUTS.HOOK_READINESS_WAIT),

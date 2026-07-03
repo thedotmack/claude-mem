@@ -44,10 +44,7 @@ interface McpInstallerConfig {
   ideLabel: string;
   configPath: string;
   configKey: 'servers' | 'mcpServers';
-  contextFile?: {
-    path: string;
-    isWorkspaceRelative: boolean;
-  };
+  contextPath?: string;
 }
 
 function installMcpIntegration(config: McpInstallerConfig): () => Promise<number> {
@@ -65,10 +62,7 @@ function installMcpIntegration(config: McpInstallerConfig): () => Promise<number
 
     const skipWarpConfigWrite = config.ideId === 'warp' && !existsSync(path.dirname(configPath));
 
-    let contextPath: string | undefined;
-    if (config.contextFile) {
-      contextPath = config.contextFile.path;
-    }
+    const contextPath = config.contextPath;
 
     try {
       writeMcpConfigAndContext(config, configPath, mcpServerPath, skipWarpConfigWrite, contextPath);
@@ -124,10 +118,7 @@ const COPILOT_CLI_CONFIG: McpInstallerConfig = {
   ideLabel: 'Copilot CLI',
   configPath: path.join(homedir(), '.github', 'copilot', 'mcp.json'),
   configKey: 'servers',
-  contextFile: {
-    path: path.join(process.cwd(), '.github', 'copilot-instructions.md'),
-    isWorkspaceRelative: true,
-  },
+  contextPath: path.join(process.cwd(), '.github', 'copilot-instructions.md'),
 };
 
 const ANTIGRAVITY_CONFIG: McpInstallerConfig = {
@@ -135,10 +126,7 @@ const ANTIGRAVITY_CONFIG: McpInstallerConfig = {
   ideLabel: 'Antigravity',
   configPath: path.join(homedir(), '.gemini', 'antigravity', 'mcp_config.json'),
   configKey: 'mcpServers',
-  contextFile: {
-    path: path.join(process.cwd(), '.agents', 'rules', 'claude-mem-context.md'),
-    isWorkspaceRelative: true,
-  },
+  contextPath: path.join(process.cwd(), '.agents', 'rules', 'claude-mem-context.md'),
 };
 
 const ROO_CODE_CONFIG: McpInstallerConfig = {
@@ -146,10 +134,7 @@ const ROO_CODE_CONFIG: McpInstallerConfig = {
   ideLabel: 'Roo Code',
   configPath: path.join(process.cwd(), '.roo', 'mcp.json'),
   configKey: 'mcpServers',
-  contextFile: {
-    path: path.join(process.cwd(), '.roo', 'rules', 'claude-mem-context.md'),
-    isWorkspaceRelative: true,
-  },
+  contextPath: path.join(process.cwd(), '.roo', 'rules', 'claude-mem-context.md'),
 };
 
 const WARP_CONFIG: McpInstallerConfig = {
@@ -157,10 +142,7 @@ const WARP_CONFIG: McpInstallerConfig = {
   ideLabel: 'Warp',
   configPath: path.join(homedir(), '.warp', 'mcp.json'),
   configKey: 'mcpServers',
-  contextFile: {
-    path: path.join(process.cwd(), 'WARP.md'),
-    isWorkspaceRelative: true,
-  },
+  contextPath: path.join(process.cwd(), 'WARP.md'),
 };
 
 function getGooseConfigPath(): string {

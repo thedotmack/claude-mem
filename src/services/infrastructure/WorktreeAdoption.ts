@@ -285,8 +285,6 @@ export async function adoptMergedWorktrees(opts: {
         );
       }
       result.chromaFailed = adoptedSqliteIds.length;
-    } finally {
-      await chromaSync.close();
     }
   }
 

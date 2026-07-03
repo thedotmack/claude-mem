@@ -13,12 +13,9 @@ import {
   markGenerationFailed,
 } from '../../../src/server/generation/processGeneratedResponse.js';
 import { ModeManager } from '../../../src/services/domain/ModeManager.js';
+import { quoteIdentifier } from '../../sdk/pg-isolation.js';
 
 const testDatabaseUrl = process.env.CLAUDE_MEM_TEST_POSTGRES_URL;
-
-function quoteIdentifier(name: string): string {
-  return `"${name.replaceAll('"', '""')}"`;
-}
 
 describe('processGeneratedResponse + markGenerationFailed', () => {
   if (!testDatabaseUrl) {

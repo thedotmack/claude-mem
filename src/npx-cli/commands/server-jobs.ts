@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import pc from 'picocolors';
+import { parseArgs as parseNodeArgs, styleText } from 'node:util';
 import { logger } from '../../utils/logger.js';
 
 // Phase 12 — `claude-mem server jobs <subcommand>` operator console for the
@@ -50,7 +50,7 @@ export async function runServerJobsCommand(argv: string[]): Promise<void> {
     process.exit(1);
   }
   if (!process.env.CLAUDE_MEM_SERVER_DATABASE_URL) {
-    console.error(pc.red('CLAUDE_MEM_SERVER_DATABASE_URL is required for server jobs commands.'));
+    console.error(styleText('red', 'CLAUDE_MEM_SERVER_DATABASE_URL is required for server jobs commands.'));
     console.error('Configure Postgres first, then re-run.');
     process.exit(1);
   }
@@ -69,14 +69,14 @@ export async function runServerJobsCommand(argv: string[]): Promise<void> {
       await runJobsCancel(parseArgs(rest));
       return;
     default:
-      console.error(pc.red(`Unknown server jobs subcommand: ${sub}`));
+      console.error(styleText('red', `Unknown server jobs subcommand: ${sub}`));
       printJobsUsage();
       process.exit(1);
   }
 }
 
 function printJobsUsage(): void {
-  console.error(`Usage: ${pc.bold('npx claude-mem server jobs <subcommand>')}`);
+  console.error(`Usage: ${styleText('bold', 'npx claude-mem server jobs <subcommand>')}`);
   console.error('Subcommands:');
   console.error('  status                    Show queue lane counts (Postgres + BullMQ)');
   console.error('  failed [--limit N]        List failed generation jobs (default 20)');
@@ -86,42 +86,29 @@ function printJobsUsage(): void {
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
-  const out: ParsedArgs = { team: null, project: null, limit: FAILED_DEFAULT_LIMIT, positional: [] };
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (!arg) continue;
-    if (arg === '--team' || arg === '--project' || arg === '--limit') {
-      const value = argv[i + 1];
-      if (!value) {
-        console.error(pc.red(`Missing value for ${arg}`));
-        process.exit(1);
-      }
-      if (arg === '--team') out.team = value;
-      else if (arg === '--project') out.project = value;
-      else if (arg === '--limit') {
-        const n = Number.parseInt(value, 10);
-        out.limit = Number.isInteger(n) && n > 0 ? n : FAILED_DEFAULT_LIMIT;
-      }
-      i += 1;
-      continue;
-    }
-    if (arg.startsWith('--team=')) { out.team = arg.slice('--team='.length); continue; }
-    if (arg.startsWith('--project=')) { out.project = arg.slice('--project='.length); continue; }
-    if (arg.startsWith('--limit=')) {
-      const n = Number.parseInt(arg.slice('--limit='.length), 10);
-      out.limit = Number.isInteger(n) && n > 0 ? n : FAILED_DEFAULT_LIMIT;
-      continue;
-    }
-    out.positional.push(arg);
-  }
-  return out;
+  const { values, positionals } = parseNodeArgs({
+    args: argv,
+    options: {
+      team: { type: 'string' },
+      project: { type: 'string' },
+      limit: { type: 'string' },
+    },
+    allowPositionals: true,
+  });
+  const limit = Number.parseInt(values.limit ?? '', 10);
+  return {
+    team: values.team ?? null,
+    project: values.project ?? null,
+    limit: Number.isInteger(limit) && limit > 0 ? limit : FAILED_DEFAULT_LIMIT,
+    positional: positionals,
+  };
 }
 
 // `--team`/`--project` may both be absent only when CLAUDE_MEM_SERVER_ADMIN=1
 // is set in the env. Without admin we refuse and ask the operator to scope.
 function requireScope(args: ParsedArgs): { team: string | null; project: string | null } {
   if (!args.team && !args.project && process.env.CLAUDE_MEM_SERVER_ADMIN !== '1') {
-    console.error(pc.red('Refusing to run unscoped: pass --team <id> and/or --project <id>, or set CLAUDE_MEM_SERVER_ADMIN=1.'));
+    console.error(styleText('red', 'Refusing to run unscoped: pass --team <id> and/or --project <id>, or set CLAUDE_MEM_SERVER_ADMIN=1.'));
     process.exit(1);
   }
   return { team: args.team, project: args.project };
@@ -215,7 +202,7 @@ async function runJobsFailed(args: ParsedArgs): Promise<void> {
 async function runJobsRetry(args: ParsedArgs): Promise<void> {
   const id = args.positional[0];
   if (!id) {
-    console.error(pc.red('Usage: server jobs retry <id>'));
+    console.error(styleText('red', 'Usage: server jobs retry <id>'));
     process.exit(1);
   }
   const scope = requireScope(args);
@@ -225,7 +212,7 @@ async function runJobsRetry(args: ParsedArgs): Promise<void> {
     // honored, but project/team filters narrow the lookup when present.
     const lookup = await loadJobScoped(pool, id, scope);
     if (!lookup) {
-      console.error(pc.red(`Generation job not found: ${id}`));
+      console.error(styleText('red', `Generation job not found: ${id}`));
       process.exit(1);
     }
 
@@ -243,7 +230,7 @@ async function runJobsRetry(args: ParsedArgs): Promise<void> {
       return;
     }
     if (lookup.status === 'processing') {
-      console.error(pc.red(`Cannot retry an in-flight job. Cancel first or wait. Current status: ${lookup.status}`));
+      console.error(styleText('red', `Cannot retry an in-flight job. Cancel first or wait. Current status: ${lookup.status}`));
       process.exit(1);
     }
 
@@ -275,7 +262,7 @@ async function runJobsRetry(args: ParsedArgs): Promise<void> {
     type UpdatedRetryRow = { id: string; status: string; attempts: number; bullmq_job_id: string | null; source_type: string };
     const row = (updated.rows as UpdatedRetryRow[])[0];
     if (!row) {
-      console.error(pc.red('Update returned no rows; the job may have been deleted.'));
+      console.error(styleText('red', 'Update returned no rows; the job may have been deleted.'));
       process.exit(1);
     }
 
@@ -320,7 +307,7 @@ async function runJobsRetry(args: ParsedArgs): Promise<void> {
 async function runJobsCancel(args: ParsedArgs): Promise<void> {
   const id = args.positional[0];
   if (!id) {
-    console.error(pc.red('Usage: server jobs cancel <id>'));
+    console.error(styleText('red', 'Usage: server jobs cancel <id>'));
     process.exit(1);
   }
   const scope = requireScope(args);
@@ -328,7 +315,7 @@ async function runJobsCancel(args: ParsedArgs): Promise<void> {
   try {
     const lookup = await loadJobScoped(pool, id, scope);
     if (!lookup) {
-      console.error(pc.red(`Generation job not found: ${id}`));
+      console.error(styleText('red', `Generation job not found: ${id}`));
       process.exit(1);
     }
     if (lookup.status === 'cancelled') {
@@ -337,7 +324,7 @@ async function runJobsCancel(args: ParsedArgs): Promise<void> {
       return;
     }
     if (lookup.status === 'completed') {
-      console.error(pc.red('Cannot cancel a completed job.'));
+      console.error(styleText('red', 'Cannot cancel a completed job.'));
       process.exit(1);
     }
 
@@ -355,7 +342,7 @@ async function runJobsCancel(args: ParsedArgs): Promise<void> {
     type UpdatedCancelRow = { id: string; status: string; bullmq_job_id: string | null; source_type: string };
     const row = (updated.rows as UpdatedCancelRow[])[0];
     if (!row) {
-      console.error(pc.red('Update returned no rows.'));
+      console.error(styleText('red', 'Update returned no rows.'));
       process.exit(1);
     }
 

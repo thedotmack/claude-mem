@@ -6,21 +6,15 @@ import { readFileSync, writeFileSync, existsSync, renameSync, mkdirSync } from '
 import { getPackageRoot, paths } from '../../../../shared/paths.js';
 import { logger } from '../../../../utils/logger.js';
 import { SettingsManager } from '../../SettingsManager.js';
-import { getBranchInfo, switchBranch, pullUpdates } from '../../BranchManager.js';
 import { ModeManager } from '../../../domain/ModeManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { clearPortCache } from '../../../../shared/worker-utils.js';
-import { flushResponseThen } from '../../../server/flushResponseThen.js';
 import { snapshotDependencyHealth } from '../../../../shared/dependency-health.js';
 
 const toggleMcpSchema = z.object({
   enabled: z.boolean(),
-}).passthrough();
-
-const switchBranchSchema = z.object({
-  branch: z.string().min(1),
 }).passthrough();
 
 export class SettingsRoutes extends BaseRouteHandler {
@@ -37,10 +31,6 @@ export class SettingsRoutes extends BaseRouteHandler {
 
     app.get('/api/mcp/status', this.handleGetMcpStatus.bind(this));
     app.post('/api/mcp/toggle', validateBody(toggleMcpSchema), this.handleToggleMcp.bind(this));
-
-    app.get('/api/branch/status', this.handleGetBranchStatus.bind(this));
-    app.post('/api/branch/switch', validateBody(switchBranchSchema), this.handleSwitchBranch.bind(this));
-    app.post('/api/branch/update', this.handleUpdateBranch.bind(this));
   }
 
   private handleGetSettings = this.wrapHandler((req: Request, res: Response): void => {
@@ -139,50 +129,6 @@ export class SettingsRoutes extends BaseRouteHandler {
 
     this.toggleMcp(enabled);
     res.json({ success: true, enabled: this.isMcpEnabled() });
-  });
-
-  private handleGetBranchStatus = this.wrapHandler((req: Request, res: Response): void => {
-    const info = getBranchInfo();
-    res.json(info);
-  });
-
-  private handleSwitchBranch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { branch } = req.body as z.infer<typeof switchBranchSchema>;
-
-    const allowedBranches = ['main', 'beta/7.0', 'feature/bun-executable'];
-    if (!allowedBranches.includes(branch)) {
-      res.status(400).json({
-        success: false,
-        error: `Invalid branch. Allowed: ${allowedBranches.join(', ')}`
-      });
-      return;
-    }
-
-    logger.info('WORKER', 'Branch switch requested', { branch });
-
-    const result = await switchBranch(branch);
-
-    if (result.success) {
-      flushResponseThen(res, result, () => {
-        logger.info('WORKER', 'Restarting worker after branch switch');
-      });
-    } else {
-      res.json(result);
-    }
-  });
-
-  private handleUpdateBranch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    logger.info('WORKER', 'Branch update requested');
-
-    const result = await pullUpdates();
-
-    if (result.success) {
-      flushResponseThen(res, result, () => {
-        logger.info('WORKER', 'Restarting worker after branch update');
-      });
-    } else {
-      res.json(result);
-    }
   });
 
   private validateSettings(settings: any): { valid: boolean; error?: string } {

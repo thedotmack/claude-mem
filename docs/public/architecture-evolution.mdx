@@ -88,15 +88,7 @@ GET /api/settings        # User settings
 POST /api/settings       # Save settings
 ```
 
-**Database Enhancements**:
-```typescript
-// New SessionStore methods for viewer
-getRecentPrompts(limit, offset, project?)
-getRecentObservations(limit, offset, project?)
-getRecentSummaries(limit, offset, project?)
-getStats()
-getUniqueProjects()
-```
+**Database Enhancements**: SessionStore gained paginated queries for recent prompts, observations, and summaries (filterable by project), plus database stats and project listing to back the viewer endpoints. (These viewer-specific methods were later replaced by the unified search layer.)
 
 **React Architecture**:
 ```

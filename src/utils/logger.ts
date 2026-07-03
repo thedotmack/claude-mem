@@ -352,31 +352,6 @@ class Logger {
   failure(component: Component, message: string, context?: LogContext, data?: any): void {
     this.error(component, `✗ ${message}`, context, data);
   }
-
-  happyPathError<T = string>(
-    component: Component,
-    message: string,
-    context?: LogContext,
-    data?: any,
-    fallback: T = '' as T
-  ): T {
-    const stack = new Error().stack || '';
-    const stackLines = stack.split('\n');
-    const callerLine = stackLines[2] || '';
-    const callerMatch = callerLine.match(/at\s+(?:.*\s+)?\(?([^:]+):(\d+):(\d+)\)?/);
-    const location = callerMatch
-      ? `${callerMatch[1].split('/').pop()}:${callerMatch[2]}`
-      : 'unknown';
-
-    const enhancedContext = {
-      ...context,
-      location
-    };
-
-    this.warn(component, `[HAPPY-PATH] ${message}`, enhancedContext, data);
-
-    return fallback;
-  }
 }
 
 export const logger = new Logger();

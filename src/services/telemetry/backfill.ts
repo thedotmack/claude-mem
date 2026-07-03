@@ -557,10 +557,9 @@ export function buildBackfillEvents(
  *  3. build events
  *  4. CLAUDE_MEM_TELEMETRY_DEBUG=1   -> stderr dry-run, NO send, NO marker
  *  5. zero events                    -> write marker, return
- *  6. no API key                     -> return (vestigial: the embedded key is never falsy)
- *  7. dedicated historicalMigration client, single-batch sizing
- *  8. on('error') latch + capture all + await shutdown() (the ONLY delivery barrier)
- *  9. marker ONLY on clean shutdown with zero emitted errors
+ *  6. dedicated historicalMigration client, single-batch sizing
+ *  7. on('error') latch + capture all + await shutdown() (the ONLY delivery barrier)
+ *  8. marker ONLY on clean shutdown with zero emitted errors
  */
 export async function runHistoricalBackfill(db: Database): Promise<void> {
   try {
@@ -625,8 +624,6 @@ async function executeHistoricalBackfill(db: Database): Promise<void> {
     });
     return;
   }
-
-  if (!getTelemetryApiKey()) return;
 
   // Dedicated short-lived client — the live singleton lacks
   // historicalMigration and its shutdown latch must stay untouched. The

@@ -23,20 +23,18 @@ describe('npx CLI server namespace', () => {
     expect(serverSource).toContain('runStatusCommand()');
   });
 
-  it('routes server lifecycle commands while keeping reserved commands nonzero failures', () => {
+  it('routes server lifecycle commands and falls through to a nonzero failure for unknown commands', () => {
     expect(serverSource).toContain('runServerLifecycleCommand(subCommand)');
     expect(serverSource).toContain('runServerStartCommand()');
     expect(serverSource).toContain('runServerStopCommand()');
     expect(serverSource).toContain('runServerRestartCommand()');
     expect(serverSource).toContain('runServerStatusCommand()');
-    expect(serverSource).toContain("'logs'");
-    expect(serverSource).toContain("'doctor'");
-    expect(serverSource).toContain("'migrate'");
-    expect(serverSource).toContain("'export'");
-    expect(serverSource).toContain("'import'");
     expect(serverSource).toContain("process.exit(1)");
     expect(serverSource).toContain('runServerApiKeyCommand(argv.slice(1))');
     expect(serverSource).not.toContain('runServerLogsCommand');
+    expect(serverSource).not.toContain("'logs'");
+    expect(serverSource).not.toContain("'doctor'");
+    expect(serverSource).not.toContain("'migrate'");
   });
 
   it('normalizes direct worker-service server invocations', () => {

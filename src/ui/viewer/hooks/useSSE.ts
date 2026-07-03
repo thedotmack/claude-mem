@@ -8,7 +8,6 @@ export function useSSE() {
   const [summaries, setSummaries] = useState<Summary[]>([]);
   const [prompts, setPrompts] = useState<UserPrompt[]>([]);
   const [projects, setProjects] = useState<string[]>([]);
-  const [isConnected, setIsConnected] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [queueDepth, setQueueDepth] = useState(0);
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -29,7 +28,6 @@ export function useSSE() {
 
       eventSource.onopen = () => {
         console.log('[SSE] Connected');
-        setIsConnected(true);
         if (reconnectTimeoutRef.current) {
           clearTimeout(reconnectTimeoutRef.current);
         }
@@ -37,7 +35,6 @@ export function useSSE() {
 
       eventSource.onerror = (error) => {
         console.error('[SSE] Connection error:', error);
-        setIsConnected(false);
         eventSource.close();
 
         reconnectTimeoutRef.current = setTimeout(() => {
@@ -111,7 +108,6 @@ export function useSSE() {
     prompts,
     projects,
     isProcessing,
-    queueDepth,
-    isConnected
+    queueDepth
   };
 }

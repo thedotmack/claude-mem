@@ -6,7 +6,6 @@ import {
   isQuotaLimitedObserverOutput,
   previewOutput,
 } from '../../../sdk/output-classifier.js';
-import { ingestSummary } from '../http/shared.js';
 import { updateCursorContextForProject } from '../../integrations/CursorHooksInstaller.js';
 import { notifyTelegram } from '../../integrations/TelegramNotifier.js';
 import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
@@ -205,16 +204,6 @@ export async function processAgentResponse(
         usage && usage.input > 0 && usage.output > 0
           ? Math.round((usage.input / usage.output) * 100) / 100
           : undefined,
-    });
-  }
-
-  if (summary && (summary.skipped || session.lastSummaryStored)) {
-    await ingestSummary({
-      kind: 'parsed',
-      sessionDbId: session.sessionDbId,
-      messageId: -1,
-      contentSessionId: session.contentSessionId,
-      parsed: summary,
     });
   }
 
@@ -428,7 +417,7 @@ async function syncAndBroadcastSummary(
     created_at_epoch: result.createdAtEpoch
   });
 
-  updateCursorContextForProject(session.project, getWorkerPort()).catch(error => {
+  updateCursorContextForProject(session.project).catch(error => {
     logger.warn('CURSOR', 'Context update failed (non-critical)', { project: session.project }, error as Error);
   });
 }

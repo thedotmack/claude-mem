@@ -55,18 +55,9 @@ const observationsBatchSchema = z.object({
   platform_source: z.string().optional(),
 }).passthrough();
 
-const sdkSessionsBatchSchema = z.preprocess((value) => {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
-
-  const body = value as Record<string, unknown>;
-  if (body.memorySessionIds === undefined && body.sdkSessionIds !== undefined) {
-    return { ...body, memorySessionIds: body.sdkSessionIds };
-  }
-
-  return value;
-}, z.object({
+const sdkSessionsBatchSchema = z.object({
   memorySessionIds: stringArrayLike,
-}).passthrough());
+}).passthrough();
 
 const importSchema = z.object({
   sessions: z.array(z.unknown()).optional(),
@@ -295,27 +286,6 @@ export class DataRoutes extends BaseRouteHandler {
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
 
     return { offset, limit, project, platformSource };
-  }
-
-  private static firstString(value: unknown): string | undefined {
-    if (Array.isArray(value)) {
-      return DataRoutes.firstString(value[0]);
-    }
-    return typeof value === 'string' && value.trim() ? value : undefined;
-  }
-
-  private getOptionalPlatformSourceFromRequest(req: Request): string | undefined {
-    const body = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
-    const header = req.get?.('x-platform-source')
-      ?? req.get?.('x-claude-mem-platform-source');
-    const rawPlatformSource =
-      DataRoutes.firstString(req.query.platformSource)
-      ?? DataRoutes.firstString(req.query.platform_source)
-      ?? DataRoutes.firstString(body.platformSource)
-      ?? DataRoutes.firstString(body.platform_source)
-      ?? DataRoutes.firstString(header);
-
-    return rawPlatformSource ? normalizePlatformSource(rawPlatformSource) : undefined;
   }
 
   private handleImport = this.wrapHandler((req: Request, res: Response): void => {

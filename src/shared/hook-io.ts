@@ -125,18 +125,6 @@ export function emitModelContext(adapter: PlatformAdapter, result: HookResult): 
 
 let moduleHasEmitted = false;
 
-/**
- * USER_HINT routed via the HookResult.systemMessage path. Does NOT write to a
- * stream — returns a HookResult the caller merges before emitModelContext.
- * systemMessage is platform-specific (claude-code surfaces it; codex ignores
- * it) so it must flow through the adapter, not raw stderr. If a systemMessage
- * already exists, the hint is appended with a blank line between.
- */
-export function withUserHint(result: HookResult, hint: string): HookResult {
-  const merged = result.systemMessage ? `${result.systemMessage}\n\n${hint}` : hint;
-  return { ...result, systemMessage: merged };
-}
-
 export interface ExitOptions {
   skipExit?: boolean;
 }
