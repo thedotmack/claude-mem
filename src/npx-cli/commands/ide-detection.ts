@@ -85,8 +85,8 @@ export function detectInstalledIDEs(): IDEInfo[] {
     {
       id: 'antigravity',
       label: 'Antigravity',
-      detected: existsSync(join(home, '.gemini', 'antigravity')),
-      hint: 'MCP-based integration',
+      detected: existsSync(join(home, '.gemini', 'antigravity')) || isCommandInPath('agy'),
+      hint: 'hooks + MCP integration',
     },
     {
       id: 'goose',

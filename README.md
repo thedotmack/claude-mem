@@ -142,6 +142,12 @@ Or install for OpenCode:
 npx claude-mem install --ide opencode
 ```
 
+Or install for Antigravity CLI ([setup guide](https://docs.claude-mem.ai/antigravity-cli/setup)):
+
+```bash
+npx claude-mem install --ide antigravity
+```
+
 Or install from the plugin marketplace inside Claude Code:
 
 ```bash

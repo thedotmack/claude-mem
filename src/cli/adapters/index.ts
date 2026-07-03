@@ -1,4 +1,5 @@
 import type { PlatformAdapter } from '../types.js';
+import { antigravityCliAdapter } from './antigravity-cli.js';
 import { claudeCodeAdapter } from './claude-code.js';
 import { codexAdapter } from './codex.js';
 import { cursorAdapter } from './cursor.js';
@@ -11,9 +12,10 @@ export function getPlatformAdapter(platform: string): PlatformAdapter {
     case 'codex': return codexAdapter;
     case 'cursor': return cursorAdapter;
     case 'windsurf': return windsurfAdapter;
+    case 'antigravity': case 'antigravity-cli': return antigravityCliAdapter;
     case 'raw': return rawAdapter;
     default: return rawAdapter;
   }
 }
 
-export { claudeCodeAdapter, codexAdapter, cursorAdapter, rawAdapter, windsurfAdapter };
+export { antigravityCliAdapter, claudeCodeAdapter, codexAdapter, cursorAdapter, rawAdapter, windsurfAdapter };

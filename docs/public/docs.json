@@ -59,6 +59,13 @@
         ]
       },
       {
+        "group": "Antigravity CLI Integration",
+        "icon": "terminal",
+        "pages": [
+          "antigravity-cli/setup"
+        ]
+      },
+      {
         "group": "Best Practices",
         "icon": "lightbulb",
         "pages": [

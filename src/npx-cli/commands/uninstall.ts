@@ -371,6 +371,10 @@ export async function runUninstallCommand(): Promise<void> {
       const { uninstallCodexCli } = await import('../../services/integrations/CodexCliInstaller.js');
       return uninstallCodexCli();
     }},
+    { label: 'Antigravity CLI hooks + MCP', fn: async () => {
+      const { uninstallAntigravityCliHooks } = await import('../../services/integrations/AntigravityCliHooksInstaller.js');
+      return uninstallAntigravityCliHooks();
+    }},
   ];
 
   for (const { label, fn } of ideCleanups) {

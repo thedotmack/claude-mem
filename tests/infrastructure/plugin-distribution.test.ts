@@ -434,6 +434,7 @@ describe('Spawn-Contract Templating - Rule B installers bake absolute paths', ()
     'src/services/integrations/CursorHooksInstaller.ts',
     'src/services/integrations/WindsurfHooksInstaller.ts',
     'src/services/integrations/McpIntegrations.ts',
+    'src/services/integrations/AntigravityCliHooksInstaller.ts',
   ];
 
   for (const file of installerFiles) {

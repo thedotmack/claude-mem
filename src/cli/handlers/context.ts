@@ -132,8 +132,16 @@ export const contextHandler: EventHandler = {
       }
     }
 
-    const systemMessage = showTerminalOutput && coloredTimeline
-      ? `${coloredTimeline}\n\nView Observations Live @ http://localhost:${port}`
+    const platform = input.platform;
+
+    // Antigravity CLI (like the former Gemini CLI) is hooks-based, not an
+    // MCP-context-fetch platform like Codex — colorApiPath never populates
+    // coloredTimeline for it (colors are claude-code-only above), so fall
+    // back to the plain additionalContext for terminal display.
+    const displayContent = coloredTimeline || (platform === 'antigravity-cli' ? additionalContext : '');
+
+    const systemMessage = showTerminalOutput && displayContent
+      ? `${displayContent}\n\nView Observations Live @ http://localhost:${port}`
       : undefined;
 
     return {
