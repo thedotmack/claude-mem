@@ -50,8 +50,8 @@ describe('AntigravityCliHooksInstaller - event mapping (B0-confirmed 8-event map
     expect(src).toContain('writeMcpJsonConfig');
   });
 
-  it('writes the rules/context placeholder to the plural .agents/rules path', () => {
-    expect(src).toContain("path.join(process.cwd(), '.agents', 'rules', 'claude-mem-context.md')");
+  it('writes the rules/context placeholder to the plural, home-relative .agents/rules path', () => {
+    expect(src).toContain("path.join(homedir(), '.agents', 'rules', 'claude-mem-context.md')");
   });
 });
 

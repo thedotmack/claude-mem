@@ -50,9 +50,12 @@ const ANTIGRAVITY_MCP_CONFIG_PATHS = [
   path.join(GEMINI_CONFIG_DIR, 'config', 'mcp_config.json'),
 ];
 
-// Plural "agents" — confirmed real and populated in B0. Matches the path the
-// prior MCP-only ANTIGRAVITY_CONFIG in McpIntegrations.ts already used.
-const RULES_CONTEXT_PATH = path.join(process.cwd(), '.agents', 'rules', 'claude-mem-context.md');
+// Plural "agents", home-relative — confirmed real and populated in B0 at
+// ~/.agents/rules/. The prior MCP-only ANTIGRAVITY_CONFIG used process.cwd()
+// instead, which a live install test (Phase C) proved wrong: it writes into
+// whatever directory the installer happens to run from rather than the
+// user's actual global rules directory.
+const RULES_CONTEXT_PATH = path.join(homedir(), '.agents', 'rules', 'claude-mem-context.md');
 
 const HOOK_NAME = 'claude-mem';
 const HOOK_TIMEOUT_MS = 10000;
