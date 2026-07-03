@@ -2,6 +2,7 @@ import { spawnHidden } from '../../shared/spawn.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
+import { buildObservationPrompt, type Observation, type ObservationPromptOptions } from '../../sdk/prompts.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
@@ -23,6 +24,17 @@ const CODEX_EXEC_WORKDIR_PREFIX = 'claude-mem-codex-';
 const WINDOWS_SHELL_META_RE = /[\0\r\n&|<>()^%!"]/;
 const CODEX_REASONING_EFFORT_VALUES = ['minimal', 'low', 'medium', 'high', 'xhigh'] as const;
 const CODEX_REASONING_EFFORTS = new Set<string>(CODEX_REASONING_EFFORT_VALUES);
+const CODEX_OBSERVATION_PROMPT_OPTIONS: ObservationPromptOptions = {
+  maxObservations: 3,
+  requireNarrative: true,
+  extraOutputRules: [
+    'Prefer one observation per tool use. Use 2-3 only when the tool output contains unrelated durable findings that would be misleading if merged.',
+    'Do not split a single command output, diff, status report, review, or document inspection into one observation per line, file, or finding; merge related facts under one title.',
+    'Keep exact commands, file paths, IDs, counts, dates, and source-specific evidence in <facts>, but group related facts into the same observation.',
+    'If the tool output only confirms a transient status, queue depth, formatting check, or no-op probe, return an empty response unless it changes the durable conclusion for future work.',
+    'Never create near-duplicate observations that differ only by wording or by one overlapping fact.',
+  ],
+};
 const CODEX_EXEC_ENV_ALLOWLIST = new Set([
   'APPDATA',
   'CODEX_HOME',
@@ -255,6 +267,10 @@ export function parseCodexExecJsonl(stdout: string): ProviderQueryResult {
   };
 }
 
+export function buildCodexObservationPrompt(obs: Observation): string {
+  return buildObservationPrompt(obs, CODEX_OBSERVATION_PROMPT_OPTIONS);
+}
+
 export function classifyCodexExecError(input: {
   exitCode?: number | null;
   signal?: NodeJS.Signals | string | null;
@@ -339,7 +355,6 @@ export function classifyCodexExecError(input: {
 export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
   protected readonly providerName = 'Codex';
   protected readonly syntheticIdPrefix = 'codex';
-  protected readonly requireNonEmptyToTruncate = false;
   protected readonly forwardEmptyMessageResponse = true;
 
   constructor(dbManager: DatabaseManager, sessionManager: SessionManager) {
@@ -380,6 +395,10 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
     };
   }
 
+  protected buildObservationPrompt(obs: Observation, _config: CodexConfig): string {
+    return buildCodexObservationPrompt(obs);
+  }
+
   protected async query(history: ConversationMessage[], config: CodexConfig): Promise<ProviderQueryResult> {
     return withRetry(
       attemptSignal => this.queryCodexExec(history, config, attemptSignal),
@@ -392,7 +411,37 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
   }
 
   private truncateHistoryForCodex(history: ConversationMessage[], config: CodexConfig): ConversationMessage[] {
-    return this.truncateHistory(history, config.maxContextMessages, config.maxEstimatedTokens);
+    if (history.length <= config.maxContextMessages) {
+      const totalTokens = history.reduce((sum, message) => sum + this.estimateTokens(message.content), 0);
+      if (totalTokens <= config.maxEstimatedTokens) {
+        return history;
+      }
+    }
+
+    const truncated: ConversationMessage[] = [];
+    let tokenCount = 0;
+
+    for (let i = history.length - 1; i >= 0; i--) {
+      const message = history[i];
+      const messageTokens = this.estimateTokens(message.content);
+      const overLimit = truncated.length >= config.maxContextMessages || tokenCount + messageTokens > config.maxEstimatedTokens;
+
+      if (overLimit) {
+        logger.warn('SDK', 'Codex context window truncated to prevent runaway costs', {
+          originalMessages: history.length,
+          keptMessages: truncated.length,
+          droppedMessages: i + 1,
+          estimatedTokens: tokenCount,
+          tokenLimit: config.maxEstimatedTokens,
+        });
+        break;
+      }
+
+      truncated.unshift(message);
+      tokenCount += messageTokens;
+    }
+
+    return truncated;
   }
 
   private formatPrompt(history: ConversationMessage[], config: CodexConfig): string {
