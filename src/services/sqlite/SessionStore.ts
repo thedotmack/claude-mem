@@ -478,8 +478,6 @@ export class SessionStore {
       CREATE INDEX IF NOT EXISTS idx_sdk_sessions_project ON sdk_sessions(project);
       CREATE INDEX IF NOT EXISTS idx_sdk_sessions_status ON sdk_sessions(status);
       CREATE INDEX IF NOT EXISTS idx_sdk_sessions_started ON sdk_sessions(started_at_epoch DESC);
-      CREATE INDEX IF NOT EXISTS idx_sdk_sessions_platform_source ON sdk_sessions(platform_source);
-      CREATE UNIQUE INDEX IF NOT EXISTS ux_sdk_sessions_platform_content ON sdk_sessions(platform_source, content_session_id);
 
       CREATE TABLE IF NOT EXISTS observations (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -518,6 +516,13 @@ export class SessionStore {
       CREATE INDEX IF NOT EXISTS idx_session_summaries_project ON session_summaries(project);
       CREATE INDEX IF NOT EXISTS idx_session_summaries_created ON session_summaries(created_at_epoch DESC);
     `);
+
+    const sdkSessionColumns = this.db.query('PRAGMA table_info(sdk_sessions)').all() as TableColumnInfo[];
+    const hasPlatformSource = sdkSessionColumns.some(col => col.name === 'platform_source');
+    if (hasPlatformSource) {
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_sdk_sessions_platform_source ON sdk_sessions(platform_source)');
+      this.db.run('CREATE UNIQUE INDEX IF NOT EXISTS ux_sdk_sessions_platform_content ON sdk_sessions(platform_source, content_session_id)');
+    }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(4, new Date().toISOString());
   }
