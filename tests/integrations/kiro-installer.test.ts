@@ -351,14 +351,19 @@ describe('installKiroCliIntegration / uninstallKiroCliIntegration', () => {
     expect(readJson(USER_SETTINGS_PATH).CLAUDE_MEM_PROVIDER).toBeUndefined();
   });
 
-  it('never overrides an explicit provider choice', async () => {
-    writeAgent('daily', { name: 'daily' });
-    writeFileSync(USER_SETTINGS_PATH, JSON.stringify({ CLAUDE_MEM_PROVIDER: 'claude' }, null, 2));
+  it('respects any existing provider value, like the gemini/openrouter providers do', async () => {
+    // The install-flow default for --ide kiro-cli lives in promptProvider,
+    // which persists provider=kiro BEFORE this installer runs; here an
+    // existing value — user-chosen claude included — is never clobbered.
+    for (const provider of ['claude', 'gemini', 'openrouter']) {
+      writeAgent('daily', { name: 'daily' });
+      writeFileSync(USER_SETTINGS_PATH, JSON.stringify({ CLAUDE_MEM_PROVIDER: provider }, null, 2));
 
-    expect(await installKiroCliIntegration()).toBe(0);
-    expect(readJson(USER_SETTINGS_PATH).CLAUDE_MEM_PROVIDER).toBe('claude');
+      expect(await installKiroCliIntegration()).toBe(0);
+      expect(readJson(USER_SETTINGS_PATH).CLAUDE_MEM_PROVIDER).toBe(provider);
 
-    expect(uninstallKiroCliIntegration()).toBe(0);
-    expect(readJson(USER_SETTINGS_PATH).CLAUDE_MEM_PROVIDER).toBe('claude');
+      expect(uninstallKiroCliIntegration()).toBe(0);
+      expect(readJson(USER_SETTINGS_PATH).CLAUDE_MEM_PROVIDER).toBe(provider);
+    }
   });
 });

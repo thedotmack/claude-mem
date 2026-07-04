@@ -383,16 +383,25 @@ function revertSemanticInjectDefault(manifest: KiroInstallManifest | null): void
 
 /**
  * Kiro installs should compress on the user's Kiro subscription by default —
- * no third-party API key and no co-installed Claude Code required. Only fills
- * the value when the user has not chosen a provider; recorded in the manifest
- * and reverted on uninstall.
+ * no third-party API key and no co-installed Claude Code required. Behaves
+ * like the gemini/openrouter providers: an existing CLAUDE_MEM_PROVIDER value
+ * is always respected; only an unset one is filled. The kiro-by-default
+ * decision for `npx claude-mem install --ide kiro-cli` lives in
+ * promptProvider (install.ts), the one place that can distinguish an explicit
+ * user choice from the materialised 'claude' settings default — by the time
+ * this runs there, the provider is already set. This fallback covers the
+ * standalone `claude-mem kiro-cli install` path on fresh machines.
  *
- * Returns true when the installer wrote the key.
+ * Returns true when the installer wrote the key; recorded in the manifest and
+ * reverted on uninstall.
  */
 function defaultProviderToKiro(): boolean {
   const settings = readJsonSafe<Record<string, unknown>>(USER_SETTINGS_PATH, {});
   if (settings.CLAUDE_MEM_PROVIDER !== undefined) {
-    console.log(`  Compression provider: ${settings.CLAUDE_MEM_PROVIDER} (set CLAUDE_MEM_PROVIDER=kiro to use your Kiro subscription)`);
+    const hint = settings.CLAUDE_MEM_PROVIDER === 'kiro'
+      ? ''
+      : ' (set CLAUDE_MEM_PROVIDER=kiro to use your Kiro subscription)';
+    console.log(`  Compression provider: ${settings.CLAUDE_MEM_PROVIDER}${hint}`);
     return false;
   }
   settings.CLAUDE_MEM_PROVIDER = 'kiro';

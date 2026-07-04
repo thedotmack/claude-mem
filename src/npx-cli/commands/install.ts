@@ -931,8 +931,17 @@ async function bootstrapAndPersistServerApiKey(): Promise<void> {
   );
 }
 
-async function promptProvider(options: InstallOptions): Promise<ProviderId> {
-  const initialProvider = (getSetting('CLAUDE_MEM_PROVIDER') as ProviderId) || 'claude';
+async function promptProvider(options: InstallOptions, selectedIDEs: string[] = []): Promise<ProviderId> {
+  // Kiro-targeted installs default to the kiro provider (compression on the
+  // user's Kiro subscription — no API key, no co-installed Claude Code).
+  // This decision must live HERE and not in the Kiro installer: unrelated
+  // loadFromFile calls materialise the 'claude' fallback into settings.json
+  // before the IDE tasks run, so only this flow can tell an explicit choice
+  // (--provider flag / prompt selection) from the written default.
+  const kiroTargeted = selectedIDEs.includes('kiro-cli');
+  const initialProvider = kiroTargeted
+    ? 'kiro'
+    : ((getSetting('CLAUDE_MEM_PROVIDER') as ProviderId) || 'claude');
 
   const persistClaudeProvider = (authMethod?: 'subscription' | 'api-key' | 'gateway') => {
     const resolvedAuthMethod = authMethod ?? resolveClaudeAuthMethod();
@@ -1062,6 +1071,11 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
       if (wrote) log.info(`Saved provider=${options.provider} to ~/.claude-mem/settings.json`);
       log.warn(`Provider=${options.provider} requested non-interactively. API key prompt skipped — set CLAUDE_MEM_${options.provider.toUpperCase()}_API_KEY and CLAUDE_MEM_PROVIDER in settings.json or env manually if not already set.`);
       return options.provider;
+    }
+    if (kiroTargeted) {
+      const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: 'kiro' });
+      if (wrote) log.info('Saved provider=kiro to ~/.claude-mem/settings.json (Kiro CLI install default — pass --provider to choose another)');
+      return 'kiro';
     }
     return initialProvider;
   }
@@ -1545,7 +1559,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   }
 
   const selectedRuntime = await promptRuntime(options);
-  const selectedProvider = await promptProvider(options);
+  const selectedProvider = await promptProvider(options, selectedIDEs);
   if (selectedProvider === 'claude') {
     await promptClaudeModel(options);
   }
