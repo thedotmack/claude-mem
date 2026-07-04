@@ -220,6 +220,20 @@ describe('Codex CLI Compatibility (#744)', () => {
 
       expect(output).toEqual({ continue: true });
     });
+
+    it('preserves an explicit empty-string additionalContext instead of dropping the key (#3127)', async () => {
+      const { codexAdapter } = await import('../src/cli/adapters/codex.js');
+      const output = codexAdapter.formatOutput({
+        continue: true,
+        suppressOutput: true,
+        hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
+      }) as any;
+
+      expect(output).toEqual({
+        continue: true,
+        hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
+      });
+    });
   });
 
   describe('session-init handler undefined prompt', () => {
