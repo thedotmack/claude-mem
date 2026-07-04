@@ -51,6 +51,7 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem adopt [--dry-run] [--branch <name>]')}    Stamp merged worktrees into parent project
   ${styleText('cyan', 'npx claude-mem cleanup [--dry-run]')}    Run one-time v12.4.3 pollution cleanup (or preview counts)
   ${styleText('cyan', 'npx claude-mem transcript watch')}     Start transcript watcher
+  ${styleText('cyan', 'npx claude-mem kiro-cli install|uninstall|status')}   Manage the Kiro CLI integration
   ${styleText('cyan', 'npx claude-mem antigravity-cli install|status|uninstall')}   Manage Antigravity CLI hooks + MCP config
 
 ${styleText('bold', 'IDE Identifiers')}:
@@ -210,6 +211,14 @@ async function main(): Promise<void> {
     case 'cleanup': {
       const { runCleanupCommand } = await import('./commands/runtime.js');
       runCleanupCommand(args.slice(1));
+      break;
+    }
+
+    case 'kiro-cli': {
+      // Documented surface: npx claude-mem kiro-cli install|uninstall|status
+      const { handleKiroCliCommand } = await import('../services/integrations/KiroCliInstaller.js');
+      const exitCode = await handleKiroCliCommand(args[1], args.slice(2));
+      process.exit(exitCode);
       break;
     }
 

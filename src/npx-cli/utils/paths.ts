@@ -50,14 +50,20 @@ export function pluginCacheDirectory(version: string): string {
 
 export function npmPackageRootDirectory(): string {
   const currentFilePath = fileURLToPath(import.meta.url);
-  const root = join(dirname(currentFilePath), '..', '..');
-  if (!existsSync(join(root, 'package.json'))) {
-    throw new Error(
-      `npmPackageRootDirectory: expected package.json at ${root}. ` +
-      `Bundle structure may have changed — update the path walk.`,
-    );
+  // Walk up until package.json: two levels for the built bundle
+  // (npx-cli/utils/ under the package root), three when executing TypeScript
+  // source directly (src/npx-cli/utils/ — e.g. `bun src/npx-cli/index.ts`).
+  let candidate = dirname(currentFilePath);
+  for (let depth = 0; depth < 5; depth++) {
+    if (existsSync(join(candidate, 'package.json'))) {
+      return candidate;
+    }
+    candidate = dirname(candidate);
   }
-  return root;
+  throw new Error(
+    `npmPackageRootDirectory: no package.json found walking up from ${dirname(currentFilePath)}. ` +
+    `Bundle structure may have changed — update the path walk.`,
+  );
 }
 
 export function npmPackagePluginDirectory(): string {

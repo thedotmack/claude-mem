@@ -331,7 +331,7 @@ export function ContextSettingsModal({
             >
               <FormField
                 label="AI Provider"
-                tooltip="Choose between Claude (via Agent SDK) or Gemini (via REST API)"
+                tooltip="Backend used to compress observations: Claude (Agent SDK), Gemini or OpenRouter (API key), or Kiro (your kiro-cli login session)"
               >
                 <select
                   value={formState.CLAUDE_MEM_PROVIDER || 'claude'}
@@ -340,6 +340,7 @@ export function ContextSettingsModal({
                   <option value="claude">Claude (uses your Claude account)</option>
                   <option value="gemini">Gemini (uses API key)</option>
                   <option value="openrouter">OpenRouter (multi-model)</option>
+                  <option value="kiro">Kiro (uses your Kiro subscription)</option>
                 </select>
               </FormField>
 
@@ -441,6 +442,33 @@ export function ContextSettingsModal({
                       value={formState.CLAUDE_MEM_OPENROUTER_APP_NAME || 'claude-mem'}
                       onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_APP_NAME', e.target.value)}
                       placeholder="claude-mem"
+                    />
+                  </FormField>
+                </>
+              )}
+
+              {formState.CLAUDE_MEM_PROVIDER === 'kiro' && (
+                <>
+                  <FormField
+                    label="Kiro Model"
+                    tooltip="No API key needed — auth is your kiro-cli login session. Model ids use dot notation (claude-haiku-4.5, claude-sonnet-4, auto). The model is pinned into the claude-mem-observer agent, so changes take effect after re-running: npx claude-mem install --ide kiro-cli"
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_KIRO_MODEL || 'claude-haiku-4.5'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_KIRO_MODEL', e.target.value)}
+                      placeholder="claude-haiku-4.5"
+                    />
+                  </FormField>
+                  <FormField
+                    label="Kiro CLI Path (Optional)"
+                    tooltip="Absolute path to kiro-cli. Only needed when it is not on PATH or in a standard install location."
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_KIRO_CLI_PATH || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_KIRO_CLI_PATH', e.target.value)}
+                      placeholder="/opt/homebrew/bin/kiro-cli"
                     />
                   </FormField>
                 </>
