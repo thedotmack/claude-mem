@@ -41,7 +41,7 @@ Claude-mem needs an AI provider to compress observations. On Kiro installs this 
 
 - The installer sets `CLAUDE_MEM_PROVIDER=kiro` (only when you haven't chosen a provider; reverted on uninstall) and writes a dedicated `claude-mem-observer` agent to `~/.kiro/agents/` — a **hook-less, tool-less** agent the worker spawns via headless `kiro-cli chat --no-interactive` for each compression call. Hook-less is deliberate: it stops the compression chat from being observed by claude-mem itself (recursion guard). Don't add hooks to it.
 - Requirements: an active `kiro-cli login` session. Each compression call consumes a small amount of Kiro credits (fractions of a credit per observation batch).
-- Optional settings: `CLAUDE_MEM_KIRO_MODEL` (pins a model into the observer agent at install), `CLAUDE_MEM_KIRO_CLI_PATH` (non-standard binary location).
+- Optional settings: `CLAUDE_MEM_KIRO_MODEL` (model pinned into the observer agent at install — defaults to `claude-haiku-4.5`, the cheapest Kiro tier; note the dot notation), `CLAUDE_MEM_KIRO_CLI_PATH` (non-standard binary location).
 
 Prefer a different backend? All other providers still work — `CLAUDE_MEM_PROVIDER` accepts `claude` (needs Claude Code on the same machine), `gemini`, or `openrouter` (any OpenAI-compatible endpoint). See [Cursor's provider guides](/cursor/gemini-setup); the setup is identical.
 

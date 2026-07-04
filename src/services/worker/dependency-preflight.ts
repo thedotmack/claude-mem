@@ -3,11 +3,13 @@ import os from 'os';
 import fs from 'fs';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { findClaudeExecutable as defaultFindClaudeExecutable } from '../../shared/find-claude-executable.js';
+import { findKiroCliExecutable } from './KiroProvider.js';
 import { logger } from '../../utils/logger.js';
 import {
   clearDependencyStatus,
   recordClaudeCliSetupRequired,
   recordUvxVectorSearchUnavailable,
+  recordKiroCliSetupRequired,
   snapshotDependencyHealth,
   type DependencyHealthSnapshot,
 } from '../../shared/dependency-health.js';
@@ -176,6 +178,17 @@ export function runWorkerDependencyPreflight(options: WorkerDependencyPreflightO
     }
   } else {
     clearDependencyStatus('claude_cli');
+  }
+
+  if (provider === 'kiro') {
+    if (findKiroCliExecutable()) {
+      clearDependencyStatus('kiro_cli');
+    } else {
+      logger.warn('WORKER', 'Kiro CLI dependency preflight failed: kiro-cli not found');
+      recordKiroCliSetupRequired('kiro-cli not found — the Kiro compression provider cannot run.');
+    }
+  } else {
+    clearDependencyStatus('kiro_cli');
   }
 
   if (chromaEnabled) {

@@ -327,6 +327,8 @@ describe('installKiroCliIntegration / uninstallKiroCliIntegration', () => {
     // Recursion guard: hooks here would make the compression chat observe itself.
     expect(observer.hooks).toBeUndefined();
     expect(observer.tools).toEqual([]);
+    // Cheapest Kiro tier by default; dot notation is the id kiro-cli accepts.
+    expect(observer.model).toBe('claude-haiku-4.5');
 
     const manifest = readJson(MANIFEST_PATH);
     expect(manifest.observerAgentFile).toBe(observerPath);

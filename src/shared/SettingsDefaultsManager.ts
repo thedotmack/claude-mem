@@ -109,7 +109,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_OPENROUTER_SITE_URL: '',  // Optional: for OpenRouter analytics
     CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',  // App name for OpenRouter analytics
     CLAUDE_MEM_KIRO_AGENT: 'claude-mem-observer',  // Hook-less/tool-less Kiro agent the KiroProvider spawns (recursion guard)
-    CLAUDE_MEM_KIRO_MODEL: '',  // Optional model id pinned into the observer agent config at install (empty = Kiro default)
+    CLAUDE_MEM_KIRO_MODEL: 'claude-haiku-4.5',  // Model pinned into the observer agent at install — cheapest Kiro tier (0.00 credits/call observed); id verified on kiro-cli 2.11.0 (dot notation; 'claude-haiku-4-5' is rejected)
     CLAUDE_MEM_KIRO_CLI_PATH: '',  // Optional absolute path to kiro-cli (empty = PATH + known install locations)
     CLAUDE_MEM_DATA_DIR: join(homedir(), '.claude-mem'),
     CLAUDE_MEM_LOG_LEVEL: 'INFO',

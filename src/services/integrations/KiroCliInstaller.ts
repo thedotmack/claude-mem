@@ -14,6 +14,7 @@ import {
 } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { DATA_DIR, USER_SETTINGS_PATH } from '../../shared/paths.js';
 import {
   getBunAbsolutePath,
@@ -481,11 +482,15 @@ export async function installKiroCliIntegration(): Promise<number> {
 
     // The KiroProvider's dedicated spawn target. Always rewritten: it is
     // internal, and a stale copy (e.g. user-added hooks) would break the
-    // recursion guard.
-    const settings = readJsonSafe<Record<string, string>>(USER_SETTINGS_PATH, {});
+    // recursion guard. Raw read + pure default — loadFromFile would CREATE
+    // settings.json with full defaults and break the provider/semantic-inject
+    // "only when unset" logic below.
+    const rawSettings = readJsonSafe<Record<string, string>>(USER_SETTINGS_PATH, {});
+    const observerModel = rawSettings.CLAUDE_MEM_KIRO_MODEL
+      ?? SettingsDefaultsManager.get('CLAUDE_MEM_KIRO_MODEL');
     const observerAgentFile = path.join(kiroAgentsDir(), OBSERVER_AGENT_FILENAME);
-    writeJsonAtomic(observerAgentFile, buildObserverAgent(settings.CLAUDE_MEM_KIRO_MODEL ?? ''));
-    console.log(`  Wrote compression agent ${observerAgentFile} (no hooks, no tools)`);
+    writeJsonAtomic(observerAgentFile, buildObserverAgent(observerModel));
+    console.log(`  Wrote compression agent ${observerAgentFile} (no hooks, no tools, model: ${observerModel || 'Kiro default'})`);
 
     const enabledSemanticInject =
       enableSemanticInjectDefault() || previousManifest?.enabledSemanticInject === true;
@@ -620,6 +625,18 @@ export function checkKiroCliStatus(): number {
 
   const mcpConfig = readJsonSafe<Record<string, any>>(kiroMcpJsonPath(), {});
   console.log(`MCP server registered: ${mcpConfig.mcpServers?.['claude-mem'] ? 'yes' : 'no'} (${kiroMcpJsonPath()})`);
+
+  // Raw read — status must never create/mutate the settings file.
+  const statusSettings = readJsonSafe<Record<string, string>>(USER_SETTINGS_PATH, {});
+  const statusProvider = statusSettings.CLAUDE_MEM_PROVIDER ?? SettingsDefaultsManager.get('CLAUDE_MEM_PROVIDER');
+  const statusModel = statusSettings.CLAUDE_MEM_KIRO_MODEL ?? SettingsDefaultsManager.get('CLAUDE_MEM_KIRO_MODEL');
+  const providerNote = statusProvider === 'kiro'
+    ? ` (model: ${statusModel || 'Kiro default'})`
+    : ' (set CLAUDE_MEM_PROVIDER=kiro to compress on your Kiro subscription)';
+  console.log(`Compression provider: ${statusProvider}${providerNote}`);
+
+  const observerPath = path.join(kiroAgentsDir(), OBSERVER_AGENT_FILENAME);
+  console.log(`Compression agent: ${existsSync(observerPath) ? 'installed' : 'MISSING — run: npx claude-mem install --ide kiro-cli'} (${observerPath})`);
 
   const manifest = readManifest();
   console.log(`Skills installed: ${manifest?.installedSkillDirs.length ?? 0}`);

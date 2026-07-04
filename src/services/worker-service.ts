@@ -84,7 +84,7 @@ import { ClaudeProvider, classifyClaudeError } from './worker/ClaudeProvider.js'
 import type { WorkerRef } from './worker/agents/types.js';
 import { GeminiProvider, classifyGeminiError, isGeminiSelected, isGeminiAvailable } from './worker/GeminiProvider.js';
 import { OpenRouterProvider, classifyOpenRouterError, isOpenRouterSelected, isOpenRouterAvailable } from './worker/OpenRouterProvider.js';
-import { KiroProvider } from './worker/KiroProvider.js';
+import { KiroProvider, isKiroSelected, isKiroAvailable } from './worker/KiroProvider.js';
 import { ClassifiedProviderError, isClassified, type ProviderErrorClass } from './worker/provider-errors.js';
 import { PaginationHelper } from './worker/PaginationHelper.js';
 import { SettingsManager } from './worker/SettingsManager.js';
@@ -278,7 +278,8 @@ export class WorkerService implements WorkerRef {
       workerPath: __filename,
       getAiStatus: () => {
         let provider = 'claude';
-        if (isOpenRouterSelected() && isOpenRouterAvailable()) provider = 'openrouter';
+        if (isKiroSelected() && isKiroAvailable()) provider = 'kiro';
+        else if (isOpenRouterSelected() && isOpenRouterAvailable()) provider = 'openrouter';
         else if (isGeminiSelected() && isGeminiAvailable()) provider = 'gemini';
         return {
           provider,

@@ -2,7 +2,7 @@ export type DependencyStatusKind =
   | 'setup_required'
   | 'vector_search_unavailable';
 
-export type DependencyName = 'claude_cli' | 'uvx';
+export type DependencyName = 'claude_cli' | 'uvx' | 'kiro_cli';
 
 export interface DependencyStatus {
   dependency: DependencyName;
@@ -21,6 +21,10 @@ export const CLAUDE_CLI_SETUP_REMEDIATION =
 export const UVX_VECTOR_SEARCH_REMEDIATION =
   'Install uv/uvx and make uvx visible to the worker PATH, then restart claude-mem. ' +
   'Try `curl -LsSf https://astral.sh/uv/install.sh | sh` or `brew install uv`.';
+
+export const KIRO_CLI_SETUP_REMEDIATION =
+  'Install Kiro CLI (https://kiro.dev/docs/cli/installation/) and run `kiro-cli login`, ' +
+  'or set CLAUDE_MEM_KIRO_CLI_PATH in ~/.claude-mem/settings.json, then restart claude-mem.';
 
 const statuses = new Map<DependencyName, DependencyStatus>();
 
@@ -52,6 +56,10 @@ export function recordClaudeCliSetupRequired(message: string): DependencyStatus 
 
 export function recordUvxVectorSearchUnavailable(message: string): DependencyStatus {
   return recordDependencyStatus('uvx', 'vector_search_unavailable', message, UVX_VECTOR_SEARCH_REMEDIATION);
+}
+
+export function recordKiroCliSetupRequired(message: string): DependencyStatus {
+  return recordDependencyStatus('kiro_cli', 'setup_required', message, KIRO_CLI_SETUP_REMEDIATION);
 }
 
 export function clearDependencyStatus(dependency: DependencyName): void {
