@@ -2,6 +2,7 @@ import { readJsonFromStdin } from './stdin-reader.js';
 import { getPlatformAdapter } from './adapters/index.js';
 import { AdapterRejectedInput } from './adapters/errors.js';
 import { getEventHandler } from './handlers/index.js';
+import type { HookResult } from './types.js';
 import { HOOK_EXIT_CODES } from '../shared/hook-constants.js';
 import {
   installHookStderrBuffer,
@@ -20,6 +21,23 @@ import { logger } from '../utils/logger.js';
 
 export interface HookCommandOptions {
   skipExit?: boolean;
+}
+
+/**
+ * No-op result for hooks that must exit before their handler ran (adapter
+ * rejected input, transcript path missing). `context` is the sole handler
+ * key that produces SessionStart output on every platform; a bare
+ * `{continue:true}` fallback for it — with no hookSpecificOutput — is what
+ * Codex's strict SessionStart validator rejects as "invalid session start
+ * JSON output" (issue #2972). Attaching the minimal valid payload keeps the
+ * no-op harmless everywhere else too.
+ */
+export function buildNoOpResult(event: string): HookResult {
+  const result: HookResult = { continue: true, suppressOutput: true };
+  if (event === 'context') {
+    result.hookSpecificOutput = { hookEventName: 'SessionStart', additionalContext: '' };
+  }
+  return result;
 }
 
 export function isWorkerUnavailableError(error: unknown): boolean {
@@ -108,13 +126,13 @@ export async function hookCommand(platform: string, event: string, options: Hook
   } catch (error) {
     if (error instanceof AdapterRejectedInput) {
       logger.warn('HOOK', `Adapter rejected input (${error.reason}), skipping hook`);
-      emitModelContext(adapter, { continue: true, suppressOutput: true });
+      emitModelContext(adapter, buildNoOpResult(event));
       exitGraceful(options);
       return HOOK_EXIT_CODES.SUCCESS;
     }
     if (isNonBlockingHookInputError(error)) {
       logger.warn('HOOK', `Hook input unavailable, skipping hook: ${error instanceof Error ? error.message : error}`);
-      emitModelContext(adapter, { continue: true, suppressOutput: true });
+      emitModelContext(adapter, buildNoOpResult(event));
       exitGraceful(options);
       return HOOK_EXIT_CODES.SUCCESS;
     }
