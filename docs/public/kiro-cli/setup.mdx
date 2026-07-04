@@ -35,24 +35,15 @@ Or run `npx claude-mem install` and pick **Kiro CLI** in the IDE picker (detecte
 4. Enable per-prompt semantic injection (`CLAUDE_MEM_SEMANTIC_INJECT=true`) — see [Parity](/kiro-cli/parity) for why this is defaulted on for Kiro. The setting is global (it also applies to other claude-mem platforms on this machine); the installer only sets it when you haven't, and uninstall reverts it.
 5. Record everything it touched in `~/.claude-mem/kiro-install.json` so uninstall removes exactly that.
 
-### Step 2: Configure an AI provider
+### Step 2: AI provider — your Kiro subscription, by default
 
-Claude-mem needs an AI provider to compress observations. Kiro's own subscription cannot power this (its managed backend exposes no inference API), so choose one:
+Claude-mem needs an AI provider to compress observations. On Kiro installs this **defaults to your Kiro subscription** — no API key and no other tools required:
 
-- **Claude Code installed on the same machine?** The default Claude provider works unchanged — nothing to configure.
-- **Kiro-only machine:** use Gemini (free tier) or OpenRouter / any OpenAI-compatible endpoint:
+- The installer sets `CLAUDE_MEM_PROVIDER=kiro` (only when you haven't chosen a provider; reverted on uninstall) and writes a dedicated `claude-mem-observer` agent to `~/.kiro/agents/` — a **hook-less, tool-less** agent the worker spawns via headless `kiro-cli chat --no-interactive` for each compression call. Hook-less is deliberate: it stops the compression chat from being observed by claude-mem itself (recursion guard). Don't add hooks to it.
+- Requirements: an active `kiro-cli login` session. Each compression call consumes a small amount of Kiro credits (fractions of a credit per observation batch).
+- Optional settings: `CLAUDE_MEM_KIRO_MODEL` (pins a model into the observer agent at install), `CLAUDE_MEM_KIRO_CLI_PATH` (non-standard binary location).
 
-```bash
-mkdir -p ~/.claude-mem
-cat > ~/.claude-mem/settings.json << 'EOF'
-{
-  "CLAUDE_MEM_PROVIDER": "gemini",
-  "CLAUDE_MEM_GEMINI_API_KEY": "YOUR_API_KEY"
-}
-EOF
-```
-
-See [Cursor's provider guides](/cursor/gemini-setup) — the provider setup is identical for Kiro.
+Prefer a different backend? All other providers still work — `CLAUDE_MEM_PROVIDER` accepts `claude` (needs Claude Code on the same machine), `gemini`, or `openrouter` (any OpenAI-compatible endpoint). See [Cursor's provider guides](/cursor/gemini-setup); the setup is identical.
 
 ### Step 3: Verify
 

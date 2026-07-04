@@ -314,4 +314,49 @@ describe('installKiroCliIntegration / uninstallKiroCliIntegration', () => {
 
     expect(readJson(USER_SETTINGS_PATH).CLAUDE_MEM_SEMANTIC_INJECT).toBe('false');
   });
+
+  it('writes a hook-less, tool-less observer agent and never patches hooks into it', async () => {
+    writeAgent('daily', { name: 'daily' });
+
+    expect(await installKiroCliIntegration()).toBe(0);
+    // Re-run: the observer file now exists on disk and must stay hook-free.
+    expect(await installKiroCliIntegration()).toBe(0);
+
+    const observerPath = join(kiroHome, 'agents', 'claude-mem-observer.json');
+    const observer = readJson(observerPath);
+    // Recursion guard: hooks here would make the compression chat observe itself.
+    expect(observer.hooks).toBeUndefined();
+    expect(observer.tools).toEqual([]);
+
+    const manifest = readJson(MANIFEST_PATH);
+    expect(manifest.observerAgentFile).toBe(observerPath);
+    // The observer is internal — not a patched/created user-facing agent, and
+    // its presence must not have suppressed the fallback-agent decision.
+    expect(manifest.patchedAgentFiles).not.toContain(observerPath);
+    expect(manifest.createdAgentFiles).not.toContain(observerPath);
+
+    expect(uninstallKiroCliIntegration()).toBe(0);
+    expect(existsSync(observerPath)).toBe(false);
+  });
+
+  it('defaults CLAUDE_MEM_PROVIDER to kiro when unset and reverts on uninstall', async () => {
+    writeAgent('daily', { name: 'daily' });
+
+    expect(await installKiroCliIntegration()).toBe(0);
+    expect(readJson(USER_SETTINGS_PATH).CLAUDE_MEM_PROVIDER).toBe('kiro');
+
+    expect(uninstallKiroCliIntegration()).toBe(0);
+    expect(readJson(USER_SETTINGS_PATH).CLAUDE_MEM_PROVIDER).toBeUndefined();
+  });
+
+  it('never overrides an explicit provider choice', async () => {
+    writeAgent('daily', { name: 'daily' });
+    writeFileSync(USER_SETTINGS_PATH, JSON.stringify({ CLAUDE_MEM_PROVIDER: 'claude' }, null, 2));
+
+    expect(await installKiroCliIntegration()).toBe(0);
+    expect(readJson(USER_SETTINGS_PATH).CLAUDE_MEM_PROVIDER).toBe('claude');
+
+    expect(uninstallKiroCliIntegration()).toBe(0);
+    expect(readJson(USER_SETTINGS_PATH).CLAUDE_MEM_PROVIDER).toBe('claude');
+  });
 });

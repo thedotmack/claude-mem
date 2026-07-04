@@ -58,6 +58,10 @@ interface KiroInstallManifest {
   installedSkillDirs: string[];
   /** True when install (not the user) wrote CLAUDE_MEM_SEMANTIC_INJECT=true — uninstall reverts it. */
   enabledSemanticInject?: boolean;
+  /** The hook-less/tool-less agent the KiroProvider spawns — always installer-owned, deleted on uninstall. */
+  observerAgentFile?: string;
+  /** True when install (not the user) set CLAUDE_MEM_PROVIDER=kiro — uninstall reverts it. */
+  setProviderKiro?: boolean;
 }
 
 const MANIFEST_PATH = path.join(DATA_DIR, 'kiro-install.json');
@@ -76,6 +80,23 @@ const MCP_AUTO_APPROVE_TOOLS = [
 ];
 
 const FALLBACK_AGENT_DESCRIPTION = 'Agent with claude-mem persistent memory (hooks + MCP search tools)';
+
+/**
+ * The KiroProvider spawns compression chats as this agent. It must carry NO
+ * hooks (a hooked spawn would observe its own compression — infinite
+ * recursion) and NO tools (pure text generation). Kept aligned with the
+ * CLAUDE_MEM_KIRO_AGENT settings default.
+ */
+const OBSERVER_AGENT_FILENAME = 'claude-mem-observer.json';
+
+function buildObserverAgent(model: string): KiroAgentConfig {
+  return {
+    name: 'claude-mem-observer',
+    description: 'Internal claude-mem compression agent — no tools, no hooks. Do not add hooks (recursion guard); recreated by npx claude-mem install --ide kiro-cli.',
+    tools: [],
+    ...(model ? { model } : {}),
+  };
+}
 
 /**
  * True only when the agent is byte-for-byte what the installer generated
@@ -257,6 +278,9 @@ function listAgentConfigFiles(): string[] {
   if (!existsSync(dir)) return [];
   return readdirSync(dir)
     .filter(name => name.endsWith('.json'))
+    // The observer agent must never receive hooks and must not count as an
+    // existing user agent for the fallback decision.
+    .filter(name => name !== OBSERVER_AGENT_FILENAME)
     .map(name => path.join(dir, name));
 }
 
@@ -356,6 +380,35 @@ function revertSemanticInjectDefault(manifest: KiroInstallManifest | null): void
   console.log('  Reverted CLAUDE_MEM_SEMANTIC_INJECT to its default');
 }
 
+/**
+ * Kiro installs should compress on the user's Kiro subscription by default —
+ * no third-party API key and no co-installed Claude Code required. Only fills
+ * the value when the user has not chosen a provider; recorded in the manifest
+ * and reverted on uninstall.
+ *
+ * Returns true when the installer wrote the key.
+ */
+function defaultProviderToKiro(): boolean {
+  const settings = readJsonSafe<Record<string, unknown>>(USER_SETTINGS_PATH, {});
+  if (settings.CLAUDE_MEM_PROVIDER !== undefined) {
+    console.log(`  Compression provider: ${settings.CLAUDE_MEM_PROVIDER} (set CLAUDE_MEM_PROVIDER=kiro to use your Kiro subscription)`);
+    return false;
+  }
+  settings.CLAUDE_MEM_PROVIDER = 'kiro';
+  writeJsonAtomic(USER_SETTINGS_PATH, settings);
+  console.log('  Compression provider defaulted to kiro (uses your Kiro subscription via kiro-cli)');
+  return true;
+}
+
+function revertProviderDefault(manifest: KiroInstallManifest | null): void {
+  if (!manifest?.setProviderKiro) return;
+  const settings = readJsonSafe<Record<string, unknown>>(USER_SETTINGS_PATH, {});
+  if (settings.CLAUDE_MEM_PROVIDER !== 'kiro') return;
+  delete settings.CLAUDE_MEM_PROVIDER;
+  writeJsonAtomic(USER_SETTINGS_PATH, settings);
+  console.log('  Reverted CLAUDE_MEM_PROVIDER to its default');
+}
+
 export async function installKiroCliIntegration(): Promise<number> {
   console.log('\nInstalling Claude-Mem Kiro CLI integration...\n');
 
@@ -426,8 +479,18 @@ export async function installKiroCliIntegration(): Promise<number> {
       console.log(`  Installed ${installedSkillDirs.length} skills to ${kiroSkillsDir()} (available as /skill-name)`);
     }
 
+    // The KiroProvider's dedicated spawn target. Always rewritten: it is
+    // internal, and a stale copy (e.g. user-added hooks) would break the
+    // recursion guard.
+    const settings = readJsonSafe<Record<string, string>>(USER_SETTINGS_PATH, {});
+    const observerAgentFile = path.join(kiroAgentsDir(), OBSERVER_AGENT_FILENAME);
+    writeJsonAtomic(observerAgentFile, buildObserverAgent(settings.CLAUDE_MEM_KIRO_MODEL ?? ''));
+    console.log(`  Wrote compression agent ${observerAgentFile} (no hooks, no tools)`);
+
     const enabledSemanticInject =
       enableSemanticInjectDefault() || previousManifest?.enabledSemanticInject === true;
+    const setProviderKiro =
+      defaultProviderToKiro() || previousManifest?.setProviderKiro === true;
 
     const manifest: KiroInstallManifest = {
       version: 1,
@@ -436,6 +499,8 @@ export async function installKiroCliIntegration(): Promise<number> {
       createdAgentFiles,
       installedSkillDirs,
       enabledSemanticInject,
+      observerAgentFile,
+      setProviderKiro,
     };
     writeJsonAtomic(MANIFEST_PATH, manifest);
 
@@ -503,7 +568,15 @@ export function uninstallKiroCliIntegration(): number {
       console.log(`  Removed ${removedSkills} claude-mem skills from ${kiroSkillsDir()}`);
     }
 
+    const observerAgentFile = manifest?.observerAgentFile
+      ?? path.join(kiroAgentsDir(), OBSERVER_AGENT_FILENAME);
+    if (existsSync(observerAgentFile)) {
+      rmSync(observerAgentFile, { force: true });
+      console.log(`  Removed compression agent ${observerAgentFile}`);
+    }
+
     revertSemanticInjectDefault(manifest);
+    revertProviderDefault(manifest);
 
     rmSync(MANIFEST_PATH, { force: true });
 

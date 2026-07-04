@@ -23,6 +23,8 @@ Claude-mem on Kiro CLI keeps the full pipeline — capture, AI compression, stor
 
 Observation capture and compression, session summaries, session-start memory injection, per-prompt semantic injection, MCP search tools (`search`, `timeline`, `get_observations`, corpus tools, `smart_*` tree-sitter tools), the web viewer + SSE live feed, Chroma semantic search, modes, project exclusion, privacy tags, Telegram notifications, and all worker-side features — these are host-independent and work unchanged.
 
+**Compression provider:** Kiro installs default to the **Kiro provider** — compression runs on your own Kiro subscription via headless `kiro-cli chat --no-interactive` through a dedicated hook-less, tool-less `claude-mem-observer` agent (the hook-less agent is the recursion guard: it prevents claude-mem from observing its own compression chats). No API key and no co-installed Claude Code needed. `claude`, `gemini`, and `openrouter` remain available via `CLAUDE_MEM_PROVIDER`.
+
 **Skills:** Kiro implements the same Agent Skills standard (SKILL.md), so all skills install verbatim and appear as slash commands. Skills that orchestrate Claude Code subagents (`do`, `make-plan`, `babysit`, `standup`) load fine but their subagent steps depend on Kiro's delegate/subagent capabilities; `version-bump` is Claude-Code-plugin-specific.
 
 ## Degraded, with compensation
