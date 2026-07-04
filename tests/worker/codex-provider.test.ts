@@ -3,7 +3,9 @@ import { existsSync, rmSync, statSync } from 'fs';
 import {
   buildCodexExecEnv,
   buildCodexExecArgs,
+  buildCodexSpawnCommand,
   buildCodexObservationPrompt,
+  CodexProvider,
   classifyCodexExecError,
   createCodexExecWorkDir,
   normalizeCodexExecutablePath,
@@ -167,6 +169,39 @@ describe('normalizeCodexExecutablePath', () => {
   it('allows ordinary Windows executable paths', () => {
     expect(normalizeCodexExecutablePath('C:\\Program Files\\Codex\\codex.cmd', 'win32'))
       .toBe('C:\\Program Files\\Codex\\codex.cmd');
+  });
+});
+
+describe('buildCodexSpawnCommand', () => {
+  it('quotes Windows executable paths with spaces for shell execution', () => {
+    expect(buildCodexSpawnCommand('C:\\Program Files\\Codex\\codex.cmd', 'win32'))
+      .toBe('"C:\\Program Files\\Codex\\codex.cmd"');
+  });
+
+  it('leaves non-Windows executable paths unquoted for direct spawn', () => {
+    expect(buildCodexSpawnCommand('/Applications/Codex CLI/codex', 'darwin'))
+      .toBe('/Applications/Codex CLI/codex');
+  });
+});
+
+describe('CodexProvider prompt formatting', () => {
+  it('keeps the latest message when it alone exceeds the token budget', () => {
+    const provider = new CodexProvider(null as never, null as never) as unknown as {
+      formatPrompt(history: Array<{ role: 'user' | 'assistant'; content: string }>, config: unknown): string;
+    };
+    const oversizedLatestMessage = `latest durable observation ${'x'.repeat(200)}`;
+
+    const prompt = provider.formatPrompt([
+      { role: 'assistant', content: 'older context that can be dropped' },
+      { role: 'user', content: oversizedLatestMessage },
+    ], {
+      maxContextMessages: 20,
+      maxEstimatedTokens: 1,
+    });
+
+    expect(prompt).toContain('--- 1. USER ---');
+    expect(prompt).toContain(oversizedLatestMessage);
+    expect(prompt).not.toContain('older context that can be dropped');
   });
 });
 

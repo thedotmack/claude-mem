@@ -151,6 +151,14 @@ export function normalizeCodexExecutablePath(codexPath: string | undefined, plat
   return normalized;
 }
 
+export function buildCodexSpawnCommand(codexPath: string | undefined, platform = process.platform): string {
+  const normalized = normalizeCodexExecutablePath(codexPath, platform);
+  if (platform === 'win32' && /\s/.test(normalized)) {
+    return `"${normalized}"`;
+  }
+  return normalized;
+}
+
 export function createCodexExecWorkDir(): string {
   const workDir = mkdtempSync(join(tmpdir(), CODEX_EXEC_WORKDIR_PREFIX));
   if (process.platform !== 'win32') {
@@ -427,10 +435,16 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
       const overLimit = truncated.length >= config.maxContextMessages || tokenCount + messageTokens > config.maxEstimatedTokens;
 
       if (overLimit) {
+        const keepOversizedLatestMessage = truncated.length === 0 && i === history.length - 1;
+        if (keepOversizedLatestMessage) {
+          truncated.unshift(message);
+          tokenCount += messageTokens;
+        }
+
         logger.warn('SDK', 'Codex context window truncated to prevent runaway costs', {
           originalMessages: history.length,
           keptMessages: truncated.length,
-          droppedMessages: i + 1,
+          droppedMessages: keepOversizedLatestMessage ? i : i + 1,
           estimatedTokens: tokenCount,
           tokenLimit: config.maxEstimatedTokens,
         });
@@ -481,7 +495,7 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
       const stderrChunks: Buffer[] = [];
       let settled = false;
 
-      const child = spawnHidden(config.codexPath, args, {
+      const child = spawnHidden(buildCodexSpawnCommand(config.codexPath), args, {
         cwd: workDir,
         env: buildCodexExecEnv(process.env),
         stdio: ['pipe', 'pipe', 'pipe'],
