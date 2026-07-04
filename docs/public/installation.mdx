@@ -17,7 +17,7 @@ npx claude-mem install
 
 The interactive installer will:
 - Run a runtime check (auto-installs Bun and uv if missing)
-- Detect your installed IDEs (Claude Code, Cursor, Gemini CLI, Windsurf, OpenCode, Codex CLI) and let you multi-select which ones to wire up
+- Detect your installed IDEs (Claude Code, Cursor, Windsurf, OpenCode, Codex CLI, Antigravity CLI) and let you multi-select which ones to wire up
 - Offer to install Claude Code if it isn't found
 - Prompt for an LLM provider (Claude Code auth, Gemini API key, or OpenRouter API key)
 - Prompt for the Claude model used to compress observations (Haiku / Sonnet / Opus) when the Claude provider is selected
@@ -44,7 +44,7 @@ Both methods will automatically configure hooks and start the worker service. St
 - **Node.js**: 20.0.0 or higher
 - **Bun** ≥ 1.0 (auto-installed by `npx claude-mem install` if missing)
 - **uv** (auto-installed if missing — provides Python for Chroma's embedding service)
-- **Claude Code** or another supported IDE (Cursor, Gemini CLI, Windsurf, OpenCode, Codex CLI, OpenClaw)
+- **Claude Code** or another supported IDE (Cursor, Windsurf, OpenCode, Codex CLI, Antigravity CLI, OpenClaw)
 - **SQLite 3**: bundled via `bun:sqlite`
 
 ## Advanced Installation

@@ -320,23 +320,6 @@ function makeIDETask(ideId: string, summary: InstallSummary): TaskDescriptor | n
       };
     }
 
-    case 'gemini-cli': {
-      return {
-        title: 'Gemini CLI: installing hooks',
-        task: async (message) => {
-          message('Loading Gemini CLI installer…');
-          const { installGeminiCliHooks } = await import('../../services/integrations/GeminiCliHooksInstaller.js');
-          message('Installing Gemini CLI hooks…');
-          const { result, output } = await bufferConsole(() => installGeminiCliHooks());
-          if (result !== 0) {
-            recordFailure('Gemini CLI: hook installation failed', output);
-            return `Gemini CLI: hook installation failed ${styleText('red', 'FAIL')}`;
-          }
-          return `Gemini CLI: hooks installed ${styleText('green', 'OK')}`;
-        },
-      };
-    }
-
     case 'opencode': {
       return {
         title: 'OpenCode: installing plugin',
@@ -405,8 +388,24 @@ function makeIDETask(ideId: string, summary: InstallSummary): TaskDescriptor | n
       };
     }
 
+    case 'antigravity': {
+      return {
+        title: 'Antigravity: installing hooks + MCP',
+        task: async (message) => {
+          message('Loading Antigravity CLI installer…');
+          const { installAntigravityCliHooks } = await import('../../services/integrations/AntigravityCliHooksInstaller.js');
+          message('Installing Antigravity hooks + MCP…');
+          const { result, output } = await bufferConsole(() => installAntigravityCliHooks());
+          if (result !== 0) {
+            recordFailure('Antigravity: hooks + MCP installation failed', output);
+            return `Antigravity: hooks + MCP installation failed ${styleText('red', 'FAIL')}`;
+          }
+          return `Antigravity: hooks + MCP installed ${styleText('green', 'OK')}`;
+        },
+      };
+    }
+
     case 'copilot-cli':
-    case 'antigravity':
     case 'goose':
     case 'roo-code':
     case 'warp': {

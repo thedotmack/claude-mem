@@ -47,11 +47,6 @@ export function detectInstalledIDEs(): IDEInfo[] {
       hint: 'recommended',
     },
     {
-      id: 'gemini-cli',
-      label: 'Gemini CLI',
-      detected: existsSync(join(home, '.gemini')),
-    },
-    {
       id: 'opencode',
       label: 'OpenCode',
       detected:
@@ -90,8 +85,8 @@ export function detectInstalledIDEs(): IDEInfo[] {
     {
       id: 'antigravity',
       label: 'Antigravity',
-      detected: existsSync(join(home, '.gemini', 'antigravity')),
-      hint: 'MCP-based integration',
+      detected: existsSync(join(home, '.gemini', 'antigravity')) || isCommandInPath('agy'),
+      hint: 'hooks + MCP integration',
     },
     {
       id: 'goose',

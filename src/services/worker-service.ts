@@ -71,8 +71,8 @@ import {
   handleCursorCommand
 } from './integrations/CursorHooksInstaller.js';
 import {
-  handleGeminiCliCommand
-} from './integrations/GeminiCliHooksInstaller.js';
+  handleAntigravityCliCommand
+} from './integrations/AntigravityCliHooksInstaller.js';
 
 import { DatabaseManager } from './worker/DatabaseManager.js';
 import { SessionManager } from './worker/SessionManager.js';
@@ -1230,10 +1230,10 @@ async function main() {
       break;
     }
 
-    case 'gemini-cli': {
-      const geminiSubcommand = process.argv[3];
-      const geminiResult = await handleGeminiCliCommand(geminiSubcommand, process.argv.slice(4));
-      process.exit(geminiResult);
+    case 'antigravity-cli': {
+      const antigravitySubcommand = process.argv[3];
+      const antigravityResult = await handleAntigravityCliCommand(antigravitySubcommand, process.argv.slice(4));
+      process.exit(antigravityResult);
       break;
     }
 
@@ -1247,7 +1247,7 @@ async function main() {
       const event = process.argv[4];
       if (!platform || !event) {
         console.error('Usage: claude-mem hook <platform> <event>');
-        console.error('Platforms: claude-code, codex, cursor, gemini-cli, raw');
+        console.error('Platforms: claude-code, codex, cursor, antigravity-cli, raw');
         console.error('Events: context, session-init, observation, summarize, user-message');
         process.exit(1);
       }
