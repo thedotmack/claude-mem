@@ -1,10 +1,11 @@
 import type { PlatformAdapter } from '../types.js';
 import { AdapterRejectedInput, isValidCwd } from './errors.js';
 
-export const geminiCliAdapter: PlatformAdapter = {
+export const antigravityCliAdapter: PlatformAdapter = {
   normalizeInput(raw) {
     const r = (raw ?? {}) as any;
 
+    // unverified: confirm Antigravity sets GEMINI_* env vars on first real hook firing
     const cwd = r.cwd
       ?? process.env.GEMINI_CWD
       ?? process.env.GEMINI_PROJECT_DIR
@@ -25,7 +26,7 @@ export const geminiCliAdapter: PlatformAdapter = {
     let toolResponse: unknown = r.tool_response;
 
     if (hookEventName === 'AfterAgent' && r.prompt_response) {
-      toolName = toolName ?? 'GeminiProvider';
+      toolName = toolName ?? 'AntigravityProvider';
       toolInput = toolInput ?? { prompt: r.prompt };
       toolResponse = toolResponse ?? { response: r.prompt_response };
     }
@@ -35,7 +36,7 @@ export const geminiCliAdapter: PlatformAdapter = {
     }
 
     if (hookEventName === 'Notification') {
-      toolName = toolName ?? 'GeminiNotification';
+      toolName = toolName ?? 'AntigravityNotification';
       toolInput = toolInput ?? {
         notification_type: r.notification_type,
         message: r.message,

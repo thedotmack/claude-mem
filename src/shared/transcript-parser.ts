@@ -2,18 +2,6 @@ import { readFileSync, existsSync } from 'fs';
 import { logger } from '../utils/logger.js';
 import { SYSTEM_REMINDER_REGEX } from '../utils/tag-stripping.js';
 
-function isGeminiTranscriptFormat(content: string): { isGemini: true; messages: any[] } | { isGemini: false } {
-  try {
-    const parsed = JSON.parse(content);
-    if (parsed && Array.isArray(parsed.messages)) {
-      return { isGemini: true, messages: parsed.messages };
-    }
-  } catch {
-    // Not a valid single JSON object — assume JSONL
-  }
-  return { isGemini: false };
-}
-
 export function extractLastMessage(
   transcriptPath: string,
   role: 'user' | 'assistant',
@@ -30,34 +18,7 @@ export function extractLastMessage(
     return '';
   }
 
-  const geminiCheck = isGeminiTranscriptFormat(content);
-  if (geminiCheck.isGemini) {
-    return extractLastMessageFromGeminiTranscript(geminiCheck.messages, role, stripSystemReminders);
-  }
-
   return extractLastMessageFromJsonl(content, role, stripSystemReminders);
-}
-
-function extractLastMessageFromGeminiTranscript(
-  messages: any[],
-  role: 'user' | 'assistant',
-  stripSystemReminders: boolean
-): string {
-  const geminiRole = role === 'assistant' ? 'gemini' : 'user';
-
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
-    if (msg?.type === geminiRole && typeof msg.content === 'string') {
-      let text = msg.content;
-      if (stripSystemReminders) {
-        text = text.replace(SYSTEM_REMINDER_REGEX, '');
-        text = text.replace(/\n{3,}/g, '\n\n').trim();
-      }
-      return text;
-    }
-  }
-
-  return '';
 }
 
 /**

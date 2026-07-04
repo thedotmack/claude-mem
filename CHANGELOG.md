@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.10.1] - 2026-07-04
+
+## Fixes
+
+- **Codex SessionStart hook no longer fails at startup.** When a hook errored before its handler ran (missing `session_id`, invalid `cwd`, or a missing transcript path), claude-mem fell back to a bare `{"continue":true}` regardless of which hook fired. Codex's strict `SessionStart` validator rejects that shape as "invalid session start JSON output," breaking context injection at Codex startup. The fallback now emits a valid `hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: "" }` for the `context` hook, matching what Codex expects.
+- Fixed a related gap where the Codex adapter silently dropped an explicit empty-string `additionalContext` from its output instead of preserving it, which could leave the SessionStart payload incomplete.
+
+Closes #2947, #2972. Supersedes #2953 and #2948.
+
+## [13.10.0] - 2026-07-04
+
+## Antigravity CLI support, Gemini CLI removed
+
+Google deprecated Gemini CLI's free/individual tier (cutoff June 18, 2026) in favor of **Antigravity CLI**, the official successor announced May 19, 2026. This release migrates claude-mem accordingly.
+
+### Removed
+- Gemini CLI host integration (adapter, installer, IDE-detection entry, hooks, dedicated docs/tests). The separate, still-supported Gemini LLM/observation provider (`CLAUDE_MEM_GEMINI_API_KEY`, `GeminiProvider`) is unaffected.
+
+### Added
+- Full Antigravity CLI (`agy`) support at feature parity: hooks (7-event map sharing Gemini CLI's proven `~/.gemini/settings.json`), dual MCP server registration, and `GEMINI.md`/rules-file context injection.
+- `npx claude-mem antigravity-cli install|status|uninstall` subcommand support.
+
+Verified end-to-end against a real live Antigravity CLI install, including hook firing, MCP tool registration, and context injection.
+
 ## [13.9.3] - 2026-07-03
 
 ## Changes

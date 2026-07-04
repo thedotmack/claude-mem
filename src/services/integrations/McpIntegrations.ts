@@ -7,20 +7,20 @@ import { getMcpServerAbsolutePath, getNodeAbsolutePath } from './install-paths.j
 import { readJsonSafe } from '../../utils/json-utils.js';
 import { injectContextIntoMarkdownFile } from '../../utils/context-injection.js';
 
-const PLACEHOLDER_CONTEXT = `# claude-mem: Cross-Session Memory
+export const PLACEHOLDER_CONTEXT = `# claude-mem: Cross-Session Memory
 
 *No context yet. Complete your first session and context will appear here.*
 
 Use claude-mem's MCP search tools for manual memory queries.`;
 
-function buildMcpServerEntry(mcpServerPath: string): { command: string; args: string[] } {
+export function buildMcpServerEntry(mcpServerPath: string): { command: string; args: string[] } {
   return {
     command: getNodeAbsolutePath(),
     args: [mcpServerPath],
   };
 }
 
-function writeMcpJsonConfig(
+export function writeMcpJsonConfig(
   configFilePath: string,
   mcpServerPath: string,
   serversKeyName: string = 'mcpServers',
@@ -119,14 +119,6 @@ const COPILOT_CLI_CONFIG: McpInstallerConfig = {
   configPath: path.join(homedir(), '.github', 'copilot', 'mcp.json'),
   configKey: 'servers',
   contextPath: path.join(process.cwd(), '.github', 'copilot-instructions.md'),
-};
-
-const ANTIGRAVITY_CONFIG: McpInstallerConfig = {
-  ideId: 'antigravity',
-  ideLabel: 'Antigravity',
-  configPath: path.join(homedir(), '.gemini', 'antigravity', 'mcp_config.json'),
-  configKey: 'mcpServers',
-  contextPath: path.join(process.cwd(), '.agents', 'rules', 'claude-mem-context.md'),
 };
 
 const ROO_CODE_CONFIG: McpInstallerConfig = {
@@ -240,9 +232,14 @@ Next steps:
 `);
 }
 
+// NOTE: 'antigravity' is intentionally absent here. It graduated from an
+// MCP-only integration to a full hooks+MCP installer — see
+// AntigravityCliHooksInstaller.ts, which owns Antigravity's install/uninstall
+// end-to-end (reusing writeMcpJsonConfig/buildMcpServerEntry from this file
+// for its MCP half). Leaving an entry here too would create two competing
+// install paths for the same IDE.
 export const MCP_IDE_INSTALLERS: Record<string, () => Promise<number>> = {
   'copilot-cli': installMcpIntegration(COPILOT_CLI_CONFIG),
-  'antigravity': installMcpIntegration(ANTIGRAVITY_CONFIG),
   'goose': installGooseMcpIntegration,
   'roo-code': installMcpIntegration(ROO_CODE_CONFIG),
   'warp': installMcpIntegration(WARP_CONFIG),
