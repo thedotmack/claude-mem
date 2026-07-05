@@ -226,6 +226,31 @@ describe('Install Non-TTY Support', () => {
       expect(versionProbeRegion).not.toContain('shell: IS_WINDOWS');
     });
 
+    it('writes a marketplace install marker after marketplace dependencies are installed', () => {
+      const start = installSource.indexOf("title: 'Installing marketplace dependencies'");
+      const end = installSource.indexOf('await runTasks(tasks);', start);
+      const marketplaceDepsRegion = installSource.slice(start, end);
+      expect(marketplaceDepsRegion).toContain('await runNpmInstallInMarketplace(summary)');
+      expect(marketplaceDepsRegion).toContain('writeInstallMarker(');
+      expect(marketplaceDepsRegion).toContain('marketplaceDirectory()');
+      expect(marketplaceDepsRegion).toContain("installedBunVersion ?? 'unknown'");
+    });
+
+    it('repairs both the cache root and marketplace runtime root', () => {
+      const repairRegion = installSource.slice(
+        installSource.indexOf('async function runRepairCommandInner'),
+        installSource.indexOf('export async function runRepairCommand'),
+      );
+      expect(repairRegion).toContain("title: 'Setting up runtime'");
+      expect(repairRegion).toContain("title: 'Repairing marketplace runtime'");
+      expect(repairRegion).toContain('copyPluginToCache(version)');
+      expect(repairRegion).toContain('writeInstallMarker(cacheDir, version, bunVersion, uvVersion)');
+      expect(repairRegion).toContain('Repopulating marketplace root from npm package');
+      expect(repairRegion).toContain('copyPluginToMarketplace()');
+      expect(repairRegion).toContain('await runNpmInstallInMarketplace(summary)');
+      expect(repairRegion).toContain('writeInstallMarker(marketplaceDir, version, bunVersion, uvVersion)');
+    });
+
     it('removes legacy Codex AGENTS context only after marketplace registration succeeds', () => {
       const installRegion = codexInstallerSource.slice(
         codexInstallerSource.indexOf('export async function installCodexCli'),

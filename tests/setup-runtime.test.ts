@@ -13,6 +13,7 @@ import {
 
 const SETUP_RUNTIME_SOURCE_PATH = join(import.meta.dir, '..', 'src', 'npx-cli', 'install', 'setup-runtime.ts');
 const SHARED_SPAWN_SOURCE_PATH = join(import.meta.dir, '..', 'src', 'shared', 'spawn.ts');
+const DOCTOR_SOURCE_PATH = join(import.meta.dir, '..', 'src', 'npx-cli', 'commands', 'doctor.ts');
 
 function probeBunVersion(): string | null {
   try {
@@ -164,5 +165,15 @@ describe('setup-runtime Windows spawn hygiene', () => {
     expect(source).toContain('lookupWindowsCommand(command)');
     expect(sharedSpawnSource).toContain("spawnSync('where', [command]");
     expect(sharedSpawnSource).toContain('windowsHide: true');
+  });
+});
+
+describe('doctor marketplace runtime hygiene', () => {
+  it('checks the executable marketplace root marker, not only node_modules', () => {
+    const source = readFileSync(DOCTOR_SOURCE_PATH, 'utf-8');
+    expect(source).toContain("name: 'Marketplace runtime'");
+    expect(source).toContain('isInstallCurrent(marketplaceDir, readPluginVersion())');
+    expect(source).toContain('install marker missing');
+    expect(source).toContain('install marker stale');
   });
 });
