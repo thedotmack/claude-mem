@@ -22,6 +22,7 @@ import { renderHeader } from './sections/HeaderRenderer.js';
 import { renderTimeline } from './sections/TimelineRenderer.js';
 import { shouldShowSummary, renderSummaryFields } from './sections/SummaryRenderer.js';
 import { renderPreviouslySection, renderFooter } from './sections/FooterRenderer.js';
+import { renderMermaidFlow } from './sections/MermaidRenderer.js';
 import { renderAgentEmptyState } from './formatters/AgentFormatter.js';
 import { renderHumanEmptyState } from './formatters/HumanFormatter.js';
 
@@ -72,8 +73,13 @@ function buildContextOutput(
   const output: string[] = [];
 
   const economics = calculateTokenEconomics(observations);
+  const mostRecentSummary = summaries[0];
 
   output.push(...renderHeader(project, economics, config, forHuman));
+
+  if (config.mermaidContext && !forHuman) {
+    output.push(...renderMermaidFlow(observations, mostRecentSummary));
+  }
 
   const displaySummaries = summaries.slice(0, config.sessionCount);
   const summariesForTimeline = prepareSummariesForTimeline(displaySummaries, summaries);
@@ -82,7 +88,6 @@ function buildContextOutput(
 
   output.push(...renderTimeline(timeline, fullObservationIds, config, cwd, forHuman));
 
-  const mostRecentSummary = summaries[0];
   const mostRecentObservation = observations[0];
 
   if (shouldShowSummary(config, mostRecentSummary, mostRecentObservation)) {
