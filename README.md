@@ -148,6 +148,12 @@ Or install for Antigravity CLI ([setup guide](https://docs.claude-mem.ai/antigra
 npx claude-mem install --ide antigravity
 ```
 
+Or install for Codex CLI:
+
+```bash
+npx claude-mem install --ide codex-cli
+```
+
 Or install from the plugin marketplace inside Claude Code:
 
 ```bash
@@ -156,7 +162,7 @@ Or install from the plugin marketplace inside Claude Code:
 /plugin install claude-mem
 ```
 
-Restart Claude Code. Context from previous sessions will automatically appear in new sessions.
+Restart the selected IDE. Context from previous sessions will automatically appear in new sessions.
 
 > **Note:** Claude-Mem is also published on npm, but `npm install -g claude-mem` installs the **SDK/library only** — it does not register the plugin hooks or set up the worker service. Always install via `npx claude-mem install` or the `/plugin` commands above.
 

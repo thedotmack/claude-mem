@@ -353,23 +353,68 @@ function getQueryFile(queryKey: string): string {
 }
 
 let cachedBinPath: string | null = null;
+let treeSitterCacheDir: string | null = null;
 
-function getTreeSitterBin(): string {
+type TreeSitterBinDeps = {
+  platform: NodeJS.Platform;
+  fileExists: typeof existsSync;
+  resolvePackageJson: (id: string) => string;
+};
+
+const treeSitterBinDeps: TreeSitterBinDeps = {
+  platform: process.platform,
+  fileExists: existsSync,
+  resolvePackageJson: (id: string) => _require.resolve(id),
+};
+
+export function resetTreeSitterBinCacheForTests(): void {
+  cachedBinPath = null;
+}
+
+export function setTreeSitterBinDepsForTests(
+  overrides?: Partial<TreeSitterBinDeps>,
+): void {
+  treeSitterBinDeps.platform = overrides?.platform ?? process.platform;
+  treeSitterBinDeps.fileExists = overrides?.fileExists ?? existsSync;
+  treeSitterBinDeps.resolvePackageJson = overrides?.resolvePackageJson ?? ((id: string) => _require.resolve(id));
+}
+
+export function getTreeSitterBin(): string {
   if (cachedBinPath) return cachedBinPath;
 
+  let pkgPath: string;
   try {
-    const pkgPath = _require.resolve("tree-sitter-cli/package.json");
-    const binPath = join(dirname(pkgPath), "tree-sitter");
-    if (existsSync(binPath)) {
+    pkgPath = treeSitterBinDeps.resolvePackageJson("tree-sitter-cli/package.json");
+  } catch {
+    // [ANTI-PATTERN IGNORED]: tree-sitter-cli not in node_modules is expected; falls back to PATH
+    cachedBinPath = "tree-sitter";
+    return cachedBinPath;
+  }
+
+  // tree-sitter-cli's install.js writes `tree-sitter.exe` on Windows and an
+  // extensionless `tree-sitter` elsewhere. Checking only the extensionless
+  // name discards a valid Windows binary and falls through to a bare-PATH
+  // lookup that usually fails, producing silent 0-symbol results (#2910 / #1247).
+  const candidateNames = treeSitterBinDeps.platform === "win32"
+    ? ["tree-sitter.exe", "tree-sitter"]
+    : ["tree-sitter"];
+  for (const candidateName of candidateNames) {
+    const binPath = join(dirname(pkgPath), candidateName);
+    if (treeSitterBinDeps.fileExists(binPath)) {
       cachedBinPath = binPath;
       return binPath;
     }
-  } catch {
-    // [ANTI-PATTERN IGNORED]: tree-sitter-cli not in node_modules is expected; falls back to PATH
   }
 
   cachedBinPath = "tree-sitter";
   return cachedBinPath;
+}
+
+function getTreeSitterCacheDir(): string {
+  if (!treeSitterCacheDir) {
+    treeSitterCacheDir = mkdtempSync(join(tmpdir(), "claude-mem-tree-sitter-cache-"));
+  }
+  return treeSitterCacheDir;
 }
 
 interface RawCapture {
@@ -399,7 +444,15 @@ function runBatchQuery(queryFile: string, sourceFiles: string[], grammarPath: st
 
   let output: string;
   try {
-    output = execFileSync(bin, execArgs, { encoding: "utf-8", timeout: 30000, stdio: ["pipe", "pipe", "pipe"] });
+    output = execFileSync(bin, execArgs, {
+      encoding: "utf-8",
+      timeout: 30000,
+      stdio: ["pipe", "pipe", "pipe"],
+      // `tree-sitter query -p` compiles grammars and writes lock/library files
+      // below XDG_CACHE_HOME. Agent sandboxes commonly make the user's home
+      // read-only, so use a process-local writable cache instead.
+      env: { ...process.env, XDG_CACHE_HOME: getTreeSitterCacheDir() },
+    });
   } catch (error) {
     logger.debug('WORKER', `tree-sitter query failed for ${sourceFiles.length} file(s)`, undefined, error instanceof Error ? error : undefined);
     return new Map();

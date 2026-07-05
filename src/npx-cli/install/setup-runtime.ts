@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { exec, execSync, spawnSync } from 'child_process';
+import { exec, execFile, execSync, spawnSync } from 'child_process';
 import { createRequire } from 'module';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -92,7 +92,7 @@ function isBunInstalled(): boolean {
   return getBunPath() !== null;
 }
 
-function getBunVersion(): string | null {
+export function getBunVersion(): string | null {
   const bunPath = getBunPath();
   if (!bunPath) return null;
 
@@ -129,7 +129,7 @@ function isUvInstalled(): boolean {
   return getUvPath() !== null;
 }
 
-function getUvVersion(): string | null {
+export function getUvVersion(): string | null {
   const uvPath = getUvPath();
   if (!uvPath) return null;
 
@@ -246,6 +246,66 @@ function installUv(): void {
  * we resolve subpaths, never a pinned version.
  */
 const ZOD_REQUIRED_SUBPATHS = ['zod/v3', 'zod/v4', 'zod/v4-mini'] as const;
+const TREE_SITTER_VERSION_TIMEOUT_MS = 10_000;
+
+export function treeSitterCliBinaryPath(targetDir: string): string {
+  return join(
+    targetDir,
+    'node_modules',
+    'tree-sitter-cli',
+    IS_WINDOWS ? 'tree-sitter.exe' : 'tree-sitter',
+  );
+}
+
+export function isTreeSitterCliBinaryUsable(targetDir: string): boolean {
+  const result = spawnSync(treeSitterCliBinaryPath(targetDir), ['--version'], {
+    encoding: 'utf-8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: TREE_SITTER_VERSION_TIMEOUT_MS,
+    windowsHide: true,
+  });
+  return result.status === 0
+    && /^tree-sitter \d+\.\d+\.\d+(?:\s|$)/.test((result.stdout ?? '').trim());
+}
+
+/**
+ * Runtime installs suppress all dependency lifecycle scripts to avoid running
+ * unbounded transitive postinstalls. tree-sitter-cli is the one intentional
+ * exception: its install script downloads the platform CLI used by smart-explore.
+ * Run only that top-level script, with the installer's existing timeout.
+ */
+export async function ensureTreeSitterCliBinary(
+  targetDir: string,
+  isUsable: (targetDir: string) => boolean = isTreeSitterCliBinaryUsable,
+): Promise<void> {
+  const binaryPath = treeSitterCliBinaryPath(targetDir);
+  if (isUsable(targetDir)) return;
+
+  const cliDir = join(targetDir, 'node_modules', 'tree-sitter-cli');
+  const installScript = join(cliDir, 'install.js');
+  if (!existsSync(installScript)) {
+    throw new Error(`tree-sitter-cli install script not found: ${installScript}`);
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    execFile(process.execPath, [installScript], {
+      cwd: cliDir,
+      timeout: INSTALL_TIMEOUT_MS,
+      maxBuffer: 16 * 1024 * 1024,
+      windowsHide: true,
+    }, (error, stdout, stderr) => {
+      if (error) {
+        reject(Object.assign(error, { stdout, stderr }));
+        return;
+      }
+      resolve();
+    });
+  });
+
+  if (!isUsable(targetDir)) {
+    throw new Error(`tree-sitter-cli install completed without creating a working executable ${binaryPath}`);
+  }
+}
 
 export function verifyCriticalModules(targetDir: string): void {
   const pkg = JSON.parse(readFileSync(join(targetDir, 'package.json'), 'utf-8'));
@@ -295,6 +355,10 @@ export function verifyCriticalModules(targetDir: string): void {
         unresolvable.push(subpath);
       }
     }
+  }
+
+  if (dependencies.includes('tree-sitter-cli') && !isTreeSitterCliBinaryUsable(targetDir)) {
+    unresolvable.push('tree-sitter-cli executable');
   }
 
   if (unresolvable.length > 0) {
@@ -460,6 +524,13 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
     throw new Error(`bun install failed in ${targetDir}\n${describeExecError(err)}`);
   }
 
+  try {
+    await ensureTreeSitterCliBinary(targetDir);
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    throw new Error(`tree-sitter-cli setup failed in ${targetDir}\n${describeExecError(err)}`);
+  }
+
   verifyCriticalModules(targetDir);
 }
 
@@ -499,6 +570,19 @@ export function writeInstallMarker(
   writeFileSync(markerPath(targetDir), JSON.stringify(payload));
 }
 
+function pluginDeclaresTreeSitterCli(targetDir: string): boolean {
+  try {
+    const pkg = JSON.parse(readFileSync(join(targetDir, 'package.json'), 'utf-8'));
+    return Object.keys(pkg.dependencies || {}).includes('tree-sitter-cli');
+  } catch {
+    // [ANTI-PATTERN IGNORED]: a missing or unparseable package.json in an
+    // incomplete/partial install is an expected negative — treat it as "does
+    // not declare tree-sitter-cli" so the caller re-provisions rather than
+    // throwing.
+    return false;
+  }
+}
+
 export function isInstallCurrent(targetDir: string, expectedVersion: string): boolean {
   if (!existsSync(join(targetDir, 'node_modules'))) return false;
   const marker = readInstallMarker(targetDir);
@@ -508,5 +592,13 @@ export function isInstallCurrent(targetDir: string, expectedVersion: string): bo
   if (currentBun && !marker.bun) return false;
   if (!currentBun && marker.bun) return false;
   if (currentBun && marker.bun && currentBun !== marker.bun) return false;
+  // A present marker is not sufficient if the smart-explore runtime it vouches
+  // for is missing. A prior install can write .install-version and later lose
+  // (or never have downloaded) the tree-sitter-cli executable; without this
+  // check the install fast path treats that cache as current and skips the
+  // provisioning/validation that would repair it, leaving smart-explore broken.
+  if (pluginDeclaresTreeSitterCli(targetDir) && !isTreeSitterCliBinaryUsable(targetDir)) {
+    return false;
+  }
   return true;
 }
