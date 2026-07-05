@@ -1,4 +1,5 @@
 
+import { basename } from 'path';
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import {
   executeWithWorkerFallback,
@@ -7,12 +8,11 @@ import {
 } from '../../shared/worker-utils.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
-import { getProjectContext } from '../../utils/project-name.js';
 
 export const userMessageHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
     const port = getWorkerPort();
-    const project = getProjectContext(input.cwd ?? process.cwd()).primary;
+    const project = basename(input.cwd ?? process.cwd());
     const colorsParam = input.platform === 'claude-code' ? '&colors=true' : '';
     const platformSourceParam = input.platform
       ? `&platformSource=${encodeURIComponent(normalizePlatformSource(input.platform))}`

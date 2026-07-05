@@ -19,7 +19,6 @@ import {
   getWorkerServiceAbsolutePath,
   getBunAbsolutePath,
 } from './install-paths.js';
-import { getProjectContext } from '../../utils/project-name.js';
 
 const CURSOR_REGISTRY_FILE = path.join(DATA_DIR, 'cursor-projects.json');
 
@@ -217,7 +216,7 @@ async function setupProjectContext(targetDir: string, workspaceRoot: string): Pr
   const rulesDir = path.join(targetDir, 'rules');
   mkdirSync(rulesDir, { recursive: true });
 
-  const projectName = getProjectContext(workspaceRoot).primary;
+  const projectName = path.basename(workspaceRoot);
   let contextGenerated = false;
 
   console.log(`  Generating initial context...`);
@@ -330,7 +329,7 @@ function removeCursorHooksFiles(
       console.log(`  Removed context file`);
     }
 
-    const projectName = getProjectContext(process.cwd()).primary;
+    const projectName = path.basename(process.cwd());
     unregisterCursorProject(projectName);
     console.log(`  Unregistered from auto-context updates`);
   }

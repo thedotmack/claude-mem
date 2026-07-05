@@ -2,14 +2,13 @@
 import path from 'path';
 import { homedir } from 'os';
 import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, statSync, utimesSync, copyFileSync } from 'fs';
-import { execSync } from 'child_process';
+import { execSync, spawnSync } from 'child_process';
 import { spawnHidden } from '../../shared/spawn.js';
 import { logger } from '../../utils/logger.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { removeOwnedPidFile } from '../../supervisor/shutdown.js';
 import { getSupervisor, validateWorkerPidFile, type ValidateWorkerPidStatus } from '../../supervisor/index.js';
 import { paths } from '../../shared/paths.js';
-import { getProjectContext } from '../../utils/project-name.js';
 
 const DATA_DIR = paths.dataDir();
 const PID_FILE = paths.workerPid();
@@ -190,15 +189,37 @@ type CwdClassification =
   | { kind: 'worktree'; project: string }
   | { kind: 'skip' };
 
+function gitQuery(cwd: string, args: string[]): string | null {
+  const r = spawnSync('git', ['-C', cwd, ...args], {
+    encoding: 'utf8',
+    timeout: 5000
+  });
+  if (r.status !== 0) return null;
+  return (r.stdout ?? '').trim();
+}
+
 function classifyCwdForRemap(cwd: string): CwdClassification {
   if (!existsSync(cwd)) return { kind: 'skip' };
 
-  const context = getProjectContext(cwd);
-  if (context.primary === 'unknown-project') return { kind: 'skip' };
-  return {
-    kind: context.isWorktree ? 'worktree' : 'main',
-    project: context.primary
-  };
+  const gitDir = gitQuery(cwd, ['rev-parse', '--absolute-git-dir']);
+  if (!gitDir) return { kind: 'skip' };
+
+  const commonDir = gitQuery(cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
+  if (!commonDir) return { kind: 'skip' };
+
+  const toplevel = gitQuery(cwd, ['rev-parse', '--show-toplevel']);
+  if (!toplevel) return { kind: 'skip' };
+  const leaf = path.basename(toplevel);
+
+  if (gitDir === commonDir) {
+    return { kind: 'main', project: leaf };
+  }
+
+  const parentRepoDir = commonDir.endsWith('/.git')
+    ? path.dirname(commonDir)
+    : commonDir.replace(/\.git$/, '');
+  const parent = path.basename(parentRepoDir);
+  return { kind: 'worktree', project: `${parent}/${leaf}` };
 }
 
 export function runOneTimeCwdRemap(dataDirectory?: string): void {
