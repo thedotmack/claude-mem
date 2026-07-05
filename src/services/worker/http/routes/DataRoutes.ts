@@ -4,7 +4,7 @@ import { z } from 'zod';
 import path from 'path';
 import { readFileSync, statSync, existsSync } from 'fs';
 import { logger } from '../../../../utils/logger.js';
-import { getPackageRoot, paths } from '../../../../shared/paths.js';
+import { getPackageRoot, paths, OBSERVER_SESSIONS_PROJECT } from '../../../../shared/paths.js';
 import { getWorkerPort } from '../../../../shared/worker-utils.js';
 import { PaginationHelper } from '../../PaginationHelper.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
@@ -216,16 +216,43 @@ export class DataRoutes extends BaseRouteHandler {
 
   private handleGetStats = this.wrapHandler((req: Request, res: Response): void => {
     const db = this.dbManager.getSessionStore().db;
+    const project = typeof req.query.project === 'string' ? req.query.project : undefined;
 
     const packageRoot = getPackageRoot();
     const packageJsonPath = path.join(packageRoot, 'package.json');
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
     const version = packageJson.version;
 
-    const totalObservations = db.prepare('SELECT COUNT(*) as count FROM observations').get() as { count: number };
-    const totalSessions = db.prepare('SELECT COUNT(*) as count FROM sdk_sessions').get() as { count: number };
-    const totalSummaries = db.prepare('SELECT COUNT(*) as count FROM session_summaries').get() as { count: number };
-    const firstObservationAt = getFirstObservationCreatedAt(db);
+    // Mirror PaginationHelper's reader scoping so the status line's numbers match
+    // the dashboard list views exactly. With a project, observations/summaries
+    // also adopt worktree rows via merged_into_project (sessions have no such
+    // column); without one, the internal observer-sessions project is excluded —
+    // just as the readers do. `table` is a constant identifier (never user
+    // input) and every project value is a bound parameter, so there is no
+    // dynamic SQL. Status-line consumers pass ?project=<folder> to switch between
+    // per-project and global counts.
+    const countScoped = (table: string, hasMergedColumn: boolean): number => {
+      let where: string;
+      let params: string[];
+      if (project) {
+        where = hasMergedColumn
+          ? 'WHERE (project = ? OR merged_into_project = ?)'
+          : 'WHERE project = ?';
+        params = hasMergedColumn ? [project, project] : [project];
+      } else {
+        where = 'WHERE project != ?';
+        params = [OBSERVER_SESSIONS_PROJECT];
+      }
+      const row = db
+        .prepare(`SELECT COUNT(*) as count FROM ${table} ${where}`)
+        .get(...params) as { count: number };
+      return row.count;
+    };
+
+    const totalObservations = countScoped('observations', true);
+    const totalSessions = countScoped('sdk_sessions', false);
+    const totalSummaries = countScoped('session_summaries', true);
+    const firstObservationAt = getFirstObservationCreatedAt(db, project);
 
     const dbPath = paths.database();
     let dbSize = 0;
@@ -248,9 +275,9 @@ export class DataRoutes extends BaseRouteHandler {
       database: {
         path: dbPath,
         size: dbSize,
-        observations: totalObservations.count,
-        sessions: totalSessions.count,
-        summaries: totalSummaries.count,
+        observations: totalObservations,
+        sessions: totalSessions,
+        summaries: totalSummaries,
         firstObservationAt
       }
     });
