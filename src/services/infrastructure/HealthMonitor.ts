@@ -10,12 +10,19 @@ function getWorkerHost(): string {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_HOST;
 }
 
+// Bracket IPv6 literals so a `CLAUDE_MEM_WORKER_HOST` of `::1` yields a valid
+// `http://[::1]:port` URL instead of the malformed `http://::1:port`.
+function formatHostForUrl(host: string): string {
+  if (host.startsWith('[') && host.endsWith(']')) return host;
+  return host.includes(':') ? `[${host}]` : host;
+}
+
 async function httpRequestToWorker(
   port: number,
   endpointPath: string,
   method: string = 'GET'
 ): Promise<{ ok: boolean; statusCode: number; body: string }> {
-  const response = await fetch(`http://${getWorkerHost()}:${port}${endpointPath}`, { method });
+  const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}${endpointPath}`, { method });
   let body = '';
   try {
     body = await response.text();
@@ -28,7 +35,7 @@ async function httpRequestToWorker(
 export async function isPortInUse(port: number): Promise<boolean> {
   if (process.platform === 'win32') {
     try {
-      const response = await fetch(`http://${getWorkerHost()}:${port}/api/health`);
+      const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}/api/health`);
       return response.ok;
     } catch (error) {
       if (error instanceof Error) {
