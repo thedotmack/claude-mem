@@ -1,0 +1,70 @@
+---
+title: "Release Branches"
+description: "The three branches Claude-Mem ships from, and how to run the non-stable lines locally"
+---
+
+# Release Branches
+
+Claude-Mem ships from three long-lived branches. Only one is published to npm.
+
+| Line               | Branch           | Who it's for                                         | Published to npm? |
+|--------------------|------------------|------------------------------------------------------|-------------------|
+| **Stable**         | `main`           | Everyone. This is the `npx claude-mem` install.      | **Yes** — the only published line |
+| **Core Dev**       | `core-dev`       | Maintainer + testers who want root-cause reliability fixes early | No — run from source |
+| **Community Edge** | `community-edge` | Bleeding edge with integrated community PRs          | No — run from source |
+
+## How changes flow
+
+Work is **promoted upward** toward stable. Nothing lands on `main` directly.
+
+- **New work enters as a PR to `core-dev` or `community-edge`** — never to `main`.
+- `community-edge → core-dev`: promote validated bleeding-edge work up (merge, or
+  open a PR straight to `core-dev`).
+- **`core-dev → main` is the only way `main` advances.** Stable is whatever
+  `core-dev` has hardened. `main` never takes a merge from anywhere else.
+
+```
+community-edge ──► core-dev ──► main
+  (new PRs, or       (new PRs land      (only ever advances
+   promote up)        here too)          by merging core-dev)
+```
+
+Releases happen **only** from `main`. There are no required gates or reviewers on
+the edge lines — merge at your discretion.
+
+## Which one should I use?
+
+- **Just want memory that works?** Use **stable**. `npx claude-mem@latest` is always `main`.
+- **Want to test root-cause worker/runtime reliability fixes before they land?** Use **core-dev**.
+- **Want the newest community integrations and don't mind rough edges?** Use **community-edge** (least stable).
+
+## Run a non-stable line locally
+
+Only `main` is published to npm, so `core-dev` and `community-edge` are run from source:
+
+```bash
+git clone https://github.com/thedotmack/claude-mem.git
+cd claude-mem
+git checkout core-dev          # or: community-edge
+npm install
+npm run build-and-sync         # builds, syncs to your local marketplace, restarts the worker
+```
+
+`build-and-sync` installs the checked-out branch into your local Claude Code
+plugin marketplace and restarts the worker, so the running plugin reflects that
+branch.
+
+### Go back to stable
+
+```bash
+git checkout main
+npm run build-and-sync
+```
+
+Or reinstall the published build with `npx claude-mem@latest`.
+
+## Releasing (maintainer)
+
+Releases (`npm run release`, `release:patch` / `release:minor` / `release:major`,
+git tags, npm publish) happen from **`main` only**. The edge lines are source-run
+and are never published to npm.
