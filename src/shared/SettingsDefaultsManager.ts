@@ -3,6 +3,7 @@ import { chmodSync, readFileSync, writeFileSync, existsSync, mkdirSync } from 'f
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { HOOK_TIMEOUTS, getTimeout } from './hook-constants.js';
+import { emitDiagnostic } from './hook-io.js';
 
 export const SETTINGS_FILE_MODE = 0o600;
 
@@ -243,10 +244,12 @@ export class SettingsDefaultsManager {
           writeSettingsFileSecure(settingsPath, defaults);
           // stderr, never stdout: this fires on the first boot in a fresh data
           // dir, and CLI commands like `start` promise machine-readable JSON
-          // on stdout to the hook framework.
-          console.warn('[SETTINGS] Created settings file with defaults:', settingsPath);
+          // on stdout to the hook framework. emitDiagnostic routes through the
+          // same channel logger uses so the line survives the Phase 2 hook
+          // stderr buffer (#2292) instead of being swallowed by raw console.
+          emitDiagnostic(`[SETTINGS] Created settings file with defaults: ${settingsPath}\n`);
         } catch (error: unknown) {
-          console.warn('[SETTINGS] Failed to create settings file, using in-memory defaults:', settingsPath, error instanceof Error ? error.message : String(error));
+          emitDiagnostic(`[SETTINGS] Failed to create settings file, using in-memory defaults: ${settingsPath} ${error instanceof Error ? error.message : String(error)}\n`);
         }
         return applyEnvOverrides ? this.applyEnvOverrides(defaults) : defaults;
       }
@@ -270,9 +273,9 @@ export class SettingsDefaultsManager {
         try {
           writeSettingsFileSecure(settingsPath, flatSettings);
           // stderr, never stdout — same JSON-on-stdout contract as above.
-          console.warn('[SETTINGS] Migrated settings file from nested to flat schema:', settingsPath);
+          emitDiagnostic(`[SETTINGS] Migrated settings file from nested to flat schema: ${settingsPath}\n`);
         } catch (error: unknown) {
-          console.warn('[SETTINGS] Failed to auto-migrate settings file:', settingsPath, error instanceof Error ? error.message : String(error));
+          emitDiagnostic(`[SETTINGS] Failed to auto-migrate settings file: ${settingsPath} ${error instanceof Error ? error.message : String(error)}\n`);
           // Continue with in-memory migration even if write fails
         }
       }
@@ -286,7 +289,7 @@ export class SettingsDefaultsManager {
 
       return applyEnvOverrides ? this.applyEnvOverrides(result) : result;
     } catch (error: unknown) {
-      console.warn('[SETTINGS] Failed to load settings, using defaults:', settingsPath, error instanceof Error ? error.message : String(error));
+      emitDiagnostic(`[SETTINGS] Failed to load settings, using defaults: ${settingsPath} ${error instanceof Error ? error.message : String(error)}\n`);
       const defaults = this.getAllDefaults();
       return applyEnvOverrides ? this.applyEnvOverrides(defaults) : defaults;
     }
