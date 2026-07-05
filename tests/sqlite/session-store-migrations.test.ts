@@ -1,6 +1,8 @@
 import { describe, it, expect, afterEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
+import { SessionSearch } from '../../src/services/sqlite/SessionSearch.js';
+import { SQLITE_BUSY_TIMEOUT_MS, SQLITE_JOURNAL_SIZE_LIMIT_BYTES } from '../../src/services/sqlite/connection.js';
 
 function seedLegacyContentHashScenario(db: Database): void {
   db.run(`
@@ -88,6 +90,169 @@ function hasUniqueIndexOnColumns(db: Database, table: string, columns: string[])
     return indexColumns.length === columns.length
       && indexColumns.every((column, i) => column === columns[i]);
   });
+}
+
+function insertSchemaVersions(db: Database, throughVersion: number): void {
+  const now = new Date().toISOString();
+  for (let version = 4; version <= throughVersion; version++) {
+    db.prepare('INSERT INTO schema_versions (version, applied_at) VALUES (?, ?)').run(version, now);
+  }
+}
+
+function seedHistoricalSdkSchema(
+  db: Database,
+  throughVersion: number,
+  options: { customTitle?: boolean; platformSource?: boolean; deadPendingColumns?: boolean } = {},
+): void {
+  const now = new Date().toISOString();
+  const epoch = Date.now();
+
+  db.run(`
+    CREATE TABLE schema_versions (
+      id INTEGER PRIMARY KEY,
+      version INTEGER UNIQUE NOT NULL,
+      applied_at TEXT NOT NULL
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE sdk_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      content_session_id TEXT UNIQUE NOT NULL,
+      memory_session_id TEXT UNIQUE,
+      project TEXT NOT NULL,
+      ${options.platformSource ? "platform_source TEXT NOT NULL DEFAULT 'claude'," : ''}
+      user_prompt TEXT,
+      started_at TEXT NOT NULL,
+      started_at_epoch INTEGER NOT NULL,
+      completed_at TEXT,
+      completed_at_epoch INTEGER,
+      status TEXT CHECK(status IN ('active', 'completed', 'failed')) NOT NULL DEFAULT 'active',
+      worker_port INTEGER,
+      prompt_counter INTEGER DEFAULT 0
+      ${options.customTitle ? ', custom_title TEXT' : ''}
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE observations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      memory_session_id TEXT NOT NULL,
+      project TEXT NOT NULL,
+      text TEXT,
+      type TEXT NOT NULL,
+      title TEXT,
+      subtitle TEXT,
+      facts TEXT,
+      narrative TEXT,
+      concepts TEXT,
+      files_read TEXT,
+      files_modified TEXT,
+      prompt_number INTEGER,
+      discovery_tokens INTEGER DEFAULT 0,
+      content_hash TEXT,
+      created_at TEXT NOT NULL,
+      created_at_epoch INTEGER NOT NULL,
+      FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE session_summaries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      memory_session_id TEXT NOT NULL,
+      project TEXT NOT NULL,
+      request TEXT,
+      investigated TEXT,
+      learned TEXT,
+      completed TEXT,
+      next_steps TEXT,
+      files_read TEXT,
+      files_edited TEXT,
+      notes TEXT,
+      prompt_number INTEGER,
+      discovery_tokens INTEGER DEFAULT 0,
+      created_at TEXT NOT NULL,
+      created_at_epoch INTEGER NOT NULL,
+      FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE
+    )
+  `);
+
+  if (throughVersion >= 10) {
+    db.run(`
+      CREATE TABLE user_prompts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        content_session_id TEXT NOT NULL,
+        prompt_number INTEGER NOT NULL,
+        prompt_text TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        created_at_epoch INTEGER NOT NULL,
+        FOREIGN KEY(content_session_id) REFERENCES sdk_sessions(content_session_id) ON DELETE CASCADE
+      )
+    `);
+  }
+
+  if (throughVersion >= 16) {
+    db.run(`
+      CREATE TABLE pending_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_db_id INTEGER NOT NULL,
+        content_session_id TEXT NOT NULL,
+        message_type TEXT NOT NULL CHECK(message_type IN ('observation', 'summarize')),
+        tool_name TEXT,
+        tool_input TEXT,
+        tool_response TEXT,
+        cwd TEXT,
+        last_user_message TEXT,
+        last_assistant_message TEXT,
+        prompt_number INTEGER,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'processing')),
+        created_at_epoch INTEGER NOT NULL
+        ${options.deadPendingColumns ? ', retry_count INTEGER DEFAULT 0, failed_at_epoch INTEGER, completed_at_epoch INTEGER' : ''},
+        FOREIGN KEY (session_db_id) REFERENCES sdk_sessions(id) ON DELETE CASCADE
+      )
+    `);
+  }
+
+  insertSchemaVersions(db, throughVersion);
+
+  db.prepare(`
+    INSERT INTO sdk_sessions (
+      id, content_session_id, memory_session_id, project,
+      ${options.platformSource ? 'platform_source,' : ''}
+      user_prompt, started_at, started_at_epoch, status
+    ) VALUES (?, ?, ?, ?, ${options.platformSource ? '?, ' : ''}?, ?, ?, 'active')
+  `).run(
+    7,
+    'historical-content',
+    'historical-memory',
+    'historical-project',
+    ...(options.platformSource ? [''] : []),
+    'historical prompt',
+    now,
+    epoch,
+  );
+
+  db.prepare(`
+    INSERT INTO observations (
+      memory_session_id, project, text, type, content_hash, created_at, created_at_epoch
+    ) VALUES (?, ?, ?, 'discovery', ?, ?, ?)
+  `).run('historical-memory', 'historical-project', 'historical observation', 'historical-hash', now, epoch + 1);
+
+  if (throughVersion >= 10) {
+    db.prepare(`
+      INSERT INTO user_prompts (content_session_id, prompt_number, prompt_text, created_at, created_at_epoch)
+      VALUES (?, 1, ?, ?, ?)
+    `).run('historical-content', 'historical user prompt', now, epoch + 2);
+  }
+
+  if (throughVersion >= 16) {
+    db.prepare(`
+      INSERT INTO pending_messages (
+        session_db_id, content_session_id, message_type, status, created_at_epoch
+      ) VALUES (?, ?, 'observation', 'pending', ?)
+    `).run(7, 'historical-content', epoch + 3);
+  }
 }
 
 function seedLegacyGlobalContentIdentityScenario(db: Database): void {
@@ -326,6 +491,32 @@ describe('SessionStore migrations', () => {
     }
   });
 
+  it('applies required SQLite pragmas to injected worker and search connections', () => {
+    const db = new Database(':memory:');
+    try {
+      db.run('PRAGMA busy_timeout = 0');
+      db.run('PRAGMA foreign_keys = OFF');
+
+      new SessionStore(db);
+
+      expect((db.query('PRAGMA busy_timeout').get() as { timeout: number }).timeout).toBe(SQLITE_BUSY_TIMEOUT_MS);
+      expect((db.query('PRAGMA foreign_keys').get() as { foreign_keys: number }).foreign_keys).toBe(1);
+      expect((db.query('PRAGMA synchronous').get() as { synchronous: number }).synchronous).toBe(1);
+      expect((db.query('PRAGMA journal_size_limit').get() as { journal_size_limit: number }).journal_size_limit)
+        .toBe(SQLITE_JOURNAL_SIZE_LIMIT_BYTES);
+      expect((db.query('PRAGMA auto_vacuum').get() as { auto_vacuum: number }).auto_vacuum).toBe(2);
+
+      db.run('PRAGMA busy_timeout = 0');
+      db.run('PRAGMA foreign_keys = OFF');
+      new SessionSearch(db);
+
+      expect((db.query('PRAGMA busy_timeout').get() as { timeout: number }).timeout).toBe(SQLITE_BUSY_TIMEOUT_MS);
+      expect((db.query('PRAGMA foreign_keys').get() as { foreign_keys: number }).foreign_keys).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
   it('a fresh observations FK uses ON UPDATE CASCADE and ON DELETE CASCADE', () => {
     store = new SessionStore(':memory:');
     const fks = store.db.query('PRAGMA foreign_key_list(observations)').all() as Array<{ table: string; on_update: string; on_delete: string }>;
@@ -347,6 +538,76 @@ describe('SessionStore migrations', () => {
     const promptFks = store.db.query('PRAGMA foreign_key_list(user_prompts)').all() as Array<{ table: string; from: string; to: string }>;
     expect(promptFks.some(fk => fk.table === 'sdk_sessions' && fk.from === 'session_db_id' && fk.to === 'id')).toBe(true);
     expect(promptFks.some(fk => fk.table === 'sdk_sessions' && fk.from === 'content_session_id')).toBe(false);
+  });
+
+  it('directly upgrades a v23-era schema before platform_source existed', () => {
+    const db = new Database(':memory:');
+    try {
+      seedHistoricalSdkSchema(db, 23, { customTitle: true, platformSource: false });
+
+      new SessionStore(db);
+
+      const sessionCols = new Set((db.query('PRAGMA table_info(sdk_sessions)').all() as Array<{ name: string }>).map(col => col.name));
+      expect(sessionCols.has('custom_title')).toBe(true);
+      expect(sessionCols.has('platform_source')).toBe(true);
+
+      const session = db.prepare('SELECT platform_source FROM sdk_sessions WHERE id = 7').get() as { platform_source: string };
+      expect(session.platform_source).toBe('claude');
+      expect(hasUniqueIndexOnColumns(db, 'sdk_sessions', ['platform_source', 'content_session_id'])).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('directly upgrades a v24-era schema with old global content-session uniqueness', () => {
+    const db = new Database(':memory:');
+    try {
+      seedHistoricalSdkSchema(db, 24, { customTitle: true, platformSource: true });
+
+      new SessionStore(db);
+
+      expect(hasUniqueIndexOnColumns(db, 'sdk_sessions', ['content_session_id'])).toBe(false);
+      expect(hasUniqueIndexOnColumns(db, 'sdk_sessions', ['platform_source', 'content_session_id'])).toBe(true);
+      expect((db.prepare('SELECT session_db_id FROM user_prompts WHERE content_session_id = ?').get('historical-content') as { session_db_id: number }).session_db_id).toBe(7);
+      expect((db.prepare('SELECT session_db_id FROM pending_messages WHERE content_session_id = ?').get('historical-content') as { session_db_id: number }).session_db_id).toBe(7);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('directly upgrades a v31-era schema with dead pending columns and old tool indexes', () => {
+    const db = new Database(':memory:');
+    try {
+      seedHistoricalSdkSchema(db, 31, { customTitle: true, platformSource: true, deadPendingColumns: true });
+
+      new SessionStore(db);
+
+      const pendingCols = new Set((db.query('PRAGMA table_info(pending_messages)').all() as Array<{ name: string }>).map(col => col.name));
+      expect(pendingCols.has('retry_count')).toBe(false);
+      expect(pendingCols.has('failed_at_epoch')).toBe(false);
+      expect(pendingCols.has('completed_at_epoch')).toBe(false);
+      expect(pendingCols.has('tool_use_id')).toBe(true);
+      expect(hasUniqueIndexOnColumns(db, 'pending_messages', ['session_db_id', 'tool_use_id'])).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('repairs missing v35-era invariants even when version rows already exist', () => {
+    const db = new Database(':memory:');
+    try {
+      seedHistoricalSdkSchema(db, 35, { customTitle: false, platformSource: false });
+
+      new SessionStore(db);
+
+      const sessionCols = new Set((db.query('PRAGMA table_info(sdk_sessions)').all() as Array<{ name: string }>).map(col => col.name));
+      expect(sessionCols.has('custom_title')).toBe(true);
+      expect(sessionCols.has('platform_source')).toBe(true);
+      expect(hasUniqueIndexOnColumns(db, 'sdk_sessions', ['platform_source', 'content_session_id'])).toBe(true);
+      expect(hasUniqueIndexOnColumns(db, 'pending_messages', ['session_db_id', 'tool_use_id'])).toBe(true);
+    } finally {
+      db.close();
+    }
   });
 
   it('migrates a single-platform DB without losing observations, summaries, prompts, or pending rows', () => {

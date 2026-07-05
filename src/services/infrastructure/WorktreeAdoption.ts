@@ -6,6 +6,7 @@ import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
 import { paths } from '../../shared/paths.js';
+import { openConfiguredSqliteDatabase } from '../sqlite/connection.js';
 
 const DEFAULT_DATA_DIR = paths.dataDir();
 
@@ -181,8 +182,7 @@ export async function adoptMergedWorktrees(opts: {
 
   let db: import('bun:sqlite').Database | null = null;
   try {
-    const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
-    db = new Database(dbPath);
+    db = openConfiguredSqliteDatabase(dbPath);
 
     interface ColumnInfo { name: string }
     const obsColumns = db

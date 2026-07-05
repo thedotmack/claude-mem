@@ -14,6 +14,7 @@ import {
   ObservationRow
 } from './types.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
+import { applySqliteConnectionPragmas } from './connection.js';
 
 export class SessionSearch {
   private db: Database;
@@ -26,8 +27,9 @@ export class SessionSearch {
     } else {
       ensureDir(DATA_DIR);
       this.db = new Database(dbPathOrDb);
-      this.db.run('PRAGMA journal_mode = WAL');
     }
+
+    applySqliteConnectionPragmas(this.db);
 
     this._fts5Available = this.isFts5Available();
 

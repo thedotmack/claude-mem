@@ -4,6 +4,7 @@ import { existsSync, writeFileSync, mkdirSync, rmSync, statSync, copyFileSync, s
 import { Database } from 'bun:sqlite';
 import { DATA_DIR, OBSERVER_SESSIONS_PROJECT } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
+import { openConfiguredSqliteDatabase } from '../sqlite/connection.js';
 
 const MARKER_FILENAME = '.cleanup-v12.4.3-applied';
 const STUCK_PENDING_THRESHOLD = 10;
@@ -198,7 +199,7 @@ function executeCleanup(dbPath: string, effectiveDataDir: string, markerPath: st
   }
 
   const counts = emptyCounts();
-  const db = new Database(dbPath);
+  const db = openConfiguredSqliteDatabase(dbPath);
   db.run('PRAGMA foreign_keys = ON');
 
   try {

@@ -1,8 +1,9 @@
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
-import { join, dirname } from 'path';
+import { readFileSync, existsSync } from 'fs';
+import { join } from 'path';
 import { homedir } from 'os';
 import { HOOK_TIMEOUTS, getTimeout } from './hook-constants.js';
+import { parseJsonWithBom, writeJsonFileAtomic } from './atomic-json.js';
 
 export interface SettingsDefaults {
   CLAUDE_MEM_MODEL: string;
@@ -199,11 +200,7 @@ export class SettingsDefaultsManager {
       if (!existsSync(settingsPath)) {
         const defaults = this.getAllDefaults();
         try {
-          const dir = dirname(settingsPath);
-          if (!existsSync(dir)) {
-            mkdirSync(dir, { recursive: true });
-          }
-          writeFileSync(settingsPath, JSON.stringify(defaults, null, 2), 'utf-8');
+          writeJsonFileAtomic(settingsPath, defaults);
           // stderr, never stdout: this fires on the first boot in a fresh data
           // dir, and CLI commands like `start` promise machine-readable JSON
           // on stdout to the hook framework.
@@ -215,17 +212,14 @@ export class SettingsDefaultsManager {
       }
 
       const settingsData = readFileSync(settingsPath, 'utf-8');
-      // Strip UTF-8 BOM if present — Windows tools (editors, formatters, CLI
-      // hooks) may prepend U+FEFF which Bun's JSON.parse rejects silently,
-      // causing a full fallback to defaults and breaking server-beta routing.
-      const settings = JSON.parse(settingsData.replace(/^\uFEFF/, ''));
+      const settings = parseJsonWithBom<Record<string, any>>(settingsData);
 
       let flatSettings = settings;
       if (settings.env && typeof settings.env === 'object') {
         flatSettings = settings.env;
 
         try {
-          writeFileSync(settingsPath, JSON.stringify(flatSettings, null, 2), 'utf-8');
+          writeJsonFileAtomic(settingsPath, flatSettings);
           // stderr, never stdout — same JSON-on-stdout contract as above.
           console.warn('[SETTINGS] Migrated settings file from nested to flat schema:', settingsPath);
         } catch (error: unknown) {
