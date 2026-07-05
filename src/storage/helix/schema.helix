@@ -1,0 +1,25 @@
+# Claude Mem Helix schema
+#
+# Canonical node labels
+# - Project
+# - ServerSession
+# - AgentEvent
+# - MemoryItem
+# - MemorySource
+# - ApiKey
+# - AuditLog
+# - SemanticDocument
+#
+# Canonical relationship labels
+# - session_of_project
+# - event_of_session
+# - item_of_session
+# - source_of_item
+# - key_of_project
+#
+# Indexed properties
+# - MemoryItem.indexed_text   (text)
+# - MemoryItem.embedding      (vector)
+# - SemanticDocument.document (text)
+# - SemanticDocument.embedding (vector)
+

@@ -89,6 +89,11 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: string;
   CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: string;
   CLAUDE_MEM_CLOUD_SYNC_WS: string;    // advisory WebSocket speed layer (Phase 4) — 'false' = HTTP polling only
+  CLAUDE_MEM_HELIX_ENABLED: string;
+  CLAUDE_MEM_HELIX_URL: string;
+  CLAUDE_MEM_HELIX_API_KEY: string;
+  CLAUDE_MEM_HELIX_PORT: string;
+  CLAUDE_MEM_DB_BACKEND: string;
   CLAUDE_MEM_TELEGRAM_ENABLED: string;
   CLAUDE_MEM_TELEGRAM_BOT_TOKEN: string;
   CLAUDE_MEM_TELEGRAM_CHAT_ID: string;
@@ -181,6 +186,11 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: '',      // Minted at first CloudSync start, then persisted back here
     CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: hostname(),  // Human-readable label for the cmem.ai Devices panel
     CLAUDE_MEM_CLOUD_SYNC_WS: 'true',  // Advisory WebSocket speed layer (plan Phase 4). 'false' = HTTP polling only — sync stays fully correct, just poll-latency (prime directive #2)
+    CLAUDE_MEM_HELIX_ENABLED: 'false',
+    CLAUDE_MEM_HELIX_URL: '',
+    CLAUDE_MEM_HELIX_API_KEY: '',
+    CLAUDE_MEM_HELIX_PORT: '6969',
+    CLAUDE_MEM_DB_BACKEND: 'sqlite+chroma',
     CLAUDE_MEM_TELEGRAM_ENABLED: 'true',
     CLAUDE_MEM_TELEGRAM_BOT_TOKEN: '',
     CLAUDE_MEM_TELEGRAM_CHAT_ID: '',

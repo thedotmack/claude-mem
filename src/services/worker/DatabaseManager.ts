@@ -5,16 +5,21 @@ import { SessionSearch } from '../sqlite/SessionSearch.js';
 import { openConfiguredSqliteDatabase } from '../sqlite/connection.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
 import { CloudSync } from '../sync/CloudSync.js';
+import { HelixManager } from '../sync/HelixManager.js';
+import { HelixSync } from '../sync/HelixSync.js';
+import type { VectorSync } from '../sync/VectorSync.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, DB_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import type { DBSession } from '../worker-types.js';
+import type { HelixTransport } from '../../storage/helix/transport.js';
 
 export class DatabaseManager {
   private db: Database | null = null;
   private sessionStore: SessionStore | null = null;
   private sessionSearch: SessionSearch | null = null;
-  private chromaSync: ChromaSync | null = null;
+  private chromaSync: VectorSync | null = null;
+  private helixManager: HelixManager | null = null;
   private cloudSync: CloudSync | null = null;
 
   async initialize(): Promise<void> {
@@ -28,8 +33,14 @@ export class DatabaseManager {
     this.sessionStore = new SessionStore(this.db);
     this.sessionSearch = new SessionSearch(this.db);
 
+    const backend = settings.CLAUDE_MEM_DB_BACKEND || 'sqlite+chroma';
     const chromaEnabled = settings.CLAUDE_MEM_CHROMA_ENABLED !== 'false';
-    if (chromaEnabled) {
+    const helixEnabled = settings.CLAUDE_MEM_HELIX_ENABLED === 'true' || backend.includes('helix');
+    if (helixEnabled) {
+      this.helixManager = new HelixManager();
+      this.chromaSync = new HelixSync('claude-mem', { manager: this.helixManager });
+      logger.info('DB', 'Helix semantic search enabled', { backend })
+    } else if (chromaEnabled) {
       this.chromaSync = new ChromaSync('claude-mem');
     } else {
       logger.info('DB', 'Chroma disabled via CLAUDE_MEM_CHROMA_ENABLED=false, using SQLite-only search');
@@ -51,6 +62,8 @@ export class DatabaseManager {
 
   async close(): Promise<void> {
     this.chromaSync = null;
+    await this.helixManager?.disconnect();
+    this.helixManager = null;
 
     this.cloudSync?.stop();
     this.cloudSync = null;
@@ -79,12 +92,19 @@ export class DatabaseManager {
     return this.sessionSearch;
   }
 
-  getChromaSync(): ChromaSync | null {
+  getChromaSync(): VectorSync | null {
     return this.chromaSync;
   }
 
   getCloudSync(): CloudSync | null {
     return this.cloudSync;
+  }
+
+  async getHelixTransport(): Promise<HelixTransport> {
+    if (!this.helixManager) {
+      this.helixManager = new HelixManager()
+    }
+    return await this.helixManager.getTransport()
   }
 
   getConnection(): Database {
