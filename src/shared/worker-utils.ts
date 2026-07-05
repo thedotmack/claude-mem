@@ -163,7 +163,7 @@ export function clearPortCache(): void {
   cachedApiRequestTimeoutMs = null;
 }
 
-function formatHostForUrl(host: string): string {
+export function formatHostForUrl(host: string): string {
   if (host.startsWith('[') && host.endsWith(']')) return host;
   return host.includes(':') ? `[${host}]` : host;
 }
