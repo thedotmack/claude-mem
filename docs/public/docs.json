@@ -85,6 +85,7 @@
           "modes",
           "telemetry",
           "development",
+          "branches",
           "troubleshooting",
           "platform-integration",
           "openclaw-integration"

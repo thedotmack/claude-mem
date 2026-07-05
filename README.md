@@ -382,6 +382,11 @@ Contributions are welcome! Please:
 4. Update documentation
 5. Submit a Pull Request
 
+Claude-Mem ships from three branches: `main` (stable), `core-dev`, and
+`community-edge`. Only `main` is published to npm; the others are run from source.
+See [Release Branches](https://docs.claude-mem.ai/branches) for the strategy and
+how to run the non-stable lines locally.
+
 See [Development Guide](https://docs.claude-mem.ai/development) for contribution workflow.
 
 ---
