@@ -70,7 +70,7 @@ export class HelixManager {
     getSupervisor().registerProcess(HELIX_SUPERVISOR_ID, {
       type: 'service',
       pid: this.child.pid ?? -1,
-      startedAt: Date.now()
+      startedAt: new Date().toISOString()
     }, this.child)
 
     const deadline = Date.now() + 30_000
@@ -123,4 +123,3 @@ export class HelixManager {
     return this.transport
   }
 }
-

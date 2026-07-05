@@ -1,4 +1,11 @@
 export interface VectorSearchMetadata {
+  sqlite_id: number;
+  doc_type: 'observation' | 'session_summary' | 'user_prompt';
+  memory_session_id: string;
+  project: string;
+  merged_into_project?: string | null;
+  platform_source?: string;
+  created_at_epoch: number;
   [key: string]: unknown;
 }
 
