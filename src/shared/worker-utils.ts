@@ -205,18 +205,20 @@ async function isWorkerReady(): Promise<boolean> {
 }
 
 /**
- * Canonical worker-script resolver: the marketplace install first, then the
- * dev-tree copy under cwd. Exported so other launchers (e.g. the MCP server)
- * prefer the same marketplace copy instead of spawning a stale cache-dir
- * bundle.
+ * Canonical worker-script resolver: an explicit `CLAUDE_MEM_WORKER_SCRIPT_PATH`
+ * override first (opt-in; for pinning a local-build bundle), then the marketplace
+ * install, then the dev-tree copy under cwd. Exported so other launchers (e.g.
+ * the MCP server) prefer the same bundle instead of spawning a stale cache-dir
+ * one. Unset override → identical to the prior marketplace-then-cwd behavior.
  */
 export function resolveWorkerScriptPath(): string | null {
   const candidates = [
+    process.env.CLAUDE_MEM_WORKER_SCRIPT_PATH,                            // explicit override, checked first (opt-in)
     path.join(MARKETPLACE_ROOT, 'plugin', 'scripts', 'worker-service.cjs'),
     path.join(process.cwd(), 'plugin', 'scripts', 'worker-service.cjs'),
   ];
   for (const candidate of candidates) {
-    if (existsSync(candidate)) return candidate;
+    if (candidate && existsSync(candidate)) return candidate;
   }
   return null;
 }
