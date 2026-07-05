@@ -70,10 +70,11 @@ function matchesWhereFilter(metadata: VectorSearchMetadata, filter: Record<strin
 function mapNodeMetadata(node: HelixNode): VectorSearchMetadata {
   return {
     sqlite_id: Number(node.sqlite_id),
-    doc_type: node.doc_type,
-    project: node.project,
-    merged_into_project: node.merged_into_project ?? null,
-    platform_source: node.platform_source ?? null,
+    doc_type: String(node.doc_type ?? 'observation') as VectorSearchMetadata['doc_type'],
+    memory_session_id: String(node.memory_session_id ?? ''),
+    project: String(node.project ?? ''),
+    merged_into_project: typeof node.merged_into_project === 'string' ? node.merged_into_project : null,
+    platform_source: typeof node.platform_source === 'string' ? node.platform_source : undefined,
     created_at_epoch: Number(node.created_at_epoch ?? 0)
   }
 }
@@ -262,4 +263,3 @@ export class HelixSync implements VectorSync {
     })
   }
 }
-
