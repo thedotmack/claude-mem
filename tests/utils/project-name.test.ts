@@ -58,9 +58,11 @@ describe('getProjectName', () => {
     let tmp: string;
     let repoRoot: string;
     let nestedDir: string;
+    let packageDir: string;
+    let packageSrcDir: string;
 
     beforeAll(async () => {
-      const { mkdtempSync, mkdirSync, realpathSync } = await import('fs');
+      const { mkdtempSync, mkdirSync, realpathSync, writeFileSync } = await import('fs');
       const { execFileSync } = await import('child_process');
       const { join } = await import('path');
       const { tmpdir } = await import('os');
@@ -70,7 +72,11 @@ describe('getProjectName', () => {
       tmp = realpathSync(mkdtempSync(join(tmpdir(), 'cm-reporoot-')));
       repoRoot = join(tmp, 'my-real-repo');
       nestedDir = join(repoRoot, 'packages', 'deeply', 'nested');
+      packageDir = join(repoRoot, 'packages', 'api');
+      packageSrcDir = join(packageDir, 'src', 'routes');
       mkdirSync(nestedDir, { recursive: true });
+      mkdirSync(packageSrcDir, { recursive: true });
+      writeFileSync(join(packageDir, 'package.json'), '{"name":"api"}');
       execFileSync('git', ['init', '-q'], { cwd: repoRoot });
     });
 
@@ -79,8 +85,12 @@ describe('getProjectName', () => {
       rmSync(tmp, { recursive: true, force: true });
     });
 
-    it('deep subdirectory inside a repo yields the repo-root name', () => {
-      expect(getProjectName(nestedDir)).toBe('my-real-repo');
+    it('manifest-less subdirectory inside a repo yields a repo-relative first-segment key', () => {
+      expect(getProjectName(nestedDir)).toBe('my-real-repo/packages');
+    });
+
+    it('nested monorepo package yields a repo-relative package key', () => {
+      expect(getProjectName(packageSrcDir)).toBe('my-real-repo/packages/api');
     });
 
     it('repo root itself yields the repo-root name', () => {
@@ -135,6 +145,7 @@ describe('getProjectContext', () => {
     let tmp: string;
     let mainRepo: string;
     let worktreeCheckout: string;
+    let nestedWorktreeDir: string;
 
     beforeAll(async () => {
       const { mkdtempSync, mkdirSync, writeFileSync } = await import('fs');
@@ -145,9 +156,10 @@ describe('getProjectContext', () => {
       mainRepo = join(tmp, 'main-repo');
       const worktreeGitDir = join(mainRepo, '.git', 'worktrees', 'my-worktree');
       worktreeCheckout = join(tmp, 'my-worktree');
+      nestedWorktreeDir = join(worktreeCheckout, 'packages', 'api', 'src');
 
       mkdirSync(worktreeGitDir, { recursive: true });
-      mkdirSync(worktreeCheckout, { recursive: true });
+      mkdirSync(nestedWorktreeDir, { recursive: true });
       writeFileSync(
         join(worktreeCheckout, '.git'),
         `gitdir: ${worktreeGitDir}\n`
@@ -172,6 +184,57 @@ describe('getProjectContext', () => {
       expect(project).toBe('main-repo/my-worktree');
       expect(project).not.toBe('main-repo');
       expect(project).not.toBe('my-worktree');
+    });
+
+    it('nested directories inside a worktree keep the parent/worktree project key', () => {
+      const ctx = getProjectContext(nestedWorktreeDir);
+      expect(ctx.isWorktree).toBe(true);
+      expect(ctx.primary).toBe('main-repo/my-worktree');
+      expect(ctx.allProjects).toEqual(['main-repo', 'main-repo/my-worktree']);
+    });
+  });
+
+  describe('submodule parent context', () => {
+    let tmp: string;
+    let mainRepo: string;
+    let submoduleRoot: string;
+    let nestedSubmoduleDir: string;
+
+    beforeAll(async () => {
+      const { mkdtempSync, mkdirSync, writeFileSync } = await import('fs');
+      const { join } = await import('path');
+      const { tmpdir } = await import('os');
+
+      tmp = mkdtempSync(join(tmpdir(), 'cm-submodule-'));
+      mainRepo = join(tmp, 'main-repo');
+      submoduleRoot = join(mainRepo, 'libs', 'dep');
+      nestedSubmoduleDir = join(submoduleRoot, 'src', 'deep');
+
+      mkdirSync(join(mainRepo, '.git', 'modules', 'libs', 'dep'), { recursive: true });
+      mkdirSync(nestedSubmoduleDir, { recursive: true });
+      writeFileSync(
+        join(submoduleRoot, '.git'),
+        'gitdir: ../../.git/modules/libs/dep\n'
+      );
+    });
+
+    afterAll(async () => {
+      const { rmSync } = await import('fs');
+      rmSync(tmp, { recursive: true, force: true });
+    });
+
+    it('uses the parent repo project for a submodule root', () => {
+      const ctx = getProjectContext(submoduleRoot);
+      expect(ctx.primary).toBe('main-repo');
+      expect(ctx.parent).toBeNull();
+      expect(ctx.isWorktree).toBe(false);
+      expect(ctx.allProjects).toEqual(['main-repo']);
+    });
+
+    it('uses the parent repo project for nested submodule directories', () => {
+      const ctx = getProjectContext(nestedSubmoduleDir);
+      expect(ctx.primary).toBe('main-repo');
+      expect(ctx.allProjects).toEqual(['main-repo']);
     });
   });
 });

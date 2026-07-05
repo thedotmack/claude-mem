@@ -1,6 +1,6 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
@@ -52,6 +52,13 @@ describe('SettingsDefaultsManager', () => {
 
         const content = readFileSync(settingsPath, 'utf-8');
         expect(() => JSON.parse(content)).not.toThrow();
+      });
+
+      it('should not leave a temp file after creating defaults', () => {
+        SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        const leftovers = readdirSync(tempDir).filter(name => name.includes('.settings.json.') && name.endsWith('.tmp'));
+        expect(leftovers).toEqual([]);
       });
 
       it('should write pretty-printed JSON (2-space indent)', () => {
@@ -163,11 +170,13 @@ describe('SettingsDefaultsManager', () => {
       });
 
       it('should return defaults when file contains invalid JSON', () => {
-        writeFileSync(settingsPath, 'not valid json {{{{');
+        const corrupt = 'not valid json {{{{';
+        writeFileSync(settingsPath, corrupt);
 
         const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
         expect(result).toEqual(SettingsDefaultsManager.getAllDefaults());
+        expect(readFileSync(settingsPath, 'utf-8')).toBe(corrupt);
       });
 
       it('should return defaults when file contains only whitespace', () => {
@@ -234,6 +243,16 @@ describe('SettingsDefaultsManager', () => {
         expect(parsed.env).toBeUndefined();
         expect(parsed.CLAUDE_MEM_MODEL).toBe('migrated-model');
       });
+
+      it('ignores stale temp files from an interrupted settings write', () => {
+        const settings = { CLAUDE_MEM_MODEL: 'stable-model' };
+        writeFileSync(settingsPath, JSON.stringify(settings));
+        writeFileSync(join(tempDir, '.settings.json.999999.deadbeef.tmp'), '{"CLAUDE_MEM_MODEL":');
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(result.CLAUDE_MEM_MODEL).toBe('stable-model');
+      });
     });
 
     describe('edge cases', () => {
@@ -266,7 +285,7 @@ describe('SettingsDefaultsManager', () => {
 
         const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-        expect(result).toBeDefined();
+        expect(result.CLAUDE_MEM_MODEL).toBe('bom-model');
       });
     });
   });

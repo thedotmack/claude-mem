@@ -395,6 +395,33 @@ describe('SessionStore migrations', () => {
     }
   });
 
+  it('migrates a v23 legacy DB missing platform_source through current composite identity', () => {
+    const db = new Database(':memory:');
+    try {
+      seedLegacyGlobalContentIdentityScenario(db);
+      db.run('ALTER TABLE sdk_sessions DROP COLUMN platform_source');
+      db.run('DELETE FROM schema_versions WHERE version >= 24');
+
+      const migrated = new SessionStore(db);
+
+      const session = db.prepare(`
+        SELECT id, platform_source
+        FROM sdk_sessions
+        WHERE content_session_id = 'shared-raw-id'
+      `).get() as { id: number; platform_source: string } | undefined;
+
+      expect(session).toEqual({ id: 101, platform_source: 'claude' });
+      expect(hasUniqueIndexOnColumns(db, 'sdk_sessions', ['content_session_id'])).toBe(false);
+      expect(hasUniqueIndexOnColumns(db, 'sdk_sessions', ['platform_source', 'content_session_id'])).toBe(true);
+      expect((db.prepare('SELECT session_db_id FROM user_prompts WHERE content_session_id = ?').get('shared-raw-id') as { session_db_id: number }).session_db_id).toBe(101);
+
+      const cursorId = migrated.createSDKSession('shared-raw-id', 'cursor-project', 'cursor prompt', undefined, 'cursor');
+      expect(cursorId).not.toBe(101);
+    } finally {
+      db.close();
+    }
+  });
+
   it('drops the dead pending_messages columns (retry_count / failed_at_epoch / completed_at_epoch / worker_pid) on a legacy db', () => {
     const db = new Database(':memory:');
     try {

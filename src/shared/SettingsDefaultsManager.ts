@@ -1,8 +1,9 @@
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { HOOK_TIMEOUTS, getTimeout } from './hook-constants.js';
+import { parseJsonText, writeJsonFileAtomic } from '../utils/json-utils.js';
 
 export interface SettingsDefaults {
   CLAUDE_MEM_MODEL: string;
@@ -203,7 +204,7 @@ export class SettingsDefaultsManager {
           if (!existsSync(dir)) {
             mkdirSync(dir, { recursive: true });
           }
-          writeFileSync(settingsPath, JSON.stringify(defaults, null, 2), 'utf-8');
+          writeJsonFileAtomic(settingsPath, defaults);
           // stderr, never stdout: this fires on the first boot in a fresh data
           // dir, and CLI commands like `start` promise machine-readable JSON
           // on stdout to the hook framework.
@@ -215,17 +216,18 @@ export class SettingsDefaultsManager {
       }
 
       const settingsData = readFileSync(settingsPath, 'utf-8');
-      // Strip UTF-8 BOM if present — Windows tools (editors, formatters, CLI
-      // hooks) may prepend U+FEFF which Bun's JSON.parse rejects silently,
-      // causing a full fallback to defaults and breaking server-beta routing.
-      const settings = JSON.parse(settingsData.replace(/^\uFEFF/, ''));
+      const parsedSettings = parseJsonText<unknown>(settingsData);
+      if (!parsedSettings || typeof parsedSettings !== 'object' || Array.isArray(parsedSettings)) {
+        throw new Error('settings.json must contain a JSON object');
+      }
+      const settings = parsedSettings as Record<string, unknown>;
 
       let flatSettings = settings;
-      if (settings.env && typeof settings.env === 'object') {
-        flatSettings = settings.env;
+      if (settings.env && typeof settings.env === 'object' && !Array.isArray(settings.env)) {
+        flatSettings = settings.env as Record<string, unknown>;
 
         try {
-          writeFileSync(settingsPath, JSON.stringify(flatSettings, null, 2), 'utf-8');
+          writeJsonFileAtomic(settingsPath, flatSettings);
           // stderr, never stdout — same JSON-on-stdout contract as above.
           console.warn('[SETTINGS] Migrated settings file from nested to flat schema:', settingsPath);
         } catch (error: unknown) {
@@ -236,8 +238,9 @@ export class SettingsDefaultsManager {
 
       const result: SettingsDefaults = { ...this.DEFAULTS };
       for (const key of Object.keys(this.DEFAULTS) as Array<keyof SettingsDefaults>) {
-        if (flatSettings[key] !== undefined) {
-          result[key] = flatSettings[key];
+        const value = flatSettings[key];
+        if (typeof value === 'string') {
+          result[key] = value;
         }
       }
 

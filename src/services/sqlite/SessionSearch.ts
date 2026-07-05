@@ -15,6 +15,8 @@ import {
 } from './types.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
 
+const SQLITE_BUSY_TIMEOUT_MS = 5000;
+
 export class SessionSearch {
   private db: Database;
 
@@ -28,6 +30,7 @@ export class SessionSearch {
       this.db = new Database(dbPathOrDb);
       this.db.run('PRAGMA journal_mode = WAL');
     }
+    this.db.run(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
 
     this._fts5Available = this.isFts5Available();
 

@@ -5,6 +5,8 @@ import { logger } from './logger.js';
 
 export interface WorktreeInfo {
   isWorktree: boolean;
+  isSubmodule: boolean;
+  kind: 'worktree' | 'submodule' | null;
   worktreeName: string | null;     
   parentRepoPath: string | null;   
   parentProjectName: string | null; 
@@ -12,6 +14,8 @@ export interface WorktreeInfo {
 
 const NOT_A_WORKTREE: WorktreeInfo = {
   isWorktree: false,
+  isSubmodule: false,
+  kind: null,
   worktreeName: null,
   parentRepoPath: null,
   parentProjectName: null
@@ -47,21 +51,36 @@ export function detectWorktree(cwd: string): WorktreeInfo {
     return NOT_A_WORKTREE;
   }
 
-  const gitdirPath = match[1];
+  const gitdirPath = path.resolve(path.dirname(gitPath), match[1]);
 
   const worktreesMatch = gitdirPath.match(/^(.+)[/\\]\.git[/\\]worktrees[/\\]([^/\\]+)$/);
-  if (!worktreesMatch) {
-    return NOT_A_WORKTREE;
+  if (worktreesMatch) {
+    const parentRepoPath = worktreesMatch[1];
+    const worktreeName = path.basename(cwd);
+    const parentProjectName = path.basename(parentRepoPath);
+
+    return {
+      isWorktree: true,
+      isSubmodule: false,
+      kind: 'worktree',
+      worktreeName,
+      parentRepoPath,
+      parentProjectName
+    };
   }
 
-  const parentRepoPath = worktreesMatch[1];
-  const worktreeName = path.basename(cwd);
-  const parentProjectName = path.basename(parentRepoPath);
+  const modulesMatch = gitdirPath.match(/^(.+)[/\\]\.git[/\\]modules[/\\].+$/);
+  if (modulesMatch) {
+    const parentRepoPath = modulesMatch[1];
+    return {
+      isWorktree: false,
+      isSubmodule: true,
+      kind: 'submodule',
+      worktreeName: path.basename(cwd),
+      parentRepoPath,
+      parentProjectName: path.basename(parentRepoPath)
+    };
+  }
 
-  return {
-    isWorktree: true,
-    worktreeName,
-    parentRepoPath,
-    parentProjectName
-  };
+  return NOT_A_WORKTREE;
 }

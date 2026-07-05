@@ -90,6 +90,24 @@ describe('JSON Utils', () => {
       expect(result).toEqual([1, 2, 3]);
     });
 
+    it('reads JSON objects with a UTF-8 BOM', () => {
+      const filePath = join(tempDir, 'bom-object.json');
+      writeFileSync(filePath, '\uFEFF' + JSON.stringify({ ok: true }));
+
+      const result = readJsonSafe(filePath, {});
+
+      expect(result).toEqual({ ok: true });
+    });
+
+    it('reads JSON arrays with a UTF-8 BOM', () => {
+      const filePath = join(tempDir, 'bom-array.json');
+      writeFileSync(filePath, '\uFEFF' + JSON.stringify(['a', 'b']));
+
+      const result = readJsonSafe<string[]>(filePath, []);
+
+      expect(result).toEqual(['a', 'b']);
+    });
+
     it('reads deeply nested JSON correctly', () => {
       const filePath = join(tempDir, 'nested.json');
       const deepData = {

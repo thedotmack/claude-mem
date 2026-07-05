@@ -8,6 +8,8 @@ import { USER_SETTINGS_PATH, DB_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import type { DBSession } from '../worker-types.js';
 
+const SQLITE_BUSY_TIMEOUT_MS = 5000;
+
 export class DatabaseManager {
   private db: Database | null = null;
   private sessionStore: SessionStore | null = null;
@@ -16,6 +18,7 @@ export class DatabaseManager {
 
   async initialize(): Promise<void> {
     this.db = new Database(DB_PATH);
+    this.db.run(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
     
     this.sessionStore = new SessionStore(this.db);
     this.sessionSearch = new SessionSearch(this.db);
