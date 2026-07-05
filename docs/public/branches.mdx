@@ -15,18 +15,22 @@ Claude-Mem ships from three long-lived branches. Only one is published to npm.
 
 ## How changes flow
 
-Low ceremony, solo-maintainer friendly:
+Work is **promoted upward** toward stable. Nothing lands on `main` directly.
 
-- `main` (stable) is the trunk. Releases happen **only** from `main`.
-- `main` merges **forward** into `core-dev` and `community-edge` to keep them current.
-- Validated fixes on the edge lines are promoted **back down** to `main` via normal pull requests.
+- **New work enters as a PR to `core-dev` or `community-edge`** — never to `main`.
+- `community-edge → core-dev`: promote validated bleeding-edge work up (merge, or
+  open a PR straight to `core-dev`).
+- **`core-dev → main` is the only way `main` advances.** Stable is whatever
+  `core-dev` has hardened. `main` never takes a merge from anywhere else.
 
 ```
-main ──► core-dev ──► community-edge     (forward merges keep edges current)
-main ◄── PR ◄──────── validated fixes    (promote hardened work back to stable)
+community-edge ──► core-dev ──► main
+  (new PRs, or       (new PRs land      (only ever advances
+   promote up)        here too)          by merging core-dev)
 ```
 
-There are no required gates or reviewers on the edge lines — merge at your discretion.
+Releases happen **only** from `main`. There are no required gates or reviewers on
+the edge lines — merge at your discretion.
 
 ## Which one should I use?
 
