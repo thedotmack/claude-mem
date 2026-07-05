@@ -7,6 +7,7 @@ import { logger } from '../../utils/logger.js';
 import {
   clearDependencyStatus,
   recordClaudeCliSetupRequired,
+  recordHelixCliUnavailable,
   recordUvxVectorSearchUnavailable,
   snapshotDependencyHealth,
   type DependencyHealthSnapshot,
@@ -15,6 +16,8 @@ import {
 interface DependencyPreflightSettings {
   CLAUDE_MEM_PROVIDER?: string;
   CLAUDE_MEM_CHROMA_ENABLED?: string;
+  CLAUDE_MEM_HELIX_ENABLED?: string;
+  CLAUDE_MEM_DB_BACKEND?: string;
 }
 
 interface ClassifiedClaudeSetupError {
@@ -157,6 +160,8 @@ function resolveUvxCommand(options: WorkerDependencyPreflightOptions): string {
 export function runWorkerDependencyPreflight(options: WorkerDependencyPreflightOptions): DependencyHealthSnapshot {
   const provider = options.settings.CLAUDE_MEM_PROVIDER || 'claude';
   const chromaEnabled = options.settings.CLAUDE_MEM_CHROMA_ENABLED !== 'false';
+  const helixEnabled = options.settings.CLAUDE_MEM_HELIX_ENABLED === 'true'
+    || (options.settings.CLAUDE_MEM_DB_BACKEND ?? '').includes('helix');
 
   if (provider === 'claude') {
     const findClaudeExecutable = options.findClaudeExecutable ?? (() => defaultFindClaudeExecutable('WORKER'));
@@ -192,6 +197,17 @@ export function runWorkerDependencyPreflight(options: WorkerDependencyPreflightO
     }
   } else {
     clearDependencyStatus('uvx');
+  }
+
+  if (helixEnabled) {
+    if (hasExecutableOnPath('helix', options)) {
+      clearDependencyStatus('helix');
+    } else {
+      logger.warn('WORKER', 'helix executable not found during worker dependency preflight');
+      recordHelixCliUnavailable('helix executable not found on effective PATH for HelixDB backend');
+    }
+  } else {
+    clearDependencyStatus('helix');
   }
 
   return snapshotDependencyHealth();

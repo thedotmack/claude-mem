@@ -48,6 +48,7 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem server api-key create|list|revoke')}   Manage API keys
   ${styleText('cyan', 'npx claude-mem worker start|stop|restart|status')}    Worker compatibility aliases
   ${styleText('cyan', 'npx claude-mem search <query>')}       Search observations
+  ${styleText('cyan', 'npx claude-mem migrate-to-helix')}     Copy local SQLite data into the Helix backend
   ${styleText('cyan', 'npx claude-mem adopt [--dry-run] [--branch <name>]')}    Stamp merged worktrees into parent project
   ${styleText('cyan', 'npx claude-mem cleanup [--dry-run]')}    Run one-time v12.4.3 pollution cleanup (or preview counts)
   ${styleText('cyan', 'npx claude-mem transcript watch')}     Start transcript watcher
@@ -188,6 +189,12 @@ async function main(): Promise<void> {
     case 'search': {
       const { runSearchCommand } = await import('./commands/runtime.js');
       await runSearchCommand(args.slice(1));
+      break;
+    }
+
+    case 'migrate-to-helix': {
+      const { runMigrateToHelixCommand } = await import('./commands/migrate-to-helix.js');
+      await runMigrateToHelixCommand();
       break;
     }
 

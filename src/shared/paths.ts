@@ -68,6 +68,7 @@ export const paths = {
   settings: () => join(DATA_DIR, 'settings.json'),
   database: () => join(DATA_DIR, 'claude-mem.db'),
   chroma: () => join(DATA_DIR, 'chroma'),
+  helix: () => join(DATA_DIR, 'helix'),
   combinedCerts: () => join(DATA_DIR, 'combined_certs.pem'),
   transcriptsConfig: () => join(DATA_DIR, 'transcript-watch.json'),
   transcriptsState: () => join(DATA_DIR, 'transcript-watch-state.json'),
