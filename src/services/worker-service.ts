@@ -2,7 +2,7 @@
 import path from 'path';
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
 import { spawn } from 'child_process';
-import { Database } from 'bun:sqlite';
+import type { Database } from 'bun:sqlite';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { getWorkerPort, getWorkerHost, fetchWithTimeout, resolveWorkerScriptPath } from '../shared/worker-utils.js';
@@ -16,6 +16,7 @@ import { getAuthMethodDescription } from '../shared/EnvManager.js';
 import { logger } from '../utils/logger.js';
 import { ChromaMcpManager } from './sync/ChromaMcpManager.js';
 import { ChromaSync } from './sync/ChromaSync.js';
+import { openConfiguredSqliteDatabase } from './sqlite/connection.js';
 import { configureSupervisorSignalHandlers, getSupervisor, startSupervisor } from '../supervisor/index.js';
 import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
 
@@ -892,7 +893,7 @@ function parseServerApiKeyOptions(args: string[]): Record<string, string> {
 
 function openServerCommandDatabase(): Database {
   ensureDir(DATA_DIR);
-  return new Database(DB_PATH, { create: true, readwrite: true });
+  return openConfiguredSqliteDatabase(DB_PATH, { create: true, readwrite: true });
 }
 
 function runServerApiKeyCli(args: string[]): never {

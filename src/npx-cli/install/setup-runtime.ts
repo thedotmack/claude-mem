@@ -1,12 +1,14 @@
 import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { exec, execSync, spawnSync } from 'child_process';
+import { exec, execSync, spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'child_process';
 import { createRequire } from 'module';
 import { join } from 'path';
 import { homedir } from 'os';
 import { ErrorSeverity } from './error-taxonomy.js';
 import { installerError, type InstallSummary } from './error-reporter.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { buildSpawnSyncInvocation, lookupWindowsCommand } from '../../shared/spawn.js';
 import { IS_WINDOWS } from '../utils/paths.js';
+import { parseJsonWithBom } from '../../shared/atomic-json.js';
 
 const INSTALL_TIMEOUT_MS = (() => {
   const override = process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS;
@@ -36,7 +38,7 @@ function userHasOptedOutOfVectorSearch(): boolean {
   let raw: unknown;
   try {
     if (!existsSync(USER_SETTINGS_PATH)) return false;
-    raw = JSON.parse(readFileSync(USER_SETTINGS_PATH, 'utf-8'));
+    raw = parseJsonWithBom(readFileSync(USER_SETTINGS_PATH, 'utf-8'));
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
     console.warn(`claude-mem: could not read ${USER_SETTINGS_PATH} while checking vector-search opt-out:`, err);
@@ -73,35 +75,43 @@ function markerPath(targetDir: string): string {
   return join(targetDir, '.install-version');
 }
 
-export function getBunPath(): string | null {
+function spawnVersionProbe(command: string, args: string[]) {
+  const options: SpawnSyncOptionsWithStringEncoding = {
+    encoding: 'utf-8',
+    stdio: ['pipe', 'pipe', 'pipe'],
+  };
+  const invocation = buildSpawnSyncInvocation(command, args, options);
+  return spawnSync(invocation.command, invocation.args, invocation.options);
+}
+
+function getToolPath(command: string, commonPaths: string[]): string | null {
+  const pathCommand = IS_WINDOWS ? lookupWindowsCommand(command) : command;
   try {
-    const result = spawnSync('bun', ['--version'], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS,
-    });
-    if (result.status === 0) return 'bun';
+    if (pathCommand) {
+      const result = spawnVersionProbe(pathCommand, ['--version']);
+      if (result.status === 0) return pathCommand;
+    }
   } catch {
     // Not in PATH
   }
 
-  return BUN_COMMON_PATHS.find(existsSync) || null;
+  return commonPaths.find(existsSync) || null;
+}
+
+export function getBunPath(): string | null {
+  return getToolPath('bun', BUN_COMMON_PATHS);
 }
 
 function isBunInstalled(): boolean {
   return getBunPath() !== null;
 }
 
-function getBunVersion(): string | null {
+export function getBunVersion(): string | null {
   const bunPath = getBunPath();
   if (!bunPath) return null;
 
   try {
-    const result = spawnSync(bunPath, ['--version'], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS,
-    });
+    const result = spawnVersionProbe(bunPath, ['--version']);
     return result.status === 0 ? result.stdout.trim() : null;
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
@@ -111,34 +121,19 @@ function getBunVersion(): string | null {
 }
 
 function getUvPath(): string | null {
-  try {
-    const result = spawnSync('uv', ['--version'], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS,
-    });
-    if (result.status === 0) return 'uv';
-  } catch {
-    // Not in PATH
-  }
-
-  return UV_COMMON_PATHS.find(existsSync) || null;
+  return getToolPath('uv', UV_COMMON_PATHS);
 }
 
 function isUvInstalled(): boolean {
   return getUvPath() !== null;
 }
 
-function getUvVersion(): string | null {
+export function getUvVersion(): string | null {
   const uvPath = getUvPath();
   if (!uvPath) return null;
 
   try {
-    const result = spawnSync(uvPath, ['--version'], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS,
-    });
+    const result = spawnVersionProbe(uvPath, ['--version']);
     return result.status === 0 ? result.stdout.trim() : null;
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));

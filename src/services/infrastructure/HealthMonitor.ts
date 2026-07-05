@@ -3,14 +3,26 @@ import path from 'path';
 import net from 'net';
 import { readFileSync } from 'fs';
 import { logger } from '../../utils/logger.js';
-import { MARKETPLACE_ROOT } from '../../shared/paths.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { MARKETPLACE_ROOT, USER_SETTINGS_PATH } from '../../shared/paths.js';
+
+function getWorkerHost(): string {
+  return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_HOST;
+}
+
+// Bracket IPv6 literals so a `CLAUDE_MEM_WORKER_HOST` of `::1` yields a valid
+// `http://[::1]:port` URL instead of the malformed `http://::1:port`.
+function formatHostForUrl(host: string): string {
+  if (host.startsWith('[') && host.endsWith(']')) return host;
+  return host.includes(':') ? `[${host}]` : host;
+}
 
 async function httpRequestToWorker(
   port: number,
   endpointPath: string,
   method: string = 'GET'
 ): Promise<{ ok: boolean; statusCode: number; body: string }> {
-  const response = await fetch(`http://127.0.0.1:${port}${endpointPath}`, { method });
+  const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}${endpointPath}`, { method });
   let body = '';
   try {
     body = await response.text();
@@ -23,7 +35,7 @@ async function httpRequestToWorker(
 export async function isPortInUse(port: number): Promise<boolean> {
   if (process.platform === 'win32') {
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/api/health`);
+      const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}/api/health`);
       return response.ok;
     } catch (error) {
       if (error instanceof Error) {
@@ -37,6 +49,7 @@ export async function isPortInUse(port: number): Promise<boolean> {
 
   return new Promise((resolve) => {
     const server = net.createServer();
+    const workerHost = getWorkerHost();
     server.once('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'EADDRINUSE') {
         resolve(true);
@@ -47,7 +60,7 @@ export async function isPortInUse(port: number): Promise<boolean> {
     server.once('listening', () => {
       server.close(() => resolve(false));
     });
-    server.listen(port, '127.0.0.1');
+    server.listen(port, workerHost);
   });
 }
 
@@ -133,7 +146,7 @@ export function getInstalledPluginVersion(): string {
 
 export async function getRunningWorkerVersion(port: number): Promise<string | null> {
   try {
-    const result = await httpRequestToWorker(port, '/api/version');
+    const result = await httpRequestToWorker(port, '/api/health');
     if (!result.ok) return null;
     const data = JSON.parse(result.body) as { version: string };
     return data.version;

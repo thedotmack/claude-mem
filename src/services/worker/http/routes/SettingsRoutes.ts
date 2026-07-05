@@ -2,7 +2,7 @@
 import express, { Request, Response } from 'express';
 import { z } from 'zod';
 import path from 'path';
-import { readFileSync, writeFileSync, existsSync, renameSync, mkdirSync } from 'fs';
+import { readFileSync, existsSync, renameSync, mkdirSync } from 'fs';
 import { getPackageRoot, paths } from '../../../../shared/paths.js';
 import { logger } from '../../../../utils/logger.js';
 import { SettingsManager } from '../../SettingsManager.js';
@@ -12,6 +12,7 @@ import { validateBody } from '../middleware/validateBody.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { clearPortCache } from '../../../../shared/worker-utils.js';
 import { snapshotDependencyHealth } from '../../../../shared/dependency-health.js';
+import { parseJsonWithBom, writeJsonFileAtomic } from '../../../../shared/atomic-json.js';
 
 const toggleMcpSchema = z.object({
   enabled: z.boolean(),
@@ -61,7 +62,7 @@ export class SettingsRoutes extends BaseRouteHandler {
     if (existsSync(settingsPath)) {
       const settingsData = readFileSync(settingsPath, 'utf-8');
       try {
-        settings = JSON.parse(settingsData);
+        settings = parseJsonWithBom(settingsData);
       } catch (parseError) {
         const normalizedParseError = parseError instanceof Error ? parseError : new Error(String(parseError));
         logger.error('HTTP', 'Failed to parse settings file', { settingsPath }, normalizedParseError);
@@ -111,7 +112,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
-    writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
+    writeJsonFileAtomic(settingsPath, settings);
 
     clearPortCache();
 
@@ -267,7 +268,7 @@ export class SettingsRoutes extends BaseRouteHandler {
         mkdirSync(dir, { recursive: true });
       }
 
-      writeFileSync(settingsPath, JSON.stringify(defaults, null, 2), 'utf-8');
+      writeJsonFileAtomic(settingsPath, defaults);
       logger.info('SETTINGS', 'Created settings file with defaults', { settingsPath });
     }
   }

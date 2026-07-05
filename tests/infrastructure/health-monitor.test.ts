@@ -5,14 +5,21 @@ import {
   waitForHealth,
   waitForPortFree,
   getInstalledPluginVersion,
+  getRunningWorkerVersion,
   checkVersionMatch
 } from '../../src/services/infrastructure/index.js';
 
 describe('HealthMonitor', () => {
   const originalFetch = global.fetch;
+  const originalWorkerHost = process.env.CLAUDE_MEM_WORKER_HOST;
 
   afterEach(() => {
     global.fetch = originalFetch;
+    if (originalWorkerHost === undefined) {
+      delete process.env.CLAUDE_MEM_WORKER_HOST;
+    } else {
+      process.env.CLAUDE_MEM_WORKER_HOST = originalWorkerHost;
+    }
   });
 
   describe('isPortInUse', () => {
@@ -57,6 +64,30 @@ describe('HealthMonitor', () => {
       expect(net.createServer).toHaveBeenCalled();
       expect(closeMock).toHaveBeenCalled();
       
+      spy.mockRestore();
+    });
+
+    it('should honor configured worker host when probing port occupancy', async () => {
+      process.env.CLAUDE_MEM_WORKER_HOST = '127.0.0.2';
+      const closeMock = mock((cb: Function) => cb());
+      const listenMock = mock(() => {});
+      const createServerMock = mock(() => ({
+        once: mock((event: string, cb: Function) => {
+          if (event === 'listening') {
+            setTimeout(() => cb(), 0);
+          }
+        }),
+        listen: listenMock,
+        close: closeMock
+      }));
+
+      const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
+
+      const result = await isPortInUse(37777);
+
+      expect(result).toBe(false);
+      expect(listenMock).toHaveBeenCalledWith(37777, '127.0.0.2');
+
       spy.mockRestore();
     });
 
@@ -143,6 +174,20 @@ describe('HealthMonitor', () => {
       expect(calls[0][0]).toBe('http://127.0.0.1:37777/api/health');
     });
 
+    it('should honor configured worker host when polling health', async () => {
+      process.env.CLAUDE_MEM_WORKER_HOST = 'localhost';
+      const fetchMock = mock(() => Promise.resolve({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve('')
+      } as unknown as Response));
+      global.fetch = fetchMock;
+
+      await waitForHealth(37777, 1000);
+
+      expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:37777/api/health');
+    });
+
     it('should use default timeout when not specified', async () => {
       global.fetch = mock(() => Promise.resolve({
         ok: true,
@@ -171,6 +216,20 @@ describe('HealthMonitor', () => {
   });
 
   describe('checkVersionMatch', () => {
+    it('reads the running worker version from /api/health, not /api/version', async () => {
+      const fetchMock = mock(() => Promise.resolve({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve(JSON.stringify({ version: '13.10.1' }))
+      } as unknown as Response));
+      global.fetch = fetchMock;
+
+      const version = await getRunningWorkerVersion(37777);
+
+      expect(version).toBe('13.10.1');
+      expect(fetchMock.mock.calls[0][0]).toBe('http://127.0.0.1:37777/api/health');
+    });
+
     it('should assume match when worker version is unavailable', async () => {
       global.fetch = mock(() => Promise.reject(new Error('ECONNREFUSED')));
 
