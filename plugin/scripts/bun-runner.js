@@ -147,6 +147,12 @@ function collectStdin() {
   });
 }
 
+// Wrapped in an async IIFE: top-level `await` is unsupported in the ESM loader
+// of Node < 14.8, which some Claude Code installs invoke hooks with (e.g. the
+// Node 12 shipped by Ubuntu 22.04 / many WSL setups). There it throws
+// "SyntaxError: Unexpected reserved word" at module load, breaking the hook.
+// Same oldest-Node compatibility reason as the optional-chaining note above.
+(async () => {
 const stdinData = await collectStdin();
 
 const spawnOptions = {
@@ -282,3 +288,4 @@ child.on('close', (code, signal) => {
   }
   process.exit(code || 0);
 });
+})();
