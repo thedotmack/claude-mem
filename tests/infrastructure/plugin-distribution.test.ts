@@ -64,6 +64,8 @@ describe('Plugin Distribution - Required Files', () => {
     'plugin/.claude-plugin/plugin.json',
     'plugin/.codex-plugin/plugin.json',
     'plugin/.mcp.json',
+    'plugin/sqlite/SessionStore.js',
+    'plugin/sqlite/observations/files.js',
     'plugin/skills/mem-search/SKILL.md',
     '.agents/plugins/marketplace.json',
   ];
@@ -202,6 +204,21 @@ describe('Plugin Distribution - package.json Files Field', () => {
     expect(packageJson.files).toContain('plugin/hooks');
     expect(packageJson.files).toContain('plugin/skills');
     expect(packageJson.files).toContain('plugin/scripts/*.cjs');
+    expect(packageJson.files).toContain('plugin/sqlite');
+  });
+
+  it('npm tarball includes sqlite runtime modules required by the worker', () => {
+    const result = spawnSync('npm', ['pack', '--dry-run', '--json'], {
+      cwd: projectRoot,
+      encoding: 'utf-8',
+    });
+
+    expect(result.status).toBe(0);
+    const packed = JSON.parse(result.stdout);
+    const filePaths = new Set(packed[0].files.map((file: { path: string }) => file.path));
+
+    expect(filePaths.has('plugin/sqlite/SessionStore.js')).toBe(true);
+    expect(filePaths.has('plugin/sqlite/observations/files.js')).toBe(true);
   });
 });
 
@@ -212,6 +229,8 @@ describe('Plugin Distribution - Build Script Verification', () => {
 
     expect(content).toContain('plugin/skills/mem-search/SKILL.md');
     expect(content).toContain('plugin/hooks/hooks.json');
+    expect(content).toContain('plugin/sqlite/SessionStore.js');
+    expect(content).toContain('plugin/sqlite/observations/files.js');
     expect(content).toContain('plugin/.claude-plugin/plugin.json');
   });
 });
