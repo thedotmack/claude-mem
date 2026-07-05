@@ -10,6 +10,7 @@ import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { writeJsonFileAtomic as writeSettingsJsonAtomic } from '../../shared/atomic-json.js';
 import { loadClaudeMemEnv, saveClaudeMemEnv } from '../../shared/EnvManager.js';
 import { ensureWorkerStarted, type WorkerStartResult } from '../../services/worker-spawner.js';
 import {
@@ -765,7 +766,7 @@ function mergeSettings(updates: Record<string, string>): boolean {
       current[key] = value;
     }
 
-    writeFileSync(path, JSON.stringify(current, null, 2), 'utf-8');
+    writeSettingsJsonAtomic(path, current);
     return true;
   } catch (error: unknown) {
     log.error(`Failed to write settings to ${path}: ${error instanceof Error ? error.message : String(error)}`);

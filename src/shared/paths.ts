@@ -3,6 +3,7 @@ import { homedir } from 'os';
 import { existsSync, mkdirSync, readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
+import { parseJsonWithBom } from './atomic-json.js';
 
 function getDirname(): string {
   if (typeof __dirname !== 'undefined') {
@@ -22,7 +23,7 @@ export function resolveDataDir(): string {
   const settingsPath = join(defaultDataDir, 'settings.json');
   try {
     if (existsSync(settingsPath)) {
-      const raw = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+      const raw = parseJsonWithBom<Record<string, any>>(readFileSync(settingsPath, 'utf-8'));
       const settings = raw.env ?? raw; 
       if (settings.CLAUDE_MEM_DATA_DIR) {
         return settings.CLAUDE_MEM_DATA_DIR;
