@@ -271,7 +271,8 @@ child.on('close', (code, signal) => {
   if (shouldEmitHookContinueJson && !signal && exitCode === 0) {
     process.stdout.write('{"continue":true,"suppressOutput":true}\n');
   }
-  if ((signal || exitCode > 128) && args.includes('start')) {
+  const isHookEventCommand = args[1] === 'hook';
+  if ((signal || exitCode > 128) && (args.includes('start') || isHookEventCommand)) {
     process.exit(0);
   }
   process.exit(exitCode);
