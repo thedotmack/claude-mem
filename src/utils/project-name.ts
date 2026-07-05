@@ -87,6 +87,23 @@ function findGitRepoRoot(dir: string): string | null {
   }
 }
 
+function findNearestGitContextRoot(dir: string): string | null {
+  let current = dir;
+
+  while (true) {
+    const worktreeInfo = detectWorktree(current);
+    if (worktreeInfo.isWorktree || worktreeInfo.isSubmodule) {
+      return current;
+    }
+
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return null;
+    }
+    current = parent;
+  }
+}
+
 export function getProjectName(cwd: string | null | undefined): string {
   if (!cwd || cwd.trim() === '') {
     logger.warn('PROJECT_NAME', 'Empty cwd provided, using fallback', { cwd });
@@ -135,9 +152,8 @@ export interface ProjectContext {
 }
 
 export function getProjectContext(cwd: string | null | undefined): ProjectContext {
-  const cwdProjectName = getProjectName(cwd);
-
   if (!cwd) {
+    const cwdProjectName = getProjectName(cwd);
     return { primary: cwdProjectName, parent: null, isWorktree: false, allProjects: [cwdProjectName] };
   }
 
@@ -145,11 +161,29 @@ export function getProjectContext(cwd: string | null | undefined): ProjectContex
 
   // An explicit `.claude-mem.json` name is authoritative: skip worktree
   // compositing so every copy/worktree collapses to the one configured project.
-  if (getConfiguredProjectName(expandedCwd)) {
-    return { primary: cwdProjectName, parent: null, isWorktree: false, allProjects: [cwdProjectName] };
+  const configuredProjectName = getConfiguredProjectName(expandedCwd);
+  if (configuredProjectName) {
+    return {
+      primary: configuredProjectName,
+      parent: null,
+      isWorktree: false,
+      allProjects: [configuredProjectName]
+    };
   }
 
-  const worktreeInfo = detectWorktree(expandedCwd);
+  const contextRoot = findNearestGitContextRoot(expandedCwd);
+  const repoRoot = findGitRepoRoot(expandedCwd);
+  const validContextRoot = contextRoot
+    && (!repoRoot || contextRoot === repoRoot || contextRoot.startsWith(`${repoRoot}${path.sep}`))
+    ? contextRoot
+    : null;
+  const worktreeProbePath = validContextRoot ?? repoRoot ?? expandedCwd;
+  const worktreeInfo = detectWorktree(worktreeProbePath);
+  const cwdProjectName = repoRoot
+    ? path.basename(repoRoot)
+    : contextRoot
+      ? path.basename(contextRoot)
+      : getProjectName(cwd);
 
   if (worktreeInfo.isWorktree && worktreeInfo.parentProjectName) {
     const composite = `${worktreeInfo.parentProjectName}/${cwdProjectName}`;
@@ -158,6 +192,15 @@ export function getProjectContext(cwd: string | null | undefined): ProjectContex
       parent: worktreeInfo.parentProjectName,
       isWorktree: true,
       allProjects: [worktreeInfo.parentProjectName, composite]
+    };
+  }
+
+  if (worktreeInfo.isSubmodule && worktreeInfo.parentProjectName) {
+    return {
+      primary: worktreeInfo.parentProjectName,
+      parent: null,
+      isWorktree: false,
+      allProjects: [worktreeInfo.parentProjectName]
     };
   }
 

@@ -193,6 +193,7 @@ describe('getProjectContext', () => {
     const ctx = getProjectContext(null);
     expect(ctx.primary).toBe('unknown-project');
     expect(ctx.parent).toBeNull();
+    expect(ctx.allProjects).toEqual(['unknown-project']);
   });
 
   describe('worktree isolation', () => {
@@ -236,6 +237,123 @@ describe('getProjectContext', () => {
       expect(project).toBe('main-repo/my-worktree');
       expect(project).not.toBe('main-repo');
       expect(project).not.toBe('my-worktree');
+    });
+  });
+
+  describe('submodule parent context', () => {
+    let tmp: string;
+    let mainRepo: string;
+    let submoduleCheckout: string;
+    let submoduleNestedDir: string;
+    let submoduleGitDir: string;
+
+    beforeAll(async () => {
+      const { mkdtempSync, mkdirSync, writeFileSync } = await import('fs');
+      const { join } = await import('path');
+      const { tmpdir } = await import('os');
+      const { execFileSync } = await import('child_process');
+
+      tmp = mkdtempSync(join(tmpdir(), 'cm-submodule-'));
+      mainRepo = join(tmp, 'main-repo');
+      submoduleCheckout = join(mainRepo, 'vendor', 'docs');
+      submoduleNestedDir = join(submoduleCheckout, 'src', 'nested');
+      submoduleGitDir = join(mainRepo, '.git', 'modules', 'vendor', 'docs');
+
+      mkdirSync(mainRepo, { recursive: true });
+      execFileSync('git', ['init', '-q'], { cwd: mainRepo });
+      mkdirSync(submoduleGitDir, { recursive: true });
+      mkdirSync(submoduleNestedDir, { recursive: true });
+      writeFileSync(
+        join(submoduleCheckout, '.git'),
+        `gitdir: ${submoduleGitDir}\n`
+      );
+    });
+
+    afterAll(async () => {
+      const { rmSync } = await import('fs');
+      rmSync(tmp, { recursive: true, force: true });
+    });
+
+    it('uses the parent repo as the primary project when in a submodule', () => {
+      const ctx = getProjectContext(submoduleCheckout);
+      expect(ctx.isWorktree).toBe(false);
+      expect(ctx.primary).toBe('main-repo');
+      expect(ctx.parent).toBeNull();
+      expect(ctx.allProjects).toEqual(['main-repo']);
+    });
+
+    it('does not let the leaf submodule name displace parent context', () => {
+      const ctx = getProjectContext(submoduleCheckout);
+      expect(ctx.primary).not.toBe('docs');
+      expect(ctx.allProjects).not.toContain('docs');
+    });
+
+    it('keeps the parent repo context when launched from a nested submodule directory', () => {
+      const ctx = getProjectContext(submoduleNestedDir);
+      expect(ctx.primary).toBe('main-repo');
+      expect(ctx.parent).toBeNull();
+      expect(ctx.allProjects).toEqual(['main-repo']);
+    });
+
+    it('resolves the default relative gitdir pointer before deriving the parent project', async () => {
+      const { writeFileSync } = await import('fs');
+      const { join } = await import('path');
+
+      writeFileSync(
+        join(submoduleCheckout, '.git'),
+        'gitdir: ../../.git/modules/vendor/docs\n'
+      );
+
+      const ctx = getProjectContext(submoduleCheckout);
+      expect(ctx.primary).toBe('main-repo');
+      expect(ctx.parent).toBeNull();
+      expect(ctx.allProjects).toEqual(['main-repo']);
+
+      writeFileSync(
+        join(submoduleCheckout, '.git'),
+        `gitdir: ${submoduleGitDir}\n`
+      );
+    });
+  });
+
+  describe('ancestor worktree isolation', () => {
+    let tmp: string;
+    let homeRoot: string;
+    let repoRoot: string;
+    let nestedDir: string;
+
+    beforeAll(async () => {
+      const { mkdtempSync, mkdirSync, writeFileSync } = await import('fs');
+      const { execFileSync } = await import('child_process');
+      const { join } = await import('path');
+      const { tmpdir } = await import('os');
+
+      tmp = mkdtempSync(join(tmpdir(), 'cm-home-worktree-'));
+      homeRoot = join(tmp, 'home');
+      repoRoot = join(homeRoot, 'projects', 'my-app');
+      nestedDir = join(repoRoot, 'src');
+      const dotfilesWorktreeGitDir = join(homeRoot, '.dotfiles.git', 'worktrees', 'main');
+
+      mkdirSync(dotfilesWorktreeGitDir, { recursive: true });
+      mkdirSync(nestedDir, { recursive: true });
+      writeFileSync(
+        join(homeRoot, '.git'),
+        `gitdir: ${dotfilesWorktreeGitDir}\n`
+      );
+      execFileSync('git', ['init', '-q'], { cwd: repoRoot });
+    });
+
+    afterAll(async () => {
+      const { rmSync } = await import('fs');
+      rmSync(tmp, { recursive: true, force: true });
+    });
+
+    it('ignores unrelated ancestor worktrees when a real repo root is present below them', () => {
+      const ctx = getProjectContext(nestedDir);
+      expect(ctx.isWorktree).toBe(false);
+      expect(ctx.primary).toBe('my-app');
+      expect(ctx.parent).toBeNull();
+      expect(ctx.allProjects).toEqual(['my-app']);
     });
   });
 });
