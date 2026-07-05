@@ -1741,6 +1741,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   // spinners and summary note (a live print would be clobbered by clack).
   flushSummary(summary, (line) => (isInteractive ? p.log.message(line) : console.log(`  ${line}`)));
 
+  const workerHost = getSetting('CLAUDE_MEM_WORKER_HOST');
   const workerPort = getSetting('CLAUDE_MEM_WORKER_PORT');
 
   let actualPort: number | string = workerPort;
@@ -1753,7 +1754,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     const healthSpinner = isInteractive ? p.spinner() : null;
     healthSpinner?.start(`Verifying worker on port ${workerPort}…`);
     try {
-      const healthResponse = await fetch(`http://127.0.0.1:${workerPort}/api/health`, {
+      const healthResponse = await fetch(`http://${workerHost}:${workerPort}/api/health`, {
         signal: AbortSignal.timeout(3000),
       });
       if (healthResponse.ok) {
@@ -1781,19 +1782,21 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   const workerAlive = finalWorkerState !== 'dead' || workerReady;
   const runtimeLabel = selectedRuntime === 'server' ? 'Server' : 'Worker';
   const runtimeStartCommand = selectedRuntime === 'server' ? 'npx claude-mem server start' : 'npx claude-mem start';
+  const workerBaseUrl = `http://${workerHost}:${actualPort}`;
+  const configuredWorkerBaseUrl = `http://${workerHost}:${workerPort}`;
   const workerHeadline = autoStartSkipped
     ? `${styleText('yellow', '!')} ${runtimeLabel} autostart skipped — start it manually with ${styleText('bold', runtimeStartCommand)}`
     : workerReady || finalWorkerState === 'ready'
-      ? `${styleText('green', '✓')} ${runtimeLabel} running at ${styleText('underline', `http://localhost:${actualPort}`)}`
-      : `${styleText('yellow', '⏳')} ${runtimeLabel} starting at ${styleText('underline', `http://localhost:${actualPort}`)} — give it ~30s, then refresh`;
+      ? `${styleText('green', '✓')} ${runtimeLabel} running at ${styleText('underline', workerBaseUrl)}`
+      : `${styleText('yellow', '⏳')} ${runtimeLabel} starting at ${styleText('underline', workerBaseUrl)} — give it ~30s, then refresh`;
   const nextStepsHeadline = autoStartSkipped || workerAlive
     ? workerHeadline
     : `${styleText('yellow', '!')} Worker not yet ready on port ${styleText('cyan', String(workerPort))} -- still starting up; check ${styleText('bold', 'claude-mem status')} later, or start manually: ${styleText('bold', 'npx claude-mem start')}`;
   const firstSuccessOpener = autoStartSkipped
-    ? `once the worker is running, keep ${styleText('underline', `http://localhost:${workerPort}`)} open in a browser`
+    ? `once the worker is running, keep ${styleText('underline', configuredWorkerBaseUrl)} open in a browser`
     : workerAlive
       ? 'keep that URL open in a browser'
-      : `keep ${styleText('underline', `http://localhost:${workerPort}`)} open in a browser`;
+      : `keep ${styleText('underline', configuredWorkerBaseUrl)} open in a browser`;
   const nextSteps = [
     nextStepsHeadline,
     ``,
