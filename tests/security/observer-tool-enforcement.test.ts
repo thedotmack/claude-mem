@@ -41,14 +41,24 @@ describe('Observer/KnowledgeAgent SDK tool enforcement (hardened-options)', () =
       expect(opts.allowedTools).toHaveLength(0);
     });
 
-    it('keeps the full disallowedTools deny-list (12 tools)', () => {
+    it('keeps the full disallowedTools deny-list (16 tools)', () => {
       const opts = buildHardenedSdkOptions({ ...BASE_INPUT });
       const denied = opts.disallowedTools ?? [];
       for (const tool of OBSERVER_DISALLOWED_TOOLS) {
         expect(denied).toContain(tool);
       }
+      // Explicit membership: the deny-list MUST name each of these tools by hand.
+      // A count-only assertion would pass even if a required tool were swapped for
+      // an arbitrary string, so pin the exact security contract here.
+      for (const required of [
+        'Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'WebFetch', 'WebSearch',
+        'Task', 'NotebookEdit', 'AskUserQuestion', 'TodoWrite',
+        'Skill', 'Workflow', 'SlashCommand', 'ExitPlanMode',
+      ]) {
+        expect(denied).toContain(required);
+      }
       expect(denied).toHaveLength(OBSERVER_DISALLOWED_TOOLS.length);
-      expect(OBSERVER_DISALLOWED_TOOLS).toHaveLength(12);
+      expect(OBSERVER_DISALLOWED_TOOLS).toHaveLength(16);
     });
 
     it("uses the most restrictive non-interactive permissionMode ('dontAsk')", () => {
@@ -121,8 +131,13 @@ describe('Observer/KnowledgeAgent SDK tool enforcement (hardened-options)', () =
       expect(lines[0].project).toBe('demo');
     });
 
-    it('denies Bash, Edit, Read, and Task — all tool names denied', async () => {
-      for (const tool of ['Bash', 'Edit', 'Read', 'Task', 'SomeFutureUnknownTool']) {
+    it('denies Bash, Edit, Read, Task, the plan/skill tools, and unknown tools — all denied', async () => {
+      const attempted = [
+        'Bash', 'Edit', 'Read', 'Task',
+        'Skill', 'Workflow', 'SlashCommand', 'ExitPlanMode',
+        'SomeFutureUnknownTool',
+      ];
+      for (const tool of attempted) {
         const result = await callCanUseTool({ ...BASE_INPUT }, tool, { x: 1 });
         expect(result.behavior).toBe('deny');
         if (result.behavior === 'deny') {
@@ -131,7 +146,7 @@ describe('Observer/KnowledgeAgent SDK tool enforcement (hardened-options)', () =
         }
       }
       const lines = readAuditLines();
-      expect(lines).toHaveLength(5);
+      expect(lines).toHaveLength(attempted.length);
       expect(lines.every((l) => l.result === 'denied')).toBe(true);
     });
 
