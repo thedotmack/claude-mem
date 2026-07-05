@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 
-import { writeFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
 import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager.js';
 import { resolveDataDir } from '../src/shared/paths.js';
+import { parseJsonText } from '../src/utils/json-utils.js';
 import type {
   ObservationRecord,
   SdkSessionRecord,
@@ -28,6 +29,30 @@ function parseWorkerPort(rawPort: unknown): number {
   return port;
 }
 
+function readWorkerPortSetting(settingsPath: string, sanitizedPort: string): unknown {
+  if (process.env.CLAUDE_MEM_WORKER_PORT !== undefined || !existsSync(settingsPath)) {
+    return sanitizedPort;
+  }
+
+  try {
+    const parsed = parseJsonText<unknown>(readFileSync(settingsPath, 'utf-8'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return sanitizedPort;
+    }
+
+    const settings = parsed as Record<string, unknown>;
+    const rawSettings = settings.env && typeof settings.env === 'object' && !Array.isArray(settings.env)
+      ? settings.env as Record<string, unknown>
+      : settings;
+
+    return Object.prototype.hasOwnProperty.call(rawSettings, 'CLAUDE_MEM_WORKER_PORT')
+      ? rawSettings.CLAUDE_MEM_WORKER_PORT
+      : sanitizedPort;
+  } catch {
+    return sanitizedPort;
+  }
+}
+
 async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), WORKER_FETCH_TIMEOUT_MS);
@@ -48,8 +73,9 @@ async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Respon
 }
 
 export async function exportMemories(query: string, outputFile: string, project?: string) {
-  const settings = SettingsDefaultsManager.loadFromFile(join(resolveDataDir(), 'settings.json'));
-  const port = parseWorkerPort(settings.CLAUDE_MEM_WORKER_PORT);
+  const settingsPath = join(resolveDataDir(), 'settings.json');
+  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+  const port = parseWorkerPort(readWorkerPortSetting(settingsPath, settings.CLAUDE_MEM_WORKER_PORT));
   const baseUrl = `http://localhost:${port}`;
 
   console.log(`🔍 Searching for: "${query}"${project ? ` (project: ${project})` : ' (all projects)'}`);

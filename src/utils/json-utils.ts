@@ -42,9 +42,7 @@ export function writeJsonFileAtomic(filepath: string, data: unknown): void {
     if (lstatSync(filepath).isSymbolicLink()) {
       try {
         resolved = realpathSync(filepath);
-      } catch (realpathErr) {
-        const realpathError = realpathErr instanceof Error ? realpathErr : new Error(String(realpathErr));
-        console.warn(`claude-mem: realpathSync failed for ${filepath}, resolving symlink manually:`, realpathError);
+      } catch {
         const linkTarget = readlinkSync(filepath);
         resolved = resolve(dirname(filepath), linkTarget);
       }
@@ -93,9 +91,9 @@ export function writeJsonFileAtomic(filepath: string, data: unknown): void {
       try {
         dirFd = openSync(dir, 'r');
         fsyncSync(dirFd);
-      } catch (dirSyncErr) {
-        const dirSyncError = dirSyncErr instanceof Error ? dirSyncErr : new Error(String(dirSyncErr));
-        console.warn(`claude-mem: directory fsync failed for ${dir}:`, dirSyncError);
+      } catch {
+        // Directory fsync is a best-effort durability step; the file write itself
+        // has already been flushed and renamed.
       } finally {
         if (dirFd !== undefined) {
           try { closeSync(dirFd); } catch { /* ignore */ }
