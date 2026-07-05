@@ -631,6 +631,41 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(existsSync(chromaWriterLockPath())).toBe(false);
   });
 
+  it('keeps the writer lock until unexpected-close tree cleanup finishes', async () => {
+    const managerForTesting = ChromaMcpManager as unknown as typeof ChromaMcpManager & {
+      killProcessTree: (pid: number) => Promise<void>;
+    };
+    const originalKillProcessTree = managerForTesting.killProcessTree;
+    const cleanupStartedForPids: number[] = [];
+    let finishCleanup: (() => void) | null = null;
+
+    managerForTesting.killProcessTree = async (pid: number) => {
+      cleanupStartedForPids.push(pid);
+      await new Promise<void>((resolve) => {
+        finishCleanup = resolve;
+      });
+    };
+
+    try {
+      const mgr = ChromaMcpManager.getInstance();
+
+      await mgr.callTool('chroma_list_collections', { limit: 1 });
+      expect(existsSync(chromaWriterLockPath())).toBe(true);
+
+      const firstPid = transportInstances[0]._process.pid;
+      transportInstances[0].onclose?.();
+
+      await waitForCondition(() => cleanupStartedForPids.includes(firstPid));
+      expect(existsSync(chromaWriterLockPath())).toBe(true);
+
+      finishCleanup?.();
+      await waitForCondition(() => !existsSync(chromaWriterLockPath()));
+    } finally {
+      finishCleanup?.();
+      managerForTesting.killProcessTree = originalKillProcessTree;
+    }
+  });
+
   it('refuses to open a second local writer for a live Chroma data dir owner', async () => {
     writeChromaWriterLock(process.pid, 'other-worker-owner');
     const mgr = ChromaMcpManager.getInstance();

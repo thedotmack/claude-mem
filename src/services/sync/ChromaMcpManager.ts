@@ -86,6 +86,7 @@ export class ChromaMcpManager {
   private intentionallyClosingTransports = new WeakSet<object>();
   private readonly chromaWriterOwnerId = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
   private chromaWriterLock: { path: string; dataDir: string; ownerId: string } | null = null;
+  private unexpectedCloseCleanup: Promise<void> | null = null;
   private static uvxAvailabilityProbe: ((command: string, env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null = null;
 
   private constructor() {}
@@ -98,6 +99,8 @@ export class ChromaMcpManager {
   }
 
   private async ensureConnected(): Promise<void> {
+    await this.waitForUnexpectedCloseCleanup();
+
     if (this.connected && this.client) {
       return;
     }
@@ -263,7 +266,6 @@ export class ChromaMcpManager {
       logger.warn('CHROMA_MCP', 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff');
       this.connected = false;
       getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
-      this.releaseChromaWriterLock();
       this.client = null;
       this.transport = null;
       this.lastConnectionFailureTimestamp = Date.now();
@@ -273,15 +275,40 @@ export class ChromaMcpManager {
       // does not use process groups. Sweep the descendant tree using the
       // captured PID — best-effort; pgrep returns nothing if everything
       // already exited (#2313).
-      if (currentTrackedPid) {
-        ChromaMcpManager.killProcessTree(currentTrackedPid).catch((error) => {
-          logger.debug('CHROMA_MCP', 'Background tree-kill after onclose finished (best-effort)', {
-            pid: currentTrackedPid,
-            error: error instanceof Error ? error.message : String(error)
-          });
-        });
-      }
+      this.scheduleUnexpectedCloseCleanup(currentTrackedPid);
     };
+  }
+
+  private scheduleUnexpectedCloseCleanup(pid: number | undefined): void {
+    let cleanup: Promise<void>;
+    cleanup = this.cleanupUnexpectedCloseSubprocess(pid).finally(() => {
+      if (this.unexpectedCloseCleanup === cleanup) {
+        this.unexpectedCloseCleanup = null;
+      }
+    });
+    this.unexpectedCloseCleanup = cleanup;
+  }
+
+  private async cleanupUnexpectedCloseSubprocess(pid: number | undefined): Promise<void> {
+    try {
+      if (pid) {
+        await ChromaMcpManager.killProcessTree(pid);
+      }
+    } catch (error) {
+      logger.debug('CHROMA_MCP', 'Background tree-kill after onclose finished (best-effort)', {
+        pid,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    } finally {
+      this.releaseChromaWriterLock();
+    }
+  }
+
+  private async waitForUnexpectedCloseCleanup(): Promise<void> {
+    const cleanup = this.unexpectedCloseCleanup;
+    if (cleanup) {
+      await cleanup;
+    }
   }
 
   private assertConnectionNotCancelled(connectionGeneration: number): void {
@@ -911,6 +938,7 @@ export class ChromaMcpManager {
    */
   async stop(): Promise<void> {
     this.connectionGeneration += 1;
+    await this.waitForUnexpectedCloseCleanup();
 
     if (!this.client && !this.transport && !this.activePrewarmChild) {
       logger.debug('CHROMA_MCP', 'No active MCP connection to stop');
