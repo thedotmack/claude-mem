@@ -4,13 +4,18 @@ import net from 'net';
 import { readFileSync } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { MARKETPLACE_ROOT } from '../../shared/paths.js';
+import { getWorkerHost } from '../../shared/worker-utils.js';
+
+function formatHostForUrl(host: string): string {
+  return host.includes(':') ? `[${host}]` : host;
+}
 
 async function httpRequestToWorker(
   port: number,
   endpointPath: string,
   method: string = 'GET'
 ): Promise<{ ok: boolean; statusCode: number; body: string }> {
-  const response = await fetch(`http://127.0.0.1:${port}${endpointPath}`, { method });
+  const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}${endpointPath}`, { method });
   let body = '';
   try {
     body = await response.text();
@@ -23,7 +28,7 @@ async function httpRequestToWorker(
 export async function isPortInUse(port: number): Promise<boolean> {
   if (process.platform === 'win32') {
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/api/health`);
+      const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}/api/health`);
       return response.ok;
     } catch (error) {
       if (error instanceof Error) {
@@ -47,7 +52,7 @@ export async function isPortInUse(port: number): Promise<boolean> {
     server.once('listening', () => {
       server.close(() => resolve(false));
     });
-    server.listen(port, '127.0.0.1');
+    server.listen(port, getWorkerHost());
   });
 }
 
@@ -121,9 +126,6 @@ export async function waitForPortFree(port: number, timeoutMs: number = 10000): 
 
 export async function httpShutdown(port: number, reason: 'stop' | 'restart' = 'stop'): Promise<boolean> {
   try {
-    // The CLI restart path stops the worker through this same endpoint; the
-    // reason tag lets the worker report shutdown_reason: 'restart' on its
-    // worker_stopped telemetry instead of a generic 'stop'.
     const endpointPath = reason === 'restart' ? '/api/admin/shutdown?reason=restart' : '/api/admin/shutdown';
     const result = await httpRequestToWorker(port, endpointPath, 'POST');
     if (!result.ok) {
