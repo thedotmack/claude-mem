@@ -7,9 +7,9 @@
 
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
-import { spawnSync } from 'child_process';
 import { styleText } from 'node:util';
-import { isPluginInstalled, marketplaceDirectory, IS_WINDOWS } from '../utils/paths.js';
+import { isPluginInstalled, marketplaceDirectory } from '../utils/paths.js';
+import { getBunVersion, getUvVersion } from '../install/setup-runtime.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { resolveDataDir } from '../../shared/paths.js';
 
@@ -23,14 +23,9 @@ interface CheckResult {
   required: boolean;
 }
 
-function probeVersion(bin: string): string | null {
+function probeVersion(bin: 'bun' | 'uv'): string | null {
   try {
-    const result = spawnSync(bin, ['--version'], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS,
-    });
-    return result.status === 0 ? result.stdout.trim() : null;
+    return bin === 'bun' ? getBunVersion() : getUvVersion();
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
     console.warn(`[doctor] Failed to probe \`${bin} --version\`:`, err);

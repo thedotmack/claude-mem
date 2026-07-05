@@ -4,7 +4,7 @@ import { randomUUID } from 'crypto';
 import { spawnSync } from 'child_process';
 import { loadTelemetryConfig, saveTelemetryConfig } from '../../services/telemetry/consent.js';
 import { captureCliEvent } from '../../services/telemetry/cli-telemetry.js';
-import { spawnHidden } from '../../shared/spawn.js';
+import { buildSpawnSyncInvocation, lookupWindowsCommand, spawnHidden } from '../../shared/spawn.js';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, join } from 'path';
@@ -56,12 +56,14 @@ function detectInstallMethod(): string {
  * never starts. Missing binary or timeout → undefined (dropped by scrubber).
  */
 function readClaudeCodeVersionOutput(): string | undefined {
-  const result = spawnSync('claude', ['--version'], {
+  const command = process.platform === 'win32'
+    ? (lookupWindowsCommand('claude') ?? 'claude.cmd')
+    : 'claude';
+  const invocation = buildSpawnSyncInvocation(command, ['--version'], {
     timeout: 5000,
-    windowsHide: true,
-    shell: process.platform === 'win32',
     encoding: 'utf-8',
   });
+  const result = spawnSync(invocation.command, invocation.args, invocation.options);
   const output = (result.stdout ?? '').trim();
   if (!output) return undefined;
   // "2.0.14 (Claude Code)" → "2.0.14"
@@ -536,6 +538,7 @@ async function installClaudeCode(): Promise<boolean> {
   const command = IS_WINDOWS
     ? 'powershell -ExecutionPolicy ByPass -c "irm https://claude.ai/install.ps1 | iex"'
     : 'curl -fsSL https://claude.ai/install.sh | bash';
+  const installShell = IS_WINDOWS ? (process.env.ComSpec ?? 'cmd.exe') : '/bin/bash';
 
   const spinner = isInteractive ? p.spinner() : null;
   spinner?.start('Installing Claude Code (this can take a few minutes — downloading the native build)…');
@@ -543,7 +546,7 @@ async function installClaudeCode(): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     let captured = '';
     const child = spawnHidden(command, [], {
-      shell: IS_WINDOWS ? (process.env.ComSpec ?? 'cmd.exe') : '/bin/bash',
+      shell: installShell,
       stdio: spinner ? ['inherit', 'pipe', 'pipe'] : 'inherit',
     });
 

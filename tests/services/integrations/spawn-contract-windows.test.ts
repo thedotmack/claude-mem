@@ -5,6 +5,7 @@ import {
   resolveCodexCommand,
   resolveCodexSpawnInvocation,
 } from '../../../src/services/integrations/CodexCliInstaller.js';
+import { buildSpawnSyncInvocation } from '../../../src/shared/spawn.js';
 
 // Windows spawn-contract fixes:
 //   #2696 — ChromaDB MCP subprocess: spawn uvx.exe DIRECTLY, never `cmd.exe /c uvx`.
@@ -43,6 +44,25 @@ describe('Windows #2696 - chroma-mcp spawns uvx directly', () => {
 });
 
 describe('Windows #2695 - codex spawn resolves the .cmd shim without a shell', () => {
+  it('shared spawn wrapper wraps .cmd shims with cmd.exe and windowsHide', () => {
+    const invocation = buildSpawnSyncInvocation(
+      'C:\\Tools\\bin\\tool.cmd',
+      ['run', 'C:\\Path With Spaces'],
+      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] },
+      'win32',
+    );
+
+    expect(invocation.command).toBe('cmd.exe');
+    expect(invocation.args).toEqual([
+      '/d',
+      '/s',
+      '/c',
+      '"C:\\Tools\\bin\\tool.cmd" "run" "C:\\Path With Spaces"',
+    ]);
+    expect(invocation.options.windowsHide).toBe(true);
+    expect('shell' in invocation.options).toBe(false);
+  });
+
   it('resolves a where-discovered codex.cmd path on Windows', () => {
     expect(resolveCodexCommand('win32', () => 'C:\\Users\\tester\\AppData\\Roaming\\npm\\codex.cmd'))
       .toBe('C:\\Users\\tester\\AppData\\Roaming\\npm\\codex.cmd');
