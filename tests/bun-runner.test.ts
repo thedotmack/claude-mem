@@ -11,8 +11,11 @@ describe('bun-runner.js findBun: DEP0190 regression guard (#1503)', () => {
     expect(vulnerablePattern.test(source)).toBe(false);
   });
 
-  it('uses a single string command for Windows where-bun lookup', () => {
-    expect(source).toContain("spawnSync('where bun'");
+  it('uses a shell-free Windows where-bun lookup with hidden windows', () => {
+    const windowsCallMatch = source.match(/spawnSync\('where',\s*\['bun'\],\s*\{([^}]+)\}/);
+    expect(windowsCallMatch).not.toBeNull();
+    expect(windowsCallMatch![1]).toContain('windowsHide: true');
+    expect(windowsCallMatch![1]).not.toContain('shell');
   });
 
   it('uses no shell option for Unix which-bun lookup', () => {

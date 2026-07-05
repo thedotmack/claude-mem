@@ -11,6 +11,9 @@ import {
   platformUvRemediation,
 } from '../src/npx-cli/install/setup-runtime';
 
+const SETUP_RUNTIME_SOURCE_PATH = join(import.meta.dir, '..', 'src', 'npx-cli', 'install', 'setup-runtime.ts');
+const SHARED_SPAWN_SOURCE_PATH = join(import.meta.dir, '..', 'src', 'shared', 'spawn.ts');
+
 function probeBunVersion(): string | null {
   try {
     const result = spawnSync('bun', ['--version'], {
@@ -149,5 +152,17 @@ describe('setup-runtime install marker', () => {
       expect(text.toLowerCase()).toContain('uv');
       expect(text).toContain('claude-mem install');
     });
+  });
+});
+
+describe('setup-runtime Windows spawn hygiene', () => {
+  it('does not use shell: IS_WINDOWS for bun/uv version probes', () => {
+    const source = readFileSync(SETUP_RUNTIME_SOURCE_PATH, 'utf-8');
+    const sharedSpawnSource = readFileSync(SHARED_SPAWN_SOURCE_PATH, 'utf-8');
+    expect(source).not.toContain('shell: IS_WINDOWS');
+    expect(source).toContain('buildSpawnSyncInvocation(command, args, options)');
+    expect(source).toContain('lookupWindowsCommand(command)');
+    expect(sharedSpawnSource).toContain("spawnSync('where', [command]");
+    expect(sharedSpawnSource).toContain('windowsHide: true');
   });
 });

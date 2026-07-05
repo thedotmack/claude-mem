@@ -210,11 +210,20 @@ describe('Install Non-TTY Support', () => {
         codexInstallerSource.indexOf('export function resolveCodexCommand'),
         codexInstallerSource.indexOf('/**\n * Spawn the `codex` CLI.'),
       );
-      expect(codexSpawnRegion).toContain("platform === 'win32'");
-      expect(codexSpawnRegion).toContain("command: 'cmd.exe'");
-      expect(codexSpawnRegion).toContain("args: ['/d', '/s', '/c', [resolvedCommand, ...args].map(quoteCmdArgument).join(' ')]");
+      expect(codexSpawnRegion).toContain('buildSpawnSyncInvocation(resolvedCommand, args');
       expect(codexSpawnRegion).not.toContain('shell: true');
       expect(resolverRegion).toContain("'codex.cmd'");
+    });
+
+    it('probes Claude Code version through the shared no-shell Windows invocation', () => {
+      const versionProbeRegion = installSource.slice(
+        installSource.indexOf('function readClaudeCodeVersionOutput'),
+        installSource.indexOf('function detectClaudeCodeVersion'),
+      );
+      expect(versionProbeRegion).toContain("lookupWindowsCommand('claude') ?? 'claude.cmd'");
+      expect(versionProbeRegion).toContain('buildSpawnSyncInvocation(command, [');
+      expect(versionProbeRegion).not.toContain("shell: process.platform === 'win32'");
+      expect(versionProbeRegion).not.toContain('shell: IS_WINDOWS');
     });
 
     it('removes legacy Codex AGENTS context only after marketplace registration succeeds', () => {
