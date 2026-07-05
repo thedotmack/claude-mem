@@ -10,6 +10,12 @@ import {
   isAbortError,
   type WorkerRef
 } from './agents/index.js';
+import {
+  boundObserverHistory,
+  sanitizeObserverText,
+  stringifyObserverPayload,
+  OBSERVER_CONTEXT_MAX_SERIALIZED_CHARS,
+} from './observer-context.js';
 
 /**
  * Normalized result returned by a concrete provider's `query()`.
@@ -102,7 +108,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     try {
       session.lastPromptSentAt = Date.now();
       session.lastGeneratorSource = 'init';
-      const initResponse = await this.query(session.conversationHistory, config);
+      const initResponse = await this.query(boundObserverHistory(session.conversationHistory), config);
       await this.handleInitResponse(initResponse, session, worker, model);
     } catch (error: unknown) {
       if (error instanceof Error) {
@@ -199,8 +205,8 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     const obsPrompt = buildObservationPrompt({
       id: 0,
       tool_name: message.tool_name!,
-      tool_input: JSON.stringify(message.tool_input),
-      tool_output: JSON.stringify(message.tool_response),
+      tool_input: stringifyObserverPayload(message.tool_input, 'tool_input'),
+      tool_output: stringifyObserverPayload(message.tool_response, 'tool_response'),
       created_at_epoch: originalTimestamp ?? Date.now(),
       cwd: message.cwd
     });
@@ -208,7 +214,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     session.conversationHistory.push({ role: 'user', content: obsPrompt });
     session.lastPromptSentAt = Date.now();
     session.lastGeneratorSource = 'ingest';
-    const obsResponse = await this.query(session.conversationHistory, config);
+    const obsResponse = await this.query(boundObserverHistory(session.conversationHistory), config);
 
     let tokensUsed = 0;
     if (obsResponse.content) {
@@ -251,13 +257,16 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       memory_session_id: session.memorySessionId,
       project: session.project,
       user_prompt: session.userPrompt,
-      last_assistant_message: message.last_assistant_message || ''
+      last_assistant_message: sanitizeObserverText(message.last_assistant_message || '', {
+        key: 'last_assistant_message',
+        maxChars: OBSERVER_CONTEXT_MAX_SERIALIZED_CHARS,
+      })
     }, mode);
 
     session.conversationHistory.push({ role: 'user', content: summaryPrompt });
     session.lastPromptSentAt = Date.now();
     session.lastGeneratorSource = 'summarize';
-    const summaryResponse = await this.query(session.conversationHistory, config);
+    const summaryResponse = await this.query(boundObserverHistory(session.conversationHistory), config);
 
     let tokensUsed = 0;
     if (summaryResponse.content) {

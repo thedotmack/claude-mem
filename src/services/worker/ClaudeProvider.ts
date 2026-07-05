@@ -30,6 +30,11 @@ import { ClassifiedProviderError } from './provider-errors.js';
 import { resolveTierAlias } from './model-aliases.js';
 import { telemetryBuffer } from '../telemetry/buffer.js';
 import { clearDependencyStatus, recordClaudeCliSetupRequired } from '../../shared/dependency-health.js';
+import {
+  sanitizeObserverText,
+  stringifyObserverPayload,
+  OBSERVER_CONTEXT_MAX_SERIALIZED_CHARS,
+} from './observer-context.js';
 
 /**
  * Module-scoped guard so the "effort parameter" hint only fires once per
@@ -498,9 +503,9 @@ export class ClaudeProvider {
         const obsPrompt = buildObservationPrompt({
           id: 0, // Not used in prompt
           tool_name: message.tool_name!,
-          tool_input: JSON.stringify(message.tool_input),
-          tool_output: JSON.stringify(message.tool_response),
-          created_at_epoch: Date.now(),
+          tool_input: stringifyObserverPayload(message.tool_input, 'tool_input'),
+          tool_output: stringifyObserverPayload(message.tool_response, 'tool_response'),
+          created_at_epoch: message._originalTimestamp,
           cwd: message.cwd
         });
 
@@ -524,7 +529,10 @@ export class ClaudeProvider {
           memory_session_id: session.memorySessionId,
           project: session.project,
           user_prompt: session.userPrompt,
-          last_assistant_message: message.last_assistant_message || ''
+          last_assistant_message: sanitizeObserverText(message.last_assistant_message || '', {
+            key: 'last_assistant_message',
+            maxChars: OBSERVER_CONTEXT_MAX_SERIALIZED_CHARS,
+          })
         }, mode);
 
         session.conversationHistory.push({ role: 'user', content: summaryPrompt });
