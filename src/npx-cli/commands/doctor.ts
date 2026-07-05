@@ -38,14 +38,15 @@ function probeVersion(bin: string): string | null {
   }
 }
 
-async function probeWorkerHealth(workerPort: string): Promise<{ status: CheckStatus; detail: string }> {
-  const res = await fetch(`http://127.0.0.1:${workerPort}/api/health`, {
+async function probeWorkerHealth(workerHost: string, workerPort: string): Promise<{ status: CheckStatus; detail: string }> {
+  const workerUrl = `http://${workerHost}:${workerPort}`;
+  const res = await fetch(`${workerUrl}/api/health`, {
     signal: AbortSignal.timeout(3000),
   });
   if (res.ok) {
-    return { status: 'ok', detail: `healthy at http://127.0.0.1:${workerPort}` };
+    return { status: 'ok', detail: `healthy at ${workerUrl}` };
   }
-  return { status: 'warn', detail: `reachable but unhealthy (HTTP ${res.status}) on port ${workerPort}` };
+  return { status: 'warn', detail: `reachable but unhealthy (HTTP ${res.status}) at ${workerUrl}` };
 }
 
 export async function runDoctorCommand(): Promise<void> {
@@ -90,11 +91,12 @@ export async function runDoctorCommand(): Promise<void> {
   });
 
   // 5. Worker health.
+  const workerHost = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_HOST');
   const workerPort = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT');
   let workerStatus: CheckStatus = 'fail';
-  let workerDetail = `no response on port ${workerPort} — start with \`npx claude-mem start\``;
+  let workerDetail = `no response at http://${workerHost}:${workerPort} — start with \`npx claude-mem start\``;
   try {
-    const worker = await probeWorkerHealth(workerPort);
+    const worker = await probeWorkerHealth(workerHost, workerPort);
     workerStatus = worker.status;
     workerDetail = worker.detail;
   } catch {
