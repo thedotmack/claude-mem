@@ -216,12 +216,8 @@ if (child.stdin) {
     // prevents the daemon from starting/stopping on platforms where Claude Code
     // doesn't pipe a payload for SessionStart (e.g. Windows CC ≤ 2.1.145).
     if (isLifecycle) {
-      // Lifecycle commands don't need stdin — close pipe and let child run.
       try { child.stdin.end(); } catch {}
     } else {
-      // Issue #2188: empty/missing stdin previously masked by `|| '{}'` fallback,
-      // which silently hid WSL bash failures (e.g. hooks invoked under a broken
-      // shell that never piped a payload). Surface the failure mode instead.
       const dataDir = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
       const payloadType = stdinData === null
         ? 'null (no data event or stream error)'
@@ -245,23 +241,8 @@ if (child.stdin) {
         `  CLAUDE_PLUGIN_ROOT: ${RESOLVED_PLUGIN_ROOT}`,
       ].join('\n');
 
-      // IO discipline (see src/shared/hook-io.ts intent vocabulary):
-      // - this stderr write is a USER_HINT (Claude Code surfaces it inline).
-      // - the CAPTURE_BROKEN marker file below is a DIAGNOSTIC durable signal for
-      //   the next session-start hint.
-      // - exit 0 below is the EXIT_SIGNAL per CLAUDE.md (Windows Terminal tab
-      //   management); the marker file, not the exit code, is the durable failure
-      //   signal. bun-runner runs in its own node process BEFORE hookCommand's
-      //   stderr buffer is installed, so this write is never swallowed.
-
-      // Write to stderr so Claude Code surfaces the diagnostic.
       console.error(diagnostic);
 
-      // Persist diagnostic to the runner-errors log and drop a CAPTURE_BROKEN marker
-      // file so the next session-start hint can surface the failure. We exit 0 to
-      // honor the project's exit-code strategy (worker/hook errors exit 0 to
-      // prevent Windows Terminal tab pileup) — the marker file is the durable
-      // signal that something is wrong, not the exit code.
       try {
         const logsDir = join(dataDir, 'logs');
         mkdirSync(logsDir, { recursive: true });
@@ -280,10 +261,6 @@ if (child.stdin) {
 }
 
 child.on('error', (err) => {
-  // EXCEPTION to CLAUDE.md exit-0-on-error: Bun-not-found is a user environment
-  // problem, not a hook execution failure. Surfacing exit 1 here forces Claude
-  // Code to display the stderr message rather than silently retrying. This runs
-  // before any hook handler, so the exit-0 tab-management rationale doesn't apply.
   console.error(`Failed to start Bun: ${err.message}`);
   process.exit(1);
 });
