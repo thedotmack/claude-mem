@@ -197,6 +197,7 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       const contentSessionId = ensureSessionInitialized(input.sessionID, projectName);
       workerPostFireAndForget("/api/sessions/observations", {
         contentSessionId,
+        platformSource: 'opencode',
         tool_name: input.tool,
         tool_input: output.args || {},
         tool_response: truncate(output.output || ""),
@@ -222,6 +223,7 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
 
       workerPostFireAndForget("/api/sessions/observations", {
         contentSessionId,
+        platformSource: 'opencode',
         tool_name: "assistant_message",
         tool_input: {},
         tool_response: truncate(messageText),
@@ -237,6 +239,7 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       const contentSessionId = ensureSessionInitialized(input.sessionID, projectName);
       workerPostFireAndForget("/api/sessions/summarize", {
         contentSessionId,
+        platformSource: 'opencode',
         last_assistant_message: "",
       });
     },
@@ -254,6 +257,7 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
           const contentSessionId = ensureSessionInitialized(sessionID, projectName);
           workerPostFireAndForget("/api/sessions/summarize", {
             contentSessionId,
+            platformSource: 'opencode',
             last_assistant_message: "",
           });
           break;
