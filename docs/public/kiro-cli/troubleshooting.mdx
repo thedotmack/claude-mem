@@ -1,0 +1,40 @@
+---
+title: "Kiro CLI Troubleshooting"
+description: "Diagnose claude-mem capture and injection issues on Kiro CLI"
+---
+
+# Kiro CLI Troubleshooting
+
+## No context appears in new sessions
+
+1. **Check the hooks are installed:** `npx claude-mem kiro-cli status`. If your agent is listed under "Agents WITHOUT memory hooks", re-run `npx claude-mem install --ide kiro-cli`.
+2. **Check the worker:** `npx claude-mem status`. The `agentSpawn` hook starts the worker automatically, but a first-ever cold start can exceed the hook timeout — the *next* session will have context.
+3. **Check you have memory to inject:** context appears from your **second** session in a project onwards.
+4. **Custom agent?** Verify with `/hooks` inside the session that the claude-mem hooks are listed for the *active* agent — hooks are per-agent on Kiro.
+
+## Observations are not being captured
+
+- Run a session, then check the viewer (URL from `npx claude-mem status`) or `npx claude-mem search "<something you just did>"`.
+- Confirm a provider is configured (`CLAUDE_MEM_PROVIDER` in `~/.claude-mem/settings.json`); without one, raw observations queue but compression reports `setup_required`.
+- If the project is listed in `CLAUDE_MEM_EXCLUDED_PROJECTS`, nothing is captured by design.
+
+## MCP tools missing inside chat
+
+- `/mcp` should list `claude-mem`. If not: check `~/.kiro/settings/mcp.json` contains the `claude-mem` entry, and that your custom agent has `"includeMcpJson": true` or `"@claude-mem"` in its `tools` array.
+
+## A tool call was blocked or stdout garbage appeared in context
+
+Claude-mem's Kiro hooks never exit 2 and never print JSON. If you see either, another hook is responsible — check `/hooks` for the full list on the active agent.
+
+## File names not associated with observations
+
+Kiro's built-in `tool_input` field names are undocumented; claude-mem maps `path` → `file_path` for `fs_read`/`fs_write`. If files are missing from observations on your Kiro version, capture real payloads with the probe agent in `tests/fixtures/kiro/probe/` (see the README next to it) and [open an issue](https://github.com/thedotmack/claude-mem/issues) with the log.
+
+## Clean reinstall
+
+```bash
+npx claude-mem kiro-cli uninstall
+npx claude-mem install --ide kiro-cli
+```
+
+Your data in `~/.claude-mem` survives both steps.

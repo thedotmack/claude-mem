@@ -23,7 +23,7 @@ ${styleText('bold', 'Install Commands')} (no Bun required):
   ${styleText('cyan', 'npx claude-mem')}                     Interactive install
   ${styleText('cyan', 'npx claude-mem install')}              Interactive install
   ${styleText('cyan', 'npx claude-mem install --ide <id>')}   Install for specific IDE
-  ${styleText('cyan', 'npx claude-mem install --provider claude|gemini|openrouter')}   Set LLM provider non-interactively
+  ${styleText('cyan', 'npx claude-mem install --provider claude|gemini|openrouter|kiro')}   Set LLM provider non-interactively
   ${styleText('cyan', 'npx claude-mem install --model <id>')}   Set Claude model (when provider=claude)
   ${styleText('cyan', 'npx claude-mem install --no-auto-start')}   Skip worker auto-start at the end
   ${styleText('cyan', 'npx claude-mem install --disable-auto-memory')}   Explicitly disable Claude Code native auto-memory
@@ -51,12 +51,13 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem adopt [--dry-run] [--branch <name>]')}    Stamp merged worktrees into parent project
   ${styleText('cyan', 'npx claude-mem cleanup [--dry-run]')}    Run one-time v12.4.3 pollution cleanup (or preview counts)
   ${styleText('cyan', 'npx claude-mem transcript watch')}     Start transcript watcher
+  ${styleText('cyan', 'npx claude-mem kiro-cli install|uninstall|status')}   Manage the Kiro CLI integration
   ${styleText('cyan', 'npx claude-mem antigravity-cli install|status|uninstall')}   Manage Antigravity CLI hooks + MCP config
 
 ${styleText('bold', 'IDE Identifiers')}:
   claude-code, cursor, opencode, openclaw,
-  windsurf, codex-cli, copilot-cli, antigravity, goose,
-  roo-code, warp
+  windsurf, codex-cli, kiro-cli, copilot-cli, antigravity,
+  goose, roo-code, warp
 `);
 }
 
@@ -78,8 +79,8 @@ function parseInstallOptions(argv: string[]): InstallOptions {
   const flag = (name: string): string | undefined =>
     typeof values[name] === 'string' ? (values[name] as string) : undefined;
   const provider = flag('provider');
-  if (provider !== undefined && provider !== 'claude' && provider !== 'gemini' && provider !== 'openrouter') {
-    console.error(`Unknown --provider: ${provider}. Allowed: claude, gemini, openrouter`);
+  if (provider !== undefined && provider !== 'claude' && provider !== 'gemini' && provider !== 'openrouter' && provider !== 'kiro') {
+    console.error(`Unknown --provider: ${provider}. Allowed: claude, gemini, openrouter, kiro`);
     process.exit(1);
   }
   const runtime = flag('runtime');
@@ -210,6 +211,14 @@ async function main(): Promise<void> {
     case 'cleanup': {
       const { runCleanupCommand } = await import('./commands/runtime.js');
       runCleanupCommand(args.slice(1));
+      break;
+    }
+
+    case 'kiro-cli': {
+      // Documented surface: npx claude-mem kiro-cli install|uninstall|status
+      const { handleKiroCliCommand } = await import('../services/integrations/KiroCliInstaller.js');
+      const exitCode = await handleKiroCliCommand(args[1], args.slice(2));
+      process.exit(exitCode);
       break;
     }
 

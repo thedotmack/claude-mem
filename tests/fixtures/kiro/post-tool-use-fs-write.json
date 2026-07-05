@@ -1,0 +1,14 @@
+{
+  "hook_event_name": "postToolUse",
+  "cwd": "/tmp/kiro-e2e-project",
+  "tool_name": "fs_write",
+  "tool_input": {
+    "command": "create",
+    "path": "/tmp/kiro-e2e-project/src/auth.ts",
+    "file_text": "export const TIMEOUT_MS = 30000;\n"
+  },
+  "tool_response": {
+    "success": true,
+    "result": [""]
+  }
+}

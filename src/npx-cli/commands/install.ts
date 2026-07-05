@@ -372,6 +372,23 @@ function makeIDETask(ideId: string, summary: InstallSummary): TaskDescriptor | n
       };
     }
 
+    case 'kiro-cli': {
+      return {
+        title: 'Kiro CLI: installing agent hooks + MCP + skills',
+        task: async (message) => {
+          message('Loading Kiro CLI installer…');
+          const { installKiroCliIntegration } = await import('../../services/integrations/KiroCliInstaller.js');
+          message('Patching Kiro agent configs…');
+          const { result, output } = await bufferConsole(() => installKiroCliIntegration());
+          if (result !== 0) {
+            recordFailure('Kiro CLI: integration setup failed', output);
+            return `Kiro CLI: integration setup failed ${styleText('red', 'FAIL')}`;
+          }
+          return `Kiro CLI: agent hooks + MCP + skills installed ${styleText('green', 'OK')}`;
+        },
+      };
+    }
+
     case 'codex-cli': {
       return {
         title: 'Codex CLI: registering hooks marketplace',
@@ -779,7 +796,7 @@ function mergeSettings(updates: Record<string, string>): boolean {
   }
 }
 
-type ProviderId = 'claude' | 'gemini' | 'openrouter';
+type ProviderId = 'claude' | 'gemini' | 'openrouter' | 'kiro';
 type ClaudeAccessMode = 'subscription' | 'api-key';
 type ClaudeApiMode = 'direct' | 'gateway';
 // Phase 1d: Persisted DB literals (`server_beta_schema_migrations`, job_type
@@ -923,8 +940,17 @@ async function bootstrapAndPersistServerApiKey(): Promise<void> {
   );
 }
 
-async function promptProvider(options: InstallOptions): Promise<ProviderId> {
-  const initialProvider = (getSetting('CLAUDE_MEM_PROVIDER') as ProviderId) || 'claude';
+async function promptProvider(options: InstallOptions, selectedIDEs: string[] = []): Promise<ProviderId> {
+  // Kiro-targeted installs default to the kiro provider (compression on the
+  // user's Kiro subscription — no API key, no co-installed Claude Code).
+  // This decision must live HERE and not in the Kiro installer: unrelated
+  // loadFromFile calls materialise the 'claude' fallback into settings.json
+  // before the IDE tasks run, so only this flow can tell an explicit choice
+  // (--provider flag / prompt selection) from the written default.
+  const kiroTargeted = selectedIDEs.includes('kiro-cli');
+  const initialProvider = kiroTargeted
+    ? 'kiro'
+    : ((getSetting('CLAUDE_MEM_PROVIDER') as ProviderId) || 'claude');
 
   const persistClaudeProvider = (authMethod?: 'subscription' | 'api-key' | 'gateway') => {
     const resolvedAuthMethod = authMethod ?? resolveClaudeAuthMethod();
@@ -1044,10 +1070,21 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
         persistClaudeProvider();
         return 'claude';
       }
+      if (options.provider === 'kiro') {
+        // No API key: compression runs on the user's kiro-cli login session.
+        const wroteKiro = mergeSettings({ CLAUDE_MEM_PROVIDER: 'kiro' });
+        if (wroteKiro) log.info('Saved provider=kiro to ~/.claude-mem/settings.json (uses your Kiro subscription via kiro-cli)');
+        return 'kiro';
+      }
       const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: options.provider });
       if (wrote) log.info(`Saved provider=${options.provider} to ~/.claude-mem/settings.json`);
       log.warn(`Provider=${options.provider} requested non-interactively. API key prompt skipped — set CLAUDE_MEM_${options.provider.toUpperCase()}_API_KEY and CLAUDE_MEM_PROVIDER in settings.json or env manually if not already set.`);
       return options.provider;
+    }
+    if (kiroTargeted) {
+      const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: 'kiro' });
+      if (wrote) log.info('Saved provider=kiro to ~/.claude-mem/settings.json (Kiro CLI install default — pass --provider to choose another)');
+      return 'kiro';
     }
     return initialProvider;
   }
@@ -1106,6 +1143,7 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
         { value: 'claude', label: 'Claude Agent SDK (recommended)' },
         { value: 'gemini', label: 'Gemini' },
         { value: 'openrouter', label: 'OpenRouter' },
+        { value: 'kiro', label: 'Kiro subscription (via kiro-cli, no API key)' },
       ],
       initialValue: initialProvider,
     });
@@ -1119,6 +1157,14 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
   if (selectedProvider === 'claude') {
     await runClaudeAuthFlow();
     return 'claude';
+  }
+
+  if (selectedProvider === 'kiro') {
+    // No API key flow: auth is kiro-cli's own login session.
+    const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: 'kiro' });
+    if (wrote) log.info('Saved provider=kiro to ~/.claude-mem/settings.json');
+    log.info('Compression will run on your Kiro subscription (`kiro-cli login` must be active).');
+    return 'kiro';
   }
 
   const providerLabel = selectedProvider === 'gemini' ? 'Gemini' : 'OpenRouter';
@@ -1406,7 +1452,7 @@ async function promptCmemOnlineOptIn(version: string): Promise<void> {
 
 export interface InstallOptions {
   ide?: string;
-  provider?: 'claude' | 'gemini' | 'openrouter';
+  provider?: 'claude' | 'gemini' | 'openrouter' | 'kiro';
   model?: string;
   noAutoStart?: boolean;
   disableAutoMemory?: boolean;
@@ -1522,7 +1568,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   }
 
   const selectedRuntime = await promptRuntime(options);
-  const selectedProvider = await promptProvider(options);
+  const selectedProvider = await promptProvider(options, selectedIDEs);
   if (selectedProvider === 'claude') {
     await promptClaudeModel(options);
   }

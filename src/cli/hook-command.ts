@@ -15,6 +15,8 @@ import {
   recordWorkerUnreachable,
   setActiveHookType,
   getActiveHookType,
+  setActivePlatform,
+  activePlatformNeverBlocks,
 } from '../shared/worker-utils.js';
 import { captureCliEvent } from '../services/telemetry/cli-telemetry.js';
 import { logger } from '../utils/logger.js';
@@ -105,6 +107,10 @@ export async function hookCommand(platform: string, event: string, options: Hook
   // Register the hook event for the threshold-gated hook_failed telemetry
   // (closed enum enforced inside; non-enum events just omit hook_type).
   setActiveHookType(event);
+  // Register the platform so the fail-loud exit-2 paths (here and in
+  // recordWorkerUnreachable) can degrade to diagnostics on hosts where
+  // exit 2 has blocking semantics (Kiro CLI).
+  setActivePlatform(platform);
 
   // Hook IO Discipline (issue #2292):
   // We BUFFER stderr during handler execution so that unsolicited writes from
@@ -161,6 +167,13 @@ export async function hookCommand(platform: string, event: string, options: Hook
         error_mode: 'blocking_error',
         threshold_tripped: false,
       });
+    }
+    // Never-block platforms (Kiro): exit 2 there blocks the user's tool call
+    // (preToolUse) — surface the error on stderr only and exit 0.
+    if (activePlatformNeverBlocks()) {
+      stderrBuffer.flush();
+      exitGraceful(options);
+      return HOOK_EXIT_CODES.SUCCESS;
     }
     // BLOCKING_FEEDBACK: flush the buffered logger.error line to stderr and
     // exit 2 so the model receives it per Claude Code's hook contract.

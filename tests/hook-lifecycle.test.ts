@@ -49,6 +49,16 @@ describe('Hook Lifecycle - Event Handlers', () => {
   });
 });
 
+describe('Kiro CLI Compatibility', () => {
+  describe('getPlatformAdapter', () => {
+    it('should return kiroAdapter for kiro and kiro-cli', async () => {
+      const { getPlatformAdapter, kiroAdapter } = await import('../src/cli/adapters/index.js');
+      expect(getPlatformAdapter('kiro')).toBe(kiroAdapter);
+      expect(getPlatformAdapter('kiro-cli')).toBe(kiroAdapter);
+    });
+  });
+});
+
 describe('Codex CLI Compatibility (#744)', () => {
   describe('getPlatformAdapter', () => {
     it('should return codexAdapter for codex', async () => {

@@ -71,6 +71,15 @@ export function detectInstalledIDEs(): IDEInfo[] {
       hint: 'native hooks integration',
     },
     {
+      // Directory-only on purpose (matching gemini-cli/codex-cli): the
+      // installer requires ~/.kiro to exist, so detecting a PATH-only binary
+      // would offer an install that immediately fails.
+      id: 'kiro-cli',
+      label: 'Kiro CLI',
+      detected: existsSync(process.env.KIRO_HOME ?? join(home, '.kiro')),
+      hint: 'agent hooks + MCP integration',
+    },
+    {
       id: 'cursor',
       label: 'Cursor',
       detected: existsSync(join(home, '.cursor')),
