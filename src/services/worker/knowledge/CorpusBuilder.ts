@@ -1,27 +1,12 @@
 
 import { logger } from '../../../utils/logger.js';
+import { parseJsonArrayColumn } from '../../../utils/json-utils.js';
 import type { ObservationSearchResult } from '../../sqlite/types.js';
 import type { SessionStore } from '../../sqlite/SessionStore.js';
 import type { SearchOrchestrator } from '../search/SearchOrchestrator.js';
 import { CorpusRenderer } from './CorpusRenderer.js';
 import { CorpusStore } from './CorpusStore.js';
 import type { CorpusFile, CorpusFilter, CorpusObservation, CorpusStats } from './types.js';
-
-function safeParseJsonArray(value: unknown): string[] {
-  if (Array.isArray(value)) return value.filter((v): v is string => typeof v === 'string');
-  if (typeof value !== 'string') return [];
-  try {
-    const parsed = JSON.parse(value);
-    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : [];
-  } catch (error) {
-    if (error instanceof Error) {
-      logger.warn('WORKER', 'Failed to parse JSON array field', {}, error);
-    } else {
-      logger.warn('WORKER', 'Failed to parse JSON array field (non-Error thrown)', { thrownValue: String(error) });
-    }
-    return [];
-  }
-}
 
 export class CorpusBuilder {
   private renderer: CorpusRenderer;
@@ -105,14 +90,25 @@ export class CorpusBuilder {
       title: row.title || '',
       subtitle: row.subtitle || null,
       narrative: row.narrative || null,
-      facts: safeParseJsonArray(row.facts),
-      concepts: safeParseJsonArray(row.concepts),
-      files_read: safeParseJsonArray(row.files_read),
-      files_modified: safeParseJsonArray(row.files_modified),
+      facts: this.parseCorpusColumn(row.facts, 'facts'),
+      concepts: this.parseCorpusColumn(row.concepts, 'concepts'),
+      files_read: this.parseCorpusColumn(row.files_read, 'files_read'),
+      files_modified: this.parseCorpusColumn(row.files_modified, 'files_modified'),
       project: row.project,
       created_at: row.created_at,
       created_at_epoch: row.created_at_epoch,
     };
+  }
+
+  private parseCorpusColumn(value: unknown, column: string): string[] {
+    return parseJsonArrayColumn(value, (error, rawValue) => {
+      logger.warn(
+        'WORKER',
+        `Malformed JSON in observation column "${column}"; defaulting to empty array`,
+        { column, rawPreview: rawValue.slice(0, 100) },
+        error instanceof Error ? error : new Error(String(error)),
+      );
+    });
   }
 
   private calculateStats(observations: CorpusObservation[]): CorpusStats {

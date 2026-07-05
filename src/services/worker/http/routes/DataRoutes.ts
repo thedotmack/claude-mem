@@ -4,6 +4,7 @@ import { z } from 'zod';
 import path from 'path';
 import { readFileSync, statSync, existsSync } from 'fs';
 import { logger } from '../../../../utils/logger.js';
+import { parseJsonArrayColumn } from '../../../../utils/json-utils.js';
 import { getPackageRoot, paths, OBSERVER_SESSIONS_PROJECT } from '../../../../shared/paths.js';
 import { getWorkerPort } from '../../../../shared/worker-utils.js';
 import { PaginationHelper } from '../../PaginationHelper.js';
@@ -388,10 +389,6 @@ export class DataRoutes extends BaseRouteHandler {
       const chromaSync = this.dbManager.getChromaSync();
       if (chromaSync && importedObservations.length > 0) {
         const CHROMA_SYNC_CONCURRENCY = 8;
-        const safeParseJson = (val: string | null): string[] => {
-          if (!val) return [];
-          try { return JSON.parse(val); } catch { return []; }
-        };
 
         const syncOne = async ({ id, obs }: { id: number; obs: any }) => {
           const sourceRow = store.db.prepare(`
@@ -407,11 +404,11 @@ export class DataRoutes extends BaseRouteHandler {
             type: obs.type || 'discovery',
             title: obs.title || null,
             subtitle: obs.subtitle || null,
-            facts: safeParseJson(obs.facts),
+            facts: parseJsonArrayColumn(obs.facts),
             narrative: obs.narrative || null,
-            concepts: safeParseJson(obs.concepts),
-            files_read: safeParseJson(obs.files_read),
-            files_modified: safeParseJson(obs.files_modified),
+            concepts: parseJsonArrayColumn(obs.concepts),
+            files_read: parseJsonArrayColumn(obs.files_read),
+            files_modified: parseJsonArrayColumn(obs.files_modified),
           };
 
           await chromaSync.syncObservation(
