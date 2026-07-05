@@ -43,7 +43,8 @@
   <a href="README.hu.md">🇭🇺 Magyar</a> •
   <a href="README.fi.md">🇫🇮 Suomi</a> •
   <a href="README.da.md">🇩🇰 Dansk</a> •
-  <a href="README.no.md">🇳🇴 Norsk</a>
+  <a href="README.no.md">🇳🇴 Norsk</a> •
+  <a href="README.ta.md">🇮🇳 தமிழ்</a>
 </p>
 
 <h4 align="center"><a href="https://claude.com/claude-code" target="_blank">Claude Code</a>-এর জন্য নির্মিত স্থায়ী মেমরি কম্প্রেশন সিস্টেম।</h4>

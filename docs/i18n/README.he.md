@@ -42,7 +42,8 @@
   <a href="README.hu.md">🇭🇺 Magyar</a> •
   <a href="README.fi.md">🇫🇮 Suomi</a> •
   <a href="README.da.md">🇩🇰 Dansk</a> •
-  <a href="README.no.md">🇳🇴 Norsk</a>
+  <a href="README.no.md">🇳🇴 Norsk</a> •
+  <a href="README.ta.md">🇮🇳 தமிழ்</a>
 </p>
 
 <h4 align="center">מערכת דחיסת זיכרון מתמשך שנבנתה עבור <a href="https://claude.com/claude-code" target="_blank">Claude Code</a>.</h4>
