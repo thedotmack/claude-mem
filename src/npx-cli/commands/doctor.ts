@@ -8,8 +8,8 @@
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { styleText } from 'node:util';
-import { isPluginInstalled, marketplaceDirectory } from '../utils/paths.js';
-import { getBunVersion, getUvVersion } from '../install/setup-runtime.js';
+import { isPluginInstalled, marketplaceDirectory, readPluginVersion } from '../utils/paths.js';
+import { getBunVersion, getUvVersion, isInstallCurrent } from '../install/setup-runtime.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { resolveDataDir } from '../../shared/paths.js';
 
@@ -75,13 +75,24 @@ export async function runDoctorCommand(): Promise<void> {
     required: true,
   });
 
-  // 4. Marketplace dependencies materialized.
-  const marketplaceNodeModules = join(marketplaceDirectory(), 'node_modules');
+  // 4. Marketplace runtime root materialized.
+  const marketplaceDir = marketplaceDirectory();
+  const marketplaceNodeModules = join(marketplaceDir, 'node_modules');
+  const marketplaceMarker = join(marketplaceDir, '.install-version');
   const depsPresent = existsSync(marketplaceNodeModules);
+  const markerPresent = existsSync(marketplaceMarker);
+  const marketplaceCurrent = installed && isInstallCurrent(marketplaceDir, readPluginVersion());
+  const marketplaceDetail = marketplaceCurrent
+    ? 'node_modules and install marker present'
+    : !depsPresent
+      ? 'node_modules missing — run `npx claude-mem repair`'
+      : !markerPresent
+        ? 'install marker missing — run `npx claude-mem repair`'
+        : 'install marker stale — run `npx claude-mem repair`';
   checks.push({
-    name: 'Marketplace deps',
-    status: installed ? (depsPresent ? 'ok' : 'fail') : 'warn',
-    detail: depsPresent ? 'node_modules present' : 'missing — run `npx claude-mem repair`',
+    name: 'Marketplace runtime',
+    status: installed ? (marketplaceCurrent ? 'ok' : 'fail') : 'warn',
+    detail: marketplaceDetail,
     required: installed,
   });
 

@@ -1625,6 +1625,12 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
           const stopHeartbeat = startHeartbeat(message, 'Running npm install…');
           try {
             await runNpmInstallInMarketplace(summary);
+            writeInstallMarker(
+              marketplaceDirectory(),
+              version,
+              installedBunVersion ?? 'unknown',
+              installedUvVersion ?? 'unknown',
+            );
           } finally {
             stopHeartbeat();
           }
@@ -1855,9 +1861,12 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   }, { person: true });
 }
 
-export async function runRepairCommand(): Promise<void> {
+async function runRepairCommandInner(summary: InstallSummary): Promise<void> {
   const version = readPluginVersion();
   const cacheDir = pluginCacheDirectory(version);
+  const marketplaceDir = marketplaceDirectory();
+  let bunVersion = 'unknown';
+  let uvVersion = 'unknown';
 
   if (isInteractive) {
     p.intro(styleText(['bgCyan', 'black'], ' claude-mem repair '));
@@ -1871,9 +1880,11 @@ export async function runRepairCommand(): Promise<void> {
       title: 'Setting up runtime',
       task: async (message) => {
         message('Checking Bun…');
-        const { version: bunVersion } = await ensureBun();
+        const bun = await ensureBun(summary);
+        bunVersion = bun.version;
         message('Checking uv…');
-        const { version: uvVersion } = await ensureUv();
+        const uv = await ensureUv(summary);
+        uvVersion = uv.version;
         // Repair must regenerate the cache if it was wiped (e.g. user ran
         // `rm -rf ~/.claude/plugins/cache`). Without this, bun install would
         // fail immediately with no package.json to install against.
@@ -1882,17 +1893,59 @@ export async function runRepairCommand(): Promise<void> {
           copyPluginToCache(version);
         }
         message('Reinstalling plugin dependencies…');
-        const { bunPath } = await ensureBun();
+        const { bunPath } = bun;
         await installPluginDependencies(cacheDir, bunPath);
         writeInstallMarker(cacheDir, version, bunVersion, uvVersion);
         return `Runtime ready (Bun ${bunVersion}, uv ${uvVersion}) ${styleText('green', 'OK')}`;
       },
     },
+    {
+      title: 'Repairing marketplace runtime',
+      task: async (message) => {
+        message('Repopulating marketplace root from npm package…');
+        copyPluginToMarketplace();
+        message('Reinstalling marketplace dependencies…');
+        const stopHeartbeat = startHeartbeat(message, 'Running npm install…');
+        try {
+          await runNpmInstallInMarketplace(summary);
+          writeInstallMarker(marketplaceDir, version, bunVersion, uvVersion);
+        } finally {
+          stopHeartbeat();
+        }
+        return `Marketplace runtime ready ${styleText('green', 'OK')}`;
+      },
+    },
   ]);
+
+  flushSummary(summary, (line) => (isInteractive ? p.log.message(line) : console.log(`  ${line}`)));
 
   if (isInteractive) {
     p.outro(styleText('green', 'claude-mem repair complete.'));
   } else {
     console.log('claude-mem repair complete.');
+  }
+}
+
+export async function runRepairCommand(): Promise<void> {
+  const summary = createInstallSummary();
+  try {
+    await runRepairCommandInner(summary);
+  } catch (error: unknown) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    if (err instanceof InstallAbortError) {
+      flushSummary(summary, (line) => (isInteractive ? p.log.message(line) : console.error(`  ${line}`)));
+      const headline = `Repair Aborted: ${err.category.id}`;
+      if (isInteractive) {
+        p.log.error(headline);
+        p.log.error(err.remediation);
+        p.outro(styleText('red', 'claude-mem repair aborted.'));
+      } else {
+        console.error(`\n  ${headline}`);
+        console.error(`  ${err.remediation}`);
+        console.error(`  ${err.message}`);
+      }
+      process.exit(1);
+    }
+    throw error;
   }
 }
