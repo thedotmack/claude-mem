@@ -45,6 +45,7 @@
     "plugin/modes",
     "plugin/scripts/*.js",
     "plugin/scripts/*.cjs",
+    "plugin/sqlite",
     "plugin/skills",
     "plugin/ui",
     "openclaw"
