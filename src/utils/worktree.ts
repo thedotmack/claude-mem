@@ -4,18 +4,14 @@ import path from 'path';
 import { logger } from './logger.js';
 
 export interface WorktreeInfo {
-  kind: 'none' | 'worktree' | 'submodule';
   isWorktree: boolean;
-  isSubmodule: boolean;
   worktreeName: string | null;     
   parentRepoPath: string | null;   
   parentProjectName: string | null; 
 }
 
 const NOT_A_WORKTREE: WorktreeInfo = {
-  kind: 'none',
   isWorktree: false,
-  isSubmodule: false,
   worktreeName: null,
   parentRepoPath: null,
   parentProjectName: null
@@ -52,38 +48,19 @@ export function detectWorktree(cwd: string): WorktreeInfo {
   }
 
   const gitdirPath = match[1];
-  const resolvedGitdirPath = path.resolve(path.dirname(gitPath), gitdirPath);
 
-  const worktreesMatch = resolvedGitdirPath.match(/^(.+)[/\\]\.git[/\\]worktrees[/\\]([^/\\]+)$/);
-  if (worktreesMatch) {
-    const parentRepoPath = worktreesMatch[1];
-    const worktreeName = path.basename(cwd);
-    const parentProjectName = path.basename(parentRepoPath);
-
-    return {
-      kind: 'worktree',
-      isWorktree: true,
-      isSubmodule: false,
-      worktreeName,
-      parentRepoPath,
-      parentProjectName
-    };
-  }
-
-  const normalizedGitdirPath = resolvedGitdirPath.replace(/[/\\]+$/, '');
-  const submoduleMatch = normalizedGitdirPath.match(/^(.*?)[/\\]\.git[/\\]modules[/\\].+$/);
-  if (!submoduleMatch) {
+  const worktreesMatch = gitdirPath.match(/^(.+)[/\\]\.git[/\\]worktrees[/\\]([^/\\]+)$/);
+  if (!worktreesMatch) {
     return NOT_A_WORKTREE;
   }
 
-  const parentRepoPath = submoduleMatch[1];
+  const parentRepoPath = worktreesMatch[1];
+  const worktreeName = path.basename(cwd);
   const parentProjectName = path.basename(parentRepoPath);
 
   return {
-    kind: 'submodule',
-    isWorktree: false,
-    isSubmodule: true,
-    worktreeName: null,
+    isWorktree: true,
+    worktreeName,
     parentRepoPath,
     parentProjectName
   };
