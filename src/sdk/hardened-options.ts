@@ -59,7 +59,11 @@ export const OBSERVER_DISALLOWED_TOOLS = [
   'Task',           // No spawning sub-agents
   'NotebookEdit',   // No notebook editing
   'AskUserQuestion',// No asking questions
-  'TodoWrite',
+  'TodoWrite',      // No todo writing
+  'Skill',          // No skill invocation
+  'Workflow',       // No workflow orchestration
+  'SlashCommand',   // No slash-command execution
+  'ExitPlanMode',   // No plan-mode exit
 ] as const;
 
 export interface HardenedSdkOptionsInput {
