@@ -112,6 +112,28 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
    npm run worker:restart
    ```
 
+
+### Windows: console windows still flash even after `windowsHide` fixes
+
+**Symptoms**: On Windows 11, Claude-Mem hooks or worker subprocesses still create short-lived terminal windows on every tool use, even when the spawned process uses `windowsHide: true`. The flashing windows may show up as Windows Terminal / Cascadia windows rather than classic `conhost.exe` windows.
+
+**Why it happens**: `windowsHide: true` suppresses classic Console Host windows, but it does not hide windows created by Windows Terminal when Windows Terminal is configured as the system default terminal host.
+
+**Solution**:
+
+1. Switch Windows' default terminal application to **Windows Console Host**:
+   - Open **Windows Terminal** → **Settings** → **Startup**
+   - Set **Default terminal application** to **Windows Console Host**
+   - Restart Claude Code / Claude-Mem hooks after changing the setting
+
+2. Keep the Claude-Mem `windowsHide` subprocess fixes in place. Both pieces matter:
+   - Windows Console Host makes `windowsHide` effective for short-lived subprocesses.
+   - `windowsHide: true` still needs to be present on hook, worker, git, Bun, and daemon spawns.
+
+3. For scripted/registry-managed environments, the same default-terminal setting maps to `HKCU\Console\%Startup` `DelegationConsole` and `DelegationTerminal` values for Windows Console Host. Prefer the UI path above unless you already manage this setting centrally.
+
+If the flashing continues after switching to Windows Console Host, capture the process/window class that appears during a hook fire. A `CASCADIA_HOSTING_WINDOW_CLASS` window points back to Windows Terminal hosting; classic console flashes usually mean another spawn site is still missing `windowsHide: true`.
+
 ### Chroma/Python Dependency Issues (v5.0.0+)
 
 **Symptoms**: Installation fails with chromadb or Python-related errors.
