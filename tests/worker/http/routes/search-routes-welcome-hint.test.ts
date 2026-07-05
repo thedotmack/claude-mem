@@ -89,12 +89,14 @@ describe('SearchRoutes Welcome Hint', () => {
     generateContextStub.mockClear();
     mockClaudeMemEnv = {};
     delete process.env.CLAUDE_MEM_WELCOME_HINT_ENABLED;
+    delete process.env.CLAUDE_MEM_PROVIDER;
   });
 
   afterEach(() => {
     loggerSpies.forEach(spy => spy.mockRestore());
     delete process.env.CLAUDE_MEM_WELCOME_HINT_ENABLED;
     delete process.env.CLAUDE_MEM_WORKER_PORT;
+    delete process.env.CLAUDE_MEM_PROVIDER;
   });
 
   afterAll(() => {
@@ -288,6 +290,26 @@ describe('SearchRoutes Welcome Hint', () => {
     expect(body).toContain('/learn-codebase');
     // Warning must appear before the welcome hint
     expect(body.indexOf('⚠️')).toBeLessThan(body.indexOf('# claude-mem status'));
+  });
+
+  it('omits credential warning for CLI-auth providers without API credential env vars', async () => {
+    for (const provider of ['codex', 'codex-cli', 'kiro', 'kiro-cli']) {
+      process.env.CLAUDE_MEM_PROVIDER = provider;
+
+      const routes = new SearchRoutes(mockSearchManager);
+      const handler = captureContextInjectHandler(routes);
+
+      const res = createMockRes();
+      const req = { query: { projects: `/path/to/empty-${provider}` } } as unknown as Request;
+
+      handler(req, res as unknown as Response);
+      await new Promise(resolve => setImmediate(resolve));
+
+      const body = (res.send as any).mock.calls[0][0] as string;
+      expect(body).toContain('# claude-mem status');
+      expect(body).not.toContain('⚠️');
+      expect(body).not.toContain('credentials not configured');
+    }
   });
 
   it('omits credential warning when .env has ANTHROPIC_AUTH_TOKEN', async () => {

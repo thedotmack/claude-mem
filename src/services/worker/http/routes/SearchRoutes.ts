@@ -57,6 +57,14 @@ How it works: \`/how-it-works\`
 This message disappears once the first observation lands.
 `;
 
+function isCliAuthProvider(provider: string | undefined): boolean {
+  const normalized = String(provider ?? '').trim().toLowerCase();
+  return normalized === 'codex'
+    || normalized === 'codex-cli'
+    || normalized === 'kiro'
+    || normalized === 'kiro-cli';
+}
+
 const semanticContextSchema = z.object({
   q: z.string().optional(),
   project: z.string().optional(),
@@ -328,7 +336,8 @@ export class SearchRoutes extends BaseRouteHandler {
           || credEnv.ANTHROPIC_AUTH_TOKEN
           || credEnv.GEMINI_API_KEY
           || credEnv.OPENROUTER_API_KEY;
-        if (!hasCreds) {
+        const selectedProvider = process.env.CLAUDE_MEM_PROVIDER ?? settings.CLAUDE_MEM_PROVIDER;
+        if (!hasCreds && !isCliAuthProvider(selectedProvider)) {
           const credWarning = [
             '⚠️  claude-mem credentials not configured — observations cannot be generated.',
             'Anthropic OAuth users can ignore this message.',
