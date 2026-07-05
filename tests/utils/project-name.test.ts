@@ -54,10 +54,11 @@ describe('getProjectName', () => {
     });
   });
 
-  describe('#2663 — name derived from git repo root', () => {
+  describe('Phase 7 — repo-relative project identity', () => {
     let tmp: string;
     let repoRoot: string;
     let nestedDir: string;
+    let overrideNestedDir: string;
 
     beforeAll(async () => {
       const { mkdtempSync, mkdirSync, realpathSync } = await import('fs');
@@ -70,7 +71,9 @@ describe('getProjectName', () => {
       tmp = realpathSync(mkdtempSync(join(tmpdir(), 'cm-reporoot-')));
       repoRoot = join(tmp, 'my-real-repo');
       nestedDir = join(repoRoot, 'packages', 'deeply', 'nested');
+      overrideNestedDir = join(repoRoot, 'override-package', 'deeply', 'nested');
       mkdirSync(nestedDir, { recursive: true });
+      mkdirSync(overrideNestedDir, { recursive: true });
       execFileSync('git', ['init', '-q'], { cwd: repoRoot });
     });
 
@@ -79,12 +82,41 @@ describe('getProjectName', () => {
       rmSync(tmp, { recursive: true, force: true });
     });
 
-    it('deep subdirectory inside a repo yields the repo-root name', () => {
-      expect(getProjectName(nestedDir)).toBe('my-real-repo');
+    it('deep subdirectory inside a repo yields a repo-relative key', () => {
+      expect(getProjectName(nestedDir)).toBe('my-real-repo/packages/deeply/nested');
     });
 
     it('repo root itself yields the repo-root name', () => {
       expect(getProjectName(repoRoot)).toBe('my-real-repo');
+    });
+
+    it('context preserves root alias while making the subdirectory primary', () => {
+      const ctx = getProjectContext(nestedDir);
+      expect(ctx.primary).toBe('my-real-repo/packages/deeply/nested');
+      expect(ctx.gitRootKey).toBe('my-real-repo');
+      expect(ctx.repoRelativeKey).toBe('packages/deeply/nested');
+      expect(ctx.cwdKey).toBe('nested');
+      expect(ctx.aliases).toEqual(['my-real-repo']);
+      expect(ctx.allProjects).toEqual(['my-real-repo', 'my-real-repo/packages/deeply/nested']);
+    });
+
+    it('honors .claude-mem.json projectName override as primary while retaining aliases', async () => {
+      const { writeFileSync } = await import('fs');
+      writeFileSync(
+        `${repoRoot}/override-package/.claude-mem.json`,
+        JSON.stringify({ projectName: 'explicit-monorepo-package' })
+      );
+
+      const ctx = getProjectContext(overrideNestedDir);
+      expect(ctx.primary).toBe('explicit-monorepo-package');
+      expect(ctx.userOverride).toBe('explicit-monorepo-package');
+      expect(ctx.gitRootKey).toBe('my-real-repo');
+      expect(ctx.repoRelativeKey).toBe('override-package/deeply/nested');
+      expect(ctx.allProjects).toEqual([
+        'my-real-repo',
+        'my-real-repo/override-package/deeply/nested',
+        'explicit-monorepo-package',
+      ]);
     });
 
     it('non-repo path falls back to basename(cwd)', () => {
@@ -116,6 +148,11 @@ describe('getProjectContext', () => {
     expect(ctx.parent).toBeNull();
     expect(ctx.isWorktree).toBe(false);
     expect(ctx.allProjects).toEqual(['my-project']);
+    expect(ctx.cwdKey).toBe('my-project');
+    expect(ctx.gitRootKey).toBeNull();
+    expect(ctx.repoRelativeKey).toBeNull();
+    expect(ctx.userOverride).toBeNull();
+    expect(ctx.aliases).toEqual([]);
   });
 
   it('resolves ~ path correctly', () => {
@@ -129,6 +166,8 @@ describe('getProjectContext', () => {
     const ctx = getProjectContext(null);
     expect(ctx.primary).toBe('unknown-project');
     expect(ctx.parent).toBeNull();
+    expect(ctx.allProjects).toEqual(['unknown-project']);
+    expect(ctx.gitRootKey).toBeNull();
   });
 
   describe('worktree isolation', () => {
@@ -165,6 +204,8 @@ describe('getProjectContext', () => {
       expect(ctx.primary).toBe('main-repo/my-worktree');
       expect(ctx.parent).toBe('main-repo');
       expect(ctx.allProjects).toEqual(['main-repo', 'main-repo/my-worktree']);
+      expect(ctx.gitRootKey).toBe('main-repo/my-worktree');
+      expect(ctx.repoRelativeKey).toBeNull();
     });
 
     it('write-path call sites resolve to composite name in worktrees', () => {

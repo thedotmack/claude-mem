@@ -6,6 +6,7 @@ import { logger } from '../../utils/logger.js';
 import { getWorkerHost, getWorkerPort } from '../../shared/worker-utils.js';
 import { DATA_DIR } from '../../shared/paths.js';
 import { getBunAbsolutePath as findBunPath, getWorkerServiceAbsolutePath as findWorkerServicePath } from './install-paths.js';
+import { getProjectContext } from '../../utils/project-name.js';
 
 interface WindsurfHookEntry {
   command: string;
@@ -228,7 +229,7 @@ Next steps:
 
 async function setupWindsurfProjectContext(workspaceRoot: string): Promise<void> {
   const port = getWorkerPort();
-  const projectName = path.basename(workspaceRoot);
+  const projectName = getProjectContext(workspaceRoot).primary;
   let contextGenerated = false;
 
   console.log(`  Generating initial context...`);
