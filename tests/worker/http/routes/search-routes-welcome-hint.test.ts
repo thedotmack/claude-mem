@@ -18,6 +18,12 @@ mock.module('../../../../src/shared/paths.js', () => ({
   paths: realPaths.paths,
 }));
 
+// Mutable reference so individual tests can control loadClaudeMemEnv's return value.
+let mockClaudeMemEnv: Record<string, string | undefined> = {};
+mock.module('../../../../src/shared/EnvManager.js', () => ({
+  loadClaudeMemEnv: () => mockClaudeMemEnv,
+}));
+
 import { SearchRoutes } from '../../../../src/services/worker/http/routes/SearchRoutes.js';
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
@@ -81,6 +87,7 @@ describe('SearchRoutes Welcome Hint', () => {
     };
 
     generateContextStub.mockClear();
+    mockClaudeMemEnv = {};
     delete process.env.CLAUDE_MEM_WELCOME_HINT_ENABLED;
   });
 
@@ -256,5 +263,102 @@ describe('SearchRoutes Welcome Hint', () => {
 
     const body = (res.send as any).mock.calls[0][0] as string;
     expect(body).toContain('http://localhost:43210');
+  });
+
+  // ── Credential warning ──────────────────────────────────────────
+
+  it('prepends credential warning when .env has no credentials', async () => {
+    const routes = new SearchRoutes(mockSearchManager);
+    const handler = captureContextInjectHandler(routes);
+
+    const res = createMockRes();
+    const req = { query: { projects: '/path/to/empty-project' } } as unknown as Request;
+
+    handler(req, res as unknown as Response);
+    await new Promise(resolve => setImmediate(resolve));
+
+    expect(res.send).toHaveBeenCalledTimes(1);
+    const body = (res.send as any).mock.calls[0][0] as string;
+    expect(body).toContain('⚠️  claude-mem credentials not configured');
+    expect(body).toContain('Anthropic OAuth users can ignore this message.');
+    expect(body).toContain('Create ~/.claude-mem/.env with your API credentials');
+    expect(body).toContain('ANTHROPIC_AUTH_TOKEN=your-token');
+    expect(body).toContain('ANTHROPIC_API_KEY=your-key');
+    expect(body).toContain('# claude-mem status');
+    expect(body).toContain('/learn-codebase');
+    // Warning must appear before the welcome hint
+    expect(body.indexOf('⚠️')).toBeLessThan(body.indexOf('# claude-mem status'));
+  });
+
+  it('omits credential warning when .env has ANTHROPIC_AUTH_TOKEN', async () => {
+    mockClaudeMemEnv = { ANTHROPIC_AUTH_TOKEN: 'test-token' };
+
+    const routes = new SearchRoutes(mockSearchManager);
+    const handler = captureContextInjectHandler(routes);
+
+    const res = createMockRes();
+    const req = { query: { projects: '/path/to/empty-project' } } as unknown as Request;
+
+    handler(req, res as unknown as Response);
+    await new Promise(resolve => setImmediate(resolve));
+
+    const body = (res.send as any).mock.calls[0][0] as string;
+    expect(body).toContain('# claude-mem status');
+    expect(body).not.toContain('⚠️');
+    expect(body).not.toContain('credentials not configured');
+  });
+
+  it('omits credential warning when .env has ANTHROPIC_API_KEY', async () => {
+    mockClaudeMemEnv = { ANTHROPIC_API_KEY: 'test-key' };
+
+    const routes = new SearchRoutes(mockSearchManager);
+    const handler = captureContextInjectHandler(routes);
+
+    const res = createMockRes();
+    const req = { query: { projects: '/path/to/empty-project' } } as unknown as Request;
+
+    handler(req, res as unknown as Response);
+    await new Promise(resolve => setImmediate(resolve));
+
+    const body = (res.send as any).mock.calls[0][0] as string;
+    expect(body).toContain('# claude-mem status');
+    expect(body).not.toContain('⚠️');
+    expect(body).not.toContain('credentials not configured');
+  });
+
+  it('omits credential warning when .env has GEMINI_API_KEY', async () => {
+    mockClaudeMemEnv = { GEMINI_API_KEY: 'test-gemini-key' };
+
+    const routes = new SearchRoutes(mockSearchManager);
+    const handler = captureContextInjectHandler(routes);
+
+    const res = createMockRes();
+    const req = { query: { projects: '/path/to/empty-project' } } as unknown as Request;
+
+    handler(req, res as unknown as Response);
+    await new Promise(resolve => setImmediate(resolve));
+
+    const body = (res.send as any).mock.calls[0][0] as string;
+    expect(body).toContain('# claude-mem status');
+    expect(body).not.toContain('⚠️');
+    expect(body).not.toContain('credentials not configured');
+  });
+
+  it('omits credential warning when .env has OPENROUTER_API_KEY', async () => {
+    mockClaudeMemEnv = { OPENROUTER_API_KEY: 'test-openrouter-key' };
+
+    const routes = new SearchRoutes(mockSearchManager);
+    const handler = captureContextInjectHandler(routes);
+
+    const res = createMockRes();
+    const req = { query: { projects: '/path/to/empty-project' } } as unknown as Request;
+
+    handler(req, res as unknown as Response);
+    await new Promise(resolve => setImmediate(resolve));
+
+    const body = (res.send as any).mock.calls[0][0] as string;
+    expect(body).toContain('# claude-mem status');
+    expect(body).not.toContain('⚠️');
+    expect(body).not.toContain('credentials not configured');
   });
 });
