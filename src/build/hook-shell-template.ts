@@ -209,6 +209,60 @@ function buildMcpNodeLauncher(options: ShellTemplateOptions): string {
   );
 }
 
+function jsSingleQuoted(value: string): string {
+  return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+}
+
+function jsArray(values: string[]): string {
+  return `[${values.map(jsSingleQuoted).join(',')}]`;
+}
+
+export interface CodexWindowsCommandOptions {
+  startupVersionCheck?: boolean;
+}
+
+/**
+ * Codex hook contract supports `commandWindows` as the Windows-only command
+ * override. Keep this Node-based so Codex App on Windows can execute hooks from
+ * PowerShell without parsing POSIX shell syntax (OpenAI Codex hooks docs).
+ */
+export function buildCodexWindowsCommand(
+  workerArgs: string[],
+  options: CodexWindowsCommandOptions = {},
+): string {
+  const parts = [
+    "const fs=require('fs'),p=require('path'),o=require('os'),c=require('child_process');",
+    "const h=o.homedir();",
+    "const C=process.env.CLAUDE_CONFIG_DIR||p.join(h,'.claude');",
+    "const roots=[];",
+    "for(const v of [process.env.CLAUDE_PLUGIN_ROOT,process.env.PLUGIN_ROOT])if(v)roots.push(v);",
+    "const cache=p.join(C,'plugins','cache','thedotmack','claude-mem');",
+    "try{roots.push(...fs.readdirSync(cache).filter(n=>{const ch=n.charAt(0);return ch>='0'&&ch<='9'}).map(n=>p.join(cache,n)).filter(r=>{try{return fs.statSync(r).isDirectory()}catch{return false}}).sort((a,b)=>fs.statSync(b).mtimeMs-fs.statSync(a).mtimeMs))}catch{}",
+    "roots.push(p.join(C,'plugins','marketplaces','thedotmack','plugin'));",
+    "let R=null;",
+    "for(const k of roots){const r=fs.existsSync(p.join(k,'plugin','scripts'))?p.join(k,'plugin'):k;if(fs.existsSync(p.join(r,'scripts','bun-runner.js'))&&fs.existsSync(p.join(r,'scripts','worker-service.cjs'))){R=r;break}}",
+    "if(!R){process.stderr.write('claude-mem: plugin scripts not found\\n');process.exit(1)}",
+    "const env={...process.env,CLAUDE_MEM_CODEX_HOOK:'1'};",
+  ];
+
+  if (options.startupVersionCheck) {
+    parts.push(
+      "const v=c.spawnSync(process.execPath,[p.join(R,'scripts','version-check.js')],{encoding:'utf8',env});",
+      "if(v.stdout&&v.stdout.trim()){process.stdout.write(v.stdout);if(!v.stdout.endsWith('\\n'))process.stdout.write('\\n');process.exit(0)}",
+    );
+  }
+
+  parts.push(
+    `const workerArgs=${jsArray(workerArgs)};`,
+    "const args=[p.join(R,'scripts','bun-runner.js'),p.join(R,'scripts','worker-service.cjs'),...workerArgs];",
+    "const res=c.spawnSync(process.execPath,args,{stdio:'inherit',env});",
+    "if(res.error){process.stderr.write(String(res.error.message||res.error)+'\\n');process.exit(1)}",
+    "process.exit(res.status==null?0:res.status)",
+  );
+
+  return `node -e "${parts.join('')}"`;
+}
+
 /**
  * Build the full single-line shell command string for a Rule A site.
  * The output is byte-compatible with the hand-authored command strings in
