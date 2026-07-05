@@ -67,6 +67,30 @@ describe('HealthMonitor', () => {
       spy.mockRestore();
     });
 
+    it('should honor configured worker host when probing port occupancy', async () => {
+      process.env.CLAUDE_MEM_WORKER_HOST = '127.0.0.2';
+      const closeMock = mock((cb: Function) => cb());
+      const listenMock = mock(() => {});
+      const createServerMock = mock(() => ({
+        once: mock((event: string, cb: Function) => {
+          if (event === 'listening') {
+            setTimeout(() => cb(), 0);
+          }
+        }),
+        listen: listenMock,
+        close: closeMock
+      }));
+
+      const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
+
+      const result = await isPortInUse(37777);
+
+      expect(result).toBe(false);
+      expect(listenMock).toHaveBeenCalledWith(37777, '127.0.0.2');
+
+      spy.mockRestore();
+    });
+
     it('should return false for other socket errors', async () => {
       const createServerMock = mock(() => ({
         once: mock((event: string, cb: Function) => {
