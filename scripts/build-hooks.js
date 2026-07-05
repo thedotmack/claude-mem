@@ -62,7 +62,7 @@ function stripHardcodedDirname(filePath) {
  * #1215, #1533). See src/build/hook-shell-template.ts and CLAUDE.md →
  * "Spawn-Contract Resolution".
  */
-function shellTemplateManifest(buildShellCommand) {
+function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
   const ccTrailing = (...tail) => [
     'node', '"$_P/scripts/bun-runner.js"', '"$_P/scripts/worker-service.cjs"', ...tail,
   ];
@@ -85,6 +85,10 @@ function shellTemplateManifest(buildShellCommand) {
     ],
     notFoundMessage: 'claude-mem: plugin scripts not found',
   });
+  const codexHookPair = (tail, options = {}) => ({
+    command: options.startupVersionCheck ? codexStartupHook() : codexHook(tail),
+    commandWindows: buildCodexWindowsCommand(tail, options),
+  });
 
   return {
     'plugin/hooks/hooks.json': {
@@ -106,11 +110,11 @@ function shellTemplateManifest(buildShellCommand) {
     'plugin/hooks/codex-hooks.json': {
       kind: 'hooks',
       commands: {
-        'SessionStart.0.0': codexStartupHook(),
-        'UserPromptSubmit.0.0': codexHook(['hook', 'codex', 'session-init']),
-        'PreToolUse.0.0': codexHook(['hook', 'codex', 'file-context']),
-        'PostToolUse.0.0': codexHook(['hook', 'codex', 'observation']),
-        'Stop.0.0': codexHook(['hook', 'codex', 'summarize']),
+        'SessionStart.0.0': codexHookPair(['hook', 'codex', 'context'], { startupVersionCheck: true }),
+        'UserPromptSubmit.0.0': codexHookPair(['hook', 'codex', 'session-init']),
+        'PreToolUse.0.0': codexHookPair(['hook', 'codex', 'file-context']),
+        'PostToolUse.0.0': codexHookPair(['hook', 'codex', 'observation']),
+        'Stop.0.0': codexHookPair(['hook', 'codex', 'summarize']),
       },
     },
     'plugin/.mcp.json': {
@@ -130,9 +134,9 @@ function shellTemplateManifest(buildShellCommand) {
   };
 }
 
-function hookCommandByPath(parsed, dottedPath) {
+function hookEntryByPath(parsed, dottedPath) {
   const [event, groupIdx, hookIdx] = dottedPath.split('.');
-  return parsed.hooks?.[event]?.[Number(groupIdx)]?.hooks?.[Number(hookIdx)]?.command ?? null;
+  return parsed.hooks?.[event]?.[Number(groupIdx)]?.hooks?.[Number(hookIdx)] ?? null;
 }
 
 async function verifyShellTemplateCanonical() {
@@ -151,9 +155,9 @@ async function verifyShellTemplateCanonical() {
   });
   const moduleSource = bundled.outputFiles[0].text;
   const dataUrl = 'data:text/javascript;base64,' + Buffer.from(moduleSource).toString('base64');
-  const { buildShellCommand } = await import(dataUrl);
+  const { buildShellCommand, buildCodexWindowsCommand } = await import(dataUrl);
 
-  const manifest = shellTemplateManifest(buildShellCommand);
+  const manifest = shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand);
 
   for (const [filePath, spec] of Object.entries(manifest)) {
     const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
@@ -167,12 +171,23 @@ async function verifyShellTemplateCanonical() {
       }
     } else {
       for (const [dottedPath, expected] of Object.entries(spec.commands)) {
-        const actual = hookCommandByPath(parsed, dottedPath);
-        if (actual !== expected) {
+        const entry = hookEntryByPath(parsed, dottedPath);
+        const expectedCommand = typeof expected === 'string' ? expected : expected.command;
+        const actual = entry?.command ?? null;
+        if (actual !== expectedCommand) {
           throw new Error(
             `Hand-edited shell string detected in ${filePath} (${dottedPath}). It no longer matches src/build/hook-shell-template.ts. ` +
             `Regenerate via the canonical generator instead of hand-editing the command.`
           );
+        }
+        if (typeof expected !== 'string') {
+          const actualWindows = entry?.commandWindows ?? null;
+          if (actualWindows !== expected.commandWindows) {
+            throw new Error(
+              `Hand-edited Windows shell string detected in ${filePath} (${dottedPath}). It no longer matches src/build/hook-shell-template.ts. ` +
+              `Regenerate via the canonical generator instead of hand-editing commandWindows.`
+            );
+          }
         }
       }
     }
