@@ -82,34 +82,50 @@ ${observationSkeleton(mode)}
 ${mode.prompts.header_memory_start}`;
 }
 
-// Per-field character budget for the <parameters> / <outcome> blocks in an
-// observation prompt. Each field is allowed up to OBS_PROMPT_FIELD_MAX_CHARS;
-// content past that is replaced with a head + tail slice plus an explicit
-// <elided ...> marker so the observer model can see *that* truncation
-// happened (and won't fabricate detail about the missing range).
-//
-// 16k chars ≈ ~4k tokens (4 chars/token rough estimate). Two fields per
-// observation → ~8k tokens of variable input. With a 128k-token observer
-// model that leaves ample room for the system prompt, conversation
-// history, and the model's own response — and prevents a single oversized
-// Read tool result (issue #2468 reports a 130k-char file) from blowing
-// the entire context window and forcing the SDK session to abort with
-// "prompt is too long".
-//
-// Head/tail ratio (60% / 30%) keeps the start of the field (where most
-// tools put their canonical signal — file path, error message, command
-// header) and the tail (where errors / final-line context typically sit)
-// while dropping the middle. The 10% remainder is the elision marker.
+// Observer prompt budgets keep oversized Read payloads from exhausting context while preserving the command header and final error lines.
 const OBS_PROMPT_FIELD_MAX_CHARS = 16_000;
 const OBS_PROMPT_FIELD_HEAD_RATIO = 0.6;
 const OBS_PROMPT_FIELD_TAIL_RATIO = 0.3;
 
+function stripBase64ImageBlocks(value: unknown): unknown {
+  if (value === null || typeof value !== 'object') return value;
+
+  if (Array.isArray(value)) {
+    return value.map(item => stripBase64ImageBlocks(item));
+  }
+
+  const obj = value as Record<string, unknown>;
+
+  if (
+    obj.type === 'image' &&
+    obj.source !== null &&
+    typeof obj.source === 'object' &&
+    (obj.source as Record<string, unknown>).type === 'base64'
+  ) {
+    const src = obj.source as Record<string, unknown>;
+    const dataLen = typeof src.data === 'string' ? src.data.length : 0;
+    const sizeKb = Math.round((dataLen * 3) / 4 / 1024);
+    return {
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: src.media_type ?? 'unknown',
+        data: `[image omitted: ${src.media_type ?? 'unknown'}, ~${sizeKb} KB]`,
+      },
+    };
+  }
+
+  const result: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    result[k] = stripBase64ImageBlocks(v);
+  }
+  return result;
+}
+
 function truncateObservationField(value: unknown, maxChars: number = OBS_PROMPT_FIELD_MAX_CHARS): string {
-  // JSON.stringify returns undefined for undefined / functions / symbols;
-  // fall back to empty string so the call sites (template literal output)
-  // and the length check below stay well-defined.
   const raw = JSON.stringify(value, null, 2) ?? '';
   if (raw.length <= maxChars) return raw;
+  // Keep more head than tail because the tool name and error prefix usually carry the debugging signal.
   const headChars = Math.max(0, Math.floor(maxChars * OBS_PROMPT_FIELD_HEAD_RATIO));
   const tailChars = Math.max(0, Math.floor(maxChars * OBS_PROMPT_FIELD_TAIL_RATIO));
   const head = raw.slice(0, headChars);
@@ -139,6 +155,9 @@ export function buildObservationPrompt(obs: Observation): string {
     }, error instanceof Error ? error : new Error(String(error)));
     toolOutput = obs.tool_output;
   }
+
+  toolInput = stripBase64ImageBlocks(toolInput);
+  toolOutput = stripBase64ImageBlocks(toolOutput);
 
   return `<observed_from_primary_session>
   <what_happened>${obs.tool_name}</what_happened>
