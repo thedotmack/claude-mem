@@ -51,6 +51,34 @@ export async function isPortInUse(port: number): Promise<boolean> {
   });
 }
 
+/**
+ * Probe whether `port` can actually be bound on `host`. Resolves `null` on a
+ * successful bind, otherwise the failing error code (e.g. `'EADDRINUSE'`,
+ * `'EADDRNOTAVAIL'`, `'EACCES'`).
+ *
+ * This differs from isPortInUse() in an important way. On Windows isPortInUse()
+ * is health-based — it only asks whether a *healthy* worker answers /api/health
+ * — so it cannot see a port that is bound at the OS level with nothing serving
+ * behind it. That happens when a worker exits uncleanly and leaves a stale,
+ * orphaned LISTEN socket that can outlive its now-dead PID.
+ *
+ * Returning the error code (rather than a bare boolean) lets callers keep the
+ * three outcomes distinct: bindable (`null`), held by something (`'EADDRINUSE'`
+ * — the stale-socket case), and a genuine configuration error such as
+ * `'EADDRNOTAVAIL'` from a bad CLAUDE_MEM_WORKER_HOST or `'EACCES'` — which must
+ * surface as itself, not be misreported as a stale socket.
+ */
+export async function probePortBind(port: number, host: string = '127.0.0.1'): Promise<string | null> {
+  return new Promise((resolve) => {
+    const probe = net.createServer();
+    probe.once('error', (err: NodeJS.ErrnoException) => resolve(err.code ?? 'EUNKNOWN'));
+    probe.once('listening', () => {
+      probe.close(() => resolve(null));
+    });
+    probe.listen(port, host);
+  });
+}
+
 async function pollEndpointUntilOk(
   port: number,
   endpointPath: string,
