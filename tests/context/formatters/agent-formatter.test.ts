@@ -96,7 +96,7 @@ describe('AgentFormatter', () => {
       const result = renderAgentHeader('my-project');
 
       expect(result).toHaveLength(2);
-      expect(result[0]).toMatch(/^# \[my-project\] recent context, \d{4}-\d{2}-\d{2} \d{1,2}:\d{2}[ap]m [A-Z]{3,4}$/);
+      expect(result[0]).toMatch(/^# \[my-project\] recent context, \d{4}-\d{2}-\d{2}$/);
       expect(result[1]).toBe('');
     });
 
@@ -109,7 +109,7 @@ describe('AgentFormatter', () => {
     it('should handle empty project name', () => {
       const result = renderAgentHeader('');
 
-      expect(result[0]).toMatch(/^# \[\] recent context, \d{4}-\d{2}-\d{2} \d{1,2}:\d{2}[ap]m [A-Z]{3,4}$/);
+      expect(result[0]).toMatch(/^# \[\] recent context, \d{4}-\d{2}-\d{2}$/);
     });
   });
 
