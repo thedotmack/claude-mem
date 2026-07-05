@@ -789,7 +789,7 @@ export class WorkerService implements WorkerRef {
 }
 
 export async function ensureWorkerStarted(port: number): Promise<WorkerStartResult> {
-  return ensureWorkerStartedShared(port, __filename);
+  return ensureWorkerStartedShared(port, resolveWorkerScriptPath() ?? __filename);
 }
 
 export type ParsedWorkerCommand = {

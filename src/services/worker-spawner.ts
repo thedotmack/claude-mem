@@ -11,13 +11,17 @@ import {
   touchPidFile,
 } from './infrastructure/ProcessManager.js';
 import {
+  getHealthWorkerHost,
   isPortInUse,
+  probePortBind,
   waitForHealth,
   waitForReadiness,
 } from './infrastructure/HealthMonitor.js';
 import { acquireSpawnLock, releaseSpawnLock } from '../shared/worker-spawn-gate.js';
 
 const WINDOWS_SPAWN_COOLDOWN_MS = 2 * 60 * 1000;
+const STALE_SOCKET_RECOVERY_MS = 7000;
+const STALE_SOCKET_POLL_MS = 500;
 
 function getWorkerSpawnLockPath(): string {
   return path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), '.worker-start-attempted');
@@ -64,6 +68,17 @@ function clearWorkerSpawnAttempted(): void {
     // successful spawn. A stale marker on disk is harmless — the worst case
     // is one suppressed retry within the cooldown window, then it self-heals.
   }
+}
+
+async function waitForBindablePortOrHealthyWorker(port: number): Promise<'healthy' | string | null> {
+  const deadline = Date.now() + STALE_SOCKET_RECOVERY_MS;
+  while (Date.now() < deadline) {
+    if (await waitForHealth(port, STALE_SOCKET_POLL_MS)) return 'healthy';
+    const bindError = await probePortBind(port);
+    if (bindError !== 'EADDRINUSE') return bindError;
+    await new Promise<void>(resolve => setTimeout(resolve, STALE_SOCKET_POLL_MS));
+  }
+  return 'EADDRINUSE';
 }
 
 export type WorkerStartResult = 'ready' | 'warming' | 'dead';
@@ -121,6 +136,41 @@ export async function ensureWorkerStarted(
     }
     logger.error('SYSTEM', 'Port in use but worker not responding to health checks');
     return 'dead';
+  }
+
+  const bindError = await probePortBind(port);
+  if (bindError !== null) {
+    const host = getHealthWorkerHost();
+    if (bindError === 'EADDRINUSE') {
+      logger.warn('SYSTEM', 'Worker port is bound but no healthy worker responded — checking for stale socket recovery before spawn', {
+        host,
+        port,
+      });
+      const recovery = await waitForBindablePortOrHealthyWorker(port);
+      if (recovery === 'healthy') {
+        clearWorkerSpawnAttempted();
+        const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
+        logger.info('SYSTEM', 'Worker became healthy while waiting on stale port holder');
+        return ready ? 'ready' : 'warming';
+      }
+      if (recovery === null) {
+        logger.info('SYSTEM', 'Previously bound worker port became bindable; continuing with spawn', { host, port });
+      } else {
+        logger.error('SYSTEM', 'Worker port is still bound but no healthy worker responded. Reboot to release an orphaned socket, stop the process tree holding the port, or set CLAUDE_MEM_WORKER_PORT/CLAUDE_MEM_WORKER_HOST to a bindable address.', {
+          host,
+          port,
+          bindError: recovery,
+        });
+        return 'dead';
+      }
+    } else {
+      logger.error('SYSTEM', 'Worker port bind probe failed before spawn. Check CLAUDE_MEM_WORKER_HOST/CLAUDE_MEM_WORKER_PORT settings.', {
+        host,
+        port,
+        bindError,
+      });
+      return 'dead';
+    }
   }
 
   if (shouldSkipSpawnOnWindows()) {

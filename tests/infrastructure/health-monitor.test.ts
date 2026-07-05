@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
 import net from 'net';
 import {
+  formatHostForUrl,
   isPortInUse,
+  probePortBind,
   waitForHealth,
   waitForPortFree,
   getInstalledPluginVersion,
@@ -10,9 +12,21 @@ import {
 
 describe('HealthMonitor', () => {
   const originalFetch = global.fetch;
+  const originalWorkerHost = process.env.CLAUDE_MEM_WORKER_HOST;
 
   afterEach(() => {
     global.fetch = originalFetch;
+    if (originalWorkerHost === undefined) delete process.env.CLAUDE_MEM_WORKER_HOST;
+    else process.env.CLAUDE_MEM_WORKER_HOST = originalWorkerHost;
+  });
+
+  describe('formatHostForUrl', () => {
+    it('brackets IPv6 literals for HTTP URLs', () => {
+      expect(formatHostForUrl('::1')).toBe('[::1]');
+      expect(formatHostForUrl('[::1]')).toBe('[::1]');
+      expect(formatHostForUrl('127.0.0.1')).toBe('127.0.0.1');
+      expect(formatHostForUrl('localhost')).toBe('localhost');
+    });
   });
 
   describe('isPortInUse', () => {
@@ -33,6 +47,7 @@ describe('HealthMonitor', () => {
 
       expect(result).toBe(true);
       expect(net.createServer).toHaveBeenCalled();
+      expect((createServerMock.mock.results[0]?.value as any).listen).toHaveBeenCalledWith(37777, '127.0.0.1');
       
       spy.mockRestore();
     });
@@ -56,6 +71,7 @@ describe('HealthMonitor', () => {
       expect(result).toBe(false);
       expect(net.createServer).toHaveBeenCalled();
       expect(closeMock).toHaveBeenCalled();
+      expect((createServerMock.mock.results[0]?.value as any).listen).toHaveBeenCalledWith(39999, '127.0.0.1');
       
       spy.mockRestore();
     });
@@ -76,6 +92,56 @@ describe('HealthMonitor', () => {
 
       expect(result).toBe(false);
       
+      spy.mockRestore();
+    });
+  });
+
+  describe('probePortBind', () => {
+    it('returns null when the worker port is bindable', async () => {
+      const closeMock = mock((cb: Function) => cb());
+      const createServerMock = mock(() => ({
+        once: mock((event: string, cb: Function) => {
+          if (event === 'listening') setTimeout(() => cb(), 0);
+        }),
+        listen: mock(() => {}),
+        close: closeMock
+      }));
+      const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
+
+      const result = await probePortBind(37777, '127.0.0.1');
+
+      expect(result).toBeNull();
+      expect(closeMock).toHaveBeenCalled();
+      spy.mockRestore();
+    });
+
+    it('returns EADDRINUSE when a stale socket still owns the port', async () => {
+      const createServerMock = mock(() => ({
+        once: mock((event: string, cb: Function) => {
+          if (event === 'error') setTimeout(() => cb({ code: 'EADDRINUSE' }), 0);
+        }),
+        listen: mock(() => {})
+      }));
+      const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
+
+      const result = await probePortBind(37777, '127.0.0.1');
+
+      expect(result).toBe('EADDRINUSE');
+      spy.mockRestore();
+    });
+
+    it('preserves non-conflict bind errors for actionable diagnostics', async () => {
+      const createServerMock = mock(() => ({
+        once: mock((event: string, cb: Function) => {
+          if (event === 'error') setTimeout(() => cb({ code: 'EADDRNOTAVAIL' }), 0);
+        }),
+        listen: mock(() => {})
+      }));
+      const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
+
+      const result = await probePortBind(37777, '::ffff');
+
+      expect(result).toBe('EADDRNOTAVAIL');
       spy.mockRestore();
     });
   });
@@ -141,6 +207,22 @@ describe('HealthMonitor', () => {
       const calls = fetchMock.mock.calls;
       expect(calls.length).toBeGreaterThan(0);
       expect(calls[0][0]).toBe('http://127.0.0.1:37777/api/health');
+    });
+
+    it('uses CLAUDE_MEM_WORKER_HOST and formats IPv6 literals in health URLs', async () => {
+      process.env.CLAUDE_MEM_WORKER_HOST = '::1';
+      const fetchMock = mock(() => Promise.resolve({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve('')
+      } as unknown as Response));
+      global.fetch = fetchMock;
+
+      await waitForHealth(37777, 1000);
+
+      const calls = fetchMock.mock.calls;
+      expect(calls.length).toBeGreaterThan(0);
+      expect(calls[0][0]).toBe('http://[::1]:37777/api/health');
     });
 
     it('should use default timeout when not specified', async () => {

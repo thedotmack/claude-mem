@@ -21,6 +21,7 @@ describe('worker-utils API timeout resolution', () => {
   let settingsPath: string;
   const originalDataDir = process.env.CLAUDE_MEM_DATA_DIR;
   const originalTimeout = process.env.CLAUDE_MEM_API_TIMEOUT_MS;
+  const originalWorkerHost = process.env.CLAUDE_MEM_WORKER_HOST;
 
   beforeEach(() => {
     tempDir = join(tmpdir(), `worker-timeout-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -37,6 +38,8 @@ describe('worker-utils API timeout resolution', () => {
     else process.env.CLAUDE_MEM_DATA_DIR = originalDataDir;
     if (originalTimeout === undefined) delete process.env.CLAUDE_MEM_API_TIMEOUT_MS;
     else process.env.CLAUDE_MEM_API_TIMEOUT_MS = originalTimeout;
+    if (originalWorkerHost === undefined) delete process.env.CLAUDE_MEM_WORKER_HOST;
+    else process.env.CLAUDE_MEM_WORKER_HOST = originalWorkerHost;
     rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -83,5 +86,16 @@ describe('worker-utils API timeout resolution', () => {
       'Invalid CLAUDE_MEM_API_TIMEOUT_MS, using default',
       expect.objectContaining({ value: '999999', min: 500, max: 300000 })
     );
+  });
+
+  it('brackets literal IPv6 worker hosts when building worker URLs', async () => {
+    writeSettings('45000');
+    process.env.CLAUDE_MEM_WORKER_HOST = '::1';
+
+    const workerUtils = await import('../../src/shared/worker-utils.js');
+    workerUtils.clearPortCache();
+    const port = SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_WORKER_PORT;
+
+    expect(workerUtils.buildWorkerUrl('/api/health')).toBe(`http://[::1]:${port}/api/health`);
   });
 });

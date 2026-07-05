@@ -3,14 +3,25 @@ import path from 'path';
 import net from 'net';
 import { readFileSync } from 'fs';
 import { logger } from '../../utils/logger.js';
-import { MARKETPLACE_ROOT } from '../../shared/paths.js';
+import { MARKETPLACE_ROOT, paths } from '../../shared/paths.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+
+export function getHealthWorkerHost(): string {
+  return SettingsDefaultsManager.loadFromFile(paths.settings()).CLAUDE_MEM_WORKER_HOST;
+}
+
+export function formatHostForUrl(host: string): string {
+  if (host.startsWith('[') && host.endsWith(']')) return host;
+  return host.includes(':') ? `[${host}]` : host;
+}
 
 async function httpRequestToWorker(
   port: number,
   endpointPath: string,
   method: string = 'GET'
 ): Promise<{ ok: boolean; statusCode: number; body: string }> {
-  const response = await fetch(`http://127.0.0.1:${port}${endpointPath}`, { method });
+  const host = formatHostForUrl(getHealthWorkerHost());
+  const response = await fetch(`http://${host}:${port}${endpointPath}`, { method });
   let body = '';
   try {
     body = await response.text();
@@ -23,7 +34,8 @@ async function httpRequestToWorker(
 export async function isPortInUse(port: number): Promise<boolean> {
   if (process.platform === 'win32') {
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/api/health`);
+      const host = formatHostForUrl(getHealthWorkerHost());
+      const response = await fetch(`http://${host}:${port}/api/health`);
       return response.ok;
     } catch (error) {
       if (error instanceof Error) {
@@ -47,7 +59,20 @@ export async function isPortInUse(port: number): Promise<boolean> {
     server.once('listening', () => {
       server.close(() => resolve(false));
     });
-    server.listen(port, '127.0.0.1');
+    server.listen(port, getHealthWorkerHost());
+  });
+}
+
+export function probePortBind(port: number, host: string = getHealthWorkerHost()): Promise<string | null> {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once('error', (err: NodeJS.ErrnoException) => {
+      resolve(err.code ?? 'UNKNOWN');
+    });
+    server.once('listening', () => {
+      server.close(() => resolve(null));
+    });
+    server.listen(port, host);
   });
 }
 
