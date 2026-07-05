@@ -2,37 +2,27 @@
 import { ChromaMcpManager } from './ChromaMcpManager.js';
 import { ChromaSyncState, ProjectWatermarks } from './ChromaSyncState.js';
 import { ParsedObservation, ParsedSummary } from '../../sdk/parser.js';
-// cmem-sdk: keep SessionStore + parseFileList off the SDK's import graph.
-// Both come from the SQLite layer (`bun:sqlite`). The SDK never calls the
-// SQLite-only methods of ChromaSync, so a TYPE-ONLY import is sufficient —
-// the value-level use (parseFileList(...)) is loaded lazily inside the
-// methods that need it. Plan §3 anti-pattern: do NOT add `bun:sqlite` to
-// the SDK bundle externals — fix the import chain.
 import type { SessionStore as SessionStoreType } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
 import { ChromaUnavailableError } from '../worker/search/errors.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
-import type * as SqliteFilesModule from '../sqlite/observations/files.js';
 
 type SessionStore = SessionStoreType;
 
-// Lazy CJS require so tsup (used by the cmem-sdk build) does not follow
-// these SQLite-coupled modules into the SDK bundle. Worker/Bun runtime
-// reaches them at first call; the SDK never calls the methods that
-// trigger these loads, so they never load in SDK consumers.
-const lazyCreateRequire = (): ((id: string) => unknown) => {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const mod = require('module') as typeof import('module');
-  return mod.createRequire(import.meta.url);
-};
-
-let _filesHelper: typeof SqliteFilesModule | undefined;
-function loadFilesHelper(): typeof SqliteFilesModule {
-  if (!_filesHelper) {
-    const req = lazyCreateRequire();
-    _filesHelper = req('../sqlite/observations/files.js') as typeof SqliteFilesModule;
+function parseStoredFileList(value: string | null | undefined): string[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [String(parsed)];
+  } catch (error) {
+    logger.debug(
+      'CHROMA_SYNC',
+      'File list is not JSON; treating value as a single path',
+      { value },
+      error instanceof Error ? error : new Error(String(error))
+    );
+    return [value];
   }
-  return _filesHelper;
 }
 
 // Exported for cmem-sdk Phase 6: the SDK builds ChromaDocument values from
@@ -140,12 +130,8 @@ export class ChromaSync {
 
     const facts = obs.facts ? JSON.parse(obs.facts) : [];
     const concepts = obs.concepts ? JSON.parse(obs.concepts) : [];
-    // parseFileList is SQLite-shaped (`bun:sqlite` in the import chain) —
-    // resolve it through the deferred loader so this method stays out of
-    // the SDK bundle's import graph. Plan §3.
-    const filesHelper = loadFilesHelper();
-    const files_read = filesHelper.parseFileList(obs.files_read);
-    const files_modified = filesHelper.parseFileList(obs.files_modified);
+    const files_read = parseStoredFileList(obs.files_read);
+    const files_modified = parseStoredFileList(obs.files_modified);
 
     const baseMetadata: Record<string, string | number | null> = {
       sqlite_id: obs.id,

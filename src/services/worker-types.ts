@@ -22,7 +22,7 @@ export interface ActiveSession {
   earliestPendingTimestamp: number | null;  
   claimedMessageIds: number[];
   conversationHistory: ConversationMessage[];  
-  currentProvider: 'claude' | 'gemini' | 'openrouter' | 'kiro' | null;
+  currentProvider: 'claude' | 'codex' | 'gemini' | 'openrouter' | 'kiro' | null;
   consecutiveRestarts: number;
   /**
    * Legacy invalid-output counter. Ordinary non-XML observer output is now

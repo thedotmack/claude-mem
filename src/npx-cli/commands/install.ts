@@ -9,7 +9,7 @@ import { spawnHidden } from '../../shared/spawn.js';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, join } from 'path';
-import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
+import { SettingsDefaultsManager, writeSettingsFileSecure, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { loadClaudeMemEnv, saveClaudeMemEnv } from '../../shared/EnvManager.js';
 import { ensureWorkerStarted, type WorkerStartResult } from '../../services/worker-spawner.js';
@@ -706,6 +706,23 @@ function copyPluginToCache(version: string): void {
   }
 }
 
+function writeMarketplaceInstallMarker(version: string, bunVersion: string, uvVersion: string): void {
+  writeInstallMarker(join(marketplaceDirectory(), 'plugin'), version, bunVersion, uvVersion);
+}
+
+function defaultMarketplaceRuntimeReadyPaths(): string[] {
+  const pluginDir = join(marketplaceDirectory(), 'plugin');
+  return [
+    join(pluginDir, 'scripts', 'worker-service.cjs'),
+    join(pluginDir, 'node_modules', 'zod', 'package.json'),
+    join(pluginDir, 'node_modules', 'zod', 'v3'),
+  ];
+}
+
+export function isMarketplaceRuntimeReady(requiredPaths = defaultMarketplaceRuntimeReadyPaths()): boolean {
+  return requiredPaths.every((filePath) => existsSync(filePath));
+}
+
 /**
  * Install marketplace dependencies, strict-first.
  *
@@ -788,7 +805,7 @@ function mergeSettings(updates: Record<string, string>): boolean {
       current[key] = value;
     }
 
-    writeFileSync(path, JSON.stringify(current, null, 2), 'utf-8');
+    writeSettingsFileSecure(path, current);
     return true;
   } catch (error: unknown) {
     log.error(`Failed to write settings to ${path}: ${error instanceof Error ? error.message : String(error)}`);
@@ -796,7 +813,7 @@ function mergeSettings(updates: Record<string, string>): boolean {
   }
 }
 
-type ProviderId = 'claude' | 'gemini' | 'openrouter' | 'kiro';
+type ProviderId = 'claude' | 'codex' | 'gemini' | 'openrouter' | 'kiro';
 type ClaudeAccessMode = 'subscription' | 'api-key';
 type ClaudeApiMode = 'direct' | 'gateway';
 // Phase 1d: Persisted DB literals (`server_beta_schema_migrations`, job_type
@@ -1070,6 +1087,12 @@ async function promptProvider(options: InstallOptions, selectedIDEs: string[] = 
         persistClaudeProvider();
         return 'claude';
       }
+      if (options.provider === 'codex') {
+        const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: 'codex' });
+        if (wrote) log.info('Saved provider=codex to ~/.claude-mem/settings.json');
+        log.info('Codex provider uses your local Codex CLI login. Run `codex login` if the CLI is not authenticated yet.');
+        return 'codex';
+      }
       if (options.provider === 'kiro') {
         // No API key: compression runs on the user's kiro-cli login session.
         const wroteKiro = mergeSettings({ CLAUDE_MEM_PROVIDER: 'kiro' });
@@ -1141,6 +1164,7 @@ async function promptProvider(options: InstallOptions, selectedIDEs: string[] = 
       message: 'Which memory provider do you want to use?',
       options: [
         { value: 'claude', label: 'Claude Agent SDK (recommended)' },
+        { value: 'codex', label: 'Codex CLI' },
         { value: 'gemini', label: 'Gemini' },
         { value: 'openrouter', label: 'OpenRouter' },
         { value: 'kiro', label: 'Kiro subscription (via kiro-cli, no API key)' },
@@ -1157,6 +1181,13 @@ async function promptProvider(options: InstallOptions, selectedIDEs: string[] = 
   if (selectedProvider === 'claude') {
     await runClaudeAuthFlow();
     return 'claude';
+  }
+
+  if (selectedProvider === 'codex') {
+    const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: 'codex' });
+    if (wrote) log.info('Saved provider=codex to ~/.claude-mem/settings.json');
+    log.info('Codex provider uses your local Codex CLI login. Run `codex login` if the CLI is not authenticated yet.');
+    return 'codex';
   }
 
   if (selectedProvider === 'kiro') {
@@ -1276,6 +1307,38 @@ async function promptClaudeModel(options: InstallOptions): Promise<void> {
   const wrote = mergeSettings({ CLAUDE_MEM_MODEL: selectedModel });
   if (wrote) {
     log.info(`Saved Claude model=${selectedModel} to ~/.claude-mem/settings.json`);
+  }
+}
+
+async function promptCodexModel(options: InstallOptions): Promise<void> {
+  const initialModel = getSetting('CLAUDE_MEM_CODEX_MODEL') || 'gpt-5.3-codex-spark';
+
+  if (options.model) {
+    const wrote = mergeSettings({ CLAUDE_MEM_CODEX_MODEL: options.model });
+    if (wrote) {
+      log.info(`Saved Codex model=${options.model} to ~/.claude-mem/settings.json`);
+    }
+    return;
+  }
+
+  if (!isInteractive) return;
+
+  const result = await p.text({
+    message: 'Which Codex model should claude-mem use to compress observations?',
+    placeholder: 'gpt-5.3-codex-spark',
+    defaultValue: initialModel,
+    validate: (v?: string) => (!v || v.trim().length === 0) ? 'Model required' : undefined,
+  });
+
+  if (p.isCancel(result)) {
+    p.cancel('Installation cancelled.');
+    process.exit(0);
+  }
+
+  const selectedModel = String(result).trim();
+  const wrote = mergeSettings({ CLAUDE_MEM_CODEX_MODEL: selectedModel });
+  if (wrote) {
+    log.info(`Saved Codex model=${selectedModel} to ~/.claude-mem/settings.json`);
   }
 }
 
@@ -1452,7 +1515,7 @@ async function promptCmemOnlineOptIn(version: string): Promise<void> {
 
 export interface InstallOptions {
   ide?: string;
-  provider?: 'claude' | 'gemini' | 'openrouter' | 'kiro';
+  provider?: 'claude' | 'codex' | 'gemini' | 'openrouter' | 'kiro';
   model?: string;
   noAutoStart?: boolean;
   disableAutoMemory?: boolean;
@@ -1571,6 +1634,8 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   const selectedProvider = await promptProvider(options, selectedIDEs);
   if (selectedProvider === 'claude') {
     await promptClaudeModel(options);
+  } else if (selectedProvider === 'codex') {
+    await promptCodexModel(options);
   }
 
   let workerStartResult: WorkerStartResult = 'dead';
@@ -1653,6 +1718,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
             }
             writeInstallMarker(cacheDir, version, bunVersion, uvVersion);
           }
+          writeMarketplaceInstallMarker(version, bunVersion, uvVersion);
           return `Runtime ready (Bun ${bunVersion}, uv ${uvVersion}) ${styleText('green', 'OK')}`;
         },
       },
@@ -1679,6 +1745,31 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
             await runNpmInstallInMarketplace(summary);
           } finally {
             stopHeartbeat();
+          }
+          if (!isMarketplaceRuntimeReady()) {
+            const pluginDir = join(marketplaceDirectory(), 'plugin');
+            const { bunPath } = await ensureBun(summary);
+            const pluginStopHeartbeat = startHeartbeat(message, 'Installing marketplace plugin runtime dependencies (bun install)…');
+            try {
+              await installPluginDependencies(pluginDir, bunPath);
+            } catch (error: unknown) {
+              installerError(ErrorSeverity.ABORT, {
+                component: 'marketplace-plugin-runtime',
+                phase: 'marketplace-deps',
+                cause: error instanceof Error ? error : new Error(String(error)),
+                details: `Failed to install plugin runtime dependencies in ${pluginDir}.`,
+              }, summary);
+            } finally {
+              pluginStopHeartbeat();
+            }
+          }
+          if (!isMarketplaceRuntimeReady()) {
+            installerError(ErrorSeverity.ABORT, {
+              component: 'marketplace-runtime',
+              phase: 'marketplace-deps',
+              cause: new Error('Marketplace runtime is missing required dependencies. Expected plugin/node_modules/zod/v3 next to the marketplace package.'),
+              details: 'Run `npx claude-mem repair` or reinstall so marketplace runtime dependencies are rebuilt.',
+            }, summary);
           }
           return `Dependencies installed ${styleText('green', 'OK')}`;
         },

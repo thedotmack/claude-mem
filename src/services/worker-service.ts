@@ -85,6 +85,8 @@ import type { WorkerRef } from './worker/agents/types.js';
 import { GeminiProvider, classifyGeminiError, isGeminiSelected, isGeminiAvailable } from './worker/GeminiProvider.js';
 import { OpenRouterProvider, classifyOpenRouterError, isOpenRouterSelected, isOpenRouterAvailable } from './worker/OpenRouterProvider.js';
 import { KiroProvider, isKiroSelected, isKiroAvailable } from './worker/KiroProvider.js';
+import { CodexProvider, isCodexSelected } from './worker/CodexProvider.js';
+import { describeProviderAuthMethod } from './worker/provider-status.js';
 import { ClassifiedProviderError, isClassified, type ProviderErrorClass } from './worker/provider-errors.js';
 import { PaginationHelper } from './worker/PaginationHelper.js';
 import { SettingsManager } from './worker/SettingsManager.js';
@@ -213,6 +215,7 @@ export class WorkerService implements WorkerRef {
   private geminiAgent: GeminiProvider;
   private openRouterAgent: OpenRouterProvider;
   private kiroAgent: KiroProvider;
+  private codexAgent: CodexProvider;
   private paginationHelper: PaginationHelper;
   private settingsManager: SettingsManager;
   private sessionEventBroadcaster: SessionEventBroadcaster;
@@ -245,6 +248,7 @@ export class WorkerService implements WorkerRef {
     this.geminiAgent = new GeminiProvider(this.dbManager, this.sessionManager);
     this.openRouterAgent = new OpenRouterProvider(this.dbManager, this.sessionManager);
     this.kiroAgent = new KiroProvider(this.dbManager, this.sessionManager);
+    this.codexAgent = new CodexProvider(this.dbManager, this.sessionManager);
 
     this.paginationHelper = new PaginationHelper(this.dbManager);
     this.settingsManager = new SettingsManager(this.dbManager);
@@ -278,12 +282,13 @@ export class WorkerService implements WorkerRef {
       workerPath: __filename,
       getAiStatus: () => {
         let provider = 'claude';
-        if (isKiroSelected() && isKiroAvailable()) provider = 'kiro';
+        if (isCodexSelected()) provider = 'codex';
+        else if (isKiroSelected() && isKiroAvailable()) provider = 'kiro';
         else if (isOpenRouterSelected() && isOpenRouterAvailable()) provider = 'openrouter';
         else if (isGeminiSelected() && isGeminiAvailable()) provider = 'gemini';
         return {
           provider,
-          authMethod: getAuthMethodDescription(),
+          authMethod: describeProviderAuthMethod(provider, getAuthMethodDescription()),
           lastInteraction: this.lastAiInteraction
             ? {
                 timestamp: this.lastAiInteraction.timestamp,
@@ -353,7 +358,7 @@ export class WorkerService implements WorkerRef {
     });
 
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
-    const sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.kiroAgent, this.sessionEventBroadcaster, this, this.completionHandler);
+    const sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.codexAgent, this.kiroAgent, this.sessionEventBroadcaster, this, this.completionHandler);
     this.server.registerRoutes(sessionRoutes);
     attachIngestGeneratorStarter((sessionDbId, source) =>
       sessionRoutes.ensureGeneratorRunning(sessionDbId, source),

@@ -11,6 +11,7 @@ import { ClaudeProvider } from '../../ClaudeProvider.js';
 import { GeminiProvider, isGeminiSelected, isGeminiAvailable } from '../../GeminiProvider.js';
 import { OpenRouterProvider, isOpenRouterSelected, isOpenRouterAvailable } from '../../OpenRouterProvider.js';
 import { KiroProvider, isKiroSelected, isKiroAvailable } from '../../KiroProvider.js';
+import { CodexProvider, isCodexSelected } from '../../CodexProvider.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
@@ -60,6 +61,7 @@ export class SessionRoutes extends BaseRouteHandler {
     private sdkAgent: ClaudeProvider,
     private geminiAgent: GeminiProvider,
     private openRouterAgent: OpenRouterProvider,
+    private codexAgent: CodexProvider,
     private kiroAgent: KiroProvider,
     private eventBroadcaster: SessionEventBroadcaster,
     private workerService: WorkerService,
@@ -68,7 +70,10 @@ export class SessionRoutes extends BaseRouteHandler {
     super();
   }
 
-  private getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' | 'kiro' {
+  private getSelectedProvider(): 'claude' | 'codex' | 'gemini' | 'openrouter' | 'kiro' {
+    if (isCodexSelected()) {
+      return 'codex';
+    }
     if (isKiroSelected() && isKiroAvailable()) {
       return 'kiro';
     }
@@ -140,7 +145,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
   private async startGeneratorWithProvider(
     session: ReturnType<typeof this.sessionManager.getSession>,
-    provider: 'claude' | 'gemini' | 'openrouter' | 'kiro',
+    provider: 'claude' | 'codex' | 'gemini' | 'openrouter' | 'kiro',
     source: string
   ): Promise<void> {
     if (!session) return;
@@ -152,12 +157,22 @@ export class SessionRoutes extends BaseRouteHandler {
       session.abortController = new AbortController();
     }
 
-    const agent = provider === 'kiro' ? this.kiroAgent
-      : provider === 'openrouter' ? this.openRouterAgent
-      : (provider === 'gemini' ? this.geminiAgent : this.sdkAgent);
-    const agentName = provider === 'kiro' ? 'Kiro'
-      : provider === 'openrouter' ? 'OpenRouter'
-      : (provider === 'gemini' ? 'Gemini' : 'Claude SDK');
+    const agent =
+      provider === 'codex'
+        ? this.codexAgent
+        : provider === 'kiro'
+          ? this.kiroAgent
+        : provider === 'openrouter'
+          ? this.openRouterAgent
+          : (provider === 'gemini' ? this.geminiAgent : this.sdkAgent);
+    const agentName =
+      provider === 'codex'
+        ? 'Codex'
+        : provider === 'kiro'
+          ? 'Kiro'
+        : provider === 'openrouter'
+          ? 'OpenRouter'
+          : (provider === 'gemini' ? 'Gemini' : 'Claude SDK');
 
     const actualQueueDepth = this.sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId);
 
