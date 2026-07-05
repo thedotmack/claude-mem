@@ -296,7 +296,6 @@ async function buildHooks() {
       logLevel: 'error', // Suppress warnings (import.meta warning is benign)
       external: [
         'bun:sqlite',
-        'zod',
         'cohere-ai',
         'ollama',
         '@chroma-core/default-embed',
@@ -391,6 +390,15 @@ async function buildHooks() {
         }
       });
       console.log(`✓ ${mod.out} built (${(fs.statSync(mod.out).size / 1024).toFixed(2)} KB)`);
+    }
+
+    const workerBundleContent = fs.readFileSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`, 'utf-8');
+    const workerZodRequireRegex = /require\(\s*["']zod(?:\/[^"']*)?["']\s*\)/;
+    const workerZodRequireMatch = workerBundleContent.match(workerZodRequireRegex);
+    if (workerZodRequireMatch) {
+      throw new Error(
+        `worker-service.cjs contains external ${workerZodRequireMatch[0]}. Zod must be bundled into the worker service so the hook client process does not fail when plugin node_modules is unavailable after a version upgrade. See issue #2831.`
+      );
     }
 
     console.log(`\n🔧 Building server beta service...`);
