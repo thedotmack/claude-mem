@@ -18,6 +18,7 @@ export type Component =
   | 'CHROMA'
   | 'CHROMA_MCP'
   | 'CHROMA_SYNC'
+  | 'CLI'
   | 'CLAUDE_MD'
   | 'CONFIG'
   | 'CONSOLE'
