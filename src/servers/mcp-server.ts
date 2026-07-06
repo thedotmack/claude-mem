@@ -70,13 +70,15 @@ function errorIfWorkerScriptMissing(): void {
 
 async function callWorker(
   endpoint: string,
-  opts: { query?: Record<string, any>; body?: Record<string, any>; text?: boolean } = {}
+  opts: { query?: Record<string, any>; body?: Record<string, any>; del?: boolean; text?: boolean } = {}
 ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
   logger.debug('SYSTEM', '→ Worker API', undefined, { endpoint });
 
   try {
     let response: Response;
-    if (opts.body) {
+    if (opts.del) {
+      response = await workerHttpRequest(endpoint, { method: 'DELETE' });
+    } else if (opts.body) {
       response = await workerHttpRequest(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -102,7 +104,7 @@ async function callWorker(
     if (opts.text) {
       return { content: [{ type: 'text' as const, text: await response.text() }] };
     }
-    if (opts.body) {
+    if (opts.body || opts.del) {
       return { content: [{ type: 'text' as const, text: JSON.stringify(await response.json(), null, 2) }] };
     }
     return await response.json() as { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
@@ -527,6 +529,46 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     },
     handler: async (args: any) => {
       return await callWorker('/api/observations/batch', { body: args });
+    }
+  },
+  {
+    name: 'observation_dismiss',
+    description: "Stop an observation from surfacing proactively (file-context banner, search, session-start injection) WITHOUT deleting it — get_observations([id]) still returns it. Reversible via observation_undismiss. Requires the worker setting CLAUDE_MEM_ALLOW_DISMISS=true (disabled by default). Params: id (required), reason (optional).",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number', description: 'Observation id to dismiss (required)' },
+        reason: { type: 'string', description: 'Optional free-text reason, stored on the feedback row' }
+      },
+      required: ['id'],
+      additionalProperties: false
+    },
+    handler: async (args: any) => {
+      const id = Number(args?.id);
+      if (!Number.isInteger(id) || id <= 0) {
+        return { content: [{ type: 'text' as const, text: 'observation_dismiss requires an integer "id".' }], isError: true };
+      }
+      const body = typeof args?.reason === 'string' && args.reason.trim() ? { reason: args.reason } : {};
+      return await callWorker(`/api/observations/${id}/dismiss`, { body });
+    }
+  },
+  {
+    name: 'observation_undismiss',
+    description: "Reverse observation_dismiss — the observation resumes surfacing. Requires the worker setting CLAUDE_MEM_ALLOW_DISMISS=true (disabled by default). Params: id (required).",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number', description: 'Observation id to undismiss (required)' }
+      },
+      required: ['id'],
+      additionalProperties: false
+    },
+    handler: async (args: any) => {
+      const id = Number(args?.id);
+      if (!Number.isInteger(id) || id <= 0) {
+        return { content: [{ type: 'text' as const, text: 'observation_undismiss requires an integer "id".' }], isError: true };
+      }
+      return await callWorker(`/api/observations/${id}/dismiss`, { del: true });
     }
   },
   {

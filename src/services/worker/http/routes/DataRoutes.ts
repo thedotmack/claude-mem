@@ -15,6 +15,7 @@ import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
+import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { getObservationsByFilePath } from '../../../sqlite/observations/get.js';
 import { getFirstObservationCreatedAt } from '../../../sqlite/observations/recent.js';
 import { getUptimeSeconds } from '../../../../shared/uptime.js';
@@ -87,6 +88,11 @@ export class DataRoutes extends BaseRouteHandler {
     app.get('/api/observation/:id', this.handleGetObservationById.bind(this));
     app.get('/api/observations/by-file', this.handleGetObservationsByFile.bind(this));
     app.post('/api/observations/batch', validateBody(observationsBatchSchema), this.handleGetObservationsByIds.bind(this));
+    // Reversible dismiss: hide an observation from proactive surfacing without
+    // deleting it. WRITE-gated by CLAUDE_MEM_ALLOW_DISMISS (default off); the
+    // read-side filter that honors these rows is unconditional.
+    app.post('/api/observations/:id/dismiss', this.handleDismissObservation.bind(this));
+    app.delete('/api/observations/:id/dismiss', this.handleUndismissObservation.bind(this));
     app.get('/api/session/:id', this.handleGetSessionById.bind(this));
     app.post('/api/sdk-sessions/batch', validateBody(sdkSessionsBatchSchema), this.handleGetSdkSessionsByIds.bind(this));
     app.get('/api/prompt/:id', this.handleGetPromptById.bind(this));
@@ -172,6 +178,72 @@ export class DataRoutes extends BaseRouteHandler {
 
     res.json(observations);
   });
+
+  // POST /api/observations/:id/dismiss — mark an observation dismissed so it
+  // stops surfacing proactively (banner / search / session-start) without
+  // deleting it. Idempotent. WRITE-gated behind CLAUDE_MEM_ALLOW_DISMISS.
+  private handleDismissObservation = this.wrapHandler((req: Request, res: Response): void => {
+    if (!this.dismissEnabled(res)) return;
+
+    const id = this.parseIntParam(req, res, 'id');
+    if (id === null) return;
+
+    const store = this.dbManager.getSessionStore();
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+
+    // observation_feedback.observation_id is an enforced FK; verify the
+    // observation exists first so a bad id yields a clean 404 rather than a
+    // foreign-key 500. Mirrors handleGetObservationById.
+    const observation = store.getObservationById(id, platformSource);
+    if (!observation) {
+      this.notFound(res, `Observation #${id} not found`);
+      return;
+    }
+
+    const reason = DataRoutes.firstString(req.body?.reason);
+    store.dismissObservation(id, reason);
+
+    res.json({ success: true, id, dismissed: true });
+  });
+
+  // DELETE /api/observations/:id/dismiss — reverse a dismiss. No-op when the
+  // observation was never dismissed. WRITE-gated behind CLAUDE_MEM_ALLOW_DISMISS.
+  private handleUndismissObservation = this.wrapHandler((req: Request, res: Response): void => {
+    if (!this.dismissEnabled(res)) return;
+
+    const id = this.parseIntParam(req, res, 'id');
+    if (id === null) return;
+
+    const store = this.dbManager.getSessionStore();
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+
+    // Mirror the POST existence check: without it, a caller with a different
+    // x-platform-source could undismiss an observation outside its platform
+    // scope by id and make it surface again there (greptile P1).
+    const observation = store.getObservationById(id, platformSource);
+    if (!observation) {
+      this.notFound(res, `Observation #${id} not found`);
+      return;
+    }
+
+    store.undismissObservation(id);
+
+    res.json({ success: true, id, dismissed: false });
+  });
+
+  // Shared gate for the dismiss WRITE endpoints. Returns false and writes a
+  // clear 403 when the feature is disabled (the default). The read-side filter
+  // is unconditional and unaffected by this setting.
+  private dismissEnabled(res: Response): boolean {
+    if (SettingsDefaultsManager.get('CLAUDE_MEM_ALLOW_DISMISS') === 'true') {
+      return true;
+    }
+    res.status(403).json({
+      error: 'Observation dismiss is disabled. Set CLAUDE_MEM_ALLOW_DISMISS=true to enable.',
+      code: 'DISMISS_DISABLED',
+    });
+    return false;
+  }
 
   private handleGetSessionById = this.wrapHandler((req: Request, res: Response): void => {
     const id = this.parseIntParam(req, res, 'id');

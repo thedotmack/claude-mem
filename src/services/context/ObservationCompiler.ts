@@ -14,6 +14,7 @@ import type {
   PriorMessages,
 } from './types.js';
 import { SUMMARY_LOOKAHEAD } from './types.js';
+import { NOT_DISMISSED_SQL } from '../sqlite/observations/dismiss-filter.js';
 
 export function queryObservationsMulti(
   db: SessionStore,
@@ -55,6 +56,7 @@ export function queryObservationsMulti(
         SELECT 1 FROM json_each(o.concepts)
         WHERE value IN (${conceptPlaceholders})
       )
+      AND ${NOT_DISMISSED_SQL}
     ORDER BY o.created_at_epoch DESC
     LIMIT ?
   `).all(
