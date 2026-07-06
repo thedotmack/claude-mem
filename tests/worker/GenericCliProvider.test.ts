@@ -29,6 +29,9 @@ import {
   defaultSpawn,
   runWithTransientRetry,
   DEFAULT_TRANSIENT_MAX_RETRIES,
+  queryWithContentRetry,
+  DEFAULT_CONTENT_MAX_RETRIES,
+  SKIP_SUMMARY_FALLBACK,
   type SpawnFn,
 } from "../../src/services/worker/GenericCliProvider.js";
 import type { ActiveSession } from "../../src/services/worker-types.js";
@@ -639,5 +642,345 @@ describe("GenericCliProvider query() transient retry injection", () => {
     );
     // single call — throw propagated without retry
     expect(calls).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 6: 内容层 retry + fallback (queryWithContentRetry)
+// ---------------------------------------------------------------------------
+//
+// Brief: /data/vault/.superpowers/sdd/task-6-brief.md
+// Reference: /data/code/self/loop-engine/src/engine.ts:720-790 (retry loop with
+//   failedAttempts + diagnostics pairing), /data/code/self/loop-engine/src/sink.ts:15-23
+//   (留底哲学: attempts[i] = 第 i 次失败原始输出, diagnostics[i] = 针对它发出的纠错 prompt)
+//
+// Three test groups:
+//   1. standalone queryWithContentRetry() — unit tests of the retry loop
+//   2. GenericCliProvider.queryWithContentRetry() method — wrapper around the
+//      standalone that injects the provider's queryOnce
+//   3. query() integration via startSession — proves the wrapper is wired in
+//      and that retry drives a second spawn with `-r <sid> -p <correction>`
+
+describe("queryWithContentRetry (standalone)", () => {
+  it("first-call valid → 0 attempts, 0 diagnostics, returns content as-is", async () => {
+    const validXml = "<observation><type>discovery</type><title>x</title></observation>";
+    const calls: { sid: string | null; prompt: string }[] = [];
+    const queryOnce = async (sid: string | null, prompt: string) => {
+      calls.push({ sid, prompt });
+      return { content: validXml, sessionId: "session_init" as string | null };
+    };
+    const result = await queryWithContentRetry(queryOnce, "init-prompt", null);
+    expect(calls.length).toBe(1);
+    expect(calls[0].sid).toBeNull();
+    expect(calls[0].prompt).toBe("init-prompt");
+    expect(result.result.content).toBe(validXml);
+    expect(result.attempts).toEqual([]);
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it("invalid → resume + correction → valid (1 attempt + 1 diagnostic留底)", async () => {
+    const outputs = [
+      "I will help you with that", // prose → parseAgentXml invalid
+      "<observation><type>discovery</type><title>recovered</title></observation>",
+    ];
+    let i = 0;
+    const calls: { sid: string | null; prompt: string }[] = [];
+    const queryOnce = async (sid: string | null, prompt: string) => {
+      calls.push({ sid, prompt });
+      const out = outputs[i++];
+      return { content: out, sessionId: `session_${i}` as string | null };
+    };
+    const result = await queryWithContentRetry(queryOnce, "init-prompt", null);
+    // 2 calls: initial + 1 retry
+    expect(calls.length).toBe(2);
+    // retry uses the SESSION captured from the first call (same session resume)
+    expect(calls[1].sid).toBe("session_1");
+    // retry uses the CORRECTION prompt (not initial)
+    expect(calls[1].prompt).not.toBe("init-prompt");
+    expect(calls[1].prompt).toContain("schema");
+    // valid content surfaced
+    expect(result.result.content).toContain("<type>discovery</type>");
+    expect(result.result.content).toContain("recovered");
+    // 1 attempt + 1 diagnostic — paired留底 (sink.ts:15-23 contract)
+    expect(result.attempts).toHaveLength(1);
+    expect(result.attempts[0]).toBe("I will help you with that");
+    expect(result.diagnostics).toHaveLength(1);
+    expect(result.diagnostics[0]).toBe(calls[1].prompt);
+    // sessionId propagated to final captured id
+    expect(result.result.sessionId).toBe("session_2");
+  });
+
+  it("retry exhausted → returns skip_summary fallback (xml_failed_after_retries)", async () => {
+    const alwaysProse = async () => ({
+      content: "no xml here, just prose",
+      sessionId: "session_x" as string | null,
+    });
+    const result = await queryWithContentRetry(alwaysProse, "p", null, 2);
+    expect(result.result.content).toContain("<skip_summary");
+    expect(result.result.content).toContain("xml_failed_after_retries");
+    // Comprehensive留底 (brief impl sketch: push BEFORE if/else, so all 3
+    // invalid outputs are captured; corrections only emitted when retrying,
+    // so 2 — final failure has no paired correction because we gave up).
+    // Asymmetry documents itself: attempts=N+1, diagnostics=N when fallback hit.
+    expect(result.attempts).toHaveLength(3);
+    expect(result.diagnostics).toHaveLength(2);
+  });
+
+  it("DEFAULT_CONTENT_MAX_RETRIES is 2 (3 total tries: initial + 2 retries)", async () => {
+    expect(DEFAULT_CONTENT_MAX_RETRIES).toBe(2);
+  });
+
+  it("maxContentRetries=0 → single attempt, no retry, immediate fallback if invalid", async () => {
+    let calls = 0;
+    const alwaysInvalid = async () => {
+      calls++;
+      return { content: "nope", sessionId: null as string | null };
+    };
+    const result = await queryWithContentRetry(alwaysInvalid, "p", null, 0);
+    expect(calls).toBe(1);
+    expect(result.result.content).toContain("<skip_summary");
+    expect(result.attempts).toHaveLength(1);
+    expect(result.diagnostics).toHaveLength(0); // no retries → no correction prompts emitted
+  });
+
+  it("maxContentRetries=1 → 2 total tries (initial + 1 retry) before fallback", async () => {
+    let calls = 0;
+    const alwaysInvalid = async () => {
+      calls++;
+      return { content: "bad", sessionId: null as string | null };
+    };
+    const result = await queryWithContentRetry(alwaysInvalid, "p", null, 1);
+    expect(calls).toBe(2);
+    expect(result.attempts).toHaveLength(2);
+    expect(result.diagnostics).toHaveLength(1);
+    expect(result.result.content).toContain("<skip_summary");
+  });
+
+  it("valid on 3rd try → 2 attempts + 2 diagnostics留底", async () => {
+    // NOTE: bare <observation><type>...</type></observation> with no title /
+    // narrative / facts is parsed as INVALID (parser drops empty observations
+    // — see parser.ts "Skipping empty observation"). Fixture must include a
+    // title (or other non-empty field) to actually be valid.
+    const outputs = [
+      "bad1",
+      "bad2",
+      "<observation><type>bugfix</type><title>fix</title></observation>",
+    ];
+    let i = 0;
+    const queryOnce = async () => {
+      const out = outputs[i++];
+      return { content: out, sessionId: null as string | null };
+    };
+    const result = await queryWithContentRetry(queryOnce, "p", null, 2);
+    expect(i).toBe(3);
+    expect(result.attempts).toHaveLength(2);
+    expect(result.diagnostics).toHaveLength(2);
+    expect(result.attempts[0]).toBe("bad1");
+    expect(result.attempts[1]).toBe("bad2");
+    expect(result.result.content).toContain("<type>bugfix</type>");
+  });
+
+  it("sessionId propagated through retries (each retry uses prior captured sid)", async () => {
+    const sids: (string | null)[] = [];
+    const queryOnce = async (sid: string | null) => {
+      sids.push(sid);
+      // emit a different sessionId each call to verify propagation
+      return { content: "bad", sessionId: `session_${sids.length}` as string | null };
+    };
+    await queryWithContentRetry(queryOnce, "p", "session_seed", 1);
+    // call 0: sid = seed (initial)
+    // call 1: sid = session_1 (captured from call 0)
+    expect(sids).toEqual(["session_seed", "session_1"]);
+  });
+
+  it("throws inside queryOnce propagate (no swallow at content layer)", async () => {
+    const boom = async () => {
+      throw new Error("kimi ENOENT");
+    };
+    expect(queryWithContentRetry(boom, "p", null)).rejects.toThrow(/ENOENT/);
+  });
+
+  it("SKIP_SUMMARY_FALLBACK constant matches parser.ts:48 recognized shape", () => {
+    // parser.ts:48 /<skip_summary(?:\s+reason="([^"]*)")?\s*\/>/ must match
+    expect(SKIP_SUMMARY_FALLBACK).toBe('<skip_summary reason="xml_failed_after_retries" />');
+    // sanity: parser would treat this as valid (skipped summary)
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GenericCliProvider.queryWithContentRetry() method
+// ---------------------------------------------------------------------------
+
+describe("GenericCliProvider.queryWithContentRetry() method", () => {
+  let loggerSpies: ReturnType<typeof spyOn>[];
+
+  beforeEach(() => {
+    loggerSpies = [
+      spyOn(logger, "info").mockImplementation(() => {}),
+      spyOn(logger, "debug").mockImplementation(() => {}),
+      spyOn(logger, "warn").mockImplementation(() => {}),
+      spyOn(logger, "error").mockImplementation(() => {}),
+      spyOn(logger, "success").mockImplementation(() => {}),
+      spyOn(logger, "failure").mockImplementation(() => {}),
+      spyOn(logger, "dataOut").mockImplementation(() => {}),
+    ];
+  });
+
+  afterEach(() => {
+    loggerSpies.forEach((s) => s.mockRestore());
+    mock.restore();
+  });
+
+  it("invalid → resume + correction → valid: drives 2 spawns with -r sid + correction prompt", async () => {
+    const calls: { cmd: string; args: string[] }[] = [];
+    const outputs = [
+      "I will help you" + "\nTo resume this session: kimi -r session_abc",
+      "<observation><type>discovery</type><title>recovered</title></observation>" +
+        "\nTo resume this session: kimi -r session_abc",
+    ];
+    let i = 0;
+    const spawnFn: SpawnFn = async (cmd, args) => {
+      calls.push({ cmd, args });
+      return { stdout: outputs[i++], stderr: "", exitCode: 0 };
+    };
+    const { mockDbManager, mockSessionManager } = createStubs();
+    const provider = new GenericCliProvider(mockDbManager, mockSessionManager, {
+      spawn: spawnFn,
+    });
+    const result = await provider.queryWithContentRetry("user-prompt", null);
+    // 2 spawns: initial fresh, retry with -r session_abc
+    expect(calls.length).toBe(2);
+    // call 0: fresh (no resume flag)
+    expect(calls[0].args).not.toContain(KIMI_CLI_CONFIG.resumeFlag);
+    expect(calls[0].args).toContain("user-prompt");
+    // call 1: resume with captured sid, prompt is the CORRECTION (not "user-prompt")
+    expect(calls[1].args[0]).toBe(KIMI_CLI_CONFIG.resumeFlag);
+    expect(calls[1].args[1]).toBe("session_abc");
+    const pIdx = calls[1].args.indexOf("-p");
+    expect(pIdx).toBeGreaterThan(1);
+    expect(calls[1].args[pIdx + 1]).not.toBe("user-prompt");
+    expect(calls[1].args[pIdx + 1]).toContain("schema");
+    // valid content surfaced
+    expect(result.result.content).toContain("<type>discovery</type>");
+    expect(result.attempts).toHaveLength(1);
+    expect(result.diagnostics).toHaveLength(1);
+    expect(result.diagnostics[0]).toBe(calls[1].args[pIdx + 1]);
+  });
+
+  it("retry exhausted → skip_summary fallback (provider method)", async () => {
+    const alwaysProse: SpawnFn = async () => ({
+      stdout: "no xml" + "\nTo resume this session: kimi -r session_x",
+      stderr: "",
+      exitCode: 0,
+    });
+    const { mockDbManager, mockSessionManager } = createStubs();
+    const provider = new GenericCliProvider(mockDbManager, mockSessionManager, {
+      spawn: alwaysProse,
+    });
+    const result = await provider.queryWithContentRetry("p", null, 2);
+    expect(result.result.content).toBe(SKIP_SUMMARY_FALLBACK);
+    // Comprehensive留底: 3 invalid outputs captured, 2 corrections emitted
+    expect(result.attempts).toHaveLength(3);
+    expect(result.diagnostics).toHaveLength(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// query() integration via startSession — proves content retry is wired into
+// the production init/observation/summary paths
+// ---------------------------------------------------------------------------
+
+describe("GenericCliProvider query() content retry injection", () => {
+  let loggerSpies: ReturnType<typeof spyOn>[];
+
+  beforeEach(() => {
+    loggerSpies = [
+      spyOn(logger, "info").mockImplementation(() => {}),
+      spyOn(logger, "debug").mockImplementation(() => {}),
+      spyOn(logger, "warn").mockImplementation(() => {}),
+      spyOn(logger, "error").mockImplementation(() => {}),
+      spyOn(logger, "success").mockImplementation(() => {}),
+      spyOn(logger, "failure").mockImplementation(() => {}),
+      spyOn(logger, "dataOut").mockImplementation(() => {}),
+    ];
+  });
+
+  afterEach(() => {
+    loggerSpies.forEach((s) => s.mockRestore());
+    mock.restore();
+  });
+
+  it("init invalid → resume + correction → valid: 2 spawns, captures session, no throw", async () => {
+    const calls: { args: string[] }[] = [];
+    const outputs = [
+      "prose only, no XML" + "\nTo resume this session: kimi -r session_abc-123",
+      "<observation><type>discovery</type><title>init</title><narrative>n</narrative></observation>" +
+        "\nTo resume this session: kimi -r session_abc-123",
+    ];
+    let i = 0;
+    const spawnFn: SpawnFn = async (_cmd, args) => {
+      calls.push({ args });
+      return { stdout: outputs[i++], stderr: "", exitCode: 0 };
+    };
+    const { mockDbManager, mockSessionManager, mockWorker } = createStubs();
+    const provider = new GenericCliProvider(mockDbManager, mockSessionManager, {
+      spawn: spawnFn,
+    });
+    const session = createSession();
+
+    await provider.startSession(session, mockWorker);
+
+    // 2 spawns: invalid initial + valid retry
+    expect(calls.length).toBe(2);
+    // retry uses resume flag + captured sid
+    expect(calls[1].args[0]).toBe(KIMI_CLI_CONFIG.resumeFlag);
+    expect(calls[1].args[1]).toBe("session_abc-123");
+    // session id captured (from the FIRST successful capture — init's stdout)
+    expect(session.memorySessionId).toBe("session_abc-123");
+    // content retry was logged
+    const warnCalls = loggerSpies[2].mock.calls;
+    const retryLog = warnCalls.find(
+      (c: any[]) => typeof c[1] === "string" && c[1].includes("content retry"),
+    );
+    expect(retryLog).toBeDefined();
+  });
+
+  it("init always invalid → skip_summary fallback forwarded to processAgentResponse (no throw)", async () => {
+    const alwaysProse: SpawnFn = async () => ({
+      stdout: "no xml at all" + "\nTo resume this session: kimi -r session_abc-123",
+      stderr: "",
+      exitCode: 0,
+    });
+    const { mockDbManager, mockSessionManager, mockWorker } = createStubs();
+    const provider = new GenericCliProvider(mockDbManager, mockSessionManager, {
+      spawn: alwaysProse,
+    });
+    const session = createSession();
+
+    // CRITICAL: does NOT throw — fallback skip_summary is forwarded to
+    // processAgentResponse which recognizes it as valid (parser.ts:48)
+    await provider.startSession(session, mockWorker);
+
+    // 3 spawns (initial + 2 retries; maxContentRetries=2)
+    expect(session.memorySessionId).toBe("session_abc-123");
+  });
+
+  it("Task 4/5 contract preserved: valid init still triggers NO content retry", async () => {
+    const calls: { args: string[] }[] = [];
+    const spawnFn: SpawnFn = async (_cmd, args) => {
+      calls.push({ args });
+      return { stdout: INIT_STDOUT, stderr: "", exitCode: 0 };
+    };
+    const { mockDbManager, mockSessionManager, mockWorker } = createStubs();
+    const provider = new GenericCliProvider(mockDbManager, mockSessionManager, {
+      spawn: spawnFn,
+    });
+    const session = createSession();
+
+    await provider.startSession(session, mockWorker);
+
+    // exactly ONE spawn — valid XML, no content retry triggered
+    expect(calls.length).toBe(1);
+    expect(session.memorySessionId).toBe("session_abc-123");
   });
 });

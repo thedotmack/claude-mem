@@ -10,6 +10,7 @@ import {
   buildSummaryPrompt,
   buildContinuationPrompt,
 } from "../../sdk/prompts.js";
+import { parseAgentXml } from "../../sdk/parser.js";
 import type { ActiveSession, ConversationMessage } from "../worker-types.js";
 import { ModeManager } from "../domain/ModeManager.js";
 import type { ModeConfig } from "../domain/types.js";
@@ -334,6 +335,135 @@ export function buildKimiArgs(
 }
 
 // ---------------------------------------------------------------------------
+// Task 6: 内容层 retry + fallback (queryWithContentRetry)
+// ---------------------------------------------------------------------------
+//
+// Brief: /data/vault/.superpowers/sdd/task-6-brief.md
+// Reference:
+//   - /data/code/self/loop-engine/src/engine.ts:720-790 (retry loop with
+//     failedAttempts + diagnostics pairing — same留底 philosophy)
+//   - /data/code/self/loop-engine/src/sink.ts:15-23 (attempts[i] = 第 i 次失败
+//     原始输出，diagnostics[i] = 针对它发出的纠错 prompt — 按序配对留底)
+//
+// 触发条件：`parseAgentXml(content)` 返 `valid: false`（含纯 prose、未识别 root
+// tag、observation 块解析后空等所有 parser 失败路径）。纠错 prompt 注入路径：
+// queryOnce 的 prompt 参数 —— retry 时用 **同一 session**（resume）发 **不同
+// prompt**（CORRECTION_PROMPT(lastOutput)）。这与传输层 retry（fresh spawn 同
+// prompt）正交：传输层修「进程死了」，内容层修「进程活着但输出畸形」。
+//
+// 留底契约（loop-engine sink.ts:15-23 投影，但有偏差 —— 见下）：
+//   - `attempts[i]` = 第 i 次被判失败的 content 原始输出（按序）
+//   - `diagnostics[i]` = 针对第 i 次失败发出的纠错 prompt 文本（按序）
+//   - **len(attempts) === len(diagnostics)** 当且仅当末次成功（每次失败都触发
+//     了 retry，每次 retry 都有 correction）
+//   - **len(attempts) === len(diagnostics) + 1** 当末次仍失败 fallback：末次
+//     失败也进 attempts（comprehensive 留底），但它没有对应的 correction ——
+//     我们放弃了，没再发纠错。这种不对称自文档化：「试了 N+1 次，发了 N 个
+//     correction，最后那次没发因为我们认输了」。loop-engine 把末次 raw 单独
+//     落 raw.txt 故 attempts/diagnostics 严格等长；claude-mem 无独立 raw sink，
+//     把末次也塞 attempts 防丢失。
+//   - 无重发即空数组（不是 undefined）—— caller 据此判定 retry 是否发生
+//
+// Fallback：retry 耗尽 → 返 `<skip_summary reason="xml_failed_after_retries" />`。
+// parser.ts:48 识别该 tag 为 valid（不入 poison、不触发 session respawn）——
+// processAgentResponse 拿到的永远是 valid XML 或 skip_summary（poison 路径不触发）。
+
+/** 内容层 retry 默认上限（initial + N retries → 共 N+1 次尝试）。 */
+export const DEFAULT_CONTENT_MAX_RETRIES = 2;
+
+/**
+ * Fallback content emitted when content-layer retry exhausts. Recognized by
+ * parser.ts:48 (`/<skip_summary(?:\s+reason="([^"]*)")?\s*\//>`) as a valid
+ * (but skipped) summary — does NOT trip the poison/respawn path.
+ */
+export const SKIP_SUMMARY_FALLBACK = '<skip_summary reason="xml_failed_after_retries" />';
+
+/**
+ * 纠错 prompt 模板：把上一封失败的原始输出回灌给模型，告诉它 schema 期望，
+ * 要求重发纯 XML（无 prose）。`slice(0, 500)` 防止超大输出撑爆 prompt。
+ */
+export const CORRECTION_PROMPT = (lastOutput: string): string =>
+  `Your previous output did not match the required schema. Expected <observation> XML with sub-tags <type>/<title>/<facts>/<fact>/<narrative>/<concepts>/<concept>. type must be one of [bugfix|discovery|decision|refactor|other]. Re-emit ONLY the XML, no prose.\n\nPrevious output was:\n${lastOutput.slice(0, 500)}`;
+
+/**
+ * Result of a content-retry run. `result` carries the final queryOnce output
+ * (valid XML on success; skip_summary on fallback). `attempts`/`diagnostics`
+ * are paired 留底 (empty when no retry happened; equal length on success path;
+ * attempts one longer on fallback path — see block comment above).
+ */
+export interface ContentRetryResult<
+  T extends { content: string; sessionId: string | null },
+> {
+  result: T;
+  attempts: string[];
+  diagnostics: string[];
+}
+
+/**
+ * 内容层 retry + fallback 循环（standalone，不依赖 provider 实例）。
+ *
+ * 循环 `attempt = 0..maxContentRetries`：
+ *   1. `await queryOnce(sessionId, prompt)` 拿一封输出
+ *   2. 若 queryOnce 返回新 sessionId → 更新 sessionId（retry 时 resume 用）
+ *   3. `parseAgentXml(content)` 判 valid：
+ *      - valid → 立返（attempts/diagnostics 为目前已收集的，可能为空）
+ *      - invalid → 把 content 塞进 attempts，未到末次则把 CORRECTION_PROMPT(content)
+ *        塞进 diagnostics 并用作下次 prompt；末次则返 skip_summary fallback
+ *
+ * **不 catch queryOnce 抛错**：throws（transport error、ENOENT、timeout）直接上浮
+ * 到调用方（与 runWithTransientRetry 同款设计 —— 永久错误不伪装成瞬时/可纠错）。
+ *
+ * **同 session resume**：retry 用 initialSessionId（或首次 queryOnce 捕获的 sid）
+ * 作 resumeSessionId 喂给后续 queryOnce —— kimi 在原会话上下文里收到纠错 prompt，
+ * 模型有最大上下文修复输出。这与传输层 fresh-spawn retry 正交。
+ *
+ * @param queryOnce           单次尝试（resumeSessionId, prompt）→ { content, sessionId, ... }
+ * @param initialPrompt       初次 prompt（业务 user message）
+ * @param initialSessionId    初次 resumeSessionId（首次通常 null；continuation 场景传已捕获 sid）
+ * @param maxContentRetries    上限 retries（不含 initial）；默认 DEFAULT_CONTENT_MAX_RETRIES=2
+ */
+export async function queryWithContentRetry<
+  T extends { content: string; sessionId: string | null },
+>(
+  queryOnce: (resumeSessionId: string | null, prompt: string) => Promise<T>,
+  initialPrompt: string,
+  initialSessionId: string | null,
+  maxContentRetries: number = DEFAULT_CONTENT_MAX_RETRIES,
+): Promise<ContentRetryResult<T>> {
+  const attempts: string[] = [];
+  const diagnostics: string[] = [];
+  let prompt = initialPrompt;
+  let sessionId = initialSessionId;
+
+  for (let attempt = 0; attempt <= maxContentRetries; attempt++) {
+    const result = await queryOnce(sessionId, prompt);
+    // queryOnce 捕获到新 sessionId → 后续 retry 用它 resume（同 session 上下文）
+    if (result.sessionId) sessionId = result.sessionId;
+
+    const parsed = parseAgentXml(result.content, "content-retry");
+    if (parsed.valid) {
+      return { result, attempts, diagnostics };
+    }
+
+    // invalid → 留底（与 loop-engine sink.ts:18-22 同款 attempts/diagnostics 配对）
+    attempts.push(result.content);
+    if (attempt < maxContentRetries) {
+      const correction = CORRECTION_PROMPT(result.content);
+      diagnostics.push(correction);
+      prompt = correction;
+    } else {
+      // 末次仍 invalid → fallback skip_summary（parser.ts:48 识别为 valid，不入 poison）
+      const fallback = { ...result, content: SKIP_SUMMARY_FALLBACK } as T;
+      return { result: fallback, attempts, diagnostics };
+    }
+  }
+  // 不可达：for 循环 maxContentRetries >= 0 时至少执行一次并 return
+  throw new Error(
+    `queryWithContentRetry: unreachable (maxContentRetries=${maxContentRetries})`,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Task 4: GenericCliProvider session lifecycle
 // ---------------------------------------------------------------------------
 //
@@ -382,29 +512,24 @@ export class GenericCliProvider {
   }
 
   /**
-   * Issue one CLI invocation: extract the last user message as the prompt,
-   * spawn `<cmd> [resumeFlag sid] -p <prompt> ...baseArgs`, parse stdout
-   * into content + sessionId.
+   * Issue one CLI invocation: spawn `<cmd> [resumeFlag sid] -p <prompt>
+   * ...baseArgs`, parse stdout into content + sessionId. Kernel of `query()`
+   * without history extraction — extracted in Task 6 so the content-retry
+   * wrapper can re-issue with a different (correction) prompt against the
+   * SAME session.
    *
-   * Task 4 keeps this simple — Task 5 wraps `spawnFn` with transient retry,
-   * Task 6 wraps `query` with content-retry + provider fallback. Signatures
-   * are kept (prompt + resumeSessionId) → (content + sessionId) so those
-   * wrappers can compose cleanly.
+   * Layered with `runWithTransientRetry` (transport-layer retry, Task 5):
+   *   - resumeId truthy → maxRetries=0 (single attempt; defer to content-retry)
+   *   - fresh spawn → maxRetries=3 (transient network/exit-code flaps)
    *
-   * Visibility is `protected` (not `private`) so Task 6's outer
-   * `queryWithContentRetry` wrapper — living in a sibling module or a
-   * thin subclass — can call `query` directly without exposing it on the
-   * public API.
+   * Throws on non-zero exit (after transient retries exhausted) — propagates
+   * through `queryWithContentRetry` (which doesn't catch) up to
+   * `handleSessionError`.
    */
-  protected async query(
-    history: ConversationMessage[],
-    resumeSessionId?: string | null,
+  protected async queryOnce(
+    prompt: string,
+    resumeSessionId: string | null,
   ): Promise<ProviderQueryResult & { sessionId: string | null }> {
-    // kimi -p 是单 prompt —— 不像 HTTP 把 history 一起送。靠 resume
-    // session 保持上下文（首选，token 省）。如果 session 还没建立
-    // （首次 init），就发最后一条 user message 起会话。
-    const lastUser = [...history].reverse().find((m) => m.role === "user");
-    const prompt = lastUser?.content ?? "";
     const args = buildKimiArgs(prompt, this.config, resumeSessionId);
 
     logger.debug("SDK", `Querying ${this.config.providerName} CLI`, {
@@ -448,6 +573,74 @@ export class GenericCliProvider {
       servedModel: this.config.cmd,
       sessionId: parsed.sessionId,
     };
+  }
+
+  /**
+   * Public content-retry wrapper around `queryOnce`. Composes the standalone
+   * `queryWithContentRetry` with this provider's `queryOnce` as the inner
+   * single-attempt function. Returns the full result + 留底 arrays.
+   *
+   * Made public so tests can drive it directly without going through
+   * `startSession`; production callers go through `query()` (history-based).
+   */
+  async queryWithContentRetry(
+    prompt: string,
+    resumeSessionId: string | null,
+    maxContentRetries: number = DEFAULT_CONTENT_MAX_RETRIES,
+  ): Promise<
+    ContentRetryResult<ProviderQueryResult & { sessionId: string | null }>
+  > {
+    return queryWithContentRetry(
+      (sid, p) => this.queryOnce(p, sid),
+      prompt,
+      resumeSessionId,
+      maxContentRetries,
+    );
+  }
+
+  /**
+   * History-based wrapper: extract last user message as the prompt, then run
+   * `queryWithContentRetry` (the method above). Logs attempts/diagnostics to
+   * the worker log when retry actually happened (留底 arrays non-empty).
+   *
+   * Task 4 keeps this simple — Task 5 wraps `spawnFn` with transient retry,
+   * Task 6 wraps `query` with content-retry + provider fallback. Signatures
+   * are kept (prompt + resumeSessionId) → (content + sessionId) so those
+   * wrappers can compose cleanly.
+   *
+   * Visibility is `protected` (not `private`) so subclasses / external
+   * content-retry wrappers can call `queryOnce` directly without exposing
+   * it on the public API.
+   */
+  protected async query(
+    history: ConversationMessage[],
+    resumeSessionId?: string | null,
+  ): Promise<ProviderQueryResult & { sessionId: string | null }> {
+    // kimi -p 是单 prompt —— 不像 HTTP 把 history 一起送。靠 resume
+    // session 保持上下文（首选，token 省）。如果 session 还没建立
+    // （首次 init），就发最后一条 user message 起会话。
+    const lastUser = [...history].reverse().find((m) => m.role === "user");
+    const initialPrompt = lastUser?.content ?? "";
+
+    const { result, attempts, diagnostics } = await this.queryWithContentRetry(
+      initialPrompt,
+      resumeSessionId ?? null,
+    );
+
+    // 内容层 retry 发生时留底写 worker 日志（loop-engine sink.ts 留底哲学的
+    // claude-mem 投影：attempts/diagnostics 按序配对，复盘时能判断是模型不行
+    // 还是纠错措辞误导）。只在 retry 真发生时记 —— 避免 valid 路径刷日志。
+    if (attempts.length > 0 || diagnostics.length > 0) {
+      logger.warn("CLI", `${this.config.providerName} content retry`, {
+        attemptsCount: attempts.length,
+        diagnosticsCount: diagnostics.length,
+        attempts,
+        diagnostics,
+        finalFallback: result.content === SKIP_SUMMARY_FALLBACK,
+      });
+    }
+
+    return result;
   }
 
   /**
