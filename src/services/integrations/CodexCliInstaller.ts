@@ -3,13 +3,13 @@ import { homedir } from 'os';
 import {
   execFileSync,
   spawnSync,
-  type SpawnSyncOptionsWithStringEncoding,
   type SpawnSyncReturns,
 } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { logger } from '../../utils/logger.js';
 import { paths } from '../../shared/paths.js';
+import { buildSpawnSyncInvocation, type SpawnSyncInvocation } from '../../shared/spawn.js';
 
 const CODEX_DIR = path.join(homedir(), '.codex');
 const CODEX_AGENTS_MD_PATH = path.join(CODEX_DIR, 'AGENTS.md');
@@ -27,13 +27,6 @@ const REQUIRED_MARKETPLACE_FILES = [
   path.join('plugin', 'skills', 'mem-search', 'SKILL.md'),
 ];
 const WINDOWS_CODEX_EXTENSIONS = new Set(['.cmd', '.exe', '.bat', '.com']);
-const WINDOWS_CODEX_CMD_EXTENSIONS = new Set(['.cmd', '.bat']);
-
-type CodexSpawnInvocation = {
-  command: string;
-  args: string[];
-  options: SpawnSyncOptionsWithStringEncoding;
-};
 
 function commandExists(command: string): boolean {
   try {
@@ -117,10 +110,6 @@ function lookupCodexOnWindows(): string | null {
     ?? null;
 }
 
-function quoteCmdArgument(value: string): string {
-  return `"${value.replace(/"/g, '""')}"`;
-}
-
 export function resolveCodexCommand(
   platform: NodeJS.Platform = process.platform,
   windowsLookup: () => string | null = lookupCodexOnWindows,
@@ -133,30 +122,12 @@ export function resolveCodexSpawnInvocation(
   args: string[],
   platform: NodeJS.Platform = process.platform,
   windowsLookup: () => string | null = lookupCodexOnWindows,
-): CodexSpawnInvocation {
+): SpawnSyncInvocation {
   const resolvedCommand = resolveCodexCommand(platform, windowsLookup);
-  const options: SpawnSyncOptionsWithStringEncoding = {
+  return buildSpawnSyncInvocation(resolvedCommand, args, {
     encoding: 'utf-8',
     stdio: ['ignore', 'pipe', 'pipe'],
-    ...(platform === 'win32' ? { windowsHide: true } : {}),
-  };
-
-  if (
-    platform === 'win32'
-    && WINDOWS_CODEX_CMD_EXTENSIONS.has(path.extname(resolvedCommand).toLowerCase())
-  ) {
-    return {
-      command: 'cmd.exe',
-      args: ['/d', '/s', '/c', [resolvedCommand, ...args].map(quoteCmdArgument).join(' ')],
-      options,
-    };
-  }
-
-  return {
-    command: resolvedCommand,
-    args,
-    options,
-  };
+  }, platform);
 }
 
 /**
@@ -165,7 +136,7 @@ export function resolveCodexSpawnInvocation(
  * Issue #2695: on Windows `codex` is installed as `codex.cmd` (a PATH shim).
  * `child_process.spawnSync('codex', args)` without a shell does not consult
  * PATHEXT, so resolve the shim first. Native executables run directly; .cmd
- * and .bat shims use an explicit cmd.exe wrapper without shell:true.
+ * and .bat shims use an explicit cmd.exe wrapper without the shell option.
  */
 export function codexSpawn(args: string[]): SpawnSyncReturns<string> {
   const invocation = resolveCodexSpawnInvocation(args);

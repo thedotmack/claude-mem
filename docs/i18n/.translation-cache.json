@@ -1,164 +1,164 @@
 {
-  "sourceHash": "5ab0767e0980d6d4",
-  "lastUpdated": "2026-07-06T19:13:44.286Z",
+  "sourceHash": "363753f858082cd4",
+  "lastUpdated": "2026-07-06T19:25:18.460Z",
   "translations": {
     "zh": {
-      "hash": "5ab0767e0980d6d4",
+      "hash": "363753f858082cd4",
       "translatedAt": "2026-07-06T19:05:38.611Z",
       "costUsd": 0.2820174
     },
     "pt-br": {
-      "hash": "5ab0767e0980d6d4",
+      "hash": "363753f858082cd4",
       "translatedAt": "2026-07-06T19:05:38.611Z",
       "costUsd": 0.411693
     },
     "es": {
-      "hash": "5ab0767e0980d6d4",
+      "hash": "363753f858082cd4",
       "translatedAt": "2026-07-06T19:05:38.611Z",
       "costUsd": 0.2996934
     },
     "pt": {
-      "hash": "5ab0767e0980d6d4",
+      "hash": "363753f858082cd4",
       "translatedAt": "2026-07-06T19:05:38.611Z",
       "costUsd": 0.375255
     },
     "fr": {
-      "hash": "5ab0767e0980d6d4",
+      "hash": "363753f858082cd4",
       "translatedAt": "2026-07-06T19:05:38.611Z",
       "costUsd": 0.4141020000000001
     },
     "zh-tw": {
-      "hash": "5ab0767e0980d6d4",
+      "hash": "363753f858082cd4",
       "translatedAt": "2026-07-06T19:05:38.611Z",
       "costUsd": 0.2854734
     },
     "ja": {
-      "hash": "5ab0767e0980d6d4",
+      "hash": "363753f858082cd4",
       "translatedAt": "2026-07-06T19:05:38.612Z",
       "costUsd": 0.407814
     },
     "de": {
-      "hash": "5ab0767e0980d6d4",
+      "hash": "363753f858082cd4",
       "translatedAt": "2026-07-06T19:05:38.612Z",
       "costUsd": 0.3109974
     },
     "ko": {
-      "hash": "5ab0767e0980d6d4",
+      "hash": "363753f858082cd4",
       "translatedAt": "2026-07-06T19:05:38.612Z",
       "costUsd": 0.42012000000000005
     },
     "id": {
-      "hash": "5ab0767e0980d6d4",
+      "hash": "363753f858082cd4",
       "translatedAt": "2026-07-06T19:06:47.996Z",
       "costUsd": 0.41407499999999997
     },
     "ro": {
-      "hash": "5ab0767e0980d6d4",
+      "hash": "363753f858082cd4",
       "translatedAt": "2026-07-06T19:06:47.996Z",
       "costUsd": 0.417174
     },
     "vi": {
-      "hash": "5ab0767e0980d6d4",
+      "hash": "363753f858082cd4",
       "translatedAt": "2026-07-06T19:06:47.996Z",
       "costUsd": 0.43416600000000005
     },
     "hi": {
-      "hash": "5ab0767e0980d6d4",
+      "hash": "363753f858082cd4",
       "translatedAt": "2026-07-06T19:06:47.996Z",
       "costUsd": 0.448296
     },
     "bn": {
-      "hash": "5ab0767e0980d6d4",
+      "hash": "363753f858082cd4",
       "translatedAt": "2026-07-06T19:06:47.996Z",
       "costUsd": 0.47555400000000003
     },
     "th": {
-      "hash": "5ab0767e0980d6d4",
+      "hash": "363753f858082cd4",
       "translatedAt": "2026-07-06T19:06:47.996Z",
       "costUsd": 0.45055500000000004
     },
     "tl": {
-      "hash": "5ab0767e0980d6d4",
+      "hash": "363753f858082cd4",
       "translatedAt": "2026-07-06T19:06:47.996Z",
       "costUsd": 0.549732
     },
     "ru": {
-      "hash": "5ab0767e0980d6d4",
+      "hash": "363753f858082cd4",
       "translatedAt": "2026-07-06T19:08:06.144Z",
       "costUsd": 0.409269
     },
     "nl": {
-      "hash": "5ab0767e0980d6d4",
+      "hash": "363753f858082cd4",
       "translatedAt": "2026-07-06T19:08:06.144Z",
       "costUsd": 0.41447100000000003
     },
     "tr": {
-      "hash": "5ab0767e0980d6d4",
+      "hash": "363753f858082cd4",
       "translatedAt": "2026-07-06T19:08:06.144Z",
       "costUsd": 0.426993
     },
     "pl": {
-      "hash": "5ab0767e0980d6d4",
+      "hash": "363753f858082cd4",
       "translatedAt": "2026-07-06T19:08:06.144Z",
       "costUsd": 0.4277099999999999
     },
     "uk": {
-      "hash": "5ab0767e0980d6d4",
+      "hash": "363753f858082cd4",
       "translatedAt": "2026-07-06T19:08:06.144Z",
       "costUsd": 0.29703840000000004
     },
     "cs": {
-      "hash": "5ab0767e0980d6d4",
+      "hash": "363753f858082cd4",
       "translatedAt": "2026-07-06T19:08:06.144Z",
       "costUsd": 0.3023304
     },
     "he": {
-      "hash": "5ab0767e0980d6d4",
+      "hash": "363753f858082cd4",
       "translatedAt": "2026-07-06T19:08:06.144Z",
       "costUsd": 0.422784
     },
     "ar": {
-      "hash": "5ab0767e0980d6d4",
+      "hash": "363753f858082cd4",
       "translatedAt": "2026-07-06T19:08:06.144Z",
       "costUsd": 0.674184
     },
     "sv": {
-      "hash": "5ab0767e0980d6d4",
+      "hash": "363753f858082cd4",
       "translatedAt": "2026-07-06T19:08:11.780Z",
       "costUsd": 0.2918214
     },
     "it": {
-      "hash": "5ab0767e0980d6d4",
+      "hash": "363753f858082cd4",
       "translatedAt": "2026-07-06T19:08:56.973Z",
       "costUsd": 0.30166139999999997
     },
     "da": {
-      "hash": "5ab0767e0980d6d4",
+      "hash": "363753f858082cd4",
       "translatedAt": "2026-07-06T19:08:56.973Z",
       "costUsd": 0.2977074
     },
     "fi": {
-      "hash": "5ab0767e0980d6d4",
+      "hash": "363753f858082cd4",
       "translatedAt": "2026-07-06T19:08:56.973Z",
       "costUsd": 0.3121044
     },
     "hu": {
-      "hash": "5ab0767e0980d6d4",
+      "hash": "363753f858082cd4",
       "translatedAt": "2026-07-06T19:08:56.973Z",
       "costUsd": 0.30374639999999997
     },
     "el": {
-      "hash": "5ab0767e0980d6d4",
+      "hash": "363753f858082cd4",
       "translatedAt": "2026-07-06T19:08:56.973Z",
       "costUsd": 0.5626133999999999
     },
     "no": {
-      "hash": "5ab0767e0980d6d4",
+      "hash": "363753f858082cd4",
       "translatedAt": "2026-07-06T19:10:37.489Z",
       "costUsd": 0.29734740000000004
     },
     "ur": {
-      "hash": "5ab0767e0980d6d4",
+      "hash": "363753f858082cd4",
       "translatedAt": "2026-07-06T19:13:44.286Z",
       "costUsd": 0.3279894
     }

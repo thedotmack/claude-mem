@@ -52,7 +52,7 @@ const CHROMA_MCP_DEP_OVERRIDES: ReadonlyArray<string> = [
 
 // Issue #2696 (revised): chroma-mcp is now spawned by invoking uvx DIRECTLY on
 // every platform — see ChromaMcpManager.resolveUvxCommand(). The previous
-// `cmd.exe /c uvx ...` path, and the cmd.exe metacharacter-quoting helper that
+// `cmd.exe` shell-wrapper path, and the cmd.exe metacharacter-quoting helper that
 // went with it, were removed: even with the dep-override specs wrapped in double
 // quotes, Node's child_process arg-quoting for cmd.exe re-mangled the `>`/`<` in
 // `onnxruntime>=1.20` / `protobuf<7`, so cmd.exe parsed them as redirection and
@@ -138,7 +138,7 @@ export class ChromaMcpManager {
     const uvxPreflightEnv = ChromaMcpManager.getUvxPreflightEnv();
     getSupervisor().assertCanSpawn('chroma mcp');
 
-    // Spawn uvx DIRECTLY (no `cmd.exe /c` shell). On Windows, routing through
+    // Spawn uvx DIRECTLY (no `cmd.exe` shell wrapper). On Windows, routing through
     // cmd.exe makes it parse the `>`/`<` in the dep-override specs as shell
     // redirection before uvx sees them; a shell-less spawn passes them literally.
     // resolveUvxCommand returns the absolute uvx.exe path on Windows (Node won't
@@ -985,7 +985,7 @@ export class ChromaMcpManager {
   /**
    * Resolve the command used to launch uvx.
    *
-   * On Windows we MUST spawn uvx.exe DIRECTLY rather than via `cmd.exe /c uvx`:
+   * On Windows we MUST spawn uvx.exe DIRECTLY rather than via a `cmd.exe` wrapper:
    * cmd.exe parses the `>`/`<` in the dep-override specs (onnxruntime>=1.20,
    * protobuf<7) as shell redirection before uvx sees them, and Node's
    * child_process arg-quoting for cmd.exe re-mangles even pre-quoted args, so

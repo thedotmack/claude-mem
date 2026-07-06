@@ -8,6 +8,15 @@ The port comes from `CLAUDE_MEM_WORKER_PORT`; if unset, the default is
 `37700 + (uid % 100)`. The host comes from `CLAUDE_MEM_WORKER_HOST` and defaults
 to `127.0.0.1`.
 
+## Request Flow
+
+```text
+Hook or MCP client
+  -> HTTP request to worker on configured host/port
+    -> route handler in src/services/worker/http/routes/
+      -> service layer, SQLite, Chroma, or MCP search logic
+```
+
 ## Main Routes
 
 - `GET /health` - worker health and version status

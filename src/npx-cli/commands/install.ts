@@ -4,14 +4,16 @@ import { randomUUID } from 'crypto';
 import { spawnSync } from 'child_process';
 import { loadTelemetryConfig, saveTelemetryConfig } from '../../services/telemetry/consent.js';
 import { captureCliEvent } from '../../services/telemetry/cli-telemetry.js';
-import { spawnHidden } from '../../shared/spawn.js';
+import { buildSpawnSyncInvocation, lookupWindowsCommand, spawnHidden } from '../../shared/spawn.js';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { writeJsonFileAtomic as writeSettingsJsonAtomic } from '../../shared/atomic-json.js';
 import { loadClaudeMemEnv, saveClaudeMemEnv } from '../../shared/EnvManager.js';
 import { ensureWorkerStarted, type WorkerStartResult } from '../../services/worker-spawner.js';
+import { formatHostForUrl } from '../../shared/worker-utils.js';
 import {
   ensureBun,
   ensureUv,
@@ -56,12 +58,14 @@ function detectInstallMethod(): string {
  * never starts. Missing binary or timeout → undefined (dropped by scrubber).
  */
 function readClaudeCodeVersionOutput(): string | undefined {
-  const result = spawnSync('claude', ['--version'], {
+  const command = process.platform === 'win32'
+    ? (lookupWindowsCommand('claude') ?? 'claude.cmd')
+    : 'claude';
+  const invocation = buildSpawnSyncInvocation(command, ['--version'], {
     timeout: 5000,
-    windowsHide: true,
-    shell: process.platform === 'win32',
     encoding: 'utf-8',
   });
+  const result = spawnSync(invocation.command, invocation.args, invocation.options);
   const output = (result.stdout ?? '').trim();
   if (!output) return undefined;
   // "2.0.14 (Claude Code)" → "2.0.14"
@@ -536,6 +540,7 @@ async function installClaudeCode(): Promise<boolean> {
   const command = IS_WINDOWS
     ? 'powershell -ExecutionPolicy ByPass -c "irm https://claude.ai/install.ps1 | iex"'
     : 'curl -fsSL https://claude.ai/install.sh | bash';
+  const installShell = IS_WINDOWS ? (process.env.ComSpec ?? 'cmd.exe') : '/bin/bash';
 
   const spinner = isInteractive ? p.spinner() : null;
   spinner?.start('Installing Claude Code (this can take a few minutes — downloading the native build)…');
@@ -543,7 +548,7 @@ async function installClaudeCode(): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     let captured = '';
     const child = spawnHidden(command, [], {
-      shell: IS_WINDOWS ? (process.env.ComSpec ?? 'cmd.exe') : '/bin/bash',
+      shell: installShell,
       stdio: spinner ? ['inherit', 'pipe', 'pipe'] : 'inherit',
     });
 
@@ -762,7 +767,7 @@ function mergeSettings(updates: Record<string, string>): boolean {
       current[key] = value;
     }
 
-    writeFileSync(path, JSON.stringify(current, null, 2), 'utf-8');
+    writeSettingsJsonAtomic(path, current);
     return true;
   } catch (error: unknown) {
     log.error(`Failed to write settings to ${path}: ${error instanceof Error ? error.message : String(error)}`);
@@ -1622,6 +1627,12 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
           const stopHeartbeat = startHeartbeat(message, 'Running npm install…');
           try {
             await runNpmInstallInMarketplace(summary);
+            writeInstallMarker(
+              marketplaceDirectory(),
+              version,
+              installedBunVersion ?? 'unknown',
+              installedUvVersion ?? 'unknown',
+            );
           } finally {
             stopHeartbeat();
           }
@@ -1741,6 +1752,8 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   // spinners and summary note (a live print would be clobbered by clack).
   flushSummary(summary, (line) => (isInteractive ? p.log.message(line) : console.log(`  ${line}`)));
 
+  const workerHost = getSetting('CLAUDE_MEM_WORKER_HOST');
+  const workerUrlHost = formatHostForUrl(workerHost);
   const workerPort = getSetting('CLAUDE_MEM_WORKER_PORT');
 
   let actualPort: number | string = workerPort;
@@ -1753,7 +1766,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     const healthSpinner = isInteractive ? p.spinner() : null;
     healthSpinner?.start(`Verifying worker on port ${workerPort}…`);
     try {
-      const healthResponse = await fetch(`http://127.0.0.1:${workerPort}/api/health`, {
+      const healthResponse = await fetch(`http://${workerUrlHost}:${workerPort}/api/health`, {
         signal: AbortSignal.timeout(3000),
       });
       if (healthResponse.ok) {
@@ -1781,19 +1794,21 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   const workerAlive = finalWorkerState !== 'dead' || workerReady;
   const runtimeLabel = selectedRuntime === 'server' ? 'Server' : 'Worker';
   const runtimeStartCommand = selectedRuntime === 'server' ? 'npx claude-mem server start' : 'npx claude-mem start';
+  const workerBaseUrl = `http://${workerUrlHost}:${actualPort}`;
+  const configuredWorkerBaseUrl = `http://${workerUrlHost}:${workerPort}`;
   const workerHeadline = autoStartSkipped
     ? `${styleText('yellow', '!')} ${runtimeLabel} autostart skipped — start it manually with ${styleText('bold', runtimeStartCommand)}`
     : workerReady || finalWorkerState === 'ready'
-      ? `${styleText('green', '✓')} ${runtimeLabel} running at ${styleText('underline', `http://localhost:${actualPort}`)}`
-      : `${styleText('yellow', '⏳')} ${runtimeLabel} starting at ${styleText('underline', `http://localhost:${actualPort}`)} — give it ~30s, then refresh`;
+      ? `${styleText('green', '✓')} ${runtimeLabel} running at ${styleText('underline', workerBaseUrl)}`
+      : `${styleText('yellow', '⏳')} ${runtimeLabel} starting at ${styleText('underline', workerBaseUrl)} — give it ~30s, then refresh`;
   const nextStepsHeadline = autoStartSkipped || workerAlive
     ? workerHeadline
     : `${styleText('yellow', '!')} Worker not yet ready on port ${styleText('cyan', String(workerPort))} -- still starting up; check ${styleText('bold', 'claude-mem status')} later, or start manually: ${styleText('bold', 'npx claude-mem start')}`;
   const firstSuccessOpener = autoStartSkipped
-    ? `once the worker is running, keep ${styleText('underline', `http://localhost:${workerPort}`)} open in a browser`
+    ? `once the worker is running, keep ${styleText('underline', configuredWorkerBaseUrl)} open in a browser`
     : workerAlive
       ? 'keep that URL open in a browser'
-      : `keep ${styleText('underline', `http://localhost:${workerPort}`)} open in a browser`;
+      : `keep ${styleText('underline', configuredWorkerBaseUrl)} open in a browser`;
   const nextSteps = [
     nextStepsHeadline,
     ``,
@@ -1849,9 +1864,12 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   }, { person: true });
 }
 
-export async function runRepairCommand(): Promise<void> {
+async function runRepairCommandInner(summary: InstallSummary): Promise<void> {
   const version = readPluginVersion();
   const cacheDir = pluginCacheDirectory(version);
+  const marketplaceDir = marketplaceDirectory();
+  let bunVersion = 'unknown';
+  let uvVersion = 'unknown';
 
   if (isInteractive) {
     p.intro(styleText(['bgCyan', 'black'], ' claude-mem repair '));
@@ -1865,9 +1883,11 @@ export async function runRepairCommand(): Promise<void> {
       title: 'Setting up runtime',
       task: async (message) => {
         message('Checking Bun…');
-        const { version: bunVersion } = await ensureBun();
+        const bun = await ensureBun(summary);
+        bunVersion = bun.version;
         message('Checking uv…');
-        const { version: uvVersion } = await ensureUv();
+        const uv = await ensureUv(summary);
+        uvVersion = uv.version;
         // Repair must regenerate the cache if it was wiped (e.g. user ran
         // `rm -rf ~/.claude/plugins/cache`). Without this, bun install would
         // fail immediately with no package.json to install against.
@@ -1876,17 +1896,59 @@ export async function runRepairCommand(): Promise<void> {
           copyPluginToCache(version);
         }
         message('Reinstalling plugin dependencies…');
-        const { bunPath } = await ensureBun();
+        const { bunPath } = bun;
         await installPluginDependencies(cacheDir, bunPath);
         writeInstallMarker(cacheDir, version, bunVersion, uvVersion);
         return `Runtime ready (Bun ${bunVersion}, uv ${uvVersion}) ${styleText('green', 'OK')}`;
       },
     },
+    {
+      title: 'Repairing marketplace runtime',
+      task: async (message) => {
+        message('Repopulating marketplace root from npm package…');
+        copyPluginToMarketplace();
+        message('Reinstalling marketplace dependencies…');
+        const stopHeartbeat = startHeartbeat(message, 'Running npm install…');
+        try {
+          await runNpmInstallInMarketplace(summary);
+          writeInstallMarker(marketplaceDir, version, bunVersion, uvVersion);
+        } finally {
+          stopHeartbeat();
+        }
+        return `Marketplace runtime ready ${styleText('green', 'OK')}`;
+      },
+    },
   ]);
+
+  flushSummary(summary, (line) => (isInteractive ? p.log.message(line) : console.log(`  ${line}`)));
 
   if (isInteractive) {
     p.outro(styleText('green', 'claude-mem repair complete.'));
   } else {
     console.log('claude-mem repair complete.');
+  }
+}
+
+export async function runRepairCommand(): Promise<void> {
+  const summary = createInstallSummary();
+  try {
+    await runRepairCommandInner(summary);
+  } catch (error: unknown) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    if (err instanceof InstallAbortError) {
+      flushSummary(summary, (line) => (isInteractive ? p.log.message(line) : console.error(`  ${line}`)));
+      const headline = `Repair Aborted: ${err.category.id}`;
+      if (isInteractive) {
+        p.log.error(headline);
+        p.log.error(err.remediation);
+        p.outro(styleText('red', 'claude-mem repair aborted.'));
+      } else {
+        console.error(`\n  ${headline}`);
+        console.error(`  ${err.remediation}`);
+        console.error(`  ${err.message}`);
+      }
+      process.exit(1);
+    }
+    throw error;
   }
 }
