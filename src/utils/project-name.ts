@@ -24,6 +24,9 @@ function findGitRepoRoot(dir: string): string | null {
       cwd: dir,
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      // Without this, a console-less worker daemon spawning git opens a visible
+      // terminal window per call on Windows (#2900).
+      windowsHide: true,
     }).trim();
     return root || null;
   } catch (error: unknown) {
