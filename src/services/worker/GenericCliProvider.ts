@@ -1,6 +1,24 @@
 import { execSync, spawn } from "child_process";
 import { SettingsDefaultsManager } from "../../shared/SettingsDefaultsManager.js";
 import { USER_SETTINGS_PATH } from "../../shared/paths.js";
+import { DatabaseManager } from "./DatabaseManager.js";
+import { SessionManager } from "./SessionManager.js";
+import { logger } from "../../utils/logger.js";
+import {
+  buildInitPrompt,
+  buildObservationPrompt,
+  buildSummaryPrompt,
+  buildContinuationPrompt,
+} from "../../sdk/prompts.js";
+import type { ActiveSession, ConversationMessage } from "../worker-types.js";
+import { ModeManager } from "../domain/ModeManager.js";
+import type { ModeConfig } from "../domain/types.js";
+import {
+  processAgentResponse,
+  isAbortError,
+  type WorkerRef,
+} from "./agents/index.js";
+import type { ProviderQueryResult } from "./OpenAICompatibleProvider.js";
 
 /**
  * Configuration for a generic CLI provider driven by an external binary
@@ -212,4 +230,563 @@ export function buildKimiArgs(
     args.unshift(config.resumeFlag, resumeSessionId);
   }
   return args;
+}
+
+// ---------------------------------------------------------------------------
+// Task 4: GenericCliProvider session lifecycle
+// ---------------------------------------------------------------------------
+//
+// 镜像 `OpenAICompatibleProvider.startSession` 的骨架（init / observation /
+// summary loop + cumulative token accounting + abort-aware error handling +
+// history truncation），但 **不继承** OpenAICompatibleProvider —— abstract
+// 成员（`getConfig()`、`missingApiKeyError()`、`query(history, config)`）
+// 假设 HTTP 传输，与 CLI spawn 模型不匹配。复制骨架后只改 `query()`：
+//
+//   - 不是 HTTP：拼最后一条 user message 作 prompt → `buildKimiArgs` →
+//     `defaultSpawn` → `parseCliOutput`
+//   - **关键差异**：CLI 有 session 概念，每次 query 后若 `parsed.sessionId`
+//     非空，**更新 `session.memorySessionId`** 并写 DB。OpenAICompatibleProvider
+//     不这样做（HTTP 无 session 概念，memorySessionId 是一次合成的）
+//   - 传给 query 的 resumeSessionId = `session.memorySessionId`（首次
+//     undefined → fresh spawn；后续 resume）
+
+const DEFAULT_MAX_CONTEXT_MESSAGES = 20;
+const DEFAULT_MAX_ESTIMATED_TOKENS = 100_000;
+
+/**
+ * Estimate token count for a single message body. kimi text 模式不返
+ * usage，沿用 OpenAICompatibleProvider 的 chars/4 粗估（与 Gemini 的
+ * `estimateTokens` 同思路）。
+ */
+function estimateTokensHeuristic(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+/**
+ * Returns true iff `id` looks like a real kimi-emitted session id (matches
+ * `config.sessionIdRegex`). Used to distinguish captured `session_xxx`
+ * handles from the synthetic placeholder (`kimi-content-1-<ts>`) that
+ * `startSession` stamps before the first query returns.
+ */
+function isRealCliSessionId(
+  id: string | null | undefined,
+  config: GenericCliConfig,
+): boolean {
+  return !!id && config.sessionIdRegex.test(id);
+}
+
+export class GenericCliProvider {
+  private dbManager: DatabaseManager;
+  private sessionManager: SessionManager;
+  private readonly spawnFn: SpawnFn;
+  private readonly config: GenericCliConfig;
+
+  constructor(
+    dbManager: DatabaseManager,
+    sessionManager: SessionManager,
+    opts?: { spawn?: SpawnFn; config?: GenericCliConfig },
+  ) {
+    this.dbManager = dbManager;
+    this.sessionManager = sessionManager;
+    this.spawnFn = opts?.spawn ?? defaultSpawn;
+    this.config = opts?.config ?? KIMI_CLI_CONFIG;
+  }
+
+  /**
+   * Issue one CLI invocation: extract the last user message as the prompt,
+   * spawn `<cmd> [resumeFlag sid] -p <prompt> ...baseArgs`, parse stdout
+   * into content + sessionId.
+   *
+   * Task 4 keeps this simple — Task 5 wraps `spawnFn` with transient retry,
+   * Task 6 wraps `query` with content-retry + provider fallback. Signatures
+   * are kept (prompt + resumeSessionId) → (content + sessionId) so those
+   * wrappers can compose cleanly.
+   */
+  private async query(
+    history: ConversationMessage[],
+    resumeSessionId?: string | null,
+  ): Promise<ProviderQueryResult & { sessionId: string | null }> {
+    // kimi -p 是单 prompt —— 不像 HTTP 把 history 一起送。靠 resume
+    // session 保持上下文（首选，token 省）。如果 session 还没建立
+    // （首次 init），就发最后一条 user message 起会话。
+    const lastUser = [...history].reverse().find((m) => m.role === "user");
+    const prompt = lastUser?.content ?? "";
+    const args = buildKimiArgs(prompt, this.config, resumeSessionId);
+
+    logger.debug("SDK", `Querying ${this.config.providerName} CLI`, {
+      cmd: this.config.cmd,
+      hasResume: !!resumeSessionId,
+      resumeSessionId: resumeSessionId ?? null,
+      promptChars: prompt.length,
+    });
+
+    const { stdout, exitCode } = await this.spawnFn(this.config.cmd, args);
+    const parsed = parseCliOutput(stdout, this.config);
+
+    if (exitCode !== 0) {
+      // surface non-zero exit so handleSessionError can classify; Task 5
+      // will introduce structured classification.
+      throw new Error(
+        `${this.config.providerName} CLI exited with code ${exitCode}: ${stdout.slice(-400)}`,
+      );
+    }
+
+    // tokensUsed: kimi text 模式不返 usage，用 chars/4 粗估（OpenAICompatibleProvider 同思路）。
+    // 累计到 cumulativeInput/Output（70/30 split）。lastUsage 留 null —— 不
+    // 想把估算伪装成真实用量进 telemetry（与 OpenAICompatibleProvider.buildLastUsage
+    // 「只在有真数据时填」的契约一致）。
+    const tokensUsed = Math.ceil(stdout.length / 4);
+
+    return {
+      content: parsed.content,
+      tokensUsed,
+      servedModel: this.config.cmd,
+      sessionId: parsed.sessionId,
+    };
+  }
+
+  /**
+   * 镜像 OpenAICompatibleProvider.startSession：生成 synthetic
+   * memorySessionId（实际捕获会发生在首次 query 之后）→ init/continuation
+   * prompt → for await message of getMessageIterator → observation/summary。
+   *
+   * 差异：
+   *   - 不调 `getConfig()` / `missingApiKeyError()`（CLI 无 API key 概念）
+   *   - 每次 query 后若 `parsed.sessionId` 非空，更新 `session.memorySessionId`
+   *     并写 DB（OpenAICompatibleProvider 不这样做 —— HTTP 无 session 概念，
+   *     memorySessionId 是合成的）
+   */
+  async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
+    const model = this.config.cmd;
+    session.lastModelId = model;
+
+    // 注：CLI 不需要合成的 memorySessionId（kimi 自己生成 session_xxx）。
+    // 但 OpenAICompatibleProvider 这里生成一个合成 id 是为了在 init 失败的
+    // 情况下也有一个占位 id —— 我们沿用同样逻辑，让首次 query 后由真实
+    // session_xxx 覆盖。
+    if (!session.memorySessionId) {
+      const syntheticMemorySessionId = `${this.config.syntheticIdPrefix}-${session.contentSessionId}-${Date.now()}`;
+      session.memorySessionId = syntheticMemorySessionId;
+      this.dbManager
+        .getSessionStore()
+        .updateMemorySessionId(session.sessionDbId, syntheticMemorySessionId);
+      logger.info(
+        "SESSION",
+        `MEMORY_ID_GENERATED | sessionDbId=${session.sessionDbId} | provider=${this.config.providerName}`,
+      );
+    }
+
+    const mode = ModeManager.getInstance().getActiveMode();
+    const initPrompt =
+      session.lastPromptNumber === 1
+        ? buildInitPrompt(
+            session.project,
+            session.contentSessionId,
+            session.userPrompt,
+            mode,
+          )
+        : buildContinuationPrompt(
+            session.userPrompt,
+            session.lastPromptNumber,
+            session.contentSessionId,
+            mode,
+          );
+
+    session.conversationHistory.push({ role: "user", content: initPrompt });
+
+    try {
+      session.lastPromptSentAt = Date.now();
+      session.lastGeneratorSource = "init";
+      // Only resume if memorySessionId looks like a REAL captured kimi
+      // session_xxx. The synthetic placeholder generated above (e.g.
+      // "kimi-content-1-1700000000") doesn't match the regex and would be
+      // rejected by `kimi -r`. Continuation prompts (lastPromptNumber > 1)
+      // arrive with a real session_xxx from the prior worker run → resume.
+      const initResumeId = isRealCliSessionId(session.memorySessionId, this.config)
+        ? session.memorySessionId
+        : null;
+      const initResponse = await this.query(
+        session.conversationHistory,
+        initResumeId,
+      );
+      await this.handleInitResponse(initResponse, session, worker, model);
+    } catch (error: unknown) {
+      if (error instanceof Error) {
+        logger.error(
+          "SDK",
+          `${this.config.providerName} init query failed`,
+          { sessionId: session.sessionDbId, model },
+          error,
+        );
+      } else {
+        logger.error(
+          "SDK",
+          `${this.config.providerName} init query failed with non-Error`,
+          { sessionId: session.sessionDbId, model },
+          new Error(String(error)),
+        );
+      }
+      return this.handleSessionError(error, session, worker);
+    }
+
+    let lastCwd: string | undefined;
+
+    try {
+      for await (const message of this.sessionManager.getMessageIterator(
+        session.sessionDbId,
+      )) {
+        session.pendingAgentId = message.agentId ?? null;
+        session.pendingAgentType = message.agentType ?? null;
+
+        if (message.cwd) {
+          lastCwd = message.cwd;
+        }
+        const originalTimestamp = session.earliestPendingTimestamp;
+
+        if (message.type === "observation") {
+          await this.processObservationMessage(
+            session,
+            message,
+            worker,
+            originalTimestamp,
+            lastCwd,
+          );
+        } else if (message.type === "summarize") {
+          await this.processSummaryMessage(
+            session,
+            message,
+            worker,
+            mode,
+            originalTimestamp,
+            lastCwd,
+          );
+        }
+      }
+    } catch (error: unknown) {
+      if (error instanceof Error) {
+        logger.error(
+          "SDK",
+          `${this.config.providerName} message loop failed`,
+          { sessionId: session.sessionDbId, model },
+          error,
+        );
+      } else {
+        logger.error(
+          "SDK",
+          `${this.config.providerName} message loop failed with non-Error`,
+          { sessionId: session.sessionDbId, model },
+          new Error(String(error)),
+        );
+      }
+      return this.handleSessionError(error, session, worker);
+    }
+
+    const sessionDuration = Date.now() - session.startTime;
+    logger.success(
+      "SDK",
+      `${this.config.providerName} agent completed`,
+      {
+        sessionId: session.sessionDbId,
+        duration: `${(sessionDuration / 1000).toFixed(1)}s`,
+        historyLength: session.conversationHistory.length,
+      },
+    );
+  }
+
+  /**
+   * After a query returns, if `parsed.sessionId` is non-null, update
+   * `session.memorySessionId` and write through to DB. Returns true if
+   * updated (for logging).
+   */
+  private captureMemorySessionId(
+    sessionId: string | null,
+    session: ActiveSession,
+  ): boolean {
+    if (!sessionId) return false;
+    if (sessionId === session.memorySessionId) return false;
+
+    const previousId = session.memorySessionId;
+    session.memorySessionId = sessionId;
+    this.dbManager
+      .getSessionStore()
+      .updateMemorySessionId(session.sessionDbId, sessionId);
+    const label = previousId
+      ? `MEMORY_ID_CHANGED | sessionDbId=${session.sessionDbId} | from=${previousId} | to=${sessionId}`
+      : `MEMORY_ID_CAPTURED | sessionDbId=${session.sessionDbId} | memorySessionId=${sessionId}`;
+    logger.info("SESSION", label, {
+      sessionId: session.sessionDbId,
+      memorySessionId: sessionId,
+      previousId,
+    });
+    return true;
+  }
+
+  private async handleInitResponse(
+    initResponse: ProviderQueryResult & { sessionId: string | null },
+    session: ActiveSession,
+    worker: WorkerRef | undefined,
+    model: string,
+  ): Promise<void> {
+    // **关键差异（vs OpenAICompatibleProvider）**：CLI 返回真实 session_id，
+    // 覆盖掉 startSession 里那个合成占位 id。
+    this.captureMemorySessionId(initResponse.sessionId, session);
+
+    if (initResponse.content) {
+      session.conversationHistory.push({
+        role: "assistant",
+        content: initResponse.content,
+      });
+      const tokensUsed = initResponse.tokensUsed || 0;
+      session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
+      session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
+      session.lastUsage = this.buildLastUsage(initResponse);
+      await processAgentResponse(
+        initResponse.content,
+        session,
+        this.dbManager,
+        this.sessionManager,
+        worker,
+        tokensUsed,
+        null,
+        this.config.providerName,
+        undefined,
+        initResponse.servedModel ?? model,
+      );
+    } else {
+      logger.error(
+        "SDK",
+        `Empty ${this.config.providerName} init response - session may lack context`,
+        { sessionId: session.sessionDbId, model },
+      );
+    }
+  }
+
+  private async processObservationMessage(
+    session: ActiveSession,
+    message: {
+      prompt_number?: number;
+      tool_name?: string;
+      tool_input?: unknown;
+      tool_response?: unknown;
+      cwd?: string;
+    },
+    worker: WorkerRef | undefined,
+    originalTimestamp: number | null,
+    lastCwd: string | undefined,
+  ): Promise<void> {
+    if (message.prompt_number !== undefined) {
+      session.lastPromptNumber = message.prompt_number;
+    }
+
+    if (!session.memorySessionId) {
+      throw new Error(
+        "Cannot process observations: memorySessionId not yet captured. This session may need to be reinitialized.",
+      );
+    }
+
+    const obsPrompt = buildObservationPrompt({
+      id: 0,
+      tool_name: message.tool_name!,
+      tool_input: JSON.stringify(message.tool_input),
+      tool_output: JSON.stringify(message.tool_response),
+      created_at_epoch: originalTimestamp ?? Date.now(),
+      cwd: message.cwd,
+    });
+
+    session.conversationHistory.push({ role: "user", content: obsPrompt });
+    session.lastPromptSentAt = Date.now();
+    session.lastGeneratorSource = "ingest";
+    // 传当前 memorySessionId 作 resumeSessionId —— kimi 会用真实
+    // session_xxx resume（init 时捕获的）。
+    const obsResponse = await this.query(
+      session.conversationHistory,
+      session.memorySessionId,
+    );
+    // 若 kimi 在 obs 响应里返回了新的 session_id（重定向 / 失效后新建），
+    // 捕获之；否则保留原值。
+    this.captureMemorySessionId(obsResponse.sessionId, session);
+
+    let tokensUsed = 0;
+    if (obsResponse.content) {
+      session.conversationHistory.push({
+        role: "assistant",
+        content: obsResponse.content,
+      });
+      tokensUsed = obsResponse.tokensUsed || 0;
+      session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
+      session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
+      session.lastUsage = this.buildLastUsage(obsResponse);
+    }
+
+    // kimi text 模式经常返回 prose + XML 杂糅 —— 即便 content 形如空也
+    // forward 给 processAgentResponse，让 parser/invalid-output 分类器判
+    // 定（与 OpenRouterProvider 的 forwardEmptyMessageResponse=true 同思路，
+    // 不像 Gemini 那样静默丢）
+    await processAgentResponse(
+      obsResponse.content || "",
+      session,
+      this.dbManager,
+      this.sessionManager,
+      worker,
+      tokensUsed,
+      originalTimestamp,
+      this.config.providerName,
+      lastCwd,
+      obsResponse.servedModel ?? this.config.cmd,
+    );
+  }
+
+  private async processSummaryMessage(
+    session: ActiveSession,
+    message: { last_assistant_message?: string },
+    worker: WorkerRef | undefined,
+    mode: ModeConfig,
+    originalTimestamp: number | null,
+    lastCwd: string | undefined,
+  ): Promise<void> {
+    if (!session.memorySessionId) {
+      throw new Error(
+        "Cannot process summary: memorySessionId not yet captured. This session may need to be reinitialized.",
+      );
+    }
+
+    const summaryPrompt = buildSummaryPrompt(
+      {
+        id: session.sessionDbId,
+        memory_session_id: session.memorySessionId,
+        project: session.project,
+        user_prompt: session.userPrompt,
+        last_assistant_message: message.last_assistant_message || "",
+      },
+      mode,
+    );
+
+    session.conversationHistory.push({ role: "user", content: summaryPrompt });
+    session.lastPromptSentAt = Date.now();
+    session.lastGeneratorSource = "summarize";
+    const summaryResponse = await this.query(
+      session.conversationHistory,
+      session.memorySessionId,
+    );
+    this.captureMemorySessionId(summaryResponse.sessionId, session);
+
+    let tokensUsed = 0;
+    if (summaryResponse.content) {
+      session.conversationHistory.push({
+        role: "assistant",
+        content: summaryResponse.content,
+      });
+      tokensUsed = summaryResponse.tokensUsed || 0;
+      session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
+      session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
+      session.lastUsage = this.buildLastUsage(summaryResponse);
+    }
+
+    await processAgentResponse(
+      summaryResponse.content || "",
+      session,
+      this.dbManager,
+      this.sessionManager,
+      worker,
+      tokensUsed,
+      originalTimestamp,
+      this.config.providerName,
+      lastCwd,
+      summaryResponse.servedModel ?? this.config.cmd,
+    );
+  }
+
+  /**
+   * Build session.lastUsage from a query result. kimi text 模式无 usage
+   * 数据，**永远返回 null** —— 不把 chars/4 估算伪装成真实 input/output
+   * 进 telemetry（OpenAICompatibleProvider.buildLastUsage 的「只在 provider
+   * 真报数据时填 input/output」契约）。
+   *
+   * 注：cumulative token counters 仍会累加 tokensUsed（粗估），因为它们用于
+   * history truncation 阈值，而非单次事件计费。
+   */
+  private buildLastUsage(
+    _result: ProviderQueryResult,
+  ): ActiveSession["lastUsage"] {
+    return null;
+  }
+
+  /**
+   * Truncate history when it grows past the configured limits. Mirrors
+   * `OpenAICompatibleProvider.truncateHistory` with `requireNonEmptyToTruncate
+   * = false` (OpenRouter behavior) so truncation kicks in as soon as either
+   * limit is exceeded.
+   *
+   * Currently unused in the simple lifecycle (kimi -p only sends the last
+   * user message, so history size doesn't directly bloat the wire) but
+   * exported so Task 6 (content retry) can reuse it when constructing
+   * smaller retry prompts.
+   */
+  private truncateHistory(
+    history: ConversationMessage[],
+    maxContextMessages: number = DEFAULT_MAX_CONTEXT_MESSAGES,
+    maxEstimatedTokens: number = DEFAULT_MAX_ESTIMATED_TOKENS,
+  ): ConversationMessage[] {
+    if (history.length <= maxContextMessages) {
+      const totalTokens = history.reduce(
+        (sum, m) => sum + estimateTokensHeuristic(m.content),
+        0,
+      );
+      if (totalTokens <= maxEstimatedTokens) {
+        return history;
+      }
+    }
+
+    const truncated: ConversationMessage[] = [];
+    let tokenCount = 0;
+
+    for (let i = history.length - 1; i >= 0; i--) {
+      const msg = history[i];
+      const msgTokens = estimateTokensHeuristic(msg.content);
+
+      const overLimit =
+        truncated.length >= maxContextMessages ||
+        tokenCount + msgTokens > maxEstimatedTokens;
+      if (truncated.length > 0 && overLimit) {
+        logger.warn(
+          "SDK",
+          "Context window truncated to prevent runaway costs",
+          {
+            originalMessages: history.length,
+            keptMessages: truncated.length,
+            droppedMessages: i + 1,
+            estimatedTokens: tokenCount,
+            tokenLimit: maxEstimatedTokens,
+          },
+        );
+        break;
+      }
+
+      truncated.unshift(msg);
+      tokenCount += msgTokens;
+    }
+
+    return truncated;
+  }
+
+  private handleSessionError(
+    error: unknown,
+    session: ActiveSession,
+    _worker?: WorkerRef,
+  ): never {
+    if (isAbortError(error)) {
+      logger.warn("SDK", `${this.config.providerName} agent aborted`, {
+        sessionId: session.sessionDbId,
+      });
+      throw error;
+    }
+
+    logger.failure(
+      "SDK",
+      `${this.config.providerName} agent error`,
+      { sessionDbId: session.sessionDbId },
+      error instanceof Error ? error : new Error(String(error)),
+    );
+    throw error;
+  }
 }
