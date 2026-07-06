@@ -539,7 +539,7 @@ export class GenericCliProvider {
       promptChars: prompt.length,
     });
 
-    const { stdout, exitCode } = await runWithTransientRetry(
+    const { stdout, stderr, exitCode } = await runWithTransientRetry(
       () => this.spawnFn(this.config.cmd, args),
       {
         // resumeId 存在时 maxRetries=0：避免与 Task 6 内容层 retry 叠加
@@ -552,6 +552,15 @@ export class GenericCliProvider {
       },
     );
     const parsed = parseCliOutput(stdout, this.config);
+    // kimi --output-format text 把 "To resume this session: session_xxx"
+    // marker 写到 STDERR（实测 2026-07-06），stdout 只携带最终结果
+    // （observation XML 或 <skip />）。stdout 抓不到 sessionId 时 fallback
+    // 从 stderr 抓——否则 memorySessionId 保持 startSession 的合成占位
+    // （kimi-<contentSessionId>-<ts>），后续 `kimi -r <synthetic>` 必
+    // "Session not found" exit 1（见 ~/.kimi-code/logs/kimi-code.log）。
+    if (!parsed.sessionId && stderr) {
+      parsed.sessionId = parseCliOutput(stderr, this.config).sessionId;
+    }
 
     if (exitCode !== 0) {
       // 末次尝试仍非零退出（传输层 retry 已用尽，或 resumeId 场景 maxRetries=0

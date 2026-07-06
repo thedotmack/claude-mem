@@ -348,6 +348,36 @@ describe("GenericCliProvider session lifecycle", () => {
     expect(session.memorySessionId).toBe("session_abc-123");
   });
 
+  it("init: captures sessionId from STDERR when kimi emits resume marker there (Task 9 fix)", async () => {
+    // 实测 2026-07-06：kimi --output-format text 把 thinking prose +
+    // "To resume this session: kimi -r session_xxx" marker 写到 STDERR，
+    // stdout 只携带最终结果（observation XML 或 <skip />）。
+    // parseCliOutput 只解析 stdout 会丢 sessionId → memorySessionId 保持
+    // startSession 的合成占位（kimi-<contentSessionId>-<ts>）→ 后续
+    // observation/summary resume 喂合成 id 给 `kimi -r` → "Session not
+    // found" exit 1（见 ~/.kimi-code/logs/kimi-code.log）。
+    const spawnFn: SpawnFn = async () => ({
+      stdout:
+        "<observation><type>discovery</type><title>init</title><narrative>n</narrative></observation>",
+      stderr:
+        "kimi thinking prose about the observation request.\n\nTo resume this session: kimi -r session_deadbeef-cafe-1234-abcd-ef0123456789",
+      exitCode: 0,
+    });
+    const { mockDbManager, mockSessionManager, mockWorker } = createStubs();
+    const provider = new GenericCliProvider(mockDbManager, mockSessionManager, {
+      spawn: spawnFn,
+    });
+    const session = createSession();
+
+    await provider.startSession(session, mockWorker);
+
+    // sessionId 必须从 stderr 捕获（不能保持合成占位 kimi-content-1-<ts>，
+    // 否则后续 resume 必 "Session not found" exit 1）
+    expect(session.memorySessionId).toBe(
+      "session_deadbeef-cafe-1234-abcd-ef0123456789",
+    );
+  });
+
   it("defaults to defaultSpawn + KIMI_CLI_CONFIG when opts omitted", () => {
     const { mockDbManager, mockSessionManager } = createStubs();
     const provider = new GenericCliProvider(mockDbManager, mockSessionManager);
