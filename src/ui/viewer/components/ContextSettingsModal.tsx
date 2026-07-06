@@ -331,15 +331,17 @@ export function ContextSettingsModal({
             >
               <FormField
                 label="AI Provider"
-                tooltip="Choose between Claude (via Agent SDK) or Gemini (via REST API)"
+                tooltip="Backend used to compress observations: Claude Agent SDK, Codex CLI, Gemini, OpenRouter, or Kiro CLI"
               >
                 <select
                   value={formState.CLAUDE_MEM_PROVIDER || 'claude'}
                   onChange={(e) => updateSetting('CLAUDE_MEM_PROVIDER', e.target.value)}
                 >
                   <option value="claude">Claude (uses your Claude account)</option>
+                  <option value="codex">Codex CLI (uses your Codex login)</option>
                   <option value="gemini">Gemini (uses API key)</option>
                   <option value="openrouter">OpenRouter (multi-model)</option>
+                  <option value="kiro">Kiro (uses your Kiro subscription)</option>
                 </select>
               </FormField>
 
@@ -357,6 +359,87 @@ export function ContextSettingsModal({
                     <option value="opus">opus (highest quality)</option>
                   </select>
                 </FormField>
+              )}
+
+              {formState.CLAUDE_MEM_PROVIDER === 'codex' && (
+                <>
+                  <FormField
+                    label="Codex Model"
+                    tooltip="Codex model passed to `codex exec --model`"
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_CODEX_MODEL || 'gpt-5.3-codex-spark'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_CODEX_MODEL', e.target.value)}
+                      placeholder="gpt-5.3-codex-spark"
+                    />
+                  </FormField>
+                  <FormField
+                    label="Codex CLI Path"
+                    tooltip="Codex executable path; leave as codex when it is on PATH"
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_CODEX_PATH || 'codex'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_CODEX_PATH', e.target.value)}
+                      placeholder="codex"
+                    />
+                  </FormField>
+                  <FormField
+                    label="Codex Reasoning Effort"
+                    tooltip="Optional Codex reasoning effort passed to codex exec"
+                  >
+                    <select
+                      value={formState.CLAUDE_MEM_CODEX_REASONING_EFFORT || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_CODEX_REASONING_EFFORT', e.target.value)}
+                    >
+                      <option value="">model default</option>
+                      <option value="minimal">minimal</option>
+                      <option value="low">low</option>
+                      <option value="medium">medium</option>
+                      <option value="high">high</option>
+                      <option value="xhigh">xhigh</option>
+                    </select>
+                  </FormField>
+                  <FormField
+                    label="Codex Context Messages"
+                    tooltip="Maximum recent messages sent to codex exec"
+                  >
+                    <input
+                      type="number"
+                      min="1"
+                      max="100"
+                      value={formState.CLAUDE_MEM_CODEX_MAX_CONTEXT_MESSAGES || '20'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_CODEX_MAX_CONTEXT_MESSAGES', e.target.value)}
+                    />
+                  </FormField>
+                  <FormField
+                    label="Codex Max Tokens"
+                    tooltip="Estimated prompt token cap before truncating Codex context"
+                  >
+                    <input
+                      type="number"
+                      min="1000"
+                      max="1000000"
+                      step="1000"
+                      value={formState.CLAUDE_MEM_CODEX_MAX_TOKENS || '100000'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_CODEX_MAX_TOKENS', e.target.value)}
+                    />
+                  </FormField>
+                  <FormField
+                    label="Codex Timeout"
+                    tooltip="Per-attempt codex exec timeout in milliseconds"
+                  >
+                    <input
+                      type="number"
+                      min="10000"
+                      max="600000"
+                      step="10000"
+                      value={formState.CLAUDE_MEM_CODEX_TIMEOUT_MS || '120000'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_CODEX_TIMEOUT_MS', e.target.value)}
+                    />
+                  </FormField>
+                </>
               )}
 
               {formState.CLAUDE_MEM_PROVIDER === 'gemini' && (
@@ -441,6 +524,33 @@ export function ContextSettingsModal({
                       value={formState.CLAUDE_MEM_OPENROUTER_APP_NAME || 'claude-mem'}
                       onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_APP_NAME', e.target.value)}
                       placeholder="claude-mem"
+                    />
+                  </FormField>
+                </>
+              )}
+
+              {formState.CLAUDE_MEM_PROVIDER === 'kiro' && (
+                <>
+                  <FormField
+                    label="Kiro Model"
+                    tooltip="No API key needed — auth is your kiro-cli login session. Model ids use dot notation (claude-haiku-4.5, claude-sonnet-4, auto). The model is pinned into the claude-mem-observer agent, so changes take effect after re-running: npx claude-mem install --ide kiro-cli"
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_KIRO_MODEL || 'claude-haiku-4.5'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_KIRO_MODEL', e.target.value)}
+                      placeholder="claude-haiku-4.5"
+                    />
+                  </FormField>
+                  <FormField
+                    label="Kiro CLI Path (Optional)"
+                    tooltip="Absolute path to kiro-cli. Only needed when it is not on PATH or in a standard install location."
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_KIRO_CLI_PATH || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_KIRO_CLI_PATH', e.target.value)}
+                      placeholder="/opt/homebrew/bin/kiro-cli"
                     />
                   </FormField>
                 </>

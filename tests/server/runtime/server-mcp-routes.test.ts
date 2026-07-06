@@ -9,7 +9,6 @@
 
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import pg from 'pg';
-import { createHash, randomBytes } from 'crypto';
 import { Server } from '../../../src/services/server/Server.js';
 import { ServerV1PostgresRoutes } from '../../../src/server/routes/v1/ServerV1PostgresRoutes.js';
 import {
@@ -21,18 +20,9 @@ import {
 import { DisabledServerQueueManager } from '../../../src/server/runtime/types.js';
 import { ServerClient } from '../../../src/services/hooks/server-client.js';
 import { logger } from '../../../src/utils/logger.js';
+import { quoteIdentifier, newApiKey } from '../../sdk/pg-isolation.js';
 
 const testDatabaseUrl = process.env.CLAUDE_MEM_TEST_POSTGRES_URL;
-
-function quoteIdentifier(name: string): string {
-  return `"${name.replaceAll('"', '""')}"`;
-}
-
-function newApiKey(): { raw: string; hash: string } {
-  const raw = `cm_${randomBytes(24).toString('hex')}`;
-  const hash = createHash('sha256').update(raw).digest('hex');
-  return { raw, hash };
-}
 
 describe('Phase 8 MCP-backing REST endpoints (/v1/memories, /v1/search, /v1/context, /v1/jobs/:id)', () => {
   if (!testDatabaseUrl) {
@@ -97,8 +87,6 @@ describe('Phase 8 MCP-backing REST endpoints (/v1/memories, /v1/search, /v1/cont
       pool: pool as never,
       queueManager: new DisabledServerQueueManager('disabled in tests'),
       authMode: 'api-key',
-      runtime: 'server-beta',
-      sessionPolicy: 'per-event',
       // Capture-only queue stub so /v1/events succeeds without BullMQ.
       getEventQueue: () => ({
         async add() {},

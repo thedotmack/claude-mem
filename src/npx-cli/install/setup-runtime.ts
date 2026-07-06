@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { exec, execSync, spawnSync } from 'child_process';
+import { exec, execFile, execSync, spawnSync } from 'child_process';
 import { createRequire } from 'module';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -33,24 +33,27 @@ export function platformUvRemediation(): string {
 function userHasOptedOutOfVectorSearch(): boolean {
   // Read the settings file directly (the value is not in the typed defaults).
   // Honors both a top-level key and an `env`-nested key.
+  let raw: unknown;
   try {
     if (!existsSync(USER_SETTINGS_PATH)) return false;
-    const raw: unknown = JSON.parse(readFileSync(USER_SETTINGS_PATH, 'utf-8'));
-    if (!raw || typeof raw !== 'object') return false;
-    const record = raw as Record<string, unknown>;
-    const envBlock = (record.env && typeof record.env === 'object')
-      ? (record.env as Record<string, unknown>)
-      : {};
-    const value = record.CLAUDE_MEM_DISABLE_VECTOR_SEARCH ?? envBlock.CLAUDE_MEM_DISABLE_VECTOR_SEARCH;
-    return value === true || value === 'true' || value === '1';
-  } catch {
+    raw = JSON.parse(readFileSync(USER_SETTINGS_PATH, 'utf-8'));
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    console.warn(`claude-mem: could not read ${USER_SETTINGS_PATH} while checking vector-search opt-out:`, err);
     return false;
   }
+  if (!raw || typeof raw !== 'object') return false;
+  const record = raw as Record<string, unknown>;
+  const envBlock = (record.env && typeof record.env === 'object')
+    ? (record.env as Record<string, unknown>)
+    : {};
+  const value = record.CLAUDE_MEM_DISABLE_VECTOR_SEARCH ?? envBlock.CLAUDE_MEM_DISABLE_VECTOR_SEARCH;
+  return value === true || value === 'true' || value === '1';
 }
 
 const BUN_COMMON_PATHS = IS_WINDOWS
   ? [join(homedir(), '.bun', 'bin', 'bun.exe')]
-  : [join(homedir(), '.bun', 'bin', 'bun'), '/usr/local/bin/bun', '/opt/homebrew/bin/bun'];
+  : [join(homedir(), '.bun', 'bin', 'bun'), '/usr/local/bin/bun', '/opt/homebrew/bin/bun', '/home/linuxbrew/.linuxbrew/bin/bun'];
 
 const UV_COMMON_PATHS = IS_WINDOWS
   ? [join(homedir(), '.local', 'bin', 'uv.exe'), join(homedir(), '.cargo', 'bin', 'uv.exe')]
@@ -70,7 +73,7 @@ function markerPath(targetDir: string): string {
   return join(targetDir, '.install-version');
 }
 
-function getBunPath(): string | null {
+export function getBunPath(): string | null {
   try {
     const result = spawnSync('bun', ['--version'], {
       encoding: 'utf-8',
@@ -89,7 +92,7 @@ function isBunInstalled(): boolean {
   return getBunPath() !== null;
 }
 
-function getBunVersion(): string | null {
+export function getBunVersion(): string | null {
   const bunPath = getBunPath();
   if (!bunPath) return null;
 
@@ -100,7 +103,9 @@ function getBunVersion(): string | null {
       shell: IS_WINDOWS,
     });
     return result.status === 0 ? result.stdout.trim() : null;
-  } catch {
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    console.warn('claude-mem: bun --version probe failed:', err);
     return null;
   }
 }
@@ -124,7 +129,7 @@ function isUvInstalled(): boolean {
   return getUvPath() !== null;
 }
 
-function getUvVersion(): string | null {
+export function getUvVersion(): string | null {
   const uvPath = getUvPath();
   if (!uvPath) return null;
 
@@ -135,7 +140,9 @@ function getUvVersion(): string | null {
       shell: IS_WINDOWS,
     });
     return result.status === 0 ? result.stdout.trim() : null;
-  } catch {
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    console.warn('claude-mem: uv --version probe failed:', err);
     return null;
   }
 }
@@ -154,66 +161,78 @@ function describeExecError(error: unknown): string {
   return String(error);
 }
 
+/** Run the platform-specific Bun installer, then confirm the binary is resolvable. */
+function runBunInstaller(): void {
+  if (IS_WINDOWS) {
+    execSync('powershell -c "irm bun.sh/install.ps1 | iex"', {
+      stdio: 'pipe',
+      timeout: INSTALL_TIMEOUT_MS,
+      shell: process.env.ComSpec ?? 'cmd.exe',
+    });
+  } else {
+    execSync('curl -fsSL https://bun.sh/install | bash', {
+      stdio: 'pipe',
+      timeout: INSTALL_TIMEOUT_MS,
+      shell: '/bin/bash',
+    });
+  }
+
+  if (!isBunInstalled()) {
+    throw new Error(
+      'Bun installation completed but binary not found. Please restart your terminal and try again.',
+    );
+  }
+}
+
 function installBun(): void {
   try {
-    if (IS_WINDOWS) {
-      execSync('powershell -c "irm bun.sh/install.ps1 | iex"', {
-        stdio: 'pipe',
-        timeout: INSTALL_TIMEOUT_MS,
-        shell: process.env.ComSpec ?? 'cmd.exe',
-      });
-    } else {
-      execSync('curl -fsSL https://bun.sh/install | bash', {
-        stdio: 'pipe',
-        timeout: INSTALL_TIMEOUT_MS,
-        shell: '/bin/bash',
-      });
-    }
-
-    if (!isBunInstalled()) {
-      throw new Error(
-        'Bun installation completed but binary not found. Please restart your terminal and try again.',
-      );
-    }
+    runBunInstaller();
   } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
     const manualInstructions = IS_WINDOWS
       ? '  - winget install Oven-sh.Bun\n  - Or: powershell -c "irm bun.sh/install.ps1 | iex"'
       : '  - curl -fsSL https://bun.sh/install | bash\n  - Or: brew install oven-sh/bun/bun';
     throw new Error(
       `Failed to install Bun. Please install manually:\n${manualInstructions}\nThen restart your terminal and try again.\n` +
-        `Underlying error: ${describeExecError(error)}`,
+        `Underlying error: ${describeExecError(err)}`,
+    );
+  }
+}
+
+/** Run the platform-specific uv installer, then confirm the binary is resolvable. */
+function runUvInstaller(): void {
+  if (IS_WINDOWS) {
+    execSync('powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"', {
+      stdio: 'pipe',
+      timeout: INSTALL_TIMEOUT_MS,
+      shell: process.env.ComSpec ?? 'cmd.exe',
+    });
+  } else {
+    execSync('curl -LsSf https://astral.sh/uv/install.sh | sh', {
+      stdio: 'pipe',
+      timeout: INSTALL_TIMEOUT_MS,
+      shell: '/bin/bash',
+    });
+  }
+
+  if (!isUvInstalled()) {
+    throw new Error(
+      'uv installation completed but binary not found. Please restart your terminal and try again.',
     );
   }
 }
 
 function installUv(): void {
   try {
-    if (IS_WINDOWS) {
-      execSync('powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"', {
-        stdio: 'pipe',
-        timeout: INSTALL_TIMEOUT_MS,
-        shell: process.env.ComSpec ?? 'cmd.exe',
-      });
-    } else {
-      execSync('curl -LsSf https://astral.sh/uv/install.sh | sh', {
-        stdio: 'pipe',
-        timeout: INSTALL_TIMEOUT_MS,
-        shell: '/bin/bash',
-      });
-    }
-
-    if (!isUvInstalled()) {
-      throw new Error(
-        'uv installation completed but binary not found. Please restart your terminal and try again.',
-      );
-    }
+    runUvInstaller();
   } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
     const manualInstructions = IS_WINDOWS
       ? '  - winget install astral-sh.uv\n  - Or: powershell -c "irm https://astral.sh/uv/install.ps1 | iex"'
       : '  - curl -LsSf https://astral.sh/uv/install.sh | sh\n  - Or: brew install uv (macOS)';
     throw new Error(
       `Failed to install uv. Please install manually:\n${manualInstructions}\nThen restart your terminal and try again.\n` +
-        `Underlying error: ${describeExecError(error)}`,
+        `Underlying error: ${describeExecError(err)}`,
     );
   }
 }
@@ -227,6 +246,66 @@ function installUv(): void {
  * we resolve subpaths, never a pinned version.
  */
 const ZOD_REQUIRED_SUBPATHS = ['zod/v3', 'zod/v4', 'zod/v4-mini'] as const;
+const TREE_SITTER_VERSION_TIMEOUT_MS = 10_000;
+
+export function treeSitterCliBinaryPath(targetDir: string): string {
+  return join(
+    targetDir,
+    'node_modules',
+    'tree-sitter-cli',
+    IS_WINDOWS ? 'tree-sitter.exe' : 'tree-sitter',
+  );
+}
+
+export function isTreeSitterCliBinaryUsable(targetDir: string): boolean {
+  const result = spawnSync(treeSitterCliBinaryPath(targetDir), ['--version'], {
+    encoding: 'utf-8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: TREE_SITTER_VERSION_TIMEOUT_MS,
+    windowsHide: true,
+  });
+  return result.status === 0
+    && /^tree-sitter \d+\.\d+\.\d+(?:\s|$)/.test((result.stdout ?? '').trim());
+}
+
+/**
+ * Runtime installs suppress all dependency lifecycle scripts to avoid running
+ * unbounded transitive postinstalls. tree-sitter-cli is the one intentional
+ * exception: its install script downloads the platform CLI used by smart-explore.
+ * Run only that top-level script, with the installer's existing timeout.
+ */
+export async function ensureTreeSitterCliBinary(
+  targetDir: string,
+  isUsable: (targetDir: string) => boolean = isTreeSitterCliBinaryUsable,
+): Promise<void> {
+  const binaryPath = treeSitterCliBinaryPath(targetDir);
+  if (isUsable(targetDir)) return;
+
+  const cliDir = join(targetDir, 'node_modules', 'tree-sitter-cli');
+  const installScript = join(cliDir, 'install.js');
+  if (!existsSync(installScript)) {
+    throw new Error(`tree-sitter-cli install script not found: ${installScript}`);
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    execFile(process.execPath, [installScript], {
+      cwd: cliDir,
+      timeout: INSTALL_TIMEOUT_MS,
+      maxBuffer: 16 * 1024 * 1024,
+      windowsHide: true,
+    }, (error, stdout, stderr) => {
+      if (error) {
+        reject(Object.assign(error, { stdout, stderr }));
+        return;
+      }
+      resolve();
+    });
+  });
+
+  if (!isUsable(targetDir)) {
+    throw new Error(`tree-sitter-cli install completed without creating a working executable ${binaryPath}`);
+  }
+}
 
 export function verifyCriticalModules(targetDir: string): void {
   const pkg = JSON.parse(readFileSync(join(targetDir, 'package.json'), 'utf-8'));
@@ -245,6 +324,9 @@ export function verifyCriticalModules(targetDir: string): void {
     try {
       requireFromTarget.resolve(dep, { paths: resolvePaths });
     } catch {
+      // [ANTI-PATTERN IGNORED]: bare-name resolve failure is the probed signal here
+      // (expected for bin-only packages); genuinely missing deps are collected in
+      // `unresolvable` and surfaced as a loud install failure after the loop.
       // Bare-name resolution can fail for a perfectly-installed package that has
       // no importable entry point — e.g. bin-only packages like `tree-sitter-cli`
       // (package.json has `bin` but no `main`/`module`/`exports`/`index.js`).
@@ -267,9 +349,16 @@ export function verifyCriticalModules(targetDir: string): void {
       try {
         requireFromTarget.resolve(subpath, { paths: resolvePaths });
       } catch {
+        // [ANTI-PATTERN IGNORED]: subpath resolve failure is the condition being
+        // probed; it is collected in `unresolvable` and surfaced as a loud
+        // install failure below.
         unresolvable.push(subpath);
       }
     }
+  }
+
+  if (dependencies.includes('tree-sitter-cli') && !isTreeSitterCliBinaryUsable(targetDir)) {
+    unresolvable.push('tree-sitter-cli executable');
   }
 
   if (unresolvable.length > 0) {
@@ -281,7 +370,7 @@ export function verifyCriticalModules(targetDir: string): void {
 
 /** Build an ephemeral summary so callers (e.g. repair) may omit it. */
 function summaryOrEphemeral(summary?: InstallSummary): InstallSummary {
-  return summary ?? { warnings: [], failedIDEs: [], retryCount: {} };
+  return summary ?? { warnings: [], failedIDEs: [] };
 }
 
 export async function ensureBun(summary?: InstallSummary): Promise<{ bunPath: string; version: string }> {
@@ -293,10 +382,12 @@ export async function ensureBun(summary?: InstallSummary): Promise<{ bunPath: st
     try {
       installBun();
     } catch (error: unknown) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      // installerError(ABORT) reports the cause loudly and always throws.
       installerError(ErrorSeverity.ABORT, {
         component: 'bun-install',
         phase: 'setup-runtime',
-        cause: error,
+        cause: err,
         remediation: platformBunRemediation(),
       }, sum);
     }
@@ -342,18 +433,20 @@ export async function ensureUv(
     try {
       installUv();
     } catch (error: unknown) {
+      const err = error instanceof Error ? error : new Error(String(error));
       if (options.allowVectorSearchOptOut && userHasOptedOutOfVectorSearch()) {
         installerError(ErrorSeverity.WARN_CONTINUE, {
           component: 'uv-install',
           phase: 'setup-runtime',
-          cause: error,
+          cause: err,
         }, sum);
         return { uvPath: '', version: 'unknown' };
       }
+      // installerError(ABORT) reports the cause loudly and always throws.
       installerError(ErrorSeverity.ABORT, {
         component: 'uv-install',
         phase: 'setup-runtime',
-        cause: error,
+        cause: err,
         remediation: platformUvRemediation(),
       }, sum);
     }
@@ -406,14 +499,14 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
 
   const bunCmd = IS_WINDOWS && bunPath.includes(' ') ? `"${bunPath}"` : bunPath;
 
-  try {
-    // Per CHANGELOG v12.6.1 -> v12.6.2: tree-sitter-swift's nested
-    // tree-sitter-cli postinstall downloads a Rust binary and can hang the
-    // install. Bun honors trustedDependencies; npm does not. We additionally
-    // pass --ignore-scripts as belt-and-suspenders and bound it with a timeout.
-    // Async exec (not execSync): a blocked event loop freezes the installer's
-    // clack spinner for the duration of the install, which reads as a stall.
-    await new Promise<void>((resolve, reject) => {
+  // Per CHANGELOG v12.6.1 -> v12.6.2: tree-sitter-swift's nested
+  // tree-sitter-cli postinstall downloads a Rust binary and can hang the
+  // install. Bun honors trustedDependencies; npm does not. We additionally
+  // pass --ignore-scripts as belt-and-suspenders and bound it with a timeout.
+  // Async exec (not execSync): a blocked event loop freezes the installer's
+  // clack spinner for the duration of the install, which reads as a stall.
+  const runBunInstall = (): Promise<void> =>
+    new Promise<void>((resolve, reject) => {
       exec(`${bunCmd} install --frozen-lockfile --ignore-scripts`, {
         cwd: targetDir,
         timeout: INSTALL_TIMEOUT_MS,
@@ -423,8 +516,19 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
         // exec errors don't carry stdio; attach so describeExecError can report it.
         error ? reject(Object.assign(error, { stdout, stderr })) : resolve());
     });
+
+  try {
+    await runBunInstall();
   } catch (error) {
-    throw new Error(`bun install failed in ${targetDir}\n${describeExecError(error)}`);
+    const err = error instanceof Error ? error : new Error(String(error));
+    throw new Error(`bun install failed in ${targetDir}\n${describeExecError(err)}`);
+  }
+
+  try {
+    await ensureTreeSitterCliBinary(targetDir);
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    throw new Error(`tree-sitter-cli setup failed in ${targetDir}\n${describeExecError(err)}`);
   }
 
   verifyCriticalModules(targetDir);
@@ -466,6 +570,19 @@ export function writeInstallMarker(
   writeFileSync(markerPath(targetDir), JSON.stringify(payload));
 }
 
+function pluginDeclaresTreeSitterCli(targetDir: string): boolean {
+  try {
+    const pkg = JSON.parse(readFileSync(join(targetDir, 'package.json'), 'utf-8'));
+    return Object.keys(pkg.dependencies || {}).includes('tree-sitter-cli');
+  } catch {
+    // [ANTI-PATTERN IGNORED]: a missing or unparseable package.json in an
+    // incomplete/partial install is an expected negative — treat it as "does
+    // not declare tree-sitter-cli" so the caller re-provisions rather than
+    // throwing.
+    return false;
+  }
+}
+
 export function isInstallCurrent(targetDir: string, expectedVersion: string): boolean {
   if (!existsSync(join(targetDir, 'node_modules'))) return false;
   const marker = readInstallMarker(targetDir);
@@ -475,5 +592,13 @@ export function isInstallCurrent(targetDir: string, expectedVersion: string): bo
   if (currentBun && !marker.bun) return false;
   if (!currentBun && marker.bun) return false;
   if (currentBun && marker.bun && currentBun !== marker.bun) return false;
+  // A present marker is not sufficient if the smart-explore runtime it vouches
+  // for is missing. A prior install can write .install-version and later lose
+  // (or never have downloaded) the tree-sitter-cli executable; without this
+  // check the install fast path treats that cache as current and skips the
+  // provisioning/validation that would repair it, leaving smart-explore broken.
+  if (pluginDeclaresTreeSitterCli(targetDir) && !isTreeSitterCliBinaryUsable(targetDir)) {
+    return false;
+  }
   return true;
 }

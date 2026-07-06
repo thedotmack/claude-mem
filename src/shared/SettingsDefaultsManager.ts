@@ -1,8 +1,24 @@
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { chmodSync, readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { HOOK_TIMEOUTS, getTimeout } from './hook-constants.js';
+import { emitDiagnostic } from './hook-io.js';
+
+export const SETTINGS_FILE_MODE = 0o600;
+
+export function ensureSettingsFileSecureMode(settingsPath: string): void {
+  if (process.platform === 'win32') return;
+  chmodSync(settingsPath, SETTINGS_FILE_MODE);
+}
+
+export function writeSettingsFileSecure(settingsPath: string, settings: object): void {
+  writeFileSync(settingsPath, JSON.stringify(settings, null, 2), {
+    encoding: 'utf-8',
+    mode: SETTINGS_FILE_MODE,
+  });
+  ensureSettingsFileSecureMode(settingsPath);
+}
 
 export interface SettingsDefaults {
   CLAUDE_MEM_MODEL: string;
@@ -21,6 +37,17 @@ export interface SettingsDefaults {
   CLAUDE_MEM_OPENROUTER_BASE_URL: string;
   CLAUDE_MEM_OPENROUTER_SITE_URL: string;
   CLAUDE_MEM_OPENROUTER_APP_NAME: string;
+  CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: string;
+  CLAUDE_MEM_OPENROUTER_MAX_TOKENS: string;
+  CLAUDE_MEM_CODEX_MODEL: string;
+  CLAUDE_MEM_CODEX_PATH: string;
+  CLAUDE_MEM_CODEX_REASONING_EFFORT: string;
+  CLAUDE_MEM_CODEX_MAX_CONTEXT_MESSAGES: string;
+  CLAUDE_MEM_CODEX_MAX_TOKENS: string;
+  CLAUDE_MEM_CODEX_TIMEOUT_MS: string;
+  CLAUDE_MEM_KIRO_AGENT: string;
+  CLAUDE_MEM_KIRO_MODEL: string;
+  CLAUDE_MEM_KIRO_CLI_PATH: string;
   CLAUDE_MEM_DATA_DIR: string;
   CLAUDE_MEM_LOG_LEVEL: string;
   CLAUDE_MEM_PYTHON_VERSION: string;
@@ -56,7 +83,8 @@ export interface SettingsDefaults {
   CLAUDE_MEM_TIER_FAST_MODEL: string;        // #2289 — resolved by $TIER:fast in CLAUDE_MEM_MODEL
   CLAUDE_MEM_TIER_SMART_MODEL: string;       // #2289 — resolved by $TIER:smart in CLAUDE_MEM_MODEL
   CLAUDE_MEM_CHROMA_ENABLED: string;   
-  CLAUDE_MEM_CHROMA_MODE: string;      
+  CLAUDE_MEM_CHROMA_MODE: string;
+  CLAUDE_MEM_MERMAID_CONTEXT: string;      
   CLAUDE_MEM_CHROMA_HOST: string;
   CLAUDE_MEM_CHROMA_PORT: string;
   CLAUDE_MEM_CHROMA_SSL: string;
@@ -106,6 +134,17 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_OPENROUTER_BASE_URL: '',  // #2382/#2590/#2622/#2393 — optional OpenAI-compatible base URL (e.g. https://api.deepseek.com, http://localhost:1234/v1). Empty = default OpenRouter endpoint.
     CLAUDE_MEM_OPENROUTER_SITE_URL: '',  // Optional: for OpenRouter analytics
     CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',  // App name for OpenRouter analytics
+    CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: '20',  // Max messages in context window
+    CLAUDE_MEM_OPENROUTER_MAX_TOKENS: '100000',  // Max estimated tokens (~100k safety limit)
+    CLAUDE_MEM_CODEX_MODEL: 'gpt-5.3-codex-spark',  // Local Codex CLI model for subscription-backed compression
+    CLAUDE_MEM_CODEX_PATH: 'codex',  // CLI executable; override if codex is not on PATH
+    CLAUDE_MEM_CODEX_REASONING_EFFORT: '',  // Empty = Codex/model default; valid: minimal, low, medium, high, xhigh
+    CLAUDE_MEM_CODEX_MAX_CONTEXT_MESSAGES: '20',  // Max messages in Codex context window
+    CLAUDE_MEM_CODEX_MAX_TOKENS: '100000',  // Max estimated tokens (~100k safety limit)
+    CLAUDE_MEM_CODEX_TIMEOUT_MS: '120000',  // Per Codex exec attempt timeout
+    CLAUDE_MEM_KIRO_AGENT: 'claude-mem-observer',  // Hook-less/tool-less Kiro agent the KiroProvider spawns (recursion guard)
+    CLAUDE_MEM_KIRO_MODEL: 'claude-haiku-4.5',  // Model pinned into the observer agent at install — cheapest Kiro tier (0.00 credits/call observed); id verified on kiro-cli 2.11.0 (dot notation; 'claude-haiku-4-5' is rejected)
+    CLAUDE_MEM_KIRO_CLI_PATH: '',  // Optional absolute path to kiro-cli (empty = PATH + known install locations)
     CLAUDE_MEM_DATA_DIR: join(homedir(), '.claude-mem'),
     CLAUDE_MEM_LOG_LEVEL: 'INFO',
     CLAUDE_MEM_PYTHON_VERSION: '3.13',
@@ -142,6 +181,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_TIER_SMART_MODEL: 'sonnet',            // #2289 — $TIER:smart resolves here (portable alias)
     CLAUDE_MEM_CHROMA_ENABLED: 'true',         // Set to 'false' to disable Chroma and use SQLite-only search
     CLAUDE_MEM_CHROMA_MODE: 'local',           // 'local' uses persistent chroma-mcp via uvx, 'remote' connects to existing server
+    CLAUDE_MEM_MERMAID_CONTEXT: 'false',        // set to 'true' to inject a Mermaid task-flow diagram at session start
     CLAUDE_MEM_CHROMA_HOST: '127.0.0.1',
     CLAUDE_MEM_CHROMA_PORT: '8000',
     CLAUDE_MEM_CHROMA_SSL: 'false',
@@ -186,11 +226,6 @@ export class SettingsDefaultsManager {
     return parseInt(value, 10);
   }
 
-  static getBool(key: keyof SettingsDefaults): boolean {
-    const value: unknown = this.get(key);
-    return value === 'true' || value === true;
-  }
-
   private static applyEnvOverrides(settings: SettingsDefaults): SettingsDefaults {
     const result = { ...settings };
     for (const key of Object.keys(this.DEFAULTS) as Array<keyof SettingsDefaults>) {
@@ -210,15 +245,23 @@ export class SettingsDefaultsManager {
           if (!existsSync(dir)) {
             mkdirSync(dir, { recursive: true });
           }
-          writeFileSync(settingsPath, JSON.stringify(defaults, null, 2), 'utf-8');
+          writeSettingsFileSecure(settingsPath, defaults);
           // stderr, never stdout: this fires on the first boot in a fresh data
           // dir, and CLI commands like `start` promise machine-readable JSON
-          // on stdout to the hook framework.
-          console.warn('[SETTINGS] Created settings file with defaults:', settingsPath);
+          // on stdout to the hook framework. emitDiagnostic routes through the
+          // same channel logger uses so the line survives the Phase 2 hook
+          // stderr buffer (#2292) instead of being swallowed by raw console.
+          emitDiagnostic(`[SETTINGS] Created settings file with defaults: ${settingsPath}\n`);
         } catch (error: unknown) {
-          console.warn('[SETTINGS] Failed to create settings file, using in-memory defaults:', settingsPath, error instanceof Error ? error.message : String(error));
+          emitDiagnostic(`[SETTINGS] Failed to create settings file, using in-memory defaults: ${settingsPath} ${error instanceof Error ? error.message : String(error)}\n`);
         }
         return applyEnvOverrides ? this.applyEnvOverrides(defaults) : defaults;
+      }
+
+      try {
+        ensureSettingsFileSecureMode(settingsPath);
+      } catch (error: unknown) {
+        console.warn('[SETTINGS] Failed to tighten settings file permissions:', settingsPath, error instanceof Error ? error.message : String(error));
       }
 
       const settingsData = readFileSync(settingsPath, 'utf-8');
@@ -232,11 +275,11 @@ export class SettingsDefaultsManager {
         flatSettings = settings.env;
 
         try {
-          writeFileSync(settingsPath, JSON.stringify(flatSettings, null, 2), 'utf-8');
+          writeSettingsFileSecure(settingsPath, flatSettings);
           // stderr, never stdout — same JSON-on-stdout contract as above.
-          console.warn('[SETTINGS] Migrated settings file from nested to flat schema:', settingsPath);
+          emitDiagnostic(`[SETTINGS] Migrated settings file from nested to flat schema: ${settingsPath}\n`);
         } catch (error: unknown) {
-          console.warn('[SETTINGS] Failed to auto-migrate settings file:', settingsPath, error instanceof Error ? error.message : String(error));
+          emitDiagnostic(`[SETTINGS] Failed to auto-migrate settings file: ${settingsPath} ${error instanceof Error ? error.message : String(error)}\n`);
           // Continue with in-memory migration even if write fails
         }
       }
@@ -250,7 +293,7 @@ export class SettingsDefaultsManager {
 
       return applyEnvOverrides ? this.applyEnvOverrides(result) : result;
     } catch (error: unknown) {
-      console.warn('[SETTINGS] Failed to load settings, using defaults:', settingsPath, error instanceof Error ? error.message : String(error));
+      emitDiagnostic(`[SETTINGS] Failed to load settings, using defaults: ${settingsPath} ${error instanceof Error ? error.message : String(error)}\n`);
       const defaults = this.getAllDefaults();
       return applyEnvOverrides ? this.applyEnvOverrides(defaults) : defaults;
     }

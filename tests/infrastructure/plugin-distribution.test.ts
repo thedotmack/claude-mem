@@ -76,6 +76,15 @@ describe('Plugin Distribution - Required Files', () => {
   }
 });
 
+describe('Plugin Distribution - Worker Bundle Closure', () => {
+  it('does not leave ChromaSync with an unresolved sqlite files helper require', () => {
+    const workerBundlePath = path.join(projectRoot, 'plugin/scripts/worker-service.cjs');
+    const workerBundle = readFileSync(workerBundlePath, 'utf-8');
+
+    expect(workerBundle).not.toContain('../sqlite/observations/files.js');
+  });
+});
+
 describe('Plugin Distribution - Codex Marketplace', () => {
   it('points Codex at the bundled plugin root', () => {
     const marketplacePath = path.join(projectRoot, '.agents/plugins/marketplace.json');
@@ -433,8 +442,8 @@ describe('Spawn-Contract Templating - Rule B installers bake absolute paths', ()
   const installerFiles = [
     'src/services/integrations/CursorHooksInstaller.ts',
     'src/services/integrations/WindsurfHooksInstaller.ts',
-    'src/services/integrations/GeminiCliHooksInstaller.ts',
     'src/services/integrations/McpIntegrations.ts',
+    'src/services/integrations/AntigravityCliHooksInstaller.ts',
   ];
 
   for (const file of installerFiles) {

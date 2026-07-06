@@ -258,13 +258,4 @@ export class MemoryItemsRepository {
     `).all(projectId, ftsQuery, limit) as MemoryItemRow[];
     return rows.map(mapMemoryItemRow);
   }
-
-  listSources(memoryItemId: string): MemorySource[] {
-    const rows = this.db.prepare(`
-      SELECT * FROM memory_sources
-      WHERE memory_item_id = ?
-      ORDER BY created_at_epoch ASC
-    `).all(memoryItemId) as MemorySourceRow[];
-    return rows.map(mapMemorySourceRow);
-  }
 }

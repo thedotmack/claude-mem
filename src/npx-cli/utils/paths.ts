@@ -50,14 +50,20 @@ export function pluginCacheDirectory(version: string): string {
 
 export function npmPackageRootDirectory(): string {
   const currentFilePath = fileURLToPath(import.meta.url);
-  const root = join(dirname(currentFilePath), '..', '..');
-  if (!existsSync(join(root, 'package.json'))) {
-    throw new Error(
-      `npmPackageRootDirectory: expected package.json at ${root}. ` +
-      `Bundle structure may have changed — update the path walk.`,
-    );
+  // Walk up until package.json: two levels for the built bundle
+  // (npx-cli/utils/ under the package root), three when executing TypeScript
+  // source directly (src/npx-cli/utils/ — e.g. `bun src/npx-cli/index.ts`).
+  let candidate = dirname(currentFilePath);
+  for (let depth = 0; depth < 5; depth++) {
+    if (existsSync(join(candidate, 'package.json'))) {
+      return candidate;
+    }
+    candidate = dirname(candidate);
   }
-  return root;
+  throw new Error(
+    `npmPackageRootDirectory: no package.json found walking up from ${dirname(currentFilePath)}. ` +
+    `Bundle structure may have changed — update the path walk.`,
+  );
 }
 
 export function npmPackagePluginDirectory(): string {
@@ -130,7 +136,10 @@ export function writeJsonFileAtomic(filepath: string, data: any): void {
     if (lstatSync(filepath).isSymbolicLink()) {
       try {
         resolved = realpathSync(filepath);
-      } catch {
+      } catch (realpathErr) {
+        // Dangling symlink (target missing) — resolve one level manually.
+        const realpathError = realpathErr instanceof Error ? realpathErr : new Error(String(realpathErr));
+        console.warn(`claude-mem: realpathSync failed for ${filepath}, resolving symlink manually:`, realpathError);
         const linkTarget = readlinkSync(filepath);
         resolved = resolve(dirname(filepath), linkTarget);
       }
@@ -187,8 +196,10 @@ export function writeJsonFileAtomic(filepath: string, data: any): void {
       try {
         dirFd = openSync(dir, 'r');
         fsyncSync(dirFd);
-      } catch {
+      } catch (dirSyncErr) {
         // Best-effort durability.
+        const dirSyncError = dirSyncErr instanceof Error ? dirSyncErr : new Error(String(dirSyncErr));
+        console.warn(`claude-mem: directory fsync failed for ${dir}:`, dirSyncError);
       } finally {
         if (dirFd !== undefined) {
           try { closeSync(dirFd); } catch { /* ignore */ }

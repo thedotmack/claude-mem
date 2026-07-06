@@ -2,6 +2,7 @@ import { readJsonFromStdin } from './stdin-reader.js';
 import { getPlatformAdapter } from './adapters/index.js';
 import { AdapterRejectedInput } from './adapters/errors.js';
 import { getEventHandler } from './handlers/index.js';
+import type { HookResult } from './types.js';
 import { HOOK_EXIT_CODES } from '../shared/hook-constants.js';
 import {
   installHookStderrBuffer,
@@ -14,12 +15,31 @@ import {
   recordWorkerUnreachable,
   setActiveHookType,
   getActiveHookType,
+  setActivePlatform,
+  activePlatformNeverBlocks,
 } from '../shared/worker-utils.js';
 import { captureCliEvent } from '../services/telemetry/cli-telemetry.js';
 import { logger } from '../utils/logger.js';
 
 export interface HookCommandOptions {
   skipExit?: boolean;
+}
+
+/**
+ * No-op result for hooks that must exit before their handler ran (adapter
+ * rejected input, transcript path missing). `context` is the sole handler
+ * key that produces SessionStart output on every platform; a bare
+ * `{continue:true}` fallback for it — with no hookSpecificOutput — is what
+ * Codex's strict SessionStart validator rejects as "invalid session start
+ * JSON output" (issue #2972). Attaching the minimal valid payload keeps the
+ * no-op harmless everywhere else too.
+ */
+export function buildNoOpResult(event: string): HookResult {
+  const result: HookResult = { continue: true, suppressOutput: true };
+  if (event === 'context') {
+    result.hookSpecificOutput = { hookEventName: 'SessionStart', additionalContext: '' };
+  }
+  return result;
 }
 
 export function isWorkerUnavailableError(error: unknown): boolean {
@@ -87,6 +107,10 @@ export async function hookCommand(platform: string, event: string, options: Hook
   // Register the hook event for the threshold-gated hook_failed telemetry
   // (closed enum enforced inside; non-enum events just omit hook_type).
   setActiveHookType(event);
+  // Register the platform so the fail-loud exit-2 paths (here and in
+  // recordWorkerUnreachable) can degrade to diagnostics on hosts where
+  // exit 2 has blocking semantics (Kiro CLI).
+  setActivePlatform(platform);
 
   // Hook IO Discipline (issue #2292):
   // We BUFFER stderr during handler execution so that unsolicited writes from
@@ -108,13 +132,13 @@ export async function hookCommand(platform: string, event: string, options: Hook
   } catch (error) {
     if (error instanceof AdapterRejectedInput) {
       logger.warn('HOOK', `Adapter rejected input (${error.reason}), skipping hook`);
-      emitModelContext(adapter, { continue: true, suppressOutput: true });
+      emitModelContext(adapter, buildNoOpResult(event));
       exitGraceful(options);
       return HOOK_EXIT_CODES.SUCCESS;
     }
     if (isNonBlockingHookInputError(error)) {
       logger.warn('HOOK', `Hook input unavailable, skipping hook: ${error instanceof Error ? error.message : error}`);
-      emitModelContext(adapter, { continue: true, suppressOutput: true });
+      emitModelContext(adapter, buildNoOpResult(event));
       exitGraceful(options);
       return HOOK_EXIT_CODES.SUCCESS;
     }
@@ -143,6 +167,13 @@ export async function hookCommand(platform: string, event: string, options: Hook
         error_mode: 'blocking_error',
         threshold_tripped: false,
       });
+    }
+    // Never-block platforms (Kiro): exit 2 there blocks the user's tool call
+    // (preToolUse) — surface the error on stderr only and exit 0.
+    if (activePlatformNeverBlocks()) {
+      stderrBuffer.flush();
+      exitGraceful(options);
+      return HOOK_EXIT_CODES.SUCCESS;
     }
     // BLOCKING_FEEDBACK: flush the buffered logger.error line to stderr and
     // exit 2 so the model receives it per Claude Code's hook contract.

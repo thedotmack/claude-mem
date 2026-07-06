@@ -57,8 +57,6 @@ describe('SQLiteSearchStrategy', () => {
       searchObservations: mock(() => [mockObservation]),
       searchSessions: mock(() => [mockSession]),
       searchUserPrompts: mock(() => [mockPrompt]),
-      findByConcept: mock(() => [mockObservation]),
-      findByType: mock(() => [mockObservation]),
       findByFile: mock(() => ({ observations: [mockObservation], sessions: [mockSession] }))
     };
     strategy = new SQLiteSearchStrategy(mockSessionSearch);
@@ -181,111 +179,6 @@ describe('SQLiteSearchStrategy', () => {
       expect(result.results.sessions).toHaveLength(0);
       expect(result.results.prompts).toHaveLength(0);
       expect(result.usedChroma).toBe(false);
-    });
-  });
-
-  describe('findByConcept', () => {
-    it('should return matching observations (sync)', () => {
-      const options: StrategySearchOptions = {
-        limit: 10
-      };
-
-      const results = strategy.findByConcept('test-concept', options);
-
-      expect(results).toHaveLength(1);
-      expect(results[0].id).toBe(1);
-      expect(mockSessionSearch.findByConcept).toHaveBeenCalledWith('test-concept', expect.any(Object));
-    });
-
-    it('should pass all filter options to findByConcept', () => {
-      const options: StrategySearchOptions = {
-        limit: 20,
-        project: 'my-project',
-        dateRange: { start: '2025-01-01' },
-        orderBy: 'date_desc'
-      };
-
-      strategy.findByConcept('test-concept', options);
-
-      expect(mockSessionSearch.findByConcept).toHaveBeenCalledWith('test-concept', {
-        limit: 20,
-        project: 'my-project',
-        dateRange: { start: '2025-01-01' },
-        orderBy: 'date_desc'
-      });
-    });
-
-    it('should use default limit when not specified', () => {
-      const options: StrategySearchOptions = {};
-
-      strategy.findByConcept('test-concept', options);
-
-      const callArgs = mockSessionSearch.findByConcept.mock.calls[0];
-      expect(callArgs[1].limit).toBe(20); 
-    });
-
-    it('should pass platformSource to findByConcept', () => {
-      const options: StrategySearchOptions = {
-        platformSource: 'cursor'
-      };
-
-      strategy.findByConcept('test-concept', options);
-
-      expect(mockSessionSearch.findByConcept).toHaveBeenCalledWith('test-concept', expect.objectContaining({
-        platformSource: 'cursor'
-      }));
-    });
-  });
-
-  describe('findByType', () => {
-    it('should return typed observations (sync)', () => {
-      const options: StrategySearchOptions = {
-        limit: 10
-      };
-
-      const results = strategy.findByType('decision', options);
-
-      expect(results).toHaveLength(1);
-      expect(results[0].type).toBe('decision');
-      expect(mockSessionSearch.findByType).toHaveBeenCalledWith('decision', expect.any(Object));
-    });
-
-    it('should handle array of types', () => {
-      const options: StrategySearchOptions = {
-        limit: 10
-      };
-
-      strategy.findByType(['decision', 'bugfix'], options);
-
-      expect(mockSessionSearch.findByType).toHaveBeenCalledWith(['decision', 'bugfix'], expect.any(Object));
-    });
-
-    it('should pass filter options to findByType', () => {
-      const options: StrategySearchOptions = {
-        limit: 15,
-        project: 'test-project',
-        orderBy: 'date_asc'
-      };
-
-      strategy.findByType('feature', options);
-
-      expect(mockSessionSearch.findByType).toHaveBeenCalledWith('feature', {
-        limit: 15,
-        project: 'test-project',
-        orderBy: 'date_asc'
-      });
-    });
-
-    it('should pass platformSource to findByType', () => {
-      const options: StrategySearchOptions = {
-        platformSource: 'cursor'
-      };
-
-      strategy.findByType('feature', options);
-
-      expect(mockSessionSearch.findByType).toHaveBeenCalledWith('feature', expect.objectContaining({
-        platformSource: 'cursor'
-      }));
     });
   });
 

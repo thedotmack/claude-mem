@@ -1,0 +1,72 @@
+---
+title: "Kiro CLI Setup"
+description: "Add persistent memory to Amazon's Kiro CLI with claude-mem"
+---
+
+# Kiro CLI Setup
+
+> **Give Kiro CLI persistent memory across sessions.**
+
+[Kiro CLI](https://kiro.dev/docs/cli/) (formerly Amazon Q Developer CLI) starts every session from scratch. Claude-mem changes that by capturing observations, decisions, and patterns — then injecting relevant context into each new session.
+
+<Info>
+**How it works:** Kiro CLI hooks live inside agent configuration files (`~/.kiro/agents/*.json`), not a global hooks file. Claude-mem patches a hooks block into every agent config it finds: `agentSpawn` injects memory from past sessions (Kiro adds the hook's stdout to model context), `userPromptSubmit` registers the prompt and injects semantically relevant observations, `postToolUse` captures every tool call, and `stop` queues a session summary from Kiro's `assistant_response` payload. A local worker service does the storage, compression, and retrieval.
+</Info>
+
+## Prerequisites
+
+- [Kiro CLI](https://kiro.dev/docs/cli/installation/) installed (`~/.kiro` must exist) — macOS/Linux only; use WSL on Windows
+- [Node.js](https://nodejs.org/) 20+
+- Bun and uv are auto-installed by the claude-mem installer if missing
+
+## Installation
+
+### Step 1: Install claude-mem
+
+```bash
+npx claude-mem install --ide kiro-cli
+```
+
+Or run `npx claude-mem install` and pick **Kiro CLI** in the IDE picker (detected via the `~/.kiro` directory, which Kiro creates on first run). The installer will:
+
+1. Merge memory hooks into every agent config in `~/.kiro/agents/` (your own hook entries are preserved; re-running is idempotent). If you have no agents yet, it creates a `claude-mem` agent you can select with `/agent`.
+2. Register the `claude-mem` MCP server in `~/.kiro/settings/mcp.json` with read-only search tools auto-approved.
+3. Copy all claude-mem skills to `~/.kiro/skills/` — Kiro implements the same Agent Skills standard, so they work as slash commands (`/mem-search`, `/learn-codebase`, …).
+4. Enable per-prompt semantic injection (`CLAUDE_MEM_SEMANTIC_INJECT=true`) — see [Parity](/kiro-cli/parity) for why this is defaulted on for Kiro. The setting is global (it also applies to other claude-mem platforms on this machine); the installer only sets it when you haven't, and uninstall reverts it.
+5. Record everything it touched in `~/.claude-mem/kiro-install.json` so uninstall removes exactly that.
+
+### Step 2: AI provider — your Kiro subscription, by default
+
+Claude-mem needs an AI provider to compress observations. On Kiro installs this **defaults to your Kiro subscription** — no API key and no other tools required:
+
+- `npx claude-mem install --ide kiro-cli` defaults `CLAUDE_MEM_PROVIDER=kiro` (pick another in the provider prompt or pass `--provider claude|gemini|openrouter`; an installer-written default is reverted on uninstall) and writes a dedicated `claude-mem-observer` agent to `~/.kiro/agents/` — a **hook-less, tool-less** agent the worker spawns via headless `kiro-cli chat --no-interactive` for each compression call. Hook-less is deliberate: it stops the compression chat from being observed by claude-mem itself (recursion guard). Don't add hooks to it.
+- Requirements: an active `kiro-cli login` session. Each compression call consumes a small amount of Kiro credits (fractions of a credit per observation batch).
+- Optional settings: `CLAUDE_MEM_KIRO_MODEL` (model pinned into the observer agent at install — defaults to `claude-haiku-4.5`, the cheapest Kiro tier; note the dot notation), `CLAUDE_MEM_KIRO_CLI_PATH` (non-standard binary location).
+
+Prefer a different backend? All other providers still work — `CLAUDE_MEM_PROVIDER` accepts `claude` (needs Claude Code on the same machine), `gemini`, or `openrouter` (any OpenAI-compatible endpoint). See [Cursor's provider guides](/cursor/gemini-setup); the setup is identical.
+
+### Step 3: Verify
+
+```bash
+npx claude-mem kiro-cli status   # hooks / MCP / skills / unhooked agents
+npx claude-mem status            # worker health
+```
+
+Then start a chat (`kiro-cli chat`), do some work, end the turn, and start a new session in the same project — the injected memory block appears in your agent's context (check with `/context show`). The live viewer is at the worker URL printed by `npx claude-mem status`.
+
+## Important Kiro-specific behaviour
+
+<Warning>
+**Hooks are per-agent.** Kiro has no global hooks file, so agents created *after* installation have no memory capture until you re-run `npx claude-mem install --ide kiro-cli` (idempotent — it patches new agents and leaves everything else untouched). `npx claude-mem kiro-cli status` lists unhooked agents.
+</Warning>
+
+- **MCP tools in custom agents:** agents load `mcp.json` servers when `"includeMcpJson": true` (or list `"@claude-mem"` in `tools`). The read-only search tools are pre-approved; write tools (`build_corpus`, `observation_*`) still prompt.
+- **Session identity:** Kiro delivers the session UUID to hooks via the `KIRO_SESSION_ID` environment variable (verified on kiro-cli 2.11.0 — the documented `session_id` payload field is absent). In headless mode, `--resume` was observed to mint a fresh UUID, so a resumed conversation appears as a new claude-mem session; project-level memory is unaffected.
+
+## Uninstall
+
+```bash
+npx claude-mem kiro-cli uninstall
+```
+
+Removes the hook entries (yours stay), the MCP entry, and claude-mem-owned skills; your observation database in `~/.claude-mem` is preserved.

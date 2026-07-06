@@ -8,6 +8,7 @@ import {
   type PostgresPoolClient,
   type PostgresStorageRepositories
 } from '../../../src/storage/postgres/index.js';
+import { quoteIdentifier } from '../../sdk/pg-isolation.js';
 
 const testDatabaseUrl = process.env.CLAUDE_MEM_TEST_POSTGRES_URL;
 
@@ -901,8 +902,4 @@ async function createFixtureScopeWithEventJob(storage: PostgresStorageRepositori
   });
 
   return { ...scope, event, eventJob };
-}
-
-function quoteIdentifier(identifier: string): string {
-  return `"${identifier.replaceAll('"', '""')}"`;
 }

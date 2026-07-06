@@ -22,13 +22,11 @@ const {
   removePidFile,
   removePidFileIfOwner,
   getPlatformTimeout,
-  isProcessAlive,
   cleanStalePidFile,
   isPidFileRecent,
   touchPidFile,
   spawnDaemon,
   resolveWorkerRuntimePath,
-  runOneTimeChromaMigration,
   captureProcessStartToken,
   verifyPidFileOwnership,
 } = await import('../../src/services/infrastructure/index.js');
@@ -410,30 +408,6 @@ describe('ProcessManager', () => {
     });
   });
 
-  describe('isProcessAlive', () => {
-    it('should return true for the current process', () => {
-      expect(isProcessAlive(process.pid)).toBe(true);
-    });
-
-    it('should return false for a non-existent PID', () => {
-      expect(isProcessAlive(2147483647)).toBe(false);
-    });
-
-    it('should return true for PID 0 (Windows WMIC sentinel)', () => {
-      expect(isProcessAlive(0)).toBe(true);
-    });
-
-    it('should return false for negative PIDs', () => {
-      expect(isProcessAlive(-1)).toBe(false);
-      expect(isProcessAlive(-999)).toBe(false);
-    });
-
-    it('should return false for non-integer PIDs', () => {
-      expect(isProcessAlive(1.5)).toBe(false);
-      expect(isProcessAlive(NaN)).toBe(false);
-    });
-  });
-
   describe('captureProcessStartToken', () => {
     const supported = process.platform === 'linux' || process.platform === 'darwin';
 
@@ -720,48 +694,6 @@ describe('ProcessManager', () => {
 
       // Verify the non-daemon path: SIGHUP should trigger shutdown (covered by registerSignalHandlers)
       // This is a logic verification test — actual signal delivery is tested manually
-    });
-  });
-
-  describe('runOneTimeChromaMigration', () => {
-    let testDataDir: string;
-
-    beforeEach(() => {
-      testDataDir = path.join(tmpdir(), `claude-mem-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-      mkdirSync(testDataDir, { recursive: true });
-    });
-
-    afterEach(() => {
-      rmSync(testDataDir, { recursive: true, force: true });
-    });
-
-    it('should wipe chroma directory and write marker file', () => {
-      const chromaDir = path.join(testDataDir, 'chroma');
-      mkdirSync(chromaDir, { recursive: true });
-      writeFileSync(path.join(chromaDir, 'test-data.bin'), 'fake chroma data');
-
-      runOneTimeChromaMigration(testDataDir);
-
-      expect(existsSync(chromaDir)).toBe(false);
-      expect(existsSync(path.join(testDataDir, '.chroma-cleaned-v10.3'))).toBe(true);
-    });
-
-    it('should skip when marker file already exists (idempotent)', () => {
-      writeFileSync(path.join(testDataDir, '.chroma-cleaned-v10.3'), 'already done');
-
-      const chromaDir = path.join(testDataDir, 'chroma');
-      mkdirSync(chromaDir, { recursive: true });
-      writeFileSync(path.join(chromaDir, 'important.bin'), 'should survive');
-
-      runOneTimeChromaMigration(testDataDir);
-
-      expect(existsSync(chromaDir)).toBe(true);
-      expect(existsSync(path.join(chromaDir, 'important.bin'))).toBe(true);
-    });
-
-    it('should handle missing chroma directory gracefully', () => {
-      expect(() => runOneTimeChromaMigration(testDataDir)).not.toThrow();
-      expect(existsSync(path.join(testDataDir, '.chroma-cleaned-v10.3'))).toBe(true);
     });
   });
 });

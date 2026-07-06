@@ -27,6 +27,7 @@ export interface ContextConfig {
   fullObservationField: 'narrative' | 'facts';
   showLastSummary: boolean;
   showLastMessage: boolean;
+  mermaidContext: boolean;
 }
 
 export interface Observation {

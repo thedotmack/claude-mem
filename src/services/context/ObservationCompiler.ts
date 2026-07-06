@@ -16,89 +16,6 @@ import type {
 import { SUMMARY_LOOKAHEAD } from './types.js';
 import { NOT_DISMISSED_SQL } from '../sqlite/observations/dismiss-filter.js';
 
-export function queryObservations(
-  db: SessionStore,
-  project: string,
-  config: ContextConfig,
-  platformSource?: string
-): Observation[] {
-  const typeArray = Array.from(config.observationTypes);
-  const typePlaceholders = typeArray.map(() => '?').join(',');
-  const conceptArray = Array.from(config.observationConcepts);
-  const conceptPlaceholders = conceptArray.map(() => '?').join(',');
-
-  return db.db.prepare(`
-    SELECT
-      o.id,
-      o.memory_session_id,
-      COALESCE(s.platform_source, 'claude') as platform_source,
-      o.type,
-      o.title,
-      o.subtitle,
-      o.narrative,
-      o.facts,
-      o.concepts,
-      o.files_read,
-      o.files_modified,
-      o.discovery_tokens,
-      o.created_at,
-      o.created_at_epoch
-    FROM observations o
-    LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
-    WHERE (o.project = ? OR o.merged_into_project = ?)
-      AND (? IS NULL OR s.platform_source = ?)
-      AND type IN (${typePlaceholders})
-      AND EXISTS (
-        SELECT 1 FROM json_each(o.concepts)
-        WHERE value IN (${conceptPlaceholders})
-      )
-      AND ${NOT_DISMISSED_SQL}
-    ORDER BY o.created_at_epoch DESC
-    LIMIT ?
-  `).all(
-    project,
-    project,
-    platformSource ?? null,
-    platformSource ?? null,
-    ...typeArray,
-    ...conceptArray,
-    config.totalObservationCount
-  ) as Observation[];
-}
-
-export function querySummaries(
-  db: SessionStore,
-  project: string,
-  config: ContextConfig,
-  platformSource?: string
-): SessionSummary[] {
-  return db.db.prepare(`
-    SELECT
-      ss.id,
-      ss.memory_session_id,
-      COALESCE(s.platform_source, 'claude') as platform_source,
-      ss.request,
-      ss.investigated,
-      ss.learned,
-      ss.completed,
-      ss.next_steps,
-      ss.created_at,
-      ss.created_at_epoch
-    FROM session_summaries ss
-    LEFT JOIN sdk_sessions s ON ss.memory_session_id = s.memory_session_id
-    WHERE (ss.project = ? OR ss.merged_into_project = ?)
-      AND (? IS NULL OR s.platform_source = ?)
-    ORDER BY ss.created_at_epoch DESC
-    LIMIT ?
-  `).all(
-    project,
-    project,
-    platformSource ?? null,
-    platformSource ?? null,
-    config.sessionCount + SUMMARY_LOOKAHEAD
-  ) as SessionSummary[];
-}
-
 export function queryObservationsMulti(
   db: SessionStore,
   projects: string[],
@@ -292,7 +209,22 @@ export function prepareSummariesForTimeline(
   const mostRecentSummaryId = allSummaries[0]?.id;
 
   return displaySummaries.map((summary, i) => {
-    const olderSummary = i === 0 ? null : allSummaries[i + 1];
+    // Each summary is a "Session started" marker, so back-date it to the start
+    // of its session: the next-older summary in the SAME project (its previous
+    // session). This applies to every entry, including the newest. In
+    // multi-project context allSummaries interleaves projects ordered by time,
+    // so we skip summaries from other projects rather than blindly taking
+    // allSummaries[i + 1]. allSummaries is over-fetched by SUMMARY_LOOKAHEAD so
+    // the last displayed summary still has an older neighbor to anchor to.
+    // (Single-project queries don't select `project`, so it is undefined for
+    // every row and this matches the immediate next summary, as before.)
+    let olderSummary: SessionSummary | null = null;
+    for (let j = i + 1; j < allSummaries.length; j++) {
+      if (allSummaries[j].project === summary.project) {
+        olderSummary = allSummaries[j];
+        break;
+      }
+    }
     return {
       ...summary,
       displayEpoch: olderSummary ? olderSummary.created_at_epoch : summary.created_at_epoch,

@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 
+import { parseArgs } from "node:util";
 import { translateReadme, SUPPORTED_LANGUAGES } from "./index.ts";
 
 interface CliArgs {
@@ -116,81 +117,50 @@ function printLanguages(): void {
   console.log("");
 }
 
-function parseArgs(argv: string[]): CliArgs {
-  const args: CliArgs = {
-    source: "",
-    languages: [],
-    preserveCode: true,
-    verbose: false,
-    force: false,
-    useExisting: false,
-    help: false,
-    listLanguages: false,
-  };
+function parseCliArgs(argv: string[]): CliArgs {
+  try {
+    const { values, positionals } = parseArgs({
+      args: argv.slice(2),
+      allowPositionals: true,
+      options: {
+        help: { type: "boolean", short: "h", default: false },
+        "list-languages": { type: "boolean", default: false },
+        verbose: { type: "boolean", short: "v", default: false },
+        force: { type: "boolean", short: "f", default: false },
+        "use-existing": { type: "boolean", default: false },
+        "no-preserve-code": { type: "boolean", default: false },
+        output: { type: "string", short: "o" },
+        pattern: { type: "string", short: "p" },
+        model: { type: "string", short: "m" },
+        "max-budget": { type: "string" },
+      },
+    });
 
-  const positional: string[] = [];
-  let i = 2; 
-
-  while (i < argv.length) {
-    const arg = argv[i];
-
-    switch (arg) {
-      case "-h":
-      case "--help":
-        args.help = true;
-        break;
-      case "--list-languages":
-        args.listLanguages = true;
-        break;
-      case "-v":
-      case "--verbose":
-        args.verbose = true;
-        break;
-      case "-f":
-      case "--force":
-        args.force = true;
-        break;
-      case "--use-existing":
-        args.useExisting = true;
-        break;
-      case "--no-preserve-code":
-        args.preserveCode = false;
-        break;
-      case "-o":
-      case "--output":
-        args.outputDir = argv[++i];
-        break;
-      case "-p":
-      case "--pattern":
-        args.pattern = argv[++i];
-        break;
-      case "-m":
-      case "--model":
-        args.model = argv[++i];
-        break;
-      case "--max-budget":
-        args.maxBudget = parseFloat(argv[++i]);
-        break;
-      default:
-        if (arg.startsWith("-")) {
-          console.error(`Unknown option: ${arg}`);
-          process.exit(1);
-        }
-        positional.push(arg);
-    }
-    i++;
+    return {
+      source: positionals[0] ?? "",
+      languages: positionals.slice(1),
+      outputDir: values.output,
+      pattern: values.pattern,
+      preserveCode: !values["no-preserve-code"],
+      model: values.model,
+      maxBudget:
+        values["max-budget"] !== undefined
+          ? parseFloat(values["max-budget"])
+          : undefined,
+      verbose: values.verbose,
+      force: values.force,
+      useExisting: values["use-existing"],
+      help: values.help,
+      listLanguages: values["list-languages"],
+    };
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
   }
-
-  if (positional.length > 0) {
-    args.source = positional[0];
-    args.languages = positional.slice(1);
-  }
-
-  return args;
 }
 
 async function main(): Promise<void> {
-  const args = parseArgs(process.argv);
+  const args = parseCliArgs(process.argv);
 
   if (args.help) {
     printHelp();

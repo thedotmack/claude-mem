@@ -92,16 +92,6 @@ export class SQLiteSearchStrategy {
     };
   }
 
-  findByConcept(concept: string, options: StrategySearchOptions): ObservationSearchResult[] {
-    const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project, platformSource, dateRange, orderBy = 'date_desc' } = options;
-    return this.sessionSearch.findByConcept(concept, { limit, project, platformSource, dateRange, orderBy });
-  }
-
-  findByType(type: string | string[], options: StrategySearchOptions): ObservationSearchResult[] {
-    const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project, platformSource, dateRange, orderBy = 'date_desc' } = options;
-    return this.sessionSearch.findByType(type as any, { limit, project, platformSource, dateRange, orderBy });
-  }
-
   findByFile(filePath: string, options: StrategySearchOptions): {
     observations: ObservationSearchResult[];
     sessions: SessionSummarySearchResult[];

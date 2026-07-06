@@ -17,14 +17,13 @@ import {
 import { getWorkerPort, workerHttpRequest, resolveWorkerScriptPath } from '../shared/worker-utils.js';
 import { ensureWorkerStarted } from '../services/worker-spawner.js';
 import { searchCodebase, formatSearchResults } from '../services/smart-file-read/search.js';
-import { parseFile, formatFoldedView, unfoldSymbol, findProjectRoot } from '../services/smart-file-read/parser.js';
+import { parseFile, formatFoldedView, unfoldSymbol } from '../services/smart-file-read/parser.js';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import {
-  ServerClient,
   ServerClientError,
   isServerClientError,
   type ServerAddObservationRequest,
@@ -45,8 +44,9 @@ const mcpServerDir = (() => {
   if (typeof __dirname !== 'undefined') return __dirname;
   try {
     return dirname(fileURLToPath(import.meta.url));
-  } catch {
+  } catch (error) {
     mcpServerDirResolutionFailed = true;
+    logger.warn('SYSTEM', 'mcp-server: failed to resolve module directory from import.meta.url, falling back to process.cwd()', undefined, error instanceof Error ? error : new Error(String(error)));
     return process.cwd();
   }
 })();
@@ -68,170 +68,48 @@ function errorIfWorkerScriptMissing(): void {
   );
 }
 
-const TOOL_ENDPOINT_MAP: Record<string, string> = {
-  'search': '/api/search',
-  'timeline': '/api/timeline'
-};
-
-async function callWorkerAPI(
+async function callWorker(
   endpoint: string,
-  params: Record<string, any>
+  opts: { query?: Record<string, any>; body?: Record<string, any>; del?: boolean; text?: boolean } = {}
 ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
-  logger.debug('SYSTEM', '→ Worker API', undefined, { endpoint, params });
-
-  const searchParams = new URLSearchParams();
-
-  for (const [key, value] of Object.entries(params)) {
-    if (value !== undefined && value !== null) {
-      searchParams.append(key, String(value));
-    }
-  }
-
-  const apiPath = `${endpoint}?${searchParams}`;
+  logger.debug('SYSTEM', '→ Worker API', undefined, { endpoint });
 
   try {
-    const response = await workerHttpRequest(apiPath);
+    let response: Response;
+    if (opts.del) {
+      response = await workerHttpRequest(endpoint, { method: 'DELETE' });
+    } else if (opts.body) {
+      response = await workerHttpRequest(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(opts.body)
+      });
+    } else {
+      const searchParams = new URLSearchParams();
+      for (const [key, value] of Object.entries(opts.query ?? {})) {
+        if (value !== undefined && value !== null) {
+          searchParams.append(key, String(value));
+        }
+      }
+      response = await workerHttpRequest(`${endpoint}?${searchParams}`);
+    }
 
     if (!response.ok) {
       const errorText = await response.text();
       throw new Error(`Worker API error (${response.status}): ${errorText}`);
     }
-
-    const data = await response.json() as { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
 
     logger.debug('SYSTEM', '← Worker API success', undefined, { endpoint });
 
-    return data;
+    if (opts.text) {
+      return { content: [{ type: 'text' as const, text: await response.text() }] };
+    }
+    if (opts.body || opts.del) {
+      return { content: [{ type: 'text' as const, text: JSON.stringify(await response.json(), null, 2) }] };
+    }
+    return await response.json() as { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
   } catch (error: unknown) {
     logger.error('SYSTEM', '← Worker API error', { endpoint }, error instanceof Error ? error : new Error(String(error)));
-    return {
-      content: [{
-        type: 'text' as const,
-        text: `Error calling Worker API: ${error instanceof Error ? error.message : String(error)}`
-      }],
-      isError: true
-    };
-  }
-}
-
-async function callWorkerAPIText(
-  endpoint: string,
-  params: Record<string, any>
-): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
-  logger.debug('SYSTEM', '→ Worker API text', undefined, { endpoint, params });
-
-  const searchParams = new URLSearchParams();
-
-  for (const [key, value] of Object.entries(params)) {
-    if (value !== undefined && value !== null) {
-      searchParams.append(key, String(value));
-    }
-  }
-
-  const apiPath = `${endpoint}?${searchParams}`;
-
-  try {
-    const response = await workerHttpRequest(apiPath);
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Worker API error (${response.status}): ${errorText}`);
-    }
-
-    const text = await response.text();
-
-    logger.debug('SYSTEM', '← Worker API text success', undefined, { endpoint });
-
-    return {
-      content: [{
-        type: 'text' as const,
-        text,
-      }],
-    };
-  } catch (error: unknown) {
-    logger.error('SYSTEM', '← Worker API text error', { endpoint }, error instanceof Error ? error : new Error(String(error)));
-    return {
-      content: [{
-        type: 'text' as const,
-        text: `Error calling Worker API: ${error instanceof Error ? error.message : String(error)}`
-      }],
-      isError: true
-    };
-  }
-}
-
-async function executeWorkerPostRequest(
-  endpoint: string,
-  body: Record<string, any>
-): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
-  const response = await workerHttpRequest(endpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Worker API error (${response.status}): ${errorText}`);
-  }
-
-  const data = await response.json();
-
-  logger.debug('HTTP', 'Worker API success (POST)', undefined, { endpoint });
-
-  return {
-    content: [{
-      type: 'text' as const,
-      text: JSON.stringify(data, null, 2)
-    }]
-  };
-}
-
-async function callWorkerAPIPost(
-  endpoint: string,
-  body: Record<string, any>
-): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
-  logger.debug('HTTP', 'Worker API request (POST)', undefined, { endpoint });
-
-  try {
-    return await executeWorkerPostRequest(endpoint, body);
-  } catch (error: unknown) {
-    logger.error('HTTP', 'Worker API error (POST)', { endpoint }, error instanceof Error ? error : new Error(String(error)));
-    return {
-      content: [{
-        type: 'text' as const,
-        text: `Error calling Worker API: ${error instanceof Error ? error.message : String(error)}`
-      }],
-      isError: true
-    };
-  }
-}
-
-async function callWorkerAPIDelete(
-  endpoint: string
-): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
-  logger.debug('HTTP', 'Worker API request (DELETE)', undefined, { endpoint });
-
-  try {
-    const response = await workerHttpRequest(endpoint, { method: 'DELETE' });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Worker API error (${response.status}): ${errorText}`);
-    }
-
-    const data = await response.json();
-
-    logger.debug('HTTP', 'Worker API success (DELETE)', undefined, { endpoint });
-
-    return {
-      content: [{
-        type: 'text' as const,
-        text: JSON.stringify(data, null, 2)
-      }]
-    };
-  } catch (error: unknown) {
-    logger.error('HTTP', 'Worker API error (DELETE)', { endpoint }, error instanceof Error ? error : new Error(String(error)));
     return {
       content: [{
         type: 'text' as const,
@@ -337,6 +215,21 @@ function requireServerForObservationTool(toolName: string): ServerAvailable {
   return resolution;
 }
 
+function wrapHandler<Args>(
+  toolName: string,
+  execute: (args: Args) => Promise<{ content: Array<{ type: 'text'; text: string }> }>,
+): (args: Args) => Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+  return async (args: Args) => {
+    try {
+      return await execute(args);
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      logger.warn('SYSTEM', `${toolName} failed`, undefined, err);
+      return formatToolError(error);
+    }
+  };
+}
+
 interface ObservationAddArgs {
   projectId?: string;
   serverSessionId?: string | null;
@@ -345,28 +238,22 @@ interface ObservationAddArgs {
   metadata?: Record<string, unknown>;
 }
 
-async function handleObservationAdd(
-  args: ObservationAddArgs,
-): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
-  try {
-    const ctx = requireServerForObservationTool('observation_add');
-    if (typeof args?.content !== 'string' || args.content.trim().length === 0) {
-      throw new Error('observation_add: "content" is required');
-    }
-    const projectId = args.projectId && args.projectId.trim().length > 0 ? args.projectId : ctx.projectId;
-    const request: ServerAddObservationRequest = {
-      projectId,
-      content: args.content,
-      ...(args.serverSessionId !== undefined ? { serverSessionId: args.serverSessionId } : {}),
-      ...(args.kind !== undefined ? { kind: args.kind } : {}),
-      ...(args.metadata !== undefined ? { metadata: args.metadata } : {}),
-    };
-    const response = await ctx.client.addObservation(request);
-    return formatJsonResult(response);
-  } catch (error) {
-    return formatToolError(error);
+const handleObservationAdd = wrapHandler('observation_add', async (args: ObservationAddArgs) => {
+  const ctx = requireServerForObservationTool('observation_add');
+  if (typeof args?.content !== 'string' || args.content.trim().length === 0) {
+    throw new Error('observation_add: "content" is required');
   }
-}
+  const projectId = args.projectId && args.projectId.trim().length > 0 ? args.projectId : ctx.projectId;
+  const request: ServerAddObservationRequest = {
+    projectId,
+    content: args.content,
+    ...(args.serverSessionId !== undefined ? { serverSessionId: args.serverSessionId } : {}),
+    ...(args.kind !== undefined ? { kind: args.kind } : {}),
+    ...(args.metadata !== undefined ? { metadata: args.metadata } : {}),
+  };
+  const response = await ctx.client.addObservation(request);
+  return formatJsonResult(response);
+});
 
 interface ObservationRecordEventArgs {
   projectId?: string;
@@ -385,33 +272,27 @@ function normalizeMcpPlatformSource(value: string | null): string | null {
   return typeof value === 'string' ? normalizePlatformSource(value) : null;
 }
 
-async function handleObservationRecordEvent(
-  args: ObservationRecordEventArgs,
-): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
-  try {
-    const ctx = requireServerForObservationTool('observation_record_event');
-    if (typeof args?.eventType !== 'string' || args.eventType.trim().length === 0) {
-      throw new Error('observation_record_event: "eventType" is required');
-    }
-    const projectId = args.projectId && args.projectId.trim().length > 0 ? args.projectId : ctx.projectId;
-    const request: ServerRecordEventRequest = {
-      projectId,
-      sourceType: args.sourceType ?? 'api',
-      eventType: args.eventType,
-      occurredAtEpoch: typeof args.occurredAtEpoch === 'number' ? args.occurredAtEpoch : Date.now(),
-      ...(args.serverSessionId !== undefined ? { serverSessionId: args.serverSessionId } : {}),
-      ...(args.contentSessionId !== undefined ? { contentSessionId: args.contentSessionId } : {}),
-      ...(args.memorySessionId !== undefined ? { memorySessionId: args.memorySessionId } : {}),
-      ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
-      ...(args.payload !== undefined ? { payload: args.payload } : {}),
-      ...(args.generate !== undefined ? { generate: args.generate } : {}),
-    };
-    const response = await ctx.client.recordEvent(request);
-    return formatJsonResult(response);
-  } catch (error) {
-    return formatToolError(error);
+const handleObservationRecordEvent = wrapHandler('observation_record_event', async (args: ObservationRecordEventArgs) => {
+  const ctx = requireServerForObservationTool('observation_record_event');
+  if (typeof args?.eventType !== 'string' || args.eventType.trim().length === 0) {
+    throw new Error('observation_record_event: "eventType" is required');
   }
-}
+  const projectId = args.projectId && args.projectId.trim().length > 0 ? args.projectId : ctx.projectId;
+  const request: ServerRecordEventRequest = {
+    projectId,
+    sourceType: args.sourceType ?? 'api',
+    eventType: args.eventType,
+    occurredAtEpoch: typeof args.occurredAtEpoch === 'number' ? args.occurredAtEpoch : Date.now(),
+    ...(args.serverSessionId !== undefined ? { serverSessionId: args.serverSessionId } : {}),
+    ...(args.contentSessionId !== undefined ? { contentSessionId: args.contentSessionId } : {}),
+    ...(args.memorySessionId !== undefined ? { memorySessionId: args.memorySessionId } : {}),
+    ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
+    ...(args.payload !== undefined ? { payload: args.payload } : {}),
+    ...(args.generate !== undefined ? { generate: args.generate } : {}),
+  };
+  const response = await ctx.client.recordEvent(request);
+  return formatJsonResult(response);
+});
 
 interface ObservationSearchArgs {
   projectId?: string;
@@ -420,27 +301,21 @@ interface ObservationSearchArgs {
   platformSource?: string | null;
 }
 
-async function handleObservationSearch(
-  args: ObservationSearchArgs,
-): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
-  try {
-    const ctx = requireServerForObservationTool('observation_search');
-    if (typeof args?.query !== 'string' || args.query.trim().length === 0) {
-      throw new Error('observation_search: "query" is required');
-    }
-    const projectId = args.projectId && args.projectId.trim().length > 0 ? args.projectId : ctx.projectId;
-    const request: ServerSearchObservationsRequest = {
-      projectId,
-      query: args.query,
-      ...(args.limit !== undefined ? { limit: args.limit } : {}),
-      ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
-    };
-    const response = await ctx.client.searchObservations(request);
-    return formatJsonResult(response);
-  } catch (error) {
-    return formatToolError(error);
+const handleObservationSearch = wrapHandler('observation_search', async (args: ObservationSearchArgs) => {
+  const ctx = requireServerForObservationTool('observation_search');
+  if (typeof args?.query !== 'string' || args.query.trim().length === 0) {
+    throw new Error('observation_search: "query" is required');
   }
-}
+  const projectId = args.projectId && args.projectId.trim().length > 0 ? args.projectId : ctx.projectId;
+  const request: ServerSearchObservationsRequest = {
+    projectId,
+    query: args.query,
+    ...(args.limit !== undefined ? { limit: args.limit } : {}),
+    ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
+  };
+  const response = await ctx.client.searchObservations(request);
+  return formatJsonResult(response);
+});
 
 interface ObservationContextArgs {
   projectId?: string;
@@ -449,27 +324,21 @@ interface ObservationContextArgs {
   platformSource?: string | null;
 }
 
-async function handleObservationContext(
-  args: ObservationContextArgs,
-): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
-  try {
-    const ctx = requireServerForObservationTool('observation_context');
-    if (typeof args?.query !== 'string' || args.query.trim().length === 0) {
-      throw new Error('observation_context: "query" is required');
-    }
-    const projectId = args.projectId && args.projectId.trim().length > 0 ? args.projectId : ctx.projectId;
-    const request: ServerContextObservationsRequest = {
-      projectId,
-      query: args.query,
-      ...(args.limit !== undefined ? { limit: args.limit } : {}),
-      ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
-    };
-    const response = await ctx.client.contextObservations(request);
-    return formatJsonResult(response);
-  } catch (error) {
-    return formatToolError(error);
+const handleObservationContext = wrapHandler('observation_context', async (args: ObservationContextArgs) => {
+  const ctx = requireServerForObservationTool('observation_context');
+  if (typeof args?.query !== 'string' || args.query.trim().length === 0) {
+    throw new Error('observation_context: "query" is required');
   }
-}
+  const projectId = args.projectId && args.projectId.trim().length > 0 ? args.projectId : ctx.projectId;
+  const request: ServerContextObservationsRequest = {
+    projectId,
+    query: args.query,
+    ...(args.limit !== undefined ? { limit: args.limit } : {}),
+    ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
+  };
+  const response = await ctx.client.contextObservations(request);
+  return formatJsonResult(response);
+});
 
 interface ObservationGenerationStatusArgs {
   jobId?: string;
@@ -516,29 +385,26 @@ async function handleSessionStartContext(
     };
   }
 
-  return callWorkerAPIText('/api/context/inject', {
-    projects: projects.join(','),
-    ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
-    ...(args.full !== undefined ? { full: args.full } : {}),
-    ...(args.colors !== undefined ? { colors: args.colors } : {}),
+  return callWorker('/api/context/inject', {
+    query: {
+      projects: projects.join(','),
+      ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
+      ...(args.full !== undefined ? { full: args.full } : {}),
+      ...(args.colors !== undefined ? { colors: args.colors } : {}),
+    },
+    text: true,
   });
 }
 
-async function handleObservationGenerationStatus(
-  args: ObservationGenerationStatusArgs,
-): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
-  try {
-    const ctx = requireServerForObservationTool('observation_generation_status');
-    const jobId = (args?.jobId ?? args?.job_id ?? '').trim();
-    if (!jobId) {
-      throw new Error('observation_generation_status: "jobId" is required');
-    }
-    const response = await ctx.client.getJobStatus(jobId);
-    return formatJsonResult(response);
-  } catch (error) {
-    return formatToolError(error);
+const handleObservationGenerationStatus = wrapHandler('observation_generation_status', async (args: ObservationGenerationStatusArgs) => {
+  const ctx = requireServerForObservationTool('observation_generation_status');
+  const jobId = (args?.jobId ?? args?.job_id ?? '').trim();
+  if (!jobId) {
+    throw new Error('observation_generation_status: "jobId" is required');
   }
-}
+  const response = await ctx.client.getJobStatus(jobId);
+  return formatJsonResult(response);
+});
 
 async function ensureWorkerConnection(): Promise<boolean> {
   if (await verifyWorkerConnection()) {
@@ -625,8 +491,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       additionalProperties: true
     },
     handler: async (args: any) => {
-      const endpoint = TOOL_ENDPOINT_MAP['search'];
-      return await callWorkerAPI(endpoint, args);
+      return await callWorker('/api/search', { query: args });
     }
   },
   {
@@ -644,8 +509,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       additionalProperties: true
     },
     handler: async (args: any) => {
-      const endpoint = TOOL_ENDPOINT_MAP['timeline'];
-      return await callWorkerAPI(endpoint, args);
+      return await callWorker('/api/timeline', { query: args });
     }
   },
   {
@@ -664,7 +528,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       additionalProperties: true
     },
     handler: async (args: any) => {
-      return await callWorkerAPIPost('/api/observations/batch', args);
+      return await callWorker('/api/observations/batch', { body: args });
     }
   },
   {
@@ -685,7 +549,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
         return { content: [{ type: 'text' as const, text: 'observation_dismiss requires an integer "id".' }], isError: true };
       }
       const body = typeof args?.reason === 'string' && args.reason.trim() ? { reason: args.reason } : {};
-      return await callWorkerAPIPost(`/api/observations/${id}/dismiss`, body);
+      return await callWorker(`/api/observations/${id}/dismiss`, { body });
     }
   },
   {
@@ -704,7 +568,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       if (!Number.isInteger(id) || id <= 0) {
         return { content: [{ type: 'text' as const, text: 'observation_undismiss requires an integer "id".' }], isError: true };
       }
-      return await callWorkerAPIDelete(`/api/observations/${id}/dismiss`);
+      return await callWorker(`/api/observations/${id}/dismiss`, { del: true });
     }
   },
   {
@@ -730,9 +594,6 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     handler: async (args: any) => handleSessionStartContext(args ?? {}),
   },
   // Phase 8 — observation_* tools backed by server REST core.
-  // These are the canonical names. memory_* tools below are kept as
-  // compatibility aliases that delegate to these handlers, so existing
-  // MCP clients keep working without rewrites. (Plan line 753.)
   {
     name: 'observation_add',
     description: 'Insert a manual observation directly into server storage. Calls /v1/memories — does NOT enqueue generation. Server runtime only. Params: content (required), projectId (optional, falls back to settings), serverSessionId, kind, metadata.',
@@ -817,73 +678,6 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     },
     handler: async (args: any) => handleObservationGenerationStatus(args ?? {}),
   },
-  // Compatibility aliases — keep `memory_*` tool names that pre-existed in
-  // src/server/mcp/tools.ts working for any client that bound to them.
-  // These intentionally delegate to the same observation_* handlers so
-  // there is one code path for MCP write/read against the server.
-  {
-    name: 'memory_add',
-    description: 'Compatibility alias for observation_add. Same behavior; same schema modulo the legacy field names.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        projectId: { type: 'string' },
-        kind: { type: 'string' },
-        content: { type: 'string' },
-        narrative: { type: 'string', description: 'Legacy alias for content; mapped to content if content is missing' },
-        title: { type: 'string', description: 'Legacy field; appended to metadata.title' },
-        metadata: { type: 'object', additionalProperties: true },
-      },
-      required: ['projectId'],
-      additionalProperties: true,
-    },
-    handler: async (args: any) => {
-      // Map legacy fields onto observation_add. `narrative` was the v1
-      // SQLite payload; it is normalized to `content` before forwarding.
-      const merged: ObservationAddArgs = {
-        projectId: args?.projectId,
-        content: args?.content ?? args?.narrative ?? '',
-        kind: args?.kind,
-        metadata: {
-          ...(args?.metadata ?? {}),
-          ...(args?.title ? { title: args.title } : {}),
-        },
-      };
-      return handleObservationAdd(merged);
-    },
-  },
-  {
-    name: 'memory_search',
-    description: 'Compatibility alias for observation_search. Same FTS path; same /v1/search REST endpoint.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        projectId: { type: 'string' },
-        query: { type: 'string' },
-        platformSource: { type: 'string' },
-        limit: { type: 'number' },
-      },
-      required: ['projectId', 'query'],
-      additionalProperties: true,
-    },
-    handler: async (args: any) => handleObservationSearch(args ?? {}),
-  },
-  {
-    name: 'memory_context',
-    description: 'Compatibility alias for observation_context. Same /v1/context REST endpoint.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        projectId: { type: 'string' },
-        query: { type: 'string' },
-        platformSource: { type: 'string' },
-        limit: { type: 'number' },
-      },
-      required: ['projectId', 'query'],
-      additionalProperties: true,
-    },
-    handler: async (args: any) => handleObservationContext(args ?? {}),
-  },
   {
     name: 'smart_search',
     description: 'Search codebase for symbols, functions, classes using tree-sitter AST parsing. Returns folded structural views with token counts. Use path parameter to scope the search.',
@@ -941,14 +735,13 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     handler: async (args: any) => {
       const filePath = resolve(args.file_path);
       const content = await readFile(filePath, 'utf-8');
-      const projectRoot = findProjectRoot(filePath) ?? process.cwd();
-      const unfolded = unfoldSymbol(content, filePath, args.symbol_name, projectRoot);
+      const unfolded = unfoldSymbol(content, filePath, args.symbol_name);
       if (unfolded) {
         return {
           content: [{ type: 'text' as const, text: unfolded }]
         };
       }
-      const parsed = parseFile(content, filePath, projectRoot);
+      const parsed = parseFile(content, filePath);
       if (parsed.symbols.length > 0) {
         const available = parsed.symbols.map(s => `  - ${s.name} (${s.kind})`).join('\n');
         return {
@@ -982,7 +775,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     handler: async (args: any) => {
       const filePath = resolve(args.file_path);
       const content = await readFile(filePath, 'utf-8');
-      const parsed = parseFile(content, filePath, findProjectRoot(filePath) ?? process.cwd());
+      const parsed = parseFile(content, filePath);
       if (parsed.symbols.length > 0) {
         return {
           content: [{ type: 'text' as const, text: formatFoldedView(parsed) }]
@@ -1017,7 +810,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       additionalProperties: true
     },
     handler: async (args: any) => {
-      return await callWorkerAPIPost('/api/corpus', args);
+      return await callWorker('/api/corpus', { body: args });
     }
   },
   {
@@ -1029,7 +822,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       additionalProperties: true
     },
     handler: async (args: any) => {
-      return await callWorkerAPI('/api/corpus', args);
+      return await callWorker('/api/corpus', { query: args });
     }
   },
   {
@@ -1046,7 +839,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     handler: async (args: any) => {
       const { name, ...rest } = args;
       if (typeof name !== 'string' || name.trim() === '') throw new Error('Missing required argument: name');
-      return await callWorkerAPIPost(`/api/corpus/${encodeURIComponent(name)}/prime`, rest);
+      return await callWorker(`/api/corpus/${encodeURIComponent(name)}/prime`, { body: rest });
     }
   },
   {
@@ -1064,7 +857,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     handler: async (args: any) => {
       const { name, ...rest } = args;
       if (typeof name !== 'string' || name.trim() === '') throw new Error('Missing required argument: name');
-      return await callWorkerAPIPost(`/api/corpus/${encodeURIComponent(name)}/query`, rest);
+      return await callWorker(`/api/corpus/${encodeURIComponent(name)}/query`, { body: rest });
     }
   },
   {
@@ -1081,7 +874,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     handler: async (args: any) => {
       const { name, ...rest } = args;
       if (typeof name !== 'string' || name.trim() === '') throw new Error('Missing required argument: name');
-      return await callWorkerAPIPost(`/api/corpus/${encodeURIComponent(name)}/rebuild`, rest);
+      return await callWorker(`/api/corpus/${encodeURIComponent(name)}/rebuild`, { body: rest });
     }
   },
   {
@@ -1098,7 +891,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     handler: async (args: any) => {
       const { name, ...rest } = args;
       if (typeof name !== 'string' || name.trim() === '') throw new Error('Missing required argument: name');
-      return await callWorkerAPIPost(`/api/corpus/${encodeURIComponent(name)}/reprime`, rest);
+      return await callWorker(`/api/corpus/${encodeURIComponent(name)}/reprime`, { body: rest });
     }
   }
 ];
@@ -1203,29 +996,34 @@ function cleanup(reason: string = 'shutdown') {
 process.on('SIGTERM', cleanup);
 process.on('SIGINT', cleanup);
 
+function detectMissingMarketplaceMarker(): void {
+  const home = homedir();
+  const marketplaceCandidates = [
+    resolve(home, '.claude', 'plugins', 'marketplaces', 'thedotmack'),
+    resolve(home, '.config', 'claude', 'plugins', 'marketplaces', 'thedotmack'),
+  ];
+  const present = marketplaceCandidates.some(p => p && existsSync(p));
+  const cacheCandidates = [
+    resolve(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem'),
+    resolve(home, '.config', 'claude', 'plugins', 'cache', 'thedotmack', 'claude-mem'),
+  ];
+  const cachePresent = cacheCandidates.some(p => p && existsSync(p));
+  const cacheRoot = cacheCandidates[0];
+
+  if (!present && cachePresent) {
+    logger.error(
+      'SYSTEM',
+      'claude-mem MCP started but no marketplace directory was found at ~/.claude/plugins/marketplaces/thedotmack or the XDG equivalent. The IDE plugin loader needs that directory to fire claude-mem hooks (SessionStart, PostToolUse, Stop, etc.). Without it, MCP search will work but no new memories will be captured. To self-heal, run: node ~/.claude/plugins/cache/thedotmack/claude-mem/*/scripts/smart-install.js (or reinstall the plugin from the marketplace).',
+      { marketplaceCandidates, cacheRoot }
+    );
+  }
+}
+
 function checkMarketplaceMarker(): void {
   try {
-    const home = homedir();
-    const marketplaceCandidates = [
-      resolve(home, '.claude', 'plugins', 'marketplaces', 'thedotmack'),
-      resolve(home, '.config', 'claude', 'plugins', 'marketplaces', 'thedotmack'),
-    ];
-    const present = marketplaceCandidates.some(p => p && existsSync(p));
-    const cacheCandidates = [
-      resolve(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem'),
-      resolve(home, '.config', 'claude', 'plugins', 'cache', 'thedotmack', 'claude-mem'),
-    ];
-    const cachePresent = cacheCandidates.some(p => p && existsSync(p));
-    const cacheRoot = cacheCandidates[0];
-
-    if (!present && cachePresent) {
-      logger.error(
-        'SYSTEM',
-        'claude-mem MCP started but no marketplace directory was found at ~/.claude/plugins/marketplaces/thedotmack or the XDG equivalent. The IDE plugin loader needs that directory to fire claude-mem hooks (SessionStart, PostToolUse, Stop, etc.). Without it, MCP search will work but no new memories will be captured. To self-heal, run: node ~/.claude/plugins/cache/thedotmack/claude-mem/*/scripts/smart-install.js (or reinstall the plugin from the marketplace).',
-        { marketplaceCandidates, cacheRoot }
-      );
-    }
-  } catch {
+    detectMissingMarketplaceMarker();
+  } catch (error) {
+    logger.warn('SYSTEM', 'checkMarketplaceMarker failed (non-fatal startup check)', undefined, error instanceof Error ? error : new Error(String(error)));
   }
 }
 

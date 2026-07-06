@@ -12,7 +12,6 @@ import {
   createInstallSummary,
   installerError,
   flushSummary,
-  withRetry,
   InstallAbortError,
 } from '../src/npx-cli/install/error-reporter';
 import {
@@ -22,7 +21,6 @@ import {
 
 const CANONICAL_IDES = [
   'claude-code',
-  'gemini-cli',
   'opencode',
   'openclaw',
   'windsurf',
@@ -39,10 +37,10 @@ describe('error taxonomy', () => {
   it('exposes ErrorSeverity, ERROR_CATEGORIES, classifyError', () => {
     expect(ErrorSeverity.ABORT).toBe('ABORT');
     expect(Array.isArray(ERROR_CATEGORIES)).toBe(true);
-    expect(ERROR_CATEGORIES.length).toBeGreaterThanOrEqual(13);
+    expect(ERROR_CATEGORIES.length).toBeGreaterThanOrEqual(12);
   });
 
-  it('has no SILENT severity (only SILENT_RETRY)', () => {
+  it('has no SILENT severity', () => {
     const severities = new Set(ERROR_CATEGORIES.map((c) => c.severity));
     expect(severities.has('SILENT' as ErrorSeverity)).toBe(false);
   });
@@ -156,28 +154,6 @@ describe('installerError decision logic', () => {
     expect(summary.warnings[0].message).toContain('EACCES');
   });
 
-  it('SILENT_RETRY stays silent on first occurrence, escalates on second', () => {
-    const summary = createInstallSummary();
-    const ctx = { component: 'bun-net', phase: 'setup-runtime', cause: new Error('error: failed to resolve') };
-    installerError(ErrorSeverity.SILENT_RETRY, ctx, summary);
-    expect(summary.warnings).toHaveLength(0);
-    expect(summary.retryCount['bun-net']).toBe(1);
-    installerError(ErrorSeverity.SILENT_RETRY, ctx, summary);
-    expect(summary.warnings).toHaveLength(1);
-    expect(summary.retryCount['bun-net']).toBe(2);
-  });
-
-  it('withRetry retries once then rethrows', async () => {
-    const summary = createInstallSummary();
-    let calls = 0;
-    await expect(
-      withRetry(async () => { calls++; throw new Error('boom'); }, {
-        component: 'x', phase: 'y', cause: undefined,
-      }, summary, 2),
-    ).rejects.toThrow('boom');
-    expect(calls).toBe(2);
-  });
-
   it('flushSummary emits each warning with remediation', () => {
     const summary = createInstallSummary();
     installerError(ErrorSeverity.WARN_CONTINUE, {
@@ -273,7 +249,7 @@ function simulateInstall(_ide: string, scenario: Scenario): Outcome {
   return { status, aborted: false };
 }
 
-describe('cross-IDE failure matrix (12 IDEs x 4 scenarios)', () => {
+describe('cross-IDE failure matrix (11 IDEs x 4 scenarios)', () => {
   const scenarios: Scenario[] = ['happy', 'eresolve', 'missing-uv', 'missing-bun'];
 
   let prevMatrixDataDir: string | undefined;
@@ -292,8 +268,8 @@ describe('cross-IDE failure matrix (12 IDEs x 4 scenarios)', () => {
     else process.env.CLAUDE_MEM_DATA_DIR = prevMatrixDataDir;
   });
 
-  it('produces 48 cells (12 IDEs x 4 scenarios)', () => {
-    expect(CANONICAL_IDES.length * scenarios.length).toBe(48);
+  it('produces 44 cells (11 IDEs x 4 scenarios)', () => {
+    expect(CANONICAL_IDES.length * scenarios.length).toBe(44);
   });
 
   for (const ide of CANONICAL_IDES) {

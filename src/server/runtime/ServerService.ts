@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import net from 'net';
 import { dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { parseArgs } from 'util';
 import { Server, type RouteHandler } from '../../services/server/Server.js';
 import { paths } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
@@ -179,10 +180,6 @@ export class ServerService {
       pool: this.graph.postgres.pool,
       queueManager: this.graph.queueManager,
       authMode: this.graph.authMode === 'disabled' ? 'api-key' : this.graph.authMode,
-      runtime: SERVER_RUNTIME,
-      // Session policy is read inside the routes (default 'per-event' from
-      // resolveSessionGenerationPolicy(), env-overridable via
-      // CLAUDE_MEM_SERVER_SESSION_POLICY). We do not duplicate it here.
     });
     server.registerRoutes(v1Routes);
 
@@ -231,9 +228,11 @@ export class ServerService {
         try {
           await this.server.close();
         } catch (error: unknown) {
-          if ((error as NodeJS.ErrnoException)?.code !== 'ERR_SERVER_NOT_RUNNING') {
+          const err = error instanceof Error ? error : new Error(String(error));
+          if ((err as NodeJS.ErrnoException).code !== 'ERR_SERVER_NOT_RUNNING') {
             throw error;
           }
+          logger.warn('SYSTEM', 'Server was already stopped when close was requested', {}, err);
         }
         this.server = null;
       }
@@ -313,9 +312,10 @@ export async function runServerServiceCli(argv: string[] = process.argv.slice(2)
 
   // #2572 — `server keys` lists ACTIVE keys (never printing secrets) and
   // `server jobs` lists/inspects queued generation jobs. Both read the
-  // Postgres backend the server runtime uses.
+  // Postgres backend the server runtime uses. `keys` is an alias for
+  // `api-key list --active`.
   if (command === 'server' && argv[1]?.toLowerCase() === 'keys') {
-    await runServerKeysCli(argv.slice(2));
+    await runServerApiKeyCli(['list', '--active', ...argv.slice(2)]);
     return;
   }
   if (command === 'server' && argv[1]?.toLowerCase() === 'jobs') {
@@ -405,7 +405,7 @@ export async function runServerServiceCli(argv: string[] = process.argv.slice(2)
       console.error('  restart          stop then start (daemon)');
       console.error('  status           print runtime status');
       console.error('  server api-key create|list|revoke|migrate-scopes   manage Postgres API keys');
-      console.error('  server keys                                        list active keys (no secrets)');
+      console.error('  server keys                                        alias for api-key list --active (no secrets)');
       console.error('  server jobs [list|inspect <id>]                    list/inspect generation jobs');
       process.exit(1);
   }
@@ -533,7 +533,8 @@ export async function runServerApiKeyCli(argv: string[]): Promise<void> {
     if (sub === 'list') {
       // Bound the result set to prevent unintentional cross-tenant key
       // metadata disclosure when an admin runs `api-key list` on a shared
-      // host. Default page is 100; --team filters to a single tenant.
+      // host. Default page is 100; --team filters to a single tenant;
+      // --active filters to usable (non-revoked, non-expired) keys.
       const teamFilter = options.team ?? null;
       const limitArg = Number.parseInt(options.limit ?? '100', 10);
       const offsetArg = Number.parseInt(options.offset ?? '0', 10);
@@ -541,10 +542,19 @@ export async function runServerApiKeyCli(argv: string[]): Promise<void> {
         ? limitArg
         : 100;
       const offset = Number.isFinite(offsetArg) && offsetArg >= 0 ? offsetArg : 0;
-      const where = teamFilter ? 'WHERE team_id = $1' : '';
-      const params: unknown[] = teamFilter ? [teamFilter, limit, offset] : [limit, offset];
-      const limitIdx = teamFilter ? 2 : 1;
-      const offsetIdx = teamFilter ? 3 : 2;
+      const conditions: string[] = [];
+      const params: unknown[] = [];
+      if (options.active) {
+        conditions.push('revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now())');
+      }
+      if (teamFilter) {
+        params.push(teamFilter);
+        conditions.push(`team_id = $${params.length}`);
+      }
+      const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+      params.push(limit, offset);
+      // SECURITY: SELECT only non-secret metadata — never key_hash or any
+      // raw key material.
       const result = await pool.query<{
         id: string;
         team_id: string | null;
@@ -559,7 +569,7 @@ export async function runServerApiKeyCli(argv: string[]): Promise<void> {
          FROM api_keys
          ${where}
          ORDER BY created_at DESC
-         LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
+         LIMIT $${params.length - 1} OFFSET $${params.length}`,
         params,
       );
       console.log(JSON.stringify({
@@ -645,81 +655,6 @@ export async function migrateServerPostgresApiKeyScopes(argv: string[]): Promise
   console.log(JSON.stringify({ id, scopes, status: 'scopes-migrated' }, null, 2));
 }
 
-// #2572 — pure serialization for `server keys`. SECURITY: this is the ONLY
-// shaping of a key row the `keys` command emits, and it deliberately copies
-// only non-secret metadata — never `key_hash` or any raw key material. Exported
-// so a test can prove no secret field can leak regardless of the input row.
-export interface ServerKeyRow {
-  id: string;
-  team_id: string | null;
-  project_id: string | null;
-  scopes: unknown;
-  expires_at: Date | null;
-  last_used_at: Date | null;
-  created_at: Date;
-  // A leaked/extra secret column should NEVER appear in the output.
-  key_hash?: string;
-}
-
-export function serializeActiveServerKeyRow(row: ServerKeyRow): Record<string, unknown> {
-  return {
-    id: row.id,
-    teamId: row.team_id,
-    projectId: row.project_id,
-    scopes: row.scopes,
-    status: 'active',
-    lastUsedAt: row.last_used_at?.toISOString() ?? null,
-    expiresAt: row.expires_at?.toISOString() ?? null,
-    createdAt: row.created_at.toISOString(),
-  };
-}
-
-// #2572 — `server keys`: list ACTIVE (non-revoked, non-expired) keys. NEVER
-// prints the raw key or its hash — only non-secret metadata. This is a thin
-// operator convenience over `api-key list` that filters to usable keys.
-export async function runServerKeysCli(argv: string[]): Promise<void> {
-  try {
-    assertServerRuntimeForCli('keys');
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exit(1);
-  }
-  const options = parseFlagArgs(argv);
-  const teamFilter = options.team ?? null;
-  const limitArg = Number.parseInt(options.limit ?? '100', 10);
-  const limit = Number.isFinite(limitArg) && limitArg > 0 && limitArg <= 500 ? limitArg : 100;
-
-  const { getSharedPostgresPool } = await import('../../storage/postgres/index.js');
-  const pool = getSharedPostgresPool({ requireDatabaseUrl: true });
-  const where = teamFilter
-    ? 'WHERE revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now()) AND team_id = $2'
-    : 'WHERE revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now())';
-  const params: unknown[] = teamFilter ? [limit, teamFilter] : [limit];
-  const result = await pool.query<{
-    id: string;
-    team_id: string | null;
-    project_id: string | null;
-    scopes: unknown;
-    expires_at: Date | null;
-    last_used_at: Date | null;
-    created_at: Date;
-  }>(
-    `SELECT id, team_id, project_id, scopes, expires_at, last_used_at, created_at
-       FROM api_keys
-       ${where}
-       ORDER BY created_at DESC
-       LIMIT $1`,
-    params,
-  );
-  // SECURITY: serializeActiveServerKeyRow omits key_hash and any raw key
-  // material — only non-secret metadata is emitted.
-  console.log(JSON.stringify({
-    teamId: teamFilter,
-    count: result.rows.length,
-    keys: result.rows.map(serializeActiveServerKeyRow),
-  }, null, 2));
-}
-
 // #2572 — `server jobs [list|inspect <id>]`: list or inspect queued generation
 // jobs from the Postgres `observation_generation_jobs` table the server
 // runtime and its BullMQ workers share.
@@ -798,22 +733,35 @@ export async function runServerJobsCli(argv: string[]): Promise<void> {
   }, null, 2));
 }
 
-function parseFlagArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (!arg) continue;
-    if (arg.startsWith('--')) {
-      const equalsIdx = arg.indexOf('=');
-      if (equalsIdx > -1) {
-        out[arg.slice(2, equalsIdx)] = arg.slice(equalsIdx + 1);
-      } else {
-        out[arg.slice(2)] = argv[i + 1] ?? '';
-        i += 1;
-      }
-    }
-  }
-  return out;
+interface CliFlagValues {
+  scope?: string;
+  scopes?: string;
+  team?: string;
+  project?: string;
+  name?: string;
+  limit?: string;
+  offset?: string;
+  status?: string;
+  active?: boolean;
+}
+
+function parseFlagArgs(argv: string[]): CliFlagValues {
+  return parseArgs({
+    args: argv,
+    options: {
+      scope: { type: 'string' },
+      scopes: { type: 'string' },
+      team: { type: 'string' },
+      project: { type: 'string' },
+      name: { type: 'string' },
+      limit: { type: 'string' },
+      offset: { type: 'string' },
+      status: { type: 'string' },
+      active: { type: 'boolean' },
+    },
+    strict: false,
+    allowPositionals: true,
+  }).values as CliFlagValues;
 }
 
 // Phase 10 — generation-worker-only entrypoint. Starts BullMQ workers against
@@ -905,7 +853,9 @@ function readServerPidFile(): PidInfo | null {
   }
   try {
     return JSON.parse(readFileSync(paths.serverPid(), 'utf-8')) as PidInfo;
-  } catch {
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SYSTEM', 'Failed to read server PID file', { path: paths.serverPid() }, err);
     return null;
   }
 }
@@ -916,7 +866,9 @@ function readServerRuntimeState(): ServerRuntimeState | null {
   }
   try {
     return JSON.parse(readFileSync(paths.serverRuntime(), 'utf-8')) as ServerRuntimeState;
-  } catch {
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SYSTEM', 'Failed to read server runtime state file', { path: paths.serverRuntime() }, err);
     return null;
   }
 }

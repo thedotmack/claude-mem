@@ -2,13 +2,14 @@ import { describe, expect, it } from 'bun:test';
 import { homedir } from 'os';
 import { join } from 'path';
 import {
-  CODEX_SAMPLE_SCHEMA,
   SAMPLE_CONFIG,
   filterNativeHookBackedCodexWatches,
   isNativeHookBackedCodexWatch,
   shouldSuppressNativeCodexAgentsContext,
 } from '../../src/services/transcripts/config.js';
-import type { TranscriptWatchConfig } from '../../src/services/transcripts/types.js';
+import type { TranscriptSchema, TranscriptWatchConfig } from '../../src/services/transcripts/types.js';
+
+const CODEX_SAMPLE_SCHEMA: TranscriptSchema = { name: 'codex', events: [] };
 
 describe('transcript watcher config', () => {
   it('does not auto-watch Codex transcripts in the sample config', () => {

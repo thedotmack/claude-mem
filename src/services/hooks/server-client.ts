@@ -395,10 +395,11 @@ export class ServerClient {
     try {
       return JSON.parse(text) as T;
     } catch (error: unknown) {
+      const err = error instanceof Error ? error : new Error(String(error));
       throw new ServerClientError(
         'invalid_response',
         `Server ${method} ${path} returned non-JSON response`,
-        { cause: error },
+        { cause: err },
       );
     }
   }

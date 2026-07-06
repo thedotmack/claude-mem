@@ -233,35 +233,4 @@ export class PaginationHelper {
       limit
     };
   }
-
-  private paginate<T>(
-    table: string,
-    columns: string,
-    offset: number,
-    limit: number,
-    project?: string
-  ): PaginatedResult<T> {
-    const db = this.dbManager.getSessionStore().db;
-
-    let query = `SELECT ${columns} FROM ${table}`;
-    const params: any[] = [];
-
-    if (project) {
-      query += ' WHERE project = ?';
-      params.push(project);
-    }
-
-    query += ' ORDER BY created_at_epoch DESC LIMIT ? OFFSET ?';
-    params.push(limit + 1, offset); 
-
-    const stmt = db.prepare(query);
-    const results = stmt.all(...params) as T[];
-
-    return {
-      items: results.slice(0, limit),
-      hasMore: results.length > limit,
-      offset,
-      limit
-    };
-  }
 }

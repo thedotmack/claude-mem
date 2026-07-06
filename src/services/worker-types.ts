@@ -13,7 +13,6 @@ export interface ActiveSession {
   project: string;
   platformSource: string;
   userPrompt: string;
-  pendingMessages: PendingMessage[];  
   abortController: AbortController;
   generatorPromise: Promise<void> | null;
   lastPromptNumber: number;
@@ -23,7 +22,7 @@ export interface ActiveSession {
   earliestPendingTimestamp: number | null;  
   claimedMessageIds: number[];
   conversationHistory: ConversationMessage[];  
-  currentProvider: 'claude' | 'gemini' | 'openrouter' | null;
+  currentProvider: 'claude' | 'codex' | 'gemini' | 'openrouter' | 'kiro' | null;
   consecutiveRestarts: number;
   /**
    * Legacy invalid-output counter. Ordinary non-XML observer output is now
@@ -105,13 +104,6 @@ export interface PaginatedResult<T> {
   limit: number;
 }
 
-export interface PaginationParams {
-  offset: number;
-  limit: number;
-  project?: string;
-  platformSource?: string;
-}
-
 export interface ViewerSettings {
   sidebarOpen: boolean;
   selectedProject: string | null;
@@ -179,34 +171,3 @@ export interface DBSession {
 }
 
 export type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
-
-export interface ParsedObservation {
-  type: string;
-  title: string;
-  subtitle: string | null;
-  text: string;
-  concepts: string[];
-  files: string[];
-}
-
-export interface ParsedSummary {
-  request: string | null;
-  investigated: string | null;
-  learned: string | null;
-  completed: string | null;
-  next_steps: string | null;
-  notes: string | null;
-}
-
-export interface DatabaseStats {
-  totalObservations: number;
-  totalSessions: number;
-  totalPrompts: number;
-  totalSummaries: number;
-  projectCounts: Record<string, {
-    observations: number;
-    sessions: number;
-    prompts: number;
-    summaries: number;
-  }>;
-}

@@ -8,7 +8,7 @@
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
-import pc from 'picocolors';
+import { styleText } from 'node:util';
 import { isPluginInstalled, marketplaceDirectory, IS_WINDOWS } from '../utils/paths.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { resolveDataDir } from '../../shared/paths.js';
@@ -31,9 +31,21 @@ function probeVersion(bin: string): string | null {
       shell: IS_WINDOWS,
     });
     return result.status === 0 ? result.stdout.trim() : null;
-  } catch {
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    console.warn(`[doctor] Failed to probe \`${bin} --version\`:`, err);
     return null;
   }
+}
+
+async function probeWorkerHealth(workerPort: string): Promise<{ status: CheckStatus; detail: string }> {
+  const res = await fetch(`http://127.0.0.1:${workerPort}/api/health`, {
+    signal: AbortSignal.timeout(3000),
+  });
+  if (res.ok) {
+    return { status: 'ok', detail: `healthy at http://127.0.0.1:${workerPort}` };
+  }
+  return { status: 'warn', detail: `reachable but unhealthy (HTTP ${res.status}) on port ${workerPort}` };
 }
 
 export async function runDoctorCommand(): Promise<void> {
@@ -82,16 +94,9 @@ export async function runDoctorCommand(): Promise<void> {
   let workerStatus: CheckStatus = 'fail';
   let workerDetail = `no response on port ${workerPort} — start with \`npx claude-mem start\``;
   try {
-    const res = await fetch(`http://127.0.0.1:${workerPort}/api/health`, {
-      signal: AbortSignal.timeout(3000),
-    });
-    if (res.ok) {
-      workerStatus = 'ok';
-      workerDetail = `healthy at http://127.0.0.1:${workerPort}`;
-    } else {
-      workerStatus = 'warn';
-      workerDetail = `reachable but unhealthy (HTTP ${res.status}) on port ${workerPort}`;
-    }
+    const worker = await probeWorkerHealth(workerPort);
+    workerStatus = worker.status;
+    workerDetail = worker.detail;
   } catch {
     // leave as fail
   }
@@ -123,20 +128,20 @@ export async function runDoctorCommand(): Promise<void> {
   }
 
   const icon = (s: CheckStatus): string =>
-    s === 'ok' ? pc.green('✓') : s === 'warn' ? pc.yellow('!') : pc.red('✗');
+    s === 'ok' ? styleText('green', '✓') : s === 'warn' ? styleText('yellow', '!') : styleText('red', '✗');
 
-  console.log(pc.bold('\nclaude-mem doctor\n'));
+  console.log(styleText('bold', '\nclaude-mem doctor\n'));
   for (const c of checks) {
-    console.log(`  ${icon(c.status)} ${c.name.padEnd(22)} ${pc.dim(c.detail)}`);
+    console.log(`  ${icon(c.status)} ${c.name.padEnd(22)} ${styleText('dim', c.detail)}`);
   }
 
   const hardFailures = checks.filter((c) => c.required && c.status === 'fail');
   console.log('');
   if (hardFailures.length === 0) {
-    console.log(pc.green('All required checks passed.'));
+    console.log(styleText('green', 'All required checks passed.'));
     process.exit(0);
   } else {
-    console.log(pc.red(`${hardFailures.length} required check(s) failed — see remediation above.`));
+    console.log(styleText('red', `${hardFailures.length} required check(s) failed — see remediation above.`));
     process.exit(1);
   }
 }

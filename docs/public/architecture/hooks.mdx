@@ -390,7 +390,7 @@ promptNumber = db.incrementPromptCounter(sessionDbId)
 // Returns 1 for first prompt, 2 for continuation, etc.
 
 // 4. Strip privacy tags
-cleanedPrompt = stripMemoryTagsFromPrompt(prompt)
+cleanedPrompt = stripMemoryTags(prompt)
 // Removes <private>...</private> and <claude-mem-context>...</claude-mem-context>
 
 // 5. Skip if fully private
@@ -835,11 +835,8 @@ Never generate your own session IDs. Always use the `session_id` provided by the
 **Location**: `src/utils/tag-stripping.ts`
 
 ```typescript
-// Called by: new-hook.js (user prompts)
-stripMemoryTagsFromPrompt(prompt: string): string
-
-// Called by: save-hook.js (tool_input, tool_response)
-stripMemoryTagsFromJson(jsonString: string): string
+// Called by: new-hook.js (user prompts) and save-hook.js (tool_input, tool_response)
+stripMemoryTags(content: string): string
 ```
 
 **Execution Order** (Edge Processing):
@@ -917,7 +914,7 @@ For developers implementing this pattern on other platforms:
 - [ ] cleanup-hook: `POST /api/sessions/complete`
 
 ### Privacy & Tags
-- [ ] Implement `stripMemoryTagsFromPrompt()` and `stripMemoryTagsFromJson()`
+- [ ] Implement `stripMemoryTags()`
 - [ ] Process tags at hook layer (edge processing)
 - [ ] Max tag count = 100 (ReDoS protection)
 

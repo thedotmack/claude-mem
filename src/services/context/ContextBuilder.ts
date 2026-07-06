@@ -11,9 +11,7 @@ import type { ContextInput, ContextConfig, Observation, SessionSummary } from '.
 import { loadContextConfig } from './ContextConfigLoader.js';
 import { calculateTokenEconomics } from './TokenCalculator.js';
 import {
-  queryObservations,
   queryObservationsMulti,
-  querySummaries,
   querySummariesMulti,
   getPriorSessionMessages,
   prepareSummariesForTimeline,
@@ -24,6 +22,7 @@ import { renderHeader } from './sections/HeaderRenderer.js';
 import { renderTimeline } from './sections/TimelineRenderer.js';
 import { shouldShowSummary, renderSummaryFields } from './sections/SummaryRenderer.js';
 import { renderPreviouslySection, renderFooter } from './sections/FooterRenderer.js';
+import { renderMermaidFlow } from './sections/MermaidRenderer.js';
 import { renderAgentEmptyState } from './formatters/AgentFormatter.js';
 import { renderHumanEmptyState } from './formatters/HumanFormatter.js';
 
@@ -74,8 +73,13 @@ function buildContextOutput(
   const output: string[] = [];
 
   const economics = calculateTokenEconomics(observations);
+  const mostRecentSummary = summaries[0];
 
   output.push(...renderHeader(project, economics, config, forHuman));
+
+  if (config.mermaidContext && !forHuman) {
+    output.push(...renderMermaidFlow(observations, mostRecentSummary));
+  }
 
   const displaySummaries = summaries.slice(0, config.sessionCount);
   const summariesForTimeline = prepareSummariesForTimeline(displaySummaries, summaries);
@@ -84,7 +88,6 @@ function buildContextOutput(
 
   output.push(...renderTimeline(timeline, fullObservationIds, config, cwd, forHuman));
 
-  const mostRecentSummary = summaries[0];
   const mostRecentObservation = observations[0];
 
   if (shouldShowSummary(config, mostRecentSummary, mostRecentObservation)) {
@@ -185,12 +188,9 @@ export async function generateContextWithStats(
     const platformSource = input?.platformSource
       ? normalizePlatformSource(input.platformSource)
       : undefined;
-    const observations = projects.length > 1
-      ? queryObservationsMulti(db, projects, config, platformSource)
-      : queryObservations(db, project, config, platformSource);
-    const summaries = projects.length > 1
-      ? querySummariesMulti(db, projects, config, platformSource)
-      : querySummaries(db, project, config, platformSource);
+    const queryProjects = projects.length > 1 ? projects : [project];
+    const observations = queryObservationsMulti(db, queryProjects, config, platformSource);
+    const summaries = querySummariesMulti(db, queryProjects, config, platformSource);
 
     if (observations.length === 0 && summaries.length === 0) {
       return { text: renderEmptyState(project, forHuman), stats: null };

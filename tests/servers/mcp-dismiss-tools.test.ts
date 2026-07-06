@@ -22,22 +22,27 @@ describe('observation dismiss MCP tools', () => {
     expect(section).toContain("required: ['id']");
     expect(section).toContain('/api/observations/');
     expect(section).toContain('/dismiss');
-    expect(section).toContain('callWorkerAPIPost');
+    // POST is expressed by calling the unified worker helper with a body.
+    expect(section).toContain('callWorker(');
+    expect(section).toContain('{ body }');
   });
 
-  it('observation_undismiss declares id as required and calls the DELETE helper', async () => {
+  it('observation_undismiss declares id as required and calls the worker with a DELETE', async () => {
     const src = await Bun.file(mcpServerPath).text();
 
     expect(src).toContain("name: 'observation_undismiss'");
     const section = src.slice(src.indexOf("name: 'observation_undismiss'"));
     expect(section).toContain('id:');
     expect(section).toContain("required: ['id']");
-    expect(section).toContain('callWorkerAPIDelete');
+    // DELETE is expressed via the unified worker helper's del option.
+    expect(section).toContain('callWorker(');
+    expect(section).toContain('{ del: true }');
   });
 
-  it('defines a DELETE worker helper that dismiss/undismiss can reuse', async () => {
+  it('the unified worker helper supports a DELETE path that undismiss reuses', async () => {
     const src = await Bun.file(mcpServerPath).text();
-    expect(src).toContain('async function callWorkerAPIDelete');
+    expect(src).toContain('async function callWorker(');
+    expect(src).toContain('opts.del');
     expect(src).toContain("method: 'DELETE'");
   });
 });

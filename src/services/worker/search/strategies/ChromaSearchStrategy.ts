@@ -4,6 +4,7 @@ import {
   StrategySearchResult,
   SEARCH_CONSTANTS,
   ChromaMetadata,
+  DateRange,
   ObservationSearchResult,
   SessionSummarySearchResult,
   UserPromptSearchResult
@@ -37,6 +38,7 @@ export class ChromaSearchStrategy {
       limit = SEARCH_CONSTANTS.DEFAULT_LIMIT,
       project,
       platformSource,
+      dateRange,
       orderBy = 'date_desc'
     } = options;
 
@@ -54,7 +56,7 @@ export class ChromaSearchStrategy {
 
     return await this.executeChromaSearch(query, whereFilter, {
       searchObservations, searchSessions, searchPrompts,
-      obsType, concepts, files, orderBy, limit, project, platformSource
+      obsType, concepts, files, orderBy, limit, project, platformSource, dateRange
     });
   }
 
@@ -72,6 +74,7 @@ export class ChromaSearchStrategy {
       limit: number;
       project?: string;
       platformSource?: string;
+      dateRange?: DateRange;
     }
   ): Promise<StrategySearchResult> {
     const chromaResults = await this.chromaSync.queryChroma(
@@ -88,7 +91,7 @@ export class ChromaSearchStrategy {
       };
     }
 
-    const recentItems = this.filterByRecency(chromaResults);
+    const recentItems = this.filterByRecency(chromaResults, options.dateRange);
     const categorized = this.categorizeByDocType(recentItems, options);
 
     let observations: ObservationSearchResult[] = [];
@@ -153,7 +156,12 @@ export class ChromaSearchStrategy {
     }
 
     if (project) {
-      filters.push({ project });
+      filters.push({
+        $or: [
+          { project },
+          { merged_into_project: project }
+        ]
+      });
     }
 
     if (platformSource) {
@@ -172,8 +180,24 @@ export class ChromaSearchStrategy {
   private filterByRecency(chromaResults: {
     ids: number[];
     metadatas: ChromaMetadata[];
-  }): Array<{ id: number; meta: ChromaMetadata }> {
-    const cutoff = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
+  }, dateRange?: DateRange): Array<{ id: number; meta: ChromaMetadata }> {
+    let startEpoch: number | undefined;
+    let endEpoch: number | undefined;
+
+    if (dateRange) {
+      if (dateRange.start) {
+        startEpoch = typeof dateRange.start === 'number'
+          ? dateRange.start
+          : new Date(dateRange.start).getTime();
+      }
+      if (dateRange.end) {
+        endEpoch = typeof dateRange.end === 'number'
+          ? dateRange.end
+          : new Date(dateRange.end).getTime();
+      }
+    } else {
+      startEpoch = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
+    }
 
     const metadataByIdMap = new Map<number, ChromaMetadata>();
     for (const meta of chromaResults.metadatas) {
@@ -187,7 +211,9 @@ export class ChromaSearchStrategy {
         id,
         meta: metadataByIdMap.get(id) as ChromaMetadata
       }))
-      .filter(item => item.meta && item.meta.created_at_epoch > cutoff);
+      .filter(item => item.meta && item.meta.created_at_epoch != null
+        && (!startEpoch || item.meta.created_at_epoch >= startEpoch)
+        && (!endEpoch || item.meta.created_at_epoch <= endEpoch));
   }
 
   private categorizeByDocType(

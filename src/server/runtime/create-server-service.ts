@@ -3,7 +3,7 @@
 import { existsSync } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { ModeManager } from '../../services/domain/ModeManager.js';
-import { createPostgresStorageRepositories, getSharedPostgresPool, SERVER_POSTGRES_SCHEMA_VERSION } from '../../storage/postgres/index.js';
+import { getSharedPostgresPool, SERVER_POSTGRES_SCHEMA_VERSION } from '../../storage/postgres/index.js';
 import { bootstrapServerPostgresSchema } from '../../storage/postgres/schema.js';
 import type { PostgresPool } from '../../storage/postgres/pool.js';
 import { getRedisQueueConfig } from '../queue/redis-config.js';
@@ -177,20 +177,6 @@ export function loadServerMode(): void {
 export async function createServerService(
   options: CreateServerServiceOptions = {},
 ): Promise<ServerService> {
-  // Generation prompt-builder requires an active mode; the server runtime never
-  // went through the plugin setup path that loads one, so we do it here
-  // explicitly.
-  try {
-    ModeManager.getInstance().loadMode('code');
-  } catch (err) {
-    // Mode files are optional, but surface failures (e.g. malformed JSON in a
-    // CLAUDE_MEM_MODES_DIR file) so an operator can diagnose why custom types
-    // aren't appearing instead of silently falling back to the defaults.
-    logger.warn('SYSTEM', 'server: failed to load mode at startup (mode files optional)', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-
   if (!options.skipEnvValidation) {
     validateServerEnv();
   }
@@ -221,7 +207,6 @@ export async function createServerService(
     authMode: options.authMode ?? parseAuthMode(process.env.CLAUDE_MEM_AUTH_MODE),
     queueManager,
     generationWorkerManager,
-    storage: createPostgresStorageRepositories(pool),
   };
 
   if (generationWorkerManager instanceof ActiveServerGenerationWorkerManager) {
@@ -258,32 +243,40 @@ function buildServerGenerationProviderFromEnv(): ServerGenerationProvider | null
   const provider = (process.env.CLAUDE_MEM_SERVER_PROVIDER ?? '').trim().toLowerCase();
   if (!provider) return null;
   try {
-    if (provider === 'claude' || provider === 'anthropic') {
-      const apiKey = process.env.ANTHROPIC_API_KEY ?? process.env.CLAUDE_MEM_ANTHROPIC_API_KEY ?? '';
-      if (!apiKey) return null;
-      const opts: { apiKey: string; model?: string } = { apiKey };
-      if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
-      return new ClaudeObservationProvider(opts);
-    }
-    if (provider === 'gemini') {
-      const apiKey = process.env.GEMINI_API_KEY ?? process.env.CLAUDE_MEM_GEMINI_API_KEY ?? '';
-      if (!apiKey) return null;
-      const opts: { apiKey: string; model?: string } = { apiKey };
-      if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
-      return new GeminiObservationProvider(opts);
-    }
-    if (provider === 'openrouter') {
-      const apiKey = process.env.OPENROUTER_API_KEY ?? process.env.CLAUDE_MEM_OPENROUTER_API_KEY ?? '';
-      if (!apiKey) return null;
-      const opts: { apiKey: string; model?: string; baseUrl?: string } = { apiKey };
-      if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
-      // #2382/#2590/#2622/#2393 — optional OpenAI-compatible base URL.
-      const baseUrl = process.env.CLAUDE_MEM_OPENROUTER_BASE_URL ?? process.env.OPENROUTER_BASE_URL;
-      if (baseUrl) opts.baseUrl = baseUrl;
-      return new OpenRouterObservationProvider(opts);
-    }
-  } catch {
+    return instantiateServerGenerationProvider(provider);
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    // Surface the construction failure so operators can see why generation is
+    // disabled instead of silently getting a null provider.
+    logger.warn('SYSTEM', 'server: failed to construct generation provider from env; generation disabled', { provider }, err);
     return null;
+  }
+}
+
+function instantiateServerGenerationProvider(provider: string): ServerGenerationProvider | null {
+  if (provider === 'claude' || provider === 'anthropic') {
+    const apiKey = process.env.ANTHROPIC_API_KEY ?? process.env.CLAUDE_MEM_ANTHROPIC_API_KEY ?? '';
+    if (!apiKey) return null;
+    const opts: { apiKey: string; model?: string } = { apiKey };
+    if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
+    return new ClaudeObservationProvider(opts);
+  }
+  if (provider === 'gemini') {
+    const apiKey = process.env.GEMINI_API_KEY ?? process.env.CLAUDE_MEM_GEMINI_API_KEY ?? '';
+    if (!apiKey) return null;
+    const opts: { apiKey: string; model?: string } = { apiKey };
+    if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
+    return new GeminiObservationProvider(opts);
+  }
+  if (provider === 'openrouter') {
+    const apiKey = process.env.OPENROUTER_API_KEY ?? process.env.CLAUDE_MEM_OPENROUTER_API_KEY ?? '';
+    if (!apiKey) return null;
+    const opts: { apiKey: string; model?: string; baseUrl?: string } = { apiKey };
+    if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
+    // #2382/#2590/#2622/#2393 — optional OpenAI-compatible base URL.
+    const baseUrl = process.env.CLAUDE_MEM_OPENROUTER_BASE_URL ?? process.env.OPENROUTER_BASE_URL;
+    if (baseUrl) opts.baseUrl = baseUrl;
+    return new OpenRouterObservationProvider(opts);
   }
   return null;
 }

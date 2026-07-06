@@ -1,0 +1,22 @@
+{
+  "name": "claude-mem-probe",
+  "description": "Phase-0 probe agent: logs every hook payload claude-mem needs to verify. Not for daily use.",
+  "tools": ["read", "write", "shell"],
+  "hooks": {
+    "agentSpawn": [
+      { "command": "{ printf 'agentSpawn '; cat; echo; env | grep -iE 'kiro|session|chat|conversation' | sed 's/^/agentSpawn-ENV /'; } >> /tmp/kiro-probe.log", "timeout_ms": 10000 }
+    ],
+    "userPromptSubmit": [
+      { "command": "{ printf 'userPromptSubmit '; cat; echo; } >> /tmp/kiro-probe.log", "timeout_ms": 10000 }
+    ],
+    "preToolUse": [
+      { "matcher": "*", "command": "{ printf 'preToolUse '; cat; echo; } >> /tmp/kiro-probe.log", "timeout_ms": 10000 }
+    ],
+    "postToolUse": [
+      { "matcher": "*", "command": "{ printf 'postToolUse '; cat; echo; } >> /tmp/kiro-probe.log", "timeout_ms": 10000 }
+    ],
+    "stop": [
+      { "command": "{ printf 'stop '; cat; echo; } >> /tmp/kiro-probe.log", "timeout_ms": 10000 }
+    ]
+  }
+}

@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { SessionSearch } from '../../../src/services/sqlite/SessionSearch.js';
 import { getObservationsByFilePath } from '../../../src/services/sqlite/observations/get.js';
-import { queryObservations } from '../../../src/services/context/ObservationCompiler.js';
+import { queryObservationsMulti } from '../../../src/services/context/ObservationCompiler.js';
 import type { ContextConfig } from '../../../src/services/context/types.js';
 
 const PROJECT = 'dismiss-proj';
@@ -102,7 +102,7 @@ describe('reversible observation dismiss', () => {
   it('hides a dismissed observation from the session-start context query', () => {
     store.dismissObservation(dismissedId);
 
-    const surfaced = queryObservations(store, PROJECT, CONFIG).map(o => o.id);
+    const surfaced = queryObservationsMulti(store, [PROJECT], CONFIG).map(o => o.id);
     expect(surfaced).toContain(visibleId);
     expect(surfaced).not.toContain(dismissedId);
   });
@@ -125,7 +125,7 @@ describe('reversible observation dismiss', () => {
 
     expect(getObservationsByFilePath(store.db, TARGET_FILE).map(o => o.id)).toContain(dismissedId);
     expect(search.searchObservations(SEARCH_TOKEN, { project: PROJECT }).map(o => o.id)).toContain(dismissedId);
-    expect(queryObservations(store, PROJECT, CONFIG).map(o => o.id)).toContain(dismissedId);
+    expect(queryObservationsMulti(store, [PROJECT], CONFIG).map(o => o.id)).toContain(dismissedId);
   });
 
   it('dismiss is idempotent — repeat dismiss writes exactly one feedback row', () => {
@@ -150,7 +150,7 @@ describe('reversible observation dismiss', () => {
     expect(ids(getObservationsByFilePath(store.db, TARGET_FILE))).toEqual(both);
     expect(ids(search.searchObservations(SEARCH_TOKEN, { project: PROJECT }))).toEqual(both);
     expect(ids(search.searchObservations(undefined, { project: PROJECT }))).toEqual(both);
-    expect(ids(queryObservations(store, PROJECT, CONFIG))).toEqual(both);
+    expect(ids(queryObservationsMulti(store, [PROJECT], CONFIG))).toEqual(both);
 
     const feedback = store.db.prepare('SELECT COUNT(*) AS c FROM observation_feedback').get() as { c: number };
     expect(feedback.c).toBe(0);

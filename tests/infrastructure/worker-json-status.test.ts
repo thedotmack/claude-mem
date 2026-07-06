@@ -246,20 +246,6 @@ describe('worker-json-status', () => {
         }
       });
     });
-
-    describe('error scenarios', () => {
-      it.skip('should output JSON with status: error when port in use but not responding', () => {
-        // Would require: start a non-worker server on the port, then call start
-      });
-
-      it.skip('should output JSON with status: error on spawn failure', () => {
-        // Would require: mock spawnDaemon to fail
-      });
-
-      it.skip('should output JSON with status: error on health check timeout', () => {
-        // Would require: start worker that never becomes healthy
-      });
-    });
   });
 
   describe('Claude Code hook framework compatibility', () => {

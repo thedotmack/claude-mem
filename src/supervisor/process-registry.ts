@@ -72,6 +72,32 @@ export interface PidInfo {
 const WINDOWS_START_TOKEN_CACHE_TTL_MS = 5_000;
 const windowsStartTokenCache = new Map<number, { token: string | null; capturedAtMs: number }>();
 
+function queryWindowsCreationDate(pid: number): string | null {
+  // CreationDate is a CIM DATETIME (yyyyMMddHHmmss.ffffff±UTCoffset) that is
+  // unique-enough per (pid, boot) to detect PID reuse. `-NoProfile` keeps it
+  // fast; sanitizeEnv keeps the spawn-env discipline uniform (#2357/#2375).
+  const result = spawnSync(
+    'powershell.exe',
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `(Get-CimInstance Win32_Process -Filter \"ProcessId=${pid}\").CreationDate.ToString('yyyyMMddHHmmss.ffffff')`
+    ],
+    {
+      encoding: 'utf-8',
+      timeout: 5000,
+      windowsHide: true,
+      env: { ...sanitizeEnv(process.env), LC_ALL: 'C', LANG: 'C' }
+    }
+  );
+  if (result.status === 0) {
+    const trimmed = result.stdout.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  return null;
+}
+
 function captureWindowsStartToken(pid: number): string | null {
   const cached = windowsStartTokenCache.get(pid);
   if (cached && Date.now() - cached.capturedAtMs < WINDOWS_START_TOKEN_CACHE_TTL_MS) {
@@ -80,28 +106,7 @@ function captureWindowsStartToken(pid: number): string | null {
 
   let token: string | null = null;
   try {
-    // CreationDate is a CIM DATETIME (yyyyMMddHHmmss.ffffff±UTCoffset) that is
-    // unique-enough per (pid, boot) to detect PID reuse. `-NoProfile` keeps it
-    // fast; sanitizeEnv keeps the spawn-env discipline uniform (#2357/#2375).
-    const result = spawnSync(
-      'powershell.exe',
-      [
-        '-NoProfile',
-        '-NonInteractive',
-        '-Command',
-        `(Get-CimInstance Win32_Process -Filter \"ProcessId=${pid}\").CreationDate.ToString('yyyyMMddHHmmss.ffffff')`
-      ],
-      {
-        encoding: 'utf-8',
-        timeout: 5000,
-        windowsHide: true,
-        env: { ...sanitizeEnv(process.env), LC_ALL: 'C', LANG: 'C' }
-      }
-    );
-    if (result.status === 0) {
-      const trimmed = result.stdout.trim();
-      token = trimmed.length > 0 ? trimmed : null;
-    }
+    token = queryWindowsCreationDate(pid);
   } catch (error: unknown) {
     logger.debug('SYSTEM', 'captureProcessStartToken: powershell CIM lookup failed', {
       pid,
@@ -268,10 +273,6 @@ export class ProcessRegistry {
 
   getRuntimeProcess(id: string): ChildProcess | undefined {
     return this.runtimeProcesses.get(id);
-  }
-
-  getByPid(pid: number): ManagedProcessRecord[] {
-    return this.getAll().filter(record => record.pid === pid);
   }
 
   pruneDeadEntries(): number {
@@ -493,7 +494,18 @@ export async function ensureSdkProcessExit(
   await Promise.race([sigkillExit, sigkillTimeout]);
 }
 
-const TOTAL_PROCESS_HARD_CAP = 10;
+export const DEFAULT_TOTAL_PROCESS_HARD_CAP = 10;
+
+// Absolute ceiling on concurrent SDK subprocesses, sitting above the per-session
+// CLAUDE_MEM_MAX_CONCURRENT_AGENTS pool. Env-configurable so a high-throughput
+// batch backfill against a local model, where cloud rate limits don't apply, can
+// lift it. Non-positive / unparseable values fall back to the default.
+export function resolveTotalProcessHardCap(raw: string | undefined): number {
+  const parsed = parseInt(raw ?? '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_TOTAL_PROCESS_HARD_CAP;
+}
+
+const TOTAL_PROCESS_HARD_CAP = resolveTotalProcessHardCap(process.env.CLAUDE_MEM_TOTAL_PROCESS_HARD_CAP);
 const SLOT_RECHECK_INTERVAL_MS = 5_000;
 const slotWaiters: Array<() => void> = [];
 
@@ -711,6 +723,22 @@ export function spawnSdkProcess(
   return { process: spawned, pid, pgid };
 }
 
+function sigtermDuplicateSdkProcess(record: ManagedProcessRecord, sessionDbId: number): void {
+  if (typeof record.pgid === 'number') {
+    if (process.platform !== 'win32') {
+      process.kill(-record.pgid, 'SIGTERM');
+    } else {
+      process.kill(record.pid, 'SIGTERM');
+    }
+  } else {
+    process.kill(record.pid, 'SIGTERM');
+  }
+  logger.warn('PROCESS', `Killing duplicate SDK process PID ${record.pid} before spawning new one for session ${sessionDbId}`, {
+    existingPid: record.pid,
+    sessionDbId,
+  });
+}
+
 export function createSdkSpawnFactory(sessionDbId: number) {
   return (spawnOptions: SpawnSdkOptions): SpawnedSdkProcess => {
     const registry = getProcessRegistry();
@@ -719,19 +747,7 @@ export function createSdkSpawnFactory(sessionDbId: number) {
     for (const record of existing) {
       if (!isPidAlive(record.pid)) continue;
       try {
-        if (typeof record.pgid === 'number') {
-          if (process.platform !== 'win32') {
-            process.kill(-record.pgid, 'SIGTERM');
-          } else {
-            process.kill(record.pid, 'SIGTERM');
-          }
-        } else {
-          process.kill(record.pid, 'SIGTERM');
-        }
-        logger.warn('PROCESS', `Killing duplicate SDK process PID ${record.pid} before spawning new one for session ${sessionDbId}`, {
-          existingPid: record.pid,
-          sessionDbId,
-        });
+        sigtermDuplicateSdkProcess(record, sessionDbId);
       } catch (error: unknown) {
         const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
         if (code !== 'ESRCH') {

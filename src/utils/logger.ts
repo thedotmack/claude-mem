@@ -156,7 +156,8 @@ class Logger {
     if (typeof toolInput === 'string') {
       try {
         input = JSON.parse(toolInput);
-      } catch (_parseError: unknown) {
+      } catch {
+        // [ANTI-PATTERN IGNORED]: tool_input is often a plain non-JSON string, so parse failure is the expected signal here; recovery is falling back to the raw string, and logging would spam every formatted log line.
         input = toolInput;
       }
     }
@@ -252,6 +253,7 @@ class Logger {
         try {
           dataStr = '\n' + JSON.stringify(data, null, 2);
         } catch {
+          // [ANTI-PATTERN IGNORED]: JSON.stringify fails on circular/BigInt payloads, an expected data shape inside the logger's own log() path; recovery is the formatData fallback, and self-logging here would recurse.
           dataStr = ' ' + this.formatData(data);
         }
       } else {
@@ -274,10 +276,12 @@ class Logger {
       try {
         appendFileSync(this.logFilePath, logLine + '\n', 'utf8');
       } catch (error: unknown) {
+        // [ANTI-PATTERN IGNORED]: this is the logger's own file-write failure path — calling the logger here would recurse into the same failing appendFileSync, so the error is surfaced via emitDiagnostic to real stderr instead.
         // DIAGNOSTIC: route through hook-io so the message bypasses the Phase 2
         // hook stderr buffer (#2292). Outside the hook context emitDiagnostic
         // writes straight to real stderr, so non-hook callers are unaffected.
-        emitDiagnostic(`[LOGGER] Failed to write to log file: ${error instanceof Error ? error.message : String(error)}\n`);
+        const err = error instanceof Error ? error : new Error(String(error));
+        emitDiagnostic(`[LOGGER] Failed to write to log file: ${err.message}\n${err.stack ?? ''}\n`);
       }
     } else {
       // DIAGNOSTIC: see note above.
@@ -347,31 +351,6 @@ class Logger {
 
   failure(component: Component, message: string, context?: LogContext, data?: any): void {
     this.error(component, `✗ ${message}`, context, data);
-  }
-
-  happyPathError<T = string>(
-    component: Component,
-    message: string,
-    context?: LogContext,
-    data?: any,
-    fallback: T = '' as T
-  ): T {
-    const stack = new Error().stack || '';
-    const stackLines = stack.split('\n');
-    const callerLine = stackLines[2] || '';
-    const callerMatch = callerLine.match(/at\s+(?:.*\s+)?\(?([^:]+):(\d+):(\d+)\)?/);
-    const location = callerMatch
-      ? `${callerMatch[1].split('/').pop()}:${callerMatch[2]}`
-      : 'unknown';
-
-    const enhancedContext = {
-      ...context,
-      location
-    };
-
-    this.warn(component, `[HAPPY-PATH] ${message}`, enhancedContext, data);
-
-    return fallback;
   }
 }
 

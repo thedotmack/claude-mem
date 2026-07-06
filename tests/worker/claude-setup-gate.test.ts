@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
 import { ClassifiedProviderError } from '../../src/services/worker/provider-errors.js';
 import {
   CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS,
@@ -6,12 +6,19 @@ import {
   resetDependencyStatusesForTesting,
 } from '../../src/shared/dependency-health.js';
 import type { ActiveSession } from '../../src/services/worker-types.js';
+import * as realFindClaudeExecutable from '../../src/shared/find-claude-executable.js';
 
 let findClaudeExecutableImpl: () => string = () => '/mock/claude';
+const realFindClaudeExecutableSnapshot = { ...realFindClaudeExecutable };
 
 mock.module('../../src/shared/find-claude-executable.js', () => ({
+  ...realFindClaudeExecutableSnapshot,
   findClaudeExecutable: () => findClaudeExecutableImpl(),
 }));
+
+afterAll(() => {
+  mock.module('../../src/shared/find-claude-executable.js', () => realFindClaudeExecutableSnapshot);
+});
 
 const { SessionRoutes } = await import('../../src/services/worker/http/routes/SessionRoutes.js');
 const { ClaudeProvider } = await import('../../src/services/worker/ClaudeProvider.js');
@@ -24,7 +31,6 @@ function makeSession(): ActiveSession {
     project: 'project',
     platformSource: 'claude',
     userPrompt: 'prompt',
-    pendingMessages: [],
     abortController: new AbortController(),
     generatorPromise: null,
     lastPromptNumber: 1,
@@ -94,6 +100,8 @@ describe('Claude setup-required generator gate', () => {
       sessionManager as any,
       {} as any,
       claudeProvider as any,
+      { startSession: async () => {} } as any,
+      { startSession: async () => {} } as any,
       { startSession: async () => {} } as any,
       { startSession: async () => {} } as any,
       {} as any,

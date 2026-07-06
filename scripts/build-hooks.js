@@ -244,7 +244,6 @@ async function buildHooks() {
         'tree-sitter-kotlin': '^0.3.8',
         'tree-sitter-swift': '^0.7.1',
         'tree-sitter-php': '^0.24.2',
-        'tree-sitter-elixir': '^0.3.5',
         '@tree-sitter-grammars/tree-sitter-lua': '^0.4.1',
         'tree-sitter-scala': '^0.24.0',
         'tree-sitter-bash': '^0.25.1',
@@ -297,7 +296,6 @@ async function buildHooks() {
       logLevel: 'error', // Suppress warnings (import.meta warning is benign)
       external: [
         'bun:sqlite',
-        'zod',
         'cohere-ai',
         'ollama',
         '@chroma-core/default-embed',
@@ -346,6 +344,60 @@ async function buildHooks() {
       console.warn(
         `⚠️  worker-service.cjs is ${(workerStats.size / 1024).toFixed(2)} KB (advisory budget ${(WORKER_SERVICE_MAX_BYTES / 1024).toFixed(0)} KB). ` +
         `If this jumped unexpectedly, check whether a server-only dependency leaked into the worker bundle (see #2584).`
+      );
+    }
+
+    // worker-service.cjs lazy-requires these via createRequire("../sqlite/…"),
+    // intentionally kept external from the worker bundle (#2584). They MUST ship
+    // as sibling files under plugin/sqlite/, or the worker throws
+    // "Cannot find module '../sqlite/SessionStore.js'" on first embed and Chroma
+    // vector sync silently degrades on every observation. Same esbuild options and
+    // external list as the worker; the closure only pulls Node built-ins + bun:sqlite.
+    console.log(`\n🔧 Building sqlite runtime modules...`);
+    const SQLITE_MODULES = [
+      { source: 'src/services/sqlite/SessionStore.ts', out: 'plugin/sqlite/SessionStore.js' },
+      { source: 'src/services/sqlite/observations/files.ts', out: 'plugin/sqlite/observations/files.js' },
+    ];
+    for (const mod of SQLITE_MODULES) {
+      fs.mkdirSync(path.dirname(mod.out), { recursive: true });
+      await build({
+        entryPoints: [mod.source],
+        bundle: true,
+        platform: 'node',
+        target: 'node18',
+        format: 'cjs',
+        outfile: mod.out,
+        minify: true,
+        logLevel: 'error',
+        external: [
+          'bun:sqlite',
+          'zod',
+          'cohere-ai',
+          'ollama',
+          '@chroma-core/default-embed',
+          'onnxruntime-node',
+          'better-auth',
+          'better-auth/node',
+          'better-auth/plugins',
+          '@better-auth/api-key',
+        ],
+        define: {
+          '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
+          'import.meta.url': '__IMPORT_META_URL__'
+        },
+        banner: {
+          js: 'var __IMPORT_META_URL__ = require("node:url").pathToFileURL(__filename).href;'
+        }
+      });
+      console.log(`✓ ${mod.out} built (${(fs.statSync(mod.out).size / 1024).toFixed(2)} KB)`);
+    }
+
+    const workerBundleContent = fs.readFileSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`, 'utf-8');
+    const workerZodRequireRegex = /require\(\s*["']zod(?:\/[^"']*)?["']\s*\)/;
+    const workerZodRequireMatch = workerBundleContent.match(workerZodRequireRegex);
+    if (workerZodRequireMatch) {
+      throw new Error(
+        `worker-service.cjs contains external ${workerZodRequireMatch[0]}. Zod must be bundled into the worker service so the hook client process does not fail when plugin node_modules is unavailable after a version upgrade. See issue #2831.`
       );
     }
 
@@ -406,7 +458,6 @@ async function buildHooks() {
         'tree-sitter-kotlin',
         'tree-sitter-swift',
         'tree-sitter-php',
-        'tree-sitter-elixir',
         '@tree-sitter-grammars/tree-sitter-lua',
         'tree-sitter-scala',
         'tree-sitter-bash',

@@ -79,191 +79,23 @@ export async function processGeneratedResponse(
   const skipped = parsed.summary?.skipped === true;
   const privateContentDetected = skipped || observationsToWrite.length === 0;
 
-  const outcome = await withPostgresTransaction(input.pool, async (client) => {
-    const obsRepo = new PostgresObservationRepository(client);
-    const sourcesRepo = new PostgresObservationSourcesRepository(client);
-    const jobsRepo = new PostgresObservationGenerationJobRepository(client);
-    const eventsLogRepo = new PostgresObservationGenerationJobEventsRepository(client);
-    const auditRepo = new PostgresAuthRepository(client);
-
-    // Reload the job inside the transaction. If it was already completed
-    // by another worker, return its existing observations idempotently.
-    const fresh = await jobsRepo.getByIdForScope({
-      id: job.id,
-      projectId: job.projectId,
-      teamId: job.teamId,
-    });
-    if (!fresh) {
-      throw new Error(`generation job ${job.id} not found in scope`);
-    }
-    if (fresh.status === 'completed' || fresh.status === 'cancelled' || fresh.status === 'failed') {
-      logger.info('SYSTEM', 'generation job already in terminal status; skipping persistence', {
-        jobId: fresh.id,
-        status: fresh.status,
-      });
-      return {
-        kind: 'completed' as const,
-        jobId: fresh.id,
-        observations: [],
-        privateContentDetected,
-      };
-    }
-
-    const persisted: PostgresObservation[] = [];
-    for (let index = 0; index < observationsToWrite.length; index++) {
-      const parsedObservation = observationsToWrite[index]!;
-      const content = renderObservationContent(parsedObservation);
-      if (!content || content.trim().length === 0) {
-        continue;
-      }
-
-      // Defense-in-depth: even if the parser slipped a private-tagged
-      // string through, scrub before persisting.
-      const scrubbed = stripTags(content);
-      if (!scrubbed.stripped || scrubbed.stripped.trim().length === 0) {
-        continue;
-      }
-
-      const generationKey = buildObservationGenerationKey({
-        generationJobId: fresh.id,
-        parsedObservationIndex: index,
-        content: scrubbed.stripped,
-      });
-
-      const observation = await obsRepo.create({
-        projectId: fresh.projectId,
-        teamId: fresh.teamId,
-        serverSessionId: fresh.serverSessionId,
-        kind: parsedObservation.type ?? 'observation',
-        content: scrubbed.stripped,
-        generationKey,
-        metadata: {
-          title: parsedObservation.title,
-          subtitle: parsedObservation.subtitle,
-          facts: parsedObservation.facts,
-          narrative: parsedObservation.narrative,
-          concepts: parsedObservation.concepts,
-          files_read: parsedObservation.files_read,
-          files_modified: parsedObservation.files_modified,
-          provider: input.providerLabel,
-          model: input.modelId ?? null,
-        },
-        createdByJobId: fresh.id,
-      });
-      persisted.push(observation);
-
-      await sourcesRepo.addSource({
-        observationId: observation.id,
-        projectId: fresh.projectId,
-        teamId: fresh.teamId,
-        sourceType: fresh.sourceType,
-        sourceId: fresh.sourceId,
-        agentEventId: fresh.agentEventId ?? null,
-        generationJobId: fresh.id,
-        metadata: {
-          provider: input.providerLabel,
-          parsedObservationIndex: index,
-          // Phase 11 — denormalize identity context for traceability so an
-          // operator can answer "which api key produced this observation?"
-          // without joining back through generation_job → outbox → key.
-          source_adapter: input.sourceAdapter ?? null,
-          actor_id: input.actorId ?? null,
-          api_key_id: input.apiKeyId ?? null,
-        },
-      });
-
-      // Phase 11 — audit each generated observation. Using the SAME
-      // generation_job_id reference so the audit chain (event_received →
-      // generation_job.queued → generation_job.processing → observation.
-      // created → observation.read) can be reconstructed.
-      try {
-        await auditRepo.createAuditLog({
-          teamId: fresh.teamId,
-          projectId: fresh.projectId,
-          actorId: input.actorId ?? null,
-          apiKeyId: input.apiKeyId ?? null,
-          action: 'observation.created',
-          resourceType: 'observation',
-          resourceId: observation.id,
-          details: {
-            generationJobId: fresh.id,
-            sourceType: fresh.sourceType,
-            sourceId: fresh.sourceId,
-            provider: input.providerLabel,
-            model: input.modelId ?? null,
-            sourceAdapter: input.sourceAdapter ?? null,
-            parsedObservationIndex: index,
-          },
-        });
-      } catch (auditError) {
-        logger.warn('SYSTEM', 'audit_log observation.created insert failed', {
-          observationId: observation.id,
-          error: auditError instanceof Error ? auditError.message : String(auditError),
-        });
-      }
-    }
-
-    // Advance outbox status. Phase 1 transitionStatus enforces legal
-    // transitions and tenant scope inside its WHERE clause.
-    await jobsRepo.transitionStatus({
-      id: fresh.id,
-      projectId: fresh.projectId,
-      teamId: fresh.teamId,
-      status: 'completed',
-    });
-    await eventsLogRepo.append({
-      generationJobId: fresh.id,
-      projectId: fresh.projectId,
-      teamId: fresh.teamId,
-      eventType: 'completed',
-      statusAfter: 'completed',
-      attempt: fresh.attempts,
-      details: {
-        provider: input.providerLabel,
-        model: input.modelId ?? null,
-        observationCount: persisted.length,
-        privateContentDetected,
-        workerId: input.workerId ?? null,
+  const outcome = await persistGeneratedObservations(
+    input,
+    observationsToWrite.map(observation => ({
+      kind: observation.type ?? 'observation',
+      content: renderObservationContent(observation),
+      metadata: {
+        title: observation.title,
+        subtitle: observation.subtitle,
+        facts: observation.facts,
+        narrative: observation.narrative,
+        concepts: observation.concepts,
+        files_read: observation.files_read,
+        files_modified: observation.files_modified,
       },
-    });
-
-    // Audit log — best-effort; failure here would already be inside the
-    // transaction so any insert error rolls everything back. We accept
-    // that to keep the pipeline observable end-to-end.
-    try {
-      await auditRepo.createAuditLog({
-        teamId: fresh.teamId,
-        projectId: fresh.projectId,
-        actorId: input.actorId ?? null,
-        apiKeyId: input.apiKeyId ?? null,
-        action: 'generation_job.completed',
-        resourceType: 'observation_generation_job',
-        resourceId: fresh.id,
-        details: {
-          generationJobId: fresh.id,
-          provider: input.providerLabel,
-          model: input.modelId ?? null,
-          observationCount: persisted.length,
-          observationIds: persisted.map(o => o.id),
-          sourceAdapter: input.sourceAdapter ?? null,
-        },
-      });
-    } catch (auditError) {
-      // The audit log table may not have a metadata column on older
-      // schemas; swallow rather than failing generation.
-      logger.warn('SYSTEM', 'audit log insert failed during generation', {
-        jobId: fresh.id,
-        error: auditError instanceof Error ? auditError.message : String(auditError),
-      });
-    }
-
-    return {
-      kind: 'completed' as const,
-      jobId: fresh.id,
-      observations: persisted,
-      privateContentDetected,
-    };
-  });
+    })),
+    privateContentDetected,
+  );
 
   // Cost/usage metering — AFTER the transaction commits, so a metering insert
   // failure can NEVER roll back the observation + job writes (Greptile #3078: a
@@ -271,25 +103,7 @@ export async function processGeneratedResponse(
   // best-effort (logged); awaited so callers observe usage consistently.
   if (outcome.kind === 'completed' && process.env.CLAUDE_MEM_USAGE_METERING === '1') {
     try {
-      const usageRepo = new PostgresUsageRepository(input.pool);
-      if (input.tokensUsed && input.tokensUsed > 0) {
-        await usageRepo.record({
-          teamId: input.job.teamId,
-          projectId: input.job.projectId,
-          kind: 'tokens',
-          quantity: input.tokensUsed,
-          metadata: { jobId: input.job.id, provider: input.providerLabel, model: input.modelId ?? null },
-        });
-      }
-      if (outcome.observations.length > 0) {
-        await usageRepo.record({
-          teamId: input.job.teamId,
-          projectId: input.job.projectId,
-          kind: 'observation',
-          quantity: outcome.observations.length,
-          metadata: { jobId: input.job.id },
-        });
-      }
+      await recordUsageMetering(input, outcome.observations.length);
     } catch (usageError) {
       logger.warn('SYSTEM', 'usage metering record failed (post-commit)', {
         jobId: input.job.id,
@@ -385,23 +199,62 @@ export async function processSessionSummaryResponse(
   const summaryContent = summary ? renderSummaryContent(summary) : '';
   const privateContentDetected = skipped || summaryContent.trim().length === 0;
 
-  return await withPostgresTransaction(input.pool, async (client) => {
+  const rendered: RenderedObservation[] = privateContentDetected
+    ? []
+    : [{
+        kind: 'summary',
+        content: summaryContent,
+        metadata: {
+          request: summary?.request ?? null,
+          investigated: summary?.investigated ?? null,
+          learned: summary?.learned ?? null,
+          completed: summary?.completed ?? null,
+          next_steps: summary?.next_steps ?? null,
+          notes: summary?.notes ?? null,
+        },
+      }];
+
+  return persistGeneratedObservations(input, rendered, privateContentDetected);
+}
+
+interface RenderedObservation {
+  kind: string;
+  content: string;
+  metadata: Record<string, unknown>;
+}
+
+// Shared persist transaction for both the per-event and session-summary
+// pipelines: reload + terminal-status check, persist each rendered
+// observation (+ source link + observation.created audit), then advance the
+// outbox (transitionStatus + lifecycle event + generation_job.completed
+// audit). Every side-effect runs inside a single Postgres transaction so
+// retries are idempotent.
+async function persistGeneratedObservations(
+  input: ProcessGeneratedResponseInput,
+  rendered: RenderedObservation[],
+  privateContentDetected: boolean,
+): Promise<ProcessGeneratedResponseOutcome> {
+  const { job } = input;
+
+  return withPostgresTransaction(input.pool, async (client) => {
     const obsRepo = new PostgresObservationRepository(client);
     const sourcesRepo = new PostgresObservationSourcesRepository(client);
     const jobsRepo = new PostgresObservationGenerationJobRepository(client);
     const eventsLogRepo = new PostgresObservationGenerationJobEventsRepository(client);
     const auditRepo = new PostgresAuthRepository(client);
 
+    // Reload the job inside the transaction. If it was already completed
+    // by another worker, return its existing observations idempotently.
     const fresh = await jobsRepo.getByIdForScope({
       id: job.id,
       projectId: job.projectId,
       teamId: job.teamId,
     });
     if (!fresh) {
-      throw new Error(`session summary generation job ${job.id} not found in scope`);
+      throw new Error(`generation job ${job.id} not found in scope`);
     }
     if (fresh.status === 'completed' || fresh.status === 'cancelled' || fresh.status === 'failed') {
-      logger.info('SYSTEM', 'session summary job already in terminal status; skipping persistence', {
+      logger.info('SYSTEM', 'generation job already in terminal status; skipping persistence', {
         jobId: fresh.id,
         status: fresh.status,
       });
@@ -414,81 +267,96 @@ export async function processSessionSummaryResponse(
     }
 
     const persisted: PostgresObservation[] = [];
-    if (!privateContentDetected) {
-      const scrubbed = stripTags(summaryContent);
-      const scrubbedContent = scrubbed.stripped ?? '';
-      if (scrubbedContent.trim().length > 0) {
-        const generationKey = buildObservationGenerationKey({
-          generationJobId: fresh.id,
-          parsedObservationIndex: 0,
-          content: scrubbedContent,
-        });
-        const observation = await obsRepo.create({
-          projectId: fresh.projectId,
-          teamId: fresh.teamId,
-          serverSessionId: fresh.serverSessionId,
-          kind: 'summary',
-          content: scrubbedContent,
-          generationKey,
-          metadata: {
-            request: summary?.request ?? null,
-            investigated: summary?.investigated ?? null,
-            learned: summary?.learned ?? null,
-            completed: summary?.completed ?? null,
-            next_steps: summary?.next_steps ?? null,
-            notes: summary?.notes ?? null,
-            provider: input.providerLabel,
-            model: input.modelId ?? null,
-          },
-          createdByJobId: fresh.id,
-        });
-        persisted.push(observation);
+    for (let index = 0; index < rendered.length; index++) {
+      const { kind, content, metadata } = rendered[index]!;
+      if (!content || content.trim().length === 0) {
+        continue;
+      }
 
-        await sourcesRepo.addSource({
-          observationId: observation.id,
-          projectId: fresh.projectId,
-          teamId: fresh.teamId,
-          sourceType: 'session_summary',
+      // Defense-in-depth: even if the parser slipped a private-tagged
+      // string through, scrub before persisting.
+      const scrubbed = stripTags(content);
+      if (!scrubbed.stripped || scrubbed.stripped.trim().length === 0) {
+        continue;
+      }
+
+      const generationKey = buildObservationGenerationKey({
+        generationJobId: fresh.id,
+        parsedObservationIndex: index,
+        content: scrubbed.stripped,
+      });
+
+      const observation = await obsRepo.create({
+        projectId: fresh.projectId,
+        teamId: fresh.teamId,
+        serverSessionId: fresh.serverSessionId,
+        kind,
+        content: scrubbed.stripped,
+        generationKey,
+        metadata: {
+          ...metadata,
+          provider: input.providerLabel,
+          model: input.modelId ?? null,
+        },
+        createdByJobId: fresh.id,
+      });
+      persisted.push(observation);
+
+      await sourcesRepo.addSource({
+        observationId: observation.id,
+        projectId: fresh.projectId,
+        teamId: fresh.teamId,
+        sourceType: fresh.sourceType,
+        sourceId: fresh.sourceId,
+        agentEventId: fresh.agentEventId ?? null,
+        generationJobId: fresh.id,
+        metadata: {
+          provider: input.providerLabel,
+          parsedObservationIndex: index,
+          // Phase 11 — denormalize identity context for traceability so an
+          // operator can answer "which api key produced this observation?"
+          // without joining back through generation_job → outbox → key.
+          source_adapter: input.sourceAdapter ?? null,
+          actor_id: input.actorId ?? null,
+          api_key_id: input.apiKeyId ?? null,
+        },
+      });
+
+      // Phase 11 — audit each generated observation. Using the SAME
+      // generation_job_id reference so the audit chain (event_received →
+      // generation_job.queued → generation_job.processing → observation.
+      // created → observation.read) can be reconstructed.
+      const observationAuditEntry = {
+        teamId: fresh.teamId,
+        projectId: fresh.projectId,
+        actorId: input.actorId ?? null,
+        apiKeyId: input.apiKeyId ?? null,
+        action: 'observation.created',
+        resourceType: 'observation',
+        resourceId: observation.id,
+        details: {
+          generationJobId: fresh.id,
+          sourceType: fresh.sourceType,
           sourceId: fresh.sourceId,
-          generationJobId: fresh.id,
-          metadata: {
-            provider: input.providerLabel,
-            parsedObservationIndex: 0,
-            source_adapter: input.sourceAdapter ?? null,
-            actor_id: input.actorId ?? null,
-            api_key_id: input.apiKeyId ?? null,
-          },
+          provider: input.providerLabel,
+          model: input.modelId ?? null,
+          sourceAdapter: input.sourceAdapter ?? null,
+          parsedObservationIndex: index,
+          kind,
+        },
+      };
+      try {
+        await auditRepo.createAuditLog(observationAuditEntry);
+      } catch (auditError) {
+        logger.warn('SYSTEM', 'audit_log observation.created insert failed', {
+          observationId: observation.id,
+          error: auditError instanceof Error ? auditError.message : String(auditError),
         });
-
-        // Phase 11 — observation.created audit for the summary observation.
-        try {
-          await auditRepo.createAuditLog({
-            teamId: fresh.teamId,
-            projectId: fresh.projectId,
-            actorId: input.actorId ?? null,
-            apiKeyId: input.apiKeyId ?? null,
-            action: 'observation.created',
-            resourceType: 'observation',
-            resourceId: observation.id,
-            details: {
-              generationJobId: fresh.id,
-              sourceType: 'session_summary',
-              sourceId: fresh.sourceId,
-              provider: input.providerLabel,
-              model: input.modelId ?? null,
-              sourceAdapter: input.sourceAdapter ?? null,
-              kind: 'summary',
-            },
-          });
-        } catch (auditError) {
-          logger.warn('SYSTEM', 'audit_log observation.created (summary) insert failed', {
-            observationId: observation.id,
-            error: auditError instanceof Error ? auditError.message : String(auditError),
-          });
-        }
       }
     }
 
+    // Advance outbox status. Phase 1 transitionStatus enforces legal
+    // transitions and tenant scope inside its WHERE clause.
     await jobsRepo.transitionStatus({
       id: fresh.id,
       projectId: fresh.projectId,
@@ -508,31 +376,37 @@ export async function processSessionSummaryResponse(
         observationCount: persisted.length,
         privateContentDetected,
         workerId: input.workerId ?? null,
-        sourceType: 'session_summary',
+        sourceType: fresh.sourceType,
       },
     });
 
+    // Audit log — best-effort; failure here would already be inside the
+    // transaction so any insert error rolls everything back. We accept
+    // that to keep the pipeline observable end-to-end.
+    const jobCompletedAuditEntry = {
+      teamId: fresh.teamId,
+      projectId: fresh.projectId,
+      actorId: input.actorId ?? null,
+      apiKeyId: input.apiKeyId ?? null,
+      action: 'generation_job.completed',
+      resourceType: 'observation_generation_job',
+      resourceId: fresh.id,
+      details: {
+        generationJobId: fresh.id,
+        provider: input.providerLabel,
+        model: input.modelId ?? null,
+        observationCount: persisted.length,
+        observationIds: persisted.map(o => o.id),
+        sourceAdapter: input.sourceAdapter ?? null,
+        sourceType: fresh.sourceType,
+      },
+    };
     try {
-      await auditRepo.createAuditLog({
-        teamId: fresh.teamId,
-        projectId: fresh.projectId,
-        actorId: input.actorId ?? null,
-        apiKeyId: input.apiKeyId ?? null,
-        action: 'generation_job.completed',
-        resourceType: 'observation_generation_job',
-        resourceId: fresh.id,
-        details: {
-          generationJobId: fresh.id,
-          provider: input.providerLabel,
-          model: input.modelId ?? null,
-          observationCount: persisted.length,
-          observationIds: persisted.map(o => o.id),
-          sourceAdapter: input.sourceAdapter ?? null,
-          sourceType: 'session_summary',
-        },
-      });
+      await auditRepo.createAuditLog(jobCompletedAuditEntry);
     } catch (auditError) {
-      logger.warn('SYSTEM', 'audit log insert failed during summary generation', {
+      // The audit log table may not have a metadata column on older
+      // schemas; swallow rather than failing generation.
+      logger.warn('SYSTEM', 'audit log insert failed during generation', {
         jobId: fresh.id,
         error: auditError instanceof Error ? auditError.message : String(auditError),
       });
@@ -545,6 +419,33 @@ export async function processSessionSummaryResponse(
       privateContentDetected,
     };
   });
+}
+
+// Post-commit usage metering writes (tokens + observation counts). Extracted
+// so the caller's try block stays narrow; any insert failure surfaces there.
+async function recordUsageMetering(
+  input: ProcessGeneratedResponseInput,
+  observationCount: number,
+): Promise<void> {
+  const usageRepo = new PostgresUsageRepository(input.pool);
+  if (input.tokensUsed && input.tokensUsed > 0) {
+    await usageRepo.record({
+      teamId: input.job.teamId,
+      projectId: input.job.projectId,
+      kind: 'tokens',
+      quantity: input.tokensUsed,
+      metadata: { jobId: input.job.id, provider: input.providerLabel, model: input.modelId ?? null },
+    });
+  }
+  if (observationCount > 0) {
+    await usageRepo.record({
+      teamId: input.job.teamId,
+      projectId: input.job.projectId,
+      kind: 'observation',
+      quantity: observationCount,
+      metadata: { jobId: input.job.id },
+    });
+  }
 }
 
 function renderSummaryContent(summary: ParsedSummary): string {

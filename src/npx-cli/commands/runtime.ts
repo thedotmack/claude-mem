@@ -2,23 +2,23 @@ import { spawnHidden } from '../../shared/spawn.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { existsSync } from 'fs';
 import { join } from 'path';
-import pc from 'picocolors';
-import { resolveBunBinaryPath } from '../utils/bun-resolver.js';
+import { styleText } from 'node:util';
+import { getBunPath } from '../install/setup-runtime.js';
 import { isPluginInstalled, marketplaceDirectory } from '../utils/paths.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 
 function ensureInstalledOrExit(): void {
   if (!isPluginInstalled()) {
-    console.error(pc.red('claude-mem is not installed.'));
-    console.error(`Run: ${pc.bold('npx claude-mem install')}`);
+    console.error(styleText('red', 'claude-mem is not installed.'));
+    console.error(`Run: ${styleText('bold', 'npx claude-mem install')}`);
     process.exit(1);
   }
 }
 
 function resolveBunOrExit(): string {
-  const bunPath = resolveBunBinaryPath();
+  const bunPath = getBunPath();
   if (!bunPath) {
-    console.error(pc.red('Bun not found.'));
+    console.error(styleText('red', 'Bun not found.'));
     console.error('Install Bun: https://bun.sh');
     console.error('After installation, restart your terminal.');
     process.exit(1);
@@ -56,7 +56,7 @@ function spawnPlugin(bunPath: string, args: string[], startFailureLabel = 'Bun')
   });
 
   child.on('error', (error) => {
-    console.error(pc.red(`Failed to start ${startFailureLabel}: ${error.message}`));
+    console.error(styleText('red', `Failed to start ${startFailureLabel}: ${error.message}`));
     process.exit(1);
   });
 
@@ -71,7 +71,7 @@ function spawnBunWorkerCommand(command: string, extraArgs: string[] = []): void 
   const workerScript = workerServiceScriptPath();
 
   if (!existsSync(workerScript)) {
-    console.error(pc.red(`Worker script not found at: ${workerScript}`));
+    console.error(styleText('red', `Worker script not found at: ${workerScript}`));
     console.error('The installation may be corrupted. Try: npx claude-mem install');
     process.exit(1);
   }
@@ -85,7 +85,7 @@ function spawnBunServerCommand(command: string, extraArgs: string[] = []): void 
   const serverScript = serverServiceScriptPath();
 
   if (!existsSync(serverScript)) {
-    console.error(pc.red(`Server script not found at: ${serverScript}`));
+    console.error(styleText('red', `Server script not found at: ${serverScript}`));
     console.error('The installation may be corrupted. Try: npx claude-mem install');
     process.exit(1);
   }
@@ -142,7 +142,7 @@ export function runAdoptCommand(extraArgs: string[] = []): void {
   const workerScript = workerServiceScriptPath();
 
   if (!existsSync(workerScript)) {
-    console.error(pc.red(`Worker script not found at: ${workerScript}`));
+    console.error(styleText('red', `Worker script not found at: ${workerScript}`));
     console.error('The installation may be corrupted. Try: npx claude-mem install');
     process.exit(1);
   }
@@ -160,7 +160,7 @@ export async function runSearchCommand(queryParts: string[]): Promise<void> {
 
   const query = queryParts.join(' ').trim();
   if (!query) {
-    console.error(pc.red('Usage: npx claude-mem search <query>'));
+    console.error(styleText('red', 'Usage: npx claude-mem search <query>'));
     process.exit(1);
   }
 
@@ -174,21 +174,21 @@ export async function runSearchCommand(queryParts: string[]): Promise<void> {
     const message = error instanceof Error ? error.message : String(error);
     const cause = error instanceof Error ? (error as any).cause : undefined;
     if (cause?.code === 'ECONNREFUSED' || message.includes('ECONNREFUSED')) {
-      console.error(pc.red('Worker is not running.'));
-      console.error(`Start it with: ${pc.bold('npx claude-mem start')}`);
+      console.error(styleText('red', 'Worker is not running.'));
+      console.error(`Start it with: ${styleText('bold', 'npx claude-mem start')}`);
       process.exit(1);
     }
-    console.error(pc.red(`Search failed: ${message}`));
+    console.error(styleText('red', `Search failed: ${message}`));
     process.exit(1);
   }
 
   if (!response.ok) {
     if (response.status === 404) {
-      console.error(pc.red('Search endpoint not found. Is the worker running?'));
-      console.error(`Try: ${pc.bold('npx claude-mem start')}`);
+      console.error(styleText('red', 'Search endpoint not found. Is the worker running?'));
+      console.error(`Try: ${styleText('bold', 'npx claude-mem start')}`);
       process.exit(1);
     }
-    console.error(pc.red(`Search failed: HTTP ${response.status}`));
+    console.error(styleText('red', `Search failed: HTTP ${response.status}`));
     process.exit(1);
   }
 
@@ -197,7 +197,7 @@ export async function runSearchCommand(queryParts: string[]): Promise<void> {
     data = await response.json();
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error(pc.red(`Search failed: invalid JSON response (${message})`));
+    console.error(styleText('red', `Search failed: invalid JSON response (${message})`));
     process.exit(1);
   }
 

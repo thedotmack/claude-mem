@@ -9,16 +9,11 @@ import { telemetryBuffer } from '../telemetry/buffer.js';
 export class SessionManager {
   private dbManager: DatabaseManager;
   private sessions: Map<number, ActiveSession> = new Map();
-  private onSessionDeletedCallback?: () => void;
   private onPendingMutate?: () => void;
   private readonly buffer = new SessionMessageBuffer(() => this.onPendingMutate?.());
 
   constructor(dbManager: DatabaseManager) {
     this.dbManager = dbManager;
-  }
-
-  setOnSessionDeleted(callback: () => void): void {
-    this.onSessionDeletedCallback = callback;
   }
 
   setOnPendingMutate(cb: () => void): void {
@@ -111,7 +106,6 @@ export class SessionManager {
       project: dbSession.project,
       platformSource: dbSession.platform_source,
       userPrompt,
-      pendingMessages: [],
       abortController: new AbortController(),
       generatorPromise: null,
       lastPromptNumber: promptNumber || this.dbManager.getSessionStore().getPromptNumberFromUserPrompts(dbSession.content_session_id, sessionDbId),
@@ -301,10 +295,6 @@ export class SessionManager {
       duration: `${(sessionDuration / 1000).toFixed(1)}s`,
       project: session.project
     });
-
-    if (this.onSessionDeletedCallback) {
-      this.onSessionDeletedCallback();
-    }
   }
 
   removeSessionImmediate(sessionDbId: number): void {
@@ -327,19 +317,11 @@ export class SessionManager {
       sessionId: sessionDbId,
       project: session.project
     });
-
-    if (this.onSessionDeletedCallback) {
-      this.onSessionDeletedCallback();
-    }
   }
 
   async shutdownAll(): Promise<void> {
     const sessionIds = Array.from(this.sessions.keys());
     await Promise.all(sessionIds.map(id => this.deleteSession(id)));
-  }
-
-  async hasPendingMessages(): Promise<boolean> {
-    return this.getTotalQueueDepth() > 0;
   }
 
   getActiveSessionCount(): number {

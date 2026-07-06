@@ -86,36 +86,6 @@ export class SearchOrchestrator {
       && result.results.prompts.length === 0;
   }
 
-  async findByConcept(concept: string, args: any): Promise<StrategySearchResult> {
-    const options = this.normalizeParams(args);
-
-    if (this.hybridStrategy) {
-      return await this.hybridStrategy.findByConcept(concept, options);
-    }
-
-    const results = this.sqliteStrategy.findByConcept(concept, options);
-    return {
-      results: { observations: results, sessions: [], prompts: [] },
-      usedChroma: false,
-      strategy: 'sqlite'
-    };
-  }
-
-  async findByType(type: string | string[], args: any): Promise<StrategySearchResult> {
-    const options = this.normalizeParams(args);
-
-    if (this.hybridStrategy) {
-      return await this.hybridStrategy.findByType(type, options);
-    }
-
-    const results = this.sqliteStrategy.findByType(type, options);
-    return {
-      results: { observations: results, sessions: [], prompts: [] },
-      usedChroma: false,
-      strategy: 'sqlite'
-    };
-  }
-
   async findByFile(filePath: string, args: any): Promise<{
     observations: ObservationSearchResult[];
     sessions: any[];

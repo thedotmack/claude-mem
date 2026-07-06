@@ -4,7 +4,8 @@ import { z } from 'zod';
 import path from 'path';
 import { readFileSync, statSync, existsSync } from 'fs';
 import { logger } from '../../../../utils/logger.js';
-import { getPackageRoot, paths } from '../../../../shared/paths.js';
+import { parseJsonArrayColumn } from '../../../../utils/json-utils.js';
+import { getPackageRoot, paths, OBSERVER_SESSIONS_PROJECT } from '../../../../shared/paths.js';
 import { getWorkerPort } from '../../../../shared/worker-utils.js';
 import { PaginationHelper } from '../../PaginationHelper.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
@@ -56,18 +57,9 @@ const observationsBatchSchema = z.object({
   platform_source: z.string().optional(),
 }).passthrough();
 
-const sdkSessionsBatchSchema = z.preprocess((value) => {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
-
-  const body = value as Record<string, unknown>;
-  if (body.memorySessionIds === undefined && body.sdkSessionIds !== undefined) {
-    return { ...body, memorySessionIds: body.sdkSessionIds };
-  }
-
-  return value;
-}, z.object({
+const sdkSessionsBatchSchema = z.object({
   memorySessionIds: stringArrayLike,
-}).passthrough());
+}).passthrough();
 
 const importSchema = z.object({
   sessions: z.array(z.unknown()).optional(),
@@ -243,7 +235,7 @@ export class DataRoutes extends BaseRouteHandler {
   // clear 403 when the feature is disabled (the default). The read-side filter
   // is unconditional and unaffected by this setting.
   private dismissEnabled(res: Response): boolean {
-    if (SettingsDefaultsManager.getBool('CLAUDE_MEM_ALLOW_DISMISS')) {
+    if (SettingsDefaultsManager.get('CLAUDE_MEM_ALLOW_DISMISS') === 'true') {
       return true;
     }
     res.status(403).json({
@@ -297,16 +289,43 @@ export class DataRoutes extends BaseRouteHandler {
 
   private handleGetStats = this.wrapHandler((req: Request, res: Response): void => {
     const db = this.dbManager.getSessionStore().db;
+    const project = typeof req.query.project === 'string' ? req.query.project : undefined;
 
     const packageRoot = getPackageRoot();
     const packageJsonPath = path.join(packageRoot, 'package.json');
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
     const version = packageJson.version;
 
-    const totalObservations = db.prepare('SELECT COUNT(*) as count FROM observations').get() as { count: number };
-    const totalSessions = db.prepare('SELECT COUNT(*) as count FROM sdk_sessions').get() as { count: number };
-    const totalSummaries = db.prepare('SELECT COUNT(*) as count FROM session_summaries').get() as { count: number };
-    const firstObservationAt = getFirstObservationCreatedAt(db);
+    // Mirror PaginationHelper's reader scoping so the status line's numbers match
+    // the dashboard list views exactly. With a project, observations/summaries
+    // also adopt worktree rows via merged_into_project (sessions have no such
+    // column); without one, the internal observer-sessions project is excluded —
+    // just as the readers do. `table` is a constant identifier (never user
+    // input) and every project value is a bound parameter, so there is no
+    // dynamic SQL. Status-line consumers pass ?project=<folder> to switch between
+    // per-project and global counts.
+    const countScoped = (table: string, hasMergedColumn: boolean): number => {
+      let where: string;
+      let params: string[];
+      if (project) {
+        where = hasMergedColumn
+          ? 'WHERE (project = ? OR merged_into_project = ?)'
+          : 'WHERE project = ?';
+        params = hasMergedColumn ? [project, project] : [project];
+      } else {
+        where = 'WHERE project != ?';
+        params = [OBSERVER_SESSIONS_PROJECT];
+      }
+      const row = db
+        .prepare(`SELECT COUNT(*) as count FROM ${table} ${where}`)
+        .get(...params) as { count: number };
+      return row.count;
+    };
+
+    const totalObservations = countScoped('observations', true);
+    const totalSessions = countScoped('sdk_sessions', false);
+    const totalSummaries = countScoped('session_summaries', true);
+    const firstObservationAt = getFirstObservationCreatedAt(db, project);
 
     const dbPath = paths.database();
     let dbSize = 0;
@@ -329,9 +348,9 @@ export class DataRoutes extends BaseRouteHandler {
       database: {
         path: dbPath,
         size: dbSize,
-        observations: totalObservations.count,
-        sessions: totalSessions.count,
-        summaries: totalSummaries.count,
+        observations: totalObservations,
+        sessions: totalSessions,
+        summaries: totalSummaries,
         firstObservationAt
       }
     });
@@ -367,27 +386,6 @@ export class DataRoutes extends BaseRouteHandler {
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
 
     return { offset, limit, project, platformSource };
-  }
-
-  private static firstString(value: unknown): string | undefined {
-    if (Array.isArray(value)) {
-      return DataRoutes.firstString(value[0]);
-    }
-    return typeof value === 'string' && value.trim() ? value : undefined;
-  }
-
-  private getOptionalPlatformSourceFromRequest(req: Request): string | undefined {
-    const body = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
-    const header = req.get?.('x-platform-source')
-      ?? req.get?.('x-claude-mem-platform-source');
-    const rawPlatformSource =
-      DataRoutes.firstString(req.query.platformSource)
-      ?? DataRoutes.firstString(req.query.platform_source)
-      ?? DataRoutes.firstString(body.platformSource)
-      ?? DataRoutes.firstString(body.platform_source)
-      ?? DataRoutes.firstString(header);
-
-    return rawPlatformSource ? normalizePlatformSource(rawPlatformSource) : undefined;
   }
 
   private handleImport = this.wrapHandler((req: Request, res: Response): void => {
@@ -463,10 +461,6 @@ export class DataRoutes extends BaseRouteHandler {
       const chromaSync = this.dbManager.getChromaSync();
       if (chromaSync && importedObservations.length > 0) {
         const CHROMA_SYNC_CONCURRENCY = 8;
-        const safeParseJson = (val: string | null): string[] => {
-          if (!val) return [];
-          try { return JSON.parse(val); } catch { return []; }
-        };
 
         const syncOne = async ({ id, obs }: { id: number; obs: any }) => {
           const sourceRow = store.db.prepare(`
@@ -482,11 +476,11 @@ export class DataRoutes extends BaseRouteHandler {
             type: obs.type || 'discovery',
             title: obs.title || null,
             subtitle: obs.subtitle || null,
-            facts: safeParseJson(obs.facts),
+            facts: parseJsonArrayColumn(obs.facts),
             narrative: obs.narrative || null,
-            concepts: safeParseJson(obs.concepts),
-            files_read: safeParseJson(obs.files_read),
-            files_modified: safeParseJson(obs.files_modified),
+            concepts: parseJsonArrayColumn(obs.concepts),
+            files_read: parseJsonArrayColumn(obs.files_read),
+            files_modified: parseJsonArrayColumn(obs.files_modified),
           };
 
           await chromaSync.syncObservation(

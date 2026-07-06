@@ -8,7 +8,6 @@ export interface IDEInfo {
   id: string;
   label: string;
   detected: boolean;
-  supported: boolean;
   hint?: string;
 }
 
@@ -45,84 +44,76 @@ export function detectInstalledIDEs(): IDEInfo[] {
       id: 'claude-code',
       label: 'Claude Code',
       detected: isCommandInPath('claude'),
-      supported: true,
       hint: 'recommended',
-    },
-    {
-      id: 'gemini-cli',
-      label: 'Gemini CLI',
-      detected: existsSync(join(home, '.gemini')),
-      supported: true,
     },
     {
       id: 'opencode',
       label: 'OpenCode',
       detected:
         existsSync(join(home, '.config', 'opencode')) || isCommandInPath('opencode'),
-      supported: true,
       hint: 'plugin-based integration',
     },
     {
       id: 'openclaw',
       label: 'OpenClaw',
       detected: existsSync(join(home, '.openclaw')),
-      supported: true,
       hint: 'plugin-based integration',
     },
     {
       id: 'windsurf',
       label: 'Windsurf',
       detected: existsSync(join(home, '.codeium', 'windsurf')),
-      supported: true,
     },
     {
       id: 'codex-cli',
       label: 'Codex CLI',
       detected: existsSync(join(home, '.codex')),
-      supported: true,
       hint: 'native hooks integration',
+    },
+    {
+      // Directory-only on purpose (matching gemini-cli/codex-cli): the
+      // installer requires ~/.kiro to exist, so detecting a PATH-only binary
+      // would offer an install that immediately fails.
+      id: 'kiro-cli',
+      label: 'Kiro CLI',
+      detected: existsSync(process.env.KIRO_HOME ?? join(home, '.kiro')),
+      hint: 'agent hooks + MCP integration',
     },
     {
       id: 'cursor',
       label: 'Cursor',
       detected: existsSync(join(home, '.cursor')),
-      supported: true,
       hint: 'hooks + MCP integration',
     },
     {
       id: 'copilot-cli',
       label: 'Copilot CLI',
       detected: isCommandInPath('copilot'),
-      supported: true,
       hint: 'MCP-based integration',
     },
     {
       id: 'antigravity',
       label: 'Antigravity',
-      detected: existsSync(join(home, '.gemini', 'antigravity')),
-      supported: true,
-      hint: 'MCP-based integration',
+      detected: existsSync(join(home, '.gemini', 'antigravity')) || isCommandInPath('agy'),
+      hint: 'hooks + MCP integration',
     },
     {
       id: 'goose',
       label: 'Goose',
       detected:
         existsSync(join(home, '.config', 'goose')) || isCommandInPath('goose'),
-      supported: true,
       hint: 'MCP-based integration',
     },
     {
       id: 'roo-code',
       label: 'Roo Code',
       detected: hasVscodeExtension('roo-code'),
-      supported: true,
       hint: 'MCP-based integration',
     },
     {
       id: 'warp',
       label: 'Warp',
       detected: existsSync(join(home, '.warp')) || isCommandInPath('warp'),
-      supported: true,
       hint: 'MCP-based integration',
     },
   ];

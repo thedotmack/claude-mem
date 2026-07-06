@@ -7,7 +7,7 @@ import { SettingsDefaultsManager, type SettingsDefaults } from "./SettingsDefaul
 import { MARKETPLACE_ROOT, DATA_DIR } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
 import { validateWorkerPidFile } from "../supervisor/index.js";
-import { emitBlockingError } from "./hook-io.js";
+import { emitBlockingError, emitDiagnostic } from "./hook-io.js";
 import { captureCliEvent } from "../services/telemetry/cli-telemetry.js";
 import { checkVersionMatch } from "../services/infrastructure/index.js";
 // Imported from ProcessManager.js directly (not the infrastructure barrel):
@@ -37,12 +37,6 @@ function readTimeoutEnv(
 const HEALTH_CHECK_TIMEOUT_MS = readTimeoutEnv(
   'CLAUDE_MEM_HEALTH_TIMEOUT_MS',
   getTimeout(HOOK_TIMEOUTS.HEALTH_CHECK),
-  { min: 500, max: 300000 }
-);
-
-const API_REQUEST_TIMEOUT_MS = readTimeoutEnv(
-  'CLAUDE_MEM_API_TIMEOUT_MS',
-  getTimeout(HOOK_TIMEOUTS.API_REQUEST),
   { min: 500, max: 300000 }
 );
 
@@ -211,18 +205,20 @@ async function isWorkerReady(): Promise<boolean> {
 }
 
 /**
- * Canonical worker-script resolver: the marketplace install first, then the
- * dev-tree copy under cwd. Exported so other launchers (e.g. the MCP server)
- * prefer the same marketplace copy instead of spawning a stale cache-dir
- * bundle.
+ * Canonical worker-script resolver: an explicit `CLAUDE_MEM_WORKER_SCRIPT_PATH`
+ * override first (opt-in; for pinning a local-build bundle), then the marketplace
+ * install, then the dev-tree copy under cwd. Exported so other launchers (e.g.
+ * the MCP server) prefer the same bundle instead of spawning a stale cache-dir
+ * one. Unset override → identical to the prior marketplace-then-cwd behavior.
  */
 export function resolveWorkerScriptPath(): string | null {
   const candidates = [
+    process.env.CLAUDE_MEM_WORKER_SCRIPT_PATH,                            // explicit override, checked first (opt-in)
     path.join(MARKETPLACE_ROOT, 'plugin', 'scripts', 'worker-service.cjs'),
     path.join(process.cwd(), 'plugin', 'scripts', 'worker-service.cjs'),
   ];
   for (const candidate of candidates) {
-    if (existsSync(candidate)) return candidate;
+    if (candidate && existsSync(candidate)) return candidate;
   }
   return null;
 }
@@ -243,7 +239,9 @@ async function waitForWorkerReadiness(timeoutMs: number = HOOK_READINESS_TIMEOUT
   if (timeoutMs <= 0) {
     try {
       return await isWorkerReady();
-    } catch {
+    } catch (error: unknown) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      logger.debug('SYSTEM', 'Worker readiness check threw', {}, err);
       return false;
     }
   }
@@ -276,7 +274,9 @@ async function fetchWorkerHealthVersion(): Promise<string | null> {
     const response = await workerHttpRequest('/api/health', { timeoutMs: HEALTH_CHECK_TIMEOUT_MS });
     const body = await response.json() as { version?: unknown };
     return typeof body.version === 'string' ? body.version : null;
-  } catch {
+  } catch (error: unknown) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.debug('SYSTEM', 'Worker health-version fetch failed', {}, err);
     return null;
   }
 }
@@ -372,11 +372,21 @@ export async function ensureWorkerRunning(): Promise<boolean> {
       pluginVersion,
       workerVersion,
     });
+    // Only the restart POST itself can throw here (the waits below swallow
+    // their own probe errors); on failure skip the successor wait and fall
+    // through to lazy-spawn.
+    let restartRequested = false;
     try {
       await workerHttpRequest('/api/admin/restart', {
         method: 'POST',
         timeoutMs: HEALTH_CHECK_TIMEOUT_MS,
       });
+      restartRequested = true;
+    } catch (error: unknown) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      logger.debug('SYSTEM', 'Worker restart request failed; falling through to lazy-spawn', {}, err);
+    }
+    if (restartRequested) {
       // Do NOT lazy-spawn immediately after the POST — the old worker is
       // still dying and owns the port, so a spawn here races the corpse (the
       // observed restart ping-pong). The dying worker spawns its own
@@ -398,10 +408,6 @@ export async function ensureWorkerRunning(): Promise<boolean> {
       logger.warn('SYSTEM', 'No successor worker appeared after recycle; falling through to lazy-spawn', {
         pluginVersion,
         workerVersion,
-      });
-    } catch (error: unknown) {
-      logger.debug('SYSTEM', 'Worker restart request failed; falling through to lazy-spawn', {
-        error: error instanceof Error ? error.message : String(error),
       });
     }
     // Fall through to (re)spawn + readiness wait below.
@@ -506,19 +512,26 @@ function getHookFailuresPath(): string {
   return path.join(getStateDir(), 'hook-failures.json');
 }
 
+function parseHookFailureState(raw: string): HookFailureState {
+  const parsed = JSON.parse(raw) as Partial<HookFailureState>;
+  return {
+    consecutiveFailures: typeof parsed.consecutiveFailures === 'number' && Number.isFinite(parsed.consecutiveFailures)
+      ? Math.max(0, Math.floor(parsed.consecutiveFailures))
+      : 0,
+    lastFailureAt: typeof parsed.lastFailureAt === 'number' && Number.isFinite(parsed.lastFailureAt)
+      ? parsed.lastFailureAt
+      : 0,
+  };
+}
+
 function readHookFailureState(): HookFailureState {
   try {
-    const raw = readFileSync(getHookFailuresPath(), 'utf-8');
-    const parsed = JSON.parse(raw) as Partial<HookFailureState>;
-    return {
-      consecutiveFailures: typeof parsed.consecutiveFailures === 'number' && Number.isFinite(parsed.consecutiveFailures)
-        ? Math.max(0, Math.floor(parsed.consecutiveFailures))
-        : 0,
-      lastFailureAt: typeof parsed.lastFailureAt === 'number' && Number.isFinite(parsed.lastFailureAt)
-        ? parsed.lastFailureAt
-        : 0,
-    };
+    return parseHookFailureState(readFileSync(getHookFailuresPath(), 'utf-8'));
   } catch {
+    // [ANTI-PATTERN IGNORED]: the failure-counter state file is optional and
+    // absent (ENOENT) on every hook run until the first worker failure, so
+    // logging here would fire on effectively every healthy invocation; the
+    // recovery is the zeroed default state below.
     return { consecutiveFailures: 0, lastFailureAt: 0 };
   }
 }
@@ -580,6 +593,22 @@ export function getActiveHookType(): TelemetryHookType | null {
   return activeHookType;
 }
 
+let activePlatform: string | null = null;
+
+/**
+ * Record the host platform for the current hook invocation. On Kiro CLI,
+ * exit 2 has host-side semantics claude-mem must never trigger (preToolUse
+ * exit 2 blocks the user's tool call), so the fail-loud paths degrade to
+ * stderr diagnostics + exit 0 there. Called once at hookCommand entry.
+ */
+export function setActivePlatform(platform: string): void {
+  activePlatform = platform;
+}
+
+export function activePlatformNeverBlocks(): boolean {
+  return activePlatform === 'kiro' || activePlatform === 'kiro-cli';
+}
+
 export async function recordWorkerUnreachable(): Promise<number> {
   const state = readHookFailureState();
   const next: HookFailureState = {
@@ -611,9 +640,14 @@ export async function recordWorkerUnreachable(): Promise<number> {
     // stderr buffer (so preceding logger.warn lines also surface) and writes
     // via the bypass channel + exits 2. Previously this raw process.stderr.write
     // was swallowed by hookCommand's blanket no-op, so the user/model never saw it.
-    emitBlockingError(
-      `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks.`
-    );
+    // Never-block platforms (Kiro) get the same message as a diagnostic and
+    // return normally — exit 2 there would block the host's tool call.
+    const failLoudMessage = `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks.`;
+    if (activePlatformNeverBlocks()) {
+      emitDiagnostic(`${failLoudMessage}\n`);
+    } else {
+      emitBlockingError(failLoudMessage);
+    }
   }
   return next.consecutiveFailures;
 }
@@ -689,6 +723,9 @@ export async function executeWithWorkerFallback<T = unknown>(
   try {
     return JSON.parse(text) as T;
   } catch {
+    // [ANTI-PATTERN IGNORED]: worker responses are not guaranteed to be JSON;
+    // a non-JSON body is an expected shape and the raw text is the correct
+    // result for the caller.
     return text as unknown as T;
   }
 }

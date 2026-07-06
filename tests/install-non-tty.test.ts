@@ -96,7 +96,7 @@ describe('Install Non-TTY Support', () => {
 
     it('parses the explicit --disable-auto-memory flag for non-interactive installs', () => {
       expect(readFileSync(join(__dirname, '..', 'src', 'npx-cli', 'index.ts'), 'utf-8'))
-        .toContain("disableAutoMemory: argv.includes('--disable-auto-memory')");
+        .toContain("disableAutoMemory: values['disable-auto-memory'] === true");
     });
 
     it('documents the explicit --disable-auto-memory install flag in help output', () => {
@@ -147,13 +147,30 @@ describe('Install Non-TTY Support', () => {
       expect(installSource).toContain('installCodexCli(marketplaceDirectory())');
     });
 
+    it('writes an install marker into the marketplace plugin before Codex cache registration', () => {
+      const installFlowRegion = installSource.slice(
+        installSource.indexOf('const tasks: TaskDescriptor[] = ['),
+        installSource.indexOf('const failedIDEs = await setupIDEs'),
+      );
+      expect(installSource).toContain('function writeMarketplaceInstallMarker');
+      expect(installSource).toContain("writeInstallMarker(join(marketplaceDirectory(), 'plugin'), version, bunVersion, uvVersion)");
+      expect(installFlowRegion).toContain('writeMarketplaceInstallMarker(version, bunVersion, uvVersion)');
+      expect(installSource.indexOf('writeMarketplaceInstallMarker(version, bunVersion, uvVersion)'))
+        .toBeLessThan(installSource.indexOf('const failedIDEs = await setupIDEs'));
+    });
+
     it('refreshes Codex marketplace cache after registration', () => {
       const installRegion = codexInstallerSource.slice(
         codexInstallerSource.indexOf('export async function installCodexCli'),
         codexInstallerSource.indexOf('export function uninstallCodexCli'),
       );
-      expect(installRegion).toContain("['plugin', 'marketplace', 'upgrade', MARKETPLACE_NAME]");
-      expect(installRegion).toContain('installed plugin cache');
+      const cacheInstallRegion = codexInstallerSource.slice(
+        codexInstallerSource.indexOf('export async function installCodexPluginCache'),
+        codexInstallerSource.indexOf('function lookupCodexOnWindows'),
+      );
+      expect(installRegion).toContain('await installCodexPluginCache(marketplaceRoot)');
+      expect(cacheInstallRegion).toContain("['plugin', 'add', CODEX_PLUGIN_ID]");
+      expect(cacheInstallRegion).not.toContain("['plugin', 'marketplace', 'upgrade', MARKETPLACE_NAME]");
     });
 
     it('replaces stale Codex marketplace registrations from a different source', () => {
@@ -247,7 +264,6 @@ describe('Install Non-TTY Support', () => {
     });
 
     it('does not seed new Codex transcript watcher configs with AGENTS context injection', () => {
-      expect(transcriptConfigSource).toContain("name: 'codex'");
       const sampleConfigRegion = transcriptConfigSource.slice(
         transcriptConfigSource.indexOf('export const SAMPLE_CONFIG'),
         transcriptConfigSource.indexOf('stateFile: DEFAULT_STATE_PATH'),
@@ -297,7 +313,7 @@ describe('Install Non-TTY Support', () => {
 
     it('addresses privacy: everything stays local', () => {
       expect(installSource).toContain('Everything stays in ');
-      expect(installSource).toContain("pc.cyan('~/.claude-mem')");
+      expect(installSource).toContain("styleText('cyan', '~/.claude-mem')");
     });
 
     it('keeps /learn-codebase as the optional front-load path', () => {

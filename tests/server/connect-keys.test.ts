@@ -8,7 +8,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import pg from 'pg';
-import { createHash, randomBytes, randomUUID } from 'crypto';
+import { randomUUID } from 'crypto';
 import { Server } from '../../src/services/server/Server.js';
 import { ServerV1PostgresRoutes } from '../../src/server/routes/v1/ServerV1PostgresRoutes.js';
 import {
@@ -19,13 +19,10 @@ import {
 } from '../../src/storage/postgres/index.js';
 import { DisabledServerQueueManager } from '../../src/server/runtime/types.js';
 import { logger } from '../../src/utils/logger.js';
+import { newApiKey } from '../sdk/pg-isolation.js';
 
 const testDatabaseUrl = process.env.CLAUDE_MEM_TEST_POSTGRES_URL;
 const q = (n: string) => `"${n.replaceAll('"', '""')}"`;
-function newApiKey() {
-  const raw = `cm_${randomBytes(24).toString('hex')}`;
-  return { raw, hash: createHash('sha256').update(raw).digest('hex') };
-}
 
 describe('POST /v1/keys + GET /v1/connect', () => {
   if (!testDatabaseUrl) {
@@ -69,7 +66,7 @@ describe('POST /v1/keys + GET /v1/connect', () => {
     });
     server.registerRoutes(new ServerV1PostgresRoutes({
       pool: pool as never, queueManager: new DisabledServerQueueManager('disabled'),
-      authMode: 'api-key', runtime: 'server-beta', sessionPolicy: 'per-event',
+      authMode: 'api-key',
     }));
     server.finalizeRoutes();
     await server.listen(0, '127.0.0.1');

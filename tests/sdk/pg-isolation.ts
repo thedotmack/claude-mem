@@ -15,9 +15,17 @@
 // with `3F000: no schema has been selected to create in`.
 
 import pg from 'pg';
+import { createHash, randomBytes } from 'crypto';
 
 export function quoteIdentifier(name: string): string {
   return `"${name.replaceAll('"', '""')}"`;
+}
+
+/** Generate a fresh API key: the raw `cm_` token plus its sha256 hash. */
+export function newApiKey(): { raw: string; hash: string } {
+  const raw = `cm_${randomBytes(24).toString('hex')}`;
+  const hash = createHash('sha256').update(raw).digest('hex');
+  return { raw, hash };
 }
 
 /**

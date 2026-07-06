@@ -109,33 +109,42 @@ export class ActiveServerGenerationWorkerManager implements ServerGenerationWork
   // metadata is unavailable (BullMQ retries can outlive a session).
   private async auditStalledJob(bullmqJobId: string, lane: 'event' | 'summary'): Promise<void> {
     try {
-      const result = await this.options.pool.query<{
-        id: string;
-        team_id: string | null;
-        project_id: string | null;
-      }>(
-        'SELECT id, team_id, project_id FROM observation_generation_jobs WHERE bullmq_job_id = $1 LIMIT 1',
-        [bullmqJobId],
-      );
-      const row = result.rows[0];
-      if (!row) return;
-      const repo = new PostgresAuthRepository(this.options.pool);
-      await repo.createAuditLog({
-        teamId: row.team_id,
-        projectId: row.project_id,
-        actorId: null,
-        apiKeyId: null,
-        action: 'generation_job.stalled',
-        resourceType: 'observation_generation_job',
-        resourceId: row.id,
-        details: { lane, bullmqJobId },
-      });
+      await this.writeStalledJobAuditRow(bullmqJobId, lane);
     } catch (error) {
       logger.warn('SYSTEM', 'failed to audit stalled generation_job', {
         bullmqJobId,
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  // Look up the outbox row by BullMQ jobId and, when found, write the
+  // `generation_job.stalled` audit row scoped to that row's team/project.
+  private async writeStalledJobAuditRow(
+    bullmqJobId: string,
+    lane: 'event' | 'summary',
+  ): Promise<void> {
+    const result = await this.options.pool.query<{
+      id: string;
+      team_id: string | null;
+      project_id: string | null;
+    }>(
+      'SELECT id, team_id, project_id FROM observation_generation_jobs WHERE bullmq_job_id = $1 LIMIT 1',
+      [bullmqJobId],
+    );
+    const row = result.rows[0];
+    if (!row) return;
+    const repo = new PostgresAuthRepository(this.options.pool);
+    await repo.createAuditLog({
+      teamId: row.team_id,
+      projectId: row.project_id,
+      actorId: null,
+      apiKeyId: null,
+      action: 'generation_job.stalled',
+      resourceType: 'observation_generation_job',
+      resourceId: row.id,
+      details: { lane, bullmqJobId },
+    });
   }
 
   getHealth(): ServerBoundaryHealth {

@@ -4,12 +4,14 @@ import { z } from 'zod';
 import { ingestObservation } from '../shared.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
-import { stripMemoryTagsFromPrompt, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
+import { stripMemoryTags, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
 import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { ClaudeProvider } from '../../ClaudeProvider.js';
 import { GeminiProvider, isGeminiSelected, isGeminiAvailable } from '../../GeminiProvider.js';
 import { OpenRouterProvider, isOpenRouterSelected, isOpenRouterAvailable } from '../../OpenRouterProvider.js';
+import { KiroProvider, isKiroSelected, isKiroAvailable } from '../../KiroProvider.js';
+import { CodexProvider, isCodexSelected } from '../../CodexProvider.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
@@ -17,12 +19,9 @@ import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { getProjectContext } from '../../../../utils/project-name.js';
-import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 import { handleGeneratorExit } from '../../session/GeneratorExitHandler.js';
 import { telemetryBuffer } from '../../../telemetry/buffer.js';
-import { instrument } from '../../../telemetry/instrument.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
-import { getUptimeSeconds } from '../../../../shared/uptime.js';
 import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../../../shared/user-prompts.js';
 import {
   CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS,
@@ -62,6 +61,8 @@ export class SessionRoutes extends BaseRouteHandler {
     private sdkAgent: ClaudeProvider,
     private geminiAgent: GeminiProvider,
     private openRouterAgent: OpenRouterProvider,
+    private codexAgent: CodexProvider,
+    private kiroAgent: KiroProvider,
     private eventBroadcaster: SessionEventBroadcaster,
     private workerService: WorkerService,
     private completionHandler: SessionCompletionHandler,
@@ -69,27 +70,13 @@ export class SessionRoutes extends BaseRouteHandler {
     super();
   }
 
-  private getActiveAgent(): ClaudeProvider | GeminiProvider | OpenRouterProvider {
-    if (isOpenRouterSelected()) {
-      if (isOpenRouterAvailable()) {
-        logger.debug('SESSION', 'Using OpenRouter agent');
-        return this.openRouterAgent;
-      } else {
-        throw new Error('OpenRouter provider selected but no API key configured. Set CLAUDE_MEM_OPENROUTER_API_KEY in settings or OPENROUTER_API_KEY environment variable.');
-      }
+  private getSelectedProvider(): 'claude' | 'codex' | 'gemini' | 'openrouter' | 'kiro' {
+    if (isCodexSelected()) {
+      return 'codex';
     }
-    if (isGeminiSelected()) {
-      if (isGeminiAvailable()) {
-        logger.debug('SESSION', 'Using Gemini agent');
-        return this.geminiAgent;
-      } else {
-        throw new Error('Gemini provider selected but no API key configured. Set CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.');
-      }
+    if (isKiroSelected() && isKiroAvailable()) {
+      return 'kiro';
     }
-    return this.sdkAgent;
-  }
-
-  private getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' {
     if (isOpenRouterSelected() && isOpenRouterAvailable()) {
       return 'openrouter';
     }
@@ -125,6 +112,7 @@ export class SessionRoutes extends BaseRouteHandler {
               source,
             });
           } catch (error) {
+            const err = error instanceof Error ? error : new Error(String(error));
             const classified = classifyClaudeError(error);
             if (classified.kind === 'setup_required') {
               recordClaudeCliSetupRequired(classified.message);
@@ -133,7 +121,7 @@ export class SessionRoutes extends BaseRouteHandler {
               sessionId: sessionDbId,
               source,
               error: classified.message,
-            });
+            }, err);
             return;
           }
         }
@@ -157,7 +145,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
   private async startGeneratorWithProvider(
     session: ReturnType<typeof this.sessionManager.getSession>,
-    provider: 'claude' | 'gemini' | 'openrouter',
+    provider: 'claude' | 'codex' | 'gemini' | 'openrouter' | 'kiro',
     source: string
   ): Promise<void> {
     if (!session) return;
@@ -169,8 +157,22 @@ export class SessionRoutes extends BaseRouteHandler {
       session.abortController = new AbortController();
     }
 
-    const agent = provider === 'openrouter' ? this.openRouterAgent : (provider === 'gemini' ? this.geminiAgent : this.sdkAgent);
-    const agentName = provider === 'openrouter' ? 'OpenRouter' : (provider === 'gemini' ? 'Gemini' : 'Claude SDK');
+    const agent =
+      provider === 'codex'
+        ? this.codexAgent
+        : provider === 'kiro'
+          ? this.kiroAgent
+        : provider === 'openrouter'
+          ? this.openRouterAgent
+          : (provider === 'gemini' ? this.geminiAgent : this.sdkAgent);
+    const agentName =
+      provider === 'codex'
+        ? 'Codex'
+        : provider === 'kiro'
+          ? 'Kiro'
+        : provider === 'openrouter'
+          ? 'OpenRouter'
+          : (provider === 'gemini' ? 'Gemini' : 'Claude SDK');
 
     const actualQueueDepth = this.sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId);
 
@@ -224,38 +226,27 @@ export class SessionRoutes extends BaseRouteHandler {
         // transcript is the recovery path. The next observation ingest will
         // start a fresh generator via ensureGeneratorRunning.
         //
-        // Single instrumentation call: the local error line (full fidelity)
-        // and the scrubbed session_compressed rollup are one logical event.
+        // The local error line (full fidelity) and the scrubbed
+        // session_compressed rollup are one logical event.
         // No abort_reason here: every site that sets abortReason aborts the
         // controller on its next line, so aborted generators either resolve
         // normally (quota/overflow break) or hit the signal-aborted early
         // return above — this catch only ever sees non-abort rejections.
-        instrument(
-          'SESSION',
-          'error',
-          `Generator failed`,
-          {
-            sessionId: session.sessionDbId,
-            provider,
-            error: errorMsg,
-            data: error,
-          },
-          {
-            event: 'session_compressed',
-            rollup: 'session',
-            sessionDbId: session.sessionDbId,
-            props: {
-              outcome: 'error',
-              provider,
-              // Providers seed lastModelId when they start; 'unknown' covers a
-              // generator that died before resolving its model.
-              model: session.lastModelId ?? 'unknown',
-              error_category: 'provider_error',
-              hook: session.lastGeneratorSource,
-              ide: session.platformSource,
-            },
-          }
-        );
+        logger.error('SESSION', 'Generator failed', {
+          sessionId: session.sessionDbId,
+          provider,
+          error: errorMsg,
+        }, error);
+        telemetryBuffer.record('session_compressed', session.sessionDbId, {
+          outcome: 'error',
+          provider,
+          // Providers seed lastModelId when they start; 'unknown' covers a
+          // generator that died before resolving its model.
+          model: session.lastModelId ?? 'unknown',
+          error_category: 'provider_error',
+          hook: session.lastGeneratorSource,
+          ide: session.platformSource,
+        });
       })
       .finally(async () => {
         if (skipGeneratorExitFinalization) {
@@ -308,7 +299,6 @@ export class SessionRoutes extends BaseRouteHandler {
       validateBody(SessionRoutes.summarizeByClaudeIdSchema),
       this.handleSummarizeByClaudeId.bind(this)
     );
-    app.get('/api/sessions/status', this.handleStatusByClaudeId.bind(this));
   }
 
   private static readonly sessionInitByClaudeIdSchema = z.object({
@@ -405,7 +395,7 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     const cleanedLastAssistantMessage = last_assistant_message
-      ? stripMemoryTagsFromPrompt(String(last_assistant_message))
+      ? stripMemoryTags(String(last_assistant_message))
       : last_assistant_message;
     await this.sessionManager.queueSummarize(sessionDbId, cleanedLastAssistantMessage);
 
@@ -414,56 +404,6 @@ export class SessionRoutes extends BaseRouteHandler {
     this.eventBroadcaster.broadcastSummarizeQueued();
 
     res.json({ status: 'queued' });
-  });
-
-  private static firstString(value: unknown): string | undefined {
-    if (Array.isArray(value)) {
-      return SessionRoutes.firstString(value[0]);
-    }
-    return typeof value === 'string' && value.trim() ? value : undefined;
-  }
-
-  private getPlatformSourceFromRequest(req: Request): string {
-    const body = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
-    const header = req.get?.('x-platform-source')
-      ?? req.get?.('x-claude-mem-platform-source');
-    const rawPlatformSource =
-      SessionRoutes.firstString(req.query.platformSource)
-      ?? SessionRoutes.firstString(req.query.platform_source)
-      ?? SessionRoutes.firstString(body.platformSource)
-      ?? SessionRoutes.firstString(body.platform_source)
-      ?? SessionRoutes.firstString(header);
-
-    return normalizePlatformSource(rawPlatformSource);
-  }
-
-  private handleStatusByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const contentSessionId = SessionRoutes.firstString(req.query.contentSessionId)
-      ?? SessionRoutes.firstString(req.query.content_session_id);
-
-    if (!contentSessionId) {
-      return this.badRequest(res, 'Missing contentSessionId query parameter');
-    }
-
-    const store = this.dbManager.getSessionStore();
-    const platformSource = this.getPlatformSourceFromRequest(req);
-    const sessionDbId = store.createSDKSession(contentSessionId, '', '', undefined, platformSource);
-    const session = this.sessionManager.getSession(sessionDbId);
-
-    if (!session) {
-      res.json({ status: 'not_found', queueLength: 0 });
-      return;
-    }
-
-    const queueLength = this.sessionManager.getMessageBuffer().getPendingCount(sessionDbId);
-
-    res.json({
-      status: 'active',
-      sessionDbId,
-      queueLength,
-      summaryStored: session.lastSummaryStored ?? null,
-      uptime: getUptimeSeconds(session.startTime)
-    });
   });
 
   private handleSessionInitByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
@@ -525,7 +465,7 @@ export class SessionRoutes extends BaseRouteHandler {
       logger.debug('HTTP', `[ALIGNMENT] New Session | contentSessionId=${contentSessionId} | prompt#=${promptNumber} | memorySessionId will be captured on first SDK response`);
     }
 
-    const cleanedPrompt = stripMemoryTagsFromPrompt(prompt);
+    const cleanedPrompt = stripMemoryTags(prompt);
 
     if (!cleanedPrompt || cleanedPrompt.trim() === '') {
       logger.debug('HOOK', 'Session init - prompt entirely private', {

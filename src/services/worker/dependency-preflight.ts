@@ -3,11 +3,13 @@ import os from 'os';
 import fs from 'fs';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { findClaudeExecutable as defaultFindClaudeExecutable } from '../../shared/find-claude-executable.js';
+import { findKiroCliExecutable } from './KiroProvider.js';
 import { logger } from '../../utils/logger.js';
 import {
   clearDependencyStatus,
   recordClaudeCliSetupRequired,
   recordUvxVectorSearchUnavailable,
+  recordKiroCliSetupRequired,
   snapshotDependencyHealth,
   type DependencyHealthSnapshot,
 } from '../../shared/dependency-health.js';
@@ -36,7 +38,10 @@ export interface WorkerDependencyPreflightOptions {
 function defaultPathExists(filePath: string): boolean {
   try {
     return fs.existsSync(filePath);
-  } catch {
+  } catch (error) {
+    logger.warn('WORKER', 'existsSync failed during dependency preflight path check', {
+      filePath,
+    }, error instanceof Error ? error : new Error(String(error)));
     return false;
   }
 }
@@ -45,6 +50,7 @@ function defaultIsFile(filePath: string): boolean {
   try {
     return fs.statSync(filePath).isFile();
   } catch {
+    // [ANTI-PATTERN IGNORED]: statSync fails with ENOENT for every non-existent candidate while probing PATH directories for executables; treating the miss as "not a file" is the expected recovery.
     return false;
   }
 }
@@ -160,14 +166,29 @@ export function runWorkerDependencyPreflight(options: WorkerDependencyPreflightO
       findClaudeExecutable();
       clearDependencyStatus('claude_cli');
     } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
       const classified = options.classifyClaudeError(error);
       const message = classified.kind === 'setup_required'
         ? classified.message
-        : `Claude CLI preflight failed: ${error instanceof Error ? error.message : String(error)}`;
+        : `Claude CLI preflight failed: ${err.message}`;
+      logger.warn('WORKER', 'Claude CLI dependency preflight failed', {
+        kind: classified.kind,
+      }, err);
       recordClaudeCliSetupRequired(message);
     }
   } else {
     clearDependencyStatus('claude_cli');
+  }
+
+  if (provider === 'kiro') {
+    if (findKiroCliExecutable()) {
+      clearDependencyStatus('kiro_cli');
+    } else {
+      logger.warn('WORKER', 'Kiro CLI dependency preflight failed: kiro-cli not found');
+      recordKiroCliSetupRequired('kiro-cli not found — the Kiro compression provider cannot run.');
+    }
+  } else {
+    clearDependencyStatus('kiro_cli');
   }
 
   if (chromaEnabled) {

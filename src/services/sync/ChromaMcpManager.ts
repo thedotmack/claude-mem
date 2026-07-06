@@ -797,9 +797,10 @@ export class ChromaMcpManager {
       try {
         process.kill(pid, 'SIGTERM');
       } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
+        const err = error instanceof Error ? error : new Error(String(error));
+        const code = (err as NodeJS.ErrnoException).code;
         if (code !== 'ESRCH') {
-          logger.debug('CHROMA_MCP', `Failed to SIGTERM PID ${pid}`, { code });
+          logger.debug('CHROMA_MCP', `Failed to SIGTERM PID ${pid}`, { code }, err);
         }
       }
 
@@ -853,7 +854,7 @@ export class ChromaMcpManager {
         const result = await execFileAsync('pgrep', ['-P', String(pid)], { timeout: 2_000 });
         stdout = result.stdout;
       } catch {
-        // pgrep exits 1 when no children match — that's fine, just return.
+        // [ANTI-PATTERN IGNORED]: pgrep exits 1 whenever a PID has no children, which is the expected leaf case on every recursive walk; recovery is treating the node as childless and returning early.
         return;
       }
       const children = stdout
@@ -974,7 +975,8 @@ export class ChromaMcpManager {
     return dirs.map(d => {
       try {
         return fs.existsSync(d) && fs.statSync(d).isFile() ? path.dirname(d) : d;
-      } catch {
+      } catch (error) {
+        logger.debug('CHROMA_MCP', 'Failed to stat uv bin dir candidate, using as-is', { dir: d }, error instanceof Error ? error : new Error(String(error)));
         return d;
       }
     });
@@ -1040,7 +1042,8 @@ export class ChromaMcpManager {
       return executableNames.some(candidate => {
         try {
           return fs.existsSync(candidate) && fs.statSync(candidate).isFile();
-        } catch {
+        } catch (error) {
+          logger.debug('CHROMA_MCP', 'Failed to stat uvx candidate path', { candidate }, error instanceof Error ? error : new Error(String(error)));
           return false;
         }
       });
@@ -1079,7 +1082,8 @@ export class ChromaMcpManager {
     const additions = ChromaMcpManager.uvBinDirs().filter(dir => {
       try {
         if (!fs.existsSync(dir)) return false;
-      } catch {
+      } catch (error) {
+        logger.debug('CHROMA_MCP', 'Failed to check uv bin dir existence', { dir }, error instanceof Error ? error : new Error(String(error)));
         return false;
       }
       const key = process.platform === 'win32' ? dir.toLowerCase() : dir;

@@ -10,6 +10,12 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { logger } from '../../utils/logger.js';
 import { paths } from '../../shared/paths.js';
+import {
+  ensureTreeSitterCliBinary,
+  getBunVersion,
+  getUvVersion,
+  writeInstallMarker,
+} from '../../npx-cli/install/setup-runtime.js';
 
 const CODEX_DIR = path.join(homedir(), '.codex');
 const CODEX_AGENTS_MD_PATH = path.join(CODEX_DIR, 'AGENTS.md');
@@ -44,6 +50,7 @@ function commandExists(command: string): boolean {
     }
     return true;
   } catch {
+    // [ANTI-PATTERN IGNORED]: where/which exits non-zero whenever the probed command is absent from PATH; that is the expected negative probe result and commandExists reports it as false.
     return false;
   }
 }
@@ -93,23 +100,90 @@ function resolvePluginMarketplaceRoot(preferredRoot?: string): string {
   throw new Error('Could not locate a Codex marketplace root with .agents/plugins/marketplace.json and plugin/.codex-plugin/plugin.json. Run npx claude-mem@latest install from the package or repo root.');
 }
 
+function readCodexPluginVersion(marketplaceRoot: string): string {
+  const manifestPath = path.join(marketplaceRoot, 'plugin', '.codex-plugin', 'plugin.json');
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as { version?: unknown };
+  if (typeof manifest.version !== 'string' || manifest.version.length === 0) {
+    throw new Error(`Codex plugin manifest has no version: ${manifestPath}`);
+  }
+  return manifest.version;
+}
+
+export function resolveCodexPluginCacheDirectory(
+  marketplaceRoot: string,
+  codexDir: string = CODEX_DIR,
+): string {
+  return path.join(
+    codexDir,
+    'plugins',
+    'cache',
+    MARKETPLACE_NAME,
+    'claude-mem',
+    readCodexPluginVersion(marketplaceRoot),
+  );
+}
+
+type CodexPluginCacheInstallOptions = {
+  codexDir?: string;
+  runBestEffort?: typeof runCodexBestEffort;
+  ensureRuntime?: typeof ensureTreeSitterCliBinary;
+};
+
+export async function installCodexPluginCache(
+  marketplaceRoot: string,
+  options: CodexPluginCacheInstallOptions = {},
+): Promise<void> {
+  const runBestEffort = options.runBestEffort ?? runCodexBestEffort;
+  const ensureRuntime = options.ensureRuntime ?? ensureTreeSitterCliBinary;
+  const installed = runBestEffort(
+    ['plugin', 'add', CODEX_PLUGIN_ID],
+    'Installed plugin from the local Codex marketplace.',
+    'Could not install claude-mem from the local Codex marketplace',
+  );
+  if (!installed) {
+    throw new Error('Codex plugin cache could not be installed');
+  }
+
+  const codexCacheDir = resolveCodexPluginCacheDirectory(
+    marketplaceRoot,
+    options.codexDir,
+  );
+  await ensureRuntime(codexCacheDir);
+
+  // Write the install marker only after the runtime is provisioned, so
+  // `.install-version` is a truthful "runtime ready" signal rather than an
+  // optimistic one copied before `plugin add`. Without it, version-check.js
+  // emits a misleading "runtime not yet set up" hint for a working Codex cache.
+  writeInstallMarker(
+    codexCacheDir,
+    readCodexPluginVersion(marketplaceRoot),
+    getBunVersion() ?? '',
+    getUvVersion() ?? '',
+  );
+  console.log('  Smart-explore Tree-sitter runtime ready.');
+}
+
 function lookupCodexOnWindows(): string | null {
+  let stdout: string;
   try {
-    const stdout = execFileSync('where', ['codex'], {
+    stdout = execFileSync('where', ['codex'], {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
       windowsHide: true,
     });
-    const candidates = stdout
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
-    return candidates.find((candidate) => WINDOWS_CODEX_EXTENSIONS.has(path.extname(candidate).toLowerCase()))
-      ?? candidates[0]
-      ?? null;
-  } catch {
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('WORKER', 'Failed to locate codex via where; falling back to codex.cmd', { command: 'where codex' }, err);
     return null;
   }
+
+  const candidates = stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return candidates.find((candidate) => WINDOWS_CODEX_EXTENSIONS.has(path.extname(candidate).toLowerCase()))
+    ?? candidates[0]
+    ?? null;
 }
 
 function quoteCmdArgument(value: string): string {
@@ -209,7 +283,7 @@ function registerCodexMarketplace(marketplaceRoot: string): void {
     return;
   } catch (error) {
     if (!isMarketplaceDifferentSourceError(error)) {
-      throw error;
+      throw error instanceof Error ? error : new Error(String(error));
     }
   }
 
@@ -437,26 +511,30 @@ function disableCodexTranscriptAgentsContext(): boolean {
   if (!existsSync(CODEX_TRANSCRIPT_WATCH_CONFIG_PATH)) return true;
 
   try {
-    const parsed = JSON.parse(readFileSync(CODEX_TRANSCRIPT_WATCH_CONFIG_PATH, 'utf-8')) as unknown;
-    if (!isRecord(parsed) || !Array.isArray(parsed.watches)) return true;
-
-    let changed = false;
-    for (const watch of parsed.watches) {
-      if (!isRecord(watch) || !isCodexTranscriptWatch(watch)) continue;
-      if (!isRecord(watch.context) || !isLegacyCodexAgentsContext(watch.context)) continue;
-      delete watch.context;
-      changed = true;
-    }
-
-    if (changed) {
-      writeFileSync(CODEX_TRANSCRIPT_WATCH_CONFIG_PATH, `${JSON.stringify(parsed, null, 2)}\n`);
-      console.log(`  Disabled legacy Codex transcript AGENTS.md context in ${CODEX_TRANSCRIPT_WATCH_CONFIG_PATH}`);
-    }
+    stripLegacyTranscriptWatchContexts();
     return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.warn('WORKER', 'Failed to disable Codex transcript AGENTS.md context', { error: message });
     return false;
+  }
+}
+
+function stripLegacyTranscriptWatchContexts(): void {
+  const parsed = JSON.parse(readFileSync(CODEX_TRANSCRIPT_WATCH_CONFIG_PATH, 'utf-8')) as unknown;
+  if (!isRecord(parsed) || !Array.isArray(parsed.watches)) return;
+
+  let changed = false;
+  for (const watch of parsed.watches) {
+    if (!isRecord(watch) || !isCodexTranscriptWatch(watch)) continue;
+    if (!isRecord(watch.context) || !isLegacyCodexAgentsContext(watch.context)) continue;
+    delete watch.context;
+    changed = true;
+  }
+
+  if (changed) {
+    writeFileSync(CODEX_TRANSCRIPT_WATCH_CONFIG_PATH, `${JSON.stringify(parsed, null, 2)}\n`);
+    console.log(`  Disabled legacy Codex transcript AGENTS.md context in ${CODEX_TRANSCRIPT_WATCH_CONFIG_PATH}`);
   }
 }
 
@@ -472,25 +550,30 @@ export async function installCodexCli(marketplaceRootOverride?: string): Promise
   }
 
   try {
-    assertCodexMarketplaceSupported();
-    const marketplaceRoot = resolvePluginMarketplaceRoot(marketplaceRootOverride);
+    return await performCodexInstall(marketplaceRootOverride);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`\nInstallation failed: ${message}`);
+    return 1;
+  }
+}
 
-    console.log(`  Registering Codex plugin marketplace: ${marketplaceRoot}`);
-    registerCodexMarketplace(marketplaceRoot);
-    enableCodexPluginConfig();
-    runCodexBestEffort(
-      ['plugin', 'marketplace', 'upgrade', MARKETPLACE_NAME],
-      'Refreshed Codex marketplace and installed plugin cache.',
-      'Could not refresh Codex marketplace cache; reinstall or upgrade claude-mem from /plugins if Codex still uses old MCP config',
-    );
-    if (!cleanupLegacyCodexAgentsMdContext()) {
-      console.warn(`  Native Codex hooks registered, but failed to remove legacy AGENTS.md context from ${CODEX_AGENTS_MD_PATH}.`);
-    }
-    if (!cleanupLegacyCodexTranscriptAgentsContext()) {
-      console.warn(`  Native Codex hooks registered, but failed to disable legacy transcript AGENTS.md context in ${CODEX_TRANSCRIPT_WATCH_CONFIG_PATH}.`);
-    }
+async function performCodexInstall(marketplaceRootOverride?: string): Promise<number> {
+  assertCodexMarketplaceSupported();
+  const marketplaceRoot = resolvePluginMarketplaceRoot(marketplaceRootOverride);
 
-    console.log(`
+  console.log(`  Registering Codex plugin marketplace: ${marketplaceRoot}`);
+  registerCodexMarketplace(marketplaceRoot);
+  enableCodexPluginConfig();
+  await installCodexPluginCache(marketplaceRoot);
+  if (!cleanupLegacyCodexAgentsMdContext()) {
+    console.warn(`  Native Codex hooks registered, but failed to remove legacy AGENTS.md context from ${CODEX_AGENTS_MD_PATH}.`);
+  }
+  if (!cleanupLegacyCodexTranscriptAgentsContext()) {
+    console.warn(`  Native Codex hooks registered, but failed to disable legacy transcript AGENTS.md context in ${CODEX_TRANSCRIPT_WATCH_CONFIG_PATH}.`);
+  }
+
+  console.log(`
 Installation complete!
 
 Codex marketplace: ${MARKETPLACE_NAME}
@@ -503,12 +586,7 @@ Next steps:
 For a fresh setup, the supported entry point is:
   npx claude-mem@latest install
 `);
-    return 0;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(`\nInstallation failed: ${message}`);
-    return 1;
-  }
+  return 0;
 }
 
 export function uninstallCodexCli(): number {

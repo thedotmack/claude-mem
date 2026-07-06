@@ -59,10 +59,19 @@
         ]
       },
       {
-        "group": "Gemini CLI Integration",
+        "group": "Antigravity CLI Integration",
         "icon": "terminal",
         "pages": [
-          "gemini-cli/setup"
+          "antigravity-cli/setup"
+        ]
+      },
+      {
+        "group": "Kiro CLI Integration",
+        "icon": "terminal",
+        "pages": [
+          "kiro-cli/setup",
+          "kiro-cli/parity",
+          "kiro-cli/troubleshooting"
         ]
       },
       {
@@ -95,14 +104,6 @@
         "icon": "cloud",
         "pages": [
           "hosted-server"
-        ]
-      },
-      {
-        "group": "SDK & Embedding",
-        "icon": "code",
-        "pages": [
-          "sdk",
-          "sdk/cmem-sdk"
         ]
       },
       {

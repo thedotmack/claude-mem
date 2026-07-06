@@ -16,12 +16,9 @@ import { ServerGenerationJobPayloadValidationError } from '../../../src/server/j
 import type { ServerGenerationProvider } from '../../../src/server/generation/providers/shared/types.js';
 import type { Job } from 'bullmq';
 import type { ServerGenerationJobPayload, GenerateObservationsForEventJob } from '../../../src/server/jobs/types.js';
+import { quoteIdentifier } from '../../sdk/pg-isolation.js';
 
 const testDatabaseUrl = process.env.CLAUDE_MEM_TEST_POSTGRES_URL;
-
-function quoteIdentifier(name: string): string {
-  return `"${name.replaceAll('"', '""')}"`;
-}
 
 class StubProvider implements ServerGenerationProvider {
   readonly providerLabel = 'claude' as const;

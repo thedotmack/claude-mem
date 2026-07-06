@@ -6,7 +6,7 @@ import type {
   ObservationGenerationJobStatus
 } from '../../storage/postgres/generation-jobs.js';
 
-export type ServerGenerationJobKind = 'event' | 'event-batch' | 'summary' | 'reindex';
+export type ServerGenerationJobKind = 'event' | 'summary';
 
 export type ServerGenerationJobStatus = ObservationGenerationJobStatus;
 
@@ -42,39 +42,23 @@ export interface GenerateObservationsForEventJob extends ServerGenerationJob {
   agent_event_id: string;
 }
 
-export interface GenerateObservationsForEventBatchJob extends ServerGenerationJob {
-  kind: 'event-batch';
-  agent_event_ids: string[];
-}
-
 export interface GenerateSessionSummaryJob extends ServerGenerationJob {
   kind: 'summary';
   server_session_id: string;
 }
 
-export interface ReindexObservationJob extends ServerGenerationJob {
-  kind: 'reindex';
-  observation_id: string;
-}
-
 export type ServerGenerationJobPayload =
   | GenerateObservationsForEventJob
-  | GenerateObservationsForEventBatchJob
-  | GenerateSessionSummaryJob
-  | ReindexObservationJob;
+  | GenerateSessionSummaryJob;
 
 export const SERVER_JOB_QUEUE_NAMES: Record<ServerGenerationJobKind, string> = {
   event: 'server_beta_generate_event',
-  'event-batch': 'server_beta_generate_event_batch',
-  summary: 'server_beta_generate_summary',
-  reindex: 'server_beta_reindex'
+  summary: 'server_beta_generate_summary'
 };
 
 export const SERVER_JOB_KIND_PREFIX: Record<ServerGenerationJobKind, string> = {
   event: 'evt',
-  'event-batch': 'evtb',
-  summary: 'sum',
-  reindex: 'rdx'
+  summary: 'sum'
 };
 
 // Phase 11 — Zod schema validates payloads at the queue boundary so a
@@ -106,26 +90,14 @@ export const GenerateObservationsForEventJobSchema = baseFieldsSchema.extend({
   agent_event_id: z.string().min(1),
 });
 
-export const GenerateObservationsForEventBatchJobSchema = baseFieldsSchema.extend({
-  kind: z.literal('event-batch'),
-  agent_event_ids: z.array(z.string().min(1)).min(1),
-});
-
 export const GenerateSessionSummaryJobSchema = baseFieldsSchema.extend({
   kind: z.literal('summary'),
   server_session_id: z.string().min(1),
 });
 
-export const ReindexObservationJobSchema = baseFieldsSchema.extend({
-  kind: z.literal('reindex'),
-  observation_id: z.string().min(1),
-});
-
 export const ServerGenerationJobPayloadSchema = z.discriminatedUnion('kind', [
   GenerateObservationsForEventJobSchema,
-  GenerateObservationsForEventBatchJobSchema,
   GenerateSessionSummaryJobSchema,
-  ReindexObservationJobSchema,
 ]);
 
 export class ServerGenerationJobPayloadValidationError extends Error {

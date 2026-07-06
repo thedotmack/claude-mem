@@ -94,6 +94,70 @@ describe('getProjectName', () => {
     });
   });
 
+  describe('.claude-mem.json projectName override', () => {
+    let tmp: string;
+    let repoRoot: string;
+    let nestedDir: string;
+
+    beforeAll(async () => {
+      const { mkdtempSync, mkdirSync, writeFileSync, realpathSync } = await import('fs');
+      const { execFileSync } = await import('child_process');
+      const { join } = await import('path');
+      const { tmpdir } = await import('os');
+
+      tmp = realpathSync(mkdtempSync(join(tmpdir(), 'cm-cfgname-')));
+      repoRoot = join(tmp, 'my-app-2');
+      nestedDir = join(repoRoot, 'packages', 'core');
+      mkdirSync(nestedDir, { recursive: true });
+      execFileSync('git', ['init', '-q'], { cwd: repoRoot });
+      writeFileSync(
+        join(repoRoot, '.claude-mem.json'),
+        JSON.stringify({ projectName: 'my-app' })
+      );
+    });
+
+    afterAll(async () => {
+      const { rmSync } = await import('fs');
+      rmSync(tmp, { recursive: true, force: true });
+    });
+
+    it('overrides the repo-root name at the project root', () => {
+      expect(getProjectName(repoRoot)).toBe('my-app');
+    });
+
+    it('is inherited by nested subdirectories (walks up to the config)', () => {
+      expect(getProjectName(nestedDir)).toBe('my-app');
+    });
+
+    it('getProjectContext reports the configured name with no worktree composite', () => {
+      const ctx = getProjectContext(repoRoot);
+      expect(ctx.primary).toBe('my-app');
+      expect(ctx.parent).toBeNull();
+      expect(ctx.isWorktree).toBe(false);
+      expect(ctx.allProjects).toEqual(['my-app']);
+    });
+
+    it('also accepts the snake_case project_name key', async () => {
+      const { mkdtempSync, writeFileSync, rmSync, realpathSync } = await import('fs');
+      const { join } = await import('path');
+      const { tmpdir } = await import('os');
+      const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cm-cfgsnake-')));
+      writeFileSync(join(dir, '.claude-mem.json'), JSON.stringify({ project_name: 'Shared' }));
+      expect(getProjectName(dir)).toBe('Shared');
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    it('ignores an empty or non-string projectName and falls back to basename', async () => {
+      const { mkdtempSync, writeFileSync, rmSync, realpathSync } = await import('fs');
+      const { join, basename } = await import('path');
+      const { tmpdir } = await import('os');
+      const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cm-cfgempty-')));
+      writeFileSync(join(dir, '.claude-mem.json'), JSON.stringify({ projectName: '   ' }));
+      expect(getProjectName(dir)).toBe(basename(dir));
+      rmSync(dir, { recursive: true, force: true });
+    });
+  });
+
   describe('realistic scenarios from #1478', () => {
     it('handles ~ the same as full home path', () => {
       const home = homedir();
@@ -129,6 +193,7 @@ describe('getProjectContext', () => {
     const ctx = getProjectContext(null);
     expect(ctx.primary).toBe('unknown-project');
     expect(ctx.parent).toBeNull();
+    expect(ctx.allProjects).toEqual(['unknown-project']);
   });
 
   describe('worktree isolation', () => {
@@ -172,6 +237,47 @@ describe('getProjectContext', () => {
       expect(project).toBe('main-repo/my-worktree');
       expect(project).not.toBe('main-repo');
       expect(project).not.toBe('my-worktree');
+    });
+  });
+
+  describe('ancestor worktree isolation', () => {
+    let tmp: string;
+    let homeRoot: string;
+    let repoRoot: string;
+    let nestedDir: string;
+
+    beforeAll(async () => {
+      const { mkdtempSync, mkdirSync, writeFileSync } = await import('fs');
+      const { execFileSync } = await import('child_process');
+      const { join } = await import('path');
+      const { tmpdir } = await import('os');
+
+      tmp = mkdtempSync(join(tmpdir(), 'cm-home-worktree-'));
+      homeRoot = join(tmp, 'home');
+      repoRoot = join(homeRoot, 'projects', 'my-app');
+      nestedDir = join(repoRoot, 'src');
+      const dotfilesWorktreeGitDir = join(homeRoot, '.dotfiles.git', 'worktrees', 'main');
+
+      mkdirSync(dotfilesWorktreeGitDir, { recursive: true });
+      mkdirSync(nestedDir, { recursive: true });
+      writeFileSync(
+        join(homeRoot, '.git'),
+        `gitdir: ${dotfilesWorktreeGitDir}\n`
+      );
+      execFileSync('git', ['init', '-q'], { cwd: repoRoot });
+    });
+
+    afterAll(async () => {
+      const { rmSync } = await import('fs');
+      rmSync(tmp, { recursive: true, force: true });
+    });
+
+    it('ignores unrelated ancestor worktrees when a real repo root is present below them', () => {
+      const ctx = getProjectContext(nestedDir);
+      expect(ctx.isWorktree).toBe(false);
+      expect(ctx.primary).toBe('my-app');
+      expect(ctx.parent).toBeNull();
+      expect(ctx.allProjects).toEqual(['my-app']);
     });
   });
 });

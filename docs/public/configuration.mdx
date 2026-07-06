@@ -20,6 +20,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50`                        | Number of observations to inject      |
 | `CLAUDE_MEM_WORKER_PORT`      | `37700 + (uid % 100)`           | Worker service port (per-user default; override for fixed port) |
 | `CLAUDE_MEM_WORKER_HOST`      | `127.0.0.1`                     | Worker service host address           |
+| `CLAUDE_MEM_WORKER_SCRIPT_PATH` | —                               | Absolute path to a specific `worker-service.cjs` for the daemon to spawn/respawn. Overrides the installed-plugin and cwd resolution. Opt-in; for local-build testing and bundle pinning. |
 | `CLAUDE_MEM_DATA_DIR`         | `~/.claude-mem`                 | Data root — every other path (database, chroma, logs, settings.json, worker.pid) derives from this |
 | `CLAUDE_MEM_SKIP_TOOLS`       | `ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion` | Comma-separated tools to exclude from observations |
 
@@ -216,6 +217,26 @@ Claude-mem can automatically generate `CLAUDE.md` files in your project folders 
 | `CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED` | `false` | Enable auto-generation of folder CLAUDE.md files |
 
 See [Folder Context Files](usage/folder-context) for full documentation on how this feature works, configuration options, and git integration recommendations.
+
+## Per-Project Configuration (`.claude-mem.json`)
+
+You can drop a `.claude-mem.json` file in a project to override per-project behavior. It is read from the project (walking up from the working directory to your home directory), so committing it travels with the repo.
+
+### Pinning the project name
+
+By default the project name is the git repo root's folder name (or the working-directory basename when not in a repo). Set `projectName` to pin it explicitly:
+
+```json
+{
+  "projectName": "my-app"
+}
+```
+
+This is useful when you keep several independent copies or clones of the same project in differently-named folders (e.g. `my-app`, `my-app-2`, `my-app-3`). Give each a `.claude-mem.json` with the same `projectName` and they all share one memory/project instead of being split by folder name.
+
+- The configured name takes precedence over both the git-repo-root and basename derivation.
+- It also applies inside git worktrees, collapsing the usual `parent/worktree` composite to the single configured name.
+- `project_name` (snake_case) is accepted as an alias. An empty or non-string value is ignored and the default derivation is used.
 
 ## Context Injection Configuration
 
