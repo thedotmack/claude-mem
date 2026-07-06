@@ -27,6 +27,8 @@ import {
   buildKimiArgs,
   GenericCliProvider,
   defaultSpawn,
+  runWithTransientRetry,
+  DEFAULT_TRANSIENT_MAX_RETRIES,
   type SpawnFn,
 } from "../../src/services/worker/GenericCliProvider.js";
 import type { ActiveSession } from "../../src/services/worker-types.js";
@@ -370,5 +372,272 @@ describe("GenericCliProvider session lifecycle", () => {
 describe("GenericCliProvider default export wiring", () => {
   it("defaultSpawn is exported (production wiring)", () => {
     expect(typeof defaultSpawn).toBe("function");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 5: runWithTransientRetry (transport-layer retry)
+// ---------------------------------------------------------------------------
+//
+// Ported from loop-engine/src/adapters/transient.ts (simplified: no API-status
+// detection — kimi text mode has no structured error envelope; we retry purely
+// on non-zero exit). Throws (timeout/ENOENT) are NOT retried at this layer —
+// they bubble to handleSessionError. See task-5-report.md for rationale.
+
+describe("runWithTransientRetry", () => {
+  it("retries spawn on non-zero exit, succeeds within N", async () => {
+    let calls = 0;
+    const flaky: SpawnFn = async () => {
+      calls++;
+      if (calls < 3) return { stdout: "", stderr: "err", exitCode: 1 };
+      return {
+        stdout:
+          "<observation><type>discovery</type><title>ok</title></observation>",
+        stderr: "",
+        exitCode: 0,
+      };
+    };
+    const result = await runWithTransientRetry(() => flaky("kimi", []), {
+      maxRetries: 3,
+      baseDelayMs: 1,
+      isTransient: (r) => r.exitCode !== 0,
+    });
+    expect(result.exitCode).toBe(0);
+    expect(calls).toBe(3);
+  });
+
+  it("exhausts retries and returns last failure", async () => {
+    const alwaysFail: SpawnFn = async () => ({
+      stdout: "",
+      stderr: "err",
+      exitCode: 1,
+    });
+    const result = await runWithTransientRetry(() => alwaysFail("kimi", []), {
+      maxRetries: 2,
+      baseDelayMs: 1,
+      isTransient: (r) => r.exitCode !== 0,
+    });
+    expect(result.exitCode).toBe(1);
+  });
+
+  it("calls fn exactly maxRetries+1 times when always-transient", async () => {
+    let calls = 0;
+    const alwaysFail: SpawnFn = async () => {
+      calls++;
+      return { stdout: "", stderr: "err", exitCode: 1 };
+    };
+    await runWithTransientRetry(() => alwaysFail("kimi", []), {
+      maxRetries: 3,
+      baseDelayMs: 1,
+      isTransient: (r) => r.exitCode !== 0,
+    });
+    // 1 initial + 3 retries = 4 total attempts
+    expect(calls).toBe(4);
+  });
+
+  it("maxRetries=0 means single attempt, no retry even if transient (resumeId case)", async () => {
+    let calls = 0;
+    const alwaysFail: SpawnFn = async () => {
+      calls++;
+      return { stdout: "", stderr: "err", exitCode: 1 };
+    };
+    const result = await runWithTransientRetry(() => alwaysFail("kimi", []), {
+      maxRetries: 0,
+      baseDelayMs: 1,
+      isTransient: (r) => r.exitCode !== 0,
+    });
+    expect(calls).toBe(1);
+    expect(result.exitCode).toBe(1);
+  });
+
+  it("does not retry when isTransient returns false (exit 0)", async () => {
+    let calls = 0;
+    const ok: SpawnFn = async () => {
+      calls++;
+      return { stdout: "ok", stderr: "", exitCode: 0 };
+    };
+    const result = await runWithTransientRetry(() => ok("kimi", []), {
+      maxRetries: 3,
+      baseDelayMs: 1,
+      isTransient: (r) => r.exitCode !== 0,
+    });
+    expect(calls).toBe(1);
+    expect(result.exitCode).toBe(0);
+  });
+
+  it("exponential backoff: baseDelayMs * 2^attempt via sleepFn", async () => {
+    // Inject a recording sleepFn to verify backoff schedule without real timers.
+    const sleeps: number[] = [];
+    const recordingSleep = async (ms: number) => {
+      sleeps.push(ms);
+    };
+    let calls = 0;
+    const alwaysFail: SpawnFn = async () => {
+      calls++;
+      return { stdout: "", stderr: "", exitCode: 1 };
+    };
+    await runWithTransientRetry(() => alwaysFail("kimi", []), {
+      maxRetries: 3,
+      baseDelayMs: 500,
+      isTransient: (r) => r.exitCode !== 0,
+      sleepFn: recordingSleep,
+    });
+    // 3 retries → 3 sleeps: 500*2^0=500, 500*2^1=1000, 500*2^2=2000
+    expect(sleeps).toEqual([500, 1000, 2000]);
+  });
+
+  it("no sleep after final attempt (last failure returned immediately)", async () => {
+    const sleeps: number[] = [];
+    const recordingSleep = async (ms: number) => {
+      sleeps.push(ms);
+    };
+    const alwaysFail: SpawnFn = async () => ({
+      stdout: "",
+      stderr: "",
+      exitCode: 1,
+    });
+    await runWithTransientRetry(() => alwaysFail("kimi", []), {
+      maxRetries: 2,
+      baseDelayMs: 100,
+      isTransient: (r) => r.exitCode !== 0,
+      sleepFn: recordingSleep,
+    });
+    // 2 retries → 2 sleeps (after attempt 0 and after attempt 1; no sleep
+    // after the final attempt 2)
+    expect(sleeps).toEqual([100, 200]);
+  });
+
+  it("isTransient omitted means no retry (returns first result immediately)", async () => {
+    // When isTransient is omitted, the loop returns immediately on the first
+    // result regardless of shape — verifies the `!isTransient` short-circuit.
+    // Callers must pass an explicit isTransient to get retry behavior (the
+    // production injection always does: `r => r.exitCode !== 0`).
+    let calls = 0;
+    const once: SpawnFn = async () => {
+      calls++;
+      return { stdout: "x", stderr: "", exitCode: 0 };
+    };
+    const result = await runWithTransientRetry(() => once("kimi", []), {
+      maxRetries: 3,
+      baseDelayMs: 1,
+    });
+    expect(calls).toBe(1);
+    expect(result.stdout).toBe("x");
+  });
+
+  it("DEFAULT_TRANSIENT_MAX_RETRIES is 3", () => {
+    expect(DEFAULT_TRANSIENT_MAX_RETRIES).toBe(3);
+  });
+});
+
+// Injection-into-query integration: prove query() wraps spawnFn with retry and
+// honors resumeSessionId → maxRetries=0. query() is protected, so drive via
+// startSession.
+
+describe("GenericCliProvider query() transient retry injection", () => {
+  let loggerSpies: ReturnType<typeof spyOn>[];
+
+  beforeEach(() => {
+    loggerSpies = [
+      spyOn(logger, "info").mockImplementation(() => {}),
+      spyOn(logger, "debug").mockImplementation(() => {}),
+      spyOn(logger, "warn").mockImplementation(() => {}),
+      spyOn(logger, "error").mockImplementation(() => {}),
+      spyOn(logger, "success").mockImplementation(() => {}),
+      spyOn(logger, "failure").mockImplementation(() => {}),
+      spyOn(logger, "dataOut").mockImplementation(() => {}),
+    ];
+  });
+
+  afterEach(() => {
+    loggerSpies.forEach((s) => s.mockRestore());
+    mock.restore();
+  });
+
+  it("init (no resumeId): retries spawn on non-zero exit, succeeds, captures session", async () => {
+    let calls = 0;
+    const flaky: SpawnFn = async () => {
+      calls++;
+      if (calls < 2) return { stdout: "", stderr: "blip", exitCode: 1 };
+      return { stdout: INIT_STDOUT, stderr: "", exitCode: 0 };
+    };
+    const { mockDbManager, mockSessionManager, mockWorker } = createStubs();
+    const provider = new GenericCliProvider(mockDbManager, mockSessionManager, {
+      spawn: flaky,
+    });
+    const session = createSession();
+
+    await provider.startSession(session, mockWorker);
+
+    // 1 transient failure + 1 success = 2 spawn calls (no resumeId → retries allowed)
+    expect(calls).toBe(2);
+    // session captured from the successful attempt's stdout
+    expect(session.memorySessionId).toBe("session_abc-123");
+  });
+
+  it("resume (memorySessionId set): maxRetries=0 → single attempt, no retry on failure", async () => {
+    let calls = 0;
+    const alwaysFail: SpawnFn = async () => {
+      calls++;
+      return { stdout: "", stderr: "perm", exitCode: 1 };
+    };
+    const { mockDbManager, mockSessionManager, mockWorker } = createStubs();
+    const provider = new GenericCliProvider(mockDbManager, mockSessionManager, {
+      spawn: alwaysFail,
+    });
+    // Pre-set a real-shaped session id → init will resume (not fresh spawn),
+    // and resumeId truthy → maxRetries=0 (no transport retry, defer to
+    // Task 6 content-layer retry / fallback).
+    const session = createSession({
+      memorySessionId: "session_deadbeef-1234",
+      lastPromptNumber: 2,
+    });
+
+    await expect(provider.startSession(session, mockWorker)).rejects.toThrow(
+      /exited with code 1/,
+    );
+    // exactly ONE spawn call — no retries despite non-zero exit
+    expect(calls).toBe(1);
+  });
+
+  it("fresh spawn (no resumeId): exhausts 3 retries then surfaces non-zero exit", async () => {
+    let calls = 0;
+    const alwaysFail: SpawnFn = async () => {
+      calls++;
+      return { stdout: "", stderr: "down", exitCode: 1 };
+    };
+    const { mockDbManager, mockSessionManager, mockWorker } = createStubs();
+    const provider = new GenericCliProvider(mockDbManager, mockSessionManager, {
+      spawn: alwaysFail,
+    });
+    const session = createSession();
+
+    await expect(provider.startSession(session, mockWorker)).rejects.toThrow(
+      /exited with code 1/,
+    );
+    // 1 initial + 3 retries (DEFAULT_TRANSIENT_MAX_RETRIES) = 4 total
+    expect(calls).toBe(4);
+  });
+
+  it("thrown spawn error (timeout/ENOENT) is NOT retried at transport layer", async () => {
+    // Throws bypass the exitCode-based retry loop and bubble immediately —
+    // documented limitation (see task-5-report.md). Prevents retrying
+    // permanent errors like ENOENT.
+    let calls = 0;
+    const boom: SpawnFn = async () => {
+      calls++;
+      throw new Error("kimi ENOENT");
+    };
+    const { mockDbManager, mockSessionManager, mockWorker } = createStubs();
+    const provider = new GenericCliProvider(mockDbManager, mockSessionManager, {
+      spawn: boom,
+    });
+    const session = createSession();
+
+    await expect(provider.startSession(session, mockWorker)).rejects.toThrow(
+      /kimi ENOENT/,
+    );
+    // single call — throw propagated without retry
+    expect(calls).toBe(1);
   });
 });

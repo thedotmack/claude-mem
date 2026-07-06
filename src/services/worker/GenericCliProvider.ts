@@ -229,6 +229,85 @@ export const defaultSpawn: SpawnFn = (cmd, args) => {
   });
 };
 
+// ---------------------------------------------------------------------------
+// Task 5: 传输层 retry（runWithTransientRetry 移植）
+// ---------------------------------------------------------------------------
+//
+// 移植自 loop-engine/src/adapters/transient.ts 的 runWithTransientRetry，
+// 但做了简化：kimi `--output-format text` 无结构化错误信封（loop-engine 的
+// 版本要嗅探 is_error / NDJSON error 事件里的 api_error_status），这里只
+// 按 exitCode 判定。brief 的注入点就是 `isTransient: r => r.exitCode !== 0`。
+//
+// **关键语义**：
+//   - 原地重发同一调用（fresh spawn，非 resume），用满次数仍失败 → 返回末次结果
+//   - exponential backoff：baseDelayMs * 2^attempt（attempt 从 0 起）
+//   - resumeId 存在时 maxRetries=0（避免与 Task 6 内容层 retry 叠加 ——
+//     resume 重放要求确定性，参考 loop-engine opencode.ts:194）
+//   - sleepFn 可注入，便于测试 backoff 时序（loop-engine 同款设计）
+//
+// **不重试 throws**：defaultSpawn 在超时 / spawn error 事件时 reject，这些
+// 异常会穿透本层直接上浮到 handleSessionError。理由：throws 里混了 ENOENT
+// 这类永久错误，盲重试只是拖慢暴露（3.5s + 把"binary 缺失"伪装成"网络抖"）。
+// 若后续要覆盖超时重试，应加 `isTransientError?: (e: unknown) => boolean`
+// 显式白名单，而非无差别 catch。见 task-5-report.md「Known limitations」。
+
+/** 传输层 retry 默认上限（fresh spawn 场景）。 */
+export const DEFAULT_TRANSIENT_MAX_RETRIES = 3;
+
+/** 传输层 retry 默认 base delay（ms），实际退避 = base * 2^attempt。 */
+export const DEFAULT_TRANSIENT_BASE_DELAY_MS = 500;
+
+type TransientRetryOpts<T> = {
+  maxRetries: number;
+  baseDelayMs: number;
+  /** 命中返回 true 则重试；省略表示永不重试（首次结果即最终结果）。 */
+  isTransient?: (r: T) => boolean;
+  /** 退避 sleep 注入点（测试用）；默认 `setTimeout(resolve, ms)`。 */
+  sleepFn?: (ms: number) => Promise<void>;
+};
+
+const defaultTransientSleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * 瞬时错误退避重试循环（移植自 loop-engine runWithTransientRetry，简化版）。
+ *
+ * 循环 `attempt = 0..maxRetries`：每次 await fn()，若结果非 transient 立即
+ * 返回；否则（且未到末次）按 `baseDelayMs * 2^attempt` 退避后再试。用满
+ * 次数仍 transient 则返回末次结果（交由调用方决定是否抛错 —— query() 里
+ * 就是 `if (exitCode !== 0) throw`）。
+ *
+ * **不 catch fn() 抛出的异常**：throws 直接上浮，不进入重试。这样 ENOENT
+ * / SIGKILL 等永久错误不会被伪装成瞬时错误浪费退避时间。
+ *
+ * @param fn   单次尝试（无参，闭包捕获 spawn 调用）
+ * @param opts maxRetries / baseDelayMs / isTransient / sleepFn
+ * @returns    末次结果（成功或末次失败）
+ */
+export async function runWithTransientRetry<T>(
+  fn: () => Promise<T>,
+  opts: TransientRetryOpts<T>,
+): Promise<T> {
+  const {
+    maxRetries,
+    baseDelayMs,
+    isTransient,
+    sleepFn = defaultTransientSleep,
+  } = opts;
+  let last: T | undefined;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    last = await fn();
+    // 非 transient（或 isTransient 省略）→ 首次即最终，直接返回
+    if (!isTransient || !isTransient(last)) return last;
+    // 末次（attempt === maxRetries）不再退避，跳出返回 last
+    if (attempt < maxRetries) {
+      const delay = baseDelayMs * 2 ** attempt;
+      await sleepFn(delay);
+    }
+  }
+  return last as T;
+}
+
 /**
  * 构造 kimi CLI 调用参数。
  *
@@ -335,12 +414,23 @@ export class GenericCliProvider {
       promptChars: prompt.length,
     });
 
-    const { stdout, exitCode } = await this.spawnFn(this.config.cmd, args);
+    const { stdout, exitCode } = await runWithTransientRetry(
+      () => this.spawnFn(this.config.cmd, args),
+      {
+        // resumeId 存在时 maxRetries=0：避免与 Task 6 内容层 retry 叠加
+        // （resume 重放要求确定性，参考 loop-engine opencode.ts:194）。
+        // fresh spawn 才走传输层 retry（DEFAULT_TRANSIENT_MAX_RETRIES=3）。
+        maxRetries: resumeSessionId ? 0 : DEFAULT_TRANSIENT_MAX_RETRIES,
+        baseDelayMs: DEFAULT_TRANSIENT_BASE_DELAY_MS,
+        // 只按 exitCode 判定；throws（timeout/ENOENT）穿透本层不重试。
+        isTransient: (r) => r.exitCode !== 0,
+      },
+    );
     const parsed = parseCliOutput(stdout, this.config);
 
     if (exitCode !== 0) {
-      // surface non-zero exit so handleSessionError can classify; Task 5
-      // will introduce structured classification.
+      // 末次尝试仍非零退出（传输层 retry 已用尽，或 resumeId 场景 maxRetries=0
+      // 直接走到这里）—— 上浮到 handleSessionError 分类处理。
       throw new Error(
         `${this.config.providerName} CLI exited with code ${exitCode}: ${stdout.slice(-400)}`,
       );
