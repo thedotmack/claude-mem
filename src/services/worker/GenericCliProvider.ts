@@ -81,25 +81,47 @@ export function isGenericCliAvailable(): boolean {
 // ---------------------------------------------------------------------------
 
 /**
- * Result of a CLI query. `content` carries the full stdout (prose +
- * `<observation>` XML + resume marker) so downstream parser.ts can apply
- * its own regex; `sessionId` is the pre-extracted handle for resume.
+ * Result of a CLI query. `content` carries stdout with the trailing
+ * `To resume this session: ...` marker line stripped (prose +
+ * `<observation>` XML remain) so it can be pushed verbatim into
+ * `session.conversationHistory`; `sessionId` is the pre-extracted handle
+ * for resume (parsed from the original raw stdout before stripping).
  */
 export interface CliQueryResult {
-  content: string;          // stdout（含 observation XML + 可能 prose）
-  sessionId: string | null; // 从末尾 regex 抓
+  content: string;          // stdout（含 observation XML + 可能 prose，marker 已 strip）
+  sessionId: string | null; // 从末尾 regex 抓（基于原始 raw）
   exitCode: number;
   durationMs: number;
   truncated: boolean;
 }
 
 /**
+ * Regex matching the kimi-emitted resume marker line that always appears at
+ * the tail of stdout: `To resume this session: kimi -r session_xxx`.
+ *
+ * Stripped from `parseCliOutput`'s returned `content` because that content is
+ * pushed verbatim into `session.conversationHistory` as the assistant message
+ * (see handleInitResponse / processObservationMessage / processSummaryMessage);
+ * leaving the marker in place would inject resume-handle noise into every
+ * subsequent prompt and bloat token usage.
+ *
+ * Anchored to end-of-string (`$`) without the `s` flag so it only matches a
+ * trailing marker line and never a mid-content mention of the phrase. Eats
+ * the preceding newline (and any trailing spaces/CR) so the result doesn't
+ * end on a dangling blank line.
+ */
+const RESUME_MARKER_TAIL_RE = /[ \t]*\r?\n?To resume this session: [^\r\n]*$/;
+
+/**
  * 从 CLI 原始 stdout 抽取 `content` + `sessionId`。
  *
- * - `content`：整个 stdout（含 prose + `<observation>` XML + resume marker）。
- *   parser.ts 的 observation regex 会自行过滤——这里不截断。
- * - `sessionId`：从 `config.sessionIdRegex` 抓 **完整 "session_xxx"（含前缀）**，
- *   便于直接喂 `-r <sessionId>` / `-S <sessionId>`。无匹配返回 null。
+ * - `content`：stdout 去掉末尾 `To resume this session: ...` marker 行后的
+ *   prose + `<observation>` XML。该 content 会被原样 push 进
+ *   `session.conversationHistory` 的 assistant message，strip 掉 marker 避免
+ *   把 resume handle 噪音喂进后续 prompt（也省 token）。
+ * - `sessionId`：从 **原始 `raw`**（未 strip）用 `config.sessionIdRegex` 抓
+ *   **完整 "session_xxx"（含前缀）**，便于直接喂 `-r <sessionId>` /
+ *   `-S <sessionId>`。无匹配返回 null。strip 只影响 content，不影响抽取。
  *
  * 注：用 `match()[0]`（整段匹配）而非 `match()[1]`（捕获组），让 regex 后续
  * 若改成无捕获组也不破坏行为。
@@ -110,7 +132,7 @@ export function parseCliOutput(
 ): Pick<CliQueryResult, "content" | "sessionId"> {
   const m = raw.match(config.sessionIdRegex);
   return {
-    content: raw,
+    content: raw.replace(RESUME_MARKER_TAIL_RE, ""),
     sessionId: m ? m[0] : null,
   };
 }
@@ -250,18 +272,6 @@ export function buildKimiArgs(
 //   - 传给 query 的 resumeSessionId = `session.memorySessionId`（首次
 //     undefined → fresh spawn；后续 resume）
 
-const DEFAULT_MAX_CONTEXT_MESSAGES = 20;
-const DEFAULT_MAX_ESTIMATED_TOKENS = 100_000;
-
-/**
- * Estimate token count for a single message body. kimi text 模式不返
- * usage，沿用 OpenAICompatibleProvider 的 chars/4 粗估（与 Gemini 的
- * `estimateTokens` 同思路）。
- */
-function estimateTokensHeuristic(text: string): number {
-  return Math.ceil(text.length / 4);
-}
-
 /**
  * Returns true iff `id` looks like a real kimi-emitted session id (matches
  * `config.sessionIdRegex`). Used to distinguish captured `session_xxx`
@@ -301,8 +311,13 @@ export class GenericCliProvider {
    * Task 6 wraps `query` with content-retry + provider fallback. Signatures
    * are kept (prompt + resumeSessionId) → (content + sessionId) so those
    * wrappers can compose cleanly.
+   *
+   * Visibility is `protected` (not `private`) so Task 6's outer
+   * `queryWithContentRetry` wrapper — living in a sibling module or a
+   * thin subclass — can call `query` directly without exposing it on the
+   * public API.
    */
-  private async query(
+  protected async query(
     history: ConversationMessage[],
     resumeSessionId?: string | null,
   ): Promise<ProviderQueryResult & { sessionId: string | null }> {
@@ -709,64 +724,6 @@ export class GenericCliProvider {
     _result: ProviderQueryResult,
   ): ActiveSession["lastUsage"] {
     return null;
-  }
-
-  /**
-   * Truncate history when it grows past the configured limits. Mirrors
-   * `OpenAICompatibleProvider.truncateHistory` with `requireNonEmptyToTruncate
-   * = false` (OpenRouter behavior) so truncation kicks in as soon as either
-   * limit is exceeded.
-   *
-   * Currently unused in the simple lifecycle (kimi -p only sends the last
-   * user message, so history size doesn't directly bloat the wire) but
-   * exported so Task 6 (content retry) can reuse it when constructing
-   * smaller retry prompts.
-   */
-  private truncateHistory(
-    history: ConversationMessage[],
-    maxContextMessages: number = DEFAULT_MAX_CONTEXT_MESSAGES,
-    maxEstimatedTokens: number = DEFAULT_MAX_ESTIMATED_TOKENS,
-  ): ConversationMessage[] {
-    if (history.length <= maxContextMessages) {
-      const totalTokens = history.reduce(
-        (sum, m) => sum + estimateTokensHeuristic(m.content),
-        0,
-      );
-      if (totalTokens <= maxEstimatedTokens) {
-        return history;
-      }
-    }
-
-    const truncated: ConversationMessage[] = [];
-    let tokenCount = 0;
-
-    for (let i = history.length - 1; i >= 0; i--) {
-      const msg = history[i];
-      const msgTokens = estimateTokensHeuristic(msg.content);
-
-      const overLimit =
-        truncated.length >= maxContextMessages ||
-        tokenCount + msgTokens > maxEstimatedTokens;
-      if (truncated.length > 0 && overLimit) {
-        logger.warn(
-          "SDK",
-          "Context window truncated to prevent runaway costs",
-          {
-            originalMessages: history.length,
-            keptMessages: truncated.length,
-            droppedMessages: i + 1,
-            estimatedTokens: tokenCount,
-            tokenLimit: maxEstimatedTokens,
-          },
-        );
-        break;
-      }
-
-      truncated.unshift(msg);
-      tokenCount += msgTokens;
-    }
-
-    return truncated;
   }
 
   private handleSessionError(

@@ -66,6 +66,30 @@ describe("parseCliOutput", () => {
     const result = parseCliOutput("just XML no marker", KIMI_CLI_CONFIG);
     expect(result.sessionId).toBeNull();
   });
+
+  it("strips trailing resume marker line from content but keeps prose + XML (Task 4 review fix)", () => {
+    const raw = `• thinking prose...\n<observation><type>discovery</type><title>x</title></observation>\nTo resume this session: kimi -r session_abc-123-def`;
+    const result = parseCliOutput(raw, KIMI_CLI_CONFIG);
+    // sessionId still extracted from the original raw
+    expect(result.sessionId).toBe("session_abc-123-def");
+    // content keeps prose + XML
+    expect(result.content).toContain("• thinking prose...");
+    expect(result.content).toContain("<observation>");
+    expect(result.content).toContain("<type>discovery</type>");
+    // content no longer carries the resume marker line
+    expect(result.content).not.toContain("To resume this session:");
+    expect(result.content).not.toContain("session_abc-123-def");
+    // no dangling trailing newline left behind
+    expect(result.content.endsWith("\n")).toBe(false);
+  });
+
+  it("does not strip a mid-content mention of the marker phrase (only trailing line)", () => {
+    const raw = `To resume this session: mentioned mid-text\n<observation><type>bugfix</type></observation>`;
+    const result = parseCliOutput(raw, KIMI_CLI_CONFIG);
+    // marker phrase present but NOT at tail → not stripped (no real session_id either)
+    expect(result.content).toContain("To resume this session: mentioned mid-text");
+    expect(result.sessionId).toBeNull();
+  });
 });
 
 describe("buildKimiArgs", () => {
