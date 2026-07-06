@@ -347,6 +347,10 @@ Language-specific modes follow the pattern `code--[lang]` where `[lang]` is the 
 #### After Changing Mode
 
 Restart Claude Code to apply the new mode configuration.
+
+### Custom CLI Provider
+
+Claude-Mem can route observation/summary compression to any CLI-based LLM agent (e.g. Kimi Code) via `GenericCliProvider`, isolating background compression cost from your Claude subscription. Enable with `CLAUDE_MEM_PROVIDER=generic-cli` — see [Custom CLI Provider (Kimi Code)](docs/providers/generic-cli.md).
 ---
 
 ## Development
