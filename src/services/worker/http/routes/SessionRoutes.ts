@@ -10,6 +10,7 @@ import { DatabaseManager } from '../../DatabaseManager.js';
 import { ClaudeProvider } from '../../ClaudeProvider.js';
 import { GeminiProvider, isGeminiSelected, isGeminiAvailable } from '../../GeminiProvider.js';
 import { OpenRouterProvider, isOpenRouterSelected, isOpenRouterAvailable } from '../../OpenRouterProvider.js';
+import { GenericCliProvider, isGenericCliSelected, isGenericCliAvailable } from '../../GenericCliProvider.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
@@ -53,6 +54,7 @@ export class SessionRoutes extends BaseRouteHandler {
     private sdkAgent: ClaudeProvider,
     private geminiAgent: GeminiProvider,
     private openRouterAgent: OpenRouterProvider,
+    private genericCliAgent: GenericCliProvider,
     private eventBroadcaster: SessionEventBroadcaster,
     private workerService: WorkerService,
     private completionHandler: SessionCompletionHandler,
@@ -60,7 +62,7 @@ export class SessionRoutes extends BaseRouteHandler {
     super();
   }
 
-  private getActiveAgent(): ClaudeProvider | GeminiProvider | OpenRouterProvider {
+  private getActiveAgent(): ClaudeProvider | GeminiProvider | OpenRouterProvider | GenericCliProvider {
     if (isOpenRouterSelected()) {
       if (isOpenRouterAvailable()) {
         logger.debug('SESSION', 'Using OpenRouter agent');
@@ -77,14 +79,28 @@ export class SessionRoutes extends BaseRouteHandler {
         throw new Error('Gemini provider selected but no API key configured. Set CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.');
       }
     }
+    if (isGenericCliSelected()) {
+      if (isGenericCliAvailable()) {
+        logger.debug('SESSION', 'Using generic-CLI agent');
+        return this.genericCliAgent;
+      } else {
+        throw new Error('Generic CLI provider selected but the configured binary was not found on PATH. Verify the CLI (e.g. `kimi`) is installed and reachable via `which`.');
+      }
+    }
     return this.sdkAgent;
   }
 
-  private getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' {
+  private getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' | 'generic-cli' {
     if (isOpenRouterSelected() && isOpenRouterAvailable()) {
       return 'openrouter';
     }
-    return (isGeminiSelected() && isGeminiAvailable()) ? 'gemini' : 'claude';
+    if (isGeminiSelected() && isGeminiAvailable()) {
+      return 'gemini';
+    }
+    if (isGenericCliSelected() && isGenericCliAvailable()) {
+      return 'generic-cli';
+    }
+    return 'claude';
   }
 
   public async ensureGeneratorRunning(sessionDbId: number, source: string): Promise<void> {
@@ -113,7 +129,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
   private async startGeneratorWithProvider(
     session: ReturnType<typeof this.sessionManager.getSession>,
-    provider: 'claude' | 'gemini' | 'openrouter',
+    provider: 'claude' | 'gemini' | 'openrouter' | 'generic-cli',
     source: string
   ): Promise<void> {
     if (!session) return;
@@ -125,8 +141,16 @@ export class SessionRoutes extends BaseRouteHandler {
       session.abortController = new AbortController();
     }
 
-    const agent = provider === 'openrouter' ? this.openRouterAgent : (provider === 'gemini' ? this.geminiAgent : this.sdkAgent);
-    const agentName = provider === 'openrouter' ? 'OpenRouter' : (provider === 'gemini' ? 'Gemini' : 'Claude SDK');
+    const agent =
+      provider === 'openrouter' ? this.openRouterAgent
+      : provider === 'gemini' ? this.geminiAgent
+      : provider === 'generic-cli' ? this.genericCliAgent
+      : this.sdkAgent;
+    const agentName =
+      provider === 'openrouter' ? 'OpenRouter'
+      : provider === 'gemini' ? 'Gemini'
+      : provider === 'generic-cli' ? 'Generic CLI'
+      : 'Claude SDK';
 
     const actualQueueDepth = this.sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId);
 

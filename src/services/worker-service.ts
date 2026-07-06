@@ -81,6 +81,7 @@ import { ClaudeProvider, classifyClaudeError } from './worker/ClaudeProvider.js'
 import type { WorkerRef } from './worker/agents/types.js';
 import { GeminiProvider, classifyGeminiError, isGeminiSelected, isGeminiAvailable } from './worker/GeminiProvider.js';
 import { OpenRouterProvider, classifyOpenRouterError, isOpenRouterSelected, isOpenRouterAvailable } from './worker/OpenRouterProvider.js';
+import { GenericCliProvider, isGenericCliSelected, isGenericCliAvailable } from './worker/GenericCliProvider.js';
 import { ClassifiedProviderError, isClassified, type ProviderErrorClass } from './worker/provider-errors.js';
 import { PaginationHelper } from './worker/PaginationHelper.js';
 import { SettingsManager } from './worker/SettingsManager.js';
@@ -205,6 +206,7 @@ export class WorkerService implements WorkerRef {
   private sdkAgent: ClaudeProvider;
   private geminiAgent: GeminiProvider;
   private openRouterAgent: OpenRouterProvider;
+  private genericCliAgent: GenericCliProvider;
   private paginationHelper: PaginationHelper;
   private settingsManager: SettingsManager;
   private sessionEventBroadcaster: SessionEventBroadcaster;
@@ -236,6 +238,7 @@ export class WorkerService implements WorkerRef {
     this.sdkAgent = new ClaudeProvider(this.dbManager, this.sessionManager);
     this.geminiAgent = new GeminiProvider(this.dbManager, this.sessionManager);
     this.openRouterAgent = new OpenRouterProvider(this.dbManager, this.sessionManager);
+    this.genericCliAgent = new GenericCliProvider(this.dbManager, this.sessionManager);
 
     this.paginationHelper = new PaginationHelper(this.dbManager);
     this.settingsManager = new SettingsManager(this.dbManager);
@@ -270,6 +273,7 @@ export class WorkerService implements WorkerRef {
         let provider = 'claude';
         if (isOpenRouterSelected() && isOpenRouterAvailable()) provider = 'openrouter';
         else if (isGeminiSelected() && isGeminiAvailable()) provider = 'gemini';
+        else if (isGenericCliSelected() && isGenericCliAvailable()) provider = 'generic-cli';
         return {
           provider,
           authMethod: getAuthMethodDescription(),
@@ -336,7 +340,7 @@ export class WorkerService implements WorkerRef {
     });
 
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
-    const sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this, this.completionHandler);
+    const sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.genericCliAgent, this.sessionEventBroadcaster, this, this.completionHandler);
     this.server.registerRoutes(sessionRoutes);
     attachIngestGeneratorStarter((sessionDbId, source) =>
       sessionRoutes.ensureGeneratorRunning(sessionDbId, source),
