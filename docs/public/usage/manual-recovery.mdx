@@ -111,7 +111,8 @@ Would you like to process these pending queues? (y/n)
 #### Check Queue Status
 
 ```bash
-curl http://localhost:37777/api/pending-queue
+WORKER_PORT=$(jq -r .CLAUDE_MEM_WORKER_PORT ~/.claude-mem/settings.json)
+curl http://127.0.0.1:$WORKER_PORT/api/pending-queue
 ```
 
 **Response**:
@@ -148,7 +149,7 @@ curl http://localhost:37777/api/pending-queue
 #### Trigger Recovery
 
 ```bash
-curl -X POST http://localhost:37777/api/pending-queue/process \
+curl -X POST http://127.0.0.1:$WORKER_PORT/api/pending-queue/process \
   -H "Content-Type: application/json" \
   -d '{"sessionLimit": 10}'
 ```
@@ -176,7 +177,7 @@ curl -X POST http://localhost:37777/api/pending-queue/process \
 
 ```bash
 # Check queue status first
-curl http://localhost:37777/api/pending-queue
+curl http://127.0.0.1:$WORKER_PORT/api/pending-queue
 
 # Or use CLI tool which checks automatically
 bun scripts/check-pending-queue.ts
@@ -209,7 +210,7 @@ Look for:
 Check recently processed messages:
 
 ```bash
-curl http://localhost:37777/api/pending-queue | jq '.recentlyProcessed'
+curl http://127.0.0.1:$WORKER_PORT/api/pending-queue | jq '.recentlyProcessed'
 ```
 
 Or use the CLI tool which shows this automatically.
@@ -248,7 +249,7 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 
 1. **Verify worker health**:
    ```bash
-   curl http://localhost:37777/health
+   curl http://127.0.0.1:$WORKER_PORT/health
    ```
 
 2. **Check worker logs for errors**:
@@ -383,8 +384,10 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 #!/bin/bash
 # Run every hour to process stuck queues
 
+WORKER_PORT=$(jq -r .CLAUDE_MEM_WORKER_PORT ~/.claude-mem/settings.json)
+
 # Check if worker is healthy
-if curl -f http://localhost:37777/health > /dev/null 2>&1; then
+if curl -f http://127.0.0.1:$WORKER_PORT/health > /dev/null 2>&1; then
   # Auto-process up to 5 sessions
   bun scripts/check-pending-queue.ts --process --limit 5
 else
@@ -399,7 +402,8 @@ fi
 #!/bin/bash
 # Alert if stuck count exceeds threshold
 
-STUCK_COUNT=$(curl -s http://localhost:37777/api/pending-queue | jq '.queue.stuckCount')
+WORKER_PORT=$(jq -r .CLAUDE_MEM_WORKER_PORT ~/.claude-mem/settings.json)
+STUCK_COUNT=$(curl -s http://127.0.0.1:$WORKER_PORT/api/pending-queue | jq '.queue.stuckCount')
 
 if [ "$STUCK_COUNT" -gt 5 ]; then
   echo "WARNING: $STUCK_COUNT stuck messages detected"

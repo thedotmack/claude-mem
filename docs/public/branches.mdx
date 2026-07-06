@@ -1,0 +1,88 @@
+---
+title: "Release Branches"
+description: "The branches Claude-Mem ships from, what is published, and how to run non-stable lines"
+---
+
+# Release Branches
+
+Claude-Mem has three long-lived runtime branches. Only `main` is published to npm today.
+
+| Line | Branch | Who it is for | Published to npm? |
+|------|--------|---------------|-------------------|
+| Stable | `main` | Everyone. This is the `npx claude-mem` install. | Yes |
+| Core Dev | `core-dev` | Maintainer and testers who want reliability fixes early. | No, run from source |
+| Community Edge | `community-edge` | Integrated community work before it is hardened. | No, run from source |
+
+## How Changes Flow
+
+Work moves toward stable:
+
+```text
+community-edge -> core-dev -> main
+```
+
+New work enters as a PR to `core-dev` or `community-edge`, not directly to
+`main`. Stable advances when hardened `core-dev` work is promoted into `main`.
+
+Docs-only work can be staged on `updates/docs` and merged to `main` when ready.
+That branch is not a runtime release line.
+
+## Install Stable
+
+The normal installer always uses the published stable line:
+
+```bash
+npx claude-mem install
+```
+
+You can also pin an npm-published stable version:
+
+```bash
+npx claude-mem@VERSION install
+```
+
+## Run a Non-Stable Branch
+
+`core-dev` and `community-edge` are source-run lines. To test one:
+
+```bash
+git clone https://github.com/thedotmack/claude-mem.git
+cd claude-mem
+git checkout core-dev          # or: community-edge
+npm install
+npm run build-and-sync
+```
+
+`build-and-sync` builds the checked-out branch, syncs it into your local Claude
+Code plugin marketplace, and restarts the worker.
+
+To return to stable:
+
+```bash
+git checkout main
+npm run build-and-sync
+```
+
+Or reinstall the published package:
+
+```bash
+npx claude-mem@latest install
+```
+
+## Published Versions
+
+GitHub releases and npm releases are separate:
+
+- A GitHub release/tag makes the source archive visible on GitHub.
+- An npm publish is what makes `npx claude-mem@<version>` resolve.
+- `latest` points at the current stable npm publish.
+
+If npm channel tags are added later, they should use npm dist-tags such as
+`core-dev` and `community-edge`. Until then, non-stable branches are run from
+source.
+
+## Maintainer Release Rule
+
+Production releases happen from `main` only. The release flow updates the version
+manifests, builds generated artifacts, pushes a git tag, hands npm publishing to
+the maintainer, creates the GitHub release, then regenerates `CHANGELOG.md`.

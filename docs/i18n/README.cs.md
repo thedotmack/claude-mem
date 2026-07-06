@@ -1,6 +1,5 @@
 🌐 Toto je automatický překlad. Komunitní opravy jsou vítány!
 
----
 <h1 align="center">
   <br>
   <a href="https://github.com/thedotmack/claude-mem">
@@ -11,46 +10,51 @@
     </picture>
   </a>
   <br>
+  <a href="https://vercel.com/open-source-program">
+    <img alt="Vercel OSS Program" src="https://vercel.com/oss/program-badge-2026.svg" />
+  </a>
 </h1>
 
 <p align="center">
-  <a href="README.zh.md">🇨🇳 中文</a> •
-  <a href="README.zh-tw.md">🇹🇼 繁體中文</a> •
-  <a href="README.ja.md">🇯🇵 日本語</a> •
-  <a href="README.pt-br.md">🇧🇷 Português</a> •
-  <a href="README.ko.md">🇰🇷 한국어</a> •
-  <a href="README.es.md">🇪🇸 Español</a> •
-  <a href="README.de.md">🇩🇪 Deutsch</a> •
-  <a href="README.fr.md">🇫🇷 Français</a>
-  <a href="README.he.md">🇮🇱 עברית</a> •
-  <a href="README.ar.md">🇸🇦 العربية</a> •
-  <a href="README.ru.md">🇷🇺 Русский</a> •
-  <a href="README.pl.md">🇵🇱 Polski</a> •
-  <a href="README.cs.md">🇨🇿 Čeština</a> •
-  <a href="README.nl.md">🇳🇱 Nederlands</a> •
-  <a href="README.tr.md">🇹🇷 Türkçe</a> •
-  <a href="README.uk.md">🇺🇦 Українська</a> •
-  <a href="README.vi.md">🇻🇳 Tiếng Việt</a> •
-  <a href="README.id.md">🇮🇩 Indonesia</a> •
-  <a href="README.th.md">🇹🇭 ไทย</a> •
-  <a href="README.hi.md">🇮🇳 हिन्दी</a> •
-  <a href="README.bn.md">🇧🇩 বাংলা</a> •
-  <a href="README.ur.md">🇵🇰 اردو</a> •
-  <a href="README.ro.md">🇷🇴 Română</a> •
-  <a href="README.sv.md">🇸🇪 Svenska</a> •
-  <a href="README.it.md">🇮🇹 Italiano</a> •
-  <a href="README.el.md">🇬🇷 Ελληνικά</a> •
-  <a href="README.hu.md">🇭🇺 Magyar</a> •
-  <a href="README.fi.md">🇫🇮 Suomi</a> •
-  <a href="README.da.md">🇩🇰 Dansk</a> •
-  <a href="README.no.md">🇳🇴 Norsk</a>
+  <a href="docs/i18n/README.zh.md">🇨🇳 中文</a> •
+  <a href="docs/i18n/README.zh-tw.md">🇹🇼 繁體中文</a> •
+  <a href="docs/i18n/README.ja.md">🇯🇵 日本語</a> •
+  <a href="docs/i18n/README.pt.md">🇵🇹 Português</a> •
+  <a href="docs/i18n/README.pt-br.md">🇧🇷 Português</a> •
+  <a href="docs/i18n/README.ko.md">🇰🇷 한국어</a> •
+  <a href="docs/i18n/README.es.md">🇪🇸 Español</a> •
+  <a href="docs/i18n/README.de.md">🇩🇪 Deutsch</a> •
+  <a href="docs/i18n/README.fr.md">🇫🇷 Français</a> •
+  <a href="docs/i18n/README.he.md">🇮🇱 עברית</a> •
+  <a href="docs/i18n/README.ar.md">🇸🇦 العربية</a> •
+  <a href="docs/i18n/README.ru.md">🇷🇺 Русский</a> •
+  <a href="docs/i18n/README.pl.md">🇵🇱 Polski</a> •
+  <a href="docs/i18n/README.cs.md">🇨🇿 Čeština</a> •
+  <a href="docs/i18n/README.nl.md">🇳🇱 Nederlands</a> •
+  <a href="docs/i18n/README.tr.md">🇹🇷 Türkçe</a> •
+  <a href="docs/i18n/README.uk.md">🇺🇦 Українська</a> •
+  <a href="docs/i18n/README.vi.md">🇻🇳 Tiếng Việt</a> •
+  <a href="docs/i18n/README.tl.md">🇵🇭 Tagalog</a> •
+  <a href="docs/i18n/README.id.md">🇮🇩 Indonesia</a> •
+  <a href="docs/i18n/README.th.md">🇹🇭 ไทย</a> •
+  <a href="docs/i18n/README.hi.md">🇮🇳 हिन्दी</a> •
+  <a href="docs/i18n/README.bn.md">🇧🇩 বাংলা</a> •
+  <a href="docs/i18n/README.ur.md">🇵🇰 اردو</a> •
+  <a href="docs/i18n/README.ro.md">🇷🇴 Română</a> •
+  <a href="docs/i18n/README.sv.md">🇸🇪 Svenska</a> •
+  <a href="docs/i18n/README.it.md">🇮🇹 Italiano</a> •
+  <a href="docs/i18n/README.el.md">🇬🇷 Ελληνικά</a> •
+  <a href="docs/i18n/README.hu.md">🇭🇺 Magyar</a> •
+  <a href="docs/i18n/README.fi.md">🇫🇮 Suomi</a> •
+  <a href="docs/i18n/README.da.md">🇩🇰 Dansk</a> •
+  <a href="docs/i18n/README.no.md">🇳🇴 Norsk</a>
 </p>
 
 <h4 align="center">Systém trvalé komprese paměti vytvořený pro <a href="https://claude.com/claude-code" target="_blank">Claude Code</a>.</h4>
 
 <p align="center">
   <a href="LICENSE">
-    <img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="License">
+    <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/version-13.4.0-green.svg" alt="Version">
@@ -75,13 +79,40 @@
 
 <br>
 
-<p align="center">
-  <a href="https://github.com/thedotmack/claude-mem">
-    <picture>
-      <img src="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/cm-preview.gif" alt="Claude-Mem Preview" width="800">
-    </picture>
-  </a>
-</p>
+<table align="center">
+  <tr>
+    <td align="center">
+      <a href="https://github.com/thedotmack/claude-mem">
+        <picture>
+          <img
+            src="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/cm-preview.gif"
+            alt="Claude-Mem Preview"
+            width="500"
+          >
+        </picture>
+      </a>
+    </td>
+    <td align="center">
+      <a href="https://www.star-history.com/#thedotmack/claude-mem&Date">
+        <picture>
+          <source
+            media="(prefers-color-scheme: dark)"
+            srcset="https://api.star-history.com/image?repos=thedotmack/claude-mem&type=date&theme=dark&legend=top-left"
+          />
+          <source
+            media="(prefers-color-scheme: light)"
+            srcset="https://api.star-history.com/image?repos=thedotmack/claude-mem&type=date&legend=top-left"
+          />
+          <img
+            alt="Star History Chart"
+            src="https://api.star-history.com/image?repos=thedotmack/claude-mem&type=date&legend=top-left"
+            width="500"
+          />
+        </picture>
+      </a>
+    </td>
+  </tr>
+</table>
 
 <p align="center">
   <a href="#rychlý-start">Rychlý start</a> •
@@ -94,35 +125,64 @@
 </p>
 
 <p align="center">
-  Claude-Mem bezproblémově zachovává kontext napříč sezeními tím, že automaticky zaznamenává pozorování použití nástrojů, generuje sémantické souhrny a zpřístupňuje je budoucím sezením. To umožňuje Claude udržovat kontinuitu znalostí o projektech i po ukončení nebo opětovném připojení sezení.
+  Claude-Mem bezproblémově zachovává kontext napříč sezeními tím, že automaticky zaznamenává pozorování použití nástrojů, generuje sémantické souhrny a zpřístupňuje je budoucím sezením. To Claude umožňuje udržovat kontinuitu znalostí o projektech i po ukončení sezení nebo jeho opětovném navázání.
 </p>
 
 ---
 
 ## Rychlý start
 
-Spusťte nové sezení Claude Code v terminálu a zadejte následující příkazy:
+Nainstalujte jedním příkazem:
 
+```bash
+npx claude-mem install
 ```
-> /plugin marketplace add thedotmack/claude-mem
 
-> /plugin install claude-mem
+Nebo instalace pro OpenCode:
+
+```bash
+npx claude-mem install --ide opencode
+```
+
+Nebo instalace pro Antigravity CLI ([návod k nastavení](https://docs.claude-mem.ai/antigravity-cli/setup)):
+
+```bash
+npx claude-mem install --ide antigravity
+```
+
+Nebo instalace z tržiště pluginů uvnitř Claude Code:
+
+```bash
+/plugin marketplace add thedotmack/claude-mem
+
+/plugin install claude-mem
 ```
 
 Restartujte Claude Code. Kontext z předchozích sezení se automaticky objeví v nových sezeních.
+
+> **Poznámka:** Claude-Mem je také publikován na npm, ale `npm install -g claude-mem` nainstaluje **pouze SDK/knihovnu** — neregistruje háčky pluginu ani nenastaví worker službu. Vždy instalujte pomocí `npx claude-mem install` nebo výše uvedených příkazů `/plugin`.
+
+### 🦞 OpenClaw Gateway
+
+Nainstalujte claude-mem jako plugin trvalé paměti na gateway [OpenClaw](https://openclaw.ai) jediným příkazem:
+
+```bash
+curl -fsSL https://install.cmem.ai/openclaw.sh | bash
+```
+
+Instalátor se stará o závislosti, nastavení pluginu, konfiguraci AI poskytovatele, spuštění workeru a volitelné feedy pozorování v reálném čase do Telegramu, Discordu, Slacku a dalších. Podrobnosti najdete v [Průvodci integrací OpenClaw](https://docs.claude-mem.ai/openclaw-integration).
 
 **Klíčové vlastnosti:**
 
 - 🧠 **Trvalá paměť** - Kontext přetrvává napříč sezeními
 - 📊 **Postupné odhalování** - Vrstvené vyhledávání paměti s viditelností nákladů na tokeny
 - 🔍 **Vyhledávání založené na dovednostech** - Dotazujte se na historii projektu pomocí dovednosti mem-search
-- 🖥️ **Webové uživatelské rozhraní** - Tok paměti v reálném čase na http://localhost:37777
+- 🖥️ **Webové uživatelské rozhraní** - Tok paměti v reálném čase na adrese URL workeru vypsané při spuštění
 - 💻 **Dovednost pro Claude Desktop** - Vyhledávejte v paměti z konverzací Claude Desktop
 - 🔒 **Kontrola soukromí** - Použijte značky `<private>` k vyloučení citlivého obsahu z úložiště
 - ⚙️ **Konfigurace kontextu** - Jemně odstupňovaná kontrola nad tím, jaký kontext se vkládá
 - 🤖 **Automatický provoz** - Není vyžadován žádný manuální zásah
-- 🔗 **Citace** - Odkazujte na minulá pozorování pomocí ID (přístup přes http://localhost:37777/api/observation/{id} nebo zobrazit vše ve webovém prohlížeči na http://localhost:37777)
-- 🧪 **Beta kanál** - Vyzkoušejte experimentální funkce jako Endless Mode přepnutím verze
+- 🔗 **Citace** - Odkazujte na minulá pozorování pomocí ID přes API workeru nebo zobrazte vše ve webovém prohlížeči
 
 ---
 
@@ -135,7 +195,6 @@ Restartujte Claude Code. Kontext z předchozích sezení se automaticky objeví 
 - **[Průvodce instalací](https://docs.claude-mem.ai/installation)** - Rychlý start a pokročilá instalace
 - **[Průvodce použitím](https://docs.claude-mem.ai/usage/getting-started)** - Jak Claude-Mem funguje automaticky
 - **[Vyhledávací nástroje](https://docs.claude-mem.ai/usage/search-tools)** - Dotazujte se na historii projektu pomocí přirozeného jazyka
-- **[Beta funkce](https://docs.claude-mem.ai/beta-features)** - Vyzkoušejte experimentální funkce jako Endless Mode
 
 ### Osvědčené postupy
 
@@ -156,6 +215,7 @@ Restartujte Claude Code. Kontext z předchozích sezení se automaticky objeví 
 
 - **[Konfigurace](https://docs.claude-mem.ai/configuration)** - Proměnné prostředí a nastavení
 - **[Vývoj](https://docs.claude-mem.ai/development)** - Sestavení, testování, přispívání
+- **[Vydávací větve](https://docs.claude-mem.ai/branches)** - Tok větví stable, core-dev a community-edge
 - **[Řešení problémů](https://docs.claude-mem.ai/troubleshooting)** - Běžné problémy a řešení
 
 ---
@@ -166,7 +226,7 @@ Restartujte Claude Code. Kontext z předchozích sezení se automaticky objeví 
 
 1. **5 Lifecycle Hooks** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd (6 hook skriptů)
 2. **Chytrá instalace** - Kontrola cachovaných závislostí (pre-hook skript, ne lifecycle hook)
-3. **Worker Service** - HTTP API na portu 37777 s webovým prohlížečem a 10 vyhledávacími endpointy, spravováno pomocí Bun
+3. **Worker Service** - Lokální HTTP API s webovým prohlížečem a vyhledávacími endpointy, spravováno pomocí Bun
 4. **SQLite databáze** - Ukládá sezení, pozorování, souhrny
 5. **mem-search dovednost** - Dotazy v přirozeném jazyce s postupným odhalováním
 6. **Chroma vektorová databáze** - Hybridní sémantické + klíčové vyhledávání pro inteligentní vyhledávání kontextu
@@ -175,46 +235,51 @@ Podrobnosti najdete v [Přehledu architektury](https://docs.claude-mem.ai/archit
 
 ---
 
-## Dovednost mem-search
+## Vyhledávací nástroje MCP
 
-Claude-Mem poskytuje inteligentní vyhledávání prostřednictvím dovednosti mem-search, která se automaticky vyvolá, když se ptáte na minulou práci:
+Claude-Mem poskytuje inteligentní vyhledávání v paměti prostřednictvím **4 nástrojů MCP** podle vzoru **3vrstvého pracovního postupu** šetřícího tokeny:
+
+**3vrstvý pracovní postup:**
+
+1. **`search`** - Získání kompaktního indexu s ID (~50-100 tokenů/výsledek)
+2. **`timeline`** - Získání chronologického kontextu kolem zajímavých výsledků
+3. **`get_observations`** - Získání úplných podrobností POUZE pro vyfiltrovaná ID (~500-1 000 tokenů/výsledek)
 
 **Jak to funguje:**
-- Stačí se zeptat přirozeně: *"Co jsme dělali minulé sezení?"* nebo *"Opravovali jsme tuto chybu dříve?"*
-- Claude automaticky vyvolá dovednost mem-search k nalezení relevantního kontextu
+- Claude používá nástroje MCP k vyhledávání ve vaší paměti
+- Začněte s `search`, abyste získali index výsledků
+- Použijte `timeline` k zobrazení toho, co se dělo kolem konkrétních pozorování
+- Použijte `get_observations` k získání úplných podrobností pro relevantní ID
+- **Úspora tokenů až ~10x** díky filtrování před získáváním podrobností
 
-**Dostupné vyhledávací operace:**
+**Dostupné nástroje MCP:**
 
-1. **Search Observations** - Fulltextové vyhledávání napříč pozorováními
-2. **Search Sessions** - Fulltextové vyhledávání napříč souhrny sezení
-3. **Search Prompts** - Vyhledávání surových požadavků uživatelů
-4. **By Concept** - Hledání podle koncepčních značek (discovery, problem-solution, pattern, atd.)
-5. **By File** - Hledání pozorování odkazujících na konkrétní soubory
-6. **By Type** - Hledání podle typu (decision, bugfix, feature, refactor, discovery, change)
-7. **Recent Context** - Získání nedávného kontextu sezení pro projekt
-8. **Timeline** - Získání jednotné časové osy kontextu kolem konkrétního bodu v čase
-9. **Timeline by Query** - Vyhledávání pozorování a získání kontextu časové osy kolem nejlepší shody
-10. **API Help** - Získání dokumentace k vyhledávacímu API
+1. **`search`** - Vyhledávání v indexu paměti pomocí fulltextových dotazů, filtrování podle typu/data/projektu
+2. **`timeline`** - Získání chronologického kontextu kolem konkrétního pozorování nebo dotazu
+3. **`get_observations`** - Získání úplných podrobností pozorování podle ID (vždy dávkově s více ID)
 
-**Příklady dotazů v přirozeném jazyce:**
+**Příklad použití:**
 
-```
-"Jaké chyby jsme opravili minulé sezení?"
-"Jak jsme implementovali autentizaci?"
-"Jaké změny byly provedeny v worker-service.ts?"
-"Ukaž mi nedávnou práci na tomto projektu"
-"Co se dělo, když jsme přidávali viewer UI?"
+```typescript
+// Krok 1: Vyhledání indexu
+search(query="authentication bug", type="bugfix", limit=10)
+
+// Krok 2: Prohlédnutí indexu, identifikace relevantních ID (např. #123, #456)
+
+// Krok 3: Získání úplných podrobností
+get_observations(ids=[123, 456])
 ```
 
 Podrobné příklady najdete v [Průvodci vyhledávacími nástroji](https://docs.claude-mem.ai/usage/search-tools).
 
 ---
 
-## Beta funkce
+## Vydávací větve
 
-Claude-Mem nabízí **beta kanál** s experimentálními funkcemi jako **Endless Mode** (biomimetická architektura paměti pro prodloužená sezení). Přepínejte mezi stabilní a beta verzí z webového rozhraní na http://localhost:37777 → Settings.
-
-Podrobnosti o Endless Mode a jak jej vyzkoušet najdete v **[Dokumentaci beta funkcí](https://docs.claude-mem.ai/beta-features)**.
+Stabilní vydání jsou publikována z větve `main` a zveřejněna na npm. `core-dev` a
+`community-edge` jsou větve spouštěné ze zdrojového kódu určené pro včasné opravy
+spolehlivosti a komunitní integrace. Podrobnosti o toku větví a pokyny ke spuštění
+nestabilních verzí najdete v **[Vydávacích větvích](https://docs.claude-mem.ai/branches)**.
 
 ---
 
@@ -227,6 +292,17 @@ Podrobnosti o Endless Mode a jak jej vyzkoušet najdete v **[Dokumentaci beta fu
 - **SQLite 3**: Pro trvalé úložiště (součástí balíčku)
 
 ---
+### Poznámky k nastavení pro Windows
+
+Pokud se zobrazí chyba jako:
+
+```powershell
+npm : The term 'npm' is not recognized as the name of a cmdlet
+```
+
+Ujistěte se, že Node.js a npm jsou nainstalované a přidané do vaší proměnné PATH. Stáhněte nejnovější instalátor Node.js z https://nodejs.org a po instalaci restartujte terminál.
+
+---
 
 ## Konfigurace
 
@@ -234,6 +310,45 @@ Nastavení jsou spravována v `~/.claude-mem/settings.json` (automaticky vytvoř
 
 Všechna dostupná nastavení a příklady najdete v **[Průvodci konfigurací](https://docs.claude-mem.ai/configuration)**.
 
+### Konfigurace režimu a jazyka
+
+Claude-Mem podporuje více pracovních režimů a jazyků prostřednictvím nastavení `CLAUDE_MEM_MODE`.
+
+Tato volba ovládá jak:
+- Chování pracovního postupu (např. code, chill, investigation)
+- Jazyk používaný ve vygenerovaných pozorováních
+
+#### Jak nakonfigurovat
+
+Upravte svůj soubor nastavení v `~/.claude-mem/settings.json`:
+
+```json
+{
+  "CLAUDE_MEM_MODE": "code--zh"
+}
+```
+
+Režimy jsou definovány v `plugin/modes/`. Chcete-li zobrazit všechny dostupné režimy lokálně:
+
+```bash
+ls ~/.claude/plugins/marketplaces/thedotmack/plugin/modes/
+```
+
+#### Dostupné režimy
+
+| Režim | Popis |
+|------------|-------------------------|
+| `code` | Výchozí anglický režim |
+| `code--zh` | Zjednodušená čínština |
+| `code--ja` | Japonština |
+
+Jazykově specifické režimy se řídí vzorem `code--[lang]`, kde `[lang]` je kód jazyka podle ISO 639-1 (např. `zh` pro čínštinu, `ja` pro japonštinu, `es` pro španělštinu).
+
+> Poznámka: `code--zh` (zjednodušená čínština) je již vestavěn — není potřeba žádná další instalace ani aktualizace pluginu.
+
+#### Po změně režimu
+
+Restartujte Claude Code, aby se použila nová konfigurace režimu.
 ---
 
 ## Vývoj
@@ -269,34 +384,48 @@ Příspěvky jsou vítány! Prosím:
 4. Aktualizujte dokumentaci
 5. Odešlete Pull Request
 
+Claude-Mem je vydáván ze tří větví: `main` (stabilní), `core-dev` a
+`community-edge`. Na npm je publikována pouze `main`; ostatní se spouštějí ze
+zdrojového kódu. Podrobnosti o strategii a pokyny ke spuštění lokálně najdete
+ve [Vydávacích větvích](https://docs.claude-mem.ai/branches).
+
 Pracovní postup pro přispívání najdete v [Průvodci vývojem](https://docs.claude-mem.ai/development).
 
 ---
 
-## License
+## Licence
 
-This project is licensed under the **Apache License 2.0** (Apache-2.0).
+Claude-Mem je licencován pod licencí Apache License 2.0.
 
-Copyright (C) 2025 Alex Newman (@thedotmack). All rights reserved.
+Zvolili jsme Apache-2.0, protože trvalá agentní paměť by měla být snadno
+vložitelná do vývojářských nástrojů, lokálních agentů, MCP serverů, podnikových
+systémů, robotických stacků a produkčních harnessů pro agenty.
 
-See the [LICENSE](LICENSE) file for full details.
+Úplné podrobnosti najdete v souboru [LICENSE](LICENSE). Viz [docs/license.md](docs/license.md)
+a [docs/ip-boundary.md](docs/ip-boundary.md) pro rozsah licencování a hranici
+mezi open source a komerčním využitím.
 
-Apache-2.0 allows broad use, modification, distribution, and commercial use, subject to its terms.
-
-**Ragtime note**: The ragtime/ directory is licensed under the **Apache License 2.0**. See [ragtime/LICENSE](ragtime/LICENSE) for details.
+**Poznámka k Ragtime**: Adresář `ragtime/` je licencován pod licencí **Apache License 2.0**. Podrobnosti najdete v [ragtime/LICENSE](ragtime/LICENSE).
 
 ---
-
 
 ## Podpora
 
 - **Dokumentace**: [docs/](docs/)
 - **Problémy**: [GitHub Issues](https://github.com/thedotmack/claude-mem/issues)
 - **Repositář**: [github.com/thedotmack/claude-mem](https://github.com/thedotmack/claude-mem)
+- **Oficiální účet X**: [@Claude_Memory](https://x.com/Claude_Memory)
+- **Oficiální Discord**: [Připojit se k Discordu](https://discord.com/invite/J4wttp9vDu)
 - **Autor**: Alex Newman ([@thedotmack](https://github.com/thedotmack))
 
 ---
 
-**Vytvořeno pomocí Claude Agent SDK** | **Poháněno Claude Code** | **Vyrobeno s TypeScript**
+**Vytvořeno pomocí Claude Agent SDK** | **Funguje s Claude Code** | **Vyrobeno s TypeScript**
 
 ---
+
+### Co je to CMEM?
+
+CMEM je token vytvořený třetí stranou, ale oficiálně přijatý tvůrcem Claude-Mem (Alex Newman, @thedotmack). Token funguje jako komunitní katalyzátor růstu a prostředek, jak přiblížit CMEM vývojářům a znalostním pracovníkům, kteří ho nejvíce potřebují.
+
+Oficiální BASE CA: 0x76b1967eec0ccaeb001bbbb2b40dc4badba31ba3

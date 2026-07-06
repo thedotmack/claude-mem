@@ -181,28 +181,6 @@ Search operations are provided via:
 - **HTTP API**: 10 endpoints on the worker service port (per-user, default `37700 + (uid % 100)`; see `~/.claude-mem/settings.json`)
 - **Auto-Invocation**: Claude recognizes natural language queries about past work
 
-## Version Channel
-
-Claude-Mem supports switching between stable and beta versions via the web viewer UI.
-
-### Accessing Version Channel
-
-1. Open the viewer at the worker URL (default `http://127.0.0.1:<worker-port>`; the active port is the value of `CLAUDE_MEM_WORKER_PORT` in `~/.claude-mem/settings.json`)
-2. Click the Settings gear icon
-3. Find the **Version Channel** section
-
-### Switching Versions
-
-- **Try Beta**: Click "Try Beta (Endless Mode)" to switch to the beta branch with experimental features
-- **Switch to Stable**: Click "Switch to Stable" to return to the production release
-- **Check for Updates**: Pull the latest changes for your current branch
-
-**Your memory data is preserved** when switching versions. Only the plugin code changes.
-
-<Note>
-Endless Mode is experimental and slower than standard mode. See [Beta Features](beta-features) for full details and important limitations.
-</Note>
-
 ## Worker Service Management
 
 Worker service is managed by Bun as a background process. The worker auto-starts on first session and runs continuously in the background.
@@ -223,7 +201,7 @@ Claude-Mem injects past observations into each new session, giving Claude awaren
 
 ### Context Settings Modal
 
-Access the settings modal from the web viewer (the worker prints its URL on startup; default is `http://127.0.0.1:<worker-port>`):
+Access the settings modal from the web viewer. The worker prints its URL on startup; the port comes from `CLAUDE_MEM_WORKER_PORT`.
 
 1. Click the **gear icon** in the header
 2. Adjust settings in the right panel
