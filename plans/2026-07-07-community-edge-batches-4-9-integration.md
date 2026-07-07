@@ -158,6 +158,11 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
   installers. The original Gemini CLI site is now Antigravity CLI on this
   branch, so the fix is applied to Cursor, Windsurf, and Antigravity hook
   command generation.
+- #2583: add the opt-in Claude Code PreCompact hook path. The distributed hook
+  is installed but inert unless `CLAUDE_MEM_PRECOMPACT_ENABLED` is `true` or
+  `1`; enabled hooks enqueue `pre-compact` summary work through the current
+  in-RAM message buffer, tier routing treats it as summary work, and all
+  providers route it through the summary prompt path.
 
 ### Batch 8
 
@@ -227,7 +232,7 @@ Batch 5: complete.
 
 Batch 6: complete.
 
-Batch 7: #2583.
+Batch 7: complete.
 
 Batch 8: #3114, #3047, #3011, #2905, #2904, #2858, #2770, #2741, #2506.
 
@@ -254,6 +259,11 @@ Batch 9: #2608.
 - `bun test tests/infrastructure/plugin-distribution.test.ts`
 - `bun run typecheck`
 - `bun run build`
+- `git diff --check`
+- `bun test tests/infrastructure/plugin-distribution.test.ts tests/cli/hook-io.test.ts tests/cli/hook-stream-discipline.test.ts tests/services/worker/session-message-buffer.test.ts tests/gemini_provider.test.ts tests/shared/openrouter-request-settings.test.ts tests/worker/codex-provider.test.ts`
+- `bun run typecheck`
+- `bun run lint:hook-io`
+- `bun run lint:spawn-env`
 - `git diff --check`
 - `bun run build`
 - `bun run lint:hook-io`

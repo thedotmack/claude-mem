@@ -2,7 +2,7 @@ import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt, type Observation } from '../../sdk/prompts.js';
-import type { ActiveSession, ConversationMessage } from '../worker-types.js';
+import type { ActiveSession, ConversationMessage, PendingMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import type { ModeConfig } from '../domain/types.js';
 import {
@@ -156,7 +156,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
       if (message.type === 'observation') {
         await this.processObservationMessage(session, message, worker, config, originalTimestamp, lastCwd);
-      } else if (message.type === 'summarize') {
+      } else if (message.type === 'summarize' || message.type === 'pre-compact') {
         await this.processSummaryMessage(session, message, worker, config, mode, originalTimestamp, lastCwd);
       }
     }
@@ -240,7 +240,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
   private async processSummaryMessage(
     session: ActiveSession,
-    message: { last_assistant_message?: string },
+    message: { type?: PendingMessage['type']; last_assistant_message?: string },
     worker: WorkerRef | undefined,
     config: TConfig,
     mode: ModeConfig,
@@ -261,7 +261,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
     session.conversationHistory.push({ role: 'user', content: summaryPrompt });
     session.lastPromptSentAt = Date.now();
-    session.lastGeneratorSource = 'summarize';
+    session.lastGeneratorSource = message.type === 'pre-compact' ? 'pre-compact' : 'summarize';
     const summaryResponse = await this.query(session.conversationHistory, config);
 
     let tokensUsed = 0;

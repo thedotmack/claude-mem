@@ -61,7 +61,7 @@ export interface ActiveSession {
 }
 
 export interface PendingMessage {
-  type: 'observation' | 'summarize';
+  type: 'observation' | 'summarize' | 'pre-compact';
   tool_name?: string;
   tool_input?: any;
   tool_response?: any;

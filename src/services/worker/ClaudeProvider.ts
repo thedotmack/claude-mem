@@ -588,7 +588,7 @@ export class ClaudeProvider {
           parent_tool_use_id: null,
           isSynthetic: true
         };
-      } else if (message.type === 'summarize') {
+      } else if (message.type === 'summarize' || message.type === 'pre-compact') {
         const summaryPrompt = buildSummaryPrompt({
           id: session.sessionDbId,
           memory_session_id: session.memorySessionId,
@@ -600,7 +600,7 @@ export class ClaudeProvider {
         session.conversationHistory.push({ role: 'user', content: summaryPrompt });
 
         session.lastPromptSentAt = Date.now();
-        session.lastGeneratorSource = 'summarize';
+        session.lastGeneratorSource = message.type;
         yield {
           type: 'user',
           message: {

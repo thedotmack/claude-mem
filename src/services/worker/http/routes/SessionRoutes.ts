@@ -300,6 +300,11 @@ export class SessionRoutes extends BaseRouteHandler {
       validateBody(SessionRoutes.summarizeByClaudeIdSchema),
       this.handleSummarizeByClaudeId.bind(this)
     );
+    app.post(
+      '/api/sessions/pre-compact',
+      validateBody(SessionRoutes.preCompactByClaudeIdSchema),
+      this.handlePreCompactByClaudeId.bind(this)
+    );
   }
 
   private static readonly sessionInitByClaudeIdSchema = z.object({
@@ -328,6 +333,13 @@ export class SessionRoutes extends BaseRouteHandler {
     last_assistant_message: z.string().optional(),
     agentId: z.string().optional(),
     platformSource: z.string().optional(),
+  }).passthrough();
+
+  private static readonly preCompactByClaudeIdSchema = z.object({
+    contentSessionId: z.string().min(1),
+    agentId: z.string().optional(),
+    platformSource: z.string().optional(),
+    cwd: z.string().optional(),
   }).passthrough();
 
   private handleObservationsByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
@@ -401,6 +413,39 @@ export class SessionRoutes extends BaseRouteHandler {
     await this.sessionManager.queueSummarize(sessionDbId, cleanedLastAssistantMessage);
 
     await this.ensureGeneratorRunning(sessionDbId, 'summarize');
+
+    this.eventBroadcaster.broadcastSummarizeQueued();
+
+    res.json({ status: 'queued' });
+  });
+
+  private handlePreCompactByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const { contentSessionId, agentId } = req.body;
+    const platformSource = this.getPlatformSourceFromRequest(req);
+
+    if (agentId) {
+      res.json({ status: 'skipped', reason: 'subagent_context' });
+      return;
+    }
+
+    const store = this.dbManager.getSessionStore();
+    const sessionDbId = store.createSDKSession(contentSessionId, '', '', undefined, platformSource);
+    const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId);
+
+    const privacy = PrivacyCheckValidator.checkUserPromptPrivacy(
+      store,
+      contentSessionId,
+      promptNumber,
+      'pre-compact',
+      sessionDbId
+    );
+    if (!privacy.allow) {
+      res.json({ status: 'skipped', reason: 'private' });
+      return;
+    }
+
+    await this.sessionManager.queuePreCompact(sessionDbId);
+    await this.ensureGeneratorRunning(sessionDbId, 'pre-compact');
 
     this.eventBroadcaster.broadcastSummarizeQueued();
 
@@ -601,7 +646,7 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
-    const hasSummarize = pending.some(m => m.message_type === 'summarize');
+    const hasSummarize = pending.some(m => m.message_type === 'summarize' || m.message_type === 'pre-compact');
     const allSimple = pending.every(m =>
       m.message_type === 'observation' && m.tool_name && SessionRoutes.SIMPLE_TOOLS.has(m.tool_name)
     );
