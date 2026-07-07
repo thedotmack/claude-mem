@@ -32,6 +32,7 @@ import { parsePostgresConfig } from '../../storage/postgres/config.js';
 import { PostgresAuthRepository } from '../../storage/postgres/auth.js';
 import { PostgresProjectsRepository } from '../../storage/postgres/projects.js';
 import { PostgresTeamsRepository } from '../../storage/postgres/teams.js';
+import { SETTINGS_FILE_MODE } from '../../shared/SettingsDefaultsManager.js';
 
 const LOCAL_HOOK_TEAM_NAME = 'local-hook-team';
 const LOCAL_HOOK_PROJECT_NAME = 'local-hook-project';
@@ -144,28 +145,42 @@ export function persistServerSettings(
       existing = {};
     }
   }
-  // Settings file format: prefer the flat shape (modern). The migration in
-  // SettingsDefaultsManager.loadFromFile already collapses nested → flat.
-  const flat = (existing.env && typeof existing.env === 'object'
+  // Preserve Claude-Code-style top-level peers (`hooks`, `permissions`, etc.)
+  // when settings are stored as `{ env: { ... } }`.
+  const target = (existing.env && typeof existing.env === 'object' && !Array.isArray(existing.env)
     ? existing.env
     : existing) as Record<string, unknown>;
 
   // Phase 1d: write the new canonical settings keys. Legacy
   // `CLAUDE_MEM_SERVER_BETA_*` keys are dual-accepted by reads in
   // `runtime-selector.ts`, so existing installs continue to work. Any
-  // legacy keys that already live in `flat` are left untouched (we don't
+  // legacy keys that already live in `target` are left untouched (we don't
   // delete them) so a downgrade can still find them.
-  flat.CLAUDE_MEM_SERVER_API_KEY = values.apiKey;
-  flat.CLAUDE_MEM_SERVER_PROJECT_ID = values.projectId;
+  target.CLAUDE_MEM_SERVER_API_KEY = values.apiKey;
+  target.CLAUDE_MEM_SERVER_PROJECT_ID = values.projectId;
   if (values.serverBaseUrl) {
-    flat.CLAUDE_MEM_SERVER_URL = values.serverBaseUrl;
+    target.CLAUDE_MEM_SERVER_URL = values.serverBaseUrl;
   }
 
-  writeFileSync(settingsPath, JSON.stringify(flat, null, 2), 'utf-8');
+  // When the file already exists, `writeFileSync(..., { mode })` does not
+  // tighten its permissions before replacing the contents. Restrict first so
+  // an existing 0644 settings file does not briefly expose the plaintext key.
+  if (existsSync(settingsPath)) {
+    try {
+      chmodSync(settingsPath, SETTINGS_FILE_MODE);
+    } catch {
+      // Non-POSIX filesystems may reject chmod; creation mode/final chmod remain.
+    }
+  }
+
+  writeFileSync(settingsPath, JSON.stringify(existing, null, 2), {
+    encoding: 'utf-8',
+    mode: SETTINGS_FILE_MODE,
+  });
   // Hooks read this file on every invocation; restrict permissions so other
   // local users cannot read the API key.
   try {
-    chmodSync(settingsPath, 0o600);
+    chmodSync(settingsPath, SETTINGS_FILE_MODE);
   } catch {
     // Non-POSIX filesystems may reject chmod; settings file remains readable.
   }

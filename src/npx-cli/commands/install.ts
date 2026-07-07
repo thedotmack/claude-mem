@@ -33,7 +33,16 @@ import {
 import { extractEresolveBlock, isEresolve, runNpmStrict } from '../install/npm-install-helper.js';
 
 function getSetting<K extends keyof SettingsDefaults>(key: K): SettingsDefaults[K] {
-  return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH)[key];
+  if (process.env[key] !== undefined) {
+    return process.env[key] as SettingsDefaults[K];
+  }
+  try {
+    const value = readFlatSettings(USER_SETTINGS_PATH)?.[key];
+    if (value !== undefined) return value as SettingsDefaults[K];
+  } catch {
+    // Optional settings may be absent or hand-edited invalid JSON; fall back to defaults.
+  }
+  return SettingsDefaultsManager.get(key);
 }
 
 const isInteractive = process.stdin.isTTY === true;
@@ -57,10 +66,11 @@ function detectInstallMethod(): string {
  * never starts. Missing binary or timeout → undefined (dropped by scrubber).
  */
 function readClaudeCodeVersionOutput(): string | undefined {
-  const result = spawnSync('claude', ['--version'], {
+  const command = IS_WINDOWS ? (process.env.ComSpec ?? 'cmd.exe') : 'claude';
+  const args = IS_WINDOWS ? ['/d', '/c', 'claude', '--version'] : ['--version'];
+  const result = spawnSync(command, args, {
     timeout: 5000,
     windowsHide: true,
-    shell: process.platform === 'win32',
     encoding: 'utf-8',
   });
   const output = (result.stdout ?? '').trim();
@@ -784,13 +794,21 @@ async function runNpmInstallInMarketplace(summary: InstallSummary): Promise<void
   }, summary);
 }
 
-function mergeSettings(updates: Record<string, string>): boolean {
-  const path = USER_SETTINGS_PATH;
+function settingsWriteTarget(settings: Record<string, unknown>): Record<string, unknown> {
+  return settings.env && typeof settings.env === 'object' && !Array.isArray(settings.env)
+    ? settings.env as Record<string, unknown>
+    : settings;
+}
+
+export function mergeSettings(updates: Record<string, string>, path = USER_SETTINGS_PATH): boolean {
   try {
     let current: Record<string, unknown> = {};
     if (existsSync(path)) {
       try {
-        current = { ...readFlatSettings(path) };
+        const parsed = JSON.parse(readFileSync(path, 'utf-8').replace(/^\uFEFF/, ''));
+        current = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+          ? parsed as Record<string, unknown>
+          : {};
       } catch (parseError: unknown) {
         console.warn('[install] Failed to parse existing settings.json, starting from empty:', parseError instanceof Error ? parseError.message : String(parseError));
         current = {};
@@ -802,8 +820,9 @@ function mergeSettings(updates: Record<string, string>): boolean {
       }
     }
 
+    const target = settingsWriteTarget(current);
     for (const [key, value] of Object.entries(updates)) {
-      current[key] = value;
+      target[key] = value;
     }
 
     writeSettingsFileSecure(path, current);

@@ -17,6 +17,17 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
   `~/.claude-mem/.env` only.
 - #2629: strip Bedrock/Vertex/Mantle routing and Anthropic default model env
   from isolated worker subprocess environments.
+- #2929: server runtime API-key persistence preserves Claude-Code-style
+  top-level settings peers and creates the settings file with owner-only mode.
+
+### Batch 5
+
+- #3046: Windows version/path probes use explicit `cmd.exe /d /c` only for
+  bare PATH commands, while absolute runtime paths spawn directly.
+- #2937: remove stale `plugin/scripts/worker-cli.js` distribution shim and
+  update tests/docs to reflect `worker-service.cjs` as the lifecycle entry.
+- #2928: installer settings merges preserve top-level peers when
+  `settings.json` uses `{ env: { ... }, hooks, permissions, ... }`.
 
 ### Batch 6
 
@@ -102,9 +113,9 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
 
 ## Still to integrate from Batches 4-9
 
-Batch 4: #2957, #2929.
+Batch 4: #2957.
 
-Batch 5: #3113, #3110, #3102, #3066, #3046, #2937, #2928, #2924, #2918, #2597,
+Batch 5: #3113, #3110, #3102, #3066, #2924, #2918, #2597,
 #2595.
 
 Batch 6: #3034, #3014, #3000, #2908, #2855, #2764, #2731, #2623, #2523.

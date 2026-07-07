@@ -7,7 +7,7 @@ import { existsSync, readFileSync } from 'fs';
  */
 export function readFlatSettings(path: string): Record<string, unknown> | null {
   if (!existsSync(path)) return null;
-  const raw = JSON.parse(readFileSync(path, 'utf-8'));
+  const raw = JSON.parse(readFileSync(path, 'utf-8').replace(/^\uFEFF/, ''));
   if (!raw || typeof raw !== 'object') return null;
   const record = raw as Record<string, unknown>;
   return (record.env && typeof record.env === 'object' ? record.env : record) as Record<string, unknown>;

@@ -13,6 +13,9 @@ export function ensureSettingsFileSecureMode(settingsPath: string): void {
 }
 
 export function writeSettingsFileSecure(settingsPath: string, settings: object): void {
+  if (existsSync(settingsPath)) {
+    ensureSettingsFileSecureMode(settingsPath);
+  }
   writeFileSync(settingsPath, JSON.stringify(settings, null, 2), {
     encoding: 'utf-8',
     mode: SETTINGS_FILE_MODE,
