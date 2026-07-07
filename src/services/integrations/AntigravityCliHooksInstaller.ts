@@ -82,7 +82,8 @@ function buildHookCommand(
   const escapedBunPath = bunPath.replace(/\\/g, '\\\\');
   const escapedWorkerPath = workerServicePath.replace(/\\/g, '\\\\');
 
-  return `"${escapedBunPath}" "${escapedWorkerPath}" hook antigravity-cli ${internalEvent}`;
+  const callOperator = process.platform === 'win32' ? '& ' : '';
+  return `${callOperator}"${escapedBunPath}" "${escapedWorkerPath}" hook antigravity-cli ${internalEvent}`;
 }
 
 function createHookGroup(hookCommand: string): AntigravityHookGroup {

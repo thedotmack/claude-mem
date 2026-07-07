@@ -154,6 +154,10 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
   budgets while keeping newest context in chronological order, Gemini now has
   matching context-limit defaults, and both providers log truncation without
   dropping the init prompt.
+- #2507: prefix Windows PowerShell hook commands with `& ` in Rule B
+  installers. The original Gemini CLI site is now Antigravity CLI on this
+  branch, so the fix is applied to Cursor, Windsurf, and Antigravity hook
+  command generation.
 
 ### Batch 8
 
@@ -223,7 +227,7 @@ Batch 5: complete.
 
 Batch 6: complete.
 
-Batch 7: #2583, #2507.
+Batch 7: #2583.
 
 Batch 8: #3114, #3047, #3011, #2905, #2904, #2858, #2770, #2741, #2506.
 
@@ -246,6 +250,10 @@ Batch 9: #2608.
 - `bun run typecheck`
 - `bun run lint:hook-io`
 - `bun run lint:spawn-env`
+- `git diff --check`
+- `bun test tests/infrastructure/plugin-distribution.test.ts`
+- `bun run typecheck`
+- `bun run build`
 - `git diff --check`
 - `bun run build`
 - `bun run lint:hook-io`

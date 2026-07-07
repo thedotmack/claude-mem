@@ -483,6 +483,18 @@ describe('Spawn-Contract Templating - Rule B installers bake absolute paths', ()
     });
   }
 
+  for (const file of [
+    'src/services/integrations/CursorHooksInstaller.ts',
+    'src/services/integrations/WindsurfHooksInstaller.ts',
+    'src/services/integrations/AntigravityCliHooksInstaller.ts',
+  ]) {
+    it(`${file} prefixes Windows PowerShell hook commands with the call operator`, () => {
+      const content = readFileSync(path.join(projectRoot, file), 'utf-8');
+      expect(content).toContain("process.platform === 'win32' ? '& ' : ''");
+      expect(content).toMatch(/return `\$\{callOperator\}"/);
+    });
+  }
+
   it('install-paths.ts centralizes the Rule B helpers', () => {
     const content = readFileSync(
       path.join(projectRoot, 'src/services/integrations/install-paths.ts'),
