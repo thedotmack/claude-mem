@@ -45,6 +45,14 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
   Setup hook force-clears/reinstalls stale `node_modules` and self-heals the
   marker only after a successful forced reinstall, preserving the actionable
   install hint on failure.
+- #2918: already contained by current branch. Runtime install verifies and
+  repairs the `tree-sitter-cli` executable after script-suppressed dependency
+  install, `isInstallCurrent` rejects stale caches with missing CLI binaries,
+  and smart-file-read resolves Windows `tree-sitter.exe` before falling back to
+  bare `tree-sitter`.
+- #2595: harden `scripts/sync-marketplace.cjs` with no-write dry runs, opt-in
+  rsync delete, preserved user-config excludes, and dry-run-safe Bun install
+  logging. The legacy bash sync script was already absent on this branch.
 
 ### Batch 6
 
@@ -132,7 +140,7 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
 
 Batch 4: #2957.
 
-Batch 5: #2924, #2918, #2597, #2595.
+Batch 5: #2924, #2597.
 
 Batch 6: #3034, #3014, #3000, #2908, #2855, #2764, #2731, #2623, #2523.
 

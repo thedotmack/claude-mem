@@ -143,6 +143,30 @@ describe('Install Non-TTY Support', () => {
       expect(gitignoreExcludeRegion).toContain('syncManagedFiles.has(line)');
     });
 
+    it('keeps marketplace sync deletes opt-in and preserves local user config', () => {
+      expect(syncMarketplaceSource).toContain('function deleteFlag()');
+      expect(syncMarketplaceSource).toContain("argv.includes('--force-delete')");
+      expect(syncMarketplaceSource).toContain("CLAUDE_MEM_SYNC_FORCE_DELETE === '1'");
+      expect(syncMarketplaceSource).toContain("return '--delete'");
+      expect(syncMarketplaceSource).toContain('PRESERVE_PATTERNS');
+      expect(syncMarketplaceSource).toContain("'secrets/***'");
+      expect(syncMarketplaceSource).toContain("'data/***'");
+      expect(syncMarketplaceSource).not.toContain('rsync -av --delete --exclude=.git');
+    });
+
+    it('makes marketplace sync dry-run preview every rsync phase and skip installs', () => {
+      expect(syncMarketplaceSource).toContain('function dryRunFlag()');
+      expect(syncMarketplaceSource).toContain('Marketplace sync preview:');
+      expect(syncMarketplaceSource).toContain('Cache (version ${version}) sync preview:');
+      expect(syncMarketplaceSource).toContain('--dry-run: skipping worker restart and bun installs');
+      expect(syncMarketplaceSource).toContain('const DRY_RUN = dryRunFlag();');
+      expect(syncMarketplaceSource).toContain('branch && branch !== \'main\' && !isForce && !DRY_RUN');
+      expect(syncMarketplaceSource.indexOf('const DRY_RUN = dryRunFlag();'))
+        .toBeLessThan(syncMarketplaceSource.indexOf('if (branch && branch !== \'main\''));
+      expect(syncMarketplaceSource.indexOf('if (DRY_RUN) {'))
+        .toBeLessThan(syncMarketplaceSource.indexOf("console.log('Running bun install in marketplace...')"));
+    });
+
     it('registers Codex against the durable marketplace directory', () => {
       expect(installSource).toContain('installCodexCli(marketplaceDirectory())');
     });

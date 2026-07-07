@@ -8,6 +8,49 @@ const os = require('os');
 const INSTALLED_PATH = path.join(os.homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
 const CACHE_BASE_PATH = path.join(os.homedir(), '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem');
 
+const PRESERVE_PATTERNS = [
+  '.env',
+  '.env.local',
+  '.env.*',
+  'docker-compose.override.yml',
+  'docker-compose.override.*.yml',
+  'secrets/',
+  'secrets/***',
+  'data/',
+  'data/***',
+  '.user-config/',
+  '.user-config/***',
+];
+
+function preserveExcludes() {
+  return PRESERVE_PATTERNS.map((pattern) => `--exclude=${JSON.stringify(pattern)}`).join(' ');
+}
+
+function buildDryRunCommand(rsyncCommand) {
+  return rsyncCommand.replace(/^rsync\s+-/, 'rsync --dry-run -');
+}
+
+function deleteFlag() {
+  const argv = process.argv.slice(2);
+  if (argv.includes('--force-delete') || process.env.CLAUDE_MEM_SYNC_FORCE_DELETE === '1') {
+    return '--delete';
+  }
+  return '';
+}
+
+function dryRunFlag() {
+  const argv = process.argv.slice(2);
+  return argv.includes('--dry-run') || argv.includes('-n');
+}
+
+function shouldShowPreview() {
+  const argv = process.argv.slice(2);
+  if (argv.includes('--non-interactive') || argv.includes('--no-preview')) {
+    return false;
+  }
+  return process.env.CLAUDE_MEM_SYNC_NO_PREVIEW !== '1';
+}
+
 function getCurrentBranch() {
   try {
     if (!existsSync(path.join(INSTALLED_PATH, '.git'))) {
@@ -42,10 +85,11 @@ function getGitignoreExcludes(basePath) {
     .join(' ');
 }
 
+const DRY_RUN = dryRunFlag();
 const branch = getCurrentBranch();
 const isForce = process.argv.includes('--force');
 
-if (branch && branch !== 'main' && !isForce) {
+if (branch && branch !== 'main' && !isForce && !DRY_RUN) {
   console.log('');
   console.log('\x1b[33m%s\x1b[0m', `WARNING: Installed plugin is on beta branch: ${branch}`);
   console.log('\x1b[33m%s\x1b[0m', 'Running rsync would overwrite beta code.');
@@ -70,20 +114,36 @@ function getPluginVersion() {
 }
 
 console.log('Syncing to marketplace...');
+if (DRY_RUN) {
+  console.log('\x1b[33m%s\x1b[0m', '--dry-run: previewing all rsync invocations; no marketplace writes will happen.');
+}
+
 try {
   const rootDir = path.join(__dirname, '..');
   const gitignoreExcludes = getGitignoreExcludes(rootDir);
+  const DELETE = deleteFlag();
 
-  execSync(
-    `rsync -av --delete --exclude=.git --exclude=bun.lock --exclude=package-lock.json --exclude=scripts/package.json --exclude=scripts/node_modules ${gitignoreExcludes} ./ ~/.claude/plugins/marketplaces/thedotmack/`,
-    { stdio: 'inherit' }
-  );
+  {
+    const cmdBase = `rsync -av ${DELETE} --exclude=.git --exclude=bun.lock --exclude=package-lock.json --exclude=scripts/package.json --exclude=scripts/node_modules ${gitignoreExcludes} ${preserveExcludes()} ./ ~/.claude/plugins/marketplaces/thedotmack/`;
+    if (DRY_RUN) {
+      console.log('\x1b[36m%s\x1b[0m', 'Marketplace sync preview:');
+      execSync(buildDryRunCommand(cmdBase), { stdio: 'inherit' });
+    } else {
+      if (shouldShowPreview() && DELETE) {
+        console.log('\x1b[36m%s\x1b[0m', 'Preview (would-delete items below). Pass --non-interactive to skip:');
+        execSync(buildDryRunCommand(cmdBase), { stdio: 'inherit' });
+      }
+      execSync(cmdBase, { stdio: 'inherit' });
+    }
+  }
 
-  console.log('Running bun install in marketplace...');
-  execSync(
-    'cd ~/.claude/plugins/marketplaces/thedotmack/ && bun install',
-    { stdio: 'inherit' }
-  );
+  if (!DRY_RUN) {
+    console.log('Running bun install in marketplace...');
+    execSync(
+      'cd ~/.claude/plugins/marketplaces/thedotmack/ && bun install',
+      { stdio: 'inherit' }
+    );
+  }
 
   const version = getPluginVersion();
   const CACHE_VERSION_PATH = path.join(CACHE_BASE_PATH, version);
@@ -92,13 +152,29 @@ try {
   const pluginGitignoreExcludes = getGitignoreExcludes(pluginDir);
 
   console.log(`Syncing to cache folder (version ${version})...`);
-  execSync(
-    `rsync -av --delete --exclude=.git ${pluginGitignoreExcludes} plugin/ "${CACHE_VERSION_PATH}/"`,
-    { stdio: 'inherit' }
-  );
+  {
+    const cmdBase = `rsync -av ${DELETE} --exclude=.git ${pluginGitignoreExcludes} ${preserveExcludes()} plugin/ "${CACHE_VERSION_PATH}/"`;
+    if (DRY_RUN) {
+      console.log('\x1b[36m%s\x1b[0m', `Cache (version ${version}) sync preview:`);
+      execSync(buildDryRunCommand(cmdBase), { stdio: 'inherit' });
+    } else {
+      if (shouldShowPreview() && DELETE) {
+        console.log('\x1b[36m%s\x1b[0m', `Preview (cache ${version} would-delete):`);
+        execSync(buildDryRunCommand(cmdBase), { stdio: 'inherit' });
+      }
+      execSync(cmdBase, { stdio: 'inherit' });
+    }
+  }
 
-  console.log(`Running bun install in cache folder (version ${version})...`);
-  execSync(`bun install`, { cwd: CACHE_VERSION_PATH, stdio: 'inherit' });
+  if (!DRY_RUN) {
+    console.log(`Running bun install in cache folder (version ${version})...`);
+    execSync(`bun install`, { cwd: CACHE_VERSION_PATH, stdio: 'inherit' });
+  }
+
+  if (DRY_RUN) {
+    console.log('\x1b[33m%s\x1b[0m', '--dry-run: skipping worker restart and bun installs. No marketplace writes happened.');
+    process.exit(0);
+  }
 
   console.log('\x1b[32m%s\x1b[0m', 'Sync complete!');
 
