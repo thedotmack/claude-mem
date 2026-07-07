@@ -106,6 +106,10 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
   init/observation writes, passing the first user message as the session prompt,
   reading the worker port from settings when OpenCode has no inherited env, and
   registering the claude-mem MCP server during OpenCode install.
+- #2731: integrate the separable corpus filter fixes. `build_corpus` now accepts
+  the advertised `dateStart`/`dateEnd` camelCase filters, and corpus
+  observation type filters route through `obs_type` instead of the search
+  `type` discriminator.
 
 ### Batch 7
 
@@ -160,6 +164,10 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
 - #2833: transcript backfill can spend provider tokens; requires product and
   cost controls review.
 - #2877: broad directory refactor; should not be mixed with behavior integration.
+- #2731 UDS daemon pipeline and broad MCP documentation rewrite: held because
+  the daemon is a new optional hook runtime and should be reviewed as a
+  dedicated performance feature; the corpus data-loss fixes from this PR are
+  integrated above.
 
 ## Still to integrate from Batches 4-9
 
@@ -167,7 +175,7 @@ Batch 4: complete.
 
 Batch 5: complete.
 
-Batch 6: #3034, #2908, #2764, #2731, #2623, #2523.
+Batch 6: #3034, #2908, #2764, #2623, #2523.
 
 Batch 7: #3033, #3009, #2980, #2921, #2917, #2895, #2892, #2885, #2739, #2583,
 #2507.

@@ -149,6 +149,22 @@ describe('CorpusRoutes Type Coercion', () => {
     });
   });
 
+  it('accepts camelCase date filters advertised by the MCP tool', async () => {
+    const { req, res } = createMockReqRes({
+      name: 'camel-dates',
+      dateStart: '2026-05-01',
+      dateEnd: '2026-06-01',
+    });
+
+    handler(req as Request, res as Response);
+    await flushPromises();
+
+    expect(mockBuild).toHaveBeenCalledWith('camel-dates', '', {
+      date_start: '2026-05-01',
+      date_end: '2026-06-01',
+    });
+  });
+
   it('rejects invalid array items before calling CorpusBuilder', async () => {
     const { req, res, statusSpy } = createMockReqRes({
       name: 'bad-array',

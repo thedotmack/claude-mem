@@ -24,7 +24,7 @@ export class CorpusBuilder {
 
     const searchArgs: Record<string, unknown> = {};
     if (filter.project) searchArgs.project = filter.project;
-    if (filter.types && filter.types.length > 0) searchArgs.type = filter.types.join(',');
+    if (filter.types && filter.types.length > 0) searchArgs.obs_type = filter.types.join(',');
     if (filter.concepts && filter.concepts.length > 0) searchArgs.concepts = filter.concepts.join(',');
     if (filter.files && filter.files.length > 0) searchArgs.files = filter.files.join(',');
     if (filter.query) searchArgs.query = filter.query;
