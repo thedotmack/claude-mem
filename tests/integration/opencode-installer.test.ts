@@ -7,6 +7,7 @@ import {
   deregisterOpenCodePluginFromConfig,
   getOpenCodeConfigPath,
   removeOpenCodePluginReference,
+  registerOpenCodeMCPServer,
   registerOpenCodePluginInConfig,
 } from '../../src/services/integrations/OpenCodeInstaller.js';
 
@@ -90,6 +91,25 @@ describe('OpenCode installer config registration', () => {
     const config = JSON.parse(readFileSync(getOpenCodeConfigPath(), 'utf-8'));
     expect(config.plugin).toEqual(['context-mode', './plugins/claude-mem.js']);
     expect(config.provider).toEqual({ openai: { models: {} } });
+  });
+
+  it('registers the claude-mem MCP server while preserving existing MCP entries', () => {
+    writeFileSync(getOpenCodeConfigPath(), JSON.stringify({
+      $schema: 'https://opencode.ai/config.json',
+      mcp: {
+        context7: { type: 'local', command: ['node', 'context7.js'], enabled: true },
+      },
+    }), 'utf-8');
+
+    const result = registerOpenCodeMCPServer();
+
+    expect(result).toBe(0);
+    const config = JSON.parse(readFileSync(getOpenCodeConfigPath(), 'utf-8'));
+    expect(config.mcp.context7).toEqual({ type: 'local', command: ['node', 'context7.js'], enabled: true });
+    expect(config.mcp['claude-mem'].type).toBe('local');
+    expect(config.mcp['claude-mem'].command[0]).toBe(process.execPath);
+    expect(config.mcp['claude-mem'].command[1]).toContain('mcp-server.cjs');
+    expect(config.mcp['claude-mem'].enabled).toBe(true);
   });
 
   it('removes the plugin reference from opencode.json during deregistration', () => {

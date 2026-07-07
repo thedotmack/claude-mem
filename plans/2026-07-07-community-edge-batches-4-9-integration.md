@@ -96,6 +96,16 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
 - #2826: write Antigravity MCP config to the shared Gemini config path used by
   current Antigravity integration.
 - #2810: ignore Codex/internal system prompts before session creation.
+- #3000: already contained by current branch. Antigravity CLI hooks route
+  through `hook antigravity-cli`, use the shared Gemini config tree, register
+  MCP via the shared helpers, and normalize Antigravity CLI payloads through the
+  dedicated adapter.
+- #3014/#2855: update the OpenCode plugin for the current contract by exporting
+  the required `id: "claude-mem"` descriptor, reading tool args and
+  `chat.message` session IDs from OpenCode input payloads, awaiting worker
+  init/observation writes, passing the first user message as the session prompt,
+  reading the worker port from settings when OpenCode has no inherited env, and
+  registering the claude-mem MCP server during OpenCode install.
 
 ### Batch 7
 
@@ -157,7 +167,7 @@ Batch 4: complete.
 
 Batch 5: complete.
 
-Batch 6: #3034, #3014, #3000, #2908, #2855, #2764, #2731, #2623, #2523.
+Batch 6: #3034, #2908, #2764, #2731, #2623, #2523.
 
 Batch 7: #3033, #3009, #2980, #2921, #2917, #2895, #2892, #2885, #2739, #2583,
 #2507.
