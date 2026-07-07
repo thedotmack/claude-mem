@@ -30,6 +30,7 @@ function probeVersion(bin: string): string | null {
     const result = spawnSync(command, args, {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
     });
     return result.status === 0 ? result.stdout.trim() : null;
   } catch (error) {

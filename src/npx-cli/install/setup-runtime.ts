@@ -78,6 +78,7 @@ function probeVersionCommand(command: string): SpawnSyncReturns<string> {
   return spawnSync(resolved.command, resolved.args, {
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
   });
 }
 

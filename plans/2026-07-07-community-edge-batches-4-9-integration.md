@@ -132,6 +132,12 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
   attempt conservative reclaim only after proving the listener is claude-mem
   owned, and the default worker-unreachable fail-loud threshold is raised from
   3 to 10 to avoid multi-window paralysis during recovery.
+- #2921: carry `windowsHide: true` through remaining live Windows spawn probes
+  and launchers for cwd remap git probes, worktree adoption git probes, the MCP
+  node launcher template, server runtime daemon launch, worker-to-server CLI
+  launch, and current npx doctor/setup runtime probes. The old
+  `src/npx-cli/utils/bun-resolver.ts` site from the PR no longer exists on this
+  branch.
 
 ### Batch 8
 
@@ -201,7 +207,7 @@ Batch 5: complete.
 
 Batch 6: complete.
 
-Batch 7: #2921, #2917, #2892, #2885, #2739, #2583,
+Batch 7: #2917, #2892, #2885, #2739, #2583,
 #2507.
 
 Batch 8: #3114, #3047, #3011, #2905, #2904, #2858, #2770, #2741, #2506.
@@ -220,6 +226,12 @@ Batch 9: #2608.
 - `npm run typecheck`
 - `bun test tests/json-utils.test.ts tests/shared/settings-defaults-manager.test.ts tests/settings-routes-claude-token-validation.test.ts`
 - `bun test tests/json-utils.test.ts tests/shared/settings-defaults-manager.test.ts tests/settings-routes-claude-token-validation.test.ts tests/install-settings-preservation.test.ts tests/infrastructure/plugin-distribution.test.ts tests/integrations/opencode-plugin-contract.test.ts`
+- `bun run typecheck`
+- `bun run build`
+- `bun run lint:hook-io`
+- `bun run lint:spawn-env`
+- `git diff --check`
+- `bun test tests/infrastructure/windows-hide-regressions.test.ts tests/infrastructure/plugin-distribution.test.ts tests/infrastructure/process-manager.test.ts`
 - `bun run typecheck`
 - `bun run build`
 - `bun run lint:hook-io`
