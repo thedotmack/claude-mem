@@ -127,6 +127,11 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
   settings readers, including defaults loading, HTTP settings updates, path
   resolution, logger startup, plugin disabled-state checks, npx/server settings
   helpers, and the OpenCode plugin worker-port reader.
+- #3009/#2980/#2895: reconcile stale worker-port cleanup. Port-in-use checks
+  now probe real socket bindability on every platform, unhealthy bound ports
+  attempt conservative reclaim only after proving the listener is claude-mem
+  owned, and the default worker-unreachable fail-loud threshold is raised from
+  3 to 10 to avoid multi-window paralysis during recovery.
 
 ### Batch 8
 
@@ -196,7 +201,7 @@ Batch 5: complete.
 
 Batch 6: complete.
 
-Batch 7: #3009, #2980, #2921, #2917, #2895, #2892, #2885, #2739, #2583,
+Batch 7: #2921, #2917, #2892, #2885, #2739, #2583,
 #2507.
 
 Batch 8: #3114, #3047, #3011, #2905, #2904, #2858, #2770, #2741, #2506.
@@ -215,6 +220,13 @@ Batch 9: #2608.
 - `npm run typecheck`
 - `bun test tests/json-utils.test.ts tests/shared/settings-defaults-manager.test.ts tests/settings-routes-claude-token-validation.test.ts`
 - `bun test tests/json-utils.test.ts tests/shared/settings-defaults-manager.test.ts tests/settings-routes-claude-token-validation.test.ts tests/install-settings-preservation.test.ts tests/infrastructure/plugin-distribution.test.ts tests/integrations/opencode-plugin-contract.test.ts`
+- `bun run typecheck`
+- `bun run build`
+- `bun run lint:hook-io`
+- `bun run lint:spawn-env`
+- `git diff --check`
+- `bun test tests/cli/kiro-never-block.test.ts tests/shared/worker-autostart-flag.test.ts tests/infrastructure/health-monitor.test.ts tests/services/worker-spawner-stale-socket.test.ts tests/services/worker-spawner.test.ts tests/infrastructure/process-manager.test.ts`
+- `bun test tests/infrastructure/plugin-distribution.test.ts tests/cli/kiro-never-block.test.ts tests/shared/worker-autostart-flag.test.ts tests/infrastructure/health-monitor.test.ts tests/services/worker-spawner-stale-socket.test.ts tests/services/worker-spawner.test.ts tests/infrastructure/process-manager.test.ts`
 - `bun run typecheck`
 - `bun run build`
 - `bun run lint:hook-io`

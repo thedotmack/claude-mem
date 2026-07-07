@@ -7,6 +7,7 @@ import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import {
   cleanStalePidFile,
   getPlatformTimeout,
+  reclaimStaleWorkerPort,
   spawnDaemon,
   touchPidFile,
 } from './infrastructure/ProcessManager.js';
@@ -121,18 +122,20 @@ export async function ensureWorkerStarted(
       logger.info('SYSTEM', 'Worker is now healthy');
       return ready ? 'ready' : 'warming';
     }
-    logger.error('SYSTEM', 'Port in use but worker not responding to health checks');
-    return 'dead';
+    const reclaimed = await reclaimStaleWorkerPort(port);
+    if (!reclaimed) {
+      logger.error('SYSTEM', 'Port in use but worker not responding and reclaim failed');
+      return 'dead';
+    }
+    clearWorkerSpawnAttempted();
   }
 
-  // The port is not owned by a healthy worker (checked above). Before spawning a
-  // detached daemon, verify the port can actually be bound — here, in the
-  // user-facing parent, where a failure is visible. A stale/orphaned LISTEN
-  // socket (common on Windows after an unclean exit — it can outlive its dead
-  // PID) leaves the port un-bindable while isPortInUse() (health-based) reports
-  // it free. Spawning into that just yields a daemon that hits EADDRINUSE and
-  // exits in the background while this parent reports 'warming', so the failure
-  // stays invisible. Detect it here and surface it as a real 'dead' result.
+  // Before spawning a detached daemon, verify the port can actually be bound —
+  // here, in the user-facing parent, where a failure is visible. A stale or
+  // unrelated LISTEN socket would otherwise make the daemon hit EADDRINUSE and
+  // exit in the background while this parent reports 'warming'. Detect it here
+  // and either reclaim a proven stale claude-mem worker or surface a real
+  // 'dead' result.
   const workerHost = getWorkerHost();
   let bindProbe = await probePortBind(port, workerHost);
   if (bindProbe === 'EADDRINUSE') {
@@ -149,6 +152,13 @@ export async function ensureWorkerStarted(
         return ready ? 'ready' : 'warming';
       }
       bindProbe = await probePortBind(port, workerHost);
+    }
+    if (bindProbe === 'EADDRINUSE') {
+      const reclaimed = await reclaimStaleWorkerPort(port);
+      if (reclaimed) {
+        clearWorkerSpawnAttempted();
+        bindProbe = await probePortBind(port, workerHost);
+      }
     }
     if (bindProbe === 'EADDRINUSE') {
       logger.error('SYSTEM',

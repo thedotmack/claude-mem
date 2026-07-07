@@ -9,6 +9,8 @@ import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { removeOwnedPidFile } from '../../supervisor/shutdown.js';
 import { getSupervisor, validateWorkerPidFile, type ValidateWorkerPidStatus } from '../../supervisor/index.js';
 import { paths } from '../../shared/paths.js';
+import { HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
+import { waitForPortFree } from './HealthMonitor.js';
 
 const DATA_DIR = paths.dataDir();
 const PID_FILE = paths.workerPid();
@@ -409,4 +411,117 @@ export function touchPidFile(): void {
 
 export function cleanStalePidFile(): ValidateWorkerPidStatus {
   return validateWorkerPidFile({ logAlive: false, pidFilePath: PID_FILE });
+}
+
+function runCommand(command: string, args: string[], timeoutMs: number): string | null {
+  const result = spawnSync(command, args, {
+    encoding: 'utf-8',
+    timeout: timeoutMs,
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  if (result.status !== 0) return null;
+  return (result.stdout ?? '').trim();
+}
+
+async function findPortOwnerPid(port: number): Promise<number | null> {
+  if (!Number.isInteger(port) || port <= 0) return null;
+
+  try {
+    const output = process.platform === 'win32'
+      ? runCommand('powershell', [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          `(Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1).OwningProcess`,
+        ], HOOK_TIMEOUTS.POWERSHELL_COMMAND)
+      : runCommand('lsof', ['-ti', `tcp:${port}`, '-sTCP:LISTEN'], 5000);
+    const pid = parseInt((output?.split(/\r?\n/)[0] ?? '').trim(), 10);
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch (error: unknown) {
+    logger.debug('SYSTEM', 'Could not determine port owner PID', { port },
+      error instanceof Error ? error : new Error(String(error)));
+    return null;
+  }
+}
+
+async function getProcessCommandLine(pid: number): Promise<string | null> {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+
+  try {
+    if (process.platform === 'win32') {
+      return runCommand('powershell', [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" -ErrorAction SilentlyContinue).CommandLine`,
+      ], HOOK_TIMEOUTS.POWERSHELL_COMMAND);
+    }
+    return runCommand('ps', ['-p', String(pid), '-o', 'command='], 5000);
+  } catch (error: unknown) {
+    logger.debug('SYSTEM', 'Could not read process command line', { pid },
+      error instanceof Error ? error : new Error(String(error)));
+    return null;
+  }
+}
+
+function isOwnedByClaudeMem(pid: number, commandLine: string | null): boolean {
+  const pidFile = readPidFile();
+  if (pidFile?.pid === pid && verifyPidFileOwnership(pidFile)) return true;
+  return Boolean(commandLine && /worker-service|claude-mem/i.test(commandLine));
+}
+
+async function terminateProcess(pid: number): Promise<boolean> {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    if (process.platform === 'win32') {
+      const result = spawnSync('taskkill', ['/F', '/T', '/PID', String(pid)], {
+        encoding: 'utf-8',
+        timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND,
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      return result.status === 0;
+    }
+    process.kill(pid, 'SIGKILL');
+    return true;
+  } catch (error: unknown) {
+    logger.warn('SYSTEM', 'Failed to terminate process', { pid },
+      error instanceof Error ? error : new Error(String(error)));
+    return false;
+  }
+}
+
+/**
+ * Reclaim a port only when it is held by a proven claude-mem worker.
+ *
+ * This handles the stale-listener case without killing unrelated processes:
+ * the owner must match the guarded worker PID file or have a claude-mem worker
+ * command-line marker. The function returns true only after the port is free.
+ */
+export async function reclaimStaleWorkerPort(port: number): Promise<boolean> {
+  const pid = await findPortOwnerPid(port);
+  if (pid === null) {
+    logger.warn('SYSTEM', 'Port held but owning PID could not be determined — not reclaiming', { port });
+    return false;
+  }
+
+  const commandLine = await getProcessCommandLine(pid);
+  if (!isOwnedByClaudeMem(pid, commandLine)) {
+    logger.error('SYSTEM', 'Port held by a non-claude-mem process — refusing to kill', { port, pid, commandLine });
+    return false;
+  }
+
+  logger.warn('SYSTEM', 'Reclaiming port from unresponsive claude-mem worker', { port, pid });
+  if (!(await terminateProcess(pid))) return false;
+
+  const freed = await waitForPortFree(port, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
+  if (!freed) {
+    logger.error('SYSTEM', 'Terminated stale worker but port did not free in time', { port, pid });
+    return false;
+  }
+
+  removePidFile();
+  logger.info('SYSTEM', 'Stale worker terminated and port reclaimed', { port, pid });
+  return true;
 }

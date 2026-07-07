@@ -54,14 +54,14 @@ describe('recordWorkerUnreachable on Kiro', () => {
     setActivePlatform('kiro');
     const stderr = captureRealStderr();
     try {
-      // Default threshold is 3; go well past it. On non-kiro platforms the
+      // Default threshold is 10; go past it. On non-kiro platforms the
       // threshold call would process.exit(2) — this test COMPLETING past the
       // threshold is the invariant under test.
       let count = 0;
-      for (let i = 0; i < 5; i++) {
+      for (let i = 0; i < 11; i++) {
         count = await recordWorkerUnreachable();
       }
-      expect(count).toBe(5);
+      expect(count).toBe(11);
     } finally {
       stderr.restore();
     }
@@ -70,7 +70,7 @@ describe('recordWorkerUnreachable on Kiro', () => {
     expect(all).toContain('worker unreachable');
 
     const persisted = JSON.parse(readFileSync(FAILURE_STATE_PATH, 'utf-8'));
-    expect(persisted.consecutiveFailures).toBe(5);
+    expect(persisted.consecutiveFailures).toBe(11);
   });
 });
 

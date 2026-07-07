@@ -26,34 +26,7 @@ async function httpRequestToWorker(
 }
 
 export async function isPortInUse(port: number): Promise<boolean> {
-  if (process.platform === 'win32') {
-    try {
-      const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}/api/health`);
-      return response.ok;
-    } catch (error) {
-      if (error instanceof Error) {
-        logger.debug('SYSTEM', 'Windows health check failed (port not in use)', {}, error);
-      } else {
-        logger.debug('SYSTEM', 'Windows health check failed (port not in use)', { error: String(error) });
-      }
-      return false;
-    }
-  }
-
-  return new Promise((resolve) => {
-    const server = net.createServer();
-    server.once('error', (err: NodeJS.ErrnoException) => {
-      if (err.code === 'EADDRINUSE') {
-        resolve(true);
-      } else {
-        resolve(false);
-      }
-    });
-    server.once('listening', () => {
-      server.close(() => resolve(false));
-    });
-    server.listen(port, getWorkerHost());
-  });
+  return (await probePortBind(port, getWorkerHost())) === 'EADDRINUSE';
 }
 
 /**
@@ -61,11 +34,9 @@ export async function isPortInUse(port: number): Promise<boolean> {
  * successful bind, otherwise the failing error code (e.g. `'EADDRINUSE'`,
  * `'EADDRNOTAVAIL'`, `'EACCES'`).
  *
- * This differs from isPortInUse() in an important way. On Windows isPortInUse()
- * is health-based — it only asks whether a *healthy* worker answers /api/health
- * — so it cannot see a port that is bound at the OS level with nothing serving
- * behind it. That happens when a worker exits uncleanly and leaves a stale,
- * orphaned LISTEN socket that can outlive its now-dead PID.
+ * isPortInUse() answers the common boolean version of the same bindability
+ * question. This lower-level helper preserves the exact bind failure so callers
+ * can distinguish a stale/orphaned listener from configuration errors.
  *
  * Returning the error code (rather than a bare boolean) lets callers keep the
  * three outcomes distinct: bindable (`null`), held by something (`'EADDRINUSE'`
