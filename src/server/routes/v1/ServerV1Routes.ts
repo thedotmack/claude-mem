@@ -4,7 +4,7 @@ import type { Application, Request, Response } from 'express';
 import type { Database } from 'bun:sqlite';
 import { z, type ZodTypeAny } from 'zod';
 import type { RouteHandler } from '../../../services/server/Server.js';
-import { CreateAgentEventSchema } from '../../../core/schemas/agent-event.js';
+import { CreateAgentEventSchema, type AgentEvent } from '../../../core/schemas/agent-event.js';
 import { CreateMemoryItemSchema } from '../../../core/schemas/memory-item.js';
 import { CreateProjectSchema } from '../../../core/schemas/project.js';
 import { CreateServerSessionSchema } from '../../../core/schemas/session.js';
@@ -16,6 +16,7 @@ import {
   ServerSessionsRepository,
 } from '../../../storage/sqlite/index.js';
 import { requireServerAuth } from '../../middleware/auth.js';
+import { buildAdvisorCallView } from '../../../shared/advisor-call-view.js';
 
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 const BUILT_IN_VERSION = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined'
@@ -46,6 +47,16 @@ function hasSearchableContent(body: {
     (Array.isArray(body.facts) && body.facts.some(hasText)) ||
     (Array.isArray(body.concepts) && body.concepts.some(hasText))
   );
+}
+
+function toAdvisorCallView(event: AgentEvent): Record<string, unknown> {
+  return buildAdvisorCallView(event.payload, {
+    id: event.id,
+    project: event.projectId,
+    occurredAtEpoch: event.occurredAtEpoch,
+    contentSessionId: event.contentSessionId,
+    platformSourceFallback: event.platformSource,
+  });
 }
 
 export interface ServerV1RoutesOptions {
@@ -250,6 +261,20 @@ export class ServerV1Routes implements RouteHandler {
       this.audit(req, 'memory.context', null, body.projectId);
       res.json({ memories, context: memories.map(memory => memory.narrative ?? memory.text ?? memory.title).filter(Boolean).join('\n\n') });
     }));
+
+    app.get('/v1/advisor-calls', readAuth, (req, res) => {
+      const projectId = String(req.query.projectId ?? '');
+      if (!projectId) {
+        res.status(400).json({ error: 'ValidationError', message: 'projectId query parameter is required' });
+        return;
+      }
+      if (!this.ensureProjectAllowed(req, res, projectId)) return;
+      // Clamp to [1, 500]: a negative LIMIT means "no limit" in SQLite.
+      const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? '100'), 10) || 100, 1), 500);
+      const events = new AgentEventsRepository(this.options.getDatabase()).listAdvisorCalls(projectId, limit);
+      this.audit(req, 'advisor_call.list', null, projectId);
+      res.json({ advisorCalls: events.map(toAdvisorCallView) });
+    });
 
     app.get('/v1/audit', readAuth, (req, res) => {
       const projectId = String(req.query.projectId ?? '');

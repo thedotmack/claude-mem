@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from 'react';
-import { Observation, Summary, UserPrompt } from '../types';
+import { Observation, Summary, UserPrompt, AdvisorCall } from '../types';
 import { UI } from '../constants/ui';
 import { API_ENDPOINTS } from '../constants/api';
 
@@ -8,8 +8,8 @@ interface PaginationState {
   hasMore: boolean;
 }
 
-type DataType = 'observations' | 'summaries' | 'prompts';
-type DataItem = Observation | Summary | UserPrompt;
+type DataType = 'observations' | 'summaries' | 'prompts' | 'advisorCalls';
+type DataItem = Observation | Summary | UserPrompt | AdvisorCall;
 
 function usePaginationFor<TItem extends DataItem>(endpoint: string, dataType: DataType, currentFilter: string) {
   const [state, setState] = useState<PaginationState>({
@@ -85,10 +85,12 @@ export function usePagination(currentFilter: string) {
   const observations = usePaginationFor<Observation>(API_ENDPOINTS.OBSERVATIONS, 'observations', currentFilter);
   const summaries = usePaginationFor<Summary>(API_ENDPOINTS.SUMMARIES, 'summaries', currentFilter);
   const prompts = usePaginationFor<UserPrompt>(API_ENDPOINTS.PROMPTS, 'prompts', currentFilter);
+  const advisorCalls = usePaginationFor<AdvisorCall>(API_ENDPOINTS.ADVISOR_CALLS, 'advisorCalls', currentFilter);
 
   return {
     observations,
     summaries,
-    prompts
+    prompts,
+    advisorCalls
   };
 }

@@ -79,4 +79,26 @@ export class AgentEventsRepository {
     `).all(projectId, limit) as AgentEventRow[];
     return rows.map(mapAgentEventRow);
   }
+
+  /**
+   * `advisor` tool calls are `tool_use` agent_events whose payload names that
+   * tool (recorded by the Stop hook's transcript scan — the advisor is a
+   * server-side tool that never fires PostToolUse). agent_events is already
+   * durable, so filtering is enough — no separate table. Unlike the Postgres
+   * repo, create() here has no idempotency key, so a re-fired hook can insert
+   * the same call twice; GROUP BY the payload's toolUseId collapses those at
+   * read time (rows without a toolUseId fall back to their own id).
+   */
+  listAdvisorCalls(projectId: string, limit = 100): AgentEvent[] {
+    const rows = this.db.prepare(`
+      SELECT *, MIN(created_at_epoch) FROM agent_events
+      WHERE project_id = ?
+        AND event_type = 'tool_use'
+        AND json_extract(payload, '$.tool_name') = 'advisor'
+      GROUP BY COALESCE(json_extract(payload, '$.toolUseId'), id)
+      ORDER BY occurred_at_epoch DESC
+      LIMIT ?
+    `).all(projectId, limit) as AgentEventRow[];
+    return rows.map(mapAgentEventRow);
+  }
 }

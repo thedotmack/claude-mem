@@ -137,6 +137,31 @@ export class PostgresAgentEventsRepository {
     );
     return result.rows.map(mapAgentEventRow);
   }
+
+  /**
+   * `advisor` tool calls are `tool_use` agent_events whose payload names that
+   * tool — agent_events is already durable (unlike the classic worker's
+   * in-RAM tool-use buffer), so filtering is enough; no separate table.
+   */
+  async listAdvisorCalls(input: {
+    projectId: string;
+    teamId: string;
+    limit?: number;
+  }): Promise<PostgresAgentEvent[]> {
+    const result = await this.client.query<AgentEventRow>(
+      `
+        SELECT * FROM agent_events
+        WHERE project_id = $1
+          AND team_id = $2
+          AND event_type = 'tool_use'
+          AND payload->>'tool_name' = 'advisor'
+        ORDER BY occurred_at DESC
+        LIMIT $3
+      `,
+      [input.projectId, input.teamId, input.limit ?? 100]
+    );
+    return result.rows.map(mapAgentEventRow);
+  }
 }
 
 export function buildAgentEventIdempotencyKey(input: {
