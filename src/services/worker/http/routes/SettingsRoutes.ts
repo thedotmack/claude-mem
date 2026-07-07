@@ -16,6 +16,7 @@ import {
 } from '../../../../shared/openrouter-request-settings.js';
 import { clearPortCache } from '../../../../shared/worker-utils.js';
 import { snapshotDependencyHealth } from '../../../../shared/dependency-health.js';
+import { stripBom } from '../../../../utils/json-utils.js';
 
 const toggleMcpSchema = z.object({
   enabled: z.boolean(),
@@ -65,7 +66,7 @@ export class SettingsRoutes extends BaseRouteHandler {
     if (existsSync(settingsPath)) {
       const settingsData = readFileSync(settingsPath, 'utf-8');
       try {
-        settings = JSON.parse(settingsData);
+        settings = JSON.parse(stripBom(settingsData));
       } catch (parseError) {
         const normalizedParseError = parseError instanceof Error ? parseError : new Error(String(parseError));
         logger.error('HTTP', 'Failed to parse settings file', { settingsPath }, normalizedParseError);

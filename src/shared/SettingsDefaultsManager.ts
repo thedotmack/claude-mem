@@ -4,6 +4,7 @@ import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { HOOK_TIMEOUTS, getTimeout } from './hook-constants.js';
 import { emitDiagnostic } from './hook-io.js';
+import { stripBom } from '../utils/json-utils.js';
 
 export const SETTINGS_FILE_MODE = 0o600;
 
@@ -276,10 +277,7 @@ export class SettingsDefaultsManager {
       }
 
       const settingsData = readFileSync(settingsPath, 'utf-8');
-      // Strip UTF-8 BOM if present — Windows tools (editors, formatters, CLI
-      // hooks) may prepend U+FEFF which Bun's JSON.parse rejects silently,
-      // causing a full fallback to defaults and breaking server-beta routing.
-      const settings = JSON.parse(settingsData.replace(/^\uFEFF/, ''));
+      const settings = JSON.parse(stripBom(settingsData));
 
       let flatSettings = settings;
       if (settings.env && typeof settings.env === 'object') {

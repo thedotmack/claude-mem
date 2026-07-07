@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { mkdirSync, writeFileSync, existsSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { readJsonSafe, parseJsonArrayColumn } from '../src/utils/json-utils';
+import { readJsonSafe, parseJsonArrayColumn, stripBom } from '../src/utils/json-utils';
 
 describe('JSON Utils', () => {
   let tempDir: string;
@@ -33,6 +33,16 @@ describe('JSON Utils', () => {
       const filePath = join(tempDir, 'valid.json');
       const data = { name: 'test', count: 42, nested: { key: 'value' } };
       writeFileSync(filePath, JSON.stringify(data));
+
+      const result = readJsonSafe(filePath, {});
+
+      expect(result).toEqual(data);
+    });
+
+    it('returns parsed content for BOM-prefixed JSON file', () => {
+      const filePath = join(tempDir, 'bom.json');
+      const data = { name: 'windows', count: 1 };
+      writeFileSync(filePath, `\uFEFF${JSON.stringify(data)}`);
 
       const result = readJsonSafe(filePath, {});
 
@@ -115,6 +125,13 @@ describe('JSON Utils', () => {
       const result = readJsonSafe(filePath, {});
 
       expect(result).toEqual({ ok: true });
+    });
+  });
+
+  describe('stripBom', () => {
+    it('strips a leading BOM only', () => {
+      expect(stripBom('\uFEFF{"ok":true}')).toBe('{"ok":true}');
+      expect(stripBom('{"ok":"\uFEFF"}')).toBe('{"ok":"\uFEFF"}');
     });
   });
 

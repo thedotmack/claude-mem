@@ -166,7 +166,7 @@ import {
   readPluginVersion,
   writeJsonFileAtomic,
 } from '../utils/paths.js';
-import { readJsonSafe } from '../../utils/json-utils.js';
+import { readJsonSafe, stripBom } from '../../utils/json-utils.js';
 import { readFlatSettings } from '../utils/settings.js';
 import { shutdownWorkerAndWait } from '../../services/install/shutdown-helper.js';
 import { detectInstalledIDEs } from './ide-detection.js';
@@ -805,7 +805,7 @@ export function mergeSettings(updates: Record<string, string>, path = USER_SETTI
     let current: Record<string, unknown> = {};
     if (existsSync(path)) {
       try {
-        const parsed = JSON.parse(readFileSync(path, 'utf-8').replace(/^\uFEFF/, ''));
+        const parsed = JSON.parse(stripBom(readFileSync(path, 'utf-8')));
         current = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
           ? parsed as Record<string, unknown>
           : {};

@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { SettingsDefaultsManager } from "../../shared/SettingsDefaultsManager.js";
+import { stripBom } from "../../utils/json-utils.js";
 
 const PLATFORM_SOURCE = "opencode";
 
@@ -108,7 +109,7 @@ function resolveWorkerPort(): string {
   try {
     const settingsPath = join(homedir(), ".claude-mem", "settings.json");
     if (existsSync(settingsPath)) {
-      const settings = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, string>;
+      const settings = JSON.parse(stripBom(readFileSync(settingsPath, "utf-8"))) as Record<string, string>;
       if (settings.CLAUDE_MEM_WORKER_PORT) {
         return settings.CLAUDE_MEM_WORKER_PORT;
       }

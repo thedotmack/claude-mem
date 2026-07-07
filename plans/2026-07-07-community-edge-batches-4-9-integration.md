@@ -123,6 +123,10 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
 - #2598: hook PATH prelude prefers `printenv PATH` with shell fallback.
 - #2997: Windows `.cmd` SDK spawns parse npm-style shims and spawn `node`
   directly when possible, with existing fallback preserved.
+- #3033: centralize UTF-8 BOM stripping in `stripBom()` and use it across
+  settings readers, including defaults loading, HTTP settings updates, path
+  resolution, logger startup, plugin disabled-state checks, npx/server settings
+  helpers, and the OpenCode plugin worker-port reader.
 
 ### Batch 8
 
@@ -192,7 +196,7 @@ Batch 5: complete.
 
 Batch 6: complete.
 
-Batch 7: #3033, #3009, #2980, #2921, #2917, #2895, #2892, #2885, #2739, #2583,
+Batch 7: #3009, #2980, #2921, #2917, #2895, #2892, #2885, #2739, #2583,
 #2507.
 
 Batch 8: #3114, #3047, #3011, #2905, #2904, #2858, #2770, #2741, #2506.
@@ -209,3 +213,10 @@ Batch 9: #2608.
 - `bun test tests/shared/openrouter-request-settings.test.ts tests/shared/openrouter-base-url.test.ts tests/shared/settings-defaults-manager.test.ts`
 - `bun test tests/services/sqlite/database-pragmas.test.ts tests/sqlite tests/services/sqlite`
 - `npm run typecheck`
+- `bun test tests/json-utils.test.ts tests/shared/settings-defaults-manager.test.ts tests/settings-routes-claude-token-validation.test.ts`
+- `bun test tests/json-utils.test.ts tests/shared/settings-defaults-manager.test.ts tests/settings-routes-claude-token-validation.test.ts tests/install-settings-preservation.test.ts tests/infrastructure/plugin-distribution.test.ts tests/integrations/opencode-plugin-contract.test.ts`
+- `bun run typecheck`
+- `bun run build`
+- `bun run lint:hook-io`
+- `bun run lint:spawn-env`
+- `git diff --check`
