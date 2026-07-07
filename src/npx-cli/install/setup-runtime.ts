@@ -92,7 +92,13 @@ const LEGACY_VERSION_MARKER_RE =
   /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
 function markerPath(targetDir: string): string {
-  return join(targetDir, '.install-version');
+  return join(resolveRuntimeRoot(targetDir), '.install-version');
+}
+
+function resolveRuntimeRoot(targetDir: string): string {
+  const marketplacePluginDir = join(targetDir, 'plugin');
+  if (existsSync(join(marketplacePluginDir, 'package.json'))) return marketplacePluginDir;
+  return targetDir;
 }
 
 export function getBunPath(): string | null {
@@ -589,8 +595,9 @@ function pluginDeclaresTreeSitterCli(targetDir: string): boolean {
 }
 
 export function isInstallCurrent(targetDir: string, expectedVersion: string): boolean {
-  if (!existsSync(join(targetDir, 'node_modules'))) return false;
-  const marker = readInstallMarker(targetDir);
+  const runtimeRoot = resolveRuntimeRoot(targetDir);
+  if (!existsSync(join(runtimeRoot, 'node_modules'))) return false;
+  const marker = readInstallMarker(runtimeRoot);
   if (!marker) return false;
   if (marker.version !== expectedVersion) return false;
   const currentBun = getBunVersion();
@@ -602,7 +609,7 @@ export function isInstallCurrent(targetDir: string, expectedVersion: string): bo
   // (or never have downloaded) the tree-sitter-cli executable; without this
   // check the install fast path treats that cache as current and skips the
   // provisioning/validation that would repair it, leaving smart-explore broken.
-  if (pluginDeclaresTreeSitterCli(targetDir) && !isTreeSitterCliBinaryUsable(targetDir)) {
+  if (pluginDeclaresTreeSitterCli(runtimeRoot) && !isTreeSitterCliBinaryUsable(runtimeRoot)) {
     return false;
   }
   return true;

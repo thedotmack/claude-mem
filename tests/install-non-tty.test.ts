@@ -159,6 +159,16 @@ describe('Install Non-TTY Support', () => {
         .toBeLessThan(installSource.indexOf('const failedIDEs = await setupIDEs'));
     });
 
+    it('mirrors repair markers into the durable marketplace plugin when present', () => {
+      const repairRegion = installSource.slice(
+        installSource.indexOf('export async function runRepairCommand'),
+        installSource.indexOf("console.log('claude-mem repair complete.')"),
+      );
+      expect(repairRegion).toContain("writeInstallMarker(cacheDir, version, bunVersion, uvVersion)");
+      expect(repairRegion).toContain("existsSync(join(marketplaceDirectory(), 'plugin', 'package.json'))");
+      expect(repairRegion).toContain('writeInstallMarker(marketplaceDirectory(), version, bunVersion, uvVersion)');
+    });
+
     it('refreshes Codex marketplace cache after registration', () => {
       const installRegion = codexInstallerSource.slice(
         codexInstallerSource.indexOf('export async function installCodexCli'),

@@ -248,6 +248,41 @@ function seedLegacyGlobalContentIdentityScenario(db: Database): void {
   `).run(101, 'shared-raw-id', 'tool-1', epoch + 4);
 }
 
+function seedPrePlatformSourceSessionsTable(db: Database): void {
+  const now = new Date().toISOString();
+  const epoch = Date.now();
+
+  db.run(`
+    CREATE TABLE schema_versions (
+      id INTEGER PRIMARY KEY,
+      version INTEGER UNIQUE NOT NULL,
+      applied_at TEXT NOT NULL
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE sdk_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      content_session_id TEXT UNIQUE NOT NULL,
+      memory_session_id TEXT UNIQUE,
+      project TEXT NOT NULL,
+      user_prompt TEXT,
+      started_at TEXT NOT NULL,
+      started_at_epoch INTEGER NOT NULL,
+      completed_at TEXT,
+      completed_at_epoch INTEGER,
+      status TEXT CHECK(status IN ('active', 'completed', 'failed')) NOT NULL DEFAULT 'active'
+    )
+  `);
+
+  db.prepare(`
+    INSERT INTO sdk_sessions (
+      content_session_id, memory_session_id, project, user_prompt,
+      started_at, started_at_epoch, status
+    ) VALUES (?, ?, ?, ?, ?, ?, 'active')
+  `).run('legacy-content', 'legacy-memory', 'legacy-project', 'legacy prompt', now, epoch);
+}
+
 describe('SessionStore migrations', () => {
   let store: SessionStore | undefined;
 
@@ -347,6 +382,27 @@ describe('SessionStore migrations', () => {
     const promptFks = store.db.query('PRAGMA foreign_key_list(user_prompts)').all() as Array<{ table: string; from: string; to: string }>;
     expect(promptFks.some(fk => fk.table === 'sdk_sessions' && fk.from === 'session_db_id' && fk.to === 'id')).toBe(true);
     expect(promptFks.some(fk => fk.table === 'sdk_sessions' && fk.from === 'content_session_id')).toBe(false);
+  });
+
+  it('initializes a legacy sdk_sessions table before platform_source indexes exist', () => {
+    const db = new Database(':memory:');
+    try {
+      seedPrePlatformSourceSessionsTable(db);
+
+      expect(() => new SessionStore(db)).not.toThrow();
+
+      const cols = new Set((db.query('PRAGMA table_info(sdk_sessions)').all() as Array<{ name: string }>).map(col => col.name));
+      expect(cols.has('platform_source')).toBe(true);
+      expect(hasUniqueIndexOnColumns(db, 'sdk_sessions', ['platform_source', 'content_session_id'])).toBe(true);
+      const row = db.prepare(`
+        SELECT platform_source
+        FROM sdk_sessions
+        WHERE content_session_id = 'legacy-content'
+      `).get() as { platform_source: string } | undefined;
+      expect(row?.platform_source).toBe('claude');
+    } finally {
+      db.close();
+    }
   });
 
   it('migrates a single-platform DB without losing observations, summaries, prompts, or pending rows', () => {

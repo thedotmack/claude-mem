@@ -28,6 +28,23 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
   update tests/docs to reflect `worker-service.cjs` as the lifecycle entry.
 - #2928: installer settings merges preserve top-level peers when
   `settings.json` uses `{ env: { ... }, hooks, permissions, ... }`.
+- #3066: already contained by current branch. `CodexCliInstaller` installs the
+  local Codex plugin cache with `codex plugin add claude-mem@claude-mem-local`
+  after marketplace registration, no longer uses local marketplace upgrade, and
+  install tests assert the marketplace plugin marker is written before Codex
+  cache registration.
+- #3102: already contained by current branch. `scripts/build-hooks.js` emits
+  `plugin/sqlite/SessionStore.js` and `plugin/sqlite/observations/files.js`,
+  `package.json` ships `plugin/sqlite`, tracked generated files are present,
+  and plugin distribution tests guard the worker bundle closure.
+- #3110: preserve install markers for Codex plugin roots by resolving durable
+  marketplace roots to `plugin/.install-version` and `plugin/node_modules`,
+  mirroring repair markers into the marketplace plugin, and guarding
+  pre-`platform_source` SQLite tables during schema initialization.
+- #3113: missing `.install-version` is checked before dependency install; the
+  Setup hook force-clears/reinstalls stale `node_modules` and self-heals the
+  marker only after a successful forced reinstall, preserving the actionable
+  install hint on failure.
 
 ### Batch 6
 
@@ -115,8 +132,7 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
 
 Batch 4: #2957.
 
-Batch 5: #3113, #3110, #3102, #3066, #2924, #2918, #2597,
-#2595.
+Batch 5: #2924, #2918, #2597, #2595.
 
 Batch 6: #3034, #3014, #3000, #2908, #2855, #2764, #2731, #2623, #2523.
 

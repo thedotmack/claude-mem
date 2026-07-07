@@ -2045,6 +2045,9 @@ export async function runRepairCommand(): Promise<void> {
         const { bunPath } = await ensureBun();
         await installPluginDependencies(cacheDir, bunPath);
         writeInstallMarker(cacheDir, version, bunVersion, uvVersion);
+        if (existsSync(join(marketplaceDirectory(), 'plugin', 'package.json'))) {
+          writeInstallMarker(marketplaceDirectory(), version, bunVersion, uvVersion);
+        }
         return `Runtime ready (Bun ${bunVersion}, uv ${uvVersion}) ${styleText('green', 'OK')}`;
       },
     },

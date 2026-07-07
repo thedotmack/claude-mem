@@ -49,6 +49,14 @@ async function probeWorkerHealth(workerPort: string): Promise<{ status: CheckSta
   return { status: 'warn', detail: `reachable but unhealthy (HTTP ${res.status}) on port ${workerPort}` };
 }
 
+export function marketplaceDependencyDirectory(marketplaceDir = marketplaceDirectory()): string {
+  const marketplacePluginDir = join(marketplaceDir, 'plugin');
+  if (existsSync(join(marketplacePluginDir, 'package.json'))) {
+    return join(marketplacePluginDir, 'node_modules');
+  }
+  return join(marketplaceDir, 'node_modules');
+}
+
 export async function runDoctorCommand(): Promise<void> {
   const checks: CheckResult[] = [];
   const dataDir = resolveDataDir();
@@ -81,7 +89,7 @@ export async function runDoctorCommand(): Promise<void> {
   });
 
   // 4. Marketplace dependencies materialized.
-  const marketplaceNodeModules = join(marketplaceDirectory(), 'node_modules');
+  const marketplaceNodeModules = marketplaceDependencyDirectory();
   const depsPresent = existsSync(marketplaceNodeModules);
   checks.push({
     name: 'Marketplace deps',

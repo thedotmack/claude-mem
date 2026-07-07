@@ -94,6 +94,44 @@ describe('setup-runtime install marker', () => {
       const parsed = JSON.parse(readFileSync(join(tempDir, '.install-version'), 'utf-8'));
       expect(Object.keys(parsed).sort()).toEqual(['bun', 'installedAt', 'uv', 'version'].sort());
     });
+
+    it('writes marketplace-root markers into plugin/.install-version', () => {
+      mkdirSync(join(tempDir, 'plugin'), { recursive: true });
+      writeFileSync(join(tempDir, 'plugin', 'package.json'), JSON.stringify({ dependencies: {} }));
+
+      writeInstallMarker(tempDir, '2.3.4', '1.2.0', '0.4.18');
+
+      expect(existsSync(join(tempDir, '.install-version'))).toBe(false);
+      const parsed = JSON.parse(readFileSync(join(tempDir, 'plugin', '.install-version'), 'utf-8'));
+      expect(parsed.version).toBe('2.3.4');
+    });
+  });
+
+  describe('marketplace-root marker resolution', () => {
+    beforeEach(() => {
+      mkdirSync(join(tempDir, 'plugin', 'node_modules'), { recursive: true });
+      writeFileSync(join(tempDir, 'package.json'), JSON.stringify({ name: 'marketplace-root' }));
+      writeFileSync(join(tempDir, 'plugin', 'package.json'), JSON.stringify({ dependencies: {} }));
+    });
+
+    it('reads plugin/.install-version when given the marketplace root', () => {
+      writeFileSync(join(tempDir, 'plugin', '.install-version'), JSON.stringify({ version: '9.8.7' }));
+
+      expect(readInstallMarker(tempDir)?.version).toBe('9.8.7');
+    });
+
+    it('checks plugin/node_modules when testing marketplace-root install currency', () => {
+      const bunVersion = probeBunVersion();
+      if (!bunVersion) {
+        return;
+      }
+      writeInstallMarker(tempDir, '9.8.7', bunVersion, '0.1.0');
+
+      expect(isInstallCurrent(tempDir, '9.8.7')).toBe(true);
+      rmSync(join(tempDir, 'plugin', 'node_modules'), { recursive: true, force: true });
+      mkdirSync(join(tempDir, 'node_modules'), { recursive: true });
+      expect(isInstallCurrent(tempDir, '9.8.7')).toBe(false);
+    });
   });
 
   describe('isInstallCurrent', () => {
