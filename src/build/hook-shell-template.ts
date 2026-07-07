@@ -58,7 +58,11 @@ export interface ShellTemplateOptions {
   mcpExtraCacheRoots?: string[];
 }
 
-const CLAUDE_CODE_PATH_PRELUDE = `export PATH="$($SHELL -lc 'echo $PATH' 2>/dev/null):$PATH";`;
+const CLAUDE_CODE_PATH_PRELUDE =
+  `_HP=$(printenv PATH 2>/dev/null || true); ` +
+  `_LP=; if [ -n "\${SHELL:-}" ]; then _LP=$("$SHELL" -lc 'printf %s "$PATH"' 2>/dev/null || true); fi; ` +
+  `_HP=$(printf '%s' "$_HP"); _LP=$(printf '%s' "$_LP"); ` +
+  `export PATH="\${_LP:+$_LP:}\${_HP:+$_HP:}$PATH";`;
 
 const CLAUDE_CODE_SETUP_PATH_PRELUDE =
   'export PATH="$HOME/.nvm/versions/node/v$(ls \\"$HOME/.nvm/versions/node\\" 2>/dev/null | ' +

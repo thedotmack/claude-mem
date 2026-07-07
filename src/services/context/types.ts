@@ -28,10 +28,17 @@ export interface ContextConfig {
   showLastSummary: boolean;
   showLastMessage: boolean;
   mermaidContext: boolean;
+
+  /**
+   * Whether observation refs in the inject panel can be fetched by id.
+   * When false, UUID refs are shortened for display and users are pointed to
+   * semantic search instead of by-id fetch.
+   */
+  fetchByIdSupported?: boolean;
 }
 
 export interface Observation {
-  id: number;
+  id: number | string;
   memory_session_id: string;
   platform_source?: string;
   type: string;

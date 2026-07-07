@@ -40,9 +40,9 @@ describe('AntigravityCliHooksInstaller - event mapping (B0-confirmed 7-event map
     expect(src).toContain("path.join(GEMINI_CONFIG_DIR, 'GEMINI.md')");
   });
 
-  it('dual-writes MCP config to both B0-confirmed candidate paths', () => {
-    expect(src).toContain("path.join(GEMINI_CONFIG_DIR, 'antigravity', 'mcp_config.json')");
+  it('writes MCP config to the shared path Antigravity reads', () => {
     expect(src).toContain("path.join(GEMINI_CONFIG_DIR, 'config', 'mcp_config.json')");
+    expect(src).not.toContain("path.join(GEMINI_CONFIG_DIR, 'antigravity', 'mcp_config.json')");
   });
 
   it('reuses writeMcpJsonConfig from McpIntegrations.ts rather than reimplementing MCP config writing', () => {

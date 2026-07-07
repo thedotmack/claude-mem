@@ -13,7 +13,7 @@ import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { shouldTrackProject as defaultShouldTrackProject } from '../../shared/should-track-project.js';
 import { loadFromFileOnce as defaultLoadFromFileOnce } from '../../shared/hook-settings.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
-import { isInternalProtocolPayload } from '../../utils/tag-stripping.js';
+import { isInternalProtocolPayload, isInternalSystemPrompt } from '../../utils/tag-stripping.js';
 import {
   resolveRuntimeContext as defaultResolveRuntimeContext,
   logServerFallback as defaultLogServerFallback,
@@ -66,8 +66,8 @@ export const sessionInitHandler: EventHandler = {
       return { continue: true, suppressOutput: true };
     }
 
-    if (rawPrompt && isInternalProtocolPayload(rawPrompt)) {
-      logger.debug('HOOK', 'session-init: skipping internal protocol payload', {
+    if (rawPrompt && (isInternalProtocolPayload(rawPrompt) || isInternalSystemPrompt(rawPrompt))) {
+      logger.debug('HOOK', 'session-init: skipping internal protocol or system payload', {
         preview: rawPrompt.slice(0, 80),
       });
       return { continue: true, suppressOutput: true };

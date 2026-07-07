@@ -138,13 +138,15 @@ describe('HybridSearchStrategy', () => {
     it('should preserve platformSource through by-file metadata search and hydration', async () => {
       const options: StrategySearchOptions = {
         limit: 10,
-        platformSource: 'cursor'
+        platformSource: 'cursor',
+        isFolder: true,
       };
 
       await strategy.findByFile('/path/to/file.ts', options);
 
       expect(mockSessionSearch.findByFile).toHaveBeenCalledWith('/path/to/file.ts', expect.objectContaining({
-        platformSource: 'cursor'
+        platformSource: 'cursor',
+        isFolder: true,
       }));
       expect(mockSessionStore.getObservationsByIds).toHaveBeenCalledWith(expect.any(Array), expect.objectContaining({
         platformSource: 'cursor'
@@ -168,7 +170,27 @@ describe('HybridSearchStrategy', () => {
       expect(result.usedChroma).toBe(true);
     });
 
-    it('falls back to scoped SQLite file observation matches when platform-scoped Chroma ranks zero ids', async () => {
+    it('appends exact metadata matches that Chroma did not rank', async () => {
+      mockSessionSearch.findByFile = mock(() => ({
+        observations: [mockObservation1, mockObservation2, mockObservation3],
+        sessions: [mockSession]
+      }));
+      mockChromaSync.queryChroma = mock(() => Promise.resolve({
+        ids: [2],
+        distances: [0.1],
+        metadatas: []
+      }));
+
+      const result = await strategy.findByFile('/path/to/file.ts', { limit: 10 });
+
+      expect(mockSessionStore.getObservationsByIds).toHaveBeenCalledWith([2, 1, 3], expect.objectContaining({
+        orderBy: 'relevance',
+      }));
+      expect(result.observations.map(obs => obs.id)).toEqual([2, 1, 3]);
+      expect(result.usedChroma).toBe(true);
+    });
+
+    it('falls back to SQLite file observation matches when Chroma ranks zero ids', async () => {
       mockChromaSync.queryChroma = mock(() => Promise.resolve({
         ids: [],
         distances: [],
@@ -177,7 +199,6 @@ describe('HybridSearchStrategy', () => {
 
       const result = await strategy.findByFile('/path/to/file.ts', {
         limit: 10,
-        platformSource: 'cursor'
       });
 
       expect(mockSessionStore.getObservationsByIds).not.toHaveBeenCalled();

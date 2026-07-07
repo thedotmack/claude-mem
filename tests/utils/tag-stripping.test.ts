@@ -1,6 +1,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
-import { stripMemoryTags, isInternalProtocolPayload } from '../../src/utils/tag-stripping.js';
+import { stripMemoryTags, isInternalProtocolPayload, isInternalSystemPrompt } from '../../src/utils/tag-stripping.js';
 import { logger } from '../../src/utils/logger.js';
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
@@ -445,6 +445,29 @@ after`;
     it('returns false for two adjacent protocol blocks (deliberate: deny-list per single block, not concatenations)', () => {
       const text = '<task-notification>a</task-notification><task-notification>b</task-notification>';
       expect(isInternalProtocolPayload(text)).toBe(false);
+    });
+  });
+
+  describe('isInternalSystemPrompt', () => {
+    it('returns false for user prompts', () => {
+      expect(isInternalSystemPrompt('How do I run a backup?')).toBe(false);
+      expect(isInternalSystemPrompt('Memory Writing Agent is cool.')).toBe(false);
+    });
+
+    it('detects Codex title generation prompts', () => {
+      expect(isInternalSystemPrompt('You are a helpful assistant. You will be presented with a user prompt, and your job is to provide a short title for a task.')).toBe(true);
+      expect(isInternalSystemPrompt('   You are a helpful assistant. You will be presented with a user prompt, and your job is to provide a short title for a task')).toBe(true);
+    });
+
+    it('detects memory writing agent prompts', () => {
+      expect(isInternalSystemPrompt('## Memory Writing Agent: Phase 2 (Consolidation)\n\nYou are a Memory Writing Agent.')).toBe(true);
+      expect(isInternalSystemPrompt('## Memory Writing Agent\n\nYour job: consolidate')).toBe(true);
+    });
+
+    it('detects Codex onboarding suggestion prompts', () => {
+      expect(isInternalSystemPrompt('# Overview\n\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this local project.')).toBe(true);
+      expect(isInternalSystemPrompt('# Overview\r\n\r\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do')).toBe(true);
+      expect(isInternalSystemPrompt(' # Overview\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do')).toBe(true);
     });
   });
 });

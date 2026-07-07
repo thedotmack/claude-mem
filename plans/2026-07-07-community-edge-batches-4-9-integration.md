@@ -40,6 +40,11 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
 - #2527: current edge already had the base-url resolver; this branch adds
   settings API persistence, viewer configuration, and non-localhost HTTPS
   validation for `CLAUDE_MEM_OPENROUTER_BASE_URL`.
+- #2835: add `claude` as an alias for the Claude Code adapter/install path and
+  CLI detection.
+- #2826: write Antigravity MCP config to the shared Gemini config path used by
+  current Antigravity integration.
+- #2810: ignore Codex/internal system prompts before session creation.
 
 ### Batch 7
 
@@ -47,6 +52,12 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
   skip-prose observer acknowledgements as benign `skip` output, clear stale
   invalid-output debt, and avoid poison respawn loops while preserving quota
   failure handling.
+- #2828: add `CLAUDE_MEM_WORKER_AUTOSTART=false` to disable hook lazy-spawn.
+- #2609: fail-loud worker-unreachable threshold warns and continues instead of
+  blocking hook execution.
+- #2598: hook PATH prelude prefers `printenv PATH` with shell fallback.
+- #2997: Windows `.cmd` SDK spawns parse npm-style shims and spawn `node`
+  directly when possible, with existing fallback preserved.
 
 ### Batch 8
 
@@ -54,6 +65,18 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
   before WAL/schema writes; legacy DBs are left unchanged when not safely fresh.
 - #2849: primary SQLite connections consistently apply `PRAGMA busy_timeout =
   5000`.
+- #3116: folder `CLAUDE.md` lookup uses project-relative paths and avoids
+  creating/rewriting empty skeleton folder context.
+- #3116/#3011-adjacent Chroma fallback: by-file hybrid search preserves exact
+  metadata matches when Chroma ranks none or misses exact matches.
+- #2883: cwd remap reconciliation reruns idempotently and backs up only when
+  changes are needed.
+- #2867: context refs can render display-only 8-char UUID prefixes when direct
+  fetch-by-id is unavailable.
+- #2942: observer Claude SDK spawns disable session persistence and avoid stale
+  persisted session resumes.
+- #2671: server-generated observations and summaries copy project metadata from
+  `server_sessions.metadata.project`.
 
 ## Held or split from this tranche
 
@@ -84,14 +107,12 @@ Batch 4: #2957, #2929.
 Batch 5: #3113, #3110, #3102, #3066, #3046, #2937, #2928, #2924, #2918, #2597,
 #2595.
 
-Batch 6: #3034, #3014, #3000, #2908, #2855, #2835, #2826, #2810, #2764, #2731,
-#2623, #2523.
+Batch 6: #3034, #3014, #3000, #2908, #2855, #2764, #2731, #2623, #2523.
 
-Batch 7: #3033, #3009, #2997, #2980, #2921, #2917, #2895, #2892, #2885, #2828,
-#2739, #2609, #2598, #2583, #2507.
+Batch 7: #3033, #3009, #2980, #2921, #2917, #2895, #2892, #2885, #2739, #2583,
+#2507.
 
-Batch 8: #3116, #3114, #3047, #3011, #2942, #2905, #2904, #2883, #2867, #2858,
-#2770, #2741, #2671, #2506.
+Batch 8: #3114, #3047, #3011, #2905, #2904, #2858, #2770, #2741, #2506.
 
 Batch 9: #2608.
 

@@ -224,5 +224,17 @@ describe('SQLiteSearchStrategy', () => {
         platformSource: 'cursor'
       }));
     });
+
+    it('should pass isFolder to findByFile so SQLite fallback filters direct children', () => {
+      const options: StrategySearchOptions = {
+        isFolder: true
+      };
+
+      strategy.findByFile('/src/features', options);
+
+      expect(mockSessionSearch.findByFile).toHaveBeenCalledWith('/src/features', expect.objectContaining({
+        isFolder: true
+      }));
+    });
   });
 });

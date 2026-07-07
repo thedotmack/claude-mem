@@ -227,6 +227,7 @@ describe('PostgresServerSessionsRepository + Postgres', () => {
       teamId,
       projectId,
       externalSessionId: 'ext-summary',
+      metadata: { project: 'folder-a' },
     });
     const job = await storage.observationGenerationJobs.create({
       projectId,
@@ -262,6 +263,7 @@ describe('PostgresServerSessionsRepository + Postgres', () => {
     if (outcome1.kind === 'completed') {
       expect(outcome1.observations.length).toBeGreaterThan(0);
       expect(outcome1.observations[0]!.kind).toBe('summary');
+      expect(outcome1.observations[0]!.metadata.project).toBe('folder-a');
     }
 
     // Idempotent: replaying does not produce new observations because the

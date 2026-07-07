@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { ingestObservation } from '../shared.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
-import { stripMemoryTags, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
+import { stripMemoryTags, isInternalProtocolPayload, isInternalSystemPrompt } from '../../../../utils/tag-stripping.js';
 import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { ClaudeProvider } from '../../ClaudeProvider.js';
@@ -414,8 +414,8 @@ export class SessionRoutes extends BaseRouteHandler {
     const platformSource = this.getPlatformSourceFromRequest(req);
     const customTitle = req.body.customTitle || undefined;
 
-    if (rawPrompt && isInternalProtocolPayload(rawPrompt)) {
-      logger.debug('HTTP', 'session-init: skipping internal protocol payload before session creation', { contentSessionId });
+    if (rawPrompt && (isInternalProtocolPayload(rawPrompt) || isInternalSystemPrompt(rawPrompt))) {
+      logger.debug('HTTP', 'session-init: skipping internal protocol or system payload before session creation', { contentSessionId });
       res.json({ skipped: true, reason: 'internal_protocol' });
       return;
     }

@@ -41,12 +41,8 @@ const GEMINI_CONFIG_DIR = path.join(homedir(), '.gemini');
 const GEMINI_SETTINGS_PATH = path.join(GEMINI_CONFIG_DIR, 'settings.json');
 const GEMINI_MD_PATH = path.join(GEMINI_CONFIG_DIR, 'GEMINI.md');
 
-// B0 found two real, genuinely ambiguous MCP config paths on a live machine —
-// one already populated (old path), one present but empty (newer path per
-// third-party docs). Dual-write to both until Phase C's hands-on gate
-// resolves which one `agy` actually reads.
+// Antigravity reads MCP servers from the shared Gemini config path.
 const ANTIGRAVITY_MCP_CONFIG_PATHS = [
-  path.join(GEMINI_CONFIG_DIR, 'antigravity', 'mcp_config.json'),
   path.join(GEMINI_CONFIG_DIR, 'config', 'mcp_config.json'),
 ];
 

@@ -199,7 +199,10 @@ export class ClaudeProvider {
     const messageGenerator = this.createMessageGenerator(session, cwdTracker);
 
     const hasRealMemorySessionId = !!session.memorySessionId;
-    const shouldResume = hasRealMemorySessionId && session.lastPromptNumber > 1 && !session.forceInit;
+    const wasForceInit = session.forceInit;
+    const shouldResume = hasRealMemorySessionId && session.lastPromptNumber > 1 && !wasForceInit;
+    const isStaleFreshStart = hasRealMemorySessionId && !shouldResume;
+    const observerExtraArgs = wasForceInit || isStaleFreshStart ? ['--no-session-persistence'] : [];
 
     if (session.forceInit) {
       logger.info('SDK', 'forceInit flag set, starting fresh SDK session', {
@@ -250,7 +253,7 @@ export class ClaudeProvider {
         pathToClaudeCodeExecutable: claudePath,
         abortController: session.abortController,
         ...(shouldResume && session.memorySessionId ? { resume: session.memorySessionId } : {}),
-        spawnClaudeCodeProcess: createSdkSpawnFactory(session.sessionDbId),
+        spawnClaudeCodeProcess: createSdkSpawnFactory(session.sessionDbId, observerExtraArgs),
       }),
     });
 

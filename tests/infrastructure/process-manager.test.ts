@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll } from 'bun:test';
-import { existsSync, readFileSync, mkdirSync, mkdtempSync, writeFileSync, rmSync, statSync } from 'fs';
+import { existsSync, readFileSync, mkdirSync, mkdtempSync, writeFileSync, rmSync, statSync, readdirSync } from 'fs';
 import { homedir, tmpdir } from 'os';
+import { spawnSync } from 'child_process';
 import path from 'path';
 import type { PidInfo } from '../../src/services/infrastructure/index.js';
 
@@ -29,6 +30,7 @@ const {
   resolveWorkerRuntimePath,
   captureProcessStartToken,
   verifyPidFileOwnership,
+  runOneTimeCwdRemap,
 } = await import('../../src/services/infrastructure/index.js');
 const { paths } = await import('../../src/shared/paths.js');
 
@@ -550,7 +552,7 @@ describe('ProcessManager', () => {
   describe('cleanStalePidFile', () => {
     it('should remove PID file when process is dead', () => {
       const staleInfo: PidInfo = {
-        pid: 2147483647,
+        pid: -1,
         port: 37777,
         startedAt: '2024-01-01T00:00:00.000Z'
       };
@@ -580,6 +582,53 @@ describe('ProcessManager', () => {
       expect(existsSync(PID_FILE)).toBe(false);
 
       expect(() => cleanStalePidFile()).not.toThrow();
+    });
+  });
+
+  describe('runOneTimeCwdRemap', () => {
+    it('reruns idempotently and backs up only when project rows change', () => {
+      const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
+      const dataDir = mkdtempSync(path.join(tmpdir(), 'claude-mem-cwd-remap-'));
+      const repoDir = path.join(dataDir, 'repo-main');
+      mkdirSync(repoDir, { recursive: true });
+      const gitInit = spawnSync('git', ['init'], { cwd: repoDir, encoding: 'utf-8' });
+      expect(gitInit.status).toBe(0);
+
+      const dbPath = path.join(dataDir, 'claude-mem.db');
+      const db = new Database(dbPath);
+      try {
+        db.run('CREATE TABLE pending_messages (id INTEGER PRIMARY KEY, session_db_id INTEGER, cwd TEXT)');
+        db.run('CREATE TABLE sdk_sessions (id INTEGER PRIMARY KEY, memory_session_id TEXT, project TEXT)');
+        db.run('CREATE TABLE observations (id INTEGER PRIMARY KEY, memory_session_id TEXT, project TEXT)');
+        db.run('CREATE TABLE session_summaries (id INTEGER PRIMARY KEY, memory_session_id TEXT, project TEXT)');
+        db.run('INSERT INTO sdk_sessions (id, memory_session_id, project) VALUES (1, ?, ?)', 'mem-1', 'old-project');
+        db.run('INSERT INTO observations (id, memory_session_id, project) VALUES (1, ?, ?)', 'mem-1', 'old-project');
+        db.run('INSERT INTO session_summaries (id, memory_session_id, project) VALUES (1, ?, ?)', 'mem-1', 'old-project');
+        db.run('INSERT INTO pending_messages (id, session_db_id, cwd) VALUES (1, 1, ?)', repoDir);
+      } finally {
+        db.close();
+      }
+
+      try {
+        runOneTimeCwdRemap(dataDir);
+        const afterFirst = new Database(dbPath, { readonly: true });
+        try {
+          expect(afterFirst.query('SELECT project FROM sdk_sessions WHERE id = 1').get()).toEqual({ project: 'repo-main' });
+          expect(afterFirst.query('SELECT project FROM observations WHERE id = 1').get()).toEqual({ project: 'repo-main' });
+          expect(afterFirst.query('SELECT project FROM session_summaries WHERE id = 1').get()).toEqual({ project: 'repo-main' });
+        } finally {
+          afterFirst.close();
+        }
+
+        const backupsAfterFirst = readdirSync(dataDir).filter(name => name.includes('.bak-cwd-remap-'));
+        expect(backupsAfterFirst).toHaveLength(1);
+
+        runOneTimeCwdRemap(dataDir);
+        const backupsAfterSecond = readdirSync(dataDir).filter(name => name.includes('.bak-cwd-remap-'));
+        expect(backupsAfterSecond).toHaveLength(1);
+      } finally {
+        rmSync(dataDir, { recursive: true, force: true });
+      }
     });
   });
 

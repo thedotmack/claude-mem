@@ -240,7 +240,7 @@ async function resolveClaudeAutoMemoryChoice(
   selectedIDEs: string[],
   options: InstallOptions,
 ): Promise<ClaudeAutoMemoryChoice> {
-  if (!selectedIDEs.includes('claude-code')) {
+  if (!selectedIDEs.includes('claude-code') && !selectedIDEs.includes('claude')) {
     return 'not-applicable';
   }
 
@@ -292,6 +292,7 @@ function makeIDETask(ideId: string, summary: InstallSummary): TaskDescriptor | n
   };
 
   switch (ideId) {
+    case 'claude':
     case 'claude-code': {
       return {
         title: 'Claude Code: registering plugin',

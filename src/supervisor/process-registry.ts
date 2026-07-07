@@ -6,6 +6,39 @@ import { logger } from '../utils/logger.js';
 import { sanitizeEnv } from './env-sanitizer.js';
 import { paths } from '../shared/paths.js';
 
+export function parseCmdFile(cmdPath: string): { node: string; script: string } | null {
+  try {
+    const content = readFileSync(cmdPath, 'utf-8');
+    const match = content.match(/"%_prog%"\s+"([^"]+)"/);
+    if (!match || !match[1]) {
+      return null;
+    }
+
+    let scriptPath = match[1];
+    const cmdDir = path.dirname(cmdPath);
+    if (scriptPath.startsWith('%dp0%\\')) {
+      scriptPath = scriptPath.replace(/^%dp0%\\/, cmdDir + '\\');
+    } else if (scriptPath.startsWith('%~dp0\\') || scriptPath.startsWith('%dp0\\')) {
+      scriptPath = scriptPath.replace(/^%~?dp0\\/, cmdDir + '\\');
+    } else if (scriptPath.startsWith('%dp0%')) {
+      scriptPath = scriptPath.replace(/^%dp0%/, cmdDir);
+    } else if (scriptPath.startsWith('%~dp0') || scriptPath.startsWith('%dp0')) {
+      scriptPath = scriptPath.replace(/^%~?dp0/, cmdDir);
+    }
+
+    scriptPath = scriptPath.replace(/\\/g, path.sep);
+    if (!existsSync(scriptPath)) {
+      return null;
+    }
+
+    const localNodePath = path.join(cmdDir, 'node.exe');
+    const node = existsSync(localNodePath) ? localNodePath : 'node';
+    return { node, script: scriptPath };
+  } catch {
+    return null;
+  }
+}
+
 const REAP_SESSION_SIGTERM_TIMEOUT_MS = 5_000;
 const REAP_SESSION_SIGKILL_TIMEOUT_MS = 1_000;
 
@@ -594,22 +627,15 @@ export interface SpawnedSdkProcess {
 export interface SpawnSdkOptions {
   command: string;
   args: string[];
+  extraArgs?: string[];
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
 }
 
-export function spawnSdkProcess(
-  sessionDbId: number,
-  options: SpawnSdkOptions
-): { process: SpawnedSdkProcess; pid: number; pgid: number } | null {
-  const registry = getProcessRegistry();
-
-  const useCmdWrapper = process.platform === 'win32' && options.command.endsWith('.cmd');
-  const env = sanitizeEnv(options.env ?? process.env);
-
+export function normalizeSpawnSdkArgs(args: string[], extraArgs: string[] = []): string[] {
   const filteredArgs: string[] = [];
-  for (const arg of options.args) {
+  for (const arg of args) {
     if (arg === '') {
       if (filteredArgs.length > 0 && filteredArgs[filteredArgs.length - 1].startsWith('--')) {
         filteredArgs.pop();
@@ -619,17 +645,31 @@ export function spawnSdkProcess(
     filteredArgs.push(arg);
   }
 
+  for (const extraArg of extraArgs) {
+    if (extraArg !== '') {
+      filteredArgs.push(extraArg);
+    }
+  }
+
+  return filteredArgs;
+}
+
+export function spawnSdkProcess(
+  sessionDbId: number,
+  options: SpawnSdkOptions
+): { process: SpawnedSdkProcess; pid: number; pgid: number } | null {
+  const registry = getProcessRegistry();
+
+  const env = sanitizeEnv(options.env ?? process.env);
+  const filteredArgs = normalizeSpawnSdkArgs(options.args, options.extraArgs);
+
   const isWin = process.platform === 'win32';
-  const child = useCmdWrapper
-    ? spawnHidden('cmd.exe', ['/d', '/c', options.command, ...filteredArgs], {
-        cwd: options.cwd,
-        env,
-        detached: !isWin,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        signal: options.signal,
-        windowsHide: true,
-      })
-    : spawnHidden(options.command, filteredArgs, {
+  let child: ChildProcess;
+
+  if (isWin && options.command.endsWith('.cmd')) {
+    const parsed = parseCmdFile(options.command);
+    if (parsed) {
+      child = spawnHidden(parsed.node, [parsed.script, ...filteredArgs], {
         cwd: options.cwd,
         env,
         detached: !isWin,
@@ -637,6 +677,26 @@ export function spawnSdkProcess(
         signal: options.signal,
         windowsHide: true,
       });
+    } else {
+      child = spawnHidden('cmd.exe', ['/d', '/c', options.command, ...filteredArgs], {
+        cwd: options.cwd,
+        env,
+        detached: !isWin,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        signal: options.signal,
+        windowsHide: true,
+      });
+    }
+  } else {
+    child = spawnHidden(options.command, filteredArgs, {
+      cwd: options.cwd,
+      env,
+      detached: !isWin,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      signal: options.signal,
+      windowsHide: true,
+    });
+  }
 
   child.on('error', (err: Error) => {
     logger.warn('SDK_SPAWN', `[session-${sessionDbId}] child emitted error event`, {
@@ -739,7 +799,7 @@ function sigtermDuplicateSdkProcess(record: ManagedProcessRecord, sessionDbId: n
   });
 }
 
-export function createSdkSpawnFactory(sessionDbId: number) {
+export function createSdkSpawnFactory(sessionDbId: number, extraArgs: string[] = []) {
   return (spawnOptions: SpawnSdkOptions): SpawnedSdkProcess => {
     const registry = getProcessRegistry();
 
@@ -762,7 +822,10 @@ export function createSdkSpawnFactory(sessionDbId: number) {
       }
     }
 
-    const result = spawnSdkProcess(sessionDbId, spawnOptions);
+    const result = spawnSdkProcess(sessionDbId, {
+      ...spawnOptions,
+      extraArgs: [...(spawnOptions.extraArgs ?? []), ...extraArgs],
+    });
     if (!result) {
       throw new Error(`Failed to spawn SDK subprocess for session ${sessionDbId}`);
     }

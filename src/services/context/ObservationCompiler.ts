@@ -250,7 +250,7 @@ export function buildTimeline(
   return timeline;
 }
 
-export function getFullObservationIds(observations: Observation[], count: number): Set<number> {
+export function getFullObservationIds(observations: Observation[], count: number): Set<Observation['id']> {
   return new Set(
     observations
       .slice(0, count)
