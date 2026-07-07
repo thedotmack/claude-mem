@@ -6,14 +6,24 @@ interface AdvisorCallCardProps {
   advisorCall: AdvisorCall;
 }
 
+/** 'claude-fable-5' → 'fable-5' for the badge; unknown shapes pass through. */
+function shortModelName(model: string): string {
+  return model.replace(/^claude-/, '');
+}
+
 export function AdvisorCallCard({ advisorCall }: AdvisorCallCardProps) {
-  const date = formatDate(advisorCall.created_at_epoch);
+  const date = formatDate(advisorCall.occurred_at_epoch);
 
   return (
     <div className="card advisor-call-card">
       <div className="card-header">
         <div className="card-header-left">
           <span className="card-type">Advisor</span>
+          {advisorCall.advisor_model && (
+            <span className="advisor-call-model" title={`Advice served by ${advisorCall.advisor_model}`}>
+              {shortModelName(advisorCall.advisor_model)}
+            </span>
+          )}
           <span className={`card-source source-${advisorCall.platform_source || 'claude'}`}>
             {advisorCall.platform_source || 'claude'}
           </span>
@@ -23,7 +33,7 @@ export function AdvisorCallCard({ advisorCall }: AdvisorCallCardProps) {
 
       {advisorCall.last_user_message && (
         <div className="advisor-call-section">
-          <div className="advisor-call-section-label">Context at call time</div>
+          <div className="advisor-call-section-label">Turn context</div>
           <div className="advisor-call-context">{advisorCall.last_user_message}</div>
         </div>
       )}
@@ -39,7 +49,7 @@ export function AdvisorCallCard({ advisorCall }: AdvisorCallCardProps) {
           title="Forwarded context = the full conversation transcript up to this line, as it existed at call time"
         >
           transcript: {advisorCall.transcript_path}
-          {advisorCall.transcript_line_count != null && ` (${advisorCall.transcript_line_count} lines)`}
+          {advisorCall.transcript_line_number != null && `:${advisorCall.transcript_line_number}`}
         </div>
       )}
 

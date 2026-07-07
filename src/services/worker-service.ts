@@ -354,7 +354,7 @@ export class WorkerService implements WorkerRef {
       sessionRoutes.ensureGeneratorRunning(sessionDbId, source),
     );
     this.server.registerRoutes(new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime));
-    this.server.registerRoutes(new AdvisorRoutes(this.paginationHelper, this.dbManager));
+    this.server.registerRoutes(new AdvisorRoutes(this.paginationHelper, this.dbManager, this.sessionEventBroadcaster));
     this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
     this.server.registerRoutes(new LogsRoutes());
     this.server.registerRoutes(new MemoryRoutes(this.dbManager, 'claude-mem'));

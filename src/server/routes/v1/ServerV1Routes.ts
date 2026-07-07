@@ -16,7 +16,7 @@ import {
   ServerSessionsRepository,
 } from '../../../storage/sqlite/index.js';
 import { requireServerAuth } from '../../middleware/auth.js';
-import { stringifyAdvice } from '../../../shared/advisor-advice.js';
+import { buildAdvisorCallView } from '../../../shared/advisor-call-view.js';
 
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 const BUILT_IN_VERSION = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined'
@@ -49,25 +49,14 @@ function hasSearchableContent(body: {
   );
 }
 
-/**
- * Reshape a raw `tool_use` agent_event (whose payload carries whatever the
- * hook sent — see cli/handlers/observation.ts) into a stable advisor-call
- * view: session, forwarded-context pointer, and the full advice text.
- */
 function toAdvisorCallView(event: AgentEvent): Record<string, unknown> {
-  const payload = (event.payload && typeof event.payload === 'object') ? event.payload as Record<string, unknown> : {};
-  return {
+  return buildAdvisorCallView(event.payload, {
     id: event.id,
     project: event.projectId,
-    contentSessionId: event.contentSessionId,
-    platformSource: typeof payload.platformSource === 'string' ? payload.platformSource : null,
-    cwd: typeof payload.cwd === 'string' ? payload.cwd : null,
-    lastUserMessage: typeof payload.lastUserMessage === 'string' ? payload.lastUserMessage : null,
-    transcriptPath: typeof payload.transcriptPath === 'string' ? payload.transcriptPath : null,
-    transcriptLineCount: typeof payload.transcriptLineCount === 'number' ? payload.transcriptLineCount : null,
-    advice: stringifyAdvice(payload.tool_response),
     occurredAtEpoch: event.occurredAtEpoch,
-  };
+    contentSessionId: event.contentSessionId,
+    platformSourceFallback: event.platformSource,
+  });
 }
 
 export interface ServerV1RoutesOptions {
@@ -280,7 +269,8 @@ export class ServerV1Routes implements RouteHandler {
         return;
       }
       if (!this.ensureProjectAllowed(req, res, projectId)) return;
-      const limit = Math.min(parseInt(String(req.query.limit ?? '100'), 10) || 100, 500);
+      // Clamp to [1, 500]: a negative LIMIT means "no limit" in SQLite.
+      const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? '100'), 10) || 100, 1), 500);
       const events = new AgentEventsRepository(this.options.getDatabase()).listAdvisorCalls(projectId, limit);
       this.audit(req, 'advisor_call.list', null, projectId);
       res.json({ advisorCalls: events.map(toAdvisorCallView) });

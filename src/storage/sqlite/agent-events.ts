@@ -81,18 +81,21 @@ export class AgentEventsRepository {
   }
 
   /**
-   * `advisor` tool calls are just `tool_use` agent_events whose payload names
-   * that tool — no separate table needed here, unlike the classic worker's
-   * SQLite store, which only buffers tool_use fragments in memory (see
-   * services/worker/SessionMessageBuffer.ts) and would lose them otherwise.
-   * agent_events is already durable, so filtering is enough.
+   * `advisor` tool calls are `tool_use` agent_events whose payload names that
+   * tool (recorded by the Stop hook's transcript scan — the advisor is a
+   * server-side tool that never fires PostToolUse). agent_events is already
+   * durable, so filtering is enough — no separate table. Unlike the Postgres
+   * repo, create() here has no idempotency key, so a re-fired hook can insert
+   * the same call twice; GROUP BY the payload's toolUseId collapses those at
+   * read time (rows without a toolUseId fall back to their own id).
    */
   listAdvisorCalls(projectId: string, limit = 100): AgentEvent[] {
     const rows = this.db.prepare(`
-      SELECT * FROM agent_events
+      SELECT *, MIN(created_at_epoch) FROM agent_events
       WHERE project_id = ?
         AND event_type = 'tool_use'
         AND json_extract(payload, '$.tool_name') = 'advisor'
+      GROUP BY COALESCE(json_extract(payload, '$.toolUseId'), id)
       ORDER BY occurred_at_epoch DESC
       LIMIT ?
     `).all(projectId, limit) as AgentEventRow[];

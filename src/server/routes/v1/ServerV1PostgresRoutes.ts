@@ -34,7 +34,7 @@ import { PostgresServerSessionsRepository } from '../../../storage/postgres/serv
 import { IngestEventsService, type EnqueueOutcome } from '../../services/IngestEventsService.js';
 import { EndSessionService } from '../../services/EndSessionService.js';
 import { normalizePlatformSource, normalizePlatformSourceOrNull } from '../../../shared/platform-source.js';
-import { stringifyAdvice } from '../../../shared/advisor-advice.js';
+import { buildAdvisorCallView } from '../../../shared/advisor-call-view.js';
 
 const SOURCE_ADAPTER_DEFAULT = 'api';
 
@@ -1948,25 +1948,14 @@ function serializeSession(session: {
   };
 }
 
-/**
- * Reshape a raw `tool_use` agent_event (whose payload carries whatever the
- * hook sent — see cli/handlers/observation.ts) into a stable advisor-call
- * view: session, forwarded-context pointer, and the full advice text.
- */
 function serializeAdvisorCall(event: PostgresAgentEvent): Record<string, unknown> {
-  const payload = (event.payload && typeof event.payload === 'object') ? event.payload as Record<string, unknown> : {};
-  return {
+  return buildAdvisorCallView(event.payload, {
     id: event.id,
     project: event.projectId,
-    serverSessionId: event.serverSessionId,
-    platformSource: typeof payload.platformSource === 'string' ? payload.platformSource : event.platformSource,
-    cwd: typeof payload.cwd === 'string' ? payload.cwd : null,
-    lastUserMessage: typeof payload.lastUserMessage === 'string' ? payload.lastUserMessage : null,
-    transcriptPath: typeof payload.transcriptPath === 'string' ? payload.transcriptPath : null,
-    transcriptLineCount: typeof payload.transcriptLineCount === 'number' ? payload.transcriptLineCount : null,
-    advice: stringifyAdvice(payload.tool_response),
     occurredAtEpoch: event.occurredAtEpoch,
-  };
+    serverSessionId: event.serverSessionId,
+    platformSourceFallback: event.platformSource,
+  });
 }
 
 function serializeEvent(event: PostgresAgentEvent): Record<string, unknown> {

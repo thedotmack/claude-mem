@@ -888,24 +888,24 @@ export class SessionStore {
   }
 
   /**
-   * Durable, verbatim record of every `advisor` tool call, written outside the
-   * pending_messages -> LLM-compression pipeline (that pipeline discards raw
-   * tool_response text once it folds a batch into a narrative Observation).
-   * The advisor's advice is the whole point of calling it, so it is stored in
-   * full here; the forwarded context is not (the advisor forwards the entire
-   * conversation transcript, which would duplicate data already on disk) —
-   * only a lightweight pointer (transcript_path + line count at call time)
-   * plus the last user message, for a preview.
+   * Durable, verbatim record of every `advisor` tool call. The advisor is a
+   * server-side tool (server_tool_use in the transcript) — it never fires
+   * PostToolUse and never enters the observation pipeline, so rows here come
+   * from transcript scans in the Stop hook (see shared/advisor-transcript.ts)
+   * via POST /api/advisor-calls. The advice text is the whole point of the
+   * call and is stored in full; the forwarded context is not (the advisor
+   * forwards the entire conversation, which already lives on disk) — only a
+   * pointer (transcript_path + line number) plus the turn's user message.
+   * tool_use_id (the srvtoolu_... id) is UNIQUE so replayed scans are no-ops.
+   *
+   * v37 drops any v36-era table: v36 only ever existed on an unmerged branch
+   * whose capture path never fired, so the table is provably empty.
    */
   private createAdvisorCallsTable(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(36) as SchemaVersion | undefined;
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(37) as SchemaVersion | undefined;
     if (applied) return;
 
-    const tables = this.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='advisor_calls'").all() as TableNameRow[];
-    if (tables.length > 0) {
-      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(36, new Date().toISOString());
-      return;
-    }
+    this.db.run('DROP TABLE IF EXISTS advisor_calls');
 
     logger.debug('DB', 'Creating advisor_calls table');
 
@@ -916,10 +916,12 @@ export class SessionStore {
         content_session_id TEXT NOT NULL,
         project TEXT NOT NULL,
         platform_source TEXT NOT NULL,
+        tool_use_id TEXT NOT NULL,
+        advisor_model TEXT,
         cwd TEXT,
         last_user_message TEXT,
         transcript_path TEXT,
-        transcript_line_count INTEGER,
+        transcript_line_number INTEGER,
         advice TEXT NOT NULL,
         occurred_at_epoch INTEGER NOT NULL,
         created_at TEXT NOT NULL,
@@ -928,49 +930,64 @@ export class SessionStore {
       )
     `);
 
+    this.db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_advisor_calls_tool_use ON advisor_calls(tool_use_id)');
     this.db.run('CREATE INDEX IF NOT EXISTS idx_advisor_calls_session ON advisor_calls(session_db_id)');
     this.db.run('CREATE INDEX IF NOT EXISTS idx_advisor_calls_project ON advisor_calls(project)');
-    this.db.run('CREATE INDEX IF NOT EXISTS idx_advisor_calls_created ON advisor_calls(created_at_epoch DESC)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_advisor_calls_occurred ON advisor_calls(occurred_at_epoch DESC)');
 
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(36, new Date().toISOString());
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(37, new Date().toISOString());
 
     logger.debug('DB', 'advisor_calls table created successfully');
   }
 
+  /**
+   * Insert an advisor call; a duplicate tool_use_id (replayed transcript
+   * scan, re-fired Stop hook) is ignored. Returns the row id and whether
+   * this call actually inserted it — callers broadcast only fresh inserts.
+   */
   recordAdvisorCall(input: {
     sessionDbId: number;
     contentSessionId: string;
     project: string;
     platformSource: string;
+    toolUseId: string;
+    advisorModel?: string | null;
     cwd?: string | null;
     lastUserMessage?: string | null;
     transcriptPath?: string | null;
-    transcriptLineCount?: number | null;
+    transcriptLineNumber?: number | null;
     advice: string;
     occurredAtEpoch: number;
-  }): number {
+  }): { id: number; inserted: boolean } {
     const now = new Date();
 
     const result = this.db.prepare(`
-      INSERT INTO advisor_calls
-      (session_db_id, content_session_id, project, platform_source, cwd, last_user_message, transcript_path, transcript_line_count, advice, occurred_at_epoch, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT OR IGNORE INTO advisor_calls
+      (session_db_id, content_session_id, project, platform_source, tool_use_id, advisor_model, cwd, last_user_message, transcript_path, transcript_line_number, advice, occurred_at_epoch, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       input.sessionDbId,
       input.contentSessionId,
       input.project,
       input.platformSource,
+      input.toolUseId,
+      input.advisorModel ?? null,
       input.cwd ?? null,
       input.lastUserMessage ?? null,
       input.transcriptPath ?? null,
-      input.transcriptLineCount ?? null,
+      input.transcriptLineNumber ?? null,
       input.advice,
       input.occurredAtEpoch,
       now.toISOString(),
       now.getTime()
     );
 
-    return Number(result.lastInsertRowid);
+    if (result.changes > 0) {
+      return { id: Number(result.lastInsertRowid), inserted: true };
+    }
+
+    const existing = this.db.prepare('SELECT id FROM advisor_calls WHERE tool_use_id = ?').get(input.toolUseId) as { id: number } | undefined;
+    return { id: existing?.id ?? 0, inserted: false };
   }
 
   getAdvisorCalls(offset: number, limit: number, project?: string, platformSource?: string): { items: AdvisorCallRecord[]; hasMore: boolean; offset: number; limit: number } {

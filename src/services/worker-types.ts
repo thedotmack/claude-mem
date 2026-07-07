@@ -162,10 +162,12 @@ export interface AdvisorCall {
   content_session_id: string;
   project: string;
   platform_source: string;
+  tool_use_id: string;
+  advisor_model: string | null;
   cwd: string | null;
   last_user_message: string | null;
   transcript_path: string | null;
-  transcript_line_count: number | null;
+  transcript_line_number: number | null;
   advice: string;
   occurred_at_epoch: number;
   created_at: string;
