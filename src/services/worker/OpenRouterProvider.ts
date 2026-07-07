@@ -16,6 +16,7 @@ import { SessionManager } from './SessionManager.js';
 import { ClassifiedProviderError } from './provider-errors.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
+import { truncateConversationHistory } from './truncate-history.js';
 
 /**
  * OpenAI-compatible client configuration.
@@ -101,6 +102,8 @@ export function classifyOpenRouterError(input: {
 }
 
 const CHARS_PER_TOKEN_ESTIMATE = 4;
+const DEFAULT_MAX_CONTEXT_MESSAGES = 20;
+const DEFAULT_MAX_ESTIMATED_TOKENS = 100000;
 
 interface OpenAIMessage {
   role: 'user' | 'assistant' | 'system';
@@ -250,12 +253,20 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     reasoningEffort: OpenRouterReasoningEffort | null = null,
     extraBody: Record<string, unknown> | null = null
   ): Promise<ProviderQueryResult> {
-    const messages = this.conversationToOpenAIMessages(history);
-    const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
-    const estimatedTokens = this.estimateTokens(history.map(m => m.content).join(''));
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const maxContextMessages = parseInt(settings.CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES, 10) || DEFAULT_MAX_CONTEXT_MESSAGES;
+    const maxEstimatedTokens = parseInt(settings.CLAUDE_MEM_OPENROUTER_MAX_TOKENS, 10) || DEFAULT_MAX_ESTIMATED_TOKENS;
+    const truncatedHistory = truncateConversationHistory(history, {
+      maxContextMessages,
+      maxEstimatedTokens,
+      estimateTokens: (text) => this.estimateTokens(text ?? ''),
+    });
+    const messages = this.conversationToOpenAIMessages(truncatedHistory);
+    const totalChars = truncatedHistory.reduce((sum, m) => sum + m.content.length, 0);
+    const estimatedTokens = this.estimateTokens(truncatedHistory.map(m => m.content).join(''));
 
     logger.debug('SDK', `Querying OpenRouter multi-turn (${model})`, {
-      turns: history.length,
+      turns: truncatedHistory.length,
       totalChars,
       estimatedTokens
     });

@@ -149,6 +149,11 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
   fallbacks can surface a throttled offline banner. #2885's per-session
   disabled sentinel is superseded because non-blocking outages no longer
   create the Claude Stop-hook retry loop it was designed to cap.
+- #2739: preserve the initial prompt while truncating Gemini/OpenRouter
+  conversation history. The shared truncation helper applies message and token
+  budgets while keeping newest context in chronological order, Gemini now has
+  matching context-limit defaults, and both providers log truncation without
+  dropping the init prompt.
 
 ### Batch 8
 
@@ -218,8 +223,7 @@ Batch 5: complete.
 
 Batch 6: complete.
 
-Batch 7: #2739, #2583,
-#2507.
+Batch 7: #2583, #2507.
 
 Batch 8: #3114, #3047, #3011, #2905, #2904, #2858, #2770, #2741, #2506.
 
@@ -238,6 +242,11 @@ Batch 9: #2608.
 - `bun test tests/json-utils.test.ts tests/shared/settings-defaults-manager.test.ts tests/settings-routes-claude-token-validation.test.ts`
 - `bun test tests/json-utils.test.ts tests/shared/settings-defaults-manager.test.ts tests/settings-routes-claude-token-validation.test.ts tests/install-settings-preservation.test.ts tests/infrastructure/plugin-distribution.test.ts tests/integrations/opencode-plugin-contract.test.ts`
 - `bun run typecheck`
+- `bun test tests/worker/truncate-history.test.ts tests/gemini_provider.test.ts tests/shared/openrouter-request-settings.test.ts tests/shared/settings-defaults-manager.test.ts tests/infrastructure/plugin-distribution.test.ts`
+- `bun run typecheck`
+- `bun run lint:hook-io`
+- `bun run lint:spawn-env`
+- `git diff --check`
 - `bun run build`
 - `bun run lint:hook-io`
 - `bun run lint:spawn-env`
