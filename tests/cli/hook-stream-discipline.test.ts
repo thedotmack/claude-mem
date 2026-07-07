@@ -66,6 +66,80 @@ describe('#2292 — fail-loud diagnostic is no longer swallowed', () => {
   });
 });
 
+describe('#3161 — Stop hook never exits 2 on worker-unreachable', () => {
+  it('worker-utils fail-loud branch exempts summarize BEFORE the emitBlockingError exit-2 path (source contract)', () => {
+    const src = readFileSync(join(REPO_ROOT, 'src', 'shared', 'worker-utils.ts'), 'utf-8');
+    const fnStart = src.indexOf('export async function recordWorkerUnreachable');
+    expect(fnStart).toBeGreaterThan(-1);
+    // Guard the anchor itself: a missing column-0 close brace would make
+    // slice(fnStart, -1) silently widen the window to the whole file tail.
+    const fnEnd = src.indexOf('\n}', fnStart);
+    expect(fnEnd).toBeGreaterThan(fnStart);
+    const fnBody = src.slice(fnStart, fnEnd);
+    const guardIdx = fnBody.indexOf("hookType === 'summarize'");
+    const blockIdx = fnBody.indexOf('emitBlockingError(');
+    // The summarize exemption must exist and short-circuit before exit 2.
+    expect(guardIdx).toBeGreaterThan(-1);
+    expect(blockIdx).toBeGreaterThan(-1);
+    expect(guardIdx).toBeLessThan(blockIdx);
+    // The exemption must actually SHORT-CIRCUIT: without a `return` between
+    // the guard and emitBlockingError, the summarize branch would emit the
+    // diagnostic and still fall through to exit 2 (mutation caught here).
+    expect(fnBody.slice(guardIdx, blockIdx)).toContain('return');
+    // The exempt path stays loud for the operator (diagnostic, not silence).
+    expect(fnBody).toContain('emitDiagnostic(');
+  });
+
+  it('hookCommand catch-all exempts summarize from the exit-2 path too (source contract)', () => {
+    // The fail-loud exemption alone is not enough: non-transport errors
+    // (adapter/stdin/handler throws, or a worker dying mid-response-body)
+    // escape to the catch-all, which must also never exit 2 for summarize.
+    const src = readFileSync(join(REPO_ROOT, 'src', 'cli', 'hook-command.ts'), 'utf-8');
+    const catchIdx = src.indexOf('} catch (error) {');
+    expect(catchIdx).toBeGreaterThan(-1);
+    const tail = src.slice(catchIdx);
+    const exemptIdx = tail.indexOf("event === 'summarize'");
+    const blockIdx = tail.indexOf('emitBlockingError(');
+    expect(exemptIdx).toBeGreaterThan(-1);
+    expect(blockIdx).toBeGreaterThan(-1);
+    expect(exemptIdx).toBeLessThan(blockIdx);
+    expect(tail.slice(exemptIdx, blockIdx)).toContain('exitGraceful');
+  });
+
+  it('executeWithWorkerFallback handles a mid-body text() rejection as unreachable, not empty-body success (source contract)', () => {
+    // A worker dying mid-body rejects text() with a plain Error whose message
+    // matches no transport pattern — unguarded it escapes to the catch-all
+    // (exit 2 on Stop). The success branch must catch it, record the failure,
+    // and return the branded fallback — NOT swallow it into an empty-body
+    // undefined "success" after resetWorkerFailureCounter has run.
+    const src = readFileSync(join(REPO_ROOT, 'src', 'shared', 'worker-utils.ts'), 'utf-8');
+    const fnStart = src.indexOf('export async function executeWithWorkerFallback');
+    expect(fnStart).toBeGreaterThan(-1);
+    const fnBody = src.slice(fnStart);
+    // The success-branch read is wrapped so a rejection routes to the fallback.
+    const readIdx = fnBody.indexOf('text = await response.text();');
+    expect(readIdx).toBeGreaterThan(-1);
+    const catchIdx = fnBody.indexOf('recordWorkerUnreachable()', readIdx);
+    const resetIdx = fnBody.indexOf('resetWorkerFailureCounter();', readIdx);
+    // recordWorkerUnreachable + branded fallback come from the read's catch,
+    // BEFORE the success-path reset (which must only run once the body is read).
+    expect(catchIdx).toBeGreaterThan(readIdx);
+    expect(resetIdx).toBeGreaterThan(catchIdx);
+    expect(fnBody.slice(catchIdx, resetIdx)).toContain('WORKER_FALLBACK_BRAND');
+    // No bare unguarded read remains in the success path.
+    expect(fnBody.includes('await response.text();\n  if (text.length')).toBe(false);
+  });
+
+  it('claude-code adapter maps stop_hook_active so the summarize re-entry loop breaker can fire', () => {
+    const base = { session_id: 's1', cwd: process.cwd() };
+    expect(claudeCodeAdapter.normalizeInput({ ...base, stop_hook_active: true }).stopHookActive).toBe(true);
+    expect(claudeCodeAdapter.normalizeInput({ ...base, stop_hook_active: false }).stopHookActive).toBe(false);
+    expect(claudeCodeAdapter.normalizeInput(base).stopHookActive).toBeUndefined();
+    // Non-boolean junk never coerces (the handler checks `=== true`).
+    expect(claudeCodeAdapter.normalizeInput({ ...base, stop_hook_active: 'yes' }).stopHookActive).toBeUndefined();
+  });
+});
+
 describe('worker-unavailable transient path stays quiet (exit 0)', () => {
   it('exitGraceful drops buffered stderr so transient failures never leak', () => {
     const real = captureRealStderr();

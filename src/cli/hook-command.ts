@@ -8,6 +8,7 @@ import {
   installHookStderrBuffer,
   emitModelContext,
   emitBlockingError,
+  emitDiagnostic,
   exitGraceful,
   resetHookIoState,
 } from '../shared/hook-io.js';
@@ -141,10 +142,11 @@ export async function hookCommand(platform: string, event: string, options: Hook
       // EXIT_SIGNAL per CLAUDE.md: transient worker errors exit 0 to avoid
       // Windows Terminal tab accumulation. The fail-loud counter (worker-utils
       // recordWorkerUnreachable) handles the surface-after-N-failures path and
-      // emits the threshold-gated hook_failed telemetry internally. Awaited:
+      // emits the threshold-gated hook_failed telemetry internally; the
+      // summarize handler is exempt from its exit-2 path (#3161). Awaited:
       // when the count JUST reaches the threshold it sends the event and then
       // exits 2; exitGraceful below would kill a pending POST mid-flight.
-      await recordWorkerUnreachable();
+      await recordWorkerUnreachable(options);
       exitGraceful(options);
       return HOOK_EXIT_CODES.SUCCESS;
     }
@@ -161,6 +163,17 @@ export async function hookCommand(platform: string, event: string, options: Hook
         error_mode: 'blocking_error',
         threshold_tripped: false,
       });
+    }
+    // #3161: mirror the fail-loud exemption in recordWorkerUnreachable for the
+    // non-transport error class. A deterministic throw here (adapter/stdin/
+    // handler) would otherwise exit 2 on Stop and loop every session end.
+    if (event === 'summarize') {
+      emitDiagnostic(
+        `claude-mem hook error (summarize, not blocking): ${error instanceof Error ? error.message : String(error)}\n`
+      );
+      emitModelContext(adapter, buildNoOpResult(event));
+      exitGraceful(options);
+      return HOOK_EXIT_CODES.SUCCESS;
     }
     // BLOCKING_FEEDBACK: flush the buffered logger.error line to stderr and
     // exit 2 so the model receives it per Claude Code's hook contract.
