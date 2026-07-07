@@ -208,9 +208,17 @@ describe('Plugin Distribution - package.json Files Field', () => {
     expect(packageJson.files).toBeDefined();
     expect(packageJson.files).toContain('plugin/.codex-plugin');
     expect(packageJson.files).toContain('plugin/.mcp.json');
+    expect(packageJson.files).toContain('plugin/bun.lock');
     expect(packageJson.files).toContain('plugin/hooks');
     expect(packageJson.files).toContain('plugin/skills');
     expect(packageJson.files).toContain('plugin/scripts/*.cjs');
+  });
+
+  it('does not ship plugin/node_modules in the npm tarball; runtime deps are lockfile-provisioned (#2597)', () => {
+    const packageJsonPath = path.join(projectRoot, 'package.json');
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
+    expect(packageJson.files).toContain('plugin/bun.lock');
+    expect(packageJson.files).not.toContain('plugin/node_modules');
   });
 });
 

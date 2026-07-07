@@ -53,6 +53,13 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
 - #2595: harden `scripts/sync-marketplace.cjs` with no-write dry runs, opt-in
   rsync delete, preserved user-config excludes, and dry-run-safe Bun install
   logging. The legacy bash sync script was already absent on this branch.
+- #2597: superseded by the current npm-release runtime model. Build now
+  generates and ships `plugin/bun.lock`, runtime setup installs from that
+  lockfile and validates critical modules, Setup self-heals missing
+  `node_modules`, and worker/MCP bundles forbid external zod requires where
+  startup cannot rely on installed plugin dependencies. We intentionally do not
+  ship `plugin/node_modules` in the npm tarball because the current dependency
+  tree is hundreds of MB and contains platform-specific native artifacts.
 
 ### Batch 6
 
@@ -140,7 +147,7 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
 
 Batch 4: #2957.
 
-Batch 5: #2924, #2597.
+Batch 5: #2924.
 
 Batch 6: #3034, #3014, #3000, #2908, #2855, #2764, #2731, #2623, #2523.
 
