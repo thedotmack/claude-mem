@@ -60,6 +60,10 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
   startup cannot rely on installed plugin dependencies. We intentionally do not
   ship `plugin/node_modules` in the npm tarball because the current dependency
   tree is hundreds of MB and contains platform-specific native artifacts.
+- #2924: superseded by the current npx CLI package. The old standalone
+  `installer/` package no longer exists on this branch; `package.json` publishes
+  executable `dist/npx-cli/index.js` as the `claude-mem` bin, and
+  `npx claude-mem uninstall` now owns plugin/registry/cache/data cleanup.
 
 ### Batch 6
 
@@ -147,7 +151,7 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
 
 Batch 4: #2957.
 
-Batch 5: #2924.
+Batch 5: complete.
 
 Batch 6: #3034, #3014, #3000, #2908, #2855, #2764, #2731, #2623, #2523.
 

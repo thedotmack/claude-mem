@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, statSync } from 'fs';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 import path from 'path';
@@ -202,6 +202,22 @@ describe('Plugin Distribution - Startup Root Resolution', () => {
 });
 
 describe('Plugin Distribution - package.json Files Field', () => {
+  it('publishes the executable npx CLI bin with uninstall support (#2924)', () => {
+    const packageJsonPath = path.join(projectRoot, 'package.json');
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
+    const binPath = packageJson.bin?.['claude-mem'];
+    expect(binPath).toBe('./dist/npx-cli/index.js');
+
+    const fullBinPath = path.join(projectRoot, binPath);
+    expect(existsSync(fullBinPath)).toBe(true);
+    expect(statSync(fullBinPath).mode & 0o111).not.toBe(0);
+
+    const npxCliSource = readFileSync(path.join(projectRoot, 'src/npx-cli/index.ts'), 'utf-8');
+    expect(npxCliSource).toContain('npx claude-mem uninstall');
+    expect(npxCliSource).toContain("case 'uninstall':");
+    expect(npxCliSource).toContain("case 'remove':");
+  });
+
   it('should include bundled plugin entries in root package.json files field', () => {
     const packageJsonPath = path.join(projectRoot, 'package.json');
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
