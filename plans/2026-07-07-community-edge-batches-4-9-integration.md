@@ -182,6 +182,11 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
   persisted session resumes.
 - #2671: server-generated observations and summaries copy project metadata from
   `server_sessions.metadata.project`.
+- #3047: monorepo subdirectories derive repo-relative project keys when the
+  repository declares workspaces or contains nested package roots, while
+  ordinary single-package repos keep the repo-root key. Explicit
+  `.claude-mem.json` names still win, and unrelated ancestor worktree markers
+  no longer override a real nested repo root.
 
 ## Held or split from this tranche
 
@@ -234,7 +239,7 @@ Batch 6: complete.
 
 Batch 7: complete.
 
-Batch 8: #3114, #3047, #3011, #2905, #2904, #2858, #2770, #2741, #2506.
+Batch 8: #3114, #3011, #2905, #2904, #2858, #2770, #2741, #2506.
 
 Batch 9: #2608.
 
@@ -261,6 +266,11 @@ Batch 9: #2608.
 - `bun run build`
 - `git diff --check`
 - `bun test tests/infrastructure/plugin-distribution.test.ts tests/cli/hook-io.test.ts tests/cli/hook-stream-discipline.test.ts tests/services/worker/session-message-buffer.test.ts tests/gemini_provider.test.ts tests/shared/openrouter-request-settings.test.ts tests/worker/codex-provider.test.ts`
+- `bun run typecheck`
+- `bun run lint:hook-io`
+- `bun run lint:spawn-env`
+- `git diff --check`
+- `bun test tests/utils/project-name.test.ts tests/infrastructure/plugin-distribution.test.ts`
 - `bun run typecheck`
 - `bun run lint:hook-io`
 - `bun run lint:spawn-env`
