@@ -363,6 +363,7 @@ describe('SettingsDefaultsManager', () => {
       expect(defaults.CLAUDE_MEM_WORKER_HOST).toBeDefined();
 
       expect(defaults.CLAUDE_MEM_PROVIDER).toBeDefined();
+      expect(defaults.CLAUDE_MEM_CLAUDE_MAX_TOKENS).toBe('150000');
       expect(defaults.CLAUDE_MEM_GEMINI_API_KEY).toBeDefined();
       expect(defaults.CLAUDE_MEM_OPENROUTER_API_KEY).toBeDefined();
       expect(defaults.CLAUDE_MEM_OPENROUTER_BASE_URL).toBe('');

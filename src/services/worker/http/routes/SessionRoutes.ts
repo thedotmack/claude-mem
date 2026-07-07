@@ -43,11 +43,12 @@ const MAX_USER_PROMPT_BYTES = 256 * 1024;
  */
 function normalizeAbortReason(
   reason: string | null | undefined
-): 'idle' | 'shutdown' | 'overflow' | 'restart_guard' | 'quota' | 'none' {
+): 'idle' | 'shutdown' | 'overflow' | 'context_bound' | 'restart_guard' | 'quota' | 'none' {
   switch ((reason ?? '').split(':')[0]) {
     case 'idle': return 'idle';
     case 'shutdown': return 'shutdown';
     case 'overflow': return 'overflow';
+    case 'context-bound': return 'context_bound';
     case 'restart-guard': return 'restart_guard';
     case 'quota': return 'quota';
     default: return 'none';

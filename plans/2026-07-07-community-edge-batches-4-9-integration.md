@@ -19,6 +19,10 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
   from isolated worker subprocess environments.
 - #2929: server runtime API-key persistence preserves Claude-Code-style
   top-level settings peers and creates the settings file with owner-only mode.
+- #2957: bound Claude provider observer context with
+  `CLAUDE_MEM_CLAUDE_MAX_TOKENS`; after a saved turn exceeds the cap, the SDK
+  session is reset to a fresh start, `memorySessionId` is cleared, and telemetry
+  reports the closed `context_bound` abort reason.
 
 ### Batch 5
 
@@ -149,7 +153,7 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
 
 ## Still to integrate from Batches 4-9
 
-Batch 4: #2957.
+Batch 4: complete.
 
 Batch 5: complete.
 

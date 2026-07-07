@@ -163,6 +163,49 @@ export function classifyClaudeError(err: unknown): ClassifiedProviderError {
   return new ClassifiedProviderError(message, { kind: 'transient', cause: err });
 }
 
+export const DEFAULT_CLAUDE_MAX_OBSERVER_TOKENS = 150000;
+const MIN_CLAUDE_MAX_OBSERVER_TOKENS = 1000;
+const MAX_CLAUDE_MAX_OBSERVER_TOKENS = 1000000;
+
+export function resolveObserverMaxTokens(
+  settings: { CLAUDE_MEM_CLAUDE_MAX_TOKENS?: string }
+): number {
+  const rawValue = settings.CLAUDE_MEM_CLAUDE_MAX_TOKENS ?? '';
+  if (!/^\d+$/.test(rawValue)) {
+    return DEFAULT_CLAUDE_MAX_OBSERVER_TOKENS;
+  }
+
+  const parsed = Number.parseInt(rawValue, 10);
+  if (
+    !Number.isSafeInteger(parsed) ||
+    parsed < MIN_CLAUDE_MAX_OBSERVER_TOKENS ||
+    parsed > MAX_CLAUDE_MAX_OBSERVER_TOKENS
+  ) {
+    return DEFAULT_CLAUDE_MAX_OBSERVER_TOKENS;
+  }
+
+  return parsed;
+}
+
+export function computeFullContextTokens(
+  usage: {
+    input_tokens?: number | null;
+    cache_creation_input_tokens?: number | null;
+    cache_read_input_tokens?: number | null;
+  } | undefined | null
+): number {
+  if (!usage) return 0;
+  return (
+    (usage.input_tokens || 0) +
+    (usage.cache_creation_input_tokens || 0) +
+    (usage.cache_read_input_tokens || 0)
+  );
+}
+
+export function observerContextExceeded(currentContextTokens: number, maxObserverTokens: number): boolean {
+  return currentContextTokens > maxObserverTokens;
+}
+
 export class ClaudeProvider {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
@@ -214,6 +257,7 @@ export class ClaudeProvider {
 
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const maxConcurrent = parseInt(settings.CLAUDE_MEM_MAX_CONCURRENT_AGENTS, 10) || 2;
+    const maxObserverTokens = resolveObserverMaxTokens(settings);
     await waitForSlot(maxConcurrent, session.abortController.signal);
 
     const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
@@ -315,6 +359,7 @@ export class ClaudeProvider {
         }
 
         if (message.type === 'assistant') {
+          let currentContextTokens = 0;
           const content = message.message.content;
           const textContent = Array.isArray(content)
             ? content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
@@ -335,12 +380,12 @@ export class ClaudeProvider {
 
             // Real per-response usage for telemetry (tokens_input includes the
             // full context the model read: fresh + cache writes + cache reads).
+            const fullContextTokens = computeFullContextTokens(usage);
             session.lastUsage = {
-              input: (usage.input_tokens || 0) +
-                (usage.cache_creation_input_tokens || 0) +
-                (usage.cache_read_input_tokens || 0),
+              input: fullContextTokens,
               output: usage.output_tokens || 0,
             };
+            currentContextTokens = fullContextTokens;
 
             logger.debug('SDK', 'Token usage captured', {
               sessionId: session.sessionDbId,
@@ -383,6 +428,22 @@ export class ClaudeProvider {
             cwdTracker.lastCwd,
             modelId
           );
+
+          if (observerContextExceeded(currentContextTokens, maxObserverTokens)) {
+            logger.warn('SDK', 'Observer context bound exceeded - resetting to a fresh SDK session', {
+              sessionId: session.sessionDbId,
+              contextTokens: currentContextTokens,
+              tokenLimit: maxObserverTokens
+            });
+            this.resetSessionForFreshStart(session);
+            session.abortReason = 'context-bound';
+            try {
+              session.abortController.abort();
+            } catch {
+              // best-effort
+            }
+            break;
+          }
         }
 
         if (message.type === 'result') {
@@ -449,6 +510,12 @@ export class ClaudeProvider {
       sessionId: session.sessionDbId,
       duration: `${(sessionDuration / 1000).toFixed(1)}s`
     });
+  }
+
+  resetSessionForFreshStart(session: Pick<ActiveSession, 'sessionDbId' | 'memorySessionId' | 'forceInit'>): void {
+    session.memorySessionId = null;
+    session.forceInit = true;
+    this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, null);
   }
 
   private async *createMessageGenerator(

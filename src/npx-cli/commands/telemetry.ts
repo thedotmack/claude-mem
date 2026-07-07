@@ -69,7 +69,7 @@ const COLLECTED_FIELDS = [
   'invalid_output_class   xml / idle / prose (never the output)',
   'consecutive_invalid_outputs   legacy unusable-output counter',
   'respawn_triggered      legacy recovery flag for old invalid-output restarts',
-  'abort_reason     idle / shutdown / overflow / restart_guard / quota / none',
+  'abort_reason     idle / shutdown / overflow / context_bound / restart_guard / quota / none',
   'previous_shutdown      crash / clean / unknown (detected at worker start)',
   'previous_uptime_seconds / uptime_seconds',
   '                 worker uptime in whole seconds (previous run / at stop)',
