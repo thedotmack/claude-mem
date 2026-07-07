@@ -143,6 +143,12 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
   context fallback calls use `allowLazySpawn: false` so a cold worker returns
   the empty SessionStart payload without spawning or accruing fail-loud debt.
   Codex SessionStart ordering remains unchanged.
+- #2892/#2885: make worker outages non-blocking. The fail-loud threshold now
+  emits diagnostics and telemetry without `exit 2`, degraded worker 5xx/429
+  responses are treated as worker-unreachable fallbacks, and session-init/Stop
+  fallbacks can surface a throttled offline banner. #2885's per-session
+  disabled sentinel is superseded because non-blocking outages no longer
+  create the Claude Stop-hook retry loop it was designed to cap.
 
 ### Batch 8
 
@@ -212,7 +218,7 @@ Batch 5: complete.
 
 Batch 6: complete.
 
-Batch 7: #2892, #2885, #2739, #2583,
+Batch 7: #2739, #2583,
 #2507.
 
 Batch 8: #3114, #3047, #3011, #2905, #2904, #2858, #2770, #2741, #2506.
@@ -231,6 +237,13 @@ Batch 9: #2608.
 - `npm run typecheck`
 - `bun test tests/json-utils.test.ts tests/shared/settings-defaults-manager.test.ts tests/settings-routes-claude-token-validation.test.ts`
 - `bun test tests/json-utils.test.ts tests/shared/settings-defaults-manager.test.ts tests/settings-routes-claude-token-validation.test.ts tests/install-settings-preservation.test.ts tests/infrastructure/plugin-distribution.test.ts tests/integrations/opencode-plugin-contract.test.ts`
+- `bun run typecheck`
+- `bun run build`
+- `bun run lint:hook-io`
+- `bun run lint:spawn-env`
+- `git diff --check`
+- `bun test tests/shared/worker-autostart-flag.test.ts tests/cli/hook-stream-discipline.test.ts tests/cli/handlers/session-init-server-beta-context.test.ts tests/cli/handlers/summarize-subagent-skip.test.ts`
+- `bun test tests/shared/worker-autostart-flag.test.ts tests/cli/hook-stream-discipline.test.ts tests/cli/handlers/session-init-server-beta-context.test.ts tests/cli/handlers/summarize-subagent-skip.test.ts tests/infrastructure/plugin-distribution.test.ts`
 - `bun run typecheck`
 - `bun run build`
 - `bun run lint:hook-io`

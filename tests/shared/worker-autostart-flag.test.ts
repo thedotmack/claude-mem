@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { existsSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
@@ -139,5 +139,24 @@ describe('worker autostart and fail-loud warning behavior', () => {
     setActivePlatform('kiro');
 
     expect(await recordWorkerUnreachable()).toBe(1);
+  });
+
+  it('does not exit 2 for regular Claude Code worker outages and exposes one outage hint', async () => {
+    settings = { CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: '1' };
+    const exitSpy = spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('process.exit should not be called for worker outages');
+    }) as never);
+
+    try {
+      const { recordWorkerUnreachable, setActivePlatform, consumeWorkerOutageHint } = await importWorkerUtilsFresh();
+      setActivePlatform('claude-code');
+
+      expect(await recordWorkerUnreachable()).toBeGreaterThan(0);
+      expect(exitSpy).not.toHaveBeenCalled();
+      expect(consumeWorkerOutageHint('session-1')).toContain('background worker offline');
+      expect(consumeWorkerOutageHint('session-1')).toBeNull();
+    } finally {
+      exitSpy.mockRestore();
+    }
   });
 });

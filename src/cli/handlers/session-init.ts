@@ -6,6 +6,7 @@ import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js'
 import {
   executeWithWorkerFallback as defaultExecuteWithWorkerFallback,
   isWorkerFallback as defaultIsWorkerFallback,
+  consumeWorkerOutageHint as defaultConsumeWorkerOutageHint,
 } from '../../shared/worker-utils.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { logger } from '../../utils/logger.js';
@@ -41,6 +42,7 @@ const defaultDependencies = {
   resolveRuntimeContext: defaultResolveRuntimeContext,
   logServerFallback: defaultLogServerFallback,
   shouldTrackProject: defaultShouldTrackProject,
+  consumeWorkerOutageHint: defaultConsumeWorkerOutageHint,
 };
 
 let dependencies = defaultDependencies;
@@ -122,7 +124,13 @@ export const sessionInitHandler: EventHandler = {
     );
 
     if (dependencies.isWorkerFallback(initResult)) {
-      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+      const hint = dependencies.consumeWorkerOutageHint(sessionId, true);
+      return {
+        continue: true,
+        suppressOutput: !hint,
+        ...(hint ? { systemMessage: hint } : {}),
+        exitCode: HOOK_EXIT_CODES.SUCCESS,
+      };
     }
 
     if (typeof initResult?.sessionDbId !== 'number') {
