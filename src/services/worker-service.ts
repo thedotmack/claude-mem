@@ -12,7 +12,7 @@ import { DATA_DIR, DB_PATH, ensureDir } from '../shared/paths.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { getUptimeSeconds } from '../shared/uptime.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
-import { getAuthMethodDescription } from '../shared/EnvManager.js';
+import { applyProxyAndCaFromEnvFile, getAuthMethodDescription } from '../shared/EnvManager.js';
 import { logger } from '../utils/logger.js';
 import { ChromaMcpManager } from './sync/ChromaMcpManager.js';
 import { ChromaSync } from './sync/ChromaSync.js';
@@ -1365,6 +1365,20 @@ async function main() {
 
     case '--daemon':
     default: {
+      try {
+        const applied = applyProxyAndCaFromEnvFile();
+        if (applied.length > 0) {
+          logger.info('SYSTEM', 'Applied proxy/CA passthrough from claude-mem env file', { keys: applied });
+        }
+      } catch (error) {
+        logger.warn(
+          'SYSTEM',
+          'Failed to apply proxy/CA passthrough from claude-mem env file',
+          {},
+          error instanceof Error ? error : new Error(String(error)),
+        );
+      }
+
       // Duplicate gate, ground truth FIRST (Phase 5): a live worker owns the
       // port — the port cannot be faked by a stale or clobbered file. Exit 0:
       // duplicate suppression is a success, not a failure.

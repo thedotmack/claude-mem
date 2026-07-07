@@ -43,6 +43,28 @@ const BLOCKED_ENV_VARS = [
   // chain sanitizeEnv.
   'CLAUDE_CODE_EFFORT_LEVEL',
   'CLAUDE_CODE_ALWAYS_ENABLE_EFFORT',
+  // Issue #2620: host Claude Code routing flags and model overrides must not
+  // reroute claude-mem's worker subprocess away from its own OAuth endpoint.
+  'CLAUDE_CODE_USE_BEDROCK',
+  'CLAUDE_CODE_USE_VERTEX',
+  'CLAUDE_CODE_USE_MANTLE',
+  'ANTHROPIC_DEFAULT_OPUS_MODEL',
+  'ANTHROPIC_DEFAULT_SONNET_MODEL',
+  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+  'HTTPS_PROXY',
+  'HTTP_PROXY',
+  'NO_PROXY',
+  'ALL_PROXY',
+  'https_proxy',
+  'http_proxy',
+  'no_proxy',
+  'all_proxy',
+  'npm_config_proxy',
+  'npm_config_https_proxy',
+  'SSL_CERT_FILE',
+  'REQUESTS_CA_BUNDLE',
+  'CURL_CA_BUNDLE',
+  'NODE_EXTRA_CA_CERTS',
 ];
 
 export interface ClaudeMemEnv {
@@ -51,14 +73,44 @@ export interface ClaudeMemEnv {
   ANTHROPIC_AUTH_TOKEN?: string;
   GEMINI_API_KEY?: string;
   OPENROUTER_API_KEY?: string;
+  HTTPS_PROXY?: string;
+  HTTP_PROXY?: string;
+  NO_PROXY?: string;
+  SSL_CERT_FILE?: string;
+  REQUESTS_CA_BUNDLE?: string;
+  CURL_CA_BUNDLE?: string;
+  NODE_EXTRA_CA_CERTS?: string;
 }
 
 /**
- * The only env keys ever copied out of ~/.claude-mem/.env. This is the
- * whitelist that load/save/buildIsolatedEnv enforce — only these five keys
- * cross the boundary. Do NOT replace the per-key copy loops with
- * Object.assign(result, parsed): that would let arbitrary keys (a leaked
- * CLAUDE_CODE_* or a typo'd ANTHROPIC_* variant) through (see #2375).
+ * Corporate proxy / custom CA passthrough. These keys are honored only when
+ * declared explicitly in ~/.claude-mem/.env; ambient parent-shell values stay
+ * blocked so session-local proxy routing does not silently latch onto the
+ * persistent daemon.
+ */
+export const PROXY_AND_CA_PASSTHROUGH_KEYS = [
+  'HTTPS_PROXY',
+  'HTTP_PROXY',
+  'NO_PROXY',
+  'SSL_CERT_FILE',
+  'REQUESTS_CA_BUNDLE',
+  'CURL_CA_BUNDLE',
+  'NODE_EXTRA_CA_CERTS',
+] as const;
+
+const AMBIENT_PROXY_AND_CA_ENV_KEYS = [
+  ...PROXY_AND_CA_PASSTHROUGH_KEYS,
+  'https_proxy',
+  'http_proxy',
+  'no_proxy',
+  'all_proxy',
+  'ALL_PROXY',
+  'npm_config_proxy',
+  'npm_config_https_proxy',
+] as const;
+
+/**
+ * The credential keys copied out of ~/.claude-mem/.env.
  */
 const CREDENTIAL_KEYS = [
   'ANTHROPIC_API_KEY',
@@ -70,7 +122,7 @@ const CREDENTIAL_KEYS = [
 
 // Node's stdlib .env parser (util.parseEnv, Node ≥20.12 / stable in 24):
 // handles `#` comments, blank lines, KEY=VALUE, and quote-stripping. The
-// downstream CREDENTIAL_KEYS whitelist still filters the result — arbitrary
+// downstream whitelists still filter the result — arbitrary
 // keys in the file never reach a ClaudeMemEnv. serializeEnvFile is kept custom
 // (header banner + selective quoting; no stdlib equivalent).
 function parseEnvFile(content: string): Record<string, string> {
@@ -104,9 +156,9 @@ function serializeEnvFile(env: Record<string, string>): string {
  * the SDK subprocess; they are re-injected here (and in buildIsolatedEnv)
  * exclusively from the file.
  *
- * The whitelist is enforced by the CREDENTIAL_KEYS copy loop below — only the
- * five named keys are ever copied out (see CREDENTIAL_KEYS for why this must
- * not become Object.assign(result, parsed)).
+ * The whitelist is enforced by the copy loops below. Do not replace them with
+ * Object.assign(result, parsed): arbitrary keys in ~/.claude-mem/.env must not
+ * cross into process.env or subprocess env.
  */
 export function loadClaudeMemEnv(): ClaudeMemEnv {
   const envFile = envFilePath();
@@ -120,6 +172,9 @@ export function loadClaudeMemEnv(): ClaudeMemEnv {
 
     const result: ClaudeMemEnv = {};
     for (const key of CREDENTIAL_KEYS) {
+      if (parsed[key]) result[key] = parsed[key];
+    }
+    for (const key of PROXY_AND_CA_PASSTHROUGH_KEYS) {
       if (parsed[key]) result[key] = parsed[key];
     }
 
@@ -189,6 +244,10 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
       const value = credentials[key];
       if (value) isolatedEnv[key] = value;
     }
+    for (const key of PROXY_AND_CA_PASSTHROUGH_KEYS) {
+      const value = credentials[key];
+      if (value) isolatedEnv[key] = value;
+    }
 
     // Note: CLAUDE_CODE_OAUTH_TOKEN is intentionally NOT copied from
     // process.env here. OAuth tokens have refresh semantics that this
@@ -198,6 +257,29 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
   }
 
   return isolatedEnv;
+}
+
+export function applyProxyAndCaFromEnvFile(): string[] {
+  const env = loadClaudeMemEnv();
+  const applied: string[] = [];
+
+  for (const key of AMBIENT_PROXY_AND_CA_ENV_KEYS) {
+    delete process.env[key];
+  }
+
+  for (const key of PROXY_AND_CA_PASSTHROUGH_KEYS) {
+    const value = env[key];
+    if (!value) continue;
+
+    process.env[key] = value;
+    applied.push(key);
+
+    if (key === 'HTTPS_PROXY') process.env.https_proxy = value;
+    if (key === 'HTTP_PROXY') process.env.http_proxy = value;
+    if (key === 'NO_PROXY') process.env.no_proxy = value;
+  }
+
+  return applied;
 }
 
 /**

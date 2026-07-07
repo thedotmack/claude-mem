@@ -229,11 +229,108 @@ describe('ResponseProcessor', () => {
 
       expect(logger.warn).toHaveBeenCalledWith(
         'PARSER',
-        expect.stringMatching(/^TestAgent returned non-XML prose response/),
-        expect.objectContaining({ sessionId: 1, outputClass: 'prose' })
+        expect.stringMatching(/^TestAgent returned non-XML skip response/),
+        expect.objectContaining({ sessionId: 1, outputClass: 'skip' })
       );
       expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
       expect(session.earliestPendingTimestamp).toBeNull();
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+    });
+
+    it('treats recognized empty-result prose as a valid no-op and clears invalid output debt', async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+      } as unknown as SessionManager;
+
+      const session = createMockSession({
+        consecutiveInvalidOutputs: 2,
+      });
+
+      await processAgentResponse(
+        'No observations to record at this time.',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
+      expect(session.consecutiveInvalidOutputs).toBe(0);
+      expect(session.earliestPendingTimestamp).toBeNull();
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith(
+        'PARSER',
+        expect.stringMatching(/^TestAgent returned non-XML skip response/),
+        expect.objectContaining({ sessionId: 1, outputClass: 'skip' })
+      );
+    });
+
+    it('treats idle output as a valid no-op and clears invalid output debt', async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+      } as unknown as SessionManager;
+
+      const session = createMockSession({
+        consecutiveInvalidOutputs: 2,
+      });
+
+      await processAgentResponse(
+        '',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
+      expect(session.consecutiveInvalidOutputs).toBe(0);
+      expect(session.earliestPendingTimestamp).toBeNull();
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+    });
+
+    it('still surfaces provider quota prose by preserving pending work and aborting', async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      const resetProcessingToPending = mock(() => Promise.resolve(1));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+        resetProcessingToPending,
+      } as unknown as SessionManager;
+
+      const session = createMockSession({
+        consecutiveInvalidOutputs: 2,
+      });
+
+      await processAgentResponse(
+        'Claude usage limit reached. Your weekly limit will reset soon.',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(confirmClaimedMessages).not.toHaveBeenCalled();
+      expect(resetProcessingToPending).toHaveBeenCalledWith(1);
+      expect(session.consecutiveInvalidOutputs).toBe(0);
+      expect(session.abortReason).toBe('quota:observer_text');
+      expect(session.abortController.signal.aborted).toBe(true);
+      expect(mockBroadcastProcessingStatus).toHaveBeenCalled();
       expect(mockStoreObservations).not.toHaveBeenCalled();
     });
   });

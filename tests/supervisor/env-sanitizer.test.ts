@@ -1,7 +1,28 @@
-import { describe, expect, it } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
+import * as fs from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { sanitizeEnv } from '../../src/supervisor/env-sanitizer.js';
 
+const TEST_DATA_DIR = fs.mkdtempSync(join(tmpdir(), 'claude-mem-sanitizer-'));
+const TEST_ENV_FILE = join(TEST_DATA_DIR, '.env');
+const ORIGINAL_ENV_FILE = process.env.CLAUDE_MEM_ENV_FILE;
+
 describe('sanitizeEnv', () => {
+  beforeAll(() => {
+    process.env.CLAUDE_MEM_ENV_FILE = TEST_ENV_FILE;
+  });
+
+  beforeEach(() => {
+    try { fs.unlinkSync(TEST_ENV_FILE); } catch { /* ignore */ }
+  });
+
+  afterAll(() => {
+    if (ORIGINAL_ENV_FILE === undefined) delete process.env.CLAUDE_MEM_ENV_FILE;
+    else process.env.CLAUDE_MEM_ENV_FILE = ORIGINAL_ENV_FILE;
+    fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  });
+
   it('strips variables with CLAUDECODE_ prefix', () => {
     const result = sanitizeEnv({
       CLAUDECODE_FOO: 'bar',
@@ -18,11 +39,19 @@ describe('sanitizeEnv', () => {
     const result = sanitizeEnv({
       CLAUDE_CODE_BAR: 'baz',
       CLAUDE_CODE_OAUTH_TOKEN: 'token',
+      CLAUDE_CODE_SKIP_BEDROCK_AUTH: '1',
+      CLAUDE_CODE_SKIP_VERTEX_AUTH: '1',
+      CLAUDE_CODE_USE_BEDROCK: '1',
+      CLAUDE_CODE_USE_VERTEX: '1',
       HOME: '/home/user'
     });
 
     expect(result.CLAUDE_CODE_BAR).toBeUndefined();
     expect(result.CLAUDE_CODE_OAUTH_TOKEN).toBe('token');
+    expect(result.CLAUDE_CODE_SKIP_BEDROCK_AUTH).toBe('1');
+    expect(result.CLAUDE_CODE_SKIP_VERTEX_AUTH).toBe('1');
+    expect(result.CLAUDE_CODE_USE_BEDROCK).toBeUndefined();
+    expect(result.CLAUDE_CODE_USE_VERTEX).toBeUndefined();
     expect(result.HOME).toBe('/home/user');
   });
 
@@ -130,7 +159,7 @@ describe('sanitizeEnv', () => {
     expect(result.HOME).toBe('/home/user');
   });
 
-  it('preserves proxy env vars (uppercase and lowercase) so the worker subprocess inherits the system proxy', () => {
+  it('strips ambient proxy and CA env vars by default', () => {
     const result = sanitizeEnv({
       HTTP_PROXY: 'http://bad-proxy:1234',
       HTTPS_PROXY: 'http://bad-proxy:1234',
@@ -142,19 +171,46 @@ describe('sanitizeEnv', () => {
       no_proxy: 'localhost,127.0.0.1',
       npm_config_proxy: 'http://bad-proxy:1234',
       npm_config_https_proxy: 'http://bad-proxy:1234',
+      NODE_EXTRA_CA_CERTS: '/tmp/corp-ca.pem',
+      SSL_CERT_FILE: '/tmp/ssl.pem',
       PATH: '/usr/bin'
     });
 
-    expect(result.HTTP_PROXY).toBe('http://bad-proxy:1234');
-    expect(result.HTTPS_PROXY).toBe('http://bad-proxy:1234');
-    expect(result.ALL_PROXY).toBe('socks5://bad-proxy:1080');
+    expect(result.HTTP_PROXY).toBeUndefined();
+    expect(result.HTTPS_PROXY).toBeUndefined();
+    expect(result.ALL_PROXY).toBeUndefined();
+    expect(result.NO_PROXY).toBeUndefined();
+    expect(result.http_proxy).toBeUndefined();
+    expect(result.https_proxy).toBeUndefined();
+    expect(result.all_proxy).toBeUndefined();
+    expect(result.no_proxy).toBeUndefined();
+    expect(result.npm_config_proxy).toBeUndefined();
+    expect(result.npm_config_https_proxy).toBeUndefined();
+    expect(result.NODE_EXTRA_CA_CERTS).toBeUndefined();
+    expect(result.SSL_CERT_FILE).toBeUndefined();
+    expect(result.PATH).toBe('/usr/bin');
+  });
+
+  it('preserves proxy and CA env vars only when declared in claude-mem env file', () => {
+    fs.writeFileSync(
+      TEST_ENV_FILE,
+      'HTTPS_PROXY=http://corp-proxy:3128\nNO_PROXY=localhost,127.0.0.1\nNODE_EXTRA_CA_CERTS=/tmp/corp-ca.pem\n',
+    );
+
+    const result = sanitizeEnv({
+      HTTPS_PROXY: 'http://corp-proxy:3128',
+      https_proxy: 'http://corp-proxy:3128',
+      HTTP_PROXY: 'http://other-proxy:3128',
+      NO_PROXY: 'localhost,127.0.0.1',
+      NODE_EXTRA_CA_CERTS: '/tmp/corp-ca.pem',
+      PATH: '/usr/bin'
+    });
+
+    expect(result.HTTPS_PROXY).toBe('http://corp-proxy:3128');
+    expect(result.https_proxy).toBe('http://corp-proxy:3128');
     expect(result.NO_PROXY).toBe('localhost,127.0.0.1');
-    expect(result.http_proxy).toBe('http://bad-proxy:1234');
-    expect(result.https_proxy).toBe('http://bad-proxy:1234');
-    expect(result.all_proxy).toBe('socks5://bad-proxy:1080');
-    expect(result.no_proxy).toBe('localhost,127.0.0.1');
-    expect(result.npm_config_proxy).toBe('http://bad-proxy:1234');
-    expect(result.npm_config_https_proxy).toBe('http://bad-proxy:1234');
+    expect(result.NODE_EXTRA_CA_CERTS).toBe('/tmp/corp-ca.pem');
+    expect(result.HTTP_PROXY).toBeUndefined();
     expect(result.PATH).toBe('/usr/bin');
   });
 
@@ -162,6 +218,8 @@ describe('sanitizeEnv', () => {
     const result = sanitizeEnv({
       CLAUDE_CODE_OAUTH_TOKEN: 'my-oauth-token',
       CLAUDE_CODE_GIT_BASH_PATH: '/usr/bin/bash',
+      CLAUDE_CODE_SKIP_BEDROCK_AUTH: '1',
+      CLAUDE_CODE_SKIP_VERTEX_AUTH: '1',
       CLAUDE_CODE_RANDOM_OTHER: 'should-be-stripped',
       CLAUDE_CODE_INTERNAL_FLAG: 'should-be-stripped',
       PATH: '/usr/bin'
@@ -169,6 +227,8 @@ describe('sanitizeEnv', () => {
 
     expect(result.CLAUDE_CODE_OAUTH_TOKEN).toBe('my-oauth-token');
     expect(result.CLAUDE_CODE_GIT_BASH_PATH).toBe('/usr/bin/bash');
+    expect(result.CLAUDE_CODE_SKIP_BEDROCK_AUTH).toBe('1');
+    expect(result.CLAUDE_CODE_SKIP_VERTEX_AUTH).toBe('1');
 
     expect(result.CLAUDE_CODE_RANDOM_OTHER).toBeUndefined();
     expect(result.CLAUDE_CODE_INTERNAL_FLAG).toBeUndefined();

@@ -38,6 +38,7 @@ import {
   type ServerRuntimeContext,
 } from '../services/hooks/runtime-selector.js';
 import { normalizePlatformSource } from '../shared/platform-source.js';
+import { getAdvertisedMcpToolsForRuntime } from './mcp-tool-visibility.js';
 
 let mcpServerDirResolutionFailed = false;
 const mcpServerDir = (() => {
@@ -211,6 +212,20 @@ function requireServerForObservationTool(toolName: string): ServerAvailable {
     throw new ServerClientError('missing_api_key', `${toolName}: ${resolution.reason}`);
   }
   return resolution;
+}
+
+function shouldRouteSearchToServer(args: any, resolution: ServerResolution | null): resolution is ServerAvailable {
+  if (!resolution?.available) return false;
+  const hasText = typeof args?.query === 'string' && args.query.trim().length > 0;
+  const typeIsObservations = args?.type === undefined || args?.type === 'observations';
+  const hasUnsupportedFilter =
+    args?.project !== undefined ||
+    args?.obs_type !== undefined ||
+    args?.dateStart !== undefined ||
+    args?.dateEnd !== undefined ||
+    args?.offset !== undefined ||
+    args?.orderBy !== undefined;
+  return hasText && typeIsObservations && !hasUnsupportedFilter;
 }
 
 function wrapHandler<Args>(
@@ -489,6 +504,16 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       additionalProperties: true
     },
     handler: async (args: any) => {
+      const serverResolution = resolveServerToolContext();
+      if (shouldRouteSearchToServer(args, serverResolution)) {
+        const request: ServerSearchObservationsRequest = {
+          projectId: serverResolution.projectId,
+          query: args.query,
+          ...(args.limit !== undefined ? { limit: args.limit } : {}),
+          ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
+        };
+        return formatJsonResult(await serverResolution.client.searchObservations(request));
+      }
       return await callWorker('/api/search', { query: args });
     }
   },
@@ -528,6 +553,43 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     handler: async (args: any) => {
       return await callWorker('/api/observations/batch', { body: args });
     }
+  },
+  {
+    name: 'memory_save',
+    description: 'Save a manual memory to the local worker via POST /api/memory/save. Worker runtime only. Params: text (required), title, project, metadata.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'The memory content to store' },
+        title: { type: 'string', description: 'Optional short title; auto-derived from text if omitted' },
+        project: { type: 'string', description: 'Project bucket; defaults to the worker default project if omitted' },
+        metadata: { type: 'object', additionalProperties: true },
+      },
+      required: ['text'],
+      additionalProperties: false,
+    },
+    handler: async (args: any) => {
+      if (selectRuntime() === 'server') {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: 'memory_save targets the worker runtime (POST /api/memory/save) and is unavailable when CLAUDE_MEM_RUNTIME=server. Use observation_add, which writes to the server backend.',
+          }],
+          isError: true,
+        };
+      }
+      if (typeof args?.text !== 'string' || args.text.trim().length === 0) {
+        return {
+          content: [{ type: 'text' as const, text: 'memory_save: "text" is required' }],
+          isError: true,
+        };
+      }
+      const body: Record<string, unknown> = { text: args.text };
+      if (typeof args.title === 'string' && args.title.trim()) body.title = args.title;
+      if (typeof args.project === 'string' && args.project.trim()) body.project = args.project;
+      if (args.metadata && typeof args.metadata === 'object') body.metadata = args.metadata;
+      return await callWorker('/api/memory/save', { body });
+    },
   },
   {
     name: 'session_start_context',
@@ -867,8 +929,9 @@ const server = new Server(
 );
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
+  const advertisedTools = getAdvertisedMcpToolsForRuntime(tools, selectRuntime());
   return {
-    tools: tools.map(tool => ({
+    tools: advertisedTools.map(tool => ({
       name: tool.name,
       description: tool.description,
       inputSchema: tool.inputSchema

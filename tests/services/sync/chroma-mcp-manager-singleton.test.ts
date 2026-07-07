@@ -78,6 +78,7 @@ class FakeTransport {
 
   constructor(_opts: { command: string; args: string[] }) {
     transportCount += 1;
+    lifecycleEvents.push('transport-construct');
     this._process = new FakeChildProcess();
     transportInstances.push(this);
   }
@@ -138,6 +139,7 @@ mock.module('../../../src/shared/paths.js', () => ({
   paths: {
     chroma: () => '/tmp/fake-chroma',
     combinedCerts: () => '/tmp/fake-combined-certs.pem',
+    envFile: () => '/tmp/fake-claude-mem.env',
   },
 }));
 
@@ -173,7 +175,8 @@ mock.module('../../../src/utils/logger.js', () => ({
 const killTreeCalls: number[] = [];
 let execSyncCalls = 0;
 const prewarmSpawnCalls: Array<{ command: string; args: string[]; child: FakeChildProcess }> = [];
-let prewarmSpawnBehavior: 'success' | 'timeout' | 'failure' = 'success';
+const lifecycleEvents: string[] = [];
+let prewarmSpawnBehavior: 'success' | 'timeout' | 'failure' | 'signal' = 'success';
 let prewarmStdout = '';
 let prewarmStderr = '';
 
@@ -198,14 +201,20 @@ mock.module('child_process', () => {
     ...original,
     spawn: (command: string, args: string[]) => {
       const child = new FakeChildProcess();
+      lifecycleEvents.push('prewarm-spawn');
       prewarmSpawnCalls.push({ command, args, child });
       queueMicrotask(() => {
         if (prewarmStdout) child.stdout.write(prewarmStdout);
         if (prewarmStderr) child.stderr.write(prewarmStderr);
         if (prewarmSpawnBehavior === 'success') {
+          lifecycleEvents.push('prewarm-close');
           child.finish(0);
         } else if (prewarmSpawnBehavior === 'failure') {
+          lifecycleEvents.push('prewarm-close');
           child.finish(1);
+        } else if (prewarmSpawnBehavior === 'signal') {
+          lifecycleEvents.push('prewarm-close');
+          child.finish(null, 'SIGTERM');
         }
       });
       return child;
@@ -275,6 +284,7 @@ function resetState(): void {
   transportCount = 0;
   transportInstances.length = 0;
   prewarmSpawnCalls.length = 0;
+  lifecycleEvents.length = 0;
   killTreeCalls.length = 0;
   logEntries.length = 0;
   execSyncCalls = 0;
@@ -546,6 +556,41 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
 
     await expect(mgr.callTool('chroma_list_collections', { limit: 1 })).rejects.toThrow('connection in backoff');
     expect(prewarmSpawnCalls.length).toBe(1);
+  });
+
+  it('prewarms the uvx --from launcher before constructing the MCP transport', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(prewarmSpawnCalls.length).toBe(1);
+    expect(prewarmSpawnCalls[0].args).toEqual([
+      '--python', '3.13',
+      '--with', 'onnxruntime>=1.20',
+      '--with', 'protobuf<7',
+      '--from', 'chroma-mcp@0.2.6',
+      'chroma-mcp',
+      '--help',
+    ]);
+    expect(transportInstances.length).toBe(1);
+    expect(lifecycleEvents).toEqual([
+      'prewarm-spawn',
+      'prewarm-close',
+      'transport-construct',
+    ]);
+  });
+
+  it('treats a signal-terminated prewarm child as a prewarm failure before MCP connect', async () => {
+    prewarmSpawnBehavior = 'signal';
+    const mgr = ChromaMcpManager.getInstance();
+
+    await expect(mgr.callTool('chroma_list_collections', { limit: 1 })).rejects.toThrow(
+      'prewarm terminated by signal SIGTERM'
+    );
+
+    expect(prewarmSpawnCalls.length).toBe(1);
+    expect(transportInstances.length).toBe(0);
+    expect(transportCount).toBe(0);
   });
 
   it('captures a bounded chroma-mcp stderr tail on MCP connect failure', async () => {

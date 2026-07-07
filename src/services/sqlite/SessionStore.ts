@@ -1,5 +1,5 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite';
-import { DATA_DIR, DB_PATH, ensureDir, OBSERVER_SESSIONS_PROJECT } from '../../shared/paths.js';
+import { DB_PATH, OBSERVER_SESSIONS_PROJECT } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import {
   TableColumnInfo,
@@ -16,6 +16,7 @@ import { computeObservationContentHash } from './observations/store.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources } from '../../shared/platform-source.js';
 import { findRecentDuplicateUserPrompt as findRecentDuplicateUserPromptRecord } from './prompts/get.js';
 import { normalizeStoredPromptText } from './prompt-storage.js';
+import { applySqliteBusyTimeout, openPrimarySqliteConnection } from './connection.js';
 
 interface IndexColumnInfo {
   seqno: number;
@@ -69,16 +70,9 @@ export class SessionStore {
   constructor(dbPathOrDb: string | Database = DB_PATH) {
     if (dbPathOrDb instanceof Database) {
       this.db = dbPathOrDb;
+      applySqliteBusyTimeout(this.db);
     } else {
-      if (dbPathOrDb !== ':memory:') {
-        ensureDir(DATA_DIR);
-      }
-      this.db = new Database(dbPathOrDb);
-
-      this.db.run('PRAGMA journal_mode = WAL');
-      this.db.run('PRAGMA synchronous = NORMAL');
-      this.db.run('PRAGMA foreign_keys = ON');
-      this.db.run('PRAGMA journal_size_limit = 4194304'); 
+      this.db = openPrimarySqliteConnection(dbPathOrDb);
     }
 
     this.initializeSchema();

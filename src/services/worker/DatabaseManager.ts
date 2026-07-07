@@ -7,6 +7,7 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { USER_SETTINGS_PATH, DB_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import type { DBSession } from '../worker-types.js';
+import { openPrimarySqliteConnection } from '../sqlite/connection.js';
 
 export class DatabaseManager {
   private db: Database | null = null;
@@ -15,7 +16,7 @@ export class DatabaseManager {
   private chromaSync: ChromaSync | null = null;
 
   async initialize(): Promise<void> {
-    this.db = new Database(DB_PATH);
+    this.db = openPrimarySqliteConnection(DB_PATH);
     
     this.sessionStore = new SessionStore(this.db);
     this.sessionSearch = new SessionSearch(this.db);

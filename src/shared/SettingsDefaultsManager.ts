@@ -37,6 +37,8 @@ export interface SettingsDefaults {
   CLAUDE_MEM_OPENROUTER_BASE_URL: string;
   CLAUDE_MEM_OPENROUTER_SITE_URL: string;
   CLAUDE_MEM_OPENROUTER_APP_NAME: string;
+  CLAUDE_MEM_OPENROUTER_REASONING_EFFORT: string;
+  CLAUDE_MEM_OPENROUTER_EXTRA_BODY: string;
   CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: string;
   CLAUDE_MEM_OPENROUTER_MAX_TOKENS: string;
   CLAUDE_MEM_CODEX_MODEL: string;
@@ -133,6 +135,8 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_OPENROUTER_BASE_URL: '',  // #2382/#2590/#2622/#2393 — optional OpenAI-compatible base URL (e.g. https://api.deepseek.com, http://localhost:1234/v1). Empty = default OpenRouter endpoint.
     CLAUDE_MEM_OPENROUTER_SITE_URL: '',  // Optional: for OpenRouter analytics
     CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',  // App name for OpenRouter analytics
+    CLAUDE_MEM_OPENROUTER_REASONING_EFFORT: '',  // Optional OpenRouter reasoning effort. Valid: none, low, medium, high. Empty = provider/model default.
+    CLAUDE_MEM_OPENROUTER_EXTRA_BODY: '',  // Optional JSON object merged into OpenAI-compatible chat/completions body after validation.
     CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: '20',  // Max messages in context window
     CLAUDE_MEM_OPENROUTER_MAX_TOKENS: '100000',  // Max estimated tokens (~100k safety limit)
     CLAUDE_MEM_CODEX_MODEL: 'gpt-5.3-codex-spark',  // Local Codex CLI model for subscription-backed compression

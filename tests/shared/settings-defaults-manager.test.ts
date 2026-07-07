@@ -365,6 +365,9 @@ describe('SettingsDefaultsManager', () => {
       expect(defaults.CLAUDE_MEM_PROVIDER).toBeDefined();
       expect(defaults.CLAUDE_MEM_GEMINI_API_KEY).toBeDefined();
       expect(defaults.CLAUDE_MEM_OPENROUTER_API_KEY).toBeDefined();
+      expect(defaults.CLAUDE_MEM_OPENROUTER_BASE_URL).toBe('');
+      expect(defaults.CLAUDE_MEM_OPENROUTER_REASONING_EFFORT).toBe('');
+      expect(defaults.CLAUDE_MEM_OPENROUTER_EXTRA_BODY).toBe('');
       expect(defaults.CLAUDE_MEM_CODEX_MODEL).toBe('gpt-5.3-codex-spark');
       expect(defaults.CLAUDE_MEM_CODEX_PATH).toBe('codex');
       expect(defaults.CLAUDE_MEM_CODEX_REASONING_EFFORT).toBe('');

@@ -1,6 +1,12 @@
 
 import { getCredential } from '../../shared/EnvManager.js';
 import { resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-base-url.js';
+import {
+  buildOpenRouterRequestBody,
+  parseOpenRouterExtraBody,
+  parseOpenRouterReasoningEffort,
+  type OpenRouterReasoningEffort,
+} from '../../shared/openrouter-request-settings.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
@@ -134,6 +140,8 @@ interface OpenRouterConfig {
   apiUrl: string;
   siteUrl?: string;
   appName?: string;
+  reasoningEffort: OpenRouterReasoningEffort | null;
+  extraBody: Record<string, unknown> | null;
 }
 
 export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfig> {
@@ -187,7 +195,16 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
   }
 
   protected async query(history: ConversationMessage[], config: OpenRouterConfig): Promise<ProviderQueryResult> {
-    return this.queryOpenRouterMultiTurn(history, config.apiKey, config.model, config.apiUrl, config.siteUrl, config.appName);
+    return this.queryOpenRouterMultiTurn(
+      history,
+      config.apiKey,
+      config.model,
+      config.apiUrl,
+      config.siteUrl,
+      config.appName,
+      config.reasoningEffort,
+      config.extraBody
+    );
   }
 
   /** POST the chat-completions request. Extracted so the retry try block stays narrow. */
@@ -198,6 +215,8 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     messages: OpenAIMessage[],
     siteUrl: string | undefined,
     appName: string | undefined,
+    reasoningEffort: OpenRouterReasoningEffort | null,
+    extraBody: Record<string, unknown> | null,
     priorRequestId: string | null,
     attemptSignal: AbortSignal
   ): Promise<Response> {
@@ -210,16 +229,13 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
         'Content-Type': 'application/json',
         ...(priorRequestId ? { 'x-claude-mem-prior-request-id': priorRequestId } : {}),
       },
-      body: JSON.stringify({
+      body: JSON.stringify(buildOpenRouterRequestBody({
+        apiUrl,
         model,
         messages,
-        temperature: 0.3,  // Lower temperature for structured extraction
-        max_tokens: 4096,
-        // Ask openrouter.ai for usage accounting (token counts + cost).
-        // Only sent to openrouter.ai — strict custom gateways may reject
-        // unknown body fields.
-        ...(apiUrl.includes('openrouter.ai') ? { usage: { include: true } } : {}),
-      }),
+        reasoningEffort,
+        extraBody,
+      })),
       signal: attemptSignal,
     });
   }
@@ -230,7 +246,9 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     model: string,
     apiUrl: string,
     siteUrl?: string,
-    appName?: string
+    appName?: string,
+    reasoningEffort: OpenRouterReasoningEffort | null = null,
+    extraBody: Record<string, unknown> | null = null
   ): Promise<ProviderQueryResult> {
     const messages = this.conversationToOpenAIMessages(history);
     const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
@@ -247,7 +265,18 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     const data = await withRetry<OpenRouterResponse>(async (attemptSignal) => {
       let response: Response;
       try {
-        response = await this.fetchChatCompletion(apiUrl, apiKey, model, messages, siteUrl, appName, priorRequestId, attemptSignal);
+        response = await this.fetchChatCompletion(
+          apiUrl,
+          apiKey,
+          model,
+          messages,
+          siteUrl,
+          appName,
+          reasoningEffort,
+          extraBody,
+          priorRequestId,
+          attemptSignal
+        );
       } catch (networkError: unknown) {
         const err = networkError instanceof Error ? networkError : new Error(String(networkError));
         throw classifyOpenRouterError({ cause: err });
@@ -353,8 +382,17 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
 
     const siteUrl = settings.CLAUDE_MEM_OPENROUTER_SITE_URL || '';
     const appName = settings.CLAUDE_MEM_OPENROUTER_APP_NAME || 'claude-mem';
+    const reasoningEffort = parseOpenRouterReasoningEffort(settings.CLAUDE_MEM_OPENROUTER_REASONING_EFFORT);
+    let extraBody: Record<string, unknown> | null = null;
+    try {
+      extraBody = parseOpenRouterExtraBody(settings.CLAUDE_MEM_OPENROUTER_EXTRA_BODY);
+    } catch (error) {
+      logger.warn('SETTINGS', 'Ignoring invalid OpenRouter extra body setting', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
 
-    return { apiKey, model, apiUrl, siteUrl, appName };
+    return { apiKey, model, apiUrl, siteUrl, appName, reasoningEffort, extraBody };
   }
 }
 

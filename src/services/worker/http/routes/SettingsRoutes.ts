@@ -10,6 +10,10 @@ import { ModeManager } from '../../../domain/ModeManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { SettingsDefaultsManager, writeSettingsFileSecure } from '../../../../shared/SettingsDefaultsManager.js';
+import {
+  validateOpenRouterExtraBody,
+  validateOpenRouterReasoningEffort,
+} from '../../../../shared/openrouter-request-settings.js';
 import { clearPortCache } from '../../../../shared/worker-utils.js';
 import { snapshotDependencyHealth } from '../../../../shared/dependency-health.js';
 
@@ -87,8 +91,11 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_GEMINI_MAX_TOKENS',
       'CLAUDE_MEM_OPENROUTER_API_KEY',
       'CLAUDE_MEM_OPENROUTER_MODEL',
+      'CLAUDE_MEM_OPENROUTER_BASE_URL',
       'CLAUDE_MEM_OPENROUTER_SITE_URL',
       'CLAUDE_MEM_OPENROUTER_APP_NAME',
+      'CLAUDE_MEM_OPENROUTER_REASONING_EFFORT',
+      'CLAUDE_MEM_OPENROUTER_EXTRA_BODY',
       'CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES',
       'CLAUDE_MEM_OPENROUTER_MAX_TOKENS',
       'CLAUDE_MEM_CODEX_MODEL',
@@ -276,6 +283,30 @@ export class SettingsRoutes extends BaseRouteHandler {
       if (isNaN(timeout) || timeout < 10000 || timeout > 600000) {
         return { valid: false, error: 'CLAUDE_MEM_CODEX_TIMEOUT_MS must be between 10000 and 600000' };
       }
+    }
+
+    if (settings.CLAUDE_MEM_OPENROUTER_BASE_URL) {
+      let parsedBaseUrl: URL;
+      try {
+        parsedBaseUrl = new URL(settings.CLAUDE_MEM_OPENROUTER_BASE_URL);
+      } catch (error) {
+        logger.debug('SETTINGS', 'Invalid URL format', { url: settings.CLAUDE_MEM_OPENROUTER_BASE_URL, error: error instanceof Error ? error.message : String(error) });
+        return { valid: false, error: 'CLAUDE_MEM_OPENROUTER_BASE_URL must be a valid URL' };
+      }
+      const isLocalhost = parsedBaseUrl.hostname === 'localhost' || parsedBaseUrl.hostname === '127.0.0.1' || parsedBaseUrl.hostname === '::1';
+      if (!isLocalhost && parsedBaseUrl.protocol !== 'https:') {
+        return { valid: false, error: 'CLAUDE_MEM_OPENROUTER_BASE_URL must use HTTPS for non-localhost hosts to protect your API key' };
+      }
+    }
+
+    const reasoningEffortError = validateOpenRouterReasoningEffort(settings.CLAUDE_MEM_OPENROUTER_REASONING_EFFORT);
+    if (reasoningEffortError) {
+      return { valid: false, error: reasoningEffortError };
+    }
+
+    const extraBodyError = validateOpenRouterExtraBody(settings.CLAUDE_MEM_OPENROUTER_EXTRA_BODY);
+    if (extraBodyError) {
+      return { valid: false, error: extraBodyError };
     }
 
     if (settings.CLAUDE_MEM_OPENROUTER_SITE_URL) {
