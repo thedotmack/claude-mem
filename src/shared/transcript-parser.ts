@@ -2,6 +2,25 @@ import { readFileSync, existsSync } from 'fs';
 import { logger } from '../utils/logger.js';
 import { SYSTEM_REMINDER_REGEX } from '../utils/tag-stripping.js';
 
+/**
+ * Count non-empty JSONL lines in a transcript file. Used as a cheap pointer
+ * back into "how much conversation existed at this moment" — e.g. to record
+ * how far a tool call (like `advisor`, which forwards the whole transcript)
+ * had read into the session, without copying the transcript itself.
+ */
+export function countTranscriptLines(transcriptPath: string): number {
+  if (!transcriptPath || !existsSync(transcriptPath)) {
+    return 0;
+  }
+
+  const content = readFileSync(transcriptPath, 'utf-8').trim();
+  if (!content) {
+    return 0;
+  }
+
+  return content.split('\n').filter(line => line.trim().length > 0).length;
+}
+
 export function extractLastMessage(
   transcriptPath: string,
   role: 'user' | 'assistant',

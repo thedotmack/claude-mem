@@ -9,6 +9,7 @@ import {
   ObservationRecord,
   SessionSummaryRecord,
   UserPromptRecord,
+  AdvisorCallRecord,
   LatestPromptResult
 } from '../../types/database.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from './types.js';
@@ -106,6 +107,7 @@ export class SessionStore {
     this.ensureSDKSessionsPlatformContentIdentity();
     this.ensureUserPromptsSessionDbId();
     this.ensurePendingMessagesSessionToolUniqueIndex();
+    this.createAdvisorCallsTable();
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -883,6 +885,130 @@ export class SessionStore {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(16, new Date().toISOString());
 
     logger.debug('DB', 'pending_messages table created successfully');
+  }
+
+  /**
+   * Durable, verbatim record of every `advisor` tool call, written outside the
+   * pending_messages -> LLM-compression pipeline (that pipeline discards raw
+   * tool_response text once it folds a batch into a narrative Observation).
+   * The advisor's advice is the whole point of calling it, so it is stored in
+   * full here; the forwarded context is not (the advisor forwards the entire
+   * conversation transcript, which would duplicate data already on disk) —
+   * only a lightweight pointer (transcript_path + line count at call time)
+   * plus the last user message, for a preview.
+   */
+  private createAdvisorCallsTable(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(36) as SchemaVersion | undefined;
+    if (applied) return;
+
+    const tables = this.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='advisor_calls'").all() as TableNameRow[];
+    if (tables.length > 0) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(36, new Date().toISOString());
+      return;
+    }
+
+    logger.debug('DB', 'Creating advisor_calls table');
+
+    this.db.run(`
+      CREATE TABLE advisor_calls (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_db_id INTEGER NOT NULL,
+        content_session_id TEXT NOT NULL,
+        project TEXT NOT NULL,
+        platform_source TEXT NOT NULL,
+        cwd TEXT,
+        last_user_message TEXT,
+        transcript_path TEXT,
+        transcript_line_count INTEGER,
+        advice TEXT NOT NULL,
+        occurred_at_epoch INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        created_at_epoch INTEGER NOT NULL,
+        FOREIGN KEY (session_db_id) REFERENCES sdk_sessions(id) ON DELETE CASCADE
+      )
+    `);
+
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_advisor_calls_session ON advisor_calls(session_db_id)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_advisor_calls_project ON advisor_calls(project)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_advisor_calls_created ON advisor_calls(created_at_epoch DESC)');
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(36, new Date().toISOString());
+
+    logger.debug('DB', 'advisor_calls table created successfully');
+  }
+
+  recordAdvisorCall(input: {
+    sessionDbId: number;
+    contentSessionId: string;
+    project: string;
+    platformSource: string;
+    cwd?: string | null;
+    lastUserMessage?: string | null;
+    transcriptPath?: string | null;
+    transcriptLineCount?: number | null;
+    advice: string;
+    occurredAtEpoch: number;
+  }): number {
+    const now = new Date();
+
+    const result = this.db.prepare(`
+      INSERT INTO advisor_calls
+      (session_db_id, content_session_id, project, platform_source, cwd, last_user_message, transcript_path, transcript_line_count, advice, occurred_at_epoch, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      input.sessionDbId,
+      input.contentSessionId,
+      input.project,
+      input.platformSource,
+      input.cwd ?? null,
+      input.lastUserMessage ?? null,
+      input.transcriptPath ?? null,
+      input.transcriptLineCount ?? null,
+      input.advice,
+      input.occurredAtEpoch,
+      now.toISOString(),
+      now.getTime()
+    );
+
+    return Number(result.lastInsertRowid);
+  }
+
+  getAdvisorCalls(offset: number, limit: number, project?: string, platformSource?: string): { items: AdvisorCallRecord[]; hasMore: boolean; offset: number; limit: number } {
+    let query = 'SELECT * FROM advisor_calls';
+    const params: SQLQueryBindings[] = [];
+    const conditions: string[] = [];
+
+    if (project) {
+      conditions.push('project = ?');
+      params.push(project);
+    } else {
+      conditions.push('project != ?');
+      params.push(OBSERVER_SESSIONS_PROJECT);
+    }
+    if (platformSource) {
+      conditions.push('platform_source = ?');
+      params.push(platformSource);
+    }
+    if (conditions.length > 0) {
+      query += ` WHERE ${conditions.join(' AND ')}`;
+    }
+
+    query += ' ORDER BY occurred_at_epoch DESC LIMIT ? OFFSET ?';
+    params.push(limit + 1, offset);
+
+    const results = this.db.prepare(query).all(...params) as AdvisorCallRecord[];
+
+    return {
+      items: results.slice(0, limit),
+      hasMore: results.length > limit,
+      offset,
+      limit
+    };
+  }
+
+  getAdvisorCallById(id: number): AdvisorCallRecord | null {
+    const row = this.db.prepare('SELECT * FROM advisor_calls WHERE id = ?').get(id) as AdvisorCallRecord | undefined;
+    return row ?? null;
   }
 
   private renameSessionIdColumns(): void {

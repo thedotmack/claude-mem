@@ -296,6 +296,9 @@ export class SessionRoutes extends BaseRouteHandler {
     platformSource: z.string().optional(),
     tool_use_id: z.string().optional(),
     toolUseId: z.string().optional(),
+    lastUserMessage: z.string().optional(),
+    transcriptPath: z.string().optional(),
+    transcriptLineCount: z.number().optional(),
   }).passthrough();
 
   private static readonly summarizeByClaudeIdSchema = z.object({
@@ -316,6 +319,9 @@ export class SessionRoutes extends BaseRouteHandler {
       agentType,
       tool_use_id,
       toolUseId,
+      lastUserMessage,
+      transcriptPath,
+      transcriptLineCount,
     } = req.body;
     const platformSource = this.getPlatformSourceFromRequest(req);
 
@@ -329,6 +335,9 @@ export class SessionRoutes extends BaseRouteHandler {
       agentId,
       agentType,
       toolUseId: typeof tool_use_id === 'string' ? tool_use_id : (typeof toolUseId === 'string' ? toolUseId : undefined),
+      lastUserMessage,
+      transcriptPath,
+      transcriptLineCount,
     });
 
     if (!result.ok) {

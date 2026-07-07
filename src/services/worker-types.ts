@@ -147,11 +147,27 @@ export interface Summary {
 
 export interface UserPrompt {
   id: number;
-  content_session_id: string;  
-  project: string; 
+  content_session_id: string;
+  project: string;
   platform_source: string;
   prompt_number: number;
   prompt_text: string;
+  created_at: string;
+  created_at_epoch: number;
+}
+
+export interface AdvisorCall {
+  id: number;
+  session_db_id: number;
+  content_session_id: string;
+  project: string;
+  platform_source: string;
+  cwd: string | null;
+  last_user_message: string | null;
+  transcript_path: string | null;
+  transcript_line_count: number | null;
+  advice: string;
+  occurred_at_epoch: number;
   created_at: string;
   created_at_epoch: number;
 }

@@ -1,12 +1,20 @@
 
 import { SSEBroadcaster } from '../SSEBroadcaster.js';
 import type { WorkerService } from '../../worker-service.js';
+import type { AdvisorCall } from '../../worker-types.js';
 
 export class SessionEventBroadcaster {
   constructor(
     private sseBroadcaster: SSEBroadcaster,
     private workerService: WorkerService
   ) {}
+
+  broadcastNewAdvisorCall(advisorCall: AdvisorCall): void {
+    this.sseBroadcaster.broadcast({
+      type: 'new_advisor_call',
+      advisorCall
+    });
+  }
 
   broadcastNewPrompt(prompt: {
     id: number;

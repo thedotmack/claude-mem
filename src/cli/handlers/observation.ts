@@ -10,10 +10,43 @@ import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { resolveRuntimeContext, logServerFallback } from '../../services/hooks/runtime-selector.js';
 import { isServerClientError, type ServerRecordEventRequest } from '../../services/hooks/server-client.js';
+import { extractLastMessage, countTranscriptLines } from '../../shared/transcript-parser.js';
+
+const ADVISOR_TOOL_NAME = 'advisor';
+
+/**
+ * The `advisor` tool takes no arguments — it forwards the entire conversation
+ * transcript to a stronger model and returns advice. `tool_input` is
+ * therefore empty and doesn't tell us what context was sent. Rather than
+ * duplicating the whole transcript into the database, capture a lightweight
+ * pointer (transcript path + how many lines existed at call time) plus the
+ * last user message for a quick preview.
+ */
+function extractAdvisorContext(input: NormalizedHookInput): {
+  lastUserMessage?: string;
+  transcriptPath?: string;
+  transcriptLineCount?: number;
+} | undefined {
+  if (input.toolName !== ADVISOR_TOOL_NAME) {
+    return undefined;
+  }
+
+  const transcriptPath = input.transcriptPath;
+  if (!transcriptPath) {
+    return { lastUserMessage: undefined, transcriptPath: undefined, transcriptLineCount: undefined };
+  }
+
+  return {
+    lastUserMessage: extractLastMessage(transcriptPath, 'user', true) || undefined,
+    transcriptPath,
+    transcriptLineCount: countTranscriptLines(transcriptPath),
+  };
+}
 
 async function dispatchToWorker(
   input: NormalizedHookInput,
   platformSource: string,
+  advisorContext: ReturnType<typeof extractAdvisorContext>,
 ): Promise<HookResult> {
   const result = await executeWithWorkerFallback<{ status?: string }>(
     '/api/sessions/observations',
@@ -27,6 +60,7 @@ async function dispatchToWorker(
       cwd: input.cwd,
       agentId: input.agentId,
       agentType: input.agentType,
+      ...advisorContext,
     },
   );
 
@@ -60,6 +94,8 @@ export const observationHandler: EventHandler = {
       return { continue: true, suppressOutput: true };
     }
 
+    const advisorContext = extractAdvisorContext(input);
+
     const runtime = resolveRuntimeContext();
     // Phase 1a (cmem-sdk rename): `runtime.runtime` is the canonical `'server'`
     // value. `runtime-selector.selectRuntime()` continues to accept the legacy
@@ -80,6 +116,7 @@ export const observationHandler: EventHandler = {
           agentId: input.agentId,
           agentType: input.agentType,
           platformSource,
+          ...advisorContext,
         },
       };
       try {
@@ -99,6 +136,6 @@ export const observationHandler: EventHandler = {
       }
     }
 
-    return dispatchToWorker(input, platformSource);
+    return dispatchToWorker(input, platformSource, advisorContext);
   },
 };

@@ -79,4 +79,23 @@ export class AgentEventsRepository {
     `).all(projectId, limit) as AgentEventRow[];
     return rows.map(mapAgentEventRow);
   }
+
+  /**
+   * `advisor` tool calls are just `tool_use` agent_events whose payload names
+   * that tool — no separate table needed here, unlike the classic worker's
+   * SQLite store, which only buffers tool_use fragments in memory (see
+   * services/worker/SessionMessageBuffer.ts) and would lose them otherwise.
+   * agent_events is already durable, so filtering is enough.
+   */
+  listAdvisorCalls(projectId: string, limit = 100): AgentEvent[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM agent_events
+      WHERE project_id = ?
+        AND event_type = 'tool_use'
+        AND json_extract(payload, '$.tool_name') = 'advisor'
+      ORDER BY occurred_at_epoch DESC
+      LIMIT ?
+    `).all(projectId, limit) as AgentEventRow[];
+    return rows.map(mapAgentEventRow);
+  }
 }

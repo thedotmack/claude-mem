@@ -34,6 +34,7 @@ import { PostgresServerSessionsRepository } from '../../../storage/postgres/serv
 import { IngestEventsService, type EnqueueOutcome } from '../../services/IngestEventsService.js';
 import { EndSessionService } from '../../services/EndSessionService.js';
 import { normalizePlatformSource, normalizePlatformSourceOrNull } from '../../../shared/platform-source.js';
+import { stringifyAdvice } from '../../../shared/advisor-advice.js';
 
 const SOURCE_ADAPTER_DEFAULT = 'api';
 
@@ -481,6 +482,25 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         eventId: eventRow.id,
         observations: obsResult.rows.map(serializeObservationWithSource),
       });
+    }));
+
+    // GET /v1/advisor-calls — `advisor` tool calls are just `tool_use`
+    // agent_events whose payload names that tool (see
+    // PostgresAgentEventsRepository.listAdvisorCalls). agent_events is
+    // already durable, so no separate table/write-path is needed here.
+    app.get('/v1/advisor-calls', readAuth, this.asyncHandler(async (req, res) => {
+      const teamId = this.requireTeamId(req, res);
+      if (!teamId) return;
+      const projectId = String(req.query.projectId ?? '');
+      if (!projectId) {
+        res.status(400).json({ error: 'ValidationError', message: 'projectId query parameter is required' });
+        return;
+      }
+      if (!this.ensureProjectAllowed(req, res, projectId)) return;
+      const limit = clampInt(req.query.limit, 100, 1, 500);
+      const events = await new PostgresAgentEventsRepository(this.options.pool).listAdvisorCalls({ projectId, teamId, limit });
+      await this.auditWrite(req, 'advisor_call.list', null, projectId, { resultCount: events.length });
+      res.json({ advisorCalls: events.map(serializeAdvisorCall) });
     }));
 
     // Phase 11 — team-scoped queue listing. The api key MUST be bound to this
@@ -1925,6 +1945,27 @@ function serializeSession(session: {
     lastGeneratedAtEpoch: session.lastGeneratedAtEpoch,
     createdAtEpoch: session.createdAtEpoch,
     updatedAtEpoch: session.updatedAtEpoch,
+  };
+}
+
+/**
+ * Reshape a raw `tool_use` agent_event (whose payload carries whatever the
+ * hook sent — see cli/handlers/observation.ts) into a stable advisor-call
+ * view: session, forwarded-context pointer, and the full advice text.
+ */
+function serializeAdvisorCall(event: PostgresAgentEvent): Record<string, unknown> {
+  const payload = (event.payload && typeof event.payload === 'object') ? event.payload as Record<string, unknown> : {};
+  return {
+    id: event.id,
+    project: event.projectId,
+    serverSessionId: event.serverSessionId,
+    platformSource: typeof payload.platformSource === 'string' ? payload.platformSource : event.platformSource,
+    cwd: typeof payload.cwd === 'string' ? payload.cwd : null,
+    lastUserMessage: typeof payload.lastUserMessage === 'string' ? payload.lastUserMessage : null,
+    transcriptPath: typeof payload.transcriptPath === 'string' ? payload.transcriptPath : null,
+    transcriptLineCount: typeof payload.transcriptLineCount === 'number' ? payload.transcriptLineCount : null,
+    advice: stringifyAdvice(payload.tool_response),
+    occurredAtEpoch: event.occurredAtEpoch,
   };
 }
 

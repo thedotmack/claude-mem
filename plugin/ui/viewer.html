@@ -31,6 +31,7 @@
       --color-bg-summary: #fffbf0;
       --color-bg-prompt: #f6f3fb;
       --color-bg-observation: #f0f6fb;
+      --color-bg-advisor: #eafaf7;
       --color-bg-stat: #f6f8fa;
       --color-bg-scrollbar-track: #ffffff;
       --color-bg-scrollbar-thumb: #d1d5da;
@@ -46,6 +47,8 @@
       --color-border-prompt-hover: #6e40c9;
       --color-border-observation: #0969da;
       --color-border-observation-hover: #0550ae;
+      --color-border-advisor: #0f766e;
+      --color-border-advisor-hover: #0c5f57;
 
       --color-text-primary: #2b2520;
       --color-text-secondary: #5a5248;
@@ -75,6 +78,8 @@
       --color-prompt-badge-text: #8250df;
       --color-observation-badge-bg: rgba(9, 105, 218, 0.12);
       --color-observation-badge-text: #0550ae;
+      --color-advisor-badge-bg: rgba(15, 118, 110, 0.12);
+      --color-advisor-badge-text: #0f766e;
 
       --color-skeleton-base: #d0d7de;
       --color-skeleton-highlight: #e8ecef;
@@ -100,6 +105,7 @@
       --color-bg-summary: #2a2724;
       --color-bg-prompt: #262033;
       --color-bg-observation: #1a2332;
+      --color-bg-advisor: #173330;
       --color-bg-stat: #252320;
       --color-bg-scrollbar-track: #1a1916;
       --color-bg-scrollbar-thumb: #3a3834;
@@ -115,6 +121,8 @@
       --color-border-prompt-hover: #7e6bae;
       --color-border-observation: #527aa0;
       --color-border-observation-hover: #6a8eb8;
+      --color-border-advisor: #2dd4bf;
+      --color-border-advisor-hover: #5eead4;
 
       --color-text-primary: #dcd6cc;
       --color-text-secondary: #b8b0a4;
@@ -144,6 +152,8 @@
       --color-prompt-badge-text: #9e8ccc;
       --color-observation-badge-bg: rgba(121, 184, 255, 0.15);
       --color-observation-badge-text: #79b8ff;
+      --color-advisor-badge-bg: rgba(45, 212, 191, 0.15);
+      --color-advisor-badge-text: #5eead4;
 
       --color-skeleton-base: #3a3834;
       --color-skeleton-highlight: #4a4540;
@@ -170,6 +180,7 @@
         --color-bg-summary: #fffbf0;
         --color-bg-prompt: #f6f3fb;
         --color-bg-observation: #f0f6fb;
+        --color-bg-advisor: #eafaf7;
         --color-bg-stat: #f6f8fa;
         --color-bg-scrollbar-track: #ffffff;
         --color-bg-scrollbar-thumb: #d1d5da;
@@ -185,6 +196,8 @@
         --color-border-prompt-hover: #6e40c9;
         --color-border-observation: #0969da;
         --color-border-observation-hover: #0550ae;
+        --color-border-advisor: #0f766e;
+        --color-border-advisor-hover: #0c5f57;
 
         --color-text-primary: #24292f;
         --color-text-secondary: #57606a;
@@ -214,6 +227,8 @@
         --color-prompt-badge-text: #8250df;
         --color-observation-badge-bg: rgba(9, 105, 218, 0.12);
         --color-observation-badge-text: #0550ae;
+        --color-advisor-badge-bg: rgba(15, 118, 110, 0.12);
+        --color-advisor-badge-text: #0f766e;
 
         --color-skeleton-base: #d0d7de;
         --color-skeleton-highlight: #e8ecef;
@@ -240,6 +255,7 @@
         --color-bg-summary: #3d2f00;
         --color-bg-prompt: #2d1b4e;
         --color-bg-observation: #1a2332;
+        --color-bg-advisor: #173330;
         --color-bg-stat: #2d2d2d;
         --color-bg-scrollbar-track: #1e1e1e;
         --color-bg-scrollbar-thumb: #424242;
@@ -255,6 +271,8 @@
         --color-border-prompt-hover: #8e6cdb;
         --color-border-observation: #527aa0;
         --color-border-observation-hover: #6a8eb8;
+        --color-border-advisor: #2dd4bf;
+        --color-border-advisor-hover: #5eead4;
 
         --color-text-primary: #cccccc;
         --color-text-secondary: #a0a0a0;
@@ -284,6 +302,8 @@
         --color-prompt-badge-text: #8e6cdb;
         --color-observation-badge-bg: rgba(121, 184, 255, 0.15);
         --color-observation-badge-text: #79b8ff;
+        --color-advisor-badge-bg: rgba(45, 212, 191, 0.15);
+        --color-advisor-badge-text: #5eead4;
 
         --color-skeleton-base: #404040;
         --color-skeleton-highlight: #505050;
@@ -1072,6 +1092,55 @@
     .prompt-card .card-type {
       background: var(--color-prompt-badge-bg);
       color: var(--color-prompt-badge-text);
+    }
+
+    .advisor-call-card {
+      border-color: var(--color-border-advisor);
+      background: var(--color-bg-advisor);
+    }
+
+    .advisor-call-card:hover {
+      border-color: var(--color-border-advisor-hover);
+    }
+
+    .advisor-call-card .card-type {
+      background: var(--color-advisor-badge-bg);
+      color: var(--color-advisor-badge-text);
+    }
+
+    .advisor-call-section {
+      margin-top: 10px;
+    }
+
+    .advisor-call-section-label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--color-text-muted);
+      margin-bottom: 4px;
+    }
+
+    .advisor-call-context {
+      color: var(--color-text-secondary);
+      font-size: 13px;
+      font-style: italic;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .advisor-call-advice {
+      color: var(--color-text-primary);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .advisor-call-transcript-ref {
+      margin-top: 8px;
+      font-size: 12px;
+      color: var(--color-text-muted);
+      font-family: var(--font-terminal);
+      word-break: break-all;
     }
 
     /* Welcome modal — first-launch + reusable as help via the ? button.

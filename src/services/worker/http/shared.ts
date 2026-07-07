@@ -10,6 +10,7 @@ import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
 import { getProjectContext } from '../../../utils/project-name.js';
 import { normalizePlatformSource } from '../../../shared/platform-source.js';
 import { PrivacyCheckValidator } from '../validation/PrivacyCheckValidator.js';
+import { stringifyAdvice } from '../../../shared/advisor-advice.js';
 
 interface IngestContext {
   sessionManager: SessionManager;
@@ -52,7 +53,13 @@ export interface ObservationPayload {
   agentId?: string;
   agentType?: string;
   toolUseId?: string;
+  // Only set (by the hook) when toolName === 'advisor' — see AdvisorRoutes.
+  lastUserMessage?: string;
+  transcriptPath?: string;
+  transcriptLineCount?: number;
 }
+
+const ADVISOR_TOOL_NAME = 'advisor';
 
 export async function ingestObservation(payload: ObservationPayload): Promise<IngestResult> {
   const { sessionManager, dbManager, eventBroadcaster, ensureGeneratorRunning } = requireContext();
@@ -109,6 +116,28 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
   );
   if (!privacy.allow) {
     return { ok: true, status: 'skipped', reason: 'private' };
+  }
+
+  if (payload.toolName === ADVISOR_TOOL_NAME) {
+    const advice = stringifyAdvice(payload.toolResponse);
+    if (advice) {
+      const advisorCallId = store.recordAdvisorCall({
+        sessionDbId,
+        contentSessionId: payload.contentSessionId,
+        project,
+        platformSource,
+        cwd: cwd || null,
+        lastUserMessage: payload.lastUserMessage ?? null,
+        transcriptPath: payload.transcriptPath ?? null,
+        transcriptLineCount: payload.transcriptLineCount ?? null,
+        advice,
+        occurredAtEpoch: Date.now(),
+      });
+      const advisorCall = store.getAdvisorCallById(advisorCallId);
+      if (advisorCall) {
+        eventBroadcaster.broadcastNewAdvisorCall(advisorCall);
+      }
+    }
   }
 
   const cleanedToolInput = payload.toolInput !== undefined
