@@ -28,6 +28,7 @@ export type Component =
   | 'ENV'
   | 'FOLDER_INDEX'
   | 'GIT'
+  | 'HELIX'
   | 'HOOK'
   | 'HTTP'
   | 'IMPORT'

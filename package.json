@@ -118,6 +118,7 @@
     "2fa": false
   },
   "dependencies": {
+    "@helix-db/helix-db": "^2.0.5",
     "@better-auth/api-key": "^1.6.16",
     "better-auth": "^1.6.16"
   },

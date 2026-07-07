@@ -2,7 +2,7 @@ export type DependencyStatusKind =
   | 'setup_required'
   | 'vector_search_unavailable';
 
-export type DependencyName = 'claude_cli' | 'uvx';
+export type DependencyName = 'claude_cli' | 'uvx' | 'helix';
 
 export interface DependencyStatus {
   dependency: DependencyName;
@@ -21,6 +21,10 @@ export const CLAUDE_CLI_SETUP_REMEDIATION =
 export const UVX_VECTOR_SEARCH_REMEDIATION =
   'Install uv/uvx and make uvx visible to the worker PATH, then restart claude-mem. ' +
   'Try `curl -LsSf https://astral.sh/uv/install.sh | sh` or `brew install uv`.';
+
+export const HELIX_CLI_REMEDIATION =
+  'Install the Helix CLI and ensure `helix` is on PATH, then restart claude-mem. ' +
+  'Try `curl -sSL "https://install.helix-db.com" | bash`.';
 
 const statuses = new Map<DependencyName, DependencyStatus>();
 
@@ -52,6 +56,10 @@ export function recordClaudeCliSetupRequired(message: string): DependencyStatus 
 
 export function recordUvxVectorSearchUnavailable(message: string): DependencyStatus {
   return recordDependencyStatus('uvx', 'vector_search_unavailable', message, UVX_VECTOR_SEARCH_REMEDIATION);
+}
+
+export function recordHelixCliUnavailable(message: string): DependencyStatus {
+  return recordDependencyStatus('helix', 'setup_required', message, HELIX_CLI_REMEDIATION);
 }
 
 export function clearDependencyStatus(dependency: DependencyName): void {
