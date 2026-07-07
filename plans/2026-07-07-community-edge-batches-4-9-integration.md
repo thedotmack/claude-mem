@@ -168,6 +168,21 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
   the daemon is a new optional hook runtime and should be reviewed as a
   dedicated performance feature; the corpus data-loss fixes from this PR are
   integrated above.
+- #3034/#2764: competing CLI-backed observation providers. #3034 explicitly
+  supersedes #2764, but adding `agy-cli` as a generation provider is a new
+  provider backend with auth/session semantics and should ship as a dedicated
+  provider feature. The Antigravity CLI hook integration from #3000 is already
+  contained on this branch.
+- #2908: Kimi Code CLI is a new host integration with installer, plugin
+  manifest, and hook dispatch surface. It should be reviewed as a dedicated
+  integration instead of being mixed into the npm release reconciliation.
+- #2623: DeepSeek backend support is superseded by the current OpenRouter
+  custom base URL/model path, including DeepSeek-style URL tests. The i18n
+  framework and prompt-overlap deduplication portions are broad product changes
+  and should be split into dedicated PRs.
+- #2523: Vertex AI for Gemini adds a new Google ADC dependency and cloud auth
+  path. Hold for a dedicated provider-auth review rather than expanding this
+  npm release branch.
 
 ## Still to integrate from Batches 4-9
 
@@ -175,7 +190,7 @@ Batch 4: complete.
 
 Batch 5: complete.
 
-Batch 6: #3034, #2908, #2764, #2623, #2523.
+Batch 6: complete.
 
 Batch 7: #3033, #3009, #2980, #2921, #2917, #2895, #2892, #2885, #2739, #2583,
 #2507.
