@@ -313,8 +313,7 @@ const RULE_A_EXPECTATIONS: Record<string, Record<string, string>> = {
       trailingCommand: ['node', '"$_P/scripts/version-check.js"'],
       notFoundMessage: 'claude-mem: version-check.js not found',
     }),
-    'SessionStart.0.0': claudeHook(['start'], { trailingJson: { continue: true, suppressOutput: true } }),
-    'SessionStart.0.1': claudeHook(['hook', 'claude-code', 'context']),
+    'SessionStart.0.0': claudeHook(['hook', 'claude-code', 'context']),
     'UserPromptSubmit.0.0': claudeHook(['hook', 'claude-code', 'session-init']),
     'PostToolUse.0.0': claudeHook(['hook', 'claude-code', 'observation']),
     'PreToolUse.0.0': claudeHook(['hook', 'claude-code', 'file-context']),
@@ -360,6 +359,13 @@ describe('Spawn-Contract Templating - Rule A generator parity', () => {
   it('plugin/.mcp.json mcp-search command equals buildShellCommand output', () => {
     const parsed = readJson('plugin/.mcp.json');
     expect(parsed.mcpServers['mcp-search'].args[1]).toBe(MCP_EXPECTED);
+  });
+
+  it('keeps Claude SessionStart non-blocking', () => {
+    const claudeHooks = RULE_A_EXPECTATIONS['plugin/hooks/hooks.json'];
+    expect(claudeHooks['SessionStart.0.0']).toContain('hook claude-code context');
+    expect(Object.keys(claudeHooks)).not.toContain('SessionStart.0.1');
+    expect(claudeHooks['SessionStart.0.0']).not.toContain('worker-service.cjs" start');
   });
 
   it('never leaks a raw ${CLAUDE_PLUGIN_ROOT} into the resolved trailing command', () => {

@@ -17,6 +17,7 @@ const realHealthMonitorSnapshot = { ...realHealthMonitor };
 const realCliTelemetrySnapshot = { ...realCliTelemetry };
 
 let settings: Record<string, string> = {};
+let workerHealthy = true;
 const fetchLog: Array<{ url: string; method: string }> = [];
 const dataDir = path.join(tmpdir(), `claude-mem-worker-utils-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 
@@ -69,9 +70,10 @@ function installFetchMock(): void {
       url: typeof url === 'string' ? url : url.toString(),
       method: (init?.method ?? 'GET').toUpperCase(),
     });
+    const status = workerHealthy ? 200 : 503;
     return Promise.resolve({
-      ok: true,
-      status: 200,
+      ok: workerHealthy,
+      status,
       text: () => Promise.resolve(''),
       json: () => Promise.resolve({ version: '13.4.1' }),
     } as unknown as Response);
@@ -83,6 +85,7 @@ describe('worker autostart and fail-loud warning behavior', () => {
 
   beforeEach(() => {
     settings = {};
+    workerHealthy = true;
     process.env.CLAUDE_MEM_DATA_DIR = dataDir;
     installFetchMock();
   });
@@ -114,6 +117,19 @@ describe('worker autostart and fail-loud warning behavior', () => {
 
     expect(await ensureWorkerAliveOnce()).toBe(true);
     expect(fetchLog.some(call => call.url.includes('/api/health'))).toBe(true);
+  });
+
+  it('best-effort calls skip lazy-spawn without recording fail-loud debt', async () => {
+    workerHealthy = false;
+
+    const { executeWithWorkerFallback, isWorkerFallback } = await importWorkerUtilsFresh();
+    const result = await executeWithWorkerFallback('/api/context/inject?projects=test', 'GET', undefined, {
+      allowLazySpawn: false,
+    });
+
+    expect(isWorkerFallback(result)).toBe(true);
+    expect(fetchLog.some(call => call.url.includes('/api/health'))).toBe(true);
+    expect(existsSync(path.join(dataDir, 'state', 'hook-failures.json'))).toBe(false);
   });
 
   it('warns but does not throw or exit for Kiro when the worker-unreachable threshold is reached', async () => {

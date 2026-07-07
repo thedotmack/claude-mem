@@ -87,7 +87,9 @@ export const contextHandler: EventHandler = {
     if (mcpContextResult !== null) {
       additionalContext = mcpContextResult;
     } else {
-      const contextResult = await executeWithWorkerFallback<string>(apiPath, 'GET');
+      const contextResult = await executeWithWorkerFallback<string>(apiPath, 'GET', undefined, {
+        allowLazySpawn: false,
+      });
       if (isWorkerFallback(contextResult)) {
         return emptyResult;
       }
@@ -125,7 +127,9 @@ export const contextHandler: EventHandler = {
       if (mcpColorResult !== null) {
         coloredTimeline = mcpColorResult;
       } else {
-        const colorResult = await executeWithWorkerFallback<string>(colorApiPath, 'GET');
+        const colorResult = await executeWithWorkerFallback<string>(colorApiPath, 'GET', undefined, {
+          allowLazySpawn: false,
+        });
         if (!isWorkerFallback(colorResult) && typeof colorResult === 'string') {
           coloredTimeline = colorResult.trim();
         }

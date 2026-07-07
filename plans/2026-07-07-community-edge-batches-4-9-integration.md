@@ -138,6 +138,11 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
   launch, and current npx doctor/setup runtime probes. The old
   `src/npx-cli/utils/bun-resolver.ts` site from the PR no longer exists on this
   branch.
+- #2917: make Claude Code SessionStart non-blocking on cold worker boot. The
+  Claude hook contract now runs only the context hook at SessionStart, while
+  context fallback calls use `allowLazySpawn: false` so a cold worker returns
+  the empty SessionStart payload without spawning or accruing fail-loud debt.
+  Codex SessionStart ordering remains unchanged.
 
 ### Batch 8
 
@@ -207,7 +212,7 @@ Batch 5: complete.
 
 Batch 6: complete.
 
-Batch 7: #2917, #2892, #2885, #2739, #2583,
+Batch 7: #2892, #2885, #2739, #2583,
 #2507.
 
 Batch 8: #3114, #3047, #3011, #2905, #2904, #2858, #2770, #2741, #2506.
@@ -226,6 +231,12 @@ Batch 9: #2608.
 - `npm run typecheck`
 - `bun test tests/json-utils.test.ts tests/shared/settings-defaults-manager.test.ts tests/settings-routes-claude-token-validation.test.ts`
 - `bun test tests/json-utils.test.ts tests/shared/settings-defaults-manager.test.ts tests/settings-routes-claude-token-validation.test.ts tests/install-settings-preservation.test.ts tests/infrastructure/plugin-distribution.test.ts tests/integrations/opencode-plugin-contract.test.ts`
+- `bun run typecheck`
+- `bun run build`
+- `bun run lint:hook-io`
+- `bun run lint:spawn-env`
+- `git diff --check`
+- `bun test tests/infrastructure/plugin-distribution.test.ts tests/shared/worker-autostart-flag.test.ts tests/shared/worker-utils-version-recycle.test.ts tests/cli/handlers/session-init-server-beta-context.test.ts`
 - `bun run typecheck`
 - `bun run build`
 - `bun run lint:hook-io`
