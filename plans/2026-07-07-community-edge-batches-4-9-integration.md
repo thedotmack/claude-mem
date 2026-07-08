@@ -230,6 +230,12 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
   behavior. The make-plan skill now requires writing plans to
   `plans/inbox/<YYYY-MM-DD>-<short-slug>.md` and creating kanban subfolders
   when absent.
+- #2905: port the core output-contract hardening. Parser results now carry the
+  first XML root kind, explicit no-op observation XML is accepted only by the
+  worker response path, `init`/`ingest` responses must be observation-shaped,
+  and `summarize` responses must be summary-shaped. Wrong-root XML and
+  explicit no-op observation batches are confirmed/dropped without storing the
+  wrong record type or reintroducing Batch 7 invalid-output respawn debt.
 
 ### Batch 9
 
@@ -282,6 +288,12 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
 - #2506 stale `plans/` file moves and generated bundles: held. Current branch
   has newer plan documents and generated assets; this tranche ports only the
   source/skill behavior and regenerates from the current tree.
+- #2905 non-Claude batching, broad low-signal observation filtering, OpenClaw
+  contract changes, shared observation SQL/content helpers, UI/card display
+  changes, and stale generated bundles: held for a dedicated provider
+  resilience/filtering follow-up. They span provider throughput, observation
+  product policy, storage rendering, and host-plugin surfaces beyond the npm
+  release reconciliation.
 
 ## Still to integrate from Batches 4-9
 
@@ -293,7 +305,7 @@ Batch 6: complete.
 
 Batch 7: complete.
 
-Batch 8: #2905.
+Batch 8: complete.
 
 Batch 9: complete.
 
@@ -318,6 +330,13 @@ Batch 9: complete.
 - `bun test tests/utils/project-name.test.ts tests/context/observation-compiler.test.ts tests/worker/http/routes/search-routes-welcome-hint.test.ts`
 - `bun run typecheck`
 - `bun test tests/hooks/file-context.test.ts tests/context/include-last-message-dot-path.test.ts tests/services/sqlite/observation-dismiss.test.ts tests/cli/handlers/context-mcp-session-start.test.ts tests/cli/adapters/codex-file-context.test.ts tests/transcripts/processor-codex-context.test.ts`
+- `npm run build`
+- `bun test tests/infrastructure/plugin-distribution.test.ts`
+- `bun run lint:hook-io`
+- `bun run lint:spawn-env`
+- `git diff --check`
+- `bun test tests/sdk/parser.test.ts tests/sdk/parse-summary.test.ts tests/worker/agents/response-processor.test.ts`
+- `bun run typecheck`
 - `npm run build`
 - `bun test tests/infrastructure/plugin-distribution.test.ts`
 - `bun run lint:hook-io`

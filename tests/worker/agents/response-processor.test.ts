@@ -335,6 +335,108 @@ describe('ResponseProcessor', () => {
     });
   });
 
+  describe('output kind contract', () => {
+    it('drops summary XML when observation output is expected', async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+      } as unknown as SessionManager;
+
+      const session = createMockSession({
+        lastGeneratorSource: 'init',
+        consecutiveInvalidOutputs: 2,
+      } as Partial<ActiveSession>);
+
+      await processAgentResponse(
+        '<summary><request>Wrong root</request></summary>',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
+      expect(session.consecutiveInvalidOutputs).toBe(0);
+      expect(session.earliestPendingTimestamp).toBeNull();
+      expect(logger.warn).toHaveBeenCalledWith(
+        'PARSER',
+        expect.stringMatching(/^TestAgent returned summary XML while observation output was expected/),
+        expect.objectContaining({ expectedKind: 'observation', actualKind: 'summary' })
+      );
+    });
+
+    it('drops observation XML when summary output is expected', async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+      } as unknown as SessionManager;
+
+      const session = createMockSession({
+        lastGeneratorSource: 'summarize',
+        consecutiveInvalidOutputs: 1,
+      } as Partial<ActiveSession>);
+
+      await processAgentResponse(
+        '<observation><type>discovery</type><title>Wrong root</title></observation>',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
+      expect(session.consecutiveInvalidOutputs).toBe(0);
+      expect(session.earliestPendingTimestamp).toBeNull();
+      expect(logger.warn).toHaveBeenCalledWith(
+        'PARSER',
+        expect.stringMatching(/^TestAgent returned observation XML while summary output was expected/),
+        expect.objectContaining({ expectedKind: 'summary', actualKind: 'observation' })
+      );
+    });
+
+    it('treats explicit no-op observation XML as a valid dropped observation batch', async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+      } as unknown as SessionManager;
+
+      const session = createMockSession({
+        lastGeneratorSource: 'ingest',
+        consecutiveInvalidOutputs: 2,
+      } as Partial<ActiveSession>);
+
+      await processAgentResponse(
+        '<observation><type>skip</type><narrative>No new observations from this routine status check.</narrative></observation>',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
+      expect(session.consecutiveInvalidOutputs).toBe(0);
+      expect(session.earliestPendingTimestamp).toBeNull();
+    });
+  });
+
   describe('parsing summary from XML response', () => {
     it('should parse summary from response', async () => {
       const session = createMockSession();

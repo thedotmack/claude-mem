@@ -47,6 +47,7 @@ describe('parseAgentXml — summaries', () => {
     const result = parseAgentXml(text);
     expect(result.valid).toBe(true);
     if (result.valid && result.summary) {
+      expect(result.rootKind).toBe('summary');
       expect(result.summary.request).toBe('Fix the bug');
       expect(result.summary.investigated).toBeNull();
       expect(result.summary.learned).toBeNull();

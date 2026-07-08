@@ -150,6 +150,41 @@ describe('parseAgentXml — observations', () => {
     expect(result.valid).toBe(false);
   });
 
+  it('reports observation root kind for valid observations', () => {
+    const result = parseAgentXml(`<observation>
+      <type>discovery</type>
+      <title>Root kind</title>
+    </observation>`);
+
+    expect(result.valid).toBe(true);
+    if (!result.valid) return;
+    expect(result.rootKind).toBe('observation');
+  });
+
+  it('rejects explicit no-op observation XML unless opted in', () => {
+    const xml = `<observation>
+      <type>skip</type>
+      <narrative>No new observations from this routine status check.</narrative>
+    </observation>`;
+
+    expect(parseAgentXml(xml).valid).toBe(false);
+  });
+
+  it('accepts explicit no-op observation XML when opted in', () => {
+    const xml = `<observation>
+      <type>skip</type>
+      <narrative>No new observations from this routine status check.</narrative>
+    </observation>`;
+
+    const result = parseAgentXml(xml, 'test-correlation', { allowNoOpObservations: true });
+
+    expect(result.valid).toBe(true);
+    if (!result.valid) return;
+    expect(result.rootKind).toBe('observation');
+    expect(result.observations).toEqual([]);
+    expect(result.summary).toBeNull();
+  });
+
   it('parses files_read and files_modified arrays correctly', () => {
     const xml = `<observation>
       <type>bugfix</type>
