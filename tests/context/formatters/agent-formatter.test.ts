@@ -118,9 +118,9 @@ describe('AgentFormatter', () => {
     it('should produce legend with type items', () => {
       const result = renderAgentLegend();
 
-      expect(result).toHaveLength(4);
+      expect(result).toHaveLength(8);
       expect(result[0]).toContain('Legend:');
-      expect(result[3]).toBe('');
+      expect(result[7]).toBe('');
     });
 
     it('should include session in legend', () => {
@@ -130,13 +130,18 @@ describe('AgentFormatter', () => {
     });
 
     it('should keep get_observations hint when fetch-by-id is supported', () => {
-      expect(renderAgentLegend(true).join('\n')).toContain('get_observations');
+      const joined = renderAgentLegend(true).join('\n');
+      expect(joined).toContain('get_observations');
+      expect(joined).toContain('ToolSearch select:mcp__mcp-search__search,mcp__mcp-search__timeline,mcp__mcp-search__get_observations');
+      expect(joined).toContain('/make-plan');
+      expect(joined).toContain('/do');
     });
 
     it('should switch to display-only refs hint when fetch-by-id is unsupported', () => {
       const joined = renderAgentLegend(false).join('\n');
       expect(joined).toContain('short refs are display-only');
       expect(joined).not.toContain('get_observations');
+      expect(joined).toContain('avoid direct ID fetches');
     });
   });
 

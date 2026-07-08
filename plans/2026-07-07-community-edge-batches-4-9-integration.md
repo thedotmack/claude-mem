@@ -223,6 +223,13 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
   selection skips dream rows, welcome-hint suppression now treats summaries as
   memory, and all paths preserve platform-source scoping plus dismissed
   observation filtering.
+- #2506: port the source-level startup guidance and make-plan file-output
+  behavior without the stale plan-file reshuffle. Agent context now nudges
+  multi-step work toward ToolSearch-assisted mem-search, `/make-plan`, `/do`,
+  and source-cited subagent fan-out while preserving display-only UUID ref
+  behavior. The make-plan skill now requires writing plans to
+  `plans/inbox/<YYYY-MM-DD>-<short-slug>.md` and creating kanban subfolders
+  when absent.
 
 ### Batch 9
 
@@ -272,6 +279,9 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
 - #2523: Vertex AI for Gemini adds a new Google ADC dependency and cloud auth
   path. Hold for a dedicated provider-auth review rather than expanding this
   npm release branch.
+- #2506 stale `plans/` file moves and generated bundles: held. Current branch
+  has newer plan documents and generated assets; this tranche ports only the
+  source/skill behavior and regenerates from the current tree.
 
 ## Still to integrate from Batches 4-9
 
@@ -283,7 +293,7 @@ Batch 6: complete.
 
 Batch 7: complete.
 
-Batch 8: #2905, #2506.
+Batch 8: #2905.
 
 Batch 9: complete.
 
@@ -308,6 +318,13 @@ Batch 9: complete.
 - `bun test tests/utils/project-name.test.ts tests/context/observation-compiler.test.ts tests/worker/http/routes/search-routes-welcome-hint.test.ts`
 - `bun run typecheck`
 - `bun test tests/hooks/file-context.test.ts tests/context/include-last-message-dot-path.test.ts tests/services/sqlite/observation-dismiss.test.ts tests/cli/handlers/context-mcp-session-start.test.ts tests/cli/adapters/codex-file-context.test.ts tests/transcripts/processor-codex-context.test.ts`
+- `npm run build`
+- `bun test tests/infrastructure/plugin-distribution.test.ts`
+- `bun run lint:hook-io`
+- `bun run lint:spawn-env`
+- `git diff --check`
+- `bun test tests/context/formatters/agent-formatter.test.ts`
+- `bun run typecheck`
 - `npm run build`
 - `bun test tests/infrastructure/plugin-distribution.test.ts`
 - `bun run lint:hook-io`
