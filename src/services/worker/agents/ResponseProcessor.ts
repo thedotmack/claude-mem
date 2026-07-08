@@ -167,11 +167,8 @@ function extractPathsFromToolInput(
 
 function extractPatchPaths(toolInput: unknown): string[] {
   const input = maybeParseObject(toolInput);
-  if (typeof toolInput === 'string') {
-    return parsePatchFiles(toolInput);
-  }
   if (!input) {
-    return [];
+    return typeof toolInput === 'string' ? parsePatchFiles(toolInput) : [];
   }
 
   const patches: string[] = [];
