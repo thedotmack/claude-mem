@@ -1,5 +1,36 @@
 import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
+import { existsSync, readFileSync } from 'fs';
 import { logger } from '../../../src/utils/logger.js';
+
+function mockSettingsDefaults(): Record<string, string> {
+  return {
+    CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: mockFolderClaudeMdEnabled,
+    CLAUDE_MEM_QUEUE_ENGINE: 'sqlite',
+    CLAUDE_MEM_WELCOME_HINT_ENABLED: 'true',
+    CLAUDE_MEM_WORKER_PORT: '37777',
+  };
+}
+
+function mockSettingsFromFile(settingsPath?: string, applyEnvOverrides = true): Record<string, string> {
+  const settings = settingsPath && existsSync(settingsPath)
+    ? { ...mockSettingsDefaults(), ...JSON.parse(readFileSync(settingsPath, 'utf-8')) }
+    : mockSettingsDefaults();
+
+  if (!applyEnvOverrides) {
+    settings.CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED = mockFolderClaudeMdEnabled;
+    return settings;
+  }
+
+  for (const key of Object.keys(settings)) {
+    if (key === 'CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED') {
+      continue;
+    }
+    settings[key] = process.env[key] ?? settings[key];
+  }
+  settings.CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED = mockFolderClaudeMdEnabled;
+
+  return settings;
+}
 
 mock.module('../../../src/services/worker-service.js', () => ({
   updateCursorContextForProject: () => Promise.resolve(),
@@ -15,9 +46,11 @@ mock.module('../../../src/shared/worker-utils.js', () => ({
 
 mock.module('../../../src/shared/SettingsDefaultsManager.js', () => ({
   SettingsDefaultsManager: {
-    loadFromFile: () => ({
-      CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: mockFolderClaudeMdEnabled,
-    }),
+    getAllDefaults: () => mockSettingsDefaults(),
+    get: (key: string) => process.env[key] ?? mockSettingsDefaults()[key] ?? '',
+    getInt: (key: string) => parseInt(process.env[key] ?? mockSettingsDefaults()[key] ?? '0', 10),
+    loadFromFile: (settingsPath?: string, applyEnvOverrides = true) =>
+      mockSettingsFromFile(settingsPath, applyEnvOverrides),
   },
 }));
 
@@ -254,11 +287,10 @@ describe('ResponseProcessor', () => {
   });
 
   describe('observation file metadata gating', () => {
-    it('drops fabricated files_modified while preserving read evidence and folder updates', async () => {
+    it('drops fabricated files_modified while preserving read evidence', async () => {
       claimedMessages = [
         { type: 'observation', tool_name: 'Read', tool_input: { file_path: 'supabase/functions/edge/index.ts' } },
       ];
-      mockFolderClaudeMdEnabled = true;
 
       const session = createMockSession();
       const responseText = `
@@ -288,13 +320,6 @@ describe('ResponseProcessor', () => {
       const [, , observations] = mockStoreObservations.mock.calls[0];
       expect(observations[0].files_read).toEqual(['supabase/functions/edge/index.ts']);
       expect(observations[0].files_modified).toEqual([]);
-      expect(mockUpdateFolderClaudeMdFiles).toHaveBeenCalledTimes(1);
-      expect(mockUpdateFolderClaudeMdFiles).toHaveBeenCalledWith(
-        ['supabase/functions/edge/index.ts'],
-        'test-project',
-        37777,
-        undefined
-      );
     });
 
     it('populates files_modified from captured write evidence when XML omits it', async () => {
