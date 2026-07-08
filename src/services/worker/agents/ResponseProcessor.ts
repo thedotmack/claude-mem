@@ -131,7 +131,8 @@ export async function processAgentResponse(
       session.lastPromptNumber,
       discoveryTokens,
       originalTimestamp ?? undefined,
-      modelId
+      modelId,
+      session.contentSessionId
     );
   } finally {
     session.pendingAgentId = null;

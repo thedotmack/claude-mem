@@ -80,6 +80,26 @@ describe('SessionStore.storeObservations', () => {
     expect(store.getSummaryForSession('mem-with-summary')?.request).toBe('do the thing');
   });
 
+  it('stamps content_session_id on observations and summaries in one transaction', () => {
+    const result = store.storeObservations(
+      session('mem-content-tx'),
+      'project',
+      [obs({ title: 'A', narrative: 'a' })],
+      summary({ request: 'do the content thing' }),
+      1,
+      0,
+      1700000000000,
+      undefined,
+      'content-window-1'
+    );
+
+    const observation = store.db.prepare('SELECT content_session_id FROM observations WHERE id = ?').get(result.observationIds[0]) as { content_session_id: string | null };
+    const storedSummary = store.db.prepare('SELECT content_session_id FROM session_summaries WHERE id = ?').get(result.summaryId) as { content_session_id: string | null };
+
+    expect(observation.content_session_id).toBe('content-window-1');
+    expect(storedSummary.content_session_id).toBe('content-window-1');
+  });
+
   it('handles an empty observations array', () => {
     const result = store.storeObservations(session('mem-empty'), 'project', [], null);
     expect(result.observationIds.length).toBe(0);

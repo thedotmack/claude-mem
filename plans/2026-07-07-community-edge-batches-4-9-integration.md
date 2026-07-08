@@ -193,6 +193,12 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
   ingest applies the same guard before queueing observations. Defaults preserve
   existing behavior, settings API validation rejects unsafe shapes, and the
   viewer exposes both controls under Advanced settings.
+- #2770: stamp nullable `content_session_id` onto generated observation and
+  summary rows at write time. This branch uses schema version 36 because version
+  35 is already occupied; the migration adds/backfills indexed columns from
+  linkable `sdk_sessions`, self-heals missing indexes, import paths preserve
+  supplied content-session IDs, and the worker response processor passes the
+  active `session.contentSessionId` through storage.
 
 ### Batch 9
 
@@ -253,7 +259,7 @@ Batch 6: complete.
 
 Batch 7: complete.
 
-Batch 8: #3114, #3011, #2905, #2904, #2858, #2770, #2506.
+Batch 8: #3114, #3011, #2905, #2904, #2858, #2506.
 
 Batch 9: complete.
 
@@ -292,6 +298,12 @@ Batch 9: complete.
 - `git diff --check`
 - custom Node README switcher validation: validated 35 switchers and 1224
   local links
+- `bun run build`
+- `bun run lint:hook-io`
+- `bun run lint:spawn-env`
+- `git diff --check`
+- `bun test tests/sqlite/session-store-migrations.test.ts tests/sqlite/session-store-observations.test.ts tests/sqlite/session-store-summaries.test.ts tests/sqlite/session-store-transactions.test.ts tests/worker/agents/response-processor.test.ts tests/worker/http/routes/data-routes-import-platform.test.ts tests/infrastructure/plugin-distribution.test.ts`
+- `bun run typecheck`
 - `bun run build`
 - `bun run lint:hook-io`
 - `bun run lint:spawn-env`

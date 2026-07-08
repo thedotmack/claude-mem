@@ -102,6 +102,7 @@ export class SessionStore {
     this.ensureSDKSessionsPlatformContentIdentity();
     this.ensureUserPromptsSessionDbId();
     this.ensurePendingMessagesSessionToolUniqueIndex();
+    this.addObservationContentSessionIdColumns();
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -437,6 +438,71 @@ export class SessionStore {
     }
   }
 
+  private addObservationContentSessionIdColumns(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(36) as SchemaVersion | undefined;
+
+    const observationCols = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasObservationContentSession = observationCols.some(c => c.name === 'content_session_id');
+
+    const summaryCols = this.db.query('PRAGMA table_info(session_summaries)').all() as TableColumnInfo[];
+    const hasSummaryContentSession = summaryCols.some(c => c.name === 'content_session_id');
+
+    const hasObservationIndex = this.db.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_observations_content_session'
+    `).get() as { name: string } | undefined;
+    const hasSummaryIndex = this.db.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_session_summaries_content_session'
+    `).get() as { name: string } | undefined;
+
+    if (applied && hasObservationContentSession && hasSummaryContentSession && hasObservationIndex && hasSummaryIndex) return;
+
+    if (!hasObservationContentSession) {
+      this.db.run('ALTER TABLE observations ADD COLUMN content_session_id TEXT');
+      logger.debug('DB', 'Added content_session_id column to observations table (#2769)');
+    }
+    this.db.run(`
+      UPDATE observations
+         SET content_session_id = (
+           SELECT s.content_session_id
+             FROM sdk_sessions s
+            WHERE s.memory_session_id = observations.memory_session_id
+            LIMIT 1
+         )
+       WHERE content_session_id IS NULL
+         AND EXISTS (
+           SELECT 1
+             FROM sdk_sessions s
+            WHERE s.memory_session_id = observations.memory_session_id
+         )
+    `);
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_content_session ON observations(content_session_id)');
+
+    if (!hasSummaryContentSession) {
+      this.db.run('ALTER TABLE session_summaries ADD COLUMN content_session_id TEXT');
+      logger.debug('DB', 'Added content_session_id column to session_summaries table (#2769)');
+    }
+    this.db.run(`
+      UPDATE session_summaries
+         SET content_session_id = (
+           SELECT s.content_session_id
+             FROM sdk_sessions s
+            WHERE s.memory_session_id = session_summaries.memory_session_id
+            LIMIT 1
+         )
+       WHERE content_session_id IS NULL
+         AND EXISTS (
+           SELECT 1
+             FROM sdk_sessions s
+            WHERE s.memory_session_id = session_summaries.memory_session_id
+         )
+    `);
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_session_summaries_content_session ON session_summaries(content_session_id)');
+
+    if (!applied) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(36, new Date().toISOString());
+    }
+  }
+
   private dropDeadPendingMessagesColumns(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(31) as SchemaVersion | undefined;
 
@@ -504,6 +570,7 @@ export class SessionStore {
       CREATE TABLE IF NOT EXISTS observations (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         memory_session_id TEXT NOT NULL,
+        content_session_id TEXT,
         project TEXT NOT NULL,
         text TEXT NOT NULL,
         type TEXT NOT NULL,
@@ -520,6 +587,7 @@ export class SessionStore {
       CREATE TABLE IF NOT EXISTS session_summaries (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         memory_session_id TEXT UNIQUE NOT NULL,
+        content_session_id TEXT,
         project TEXT NOT NULL,
         request TEXT,
         investigated TEXT,
@@ -1888,7 +1956,8 @@ export class SessionStore {
     promptNumber?: number,
     discoveryTokens: number = 0,
     overrideTimestampEpoch?: number,
-    generatedByModel?: string
+    generatedByModel?: string,
+    contentSessionId?: string | null
   ): { id: number; createdAtEpoch: number } {
     const result = this.storeObservations(
       memorySessionId,
@@ -1898,7 +1967,8 @@ export class SessionStore {
       promptNumber,
       discoveryTokens,
       overrideTimestampEpoch,
-      generatedByModel
+      generatedByModel,
+      contentSessionId
     );
 
     return { id: result.observationIds[0], createdAtEpoch: result.createdAtEpoch };
@@ -1917,7 +1987,8 @@ export class SessionStore {
     },
     promptNumber?: number,
     discoveryTokens: number = 0,
-    overrideTimestampEpoch?: number
+    overrideTimestampEpoch?: number,
+    contentSessionId?: string | null
   ): { id: number; createdAtEpoch: number } {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
@@ -1925,8 +1996,9 @@ export class SessionStore {
     const stmt = this.db.prepare(`
       INSERT INTO session_summaries
       (memory_session_id, project, request, investigated, learned, completed,
-       next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch,
+       content_session_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -1941,7 +2013,8 @@ export class SessionStore {
       promptNumber || null,
       discoveryTokens,
       timestampIso,
-      timestampEpoch
+      timestampEpoch,
+      contentSessionId ?? null
     );
 
     return {
@@ -1977,7 +2050,8 @@ export class SessionStore {
     promptNumber?: number,
     discoveryTokens: number = 0,
     overrideTimestampEpoch?: number,
-    generatedByModel?: string
+    generatedByModel?: string,
+    contentSessionId?: string | null
   ): { observationIds: number[]; summaryId: number | null; createdAtEpoch: number } {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
@@ -1989,8 +2063,8 @@ export class SessionStore {
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
          files_read, files_modified, prompt_number, discovery_tokens, agent_type, agent_id, content_hash, created_at, created_at_epoch,
-         generated_by_model, metadata)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         generated_by_model, metadata, content_session_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(memory_session_id, content_hash) DO NOTHING
         RETURNING id
       `);
@@ -2019,7 +2093,8 @@ export class SessionStore {
           timestampIso,
           timestampEpoch,
           generatedByModel || null,
-          observation.metadata ?? null
+          observation.metadata ?? null,
+          contentSessionId ?? null
         ) as { id: number } | null;
 
         if (inserted) {
@@ -2041,8 +2116,9 @@ export class SessionStore {
         const summaryStmt = this.db.prepare(`
           INSERT INTO session_summaries
           (memory_session_id, project, request, investigated, learned, completed,
-           next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch,
+           content_session_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
         const result = summaryStmt.run(
@@ -2057,7 +2133,8 @@ export class SessionStore {
           promptNumber || null,
           discoveryTokens,
           timestampIso,
-          timestampEpoch
+          timestampEpoch,
+          contentSessionId ?? null
         );
         summaryId = Number(result.lastInsertRowid);
       }
@@ -2415,6 +2492,7 @@ export class SessionStore {
 
   importSessionSummary(summary: {
     memory_session_id: string;
+    content_session_id?: string | null;
     project: string;
     request: string | null;
     investigated: string | null;
@@ -2439,14 +2517,15 @@ export class SessionStore {
 
     const stmt = this.db.prepare(`
       INSERT INTO session_summaries (
-        memory_session_id, project, request, investigated, learned,
+        memory_session_id, content_session_id, project, request, investigated, learned,
         completed, next_steps, files_read, files_edited, notes,
         prompt_number, discovery_tokens, created_at, created_at_epoch
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
       summary.memory_session_id,
+      summary.content_session_id ?? null,
       summary.project,
       summary.request,
       summary.investigated,
@@ -2467,6 +2546,7 @@ export class SessionStore {
 
   importObservation(obs: {
     memory_session_id: string;
+    content_session_id?: string | null;
     project: string;
     text: string | null;
     type: string;
@@ -2495,15 +2575,16 @@ export class SessionStore {
 
     const stmt = this.db.prepare(`
       INSERT INTO observations (
-        memory_session_id, project, text, type, title, subtitle,
+        memory_session_id, content_session_id, project, text, type, title, subtitle,
         facts, narrative, concepts, files_read, files_modified,
         prompt_number, discovery_tokens, agent_type, agent_id,
         created_at, created_at_epoch
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
       obs.memory_session_id,
+      obs.content_session_id ?? null,
       obs.project,
       obs.text,
       obs.type,

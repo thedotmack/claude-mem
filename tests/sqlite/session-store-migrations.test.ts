@@ -384,6 +384,45 @@ describe('SessionStore migrations', () => {
     expect(promptFks.some(fk => fk.table === 'sdk_sessions' && fk.from === 'content_session_id')).toBe(false);
   });
 
+  it('fresh DB creates nullable content_session_id columns and indexes for generated rows', () => {
+    store = new SessionStore(':memory:');
+
+    const observationCols = new Set((store.db.query('PRAGMA table_info(observations)').all() as Array<{ name: string }>).map(col => col.name));
+    const summaryCols = new Set((store.db.query('PRAGMA table_info(session_summaries)').all() as Array<{ name: string }>).map(col => col.name));
+    expect(observationCols.has('content_session_id')).toBe(true);
+    expect(summaryCols.has('content_session_id')).toBe(true);
+
+    const observationIndex = store.db.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_observations_content_session'
+    `).get() as { name: string } | undefined;
+    const summaryIndex = store.db.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_session_summaries_content_session'
+    `).get() as { name: string } | undefined;
+    const version = store.db.prepare('SELECT version FROM schema_versions WHERE version = 36').get() as { version: number } | undefined;
+
+    expect(observationIndex?.name).toBe('idx_observations_content_session');
+    expect(summaryIndex?.name).toBe('idx_session_summaries_content_session');
+    expect(version?.version).toBe(36);
+  });
+
+  it('recreates content_session_id indexes when v36 is already marked applied', () => {
+    store = new SessionStore(':memory:');
+    store.db.run('DROP INDEX idx_observations_content_session');
+    store.db.run('DROP INDEX idx_session_summaries_content_session');
+
+    expect(() => new SessionStore(store!.db)).not.toThrow();
+
+    const observationIndex = store.db.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_observations_content_session'
+    `).get() as { name: string } | undefined;
+    const summaryIndex = store.db.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_session_summaries_content_session'
+    `).get() as { name: string } | undefined;
+
+    expect(observationIndex?.name).toBe('idx_observations_content_session');
+    expect(summaryIndex?.name).toBe('idx_session_summaries_content_session');
+  });
+
   it('initializes a legacy sdk_sessions table before platform_source indexes exist', () => {
     const db = new Database(':memory:');
     try {
@@ -426,6 +465,8 @@ describe('SessionStore migrations', () => {
 
       expect((db.prepare("SELECT COUNT(*) AS n FROM observations WHERE memory_session_id = 'memory-legacy'").get() as { n: number }).n).toBe(1);
       expect((db.prepare("SELECT COUNT(*) AS n FROM session_summaries WHERE memory_session_id = 'memory-legacy'").get() as { n: number }).n).toBe(1);
+      expect((db.prepare("SELECT content_session_id FROM observations WHERE memory_session_id = 'memory-legacy'").get() as { content_session_id: string }).content_session_id).toBe('shared-raw-id');
+      expect((db.prepare("SELECT content_session_id FROM session_summaries WHERE memory_session_id = 'memory-legacy'").get() as { content_session_id: string }).content_session_id).toBe('shared-raw-id');
       expect((db.prepare('SELECT session_db_id FROM user_prompts WHERE content_session_id = ?').get('shared-raw-id') as { session_db_id: number }).session_db_id).toBe(101);
       expect((db.prepare('SELECT session_db_id FROM pending_messages WHERE content_session_id = ?').get('shared-raw-id') as { session_db_id: number }).session_db_id).toBe(101);
 
