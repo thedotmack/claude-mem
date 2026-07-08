@@ -81,7 +81,7 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'days_since_last_obs',
   // search_performed retrieval quality — result_count is an integer,
   // chroma_available a boolean, fallback_reason one of OUR enum values
-  // (none | chroma_connection | chroma_error | chroma_not_initialized).
+  // (none | chroma_connection | chroma_error | chroma_not_initialized | chroma_zero_results).
   // Never the query, never an error message.
   'result_count',
   'chroma_available',

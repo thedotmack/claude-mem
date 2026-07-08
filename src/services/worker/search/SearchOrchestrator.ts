@@ -10,8 +10,11 @@ import { HybridSearchStrategy } from './strategies/HybridSearchStrategy.js';
 import type {
   StrategySearchOptions,
   StrategySearchResult,
-  ObservationSearchResult
+  ObservationSearchResult,
+  SearchResults,
+  SearchCategory
 } from './types.js';
+import { SEARCH_CONSTANTS, SEARCH_CATEGORIES, isCategoryRequested } from './types.js';
 import { ChromaUnavailableError } from './errors.js';
 import { logger } from '../../../utils/logger.js';
 import { normalizePlatformSource } from '../../../shared/platform-source.js';
@@ -20,6 +23,14 @@ interface NormalizedParams extends StrategySearchOptions {
   concepts?: string[];
   files?: string[];
   obsType?: string[];
+}
+
+function copyCategory<K extends SearchCategory>(
+  target: SearchResults,
+  source: SearchResults,
+  category: K
+): void {
+  target[category] = source[category];
 }
 
 export class SearchOrchestrator {
@@ -56,13 +67,9 @@ export class SearchOrchestrator {
 
     if (this.chromaStrategy) {
       logger.debug('SEARCH', 'Orchestrator: Using Chroma semantic search', {});
+      let chromaResult: StrategySearchResult;
       try {
-        const chromaResult = await this.chromaStrategy.search(options);
-        if (options.platformSource && this.isEmptyResult(chromaResult)) {
-          logger.debug('SEARCH', 'Orchestrator: platform-scoped Chroma search returned zero matches; falling back to SQLite', {});
-          return await this.sqliteStrategy.search(options);
-        }
-        return chromaResult;
+        chromaResult = await this.chromaStrategy.search(options);
       } catch (error) {
         const errorObj = error instanceof Error ? error : new Error(String(error));
         throw new ChromaUnavailableError(
@@ -70,6 +77,7 @@ export class SearchOrchestrator {
           errorObj
         );
       }
+      return await this.supplementEmptyCategories(options, chromaResult);
     }
 
     logger.debug('SEARCH', 'Orchestrator: Chroma not configured', {});
@@ -80,10 +88,55 @@ export class SearchOrchestrator {
     };
   }
 
-  private isEmptyResult(result: StrategySearchResult): boolean {
-    return result.results.observations.length === 0
-      && result.results.sessions.length === 0
-      && result.results.prompts.length === 0;
+  async supplementEmptyCategories(
+    options: StrategySearchOptions,
+    chromaResult: StrategySearchResult
+  ): Promise<StrategySearchResult> {
+    const requestedCategories = SEARCH_CATEGORIES
+      .filter(category => isCategoryRequested(options.searchType, category));
+    const emptyCategories = requestedCategories
+      .filter(category => chromaResult.results[category].length === 0);
+
+    if (emptyCategories.length === 0) {
+      return chromaResult;
+    }
+
+    // The Chroma paths apply a default 90-day recency window when no dateRange
+    // is given (filterByRecency); mirror it here so supplemented categories
+    // share the same time semantics as the Chroma-backed ones.
+    const supplementOptions: StrategySearchOptions = options.dateRange
+      ? options
+      : { ...options, dateRange: { start: Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS } };
+
+    if (emptyCategories.length === requestedCategories.length) {
+      logger.debug('SEARCH', 'Orchestrator: Chroma search returned zero matches for every requested category; falling back to SQLite', {});
+      return await this.sqliteStrategy.search(supplementOptions);
+    }
+
+    logger.debug('SEARCH', 'Orchestrator: Chroma search returned zero matches for some categories; supplementing from SQLite', {
+      categories: emptyCategories.join(',')
+    });
+
+    const mergedResults = { ...chromaResult.results };
+    let supplemented = false;
+
+    for (const category of emptyCategories) {
+      const sqliteResult = await this.sqliteStrategy.search({ ...supplementOptions, searchType: category });
+      if (sqliteResult.results[category].length > 0) {
+        copyCategory(mergedResults, sqliteResult.results, category);
+        supplemented = true;
+      }
+    }
+
+    if (!supplemented) {
+      return chromaResult;
+    }
+
+    return {
+      results: mergedResults,
+      usedChroma: true,
+      strategy: 'hybrid'
+    };
   }
 
   async findByFile(filePath: string, args: any): Promise<{

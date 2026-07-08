@@ -27,9 +27,9 @@ import { ChromaUnavailableError } from './search/errors.js';
  */
 export interface SearchTelemetryEnvelope {
   result_count?: number;
-  search_strategy?: 'chroma' | 'fts' | 'filter_only';
+  search_strategy?: 'chroma' | 'fts' | 'hybrid' | 'filter_only';
   chroma_available?: boolean;
-  fallback_reason?: 'none' | 'chroma_connection' | 'chroma_error' | 'chroma_not_initialized';
+  fallback_reason?: 'none' | 'chroma_connection' | 'chroma_error' | 'chroma_not_initialized' | 'chroma_zero_results';
 }
 
 export class SearchManager {
@@ -416,7 +416,7 @@ export class SearchManager {
           prompts = this.sessionSearch.searchUserPrompts(query, options);
         }
       } else {
-        logger.debug('SEARCH', 'ChromaDB found no matches (final result, no FTS5 fallback)', {});
+        logger.debug('SEARCH', 'ChromaDB found no matches; zero-result SQLite/FTS5 fallback may follow', {});
       }
     }
 
@@ -432,6 +432,7 @@ export class SearchManager {
     let chromaFailed = false;
     let platformScopedChromaZeroFallback = false;
     let chromaFailureReason: { message: string; isConnectionError: boolean } | null = null;
+    let supplementStrategy: 'chroma' | 'hybrid' | 'sqlite' = 'chroma';
 
     const searchObservations = !type || type === 'observations';
     const searchSessions = !type || type === 'sessions';
@@ -487,6 +488,28 @@ export class SearchManager {
         const chromaOutcome = await this.performChromaSemanticSearch(query, whereFilter, options, { obs_type, concepts, files, searchObservations, searchSessions, searchPrompts });
         chromaSucceeded = true;
         ({ observations, sessions, prompts, platformScopedChromaZeroFallback } = chromaOutcome);
+
+        if (!platformScopedChromaZeroFallback) {
+          const supplemented = await this.orchestrator.supplementEmptyCategories(
+            {
+              ...options,
+              query,
+              searchType: (type as 'observations' | 'sessions' | 'prompts' | undefined) ?? 'all',
+              obsType: obs_type,
+              concepts,
+              files
+            },
+            {
+              results: { observations, sessions, prompts },
+              usedChroma: true,
+              strategy: 'chroma' as const
+            }
+          );
+          ({ observations, sessions, prompts } = supplemented.results);
+          supplementStrategy = supplemented.strategy === 'hybrid' || supplemented.strategy === 'sqlite'
+            ? supplemented.strategy
+            : 'chroma';
+        }
       } catch (chromaError) {
         const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
         chromaFailureReason = {
@@ -540,14 +563,20 @@ export class SearchManager {
         searchStrategy = 'filter_only';
         fallbackReason = 'none';
       } else if (this.chromaSync) {
-        // PATH 2: Chroma semantic search, degrading to FTS5 on error or
-        // platform-scoped zeroes caused by pre-platform Chroma metadata.
-        searchStrategy = chromaFailed || platformScopedChromaZeroFallback ? 'fts' : 'chroma';
+        // PATH 2: Chroma semantic search, degrading to FTS5 on error or on
+        // zero-result Chroma matches (platform-scoped zeroes, full zero
+        // matches, or per-category SQLite supplement).
         if (chromaFailed) {
+          searchStrategy = 'fts';
           fallbackReason = chromaFailureReason?.isConnectionError ? 'chroma_connection' : 'chroma_error';
-        } else if (platformScopedChromaZeroFallback) {
-          fallbackReason = 'chroma_error';
+        } else if (platformScopedChromaZeroFallback || supplementStrategy === 'sqlite') {
+          searchStrategy = 'fts';
+          fallbackReason = 'chroma_zero_results';
+        } else if (supplementStrategy === 'hybrid') {
+          searchStrategy = 'hybrid';
+          fallbackReason = 'chroma_zero_results';
         } else {
+          searchStrategy = 'chroma';
           fallbackReason = 'none';
         }
       } else {

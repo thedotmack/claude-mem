@@ -65,7 +65,7 @@ const COLLECTED_FIELDS = [
   '                 install age and recent activity, in days/counts',
   'result_count     how many results a search returned (never the query)',
   'chroma_available whether vector search was reachable for a search',
-  'fallback_reason  none / chroma_connection / chroma_error / chroma_not_initialized',
+  'fallback_reason  none / chroma_connection / chroma_error / chroma_not_initialized / chroma_zero_results',
   'invalid_output_class   xml / idle / prose (never the output)',
   'consecutive_invalid_outputs   legacy unusable-output counter',
   'respawn_triggered      legacy recovery flag for old invalid-output restarts',
