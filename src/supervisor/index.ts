@@ -8,6 +8,7 @@ import {
   type ProcessRegistry
 } from './process-registry.js';
 import { runShutdownCascade } from './shutdown.js';
+export { reapLeakedProcesses } from './shutdown.js';
 import { startHealthChecker, stopHealthChecker } from './health-checker.js';
 import { paths } from '../shared/paths.js';
 
