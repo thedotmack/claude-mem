@@ -187,6 +187,12 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
   ordinary single-package repos keep the repo-root key. Explicit
   `.claude-mem.json` names still win, and unrelated ancestor worktree markers
   no longer override a real nested repo root.
+- #2741: add opt-in observation filtering for subagents. The hook skips before
+  worker/server dispatch when `CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS=true` or
+  when `CLAUDE_MEM_SKIP_AGENT_TYPES` contains the exact `agentType`; worker HTTP
+  ingest applies the same guard before queueing observations. Defaults preserve
+  existing behavior, settings API validation rejects unsafe shapes, and the
+  viewer exposes both controls under Advanced settings.
 
 ### Batch 9
 
@@ -247,7 +253,7 @@ Batch 6: complete.
 
 Batch 7: complete.
 
-Batch 8: #3114, #3011, #2905, #2904, #2858, #2770, #2741, #2506.
+Batch 8: #3114, #3011, #2905, #2904, #2858, #2770, #2506.
 
 Batch 9: complete.
 
@@ -286,6 +292,13 @@ Batch 9: complete.
 - `git diff --check`
 - custom Node README switcher validation: validated 35 switchers and 1224
   local links
+- `bun run build`
+- `bun run lint:hook-io`
+- `bun run lint:spawn-env`
+- `git diff --check`
+- `bun test tests/shared/should-skip-agent-observation.test.ts tests/cli/handlers/observation-subagent-skip.test.ts tests/cli/handlers/summarize-subagent-skip.test.ts tests/shared/settings-defaults-manager.test.ts tests/settings-routes-claude-token-validation.test.ts`
+- `bun test tests/infrastructure/plugin-distribution.test.ts`
+- `bun run typecheck`
 - `bun run build`
 - `bun run lint:hook-io`
 - `bun run lint:spawn-env`

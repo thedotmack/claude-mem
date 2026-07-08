@@ -7,6 +7,8 @@ import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker
 import { logger } from '../../utils/logger.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
+import { shouldSkipAgentObservation } from '../../shared/should-skip-agent-observation.js';
+import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { resolveRuntimeContext, logServerFallback } from '../../services/hooks/runtime-selector.js';
 import { isServerClientError, type ServerRecordEventRequest } from '../../services/hooks/server-client.js';
@@ -65,6 +67,16 @@ export const observationHandler: EventHandler = {
     if (!shouldTrackProject(cwd)) {
       logger.debug('HOOK', 'Project excluded from tracking, skipping observation', { cwd, toolName });
       return { continue: true, suppressOutput: true };
+    }
+
+    const agentSkip = shouldSkipAgentObservation(input.agentId, input.agentType, loadFromFileOnce());
+    if (agentSkip.skip) {
+      logger.debug('HOOK', `Skipping observation: ${agentSkip.reason}`, {
+        toolName,
+        agentId: input.agentId,
+        agentType: input.agentType,
+      });
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
     const runtime = resolveRuntimeContext();

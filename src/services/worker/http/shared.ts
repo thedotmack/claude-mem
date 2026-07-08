@@ -5,6 +5,7 @@ import type { DatabaseManager } from '../DatabaseManager.js';
 import type { SessionEventBroadcaster } from '../events/SessionEventBroadcaster.js';
 import { stripMemoryTags } from '../../../utils/tag-stripping.js';
 import { isProjectExcluded } from '../../../utils/project-filter.js';
+import { shouldSkipAgentObservation } from '../../../shared/should-skip-agent-observation.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
 import { getProjectContext } from '../../../utils/project-name.js';
@@ -72,6 +73,11 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
   );
   if (skipTools.has(payload.toolName)) {
     return { ok: true, status: 'skipped', reason: 'tool_excluded' };
+  }
+
+  const agentSkip = shouldSkipAgentObservation(payload.agentId, payload.agentType, settings);
+  if (agentSkip.skip) {
+    return { ok: true, status: 'skipped', reason: agentSkip.reason! };
   }
 
   const fileOperationTools = new Set(['Edit', 'Write', 'Read', 'NotebookEdit']);

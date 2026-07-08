@@ -84,6 +84,8 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_WORKER_PORT',
       'CLAUDE_MEM_WORKER_HOST',
       'CLAUDE_MEM_PROVIDER',
+      'CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS',
+      'CLAUDE_MEM_SKIP_AGENT_TYPES',
       'CLAUDE_MEM_CLAUDE_AUTH_METHOD',
       'CLAUDE_MEM_CLAUDE_MAX_TOKENS',
       'CLAUDE_MEM_GEMINI_API_KEY',
@@ -231,6 +233,16 @@ export class SettingsRoutes extends BaseRouteHandler {
       if (settings[key] && !['true', 'false'].includes(settings[key])) {
         return { valid: false, error: `${key} must be "true" or "false"` };
       }
+    }
+
+    if (settings.CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS !== undefined) {
+      if (!['true', 'false'].includes(settings.CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS)) {
+        return { valid: false, error: 'CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS must be "true" or "false"' };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_SKIP_AGENT_TYPES !== undefined && typeof settings.CLAUDE_MEM_SKIP_AGENT_TYPES !== 'string') {
+      return { valid: false, error: 'CLAUDE_MEM_SKIP_AGENT_TYPES must be a comma-separated string' };
     }
 
     if (settings.CLAUDE_MEM_CONTEXT_FULL_COUNT) {

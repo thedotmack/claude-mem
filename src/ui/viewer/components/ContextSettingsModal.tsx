@@ -608,6 +608,28 @@ export function ContextSettingsModal({
 
               <div className="toggle-group" style={{ marginTop: '12px' }}>
                 <ToggleSwitch
+                  id="skip-subagent-observations"
+                  label="Skip subagent observations"
+                  description="Ignore observations produced by subagents"
+                  checked={formState.CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS === 'true'}
+                  onChange={() => toggleBoolean('CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS')}
+                />
+              </div>
+
+              <FormField
+                label="Skipped agent types"
+                tooltip="Comma-separated agent_type values to skip, for example workflow-subagent"
+              >
+                <input
+                  type="text"
+                  value={formState.CLAUDE_MEM_SKIP_AGENT_TYPES || ''}
+                  onChange={(e) => updateSetting('CLAUDE_MEM_SKIP_AGENT_TYPES', e.target.value)}
+                  placeholder="workflow-subagent"
+                />
+              </FormField>
+
+              <div className="toggle-group" style={{ marginTop: '12px' }}>
+                <ToggleSwitch
                   id="show-last-summary"
                   label="Include last summary"
                   description="Add previous session's summary to context"
