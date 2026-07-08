@@ -94,7 +94,7 @@ Every event property passes through a strict whitelist scrubber — any key not 
 | `days_since_last_obs` | `0` | Days since the most recent observation was stored |
 | `result_count` | `12` | How many results a memory search returned — count only, never the results or the query |
 | `chroma_available` | `true` | Whether the vector-search backend was reachable for a search (false = fell back to full-text search) |
-| `fallback_reason` | `none` | Why a search fell back from vector search: none / chroma_connection / chroma_error / chroma_not_initialized — a closed enum, never an error message |
+| `fallback_reason` | `none` | Why a search fell back from vector search: none / chroma_connection / chroma_error / chroma_not_initialized / chroma_zero_results — a closed enum, never an error message |
 | `invalid_output_class` | `idle` | Coarse class of an unusable compression output: xml / idle / prose (`xml` = looked like the expected format but failed to parse) — never the output itself |
 | `consecutive_invalid_outputs` | `0` | Legacy unusable-output counter, retained as a scrubbed numeric field |
 | `respawn_triggered` | `false` | Legacy recovery flag for old invalid-output restarts |
