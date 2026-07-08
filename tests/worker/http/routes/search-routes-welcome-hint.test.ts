@@ -144,6 +144,30 @@ describe('SearchRoutes Welcome Hint', () => {
     expect(res.send).toHaveBeenCalledWith('CONTEXT_FROM_GENERATOR');
   });
 
+  it('skips the welcome hint when summaries exist without observations', async () => {
+    const observationCountStub = mock(() => ({ count: 0 }));
+    const summaryCountStub = mock(() => ({ count: 2 }));
+    prepareStub = mock((sql: string) => ({
+      get: sql.includes('session_summaries') ? summaryCountStub : observationCountStub,
+    }));
+    mockSessionStore = { db: { prepare: prepareStub } };
+    mockSearchManager = { getSessionStore: () => mockSessionStore };
+
+    const routes = new SearchRoutes(mockSearchManager);
+    const handler = captureContextInjectHandler(routes);
+
+    const res = createMockRes();
+    const req = { query: { projects: '/path/to/summary-project' } } as unknown as Request;
+
+    handler(req, res as unknown as Response);
+    await new Promise(resolve => setImmediate(resolve));
+
+    expect(observationCountStub).toHaveBeenCalledTimes(1);
+    expect(summaryCountStub).toHaveBeenCalledTimes(1);
+    expect(generateContextStub).toHaveBeenCalledTimes(1);
+    expect(res.send).toHaveBeenCalledWith('CONTEXT_FROM_GENERATOR');
+  });
+
   it('skips the welcome hint when CLAUDE_MEM_WELCOME_HINT_ENABLED=false', async () => {
     process.env.CLAUDE_MEM_WELCOME_HINT_ENABLED = 'false';
 

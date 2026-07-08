@@ -53,6 +53,7 @@ export interface Observation {
   created_at: string;
   created_at_epoch: number;
   project?: string;
+  merged_into_project?: string | null;
 }
 
 export interface SessionSummary {
@@ -67,6 +68,7 @@ export interface SessionSummary {
   created_at: string;
   created_at_epoch: number;
   project?: string;
+  merged_into_project?: string | null;
 }
 
 export interface SummaryTimelineItem extends SessionSummary {

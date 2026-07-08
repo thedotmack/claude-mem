@@ -212,7 +212,7 @@ describe('getProjectName', () => {
       expect(ctx.primary).toBe('my-app');
       expect(ctx.parent).toBeNull();
       expect(ctx.isWorktree).toBe(false);
-      expect(ctx.allProjects).toEqual(['my-app']);
+      expect(ctx.allProjects).toEqual(['my-app:dream', 'my-app']);
     });
 
     it('also accepts the snake_case project_name key', async () => {
@@ -257,7 +257,7 @@ describe('getProjectContext', () => {
     expect(ctx.primary).toBe('my-project');
     expect(ctx.parent).toBeNull();
     expect(ctx.isWorktree).toBe(false);
-    expect(ctx.allProjects).toEqual(['my-project']);
+    expect(ctx.allProjects).toEqual(['my-project:dream', 'my-project']);
   });
 
   it('resolves ~ path correctly', () => {
@@ -271,7 +271,7 @@ describe('getProjectContext', () => {
     const ctx = getProjectContext(null);
     expect(ctx.primary).toBe('unknown-project');
     expect(ctx.parent).toBeNull();
-    expect(ctx.allProjects).toEqual(['unknown-project']);
+    expect(ctx.allProjects).toEqual(['unknown-project:dream', 'unknown-project']);
   });
 
   it('uses only the repo-relative subproject key for non-worktree monorepo paths', async () => {
@@ -292,7 +292,7 @@ describe('getProjectContext', () => {
       expect(ctx.primary).toBe('my-real-repo/packages/api');
       expect(ctx.parent).toBeNull();
       expect(ctx.isWorktree).toBe(false);
-      expect(ctx.allProjects).toEqual(['my-real-repo/packages/api']);
+      expect(ctx.allProjects).toEqual(['my-real-repo/packages/api:dream', 'my-real-repo/packages/api']);
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -331,7 +331,12 @@ describe('getProjectContext', () => {
       expect(ctx.isWorktree).toBe(true);
       expect(ctx.primary).toBe('main-repo/my-worktree');
       expect(ctx.parent).toBe('main-repo');
-      expect(ctx.allProjects).toEqual(['main-repo', 'main-repo/my-worktree']);
+      expect(ctx.allProjects).toEqual([
+        'main-repo:dream',
+        'main-repo/my-worktree:dream',
+        'main-repo',
+        'main-repo/my-worktree',
+      ]);
     });
 
     it('write-path call sites resolve to composite name in worktrees', () => {
@@ -379,7 +384,7 @@ describe('getProjectContext', () => {
       expect(ctx.isWorktree).toBe(false);
       expect(ctx.primary).toBe('my-app');
       expect(ctx.parent).toBeNull();
-      expect(ctx.allProjects).toEqual(['my-app']);
+      expect(ctx.allProjects).toEqual(['my-app:dream', 'my-app']);
     });
   });
 });

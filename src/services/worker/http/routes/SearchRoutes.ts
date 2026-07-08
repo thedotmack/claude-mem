@@ -10,7 +10,7 @@ import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
 import { groupByDate } from '../../../../shared/timeline-formatting.js';
-import { countObservationsByProjects } from '../../../context/ObservationCompiler.js';
+import { countObservationsByProjects, countSummariesByProjects } from '../../../context/ObservationCompiler.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { loadClaudeMemEnv } from '../../../../shared/EnvManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
@@ -79,7 +79,7 @@ export class SearchRoutes extends BaseRouteHandler {
   private cachedSettingsAt = 0;
   // Scope this cache to the route instance so separate server/test instances do
   // not inherit each other's positive observation state through shared modules.
-  private readonly projectsKnownNonEmpty = new Set<string>();
+  private readonly projectSetsKnownNonEmpty = new Set<string>();
 
   constructor(
     private searchManager: SearchManager
@@ -99,18 +99,19 @@ export class SearchRoutes extends BaseRouteHandler {
     return this.cachedSettings;
   }
 
-  private projectsHaveObservations(
+  private projectsHaveContext(
     sessionStore: ReturnType<SearchManager['getSessionStore']>,
     projects: string[],
     platformSource?: string,
   ): boolean {
     const cacheKey = platformSource ? `${platformSource}\0${projects.join('\0')}` : projects.join('\0');
-    if (this.projectsKnownNonEmpty.has(cacheKey)) {
+    if (this.projectSetsKnownNonEmpty.has(cacheKey)) {
       return true;
     }
     const observationCount = countObservationsByProjects(sessionStore, projects, platformSource);
-    if (observationCount > 0) {
-      this.projectsKnownNonEmpty.add(cacheKey);
+    const summaryCount = observationCount > 0 ? 0 : countSummariesByProjects(sessionStore, projects, platformSource);
+    if (observationCount > 0 || summaryCount > 0) {
+      this.projectSetsKnownNonEmpty.add(cacheKey);
       return true;
     }
     return false;
@@ -312,9 +313,9 @@ export class SearchRoutes extends BaseRouteHandler {
     const hintEnabled = String(hintEnabledRaw ?? '').toLowerCase() === 'true';
     if (hintEnabled && !full) {
       const sessionStore = this.searchManager.getSessionStore();
-      // Memoized: skips the COUNT(*) query once any project in the set has
-      // observations. Hot-path: PostToolUse fires after every Read/Edit.
-      if (!this.projectsHaveObservations(sessionStore, projects, platformSource)) {
+      // Memoized: skips the COUNT(*) query once the exact project set has
+      // context. Hot-path: PostToolUse fires after every Read/Edit.
+      if (!this.projectsHaveContext(sessionStore, projects, platformSource)) {
         const port = process.env.CLAUDE_MEM_WORKER_PORT ?? settings.CLAUDE_MEM_WORKER_PORT;
         const viewerUrl = `http://localhost:${port}`;
         let hintBody = WELCOME_HINT_TEMPLATE.replace('{viewer_url}', viewerUrl);

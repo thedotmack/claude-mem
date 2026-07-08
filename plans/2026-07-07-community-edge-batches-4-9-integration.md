@@ -216,6 +216,13 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
   session-start context queries while remaining fetchable by id. Worker
   dismiss/undismiss endpoints and MCP tools are gated by
   `CLAUDE_MEM_ALLOW_DISMISS=false` by default.
+- #2858: inject project `:dream` namespaces alongside raw project memory for
+  SessionStart context. Dream observations and summaries are queried only when
+  that namespace has context, dream rows are preferred when present, one raw
+  observation is preserved when dream rows saturate the window, prior transcript
+  selection skips dream rows, welcome-hint suppression now treats summaries as
+  memory, and all paths preserve platform-source scoping plus dismissed
+  observation filtering.
 
 ### Batch 9
 
@@ -276,7 +283,7 @@ Batch 6: complete.
 
 Batch 7: complete.
 
-Batch 8: #2905, #2858, #2506.
+Batch 8: #2905, #2506.
 
 Batch 9: complete.
 
@@ -295,6 +302,14 @@ Batch 9: complete.
 - `bun run typecheck`
 - `bun test tests/worker/truncate-history.test.ts tests/gemini_provider.test.ts tests/shared/openrouter-request-settings.test.ts tests/shared/settings-defaults-manager.test.ts tests/infrastructure/plugin-distribution.test.ts`
 - `bun run typecheck`
+- `bun run lint:hook-io`
+- `bun run lint:spawn-env`
+- `git diff --check`
+- `bun test tests/utils/project-name.test.ts tests/context/observation-compiler.test.ts tests/worker/http/routes/search-routes-welcome-hint.test.ts`
+- `bun run typecheck`
+- `bun test tests/hooks/file-context.test.ts tests/context/include-last-message-dot-path.test.ts tests/services/sqlite/observation-dismiss.test.ts tests/cli/handlers/context-mcp-session-start.test.ts tests/cli/adapters/codex-file-context.test.ts tests/transcripts/processor-codex-context.test.ts`
+- `npm run build`
+- `bun test tests/infrastructure/plugin-distribution.test.ts`
 - `bun run lint:hook-io`
 - `bun run lint:spawn-env`
 - `git diff --check`

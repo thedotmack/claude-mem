@@ -264,11 +264,22 @@ export interface ProjectContext {
   allProjects: string[];
 }
 
+export function getDreamProjectName(projectName: string): string {
+  return projectName.endsWith(':dream') ? projectName : `${projectName}:dream`;
+}
+
+function withDreamProjects(projects: string[]): string[] {
+  return [
+    ...projects.map(getDreamProjectName),
+    ...projects,
+  ];
+}
+
 export function getProjectContext(cwd: string | null | undefined): ProjectContext {
   const cwdProjectName = getProjectName(cwd);
 
   if (!cwd) {
-    return { primary: cwdProjectName, parent: null, isWorktree: false, allProjects: [cwdProjectName] };
+    return { primary: cwdProjectName, parent: null, isWorktree: false, allProjects: withDreamProjects([cwdProjectName]) };
   }
 
   const expandedCwd = expandTilde(cwd);
@@ -276,7 +287,7 @@ export function getProjectContext(cwd: string | null | undefined): ProjectContex
   // An explicit `.claude-mem.json` name is authoritative: skip worktree
   // compositing so every copy/worktree collapses to the one configured project.
   if (getConfiguredProjectName(expandedCwd)) {
-    return { primary: cwdProjectName, parent: null, isWorktree: false, allProjects: [cwdProjectName] };
+    return { primary: cwdProjectName, parent: null, isWorktree: false, allProjects: withDreamProjects([cwdProjectName]) };
   }
 
   const repoRoot = findGitRepoRoot(expandedCwd);
@@ -296,9 +307,9 @@ export function getProjectContext(cwd: string | null | undefined): ProjectContex
       primary: composite,
       parent: worktreeInfo.parentProjectName,
       isWorktree: true,
-      allProjects: [worktreeInfo.parentProjectName, composite]
+      allProjects: withDreamProjects([worktreeInfo.parentProjectName, composite])
     };
   }
 
-  return { primary: cwdProjectName, parent: null, isWorktree: false, allProjects: [cwdProjectName] };
+  return { primary: cwdProjectName, parent: null, isWorktree: false, allProjects: withDreamProjects([cwdProjectName]) };
 }

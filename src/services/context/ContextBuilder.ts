@@ -13,6 +13,8 @@ import { calculateTokenEconomics } from './TokenCalculator.js';
 import {
   queryObservationsMulti,
   querySummariesMulti,
+  countObservationsByProjects,
+  countSummariesByProjects,
   getPriorSessionMessages,
   prepareSummariesForTimeline,
   buildTimeline,
@@ -59,6 +61,19 @@ function initializeDatabase(): SessionStore | null {
 
 function renderEmptyState(project: string, forHuman: boolean): string {
   return forHuman ? renderHumanEmptyState(project) : renderAgentEmptyState(project);
+}
+
+function isDreamProject(project: string): boolean {
+  return project.endsWith(':dream');
+}
+
+function rawProjectName(project: string): string {
+  return isDreamProject(project) ? project.slice(0, -':dream'.length) : project;
+}
+
+function getPrimaryContextProject(projects: string[], fallback: string): string {
+  const primary = [...projects].reverse().find(project => !isDreamProject(project)) ?? fallback;
+  return rawProjectName(primary);
 }
 
 function buildContextOutput(
@@ -172,7 +187,7 @@ export async function generateContextWithStats(
   const context = getProjectContext(cwd);
 
   const projects = input?.projects?.length ? input.projects : context.allProjects;
-  const project = projects[projects.length - 1] ?? context.primary;
+  const project = getPrimaryContextProject(projects, context.primary);
 
   if (input?.full) {
     config.totalObservationCount = 999999;
@@ -188,7 +203,16 @@ export async function generateContextWithStats(
     const platformSource = input?.platformSource
       ? normalizePlatformSource(input.platformSource)
       : undefined;
-    const queryProjects = projects.length > 1 ? projects : [project];
+    const dreamProjects = projects.filter(isDreamProject);
+    const rawProjects = projects.filter(candidate => !isDreamProject(candidate)).map(rawProjectName);
+    const dreamProjectsHaveContext = dreamProjects.length > 0
+      && (
+        countObservationsByProjects(db, dreamProjects, platformSource) > 0
+        || countSummariesByProjects(db, dreamProjects, platformSource) > 0
+      );
+    const queryProjects = dreamProjectsHaveContext || rawProjects.length === 0
+      ? projects
+      : rawProjects;
     const observations = queryObservationsMulti(db, queryProjects, config, platformSource);
     const summaries = querySummariesMulti(db, queryProjects, config, platformSource);
 
