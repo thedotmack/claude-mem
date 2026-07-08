@@ -180,6 +180,11 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
   direct and `merged_into_project` matches in relevance order, ignores keyword
   fallback retries, logs only query lengths, and uses an internal semantic
   hydration window without exposing a public `semanticLimit` knob.
+- #2904: reclaim legacy prompt/session bloat. Maintenance version 38 normalizes
+  oversized or wrapper-tagged `user_prompts`, clears completed/failed
+  `sdk_sessions.user_prompt` only when first-prompt history exists for the same
+  `session_db_id`, and runs best-effort page reclamation without failing
+  startup. Version 38 avoids collisions with the existing v35-v37 migrations.
 - #2883: cwd remap reconciliation reruns idempotently and backs up only when
   changes are needed.
 - #2867: context refs can render display-only 8-char UUID prefixes when direct
@@ -271,7 +276,7 @@ Batch 6: complete.
 
 Batch 7: complete.
 
-Batch 8: #2905, #2904, #2858, #2506.
+Batch 8: #2905, #2858, #2506.
 
 Batch 9: complete.
 
@@ -311,6 +316,13 @@ Batch 9: complete.
 - custom Node README switcher validation: validated 35 switchers and 1224
   local links
 - `bun run build`
+- `bun run lint:hook-io`
+- `bun run lint:spawn-env`
+- `git diff --check`
+- `bun test tests/services/sqlite/session-store-maintenance.test.ts tests/session_store.test.ts tests/shared/settings-defaults-manager.test.ts tests/services/sqlite/database-pragmas.test.ts tests/sqlite/session-store-migrations.test.ts`
+- `bun run typecheck`
+- `bun run build`
+- `bun test tests/services/sqlite/session-store-maintenance.test.ts tests/session_store.test.ts tests/services/sqlite/database-pragmas.test.ts tests/sqlite/session-store-migrations.test.ts tests/infrastructure/plugin-distribution.test.ts`
 - `bun run lint:hook-io`
 - `bun run lint:spawn-env`
 - `git diff --check`

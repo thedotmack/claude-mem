@@ -15,6 +15,7 @@ import type { ObservationSearchResult, SessionSummarySearchResult } from './type
 import { computeObservationContentHash } from './observations/store.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources } from '../../shared/platform-source.js';
 import { findRecentDuplicateUserPrompt as findRecentDuplicateUserPromptRecord } from './prompts/get.js';
+import { applyLegacyPromptBloatMaintenance } from './maintenance.js';
 import { normalizeStoredPromptText } from './prompt-storage.js';
 import { applySqliteBusyTimeout, openPrimarySqliteConnection } from './connection.js';
 
@@ -104,6 +105,7 @@ export class SessionStore {
     this.ensurePendingMessagesSessionToolUniqueIndex();
     this.addObservationContentSessionIdColumns();
     this.createObservationFeedbackTable();
+    applyLegacyPromptBloatMaintenance(this.db);
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -1497,7 +1499,18 @@ export class SessionStore {
     const nowIso = new Date(nowEpoch).toISOString();
     this.db.prepare(`
       UPDATE sdk_sessions
-      SET status = 'completed', completed_at = ?, completed_at_epoch = ?
+      SET status = 'completed',
+          completed_at = ?,
+          completed_at_epoch = ?,
+          user_prompt = CASE
+            WHEN EXISTS (
+              SELECT 1
+              FROM user_prompts up
+              WHERE up.session_db_id = sdk_sessions.id
+                AND up.prompt_number = 1
+            ) THEN NULL
+            ELSE user_prompt
+          END
       WHERE id = ?
     `).run(nowIso, nowEpoch, sessionDbId);
   }
