@@ -12,12 +12,252 @@ import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
 import { getWorkerPort } from '../../../shared/worker-utils.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
-import type { ActiveSession } from '../../worker-types.js';
+import type { ActiveSession, PendingMessage } from '../../worker-types.js';
 import type { DatabaseManager } from '../DatabaseManager.js';
 import type { SessionManager } from '../SessionManager.js';
 import type { WorkerRef, StorageResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
 import { telemetryBuffer } from '../../telemetry/buffer.js';
+
+type ObservationFileEvidenceMessage = Pick<PendingMessage, 'type' | 'tool_name' | 'tool_input'>;
+
+export interface ObservationFileEvidence {
+  files_read: string[];
+  files_modified: string[];
+}
+
+const READ_TOOL_NAMES = new Set(['Read']);
+const WRITE_TOOL_NAMES = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit', 'write_file']);
+const PATCH_TOOL_NAMES = new Set(['apply_patch']);
+
+export function extractObservationFileEvidence(messages: ReadonlyArray<ObservationFileEvidenceMessage>): ObservationFileEvidence {
+  const filesRead: string[] = [];
+  const filesModified: string[] = [];
+  const seenRead = new Set<string>();
+  const seenModified = new Set<string>();
+
+  for (const message of messages) {
+    if (message.type !== 'observation') {
+      continue;
+    }
+
+    const toolName = typeof message.tool_name === 'string' ? message.tool_name : '';
+    if (!toolName) {
+      continue;
+    }
+
+    if (READ_TOOL_NAMES.has(toolName)) {
+      for (const filePath of extractPathsFromToolInput(message.tool_input, 'read')) {
+        pushUnique(seenRead, filesRead, filePath);
+      }
+    }
+
+    if (WRITE_TOOL_NAMES.has(toolName)) {
+      for (const filePath of extractPathsFromToolInput(message.tool_input, 'write', toolName)) {
+        pushUnique(seenModified, filesModified, filePath);
+      }
+    }
+
+    if (PATCH_TOOL_NAMES.has(toolName)) {
+      for (const filePath of extractPatchPaths(message.tool_input)) {
+        pushUnique(seenModified, filesModified, filePath);
+      }
+    }
+  }
+
+  return {
+    files_read: filesRead,
+    files_modified: filesModified,
+  };
+}
+
+function pushUnique(seen: Set<string>, output: string[], filePath: string): void {
+  if (!seen.has(filePath)) {
+    seen.add(filePath);
+    output.push(filePath);
+  }
+}
+
+function normalizePathValue(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+function maybeParseObject(value: unknown): Record<string, unknown> | null {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed || !(trimmed.startsWith('{') || trimmed.startsWith('['))) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+function extractPathsFromToolInput(
+  toolInput: unknown,
+  mode: 'read' | 'write',
+  toolName?: string
+): string[] {
+  const input = maybeParseObject(toolInput);
+  if (!input) {
+    return [];
+  }
+
+  const paths: string[] = [];
+  const directFields = mode === 'read'
+    ? ['file_path', 'filePath', 'notebook_path', 'notebookPath', 'filePaths']
+    : ['file_path', 'filePath', 'notebook_path', 'notebookPath', 'path', 'filePaths'];
+
+  for (const field of directFields) {
+    const value = input[field];
+    if (Array.isArray(value)) {
+      for (const entry of value) {
+        const path = normalizePathValue(entry);
+        if (path) {
+          paths.push(path);
+        }
+      }
+      continue;
+    }
+
+    const path = normalizePathValue(value);
+    if (path) {
+      paths.push(path);
+    }
+  }
+
+  if (mode === 'write') {
+    const edits = input.edits;
+    if (Array.isArray(edits)) {
+      for (const edit of edits) {
+        if (!edit || typeof edit !== 'object') {
+          continue;
+        }
+        const record = edit as Record<string, unknown>;
+        for (const field of ['file_path', 'filePath', 'notebook_path', 'notebookPath', 'path']) {
+          const path = normalizePathValue(record[field]);
+          if (path) {
+            paths.push(path);
+          }
+        }
+        const patch = normalizePathValue(record.patch);
+        if (patch && toolName === 'apply_patch') {
+          paths.push(...extractPatchPaths(patch));
+        }
+      }
+    }
+  }
+
+  return dedupeStable(paths);
+}
+
+function extractPatchPaths(toolInput: unknown): string[] {
+  const input = maybeParseObject(toolInput);
+  if (typeof toolInput === 'string') {
+    return parsePatchFiles(toolInput);
+  }
+  if (!input) {
+    return [];
+  }
+
+  const patches: string[] = [];
+  const patch = normalizePathValue(input.patch);
+  if (patch) {
+    patches.push(patch);
+  }
+
+  const edits = input.edits;
+  if (Array.isArray(edits)) {
+    for (const edit of edits) {
+      if (typeof edit === 'string') {
+        patches.push(edit);
+        continue;
+      }
+      if (!edit || typeof edit !== 'object') {
+        continue;
+      }
+      const record = edit as Record<string, unknown>;
+      const nestedPatch = normalizePathValue(record.patch);
+      if (nestedPatch) {
+        patches.push(nestedPatch);
+      }
+    }
+  }
+
+  return dedupeStable(patches.flatMap(parsePatchFiles));
+}
+
+function parsePatchFiles(patch: string): string[] {
+  const files: string[] = [];
+  for (const line of patch.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('*** Update File: ')) {
+      files.push(trimmed.replace('*** Update File: ', '').trim());
+      continue;
+    }
+    if (trimmed.startsWith('*** Add File: ')) {
+      files.push(trimmed.replace('*** Add File: ', '').trim());
+      continue;
+    }
+    if (trimmed.startsWith('*** Delete File: ')) {
+      files.push(trimmed.replace('*** Delete File: ', '').trim());
+      continue;
+    }
+    if (trimmed.startsWith('*** Move to: ')) {
+      files.push(trimmed.replace('*** Move to: ', '').trim());
+      continue;
+    }
+    if (trimmed.startsWith('+++ ')) {
+      const filePath = trimmed.replace('+++ ', '').replace(/^b\//, '').trim();
+      if (filePath && filePath !== '/dev/null') {
+        files.push(filePath);
+      }
+    }
+  }
+  return dedupeStable(files);
+}
+
+function dedupeStable(values: string[]): string[] {
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (const value of values) {
+    if (!value || seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    deduped.push(value);
+  }
+  return deduped;
+}
+
+function sanitizeObservationFiles(
+  observations: ParsedObservation[],
+  fileEvidence: ObservationFileEvidence
+): ParsedObservation[] {
+  return observations.map(obs => ({
+    ...obs,
+    files_read: mergeFileLists(fileEvidence.files_read, obs.files_read),
+    files_modified: fileEvidence.files_modified,
+  }));
+}
+
+function mergeFileLists(primary: string[], secondary: string[]): string[] {
+  return dedupeStable([...primary, ...secondary]);
+}
 
 export async function processAgentResponse(
   text: string,
@@ -106,16 +346,19 @@ export async function processAgentResponse(
 
   const { observations, summary } = parsed;
   const summaryForStore = normalizeSummaryForStorage(summary);
+  const claimedMessages = sessionManager.getClaimedMessages(session.sessionDbId);
+  const fileEvidence = extractObservationFileEvidence(claimedMessages);
+  const sanitizedObservations = sanitizeObservationFiles(observations, fileEvidence);
 
   const sessionStore = dbManager.getSessionStore();
   sessionStore.ensureMemorySessionIdRegistered(session.sessionDbId, session.memorySessionId, getWorkerPort());
 
-  logger.info('DB', `STORING | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${observations.length} | hasSummary=${!!summaryForStore}`, {
+  logger.info('DB', `STORING | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${sanitizedObservations.length} | hasSummary=${!!summaryForStore}`, {
     sessionId: session.sessionDbId,
     memorySessionId: session.memorySessionId
   });
 
-  const labeledObservations = observations.map(obs => ({
+  const labeledObservations = sanitizedObservations.map(obs => ({
     ...obs,
     agent_type: session.pendingAgentType ?? null,
     agent_id: session.pendingAgentId ?? null
@@ -219,7 +462,7 @@ export async function processAgentResponse(
   });
 
   await syncAndBroadcastObservations(
-    observations,
+    labeledObservations,
     result,
     session,
     dbManager,
