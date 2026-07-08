@@ -240,11 +240,16 @@ describe('ResponseProcessor', () => {
           tool_name: 'apply_patch',
           tool_input: '*** Update File: src/patch.ts\n@@\n-old\n+new\n',
         },
+        {
+          type: 'observation',
+          tool_name: 'apply_patch',
+          tool_input: JSON.stringify({ patch: '*** Update File: src/json-patch.ts\n@@\n-old\n+new\n' }),
+        },
         { type: 'observation', tool_name: 'Read', tool_input: { file_path: 'src/read.ts' } },
       ]);
 
       expect(evidence.files_read).toEqual(['src/read.ts']);
-      expect(evidence.files_modified).toEqual(['src/write.ts', 'src/patch.ts']);
+      expect(evidence.files_modified).toEqual(['src/write.ts', 'src/patch.ts', 'src/json-patch.ts']);
     });
   });
 
