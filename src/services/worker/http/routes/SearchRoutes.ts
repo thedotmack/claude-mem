@@ -5,6 +5,7 @@ import path from 'path';
 import { z } from 'zod';
 import { SearchManager } from '../../SearchManager.js';
 import type { SearchTelemetryEnvelope } from '../../SearchManager.js';
+import { SEARCH_CONSTANTS } from '../../search/index.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
@@ -414,6 +415,22 @@ export class SearchRoutes extends BaseRouteHandler {
     const project = SearchRoutes.firstString(req.body?.project) ?? SearchRoutes.firstString(req.query.project);
     const limit = Math.min(Math.max(parseInt(String(req.body?.limit || req.query.limit || '5'), 10) || 5, 1), 20);
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+    const semanticWindowLimit = SEARCH_CONSTANTS.CHROMA_BATCH_SIZE;
+    const baseSearchArgs = {
+      query,
+      type: 'observations',
+      limit: String(limit),
+      format: 'json',
+      orderBy: 'relevance',
+      ...(platformSource ? { platformSource } : {}),
+    };
+    const scopedSearchArgs = project
+      ? { ...baseSearchArgs, project }
+      : baseSearchArgs;
+    const observationKey = (obs: any): string => String(
+      obs?.id
+      ?? `${obs?.title || ''}:${obs?.created_at || ''}:${obs?.project || ''}:${obs?.merged_into_project || ''}`
+    );
 
     if (!query || query.length < 20) {
       res.json({ context: '', count: 0 });
@@ -422,36 +439,90 @@ export class SearchRoutes extends BaseRouteHandler {
 
     let result: any;
     try {
-      result = await this.searchManager.search({
-        query,
-        type: 'observations',
-        project,
-        limit: String(limit),
-        format: 'json',
-        ...(platformSource ? { platformSource } : {}),
-      });
+      const scopedTelemetry: SearchTelemetryEnvelope = {};
+      result = await this.searchManager.search(
+        scopedSearchArgs,
+        scopedTelemetry,
+        { semanticHydrationLimit: semanticWindowLimit }
+      );
+      const scopedObservations = result?.observations || [];
+
+      if (project) {
+        try {
+          const fallbackTelemetry: SearchTelemetryEnvelope = {};
+          const fallbackResult = await this.searchManager.search(
+            baseSearchArgs,
+            fallbackTelemetry,
+            { semanticHydrationLimit: semanticWindowLimit }
+          );
+          const fallbackUsedKeywordSearch =
+            fallbackTelemetry.search_strategy === 'fts'
+            || fallbackTelemetry.search_strategy === 'filter_only';
+
+          if (fallbackUsedKeywordSearch) {
+            result = { ...(result || {}), observations: scopedObservations };
+          } else {
+            const scopedObservationsByKey = new Map(
+              scopedObservations.map((obs: any) => [observationKey(obs), obs])
+            );
+            const seenObservationKeys = new Set<string>();
+            result = {
+              ...(result || {}),
+              observations: [
+                ...(fallbackResult?.observations || [])
+                  .filter((obs: any) => obs.project === project || obs.merged_into_project === project)
+                  .filter((obs: any) => {
+                    const key = observationKey(obs);
+                    if (seenObservationKeys.has(key)) return false;
+                    seenObservationKeys.add(key);
+                    return true;
+                  })
+                  .map((obs: any) => scopedObservationsByKey.get(observationKey(obs)) || obs),
+                ...scopedObservations.filter((obs: any) => {
+                  const key = observationKey(obs);
+                  if (seenObservationKeys.has(key)) return false;
+                  seenObservationKeys.add(key);
+                  return true;
+                }),
+              ],
+            };
+          }
+        } catch (fallbackError) {
+          if (!scopedObservations.length) throw fallbackError;
+          const normalizedFallbackError = fallbackError instanceof Error
+            ? fallbackError
+            : new Error(String(fallbackError));
+          logger.warn(
+            'HTTP',
+            'Semantic context fallback failed, keeping scoped results',
+            { queryLength: query.length, project, platformSource },
+            normalizedFallbackError
+          );
+        }
+      }
     } catch (error) {
       const normalizedError = error instanceof Error ? error : new Error(String(error));
-      logger.error('HTTP', 'Semantic context query failed', { query, project, platformSource }, normalizedError);
+      logger.error('HTTP', 'Semantic context query failed', { queryLength: query.length, project, platformSource }, normalizedError);
       res.json({ context: '', count: 0 });
       return;
     }
 
     const observations = result?.observations || [];
-    if (!observations.length) {
+    const renderedObservations = observations.slice(0, limit);
+    if (!renderedObservations.length) {
       res.json({ context: '', count: 0 });
       return;
     }
 
     const lines: string[] = ['## Relevant Past Work (semantic match)\n'];
-    for (const obs of observations.slice(0, limit)) {
+    for (const obs of renderedObservations) {
       const date = obs.created_at?.slice(0, 10) || '';
       lines.push(`### ${obs.title || 'Observation'} (${date})`);
       if (obs.narrative) lines.push(obs.narrative);
       lines.push('');
     }
 
-    res.json({ context: lines.join('\n'), count: observations.length });
+    res.json({ context: lines.join('\n'), count: renderedObservations.length });
   });
 
   private queryWithPlatformSource(req: Request): Record<string, any> {

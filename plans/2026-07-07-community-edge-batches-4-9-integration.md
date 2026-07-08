@@ -174,6 +174,12 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
   creating/rewriting empty skeleton folder context.
 - #3116/#3011-adjacent Chroma fallback: by-file hybrid search preserves exact
   metadata matches when Chroma ranks none or misses exact matches.
+- #3011: recover semantic context when scoped Chroma metadata misses relevant
+  adopted rows. `/api/context/semantic` now runs a bounded unscoped semantic
+  retry for project-scoped requests, keeps platform-source scoping, merges
+  direct and `merged_into_project` matches in relevance order, ignores keyword
+  fallback retries, logs only query lengths, and uses an internal semantic
+  hydration window without exposing a public `semanticLimit` knob.
 - #2883: cwd remap reconciliation reruns idempotently and backs up only when
   changes are needed.
 - #2867: context refs can render display-only 8-char UUID prefixes when direct
@@ -265,7 +271,7 @@ Batch 6: complete.
 
 Batch 7: complete.
 
-Batch 8: #3011, #2905, #2904, #2858, #2506.
+Batch 8: #2905, #2904, #2858, #2506.
 
 Batch 9: complete.
 
@@ -305,6 +311,13 @@ Batch 9: complete.
 - custom Node README switcher validation: validated 35 switchers and 1224
   local links
 - `bun run build`
+- `bun run lint:hook-io`
+- `bun run lint:spawn-env`
+- `git diff --check`
+- `bun test tests/worker/search-manager-semantic-limit.test.ts tests/worker/http/routes/search-routes-semantic-context.test.ts tests/worker/chroma-sync-query-logging.test.ts tests/services/sqlite/get-observations-by-ids-relevance.test.ts`
+- `bun run typecheck`
+- `bun run build`
+- `bun test tests/worker/search-manager-semantic-limit.test.ts tests/worker/http/routes/search-routes-semantic-context.test.ts tests/worker/chroma-sync-query-logging.test.ts tests/services/sqlite/get-observations-by-ids-relevance.test.ts tests/infrastructure/plugin-distribution.test.ts`
 - `bun run lint:hook-io`
 - `bun run lint:spawn-env`
 - `git diff --check`
