@@ -37,6 +37,7 @@ describe('SettingsRoutes settings allowlist', () => {
     const source = readFileSync('src/services/worker/http/routes/SettingsRoutes.ts', 'utf-8');
     expect(source).toContain("'CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS'");
     expect(source).toContain("'CLAUDE_MEM_SKIP_AGENT_TYPES'");
+    expect(source).toContain("'CLAUDE_MEM_ALLOW_DISMISS'");
   });
 
   it('validates subagent observation filter setting shapes', () => {
@@ -52,5 +53,14 @@ describe('SettingsRoutes settings allowlist', () => {
     const listResult = validateSettings({ CLAUDE_MEM_SKIP_AGENT_TYPES: ['workflow-subagent'] });
     expect(listResult.valid).toBe(false);
     expect(listResult.error).toBe('CLAUDE_MEM_SKIP_AGENT_TYPES must be a comma-separated string');
+  });
+
+  it('validates the observation dismiss write gate setting', () => {
+    expect(validateSettings({ CLAUDE_MEM_ALLOW_DISMISS: 'true' }).valid).toBe(true);
+    expect(validateSettings({ CLAUDE_MEM_ALLOW_DISMISS: 'false' }).valid).toBe(true);
+
+    const result = validateSettings({ CLAUDE_MEM_ALLOW_DISMISS: false });
+    expect(result.valid).toBe(false);
+    expect(result.error).toBe('CLAUDE_MEM_ALLOW_DISMISS must be "true" or "false"');
   });
 });

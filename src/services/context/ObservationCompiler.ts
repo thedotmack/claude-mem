@@ -2,6 +2,7 @@
 import path from 'path';
 import { existsSync, readFileSync } from 'fs';
 import { SessionStore } from '../sqlite/SessionStore.js';
+import { NOT_DISMISSED_SQL } from '../sqlite/observations/dismiss-filter.js';
 import { logger } from '../../utils/logger.js';
 import { SYSTEM_REMINDER_REGEX } from '../../utils/tag-stripping.js';
 import { CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
@@ -55,6 +56,7 @@ export function queryObservationsMulti(
         SELECT 1 FROM json_each(o.concepts)
         WHERE value IN (${conceptPlaceholders})
       )
+      AND ${NOT_DISMISSED_SQL}
     ORDER BY o.created_at_epoch DESC
     LIMIT ?
   `).all(
@@ -78,6 +80,7 @@ export function countObservationsByProjects(db: SessionStore, projects: string[]
     WHERE (o.project IN (${projectPlaceholders})
        OR o.merged_into_project IN (${projectPlaceholders}))
       AND (? IS NULL OR s.platform_source = ?)
+      AND ${NOT_DISMISSED_SQL}
   `).get(...projects, ...projects, platformSource ?? null, platformSource ?? null) as { count: number } | undefined;
   return row?.count ?? 0;
 }

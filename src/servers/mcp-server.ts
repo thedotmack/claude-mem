@@ -71,13 +71,17 @@ function errorIfWorkerScriptMissing(): void {
 
 async function callWorker(
   endpoint: string,
-  opts: { query?: Record<string, any>; body?: Record<string, any>; text?: boolean } = {}
+  opts: { query?: Record<string, any>; body?: Record<string, any>; text?: boolean; del?: boolean } = {}
 ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
   logger.debug('SYSTEM', '→ Worker API', undefined, { endpoint });
 
   try {
     let response: Response;
-    if (opts.body) {
+    if (opts.del) {
+      response = await workerHttpRequest(endpoint, {
+        method: 'DELETE'
+      });
+    } else if (opts.body) {
       response = await workerHttpRequest(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -589,6 +593,51 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       if (typeof args.project === 'string' && args.project.trim()) body.project = args.project;
       if (args.metadata && typeof args.metadata === 'object') body.metadata = args.metadata;
       return await callWorker('/api/memory/save', { body });
+    },
+  },
+  {
+    name: 'observation_dismiss',
+    description: 'Hide an observation from proactive surfacing without deleting it. Worker runtime only; requires CLAUDE_MEM_ALLOW_DISMISS=true. Params: id (required), reason.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number', description: 'Observation ID to dismiss' },
+        reason: { type: 'string', description: 'Optional reason stored as feedback metadata' },
+      },
+      required: ['id'],
+      additionalProperties: false,
+    },
+    handler: async (args: any) => {
+      if (!Number.isInteger(args?.id)) {
+        return {
+          content: [{ type: 'text' as const, text: 'observation_dismiss: "id" must be an integer' }],
+          isError: true,
+        };
+      }
+      const body: Record<string, unknown> = {};
+      if (typeof args.reason === 'string' && args.reason.trim()) body.reason = args.reason;
+      return await callWorker(`/api/observations/${encodeURIComponent(String(args.id))}/dismiss`, { body });
+    },
+  },
+  {
+    name: 'observation_undismiss',
+    description: 'Restore a dismissed observation to proactive surfacing. Worker runtime only; requires CLAUDE_MEM_ALLOW_DISMISS=true. Params: id (required).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number', description: 'Observation ID to undismiss' },
+      },
+      required: ['id'],
+      additionalProperties: false,
+    },
+    handler: async (args: any) => {
+      if (!Number.isInteger(args?.id)) {
+        return {
+          content: [{ type: 'text' as const, text: 'observation_undismiss: "id" must be an integer' }],
+          isError: true,
+        };
+      }
+      return await callWorker(`/api/observations/${encodeURIComponent(String(args.id))}/dismiss`, { del: true });
     },
   },
   {

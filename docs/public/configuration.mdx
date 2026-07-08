@@ -24,6 +24,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | `CLAUDE_MEM_WORKER_SCRIPT_PATH` | —                               | Absolute path to a specific `worker-service.cjs` for the daemon to spawn/respawn. Overrides the installed-plugin and cwd resolution. Opt-in; for local-build testing and bundle pinning. |
 | `CLAUDE_MEM_DATA_DIR`         | `~/.claude-mem`                 | Data root — every other path (database, chroma, logs, settings.json, worker.pid) derives from this |
 | `CLAUDE_MEM_SKIP_TOOLS`       | `ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion` | Comma-separated tools to exclude from observations |
+| `CLAUDE_MEM_ALLOW_DISMISS`    | `false`                         | When `true`, enables observation dismiss/undismiss writes. Dismissed observations are hidden from proactive surfacing but remain fetchable by id. |
 | `CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS` | `false`               | When `true`, skip every observation carrying an `agentId`. Main-session observations are unaffected. |
 | `CLAUDE_MEM_SKIP_AGENT_TYPES` | _(empty)_                       | Comma-separated `agent_type` values to skip, e.g. `workflow-subagent,Explore`. |
 

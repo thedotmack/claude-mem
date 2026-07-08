@@ -353,7 +353,7 @@ describe('SessionStore migrations', () => {
 
   it('fresh-DB init creates the SessionStore core tables', () => {
     store = new SessionStore(':memory:');
-    const expected = ['schema_versions', 'sdk_sessions', 'observations', 'session_summaries', 'user_prompts', 'pending_messages'];
+    const expected = ['schema_versions', 'sdk_sessions', 'observations', 'session_summaries', 'user_prompts', 'pending_messages', 'observation_feedback'];
 
     for (const table of expected) {
       const row = store.db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`).get(table) as { name: string } | undefined;
@@ -421,6 +421,44 @@ describe('SessionStore migrations', () => {
 
     expect(observationIndex?.name).toBe('idx_observations_content_session');
     expect(summaryIndex?.name).toBe('idx_session_summaries_content_session');
+  });
+
+  it('fresh DB creates observation feedback table and indexes at v37', () => {
+    store = new SessionStore(':memory:');
+
+    const table = store.db.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'observation_feedback'
+    `).get() as { name: string } | undefined;
+    const observationIndex = store.db.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_feedback_observation'
+    `).get() as { name: string } | undefined;
+    const signalIndex = store.db.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_feedback_signal'
+    `).get() as { name: string } | undefined;
+    const version = store.db.prepare('SELECT version FROM schema_versions WHERE version = 37').get() as { version: number } | undefined;
+
+    expect(table?.name).toBe('observation_feedback');
+    expect(observationIndex?.name).toBe('idx_feedback_observation');
+    expect(signalIndex?.name).toBe('idx_feedback_signal');
+    expect(version?.version).toBe(37);
+  });
+
+  it('recreates observation feedback indexes when v37 is already marked applied', () => {
+    store = new SessionStore(':memory:');
+    store.db.run('DROP INDEX idx_feedback_observation');
+    store.db.run('DROP INDEX idx_feedback_signal');
+
+    expect(() => new SessionStore(store!.db)).not.toThrow();
+
+    const observationIndex = store.db.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_feedback_observation'
+    `).get() as { name: string } | undefined;
+    const signalIndex = store.db.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_feedback_signal'
+    `).get() as { name: string } | undefined;
+
+    expect(observationIndex?.name).toBe('idx_feedback_observation');
+    expect(signalIndex?.name).toBe('idx_feedback_signal');
   });
 
   it('initializes a legacy sdk_sessions table before platform_source indexes exist', () => {

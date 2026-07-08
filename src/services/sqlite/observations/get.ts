@@ -3,6 +3,7 @@ import { Database } from 'bun:sqlite';
 import type { ObservationRecord } from '../../../types/database.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../../shared/platform-source.js';
 import { logger } from '../../../utils/logger.js';
+import { NOT_DISMISSED_SQL } from './dismiss-filter.js';
 
 export function getObservationsByFilePath(
   db: Database,
@@ -54,6 +55,7 @@ export function getObservationsByFilePath(
       (o.files_read LIKE '[%' AND EXISTS (SELECT 1 FROM json_each(o.files_read) WHERE value IN (${pathPlaceholders})))
       OR (o.files_modified LIKE '[%' AND EXISTS (SELECT 1 FROM json_each(o.files_modified) WHERE value IN (${pathPlaceholders})))
     )
+    AND ${NOT_DISMISSED_SQL}
     ${projectClause}
     ${platformClause}
     ORDER BY created_at_epoch DESC

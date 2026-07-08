@@ -8,6 +8,7 @@ function capturePostChain(routes: DataRoutes, targetPath: string): (req: Request
   let handler: ((req: Request, res: Response) => void) | undefined;
   const app = {
     get: mock(() => {}),
+    delete: mock(() => {}),
     post: mock((path: string, ...rest: any[]) => {
       if (path !== targetPath) return;
       if (rest.length === 1) {

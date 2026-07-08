@@ -18,6 +18,7 @@ import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 import { getObservationsByFilePath } from '../../../sqlite/observations/get.js';
 import { getFirstObservationCreatedAt } from '../../../sqlite/observations/recent.js';
 import { getUptimeSeconds } from '../../../../shared/uptime.js';
+import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 
 const integerArrayLike = z.preprocess((value) => {
   if (Array.isArray(value)) return value;
@@ -60,6 +61,10 @@ const sdkSessionsBatchSchema = z.object({
   memorySessionIds: stringArrayLike,
 }).passthrough();
 
+const dismissObservationSchema = z.object({
+  reason: z.string().optional(),
+}).passthrough();
+
 const importSchema = z.object({
   sessions: z.array(z.unknown()).optional(),
   summaries: z.array(z.unknown()).optional(),
@@ -87,6 +92,8 @@ export class DataRoutes extends BaseRouteHandler {
     app.get('/api/observation/:id', this.handleGetObservationById.bind(this));
     app.get('/api/observations/by-file', this.handleGetObservationsByFile.bind(this));
     app.post('/api/observations/batch', validateBody(observationsBatchSchema), this.handleGetObservationsByIds.bind(this));
+    app.post('/api/observations/:id/dismiss', validateBody(dismissObservationSchema), this.handleDismissObservation.bind(this));
+    app.delete('/api/observations/:id/dismiss', this.handleUndismissObservation.bind(this));
     app.get('/api/session/:id', this.handleGetSessionById.bind(this));
     app.post('/api/sdk-sessions/batch', validateBody(sdkSessionsBatchSchema), this.handleGetSdkSessionsByIds.bind(this));
     app.get('/api/prompt/:id', this.handleGetPromptById.bind(this));
@@ -171,6 +178,47 @@ export class DataRoutes extends BaseRouteHandler {
     const observations = store.getObservationsByIds(ids, { orderBy, limit, project, platformSource });
 
     res.json(observations);
+  });
+
+  private handleDismissObservation = this.wrapHandler((req: Request, res: Response): void => {
+    if (!this.isDismissEnabled()) {
+      res.status(403).json({ success: false, error: 'Observation dismiss is disabled' });
+      return;
+    }
+
+    const id = this.parseIntParam(req, res, 'id');
+    if (id === null) return;
+
+    const store = this.dbManager.getSessionStore();
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+    if (!store.getObservationById(id, platformSource)) {
+      this.notFound(res, `Observation #${id} not found`);
+      return;
+    }
+
+    const { reason } = req.body as z.infer<typeof dismissObservationSchema>;
+    store.dismissObservation(id, reason);
+    res.json({ success: true, id, dismissed: true });
+  });
+
+  private handleUndismissObservation = this.wrapHandler((req: Request, res: Response): void => {
+    if (!this.isDismissEnabled()) {
+      res.status(403).json({ success: false, error: 'Observation dismiss is disabled' });
+      return;
+    }
+
+    const id = this.parseIntParam(req, res, 'id');
+    if (id === null) return;
+
+    const store = this.dbManager.getSessionStore();
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+    if (!store.getObservationById(id, platformSource)) {
+      this.notFound(res, `Observation #${id} not found`);
+      return;
+    }
+
+    store.undismissObservation(id);
+    res.json({ success: true, id, dismissed: false });
   });
 
   private handleGetSessionById = this.wrapHandler((req: Request, res: Response): void => {
@@ -314,6 +362,10 @@ export class DataRoutes extends BaseRouteHandler {
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
 
     return { offset, limit, project, platformSource };
+  }
+
+  private isDismissEnabled(): boolean {
+    return SettingsDefaultsManager.get('CLAUDE_MEM_ALLOW_DISMISS').trim().toLowerCase() === 'true';
   }
 
   private handleImport = this.wrapHandler((req: Request, res: Response): void => {

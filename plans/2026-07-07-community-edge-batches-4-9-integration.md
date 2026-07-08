@@ -199,6 +199,12 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
   linkable `sdk_sessions`, self-heals missing indexes, import paths preserve
   supplied content-session IDs, and the worker response processor passes the
   active `session.contentSessionId` through storage.
+- #3114: add reversible observation dismiss. Schema version 37 creates the
+  reserved `observation_feedback` table with self-healing indexes; dismissed
+  observations are hidden from proactive file-context, SQLite search, and
+  session-start context queries while remaining fetchable by id. Worker
+  dismiss/undismiss endpoints and MCP tools are gated by
+  `CLAUDE_MEM_ALLOW_DISMISS=false` by default.
 
 ### Batch 9
 
@@ -259,7 +265,7 @@ Batch 6: complete.
 
 Batch 7: complete.
 
-Batch 8: #3114, #3011, #2905, #2904, #2858, #2506.
+Batch 8: #3011, #2905, #2904, #2858, #2506.
 
 Batch 9: complete.
 
@@ -338,6 +344,13 @@ Batch 9: complete.
 - `bun test tests/infrastructure/plugin-distribution.test.ts tests/cli/kiro-never-block.test.ts tests/shared/worker-autostart-flag.test.ts tests/infrastructure/health-monitor.test.ts tests/services/worker-spawner-stale-socket.test.ts tests/services/worker-spawner.test.ts tests/infrastructure/process-manager.test.ts`
 - `bun run typecheck`
 - `bun run build`
+- `bun run lint:hook-io`
+- `bun run lint:spawn-env`
+- `git diff --check`
+- `bun test tests/services/sqlite/observation-dismiss.test.ts tests/worker/http/routes/data-routes-dismiss.test.ts tests/servers/mcp-dismiss-tools.test.ts tests/sqlite/session-store-migrations.test.ts tests/settings-routes-claude-token-validation.test.ts tests/worker/http/routes/data-routes-platform-scoping.test.ts tests/worker/http/routes/data-routes-import-platform.test.ts`
+- `bun run typecheck`
+- `bun run build`
+- `bun test tests/services/sqlite/observation-dismiss.test.ts tests/worker/http/routes/data-routes-dismiss.test.ts tests/servers/mcp-dismiss-tools.test.ts tests/sqlite/session-store-migrations.test.ts tests/settings-routes-claude-token-validation.test.ts tests/worker/http/routes/data-routes-platform-scoping.test.ts tests/worker/http/routes/data-routes-import-platform.test.ts tests/infrastructure/plugin-distribution.test.ts`
 - `bun run lint:hook-io`
 - `bun run lint:spawn-env`
 - `git diff --check`

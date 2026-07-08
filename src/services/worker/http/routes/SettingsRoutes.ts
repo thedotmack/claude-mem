@@ -84,6 +84,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_WORKER_PORT',
       'CLAUDE_MEM_WORKER_HOST',
       'CLAUDE_MEM_PROVIDER',
+      'CLAUDE_MEM_ALLOW_DISMISS',
       'CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS',
       'CLAUDE_MEM_SKIP_AGENT_TYPES',
       'CLAUDE_MEM_CLAUDE_AUTH_METHOD',
@@ -225,12 +226,13 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT',
       'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT',
+      'CLAUDE_MEM_ALLOW_DISMISS',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
     ];
 
     for (const key of booleanSettings) {
-      if (settings[key] && !['true', 'false'].includes(settings[key])) {
+      if (settings[key] !== undefined && !['true', 'false'].includes(settings[key])) {
         return { valid: false, error: `${key} must be "true" or "false"` };
       }
     }

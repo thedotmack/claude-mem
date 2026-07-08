@@ -103,6 +103,7 @@ export class SessionStore {
     this.ensureUserPromptsSessionDbId();
     this.ensurePendingMessagesSessionToolUniqueIndex();
     this.addObservationContentSessionIdColumns();
+    this.createObservationFeedbackTable();
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -500,6 +501,39 @@ export class SessionStore {
 
     if (!applied) {
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(36, new Date().toISOString());
+    }
+  }
+
+  private createObservationFeedbackTable(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(37) as SchemaVersion | undefined;
+    const table = this.db.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'observation_feedback'
+    `).get() as TableNameRow | undefined;
+    const observationIndex = this.db.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_feedback_observation'
+    `).get() as { name: string } | undefined;
+    const signalIndex = this.db.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_feedback_signal'
+    `).get() as { name: string } | undefined;
+
+    if (applied && table && observationIndex && signalIndex) return;
+
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS observation_feedback (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        observation_id INTEGER NOT NULL,
+        signal_type TEXT NOT NULL,
+        session_db_id INTEGER,
+        created_at_epoch INTEGER NOT NULL,
+        metadata TEXT,
+        FOREIGN KEY (observation_id) REFERENCES observations(id) ON DELETE CASCADE
+      )
+    `);
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_feedback_observation ON observation_feedback(observation_id)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_feedback_signal ON observation_feedback(signal_type)');
+
+    if (!applied) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(37, new Date().toISOString());
     }
   }
 
@@ -1764,6 +1798,34 @@ export class SessionStore {
     const rowMap = new Map(rows.map(r => [r.id, r]));
     const ordered = ids.map(id => rowMap.get(id)).filter((r): r is ObservationSearchResult => !!r);
     return limit ? ordered.slice(0, limit) : ordered;
+  }
+
+  dismissObservation(observationId: number, reason?: string): void {
+    const trimmedReason = typeof reason === 'string' ? reason.trim() : '';
+    const metadata = trimmedReason ? JSON.stringify({ reason: trimmedReason }) : null;
+    this.db.prepare(`
+      INSERT INTO observation_feedback (observation_id, signal_type, session_db_id, created_at_epoch, metadata)
+      SELECT ?, 'dismissed', NULL, ?, ?
+      WHERE NOT EXISTS (
+        SELECT 1 FROM observation_feedback
+        WHERE observation_id = ? AND signal_type = 'dismissed'
+      )
+    `).run(observationId, Date.now(), metadata, observationId);
+  }
+
+  undismissObservation(observationId: number): void {
+    this.db.prepare(`
+      DELETE FROM observation_feedback
+      WHERE observation_id = ? AND signal_type = 'dismissed'
+    `).run(observationId);
+  }
+
+  isDismissed(observationId: number): boolean {
+    return this.db.prepare(`
+      SELECT 1 FROM observation_feedback
+      WHERE observation_id = ? AND signal_type = 'dismissed'
+      LIMIT 1
+    `).get(observationId) != null;
   }
 
   getSummaryForSession(memorySessionId: string, platformSource?: string): SummaryDetailRow | null {
