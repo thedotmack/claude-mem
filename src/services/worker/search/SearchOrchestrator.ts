@@ -56,13 +56,9 @@ export class SearchOrchestrator {
 
     if (this.chromaStrategy) {
       logger.debug('SEARCH', 'Orchestrator: Using Chroma semantic search', {});
+      let chromaResult: StrategySearchResult;
       try {
-        const chromaResult = await this.chromaStrategy.search(options);
-        if (options.platformSource && this.isEmptyResult(chromaResult)) {
-          logger.debug('SEARCH', 'Orchestrator: platform-scoped Chroma search returned zero matches; falling back to SQLite', {});
-          return await this.sqliteStrategy.search(options);
-        }
-        return chromaResult;
+        chromaResult = await this.chromaStrategy.search(options);
       } catch (error) {
         const errorObj = error instanceof Error ? error : new Error(String(error));
         throw new ChromaUnavailableError(
@@ -70,6 +66,7 @@ export class SearchOrchestrator {
           errorObj
         );
       }
+      return await this.supplementEmptyCategories(options, chromaResult);
     }
 
     logger.debug('SEARCH', 'Orchestrator: Chroma not configured', {});
@@ -80,10 +77,49 @@ export class SearchOrchestrator {
     };
   }
 
-  private isEmptyResult(result: StrategySearchResult): boolean {
-    return result.results.observations.length === 0
-      && result.results.sessions.length === 0
-      && result.results.prompts.length === 0;
+  async supplementEmptyCategories(
+    options: StrategySearchOptions,
+    chromaResult: StrategySearchResult
+  ): Promise<StrategySearchResult> {
+    const searchType = options.searchType ?? 'all';
+    const requestedCategories = (['observations', 'sessions', 'prompts'] as const)
+      .filter(category => searchType === 'all' || searchType === category);
+    const emptyCategories = requestedCategories
+      .filter(category => chromaResult.results[category].length === 0);
+
+    if (emptyCategories.length === 0) {
+      return chromaResult;
+    }
+
+    if (emptyCategories.length === requestedCategories.length) {
+      logger.debug('SEARCH', 'Orchestrator: Chroma search returned zero matches for every requested category; falling back to SQLite', {});
+      return await this.sqliteStrategy.search(options);
+    }
+
+    logger.debug('SEARCH', 'Orchestrator: Chroma search returned zero matches for some categories; supplementing from SQLite', {
+      categories: emptyCategories.join(',')
+    });
+
+    const mergedResults = { ...chromaResult.results };
+    let supplemented = false;
+
+    for (const category of emptyCategories) {
+      const sqliteResult = await this.sqliteStrategy.search({ ...options, searchType: category });
+      if (sqliteResult.results[category].length > 0) {
+        mergedResults[category] = sqliteResult.results[category] as any;
+        supplemented = true;
+      }
+    }
+
+    if (!supplemented) {
+      return chromaResult;
+    }
+
+    return {
+      results: mergedResults,
+      usedChroma: true,
+      strategy: 'hybrid'
+    };
   }
 
   async findByFile(filePath: string, args: any): Promise<{

@@ -487,6 +487,25 @@ export class SearchManager {
         const chromaOutcome = await this.performChromaSemanticSearch(query, whereFilter, options, { obs_type, concepts, files, searchObservations, searchSessions, searchPrompts });
         chromaSucceeded = true;
         ({ observations, sessions, prompts, platformScopedChromaZeroFallback } = chromaOutcome);
+
+        if (!platformScopedChromaZeroFallback) {
+          const supplemented = await this.orchestrator.supplementEmptyCategories(
+            {
+              ...options,
+              query,
+              searchType: (type as 'observations' | 'sessions' | 'prompts' | undefined) ?? 'all',
+              obsType: obs_type,
+              concepts,
+              files
+            },
+            {
+              results: { observations, sessions, prompts },
+              usedChroma: true,
+              strategy: 'chroma' as const
+            }
+          );
+          ({ observations, sessions, prompts } = supplemented.results);
+        }
       } catch (chromaError) {
         const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
         chromaFailureReason = {
