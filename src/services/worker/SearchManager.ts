@@ -416,7 +416,7 @@ export class SearchManager {
           prompts = this.sessionSearch.searchUserPrompts(query, options);
         }
       } else {
-        logger.debug('SEARCH', 'ChromaDB found no matches (final result, no FTS5 fallback)', {});
+        logger.debug('SEARCH', 'ChromaDB found no matches; zero-result SQLite/FTS5 fallback may follow', {});
       }
     }
 

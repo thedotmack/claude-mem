@@ -213,4 +213,54 @@ describe('SearchOrchestrator per-category SQLite supplement', () => {
     expect(result.results.prompts).toEqual([userPrompt]);
     expect(result.results.observations).toHaveLength(0);
   });
+
+  it('applies the default 90-day recency window to supplement queries when no dateRange is given', async () => {
+    const queryChroma = mock(() => Promise.resolve({
+      ids: [7],
+      distances: [0.1],
+      metadatas: [{ sqlite_id: 7, doc_type: 'user_prompt', created_at_epoch: Date.now() }],
+    }));
+    const searchObservations = mock(() => []);
+    const getUserPromptsByIds = mock(() => [userPrompt]);
+    const orchestrator = buildOrchestrator({ queryChroma, searchObservations, getUserPromptsByIds });
+
+    const before = Date.now();
+    await orchestrator.search({
+      query: 'テスト',
+      searchType: 'all',
+      limit: 5,
+    });
+    const after = Date.now();
+
+    expect(searchObservations).toHaveBeenCalledWith('テスト', expect.objectContaining({
+      dateRange: expect.objectContaining({ start: expect.any(Number) }),
+    }));
+    const passedStart = (searchObservations.mock.calls[0] as any[])[1].dateRange.start;
+    const ninetyDaysMs = 90 * 24 * 60 * 60 * 1000;
+    expect(passedStart).toBeGreaterThanOrEqual(before - ninetyDaysMs);
+    expect(passedStart).toBeLessThanOrEqual(after - ninetyDaysMs);
+  });
+
+  it('preserves an explicit dateRange in supplement queries', async () => {
+    const queryChroma = mock(() => Promise.resolve({
+      ids: [7],
+      distances: [0.1],
+      metadatas: [{ sqlite_id: 7, doc_type: 'user_prompt', created_at_epoch: Date.now() }],
+    }));
+    const searchObservations = mock(() => []);
+    const getUserPromptsByIds = mock(() => [userPrompt]);
+    const orchestrator = buildOrchestrator({ queryChroma, searchObservations, getUserPromptsByIds });
+
+    const dateRange = { start: 123, end: 456 };
+    await orchestrator.search({
+      query: 'テスト',
+      searchType: 'all',
+      limit: 5,
+      dateRange,
+    });
+
+    expect(searchObservations).toHaveBeenCalledWith('テスト', expect.objectContaining({
+      dateRange,
+    }));
+  });
 });

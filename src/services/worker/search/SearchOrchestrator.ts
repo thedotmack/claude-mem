@@ -10,8 +10,11 @@ import { HybridSearchStrategy } from './strategies/HybridSearchStrategy.js';
 import type {
   StrategySearchOptions,
   StrategySearchResult,
-  ObservationSearchResult
+  ObservationSearchResult,
+  SearchResults,
+  SearchCategory
 } from './types.js';
+import { SEARCH_CONSTANTS, SEARCH_CATEGORIES, isCategoryRequested } from './types.js';
 import { ChromaUnavailableError } from './errors.js';
 import { logger } from '../../../utils/logger.js';
 import { normalizePlatformSource } from '../../../shared/platform-source.js';
@@ -20,6 +23,14 @@ interface NormalizedParams extends StrategySearchOptions {
   concepts?: string[];
   files?: string[];
   obsType?: string[];
+}
+
+function copyCategory<K extends SearchCategory>(
+  target: SearchResults,
+  source: SearchResults,
+  category: K
+): void {
+  target[category] = source[category];
 }
 
 export class SearchOrchestrator {
@@ -81,9 +92,8 @@ export class SearchOrchestrator {
     options: StrategySearchOptions,
     chromaResult: StrategySearchResult
   ): Promise<StrategySearchResult> {
-    const searchType = options.searchType ?? 'all';
-    const requestedCategories = (['observations', 'sessions', 'prompts'] as const)
-      .filter(category => searchType === 'all' || searchType === category);
+    const requestedCategories = SEARCH_CATEGORIES
+      .filter(category => isCategoryRequested(options.searchType, category));
     const emptyCategories = requestedCategories
       .filter(category => chromaResult.results[category].length === 0);
 
@@ -91,9 +101,16 @@ export class SearchOrchestrator {
       return chromaResult;
     }
 
+    // The Chroma paths apply a default 90-day recency window when no dateRange
+    // is given (filterByRecency); mirror it here so supplemented categories
+    // share the same time semantics as the Chroma-backed ones.
+    const supplementOptions: StrategySearchOptions = options.dateRange
+      ? options
+      : { ...options, dateRange: { start: Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS } };
+
     if (emptyCategories.length === requestedCategories.length) {
       logger.debug('SEARCH', 'Orchestrator: Chroma search returned zero matches for every requested category; falling back to SQLite', {});
-      return await this.sqliteStrategy.search(options);
+      return await this.sqliteStrategy.search(supplementOptions);
     }
 
     logger.debug('SEARCH', 'Orchestrator: Chroma search returned zero matches for some categories; supplementing from SQLite', {
@@ -104,9 +121,9 @@ export class SearchOrchestrator {
     let supplemented = false;
 
     for (const category of emptyCategories) {
-      const sqliteResult = await this.sqliteStrategy.search({ ...options, searchType: category });
+      const sqliteResult = await this.sqliteStrategy.search({ ...supplementOptions, searchType: category });
       if (sqliteResult.results[category].length > 0) {
-        mergedResults[category] = sqliteResult.results[category] as any;
+        copyCategory(mergedResults, sqliteResult.results, category);
         supplemented = true;
       }
     }
