@@ -14,14 +14,16 @@
 </h1>
 
 <p align="center">
+  <a href="../../README.md">English</a> •
   <a href="README.zh.md">🇨🇳 中文</a> •
   <a href="README.zh-tw.md">🇹🇼 繁體中文</a> •
   <a href="README.ja.md">🇯🇵 日本語</a> •
+  <a href="pt.md">🇵🇹 Português</a> •
   <a href="README.pt-br.md">🇧🇷 Português</a> •
   <a href="README.ko.md">🇰🇷 한국어</a> •
   <a href="README.es.md">🇪🇸 Español</a> •
   <a href="README.de.md">🇩🇪 Deutsch</a> •
-  <a href="README.fr.md">🇫🇷 Français</a>
+  <a href="README.fr.md">🇫🇷 Français</a> •
   <a href="README.he.md">🇮🇱 עברית</a> •
   <a href="README.ar.md">🇸🇦 العربية</a> •
   <a href="README.ru.md">🇷🇺 Русский</a> •
@@ -31,6 +33,7 @@
   <a href="README.tr.md">🇹🇷 Türkçe</a> •
   <a href="README.uk.md">🇺🇦 Українська</a> •
   <a href="README.vi.md">🇻🇳 Tiếng Việt</a> •
+  <a href="README.tl.md">🇵🇭 Tagalog</a> •
   <a href="README.id.md">🇮🇩 Indonesia</a> •
   <a href="README.th.md">🇹🇭 ไทย</a> •
   <a href="README.hi.md">🇮🇳 हिन्दी</a> •
@@ -44,7 +47,8 @@
   <a href="README.fi.md">🇫🇮 Suomi</a> •
   <a href="README.da.md">🇩🇰 Dansk</a> •
   <a href="README.no.md">🇳🇴 Norsk</a> •
-  <a href="README.ta.md">🇮🇳 தமிழ்</a>
+  <a href="README.ta.md">🇮🇳 தமிழ்</a> •
+  <a href="README.ne.md">🇳🇵 नेपाली</a>
 </p>
 
 <h4 align="center">Σύστημα συμπίεσης μόνιμης μνήμης κατασκευασμένο για το <a href="https://claude.com/claude-code" target="_blank">Claude Code</a>.</h4>

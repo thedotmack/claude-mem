@@ -188,6 +188,14 @@ Source plan: issue #3139, Batches 4-9. The live-state inventory was refreshed on
   `.claude-mem.json` names still win, and unrelated ancestor worktree markers
   no longer override a real nested repo root.
 
+### Batch 9
+
+- #2608: add README i18n language-switcher coverage without regressing current
+  README body content. All localized README switchers now include the English,
+  Portugal Portuguese, Tagalog, and Nepali links and point Portugal Portuguese
+  at the existing `docs/i18n/pt.md` file instead of the missing
+  `README.pt.md`.
+
 ## Held or split from this tranche
 
 - #2616: large opt-in auto-redaction feature; conflicts with prompt/runtime
@@ -241,7 +249,7 @@ Batch 7: complete.
 
 Batch 8: #3114, #3011, #2905, #2904, #2858, #2770, #2741, #2506.
 
-Batch 9: #2608.
+Batch 9: complete.
 
 ## Verification so far
 
@@ -275,6 +283,9 @@ Batch 9: #2608.
 - `bun run lint:hook-io`
 - `bun run lint:spawn-env`
 - `git diff --check`
+- `git diff --check`
+- custom Node README switcher validation: validated 35 switchers and 1224
+  local links
 - `bun run build`
 - `bun run lint:hook-io`
 - `bun run lint:spawn-env`
