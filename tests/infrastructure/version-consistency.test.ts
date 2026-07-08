@@ -5,6 +5,11 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '../..');
+const SEMVER_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 describe('Version Consistency', () => {
   let rootVersion: string;
@@ -15,7 +20,7 @@ describe('Version Consistency', () => {
     
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
     expect(packageJson.version).toBeDefined();
-    expect(packageJson.version).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(packageJson.version).toMatch(SEMVER_PATTERN);
     
     rootVersion = packageJson.version;
   });
@@ -59,7 +64,7 @@ describe('Version Consistency', () => {
     
     const workerServiceContent = readFileSync(workerServicePath, 'utf-8');
 
-    const versionPattern = new RegExp(`"${rootVersion.replace(/\./g, '\\.')}"`, 'g');
+    const versionPattern = new RegExp(`"${escapeRegex(rootVersion)}"`, 'g');
     const matches = workerServiceContent.match(versionPattern);
     
     expect(matches).toBeTruthy();
@@ -79,9 +84,9 @@ describe('Version Consistency', () => {
   });
 
   it('should validate version format is semver compliant', () => {
-    expect(rootVersion).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(rootVersion).toMatch(SEMVER_PATTERN);
     
-    const [major, minor, patch] = rootVersion.split('.').map(Number);
+    const [major, minor, patch] = rootVersion.split(/[+-]/)[0].split('.').map(Number);
     expect(major).toBeGreaterThanOrEqual(0);
     expect(minor).toBeGreaterThanOrEqual(0);
     expect(patch).toBeGreaterThanOrEqual(0);

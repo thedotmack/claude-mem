@@ -1,6 +1,6 @@
 {
   "name": "claude-mem",
-  "version": "13.10.1",
+  "version": "13.10.3-community-edge.0",
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "keywords": [
     "claude",
@@ -35,7 +35,8 @@
   "files": [
     "dist",
     ".agents/plugins/marketplace.json",
-    ".claude-plugin/marketplace.json",    ".codex-plugin",
+    ".claude-plugin/marketplace.json",
+    ".codex-plugin",
     "plugin/.claude-plugin",
     "plugin/.codex-plugin",
     "plugin/.mcp.json",
