@@ -5,6 +5,8 @@ import path from 'path';
 import {
   createProcessRegistry,
   isPidAlive,
+  normalizeSpawnSdkArgs,
+  parseCmdFile,
   resolveTotalProcessHardCap,
   DEFAULT_TOTAL_PROCESS_HARD_CAP,
 } from '../../src/supervisor/process-registry.js';
@@ -366,6 +368,29 @@ describe('supervisor ProcessRegistry', () => {
     });
   });
 
+  describe('normalizeSpawnSdkArgs', () => {
+    it('appends explicit extra args after SDK args', () => {
+      expect(normalizeSpawnSdkArgs(['--print', 'json'], ['--no-session-persistence'])).toEqual([
+        '--print',
+        'json',
+        '--no-session-persistence',
+      ]);
+    });
+
+    it('strips empty placeholder flags before appending extra args', () => {
+      expect(normalizeSpawnSdkArgs([
+        '--append-system-prompt',
+        '',
+        '--resume',
+        'session-123',
+      ], ['--no-session-persistence'])).toEqual([
+        '--resume',
+        'session-123',
+        '--no-session-persistence',
+      ]);
+    });
+  });
+
   describe('reapSession', () => {
     it('unregisters dead processes for the given session', async () => {
       const tempDir = makeTempDir();
@@ -445,6 +470,69 @@ describe('supervisor ProcessRegistry', () => {
 
     it('takes the leading integer of a mixed string (parseInt semantics)', () => {
       expect(resolveTotalProcessHardCap('32abc')).toBe(32);
+    });
+  });
+
+  describe('parseCmdFile', () => {
+    it('resolves npm-style %~dp0 shims to the target script and local node.exe', () => {
+      const tempDir = makeTempDir();
+      tempDirs.push(tempDir);
+      mkdirSync(tempDir, { recursive: true });
+      const scriptDir = path.join(tempDir, 'node_modules', 'tool', 'bin');
+      mkdirSync(scriptDir, { recursive: true });
+      const scriptPath = path.join(scriptDir, 'tool.js');
+      const cmdPath = path.join(tempDir, 'tool.cmd');
+      const nodePath = path.join(tempDir, 'node.exe');
+
+      writeFileSync(scriptPath, 'console.log("tool");');
+      writeFileSync(nodePath, '');
+      writeFileSync(cmdPath, [
+        '@ECHO off',
+        'SETLOCAL',
+        'SET "_prog=node"',
+        '"%_prog%" "%~dp0\\node_modules\\tool\\bin\\tool.js" %*',
+      ].join('\n'));
+
+      expect(parseCmdFile(cmdPath)).toEqual({
+        node: nodePath,
+        script: scriptPath,
+      });
+    });
+
+    it('resolves npm-style %dp0% shims to the target script and local node.exe', () => {
+      const tempDir = makeTempDir();
+      tempDirs.push(tempDir);
+      mkdirSync(tempDir, { recursive: true });
+      const scriptDir = path.join(tempDir, 'node_modules', 'tool', 'bin');
+      mkdirSync(scriptDir, { recursive: true });
+      const scriptPath = path.join(scriptDir, 'tool.js');
+      const cmdPath = path.join(tempDir, 'tool.cmd');
+      const nodePath = path.join(tempDir, 'node.exe');
+
+      writeFileSync(scriptPath, 'console.log("tool");');
+      writeFileSync(nodePath, '');
+      writeFileSync(cmdPath, [
+        '@ECHO off',
+        'SETLOCAL',
+        'SET "dp0=%~dp0"',
+        'SET "_prog=node"',
+        '"%_prog%" "%dp0%\\node_modules\\tool\\bin\\tool.js" %*',
+      ].join('\n'));
+
+      expect(parseCmdFile(cmdPath)).toEqual({
+        node: nodePath,
+        script: scriptPath,
+      });
+    });
+
+    it('returns null for unsupported cmd shims', () => {
+      const tempDir = makeTempDir();
+      tempDirs.push(tempDir);
+      mkdirSync(tempDir, { recursive: true });
+      const cmdPath = path.join(tempDir, 'tool.cmd');
+      writeFileSync(cmdPath, '@ECHO off\necho unsupported\n');
+
+      expect(parseCmdFile(cmdPath)).toBeNull();
     });
   });
 });

@@ -3,6 +3,7 @@ import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import {
   buildTimeline,
   countObservationsByProjects,
+  countSummariesByProjects,
   queryObservationsMulti,
   querySummariesMulti,
 } from '../../src/services/context/ObservationCompiler.js';
@@ -243,6 +244,9 @@ describe('context compiler platform scoping', () => {
       expect(countObservationsByProjects(store, ['context-platform-project'], 'codex')).toBe(1);
       expect(countObservationsByProjects(store, ['context-platform-project'], 'claude')).toBe(1);
       expect(countObservationsByProjects(store, ['context-platform-project'])).toBe(2);
+      expect(countSummariesByProjects(store, ['context-platform-project'], 'codex')).toBe(1);
+      expect(countSummariesByProjects(store, ['context-platform-project'], 'claude')).toBe(1);
+      expect(countSummariesByProjects(store, ['context-platform-project'])).toBe(2);
     } finally {
       store.close();
     }
@@ -288,6 +292,95 @@ describe('context compiler platform scoping', () => {
         'WORKTREE_CODEX_SUMMARY',
         'PARENT_CODEX_SUMMARY',
       ]);
+    } finally {
+      store.close();
+    }
+  });
+});
+
+describe('context compiler dream namespace selection', () => {
+  const config: ContextConfig = {
+    totalObservationCount: 2,
+    fullObservationCount: 1,
+    sessionCount: 2,
+    showReadTokens: true,
+    showWorkTokens: true,
+    showSavingsAmount: true,
+    showSavingsPercent: true,
+    observationTypes: new Set(['discovery']),
+    observationConcepts: new Set(['platform-scope']),
+    fullObservationField: 'narrative',
+    showLastSummary: true,
+    showLastMessage: false,
+  };
+
+  function seedObservation(
+    store: SessionStore,
+    input: { project: string; title: string; epoch: number; platformSource?: string },
+  ): void {
+    const sessionDbId = store.createSDKSession(
+      `${input.title}-content`,
+      input.project,
+      `${input.title} prompt`,
+      undefined,
+      input.platformSource ?? 'claude',
+    );
+    const memorySessionId = `${input.title}-memory`;
+    store.ensureMemorySessionIdRegistered(sessionDbId, memorySessionId);
+    store.storeObservation(
+      memorySessionId,
+      input.project,
+      {
+        type: 'discovery',
+        title: input.title,
+        subtitle: null,
+        facts: [],
+        narrative: `${input.title} narrative`,
+        concepts: ['platform-scope'],
+        files_read: [],
+        files_modified: [],
+      },
+      1,
+      0,
+      input.epoch,
+    );
+  }
+
+  it('prioritizes dream observations while preserving a raw fallback', () => {
+    const store = new SessionStore(':memory:');
+    try {
+      seedObservation(store, { project: 'dream-project', title: 'RAW_OLD', epoch: 1_700_000_000_000 });
+      seedObservation(store, { project: 'dream-project:dream', title: 'DREAM_ONE', epoch: 1_700_000_001_000 });
+      seedObservation(store, { project: 'dream-project:dream', title: 'DREAM_TWO', epoch: 1_700_000_002_000 });
+      seedObservation(store, { project: 'dream-project:dream', title: 'DREAM_THREE', epoch: 1_700_000_003_000 });
+
+      const rows = queryObservationsMulti(store, ['dream-project:dream', 'dream-project'], config);
+
+      expect(rows.map(row => row.title)).toEqual(['DREAM_THREE', 'RAW_OLD']);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('does not use cross-platform raw observations as the fallback', () => {
+    const store = new SessionStore(':memory:');
+    try {
+      seedObservation(store, {
+        project: 'platform-dream',
+        title: 'CLAUDE_RAW',
+        epoch: 1_700_000_000_000,
+        platformSource: 'claude',
+      });
+      seedObservation(store, {
+        project: 'platform-dream:dream',
+        title: 'CODEX_DREAM',
+        epoch: 1_700_000_001_000,
+        platformSource: 'codex',
+      });
+
+      const rows = queryObservationsMulti(store, ['platform-dream:dream', 'platform-dream'], config, 'codex');
+
+      expect(rows.map(row => row.title)).toEqual(['CODEX_DREAM']);
     } finally {
       store.close();
     }

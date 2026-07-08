@@ -26,5 +26,9 @@ export function renderFooter(
   if (forHuman) {
     return Human.renderHumanFooter(economics.totalDiscoveryTokens, economics.totalReadTokens);
   }
-  return Agent.renderAgentFooter(economics.totalDiscoveryTokens, economics.totalReadTokens);
+  return Agent.renderAgentFooter(
+    economics.totalDiscoveryTokens,
+    economics.totalReadTokens,
+    config.fetchByIdSupported
+  );
 }

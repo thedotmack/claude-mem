@@ -17,6 +17,25 @@ describe('MCP tool inputSchema declarations', () => {
     expect(searchSection).not.toContain("properties: {}");
   });
 
+  it('search routes compatible server-runtime observation queries to ServerClient only when filters are supported', async () => {
+    const src = await Bun.file(mcpServerPath).text();
+    const helperSection = src.slice(
+      src.indexOf('function shouldRouteSearchToServer'),
+      src.indexOf('function wrapHandler'),
+    );
+    const searchSection = src.slice(src.indexOf("name: 'search'"), src.indexOf("name: 'timeline'"));
+
+    expect(helperSection).toContain("args?.type === undefined || args?.type === 'observations'");
+    expect(helperSection).toContain('args?.project !== undefined');
+    expect(helperSection).toContain('args?.obs_type !== undefined');
+    expect(helperSection).toContain('args?.dateStart !== undefined');
+    expect(helperSection).toContain('args?.offset !== undefined');
+    expect(searchSection).toContain('resolveServerToolContext()');
+    expect(searchSection).toContain('shouldRouteSearchToServer(args, serverResolution)');
+    expect(searchSection).toContain('serverResolution.client.searchObservations(request)');
+    expect(searchSection).toContain("callWorker('/api/search'");
+  });
+
   it('timeline tool declares anchor and query parameters', async () => {
     const src = await Bun.file(mcpServerPath).text();
 
@@ -38,6 +57,19 @@ describe('MCP tool inputSchema declarations', () => {
     const getObsSection = src.slice(src.indexOf("name: 'get_observations'"));
     expect(getObsSection).toContain("ids:");
     expect(getObsSection).toContain("required:");
+  });
+
+  it('memory_save exposes the worker manual save path and is guarded away from server runtime', async () => {
+    const src = await Bun.file(mcpServerPath).text();
+    const section = src.slice(
+      src.indexOf("name: 'memory_save'"),
+      src.indexOf("name: 'session_start_context'"),
+    );
+    expect(section).toContain('/api/memory/save');
+    expect(section).toContain("required: ['text']");
+    expect(section).toContain("selectRuntime() === 'server'");
+    expect(section).toContain('observation_add');
+    expect(section).toContain("callWorker('/api/memory/save'");
   });
 
   it('session_start_context exposes worker SessionStart renderer parameters', async () => {

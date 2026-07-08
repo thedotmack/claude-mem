@@ -20,6 +20,7 @@ function captureRoute(routes: DataRoutes, method: Method, targetPath: string): (
   const app = {
     get: method === 'get' ? register : mock(() => {}),
     post: method === 'post' ? register : mock(() => {}),
+    delete: mock(() => {}),
   };
 
   routes.setupRoutes(app as any);

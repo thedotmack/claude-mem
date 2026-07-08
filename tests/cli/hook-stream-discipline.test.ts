@@ -58,11 +58,14 @@ describe('#2292 — fail-loud diagnostic is no longer swallowed', () => {
     }
   });
 
-  it('worker-utils recordWorkerUnreachable routes through emitBlockingError (source contract)', () => {
+  it('worker-utils recordWorkerUnreachable routes through emitDiagnostic (not emitBlockingError)', () => {
     const src = readFileSync(join(REPO_ROOT, 'src', 'shared', 'worker-utils.ts'), 'utf-8');
-    // The fail-loud branch must NOT call process.stderr.write / process.exit directly.
-    expect(src).toContain('emitBlockingError(');
+    // Worker outages must never block the harness. The fail-loud branch uses
+    // emitDiagnostic (stderr only) instead of emitBlockingError (exit 2).
+    expect(src).toContain('emitDiagnostic(');
+    expect(src).not.toContain('emitBlockingError(');
     expect(src).not.toMatch(/process\.stderr\.write\(\s*\n\s*`claude-mem worker unreachable/);
+    expect(src).not.toMatch(/process\.exit\(2\)/);
   });
 });
 

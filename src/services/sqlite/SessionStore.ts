@@ -1,5 +1,5 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite';
-import { DATA_DIR, DB_PATH, ensureDir, OBSERVER_SESSIONS_PROJECT } from '../../shared/paths.js';
+import { DB_PATH, OBSERVER_SESSIONS_PROJECT } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import {
   TableColumnInfo,
@@ -15,7 +15,9 @@ import type { ObservationSearchResult, SessionSummarySearchResult } from './type
 import { computeObservationContentHash } from './observations/store.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources } from '../../shared/platform-source.js';
 import { findRecentDuplicateUserPrompt as findRecentDuplicateUserPromptRecord } from './prompts/get.js';
+import { applyLegacyPromptBloatMaintenance } from './maintenance.js';
 import { normalizeStoredPromptText } from './prompt-storage.js';
+import { applySqliteBusyTimeout, openPrimarySqliteConnection } from './connection.js';
 
 interface IndexColumnInfo {
   seqno: number;
@@ -69,16 +71,9 @@ export class SessionStore {
   constructor(dbPathOrDb: string | Database = DB_PATH) {
     if (dbPathOrDb instanceof Database) {
       this.db = dbPathOrDb;
+      applySqliteBusyTimeout(this.db);
     } else {
-      if (dbPathOrDb !== ':memory:') {
-        ensureDir(DATA_DIR);
-      }
-      this.db = new Database(dbPathOrDb);
-
-      this.db.run('PRAGMA journal_mode = WAL');
-      this.db.run('PRAGMA synchronous = NORMAL');
-      this.db.run('PRAGMA foreign_keys = ON');
-      this.db.run('PRAGMA journal_size_limit = 4194304'); 
+      this.db = openPrimarySqliteConnection(dbPathOrDb);
     }
 
     this.initializeSchema();
@@ -108,6 +103,9 @@ export class SessionStore {
     this.ensureSDKSessionsPlatformContentIdentity();
     this.ensureUserPromptsSessionDbId();
     this.ensurePendingMessagesSessionToolUniqueIndex();
+    this.addObservationContentSessionIdColumns();
+    this.createObservationFeedbackTable();
+    applyLegacyPromptBloatMaintenance(this.db);
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -443,6 +441,104 @@ export class SessionStore {
     }
   }
 
+  private addObservationContentSessionIdColumns(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(36) as SchemaVersion | undefined;
+
+    const observationCols = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasObservationContentSession = observationCols.some(c => c.name === 'content_session_id');
+
+    const summaryCols = this.db.query('PRAGMA table_info(session_summaries)').all() as TableColumnInfo[];
+    const hasSummaryContentSession = summaryCols.some(c => c.name === 'content_session_id');
+
+    const hasObservationIndex = this.db.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_observations_content_session'
+    `).get() as { name: string } | undefined;
+    const hasSummaryIndex = this.db.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_session_summaries_content_session'
+    `).get() as { name: string } | undefined;
+
+    if (applied && hasObservationContentSession && hasSummaryContentSession && hasObservationIndex && hasSummaryIndex) return;
+
+    if (!hasObservationContentSession) {
+      this.db.run('ALTER TABLE observations ADD COLUMN content_session_id TEXT');
+      logger.debug('DB', 'Added content_session_id column to observations table (#2769)');
+    }
+    this.db.run(`
+      UPDATE observations
+         SET content_session_id = (
+           SELECT s.content_session_id
+             FROM sdk_sessions s
+            WHERE s.memory_session_id = observations.memory_session_id
+            LIMIT 1
+         )
+       WHERE content_session_id IS NULL
+         AND EXISTS (
+           SELECT 1
+             FROM sdk_sessions s
+            WHERE s.memory_session_id = observations.memory_session_id
+         )
+    `);
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_content_session ON observations(content_session_id)');
+
+    if (!hasSummaryContentSession) {
+      this.db.run('ALTER TABLE session_summaries ADD COLUMN content_session_id TEXT');
+      logger.debug('DB', 'Added content_session_id column to session_summaries table (#2769)');
+    }
+    this.db.run(`
+      UPDATE session_summaries
+         SET content_session_id = (
+           SELECT s.content_session_id
+             FROM sdk_sessions s
+            WHERE s.memory_session_id = session_summaries.memory_session_id
+            LIMIT 1
+         )
+       WHERE content_session_id IS NULL
+         AND EXISTS (
+           SELECT 1
+             FROM sdk_sessions s
+            WHERE s.memory_session_id = session_summaries.memory_session_id
+         )
+    `);
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_session_summaries_content_session ON session_summaries(content_session_id)');
+
+    if (!applied) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(36, new Date().toISOString());
+    }
+  }
+
+  private createObservationFeedbackTable(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(37) as SchemaVersion | undefined;
+    const table = this.db.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'observation_feedback'
+    `).get() as TableNameRow | undefined;
+    const observationIndex = this.db.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_feedback_observation'
+    `).get() as { name: string } | undefined;
+    const signalIndex = this.db.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_feedback_signal'
+    `).get() as { name: string } | undefined;
+
+    if (applied && table && observationIndex && signalIndex) return;
+
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS observation_feedback (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        observation_id INTEGER NOT NULL,
+        signal_type TEXT NOT NULL,
+        session_db_id INTEGER,
+        created_at_epoch INTEGER NOT NULL,
+        metadata TEXT,
+        FOREIGN KEY (observation_id) REFERENCES observations(id) ON DELETE CASCADE
+      )
+    `);
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_feedback_observation ON observation_feedback(observation_id)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_feedback_signal ON observation_feedback(signal_type)');
+
+    if (!applied) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(37, new Date().toISOString());
+    }
+  }
+
   private dropDeadPendingMessagesColumns(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(31) as SchemaVersion | undefined;
 
@@ -506,12 +602,11 @@ export class SessionStore {
       CREATE INDEX IF NOT EXISTS idx_sdk_sessions_project ON sdk_sessions(project);
       CREATE INDEX IF NOT EXISTS idx_sdk_sessions_status ON sdk_sessions(status);
       CREATE INDEX IF NOT EXISTS idx_sdk_sessions_started ON sdk_sessions(started_at_epoch DESC);
-      CREATE INDEX IF NOT EXISTS idx_sdk_sessions_platform_source ON sdk_sessions(platform_source);
-      CREATE UNIQUE INDEX IF NOT EXISTS ux_sdk_sessions_platform_content ON sdk_sessions(platform_source, content_session_id);
 
       CREATE TABLE IF NOT EXISTS observations (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         memory_session_id TEXT NOT NULL,
+        content_session_id TEXT,
         project TEXT NOT NULL,
         text TEXT NOT NULL,
         type TEXT NOT NULL,
@@ -528,6 +623,7 @@ export class SessionStore {
       CREATE TABLE IF NOT EXISTS session_summaries (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         memory_session_id TEXT UNIQUE NOT NULL,
+        content_session_id TEXT,
         project TEXT NOT NULL,
         request TEXT,
         investigated TEXT,
@@ -546,6 +642,12 @@ export class SessionStore {
       CREATE INDEX IF NOT EXISTS idx_session_summaries_project ON session_summaries(project);
       CREATE INDEX IF NOT EXISTS idx_session_summaries_created ON session_summaries(created_at_epoch DESC);
     `);
+
+    const sdkSessionColumns = this.db.query('PRAGMA table_info(sdk_sessions)').all() as TableColumnInfo[];
+    if (sdkSessionColumns.some(col => col.name === 'platform_source')) {
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_sdk_sessions_platform_source ON sdk_sessions(platform_source)');
+      this.db.run('CREATE UNIQUE INDEX IF NOT EXISTS ux_sdk_sessions_platform_content ON sdk_sessions(platform_source, content_session_id)');
+    }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(4, new Date().toISOString());
   }
@@ -1397,7 +1499,18 @@ export class SessionStore {
     const nowIso = new Date(nowEpoch).toISOString();
     this.db.prepare(`
       UPDATE sdk_sessions
-      SET status = 'completed', completed_at = ?, completed_at_epoch = ?
+      SET status = 'completed',
+          completed_at = ?,
+          completed_at_epoch = ?,
+          user_prompt = CASE
+            WHEN EXISTS (
+              SELECT 1
+              FROM user_prompts up
+              WHERE up.session_db_id = sdk_sessions.id
+                AND up.prompt_number = 1
+            ) THEN NULL
+            ELSE user_prompt
+          END
       WHERE id = ?
     `).run(nowIso, nowEpoch, sessionDbId);
   }
@@ -1700,6 +1813,34 @@ export class SessionStore {
     return limit ? ordered.slice(0, limit) : ordered;
   }
 
+  dismissObservation(observationId: number, reason?: string): void {
+    const trimmedReason = typeof reason === 'string' ? reason.trim() : '';
+    const metadata = trimmedReason ? JSON.stringify({ reason: trimmedReason }) : null;
+    this.db.prepare(`
+      INSERT INTO observation_feedback (observation_id, signal_type, session_db_id, created_at_epoch, metadata)
+      SELECT ?, 'dismissed', NULL, ?, ?
+      WHERE NOT EXISTS (
+        SELECT 1 FROM observation_feedback
+        WHERE observation_id = ? AND signal_type = 'dismissed'
+      )
+    `).run(observationId, Date.now(), metadata, observationId);
+  }
+
+  undismissObservation(observationId: number): void {
+    this.db.prepare(`
+      DELETE FROM observation_feedback
+      WHERE observation_id = ? AND signal_type = 'dismissed'
+    `).run(observationId);
+  }
+
+  isDismissed(observationId: number): boolean {
+    return this.db.prepare(`
+      SELECT 1 FROM observation_feedback
+      WHERE observation_id = ? AND signal_type = 'dismissed'
+      LIMIT 1
+    `).get(observationId) != null;
+  }
+
   getSummaryForSession(memorySessionId: string, platformSource?: string): SummaryDetailRow | null {
     const params: any[] = [memorySessionId];
     let platformClause = '';
@@ -1890,7 +2031,8 @@ export class SessionStore {
     promptNumber?: number,
     discoveryTokens: number = 0,
     overrideTimestampEpoch?: number,
-    generatedByModel?: string
+    generatedByModel?: string,
+    contentSessionId?: string | null
   ): { id: number; createdAtEpoch: number } {
     const result = this.storeObservations(
       memorySessionId,
@@ -1900,7 +2042,8 @@ export class SessionStore {
       promptNumber,
       discoveryTokens,
       overrideTimestampEpoch,
-      generatedByModel
+      generatedByModel,
+      contentSessionId
     );
 
     return { id: result.observationIds[0], createdAtEpoch: result.createdAtEpoch };
@@ -1919,7 +2062,8 @@ export class SessionStore {
     },
     promptNumber?: number,
     discoveryTokens: number = 0,
-    overrideTimestampEpoch?: number
+    overrideTimestampEpoch?: number,
+    contentSessionId?: string | null
   ): { id: number; createdAtEpoch: number } {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
@@ -1927,8 +2071,9 @@ export class SessionStore {
     const stmt = this.db.prepare(`
       INSERT INTO session_summaries
       (memory_session_id, project, request, investigated, learned, completed,
-       next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch,
+       content_session_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -1943,7 +2088,8 @@ export class SessionStore {
       promptNumber || null,
       discoveryTokens,
       timestampIso,
-      timestampEpoch
+      timestampEpoch,
+      contentSessionId ?? null
     );
 
     return {
@@ -1979,7 +2125,8 @@ export class SessionStore {
     promptNumber?: number,
     discoveryTokens: number = 0,
     overrideTimestampEpoch?: number,
-    generatedByModel?: string
+    generatedByModel?: string,
+    contentSessionId?: string | null
   ): { observationIds: number[]; summaryId: number | null; createdAtEpoch: number } {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
@@ -1991,8 +2138,8 @@ export class SessionStore {
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
          files_read, files_modified, prompt_number, discovery_tokens, agent_type, agent_id, content_hash, created_at, created_at_epoch,
-         generated_by_model, metadata)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         generated_by_model, metadata, content_session_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(memory_session_id, content_hash) DO NOTHING
         RETURNING id
       `);
@@ -2021,7 +2168,8 @@ export class SessionStore {
           timestampIso,
           timestampEpoch,
           generatedByModel || null,
-          observation.metadata ?? null
+          observation.metadata ?? null,
+          contentSessionId ?? null
         ) as { id: number } | null;
 
         if (inserted) {
@@ -2043,8 +2191,9 @@ export class SessionStore {
         const summaryStmt = this.db.prepare(`
           INSERT INTO session_summaries
           (memory_session_id, project, request, investigated, learned, completed,
-           next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch,
+           content_session_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
         const result = summaryStmt.run(
@@ -2059,7 +2208,8 @@ export class SessionStore {
           promptNumber || null,
           discoveryTokens,
           timestampIso,
-          timestampEpoch
+          timestampEpoch,
+          contentSessionId ?? null
         );
         summaryId = Number(result.lastInsertRowid);
       }
@@ -2417,6 +2567,7 @@ export class SessionStore {
 
   importSessionSummary(summary: {
     memory_session_id: string;
+    content_session_id?: string | null;
     project: string;
     request: string | null;
     investigated: string | null;
@@ -2441,14 +2592,15 @@ export class SessionStore {
 
     const stmt = this.db.prepare(`
       INSERT INTO session_summaries (
-        memory_session_id, project, request, investigated, learned,
+        memory_session_id, content_session_id, project, request, investigated, learned,
         completed, next_steps, files_read, files_edited, notes,
         prompt_number, discovery_tokens, created_at, created_at_epoch
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
       summary.memory_session_id,
+      summary.content_session_id ?? null,
       summary.project,
       summary.request,
       summary.investigated,
@@ -2469,6 +2621,7 @@ export class SessionStore {
 
   importObservation(obs: {
     memory_session_id: string;
+    content_session_id?: string | null;
     project: string;
     text: string | null;
     type: string;
@@ -2497,15 +2650,16 @@ export class SessionStore {
 
     const stmt = this.db.prepare(`
       INSERT INTO observations (
-        memory_session_id, project, text, type, title, subtitle,
+        memory_session_id, content_session_id, project, text, type, title, subtitle,
         facts, narrative, concepts, files_read, files_modified,
         prompt_number, discovery_tokens, agent_type, agent_id,
         created_at, created_at_epoch
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
       obs.memory_session_id,
+      obs.content_session_id ?? null,
       obs.project,
       obs.text,
       obs.type,

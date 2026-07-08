@@ -19,6 +19,21 @@ import type { WorkerRef, StorageResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
 import { telemetryBuffer } from '../../telemetry/buffer.js';
 
+type AgentOutputKind = 'observation' | 'summary' | 'none';
+type ExpectedOutputKind = Exclude<AgentOutputKind, 'none'>;
+
+function expectedOutputKindForGenerator(source: string | undefined): ExpectedOutputKind | null {
+  if (source === 'summarize') return 'summary';
+  if (source === 'init' || source === 'ingest') return 'observation';
+  return null;
+}
+
+function parsedOutputKind(parsed: { observations: ParsedObservation[]; summary: ParsedSummary | null }): AgentOutputKind {
+  if (parsed.summary) return 'summary';
+  if (parsed.observations.length > 0) return 'observation';
+  return 'none';
+}
+
 export async function processAgentResponse(
   text: string,
   session: ActiveSession,
@@ -38,7 +53,7 @@ export async function processAgentResponse(
     session.conversationHistory.push({ role: 'assistant', content: text });
   }
 
-  const parsed = parseAgentXml(text, session.contentSessionId);
+  const parsed = parseAgentXml(text, session.contentSessionId, { allowNoOpObservations: true });
 
   // Provider enum for telemetry, derived once so the invalid-output and
   // success paths stamp the same value.
@@ -89,6 +104,37 @@ export async function processAgentResponse(
     return;
   }
 
+  const expectedKind = expectedOutputKindForGenerator(session.lastGeneratorSource);
+  const actualKind = parsedOutputKind(parsed);
+  const contractKind = actualKind === 'none' ? parsed.rootKind : actualKind;
+
+  if (expectedKind && contractKind !== expectedKind) {
+    const outputClass = classifyObserverOutput(text);
+    const preview = previewOutput(text);
+    session.consecutiveInvalidOutputs = 0;
+
+    logger.warn('PARSER', `${agentName} returned ${contractKind} XML while ${expectedKind} output was expected — ignoring queued batch`, {
+      sessionId: session.sessionDbId,
+      outputClass,
+      preview,
+      expectedKind,
+      actualKind: contractKind,
+      generatorSource: session.lastGeneratorSource,
+      consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
+    });
+
+    await sessionManager.confirmClaimedMessages(session.sessionDbId);
+    session.earliestPendingTimestamp = null;
+    return;
+  }
+
+  if (actualKind === 'none') {
+    session.consecutiveInvalidOutputs = 0;
+    await sessionManager.confirmClaimedMessages(session.sessionDbId);
+    session.earliestPendingTimestamp = null;
+    return;
+  }
+
   // Valid parse — clear the invalid-output counter so transient misses don't
   // accumulate toward a respawn across a healthy session.
   session.consecutiveInvalidOutputs = 0;
@@ -131,7 +177,8 @@ export async function processAgentResponse(
       session.lastPromptNumber,
       discoveryTokens,
       originalTimestamp ?? undefined,
-      modelId
+      modelId,
+      session.contentSessionId
     );
   } finally {
     session.pendingAgentId = null;

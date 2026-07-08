@@ -2,6 +2,14 @@ import { stripMemoryTags } from '../../utils/tag-stripping.js';
 import { logger } from '../../utils/logger.js';
 
 export const MAX_STORED_PROMPT_CHARS = 4000;
+export const STORED_PROMPT_NORMALIZATION_MARKERS = [
+  '<private',
+  '<claude-mem-context',
+  '<system_instruction',
+  '<system-instruction',
+  '<persisted-output',
+  '<system-reminder',
+] as const;
 
 export function normalizeStoredPromptText(promptText: string): string {
   const trimmedRawPrompt = promptText.trim();

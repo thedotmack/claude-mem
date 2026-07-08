@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { ingestObservation } from '../shared.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
-import { stripMemoryTags, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
+import { stripMemoryTags, isInternalProtocolPayload, isInternalSystemPrompt } from '../../../../utils/tag-stripping.js';
 import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { ClaudeProvider } from '../../ClaudeProvider.js';
@@ -43,11 +43,12 @@ const MAX_USER_PROMPT_BYTES = 256 * 1024;
  */
 function normalizeAbortReason(
   reason: string | null | undefined
-): 'idle' | 'shutdown' | 'overflow' | 'restart_guard' | 'quota' | 'none' {
+): 'idle' | 'shutdown' | 'overflow' | 'context_bound' | 'restart_guard' | 'quota' | 'none' {
   switch ((reason ?? '').split(':')[0]) {
     case 'idle': return 'idle';
     case 'shutdown': return 'shutdown';
     case 'overflow': return 'overflow';
+    case 'context-bound': return 'context_bound';
     case 'restart-guard': return 'restart_guard';
     case 'quota': return 'quota';
     default: return 'none';
@@ -299,6 +300,11 @@ export class SessionRoutes extends BaseRouteHandler {
       validateBody(SessionRoutes.summarizeByClaudeIdSchema),
       this.handleSummarizeByClaudeId.bind(this)
     );
+    app.post(
+      '/api/sessions/pre-compact',
+      validateBody(SessionRoutes.preCompactByClaudeIdSchema),
+      this.handlePreCompactByClaudeId.bind(this)
+    );
   }
 
   private static readonly sessionInitByClaudeIdSchema = z.object({
@@ -327,6 +333,13 @@ export class SessionRoutes extends BaseRouteHandler {
     last_assistant_message: z.string().optional(),
     agentId: z.string().optional(),
     platformSource: z.string().optional(),
+  }).passthrough();
+
+  private static readonly preCompactByClaudeIdSchema = z.object({
+    contentSessionId: z.string().min(1),
+    agentId: z.string().optional(),
+    platformSource: z.string().optional(),
+    cwd: z.string().optional(),
   }).passthrough();
 
   private handleObservationsByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
@@ -406,6 +419,39 @@ export class SessionRoutes extends BaseRouteHandler {
     res.json({ status: 'queued' });
   });
 
+  private handlePreCompactByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const { contentSessionId, agentId } = req.body;
+    const platformSource = this.getPlatformSourceFromRequest(req);
+
+    if (agentId) {
+      res.json({ status: 'skipped', reason: 'subagent_context' });
+      return;
+    }
+
+    const store = this.dbManager.getSessionStore();
+    const sessionDbId = store.createSDKSession(contentSessionId, '', '', undefined, platformSource);
+    const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId);
+
+    const privacy = PrivacyCheckValidator.checkUserPromptPrivacy(
+      store,
+      contentSessionId,
+      promptNumber,
+      'pre-compact',
+      sessionDbId
+    );
+    if (!privacy.allow) {
+      res.json({ status: 'skipped', reason: 'private' });
+      return;
+    }
+
+    await this.sessionManager.queuePreCompact(sessionDbId);
+    await this.ensureGeneratorRunning(sessionDbId, 'pre-compact');
+
+    this.eventBroadcaster.broadcastSummarizeQueued();
+
+    res.json({ status: 'queued' });
+  });
+
   private handleSessionInitByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { contentSessionId } = req.body;
 
@@ -414,8 +460,8 @@ export class SessionRoutes extends BaseRouteHandler {
     const platformSource = this.getPlatformSourceFromRequest(req);
     const customTitle = req.body.customTitle || undefined;
 
-    if (rawPrompt && isInternalProtocolPayload(rawPrompt)) {
-      logger.debug('HTTP', 'session-init: skipping internal protocol payload before session creation', { contentSessionId });
+    if (rawPrompt && (isInternalProtocolPayload(rawPrompt) || isInternalSystemPrompt(rawPrompt))) {
+      logger.debug('HTTP', 'session-init: skipping internal protocol or system payload before session creation', { contentSessionId });
       res.json({ skipped: true, reason: 'internal_protocol' });
       return;
     }
@@ -600,7 +646,7 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
-    const hasSummarize = pending.some(m => m.message_type === 'summarize');
+    const hasSummarize = pending.some(m => m.message_type === 'summarize' || m.message_type === 'pre-compact');
     const allSimple = pending.every(m =>
       m.message_type === 'observation' && m.tool_name && SessionRoutes.SIMPLE_TOOLS.has(m.tool_name)
     );

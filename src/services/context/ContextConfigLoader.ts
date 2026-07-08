@@ -53,5 +53,6 @@ export function loadContextConfig(): ContextConfig {
     showLastSummary: settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY === 'true',
     showLastMessage: settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE === 'true',
     mermaidContext: settings.CLAUDE_MEM_MERMAID_CONTEXT === 'true',
+    fetchByIdSupported: settings.CLAUDE_MEM_CONTEXT_FETCH_BY_ID_SUPPORTED !== 'false',
   };
 }

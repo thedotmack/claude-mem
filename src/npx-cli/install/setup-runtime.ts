@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { exec, execFile, execSync, spawnSync } from 'child_process';
+import { execFile, execSync, spawnSync, type SpawnSyncReturns } from 'child_process';
 import { createRequire } from 'module';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -59,6 +59,29 @@ const UV_COMMON_PATHS = IS_WINDOWS
   ? [join(homedir(), '.local', 'bin', 'uv.exe'), join(homedir(), '.cargo', 'bin', 'uv.exe')]
   : [join(homedir(), '.local', 'bin', 'uv'), join(homedir(), '.cargo', 'bin', 'uv'), '/usr/local/bin/uv', '/opt/homebrew/bin/uv'];
 
+function isBareCommand(command: string): boolean {
+  return !/[\\/]/.test(command) && !/^[A-Za-z]:/.test(command);
+}
+
+function resolveCommand(command: string, args: string[]): { command: string; args: string[] } {
+  if (IS_WINDOWS && isBareCommand(command)) {
+    return {
+      command: process.env.ComSpec ?? 'cmd.exe',
+      args: ['/d', '/c', command, ...args],
+    };
+  }
+  return { command, args };
+}
+
+function probeVersionCommand(command: string): SpawnSyncReturns<string> {
+  const resolved = resolveCommand(command, ['--version']);
+  return spawnSync(resolved.command, resolved.args, {
+    encoding: 'utf-8',
+    stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
+  });
+}
+
 interface MarkerSchema {
   version: string;
   bun?: string;
@@ -70,16 +93,18 @@ const LEGACY_VERSION_MARKER_RE =
   /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
 function markerPath(targetDir: string): string {
-  return join(targetDir, '.install-version');
+  return join(resolveRuntimeRoot(targetDir), '.install-version');
+}
+
+function resolveRuntimeRoot(targetDir: string): string {
+  const marketplacePluginDir = join(targetDir, 'plugin');
+  if (existsSync(join(marketplacePluginDir, 'package.json'))) return marketplacePluginDir;
+  return targetDir;
 }
 
 export function getBunPath(): string | null {
   try {
-    const result = spawnSync('bun', ['--version'], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS,
-    });
+    const result = probeVersionCommand('bun');
     if (result.status === 0) return 'bun';
   } catch {
     // Not in PATH
@@ -97,11 +122,7 @@ export function getBunVersion(): string | null {
   if (!bunPath) return null;
 
   try {
-    const result = spawnSync(bunPath, ['--version'], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS,
-    });
+    const result = probeVersionCommand(bunPath);
     return result.status === 0 ? result.stdout.trim() : null;
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
@@ -112,11 +133,7 @@ export function getBunVersion(): string | null {
 
 function getUvPath(): string | null {
   try {
-    const result = spawnSync('uv', ['--version'], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS,
-    });
+    const result = probeVersionCommand('uv');
     if (result.status === 0) return 'uv';
   } catch {
     // Not in PATH
@@ -134,11 +151,7 @@ export function getUvVersion(): string | null {
   if (!uvPath) return null;
 
   try {
-    const result = spawnSync(uvPath, ['--version'], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS,
-    });
+    const result = probeVersionCommand(uvPath);
     return result.status === 0 ? result.stdout.trim() : null;
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
@@ -497,8 +510,6 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
     throw new Error(`installPluginDependencies: no package.json at ${targetDir}`);
   }
 
-  const bunCmd = IS_WINDOWS && bunPath.includes(' ') ? `"${bunPath}"` : bunPath;
-
   // Per CHANGELOG v12.6.1 -> v12.6.2: tree-sitter-swift's nested
   // tree-sitter-cli postinstall downloads a Rust binary and can hang the
   // install. Bun honors trustedDependencies; npm does not. We additionally
@@ -507,11 +518,12 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
   // clack spinner for the duration of the install, which reads as a stall.
   const runBunInstall = (): Promise<void> =>
     new Promise<void>((resolve, reject) => {
-      exec(`${bunCmd} install --frozen-lockfile --ignore-scripts`, {
+      const resolved = resolveCommand(bunPath, ['install', '--frozen-lockfile', '--ignore-scripts']);
+      execFile(resolved.command, resolved.args, {
         cwd: targetDir,
         timeout: INSTALL_TIMEOUT_MS,
         maxBuffer: 16 * 1024 * 1024,
-        ...(IS_WINDOWS ? { shell: process.env.ComSpec ?? 'cmd.exe' } : {}),
+        windowsHide: true,
       }, (error, stdout, stderr) =>
         // exec errors don't carry stdio; attach so describeExecError can report it.
         error ? reject(Object.assign(error, { stdout, stderr })) : resolve());
@@ -584,8 +596,9 @@ function pluginDeclaresTreeSitterCli(targetDir: string): boolean {
 }
 
 export function isInstallCurrent(targetDir: string, expectedVersion: string): boolean {
-  if (!existsSync(join(targetDir, 'node_modules'))) return false;
-  const marker = readInstallMarker(targetDir);
+  const runtimeRoot = resolveRuntimeRoot(targetDir);
+  if (!existsSync(join(runtimeRoot, 'node_modules'))) return false;
+  const marker = readInstallMarker(runtimeRoot);
   if (!marker) return false;
   if (marker.version !== expectedVersion) return false;
   const currentBun = getBunVersion();
@@ -597,7 +610,7 @@ export function isInstallCurrent(targetDir: string, expectedVersion: string): bo
   // (or never have downloaded) the tree-sitter-cli executable; without this
   // check the install fast path treats that cache as current and skips the
   // provisioning/validation that would repair it, leaving smart-explore broken.
-  if (pluginDeclaresTreeSitterCli(targetDir) && !isTreeSitterCliBinaryUsable(targetDir)) {
+  if (pluginDeclaresTreeSitterCli(runtimeRoot) && !isTreeSitterCliBinaryUsable(runtimeRoot)) {
     return false;
   }
   return true;

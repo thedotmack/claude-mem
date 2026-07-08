@@ -49,6 +49,8 @@ const buildCorpusSchema = z.object({
   query: z.string().optional(),
   date_start: z.string().optional(),
   date_end: z.string().optional(),
+  dateStart: z.string().optional(),
+  dateEnd: z.string().optional(),
   limit: positiveIntegerLike,
 }).passthrough();
 
@@ -85,8 +87,10 @@ export class CorpusRoutes extends BaseRouteHandler {
   }
 
   private handleBuildCorpus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { name, description, project, types, concepts, files, query, date_start, date_end, limit } =
-      req.body as z.infer<typeof buildCorpusSchema>;
+    const body = req.body as z.infer<typeof buildCorpusSchema>;
+    const { name, description, project, types, concepts, files, query, limit } = body;
+    const dateStart = body.date_start ?? body.dateStart;
+    const dateEnd = body.date_end ?? body.dateEnd;
 
     const filter: CorpusFilter = {};
     if (project) filter.project = project;
@@ -94,8 +98,8 @@ export class CorpusRoutes extends BaseRouteHandler {
     if (concepts && concepts.length > 0) filter.concepts = concepts;
     if (files && files.length > 0) filter.files = files;
     if (query) filter.query = query;
-    if (date_start) filter.date_start = date_start;
-    if (date_end) filter.date_end = date_end;
+    if (dateStart) filter.date_start = dateStart;
+    if (dateEnd) filter.date_end = dateEnd;
     if (limit !== undefined) filter.limit = limit;
 
     logger.info('SEARCH', 'Building corpus', { name, project, filterKeys: Object.keys(filter) });

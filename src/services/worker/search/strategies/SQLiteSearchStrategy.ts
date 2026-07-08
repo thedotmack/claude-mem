@@ -96,7 +96,14 @@ export class SQLiteSearchStrategy {
     observations: ObservationSearchResult[];
     sessions: SessionSummarySearchResult[];
   } {
-    const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project, platformSource, dateRange, orderBy = 'date_desc' } = options;
-    return this.sessionSearch.findByFile(filePath, { limit, project, platformSource, dateRange, orderBy });
+    const {
+      limit = SEARCH_CONSTANTS.DEFAULT_LIMIT,
+      project,
+      platformSource,
+      dateRange,
+      orderBy = 'date_desc',
+      isFolder,
+    } = options;
+    return this.sessionSearch.findByFile(filePath, { limit, project, platformSource, dateRange, orderBy, isFolder });
   }
 }

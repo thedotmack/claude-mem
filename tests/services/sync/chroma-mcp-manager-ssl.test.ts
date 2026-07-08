@@ -71,6 +71,7 @@ mock.module('../../../src/shared/paths.js', () => ({
   paths: {
     chroma: () => '/tmp/fake-chroma',
     combinedCerts: () => '/tmp/fake-combined-certs.pem',
+    envFile: () => '/tmp/fake-claude-mem.env',
   },
 }));
 
@@ -110,7 +111,7 @@ afterAll(() => {
 function expectLauncherPrefixBeforeMode(args: string[], mode: 'http' | 'persistent') {
   const fromIdx = args.indexOf('--from');
   expect(fromIdx).toBeGreaterThan(-1);
-  expect(args[fromIdx + 1]).toBe('chroma-mcp==0.2.6');
+  expect(args[fromIdx + 1]).toBe('chroma-mcp@0.2.6');
   expect(args[fromIdx + 2]).toBe('chroma-mcp');
   expect(args[fromIdx + 3]).toBe('--client-type');
   expect(args[fromIdx + 4]).toBe(mode);

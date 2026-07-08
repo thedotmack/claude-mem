@@ -40,4 +40,13 @@ describe('Worker spawner stale-socket guard (orphaned listener)', () => {
     const deadIdx = source.indexOf("return 'dead'", guardIdx);
     expect(deadIdx).toBeGreaterThan(guardIdx);
   });
+
+  it('tries the conservative stale-worker reclaim before giving stale-socket guidance', () => {
+    const reclaimIdx = source.indexOf('reclaimStaleWorkerPort(port)');
+    const guidanceIdx = source.indexOf('held by a stale socket with no healthy worker behind it');
+    const spawnIdx = source.indexOf('spawnDaemon(');
+    expect(reclaimIdx).toBeGreaterThan(-1);
+    expect(reclaimIdx).toBeLessThan(guidanceIdx);
+    expect(reclaimIdx).toBeLessThan(spawnIdx);
+  });
 });

@@ -6,6 +6,7 @@ import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js'
 import {
   executeWithWorkerFallback as defaultExecuteWithWorkerFallback,
   isWorkerFallback as defaultIsWorkerFallback,
+  consumeWorkerOutageHint as defaultConsumeWorkerOutageHint,
 } from '../../shared/worker-utils.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { logger } from '../../utils/logger.js';
@@ -13,7 +14,7 @@ import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { shouldTrackProject as defaultShouldTrackProject } from '../../shared/should-track-project.js';
 import { loadFromFileOnce as defaultLoadFromFileOnce } from '../../shared/hook-settings.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
-import { isInternalProtocolPayload } from '../../utils/tag-stripping.js';
+import { isInternalProtocolPayload, isInternalSystemPrompt } from '../../utils/tag-stripping.js';
 import {
   resolveRuntimeContext as defaultResolveRuntimeContext,
   logServerFallback as defaultLogServerFallback,
@@ -41,6 +42,7 @@ const defaultDependencies = {
   resolveRuntimeContext: defaultResolveRuntimeContext,
   logServerFallback: defaultLogServerFallback,
   shouldTrackProject: defaultShouldTrackProject,
+  consumeWorkerOutageHint: defaultConsumeWorkerOutageHint,
 };
 
 let dependencies = defaultDependencies;
@@ -66,8 +68,8 @@ export const sessionInitHandler: EventHandler = {
       return { continue: true, suppressOutput: true };
     }
 
-    if (rawPrompt && isInternalProtocolPayload(rawPrompt)) {
-      logger.debug('HOOK', 'session-init: skipping internal protocol payload', {
+    if (rawPrompt && (isInternalProtocolPayload(rawPrompt) || isInternalSystemPrompt(rawPrompt))) {
+      logger.debug('HOOK', 'session-init: skipping internal protocol or system payload', {
         preview: rawPrompt.slice(0, 80),
       });
       return { continue: true, suppressOutput: true };
@@ -122,7 +124,13 @@ export const sessionInitHandler: EventHandler = {
     );
 
     if (dependencies.isWorkerFallback(initResult)) {
-      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+      const hint = dependencies.consumeWorkerOutageHint(sessionId, true);
+      return {
+        continue: true,
+        suppressOutput: !hint,
+        ...(hint ? { systemMessage: hint } : {}),
+        exitCode: HOOK_EXIT_CODES.SUCCESS,
+      };
     }
 
     if (typeof initResult?.sessionDbId !== 'number') {

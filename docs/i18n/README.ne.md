@@ -14,10 +14,11 @@
 </h1>
 
 <p align="center">
+  <a href="../../README.md">English</a> •
   <a href="README.zh.md">🇨🇳 中文</a> •
   <a href="README.zh-tw.md">🇹🇼 繁體中文</a> •
   <a href="README.ja.md">🇯🇵 日本語</a> •
-  <a href="README.pt.md">🇵🇹 Português</a> •
+  <a href="pt.md">🇵🇹 Português</a> •
   <a href="README.pt-br.md">🇧🇷 Português</a> •
   <a href="README.ko.md">🇰🇷 한국어</a> •
   <a href="README.es.md">🇪🇸 Español</a> •
@@ -46,6 +47,7 @@
   <a href="README.fi.md">🇫🇮 Suomi</a> •
   <a href="README.da.md">🇩🇰 Dansk</a> •
   <a href="README.no.md">🇳🇴 Norsk</a> •
+  <a href="README.ta.md">🇮🇳 தமிழ்</a> •
   <a href="README.ne.md">🇳🇵 नेपाली</a>
 </p>
 

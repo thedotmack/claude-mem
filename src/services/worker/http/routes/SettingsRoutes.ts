@@ -10,8 +10,13 @@ import { ModeManager } from '../../../domain/ModeManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { SettingsDefaultsManager, writeSettingsFileSecure } from '../../../../shared/SettingsDefaultsManager.js';
+import {
+  validateOpenRouterExtraBody,
+  validateOpenRouterReasoningEffort,
+} from '../../../../shared/openrouter-request-settings.js';
 import { clearPortCache } from '../../../../shared/worker-utils.js';
 import { snapshotDependencyHealth } from '../../../../shared/dependency-health.js';
+import { stripBom } from '../../../../utils/json-utils.js';
 
 const toggleMcpSchema = z.object({
   enabled: z.boolean(),
@@ -61,7 +66,7 @@ export class SettingsRoutes extends BaseRouteHandler {
     if (existsSync(settingsPath)) {
       const settingsData = readFileSync(settingsPath, 'utf-8');
       try {
-        settings = JSON.parse(settingsData);
+        settings = JSON.parse(stripBom(settingsData));
       } catch (parseError) {
         const normalizedParseError = parseError instanceof Error ? parseError : new Error(String(parseError));
         logger.error('HTTP', 'Failed to parse settings file', { settingsPath }, normalizedParseError);
@@ -79,7 +84,11 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_WORKER_PORT',
       'CLAUDE_MEM_WORKER_HOST',
       'CLAUDE_MEM_PROVIDER',
+      'CLAUDE_MEM_ALLOW_DISMISS',
+      'CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS',
+      'CLAUDE_MEM_SKIP_AGENT_TYPES',
       'CLAUDE_MEM_CLAUDE_AUTH_METHOD',
+      'CLAUDE_MEM_CLAUDE_MAX_TOKENS',
       'CLAUDE_MEM_GEMINI_API_KEY',
       'CLAUDE_MEM_GEMINI_MODEL',
       'CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED',
@@ -87,8 +96,11 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_GEMINI_MAX_TOKENS',
       'CLAUDE_MEM_OPENROUTER_API_KEY',
       'CLAUDE_MEM_OPENROUTER_MODEL',
+      'CLAUDE_MEM_OPENROUTER_BASE_URL',
       'CLAUDE_MEM_OPENROUTER_SITE_URL',
       'CLAUDE_MEM_OPENROUTER_APP_NAME',
+      'CLAUDE_MEM_OPENROUTER_REASONING_EFFORT',
+      'CLAUDE_MEM_OPENROUTER_EXTRA_BODY',
       'CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES',
       'CLAUDE_MEM_OPENROUTER_MAX_TOKENS',
       'CLAUDE_MEM_CODEX_MODEL',
@@ -158,6 +170,14 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
+    if (settings.CLAUDE_MEM_CLAUDE_MAX_TOKENS) {
+      const rawTokens = String(settings.CLAUDE_MEM_CLAUDE_MAX_TOKENS);
+      const tokens = /^\d+$/.test(rawTokens) ? Number.parseInt(rawTokens, 10) : NaN;
+      if (!Number.isSafeInteger(tokens) || tokens < 1000 || tokens > 1000000) {
+        return { valid: false, error: 'CLAUDE_MEM_CLAUDE_MAX_TOKENS must be between 1000 and 1000000' };
+      }
+    }
+
     if (settings.CLAUDE_MEM_GEMINI_MODEL) {
       const validGeminiModels = ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-3-flash-preview'];
       if (!validGeminiModels.includes(settings.CLAUDE_MEM_GEMINI_MODEL)) {
@@ -206,14 +226,25 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT',
       'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT',
+      'CLAUDE_MEM_ALLOW_DISMISS',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
     ];
 
     for (const key of booleanSettings) {
-      if (settings[key] && !['true', 'false'].includes(settings[key])) {
+      if (settings[key] !== undefined && !['true', 'false'].includes(settings[key])) {
         return { valid: false, error: `${key} must be "true" or "false"` };
       }
+    }
+
+    if (settings.CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS !== undefined) {
+      if (!['true', 'false'].includes(settings.CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS)) {
+        return { valid: false, error: 'CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS must be "true" or "false"' };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_SKIP_AGENT_TYPES !== undefined && typeof settings.CLAUDE_MEM_SKIP_AGENT_TYPES !== 'string') {
+      return { valid: false, error: 'CLAUDE_MEM_SKIP_AGENT_TYPES must be a comma-separated string' };
     }
 
     if (settings.CLAUDE_MEM_CONTEXT_FULL_COUNT) {
@@ -276,6 +307,30 @@ export class SettingsRoutes extends BaseRouteHandler {
       if (isNaN(timeout) || timeout < 10000 || timeout > 600000) {
         return { valid: false, error: 'CLAUDE_MEM_CODEX_TIMEOUT_MS must be between 10000 and 600000' };
       }
+    }
+
+    if (settings.CLAUDE_MEM_OPENROUTER_BASE_URL) {
+      let parsedBaseUrl: URL;
+      try {
+        parsedBaseUrl = new URL(settings.CLAUDE_MEM_OPENROUTER_BASE_URL);
+      } catch (error) {
+        logger.debug('SETTINGS', 'Invalid URL format', { url: settings.CLAUDE_MEM_OPENROUTER_BASE_URL, error: error instanceof Error ? error.message : String(error) });
+        return { valid: false, error: 'CLAUDE_MEM_OPENROUTER_BASE_URL must be a valid URL' };
+      }
+      const isLocalhost = parsedBaseUrl.hostname === 'localhost' || parsedBaseUrl.hostname === '127.0.0.1' || parsedBaseUrl.hostname === '::1';
+      if (!isLocalhost && parsedBaseUrl.protocol !== 'https:') {
+        return { valid: false, error: 'CLAUDE_MEM_OPENROUTER_BASE_URL must use HTTPS for non-localhost hosts to protect your API key' };
+      }
+    }
+
+    const reasoningEffortError = validateOpenRouterReasoningEffort(settings.CLAUDE_MEM_OPENROUTER_REASONING_EFFORT);
+    if (reasoningEffortError) {
+      return { valid: false, error: reasoningEffortError };
+    }
+
+    const extraBodyError = validateOpenRouterExtraBody(settings.CLAUDE_MEM_OPENROUTER_EXTRA_BODY);
+    if (extraBodyError) {
+      return { valid: false, error: extraBodyError };
     }
 
     if (settings.CLAUDE_MEM_OPENROUTER_SITE_URL) {

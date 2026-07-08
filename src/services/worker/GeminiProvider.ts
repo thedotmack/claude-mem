@@ -10,8 +10,11 @@ import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { ClassifiedProviderError } from './provider-errors.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
+import { truncateConversationHistory } from './truncate-history.js';
 
 const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1/models';
+const DEFAULT_MAX_CONTEXT_MESSAGES = 20;
+const DEFAULT_MAX_ESTIMATED_TOKENS = 100000;
 
 /**
  * Classify a Gemini fetch failure into ClassifiedProviderError. Called at
@@ -322,11 +325,19 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
     model: GeminiModel,
     rateLimitingEnabled: boolean
   ): Promise<ProviderQueryResult> {
-    const contents = this.conversationToGeminiContents(history);
-    const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
+    const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
+    const maxContextMessages = parseInt(settings.CLAUDE_MEM_GEMINI_MAX_CONTEXT_MESSAGES, 10) || DEFAULT_MAX_CONTEXT_MESSAGES;
+    const maxEstimatedTokens = parseInt(settings.CLAUDE_MEM_GEMINI_MAX_TOKENS, 10) || DEFAULT_MAX_ESTIMATED_TOKENS;
+    const truncatedHistory = truncateConversationHistory(history, {
+      maxContextMessages,
+      maxEstimatedTokens,
+      estimateTokens: (text) => this.estimateTokens(text ?? ''),
+    });
+    const contents = this.conversationToGeminiContents(truncatedHistory);
+    const totalChars = truncatedHistory.reduce((sum, m) => sum + m.content.length, 0);
 
     logger.debug('SDK', `Querying Gemini multi-turn (${model})`, {
-      turns: history.length,
+      turns: truncatedHistory.length,
       totalChars
     });
 

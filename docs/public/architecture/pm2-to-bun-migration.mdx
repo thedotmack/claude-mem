@@ -504,8 +504,8 @@ npm run worker:restart
 git checkout <pre-7.1.0-tag>
 npm install && npm run build && npm run sync-marketplace
 
-# 2. Start PM2 worker
-pm2 start plugin/scripts/worker-cli.js --name claude-mem-worker
+# 2. Start the legacy PM2 worker using that tag's documented CLI entry
+pm2 start <legacy-worker-entry> --name claude-mem-worker
 
 # 3. Update to new version
 git checkout main

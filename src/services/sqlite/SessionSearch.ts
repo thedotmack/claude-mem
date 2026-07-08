@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { TableNameRow } from '../../types/database.js';
-import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
+import { DB_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { isDirectChild } from '../../shared/path-utils.js';
 import { AppError } from '../server/ErrorHandler.js';
@@ -14,6 +14,8 @@ import {
   ObservationRow
 } from './types.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
+import { applySqliteBusyTimeout, openPrimarySqliteConnection } from './connection.js';
+import { NOT_DISMISSED_SQL } from './observations/dismiss-filter.js';
 
 export class SessionSearch {
   private db: Database;
@@ -23,10 +25,9 @@ export class SessionSearch {
   constructor(dbPathOrDb: string | Database = DB_PATH) {
     if (dbPathOrDb instanceof Database) {
       this.db = dbPathOrDb;
+      applySqliteBusyTimeout(this.db);
     } else {
-      ensureDir(DATA_DIR);
-      this.db = new Database(dbPathOrDb);
-      this.db.run('PRAGMA journal_mode = WAL');
+      this.db = openPrimarySqliteConnection(dbPathOrDb);
     }
 
     this._fts5Available = this.isFts5Available();
@@ -258,6 +259,7 @@ export class SessionSearch {
         SELECT o.*, o.discovery_tokens
         FROM observations o
         WHERE ${filterClause}
+          AND ${NOT_DISMISSED_SQL}
         ${orderClause}
         LIMIT ? OFFSET ?
       `;
@@ -276,6 +278,7 @@ export class SessionSearch {
         JOIN observations_fts ON observations_fts.rowid = o.id
         WHERE observations_fts MATCH ?
         ${filterClause ? 'AND ' + filterClause : ''}
+        AND ${NOT_DISMISSED_SQL}
         ${orderClause}
         LIMIT ? OFFSET ?
       `;
@@ -373,6 +376,7 @@ export class SessionSearch {
       SELECT o.*, o.discovery_tokens
       FROM observations o
       WHERE ${filterClause}
+        AND ${NOT_DISMISSED_SQL}
       ${orderClause}
       LIMIT ? OFFSET ?
     `;
@@ -433,6 +437,7 @@ export class SessionSearch {
       SELECT o.*, o.discovery_tokens
       FROM observations o
       WHERE ${filterClause}
+        AND ${NOT_DISMISSED_SQL}
       ${orderClause}
       LIMIT ? OFFSET ?
     `;
@@ -516,6 +521,7 @@ export class SessionSearch {
       SELECT o.*, o.discovery_tokens
       FROM observations o
       WHERE ${filterClause}
+        AND ${NOT_DISMISSED_SQL}
       ${orderClause}
       LIMIT ? OFFSET ?
     `;

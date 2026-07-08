@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { spawn } from 'child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 
@@ -62,7 +62,11 @@ function runVersionCheck(pluginRoot: string, fakeBinDir: string): Promise<{ stde
 
 type BunBehavior = 'success' | 'partial-then-fail';
 
-function makeFreshPlugin(name: string, bunBehavior: BunBehavior = 'success'): { pluginRoot: string; fakeBinDir: string } {
+function makeFreshPlugin(
+  name: string,
+  bunBehavior: BunBehavior = 'success',
+  options: { writeMarker?: boolean } = {},
+): { pluginRoot: string; fakeBinDir: string } {
   const pluginRoot = join(tmpRoot, name);
   mkdirSync(pluginRoot, { recursive: true });
   writeFileSync(join(pluginRoot, 'package.json'), JSON.stringify({
@@ -70,7 +74,9 @@ function makeFreshPlugin(name: string, bunBehavior: BunBehavior = 'success'): { 
     version: '0.0.0',
     dependencies: { zod: '^3.0.0' },
   }));
-  writeFileSync(join(pluginRoot, '.install-version'), JSON.stringify({ version: '0.0.0' }));
+  if (options.writeMarker !== false) {
+    writeFileSync(join(pluginRoot, '.install-version'), JSON.stringify({ version: '0.0.0' }));
+  }
 
   const fakeBinDir = join(pluginRoot, '.bin');
   mkdirSync(fakeBinDir, { recursive: true });
@@ -150,6 +156,35 @@ describe.skipIf(SKIP_NON_UNIX)('version-check Setup-phase ensurePluginDependenci
     expect(code).toBe(0);
     expect(stderr).toContain(INSTALL_FAILURE_DIAGNOSTIC);
     expect(stderr).toContain('exit 42');
+    expect(existsSync(join(pluginRoot, 'node_modules'))).toBe(false);
+  });
+
+  test('missing install marker forces reinstall and clears stale node_modules before self-healing', async () => {
+    const { pluginRoot, fakeBinDir } = makeFreshPlugin('plugin-missing-marker-stale-modules', 'success', { writeMarker: false });
+    mkdirSync(join(pluginRoot, 'node_modules'), { recursive: true });
+    writeFileSync(join(pluginRoot, 'node_modules', 'stale.txt'), 'stale');
+
+    const { stderr, code } = await runVersionCheck(pluginRoot, fakeBinDir);
+
+    expect(code).toBe(0);
+    expect(stderr).toContain(INSTALL_DIAGNOSTIC);
+    expect(stderr).toContain(INSTALL_SUCCESS_DIAGNOSTIC);
+    expect(existsSync(join(pluginRoot, 'node_modules', 'stale.txt'))).toBe(false);
+    expect(existsSync(join(pluginRoot, FAKE_INSTALLED_MARKER_REL))).toBe(true);
+    const marker = JSON.parse(readFileSync(join(pluginRoot, '.install-version'), 'utf-8'));
+    expect(marker.version).toBe('0.0.0');
+    expect(typeof marker.installedAt).toBe('string');
+  });
+
+  test('missing install marker is not self-healed when forced reinstall fails', async () => {
+    const { pluginRoot, fakeBinDir } = makeFreshPlugin('plugin-missing-marker-fail', 'partial-then-fail', { writeMarker: false });
+
+    const { stderr, code } = await runVersionCheck(pluginRoot, fakeBinDir);
+
+    expect(code).toBe(0);
+    expect(stderr).toContain(INSTALL_FAILURE_DIAGNOSTIC);
+    expect(stderr).toContain('claude-mem: runtime not yet set up - run: npx claude-mem@latest install');
+    expect(existsSync(join(pluginRoot, '.install-version'))).toBe(false);
     expect(existsSync(join(pluginRoot, 'node_modules'))).toBe(false);
   });
 

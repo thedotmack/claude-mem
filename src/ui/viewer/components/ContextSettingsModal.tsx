@@ -505,6 +505,17 @@ export function ContextSettingsModal({
                     />
                   </FormField>
                   <FormField
+                    label="Base URL (Optional)"
+                    tooltip="OpenAI-compatible base URL. Leave empty for OpenRouter."
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_OPENROUTER_BASE_URL || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_BASE_URL', e.target.value)}
+                      placeholder="https://api.deepseek.com"
+                    />
+                  </FormField>
+                  <FormField
                     label="Site URL (Optional)"
                     tooltip="Your site URL for OpenRouter analytics (optional)"
                   >
@@ -524,6 +535,32 @@ export function ContextSettingsModal({
                       value={formState.CLAUDE_MEM_OPENROUTER_APP_NAME || 'claude-mem'}
                       onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_APP_NAME', e.target.value)}
                       placeholder="claude-mem"
+                    />
+                  </FormField>
+                  <FormField
+                    label="Reasoning Effort (Optional)"
+                    tooltip="OpenRouter reasoning effort. Empty uses the provider or model default."
+                  >
+                    <select
+                      value={formState.CLAUDE_MEM_OPENROUTER_REASONING_EFFORT || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_REASONING_EFFORT', e.target.value)}
+                    >
+                      <option value="">Default</option>
+                      <option value="none">none</option>
+                      <option value="low">low</option>
+                      <option value="medium">medium</option>
+                      <option value="high">high</option>
+                    </select>
+                  </FormField>
+                  <FormField
+                    label="Extra Body JSON (Optional)"
+                    tooltip="Additional OpenAI-compatible request body fields. Core fields like model, messages, max_tokens, usage, and reasoning are blocked."
+                  >
+                    <textarea
+                      value={formState.CLAUDE_MEM_OPENROUTER_EXTRA_BODY || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_EXTRA_BODY', e.target.value)}
+                      placeholder='{"thinking":{"type":"disabled"}}'
+                      rows={3}
                     />
                   </FormField>
                 </>
@@ -566,6 +603,28 @@ export function ContextSettingsModal({
                   max="65535"
                   value={formState.CLAUDE_MEM_WORKER_PORT || '37777'}
                   onChange={(e) => updateSetting('CLAUDE_MEM_WORKER_PORT', e.target.value)}
+                />
+              </FormField>
+
+              <div className="toggle-group" style={{ marginTop: '12px' }}>
+                <ToggleSwitch
+                  id="skip-subagent-observations"
+                  label="Skip subagent observations"
+                  description="Ignore observations produced by subagents"
+                  checked={formState.CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS === 'true'}
+                  onChange={() => toggleBoolean('CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS')}
+                />
+              </div>
+
+              <FormField
+                label="Skipped agent types"
+                tooltip="Comma-separated agent_type values to skip, for example workflow-subagent"
+              >
+                <input
+                  type="text"
+                  value={formState.CLAUDE_MEM_SKIP_AGENT_TYPES || ''}
+                  onChange={(e) => updateSetting('CLAUDE_MEM_SKIP_AGENT_TYPES', e.target.value)}
+                  placeholder="workflow-subagent"
                 />
               </FormField>
 

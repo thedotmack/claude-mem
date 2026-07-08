@@ -35,8 +35,37 @@ describe('classifyObserverOutput (plan-11 #2485)', () => {
     expect(classifyObserverOutput(null)).toBe('idle');
   });
 
-  it('classifies conversational prose as prose', () => {
-    expect(classifyObserverOutput('Skipping — repeated log scan with no new findings.')).toBe('prose');
+  it('classifies arbitrary conversational prose as prose', () => {
+    expect(classifyObserverOutput('Hmm, I think this one is a bit ambiguous, let me consider it.')).toBe('prose');
+  });
+
+  it('classifies plain-prose no-op acknowledgements as skip', () => {
+    expect(classifyObserverOutput('No observations to record.')).toBe('skip');
+    expect(classifyObserverOutput('Nothing to record for this batch.')).toBe('skip');
+    expect(classifyObserverOutput('No summary needed.')).toBe('skip');
+  });
+
+  it('classifies haiku-style no-op acknowledgements as skip', () => {
+    expect(classifyObserverOutput('(no observations - insufficient data in this observation window)')).toBe('skip');
+    expect(classifyObserverOutput('(No tool executions observed yet in the primary session.)')).toBe('skip');
+    expect(classifyObserverOutput('(Empty - no tool execution data observed yet)')).toBe('skip');
+  });
+
+  it('classifies skip prose from repeated scans as skip', () => {
+    expect(classifyObserverOutput('Skipping — repeated log scan with no new findings.')).toBe('skip');
+    expect(classifyObserverOutput('No substantive tool executions.')).toBe('skip');
+  });
+
+  it('keeps XML precedence over skip-prose markers in narrative text', () => {
+    const xml =
+      '<observation><type>discovery</type><narrative>The agent reported no observations from this scan.</narrative></observation>';
+    expect(classifyObserverOutput(xml)).toBe('xml');
+  });
+
+  it('rejects long or substantive no-observations prose as prose', () => {
+    expect(classifyObserverOutput(`No observations ${'x'.repeat(200)}`)).toBe('prose');
+    expect(classifyObserverOutput('No observations, but I found a stale cache bug.')).toBe('prose');
+    expect(classifyObserverOutput('No observations to record, however I identified an error.')).toBe('prose');
   });
 
   it('classifies former poison marker strings as ordinary prose', () => {

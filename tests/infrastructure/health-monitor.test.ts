@@ -82,8 +82,8 @@ describe('HealthMonitor', () => {
   });
 
   describe('probePortBind', () => {
-    // Unlike isPortInUse (health-based on Windows), this probes a real bind and
-    // returns the failing error code — so callers can tell the stale-socket case
+    // probePortBind is the low-level bind probe behind isPortInUse. It returns
+    // the failing error code so callers can tell the stale-socket case
     // (EADDRINUSE) apart from genuine config errors (EADDRNOTAVAIL / EACCES).
     it('should return null when a real bind succeeds (port free)', async () => {
       const closeMock = mock((cb: Function) => cb());

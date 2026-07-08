@@ -7,9 +7,9 @@ import { SettingsDefaultsManager, type SettingsDefaults } from "./SettingsDefaul
 import { MARKETPLACE_ROOT, DATA_DIR } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
 import { validateWorkerPidFile } from "../supervisor/index.js";
-import { emitBlockingError, emitDiagnostic } from "./hook-io.js";
+import { emitDiagnostic } from "./hook-io.js";
 import { captureCliEvent } from "../services/telemetry/cli-telemetry.js";
-import { checkVersionMatch } from "../services/infrastructure/index.js";
+import { checkVersionMatch } from "../services/infrastructure/HealthMonitor.js";
 // Imported from ProcessManager.js directly (not the infrastructure barrel):
 // tests mock the barrel module wholesale, and the resolver must stay real.
 // ProcessManager imports nothing from worker-utils, so no cycle.
@@ -339,7 +339,12 @@ async function isWorkerPortAlive(): Promise<boolean> {
   return false;
 }
 
-export async function ensureWorkerRunning(): Promise<boolean> {
+export interface EnsureWorkerRunningOptions {
+  allowLazySpawn?: boolean;
+}
+
+export async function ensureWorkerRunning(options: EnsureWorkerRunningOptions = {}): Promise<boolean> {
+  const allowLazySpawn = options.allowLazySpawn !== false;
   // Installed-plugin version captured when the alive branch runs, so every
   // post-readiness path below can run the one-shot amplifier check
   // (warnIfVersionStillMismatched). Stays null when no worker was alive
@@ -411,6 +416,11 @@ export async function ensureWorkerRunning(): Promise<boolean> {
       });
     }
     // Fall through to (re)spawn + readiness wait below.
+  }
+
+  if (!allowLazySpawn) {
+    logger.info('SYSTEM', 'Worker not already healthy; skipping lazy-spawn for best-effort hook call');
+    return false;
   }
 
   const runtimePath = resolveWorkerRuntimePath();
@@ -491,10 +501,24 @@ export async function ensureWorkerRunning(): Promise<boolean> {
 
 let aliveCache: boolean | null = null;
 
-export async function ensureWorkerAliveOnce(): Promise<boolean> {
-  if (aliveCache !== null) return aliveCache;
-  aliveCache = await ensureWorkerRunning();
-  return aliveCache;
+export function resetAliveCache(): void {
+  aliveCache = null;
+}
+
+export async function ensureWorkerAliveOnce(options: EnsureWorkerRunningOptions = {}): Promise<boolean> {
+  const allowLazySpawn = options.allowLazySpawn !== false;
+  if (aliveCache === true) return true;
+  if (aliveCache === false && allowLazySpawn) return false;
+  if (allowLazySpawn && (loadFromFileOnce().CLAUDE_MEM_WORKER_AUTOSTART ?? 'true').trim().toLowerCase() === 'false') {
+    aliveCache = false;
+    return aliveCache;
+  }
+
+  const alive = await ensureWorkerRunning(options);
+  if (alive || allowLazySpawn) {
+    aliveCache = alive;
+  }
+  return alive;
 }
 
 interface HookFailureState {
@@ -502,7 +526,7 @@ interface HookFailureState {
   lastFailureAt: number;
 }
 
-const FAIL_LOUD_DEFAULT_THRESHOLD = 3;
+const FAIL_LOUD_DEFAULT_THRESHOLD = 10;
 
 function getStateDir(): string {
   return path.join(DATA_DIR, 'state');
@@ -619,15 +643,8 @@ export async function recordWorkerUnreachable(): Promise<number> {
 
   const threshold = getFailLoudThreshold();
   if (next.consecutiveFailures >= threshold) {
-    // hook_failed distress signal. Gated to the failure that JUST reached the
-    // threshold (`===`, not `>=`): the stderr warning below repeats on every
-    // failure past the threshold, but telemetry emits once per failure streak
-    // to bound volume. MUST be awaited BEFORE emitBlockingError — it calls
-    // process.exit(2) immediately, which would kill a fire-and-forget POST
-    // mid-flight. captureCliEvent never throws and is hard-capped at 2s, so
-    // this cannot hang the fail-loud path. Closed-enum/count props only —
-    // never error text. Transport is the direct CLI POST, never the worker
-    // API (the defining failure here IS "worker unreachable").
+    // DIAGNOSTIC only — never block the harness for an optional background
+    // service. Callers surface user-facing banners via consumeWorkerOutageHint.
     if (next.consecutiveFailures === threshold) {
       await captureCliEvent('hook_failed', {
         ...(activeHookType !== null ? { hook_type: activeHookType } : {}),
@@ -636,18 +653,8 @@ export async function recordWorkerUnreachable(): Promise<number> {
         threshold_tripped: true,
       });
     }
-    // #2292 fix: BLOCKING_FEEDBACK. emitBlockingError flushes the Phase 2
-    // stderr buffer (so preceding logger.warn lines also surface) and writes
-    // via the bypass channel + exits 2. Previously this raw process.stderr.write
-    // was swallowed by hookCommand's blanket no-op, so the user/model never saw it.
-    // Never-block platforms (Kiro) get the same message as a diagnostic and
-    // return normally — exit 2 there would block the host's tool call.
     const failLoudMessage = `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks.`;
-    if (activePlatformNeverBlocks()) {
-      emitDiagnostic(`${failLoudMessage}\n`);
-    } else {
-      emitBlockingError(failLoudMessage);
-    }
+    emitDiagnostic(`${failLoudMessage}\n`);
   }
   return next.consecutiveFailures;
 }
@@ -656,6 +663,60 @@ function resetWorkerFailureCounter(): void {
   const state = readHookFailureState();
   if (state.consecutiveFailures === 0) return;
   writeHookFailureStateAtomic({ consecutiveFailures: 0, lastFailureAt: 0 });
+}
+
+interface OutageWarningState {
+  lastWarnedAt: number;
+  lastSessionId?: string;
+}
+
+function getOutageWarningPath(): string {
+  return path.join(getStateDir(), 'last-outage-warning.json');
+}
+
+function readOutageWarningState(): OutageWarningState {
+  try {
+    const parsed = JSON.parse(readFileSync(getOutageWarningPath(), 'utf-8')) as Partial<OutageWarningState>;
+    return {
+      lastWarnedAt: typeof parsed.lastWarnedAt === 'number' ? parsed.lastWarnedAt : 0,
+      lastSessionId: typeof parsed.lastSessionId === 'string' ? parsed.lastSessionId : undefined,
+    };
+  } catch {
+    return { lastWarnedAt: 0 };
+  }
+}
+
+function writeOutageWarningStateAtomic(state: OutageWarningState): void {
+  const stateDir = getStateDir();
+  const dest = getOutageWarningPath();
+  const tmp = `${dest}.tmp`;
+  try {
+    if (!existsSync(stateDir)) {
+      mkdirSync(stateDir, { recursive: true });
+    }
+    writeFileSync(tmp, JSON.stringify(state), 'utf-8');
+    renameSync(tmp, dest);
+  } catch {
+    // Best effort only; a failed write can at worst show the banner again.
+  }
+}
+
+const OUTAGE_BANNER_THROTTLE_MS = 30 * 60 * 1000;
+const WORKER_OFFLINE_BANNER =
+  'claude-mem: background worker offline — memory features (search, observations, context) unavailable this session.';
+
+export function consumeWorkerOutageHint(sessionId?: string, bypassThrottle = false): string | null {
+  const failures = readHookFailureState();
+  if (failures.consecutiveFailures === 0) return null;
+
+  const warned = readOutageWarningState();
+  const now = Date.now();
+  const sameSession = sessionId !== undefined && warned.lastSessionId === sessionId;
+  const withinThrottle = (now - warned.lastWarnedAt) < OUTAGE_BANNER_THROTTLE_MS;
+  if (!bypassThrottle && sameSession && withinThrottle) return null;
+
+  writeOutageWarningStateAtomic({ lastWarnedAt: now, lastSessionId: sessionId });
+  return WORKER_OFFLINE_BANNER;
 }
 
 const WORKER_FALLBACK_BRAND: unique symbol = Symbol.for('claude-mem/worker-fallback');
@@ -674,6 +735,7 @@ export function isWorkerFallback<T>(result: WorkerCallResult<T>): result is Work
 
 export interface WorkerFallbackOptions {
   timeoutMs?: number;
+  allowLazySpawn?: boolean;
 }
 
 export async function executeWithWorkerFallback<T = unknown>(
@@ -682,9 +744,11 @@ export async function executeWithWorkerFallback<T = unknown>(
   body?: unknown,
   options: WorkerFallbackOptions = {},
 ): Promise<WorkerCallResult<T>> {
-  const alive = await ensureWorkerAliveOnce();
+  const alive = await ensureWorkerAliveOnce({ allowLazySpawn: options.allowLazySpawn });
   if (!alive) {
-    await recordWorkerUnreachable();
+    if (options.allowLazySpawn !== false) {
+      await recordWorkerUnreachable();
+    }
     return { continue: true, reason: 'worker_unreachable', [WORKER_FALLBACK_BRAND]: true };
   }
 
@@ -700,8 +764,8 @@ export async function executeWithWorkerFallback<T = unknown>(
   const response = await workerHttpRequest(url, init);
   if (!response.ok) {
     const text = await response.text().catch(() => '');
-    resetWorkerFailureCounter();
     if (response.status === 429 || response.status >= 500) {
+      await recordWorkerUnreachable();
       logger.warn('SYSTEM', `Worker API ${method} ${url} returned ${response.status}; skipping hook API call`, {
         body: text.substring(0, 200),
       });
@@ -711,6 +775,7 @@ export async function executeWithWorkerFallback<T = unknown>(
         [WORKER_FALLBACK_BRAND]: true,
       };
     }
+    resetWorkerFailureCounter();
 
     let parsed: unknown = text;
     try { parsed = JSON.parse(text); } catch { /* keep raw text */ }

@@ -204,6 +204,29 @@ export class SessionManager {
     }
   }
 
+  async queuePreCompact(sessionDbId: number): Promise<void> {
+    let session = this.sessions.get(sessionDbId);
+    if (!session) {
+      session = this.initializeSession(sessionDbId);
+    }
+
+    const message: PendingMessage = {
+      type: 'pre-compact'
+    };
+
+    const messageId = this.buffer.enqueue(sessionDbId, message);
+    const queueDepth = this.buffer.getPendingCount(sessionDbId);
+    if (messageId === 0) {
+      logger.debug('QUEUE', `DUP_SUPPRESSED | sessionDbId=${sessionDbId} | type=pre-compact | depth=${queueDepth}`, {
+        sessionId: sessionDbId
+      });
+    } else {
+      logger.info('QUEUE', `ENQUEUED | sessionDbId=${sessionDbId} | messageId=${messageId} | type=pre-compact | depth=${queueDepth}`, {
+        sessionId: sessionDbId
+      });
+    }
+  }
+
   async clearPendingForSession(sessionDbId: number): Promise<number> {
     return this.buffer.clear(sessionDbId);
   }

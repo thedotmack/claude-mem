@@ -1,6 +1,6 @@
 import { describe, it, expect, mock, afterEach, afterAll, beforeEach } from 'bun:test';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
-import path, { join } from 'path';
+import path, { join, relative } from 'path';
 import { tmpdir } from 'os';
 
 // Snapshot the real modules BEFORE mock.module mutates the live namespace, then
@@ -397,7 +397,7 @@ describe('updateFolderClaudeMdFiles', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
-    expect(callUrl).toContain(encodeURIComponent('/home/user/my-project/src/utils'));
+    expect(callUrl).toContain(encodeURIComponent('src/utils'));
   });
 
   it('should accept absolute paths within projectRoot and use them directly', async () => {
@@ -425,7 +425,7 @@ describe('updateFolderClaudeMdFiles', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
-    expect(callUrl).toContain(encodeURIComponent(folderPath));
+    expect(callUrl).toContain(encodeURIComponent(relative(tempDir, folderPath)));
   });
 
   it('should work without projectRoot for backward compatibility', async () => {
@@ -478,7 +478,7 @@ describe('updateFolderClaudeMdFiles', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
-    expect(callUrl).toContain(encodeURIComponent('/home/user/my-project/src/utils'));
+    expect(callUrl).toContain(encodeURIComponent('src/utils'));
     expect(callUrl.replace('http://', '')).not.toContain('//');
   });
 
@@ -534,7 +534,7 @@ describe('updateFolderClaudeMdFiles', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
-    expect(callUrl).toContain(encodeURIComponent('/home/user/project/src/utils'));
+    expect(callUrl).toContain(encodeURIComponent('src/utils'));
   });
 
   it('should handle empty string paths gracefully with projectRoot', async () => {
@@ -556,7 +556,7 @@ describe('updateFolderClaudeMdFiles', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
-    expect(callUrl).toContain(encodeURIComponent('/home/user/project/src'));
+    expect(callUrl).toContain(encodeURIComponent('src'));
   });
 });
 
@@ -809,8 +809,8 @@ describe('issue #859 - skip folders with active CLAUDE.md', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
-    expect(callUrl).toContain(encodeURIComponent('/project/src/services'));
-    expect(callUrl).not.toContain(encodeURIComponent('/project/src/utils'));
+    expect(callUrl).toContain(encodeURIComponent('src/services'));
+    expect(callUrl).not.toContain(encodeURIComponent('src/utils'));
   });
 
   it('should handle relative CLAUDE.md paths with projectRoot', async () => {
@@ -850,7 +850,7 @@ describe('issue #859 - skip folders with active CLAUDE.md', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
-    expect(callUrl).toContain(encodeURIComponent('/project/src/c'));
+    expect(callUrl).toContain(encodeURIComponent('src/c'));
   });
 
   it('should still exclude project root even when CLAUDE.md filter would allow it', async () => {
@@ -1082,9 +1082,9 @@ describe('CLAUDE.local.md support', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
-    expect(callUrl).toContain(encodeURIComponent('/project/src/c'));
-    expect(callUrl).not.toContain(encodeURIComponent('/project/src/a'));
-    expect(callUrl).not.toContain(encodeURIComponent('/project/src/b'));
+    expect(callUrl).toContain(encodeURIComponent('src/c'));
+    expect(callUrl).not.toContain(encodeURIComponent('src/a'));
+    expect(callUrl).not.toContain(encodeURIComponent('src/b'));
   });
 });
 
@@ -1152,7 +1152,7 @@ describe('skeleton CLAUDE.md deny-list (#2400)', () => {
     expect(readFileSync(claudeMdPath, 'utf-8')).toContain('#123');
   });
 
-  it('default (unset deny-list) preserves prior behavior — existing file gets the empty section rewritten', async () => {
+  it('empty/skeleton content never touches an existing file, even with no deny-list', async () => {
     delete process.env[ENV_KEY];
 
     const folderPath = join(tempDir, 'no-denylist');
@@ -1168,10 +1168,26 @@ describe('skeleton CLAUDE.md deny-list (#2400)', () => {
 
     await updateFolderClaudeMdFiles([filePath], 'test-project', 37777, tempDir);
 
-    // With no deny-list, the existing file is still processed (the new guard is
-    // a no-op), so the tagged context section is appended to the existing file.
     const content = readFileSync(claudeMdPath, 'utf-8');
-    expect(content).toContain('PRE-EXISTING');
-    expect(content).toContain('<claude-mem-context>');
+    expect(content).toBe('PRE-EXISTING');
+    expect(content).not.toContain('<claude-mem-context>');
+  });
+
+  it('does not create an empty skeleton CLAUDE.md in a folder with no observations', async () => {
+    delete process.env[ENV_KEY];
+
+    const folderPath = join(tempDir, 'no-obs');
+    mkdirSync(folderPath, { recursive: true });
+    const claudeMdPath = join(folderPath, 'CLAUDE.md');
+    const filePath = join(folderPath, 'file.ts');
+
+    global.fetch = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(emptySkeletonResponse),
+    } as Response));
+
+    await updateFolderClaudeMdFiles([filePath], 'test-project', 37777, tempDir);
+
+    expect(existsSync(claudeMdPath)).toBe(false);
   });
 });

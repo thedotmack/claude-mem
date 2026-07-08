@@ -3,7 +3,7 @@
 // console.* / process.exit. logger.* calls are DIAGNOSTIC; thrown errors are
 // caught by hookCommand and routed through emitBlockingError.
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
-import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker-utils.js';
+import { executeWithWorkerFallback, isWorkerFallback, consumeWorkerOutageHint } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
 import { extractLastMessage } from '../../shared/transcript-parser.js';
 import { stripMemoryTags } from '../../utils/tag-stripping.js';
@@ -145,7 +145,13 @@ export const summarizeHandler: EventHandler = {
       },
     );
     if (isWorkerFallback(queueResult)) {
-      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+      const hint = consumeWorkerOutageHint(sessionId);
+      return {
+        continue: true,
+        suppressOutput: !hint,
+        ...(hint ? { systemMessage: hint } : {}),
+        exitCode: HOOK_EXIT_CODES.SUCCESS,
+      };
     }
 
     logger.debug('HOOK', 'Summary request queued, exiting hook');

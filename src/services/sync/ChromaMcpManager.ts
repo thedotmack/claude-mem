@@ -312,7 +312,7 @@ export class ChromaMcpManager {
     return [
       '--python', pythonVersion,
       ...depOverrideFlags,
-      '--from', `chroma-mcp==${CHROMA_MCP_PINNED_VERSION}`,
+      '--from', `chroma-mcp@${CHROMA_MCP_PINNED_VERSION}`,
       'chroma-mcp',
     ];
   }
@@ -420,6 +420,10 @@ export class ChromaMcpManager {
         }
         if (code === 0) {
           resolve();
+          return;
+        }
+        if (code === null) {
+          reject(new Error(`chroma-mcp prewarm terminated by signal${signal ? ` ${signal}` : ''}`));
           return;
         }
         reject(new Error(`chroma-mcp prewarm exited with code ${code ?? 'null'}${signal ? ` signal ${signal}` : ''}`));

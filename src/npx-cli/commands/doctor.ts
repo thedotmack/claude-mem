@@ -25,10 +25,12 @@ interface CheckResult {
 
 function probeVersion(bin: string): string | null {
   try {
-    const result = spawnSync(bin, ['--version'], {
+    const command = IS_WINDOWS ? (process.env.ComSpec ?? 'cmd.exe') : bin;
+    const args = IS_WINDOWS ? ['/d', '/c', bin, '--version'] : ['--version'];
+    const result = spawnSync(command, args, {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS,
+      windowsHide: true,
     });
     return result.status === 0 ? result.stdout.trim() : null;
   } catch (error) {
@@ -46,6 +48,14 @@ async function probeWorkerHealth(workerPort: string): Promise<{ status: CheckSta
     return { status: 'ok', detail: `healthy at http://127.0.0.1:${workerPort}` };
   }
   return { status: 'warn', detail: `reachable but unhealthy (HTTP ${res.status}) on port ${workerPort}` };
+}
+
+export function marketplaceDependencyDirectory(marketplaceDir = marketplaceDirectory()): string {
+  const marketplacePluginDir = join(marketplaceDir, 'plugin');
+  if (existsSync(join(marketplacePluginDir, 'package.json'))) {
+    return join(marketplacePluginDir, 'node_modules');
+  }
+  return join(marketplaceDir, 'node_modules');
 }
 
 export async function runDoctorCommand(): Promise<void> {
@@ -80,7 +90,7 @@ export async function runDoctorCommand(): Promise<void> {
   });
 
   // 4. Marketplace dependencies materialized.
-  const marketplaceNodeModules = join(marketplaceDirectory(), 'node_modules');
+  const marketplaceNodeModules = marketplaceDependencyDirectory();
   const depsPresent = existsSync(marketplaceNodeModules);
   checks.push({
     name: 'Marketplace deps',

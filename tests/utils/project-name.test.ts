@@ -1,13 +1,14 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import { homedir } from 'os';
+import path from 'path';
 import { getProjectName, getProjectContext } from '../../src/utils/project-name.js';
 
 describe('getProjectName', () => {
   describe('tilde expansion', () => {
     it('resolves bare ~ to home directory basename', () => {
       const home = homedir();
-      const expected = home.split('/').pop() || home.split('\\').pop() || '';
+      const expected = path.basename(home);
       expect(getProjectName('~')).toBe(expected);
     });
 
@@ -17,7 +18,7 @@ describe('getProjectName', () => {
 
     it('resolves ~/ to home directory basename', () => {
       const home = homedir();
-      const expected = home.split('/').pop() || home.split('\\').pop() || '';
+      const expected = path.basename(home);
       expect(getProjectName('~/')).toBe(expected);
     });
   });
@@ -87,6 +88,83 @@ describe('getProjectName', () => {
       expect(getProjectName(repoRoot)).toBe('my-real-repo');
     });
 
+    it('plain subdirectory inside a declared workspace repo yields a repo-relative project key', async () => {
+      const { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } = await import('fs');
+      const { execFileSync } = await import('child_process');
+      const { join } = await import('path');
+      const { tmpdir } = await import('os');
+      const tmpDir = realpathSync(mkdtempSync(join(tmpdir(), 'cm-workspace-')));
+      try {
+        const root = join(tmpDir, 'my-real-repo');
+        const automationDir = join(root, 'automation', 'scripts');
+        mkdirSync(automationDir, { recursive: true });
+        execFileSync('git', ['init', '-q'], { cwd: root });
+        writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'my-real-repo', workspaces: ['packages/*'] }));
+
+        expect(getProjectName(automationDir)).toBe('my-real-repo/automation');
+      } finally {
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('plain subdirectory inside a non-workspace package repo stays on the repo-root key', async () => {
+      const { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } = await import('fs');
+      const { execFileSync } = await import('child_process');
+      const { join } = await import('path');
+      const { tmpdir } = await import('os');
+      const tmpDir = realpathSync(mkdtempSync(join(tmpdir(), 'cm-singlepkg-')));
+      try {
+        const root = join(tmpDir, 'my-real-repo');
+        const srcDir = join(root, 'src', 'lib');
+        mkdirSync(srcDir, { recursive: true });
+        execFileSync('git', ['init', '-q'], { cwd: root });
+        writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'my-real-repo' }));
+
+        expect(getProjectName(srcDir)).toBe('my-real-repo');
+      } finally {
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('package directory inside a monorepo yields the repo-relative package key', async () => {
+      const { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } = await import('fs');
+      const { execFileSync } = await import('child_process');
+      const { join } = await import('path');
+      const { tmpdir } = await import('os');
+      const tmpDir = realpathSync(mkdtempSync(join(tmpdir(), 'cm-package-root-')));
+      try {
+        const root = join(tmpDir, 'my-real-repo');
+        const packageSrcDir = join(root, 'packages', 'api', 'src');
+        mkdirSync(packageSrcDir, { recursive: true });
+        execFileSync('git', ['init', '-q'], { cwd: root });
+        writeFileSync(join(root, 'packages', 'api', 'package.json'), JSON.stringify({ name: 'api' }));
+
+        expect(getProjectName(packageSrcDir)).toBe('my-real-repo/packages/api');
+      } finally {
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('manifest-less monorepos split plain subdirectories when nested package roots exist', async () => {
+      const { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } = await import('fs');
+      const { execFileSync } = await import('child_process');
+      const { join } = await import('path');
+      const { tmpdir } = await import('os');
+      const tmpDir = realpathSync(mkdtempSync(join(tmpdir(), 'cm-manifestless-mono-')));
+      try {
+        const root = join(tmpDir, 'my-real-repo');
+        const automationDir = join(root, 'automation', 'scripts');
+        mkdirSync(automationDir, { recursive: true });
+        mkdirSync(join(root, 'packages', 'api'), { recursive: true });
+        execFileSync('git', ['init', '-q'], { cwd: root });
+        writeFileSync(join(root, 'packages', 'api', 'package.json'), JSON.stringify({ name: 'api' }));
+
+        expect(getProjectName(automationDir)).toBe('my-real-repo/automation');
+      } finally {
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
     it('non-repo path falls back to basename(cwd)', () => {
       // A path that does not exist (and therefore cannot be in a repo) must
       // fall back to basename(cwd) rather than throwing or returning a root.
@@ -134,7 +212,7 @@ describe('getProjectName', () => {
       expect(ctx.primary).toBe('my-app');
       expect(ctx.parent).toBeNull();
       expect(ctx.isWorktree).toBe(false);
-      expect(ctx.allProjects).toEqual(['my-app']);
+      expect(ctx.allProjects).toEqual(['my-app:dream', 'my-app']);
     });
 
     it('also accepts the snake_case project_name key', async () => {
@@ -179,7 +257,7 @@ describe('getProjectContext', () => {
     expect(ctx.primary).toBe('my-project');
     expect(ctx.parent).toBeNull();
     expect(ctx.isWorktree).toBe(false);
-    expect(ctx.allProjects).toEqual(['my-project']);
+    expect(ctx.allProjects).toEqual(['my-project:dream', 'my-project']);
   });
 
   it('resolves ~ path correctly', () => {
@@ -193,7 +271,31 @@ describe('getProjectContext', () => {
     const ctx = getProjectContext(null);
     expect(ctx.primary).toBe('unknown-project');
     expect(ctx.parent).toBeNull();
-    expect(ctx.allProjects).toEqual(['unknown-project']);
+    expect(ctx.allProjects).toEqual(['unknown-project:dream', 'unknown-project']);
+  });
+
+  it('uses only the repo-relative subproject key for non-worktree monorepo paths', async () => {
+    const { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } = await import('fs');
+    const { execFileSync } = await import('child_process');
+    const { join } = await import('path');
+    const { tmpdir } = await import('os');
+    const tmpDir = realpathSync(mkdtempSync(join(tmpdir(), 'cm-context-mono-')));
+    try {
+      const root = join(tmpDir, 'my-real-repo');
+      const packageDir = join(root, 'packages', 'api', 'src');
+      mkdirSync(packageDir, { recursive: true });
+      execFileSync('git', ['init', '-q'], { cwd: root });
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'my-real-repo', workspaces: ['packages/*'] }));
+      writeFileSync(join(root, 'packages', 'api', 'package.json'), JSON.stringify({ name: 'api' }));
+
+      const ctx = getProjectContext(packageDir);
+      expect(ctx.primary).toBe('my-real-repo/packages/api');
+      expect(ctx.parent).toBeNull();
+      expect(ctx.isWorktree).toBe(false);
+      expect(ctx.allProjects).toEqual(['my-real-repo/packages/api:dream', 'my-real-repo/packages/api']);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   describe('worktree isolation', () => {
@@ -229,7 +331,12 @@ describe('getProjectContext', () => {
       expect(ctx.isWorktree).toBe(true);
       expect(ctx.primary).toBe('main-repo/my-worktree');
       expect(ctx.parent).toBe('main-repo');
-      expect(ctx.allProjects).toEqual(['main-repo', 'main-repo/my-worktree']);
+      expect(ctx.allProjects).toEqual([
+        'main-repo:dream',
+        'main-repo/my-worktree:dream',
+        'main-repo',
+        'main-repo/my-worktree',
+      ]);
     });
 
     it('write-path call sites resolve to composite name in worktrees', () => {
@@ -277,7 +384,7 @@ describe('getProjectContext', () => {
       expect(ctx.isWorktree).toBe(false);
       expect(ctx.primary).toBe('my-app');
       expect(ctx.parent).toBeNull();
-      expect(ctx.allProjects).toEqual(['my-app']);
+      expect(ctx.allProjects).toEqual(['my-app:dream', 'my-app']);
     });
   });
 });
