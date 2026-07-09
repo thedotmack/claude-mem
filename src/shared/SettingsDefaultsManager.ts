@@ -52,15 +52,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_OPENROUTER_EXTRA_BODY: string;
   CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: string;
   CLAUDE_MEM_OPENROUTER_MAX_TOKENS: string;
-  CLAUDE_MEM_CODEX_MODEL: string;
-  CLAUDE_MEM_CODEX_PATH: string;
-  CLAUDE_MEM_CODEX_REASONING_EFFORT: string;
-  CLAUDE_MEM_CODEX_MAX_CONTEXT_MESSAGES: string;
-  CLAUDE_MEM_CODEX_MAX_TOKENS: string;
-  CLAUDE_MEM_CODEX_TIMEOUT_MS: string;
-  CLAUDE_MEM_KIRO_AGENT: string;
-  CLAUDE_MEM_KIRO_MODEL: string;
-  CLAUDE_MEM_KIRO_CLI_PATH: string;
+  CLAUDE_MEM_OPENROUTER_REASONING_EFFORT: string;
   CLAUDE_MEM_DATA_DIR: string;
   CLAUDE_MEM_LOG_LEVEL: string;
   CLAUDE_MEM_PYTHON_VERSION: string;
@@ -158,15 +150,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_OPENROUTER_EXTRA_BODY: '',  // Optional JSON object merged into OpenAI-compatible chat/completions body after validation.
     CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: '20',  // Max messages in context window
     CLAUDE_MEM_OPENROUTER_MAX_TOKENS: '100000',  // Max estimated tokens (~100k safety limit)
-    CLAUDE_MEM_CODEX_MODEL: 'gpt-5.3-codex-spark',  // Local Codex CLI model for subscription-backed compression
-    CLAUDE_MEM_CODEX_PATH: 'codex',  // CLI executable; override if codex is not on PATH
-    CLAUDE_MEM_CODEX_REASONING_EFFORT: '',  // Empty = Codex/model default; valid: minimal, low, medium, high, xhigh
-    CLAUDE_MEM_CODEX_MAX_CONTEXT_MESSAGES: '20',  // Max messages in Codex context window
-    CLAUDE_MEM_CODEX_MAX_TOKENS: '100000',  // Max estimated tokens (~100k safety limit)
-    CLAUDE_MEM_CODEX_TIMEOUT_MS: '120000',  // Per Codex exec attempt timeout
-    CLAUDE_MEM_KIRO_AGENT: 'claude-mem-observer',  // Hook-less/tool-less Kiro agent the KiroProvider spawns (recursion guard)
-    CLAUDE_MEM_KIRO_MODEL: 'claude-haiku-4.5',  // Model pinned into the observer agent at install — cheapest Kiro tier (0.00 credits/call observed); id verified on kiro-cli 2.11.0 (dot notation; 'claude-haiku-4-5' is rejected)
-    CLAUDE_MEM_KIRO_CLI_PATH: '',  // Optional absolute path to kiro-cli (empty = PATH + known install locations)
+   CLAUDE_MEM_OPENROUTER_REASONING_EFFORT: 'none', // Default reasoning effort
     CLAUDE_MEM_DATA_DIR: join(homedir(), '.claude-mem'),
     CLAUDE_MEM_LOG_LEVEL: 'INFO',
     CLAUDE_MEM_PYTHON_VERSION: '3.13',
