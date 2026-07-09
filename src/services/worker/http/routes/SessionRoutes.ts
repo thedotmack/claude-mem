@@ -487,6 +487,11 @@ export class SessionRoutes extends BaseRouteHandler {
 
     store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt, sessionDbId);
 
+    // Fire-and-forget cloud sync nudge, beside the write itself so every
+    // saved prompt nudges — including cursor sessions, which skip the
+    // non-cursor branch below entirely.
+    this.dbManager.getCloudSync()?.notify();
+
     const contextInjected = this.sessionManager.getSession(sessionDbId) !== undefined;
 
     logger.debug('SESSION', 'User prompt saved', {
@@ -538,8 +543,6 @@ export class SessionRoutes extends BaseRouteHandler {
             prompt: promptText.length > 60 ? promptText.substring(0, 60) + '...' : promptText
           }, error);
         });
-
-        this.dbManager.getCloudSync()?.notify();
       }
 
       await this.ensureGeneratorRunning(sessionDbId, 'init');
