@@ -381,22 +381,28 @@ export interface ProjectContext {
   allProjects: string[];
 }
 
-export function getDreamProjectName(projectName: string): string {
-  return projectName.endsWith(':dream') ? projectName : `${projectName}:dream`;
+export function getDreamProjectName(project: string): string {
+  return project.endsWith(':dream') ? project : `${project}:dream`;
 }
 
-function withDreamProjects(projects: string[]): string[] {
-  return [
-    ...projects.map(getDreamProjectName),
-    ...projects,
-  ];
+function withDreamProject(primaryProject: string, additionalProjects: string[] = []): string[] {
+  const uniqueProjects = [primaryProject, ...additionalProjects].filter(
+    (project, index, allProjects) => allProjects.indexOf(project) === index
+  );
+  const dreamProjects = uniqueProjects.map(getDreamProjectName);
+  return [...dreamProjects, ...uniqueProjects];
 }
 
 export function getProjectContext(cwd: string | null | undefined): ProjectContext {
   const cwdProjectName = getProjectName(cwd);
 
   if (!cwd) {
-    return { primary: cwdProjectName, parent: null, isWorktree: false, allProjects: withDreamProjects([cwdProjectName]) };
+    return {
+      primary: cwdProjectName,
+      parent: null,
+      isWorktree: false,
+      allProjects: withDreamProject(cwdProjectName)
+    };
   }
 
   const expandedCwd = expandTilde(cwd);
@@ -428,9 +434,14 @@ export function getProjectContext(cwd: string | null | undefined): ProjectContex
       primary: composite,
       parent: worktreeInfo.parentProjectName,
       isWorktree: true,
-      allProjects: withDreamProjects([worktreeInfo.parentProjectName, composite])
+      allProjects: withDreamProject(worktreeInfo.parentProjectName, [composite])
     };
   }
 
-  return { primary: cwdProjectName, parent: null, isWorktree: false, allProjects: withDreamProjects([cwdProjectName]) };
+  return {
+    primary: cwdProjectName,
+    parent: null,
+    isWorktree: false,
+    allProjects: withDreamProject(cwdProjectName)
+  };
 }

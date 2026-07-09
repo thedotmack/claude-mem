@@ -275,6 +275,62 @@ describe('SearchRoutes Welcome Hint', () => {
     expect(generateContextStub).not.toHaveBeenCalled();
   });
 
+  it('does not cache mixed-project positive state onto later single-project requests', async () => {
+    let invocation = 0;
+    prepareStub = mock(() => ({
+      get: mock(() => ({ count: invocation++ === 0 ? 1 : 0 })),
+    }));
+    mockSessionStore = { db: { prepare: prepareStub } };
+    mockSearchManager = { getSessionStore: () => mockSessionStore };
+
+    const routes = new SearchRoutes(mockSearchManager);
+    const handler = captureContextInjectHandler(routes);
+
+    const mixedRes = createMockRes();
+    const mixedReq = {
+      query: { projects: 'empty:dream,nonempty' }
+    } as unknown as Request;
+
+    handler(mixedReq, mixedRes as unknown as Response);
+    await new Promise(resolve => setImmediate(resolve));
+    expect(generateContextStub).toHaveBeenCalledTimes(1);
+
+    generateContextStub.mockClear();
+    const singleRes = createMockRes();
+    const singleReq = {
+      query: { projects: 'empty:dream' }
+    } as unknown as Request;
+
+    handler(singleReq, singleRes as unknown as Response);
+    await new Promise(resolve => setImmediate(resolve));
+
+    const body = (singleRes.send as any).mock.calls[0][0] as string;
+    expect(body).toContain('# claude-mem status');
+    expect(generateContextStub).not.toHaveBeenCalled();
+  });
+
+  it('skips the welcome hint when a dream project has summaries but no observations', async () => {
+    prepareStub = mock((sql: string) => ({
+      get: mock(() => ({ count: sql.includes('session_summaries') ? 1 : 0 })),
+    }));
+    mockSessionStore = { db: { prepare: prepareStub } };
+    mockSearchManager = { getSessionStore: () => mockSessionStore };
+
+    const routes = new SearchRoutes(mockSearchManager);
+    const handler = captureContextInjectHandler(routes);
+
+    const res = createMockRes();
+    const req = {
+      query: { projects: '/path/to/project:dream,/path/to/project' }
+    } as unknown as Request;
+
+    handler(req, res as unknown as Response);
+    await new Promise(resolve => setImmediate(resolve));
+
+    expect(generateContextStub).toHaveBeenCalledTimes(1);
+    expect(res.send).toHaveBeenCalledWith('CONTEXT_FROM_GENERATOR');
+  });
+
   it('uses the request-local worker port env override in the welcome hint URL', async () => {
     process.env.CLAUDE_MEM_WORKER_PORT = '43210';
 

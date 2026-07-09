@@ -11,6 +11,9 @@ import type { ContextInput, ContextConfig, Observation, SessionSummary } from '.
 import { loadContextConfig } from './ContextConfigLoader.js';
 import { calculateTokenEconomics } from './TokenCalculator.js';
 import {
+  countObservationsByProjects,
+  countSummariesByProjects,
+  queryObservations,
   queryObservationsMulti,
   querySummariesMulti,
   countObservationsByProjects,
@@ -76,6 +79,11 @@ function rawProjectName(project: string): string {
 function getPrimaryContextProject(projects: string[], fallback: string): string {
   const primary = [...projects].reverse().find(project => !isDreamProject(project)) ?? fallback;
   return rawProjectName(primary);
+}
+
+export function getPrimaryContextProject(projects: string[], fallback: string): string {
+  const rawProjects = projects.filter((candidate) => !candidate.endsWith(':dream'));
+  return rawProjects[rawProjects.length - 1] ?? fallback;
 }
 
 function buildContextOutput(
@@ -202,21 +210,22 @@ export async function generateContextWithStats(
   }
 
   try {
-    const platformSource = input?.platformSource
-      ? normalizePlatformSource(input.platformSource)
-      : undefined;
-    const dreamProjects = projects.filter(isDreamProject);
-    const rawProjects = projects.filter(candidate => !isDreamProject(candidate)).map(rawProjectName);
-    const dreamProjectsHaveContext = dreamProjects.length > 0
-      && (
-        countObservationsByProjects(db, dreamProjects, platformSource) > 0
-        || countSummariesByProjects(db, dreamProjects, platformSource) > 0
-      );
-    const queryProjects = dreamProjectsHaveContext || rawProjects.length === 0
-      ? projects
-      : rawProjects;
-    const observations = queryObservationsMulti(db, queryProjects, config, platformSource);
-    const summaries = querySummariesMulti(db, queryProjects, config, platformSource);
+    const dreamProjects = projects.filter((candidate) => candidate.endsWith(':dream'));
+    const rawProjects = projects.filter((candidate) => !candidate.endsWith(':dream'));
+    const useDreamQueries = dreamProjects.length > 0 && (
+      countObservationsByProjects(db, dreamProjects) > 0 ||
+      countSummariesByProjects(db, dreamProjects) > 0
+    );
+    const queryProjects = useDreamQueries || rawProjects.length === 0 ? projects : rawProjects;
+    const useMultiQuery = queryProjects.length > 1;
+    const singleQueryProject = queryProjects[0] ?? project;
+
+    const observations = useMultiQuery
+      ? queryObservationsMulti(db, queryProjects, config)
+      : queryObservations(db, singleQueryProject, config);
+    const summaries = useMultiQuery
+      ? querySummariesMulti(db, queryProjects, config)
+      : querySummaries(db, singleQueryProject, config);
 
     if (observations.length === 0 && summaries.length === 0) {
       return { text: renderEmptyState(project, forHuman), stats: null };

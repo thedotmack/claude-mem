@@ -77,8 +77,8 @@ const semanticContextSchema = z.object({
 export class SearchRoutes extends BaseRouteHandler {
   private cachedSettings: ReturnType<typeof SettingsDefaultsManager.loadFromFile> | null = null;
   private cachedSettingsAt = 0;
-  // Scope this cache to the route instance so separate server/test instances do
-  // not inherit each other's positive observation state through shared modules.
+  // Cache exact request project-sets only; a mixed non-empty request must not
+  // imply that each individual project inside it has context.
   private readonly projectSetsKnownNonEmpty = new Set<string>();
 
   constructor(
@@ -104,12 +104,12 @@ export class SearchRoutes extends BaseRouteHandler {
     projects: string[],
     platformSource?: string,
   ): boolean {
-    const cacheKey = platformSource ? `${platformSource}\0${projects.join('\0')}` : projects.join('\0');
+    const cacheKey = projects.join('\0');
     if (this.projectSetsKnownNonEmpty.has(cacheKey)) {
       return true;
     }
-    const observationCount = countObservationsByProjects(sessionStore, projects, platformSource);
-    const summaryCount = observationCount > 0 ? 0 : countSummariesByProjects(sessionStore, projects, platformSource);
+    const observationCount = countObservationsByProjects(sessionStore, projects);
+    const summaryCount = countSummariesByProjects(sessionStore, projects);
     if (observationCount > 0 || summaryCount > 0) {
       this.projectSetsKnownNonEmpty.add(cacheKey);
       return true;
@@ -313,9 +313,10 @@ export class SearchRoutes extends BaseRouteHandler {
     const hintEnabled = String(hintEnabledRaw ?? '').toLowerCase() === 'true';
     if (hintEnabled && !full) {
       const sessionStore = this.searchManager.getSessionStore();
-      // Memoized: skips the COUNT(*) query once the exact project set has
-      // context. Hot-path: PostToolUse fires after every Read/Edit.
-      if (!this.projectsHaveContext(sessionStore, projects, platformSource)) {
+      // Memoized: skips the COUNT(*) query once any project in the set has
+      // observations or summaries. Hot-path: PostToolUse fires after every
+      // Read/Edit.
+      if (!this.projectsHaveContext(sessionStore, projects)) {
         const port = process.env.CLAUDE_MEM_WORKER_PORT ?? settings.CLAUDE_MEM_WORKER_PORT;
         const viewerUrl = `http://localhost:${port}`;
         let hintBody = WELCOME_HINT_TEMPLATE.replace('{viewer_url}', viewerUrl);

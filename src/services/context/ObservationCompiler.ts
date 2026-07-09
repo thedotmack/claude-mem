@@ -17,8 +17,151 @@ import type {
 import { SUMMARY_LOOKAHEAD } from './types.js';
 import { NOT_DISMISSED_SQL } from '../sqlite/observations/dismiss-filter.js';
 
-function isDreamProject(project: string | null | undefined): boolean {
-  return Boolean(project?.endsWith(':dream'));
+function isDreamProject(project: string): boolean {
+  return project.endsWith(':dream');
+}
+
+function rawProjectsForFallback(projects: string[]): string[] {
+  return projects.filter(project => !isDreamProject(project));
+}
+
+function rowMatchesRawProject(
+  row: Pick<Observation, 'project' | 'merged_into_project'>,
+  rawProjects: Set<string>
+): boolean {
+  return rawProjects.has(row.project ?? '') || rawProjects.has(row.merged_into_project ?? '');
+}
+
+function sortRowsForContext(rows: Observation[], rawProjects: Set<string>): Observation[] {
+  return [...rows].sort((a, b) => {
+    const aIsRaw = rowMatchesRawProject(a, rawProjects);
+    const bIsRaw = rowMatchesRawProject(b, rawProjects);
+    if (aIsRaw !== bIsRaw) {
+      return aIsRaw ? 1 : -1;
+    }
+    return b.created_at_epoch - a.created_at_epoch;
+  });
+}
+
+function queryLatestRawObservation(
+  db: SessionStore,
+  projects: string[],
+  typeArray: string[],
+  conceptArray: string[]
+): Observation | null {
+  const rawProjects = rawProjectsForFallback(projects);
+  if (rawProjects.length === 0) return null;
+
+  const projectPlaceholders = rawProjects.map(() => '?').join(',');
+  const typePlaceholders = typeArray.map(() => '?').join(',');
+  const conceptPlaceholders = conceptArray.map(() => '?').join(',');
+
+  return db.db.prepare(`
+    SELECT
+      o.id,
+      o.memory_session_id,
+      COALESCE(s.platform_source, 'claude') as platform_source,
+      o.type,
+      o.title,
+      o.subtitle,
+      o.narrative,
+      o.facts,
+      o.concepts,
+      o.files_read,
+      o.files_modified,
+      o.discovery_tokens,
+      o.created_at,
+      o.created_at_epoch,
+      o.project,
+      o.merged_into_project
+    FROM observations o
+    LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
+    WHERE (o.project IN (${projectPlaceholders})
+           OR o.merged_into_project IN (${projectPlaceholders}))
+      AND type IN (${typePlaceholders})
+      AND EXISTS (
+        SELECT 1 FROM json_each(o.concepts)
+        WHERE value IN (${conceptPlaceholders})
+      )
+    ORDER BY o.created_at_epoch DESC
+    LIMIT 1
+  `).get(
+    ...rawProjects,
+    ...rawProjects,
+    ...typeArray,
+    ...conceptArray
+  ) as Observation | null;
+}
+
+function includeRawFallback(
+  db: SessionStore,
+  projects: string[],
+  rows: Observation[],
+  typeArray: string[],
+  conceptArray: string[],
+  limit: number
+): Observation[] {
+  const rawProjects = new Set(rawProjectsForFallback(projects));
+  const prioritizedRows = sortRowsForContext(rows, rawProjects);
+  const selected = prioritizedRows.slice(0, limit);
+  if (rawProjects.size === 0) return selected;
+  if (selected.some(row => rowMatchesRawProject(row, rawProjects))) return selected;
+
+  const fallback = queryLatestRawObservation(db, projects, typeArray, conceptArray);
+  if (!fallback) return selected;
+
+  const withFallback = selected.length >= limit
+    ? [...selected.slice(0, Math.max(0, limit - 1)), fallback]
+    : [...selected, fallback];
+
+  return sortRowsForContext(withFallback, rawProjects);
+}
+
+export function queryObservations(
+  db: SessionStore,
+  project: string,
+  config: ContextConfig
+): Observation[] {
+  const typeArray = Array.from(config.observationTypes);
+  const typePlaceholders = typeArray.map(() => '?').join(',');
+  const conceptArray = Array.from(config.observationConcepts);
+  const conceptPlaceholders = conceptArray.map(() => '?').join(',');
+
+  return db.db.prepare(`
+    SELECT
+      o.id,
+      o.memory_session_id,
+      COALESCE(s.platform_source, 'claude') as platform_source,
+      o.type,
+      o.title,
+      o.subtitle,
+      o.narrative,
+      o.facts,
+      o.concepts,
+      o.files_read,
+      o.files_modified,
+      o.discovery_tokens,
+      o.created_at,
+      o.created_at_epoch,
+      o.project,
+      o.merged_into_project
+    FROM observations o
+    LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
+    WHERE (o.project = ? OR o.merged_into_project = ?)
+      AND type IN (${typePlaceholders})
+      AND EXISTS (
+        SELECT 1 FROM json_each(o.concepts)
+        WHERE value IN (${conceptPlaceholders})
+      )
+    ORDER BY o.created_at_epoch DESC
+    LIMIT ?
+  `).all(
+    project,
+    project,
+    ...typeArray,
+    ...conceptArray,
+    config.totalObservationCount
+  ) as Observation[];
 }
 
 function rawProjectName(project: string): string {
@@ -85,7 +228,22 @@ function queryLatestRawObservation(
   const typePlaceholders = typeArray.map(() => '?').join(',');
   const conceptPlaceholders = conceptArray.map(() => '?').join(',');
 
-  const row = db.db.prepare(`
+  const projectPlaceholders = projects.map(() => '?').join(',');
+  const rawProjects = rawProjectsForFallback(projects);
+  const rawProjectPlaceholders = rawProjects.map(() => '?').join(',');
+  const queryLimit = config.totalObservationCount * Math.max(2, projects.length);
+  const rawPriorityOrder = rawProjects.length > 0
+    ? `
+      CASE
+        WHEN o.project IN (${rawProjectPlaceholders})
+          OR o.merged_into_project IN (${rawProjectPlaceholders})
+        THEN 1
+        ELSE 0
+      END,
+    `
+    : '';
+
+  const rows = db.db.prepare(`
     SELECT
       o.id,
       o.memory_session_id,
@@ -114,69 +272,7 @@ function queryLatestRawObservation(
         SELECT 1 FROM json_each(o.concepts)
         WHERE value IN (${conceptPlaceholders})
       )
-      AND ${NOT_DISMISSED_SQL}
-    ORDER BY o.created_at_epoch DESC
-    LIMIT 1
-  `).get(
-    ...rawProjects,
-    ...rawProjects,
-    platformSource ?? null,
-    platformSource ?? null,
-    ...typeArray,
-    ...conceptArray
-  ) as Observation | undefined;
-
-  return row ?? null;
-}
-
-export function queryObservationsMulti(
-  db: SessionStore,
-  projects: string[],
-  config: ContextConfig,
-  platformSource?: string
-): Observation[] {
-  const typeArray = Array.from(config.observationTypes);
-  const typePlaceholders = typeArray.map(() => '?').join(',');
-  const conceptArray = Array.from(config.observationConcepts);
-  const conceptPlaceholders = conceptArray.map(() => '?').join(',');
-
-  const projectPlaceholders = projects.map(() => '?').join(',');
-  const rawProjects = rawProjectsForFallback(projects);
-  const hasDreamProjects = projects.some(isDreamProject);
-  const queryLimit = hasDreamProjects
-    ? Math.max(config.totalObservationCount * 2, config.totalObservationCount + rawProjects.length)
-    : config.totalObservationCount;
-
-  const rows = db.db.prepare(`
-    SELECT
-      o.id,
-      o.memory_session_id,
-      COALESCE(s.platform_source, 'claude') as platform_source,
-      o.type,
-      o.title,
-      o.subtitle,
-      o.narrative,
-      o.facts,
-      o.concepts,
-      o.files_read,
-      o.files_modified,
-      o.discovery_tokens,
-      o.created_at,
-      o.created_at_epoch,
-      o.project,
-      o.merged_into_project
-    FROM observations o
-    LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
-    WHERE (o.project IN (${projectPlaceholders})
-           OR o.merged_into_project IN (${projectPlaceholders}))
-      AND (? IS NULL OR s.platform_source = ?)
-      AND type IN (${typePlaceholders})
-      AND EXISTS (
-        SELECT 1 FROM json_each(o.concepts)
-        WHERE value IN (${conceptPlaceholders})
-      )
-      AND ${NOT_DISMISSED_SQL}
-    ORDER BY o.created_at_epoch DESC
+    ORDER BY ${rawPriorityOrder} o.created_at_epoch DESC
     LIMIT ?
   `).all(
     ...projects,
@@ -185,14 +281,19 @@ export function queryObservationsMulti(
     platformSource ?? null,
     ...typeArray,
     ...conceptArray,
+    ...rawProjects,
+    ...rawProjects,
     queryLimit
   ) as Observation[];
 
-  if (!hasDreamProjects) return rows;
-
-  const sorted = sortRowsForContext(rows, rawProjects);
-  const rawFallback = queryLatestRawObservation(db, rawProjects, typeArray, conceptArray, platformSource);
-  return includeRawFallback(sorted, rawFallback, rawProjects, config.totalObservationCount);
+  return includeRawFallback(
+    db,
+    projects,
+    rows,
+    typeArray,
+    conceptArray,
+    config.totalObservationCount
+  );
 }
 
 export function countObservationsByProjects(db: SessionStore, projects: string[], platformSource?: string): number {
@@ -210,6 +311,17 @@ export function countObservationsByProjects(db: SessionStore, projects: string[]
   return row?.count ?? 0;
 }
 
+export function countSummariesByProjects(db: SessionStore, projects: string[]): number {
+  if (projects.length === 0) return 0;
+  const projectPlaceholders = projects.map(() => '?').join(',');
+  const row = db.db.prepare(`
+    SELECT COUNT(*) as count FROM session_summaries
+    WHERE project IN (${projectPlaceholders})
+       OR merged_into_project IN (${projectPlaceholders})
+  `).get(...projects, ...projects) as { count: number } | undefined;
+  return row?.count ?? 0;
+}
+
 export function querySummariesMulti(
   db: SessionStore,
   projects: string[],
@@ -217,11 +329,8 @@ export function querySummariesMulti(
   platformSource?: string
 ): SessionSummary[] {
   const projectPlaceholders = projects.map(() => '?').join(',');
-  const rawProjects = rawProjectsForFallback(projects);
-  const hasDreamProjects = projects.some(isDreamProject);
-  const queryLimit = hasDreamProjects
-    ? Math.max((config.sessionCount + SUMMARY_LOOKAHEAD) * 2, config.sessionCount + SUMMARY_LOOKAHEAD + rawProjects.length)
-    : config.sessionCount + SUMMARY_LOOKAHEAD;
+  const resultLimit = config.sessionCount + SUMMARY_LOOKAHEAD;
+  const queryLimit = resultLimit * Math.max(2, projects.length);
 
   const rows = db.db.prepare(`
     SELECT
@@ -244,31 +353,9 @@ export function querySummariesMulti(
       AND (? IS NULL OR s.platform_source = ?)
     ORDER BY ss.created_at_epoch DESC
     LIMIT ?
-  `).all(
-    ...projects,
-    ...projects,
-    platformSource ?? null,
-    platformSource ?? null,
-    queryLimit
-  ) as SessionSummary[];
+  `).all(...projects, ...projects, queryLimit) as SessionSummary[];
 
-  return hasDreamProjects
-    ? sortRowsForContext(rows, rawProjects).slice(0, config.sessionCount + SUMMARY_LOOKAHEAD)
-    : rows;
-}
-
-export function countSummariesByProjects(db: SessionStore, projects: string[], platformSource?: string): number {
-  if (projects.length === 0) return 0;
-  const projectPlaceholders = projects.map(() => '?').join(',');
-  const row = db.db.prepare(`
-    SELECT COUNT(*) as count
-    FROM session_summaries ss
-    LEFT JOIN sdk_sessions s ON ss.memory_session_id = s.memory_session_id
-    WHERE (ss.project IN (${projectPlaceholders})
-       OR ss.merged_into_project IN (${projectPlaceholders}))
-      AND (? IS NULL OR s.platform_source = ?)
-  `).get(...projects, ...projects, platformSource ?? null, platformSource ?? null) as { count: number } | undefined;
-  return row?.count ?? 0;
+  return rows.slice(0, resultLimit);
 }
 
 export function cwdToDashed(cwd: string): string {
@@ -341,8 +428,8 @@ export function getPriorSessionMessages(
     return { assistantMessage: '' };
   }
 
-  const priorSessionObs = observations.find(obs =>
-    obs.memory_session_id !== currentSessionId && !isDreamProject(obs.project)
+  const priorSessionObs = observations.find(
+    obs => obs.memory_session_id !== currentSessionId && !isDreamProject(obs.project ?? '')
   );
   if (!priorSessionObs) {
     return { assistantMessage: '' };
