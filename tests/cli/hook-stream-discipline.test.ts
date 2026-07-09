@@ -167,13 +167,21 @@ describe('#3161 — Stop hook never exits 2 on worker-unreachable', () => {
     // The success-branch read is wrapped so a rejection routes to the fallback.
     const readIdx = fnBody.indexOf('text = await response.text();');
     expect(readIdx).toBeGreaterThan(-1);
-    const catchIdx = fnBody.indexOf('recordWorkerUnreachable()', readIdx);
+    const catchIdx = fnBody.indexOf("buildWorkerUnreachableFallback('worker_body_read_failed')", readIdx);
     const resetIdx = fnBody.indexOf('resetWorkerFailureCounter();', readIdx);
-    // recordWorkerUnreachable + branded fallback come from the read's catch,
-    // BEFORE the success-path reset (which must only run once the body is read).
+    // The read's catch routes through the unreachable-fallback builder (which
+    // records the failure and returns the branded fallback) BEFORE the
+    // success-path reset (which must only run once the body is read).
     expect(catchIdx).toBeGreaterThan(readIdx);
     expect(resetIdx).toBeGreaterThan(catchIdx);
-    expect(fnBody.slice(catchIdx, resetIdx)).toContain('WORKER_FALLBACK_BRAND');
+    // The builder itself owns record + brand + the tripped-streak tag that
+    // feeds the summarize USER_HINT.
+    const helperStart = src.indexOf('export async function buildWorkerUnreachableFallback');
+    expect(helperStart).toBeGreaterThan(-1);
+    const helperBody = src.slice(helperStart, src.indexOf('\n}', helperStart));
+    expect(helperBody).toContain('recordWorkerUnreachable()');
+    expect(helperBody).toContain('WORKER_FALLBACK_BRAND');
+    expect(helperBody).toContain('consecutiveFailures');
     // No bare unguarded read remains in the success path.
     expect(fnBody.includes('await response.text();\n  if (text.length')).toBe(false);
   });

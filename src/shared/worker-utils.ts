@@ -684,9 +684,18 @@ function resetWorkerFailureCounter(): void {
 
 const WORKER_FALLBACK_BRAND: unique symbol = Symbol.for('claude-mem/worker-fallback');
 
-export type WorkerFallback =
-  | { continue: true; [WORKER_FALLBACK_BRAND]: true }
-  | { continue: true; reason: string; [WORKER_FALLBACK_BRAND]: true };
+export type WorkerFallback = {
+  continue: true;
+  reason?: string;
+  /**
+   * Present when the fail-loud streak is at/past threshold. The summarize/Stop
+   * handler surfaces it as a USER_HINT (HookResult.systemMessage) — its exit
+   * code can never carry the fail-loud signal (#3161 neverBlock), and exit-0
+   * stderr is verbose-only, so this is the only user-visible channel left.
+   */
+  consecutiveFailures?: number;
+  [WORKER_FALLBACK_BRAND]: true;
+};
 
 export type WorkerCallResult<T> = T | WorkerFallback;
 
@@ -700,6 +709,22 @@ export interface WorkerFallbackOptions {
   timeoutMs?: number;
 }
 
+/**
+ * Record the unreachable failure and build the branded fallback for it,
+ * tagging `consecutiveFailures` once the fail-loud streak is at/past
+ * threshold (repeats every failure past it, matching the stderr warning).
+ * Exported for the isolated-state verification harness; production callers
+ * are the two unreachable branches in executeWithWorkerFallback.
+ */
+export async function buildWorkerUnreachableFallback(reason: string): Promise<WorkerFallback> {
+  const failures = await recordWorkerUnreachable();
+  const fallback: WorkerFallback = { continue: true, reason, [WORKER_FALLBACK_BRAND]: true };
+  if (failures >= getFailLoudThreshold()) {
+    fallback.consecutiveFailures = failures;
+  }
+  return fallback;
+}
+
 export async function executeWithWorkerFallback<T = unknown>(
   url: string,
   method: 'GET' | 'POST' | 'PUT' | 'DELETE',
@@ -708,8 +733,7 @@ export async function executeWithWorkerFallback<T = unknown>(
 ): Promise<WorkerCallResult<T>> {
   const alive = await ensureWorkerAliveOnce();
   if (!alive) {
-    await recordWorkerUnreachable();
-    return { continue: true, reason: 'worker_unreachable', [WORKER_FALLBACK_BRAND]: true };
+    return buildWorkerUnreachableFallback('worker_unreachable');
   }
 
   const init: { method: string; headers?: Record<string, string>; body?: string; timeoutMs?: number } = { method };
@@ -751,8 +775,7 @@ export async function executeWithWorkerFallback<T = unknown>(
   try {
     text = await response.text();
   } catch {
-    await recordWorkerUnreachable();
-    return { continue: true, reason: 'worker_body_read_failed', [WORKER_FALLBACK_BRAND]: true };
+    return buildWorkerUnreachableFallback('worker_body_read_failed');
   }
 
   // Body read succeeded → the worker is genuinely reachable; now safe to reset.
