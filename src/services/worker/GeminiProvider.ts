@@ -2,6 +2,8 @@
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
+import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
+import { getDedupFoldConfig } from './dedup-fold.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { getCredential } from '../../shared/EnvManager.js';
 import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
@@ -237,8 +239,52 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
     return new Error('Gemini API key not configured. Set CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.');
   }
 
-  protected estimateTokens(text: string): number {
-    return estimateTokens(text);
+  private async processObservationMessage(
+    session: ActiveSession,
+    message: { type: string; prompt_number?: number; tool_name?: string; tool_input?: unknown; tool_response?: unknown; cwd?: string; fold_count?: number; fold_window_seconds?: number },
+    worker: WorkerRef | undefined,
+    apiKey: string,
+    model: GeminiModel,
+    rateLimitingEnabled: boolean,
+    originalTimestamp: number | null,
+    lastCwd: string | undefined
+  ): Promise<void> {
+    if (message.prompt_number !== undefined) {
+      session.lastPromptNumber = message.prompt_number;
+    }
+
+    if (!session.memorySessionId) {
+      throw new Error('Cannot process observations: memorySessionId not yet captured. This session may need to be reinitialized.');
+    }
+
+    const obsPrompt = buildObservationPrompt({
+      id: 0,
+      tool_name: message.tool_name!,
+      tool_input: JSON.stringify(message.tool_input),
+      tool_output: JSON.stringify(message.tool_response),
+      created_at_epoch: originalTimestamp ?? Date.now(),
+      cwd: message.cwd,
+      fold_count: message.fold_count
+    }, { windowSeconds: message.fold_window_seconds ?? getDedupFoldConfig().windowSeconds });
+
+    session.conversationHistory.push({ role: 'user', content: obsPrompt });
+    const obsResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
+
+    let tokensUsed = 0;
+    if (obsResponse.content) {
+      session.conversationHistory.push({ role: 'assistant', content: obsResponse.content });
+      tokensUsed = obsResponse.tokensUsed || 0;
+      session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
+      session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
+    }
+
+    if (obsResponse.content) {
+      await processAgentResponse(obsResponse.content, session, this.dbManager, this.sessionManager, worker, tokensUsed, originalTimestamp, 'Gemini', lastCwd, model);
+    } else {
+      logger.warn('SDK', 'Empty Gemini observation response, leaving queue intact', {
+        sessionId: session.sessionDbId
+      });
+    }
   }
 
   private async processSummaryMessage(

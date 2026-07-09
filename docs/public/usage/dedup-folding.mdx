@@ -1,0 +1,94 @@
+---
+title: "Dedup Folding"
+description: "Collapse identical tool calls within a short window to save SDK tokens"
+---
+
+# Dedup Folding
+
+claude-mem normally sends one Claude Agent SDK turn per tool use. When a user polls (`while sleep 5; do ls; done`) or hits a retry loop, that means many near-identical SDK calls in a short window.
+
+**Dedup folding** collapses byte-identical tool calls within a sliding time window into a single SDK turn. The pending row's `fold_count` is bumped instead of enqueuing a new prompt, and the resulting observation prompt carries a `<repetition>` hint so Claude knows the call recurred.
+
+This feature is **opt-in** — enable it via settings.
+
+## Quick start
+
+In `~/.claude-mem/settings.json`:
+
+```json
+{
+  "CLAUDE_MEM_DEDUP_FOLD_ENABLED": "true",
+  "CLAUDE_MEM_DEDUP_FOLD_WINDOW_SECONDS": "30",
+  "CLAUDE_MEM_DEDUP_FOLD_DISABLED_TOOLS": ""
+}
+```
+
+Restart the worker (`claude-mem restart`) so the new settings take effect.
+
+## How it works
+
+For each PostToolUse event, claude-mem computes a fold key:
+
+```
+sha256(tool_name + canonical(tool_input) + cwd + agent_id).slice(0, 16)
+```
+
+It then looks up the most recent pending row with the same key inside the current session, created within the configured window. If found, the existing row's `fold_count` is incremented. Otherwise a new row is enqueued normally.
+
+When the message iterator finally drains the row to the SDK, `buildObservationPrompt` appends:
+
+```xml
+<repetition>This tool call occurred 5 times in a 30s window.</repetition>
+```
+
+The observer model decides whether to surface the repetition in its `<facts>` output.
+
+## Settings reference
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `CLAUDE_MEM_DEDUP_FOLD_ENABLED` | `false` | Master switch. |
+| `CLAUDE_MEM_DEDUP_FOLD_WINDOW_SECONDS` | `30` | Sliding window. Valid range: 1–3600 seconds. |
+| `CLAUDE_MEM_DEDUP_FOLD_DISABLED_TOOLS` | `""` | CSV of tool names to never fold (e.g. `Bash`). |
+
+## What gets folded
+
+A call only folds onto a prior call if **all** of these match:
+
+- `tool_name` (e.g. `Bash` vs `Read`)
+- `tool_input` (JSON keys are sorted canonically, so object reordering is fine)
+- `cwd` (working directory)
+- `agent_id` (main vs subagent traces stay separate)
+- The prior call is within the configured time window
+- Both calls are in the same claude-mem session
+
+## What does NOT fold
+
+- Calls in different sessions
+- Calls in different working directories
+- Calls from different agents (subagent vs main)
+- Calls outside the configured window
+- Tools listed in `CLAUDE_MEM_DEDUP_FOLD_DISABLED_TOOLS`
+- Anything if `CLAUDE_MEM_DEDUP_FOLD_ENABLED=false`
+
+## Caveats
+
+- **Same input, different output**: `Bash("npm test")` may produce different outputs across runs (flaky tests). The fold key only hashes the input, so all runs fold onto the first. If you need every run's output preserved separately, add `Bash` to `CLAUDE_MEM_DEDUP_FOLD_DISABLED_TOOLS`.
+- **Queue engine compatibility**: Fold is implemented for the default SQLite queue engine. If you've enabled the BullMQ engine (`CLAUDE_MEM_QUEUE_ENGINE=bullmq`), fold silently no-ops and you'll see a one-shot `[DEDUP]` warning in the worker log on the first observation.
+
+## Interaction with other dedup layers
+
+claude-mem already had two dedup layers — fold is a third, complementary one:
+
+| Layer | Where | What it catches |
+|---|---|---|
+| Hook retry | Queue ingress | Same hook fires twice (`tool_use_id` collision) |
+| **Fold (new)** | Pre-SDK | Byte-identical calls within a time window |
+| Content hash | Post-SDK store | Different inputs that produce the same summary |
+
+Fold reduces SDK round-trips. Content-hash dedup reduces stored row count when the SDK output is identical.
+
+## See also
+
+- [Auto-redaction](/usage/auto-redaction) — sister opt-in feature for redacting secret patterns before they reach the SDK.
+- [`<private>` tags](/usage/private-tags) — manual privacy control.

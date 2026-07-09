@@ -43,6 +43,7 @@
           "usage/claude-desktop",
           "usage/private-tags",
           "usage/auto-redaction",
+          "usage/dedup-folding",
           "usage/export-import",
           "usage/transcript-backfill",
           "usage/manual-recovery",

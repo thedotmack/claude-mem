@@ -113,116 +113,55 @@ export class SessionStore {
     this.dropDeadPendingMessagesColumns();
     this.ensurePendingMessagesToolUseIdColumn();
     this.dropWorkerPidColumn();
-    this.ensureSDKSessionsPlatformContentIdentity();
-    this.ensureUserPromptsSessionDbId();
-    this.ensurePendingMessagesSessionToolUniqueIndex();
-    this.ensureSyncedAtColumns(options.cloudSyncStatePath ?? paths.cloudSyncState());
+    this.ensurePendingMessagesFoldColumns();
+    this.ensurePendingMessagesFoldWindowSecondsColumn();
   }
 
-  private getIndexColumns(indexName: string): string[] {
-    return (this.db.query(`PRAGMA index_info(${JSON.stringify(indexName)})`).all() as IndexColumnInfo[])
-      .map(col => col.name);
-  }
+  // Mirrors MigrationRunner.addPendingMessagesFoldColumns (v35). SessionStore
+  // boots independently of MigrationRunner (DatabaseManager wraps a raw Database
+  // around SessionStore), so the fold columns must be ensured here too.
+  private ensurePendingMessagesFoldColumns(): void {
+    // Mirror dropWorkerPidColumn: always check the actual column shape, not just
+    // schema_versions, so that pending_messages tables rebuilt out-of-band still
+    // get the fold columns repaired in place.
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(35) as SchemaVersion | undefined;
+    const cols = this.db.query('PRAGMA table_info(pending_messages)').all() as TableColumnInfo[];
+    const colNames = new Set(cols.map(c => c.name));
+    const needsFoldKey = !colNames.has('fold_key');
+    const needsFoldCount = !colNames.has('fold_count');
+    if (applied && !needsFoldKey && !needsFoldCount) return;
 
-  private hasUniqueIndexOnColumns(table: string, columns: string[]): boolean {
-    const indexes = this.db.query(`PRAGMA index_list(${table})`).all() as IndexInfo[];
-    return indexes.some(index => {
-      if (index.unique !== 1) return false;
-      const indexColumns = this.getIndexColumns(index.name);
-      return indexColumns.length === columns.length
-        && indexColumns.every((column, i) => column === columns[i]);
-    });
-  }
-
-  private resolvePromptSessionDbId(contentSessionId: string, sessionDbId?: number, platformSource?: string): number | null {
-    if (sessionDbId !== undefined) return sessionDbId;
-
-    const normalizedPlatformSource = platformSource ? normalizePlatformSource(platformSource) : undefined;
-    if (normalizedPlatformSource) {
-      const row = this.db.prepare(`
-        SELECT id
-        FROM sdk_sessions
-        WHERE COALESCE(NULLIF(platform_source, ''), ?) = ?
-          AND content_session_id = ?
-        LIMIT 1
-      `).get(DEFAULT_PLATFORM_SOURCE, normalizedPlatformSource, contentSessionId) as { id: number } | undefined;
-
-      return row?.id ?? null;
+    if (needsFoldKey) {
+      this.db.run('ALTER TABLE pending_messages ADD COLUMN fold_key TEXT');
+      logger.debug('DB', 'Added fold_key column to pending_messages table');
+    }
+    if (needsFoldCount) {
+      this.db.run('ALTER TABLE pending_messages ADD COLUMN fold_count INTEGER NOT NULL DEFAULT 1');
+      logger.debug('DB', 'Added fold_count column to pending_messages table');
     }
 
-    const row = this.db.prepare(`
-      SELECT id
-      FROM sdk_sessions
-      WHERE content_session_id = ?
-      ORDER BY CASE COALESCE(NULLIF(platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}')
-        WHEN '${DEFAULT_PLATFORM_SOURCE}' THEN 0
-        ELSE 1
-      END, id
-      LIMIT 1
-    `).get(contentSessionId) as { id: number } | undefined;
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_pending_fold
+        ON pending_messages(session_db_id, fold_key, created_at_epoch)
+    `);
 
-    return row?.id ?? null;
+    if (!applied) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(35, new Date().toISOString());
+    }
   }
 
-  // #3038 near-duplicate dedup: occurrence_count (Tier-0 merge bump), per-project
-  // token document-frequency (IDF model), dedup bookkeeping, and the Tier-1
-  // review-only candidates table. Pure DDL; the IDF model is filled forward on
-  // insert and (re)built by the opt-in dedup-scan, never a JS backfill here.
-  private addDedupTables(): void {
+  // Mirrors MigrationRunner.addPendingMessagesFoldWindowSecondsColumn (v36).
+  // Same boot-path rationale as ensurePendingMessagesFoldColumns above.
+  private ensurePendingMessagesFoldWindowSecondsColumn(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(36) as SchemaVersion | undefined;
+    const cols = this.db.query('PRAGMA table_info(pending_messages)').all() as TableColumnInfo[];
+    const hasColumn = cols.some(c => c.name === 'fold_window_seconds');
+    if (applied && hasColumn) return;
 
-    const obsCols = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
-    if (!obsCols.some(c => c.name === 'occurrence_count')) {
-      this.db.run('ALTER TABLE observations ADD COLUMN occurrence_count INTEGER NOT NULL DEFAULT 1');
+    if (!hasColumn) {
+      this.db.run('ALTER TABLE pending_messages ADD COLUMN fold_window_seconds INTEGER');
+      logger.debug('DB', 'Added fold_window_seconds column to pending_messages table');
     }
-    // Precomputed exact-normalized-title key for O(1) Tier-0 lookup (SQLite can't
-    // express the normalization itself). NON-unique index — dedup stays app-gated
-    // on CLAUDE_MEM_DEDUP_ENABLED so disabled = byte-identical legacy behavior.
-    if (!obsCols.some(c => c.name === 'title_norm_key')) {
-      this.db.run('ALTER TABLE observations ADD COLUMN title_norm_key TEXT');
-    }
-    this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_title_norm ON observations(project, title_norm_key)');
-
-    this.db.run(`
-      CREATE TABLE IF NOT EXISTS token_df (
-        project TEXT    NOT NULL,
-        token   TEXT    NOT NULL,
-        df      INTEGER NOT NULL DEFAULT 0,
-        PRIMARY KEY (project, token)
-      )
-    `);
-
-    this.db.run(`
-      CREATE TABLE IF NOT EXISTS dedup_meta (
-        project                TEXT    PRIMARY KEY,
-        doc_count              INTEGER NOT NULL DEFAULT 0,
-        last_rebuild_doc_count INTEGER NOT NULL DEFAULT 0,
-        deleted_since_rebuild  INTEGER NOT NULL DEFAULT 0
-      )
-    `);
-
-    this.db.run(`
-      CREATE TABLE IF NOT EXISTS observation_dedup_candidates (
-        id               INTEGER PRIMARY KEY AUTOINCREMENT,
-        observation_id   INTEGER NOT NULL,
-        duplicate_of_id  INTEGER NOT NULL,
-        project          TEXT    NOT NULL,
-        method           TEXT    NOT NULL CHECK(method IN ('exact', 'idf_cosine')),
-        score            REAL    NOT NULL,
-        status           TEXT    NOT NULL DEFAULT 'pending'
-                                 CHECK(status IN ('pending', 'merged', 'distinct', 'dismissed')),
-        created_at       TEXT    NOT NULL,
-        created_at_epoch INTEGER NOT NULL,
-        metadata         TEXT,
-        FOREIGN KEY (observation_id)  REFERENCES observations(id) ON DELETE CASCADE,
-        FOREIGN KEY (duplicate_of_id) REFERENCES observations(id) ON DELETE CASCADE,
-        UNIQUE(observation_id, duplicate_of_id)
-      )
-    `);
-
-    this.db.run('CREATE INDEX IF NOT EXISTS idx_token_df_project ON token_df(project)');
-    this.db.run('CREATE INDEX IF NOT EXISTS idx_dedup_candidates_project ON observation_dedup_candidates(project, status)');
-    this.db.run('CREATE INDEX IF NOT EXISTS idx_dedup_candidates_obs ON observation_dedup_candidates(observation_id)');
 
     if (!applied) {
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(36, new Date().toISOString());

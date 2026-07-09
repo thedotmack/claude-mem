@@ -13,6 +13,46 @@ import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
 import { getProjectContext } from '../../../utils/project-name.js';
 import { normalizePlatformSource } from '../../../shared/platform-source.js';
 import { PrivacyCheckValidator } from '../validation/PrivacyCheckValidator.js';
+import { computeFoldKey, getDedupFoldConfig } from '../dedup-fold.js';
+import { EventEmitter } from 'events';
+
+export interface SummaryStoredEvent {
+  sessionId: string;
+  messageId: number;
+}
+
+class IngestEventBus extends EventEmitter {
+  private readonly recentStored = new Map<string, { event: SummaryStoredEvent; at: number }>();
+  private static readonly RECENT_EVENT_TTL_MS = 60_000;
+
+  constructor() {
+    super();
+    this.setMaxListeners(0);
+    this.on('summaryStoredEvent', (evt: SummaryStoredEvent) => {
+      this.recentStored.set(evt.sessionId, { event: evt, at: Date.now() });
+      this.evictExpiredStored();
+    });
+  }
+
+  takeRecentSummaryStored(sessionId: string): SummaryStoredEvent | undefined {
+    const entry = this.recentStored.get(sessionId);
+    if (!entry) return undefined;
+    if (Date.now() - entry.at > IngestEventBus.RECENT_EVENT_TTL_MS) {
+      this.recentStored.delete(sessionId);
+      return undefined;
+    }
+    return entry.event;
+  }
+
+  private evictExpiredStored(): void {
+    const cutoff = Date.now() - IngestEventBus.RECENT_EVENT_TTL_MS;
+    for (const [key, entry] of this.recentStored) {
+      if (entry.at < cutoff) this.recentStored.delete(key);
+    }
+  }
+}
+
+export const ingestEventBus = new IngestEventBus();
 
 interface IngestContext {
   sessionManager: SessionManager;
@@ -124,6 +164,21 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
     return { ok: true, status: 'skipped', reason: 'private' };
   }
 
+  // Compute fold key over the RAW (pre-redaction) input so S2 + S3
+  // both-enabled doesn't collapse two distinct secret-bearing calls onto
+  // the same redacted placeholder. SessionManager will still gate on
+  // dedupConfig.enabled/disabledTools, so always computing here is safe
+  // (sha256 hash, never persisted as secret).
+  const dedupConfig = getDedupFoldConfig();
+  const preComputedFoldKey: string | null = dedupConfig.enabled
+    ? computeFoldKey({
+        tool_name: payload.toolName,
+        tool_input: payload.toolInput,
+        cwd,
+        agent_id: typeof payload.agentId === 'string' ? payload.agentId : undefined,
+      })
+    : null;
+
   const cleanedToolInput = payload.toolInput !== undefined
     ? stripMemoryTagsFromJson(
         redactSensitive(JSON.stringify(payload.toolInput), getRedactionConfig()).redacted,
@@ -135,8 +190,7 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
       )
     : '{}';
 
-  await sessionManager.queueObservation(sessionDbId, {
-    backfill: payload.backfill,
+  const queueResult = await sessionManager.queueObservation(sessionDbId, {
     tool_name: payload.toolName,
     tool_input: cleanedToolInput,
     tool_response: cleanedToolResponse,
@@ -151,9 +205,15 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
     agentId: typeof payload.agentId === 'string' ? payload.agentId : undefined,
     agentType: typeof payload.agentType === 'string' ? payload.agentType : undefined,
     toolUseId: typeof payload.toolUseId === 'string' ? payload.toolUseId : undefined,
+    foldKey: preComputedFoldKey,
   });
 
   await ensureGeneratorRunning?.(sessionDbId, 'observation');
+
+  if (queueResult?.folded) {
+    return { ok: true, status: 'skipped', reason: 'dedup_folded' };
+  }
+
   eventBroadcaster.broadcastObservationQueued(sessionDbId);
 
   return { ok: true, sessionDbId };

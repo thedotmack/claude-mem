@@ -1,4 +1,6 @@
 
+import { buildContinuationPrompt, buildInitPrompt, buildObservationPrompt, buildSummaryPrompt } from '../../sdk/prompts.js';
+import { getDedupFoldConfig } from './dedup-fold.js';
 import { getCredential } from '../../shared/EnvManager.js';
 import { resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-base-url.js';
 import {
@@ -232,7 +234,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
 
   private async processObservationMessage(
     session: ActiveSession,
-    message: { prompt_number?: number; tool_name?: string; tool_input?: unknown; tool_response?: unknown; cwd?: string },
+    message: { prompt_number?: number; tool_name?: string; tool_input?: unknown; tool_response?: unknown; cwd?: string; fold_count?: number; fold_window_seconds?: number },
     originalTimestamp: number | null,
     lastCwd: string | undefined,
     apiKey: string,
@@ -257,8 +259,9 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       tool_input: JSON.stringify(message.tool_input),
       tool_output: JSON.stringify(message.tool_response),
       created_at_epoch: originalTimestamp ?? Date.now(),
-      cwd: message.cwd
-    });
+      cwd: message.cwd,
+      fold_count: message.fold_count
+    }, { windowSeconds: message.fold_window_seconds ?? getDedupFoldConfig().windowSeconds });
 
     session.conversationHistory.push({ role: 'user', content: obsPrompt });
     const obsResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, apiUrl, siteUrl, appName);

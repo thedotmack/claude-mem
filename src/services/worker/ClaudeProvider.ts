@@ -3,6 +3,7 @@ import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
+import { getDedupFoldConfig } from './dedup-fold.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, OBSERVER_SESSIONS_DIR, ensureDir, paths } from '../../shared/paths.js';
 import { buildIsolatedEnvWithFreshOAuth, getAuthMethodDescription } from '../../shared/EnvManager.js';
@@ -600,8 +601,9 @@ export class ClaudeProvider {
           tool_input: message.tool_input,
           tool_output: message.tool_response,
           created_at_epoch: Date.now(),
-          cwd: message.cwd
-        }, session.backfill ?? false);
+          cwd: message.cwd,
+          fold_count: message.fold_count
+        }, (message.fold_count ?? 1) > 1 ? { windowSeconds: message.fold_window_seconds ?? getDedupFoldConfig().windowSeconds } : undefined);
 
         session.conversationHistory.push({ role: 'user', content: obsPrompt });
 
