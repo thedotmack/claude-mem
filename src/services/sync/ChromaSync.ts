@@ -2,10 +2,18 @@
 import { ChromaMcpManager } from './ChromaMcpManager.js';
 import { ChromaSyncState, ProjectWatermarks } from './ChromaSyncState.js';
 import { ParsedObservation, ParsedSummary } from '../../sdk/parser.js';
+// cmem-sdk: keep SessionStore off the SDK's import graph. It comes from the
+// SQLite layer (`bun:sqlite`). The SDK only uses the constructor +
+// ensureCollectionExists + close() surface of ChromaSync, so a TYPE-ONLY
+// import is sufficient — the value-level use (`new SessionStore()`) is loaded
+// lazily inside the SQLite-only backfill methods that need it. Plan §3
+// anti-pattern: do NOT add `bun:sqlite` to the SDK bundle externals — fix the
+// import chain.
 import type { SessionStore as SessionStoreType } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
 import { ChromaUnavailableError } from '../worker/search/errors.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { parseFileList } from '../sqlite/observations/files.js';
 
 type SessionStore = SessionStoreType;
 
@@ -23,7 +31,9 @@ function parseStoredFileList(value: string | null | undefined): string[] {
     );
     return [value];
   }
+  return _sessionStoreCtor;
 }
+
 
 // Exported for cmem-sdk Phase 6: the SDK builds ChromaDocument values from
 // Postgres observations (UUID id, content string, metadata bag) and calls
@@ -130,8 +140,8 @@ export class ChromaSync {
 
     const facts = obs.facts ? JSON.parse(obs.facts) : [];
     const concepts = obs.concepts ? JSON.parse(obs.concepts) : [];
-    const files_read = parseStoredFileList(obs.files_read);
-    const files_modified = parseStoredFileList(obs.files_modified);
+    const files_read = parseFileList(obs.files_read);
+    const files_modified = parseFileList(obs.files_modified);
 
     const baseMetadata: Record<string, string | number | null> = {
       sqlite_id: obs.id,
@@ -600,7 +610,9 @@ export class ChromaSync {
 
     await this.ensureCollectionExists();
 
-    const watermarks = ChromaSyncState.get(project);
+    const watermarks = ChromaSyncState.get(backfillProject);
+
+    const db = storeOverride ?? new (loadSessionStoreCtor())();
 
     try {
       await this.runBackfillPipeline(store, project, watermarks);
@@ -917,7 +929,24 @@ export class ChromaSync {
       return;
     }
 
-    const sync = new ChromaSync('claude-mem');
+    // Allocate first so a constructor throw cannot leave the guard stuck true
+    // and silently skip every subsequent backfill (CodeRabbit review on PR
+    // #2282). The guard only flips to true after both resources are alive,
+    // and the finally always clears it.
+    let db: SessionStore | undefined;
+    let sync: ChromaSync | undefined;
+    try {
+      db = storeOverride ?? new (loadSessionStoreCtor())();
+      sync = new ChromaSync('claude-mem');
+    } catch (error) {
+      logger.error('CHROMA_SYNC', 'Failed to initialize backfill resources',
+        {}, error instanceof Error ? error : new Error(String(error)));
+      // Best-effort cleanup if SessionStore allocated but ChromaSync threw.
+      if (db && !storeOverride) {
+        try { db.close(); } catch { /* ignore */ }
+      }
+      throw error;
+    }
 
     ChromaSync.backfillInProgress = true;
     try {

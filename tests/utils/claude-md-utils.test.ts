@@ -420,7 +420,7 @@ describe('updateFolderClaudeMdFiles', () => {
       [filePath],  // absolute path within tempDir
       'test-project',
       37777,
-      tempDir  
+      tempDir
     );
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -1168,6 +1168,9 @@ describe('skeleton CLAUDE.md deny-list (#2400)', () => {
 
     await updateFolderClaudeMdFiles([filePath], 'test-project', 37777, tempDir);
 
+    // When the timeline parses to no observations, `formatted` is '' — the guard
+    // now skips unconditionally, so we neither inject an empty wrapper nor wipe
+    // the existing file down to a 43-byte skeleton. The file is left untouched.
     const content = readFileSync(claudeMdPath, 'utf-8');
     expect(content).toBe('PRE-EXISTING');
     expect(content).not.toContain('<claude-mem-context>');
