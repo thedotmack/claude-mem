@@ -3,7 +3,7 @@
 import { ModeManager } from '../../../../services/domain/ModeManager.js';
 import type { ModeConfig, ObservationType } from '../../../../services/domain/types.js';
 import { stripTags } from '../../../../utils/tag-stripping.js';
-import { logger } from '../../../../utils/logger.js';
+import { redactSensitive, getRedactionConfig } from '../../../../utils/redaction.js';
 import type { PostgresAgentEvent } from '../../../../storage/postgres/agent-events.js';
 import type { ServerGenerationContext } from './types.js';
 
@@ -89,6 +89,8 @@ export function buildServerGenerationPrompt(
     'activity was trivial), return a single self-closing <skip_summary />',
     'tag and nothing else. Do not include any prose outside the XML.',
     '',
+    'If you see a "&lt;redacted type=&apos;...&apos;/&gt;" marker (XML-entity-encoded) or "<redacted type=\'...\'/>" (raw) anywhere in the event payload, that field was a recognized credential pattern and was removed before storage. Treat it as a placeholder; do not infer the literal value.',
+    '',
     'Schema for each <observation> block:',
     observationOutputSchema,
   ].join('\n');
@@ -105,7 +107,9 @@ function buildEventBlock(event: PostgresAgentEvent): EventBlockResult {
   const rawPayload =
     typeof event.payload === 'string' ? event.payload : JSON.stringify(event.payload ?? {}, null, 2);
 
-  const stripResult = stripTags(rawPayload);
+  const stripResult = stripTags(
+    redactSensitive(rawPayload, getRedactionConfig()).redacted,
+  );
   const hadPrivate = (stripResult.counts.private ?? 0) > 0;
   const truncatedPayload = stripResult.stripped.length > MAX_PAYLOAD_CHARS
     ? stripResult.stripped.slice(0, MAX_PAYLOAD_CHARS) + '\n[...truncated]'

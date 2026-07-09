@@ -6,8 +6,8 @@ import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js'
 import { executeWithWorkerFallback, isWorkerFallback, consumeWorkerOutageHint } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
 import { extractLastMessage } from '../../shared/transcript-parser.js';
-import { extractAdvisorCalls } from '../../shared/advisor-transcript.js';
-import { stripMemoryTags } from '../../utils/tag-stripping.js';
+import { stripMemoryTagsFromPrompt } from '../../utils/tag-stripping.js';
+import { redactSensitive, getRedactionConfig } from '../../utils/redaction.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
@@ -177,7 +177,9 @@ export const summarizeHandler: EventHandler = {
     let lastAssistantMessage = '';
 
     if (input.lastAssistantMessage !== undefined) {
-      lastAssistantMessage = stripMemoryTags(input.lastAssistantMessage);
+      lastAssistantMessage = stripMemoryTagsFromPrompt(
+        redactSensitive(input.lastAssistantMessage, getRedactionConfig()).redacted,
+      );
     } else {
       if (!transcriptPath) {
         logger.debug('HOOK', `No transcriptPath in Stop hook input for session ${sessionId} - skipping summary`);
@@ -186,7 +188,9 @@ export const summarizeHandler: EventHandler = {
 
       try {
         lastAssistantMessage = extractLastMessage(transcriptPath, 'assistant', true);
-        lastAssistantMessage = stripMemoryTags(lastAssistantMessage);
+        lastAssistantMessage = stripMemoryTagsFromPrompt(
+          redactSensitive(lastAssistantMessage, getRedactionConfig()).redacted,
+        );
       } catch (err) {
         logger.warn('HOOK', `Stop hook: failed to extract last assistant message for session ${sessionId}: ${err instanceof Error ? err.message : err}`);
         return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };

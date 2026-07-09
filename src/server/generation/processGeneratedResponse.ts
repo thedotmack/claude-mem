@@ -21,6 +21,7 @@ import {
   type PostgresPoolClient,
 } from '../../storage/postgres/pool.js';
 import { stripTags } from '../../utils/tag-stripping.js';
+import { redactSensitive, getRedactionConfig } from '../../utils/redaction.js';
 
 // processGeneratedResponse owns the full "we got XML from a provider →
 // persist + link + advance outbox" pipeline. Every side-effect runs inside
@@ -80,19 +81,153 @@ export async function processGeneratedResponse(
   const skipped = parsed.summary?.skipped === true;
   const privateContentDetected = skipped || observationsToWrite.length === 0;
 
-  const outcome = await persistGeneratedObservations(
-    input,
-    observationsToWrite.map(observation => ({
-      kind: observation.type ?? 'observation',
-      content: renderObservationContent(observation),
-      metadata: {
-        title: observation.title,
-        subtitle: observation.subtitle,
-        facts: observation.facts,
-        narrative: observation.narrative,
-        concepts: observation.concepts,
-        files_read: observation.files_read,
-        files_modified: observation.files_modified,
+  return await withPostgresTransaction(input.pool, async (client) => {
+    const obsRepo = new PostgresObservationRepository(client);
+    const sourcesRepo = new PostgresObservationSourcesRepository(client);
+    const jobsRepo = new PostgresObservationGenerationJobRepository(client);
+    const eventsLogRepo = new PostgresObservationGenerationJobEventsRepository(client);
+    const auditRepo = new PostgresAuthRepository(client);
+
+    // Reload the job inside the transaction. If it was already completed
+    // by another worker, return its existing observations idempotently.
+    const fresh = await jobsRepo.getByIdForScope({
+      id: job.id,
+      projectId: job.projectId,
+      teamId: job.teamId,
+    });
+    if (!fresh) {
+      throw new Error(`generation job ${job.id} not found in scope`);
+    }
+    if (fresh.status === 'completed' || fresh.status === 'cancelled' || fresh.status === 'failed') {
+      logger.info('SYSTEM', 'generation job already in terminal status; skipping persistence', {
+        jobId: fresh.id,
+        status: fresh.status,
+      });
+      return {
+        kind: 'completed' as const,
+        jobId: fresh.id,
+        observations: [],
+        privateContentDetected,
+      };
+    }
+
+    const persisted: PostgresObservation[] = [];
+    for (let index = 0; index < observationsToWrite.length; index++) {
+      const parsedObservation = observationsToWrite[index]!;
+      const content = renderObservationContent(parsedObservation);
+      if (!content || content.trim().length === 0) {
+        continue;
+      }
+
+      // Defense-in-depth: even if the parser slipped a private-tagged
+      // string through, scrub before persisting.
+      const scrubbed = stripTags(
+        redactSensitive(content, getRedactionConfig()).redacted,
+      );
+      if (!scrubbed.stripped || scrubbed.stripped.trim().length === 0) {
+        continue;
+      }
+
+      const generationKey = buildObservationGenerationKey({
+        generationJobId: fresh.id,
+        parsedObservationIndex: index,
+        content: scrubbed.stripped,
+      });
+
+      const observation = await obsRepo.create({
+        projectId: fresh.projectId,
+        teamId: fresh.teamId,
+        serverSessionId: fresh.serverSessionId,
+        kind: parsedObservation.type ?? 'observation',
+        content: scrubbed.stripped,
+        generationKey,
+        metadata: {
+          title: parsedObservation.title,
+          subtitle: parsedObservation.subtitle,
+          facts: parsedObservation.facts,
+          narrative: parsedObservation.narrative,
+          concepts: parsedObservation.concepts,
+          files_read: parsedObservation.files_read,
+          files_modified: parsedObservation.files_modified,
+          provider: input.providerLabel,
+          model: input.modelId ?? null,
+        },
+        createdByJobId: fresh.id,
+      });
+      persisted.push(observation);
+
+      await sourcesRepo.addSource({
+        observationId: observation.id,
+        projectId: fresh.projectId,
+        teamId: fresh.teamId,
+        sourceType: fresh.sourceType,
+        sourceId: fresh.sourceId,
+        agentEventId: fresh.agentEventId ?? null,
+        generationJobId: fresh.id,
+        metadata: {
+          provider: input.providerLabel,
+          parsedObservationIndex: index,
+          // Phase 11 — denormalize identity context for traceability so an
+          // operator can answer "which api key produced this observation?"
+          // without joining back through generation_job → outbox → key.
+          source_adapter: input.sourceAdapter ?? null,
+          actor_id: input.actorId ?? null,
+          api_key_id: input.apiKeyId ?? null,
+        },
+      });
+
+      // Phase 11 — audit each generated observation. Using the SAME
+      // generation_job_id reference so the audit chain (event_received →
+      // generation_job.queued → generation_job.processing → observation.
+      // created → observation.read) can be reconstructed.
+      try {
+        await auditRepo.createAuditLog({
+          teamId: fresh.teamId,
+          projectId: fresh.projectId,
+          actorId: input.actorId ?? null,
+          apiKeyId: input.apiKeyId ?? null,
+          action: 'observation.created',
+          resourceType: 'observation',
+          resourceId: observation.id,
+          details: {
+            generationJobId: fresh.id,
+            sourceType: fresh.sourceType,
+            sourceId: fresh.sourceId,
+            provider: input.providerLabel,
+            model: input.modelId ?? null,
+            sourceAdapter: input.sourceAdapter ?? null,
+            parsedObservationIndex: index,
+          },
+        });
+      } catch (auditError) {
+        logger.warn('SYSTEM', 'audit_log observation.created insert failed', {
+          observationId: observation.id,
+          error: auditError instanceof Error ? auditError.message : String(auditError),
+        });
+      }
+    }
+
+    // Advance outbox status. Phase 1 transitionStatus enforces legal
+    // transitions and tenant scope inside its WHERE clause.
+    await jobsRepo.transitionStatus({
+      id: fresh.id,
+      projectId: fresh.projectId,
+      teamId: fresh.teamId,
+      status: 'completed',
+    });
+    await eventsLogRepo.append({
+      generationJobId: fresh.id,
+      projectId: fresh.projectId,
+      teamId: fresh.teamId,
+      eventType: 'completed',
+      statusAfter: 'completed',
+      attempt: fresh.attempts,
+      details: {
+        provider: input.providerLabel,
+        model: input.modelId ?? null,
+        observationCount: persisted.length,
+        privateContentDetected,
+        workerId: input.workerId ?? null,
       },
     })),
     privateContentDetected,
@@ -269,11 +404,37 @@ async function persistGeneratedObservations(
 
     const sessionProject = await fetchSessionProject(client, fresh.serverSessionId, fresh.id);
     const persisted: PostgresObservation[] = [];
-    for (let index = 0; index < rendered.length; index++) {
-      const { kind, content, metadata } = rendered[index]!;
-      if (!content || content.trim().length === 0) {
-        continue;
-      }
+    if (!privateContentDetected) {
+      const scrubbed = stripTags(
+        redactSensitive(summaryContent, getRedactionConfig()).redacted,
+      );
+      const scrubbedContent = scrubbed.stripped ?? '';
+      if (scrubbedContent.trim().length > 0) {
+        const generationKey = buildObservationGenerationKey({
+          generationJobId: fresh.id,
+          parsedObservationIndex: 0,
+          content: scrubbedContent,
+        });
+        const observation = await obsRepo.create({
+          projectId: fresh.projectId,
+          teamId: fresh.teamId,
+          serverSessionId: fresh.serverSessionId,
+          kind: 'summary',
+          content: scrubbedContent,
+          generationKey,
+          metadata: {
+            request: summary?.request ?? null,
+            investigated: summary?.investigated ?? null,
+            learned: summary?.learned ?? null,
+            completed: summary?.completed ?? null,
+            next_steps: summary?.next_steps ?? null,
+            notes: summary?.notes ?? null,
+            provider: input.providerLabel,
+            model: input.modelId ?? null,
+          },
+          createdByJobId: fresh.id,
+        });
+        persisted.push(observation);
 
       // Defense-in-depth: even if the parser slipped a private-tagged
       // string through, scrub before persisting.

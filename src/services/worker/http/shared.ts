@@ -3,7 +3,9 @@ import { logger } from '../../../utils/logger.js';
 import type { SessionManager } from '../SessionManager.js';
 import type { DatabaseManager } from '../DatabaseManager.js';
 import type { SessionEventBroadcaster } from '../events/SessionEventBroadcaster.js';
-import { stripMemoryTags } from '../../../utils/tag-stripping.js';
+import type { ParsedSummary } from '../../../sdk/parser.js';
+import { stripMemoryTagsFromJson } from '../../../utils/tag-stripping.js';
+import { redactSensitive, getRedactionConfig } from '../../../utils/redaction.js';
 import { isProjectExcluded } from '../../../utils/project-filter.js';
 import { shouldSkipAgentObservation } from '../../../shared/should-skip-agent-observation.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
@@ -118,10 +120,14 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
   }
 
   const cleanedToolInput = payload.toolInput !== undefined
-    ? stripMemoryTags(JSON.stringify(payload.toolInput))
+    ? stripMemoryTagsFromJson(
+        redactSensitive(JSON.stringify(payload.toolInput), getRedactionConfig()).redacted,
+      )
     : '{}';
   const cleanedToolResponse = payload.toolResponse !== undefined
-    ? stripMemoryTags(JSON.stringify(payload.toolResponse))
+    ? stripMemoryTagsFromJson(
+        redactSensitive(JSON.stringify(payload.toolResponse), getRedactionConfig()).redacted,
+      )
     : '{}';
 
   await sessionManager.queueObservation(sessionDbId, {
