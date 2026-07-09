@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS observations (
   agent_id             TEXT,
   merged_into_project  TEXT,
   generated_by_model   TEXT,
+  relevance_count      INTEGER DEFAULT 0,
   metadata             TEXT,
   occurrence_count     INTEGER NOT NULL DEFAULT 1,  -- #3038: bumped on a Tier-0 exact-normalized-title merge
   title_norm_key       TEXT,                        -- #3038: sha256(project + normalizeTitle); O(1) Tier-0 lookup (NULL when title normalizes to empty)

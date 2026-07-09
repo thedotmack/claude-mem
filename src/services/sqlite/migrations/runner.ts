@@ -23,12 +23,14 @@ export class MigrationRunner {
     this.ensureDiscoveryTokensColumn();
     this.createPendingMessagesTable();
     this.renameSessionIdColumns();
+    this.markRepairSessionIdColumnRename();
     this.addFailedAtEpochColumn();
     this.addOnUpdateCascadeToForeignKeys();
     this.addObservationContentHashColumn();
     this.addSessionCustomTitleColumn();
     this.createObservationFeedbackTable();
     this.addSessionPlatformSourceColumn();
+    this.addObservationModelColumns();
     this.ensureMergedIntoProjectColumns();
     this.addObservationSubagentColumns();
     this.rebuildPendingMessagesForSelfHealingClaim();
@@ -490,6 +492,10 @@ export class MigrationRunner {
     }
   }
 
+  private markRepairSessionIdColumnRename(): void {
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(19, new Date().toISOString());
+  }
+
   private addFailedAtEpochColumn(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(20) as SchemaVersion | undefined;
     if (applied) return;
@@ -750,6 +756,26 @@ export class MigrationRunner {
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(25, new Date().toISOString());
+  }
+
+  private addObservationModelColumns(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(26) as SchemaVersion | undefined;
+    if (applied) return;
+
+    const columns = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasGeneratedByModel = columns.some(col => col.name === 'generated_by_model');
+    const hasRelevanceCount = columns.some(col => col.name === 'relevance_count');
+
+    if (!hasGeneratedByModel) {
+      this.db.run('ALTER TABLE observations ADD COLUMN generated_by_model TEXT');
+      logger.debug('DB', 'Added generated_by_model column to observations table');
+    }
+    if (!hasRelevanceCount) {
+      this.db.run('ALTER TABLE observations ADD COLUMN relevance_count INTEGER DEFAULT 0');
+      logger.debug('DB', 'Added relevance_count column to observations table');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(26, new Date().toISOString());
   }
 
   private ensureMergedIntoProjectColumns(): void {

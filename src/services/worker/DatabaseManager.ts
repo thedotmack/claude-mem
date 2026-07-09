@@ -2,7 +2,7 @@
 import { Database } from 'bun:sqlite';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { SessionSearch } from '../sqlite/SessionSearch.js';
-import { applySqliteBusyTimeout } from '../sqlite/connection.js';
+import { MigrationRunner } from '../sqlite/migrations/runner.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
 import { CloudSync } from '../sync/CloudSync.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
@@ -19,8 +19,10 @@ export class DatabaseManager {
   private cloudSync: CloudSync | null = null;
 
   async initialize(): Promise<void> {
-    this.db = applySqliteBusyTimeout(new Database(resolveDbPath()));
-    
+    this.db = new Database(DB_PATH);
+
+    new MigrationRunner(this.db).runAllMigrations();
+
     this.sessionStore = new SessionStore(this.db);
     this.sessionSearch = new SessionSearch(this.db);
 
