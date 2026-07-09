@@ -391,59 +391,33 @@ async function buildHooks() {
       );
     }
 
-    // worker-service.cjs lazy-requires these via createRequire("../sqlite/…"),
-    // intentionally kept external from the worker bundle (#2584). They MUST ship
-    // as sibling files under plugin/sqlite/, or the worker throws
-    // "Cannot find module '../sqlite/SessionStore.js'" on first embed and Chroma
-    // vector sync silently degrades on every observation. Same esbuild options and
-    // external list as the worker; the closure only pulls Node built-ins + bun:sqlite.
-    console.log(`\n🔧 Building sqlite runtime modules...`);
-    const SQLITE_MODULES = [
-      { source: 'src/services/sqlite/SessionStore.ts', out: 'plugin/sqlite/SessionStore.js' },
-      { source: 'src/services/sqlite/observations/files.ts', out: 'plugin/sqlite/observations/files.js' },
+    // worker-service reaches SessionStore + parseFileList through a runtime
+    // `createRequire(import.meta.url)(...)` call (see ChromaSync.ts), not a
+    // static `import` — intentionally, so tsup's cmem-sdk build doesn't
+    // follow them and drag `bun:sqlite` into SDK consumers. But that same
+    // indirection means esbuild's worker-service bundle above does NOT
+    // statically resolve — and therefore does not inline — these modules.
+    // They must be emitted as loose files next to the bundle so the
+    // runtime `require('../sqlite/...')` calls actually resolve (#3092).
+    console.log(`\n🔧 Building lazy-loaded SQLite modules for worker-service...`);
+    const LAZY_SQLITE_MODULES = [
+      { source: 'src/services/sqlite/SessionStore.ts', outfile: `${hooksDir}/../sqlite/SessionStore.js` },
+      { source: 'src/services/sqlite/observations/files.ts', outfile: `${hooksDir}/../sqlite/observations/files.js` },
     ];
-    for (const mod of SQLITE_MODULES) {
-      fs.mkdirSync(path.dirname(mod.out), { recursive: true });
+    for (const mod of LAZY_SQLITE_MODULES) {
       await build({
         entryPoints: [mod.source],
         bundle: true,
         platform: 'node',
         target: 'node18',
         format: 'cjs',
-        outfile: mod.out,
+        outfile: mod.outfile,
         minify: true,
         logLevel: 'error',
-        external: [
-          'bun:sqlite',
-          'zod',
-          'cohere-ai',
-          'ollama',
-          '@chroma-core/default-embed',
-          'onnxruntime-node',
-          'better-auth',
-          'better-auth/node',
-          'better-auth/plugins',
-          '@better-auth/api-key',
-        ],
-        define: {
-          '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
-          'import.meta.url': '__IMPORT_META_URL__'
-        },
-        banner: {
-          js: 'var __IMPORT_META_URL__ = require("node:url").pathToFileURL(__filename).href;'
-        }
+        external: ['bun:sqlite'],
       });
-      console.log(`✓ ${mod.out} built (${(fs.statSync(mod.out).size / 1024).toFixed(2)} KB)`);
     }
-
-    const workerBundleContent = fs.readFileSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`, 'utf-8');
-    const workerZodRequireRegex = /require\(\s*["']zod(?:\/[^"']*)?["']\s*\)/;
-    const workerZodRequireMatch = workerBundleContent.match(workerZodRequireRegex);
-    if (workerZodRequireMatch) {
-      throw new Error(
-        `worker-service.cjs contains external ${workerZodRequireMatch[0]}. Zod must be bundled into the worker service so the hook client process does not fail when plugin node_modules is unavailable after a version upgrade. See issue #2831.`
-      );
-    }
+    console.log(`✓ Lazy SQLite modules built (${LAZY_SQLITE_MODULES.map((m) => path.relative(hooksDir, m.outfile)).join(', ')})`);
 
     console.log(`\n🔧 Building server beta service...`);
     await build({
