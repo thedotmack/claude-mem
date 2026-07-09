@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/thedotmack-claude-mem-badge.png)](https://mseep.ai/app/thedotmack-claude-mem)
+
 <h1 align="center">
   <br>
   <a href="https://github.com/thedotmack/claude-mem">
