@@ -2409,44 +2409,14 @@ export class SessionStore {
     generatedByModel?: string,
     contentSessionId?: string | null
   ): { id: number; createdAtEpoch: number } {
-    const timestampEpoch = overrideTimestampEpoch ?? Date.now();
-    const timestampIso = new Date(timestampEpoch).toISOString();
-
-    const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
-    const dedup = this.dedupConfig();
-    const titleNormKey = computeTitleNormKey(project, observation.title);
-
-    // Tier-0 (#3038): an existing same-project row with an equal NORMALIZED title is a
-    // duplicate of any age — bump its occurrence_count and return it, no insert. Mirrors
-    // the content_hash ON CONFLICT DO NOTHING semantics but cross-session + normalization-aware.
-    if (dedup.enabled) {
-      // Retry idempotency: a redelivered identical (session, content_hash) must NOT
-      // bump occurrence_count — return the existing row, exactly as the legacy
-      // ON CONFLICT DO NOTHING path did. Only a genuinely-new observation that shares
-      // a normalized title (cross-session recurrence) counts as a Tier-0 occurrence.
-      const retry = this.db.prepare(
-        'SELECT id, created_at_epoch FROM observations WHERE memory_session_id = ? AND content_hash = ?'
-      ).get(memorySessionId, contentHash) as { id: number; created_at_epoch: number } | undefined;
-      if (retry) return { id: retry.id, createdAtEpoch: retry.created_at_epoch };
-
-      const canonical = findTier0Canonical(this.db, project, titleNormKey);
-      if (canonical) {
-        this.db.prepare('UPDATE observations SET occurrence_count = occurrence_count + 1 WHERE id = ?').run(canonical.id);
-        return { id: canonical.id, createdAtEpoch: canonical.created_at_epoch };
-      }
+    // storeObservations skips empty-title rows, which would leave no id to return here.
+    // This wrapper stores exactly one observation, so require a title up front rather than
+    // returning an undefined id.
+    if (!observation.title || observation.title.trim() === '') {
+      throw new Error('storeObservation requires a non-empty title');
     }
 
-    const stmt = this.db.prepare(`
-      INSERT INTO observations
-      (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-       files_read, files_modified, prompt_number, discovery_tokens, agent_type, agent_id, content_hash, created_at, created_at_epoch,
-       generated_by_model, metadata, title_norm_key)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(memory_session_id, content_hash) DO NOTHING
-      RETURNING id, created_at_epoch
-    `);
-
-    const inserted = stmt.get(
+    const result = this.storeObservations(
       memorySessionId,
       project,
       [observation],
@@ -2580,6 +2550,13 @@ export class SessionStore {
       );
 
       for (const observation of observations) {
+        // Skip observations with an empty title. They're malformed, low-signal rows that
+        // just take up space in the recency-based recall window without adding any facts.
+        if (!observation.title || observation.title.trim() === '') {
+          logger.debug('DB', 'Skipping observation with empty title');
+          continue;
+        }
+
         const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
         const titleNormKey = computeTitleNormKey(project, observation.title);
 

@@ -174,4 +174,22 @@ describe('MemoryRoutes — POST /api/memory/save (#2116)', () => {
     expect(statusSpy).toHaveBeenCalledWith(400);
     expect(mockStoreObservation).not.toHaveBeenCalled();
   });
+
+  it('falls back to a text-derived title when the title is whitespace-only', () => {
+    const handler = buildHandler();
+    const { req, res } = createMockReqRes({ text: 'the memory body text', title: '   ' });
+    handler(req as Request, res as Response);
+
+    expect(mockStoreObservation).toHaveBeenCalledTimes(1);
+    // A whitespace-only title must not reach storeObservation (it would throw); use the text.
+    expect(storeObservationCalls[0][2].title).toBe('the memory body text');
+  });
+
+  it('uses the provided title (trimmed) when it has content', () => {
+    const handler = buildHandler();
+    const { req, res } = createMockReqRes({ text: 'body', title: '  My Title  ' });
+    handler(req as Request, res as Response);
+
+    expect(storeObservationCalls[0][2].title).toBe('My Title');
+  });
 });
