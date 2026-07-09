@@ -575,8 +575,8 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     }
   },
   {
-    name: 'observation_dismiss',
-    description: "Stop an observation from surfacing proactively (file-context banner, search, session-start injection) WITHOUT deleting it — get_observations([id]) still returns it. Reversible via observation_undismiss. Requires the worker setting CLAUDE_MEM_ALLOW_DISMISS=true (disabled by default). Params: id (required), reason (optional).",
+    name: 'observation_add',
+    description: '[Server-beta runtime only — DISABLED in default "worker" runtime.] Insert a manual observation directly into server-beta storage (/v1/memories — does NOT enqueue generation). In worker runtime use the hook pipeline (hook-client.mjs) instead. Params: content (required), projectId (optional, falls back to settings), serverSessionId, kind, metadata.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -656,7 +656,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'observation_record_event',
-    description: 'Record an agent event into the server. Calls /v1/events — server inserts the event row, the outbox row, and enqueues a generation job atomically. Server runtime only.',
+    description: '[Server-beta runtime only — DISABLED in default "worker" runtime.] Record an agent event (/v1/events) — server inserts event row, outbox row, and enqueues a generation job atomically. Worker runtime: use the hook pipeline (hook-client.mjs) instead.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -678,7 +678,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'observation_search',
-    description: 'Full-text search across generated observations using the server\'s GIN tsvector index (Phase 1). Calls /v1/search. Server runtime only. Params: query (required), projectId (optional), platformSource, limit (default 20, max 100).',
+    description: '[Server-beta runtime only — DISABLED in default "worker" runtime.] Full-text search across server-beta-generated observations (Postgres FTS). In worker runtime use the top-level `search` tool instead. Params: query (required), projectId, limit (default 20, max 100).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -694,7 +694,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'observation_context',
-    description: 'Get top-N relevant observations for context injection. Returns matched observations AND a pre-joined context string suitable for prompt injection. Calls /v1/context. Server runtime only.',
+    description: '[Server-beta runtime only — DISABLED in default "worker" runtime.] Returns top-N relevant observations PLUS a single concatenated text block ready for system-prompt injection. Worker-runtime substitute: use `search` + `get_observations` and concat manually.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -710,7 +710,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'observation_generation_status',
-    description: 'Look up the status of an observation generation job by id. Calls /v1/jobs/:id. Server runtime only. Returns the same payload as REST.',
+    description: '[Server-beta runtime only — DISABLED in default "worker" runtime.] Look up an observation-generation job (LLM job that converts a raw event into a structured observation). Worker runtime has no equivalent. Params: jobId (required).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -727,7 +727,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   // there is one code path for MCP write/read against server-beta.
   {
     name: 'memory_add',
-    description: 'Compatibility alias for observation_add. Same behavior; same schema modulo the legacy field names.',
+    description: '[Server-beta runtime only — DISABLED in default "worker" runtime.] Pure compatibility alias for observation_add — supports legacy field names "narrative" and "title". New code should call observation_add directly. Not usable in worker runtime.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -819,7 +819,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'memory_search',
-    description: 'Compatibility alias for observation_search. Same FTS path; same /v1/search REST endpoint.',
+    description: '[Server-beta runtime only — DISABLED in default "worker" runtime.] Pure compatibility alias for observation_search. New code should call the top-level `search` (worker runtime) or observation_search (server-beta).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -834,7 +834,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'memory_context',
-    description: 'Compatibility alias for observation_context. Same /v1/context REST endpoint.',
+    description: '[Server-beta runtime only — DISABLED in default "worker" runtime.] Pure compatibility alias for observation_context. Not usable in worker runtime.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -960,7 +960,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'build_corpus',
-    description: 'Build a knowledge corpus from filtered observations. Creates a queryable knowledge agent. Params: name (required), description, project, types (comma-separated), concepts (comma-separated), files (comma-separated), query, dateStart, dateEnd, limit',
+    description: 'Build a knowledge corpus snapshot for later prime_corpus + query_corpus. Verify `stats.observation_count` and `date_range` in the response before priming. Params: name (required, used as filename), description, project, types (comma-separated; canonical: bugfix,decision,feature,change,refactor,discovery), concepts, files, query, dateStart (ISO), dateEnd (ISO), limit (default 500).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -996,7 +996,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'prime_corpus',
-    description: 'Prime a knowledge corpus — creates an AI session loaded with the corpus knowledge. Must be called before query_corpus.',
+    description: 'Prime a corpus into a fresh AI session. Returns {session_id, name}. REQUIRED before query_corpus — querying an unprimed corpus errors. Session persists for the MCP server lifetime. After rebuild_corpus call reprime_corpus to pick up new observations.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1013,7 +1013,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'query_corpus',
-    description: 'Ask a question to a primed knowledge corpus. The corpus must be primed first with prime_corpus.',
+    description: 'Ask a natural-language question against a primed corpus; returns an LLM-synthesized answer with citations like [obs:<id>]. PRECONDITION: prime_corpus(name) must have been called first in this MCP server lifetime — otherwise this errors. The answer is generative, NOT a deterministic lookup. Params: name (corpus), question.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1031,7 +1031,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'rebuild_corpus',
-    description: 'Rebuild a knowledge corpus from its stored filter — re-runs the search to refresh with new observations. Does not re-prime the session.',
+    description: 'Re-run a corpus filter to pick up new observations. Does NOT touch the primed AI session — to make queries reflect the rebuild, also call reprime_corpus(name). Inherits the same filter logic as build_corpus.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1048,7 +1048,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'reprime_corpus',
-    description: 'Create a fresh knowledge agent session for a corpus, clearing prior Q&A context. Use when conversation has drifted or after rebuilding.',
+    description: "Discard a corpus' current AI session and create a fresh one — clears all prior Q&A history. Use after rebuild_corpus, after the conversation has drifted, or to escape a confused session. Previous session_id is no longer queryable after this.",
     inputSchema: {
       type: 'object',
       properties: {

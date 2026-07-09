@@ -49,6 +49,9 @@ const buildCorpusSchema = z.object({
   query: z.string().optional(),
   date_start: z.string().optional(),
   date_end: z.string().optional(),
+  // Dual-accept: the MCP tool surface advertises camelCase (dateStart/dateEnd).
+  // Without these declarations Zod's .passthrough() keeps the camelCase keys on
+  // the body but the snake_case destructure below never reads them.
   dateStart: z.string().optional(),
   dateEnd: z.string().optional(),
   limit: positiveIntegerLike,
@@ -89,6 +92,7 @@ export class CorpusRoutes extends BaseRouteHandler {
   private handleBuildCorpus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const body = req.body as z.infer<typeof buildCorpusSchema>;
     const { name, description, project, types, concepts, files, query, limit } = body;
+    // Accept either casing — internal filter stays snake_case.
     const dateStart = body.date_start ?? body.dateStart;
     const dateEnd = body.date_end ?? body.dateEnd;
 
