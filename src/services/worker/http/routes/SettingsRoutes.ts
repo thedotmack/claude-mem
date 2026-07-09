@@ -95,9 +95,9 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED',
       'CLAUDE_MEM_GEMINI_MAX_CONTEXT_MESSAGES',
       'CLAUDE_MEM_GEMINI_MAX_TOKENS',
-      'CLAUDE_MEM_GEMINI_CLI_MODEL',
-      'CLAUDE_MEM_GEMINI_CLI_PATH',
-      'CLAUDE_MEM_GEMINI_CLI_TIMEOUT_MS',
+      'CLAUDE_MEM_AGY_CLI_MODEL',
+      'CLAUDE_MEM_AGY_CLI_PATH',
+      'CLAUDE_MEM_AGY_CLI_TIMEOUT_MS',
       'CLAUDE_MEM_OPENROUTER_API_KEY',
       'CLAUDE_MEM_OPENROUTER_MODEL',
       'CLAUDE_MEM_OPENROUTER_BASE_URL',
@@ -155,9 +155,16 @@ export class SettingsRoutes extends BaseRouteHandler {
 
   private validateSettings(settings: any): { valid: boolean; error?: string } {
     if (settings.CLAUDE_MEM_PROVIDER) {
-    const validProviders = ['claude', 'gemini', 'gemini-cli', 'openrouter'];
+    const validProviders = ['claude', 'gemini', 'agy-cli', 'openrouter'];
     if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
-      return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", "gemini-cli", or "openrouter"' };
+      return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", "agy-cli", or "openrouter"' };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_AGY_CLI_TIMEOUT_MS) {
+      const timeout = parseInt(settings.CLAUDE_MEM_AGY_CLI_TIMEOUT_MS, 10);
+      if (isNaN(timeout) || timeout < 1000 || timeout > 3_600_000) {
+        return { valid: false, error: 'CLAUDE_MEM_AGY_CLI_TIMEOUT_MS must be between 1000 and 3600000' };
       }
     }
 

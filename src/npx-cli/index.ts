@@ -23,7 +23,7 @@ ${pc.bold('Install Commands')} (no Bun required):
   ${pc.cyan('npx claude-mem')}                     Interactive install
   ${pc.cyan('npx claude-mem install')}              Interactive install
   ${pc.cyan('npx claude-mem install --ide <id>')}   Install for specific IDE
-  ${pc.cyan('npx claude-mem install --provider claude|gemini|gemini-cli|openrouter')}   Set LLM provider non-interactively
+  ${pc.cyan('npx claude-mem install --provider claude|gemini|agy-cli|openrouter')}   Set LLM provider non-interactively
   ${pc.cyan('npx claude-mem install --model <id>')}   Set Claude model (when provider=claude)
   ${pc.cyan('npx claude-mem install --no-auto-start')}   Skip worker auto-start at the end
   ${pc.cyan('npx claude-mem install --keep-auto-memory')}   Keep Claude Code native auto-memory on (disabled by default; it conflicts with claude-mem)
@@ -92,8 +92,8 @@ function parseInstallOptions(argv: string[]): InstallOptions {
 
 function parseInstallOptions(argv: string[]): InstallOptions {
   const provider = readFlag(argv, '--provider');
-  if (provider !== undefined && provider !== 'claude' && provider !== 'gemini' && provider !== 'gemini-cli' && provider !== 'openrouter') {
-    console.error(`Unknown --provider: ${provider}. Allowed: claude, gemini, gemini-cli, openrouter`);
+  if (provider !== undefined && provider !== 'claude' && provider !== 'gemini' && provider !== 'agy-cli' && provider !== 'openrouter') {
+    console.error(`Unknown --provider: ${provider}. Allowed: claude, gemini, agy-cli, openrouter`);
     process.exit(1);
   }
   const runtime = readFlag(argv, '--runtime');

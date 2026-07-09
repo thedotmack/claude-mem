@@ -22,7 +22,7 @@ export interface ActiveSession {
   earliestPendingTimestamp: number | null;  
   claimedMessageIds: number[];
   conversationHistory: ConversationMessage[];  
-  currentProvider: 'claude' | 'gemini' | 'openrouter' | 'gemini-cli' | null;
+  currentProvider: 'claude' | 'gemini' | 'openrouter' | 'agy-cli' | null;
   consecutiveRestarts: number;
   /**
    * Consecutive non-XML (idle/prose/poisoned) observer outputs. Reset to 0 on a

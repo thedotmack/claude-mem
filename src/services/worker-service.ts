@@ -85,7 +85,12 @@ import { SSEBroadcaster } from './worker/SSEBroadcaster.js';
 import { ClaudeProvider, classifyClaudeError, isDeepseekSelected, isDeepseekAvailable } from './worker/ClaudeProvider.js';
 import type { WorkerRef } from './worker/agents/types.js';
 import { GeminiProvider, classifyGeminiError, isGeminiSelected, isGeminiAvailable } from './worker/GeminiProvider.js';
-import { GeminiCliProvider, isGeminiCliSelected, isGeminiCliAvailable } from './worker/GeminiCliProvider.js';
+import {
+  AGY_CLI_UNAVAILABLE_MESSAGE,
+  AgyCliProvider,
+  isAgyCliSelected,
+  isAgyCliAvailable,
+} from './worker/AgyCliProvider.js';
 import { OpenRouterProvider, classifyOpenRouterError, isOpenRouterSelected, isOpenRouterAvailable } from './worker/OpenRouterProvider.js';
 import { KiroProvider, isKiroSelected, isKiroAvailable } from './worker/KiroProvider.js';
 import { CodexProvider, isCodexSelected } from './worker/CodexProvider.js';
@@ -144,6 +149,30 @@ export function buildStatusOutput(
     output.suppressOutput = true;
   }
   return output;
+}
+
+export interface AiProviderStatus {
+  provider: 'claude' | 'gemini' | 'openrouter' | 'agy-cli';
+  available: boolean;
+  error?: string;
+}
+
+export function getAiProviderStatus(): AiProviderStatus {
+  if (isOpenRouterSelected() && isOpenRouterAvailable()) {
+    return { provider: 'openrouter', available: true };
+  }
+  if (isAgyCliSelected()) {
+    const available = isAgyCliAvailable();
+    return {
+      provider: 'agy-cli',
+      available,
+      ...(!available && { error: AGY_CLI_UNAVAILABLE_MESSAGE }),
+    };
+  }
+  if (isGeminiSelected() && isGeminiAvailable()) {
+    return { provider: 'gemini', available: true };
+  }
+  return { provider: 'claude', available: true };
 }
 
 // Closed enum for worker_stopped telemetry — definition (and its
@@ -220,7 +249,7 @@ export class WorkerService implements WorkerRef {
   private sdkAgent: ClaudeProvider;
   private geminiAgent: GeminiProvider;
   private openRouterAgent: OpenRouterProvider;
-  private geminiCliAgent: GeminiCliProvider;
+  private agyCliAgent: AgyCliProvider;
   private paginationHelper: PaginationHelper;
   private settingsManager: SettingsManager;
   private sessionEventBroadcaster: SessionEventBroadcaster;
@@ -252,7 +281,7 @@ export class WorkerService implements WorkerRef {
     this.sdkAgent = new ClaudeProvider(this.dbManager, this.sessionManager);
     this.geminiAgent = new GeminiProvider(this.dbManager, this.sessionManager);
     this.openRouterAgent = new OpenRouterProvider(this.dbManager, this.sessionManager);
-    this.geminiCliAgent = new GeminiCliProvider(this.dbManager, this.sessionManager);
+    this.agyCliAgent = new AgyCliProvider(this.dbManager, this.sessionManager);
 
     this.paginationHelper = new PaginationHelper(this.dbManager);
     this.settingsManager = new SettingsManager(this.dbManager);
@@ -285,16 +314,9 @@ export class WorkerService implements WorkerRef {
       onRestart: () => this.shutdown('restart'),
       workerPath: __filename,
       getAiStatus: () => {
-        let provider = 'claude';
-        if (isOpenRouterSelected() && isOpenRouterAvailable()) provider = 'openrouter';
-        else if (isGeminiCliSelected() && isGeminiCliAvailable()) provider = 'gemini-cli';
-        else if (isGeminiSelected() && isGeminiAvailable()) provider = 'gemini';
-        else if (isDeepseekSelected() && isDeepseekAvailable()) provider = 'deepseek';
         return {
-          provider,
-          authMethod: provider === 'deepseek'
-            ? 'DeepSeek API key (from CLAUDE_MEM_DEEPSEEK_API_KEY in settings.json)'
-            : getAuthMethodDescription(),
+          ...getAiProviderStatus(),
+          authMethod: getAuthMethodDescription(),
           lastInteraction: this.lastAiInteraction
             ? {
                 timestamp: this.lastAiInteraction.timestamp,
@@ -364,7 +386,7 @@ export class WorkerService implements WorkerRef {
     });
 
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
-    const sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.geminiCliAgent, this.sessionEventBroadcaster, this, this.completionHandler);
+    const sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.agyCliAgent, this.sessionEventBroadcaster, this, this.completionHandler);
     this.server.registerRoutes(sessionRoutes);
     attachIngestGeneratorStarter((sessionDbId, source) =>
       sessionRoutes.ensureGeneratorRunning(sessionDbId, source),

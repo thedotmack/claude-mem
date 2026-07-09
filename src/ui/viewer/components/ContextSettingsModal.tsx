@@ -333,7 +333,7 @@ export function ContextSettingsModal({
             >
               <FormField
                 label="AI Provider"
-                tooltip="Provider for generating observations: Claude (Agent SDK), Gemini (API key), Gemini CLI (your gemini login — no API key), or OpenRouter"
+                tooltip="Provider for generating observations: Claude, Gemini API, Antigravity Agy CLI, or OpenRouter"
               >
                 <select
                   value={formState.CLAUDE_MEM_PROVIDER || 'claude'}
@@ -341,7 +341,7 @@ export function ContextSettingsModal({
                 >
                   <option value="claude">Claude (uses your Claude account)</option>
                   <option value="gemini">Gemini (uses API key)</option>
-                  <option value="gemini-cli">Gemini CLI (uses your gemini login — no API key)</option>
+                  <option value="agy-cli">Agy CLI (uses your Antigravity login)</option>
                   <option value="openrouter">OpenRouter (multi-model)</option>
                 </select>
               </FormField>
@@ -478,6 +478,45 @@ export function ContextSettingsModal({
                       onChange={(checked) => updateSetting('CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED', checked ? 'true' : 'false')}
                     />
                   </div>
+                </>
+              )}
+
+              {formState.CLAUDE_MEM_PROVIDER === 'agy-cli' && (
+                <>
+                  <FormField
+                    label="Agy CLI Model (Optional)"
+                    tooltip="Model passed to Antigravity CLI. Leave empty to use the current Antigravity default."
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_AGY_CLI_MODEL || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_AGY_CLI_MODEL', e.target.value)}
+                      placeholder="Antigravity default"
+                    />
+                  </FormField>
+                  <FormField
+                    label="Agy CLI Path (Optional)"
+                    tooltip="Explicit path to the agy binary. Leave empty to auto-detect on PATH or ~/.local/bin/agy."
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_AGY_CLI_PATH || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_AGY_CLI_PATH', e.target.value)}
+                      placeholder="auto-detect (which agy)"
+                    />
+                  </FormField>
+                  <FormField
+                    label="Request Timeout (ms)"
+                    tooltip="Per-turn timeout for Agy CLI subprocesses, in milliseconds."
+                  >
+                    <input
+                      type="number"
+                      min="1000"
+                      max="3600000"
+                      value={formState.CLAUDE_MEM_AGY_CLI_TIMEOUT_MS || '300000'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_AGY_CLI_TIMEOUT_MS', e.target.value)}
+                    />
+                  </FormField>
                 </>
               )}
 
