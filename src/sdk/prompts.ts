@@ -251,6 +251,7 @@ export function buildSummaryPrompt(session: SDKSession, mode: ModeConfig): strin
 • You MUST wrap your ENTIRE response in <summary>...</summary> tags.
 • Do NOT use <observation> tags. <observation> output will be DISCARDED and cause a system error.
 • The ONLY accepted root tag is <summary>. Any other root tag is a protocol violation.
+• Inside the <summary> child tags (e.g. <request>, <investigated>, <learned>, etc.), write in plain text or markdown (using "-" for bullet points). Do NOT generate nested XML tags (such as <item>, <bullet>, <ul>, or <li>) inside these text fields.
 
 ${mode.prompts.header_summary_checkpoint}
 ${mode.prompts.summary_instruction}

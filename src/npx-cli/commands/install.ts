@@ -10,7 +10,7 @@ import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { SettingsDefaultsManager, writeSettingsFileSecure, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
-import { writeJsonFileAtomic as writeSettingsJsonAtomic } from '../../shared/atomic-json.js';
+import { hasGeminiExecutable } from '../../shared/find-gemini-executable.js';
 import { loadClaudeMemEnv, saveClaudeMemEnv } from '../../shared/EnvManager.js';
 import { ensureWorkerStarted, type WorkerStartResult } from '../../services/worker-spawner.js';
 import { formatHostForUrl } from '../../shared/worker-utils.js';
@@ -853,7 +853,7 @@ export function mergeSettings(updates: Record<string, string>, path = USER_SETTI
   }
 }
 
-type ProviderId = 'claude' | 'gemini' | 'openrouter' | 'deepseek';
+type ProviderId = 'claude' | 'gemini' | 'openrouter' | 'gemini-cli';
 type ClaudeAccessMode = 'subscription' | 'api-key';
 type ClaudeApiMode = 'direct' | 'gateway';
 // Phase 1d: Persisted DB literals (`server_beta_schema_migrations`, job_type
@@ -1127,17 +1127,11 @@ async function promptProvider(options: InstallOptions, selectedIDEs: string[] = 
         persistClaudeProvider();
         return 'claude';
       }
-      if (options.provider === 'codex') {
-        const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: 'codex' });
-        if (wrote) log.info('Saved provider=codex to ~/.claude-mem/settings.json');
-        log.info('Codex provider uses your local Codex CLI login. Run `codex login` if the CLI is not authenticated yet.');
-        return 'codex';
-      }
-      if (options.provider === 'kiro') {
-        // No API key: compression runs on the user's kiro-cli login session.
-        const wroteKiro = mergeSettings({ CLAUDE_MEM_PROVIDER: 'kiro' });
-        if (wroteKiro) log.info('Saved provider=kiro to ~/.claude-mem/settings.json (uses your Kiro subscription via kiro-cli)');
-        return 'kiro';
+      if (options.provider === 'gemini-cli') {
+        const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: 'gemini-cli' });
+        if (wrote) log.info('Saved provider=gemini-cli to ~/.claude-mem/settings.json');
+        log.info('Gemini CLI provider uses your `gemini` CLI login — no API key needed. Ensure @google/gemini-cli is installed and signed in.');
+        return 'gemini-cli';
       }
       const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: options.provider });
       if (wrote) log.info(`Saved provider=${options.provider} to ~/.claude-mem/settings.json`);
@@ -1204,8 +1198,8 @@ async function promptProvider(options: InstallOptions, selectedIDEs: string[] = 
       message: 'Which memory provider do you want to use?',
       options: [
         { value: 'claude', label: 'Claude Agent SDK (recommended)' },
-        { value: 'codex', label: 'Codex CLI' },
-        { value: 'gemini', label: 'Gemini' },
+        { value: 'gemini', label: 'Gemini (API key)' },
+        { value: 'gemini-cli', label: 'Gemini CLI (uses your gemini login — no API key)' },
         { value: 'openrouter', label: 'OpenRouter' },
         { value: 'deepseek', label: 'DeepSeek' },
       ],
@@ -1223,7 +1217,18 @@ async function promptProvider(options: InstallOptions, selectedIDEs: string[] = 
     return 'claude';
   }
 
-  const providerLabel = selectedProvider === 'gemini' ? 'Gemini' : selectedProvider === 'openrouter' ? 'OpenRouter' : 'DeepSeek';
+  if (selectedProvider === 'gemini-cli') {
+    const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: 'gemini-cli' });
+    if (wrote) log.info('Saved provider=gemini-cli to ~/.claude-mem/settings.json');
+    if (hasGeminiExecutable()) {
+      log.info('Found the `gemini` CLI — observations will be generated via your gemini login (no API key needed).');
+    } else {
+      log.warn('The `gemini` CLI was not found on PATH. Install it (npm install -g @google/gemini-cli) and sign in, or set CLAUDE_MEM_GEMINI_CLI_PATH.');
+    }
+    return 'gemini-cli';
+  }
+
+  const providerLabel = selectedProvider === 'gemini' ? 'Gemini' : 'OpenRouter';
   const keyEnvName = selectedProvider === 'gemini'
     ? 'CLAUDE_MEM_GEMINI_API_KEY'
     : selectedProvider === 'openrouter'
@@ -1542,7 +1547,7 @@ async function promptCmemOnlineOptIn(version: string): Promise<void> {
 
 export interface InstallOptions {
   ide?: string;
-  provider?: 'claude' | 'gemini' | 'openrouter' | 'deepseek';
+  provider?: 'claude' | 'gemini' | 'openrouter' | 'gemini-cli';
   model?: string;
   noAutoStart?: boolean;
   disableAutoMemory?: boolean;

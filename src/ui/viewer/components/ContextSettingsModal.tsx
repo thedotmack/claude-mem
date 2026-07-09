@@ -332,17 +332,17 @@ export function ContextSettingsModal({
               defaultOpen={false}
             >
               <FormField
-                label={t('settings.aiProvider')}
-                tooltip={t('settings.aiProviderTip')}
+                label="AI Provider"
+                tooltip="Provider for generating observations: Claude (Agent SDK), Gemini (API key), Gemini CLI (your gemini login — no API key), or OpenRouter"
               >
                 <select
                   value={formState.CLAUDE_MEM_PROVIDER || 'claude'}
                   onChange={(e) => updateSetting('CLAUDE_MEM_PROVIDER', e.target.value)}
                 >
-                  <option value="claude">{t('settings.providerClaude')}</option>
-                  <option value="gemini">{t('settings.providerGemini')}</option>
-                  <option value="openrouter">{t('settings.providerOpenRouter')}</option>
-                  <option value="deepseek">{t('settings.providerDeepseek')}</option>
+                  <option value="claude">Claude (uses your Claude account)</option>
+                  <option value="gemini">Gemini (uses API key)</option>
+                  <option value="gemini-cli">Gemini CLI (uses your gemini login — no API key)</option>
+                  <option value="openrouter">OpenRouter (multi-model)</option>
                 </select>
               </FormField>
 
@@ -611,6 +611,47 @@ export function ContextSettingsModal({
                   <div style={{ padding: '8px 12px', marginTop: '8px', background: 'var(--color-bg-secondary)', borderRadius: '6px', fontSize: '12px', color: 'var(--color-text-secondary)' }}>
                     {t('settings.deepseekNote')}
                   </div>
+                </>
+              )}
+
+              {formState.CLAUDE_MEM_PROVIDER === 'gemini-cli' && (
+                <>
+                  <FormField
+                    label="Gemini CLI Model"
+                    tooltip="Model passed to the `gemini` CLI. Uses your gemini login (OAuth) — no API key required."
+                  >
+                    <select
+                      value={formState.CLAUDE_MEM_GEMINI_CLI_MODEL || 'auto'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_GEMINI_CLI_MODEL', e.target.value)}
+                    >
+                      <option value="auto">auto (auto-select model)</option>
+                      <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite (fastest)</option>
+                      <option value="gemini-2.5-flash">gemini-2.5-flash (balanced)</option>
+                      <option value="gemini-3-flash-preview">gemini-3-flash-preview (preview)</option>
+                    </select>
+                  </FormField>
+                  <FormField
+                    label="Gemini CLI Path (Optional)"
+                    tooltip="Explicit path to the gemini binary. Leave empty to auto-detect on PATH (which gemini)."
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_GEMINI_CLI_PATH || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_GEMINI_CLI_PATH', e.target.value)}
+                      placeholder="auto-detect (which gemini)"
+                    />
+                  </FormField>
+                  <FormField
+                    label="Request Timeout (ms)"
+                    tooltip="Per-turn timeout for gemini CLI subprocesses, in milliseconds."
+                  >
+                    <input
+                      type="number"
+                      min="1000"
+                      value={formState.CLAUDE_MEM_GEMINI_CLI_TIMEOUT_MS || '120000'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_GEMINI_CLI_TIMEOUT_MS', e.target.value)}
+                    />
+                  </FormField>
                 </>
               )}
 

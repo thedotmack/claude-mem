@@ -103,6 +103,36 @@ describe('parseAgentXml — summaries', () => {
     }
   });
 
+  it('cleans up nested <item> and <li> tags and converts them to markdown bullet points', () => {
+    const text = `<summary>
+      <request>Test request</request>
+      <investigated>
+        <item>The first thing we checked</item>
+        <li>The second thing we checked</li>
+      </investigated>
+      <learned>
+        <ul>
+          <item>Learned item 1</item>
+          <item>Learned item 2</item>
+        </ul>
+      </learned>
+      <completed>
+        <item>Completed item 1
+        with a newline</item>
+      </completed>
+      <next_steps>Nothing nested here</next_steps>
+    </summary>`;
+    const result = parseAgentXml(text);
+    expect(result.valid).toBe(true);
+    if (result.valid && result.summary) {
+      expect(result.summary.request).toBe('Test request');
+      expect(result.summary.investigated).toBe('- The first thing we checked\n- The second thing we checked');
+      expect(result.summary.learned).toBe('- Learned item 1\n- Learned item 2');
+      expect(result.summary.completed).toBe('- Completed item 1\n  with a newline');
+      expect(result.summary.next_steps).toBe('Nothing nested here');
+    }
+  });
+
   it('returns invalid for empty input', () => {
     expect(parseAgentXml('').valid).toBe(false);
     expect(parseAgentXml('   \n  ').valid).toBe(false);

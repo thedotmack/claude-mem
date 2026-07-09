@@ -10,6 +10,7 @@ import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { ClaudeProvider, isDeepseekSelected, isDeepseekAvailable } from '../../ClaudeProvider.js';
 import { GeminiProvider, isGeminiSelected, isGeminiAvailable } from '../../GeminiProvider.js';
+import { GeminiCliProvider, isGeminiCliSelected, isGeminiCliAvailable } from '../../GeminiCliProvider.js';
 import { OpenRouterProvider, isOpenRouterSelected, isOpenRouterAvailable } from '../../OpenRouterProvider.js';
 import { KiroProvider, isKiroSelected, isKiroAvailable } from '../../KiroProvider.js';
 import { CodexProvider, isCodexSelected } from '../../CodexProvider.js';
@@ -81,8 +82,7 @@ export class SessionRoutes extends BaseRouteHandler {
     private sdkAgent: ClaudeProvider,
     private geminiAgent: GeminiProvider,
     private openRouterAgent: OpenRouterProvider,
-    private codexAgent: CodexProvider,
-    private kiroAgent: KiroProvider,
+    private geminiCliAgent: GeminiCliProvider,
     private eventBroadcaster: SessionEventBroadcaster,
     private workerService: WorkerService,
     private completionHandler: SessionCompletionHandler,
@@ -90,43 +90,14 @@ export class SessionRoutes extends BaseRouteHandler {
     super();
   }
 
-  private getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' | 'deepseek' {
+  private getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' | 'gemini-cli' {
     if (isOpenRouterSelected() && isOpenRouterAvailable()) {
       return 'openrouter';
     }
-    if (isGeminiSelected() && isGeminiAvailable()) {
-      return 'gemini';
+    if (isGeminiCliSelected() && isGeminiCliAvailable()) {
+      return 'gemini-cli';
     }
-    if (isDeepseekSelected() && isDeepseekAvailable()) {
-      return 'deepseek';
-    }
-    return 'claude';
-  }
-
-  /**
-   * Throws a clear diagnostic when a provider is selected but its API key is missing.
-   * Called at the top of the session-start path so users see the error before the SDK
-   * sends a wrong-model request.
-   */
-  private validateProviderConfig(): void {
-    if (isDeepseekSelected() && !isDeepseekAvailable()) {
-      throw new Error(
-        'DeepSeek provider selected but no API key configured. ' +
-        'Set CLAUDE_MEM_DEEPSEEK_API_KEY in settings or configure ~/.claude-mem/.env.'
-      );
-    }
-    if (isOpenRouterSelected() && !isOpenRouterAvailable()) {
-      throw new Error(
-        'OpenRouter provider selected but no API key configured. ' +
-        'Set CLAUDE_MEM_OPENROUTER_API_KEY in settings or OPENROUTER_API_KEY environment variable.'
-      );
-    }
-    if (isGeminiSelected() && !isGeminiAvailable()) {
-      throw new Error(
-        'Gemini provider selected but no API key configured. ' +
-        'Set CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.'
-      );
-    }
+    return (isGeminiSelected() && isGeminiAvailable()) ? 'gemini' : 'claude';
   }
 
   public async ensureGeneratorRunning(sessionDbId: number, source: string): Promise<void> {
@@ -193,7 +164,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
   private async startGeneratorWithProvider(
     session: ReturnType<typeof this.sessionManager.getSession>,
-    provider: 'claude' | 'gemini' | 'openrouter' | 'deepseek',
+    provider: 'claude' | 'gemini' | 'openrouter' | 'gemini-cli',
     source: string
   ): Promise<void> {
     if (!session) return;
@@ -205,8 +176,20 @@ export class SessionRoutes extends BaseRouteHandler {
       session.abortController = new AbortController();
     }
 
-    const agent = provider === 'openrouter' ? this.openRouterAgent : (provider === 'gemini' ? this.geminiAgent : this.sdkAgent);
-    const agentName = provider === 'openrouter' ? 'OpenRouter' : (provider === 'gemini' ? 'Gemini' : (provider === 'deepseek' ? 'DeepSeek (Claude SDK)' : 'Claude SDK'));
+    const agent = provider === 'openrouter'
+      ? this.openRouterAgent
+      : provider === 'gemini-cli'
+        ? this.geminiCliAgent
+        : provider === 'gemini'
+          ? this.geminiAgent
+          : this.sdkAgent;
+    const agentName = provider === 'openrouter'
+      ? 'OpenRouter'
+      : provider === 'gemini-cli'
+        ? 'Gemini CLI'
+        : provider === 'gemini'
+          ? 'Gemini'
+          : 'Claude SDK';
 
     const actualQueueDepth = this.sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId);
 

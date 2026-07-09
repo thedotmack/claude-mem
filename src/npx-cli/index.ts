@@ -19,20 +19,19 @@ function printHelp(): void {
   console.log(`
 ${styleText('bold', 'claude-mem')} v${version} — persistent memory for AI coding assistants
 
-${styleText('bold', 'Install Commands')} (no Bun required):
-  ${styleText('cyan', 'npx claude-mem')}                     Interactive install
-  ${styleText('cyan', 'npx claude-mem install')}              Interactive install
-  ${styleText('cyan', 'npx claude-mem install --ide <id>')}   Install for specific IDE
-  ${styleText('cyan', 'npx claude-mem install --provider claude|codex|gemini|openrouter|kiro')}   Set LLM provider non-interactively
-  ${styleText('cyan', 'npx claude-mem install --model <id>')}   Set provider model (Claude/Codex)
-  ${styleText('cyan', 'npx claude-mem install --no-auto-start')}   Skip worker auto-start at the end
-  ${styleText('cyan', 'npx claude-mem install --disable-auto-memory')}   Explicitly disable Claude Code native auto-memory
-  ${styleText('cyan', 'npx claude-mem install --runtime worker|server')}   Select runtime non-interactively (server brings up Docker pg+redis, generates an API key, injects the IDE MCP config)
-  ${styleText('cyan', 'npx claude-mem install --runtime server --server-url <url>')}   Point the server runtime at a specific base URL
-  ${styleText('cyan', 'npx claude-mem repair')}                Repair runtime (re-runs Bun/uv setup and bun install in plugin cache)
-  ${styleText('cyan', 'npx claude-mem update')}               Update to latest version
-  ${styleText('cyan', 'npx claude-mem uninstall')}            Remove plugin and configs
-  ${styleText('cyan', 'npx claude-mem version')}              Print version
+${pc.bold('Install Commands')} (no Bun required):
+  ${pc.cyan('npx claude-mem')}                     Interactive install
+  ${pc.cyan('npx claude-mem install')}              Interactive install
+  ${pc.cyan('npx claude-mem install --ide <id>')}   Install for specific IDE
+  ${pc.cyan('npx claude-mem install --provider claude|gemini|gemini-cli|openrouter')}   Set LLM provider non-interactively
+  ${pc.cyan('npx claude-mem install --model <id>')}   Set Claude model (when provider=claude)
+  ${pc.cyan('npx claude-mem install --no-auto-start')}   Skip worker auto-start at the end
+  ${pc.cyan('npx claude-mem install --runtime worker|server')}   Select runtime non-interactively (server brings up Docker pg+redis, generates an API key, injects the IDE MCP config)
+  ${pc.cyan('npx claude-mem install --runtime server --server-url <url>')}   Point the server runtime at a specific base URL
+  ${pc.cyan('npx claude-mem repair')}                Repair runtime (re-runs Bun/uv setup and bun install in plugin cache)
+  ${pc.cyan('npx claude-mem update')}               Update to latest version
+  ${pc.cyan('npx claude-mem uninstall')}            Remove plugin and configs
+  ${pc.cyan('npx claude-mem version')}              Print version
 
 ${pc.bold('Runtime Commands')} (requires Bun, delegates to installed plugin):
   ${pc.cyan('npx claude-mem start')}                Start worker service
@@ -91,8 +90,13 @@ function parseInstallOptions(argv: string[]): InstallOptions {
 
 function parseInstallOptions(argv: string[]): InstallOptions {
   const provider = readFlag(argv, '--provider');
-  if (provider !== undefined && provider !== 'claude' && provider !== 'gemini' && provider !== 'openrouter' && provider !== 'deepseek') {
-    console.error(`Unknown --provider: ${provider}. Allowed: claude, gemini, openrouter, deepseek`);
+  if (provider !== undefined && provider !== 'claude' && provider !== 'gemini' && provider !== 'gemini-cli' && provider !== 'openrouter') {
+    console.error(`Unknown --provider: ${provider}. Allowed: claude, gemini, gemini-cli, openrouter`);
+    process.exit(1);
+  }
+  const runtime = readFlag(argv, '--runtime');
+  if (runtime !== undefined && runtime !== 'worker' && runtime !== 'server' && runtime !== 'server-beta') {
+    console.error(`Unknown --runtime: ${runtime}. Allowed: worker, server`);
     process.exit(1);
   }
   return {

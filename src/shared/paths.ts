@@ -49,6 +49,26 @@ export const OBSERVER_SESSIONS_DIR = join(DATA_DIR, 'observer-sessions');
 
 export const OBSERVER_SESSIONS_PROJECT = basename(OBSERVER_SESSIONS_DIR);
 
+/**
+ * Stable cwd for every Gemini CLI observer subprocess. The gemini CLI scopes
+ * sessions by project (derived from cwd), so all observer sessions share this
+ * one directory; individual conversations are disambiguated by the session UUID
+ * captured from the first turn and later passed via --resume. See GeminiCliProvider.
+ */
+export const GEMINI_CLI_SESSIONS_DIR = join(DATA_DIR, 'gemini-cli-sessions');
+
+export const CLAUDE_SETTINGS_PATH = join(CLAUDE_CONFIG_DIR, 'settings.json');
+export const CLAUDE_COMMANDS_DIR = join(CLAUDE_CONFIG_DIR, 'commands');
+export const CLAUDE_MD_PATH = join(CLAUDE_CONFIG_DIR, 'CLAUDE.md');
+
+export function getProjectArchiveDir(projectName: string): string {
+  return join(ARCHIVES_DIR, projectName);
+}
+
+export function getWorkerSocketPath(sessionId: number): string {
+  return join(DATA_DIR, `worker-${sessionId}.sock`);
+}
+
 export function ensureDir(dirPath: string): void {
   mkdirSync(dirPath, { recursive: true });
 }
