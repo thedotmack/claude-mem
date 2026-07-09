@@ -1,5 +1,6 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite';
-import { DATA_DIR, DB_PATH, ensureDir, OBSERVER_SESSIONS_PROJECT } from '../../shared/paths.js';
+import { existsSync, readFileSync } from 'fs';
+import { DATA_DIR, DB_PATH, ensureDir, OBSERVER_SESSIONS_PROJECT, paths } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import {
   TableColumnInfo,
@@ -67,7 +68,7 @@ interface SdkSessionDetailRow {
 export class SessionStore {
   public db: Database;
 
-  constructor(dbPathOrDb: string | Database = DB_PATH) {
+  constructor(dbPathOrDb: string | Database = DB_PATH, options: { cloudSyncStatePath?: string } = {}) {
     if (dbPathOrDb instanceof Database) {
       this.db = dbPathOrDb;
     } else {
@@ -106,6 +107,7 @@ export class SessionStore {
     this.ensureSDKSessionsPlatformContentIdentity();
     this.ensureUserPromptsSessionDbId();
     this.ensurePendingMessagesSessionToolUniqueIndex();
+    this.ensureSyncedAtColumns(options.cloudSyncStatePath ?? paths.cloudSyncState());
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -438,6 +440,59 @@ export class SessionStore {
     `);
     if (!applied) {
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(35, new Date().toISOString());
+    }
+  }
+
+  private ensureSyncedAtColumns(cloudSyncStatePath: string): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(36) as SchemaVersion | undefined;
+    if (applied) return;
+
+    for (const table of ['observations', 'session_summaries', 'user_prompts']) {
+      const tableInfo = this.db.query(`PRAGMA table_info(${table})`).all() as TableColumnInfo[];
+      const hasSyncedAt = tableInfo.some(col => col.name === 'synced_at');
+
+      if (!hasSyncedAt) {
+        this.db.run(`ALTER TABLE ${table} ADD COLUMN synced_at INTEGER`);
+        logger.debug('DB', `Added synced_at column to ${table} table`);
+      }
+
+      this.db.run(`CREATE INDEX IF NOT EXISTS idx_${table}_unsynced ON ${table}(id) WHERE synced_at IS NULL`);
+    }
+
+    this.stampRowsSyncedByLegacyClient(cloudSyncStatePath);
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(36, new Date().toISOString());
+  }
+
+  // Rows the standalone cloud-sync client already uploaded (its cursors live in
+  // cloud-sync-state.json) are stamped so they are not re-uploaded. The state
+  // file is left in place — device-id adoption still reads it.
+  private stampRowsSyncedByLegacyClient(statePath: string): void {
+    if (!existsSync(statePath)) return;
+
+    let state: { lastId?: number; lastSummaryId?: number; lastPromptId?: number };
+    try {
+      state = JSON.parse(readFileSync(statePath, 'utf-8'));
+    } catch (error) {
+      logger.warn('DB', 'Failed to read legacy cloud-sync state, skipping synced_at adoption', { statePath }, error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
+    if (state === null || typeof state !== 'object') {
+      logger.warn('DB', 'Legacy cloud-sync state is not an object, skipping synced_at adoption', { statePath });
+      return;
+    }
+
+    const now = Date.now();
+    const cursors: Array<[table: string, lastSyncedId: unknown]> = [
+      ['observations', state.lastId],
+      ['session_summaries', state.lastSummaryId],
+      ['user_prompts', state.lastPromptId],
+    ];
+
+    for (const [table, lastSyncedId] of cursors) {
+      if (!(typeof lastSyncedId === 'number' && lastSyncedId > 0)) continue;
+      this.db.prepare(`UPDATE ${table} SET synced_at = ? WHERE id <= ? AND synced_at IS NULL`).run(now, lastSyncedId);
+      logger.debug('DB', `Stamped synced_at on ${table} rows already uploaded by the legacy cloud-sync client`, { lastSyncedId });
     }
   }
 
