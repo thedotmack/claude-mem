@@ -5,7 +5,7 @@ import path from 'path';
 import { z } from 'zod';
 import { SearchManager } from '../../SearchManager.js';
 import type { SearchTelemetryEnvelope } from '../../SearchManager.js';
-import { SEARCH_CONSTANTS } from '../../search/index.js';
+import { SEARCH_CONSTANTS } from '../../search/types.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
@@ -415,19 +415,23 @@ export class SearchRoutes extends BaseRouteHandler {
     const query = SearchRoutes.firstString(req.body?.q) ?? SearchRoutes.firstString(req.query.q) ?? '';
     const project = SearchRoutes.firstString(req.body?.project) ?? SearchRoutes.firstString(req.query.project);
     const limit = Math.min(Math.max(parseInt(String(req.body?.limit || req.query.limit || '5'), 10) || 5, 1), 20);
-    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
     const semanticWindowLimit = SEARCH_CONSTANTS.CHROMA_BATCH_SIZE;
-    const baseSearchArgs = {
-      query,
-      type: 'observations',
-      limit: String(limit),
-      format: 'json',
-      orderBy: 'relevance',
-      ...(platformSource ? { platformSource } : {}),
-    };
     const scopedSearchArgs = project
-      ? { ...baseSearchArgs, project }
-      : baseSearchArgs;
+      ? {
+          query,
+          type: 'observations',
+          project,
+          limit: String(limit),
+          format: 'json',
+          orderBy: 'relevance',
+        }
+      : {
+          query,
+          type: 'observations',
+          limit: String(limit),
+          format: 'json',
+          orderBy: 'relevance',
+        };
     const observationKey = (obs: any): string => String(
       obs?.id
       ?? `${obs?.title || ''}:${obs?.created_at || ''}:${obs?.project || ''}:${obs?.merged_into_project || ''}`
@@ -447,21 +451,26 @@ export class SearchRoutes extends BaseRouteHandler {
         { semanticHydrationLimit: semanticWindowLimit }
       );
       const scopedObservations = result?.observations || [];
-
       if (project) {
         try {
           const fallbackTelemetry: SearchTelemetryEnvelope = {};
-          const fallbackResult = await this.searchManager.search(
-            baseSearchArgs,
-            fallbackTelemetry,
-            { semanticHydrationLimit: semanticWindowLimit }
-          );
+          // Always run: the scoped result cannot self-report missing adopted rows,
+          // and CHROMA_BATCH_SIZE keeps the recovery window bounded.
+          const fallbackResult = await this.searchManager.search({
+            query,
+            type: 'observations',
+            limit: String(limit),
+            format: 'json',
+            orderBy: 'relevance'
+          }, fallbackTelemetry, { semanticHydrationLimit: semanticWindowLimit });
           const fallbackUsedKeywordSearch =
             fallbackTelemetry.search_strategy === 'fts'
             || fallbackTelemetry.search_strategy === 'filter_only';
-
           if (fallbackUsedKeywordSearch) {
-            result = { ...(result || {}), observations: scopedObservations };
+            result = {
+              ...(result || {}),
+              observations: scopedObservations,
+            };
           } else {
             const scopedObservationsByKey = new Map(
               scopedObservations.map((obs: any) => [observationKey(obs), obs])
@@ -496,14 +505,14 @@ export class SearchRoutes extends BaseRouteHandler {
           logger.warn(
             'HTTP',
             'Semantic context fallback failed, keeping scoped results',
-            { queryLength: query.length, project, platformSource },
+            { queryLength: query.length, project },
             normalizedFallbackError
           );
         }
       }
     } catch (error) {
       const normalizedError = error instanceof Error ? error : new Error(String(error));
-      logger.error('HTTP', 'Semantic context query failed', { queryLength: query.length, project, platformSource }, normalizedError);
+      logger.error('HTTP', 'Semantic context query failed', { queryLength: query.length, project }, normalizedError);
       res.json({ context: '', count: 0 });
       return;
     }
