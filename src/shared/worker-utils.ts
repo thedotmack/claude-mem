@@ -712,9 +712,18 @@ export async function recordWorkerUnreachable(): Promise<number> {
 
   const threshold = getFailLoudThreshold();
   if (next.consecutiveFailures >= threshold) {
-    writeHooksDisabledSentinel();
-    emitBlockingError(
-      `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks. Hooks disabled for this session.`
+    // DIAGNOSTIC only — never block the harness for an optional background service.
+    // Callers surface user-facing banners via consumeWorkerOutageHint + withUserHint.
+    if (next.consecutiveFailures === threshold) {
+      await captureCliEvent('hook_failed', {
+        ...(activeHookType !== null ? { hook_type: activeHookType } : {}),
+        error_mode: 'worker_unavailable',
+        consecutive_failures: next.consecutiveFailures,
+        threshold_tripped: true,
+      });
+    }
+    emitDiagnostic(
+      `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks.\n`
     );
   }
   return next.consecutiveFailures;
@@ -816,6 +825,73 @@ export function consumeWorkerOutageHint(sessionId?: string, bypassThrottle = fal
   return WORKER_OFFLINE_BANNER;
 }
 
+interface OutageWarningState {
+  lastWarnedAt: number;
+  lastSessionId?: string;
+}
+
+function getOutageWarningPath(): string {
+  return path.join(getStateDir(), 'last-outage-warning.json');
+}
+
+function readOutageWarningState(): OutageWarningState {
+  try {
+    const raw = readFileSync(getOutageWarningPath(), 'utf-8');
+    const parsed = JSON.parse(raw) as Partial<OutageWarningState>;
+    return {
+      lastWarnedAt: typeof parsed.lastWarnedAt === 'number' ? parsed.lastWarnedAt : 0,
+      lastSessionId: typeof parsed.lastSessionId === 'string' ? parsed.lastSessionId : undefined,
+    };
+  } catch {
+    return { lastWarnedAt: 0 };
+  }
+}
+
+function writeOutageWarningStateAtomic(state: OutageWarningState): void {
+  const dest = getOutageWarningPath();
+  const tmp = `${dest}.tmp`;
+  const stateDir = getStateDir();
+  try {
+    if (!existsSync(stateDir)) {
+      mkdirSync(stateDir, { recursive: true });
+    }
+    writeFileSync(tmp, JSON.stringify(state), 'utf-8');
+    renameSync(tmp, dest);
+  } catch {
+    // non-fatal — worst case we emit a duplicate banner
+  }
+}
+
+const OUTAGE_BANNER_THROTTLE_MS = 30 * 60 * 1000;
+const WORKER_OFFLINE_BANNER =
+  'claude-mem: background worker offline — memory features (search, observations, context) unavailable this session.';
+
+/**
+ * Returns the user-facing offline banner string when the worker is unreachable
+ * and the throttle window has elapsed (or it's a new session). Returns null if
+ * the banner was already shown recently.
+ *
+ * Pass `bypassThrottle: true` for session-start hooks where the banner should
+ * always appear if the worker is down.
+ */
+export function consumeWorkerOutageHint(
+  sessionId?: string,
+  bypassThrottle = false,
+): string | null {
+  const failures = readHookFailureState();
+  if (failures.consecutiveFailures === 0) return null;
+
+  const warned = readOutageWarningState();
+  const now = Date.now();
+  const sameSession = sessionId && warned.lastSessionId === sessionId;
+  const withinThrottle = (now - warned.lastWarnedAt) < OUTAGE_BANNER_THROTTLE_MS;
+
+  if (!bypassThrottle && sameSession && withinThrottle) return null;
+
+  writeOutageWarningStateAtomic({ lastWarnedAt: now, lastSessionId: sessionId });
+  return WORKER_OFFLINE_BANNER;
+}
+
 const WORKER_FALLBACK_BRAND: unique symbol = Symbol.for('claude-mem/worker-fallback');
 
 export type WorkerFallback =
@@ -868,7 +944,9 @@ export async function executeWithWorkerFallback<T = unknown>(
   if (!response.ok) {
     const text = await response.text().catch(() => '');
     if (response.status === 429 || response.status >= 500) {
-      await recordWorkerUnreachable();
+      // Degraded worker (5xx/429) is treated as unreachable — it should surface
+      // the offline banner just like a connection failure, not silently pass.
+      recordWorkerUnreachable();
       logger.warn('SYSTEM', `Worker API ${method} ${url} returned ${response.status}; skipping hook API call`, {
         body: text.substring(0, 200),
       });

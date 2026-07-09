@@ -3,11 +3,8 @@
 // console.* / process.exit. logger.* calls are DIAGNOSTIC; thrown errors are
 // caught by hookCommand and routed through emitBlockingError.
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
-import {
-  executeWithWorkerFallback as defaultExecuteWithWorkerFallback,
-  isWorkerFallback as defaultIsWorkerFallback,
-  consumeWorkerOutageHint as defaultConsumeWorkerOutageHint,
-} from '../../shared/worker-utils.js';
+import { executeWithWorkerFallback, isWorkerFallback, consumeWorkerOutageHint } from '../../shared/worker-utils.js';
+import { withUserHint } from '../../shared/hook-io.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { logger } from '../../utils/logger.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
@@ -119,14 +116,10 @@ export const sessionInitHandler: EventHandler = {
       },
     );
 
-    if (dependencies.isWorkerFallback(initResult)) {
-      const hint = dependencies.consumeWorkerOutageHint(sessionId, true);
-      return {
-        continue: true,
-        suppressOutput: !hint,
-        ...(hint ? { systemMessage: hint } : {}),
-        exitCode: HOOK_EXIT_CODES.SUCCESS,
-      };
+    if (isWorkerFallback(initResult)) {
+      const hint = consumeWorkerOutageHint(sessionId);
+      const base: HookResult = { continue: true, suppressOutput: !hint, exitCode: HOOK_EXIT_CODES.SUCCESS };
+      return hint ? withUserHint(base, hint) : base;
     }
 
     if (typeof initResult?.sessionDbId !== 'number') {

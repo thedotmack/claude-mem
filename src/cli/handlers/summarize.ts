@@ -4,6 +4,7 @@
 // caught by hookCommand and routed through emitBlockingError.
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import { executeWithWorkerFallback, isWorkerFallback, consumeWorkerOutageHint } from '../../shared/worker-utils.js';
+import { withUserHint } from '../../shared/hook-io.js';
 import { logger } from '../../utils/logger.js';
 import { extractLastMessage } from '../../shared/transcript-parser.js';
 import { stripMemoryTagsFromPrompt } from '../../utils/tag-stripping.js';
@@ -245,12 +246,8 @@ export const summarizeHandler: EventHandler = {
     );
     if (isWorkerFallback(queueResult)) {
       const hint = consumeWorkerOutageHint(sessionId);
-      return {
-        continue: true,
-        suppressOutput: !hint,
-        ...(hint ? { systemMessage: hint } : {}),
-        exitCode: HOOK_EXIT_CODES.SUCCESS,
-      };
+      const base: HookResult = { continue: true, suppressOutput: !hint, exitCode: HOOK_EXIT_CODES.SUCCESS };
+      return hint ? withUserHint(base, hint) : base;
     }
 
     logger.debug('HOOK', 'Summary request queued, exiting hook');
