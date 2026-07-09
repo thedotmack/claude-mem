@@ -136,36 +136,40 @@ export function persistServerSettings(
     mkdirSync(dir, { recursive: true });
   }
 
-  let existing: Record<string, unknown> = {};
+  let document: Record<string, unknown> = {};
+  let envNested = false;
   if (existsSync(settingsPath)) {
     try {
-      existing = readJsonFileWithBom<Record<string, unknown>>(settingsPath);
-    } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      logger.warn('HOOK', 'Failed to read existing settings file; starting fresh', { settingsPath }, err);
-      existing = {};
+      document = JSON.parse(readFileSync(settingsPath, 'utf-8')) as Record<string, unknown>;
+      envNested = typeof document.env === 'object' && document.env !== null;
+    } catch {
+      document = {};
     }
   }
-  // Preserve Claude-Code-style top-level peers (`hooks`, `permissions`, etc.)
-  // when settings are stored as `{ env: { ... } }`.
-  const target = (existing.env && typeof existing.env === 'object' && !Array.isArray(existing.env)
-    ? existing.env
-    : existing) as Record<string, unknown>;
+  // Settings file format: support both the flat shape (modern) and the
+  // env-nested shape (Claude-Code-style: { env: {...}, hooks: [...], ... }).
+  // The previous implementation extracted the env subtree into `flat` and
+  // wrote `flat` back as the whole file, silently dropping every non-env
+  // top-level key (hooks, permissions, apiKeyHelper, etc.) — matching the
+  // data-loss pattern fixed in mergeSettings (install.ts).
+  const target = envNested
+    ? (document.env as Record<string, unknown>)
+    : document;
 
-  // Phase 1d: write the new canonical settings keys. Legacy
-  // `CLAUDE_MEM_SERVER_BETA_*` keys are dual-accepted by reads in
-  // `runtime-selector.ts`, so existing installs continue to work. Any
-  // legacy keys that already live in `target` are left untouched (we don't
-  // delete them) so a downgrade can still find them.
-  target.CLAUDE_MEM_SERVER_API_KEY = values.apiKey;
-  target.CLAUDE_MEM_SERVER_PROJECT_ID = values.projectId;
+  target.CLAUDE_MEM_SERVER_BETA_API_KEY = values.apiKey;
+  target.CLAUDE_MEM_SERVER_BETA_PROJECT_ID = values.projectId;
   if (values.serverBaseUrl) {
-    target.CLAUDE_MEM_SERVER_URL = values.serverBaseUrl;
+    target.CLAUDE_MEM_SERVER_BETA_URL = values.serverBaseUrl;
   }
 
-  writeJsonFileAtomic(settingsPath, flat);
   // Hooks read this file on every invocation; restrict permissions so other
-  // local users cannot read the API key.
+  // local users cannot read the API key. Pass `mode: 0o600` to writeFileSync
+  // so the file is CREATED with restrictive permissions atomically — closing
+  // the TOCTOU window between writeFile and chmod where, on file creation,
+  // the API key plaintext was briefly world-readable. The chmod stays as a
+  // belt-and-braces fallback for the case where the file already existed
+  // with looser permissions before this write.
+  writeFileSync(settingsPath, JSON.stringify(document, null, 2), { encoding: 'utf-8', mode: 0o600 });
   try {
     chmodSync(settingsPath, SETTINGS_FILE_MODE);
   } catch {
