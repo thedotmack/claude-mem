@@ -1,10 +1,11 @@
 import path from "path";
-import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync, readdirSync, statSync } from "fs";
+import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync, writeSync } from "fs";
+import { execSync } from "child_process";
 import { spawnHidden } from "./spawn.js";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
-import { SettingsDefaultsManager, type SettingsDefaults } from "./SettingsDefaultsManager.js";
-import { MARKETPLACE_ROOT, DATA_DIR, USER_SETTINGS_PATH } from "./paths.js";
+import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
+import { MARKETPLACE_ROOT, DATA_DIR } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
 import { validateWorkerPidFile } from "../supervisor/index.js";
 import { emitDiagnostic } from "./hook-io.js";
@@ -720,18 +721,16 @@ export async function recordWorkerUnreachable(): Promise<number> {
 
   const threshold = getFailLoudThreshold();
   if (next.consecutiveFailures >= threshold) {
-    // DIAGNOSTIC only — never block the harness for an optional background
-    // service. Callers surface user-facing banners via consumeWorkerOutageHint.
-    if (next.consecutiveFailures === threshold) {
-      await captureCliEvent('hook_failed', {
-        ...(activeHookType !== null ? { hook_type: activeHookType } : {}),
-        error_mode: 'worker_unavailable',
-        consecutive_failures: next.consecutiveFailures,
-        threshold_tripped: true,
-      });
+    // writeSync(2, ...) goes straight to fd 2, bypassing hookCommand's
+    // process.stderr.write override that would otherwise swallow the warning.
+    // Do not process.exit — honors the exit-0 philosophy spelled out in CLAUDE.md
+    // ("Worker/hook errors exit with code 0 to prevent Windows Terminal tab
+    // accumulation") so hooks continue gracefully instead of blocking tool calls.
+    try {
+      writeSync(2, `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks.\n`);
+    } catch {
+      // stderr unwritable — nothing actionable
     }
-    const failLoudMessage = `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks.`;
-    emitDiagnostic(`${failLoudMessage}\n`);
   }
   return next.consecutiveFailures;
 }
