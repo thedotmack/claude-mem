@@ -48,6 +48,19 @@ export function detectInstalledIDEs(): IDEInfo[] {
       hint: 'recommended',
     },
     {
+      id: 'gemini-cli',
+      label: 'Gemini CLI',
+      detected: existsSync(join(home, '.gemini')),
+      supported: true,
+    },
+    {
+      id: 'kimi-code',
+      label: 'Kimi Code CLI',
+      detected: existsSync(join(home, '.kimi-code')),
+      supported: true,
+      hint: 'hooks + MCP integration',
+    },
+    {
       id: 'opencode',
       label: 'OpenCode',
       detected:

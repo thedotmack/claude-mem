@@ -59,9 +59,9 @@ ${pc.bold('Runtime Commands')} (requires Bun, delegates to installed plugin):
   ${pc.cyan('npx claude-mem transcript watch')}     Start transcript watcher
 
 ${pc.bold('IDE Identifiers')}:
-  claude-code, cursor, gemini-cli, opencode, openclaw,
-  windsurf, codex-cli, copilot-cli, antigravity, antigravity-cli,
-  goose, roo-code, warp
+  claude-code, cursor, gemini-cli, kimi-code, opencode, openclaw,
+  windsurf, codex-cli, copilot-cli, antigravity, goose,
+  roo-code, warp
 `);
 }
 

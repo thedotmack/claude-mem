@@ -13,6 +13,7 @@ export function normalizePlatformSource(value?: string | null): string {
   if (source === 'transcript') return 'codex';
   if (source.includes('codex')) return 'codex';
   if (source.includes('cursor')) return 'cursor';
+  if (source.includes('kimi')) return 'kimi';
   if (source.includes('claude')) return 'claude';
   if (source.includes('opencode')) return 'opencode';
   if (source.includes('gemini') && source.includes('cli')) return 'gemini-cli';
