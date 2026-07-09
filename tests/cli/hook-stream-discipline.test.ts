@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'bun:test';
+import { describe, it, expect, afterEach, spyOn } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import {
@@ -67,43 +67,91 @@ describe('#2292 — fail-loud diagnostic is no longer swallowed', () => {
 });
 
 describe('#3161 — Stop hook never exits 2 on worker-unreachable', () => {
-  it('worker-utils fail-loud branch exempts summarize BEFORE the emitBlockingError exit-2 path (source contract)', () => {
+  it('emitBlockingError veto: neverBlock downgrades exit 2 to a diagnostic-only write (behavioral)', () => {
+    // Single source of truth: emitBlockingError itself owns the exit-2 veto,
+    // so every call site (recordWorkerUnreachable, hookCommand's catch-all)
+    // inherits it by passing neverBlock instead of repeating a guard.
+    const real = captureRealStderr();
+    const buffer = installHookStderrBuffer();
+    // Spy (not skipExit) so the veto itself is under test: a neverBlock
+    // regression fails this assertion cleanly instead of exit-2-killing the
+    // test runner.
+    const exitSpy = spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    try {
+      emitBlockingError('worker unreachable for 3 consecutive hooks.', { neverBlock: true });
+      expect(exitSpy).not.toHaveBeenCalled();
+      expect(real.chunks.join('')).toContain('worker unreachable for 3 consecutive hooks.');
+    } finally {
+      exitSpy.mockRestore();
+      buffer.restore();
+      real.restore();
+    }
+  });
+
+  it('emitBlockingError veto: neverBlock drops (not flushes) buffered third-party noise, matching the pre-#3161-refactor short-circuit', () => {
+    // Before centralizing the veto in emitBlockingError, the summarize branch
+    // called emitDiagnostic (which never touches bufferedChunks) and returned
+    // BEFORE reaching emitBlockingError's flush — so buffered noise stayed
+    // silently buffered until hookCommand's finally{} discarded it. Routing
+    // the summarize path through emitBlockingError unconditionally would leak
+    // that noise unless neverBlock also suppresses the flush, not just exit.
+    const real = captureRealStderr();
+    const buffer = installHookStderrBuffer();
+    try {
+      process.stderr.write('third-party noise that must stay silent on the neverBlock path\n');
+      emitBlockingError('worker unreachable for 3 consecutive hooks.', { neverBlock: true, skipExit: true });
+      const surfaced = real.chunks.join('');
+      expect(surfaced).not.toContain('third-party noise');
+      expect(surfaced).toContain('worker unreachable for 3 consecutive hooks.');
+    } finally {
+      buffer.restore();
+      real.restore();
+    }
+  });
+
+  it('emitBlockingError still flushes buffered noise on the normal (non-neverBlock) blocking path (regression guard)', () => {
+    const real = captureRealStderr();
+    const buffer = installHookStderrBuffer();
+    try {
+      process.stderr.write('buffered noise that SHOULD surface on a real blocking error\n');
+      emitBlockingError('blocking message', { skipExit: true });
+      const surfaced = real.chunks.join('');
+      expect(surfaced).toContain('buffered noise');
+      expect(surfaced).toContain('blocking message');
+    } finally {
+      buffer.restore();
+      real.restore();
+    }
+  });
+
+  it('worker-utils recordWorkerUnreachable computes neverBlock from the summarize hook type (source contract)', () => {
     const src = readFileSync(join(REPO_ROOT, 'src', 'shared', 'worker-utils.ts'), 'utf-8');
     const fnStart = src.indexOf('export async function recordWorkerUnreachable');
     expect(fnStart).toBeGreaterThan(-1);
-    // Guard the anchor itself: a missing column-0 close brace would make
-    // slice(fnStart, -1) silently widen the window to the whole file tail.
     const fnEnd = src.indexOf('\n}', fnStart);
     expect(fnEnd).toBeGreaterThan(fnStart);
     const fnBody = src.slice(fnStart, fnEnd);
-    const guardIdx = fnBody.indexOf("hookType === 'summarize'");
-    const blockIdx = fnBody.indexOf('emitBlockingError(');
-    // The summarize exemption must exist and short-circuit before exit 2.
-    expect(guardIdx).toBeGreaterThan(-1);
-    expect(blockIdx).toBeGreaterThan(-1);
-    expect(guardIdx).toBeLessThan(blockIdx);
-    // The exemption must actually SHORT-CIRCUIT: without a `return` between
-    // the guard and emitBlockingError, the summarize branch would emit the
-    // diagnostic and still fall through to exit 2 (mutation caught here).
-    expect(fnBody.slice(guardIdx, blockIdx)).toContain('return');
-    // The exempt path stays loud for the operator (diagnostic, not silence).
-    expect(fnBody).toContain('emitDiagnostic(');
+    // No local exit-2 short-circuit for summarize — the veto is delegated to
+    // emitBlockingError via the neverBlock option, not duplicated here.
+    expect(fnBody).toContain("neverBlock: hookType === 'summarize'");
+    expect(fnBody).toContain('emitBlockingError(');
   });
 
-  it('hookCommand catch-all exempts summarize from the exit-2 path too (source contract)', () => {
+  it('hookCommand catch-all delegates the summarize exemption to emitBlockingError via neverBlock (source contract)', () => {
     // The fail-loud exemption alone is not enough: non-transport errors
     // (adapter/stdin/handler throws, or a worker dying mid-response-body)
-    // escape to the catch-all, which must also never exit 2 for summarize.
+    // escape to the catch-all, which must also never exit 2 for summarize —
+    // via the same neverBlock option, not a second copy of the guard.
     const src = readFileSync(join(REPO_ROOT, 'src', 'cli', 'hook-command.ts'), 'utf-8');
     const catchIdx = src.indexOf('} catch (error) {');
     expect(catchIdx).toBeGreaterThan(-1);
     const tail = src.slice(catchIdx);
-    const exemptIdx = tail.indexOf("event === 'summarize'");
+    const neverBlockIdx = tail.indexOf("const neverBlock = event === 'summarize'");
     const blockIdx = tail.indexOf('emitBlockingError(');
-    expect(exemptIdx).toBeGreaterThan(-1);
+    expect(neverBlockIdx).toBeGreaterThan(-1);
     expect(blockIdx).toBeGreaterThan(-1);
-    expect(exemptIdx).toBeLessThan(blockIdx);
-    expect(tail.slice(exemptIdx, blockIdx)).toContain('exitGraceful');
+    expect(neverBlockIdx).toBeLessThan(blockIdx);
+    expect(tail.slice(blockIdx, blockIdx + 200)).toContain('neverBlock');
   });
 
   it('executeWithWorkerFallback handles a mid-body text() rejection as unreachable, not empty-body success (source contract)', () => {

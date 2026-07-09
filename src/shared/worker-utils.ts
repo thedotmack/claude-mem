@@ -7,7 +7,7 @@ import { SettingsDefaultsManager, type SettingsDefaults } from "./SettingsDefaul
 import { MARKETPLACE_ROOT, DATA_DIR } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
 import { validateWorkerPidFile } from "../supervisor/index.js";
-import { emitBlockingError, emitDiagnostic, type ExitOptions } from "./hook-io.js";
+import { emitBlockingError, type ExitOptions } from "./hook-io.js";
 import { captureCliEvent } from "../services/telemetry/cli-telemetry.js";
 import { checkVersionMatch } from "../services/infrastructure/index.js";
 // Imported from ProcessManager.js directly (not the infrastructure barrel):
@@ -661,27 +661,16 @@ export async function recordWorkerUnreachable(options: ExitOptions = {}): Promis
         threshold_tripped: true,
       });
     }
-    // #3161: the summarize handler must NEVER exit 2. Exit 2 from a Stop hook
-    // blocks the stop and re-wakes the agent; while the worker stays down every
-    // Stop retrips this, an endless wake/stop loop. Keep the counter + streak
-    // telemetry (it still surfaces as BLOCKING_FEEDBACK at the next non-summarize
-    // hook, where blocking can't re-wake a stopping session) but downgrade to a
-    // diagnostic. Keyed on the handler name, so every event mapped to summarize
-    // is exempt (Stop across platforms, Antigravity PreCompress).
-    if (hookType === 'summarize') {
-      emitDiagnostic(
-        `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks (summarize hook: not blocking).\n`
-      );
-      return next.consecutiveFailures;
-    }
     // #2292 fix: BLOCKING_FEEDBACK. emitBlockingError flushes the Phase 2
     // stderr buffer (so preceding buffered third-party stderr noise also
     // surfaces) and writes via the bypass channel + exits 2. Previously this
     // raw process.stderr.write was swallowed by hookCommand's blanket no-op,
-    // so the user/model never saw it.
+    // so the user/model never saw it. #3161: neverBlock vetoes the exit-2 step
+    // for the summarize/Stop handler (see emitBlockingError) — the message and
+    // counter/telemetry above are unaffected, only the exit code changes.
     emitBlockingError(
       `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks.`,
-      options,
+      { ...options, neverBlock: hookType === 'summarize' },
     );
   }
   return next.consecutiveFailures;

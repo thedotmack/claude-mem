@@ -8,7 +8,6 @@ import {
   installHookStderrBuffer,
   emitModelContext,
   emitBlockingError,
-  emitDiagnostic,
   exitGraceful,
   resetHookIoState,
 } from '../shared/hook-io.js';
@@ -164,23 +163,25 @@ export async function hookCommand(platform: string, event: string, options: Hook
         threshold_tripped: false,
       });
     }
-    // #3161: mirror the fail-loud exemption in recordWorkerUnreachable for the
-    // non-transport error class. A deterministic throw here (adapter/stdin/
-    // handler) would otherwise exit 2 on Stop and loop every session end.
-    if (event === 'summarize') {
-      emitDiagnostic(
-        `claude-mem hook error (summarize, not blocking): ${error instanceof Error ? error.message : String(error)}\n`
-      );
+    // #3161: summarize (Stop) must never see exit 2 — a deterministic throw
+    // here (adapter/stdin/handler) would otherwise loop every session end.
+    // emitBlockingError's neverBlock downgrades the exit code only; the model
+    // still needs a valid stdout envelope, which buildNoOpResult supplies.
+    const neverBlock = event === 'summarize';
+    if (neverBlock) {
       emitModelContext(adapter, buildNoOpResult(event));
+    }
+    // BLOCKING_FEEDBACK: flush the buffered logger.error line to stderr and
+    // exit 2 so the model receives it per Claude Code's hook contract (unless
+    // neverBlock vetoes the exit).
+    emitBlockingError(
+      `Hook error: ${error instanceof Error ? error.message : String(error)}`,
+      { ...options, neverBlock },
+    );
+    if (neverBlock) {
       exitGraceful(options);
       return HOOK_EXIT_CODES.SUCCESS;
     }
-    // BLOCKING_FEEDBACK: flush the buffered logger.error line to stderr and
-    // exit 2 so the model receives it per Claude Code's hook contract.
-    emitBlockingError(
-      `Hook error: ${error instanceof Error ? error.message : String(error)}`,
-      options,
-    );
     return HOOK_EXIT_CODES.BLOCKING_ERROR;
   } finally {
     stderrBuffer.restore();
