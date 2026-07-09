@@ -32,39 +32,19 @@ const BLOCKED_ENV_VARS = [
   'CLAUDE_CODE_OAUTH_TOKEN', // Issue #2215: prevent stale parent-process token from leaking into
                              // isolated env. The fresh token is read from the keychain at spawn
                              // time by buildIsolatedEnvWithFreshOAuth().
-  // Issue #2357 (defense-in-depth): host CLI effort config, not part of the
-  // plugin's contract. The SDK subprocess reads CLAUDE_CODE_EFFORT_LEVEL and
-  // forwards it as the `effort` Messages API parameter; models that don't
-  // support effort (Haiku 4.5, Sonnet 4.5, older) reject with a permanent
-  // HTTP 400, which previously retried forever. env-sanitizer's CLAUDE_CODE_*
-  // prefix filter already strips these on spawn paths that chain sanitizeEnv,
-  // but BLOCKED_ENV_VARS is the canonical leak deny-list — naming them here
-  // guarantees buildIsolatedEnv() strips them even on a path that forgets to
-  // chain sanitizeEnv.
-  'CLAUDE_CODE_EFFORT_LEVEL',
-  'CLAUDE_CODE_ALWAYS_ENABLE_EFFORT',
-  // Issue #2620: host Claude Code routing flags and model overrides must not
-  // reroute claude-mem's worker subprocess away from its own OAuth endpoint.
+  // Issue #2620: routing-mode flags + model overrides leak from the host Claude
+  // Code CLI (Bedrock/Vertex/Mantle setups) and reroute the worker's
+  // CLAUDE_MEM_MODEL onto an endpoint that does not accept it, producing
+  // `400 The provided model identifier is invalid` on every compression
+  // indefinitely. The worker uses its own OAuth subscription endpoint, so
+  // these host-side routing hints must be stripped. Same env-leak family as
+  // the CLAUDE_CODE_EFFORT_LEVEL leak fixed in #2357.
   'CLAUDE_CODE_USE_BEDROCK',
   'CLAUDE_CODE_USE_VERTEX',
   'CLAUDE_CODE_USE_MANTLE',
   'ANTHROPIC_DEFAULT_OPUS_MODEL',
   'ANTHROPIC_DEFAULT_SONNET_MODEL',
   'ANTHROPIC_DEFAULT_HAIKU_MODEL',
-  'HTTPS_PROXY',
-  'HTTP_PROXY',
-  'NO_PROXY',
-  'ALL_PROXY',
-  'https_proxy',
-  'http_proxy',
-  'no_proxy',
-  'all_proxy',
-  'npm_config_proxy',
-  'npm_config_https_proxy',
-  'SSL_CERT_FILE',
-  'REQUESTS_CA_BUNDLE',
-  'CURL_CA_BUNDLE',
-  'NODE_EXTRA_CA_CERTS',
 ];
 
 export interface ClaudeMemEnv {
