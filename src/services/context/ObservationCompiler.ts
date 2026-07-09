@@ -15,6 +15,7 @@ import type {
   PriorMessages,
 } from './types.js';
 import { SUMMARY_LOOKAHEAD } from './types.js';
+import { NOT_DISMISSED_SQL } from '../sqlite/observations/dismiss-filter.js';
 
 function isDreamProject(project: string | null | undefined): boolean {
   return Boolean(project?.endsWith(':dream'));

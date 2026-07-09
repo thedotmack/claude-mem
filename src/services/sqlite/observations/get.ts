@@ -58,6 +58,7 @@ export function getObservationsByFilePath(
     AND ${NOT_DISMISSED_SQL}
     ${projectClause}
     ${platformClause}
+    AND ${NOT_DISMISSED_SQL}
     ORDER BY created_at_epoch DESC
     LIMIT ?
   `);

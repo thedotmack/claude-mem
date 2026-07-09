@@ -1,3 +1,9 @@
+// Reversible observation dismiss — activates the reserved observation_feedback
+// table (signal_type='dismissed'). A dismissed observation is hidden from every
+// PROACTIVE surfacing path (file-context banner, SQLite search, session-start
+// injection) but stays fully retrievable by id (get_observations). Undismiss
+// restores it. The read filter is unconditional but a no-op with no dismiss rows.
+
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { SessionSearch } from '../../../src/services/sqlite/SessionSearch.js';
@@ -9,6 +15,8 @@ const PROJECT = 'dismiss-proj';
 const TARGET_FILE = '/proj/src/target.ts';
 const SEARCH_TOKEN = 'zqxwtoken';
 
+// queryObservations only returns rows whose type is in observationTypes AND that
+// carry a concept in observationConcepts — mirror the compiler test's config.
 const CONFIG: ContextConfig = {
   totalObservationCount: 50,
   fullObservationCount: 3,
@@ -24,7 +32,7 @@ const CONFIG: ContextConfig = {
   showLastMessage: false,
 };
 
-function sortedIds(rows: Array<{ id: number }>): number[] {
+function ids(rows: Array<{ id: number }>): number[] {
   return rows.map(r => r.id).sort((a, b) => a - b);
 }
 
@@ -34,11 +42,11 @@ describe('reversible observation dismiss', () => {
   let visibleId: number;
   let dismissedId: number;
 
-  function seed(memorySessionId: string, title: string, epoch: number): number {
-    const sdkId = store.createSDKSession(`content-${memorySessionId}`, PROJECT, 'prompt');
-    store.updateMemorySessionId(sdkId, memorySessionId);
+  function seed(mem: string, title: string, epoch: number): number {
+    const sdkId = store.createSDKSession(`content-${mem}`, PROJECT, 'prompt');
+    store.updateMemorySessionId(sdkId, mem);
     return store.storeObservation(
-      memorySessionId,
+      mem,
       PROJECT,
       {
         type: 'discovery',
@@ -58,6 +66,8 @@ describe('reversible observation dismiss', () => {
 
   beforeEach(() => {
     store = new SessionStore(':memory:');
+    // Construct search before seeding so its FTS INSERT triggers index new rows
+    // (mirrors search-platform-source-scoping.test.ts).
     search = new SessionSearch(store.db);
     visibleId = seed('mem-visible', 'Visible', 1_700_000_000_000);
     dismissedId = seed('mem-dismissed', 'Dismissed', 1_700_000_001_000);
@@ -67,8 +77,8 @@ describe('reversible observation dismiss', () => {
     store.close();
   });
 
-  it('hides dismissed observations from file-context lookup', () => {
-    expect(sortedIds(getObservationsByFilePath(store.db, TARGET_FILE))).toEqual(sortedIds([{ id: visibleId }, { id: dismissedId }]));
+  it('hides a dismissed observation from getObservationsByFilePath (file-context banner)', () => {
+    expect(ids(getObservationsByFilePath(store.db, TARGET_FILE))).toEqual(ids([{ id: visibleId }, { id: dismissedId }]));
 
     store.dismissObservation(dismissedId);
 
@@ -77,7 +87,7 @@ describe('reversible observation dismiss', () => {
     expect(after).not.toContain(dismissedId);
   });
 
-  it('hides dismissed observations from FTS and filter-only search', () => {
+  it('hides a dismissed observation from searchObservations (FTS and filter-only paths)', () => {
     store.dismissObservation(dismissedId);
 
     const fts = search.searchObservations(SEARCH_TOKEN, { project: PROJECT }).map(o => o.id);
@@ -89,7 +99,7 @@ describe('reversible observation dismiss', () => {
     expect(filterOnly).not.toContain(dismissedId);
   });
 
-  it('hides dismissed observations from session-start context', () => {
+  it('hides a dismissed observation from the session-start context query', () => {
     store.dismissObservation(dismissedId);
 
     const surfaced = queryObservationsMulti(store, [PROJECT], CONFIG).map(o => o.id);
@@ -97,15 +107,16 @@ describe('reversible observation dismiss', () => {
     expect(surfaced).not.toContain(dismissedId);
   });
 
-  it('keeps dismissed observations addressable by id', () => {
+  it('STILL returns a dismissed observation by id (dismiss = hide, not delete)', () => {
     store.dismissObservation(dismissedId, 'too noisy');
 
     expect(store.getObservationById(dismissedId)).not.toBeNull();
     expect(store.getObservationsByIds([dismissedId]).map(o => o.id)).toContain(dismissedId);
-    expect(sortedIds(store.getObservationsByIds([visibleId, dismissedId]))).toEqual(sortedIds([{ id: visibleId }, { id: dismissedId }]));
+    // Fetching both ids returns both, dismissed or not.
+    expect(ids(store.getObservationsByIds([visibleId, dismissedId]))).toEqual(ids([{ id: visibleId }, { id: dismissedId }]));
   });
 
-  it('undismiss restores proactive surfacing', () => {
+  it('undismiss restores surfacing on every path', () => {
     store.dismissObservation(dismissedId);
     expect(store.isDismissed(dismissedId)).toBe(true);
 
@@ -117,24 +128,31 @@ describe('reversible observation dismiss', () => {
     expect(queryObservationsMulti(store, [PROJECT], CONFIG).map(o => o.id)).toContain(dismissedId);
   });
 
-  it('dismiss is idempotent', () => {
+  it('dismiss is idempotent — repeat dismiss writes exactly one feedback row', () => {
     store.dismissObservation(dismissedId, 'first');
     store.dismissObservation(dismissedId, 'second');
 
     const row = store.db
-      .prepare("SELECT COUNT(*) AS count FROM observation_feedback WHERE observation_id = ? AND signal_type = 'dismissed'")
-      .get(dismissedId) as { count: number };
-    expect(row.count).toBe(1);
+      .prepare("SELECT COUNT(*) AS c FROM observation_feedback WHERE observation_id = ? AND signal_type = 'dismissed'")
+      .get(dismissedId) as { c: number };
+    expect(row.c).toBe(1);
+    expect(store.isDismissed(dismissedId)).toBe(true);
   });
 
-  it('read filter is a no-op with zero dismiss rows', () => {
-    const both = sortedIds([{ id: visibleId }, { id: dismissedId }]);
-    expect(sortedIds(getObservationsByFilePath(store.db, TARGET_FILE))).toEqual(both);
-    expect(sortedIds(search.searchObservations(SEARCH_TOKEN, { project: PROJECT }))).toEqual(both);
-    expect(sortedIds(search.searchObservations(undefined, { project: PROJECT }))).toEqual(both);
-    expect(sortedIds(queryObservationsMulti(store, [PROJECT], CONFIG))).toEqual(both);
+  it('undismiss is a no-op when the observation was never dismissed', () => {
+    expect(store.isDismissed(visibleId)).toBe(false);
+    store.undismissObservation(visibleId); // must not throw
+    expect(store.isDismissed(visibleId)).toBe(false);
+  });
 
-    const feedback = store.db.prepare('SELECT COUNT(*) AS count FROM observation_feedback').get() as { count: number };
-    expect(feedback.count).toBe(0);
+  it('read filter is a no-op with zero dismiss rows (byte-identical surfacing)', () => {
+    const both = ids([{ id: visibleId }, { id: dismissedId }]);
+    expect(ids(getObservationsByFilePath(store.db, TARGET_FILE))).toEqual(both);
+    expect(ids(search.searchObservations(SEARCH_TOKEN, { project: PROJECT }))).toEqual(both);
+    expect(ids(search.searchObservations(undefined, { project: PROJECT }))).toEqual(both);
+    expect(ids(queryObservationsMulti(store, [PROJECT], CONFIG))).toEqual(both);
+
+    const feedback = store.db.prepare('SELECT COUNT(*) AS c FROM observation_feedback').get() as { c: number };
+    expect(feedback.c).toBe(0);
   });
 });

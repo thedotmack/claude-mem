@@ -18,6 +18,9 @@ function capturePostChain(routes: DataRoutes, targetPath: string): (req: Request
         handler = rest[1];
       }
     }),
+    // DataRoutes also registers a DELETE route (observation undismiss); provide
+    // a stub so setupRoutes doesn't throw. Mirrors data-routes-coercion.test.ts.
+    delete: mock(() => {}),
   };
 
   routes.setupRoutes(app as any);

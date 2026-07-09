@@ -114,9 +114,7 @@ export class SessionStore {
     this.ensureSDKSessionsPlatformContentIdentity();
     this.ensureUserPromptsSessionDbId();
     this.ensurePendingMessagesSessionToolUniqueIndex();
-    this.addObservationContentSessionIdColumns();
     this.createObservationFeedbackTable();
-    applyLegacyPromptBloatMaintenance(this.db);
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -1003,6 +1001,45 @@ export class SessionStore {
     logger.debug('DB', 'pending_messages table created successfully');
   }
 
+  // Activates the observation_feedback table declared in schema.sql. It was
+  // reserved in the reference schema but never created by any migration, so
+  // both fresh and existing databases need it wired here. Idempotent: the
+  // version guard plus the pre-existing-table check plus IF NOT EXISTS on the
+  // indexes make re-runs (and any DB that already has the table) a no-op. This
+  // is additive table creation in the same style as createPendingMessagesTable,
+  // not a destructive/backfilling migration.
+  private createObservationFeedbackTable(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(36) as SchemaVersion | undefined;
+    if (applied) return;
+
+    const tables = this.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='observation_feedback'").all() as TableNameRow[];
+    if (tables.length > 0) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(36, new Date().toISOString());
+      return;
+    }
+
+    logger.debug('DB', 'Creating observation_feedback table');
+
+    this.db.run(`
+      CREATE TABLE observation_feedback (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        observation_id INTEGER NOT NULL,
+        signal_type TEXT NOT NULL,
+        session_db_id INTEGER,
+        created_at_epoch INTEGER NOT NULL,
+        metadata TEXT,
+        FOREIGN KEY (observation_id) REFERENCES observations(id) ON DELETE CASCADE
+      )
+    `);
+
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_feedback_observation ON observation_feedback(observation_id)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_feedback_signal ON observation_feedback(signal_type)');
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(36, new Date().toISOString());
+
+    logger.debug('DB', 'observation_feedback table created successfully');
+  }
+
   private renameSessionIdColumns(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(17) as SchemaVersion | undefined;
     if (applied) return;
@@ -1846,6 +1883,55 @@ export class SessionStore {
     `).run(observationId);
   }
 
+  isDismissed(observationId: number): boolean {
+    return this.db.prepare(`
+      SELECT 1 FROM observation_feedback
+      WHERE observation_id = ? AND signal_type = 'dismissed'
+      LIMIT 1
+    `).get(observationId) != null;
+  }
+
+  /**
+   * Mark an observation as "dismissed" so it stops surfacing proactively
+   * (file-context banner, SQLite search, session-start injection) WITHOUT
+   * deleting it — getObservationById / getObservationsByIds still return it.
+   * Fully reversible via undismissObservation.
+   *
+   * Activates the reserved observation_feedback table (signal_type='dismissed').
+   * That table has no UNIQUE(observation_id, signal_type) index, so idempotency
+   * is enforced with a guarded INSERT ... WHERE NOT EXISTS rather than
+   * INSERT OR IGNORE (which would need a conflict target that does not exist).
+   * A repeat dismiss of the same observation is a no-op.
+   *
+   * observation_id is an enforced FK to observations(id) (PRAGMA foreign_keys
+   * = ON), so callers must pass an existing observation id; the HTTP layer
+   * verifies existence first and returns 404 otherwise.
+   */
+  dismissObservation(observationId: number, reason?: string): void {
+    const trimmedReason = typeof reason === 'string' ? reason.trim() : '';
+    const metadata = trimmedReason ? JSON.stringify({ reason: trimmedReason }) : null;
+    this.db.prepare(`
+      INSERT INTO observation_feedback (observation_id, signal_type, session_db_id, created_at_epoch, metadata)
+      SELECT ?, 'dismissed', NULL, ?, ?
+      WHERE NOT EXISTS (
+        SELECT 1 FROM observation_feedback
+        WHERE observation_id = ? AND signal_type = 'dismissed'
+      )
+    `).run(observationId, Date.now(), metadata, observationId);
+  }
+
+  /**
+   * Reverse dismissObservation — the observation resumes surfacing everywhere.
+   * No-op when the observation was never dismissed.
+   */
+  undismissObservation(observationId: number): void {
+    this.db.prepare(`
+      DELETE FROM observation_feedback
+      WHERE observation_id = ? AND signal_type = 'dismissed'
+    `).run(observationId);
+  }
+
+  /** True when the observation currently carries a 'dismissed' feedback signal. */
   isDismissed(observationId: number): boolean {
     return this.db.prepare(`
       SELECT 1 FROM observation_feedback
