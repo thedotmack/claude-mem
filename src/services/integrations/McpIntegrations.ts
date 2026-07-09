@@ -118,7 +118,21 @@ const COPILOT_CLI_CONFIG: McpInstallerConfig = {
   ideLabel: 'Copilot CLI',
   configPath: path.join(homedir(), '.github', 'copilot', 'mcp.json'),
   configKey: 'servers',
-  contextPath: path.join(process.cwd(), '.github', 'copilot-instructions.md'),
+  contextFile: {
+    path: path.join(process.cwd(), '.github', 'copilot-instructions.md'),
+    isWorkspaceRelative: true,
+  },
+};
+
+export const ANTIGRAVITY_CONFIG: McpInstallerConfig = {
+  ideId: 'antigravity',
+  ideLabel: 'Antigravity',
+  configPath: path.join(homedir(), '.gemini', 'config', 'mcp_config.json'),
+  configKey: 'mcpServers',
+  contextFile: {
+    path: path.join(process.cwd(), '.agents', 'rules', 'claude-mem-context.md'),
+    isWorkspaceRelative: true,
+  },
 };
 
 const ROO_CODE_CONFIG: McpInstallerConfig = {
