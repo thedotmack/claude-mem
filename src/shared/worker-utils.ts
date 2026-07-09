@@ -1,5 +1,5 @@
 import path from "path";
-import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync, writeSync } from "fs";
+import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync, unlinkSync } from "fs";
 import { execSync } from "child_process";
 import { spawnHidden } from "./spawn.js";
 import { logger } from "../utils/logger.js";
@@ -587,16 +587,8 @@ function getHookFailuresPath(): string {
   return path.join(getStateDir(), 'hook-failures.json');
 }
 
-function parseHookFailureState(raw: string): HookFailureState {
-  const parsed = JSON.parse(raw) as Partial<HookFailureState>;
-  return {
-    consecutiveFailures: typeof parsed.consecutiveFailures === 'number' && Number.isFinite(parsed.consecutiveFailures)
-      ? Math.max(0, Math.floor(parsed.consecutiveFailures))
-      : 0,
-    lastFailureAt: typeof parsed.lastFailureAt === 'number' && Number.isFinite(parsed.lastFailureAt)
-      ? parsed.lastFailureAt
-      : 0,
-  };
+function getHooksDisabledPath(): string {
+  return path.join(getStateDir(), 'hooks-disabled-until.json');
 }
 
 function readHookFailureState(): HookFailureState {
@@ -720,16 +712,10 @@ export async function recordWorkerUnreachable(): Promise<number> {
 
   const threshold = getFailLoudThreshold();
   if (next.consecutiveFailures >= threshold) {
-    // writeSync(2, ...) goes straight to fd 2, bypassing hookCommand's
-    // process.stderr.write override that would otherwise swallow the warning.
-    // Do not process.exit — honors the exit-0 philosophy spelled out in CLAUDE.md
-    // ("Worker/hook errors exit with code 0 to prevent Windows Terminal tab
-    // accumulation") so hooks continue gracefully instead of blocking tool calls.
-    try {
-      writeSync(2, `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks.\n`);
-    } catch {
-      // stderr unwritable — nothing actionable
-    }
+    writeHooksDisabledSentinel();
+    emitBlockingError(
+      `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks. Hooks disabled for this session.`
+    );
   }
   return next.consecutiveFailures;
 }
@@ -738,6 +724,42 @@ function resetWorkerFailureCounter(): void {
   const state = readHookFailureState();
   if (state.consecutiveFailures === 0) return;
   writeHookFailureStateAtomic({ consecutiveFailures: 0, lastFailureAt: 0 });
+  try {
+    const sentinelPath = getHooksDisabledPath();
+    if (existsSync(sentinelPath)) unlinkSync(sentinelPath);
+  } catch {
+    // Best-effort cleanup.
+  }
+}
+
+function writeHooksDisabledSentinel(): void {
+  const stateDir = getStateDir();
+  const dest = getHooksDisabledPath();
+  const tmp = `${dest}.tmp`;
+  try {
+    if (!existsSync(stateDir)) {
+      mkdirSync(stateDir, { recursive: true });
+    }
+    const payload = { disabledAt: Date.now() };
+    writeFileSync(tmp, JSON.stringify(payload), 'utf-8');
+    renameSync(tmp, dest);
+  } catch (error: unknown) {
+    logger.debug('SYSTEM', 'Failed to write hooks-disabled sentinel', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function areHooksDisabledForSession(): boolean {
+  try {
+    const raw = readFileSync(getHooksDisabledPath(), 'utf-8');
+    const parsed = JSON.parse(raw) as { disabledAt?: number };
+    if (typeof parsed.disabledAt !== 'number') return false;
+    const DISABLED_TTL_MS = 30 * 60 * 1000;
+    return Date.now() - parsed.disabledAt < DISABLED_TTL_MS;
+  } catch {
+    return false;
+  }
 }
 
 interface OutageWarningState {
@@ -819,12 +841,18 @@ export async function executeWithWorkerFallback<T = unknown>(
   body?: unknown,
   options: WorkerFallbackOptions = {},
 ): Promise<WorkerCallResult<T>> {
-  const alive = await ensureWorkerAliveOnce({ allowLazySpawn: options.allowLazySpawn });
+  const hooksDisabledForSession = areHooksDisabledForSession();
+  const alive = await ensureWorkerAliveOnce();
   if (!alive) {
-    if (options.allowLazySpawn !== false) {
-      await recordWorkerUnreachable();
+    if (hooksDisabledForSession) {
+      return { continue: true, reason: 'hooks_disabled_session', [WORKER_FALLBACK_BRAND]: true };
     }
+    await recordWorkerUnreachable();
     return { continue: true, reason: 'worker_unreachable', [WORKER_FALLBACK_BRAND]: true };
+  }
+
+  if (hooksDisabledForSession) {
+    resetWorkerFailureCounter();
   }
 
   const init: { method: string; headers?: Record<string, string>; body?: string; timeoutMs?: number } = { method };

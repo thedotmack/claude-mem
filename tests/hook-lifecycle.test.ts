@@ -15,6 +15,21 @@ describe('Hook Lifecycle - Event Handlers', () => {
       expect(nonOkRegion.indexOf('resetWorkerFailureCounter()'))
         .toBeLessThan(nonOkRegion.indexOf('response.status === 429 || response.status >= 500'));
     });
+
+    it('still probes for recovery before honoring the hooks-disabled sentinel', () => {
+      const source = readFileSync('src/shared/worker-utils.ts', 'utf-8');
+      const fallbackRegion = source.slice(
+        source.indexOf('export async function executeWithWorkerFallback'),
+        source.indexOf('const init: { method: string; headers?: Record<string, string>; body?: string; timeoutMs?: number } = { method };'),
+      );
+
+      expect(fallbackRegion).toContain('const hooksDisabledForSession = areHooksDisabledForSession();');
+      expect(fallbackRegion).toContain('const alive = await ensureWorkerAliveOnce();');
+      expect(fallbackRegion.indexOf('const alive = await ensureWorkerAliveOnce();'))
+        .toBeLessThan(fallbackRegion.indexOf("reason: 'hooks_disabled_session'"));
+      expect(fallbackRegion).toContain('if (hooksDisabledForSession) {');
+      expect(fallbackRegion).toContain('resetWorkerFailureCounter();');
+    });
   });
 
   describe('getEventHandler', () => {
@@ -504,7 +519,7 @@ describe('hookCommand - stderr discipline (plan 01 / #2292)', () => {
     expect(typeof hookCommand).toBe('function');
 
     const hookCommandSource = await Bun.file(
-      new URL('../src/cli/hook-command.ts', import.meta.url).pathname
+      new URL('../src/cli/hook-command.ts', import.meta.url)
     ).text();
 
     // Diagnostics still go through the structured logger.
