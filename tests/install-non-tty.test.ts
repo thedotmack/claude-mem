@@ -171,40 +171,23 @@ describe('Install Non-TTY Support', () => {
       expect(installSource).toContain('installCodexCli(marketplaceDirectory())');
     });
 
-    it('writes an install marker into the marketplace plugin before Codex cache registration', () => {
-      const installFlowRegion = installSource.slice(
-        installSource.indexOf('const tasks: TaskDescriptor[] = ['),
-        installSource.indexOf('const failedIDEs = await setupIDEs'),
-      );
-      expect(installSource).toContain('function writeMarketplaceInstallMarker');
-      expect(installSource).toContain("writeInstallMarker(join(marketplaceDirectory(), 'plugin'), version, bunVersion, uvVersion)");
-      expect(installFlowRegion).toContain('writeMarketplaceInstallMarker(version, bunVersion, uvVersion)');
-      expect(installSource.indexOf('writeMarketplaceInstallMarker(version, bunVersion, uvVersion)'))
-        .toBeLessThan(installSource.indexOf('const failedIDEs = await setupIDEs'));
-    });
-
-    it('mirrors repair markers into the durable marketplace plugin when present', () => {
-      const repairRegion = installSource.slice(
-        installSource.indexOf('export async function runRepairCommand'),
-        installSource.indexOf("console.log('claude-mem repair complete.')"),
-      );
-      expect(repairRegion).toContain("writeInstallMarker(cacheDir, version, bunVersion, uvVersion)");
-      expect(repairRegion).toContain("existsSync(join(marketplaceDirectory(), 'plugin', 'package.json'))");
-      expect(repairRegion).toContain('writeInstallMarker(marketplaceDirectory(), version, bunVersion, uvVersion)');
-    });
-
-    it('refreshes Codex marketplace cache after registration', () => {
+    it('installs the Codex plugin cache after local marketplace registration', () => {
       const installRegion = codexInstallerSource.slice(
         codexInstallerSource.indexOf('export async function installCodexCli'),
         codexInstallerSource.indexOf('export function uninstallCodexCli'),
       );
-      const cacheInstallRegion = codexInstallerSource.slice(
-        codexInstallerSource.indexOf('export async function installCodexPluginCache'),
-        codexInstallerSource.indexOf('function lookupCodexOnWindows'),
+      expect(installRegion).toContain("runCodex(['plugin', 'add', CODEX_PLUGIN_ID])");
+      expect(installRegion).toContain('Installed Codex plugin cache.');
+      expect(installRegion).not.toContain('runCodexBestEffort(');
+      expect(installRegion).not.toContain("['plugin', 'marketplace', 'upgrade', MARKETPLACE_NAME]");
+    });
+
+    it('copies the install marker into the bundled marketplace plugin before Codex installs it', () => {
+      const runtimeSetupRegion = installSource.slice(
+        installSource.indexOf("title: 'Setting up runtime"),
+        installSource.indexOf("return `Runtime ready"),
       );
-      expect(installRegion).toContain('await installCodexPluginCache(marketplaceRoot)');
-      expect(cacheInstallRegion).toContain("['plugin', 'add', CODEX_PLUGIN_ID]");
-      expect(cacheInstallRegion).not.toContain("['plugin', 'marketplace', 'upgrade', MARKETPLACE_NAME]");
+      expect(runtimeSetupRegion).toContain("writeInstallMarker(join(marketplaceDirectory(), 'plugin'), version, bunVersion, uvVersion)");
     });
 
     it('replaces stale Codex marketplace registrations from a different source', () => {

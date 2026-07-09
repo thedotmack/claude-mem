@@ -259,18 +259,6 @@ function runCodex(args: string[]): void {
   }
 }
 
-function runCodexBestEffort(args: string[], successMessage: string, failureMessage: string): boolean {
-  try {
-    runCodex(args);
-    console.log(`  ${successMessage}`);
-    return true;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.warn(`  ${failureMessage}: ${message}`);
-    return false;
-  }
-}
-
 function isMarketplaceDifferentSourceError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return message.includes(`marketplace '${MARKETPLACE_NAME}' is already added from a different source`)
@@ -558,9 +546,17 @@ export async function installCodexCli(marketplaceRootOverride?: string): Promise
   }
 }
 
-async function performCodexInstall(marketplaceRootOverride?: string): Promise<number> {
-  assertCodexMarketplaceSupported();
-  const marketplaceRoot = resolvePluginMarketplaceRoot(marketplaceRootOverride);
+    console.log(`  Registering Codex plugin marketplace: ${marketplaceRoot}`);
+    registerCodexMarketplace(marketplaceRoot);
+    enableCodexPluginConfig();
+    runCodex(['plugin', 'add', CODEX_PLUGIN_ID]);
+    console.log('  Installed Codex plugin cache.');
+    if (!cleanupLegacyCodexAgentsMdContext()) {
+      console.warn(`  Native Codex hooks registered, but failed to remove legacy AGENTS.md context from ${CODEX_AGENTS_MD_PATH}.`);
+    }
+    if (!cleanupLegacyCodexTranscriptAgentsContext()) {
+      console.warn(`  Native Codex hooks registered, but failed to disable legacy transcript AGENTS.md context in ${CODEX_TRANSCRIPT_WATCH_CONFIG_PATH}.`);
+    }
 
   console.log(`  Registering Codex plugin marketplace: ${marketplaceRoot}`);
   registerCodexMarketplace(marketplaceRoot);
