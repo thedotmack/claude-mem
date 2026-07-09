@@ -4,9 +4,7 @@ import { SessionStore } from '../sqlite/SessionStore.js';
 import { SessionSearch } from '../sqlite/SessionSearch.js';
 import { applySqliteBusyTimeout } from '../sqlite/connection.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
-import { HelixManager } from '../sync/HelixManager.js';
-import { HelixSync } from '../sync/HelixSync.js';
-import type { VectorSync } from '../sync/VectorSync.js';
+import { CloudSync } from '../sync/CloudSync.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { resolveDbPath, resolveUserSettingsPath } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
@@ -17,8 +15,8 @@ export class DatabaseManager {
   private db: Database | null = null;
   private sessionStore: SessionStore | null = null;
   private sessionSearch: SessionSearch | null = null;
-  private chromaSync: VectorSync | null = null;
-  private helixManager: HelixManager | null = null;
+  private chromaSync: ChromaSync | null = null;
+  private cloudSync: CloudSync | null = null;
 
   async initialize(): Promise<void> {
     this.db = applySqliteBusyTimeout(new Database(resolveDbPath()));
@@ -39,6 +37,13 @@ export class DatabaseManager {
       logger.info('DB', 'Chroma disabled via CLAUDE_MEM_CHROMA_ENABLED=false, using SQLite-only search');
     }
 
+    // Cloud sync is active ⇔ token AND user id are both non-empty (no
+    // separate enabled flag). Inactive installs get null so the write-site
+    // `getCloudSync()?.notify()` nudges are free no-ops.
+    if (settings.CLAUDE_MEM_CLOUD_SYNC_TOKEN !== '' && settings.CLAUDE_MEM_CLOUD_SYNC_USER_ID !== '') {
+      this.cloudSync = new CloudSync(this.db, settings);
+    }
+
     logger.info('DB', 'Database initialized (shared connection)');
   }
 
@@ -46,6 +51,9 @@ export class DatabaseManager {
     this.chromaSync = null;
     await this.helixManager?.disconnect();
     this.helixManager = null;
+
+    this.cloudSync?.stop();
+    this.cloudSync = null;
 
     this.sessionStore = null;
     this.sessionSearch = null;
@@ -75,11 +83,8 @@ export class DatabaseManager {
     return this.chromaSync;
   }
 
-  async getHelixTransport(): Promise<HelixTransport> {
-    if (!this.helixManager) {
-      this.helixManager = new HelixManager()
-    }
-    return await this.helixManager.getTransport()
+  getCloudSync(): CloudSync | null {
+    return this.cloudSync;
   }
 
   getConnection(): Database {

@@ -20,6 +20,7 @@ export type Component =
   | 'CHROMA_MCP'
   | 'CHROMA_SYNC'
   | 'CLAUDE_MD'
+  | 'CLOUD_SYNC'
   | 'CONFIG'
   | 'CONSOLE'
   | 'CURSOR'

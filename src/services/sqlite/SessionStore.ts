@@ -1,5 +1,6 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite';
-import { OBSERVER_SESSIONS_PROJECT, resolveDbPath } from '../../shared/paths.js';
+import { existsSync, readFileSync } from 'fs';
+import { DATA_DIR, DB_PATH, ensureDir, OBSERVER_SESSIONS_PROJECT, paths } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import {
   TableColumnInfo,
@@ -76,7 +77,7 @@ interface SdkSessionDetailRow {
 export class SessionStore {
   public db: Database;
 
-  constructor(dbPathOrDb: string | Database = resolveDbPath()) {
+  constructor(dbPathOrDb: string | Database = DB_PATH, options: { cloudSyncStatePath?: string } = {}) {
     if (dbPathOrDb instanceof Database) {
       this.db = dbPathOrDb;
       applySqliteBusyTimeout(this.db);
@@ -115,7 +116,7 @@ export class SessionStore {
     this.ensureSDKSessionsPlatformContentIdentity();
     this.ensureUserPromptsSessionDbId();
     this.ensurePendingMessagesSessionToolUniqueIndex();
-    this.addDedupTables();
+    this.ensureSyncedAtColumns(options.cloudSyncStatePath ?? paths.cloudSyncState());
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -516,101 +517,64 @@ export class SessionStore {
     }
   }
 
-  private addObservationContentSessionIdColumns(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(36) as SchemaVersion | undefined;
+  private ensureSyncedAtColumns(cloudSyncStatePath: string): void {
+    // Not gated on a schema_versions row: the community-edge line already
+    // consumed versions 36-38 without adding synced_at, so affected DBs have
+    // those version rows but not the columns. The PRAGMA checks are the real
+    // guard; version 39 is recorded for bookkeeping only.
+    let columnsAdded = false;
 
-    const observationCols = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
-    const hasObservationContentSession = observationCols.some(c => c.name === 'content_session_id');
+    for (const table of ['observations', 'session_summaries', 'user_prompts']) {
+      const tableInfo = this.db.query(`PRAGMA table_info(${table})`).all() as TableColumnInfo[];
+      const hasSyncedAt = tableInfo.some(col => col.name === 'synced_at');
 
-    const summaryCols = this.db.query('PRAGMA table_info(session_summaries)').all() as TableColumnInfo[];
-    const hasSummaryContentSession = summaryCols.some(c => c.name === 'content_session_id');
+      if (!hasSyncedAt) {
+        this.db.run(`ALTER TABLE ${table} ADD COLUMN synced_at INTEGER`);
+        logger.debug('DB', `Added synced_at column to ${table} table`);
+        columnsAdded = true;
+      }
 
-    const hasObservationIndex = this.db.prepare(`
-      SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_observations_content_session'
-    `).get() as { name: string } | undefined;
-    const hasSummaryIndex = this.db.prepare(`
-      SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_session_summaries_content_session'
-    `).get() as { name: string } | undefined;
-
-    if (applied && hasObservationContentSession && hasSummaryContentSession && hasObservationIndex && hasSummaryIndex) return;
-
-    if (!hasObservationContentSession) {
-      this.db.run('ALTER TABLE observations ADD COLUMN content_session_id TEXT');
-      logger.debug('DB', 'Added content_session_id column to observations table (#2769)');
+      this.db.run(`CREATE INDEX IF NOT EXISTS idx_${table}_unsynced ON ${table}(id) WHERE synced_at IS NULL`);
     }
-    this.db.run(`
-      UPDATE observations
-         SET content_session_id = (
-           SELECT s.content_session_id
-             FROM sdk_sessions s
-            WHERE s.memory_session_id = observations.memory_session_id
-            LIMIT 1
-         )
-       WHERE content_session_id IS NULL
-         AND EXISTS (
-           SELECT 1
-             FROM sdk_sessions s
-            WHERE s.memory_session_id = observations.memory_session_id
-         )
-    `);
-    this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_content_session ON observations(content_session_id)');
 
-    if (!hasSummaryContentSession) {
-      this.db.run('ALTER TABLE session_summaries ADD COLUMN content_session_id TEXT');
-      logger.debug('DB', 'Added content_session_id column to session_summaries table (#2769)');
+    // Legacy cursor adoption is once-only: it runs only in the call that
+    // created the columns.
+    if (columnsAdded) {
+      this.stampRowsSyncedByLegacyClient(cloudSyncStatePath);
     }
-    this.db.run(`
-      UPDATE session_summaries
-         SET content_session_id = (
-           SELECT s.content_session_id
-             FROM sdk_sessions s
-            WHERE s.memory_session_id = session_summaries.memory_session_id
-            LIMIT 1
-         )
-       WHERE content_session_id IS NULL
-         AND EXISTS (
-           SELECT 1
-             FROM sdk_sessions s
-            WHERE s.memory_session_id = session_summaries.memory_session_id
-         )
-    `);
-    this.db.run('CREATE INDEX IF NOT EXISTS idx_session_summaries_content_session ON session_summaries(content_session_id)');
 
-    if (!applied) {
-      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(36, new Date().toISOString());
-    }
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(39, new Date().toISOString());
   }
 
-  private createObservationFeedbackTable(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(37) as SchemaVersion | undefined;
-    const table = this.db.prepare(`
-      SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'observation_feedback'
-    `).get() as TableNameRow | undefined;
-    const observationIndex = this.db.prepare(`
-      SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_feedback_observation'
-    `).get() as { name: string } | undefined;
-    const signalIndex = this.db.prepare(`
-      SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_feedback_signal'
-    `).get() as { name: string } | undefined;
+  // Rows the standalone cloud-sync client already uploaded (its cursors live in
+  // cloud-sync-state.json) are stamped so they are not re-uploaded. The state
+  // file is left in place — device-id adoption still reads it.
+  private stampRowsSyncedByLegacyClient(statePath: string): void {
+    if (!existsSync(statePath)) return;
 
-    if (applied && table && observationIndex && signalIndex) return;
+    let state: { lastId?: number; lastSummaryId?: number; lastPromptId?: number };
+    try {
+      state = JSON.parse(readFileSync(statePath, 'utf-8'));
+    } catch (error) {
+      logger.warn('DB', 'Failed to read legacy cloud-sync state, skipping synced_at adoption', { statePath }, error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
+    if (state === null || typeof state !== 'object') {
+      logger.warn('DB', 'Legacy cloud-sync state is not an object, skipping synced_at adoption', { statePath });
+      return;
+    }
 
-    this.db.run(`
-      CREATE TABLE IF NOT EXISTS observation_feedback (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        observation_id INTEGER NOT NULL,
-        signal_type TEXT NOT NULL,
-        session_db_id INTEGER,
-        created_at_epoch INTEGER NOT NULL,
-        metadata TEXT,
-        FOREIGN KEY (observation_id) REFERENCES observations(id) ON DELETE CASCADE
-      )
-    `);
-    this.db.run('CREATE INDEX IF NOT EXISTS idx_feedback_observation ON observation_feedback(observation_id)');
-    this.db.run('CREATE INDEX IF NOT EXISTS idx_feedback_signal ON observation_feedback(signal_type)');
+    const now = Date.now();
+    const cursors: Array<[table: string, lastSyncedId: unknown]> = [
+      ['observations', state.lastId],
+      ['session_summaries', state.lastSummaryId],
+      ['user_prompts', state.lastPromptId],
+    ];
 
-    if (!applied) {
-      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(37, new Date().toISOString());
+    for (const [table, lastSyncedId] of cursors) {
+      if (!(typeof lastSyncedId === 'number' && lastSyncedId > 0)) continue;
+      this.db.prepare(`UPDATE ${table} SET synced_at = ? WHERE id <= ? AND synced_at IS NULL`).run(now, lastSyncedId);
+      logger.debug('DB', `Stamped synced_at on ${table} rows already uploaded by the legacy cloud-sync client`, { lastSyncedId });
     }
   }
 

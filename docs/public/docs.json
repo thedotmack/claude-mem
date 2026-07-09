@@ -111,7 +111,8 @@
         "group": "Hosted Server",
         "icon": "cloud",
         "pages": [
-          "hosted-server"
+          "hosted-server",
+          "cloud-sync"
         ]
       },
       {
