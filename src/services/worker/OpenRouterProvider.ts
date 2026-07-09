@@ -171,8 +171,7 @@ interface OpenRouterConfig {
   apiUrl: string;
   siteUrl?: string;
   appName?: string;
-  reasoningEffort: OpenRouterReasoningEffort | null;
-  extraBody: Record<string, unknown> | null;
+  extraBody?: Record<string, unknown>;
 }
 
 export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfig> {
@@ -226,49 +225,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
   }
 
   protected async query(history: ConversationMessage[], config: OpenRouterConfig): Promise<ProviderQueryResult> {
-    return this.queryOpenRouterMultiTurn(
-      history,
-      config.apiKey,
-      config.model,
-      config.apiUrl,
-      config.siteUrl,
-      config.appName,
-      config.reasoningEffort,
-      config.extraBody
-    );
-  }
-
-  /** POST the chat-completions request. Extracted so the retry try block stays narrow. */
-  private fetchChatCompletion(
-    apiUrl: string,
-    apiKey: string,
-    model: string,
-    messages: OpenAIMessage[],
-    siteUrl: string | undefined,
-    appName: string | undefined,
-    reasoningEffort: OpenRouterReasoningEffort | null,
-    extraBody: Record<string, unknown> | null,
-    priorRequestId: string | null,
-    attemptSignal: AbortSignal
-  ): Promise<Response> {
-    return fetch(apiUrl, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'HTTP-Referer': siteUrl || 'https://github.com/thedotmack/claude-mem',
-        'X-Title': appName || 'claude-mem',
-        'Content-Type': 'application/json',
-        ...(priorRequestId ? { 'x-claude-mem-prior-request-id': priorRequestId } : {}),
-      },
-      body: JSON.stringify(buildOpenRouterRequestBody({
-        apiUrl,
-        model,
-        messages,
-        reasoningEffort,
-        extraBody,
-      })),
-      signal: attemptSignal,
-    });
+    return this.queryOpenRouterMultiTurn(history, config.apiKey, config.model, config.apiUrl, config.siteUrl, config.appName, config.extraBody);
   }
 
   private async queryOpenRouterMultiTurn(
@@ -278,8 +235,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     apiUrl: string,
     siteUrl?: string,
     appName?: string,
-    reasoningEffort: OpenRouterReasoningEffort | null = null,
-    extraBody: Record<string, unknown> | null = null
+    extraBody?: Record<string, unknown>,
   ): Promise<ProviderQueryResult> {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const maxContextMessages = parseInt(settings.CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES, 10) || DEFAULT_MAX_CONTEXT_MESSAGES;
@@ -327,31 +283,14 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
             temperature: 0.3,
 
             max_tokens: 4096,
-
-            // OpenRouter reasoning control
-            // Example:
-            // CLAUDE_MEM_OPENROUTER_REASONING_EFFORT=none
-            //
-            // Sends:
-            // reasoning: { effort: "none" }
-            //
-            // This disables GLM/DeepSeek thinking tokens
-            ...(reasoningEffort
-              ? {
-                  reasoning: {
-                    effort: reasoningEffort,
-                  },
-                }
-              : {}),
-
-            // Existing OpenRouter usage tracking
-            ...(apiUrl.includes('openrouter.ai')
-              ? {
-                  usage: {
-                    include: true,
-                  },
-                }
-              : {}),
+            // Ask openrouter.ai for usage accounting (token counts + cost).
+            // Only sent to openrouter.ai — strict custom gateways may reject
+            // unknown body fields.
+            ...(apiUrl.includes('openrouter.ai') ? { usage: { include: true } } : {}),
+            // User-defined extra body parameters merged last so they can
+            // override any of the above. Used for provider-specific params
+            // like thinking control (e.g. {"thinking":{"type":"disabled"}}).
+            ...(extraBody ?? {}),
           }),
 
           signal: attemptSignal,
@@ -499,7 +438,25 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       });
     }
 
-    return { apiKey, model, apiUrl, siteUrl, appName, reasoningEffort, extraBody };
+    // Parse optional extra body parameters (JSON string). Merged into the
+    // request body last so users can override defaults or add provider-specific
+    // fields like thinking control: {"thinking":{"type":"disabled"}}.
+    let extraBody: Record<string, unknown> | undefined;
+    const extraBodyRaw = settings.CLAUDE_MEM_OPENROUTER_EXTRA_BODY;
+    if (extraBodyRaw) {
+      try {
+        const parsed = JSON.parse(extraBodyRaw);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          extraBody = parsed as Record<string, unknown>;
+        } else {
+          logger.warn('SDK', 'CLAUDE_MEM_OPENROUTER_EXTRA_BODY must be a JSON object, ignoring');
+        }
+      } catch {
+        logger.warn('SDK', 'CLAUDE_MEM_OPENROUTER_EXTRA_BODY is not valid JSON, ignoring');
+      }
+    }
+
+    return { apiKey, model, apiUrl, siteUrl, appName, extraBody };
   }
 }
 

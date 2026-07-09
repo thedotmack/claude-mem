@@ -104,14 +104,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_OPENROUTER_EXTRA_BODY',
       'CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES',
       'CLAUDE_MEM_OPENROUTER_MAX_TOKENS',
-      'CLAUDE_MEM_CODEX_MODEL',
-      'CLAUDE_MEM_CODEX_PATH',
-      'CLAUDE_MEM_CODEX_REASONING_EFFORT',
-      'CLAUDE_MEM_CODEX_MAX_CONTEXT_MESSAGES',
-      'CLAUDE_MEM_CODEX_MAX_TOKENS',
-      'CLAUDE_MEM_CODEX_TIMEOUT_MS',
-      'CLAUDE_MEM_KIRO_MODEL',
-      'CLAUDE_MEM_KIRO_CLI_PATH',
+      'CLAUDE_MEM_OPENROUTER_EXTRA_BODY',
       'CLAUDE_MEM_DATA_DIR',
       'CLAUDE_MEM_LOG_LEVEL',
       'CLAUDE_MEM_PYTHON_VERSION',
@@ -339,6 +332,17 @@ export class SettingsRoutes extends BaseRouteHandler {
       } catch (error) {
         logger.debug('SETTINGS', 'Invalid URL format', { url: settings.CLAUDE_MEM_OPENROUTER_SITE_URL, error: error instanceof Error ? error.message : String(error) });
         return { valid: false, error: 'CLAUDE_MEM_OPENROUTER_SITE_URL must be a valid URL' };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_OPENROUTER_EXTRA_BODY) {
+      try {
+        const parsed = JSON.parse(settings.CLAUDE_MEM_OPENROUTER_EXTRA_BODY);
+        if (parsed && (typeof parsed !== 'object' || Array.isArray(parsed))) {
+          return { valid: false, error: 'CLAUDE_MEM_OPENROUTER_EXTRA_BODY must be a JSON object (e.g. {"thinking":{"type":"disabled"}})' };
+        }
+      } catch {
+        return { valid: false, error: 'CLAUDE_MEM_OPENROUTER_EXTRA_BODY is not valid JSON' };
       }
     }
 
