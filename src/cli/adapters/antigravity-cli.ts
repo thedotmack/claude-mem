@@ -1,12 +1,43 @@
 import type { PlatformAdapter } from '../types.js';
 import { AdapterRejectedInput, isValidCwd } from './errors.js';
 
+/**
+ * Antigravity CLI adapter.
+ *
+ * Antigravity replaces Gemini CLI (Gemini CLI stops serving 2026-06-18). Its
+ * declarative hooks live in ~/.gemini/config/hooks.json and the stdin payload
+ * is shaped differently from Gemini CLI:
+ *
+ *   {
+ *     "conversationId": "...",            // → sessionId
+ *     "artifactDirectoryPath": "...",
+ *     "stepIdx": 50,
+ *     "toolCall": { "name": "run_command", "args": { "CommandLine": ..., "Cwd": ... } },
+ *     "transcriptPath": "...",
+ *     "workspacePaths": ["..."],          // → cwd (first entry)
+ *     "error": ""                         // PostToolUse only
+ *   }
+ *
+ * Unlike Gemini CLI, the payload carries NO `hook_event_name`. The event is
+ * known only from the CLI argument (`hook antigravity-cli <event>`), so this
+ * adapter never infers the event from stdin — it only normalizes the data.
+ *
+ * The above shape for PreToolUse/PostToolUse was confirmed by live probing
+ * agy 1.0.9 in both headless and interactive sessions. Those are the ONLY two
+ * events the CLI hook runner fires today — session/turn lifecycle events
+ * (SessionStart, Stop, Compaction, …) exist in the Python SDK but are not yet
+ * surfaced by the CLI. See AntigravityCliHooksInstaller for details.
+ */
 export const antigravityCliAdapter: PlatformAdapter = {
   normalizeInput(raw) {
     const r = (raw ?? {}) as any;
 
-    // unverified: confirm Antigravity sets GEMINI_* env vars on first real hook firing
+    const toolCall = (r.toolCall ?? {}) as Record<string, unknown>;
+    const toolArgs = (toolCall.args ?? {}) as Record<string, unknown>;
+
     const cwd = r.cwd
+      ?? (Array.isArray(r.workspacePaths) ? r.workspacePaths[0] : undefined)
+      ?? (typeof toolArgs.Cwd === 'string' ? toolArgs.Cwd : undefined)
       ?? process.env.GEMINI_CWD
       ?? process.env.GEMINI_PROJECT_DIR
       ?? process.env.CLAUDE_PROJECT_DIR
@@ -15,34 +46,26 @@ export const antigravityCliAdapter: PlatformAdapter = {
       throw new AdapterRejectedInput('invalid_cwd');
     }
 
-    const sessionId = r.session_id
+    const sessionId = r.conversationId
+      ?? r.session_id
       ?? process.env.GEMINI_SESSION_ID
       ?? undefined;
 
-    const hookEventName: string | undefined = r.hook_event_name;
+    const toolName = typeof toolCall.name === 'string' ? toolCall.name : undefined;
+    const toolInput = toolCall.args !== undefined ? toolCall.args : undefined;
 
-    let toolName: string | undefined = r.tool_name;
-    let toolInput: unknown = r.tool_input;
-    let toolResponse: unknown = r.tool_response;
-
-    if (hookEventName === 'AfterAgent' && r.prompt_response) {
-      toolName = toolName ?? 'AntigravityProvider';
-      toolInput = toolInput ?? { prompt: r.prompt };
-      toolResponse = toolResponse ?? { response: r.prompt_response };
-    }
-
-    if (hookEventName === 'BeforeTool' && toolName && !toolResponse) {
+    // PostToolUse carries an `error` field; PreToolUse has no result yet.
+    let toolResponse: unknown;
+    if ('error' in r) {
+      toolResponse = { error: r.error };
+    } else if (toolName) {
       toolResponse = { _preExecution: true };
     }
 
-    if (hookEventName === 'Notification') {
-      toolName = toolName ?? 'AntigravityNotification';
-      toolInput = toolInput ?? {
-        notification_type: r.notification_type,
-        message: r.message,
-      };
-      toolResponse = toolResponse ?? { details: r.details };
-    }
+    const metadata: Record<string, unknown> = {};
+    if (r.conversationId) metadata.conversationId = r.conversationId;
+    if (r.artifactDirectoryPath) metadata.artifactDirectoryPath = r.artifactDirectoryPath;
+    if (r.stepIdx !== undefined) metadata.stepIdx = r.stepIdx;
 
     return {
       sessionId,
@@ -51,28 +74,22 @@ export const antigravityCliAdapter: PlatformAdapter = {
       toolName,
       toolInput,
       toolResponse,
-      transcriptPath: r.transcript_path,
+      transcriptPath: r.transcriptPath,
+      metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
     };
   },
 
   formatOutput(result) {
-    const output: Record<string, unknown> = {};
+    // Antigravity hooks read a JSON object on stdout with a `decision` key
+    // (allow | deny | ask). claude-mem is a passive observer — it captures
+    // memory and never blocks the agent — so it always allows. Context is
+    // injected via GEMINI.md (still parsed by Antigravity), not stdout.
+    const decision = result.decision === 'block' ? 'deny' : 'allow';
 
-    output.continue = result.continue ?? true;
+    const output: Record<string, unknown> = { decision };
 
-    if (result.suppressOutput !== undefined) {
-      output.suppressOutput = result.suppressOutput;
-    }
-
-    if (result.systemMessage) {
-      const ansiRegex = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
-      output.systemMessage = result.systemMessage.replace(ansiRegex, '');
-    }
-
-    if (result.hookSpecificOutput) {
-      output.hookSpecificOutput = {
-        additionalContext: result.hookSpecificOutput.additionalContext,
-      };
+    if (result.reason) {
+      output.reason = result.reason;
     }
 
     return output;

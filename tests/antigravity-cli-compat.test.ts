@@ -1,150 +1,134 @@
 import { describe, it, expect } from 'bun:test';
 import { readFileSync } from 'fs';
-import { antigravityCliAdapter } from '../src/cli/adapters/antigravity-cli.js';
 
-const INSTALLER_PATH = 'src/services/integrations/AntigravityCliHooksInstaller.ts';
+// Real cwd that passes isValidCwd (repo root at test runtime).
+const CWD = process.cwd();
 
-describe('AntigravityCliHooksInstaller - event mapping (B0-confirmed 7-event map)', () => {
-  const src = readFileSync(INSTALLER_PATH, 'utf-8');
+const basePost = () => ({
+  conversationId: 'conv-abc-123',
+  artifactDirectoryPath: '/some/brain',
+  error: '',
+  stepIdx: 7,
+  toolCall: {
+    name: 'run_command',
+    args: { CommandLine: 'echo hi', Cwd: CWD },
+  },
+  transcriptPath: '/some/transcript.jsonl',
+  workspacePaths: [CWD],
+});
 
-  it('maps SessionStart to context', () => {
-    expect(src).toContain("'SessionStart': 'context'");
+describe('antigravityCliAdapter.normalizeInput - real agy 1.0.9 payload', () => {
+  it('maps conversationId -> sessionId', async () => {
+    const { antigravityCliAdapter } = await import('../src/cli/adapters/antigravity-cli.js');
+    const r = antigravityCliAdapter.normalizeInput(basePost());
+    expect(r.sessionId).toBe('conv-abc-123');
   });
 
-  it('maps BeforeAgent to session-init, not user-message', () => {
-    expect(src).toContain("'BeforeAgent': 'session-init'");
+  it('maps workspacePaths[0] -> cwd', async () => {
+    const { antigravityCliAdapter } = await import('../src/cli/adapters/antigravity-cli.js');
+    const r = antigravityCliAdapter.normalizeInput(basePost());
+    expect(r.cwd).toBe(CWD);
   });
 
-  it('maps AfterAgent, BeforeTool, AfterTool, and Notification to observation', () => {
-    expect(src).toContain("'AfterAgent': 'observation'");
-    expect(src).toContain("'BeforeTool': 'observation'");
-    expect(src).toContain("'AfterTool': 'observation'");
-    expect(src).toContain("'Notification': 'observation'");
+  it('falls back to toolCall.args.Cwd when workspacePaths missing', async () => {
+    const { antigravityCliAdapter } = await import('../src/cli/adapters/antigravity-cli.js');
+    const payload = basePost();
+    delete (payload as { workspacePaths?: unknown }).workspacePaths;
+    const r = antigravityCliAdapter.normalizeInput(payload);
+    expect(r.cwd).toBe(CWD);
   });
 
-  it('maps PreCompress to summarize', () => {
-    expect(src).toContain("'PreCompress': 'summarize'");
+  it('maps toolCall.name -> toolName and toolCall.args -> toolInput', async () => {
+    const { antigravityCliAdapter } = await import('../src/cli/adapters/antigravity-cli.js');
+    const r = antigravityCliAdapter.normalizeInput(basePost());
+    expect(r.toolName).toBe('run_command');
+    expect((r.toolInput as { CommandLine?: string }).CommandLine).toBe('echo hi');
   });
 
-  it('should not map SessionEnd (session-complete has no handler; worker self-completes)', () => {
-    expect(src).not.toContain("'SessionEnd':");
+  it('PostToolUse (has error field) -> toolResponse carries error', async () => {
+    const { antigravityCliAdapter } = await import('../src/cli/adapters/antigravity-cli.js');
+    const r = antigravityCliAdapter.normalizeInput(basePost());
+    expect(r.toolResponse).toEqual({ error: '' });
   });
 
-  it('uses the antigravity-cli hook command string, not gemini-cli', () => {
-    expect(src).toContain('hook antigravity-cli');
-    expect(src).not.toContain('hook gemini-cli');
+  it('PreToolUse (no error field) -> toolResponse marks pre-execution', async () => {
+    const { antigravityCliAdapter } = await import('../src/cli/adapters/antigravity-cli.js');
+    const payload = basePost();
+    delete (payload as { error?: unknown }).error;
+    const r = antigravityCliAdapter.normalizeInput(payload);
+    expect(r.toolResponse).toEqual({ _preExecution: true });
   });
 
-  it('targets the shared ~/.gemini config tree (settings.json + GEMINI.md), not a separate Antigravity-only file', () => {
-    expect(src).toContain("path.join(GEMINI_CONFIG_DIR, 'settings.json')");
-    expect(src).toContain("path.join(GEMINI_CONFIG_DIR, 'GEMINI.md')");
-  });
-
-  it('writes MCP config to the shared path Antigravity reads', () => {
-    expect(src).toContain("path.join(GEMINI_CONFIG_DIR, 'config', 'mcp_config.json')");
-    expect(src).not.toContain("path.join(GEMINI_CONFIG_DIR, 'antigravity', 'mcp_config.json')");
-  });
-
-  it('reuses writeMcpJsonConfig from McpIntegrations.ts rather than reimplementing MCP config writing', () => {
-    expect(src).toContain("from './McpIntegrations.js'");
-    expect(src).toContain('writeMcpJsonConfig');
-  });
-
-  it('writes the rules/context placeholder to the plural, home-relative .agents/rules path', () => {
-    expect(src).toContain("path.join(homedir(), '.agents', 'rules', 'claude-mem-context.md')");
+  it('preserves transcriptPath and antigravity metadata', async () => {
+    const { antigravityCliAdapter } = await import('../src/cli/adapters/antigravity-cli.js');
+    const r = antigravityCliAdapter.normalizeInput(basePost());
+    expect(r.transcriptPath).toBe('/some/transcript.jsonl');
+    expect(r.metadata?.conversationId).toBe('conv-abc-123');
+    expect(r.metadata?.stepIdx).toBe(7);
   });
 });
 
-describe('antigravityCliAdapter - normalizeInput', () => {
-  it('falls back to process.cwd() when no cwd and no GEMINI_*/CLAUDE_PROJECT_DIR env vars are set', () => {
-    const savedCwd = process.env.GEMINI_CWD;
-    const savedProjectDir = process.env.GEMINI_PROJECT_DIR;
-    const savedClaudeDir = process.env.CLAUDE_PROJECT_DIR;
-    delete process.env.GEMINI_CWD;
-    delete process.env.GEMINI_PROJECT_DIR;
-    delete process.env.CLAUDE_PROJECT_DIR;
-    try {
-      const result = antigravityCliAdapter.normalizeInput({});
-      expect(result.cwd).toBe(process.cwd());
-    } finally {
-      if (savedCwd !== undefined) process.env.GEMINI_CWD = savedCwd;
-      if (savedProjectDir !== undefined) process.env.GEMINI_PROJECT_DIR = savedProjectDir;
-      if (savedClaudeDir !== undefined) process.env.CLAUDE_PROJECT_DIR = savedClaudeDir;
-    }
+describe('antigravityCliAdapter.formatOutput - allow/deny contract', () => {
+  it('defaults to decision allow', async () => {
+    const { antigravityCliAdapter } = await import('../src/cli/adapters/antigravity-cli.js');
+    expect(antigravityCliAdapter.formatOutput({ continue: true })).toEqual({ decision: 'allow' });
   });
 
-  it('prefers an explicit cwd over any env var fallback', () => {
-    const result = antigravityCliAdapter.normalizeInput({ cwd: '/tmp/explicit-cwd' });
-    expect(result.cwd).toBe('/tmp/explicit-cwd');
-  });
-
-  it('rejects an invalid (empty) cwd', () => {
-    expect(() => antigravityCliAdapter.normalizeInput({ cwd: '' })).toThrow('adapter rejected input: invalid_cwd');
-  });
-
-  it('maps AfterAgent prompt_response into toolName/toolInput/toolResponse', () => {
-    const result = antigravityCliAdapter.normalizeInput({
-      cwd: '/tmp',
-      hook_event_name: 'AfterAgent',
-      prompt: 'hi',
-      prompt_response: 'hello there',
-    });
-    expect(result.toolName).toBe('AntigravityProvider');
-    expect(result.toolInput).toEqual({ prompt: 'hi' });
-    expect(result.toolResponse).toEqual({ response: 'hello there' });
-  });
-
-  it('marks a BeforeTool call as pre-execution when no response is present', () => {
-    const result = antigravityCliAdapter.normalizeInput({
-      cwd: '/tmp',
-      hook_event_name: 'BeforeTool',
-      tool_name: 'Read',
-    });
-    expect(result.toolResponse).toEqual({ _preExecution: true });
-  });
-
-  it('maps Notification fields into toolName/toolInput/toolResponse', () => {
-    const result = antigravityCliAdapter.normalizeInput({
-      cwd: '/tmp',
-      hook_event_name: 'Notification',
-      notification_type: 'permission',
-      message: 'allow?',
-      details: { foo: 'bar' },
-    });
-    expect(result.toolName).toBe('AntigravityNotification');
-    expect(result.toolInput).toEqual({ notification_type: 'permission', message: 'allow?' });
-    expect(result.toolResponse).toEqual({ details: { foo: 'bar' } });
+  it('maps block decision to deny and passes reason', async () => {
+    const { antigravityCliAdapter } = await import('../src/cli/adapters/antigravity-cli.js');
+    const out = antigravityCliAdapter.formatOutput({ decision: 'block', reason: 'nope' }) as {
+      decision: string;
+      reason?: string;
+    };
+    expect(out.decision).toBe('deny');
+    expect(out.reason).toBe('nope');
   });
 });
 
-describe('antigravityCliAdapter - formatOutput', () => {
-  it('strips ANSI escape codes from systemMessage (real bug fix carried over from Gemini CLI adapter)', () => {
-    const raw = '[31mRed text[0m';
-    const result = antigravityCliAdapter.formatOutput({ systemMessage: raw }) as Record<string, unknown>;
-    expect(result.systemMessage).toBe('Red text');
-  });
-
-  it('defaults continue to true and passes through hookSpecificOutput.additionalContext', () => {
-    const result = antigravityCliAdapter.formatOutput({
-      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: 'ctx' },
-    }) as Record<string, unknown>;
-    expect(result.continue).toBe(true);
-    expect(result.hookSpecificOutput).toEqual({ additionalContext: 'ctx' });
-  });
-
-  it('passes through suppressOutput when explicitly set', () => {
-    const result = antigravityCliAdapter.formatOutput({ suppressOutput: true }) as Record<string, unknown>;
-    expect(result.suppressOutput).toBe(true);
+describe('antigravityCliAdapter - registry wiring', () => {
+  it('resolves for both antigravity and antigravity-cli platform ids', async () => {
+    const { getPlatformAdapter } = await import('../src/cli/adapters/index.js');
+    const { antigravityCliAdapter } = await import('../src/cli/adapters/antigravity-cli.js');
+    expect(getPlatformAdapter('antigravity')).toBe(antigravityCliAdapter);
+    expect(getPlatformAdapter('antigravity-cli')).toBe(antigravityCliAdapter);
   });
 });
 
-// NOTE: an automated regression test for the B0 empty-mcp-config-file edge
-// case (see AntigravityCliHooksInstaller.ts's seedEmptyMcpConfigFile /
-// readMcpConfigTolerantly) was deliberately NOT added here. Bun's homedir()
-// does not re-read a runtime-reassigned process.env.HOME within a single
-// process, so a test attempting to redirect GEMINI_CONFIG_DIR that way
-// silently operates on the REAL ~/.gemini instead of an isolated temp dir.
-// That was verified by hand (as a one-off script run in a separate process
-// with HOME set before start, which bun DOES respect) rather than as a
-// committed test, specifically to avoid this footgun running unattended in
-// CI/local `bun test` and mutating a real, live ~/.gemini tree every run.
+describe('AntigravityCliHooksInstaller - event mapping (probe-confirmed)', () => {
+  const src = () =>
+    readFileSync('src/services/integrations/AntigravityCliHooksInstaller.ts', 'utf-8');
+
+  it('maps only the two tool events confirmed by agy 1.0.9 probing', () => {
+    const s = src();
+    expect(s).toContain("'PreToolUse': 'observation'");
+    expect(s).toContain("'PostToolUse': 'observation'");
+  });
+
+  it('does NOT register unverified lifecycle events', () => {
+    const s = src();
+    // These exist in the Python SDK but the CLI hook runner never fired them.
+    // They must stay out of the active map until re-probed (see installer comment).
+    expect(s).not.toContain("'SessionStart':");
+    expect(s).not.toContain("'Stop':");
+    expect(s).not.toContain("'Compaction':");
+    expect(s).not.toContain("'Notification':");
+    expect(s).not.toContain("'PreInvocation':");
+  });
+
+  it('writes hooks to ~/.gemini/config/hooks.json (not settings.json, not antigravity-cli dir)', () => {
+    const s = src();
+    expect(s).toContain("path.join(GEMINI_CONFIG_DIR, 'config')");
+    expect(s).toContain("'hooks.json'");
+    expect(s).not.toContain("antigravity-cli', 'hooks.json'");
+  });
+
+  it('uses seconds (not ms) for the hook timeout', () => {
+    const s = src();
+    expect(s).toContain('HOOK_TIMEOUT_SEC = 10');
+  });
+
+  it('dispatches via the antigravity-cli platform', () => {
+    const s = src();
+    expect(s).toContain('hook antigravity-cli');
+  });
+});

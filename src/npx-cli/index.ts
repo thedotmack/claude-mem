@@ -54,9 +54,9 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem kiro-cli install|uninstall|status')}   Manage the Kiro CLI integration
   ${styleText('cyan', 'npx claude-mem antigravity-cli install|status|uninstall')}   Manage Antigravity CLI hooks + MCP config
 
-${styleText('bold', 'IDE Identifiers')}:
-  claude-code, cursor, opencode, openclaw,
-  windsurf, codex-cli, kiro-cli, copilot-cli, antigravity,
+${pc.bold('IDE Identifiers')}:
+  claude-code, cursor, gemini-cli, opencode, openclaw,
+  windsurf, codex-cli, copilot-cli, antigravity, antigravity-cli,
   goose, roo-code, warp
 `);
 }

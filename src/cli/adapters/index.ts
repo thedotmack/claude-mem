@@ -13,8 +13,10 @@ export function getPlatformAdapter(platform: string): PlatformAdapter {
     case 'claude-code': return claudeCodeAdapter;
     case 'codex': return codexAdapter;
     case 'cursor': return cursorAdapter;
-    case 'kiro':
-    case 'kiro-cli': return kiroAdapter;
+    case 'gemini':
+    case 'gemini-cli': return geminiCliAdapter;
+    case 'antigravity':
+    case 'antigravity-cli': return antigravityCliAdapter;
     case 'windsurf': return windsurfAdapter;
     case 'antigravity': case 'antigravity-cli': return antigravityCliAdapter;
     case 'raw': return rawAdapter;
@@ -22,4 +24,4 @@ export function getPlatformAdapter(platform: string): PlatformAdapter {
   }
 }
 
-export { antigravityCliAdapter, claudeCodeAdapter, codexAdapter, cursorAdapter, kiroAdapter, rawAdapter, windsurfAdapter };
+export { antigravityCliAdapter, claudeCodeAdapter, codexAdapter, cursorAdapter, geminiCliAdapter, rawAdapter, windsurfAdapter };
