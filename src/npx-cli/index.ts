@@ -252,9 +252,16 @@ async function main(): Promise<void> {
       break;
     }
 
-    case 'merge-environment': {
-      const { runMergeEnvironmentCommand } = await import('./commands/merge-environment.js');
-      await runMergeEnvironmentCommand(args.slice(1));
+    case 'memory': {
+      const subCommand = args[1]?.toLowerCase();
+      if (subCommand === 'ingest') {
+        const { runMemoryIngestCommand } = await import('./commands/runtime.js');
+        runMemoryIngestCommand(args.slice(2));
+      } else {
+        console.error(pc.red(`Unknown memory subcommand: ${subCommand ?? '(none)'}`));
+        console.error(`Usage: npx claude-mem memory ingest [--source <dir> | --all] [--dry-run] [--require-cwd]`);
+        process.exit(1);
+      }
       break;
     }
 
