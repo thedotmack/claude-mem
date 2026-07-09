@@ -3,6 +3,7 @@ import {
   StrategySearchOptions,
   StrategySearchResult,
   SEARCH_CONSTANTS,
+  isCategoryRequested,
   ChromaMetadata,
   DateRange,
   ObservationSearchResult,
@@ -46,9 +47,9 @@ export class ChromaSearchStrategy {
       return this.emptyResult('chroma');
     }
 
-    const searchObservations = searchType === 'all' || searchType === 'observations';
-    const searchSessions = searchType === 'all' || searchType === 'sessions';
-    const searchPrompts = searchType === 'all' || searchType === 'prompts';
+    const searchObservations = isCategoryRequested(searchType, 'observations');
+    const searchSessions = isCategoryRequested(searchType, 'sessions');
+    const searchPrompts = isCategoryRequested(searchType, 'prompts');
 
     const whereFilter = this.buildWhereFilter(searchType, project, platformSource);
 
