@@ -43,7 +43,7 @@ function gitCapture(cwd: string, args: string[]): string | null {
   const r = spawnSync('git', ['-C', cwd, ...args], {
     encoding: 'utf8',
     timeout: GIT_TIMEOUT_MS,
-    windowsHide: true
+    windowsHide: true,
   });
   const duration = Date.now() - startTime;
   
