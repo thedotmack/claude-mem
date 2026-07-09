@@ -68,15 +68,22 @@ export function isInternalSystemPrompt(text: string): boolean {
 
   const trimmed = text.trim();
 
+  // 1. Codex-app session title generation prompt
   if (trimmed.startsWith('You are a helpful assistant. You will be presented with a user prompt, and your job is to provide a short title')) {
     return true;
   }
 
+  // 2. Memory Writing Agent consolidation prompt
   if (trimmed.startsWith('## Memory Writing Agent: Phase 2 (Consolidation)') || trimmed.startsWith('## Memory Writing Agent')) {
     return true;
   }
 
-  return trimmed.startsWith('# Overview\n\nGenerate 0 to 3 hyperpersonalized suggestions') ||
-    trimmed.startsWith('# Overview\r\n\r\nGenerate 0 to 3 hyperpersonalized suggestions') ||
-    trimmed.startsWith('# Overview\nGenerate 0 to 3 hyperpersonalized suggestions');
+  // 3. Codex onboarding/suggestions prompt
+  if (trimmed.startsWith('# Overview\n\nGenerate 0 to 3 hyperpersonalized suggestions') || 
+      trimmed.startsWith('# Overview\r\n\r\nGenerate 0 to 3 hyperpersonalized suggestions') ||
+      trimmed.startsWith('# Overview\nGenerate 0 to 3 hyperpersonalized suggestions')) {
+    return true;
+  }
+
+  return false;
 }

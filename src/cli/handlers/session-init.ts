@@ -15,12 +15,8 @@ import { shouldTrackProject as defaultShouldTrackProject } from '../../shared/sh
 import { loadFromFileOnce as defaultLoadFromFileOnce } from '../../shared/hook-settings.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { isInternalProtocolPayload, isInternalSystemPrompt } from '../../utils/tag-stripping.js';
-import {
-  resolveRuntimeContext as defaultResolveRuntimeContext,
-  logServerFallback as defaultLogServerFallback,
-  type ServerRuntimeContext,
-} from '../../services/hooks/runtime-selector.js';
-import { isServerClientError } from '../../services/hooks/server-client.js';
+import { resolveRuntimeContext, logServerBetaFallback } from '../../services/hooks/runtime-selector.js';
+import { isServerBetaClientError } from '../../services/hooks/server-beta-client.js';
 
 interface SessionInitResponse {
   sessionDbId: number;
