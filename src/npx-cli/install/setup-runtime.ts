@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { exec, execSync, spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'child_process';
+import * as childProcess from 'child_process';
 import { createRequire } from 'module';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -110,10 +110,12 @@ function spawnVersionProbe(command: string, args: string[]) {
 function getToolPath(command: string, commonPaths: string[]): string | null {
   const pathCommand = IS_WINDOWS ? lookupWindowsCommand(command) : command;
   try {
-    if (pathCommand) {
-      const result = spawnVersionProbe(pathCommand, ['--version']);
-      if (result.status === 0) return pathCommand;
-    }
+    const result = childProcess.spawnSync('bun', ['--version'], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      shell: IS_WINDOWS,
+    });
+    if (result.status === 0) return 'bun';
   } catch {
     // Not in PATH
   }
@@ -134,7 +136,11 @@ export function getBunVersion(): string | null {
   if (!bunPath) return null;
 
   try {
-    const result = spawnVersionProbe(bunPath, ['--version']);
+    const result = childProcess.spawnSync(bunPath, ['--version'], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      shell: IS_WINDOWS,
+    });
     return result.status === 0 ? result.stdout.trim() : null;
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
@@ -144,7 +150,18 @@ export function getBunVersion(): string | null {
 }
 
 function getUvPath(): string | null {
-  return getToolPath('uv', UV_COMMON_PATHS);
+  try {
+    const result = childProcess.spawnSync('uv', ['--version'], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      shell: IS_WINDOWS,
+    });
+    if (result.status === 0) return 'uv';
+  } catch {
+    // Not in PATH
+  }
+
+  return UV_COMMON_PATHS.find(existsSync) || null;
 }
 
 function isUvInstalled(): boolean {
@@ -156,7 +173,11 @@ export function getUvVersion(): string | null {
   if (!uvPath) return null;
 
   try {
-    const result = spawnVersionProbe(uvPath, ['--version']);
+    const result = childProcess.spawnSync(uvPath, ['--version'], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      shell: IS_WINDOWS,
+    });
     return result.status === 0 ? result.stdout.trim() : null;
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
@@ -204,7 +225,25 @@ function runBunInstaller(): void {
 
 function installBun(): void {
   try {
-    runBunInstaller();
+    if (IS_WINDOWS) {
+      childProcess.execSync('powershell -c "irm bun.sh/install.ps1 | iex"', {
+        stdio: 'pipe',
+        timeout: INSTALL_TIMEOUT_MS,
+        shell: process.env.ComSpec ?? 'cmd.exe',
+      });
+    } else {
+      childProcess.execSync('curl -fsSL https://bun.sh/install | bash', {
+        stdio: 'pipe',
+        timeout: INSTALL_TIMEOUT_MS,
+        shell: '/bin/bash',
+      });
+    }
+
+    if (!isBunInstalled()) {
+      throw new Error(
+        'Bun installation completed but binary not found. Please restart your terminal and try again.',
+      );
+    }
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
     const manualInstructions = IS_WINDOWS
@@ -242,7 +281,25 @@ function runUvInstaller(): void {
 
 function installUv(): void {
   try {
-    runUvInstaller();
+    if (IS_WINDOWS) {
+      childProcess.execSync('powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"', {
+        stdio: 'pipe',
+        timeout: INSTALL_TIMEOUT_MS,
+        shell: process.env.ComSpec ?? 'cmd.exe',
+      });
+    } else {
+      childProcess.execSync('curl -LsSf https://astral.sh/uv/install.sh | sh', {
+        stdio: 'pipe',
+        timeout: INSTALL_TIMEOUT_MS,
+        shell: '/bin/bash',
+      });
+    }
+
+    if (!isUvInstalled()) {
+      throw new Error(
+        'uv installation completed but binary not found. Please restart your terminal and try again.',
+      );
+    }
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
     const manualInstructions = IS_WINDOWS
@@ -515,23 +572,72 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
     throw new Error(`installPluginDependencies: no package.json at ${targetDir}`);
   }
 
-  // Per CHANGELOG v12.6.1 -> v12.6.2: tree-sitter-swift's nested
-  // tree-sitter-cli postinstall downloads a Rust binary and can hang the
-  // install. Bun honors trustedDependencies; npm does not. We additionally
-  // pass --ignore-scripts as belt-and-suspenders and bound it with a timeout.
-  // Async exec (not execSync): a blocked event loop freezes the installer's
-  // clack spinner for the duration of the install, which reads as a stall.
-  const runBunInstall = (): Promise<void> =>
-    new Promise<void>((resolve, reject) => {
-      const resolved = resolveCommand(bunPath, ['install', '--frozen-lockfile', '--ignore-scripts']);
-      execFile(resolved.command, resolved.args, {
+  const installArgs = getPluginDependencyInstallArgs();
+
+  try {
+    // Per CHANGELOG v12.6.1 -> v12.6.2: tree-sitter-swift's nested
+    // tree-sitter-cli postinstall downloads a Rust binary and can hang the
+    // install. Bun honors trustedDependencies; npm does not, so we rely on Bun's
+    // trustedDependencies gate here and still bound the install with a timeout.
+    // Async spawn (not spawnSync): a blocked event loop freezes the installer's
+    // clack spinner for the duration of the install, which reads as a stall.
+    await new Promise<void>((resolve, reject) => {
+      const child = childProcess.spawn(bunPath, installArgs, {
         cwd: targetDir,
-        timeout: INSTALL_TIMEOUT_MS,
-        maxBuffer: 16 * 1024 * 1024,
-        windowsHide: true,
-      }, (error, stdout, stderr) =>
-        // exec errors don't carry stdio; attach so describeExecError can report it.
-        error ? reject(Object.assign(error, { stdout, stderr })) : resolve());
+        shell: false,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+
+      const stdoutChunks: Buffer[] = [];
+      const stderrChunks: Buffer[] = [];
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        child.kill();
+      }, INSTALL_TIMEOUT_MS);
+
+      child.stdout.on('data', (chunk: Buffer) => {
+        stdoutChunks.push(chunk);
+      });
+      child.stderr.on('data', (chunk: Buffer) => {
+        stderrChunks.push(chunk);
+      });
+
+      child.on('error', (error) => {
+        clearTimeout(timer);
+        reject(Object.assign(error, {
+          stdout: Buffer.concat(stdoutChunks).toString('utf-8'),
+          stderr: Buffer.concat(stderrChunks).toString('utf-8'),
+        }));
+      });
+
+      child.on('close', (code, signal) => {
+        clearTimeout(timer);
+        if (code === 0) {
+          resolve();
+          return;
+        }
+
+        if (timedOut) {
+          reject(Object.assign(
+            new Error(`bun install timed out after ${INSTALL_TIMEOUT_MS}ms`),
+            {
+              stdout: Buffer.concat(stdoutChunks).toString('utf-8'),
+              stderr: Buffer.concat(stderrChunks).toString('utf-8'),
+            },
+          ));
+          return;
+        }
+
+        const signalSuffix = signal ? ` (signal: ${signal})` : '';
+        reject(Object.assign(
+          new Error(`bun install exited with code ${code ?? 'null'}${signalSuffix}`),
+          {
+            stdout: Buffer.concat(stdoutChunks).toString('utf-8'),
+            stderr: Buffer.concat(stderrChunks).toString('utf-8'),
+          },
+        ));
+      });
     });
 
   try {
@@ -549,6 +655,10 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
   }
 
   verifyCriticalModules(targetDir);
+}
+
+export function getPluginDependencyInstallArgs(): string[] {
+  return ['install', '--frozen-lockfile'];
 }
 
 export function readInstallMarker(targetDir: string): MarkerSchema | null {

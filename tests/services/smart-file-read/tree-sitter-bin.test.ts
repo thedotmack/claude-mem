@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it } from 'bun:test';
 import { dirname, join } from 'node:path';
 import {
   getTreeSitterBin,
@@ -8,13 +8,6 @@ import {
 
 describe('tree-sitter binary resolution', () => {
   const fakePackageJsonPath = join('C:', 'repo', 'node_modules', 'tree-sitter-cli', 'package.json');
-
-  // Reset before each test too: the module-level bin cache can be populated by
-  // other suites (e.g. parser.test.ts) running earlier in the same process.
-  beforeEach(() => {
-    resetTreeSitterBinCacheForTests();
-    setTreeSitterBinDepsForTests();
-  });
 
   afterEach(() => {
     resetTreeSitterBinCacheForTests();

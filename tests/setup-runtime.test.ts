@@ -1,9 +1,13 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
 import { spawnSync } from 'child_process';
+import * as childProcess from 'child_process';
+import { EventEmitter } from 'events';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { PassThrough } from 'stream';
 import {
+  getPluginDependencyInstallArgs,
   readInstallMarker,
   writeInstallMarker,
   isInstallCurrent,
@@ -29,6 +33,7 @@ function probeBunVersion(): string | null {
 
 describe('setup-runtime install marker', () => {
   let tempDir: string;
+  let spawnSpy: ReturnType<typeof spyOn> | undefined;
 
   beforeEach(() => {
     tempDir = join(
@@ -39,6 +44,8 @@ describe('setup-runtime install marker', () => {
   });
 
   afterEach(() => {
+    spawnSpy?.mockRestore();
+    spawnSpy = undefined;
     try {
       rmSync(tempDir, { recursive: true, force: true });
     } catch {
@@ -197,6 +204,49 @@ describe('setup-runtime install marker', () => {
       expect(text.length).toBeGreaterThan(0);
       expect(text.toLowerCase()).toContain('uv');
       expect(text).toContain('claude-mem install');
+    });
+  });
+
+  describe('installPluginDependencies argv', () => {
+    it('keeps frozen-lockfile and does not suppress trusted install scripts', () => {
+      expect(getPluginDependencyInstallArgs()).toEqual(['install', '--frozen-lockfile']);
+      expect(getPluginDependencyInstallArgs()).not.toContain('--ignore-scripts');
+    });
+
+    it('reports installer timeouts explicitly when the child is killed', async () => {
+      writeFileSync(join(tempDir, 'package.json'), '{}');
+      const originalTimeoutOverride = process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS;
+      process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS = '1';
+
+      try {
+        spawnSpy = spyOn(childProcess, 'spawn').mockImplementation(() => {
+          const fakeChild = new EventEmitter() as EventEmitter & {
+            stdout: PassThrough;
+            stderr: PassThrough;
+            kill: () => boolean;
+          };
+          fakeChild.stdout = new PassThrough();
+          fakeChild.stderr = new PassThrough();
+          fakeChild.kill = () => {
+            setTimeout(() => {
+              fakeChild.emit('close', null, 'SIGTERM');
+            }, 0);
+            return true;
+          };
+          return fakeChild as unknown as ReturnType<typeof childProcess.spawn>;
+        });
+
+        const runtime = await import(`../src/npx-cli/install/setup-runtime.ts?timeout-test=${Date.now()}`);
+        await expect(runtime.installPluginDependencies(tempDir, 'fake-bun')).rejects.toThrow(
+          'bun install timed out after 1ms'
+        );
+      } finally {
+        if (originalTimeoutOverride === undefined) {
+          delete process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS;
+        } else {
+          process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS = originalTimeoutOverride;
+        }
+      }
     });
   });
 });

@@ -367,8 +367,6 @@ function getQueryFile(queryKey: string): string {
 }
 
 let cachedBinPath: string | null = null;
-let treeSitterCacheDir: string | null = null;
-
 type TreeSitterBinDeps = {
   platform: NodeJS.Platform;
   fileExists: typeof existsSync;
@@ -398,25 +396,17 @@ export function getTreeSitterBin(): string {
 
   let pkgPath: string;
   try {
-    pkgPath = treeSitterBinDeps.resolvePackageJson("tree-sitter-cli/package.json");
-  } catch {
-    // [ANTI-PATTERN IGNORED]: tree-sitter-cli not in node_modules is expected; falls back to PATH
-    cachedBinPath = "tree-sitter";
-    return cachedBinPath;
-  }
+    const pkgPath = treeSitterBinDeps.resolvePackageJson("tree-sitter-cli/package.json");
+    const candidateNames = treeSitterBinDeps.platform === "win32"
+      ? ["tree-sitter.exe", "tree-sitter"]
+      : ["tree-sitter"];
 
-  // tree-sitter-cli's install.js writes `tree-sitter.exe` on Windows and an
-  // extensionless `tree-sitter` elsewhere. Checking only the extensionless
-  // name discards a valid Windows binary and falls through to a bare-PATH
-  // lookup that usually fails, producing silent 0-symbol results (#2910 / #1247).
-  const candidateNames = treeSitterBinDeps.platform === "win32"
-    ? ["tree-sitter.exe", "tree-sitter"]
-    : ["tree-sitter"];
-  for (const candidateName of candidateNames) {
-    const binPath = join(dirname(pkgPath), candidateName);
-    if (treeSitterBinDeps.fileExists(binPath)) {
-      cachedBinPath = binPath;
-      return binPath;
+    for (const candidateName of candidateNames) {
+      const binPath = join(dirname(pkgPath), candidateName);
+      if (treeSitterBinDeps.fileExists(binPath)) {
+        cachedBinPath = binPath;
+        return binPath;
+      }
     }
   }
 
