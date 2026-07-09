@@ -77,6 +77,10 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
     return { ok: true, status: 'skipped', reason: 'tool_excluded' };
   }
 
+  // #2736 — defense in depth: the hook handler already filters subagent
+  // observations before this HTTP call, but skip again here so any non-hook
+  // caller (direct API, future ingestion paths) is filtered before the
+  // queueObservation → provider request below.
   const agentSkip = shouldSkipAgentObservation(payload.agentId, payload.agentType, settings);
   if (agentSkip.skip) {
     return { ok: true, status: 'skipped', reason: agentSkip.reason! };

@@ -69,9 +69,13 @@ export const observationHandler: EventHandler = {
       return { continue: true, suppressOutput: true };
     }
 
-    const agentSkip = shouldSkipAgentObservation(input.agentId, input.agentType, loadFromFileOnce());
-    if (agentSkip.skip) {
-      logger.debug('HOOK', `Skipping observation: ${agentSkip.reason}`, {
+    // #2736 — drop subagent observations BEFORE any worker HTTP call or provider
+    // request. Placed ahead of the runtime branch so it covers both the worker
+    // and server-beta runtimes. Saves the round-trip and the provider tokens,
+    // and prevents Dynamic Workflows fan-out from exhausting provider quota.
+    const skip = shouldSkipAgentObservation(input.agentId, input.agentType, loadFromFileOnce());
+    if (skip.skip) {
+      logger.debug('HOOK', `Skipping observation: ${skip.reason}`, {
         toolName,
         agentId: input.agentId,
         agentType: input.agentType,

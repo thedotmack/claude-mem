@@ -24,31 +24,43 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | `CLAUDE_MEM_WORKER_SCRIPT_PATH` | —                               | Absolute path to a specific `worker-service.cjs` for the daemon to spawn/respawn. Overrides the installed-plugin and cwd resolution. Opt-in; for local-build testing and bundle pinning. |
 | `CLAUDE_MEM_DATA_DIR`         | `~/.claude-mem`                 | Data root — every other path (database, chroma, logs, settings.json, worker.pid) derives from this |
 | `CLAUDE_MEM_SKIP_TOOLS`       | `ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion` | Comma-separated tools to exclude from observations |
-| `CLAUDE_MEM_ALLOW_DISMISS`    | `false`                         | When `true`, enables observation dismiss/undismiss writes. Dismissed observations are hidden from proactive surfacing but remain fetchable by id. |
-| `CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS` | `false`               | When `true`, skip every observation carrying an `agentId`. Main-session observations are unaffected. |
-| `CLAUDE_MEM_SKIP_AGENT_TYPES` | _(empty)_                       | Comma-separated `agent_type` values to skip, e.g. `workflow-subagent,Explore`. |
+| `CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS` | `false`               | When `true`, skip **every** subagent observation (any tool call carrying an `agentId`). See [Subagent & Dynamic Workflow filtering](#subagent--dynamic-workflow-filtering). |
+| `CLAUDE_MEM_SKIP_AGENT_TYPES` | _(empty)_                       | Comma-separated `agent_type` values to skip, e.g. `workflow-subagent,Explore,Plan`. Main-session observations are unaffected. |
 
-### Subagent & Dynamic Workflow Filtering
+### Subagent & Dynamic Workflow filtering
 
-Claude Code Dynamic Workflows can fan one prompt out through many subagents, commonly with `agent_type: workflow-subagent`. Each subagent tool call can emit a `PostToolUse` observation, which may create high-volume, low-signal provider work.
+Claude Code [Dynamic Workflows](https://code.claude.com/docs/en/workflows) fan a single
+prompt out to tens-to-hundreds of parallel subagents (`agent_type: workflow-subagent`).
+Every tool call by every subagent fires a `PostToolUse` hook, so claude-mem creates one
+provider-analyzed observation per call — a single run can emit **hundreds-to-thousands**
+of low-signal observations. That can exhaust the configured provider's free-tier quota
+(HTTP 429) and drop the rest of the run, including valuable main-session work.
 
-These settings filter before the hook sends a worker or server request, and the worker also applies the same filter for direct compatibility callers. Both defaults are off to preserve existing observation behavior.
+Two settings let you filter these out **before** any worker round-trip or provider call.
+Both default to off, so existing behavior is preserved.
 
-```json
-{
-  "CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS": "true"
-}
-```
+- **Drop all subagent noise (recommended for heavy workflow users):**
 
-Use this to skip every subagent observation identified by `agentId`.
+  ```json
+  { "CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS": "true" }
+  ```
 
-```json
-{
-  "CLAUDE_MEM_SKIP_AGENT_TYPES": "workflow-subagent"
-}
-```
+  This is the robust lever — it keys off the presence of an `agentId`, so it catches
+  every subagent regardless of type. Main-session observations are kept.
 
-Use this to skip only specific `agent_type` values. If both settings are set, an observation is skipped when either setting matches.
+- **Surgically drop specific agent types** (keep some subagents, drop others):
+
+  ```json
+  { "CLAUDE_MEM_SKIP_AGENT_TYPES": "workflow-subagent" }
+  ```
+
+  Add a comma-separated list of `agent_type` values. The two settings combine as a
+  union: an observation is skipped if the global toggle matches **or** its `agent_type`
+  is in the list.
+
+> Subagent **summaries** are already skipped automatically; these settings add the same
+> control for **observations**. Durable cross-session knowledge generally comes from the
+> main session, so dropping ephemeral subagent steps usually improves signal-to-noise.
 
 ### Gemini Provider Settings
 

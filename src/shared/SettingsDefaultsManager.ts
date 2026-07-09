@@ -18,12 +18,10 @@ export interface SettingsDefaults {
   CLAUDE_MEM_WORKER_AUTOSTART: string;
   CLAUDE_MEM_API_TIMEOUT_MS: string;
   CLAUDE_MEM_SKIP_TOOLS: string;
-  CLAUDE_MEM_ALLOW_DISMISS: string;
-  CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS: string;
-  CLAUDE_MEM_SKIP_AGENT_TYPES: string;
-  CLAUDE_MEM_PROVIDER: string;  
-  CLAUDE_MEM_CLAUDE_AUTH_METHOD: string;
-  CLAUDE_MEM_CLAUDE_MAX_TOKENS: string;
+  CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS: string;  // #2736 — skip ALL subagent observations (any hook event carrying an agentId)
+  CLAUDE_MEM_SKIP_AGENT_TYPES: string;            // #2736 — comma-separated agent_type values to skip (e.g. workflow-subagent,Explore)
+  CLAUDE_MEM_PROVIDER: string;
+  CLAUDE_MEM_CLAUDE_AUTH_METHOD: string;  
   CLAUDE_MEM_GEMINI_API_KEY: string;
   CLAUDE_MEM_GEMINI_MODEL: string;  
   CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: string;
@@ -124,9 +122,8 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_WORKER_AUTOSTART: 'true',
     CLAUDE_MEM_API_TIMEOUT_MS: String(getTimeout(HOOK_TIMEOUTS.API_REQUEST)),
     CLAUDE_MEM_SKIP_TOOLS: 'ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion',
-    CLAUDE_MEM_ALLOW_DISMISS: 'false',
-    CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS: 'false',
-    CLAUDE_MEM_SKIP_AGENT_TYPES: '',
+    CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS: 'false',  // #2736 — default off preserves current behavior; set 'true' to skip every subagent observation (recommended for heavy Dynamic Workflows users)
+    CLAUDE_MEM_SKIP_AGENT_TYPES: '',                 // #2736 — default empty preserves current behavior; recommended value 'workflow-subagent' to drop Dynamic Workflows fan-out noise
     CLAUDE_MEM_PROVIDER: 'claude',  // Default to Claude
     CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription',  // Default to logged-in Claude SDK auth (not API key)
     CLAUDE_MEM_CLAUDE_MAX_TOKENS: '150000',  // #2956 — proactive SDK observer context cap (~150k); reset to a fresh SDK session before the model window overflows
