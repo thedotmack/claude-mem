@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { spawnSync, spawn } from 'child_process';
-import { existsSync, readFileSync, mkdirSync, appendFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, mkdirSync, appendFileSync, writeFileSync, unlinkSync, statSync } from 'fs';
 import { join, dirname, resolve } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
+import { createRequire } from 'module';
 
 const IS_WINDOWS = process.platform === 'win32';
 
@@ -129,6 +130,105 @@ if (!bunPath) {
   console.error('After installation, restart your terminal.');
   process.exit(1);
 }
+
+// Runtime self-heal: ensure the worker's externalized deps are present in
+// plugin/node_modules before we spawn it. The build-time install + tarball
+// bundling (build-hooks.js + package.json `files`) covers the npm channel,
+// but the MARKETPLACE channel is a `git clone` of this repo where
+// `plugin/node_modules` is gitignored and never committed — so a freshly
+// installed marketplace plugin has no node_modules and every hook crashes
+// with `Cannot find module 'zod/v3'` (issues #2407 / #2453 / #2640 / #2379).
+// We can't fix that at build time (the install output is gitignored), so we
+// heal once here, on first run, before the worker is invoked.
+function ensureRuntimeDeps() {
+  let pkgJsonPath;
+  try {
+    pkgJsonPath = join(RESOLVED_PLUGIN_ROOT, 'package.json');
+    if (!existsSync(pkgJsonPath)) return; // not a plugin root with deps
+    const pluginRequire = createRequire(pkgJsonPath);
+    pluginRequire.resolve('zod/v3'); // resolves → deps present, nothing to do
+    return;
+  } catch {
+    // zod/v3 unresolvable → install the one hook-critical EXTERNAL dep once.
+    // The worker bundle marks `zod` external (see scripts/build-hooks.js), so it
+    // must exist in plugin/node_modules or every hook crashes with
+    // `Cannot find module 'zod/v3'`. shell-quote is *bundled* into the worker
+    // (it appears in no `external` list), so it does NOT need a runtime install.
+    // We install with --ignore-scripts: npm resolves the full dep tree from the
+    // existing package.json, and the tree-sitter grammars are native node-gyp
+    // builds — on a Node version without a prebuilt binding (e.g. Node 26) a
+    // grammar build fails and aborts the whole install, leaving zod uninstalled.
+    // --ignore-scripts skips those native postinstalls (zod is pure JS and needs
+    // none), so the hook always recovers. Grammar/code-graph deps heal
+    // separately via `npx claude-mem install` and aren't required for hooks.
+    //
+    // stdio fd1 is 'ignore', NOT 'inherit': this process's stdout IS the Claude
+    // Code hook-response channel. npm prints its "added N packages" summary to
+    // stdout, which would prepend to the hook JSON and break parsing on exactly
+    // the fresh-install path this self-heal exists to fix. npm errors go to
+    // stderr (fd2='inherit'), and we emit our own status lines to stderr below.
+    console.error('[bun-runner] plugin/node_modules missing zod — installing hook-critical deps (first run on this install)...');
+
+    // hooks.json registers two SessionStart command hooks (matcher
+    // startup|clear|compact), so on a fresh marketplace install two
+    // bun-runner processes hit this catch near-simultaneously against the same
+    // RESOLVED_PLUGIN_ROOT and would otherwise both run `npm install` in the
+    // same cwd — a concurrent-write race that can corrupt node_modules. Gate
+    // the install behind an atomic O_EXCL lock file so exactly one process
+    // heals; the other skips straight to the re-verify below (which observes
+    // the holder's success, or self-heals on the next hook if it lost the race).
+    const lockPath = join(RESOLVED_PLUGIN_ROOT, '.claude-mem-heal.lock');
+    // Stale-lock reclaim: a crashed/killed holder must not block heal forever.
+    // TTL is >= the 60s hook timeout so we never steal a lock a live holder is
+    // still working under. Best-effort — a peer may win this unlink, which is fine.
+    const LOCK_TTL_MS = 120000;
+    try {
+      if (existsSync(lockPath) && (Date.now() - statSync(lockPath).mtimeMs) > LOCK_TTL_MS) {
+        unlinkSync(lockPath);
+      }
+    } catch {}
+
+    let haveLock = false;
+    try {
+      // 'wx' === O_CREAT | O_EXCL | O_WRONLY: atomic create-or-fail on POSIX
+      // and Windows Node. EEXIST → another process holds it; skip the install.
+      writeFileSync(lockPath, String(process.pid), { flag: 'wx' });
+      haveLock = true;
+    } catch {}
+
+    if (haveLock) {
+      try {
+        const install = spawnSync('npm', ['install', '--no-save', '--no-audit', '--no-fund', '--ignore-scripts', 'zod@^4.4.3'], {
+          cwd: RESOLVED_PLUGIN_ROOT,
+          stdio: ['ignore', 'ignore', 'inherit'],
+          // npm on Windows is a .cmd shim — spawn without shell hits ENOENT.
+          shell: IS_WINDOWS,
+        });
+        if (install.error) {
+          console.error(`[bun-runner] could not run npm install in ${RESOLVED_PLUGIN_ROOT}: ${install.error.message}`);
+        } else if (install.status !== 0) {
+          console.error(`[bun-runner] npm install exited with code ${install.status}. Run \`cd ${RESOLVED_PLUGIN_ROOT} && npm install\` manually.`);
+        }
+      } finally {
+        try { unlinkSync(lockPath); } catch {}
+      }
+    }
+
+    // Post-install re-verify (covers both the heal we just ran and the skip-
+    // because-locked path). Use a fresh createRequire scoped to the plugin
+    // package.json so the resolve runs against the now-populated node_modules.
+    // Best-effort/non-blocking: log only — the worker spawn proceeds regardless
+    // and crashes loudly if truly unhealed, now with this clearer preceding line.
+    try {
+      createRequire(pkgJsonPath).resolve('zod/v3');
+      console.error('[bun-runner] runtime deps installed.');
+    } catch {
+      console.error(`[bun-runner] heal failed — zod/v3 still unresolved after npm install. Run \`cd ${RESOLVED_PLUGIN_ROOT} && npm install\` manually.`);
+    }
+  }
+}
+
+ensureRuntimeDeps();
 
 function collectStdin() {
   return new Promise((resolve) => {
