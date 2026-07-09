@@ -110,7 +110,7 @@ cat ~/.gemini/antigravity/mcp_config.json | grep claude-mem
 cat ~/.gemini/config/mcp_config.json | grep claude-mem
 ```
 
-Open http://localhost:37777 to see the memory viewer.
+Open the worker URL printed on startup to see the memory viewer.
 
 ### Step 4: Start using Antigravity CLI
 
@@ -184,7 +184,7 @@ npx claude-mem restart
 
 ### No context appearing at session start
 
-1. Ensure the worker is running (check http://localhost:37777)
+1. Ensure the worker is running (`npm run worker:status`)
 2. You need at least one previous session with observations for context to appear
 3. Check your AI provider is configured in `~/.claude-mem/settings.json`
 

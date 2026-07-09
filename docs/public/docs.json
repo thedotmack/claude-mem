@@ -46,9 +46,7 @@
           "usage/export-import",
           "usage/transcript-backfill",
           "usage/manual-recovery",
-          "usage/folder-context",
-          "beta-features",
-          "endless-mode"
+          "usage/folder-context"
         ]
       },
       {

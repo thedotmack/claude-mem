@@ -32,7 +32,7 @@ graph TB
         HOOKS --> HOOK_HANDLERS
     end
 
-    HOOK_HANDLERS -->|"HTTP<br/>(fire-and-forget<br/>2s timeout)"| HTTP[Worker HTTP API<br/>Port 37777]
+    HOOK_HANDLERS -->|"HTTP<br/>(fire-and-forget<br/>2s timeout)"| HTTP[Worker HTTP API<br/>Configured port]
 
     subgraph WORKER["Worker Process (separate Node.js)"]
         direction TB
@@ -111,13 +111,16 @@ graph LR
 **Implementation Examples:**
 
 ```typescript
+const workerPort = process.env.CLAUDE_MEM_WORKER_PORT ?? "<worker-port>"
+const workerBaseUrl = `http://127.0.0.1:${workerPort}`
+
 // VS Code Extension - SessionStart Hook
 export async function activate(context: vscode.ExtensionContext) {
   const sessionId = generateSessionId()
   const project = workspace.name || 'default'
 
   // Fetch context from worker
-  const response = await fetch(`http://localhost:37777/api/context/inject?project=${project}`)
+  const response = await fetch(`${workerBaseUrl}/api/context/inject?project=${project}`)
   const context = await response.text()
 
   // Inject into chat or UI panel
@@ -126,7 +129,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
 // VS Code Extension - UserPromptSubmit Hook
 const command = vscode.commands.registerCommand('extension.command', async (prompt) => {
-  await fetch('http://localhost:37777/sessions/init', {
+  await fetch(`${workerBaseUrl}/sessions/init`, {
     method: 'POST',
     body: JSON.stringify({ sessionId, project, userPrompt: prompt })
   })
@@ -134,7 +137,7 @@ const command = vscode.commands.registerCommand('extension.command', async (prom
 
 // VS Code Extension - PostToolUse Hook (middleware pattern)
 workspace.onDidSaveTextDocument(async (document) => {
-  await fetch('http://localhost:37777/api/sessions/observations', {
+  await fetch(`${workerBaseUrl}/api/sessions/observations`, {
     method: 'POST',
     body: JSON.stringify({
       claudeSessionId: sessionId,
@@ -155,7 +158,7 @@ graph TB
     A["Extension: Tool Use Event"] --> B{"Skip List?<br/>(TodoWrite, AskUserQuestion, etc.)"}
     B -->|"Skip"| X["Discard"]
     B -->|"Keep"| C["Strip Privacy Tags<br/>&lt;private&gt;...&lt;/private&gt;"]
-    C --> D["HTTP POST to Worker<br/>Port 37777"]
+    C --> D["HTTP POST to Worker<br/>Configured port"]
     D --> E["2s timeout<br/>fire-and-forget"]
     E --> F["Extension continues<br/>(non-blocking)"]
 
@@ -304,7 +307,7 @@ sequenceDiagram
 
 **Processing**:
 1. Wait for worker to be available (health check, max 10 seconds)
-2. Call: `GET http://127.0.0.1:37777/api/context/inject?project={project}`
+2. Call: `GET http://127.0.0.1:<worker-port>/api/context/inject?project={project}`
 3. Return formatted context as `additionalContext` in `hookSpecificOutput`
 
 **Output** (via stdout):
@@ -402,7 +405,7 @@ if (!cleanedPrompt || cleanedPrompt.trim() === '') {
 db.saveUserPrompt(session_id, promptNumber, cleanedPrompt)
 
 // 7. Initialize session via worker HTTP
-POST http://127.0.0.1:37777/sessions/{sessionDbId}/init
+POST http://127.0.0.1:<worker-port>/sessions/{sessionDbId}/init
 Body: { project, userPrompt, promptNumber }
 ```
 
@@ -497,7 +500,7 @@ if (SKIP_TOOLS[tool_name]) return
 await ensureWorkerRunning()
 
 // 3. Send to worker (fire-and-forget HTTP)
-POST http://127.0.0.1:37777/api/sessions/observations
+POST http://127.0.0.1:<worker-port>/api/sessions/observations
 Body: {
   claudeSessionId: session_id,
   tool_name,
@@ -592,7 +595,7 @@ const lines = fs.readFileSync(transcript_path, 'utf-8').split('\n')
 await ensureWorkerRunning()
 
 // 3. Send summarization request (fire-and-forget HTTP)
-POST http://127.0.0.1:37777/api/sessions/summarize
+POST http://127.0.0.1:<worker-port>/api/sessions/summarize
 Body: {
   claudeSessionId: session_id,
   last_user_message: string,
@@ -601,7 +604,7 @@ Body: {
 Timeout: 2000ms
 
 // 4. Stop processing spinner
-POST http://127.0.0.1:37777/api/processing
+POST http://127.0.0.1:<worker-port>/api/processing
 Body: { isProcessing: false }
 ```
 
@@ -671,7 +674,7 @@ sequenceDiagram
 
 ```typescript
 // Send session complete (fire-and-forget HTTP)
-POST http://127.0.0.1:37777/api/sessions/complete
+POST http://127.0.0.1:<worker-port>/api/sessions/complete
 Body: {
   claudeSessionId: session_id,
   reason: string  // 'exit' | 'clear' | 'logout' | 'prompt_input_exit' | 'other'
@@ -902,7 +905,7 @@ For developers implementing this pattern on other platforms:
 - [ ] Indices for common queries
 
 ### Worker Service
-- [ ] HTTP server on configurable port (default 37777)
+- [ ] HTTP server on configured worker port
 - [ ] Bun runtime for process management
 - [ ] 3 core services: SessionManager, SDKAgent, DatabaseManager
 
