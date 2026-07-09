@@ -40,8 +40,7 @@ export class MigrationRunner {
     this.dropWorkerPidColumn();
     this.createServerOwnedTables();
     this.rebuildPendingMessagesForFinalQueueSchema();
-    this.addPendingMessagesFoldColumns();
-    this.addPendingMessagesFoldWindowSecondsColumn();
+    this.addContentSessionIdColumns();
   }
 
   private initializeSchema(): void {
@@ -997,6 +996,24 @@ export class MigrationRunner {
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(30, new Date().toISOString());
+  }
+
+  private addContentSessionIdColumns(): void {
+    const observationCols = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    if (!observationCols.some(c => c.name === 'content_session_id')) {
+      this.db.run('ALTER TABLE observations ADD COLUMN content_session_id TEXT');
+      logger.debug('DB', 'Added content_session_id column to observations table (#2769)');
+    }
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_content_session ON observations(content_session_id)');
+
+    const summaryCols = this.db.query('PRAGMA table_info(session_summaries)').all() as TableColumnInfo[];
+    if (!summaryCols.some(c => c.name === 'content_session_id')) {
+      this.db.run('ALTER TABLE session_summaries ADD COLUMN content_session_id TEXT');
+      logger.debug('DB', 'Added content_session_id column to session_summaries table (#2769)');
+    }
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_session_summaries_content_session ON session_summaries(content_session_id)');
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(35, new Date().toISOString());
   }
 
   private dropDeadPendingMessagesColumns(): void {

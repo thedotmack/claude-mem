@@ -118,6 +118,39 @@ describe('MigrationRunner', () => {
       expect(columnNames).toContain('relevance_count');
     });
 
+    it('should add content_session_id column and index to observations and session_summaries (#2769)', () => {
+      const runner = new MigrationRunner(db);
+      runner.runAllMigrations();
+
+      expect(getColumns(db, 'observations').map(c => c.name)).toContain('content_session_id');
+      expect(getColumns(db, 'session_summaries').map(c => c.name)).toContain('content_session_id');
+
+      expect(getIndexNames(db, 'observations')).toContain('idx_observations_content_session');
+      expect(getIndexNames(db, 'session_summaries')).toContain('idx_session_summaries_content_session');
+
+      expect(getSchemaVersions(db)).toContain(35);
+    });
+
+    it('should backfill content_session_id onto a legacy database missing the column (#2769)', () => {
+      const runner = new MigrationRunner(db);
+      runner.runAllMigrations();
+
+      db.prepare('DELETE FROM schema_versions WHERE version = 35').run();
+      db.run('DROP INDEX IF EXISTS idx_observations_content_session');
+      db.run('DROP INDEX IF EXISTS idx_session_summaries_content_session');
+      db.run('ALTER TABLE observations DROP COLUMN content_session_id');
+      db.run('ALTER TABLE session_summaries DROP COLUMN content_session_id');
+      expect(getColumns(db, 'observations').map(c => c.name)).not.toContain('content_session_id');
+
+      runner.runAllMigrations();
+
+      expect(getColumns(db, 'observations').map(c => c.name)).toContain('content_session_id');
+      expect(getColumns(db, 'session_summaries').map(c => c.name)).toContain('content_session_id');
+      expect(getIndexNames(db, 'observations')).toContain('idx_observations_content_session');
+      expect(getIndexNames(db, 'session_summaries')).toContain('idx_session_summaries_content_session');
+      expect(getSchemaVersions(db)).toContain(35);
+    });
+
     it('should record all migration versions', () => {
       const runner = new MigrationRunner(db);
       runner.runAllMigrations();
@@ -141,6 +174,7 @@ describe('MigrationRunner', () => {
       expect(versions).toContain(30);
       expect(versions).toContain(33);
       expect(versions).toContain(34);
+      expect(versions).toContain(35);
     });
 
     it('should create server-owned storage tables without changing legacy readability', () => {

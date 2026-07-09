@@ -113,59 +113,25 @@ export class SessionStore {
     this.dropDeadPendingMessagesColumns();
     this.ensurePendingMessagesToolUseIdColumn();
     this.dropWorkerPidColumn();
-    this.ensurePendingMessagesFoldColumns();
-    this.ensurePendingMessagesFoldWindowSecondsColumn();
+    this.addContentSessionIdColumns();
   }
 
-  // Mirrors MigrationRunner.addPendingMessagesFoldColumns (v35). SessionStore
-  // boots independently of MigrationRunner (DatabaseManager wraps a raw Database
-  // around SessionStore), so the fold columns must be ensured here too.
-  private ensurePendingMessagesFoldColumns(): void {
-    // Mirror dropWorkerPidColumn: always check the actual column shape, not just
-    // schema_versions, so that pending_messages tables rebuilt out-of-band still
-    // get the fold columns repaired in place.
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(35) as SchemaVersion | undefined;
-    const cols = this.db.query('PRAGMA table_info(pending_messages)').all() as TableColumnInfo[];
-    const colNames = new Set(cols.map(c => c.name));
-    const needsFoldKey = !colNames.has('fold_key');
-    const needsFoldCount = !colNames.has('fold_count');
-    if (applied && !needsFoldKey && !needsFoldCount) return;
-
-    if (needsFoldKey) {
-      this.db.run('ALTER TABLE pending_messages ADD COLUMN fold_key TEXT');
-      logger.debug('DB', 'Added fold_key column to pending_messages table');
+  private addContentSessionIdColumns(): void {
+    const observationCols = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    if (!observationCols.some(c => c.name === 'content_session_id')) {
+      this.db.run('ALTER TABLE observations ADD COLUMN content_session_id TEXT');
+      logger.debug('DB', 'Added content_session_id column to observations table (#2769)');
     }
-    if (needsFoldCount) {
-      this.db.run('ALTER TABLE pending_messages ADD COLUMN fold_count INTEGER NOT NULL DEFAULT 1');
-      logger.debug('DB', 'Added fold_count column to pending_messages table');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_content_session ON observations(content_session_id)');
+
+    const summaryCols = this.db.query('PRAGMA table_info(session_summaries)').all() as TableColumnInfo[];
+    if (!summaryCols.some(c => c.name === 'content_session_id')) {
+      this.db.run('ALTER TABLE session_summaries ADD COLUMN content_session_id TEXT');
+      logger.debug('DB', 'Added content_session_id column to session_summaries table (#2769)');
     }
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_session_summaries_content_session ON session_summaries(content_session_id)');
 
-    this.db.run(`
-      CREATE INDEX IF NOT EXISTS idx_pending_fold
-        ON pending_messages(session_db_id, fold_key, created_at_epoch)
-    `);
-
-    if (!applied) {
-      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(35, new Date().toISOString());
-    }
-  }
-
-  // Mirrors MigrationRunner.addPendingMessagesFoldWindowSecondsColumn (v36).
-  // Same boot-path rationale as ensurePendingMessagesFoldColumns above.
-  private ensurePendingMessagesFoldWindowSecondsColumn(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(36) as SchemaVersion | undefined;
-    const cols = this.db.query('PRAGMA table_info(pending_messages)').all() as TableColumnInfo[];
-    const hasColumn = cols.some(c => c.name === 'fold_window_seconds');
-    if (applied && hasColumn) return;
-
-    if (!hasColumn) {
-      this.db.run('ALTER TABLE pending_messages ADD COLUMN fold_window_seconds INTEGER');
-      logger.debug('DB', 'Added fold_window_seconds column to pending_messages table');
-    }
-
-    if (!applied) {
-      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(36, new Date().toISOString());
-    }
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(35, new Date().toISOString());
   }
 
   private dropWorkerPidColumn(): void {
@@ -2319,7 +2285,19 @@ export class SessionStore {
       throw new Error('storeObservation requires a non-empty title');
     }
 
-    const result = this.storeObservations(
+    const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
+
+    const stmt = this.db.prepare(`
+      INSERT INTO observations
+      (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
+       files_read, files_modified, prompt_number, discovery_tokens, agent_type, agent_id, content_hash, created_at, created_at_epoch,
+       generated_by_model, metadata, content_session_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(memory_session_id, content_hash) DO NOTHING
+      RETURNING id, created_at_epoch
+    `);
+
+    const inserted = stmt.get(
       memorySessionId,
       project,
       [observation],
@@ -2333,7 +2311,7 @@ export class SessionStore {
       timestampEpoch,
       generatedByModel || null,
       observation.metadata ?? null,
-      titleNormKey
+      contentSessionId ?? null
     ) as { id: number; created_at_epoch: number } | null;
 
     if (inserted) {
@@ -2443,7 +2421,7 @@ export class SessionStore {
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
          files_read, files_modified, prompt_number, discovery_tokens, agent_type, agent_id, content_hash, created_at, created_at_epoch,
-         generated_by_model, title_norm_key)
+         generated_by_model, content_session_id)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(memory_session_id, content_hash) DO NOTHING
         RETURNING id
@@ -2498,7 +2476,7 @@ export class SessionStore {
           timestampIso,
           timestampEpoch,
           generatedByModel || null,
-          titleNormKey
+          contentSessionId ?? null
         ) as { id: number } | null;
 
         if (inserted) {
@@ -2548,6 +2526,138 @@ export class SessionStore {
     });
 
     return storeTx();
+  }
+
+  storeObservationsAndMarkComplete(
+    memorySessionId: string,
+    project: string,
+    observations: Array<{
+      type: string;
+      title: string | null;
+      subtitle: string | null;
+      facts: string[];
+      narrative: string | null;
+      concepts: string[];
+      files_read: string[];
+      files_modified: string[];
+      agent_type?: string | null;
+      agent_id?: string | null;
+    }>,
+    summary: {
+      request: string;
+      investigated: string;
+      learned: string;
+      completed: string;
+      next_steps: string;
+      notes: string | null;
+    } | null,
+    messageId: number,
+    _pendingStore: unknown,
+    promptNumber?: number,
+    discoveryTokens: number = 0,
+    overrideTimestampEpoch?: number,
+    generatedByModel?: string,
+    contentSessionId?: string | null
+  ): { observationIds: number[]; summaryId?: number; createdAtEpoch: number } {
+    const timestampEpoch = overrideTimestampEpoch ?? Date.now();
+    const timestampIso = new Date(timestampEpoch).toISOString();
+
+    const storeAndMarkTx = this.db.transaction(() => {
+      const observationIds: number[] = [];
+
+      const obsStmt = this.db.prepare(`
+        INSERT INTO observations
+        (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
+         files_read, files_modified, prompt_number, discovery_tokens, agent_type, agent_id, content_hash, created_at, created_at_epoch,
+         generated_by_model, content_session_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(memory_session_id, content_hash) DO NOTHING
+        RETURNING id
+      `);
+      const lookupExistingStmt = this.db.prepare(
+        'SELECT id FROM observations WHERE memory_session_id = ? AND content_hash = ?'
+      );
+
+      for (const observation of observations) {
+        const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
+        const inserted = obsStmt.get(
+          memorySessionId,
+          project,
+          observation.type,
+          observation.title,
+          observation.subtitle,
+          JSON.stringify(observation.facts),
+          observation.narrative,
+          JSON.stringify(observation.concepts),
+          JSON.stringify(observation.files_read),
+          JSON.stringify(observation.files_modified),
+          promptNumber || null,
+          discoveryTokens,
+          observation.agent_type ?? null,
+          observation.agent_id ?? null,
+          contentHash,
+          timestampIso,
+          timestampEpoch,
+          generatedByModel || null,
+          contentSessionId ?? null
+        ) as { id: number } | null;
+
+        if (inserted) {
+          observationIds.push(inserted.id);
+          continue;
+        }
+
+        const existing = lookupExistingStmt.get(memorySessionId, contentHash) as { id: number } | null;
+        if (!existing) {
+          throw new Error(
+            `storeObservationsAndMarkComplete: ON CONFLICT without existing row for content_hash=${contentHash}`
+          );
+        }
+        observationIds.push(existing.id);
+      }
+
+      let summaryId: number | undefined;
+      if (summary) {
+        const summaryStmt = this.db.prepare(`
+          INSERT INTO session_summaries
+          (memory_session_id, project, request, investigated, learned, completed,
+           next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch,
+           content_session_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+
+        const result = summaryStmt.run(
+          memorySessionId,
+          project,
+          summary.request,
+          summary.investigated,
+          summary.learned,
+          summary.completed,
+          summary.next_steps,
+          summary.notes,
+          promptNumber || null,
+          discoveryTokens,
+          timestampIso,
+          timestampEpoch,
+          contentSessionId ?? null
+        );
+        summaryId = Number(result.lastInsertRowid);
+      }
+
+      // Current queue rows are live work only; completed work is removed, not retained as processed.
+      const deleteStmt = this.db.prepare(`
+        DELETE FROM pending_messages
+        WHERE id = ? AND status = 'processing'
+      `);
+      const deleteResult = deleteStmt.run(messageId);
+      if (deleteResult.changes !== 1) {
+        throw new Error(`storeObservationsAndMarkComplete: failed to complete pending message ${messageId}`);
+      }
+
+      return { observationIds, summaryId, createdAtEpoch: timestampEpoch };
+    });
+
+    return storeAndMarkTx();
   }
 
   getSessionSummariesByIds(

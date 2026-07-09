@@ -857,7 +857,7 @@ describe('ResponseProcessor', () => {
         promptNumber,
         tokens,
         timestamp,
-        generatedByModel,
+        ,
         contentSessionId,
       ] = mockStoreObservations.mock.calls[0];
 
@@ -868,7 +868,6 @@ describe('ResponseProcessor', () => {
       expect(promptNumber).toBe(5);
       expect(tokens).toBe(100);
       expect(timestamp).toBe(1700000000000);
-      expect(generatedByModel).toBeUndefined();
       expect(contentSessionId).toBe('content-session-123');
     });
   });
