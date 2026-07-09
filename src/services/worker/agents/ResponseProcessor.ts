@@ -17,7 +17,15 @@ import type { DatabaseManager } from '../DatabaseManager.js';
 import type { SessionManager } from '../SessionManager.js';
 import type { WorkerRef, StorageResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
-import { telemetryBuffer } from '../../telemetry/buffer.js';
+import { captureEvent } from '../../telemetry/telemetry.js';
+
+/**
+ * Consecutive non-XML observer outputs tolerated before we kill and respawn the
+ * SDK session (plan-11, #2485). Only prose counts toward the threshold; idle is
+ * benign ("nothing to record") and never counts; poisoned triggers an immediate
+ * respawn regardless of the count.
+ */
+export const INVALID_OUTPUT_RESPAWN_THRESHOLD = 3;
 
 export async function processAgentResponse(
   text: string,
@@ -75,21 +83,13 @@ export async function processAgentResponse(
     const preview = previewOutput(text);
     const recognizedEmptyAck = isRecognizedEmptyObserverAck(text, outputClass);
 
-    if (recognizedEmptyAck) {
-      // Treat recognized empty acknowledgements as healthy output so a long
-      // run of valid no-op responses does not preserve stale respawn debt.
-      session.consecutiveInvalidOutputs = 0;
-
-      logger.warn('PARSER', `${agentName} returned non-XML empty-ack ${outputClass} response, confirming claimed batch without respawn`, {
-        sessionId: session.sessionDbId,
-        outputClass,
-        preview,
-        consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
-      });
-
-      await sessionManager.confirmClaimedMessages(session.sessionDbId);
-      session.earliestPendingTimestamp = null;
-      return;
+    // Idle is benign (empty / "nothing to record"): a healthy session with no
+    // memory-worthy content must NOT accumulate toward a kill/respawn. Only
+    // prose (a possible wedge) increments; poisoned respawns immediately below.
+    if (outputClass === 'idle') {
+      session.consecutiveInvalidOutputs = session.consecutiveInvalidOutputs ?? 0;
+    } else {
+      session.consecutiveInvalidOutputs = (session.consecutiveInvalidOutputs ?? 0) + 1;
     }
 
     logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response — ignoring queued batch`, {

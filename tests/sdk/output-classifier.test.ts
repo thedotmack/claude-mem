@@ -39,10 +39,14 @@ describe('classifyObserverOutput (plan-11 #2485)', () => {
     expect(classifyObserverOutput('Hmm, I think this one is a bit ambiguous, let me consider it.')).toBe('prose');
   });
 
-  it('classifies plain-prose no-op acknowledgements as skip', () => {
-    expect(classifyObserverOutput('No observations to record.')).toBe('skip');
-    expect(classifyObserverOutput('Nothing to record for this batch.')).toBe('skip');
-    expect(classifyObserverOutput('No summary needed.')).toBe('skip');
+  it('classifies a plain-prose "nothing to record" skip as idle (benign)', () => {
+    expect(classifyObserverOutput('No observations to record.')).toBe('idle');
+    expect(classifyObserverOutput('Nothing to record for this batch.')).toBe('idle');
+    expect(classifyObserverOutput('No summary needed.')).toBe('idle');
+  });
+
+  it('classifies "session exhausted" closure string as poisoned', () => {
+    expect(classifyObserverOutput('This session has been exhausted, I cannot continue.')).toBe('poisoned');
   });
 
   it('classifies haiku-style no-op acknowledgements as skip', () => {

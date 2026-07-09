@@ -76,6 +76,21 @@ const SKIP_NEUTRAL_REMAINDER_WORDS = new Set([
   'empty',
 ]);
 
+// Benign "nothing to record" phrases the SDK emits as plain prose instead of
+// <skip_summary/>. They mean the batch had no memory-worthy content — a healthy
+// outcome — so they must be treated as idle, never as a wedge that accumulates
+// toward a respawn. Kept lowercase; matched case-insensitively against the raw
+// output.
+const BENIGN_SKIP_MARKERS: string[] = [
+  'no observations to record',
+  'nothing to record',
+  'no observations to make',
+  'nothing to summarize',
+  'no summary needed',
+  'nothing worth recording',
+  'no memory-worthy',
+];
+
 /**
  * Returns a short, single-line preview of raw output for diagnostics/logging so
  * a dropped batch is visible instead of silent.
@@ -149,10 +164,10 @@ function isRecognizedSkipProse(raw: string): boolean {
  * - `xml`      — contains a parseable `<observation>`/`<summary>`/`<skip_summary/>`
  *                root tag. (Whether it ultimately yields rows is parseAgentXml's
  *                job; this is the structural gate.)
- * - `idle`     — empty / whitespace-only. Benign: the SDK had nothing to say.
- * - `skip`     — short prose matching a known "no observations / insufficient
- *                data / skipping" acknowledgement. Benign: the SDK explicitly
- *                declined a no-op batch.
+ * - `idle`     — empty / whitespace-only, or a plain-prose "nothing to record"
+ *                skip. Benign: the SDK had nothing memory-worthy to say.
+ * - `poisoned` — a known "session exhausted"/closure string. Recover by killing
+ *                and respawning the SDK session.
  * - `prose`    — any other non-XML text. Conversational output; not persisted.
  */
 export function classifyObserverOutput(raw: unknown): ObserverOutputClass {
@@ -164,8 +179,12 @@ export function classifyObserverOutput(raw: unknown): ObserverOutputClass {
     return 'xml';
   }
 
-  if (isRecognizedSkipProse(raw)) {
-    return 'skip';
+  // A "nothing to record" answer in plain prose is a benign skip, not a wedge:
+  // classify it as idle so it never counts toward the respawn threshold.
+  for (const marker of BENIGN_SKIP_MARKERS) {
+    if (lower.includes(marker)) {
+      return 'idle';
+    }
   }
 
   return 'prose';
