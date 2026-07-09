@@ -51,6 +51,7 @@ export type Component =
   | 'SYSTEM'
   | 'TELEGRAM'
   | 'TRANSCRIPT'
+  | 'TRANSCRIPT_DEBUG'
   | 'WINDSURF'
   | 'WORKER';
 

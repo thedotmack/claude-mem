@@ -6,8 +6,8 @@ import {
   waitForHealth,
   waitForPortFree,
   getInstalledPluginVersion,
-  getRunningWorkerVersion,
-  checkVersionMatch
+  checkVersionMatch,
+  isLikelyClaudeMemWorkerCommand
 } from '../../src/services/infrastructure/index.js';
 
 describe('HealthMonitor', () => {
@@ -112,58 +112,23 @@ describe('HealthMonitor', () => {
     });
   });
 
-  describe('probePortBind', () => {
-    // probePortBind is the low-level bind probe behind isPortInUse. It returns
-    // the failing error code so callers can tell the stale-socket case
-    // (EADDRINUSE) apart from genuine config errors (EADDRNOTAVAIL / EACCES).
-    it('should return null when a real bind succeeds (port free)', async () => {
-      const closeMock = mock((cb: Function) => cb());
-      const createServerMock = mock(() => ({
-        once: mock((event: string, cb: Function) => {
-          if (event === 'listening') setTimeout(() => cb(), 0);
-        }),
-        listen: mock(() => {}),
-        close: closeMock
-      }));
-      const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
+  describe('isLikelyClaudeMemWorkerCommand', () => {
+    it('recognizes a Bun-launched claude-mem worker-service daemon', () => {
+      const commandLine = 'bun.exe D:\\tools\\claude-mem\\plugin\\scripts\\worker-service.cjs --daemon';
 
-      const result = await probePortBind(39999);
-
-      expect(result).toBeNull();
-      expect(closeMock).toHaveBeenCalled();
-      spy.mockRestore();
+      expect(isLikelyClaudeMemWorkerCommand(commandLine)).toBe(true);
     });
 
-    it('should return "EADDRINUSE" when the port is bound (stale socket)', async () => {
-      const createServerMock = mock(() => ({
-        once: mock((event: string, cb: Function) => {
-          if (event === 'error') setTimeout(() => cb({ code: 'EADDRINUSE' }), 0);
-        }),
-        listen: mock(() => {})
-      }));
-      const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
+    it('recognizes the compiled claude-mem worker binary', () => {
+      const commandLine = 'C:\\Users\\test\\.claude\\plugins\\cache\\thedotmack\\claude-mem\\13.6.1\\plugin\\scripts\\claude-mem --daemon';
 
-      const result = await probePortBind(37777);
-
-      expect(result).toBe('EADDRINUSE');
-      spy.mockRestore();
+      expect(isLikelyClaudeMemWorkerCommand(commandLine)).toBe(true);
     });
 
-    it('should preserve non-conflict bind errors (e.g. EADDRNOTAVAIL, EACCES)', async () => {
-      for (const code of ['EADDRNOTAVAIL', 'EACCES']) {
-        const createServerMock = mock(() => ({
-          once: mock((event: string, cb: Function) => {
-            if (event === 'error') setTimeout(() => cb({ code }), 0);
-          }),
-          listen: mock(() => {})
-        }));
-        const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
+    it('does not match unrelated processes on the same port', () => {
+      const commandLine = 'C:\\Program Files\\Some App\\server.exe --port 37778';
 
-        const result = await probePortBind(80, '203.0.113.1');
-
-        expect(result).toBe(code);
-        spy.mockRestore();
-      }
+      expect(isLikelyClaudeMemWorkerCommand(commandLine)).toBe(false);
     });
   });
 

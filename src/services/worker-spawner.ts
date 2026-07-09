@@ -13,6 +13,7 @@ import {
   touchPidFile,
 } from './infrastructure/ProcessManager.js';
 import {
+  forceKillStaleWorkerPortOwners,
   isPortInUse,
   probePortBind,
   waitForHealth,
@@ -247,16 +248,20 @@ export async function ensureWorkerStarted(
       logger.info('SYSTEM', 'Worker is now healthy');
       return ready ? 'ready' : 'warming';
     }
-    // Port held but nothing healthy answering → almost certainly a stale/zombie
-    // worker still bound to the socket. Reclaim it (validated kill) and fall
-    // through to a fresh spawn below. If reclaim fails, give up cleanly instead
-    // of letting every subsequent hook re-spawn a daemon that dies on bind.
-    const reclaimed = await reclaimStaleWorkerPort(port);
-    if (!reclaimed) {
-      logger.error('SYSTEM', 'Port in use but worker not responding and reclaim failed');
+
+    const killedStaleOwner = await forceKillStaleWorkerPortOwners(port);
+    if (killedStaleOwner) {
+      const freed = await waitForPortFree(port, getPlatformTimeout(5000));
+      if (freed) {
+        logger.warn('SYSTEM', 'Cleared stale Windows worker port owner; continuing with worker spawn', { port });
+      } else {
+        logger.error('SYSTEM', 'Killed stale Windows worker port owner but port is still occupied', { port });
+        return 'dead';
+      }
+    } else {
+      logger.error('SYSTEM', 'Port in use but worker not responding to health checks');
       return 'dead';
     }
-    clearWorkerSpawnAttempted();
   }
 
   if (shouldSkipSpawnOnWindows()) {
