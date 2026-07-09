@@ -7,12 +7,13 @@ import { disableClaudeAutoMemory } from '../src/npx-cli/commands/install.js';
 /**
  * Tests for auto-memory disable behavior in the install command.
  *
- * Closes anthropics/claude-code#23544 from claude-mem's side: installs now
- * require explicit consent before setting CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 in
- * ~/.claude/settings.json `env` block. The built-in MEMORY.md system creates
- * shadow state outside the user's control and competes with claude-mem's
- * hook-based memory for context-window tokens, but we should not disable it
- * without the user's opt-in.
+ * Closes anthropics/claude-code#23544 from claude-mem's side: installs set
+ * CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 in ~/.claude/settings.json `env` block by
+ * DEFAULT. The built-in MEMORY.md system creates shadow state outside the user's
+ * control and competes with claude-mem's hook-based memory for context-window
+ * tokens, so disabling it is the default in both interactive and non-interactive
+ * installs; --keep-auto-memory (or choosing "Leave enabled" interactively) opts
+ * back in.
  *
  * Source-inspection style mirrors install-non-tty.test.ts — disableClaudeAutoMemory
  * is a private module-level helper that can't be imported directly.
@@ -97,9 +98,17 @@ describe('Install: disable Claude Code auto-memory', () => {
       );
     });
 
-    it('leaves auto-memory enabled in non-interactive installs unless the explicit flag is present', () => {
+    it('disables auto-memory by default in non-interactive installs (claude-mem replaces native memory)', () => {
+      // Disabling is the default now: native auto-memory competes with claude-mem,
+      // so CI/non-interactive installs disable it too unless --keep-auto-memory.
       expect(installSource).toMatch(
-        /if \(!isInteractive\) \{\s*return ['"]leave-enabled['"]/,
+        /if \(!isInteractive\) \{\s*return ['"]disable['"]/,
+      );
+    });
+
+    it('honors --keep-auto-memory as the explicit opt-out, and --disable-auto-memory for symmetry', () => {
+      expect(installSource).toMatch(
+        /if \(options\.keepAutoMemory\) \{\s*return ['"]leave-enabled['"]/,
       );
       expect(installSource).toMatch(
         /if \(options\.disableAutoMemory\) \{\s*return ['"]disable['"]/,

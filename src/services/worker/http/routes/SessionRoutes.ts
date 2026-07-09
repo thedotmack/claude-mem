@@ -315,10 +315,11 @@ export class SessionRoutes extends BaseRouteHandler {
       validateBody(SessionRoutes.summarizeByClaudeIdSchema),
       this.handleSummarizeByClaudeId.bind(this)
     );
+    app.get('/api/sessions/status', this.handleStatusByClaudeId.bind(this));
     app.post(
-      '/api/sessions/pre-compact',
-      validateBody(SessionRoutes.preCompactByClaudeIdSchema),
-      this.handlePreCompactByClaudeId.bind(this)
+      '/api/sessions/backdate',
+      validateBody(SessionRoutes.backdateByClaudeIdSchema),
+      this.handleBackdateByClaudeId.bind(this)
     );
   }
 
@@ -350,11 +351,9 @@ export class SessionRoutes extends BaseRouteHandler {
     platformSource: z.string().optional(),
   }).passthrough();
 
-  private static readonly preCompactByClaudeIdSchema = z.object({
+  private static readonly backdateByClaudeIdSchema = z.object({
     contentSessionId: z.string().min(1),
-    agentId: z.string().optional(),
-    platformSource: z.string().optional(),
-    cwd: z.string().optional(),
+    timestampEpoch: z.number(),
   }).passthrough();
 
   private handleObservationsByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
@@ -436,12 +435,50 @@ export class SessionRoutes extends BaseRouteHandler {
     res.json({ status: 'queued' });
   });
 
-  private handlePreCompactByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { contentSessionId, agentId } = req.body;
-    const platformSource = this.getPlatformSourceFromRequest(req);
+  // Authoritatively set the date of a session's stored observations. The
+  // native-memory migration uses this to date imported notes by their source
+  // file's mtime after the worker has compressed+stored them — the enqueue-time
+  // hint is unreliable because the agent's idle turns reset the pending
+  // timestamp before the observation is emitted.
+  private handleBackdateByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const { contentSessionId, timestampEpoch } = req.body;
 
-    if (agentId) {
-      res.json({ status: 'skipped', reason: 'subagent_context' });
+    const store = this.dbManager.getSessionStore();
+    const sessionDbId = store.createSDKSession(contentSessionId, '', '');
+    const memorySessionId = store.getSessionById(sessionDbId)?.memory_session_id ?? null;
+
+    if (!memorySessionId) {
+      res.json({ updated: 0, reason: 'no_memory_session' });
+      return;
+    }
+
+    const updated = store.backdateObservationsForSession(memorySessionId, timestampEpoch);
+    res.json({ updated });
+  });
+
+  private handleStatusByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const contentSessionId = req.query.contentSessionId as string;
+
+    if (!contentSessionId) {
+      return this.badRequest(res, 'Missing contentSessionId query parameter');
+    }
+
+    const store = this.dbManager.getSessionStore();
+    const sessionDbId = store.createSDKSession(contentSessionId, '', '');
+    const session = this.sessionManager.getSession(sessionDbId);
+
+    // Count observations actually persisted for this session, straight from the
+    // DB so it's accurate even after the in-RAM session has been reaped. Callers
+    // (e.g. the native-memory migration) use this to confirm work truly landed
+    // before acting — queueLength reaching 0 alone can be a false positive when
+    // the agent returns an idle/non-XML response and the batch is dropped.
+    const memorySessionId = store.getSessionById(sessionDbId)?.memory_session_id ?? null;
+    const storedObservations = memorySessionId
+      ? store.getObservationsForSession(memorySessionId).length
+      : 0;
+
+    if (!session) {
+      res.json({ status: 'not_found', queueLength: 0, storedObservations });
       return;
     }
 
@@ -449,24 +486,14 @@ export class SessionRoutes extends BaseRouteHandler {
     const sessionDbId = store.createSDKSession(contentSessionId, '', '', undefined, platformSource);
     const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId);
 
-    const privacy = PrivacyCheckValidator.checkUserPromptPrivacy(
-      store,
-      contentSessionId,
-      promptNumber,
-      'pre-compact',
-      sessionDbId
-    );
-    if (!privacy.allow) {
-      res.json({ status: 'skipped', reason: 'private' });
-      return;
-    }
-
-    await this.sessionManager.queuePreCompact(sessionDbId);
-    await this.ensureGeneratorRunning(sessionDbId, 'pre-compact');
-
-    this.eventBroadcaster.broadcastSummarizeQueued();
-
-    res.json({ status: 'queued' });
+    res.json({
+      status: 'active',
+      sessionDbId,
+      queueLength,
+      storedObservations,
+      summaryStored: session.lastSummaryStored ?? null,
+      uptime: getUptimeSeconds(session.startTime)
+    });
   });
 
   private handleSessionInitByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
