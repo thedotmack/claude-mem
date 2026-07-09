@@ -19,103 +19,6 @@ import type { WorkerRef, StorageResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
 import { telemetryBuffer } from '../../telemetry/buffer.js';
 
-type AgentOutputKind = 'observation' | 'summary' | 'none';
-type ExpectedOutputKind = Exclude<AgentOutputKind, 'none'>;
-
-function expectedOutputKindForGenerator(source: string | undefined): ExpectedOutputKind | null {
-  if (source === 'summarize') return 'summary';
-  if (source === 'init' || source === 'ingest') return 'observation';
-  return null;
-}
-
-function parsedOutputKind(parsed: { observations: ParsedObservation[]; summary: ParsedSummary | null }): AgentOutputKind {
-  if (parsed.summary) return 'summary';
-  if (parsed.observations.length > 0) return 'observation';
-  return 'none';
-}
-
-const MAX_EMPTY_ACK_LENGTH = 200;
-const EMPTY_ACK_PREFIXES = [
-  'no observations to record',
-  'no new observations to record',
-  'no observations found',
-  'no new observations found',
-  'no observations',
-  'no new observations',
-] as const;
-const EMPTY_ACK_CONTENT_SIGNAL = /\b(?:but|however|although|except|identified|discovered|learned|recorded|captured|stored|noted|issue|bug|fix|error|failure)\b/;
-const EMPTY_ACK_NEUTRAL_REMAINDER_WORDS = new Set([
-  'at',
-  'this',
-  'time',
-  'for',
-  'batch',
-  'investigation',
-  'not',
-  'yet',
-  'started',
-  'no',
-  'tool',
-  'executions',
-  'or',
-  'technical',
-  'findings',
-  'have',
-  'been',
-  'provided',
-]);
-
-function hasEmptyAckPrefix(normalized: string, prefix: string): boolean {
-  if (normalized === prefix) {
-    return true;
-  }
-
-  if (!normalized.startsWith(prefix)) {
-    return false;
-  }
-
-  const nextChar = normalized.charAt(prefix.length);
-  return /[\s.,!?:;\-—–]/.test(nextChar);
-}
-
-function isNeutralEmptyAckRemainder(remainder: string): boolean {
-  const stripped = remainder.replace(/^[\s.,!?:;\-—–]+/, '').trim();
-  if (stripped.length === 0) {
-    return true;
-  }
-
-  const words = stripped.match(/[a-z]+/g);
-  if (!words || words.length === 0) {
-    return true;
-  }
-
-  return words.every(word => EMPTY_ACK_NEUTRAL_REMAINDER_WORDS.has(word));
-}
-
-function isRecognizedEmptyObserverAck(text: string, outputClass: ReturnType<typeof classifyObserverOutput>): boolean {
-  if (outputClass === 'idle') {
-    return true;
-  }
-
-  if (outputClass !== 'prose') {
-    return false;
-  }
-
-  const normalized = text.trim().toLowerCase();
-  if (normalized.length === 0 || normalized.length > MAX_EMPTY_ACK_LENGTH) {
-    return false;
-  }
-
-  const matchedPrefix = EMPTY_ACK_PREFIXES.find(prefix => hasEmptyAckPrefix(normalized, prefix));
-  if (!matchedPrefix) {
-    return false;
-  }
-
-  const remainder = normalized.slice(matchedPrefix.length);
-  return !EMPTY_ACK_CONTENT_SIGNAL.test(remainder) &&
-    isNeutralEmptyAckRemainder(remainder);
-}
-
 export async function processAgentResponse(
   text: string,
   session: ActiveSession,
@@ -189,47 +92,42 @@ export async function processAgentResponse(
       return;
     }
 
-    session.consecutiveInvalidOutputs = (session.consecutiveInvalidOutputs ?? 0) + 1;
-
     logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response — ignoring queued batch`, {
       sessionId: session.sessionDbId,
       outputClass,
       preview,
-      consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
+      consecutiveInvalidOutputs: session.consecutiveInvalidOutputs ?? 0,
     });
+
+    // Recover from poison (plan-11, #2485): a poisoned closure string means the
+    // SDK session is wedged and will keep emitting garbage. Idle/prose outputs
+    // are benign no-ops: confirm the claimed batch and keep the session alive.
+    if (outputClass === 'poisoned') {
+      session.consecutiveInvalidOutputs = (session.consecutiveInvalidOutputs ?? 0) + 1;
+      logger.error('SESSION', `${agentName} session poisoned — killing and respawning, pending messages preserved`, {
+        sessionId: session.sessionDbId,
+        outputClass,
+        consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
+      });
+      // Respawn-gated telemetry ONLY (never per invalid output — volume).
+      // Closed enums and counts; the raw model output never leaves the box.
+      captureEvent('session_compressed', {
+        outcome: 'invalid_output',
+        invalid_output_class: outputClass,
+        consecutive_invalid_outputs: session.consecutiveInvalidOutputs,
+        respawn_triggered: true,
+        provider: providerName,
+        model: typeof modelId === 'string' && modelId ? modelId : 'unknown',
+        ide: session.platformSource,
+        hook: session.lastGeneratorSource,
+      });
+      await sessionManager.respawnPoisonedSession(session.sessionDbId);
+      return;
+    }
 
     // Plain-text skip responses are intentionally ignored. Re-queueing them
-    // creates an observer loop where the same low-signal batch is retried.
-    await sessionManager.confirmClaimedMessages(session.sessionDbId);
-    session.earliestPendingTimestamp = null;
-    return;
-  }
-
-  const expectedKind = expectedOutputKindForGenerator(session.lastGeneratorSource);
-  const actualKind = parsedOutputKind(parsed);
-  const contractKind = actualKind === 'none' ? parsed.rootKind : actualKind;
-
-  if (expectedKind && contractKind !== expectedKind) {
-    const outputClass = classifyObserverOutput(text);
-    const preview = previewOutput(text);
-    session.consecutiveInvalidOutputs = 0;
-
-    logger.warn('PARSER', `${agentName} returned ${contractKind} XML while ${expectedKind} output was expected — ignoring queued batch`, {
-      sessionId: session.sessionDbId,
-      outputClass,
-      preview,
-      expectedKind,
-      actualKind: contractKind,
-      generatorSource: session.lastGeneratorSource,
-      consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
-    });
-
-    await sessionManager.confirmClaimedMessages(session.sessionDbId);
-    session.earliestPendingTimestamp = null;
-    return;
-  }
-
-  if (actualKind === 'none') {
+    // creates an observer loop where the same low-signal batch is retried
+    // until the restart guard fires or the provider quota is exhausted.
     session.consecutiveInvalidOutputs = 0;
     await sessionManager.confirmClaimedMessages(session.sessionDbId);
     session.earliestPendingTimestamp = null;

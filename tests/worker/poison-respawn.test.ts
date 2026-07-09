@@ -2,7 +2,6 @@ import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:te
 import { logger } from '../../src/utils/logger.js';
 import { SessionManager } from '../../src/services/worker/SessionManager.js';
 import { processAgentResponse } from '../../src/services/worker/agents/ResponseProcessor.js';
-import { handleGeneratorExit } from '../../src/services/worker/session/GeneratorExitHandler.js';
 import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
 import type { WorkerRef } from '../../src/services/worker/agents/types.js';
 
@@ -93,7 +92,7 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     expect(session.abortReason ?? null).toBeNull();
   });
 
-  it('repeated "No observations to record" acknowledgements confirm and never build respawn debt', async () => {
+  it('does not respawn on repeated prose/idle outputs', async () => {
     const sm = new SessionManager(makeDbManager());
     const session = sm.initializeSession(2, 'do the thing', 1);
     session.memorySessionId = 'mem-2';
@@ -131,32 +130,12 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
 
     const respawnSpy = spyOn(sm, 'respawnPoisonedSession');
 
-    for (let i = 0; i < INVALID_OUTPUT_RESPAWN_THRESHOLD + 1; i++) {
+    for (let i = 0; i < 5; i++) {
       await processAgentResponse(
-        'No observations to record for this batch.',
+        i % 2 === 0 ? 'Just some prose, no XML here.' : '',
         session, makeDbManager(), sm, mockWorker, 0, null, 'TestAgent'
       );
     }
-
-    expect(respawnSpy).not.toHaveBeenCalled();
-    expect(session.consecutiveInvalidOutputs).toBe(0);
-  });
-
-  it('does not respawn on repeated idle outputs', async () => {
-    const sm = new SessionManager(makeDbManager());
-    const session = sm.initializeSession(5, 'do the thing', 1);
-    session.memorySessionId = 'mem-5';
-    session.consecutiveInvalidOutputs = INVALID_OUTPUT_RESPAWN_THRESHOLD - 1;
-
-    const respawnSpy = spyOn(sm, 'respawnPoisonedSession');
-
-    for (let i = 0; i < INVALID_OUTPUT_RESPAWN_THRESHOLD + 1; i++) {
-      await processAgentResponse(
-        '',
-        session, makeDbManager(), sm, mockWorker, 0, null, 'TestAgent'
-      );
-    }
-
     expect(respawnSpy).not.toHaveBeenCalled();
     expect(session.consecutiveInvalidOutputs).toBe(0);
   });
