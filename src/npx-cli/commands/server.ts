@@ -12,6 +12,7 @@ import {
   runStatusCommand,
   runStopCommand,
 } from './runtime.js';
+import { stripBom } from '../../utils/json-utils.js';
 
 function printServerUsage(): void {
   console.error(`Usage: ${styleText('bold', 'npx claude-mem server <command>')}`);
@@ -128,14 +129,16 @@ async function runServerKeysRotateCommand(): Promise<void> {
 
   const settingsPath = join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
   let previousApiKeyId: string | null = null;
-  try {
-    const flat = readFlatSettings(settingsPath);
-    // Phase 1d: read the new canonical key first, fall back to the
-    // legacy `CLAUDE_MEM_SERVER_BETA_API_KEY` so rotations work for
-    // both fresh installs and pre-rename installs.
-    const previousKey = flat?.CLAUDE_MEM_SERVER_API_KEY ?? flat?.CLAUDE_MEM_SERVER_BETA_API_KEY;
-    if (typeof previousKey === 'string' && previousKey.length > 0) {
-      previousApiKeyId = await lookupApiKeyIdByPlaintext(previousKey);
+  if (existsSync(settingsPath)) {
+    try {
+      const raw = JSON.parse(stripBom(readFileSync(settingsPath, 'utf-8'))) as Record<string, unknown>;
+      const flat = (raw.env && typeof raw.env === 'object' ? raw.env : raw) as Record<string, unknown>;
+      const previousKey = flat.CLAUDE_MEM_SERVER_BETA_API_KEY;
+      if (typeof previousKey === 'string' && previousKey.length > 0) {
+        previousApiKeyId = await lookupApiKeyIdByPlaintext(previousKey);
+      }
+    } catch {
+      // ignore — we'll just generate a new key without revoking the old one
     }
   } catch {
     // ignore — we'll just generate a new key without revoking the old one

@@ -5,6 +5,7 @@ import path from 'path';
 import { readFileSync, existsSync, renameSync, mkdirSync } from 'fs';
 import { getPackageRoot, paths } from '../../../../shared/paths.js';
 import { logger } from '../../../../utils/logger.js';
+import { stripBom } from '../../../../utils/json-utils.js';
 import { SettingsManager } from '../../SettingsManager.js';
 import { ModeManager } from '../../../domain/ModeManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';

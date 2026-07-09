@@ -3,6 +3,7 @@ import { homedir } from 'os';
 import { existsSync, mkdirSync, readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
+import { logger } from '../utils/logger.js';
 import { stripBom } from '../utils/json-utils.js';
 
 function getDirname(): string {
