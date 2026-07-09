@@ -29,7 +29,7 @@ interface StreamedBlocksProps {
   onCite: (id: number) => void;
 }
 
-function StreamedBlocks({ blocks, animate, citedObs, onCite }: StreamedBlocksProps) {
+export function StreamedBlocks({ blocks, animate, citedObs, onCite }: StreamedBlocksProps) {
   const totalWords = useMemo(
     () =>
       blocks.reduce(

@@ -26,6 +26,7 @@ export interface ViewerSession {
   /** epoch seconds */
   ended: number;
   request: string;
+  investigated: string;
   learned: string;
   completed: string;
   next_steps: string;

@@ -12,6 +12,7 @@ import { ContextBar } from './components/ContextBar';
 import { Timeline } from './components/Timeline';
 import { Sidebar } from './components/Sidebar';
 import { AnswerDrawer, type DrawerTarget } from './components/AnswerDrawer';
+import { AgentPanel } from './components/AgentPanel';
 import { AgentToasts } from './components/AgentToasts';
 import { TweaksPopover, useTweaks } from './components/TweaksPopover';
 import { ContextSettingsModal } from './components/ContextSettingsModal';
@@ -55,6 +56,7 @@ export function App() {
   const [openSessions, setOpenSessions] = useState<Record<string, boolean> | null>(null);
   const [openObs, setOpenObs] = useState<Record<string | number, boolean>>({});
   const [drawer, setDrawer] = useState<DrawerTarget | null>(null);
+  const [agentOpen, setAgentOpen] = useState(false);
   const [sideOpen, setSideOpen] = useState(false);
   const [activeDayKey, setActiveDayKey] = useState<string | null>(null);
   const [ctxSessionId, setCtxSessionId] = useState<string | null>(null);
@@ -297,6 +299,7 @@ export function App() {
       setOpenSessions((prev) => ({ ...(prev || effOpenSessions), [o.session_id]: true }));
       setOpenObs((p) => ({ ...p, [obsId]: true }));
       setDrawer(null);
+      setAgentOpen(false);
       setFlashId(obsId);
       setTimeout(() => {
         const el = document.getElementById('obs-' + obsId);
@@ -311,17 +314,35 @@ export function App() {
   );
 
   // ---------- agent / notes ----------
+  // Asking opens the interactive agent panel; the ask becomes a new turn in
+  // the conversation thread. Note drawer closes so panels never stack.
   const handleAsk = useCallback((query: string) => {
     agent.ask(query);
+    setDrawer(null);
+    setAgentOpen(true);
   }, [agent]);
 
   const openAgentAnswer = useCallback(
     (id: string) => {
-      setDrawer({ type: 'agent', id });
+      setDrawer(null);
+      setAgentOpen(true);
       setTimeout(() => agent.markViewed(id), 4000);
     },
     [agent]
   );
+
+  // while the panel is open, freshly-answered turns finish their word-reveal
+  // then settle (viewed = no re-animation next render)
+  const doneUnviewed = agent.sessions
+    .filter((s) => s.status === 'done' && !s.viewed)
+    .map((s) => s.id)
+    .join('|');
+  useEffect(() => {
+    if (!agentOpen || !doneUnviewed) return;
+    const ids = doneUnviewed.split('|');
+    const t = setTimeout(() => ids.forEach((id) => agent.markViewed(id)), 4000);
+    return () => clearTimeout(t);
+  }, [agentOpen, doneUnviewed, agent]);
 
   const handleSaveNote = useCallback(
     (session: AgentSession) => {
@@ -348,6 +369,7 @@ export function App() {
       if (e.key === 'Escape') {
         setSideOpen(false);
         setDrawer(null);
+        setAgentOpen(false);
         setTweaksOpen(false);
       }
     };
@@ -473,6 +495,7 @@ export function App() {
                 notes={notes}
                 onOpenNote={(id) => {
                   setSideOpen(false);
+                  setAgentOpen(false);
                   setDrawer({ type: 'note', id });
                 }}
                 activeNoteId={drawer && drawer.type === 'note' ? drawer.id : null}
@@ -497,7 +520,19 @@ export function App() {
         onCite={jumpTo}
       />
 
-      <AgentToasts sessions={sessionsView} onOpen={openAgentAnswer} onDismiss={agent.dismiss} />
+      <AgentPanel
+        open={agentOpen}
+        sessions={sessionsView}
+        citedObs={citedObs}
+        onAsk={handleAsk}
+        onCite={jumpTo}
+        onSaveNote={handleSaveNote}
+        onClose={() => setAgentOpen(false)}
+      />
+
+      {!agentOpen && (
+        <AgentToasts sessions={sessionsView} onOpen={openAgentAnswer} onDismiss={agent.dismiss} />
+      )}
 
       {!welcomeDismissed && <WelcomeCard onDismiss={() => setWelcomeDismissed(true)} />}
 

@@ -5,7 +5,7 @@
 // ============================================================
 
 import React from 'react';
-import { Icon, TYPE_META } from '../ui/icons';
+import { Icon, TYPE_META, THICK_ICONS } from '../ui/icons';
 import { fmtTime, fmtDayLabel, baseName } from '../utils/format';
 import type { DayGroup as DayGroupData, TimelineSession } from '../data/buildTimeline';
 import type { ViewerObservation } from '../data/viewer-types';
@@ -57,6 +57,7 @@ export function ObservationRow({
   obs, open, onToggle, activeConcepts, onConceptClick, onFileClick, flash
 }: ObservationRowProps) {
   const meta = TYPE_META[obs.type] || TYPE_META.feature;
+  const primaryFile = obs.files_modified[0] || obs.files_read[0];
   return (
     <div
       className={'obs-row' + (open ? ' open' : '') + (flash ? ' flash' : '')}
@@ -64,17 +65,16 @@ export function ObservationRow({
       data-comment-anchor={'obs-' + obs.id}
     >
       <button className="obs-head" onClick={() => onToggle(obs.id)} aria-expanded={open}>
-        <span className="obs-type-bubble" style={{ background: meta.bg, color: meta.fg }}>
-          <Icon name={meta.icon} size={15} />
+        <span className="obs-idx">#{obs.id}</span>
+        <span className="obs-time-col">{fmtTime(obs.at)}</span>
+        <span className="obs-glyph" style={{ background: meta.bg, color: meta.fg }} title={meta.label}>
+          <Icon name={meta.icon} size={11} strokeWidth={2.25} />
         </span>
         <span className="obs-head-text">
           <span className="obs-title">{obs.title}</span>
-          {!open && obs.subtitle && <span className="obs-subtitle">{obs.subtitle}</span>}
+          {!open && primaryFile && <span className="obs-file-line">{primaryFile}</span>}
         </span>
-        <span className="obs-head-meta">
-          <span className="obs-time">{fmtTime(obs.at)}</span>
-          <Icon name="chevronDown" size={15} className={'obs-caret' + (open ? ' rot' : '')} />
-        </span>
+        <Icon name="chevronDown" size={14} className={'obs-caret' + (open ? ' rot' : '')} />
       </button>
 
       {open && (
@@ -96,10 +96,28 @@ export function ObservationRow({
                 <FileChip key={'r' + f} path={f} mode="read" onClick={onFileClick} />
               ))}
             </div>
-            <span className="obs-id">#{obs.id}</span>
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------- Session recap (the smart wrap-up, paired with the prompt) ----------
+interface RecapRowProps {
+  icon: keyof typeof THICK_ICONS;
+  label: string;
+  text: string;
+}
+
+function RecapRow({ icon, label, text }: RecapRowProps) {
+  return (
+    <div className="recap-row">
+      <img className="recap-icon" src={THICK_ICONS[icon]} alt="" />
+      <div className="recap-row-text">
+        <span className="recap-label">{label}</span>
+        <p className="recap-text">{text}</p>
+      </div>
     </div>
   );
 }
@@ -160,6 +178,18 @@ export function SessionCard({
               <p>{prompt.text}</p>
             </div>
           )}
+          {(session.investigated || session.learned || session.completed || session.next_steps) && (
+            <div className="session-recap">
+              <div className="recap-head">
+                <img className="recap-avatar" src="claude-mem-logomark.webp" alt="" />
+                <span className="recap-eyebrow">Session recap</span>
+              </div>
+              {session.investigated && <RecapRow icon="investigated" label="Investigated" text={session.investigated} />}
+              {session.learned && <RecapRow icon="learned" label="Learned" text={session.learned} />}
+              {session.completed && <RecapRow icon="completed" label="Completed" text={session.completed} />}
+              {session.next_steps && <RecapRow icon="next_steps" label="Next steps" text={session.next_steps} />}
+            </div>
+          )}
           <div className="obs-list">
             {observations.map((o) => (
               <ObservationRow
@@ -171,28 +201,6 @@ export function SessionCard({
               />
             ))}
           </div>
-          {(session.learned || session.completed || session.next_steps) && (
-            <div className="session-summary">
-              {session.learned && (
-                <div className="summary-row">
-                  <span className="summary-key"><Icon name="lightbulb" size={13} /> learned</span>
-                  <p>{session.learned}</p>
-                </div>
-              )}
-              {session.completed && (
-                <div className="summary-row">
-                  <span className="summary-key"><Icon name="check" size={13} /> completed</span>
-                  <p>{session.completed}</p>
-                </div>
-              )}
-              {session.next_steps && (
-                <div className="summary-row">
-                  <span className="summary-key"><Icon name="arrowRight" size={13} /> next steps</span>
-                  <p>{session.next_steps}</p>
-                </div>
-              )}
-            </div>
-          )}
         </div>
       )}
     </div>

@@ -105,7 +105,7 @@ export function SearchBar({ data, onAsk, onJump, onFile, onConcept }: SearchBarP
             <span className="ask-text">
               Ask your agent: <em>“{query.trim()}”</em>
             </span>
-            <span className="ask-hint">runs in background · ⏎</span>
+            <span className="ask-hint">opens the agent · ⏎</span>
           </button>
 
           {results.observations.length > 0 && (

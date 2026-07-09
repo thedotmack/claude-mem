@@ -159,6 +159,7 @@ export function buildData(raw: NormalizedRaw): ViewerData {
       started: started === Infinity ? toSec(null) : started,
       ended: ended === -Infinity ? toSec(null) : ended,
       request: (sum && sum.request) || (pr && truncate(pr.text, 110)) || list[0].title,
+      investigated: (sum && sum.investigated) || '',
       learned: (sum && sum.learned) || '',
       completed: (sum && sum.completed) || '',
       next_steps: (sum && sum.next_steps) || '',

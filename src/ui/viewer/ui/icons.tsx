@@ -89,6 +89,18 @@ export const ICON_PATHS: Record<string, IconNode[]> = {
   hash: [
     ['path', { d: 'M4 9h16' }], ['path', { d: 'M4 15h16' }],
     ['path', { d: 'M10 3 8 21' }], ['path', { d: 'M16 3l-2 18' }]
+  ],
+  shieldAlert: [
+    ['path', { d: 'M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z' }],
+    ['path', { d: 'M12 8v4' }], ['path', { d: 'M12 16h.01' }]
+  ],
+  keyRound: [
+    ['path', { d: 'M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z' }],
+    ['circle', { cx: 16.5, cy: 7.5, r: 0.5 }]
+  ],
+  send: [
+    ['path', { d: 'M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z' }],
+    ['path', { d: 'm21.854 2.147-10.94 10.939' }]
   ]
 };
 
@@ -123,9 +135,21 @@ export interface TypeMeta {
 }
 
 export const TYPE_META: Record<string, TypeMeta> = {
-  feature:   { icon: 'zap',       label: 'feature',   fg: '#D6532F', bg: '#FFE0D2' },
-  bugfix:    { icon: 'bug',       label: 'bugfix',    fg: '#C03A28', bg: '#FBE2DD' },
-  refactor:  { icon: 'wrench',    label: 'refactor',  fg: '#3E76B5', bg: '#E3EEFA' },
-  discovery: { icon: 'lightbulb', label: 'discovery', fg: '#B97714', bg: '#FDEFD6' },
-  decision:  { icon: 'gitBranch', label: 'decision',  fg: '#3E7E55', bg: '#E6F3EA' }
+  feature:        { icon: 'zap',         label: 'feature',        fg: '#D6532F', bg: '#FFE0D2' },
+  bugfix:         { icon: 'bug',         label: 'bugfix',         fg: '#C03A28', bg: '#FBE2DD' },
+  refactor:       { icon: 'wrench',      label: 'refactor',       fg: '#3E76B5', bg: '#E3EEFA' },
+  discovery:      { icon: 'lightbulb',   label: 'discovery',      fg: '#B97714', bg: '#FDEFD6' },
+  decision:       { icon: 'gitBranch',   label: 'decision',       fg: '#3E7E55', bg: '#E6F3EA' },
+  change:         { icon: 'check',       label: 'change',         fg: '#6B5544', bg: '#F4E3D6' },
+  security_alert: { icon: 'shieldAlert', label: 'security alert', fg: '#C03A28', bg: '#FBE2DD' },
+  security_note:  { icon: 'keyRound',    label: 'security note',  fg: '#6E5BA6', bg: '#EBE6F7' }
 };
+
+// ---------- Illustrated (thick) icons for session recap rows ----------
+// Full-color SVGs shipped next to the viewer bundle (plugin/ui/icon-thick-*.svg).
+export const THICK_ICONS = {
+  completed: 'icon-thick-completed.svg',
+  learned: 'icon-thick-learned.svg',
+  next_steps: 'icon-thick-next-steps.svg',
+  investigated: 'icon-thick-investigated.svg'
+} as const;

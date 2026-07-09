@@ -73,6 +73,7 @@
     "worker:tail": "tail -f 50 ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log",
     "changelog:generate": "node scripts/generate-changelog.js",
     "discord:notify": "node scripts/discord-release-notify.js",
+    "viewer:dev": "node scripts/dev-viewer.mjs",
     "worker:start": "bun plugin/scripts/worker-service.cjs start",
     "worker:stop": "bun plugin/scripts/worker-service.cjs stop",
     "worker:restart": "bun plugin/scripts/worker-service.cjs restart",
