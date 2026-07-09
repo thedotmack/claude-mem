@@ -16,8 +16,8 @@ import { getAuthMethodDescription, applyProxyAndCaFromEnvFile } from '../shared/
 import { logger } from '../utils/logger.js';
 import { ChromaMcpManager } from './sync/ChromaMcpManager.js';
 import { ChromaSync } from './sync/ChromaSync.js';
-import { applySqliteBusyTimeout } from './sqlite/connection.js';
-import { configureSupervisorSignalHandlers, getSupervisor, startSupervisor } from '../supervisor/index.js';
+import { openConfiguredSqliteDatabase } from './sqlite/connection.js';
+import { configureSupervisorSignalHandlers, getSupervisor, reapLeakedProcesses, startSupervisor } from '../supervisor/index.js';
 import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
 
 import { ensureWorkerStarted as ensureWorkerStartedShared, type WorkerStartResult } from './worker-spawner.js';
@@ -455,6 +455,24 @@ export class WorkerService implements WorkerRef {
     this.detectPreviousShutdown();
 
     await startSupervisor();
+
+    // Reap children leaked by a previous run that died outside the graceful-
+    // shutdown path (crash, SIGKILL, or shutdown-deadline expiry). Must run
+    // before server.listen: with no hook traffic yet this run has registered
+    // nothing, so every live registry record except our own pid is a leak
+    // from a dead predecessor (issue #3175).
+    try {
+      const reaped = await reapLeakedProcesses(getSupervisor().getRegistry());
+      if (reaped > 0) {
+        logger.info('SYSTEM', 'Reaped processes leaked by previous worker run', { reaped });
+      }
+    } catch (error: unknown) {
+      if (error instanceof Error) {
+        logger.warn('SYSTEM', 'Leaked-process reap failed (non-blocking)', {}, error);
+      } else {
+        logger.warn('SYSTEM', 'Leaked-process reap failed (non-blocking, non-Error)', { error: String(error) });
+      }
+    }
 
     await this.server.listen(port, host);
 
