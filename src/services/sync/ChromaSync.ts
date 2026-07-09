@@ -2,38 +2,23 @@
 import { ChromaMcpManager } from './ChromaMcpManager.js';
 import { ChromaSyncState, ProjectWatermarks } from './ChromaSyncState.js';
 import { ParsedObservation, ParsedSummary } from '../../sdk/parser.js';
-// cmem-sdk: keep SessionStore off the SDK's import graph. It comes from the
-// SQLite layer (`bun:sqlite`). The SDK only uses the constructor +
-// ensureCollectionExists + close() surface of ChromaSync, so a TYPE-ONLY
-// import is sufficient — the value-level use (`new SessionStore()`) is loaded
-// lazily inside the SQLite-only backfill methods that need it. Plan §3
-// anti-pattern: do NOT add `bun:sqlite` to the SDK bundle externals — fix the
-// import chain.
+// cmem-sdk: SessionStore stays a TYPE-ONLY import — it pulls in `bun:sqlite`
+// and the SDK never calls the SQLite-only methods of ChromaSync.
 import type { SessionStore as SessionStoreType } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
 import { ChromaUnavailableError } from '../worker/search/errors.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
+// parseFileList is a pure helper (JSON.parse over a text column) — its import
+// chain (files.ts -> logger -> paths/hook-io) is `bun:sqlite`-free, so a plain
+// static import is safe for BOTH bundles. It was previously loaded via a lazy
+// createRequire('../sqlite/observations/files.js') on the mistaken assumption
+// that files.ts was SQLite-coupled; esbuild does not follow that dynamic
+// require, so the worker build emitted neither the inlined helper nor the
+// sidecar file, and the backfill path crashed at runtime with
+// `Cannot find module '../sqlite/observations/files.js'`. See #3126 / #3107.
 import { parseFileList } from '../sqlite/observations/files.js';
 
 type SessionStore = SessionStoreType;
-
-function parseStoredFileList(value: string | null | undefined): string[] {
-  if (!value) return [];
-  try {
-    const parsed = JSON.parse(value);
-    return Array.isArray(parsed) ? parsed : [String(parsed)];
-  } catch (error) {
-    logger.debug(
-      'CHROMA_SYNC',
-      'File list is not JSON; treating value as a single path',
-      { value },
-      error instanceof Error ? error : new Error(String(error))
-    );
-    return [value];
-  }
-  return _sessionStoreCtor;
-}
-
 
 // Exported for cmem-sdk Phase 6: the SDK builds ChromaDocument values from
 // Postgres observations (UUID id, content string, metadata bag) and calls
