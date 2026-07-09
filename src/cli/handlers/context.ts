@@ -76,6 +76,13 @@ export const contextHandler: EventHandler = {
       exitCode: HOOK_EXIT_CODES.SUCCESS,
     };
 
+    const contextResult = await executeWithWorkerFallback<string>(apiPath, 'GET', undefined, {
+      allowLazySpawn: false,
+    });
+    if (isWorkerFallback(contextResult)) {
+      return emptyResult;
+    }
+
     let additionalContext: string;
     const mcpContextResult = input.platform === 'codex'
       ? await fetchSessionStartContextViaMcp({
@@ -117,22 +124,11 @@ export const contextHandler: EventHandler = {
 
     let coloredTimeline = '';
     if (showTerminalOutput) {
-      const mcpColorResult = input.platform === 'codex'
-        ? await fetchSessionStartContextViaMcp({
-            projects: context.allProjects,
-            ...(normalizedPlatformSource ? { platformSource: normalizedPlatformSource } : {}),
-            colors: true,
-          })
-        : null;
-      if (mcpColorResult !== null) {
-        coloredTimeline = mcpColorResult;
-      } else {
-        const colorResult = await executeWithWorkerFallback<string>(colorApiPath, 'GET', undefined, {
-          allowLazySpawn: false,
-        });
-        if (!isWorkerFallback(colorResult) && typeof colorResult === 'string') {
-          coloredTimeline = colorResult.trim();
-        }
+      const colorResult = await executeWithWorkerFallback<string>(colorApiPath, 'GET', undefined, {
+        allowLazySpawn: false,
+      });
+      if (!isWorkerFallback(colorResult) && typeof colorResult === 'string') {
+        coloredTimeline = colorResult.trim();
       }
     }
 

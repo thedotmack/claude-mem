@@ -458,11 +458,15 @@ describe('Spawn-Contract Templating - Rule A generator parity', () => {
     expect(parsed.mcpServers['mcp-search'].args[1]).toBe(MCP_EXPECTED);
   });
 
-  it('keeps Claude SessionStart non-blocking', () => {
+  it('keeps Claude SessionStart non-blocking while preserving Codex warmup ordering', () => {
     const claudeHooks = RULE_A_EXPECTATIONS['plugin/hooks/hooks.json'];
     expect(claudeHooks['SessionStart.0.0']).toContain('hook claude-code context');
     expect(Object.keys(claudeHooks)).not.toContain('SessionStart.0.1');
     expect(claudeHooks['SessionStart.0.0']).not.toContain('worker-service.cjs" start');
+
+    const codexHooks = RULE_A_EXPECTATIONS['plugin/hooks/codex-hooks.json'];
+    expect(codexHooks['SessionStart.0.1']).toContain('worker-service.cjs" start');
+    expect(codexHooks['SessionStart.0.2']).toContain('hook codex context');
   });
 
   it('never leaks a raw ${CLAUDE_PLUGIN_ROOT} into the resolved trailing command', () => {

@@ -540,23 +540,16 @@ export async function ensureWorkerRunning(options: EnsureWorkerRunningOptions = 
 
 let aliveCache: boolean | null = null;
 
-/** Test-only: reset the ensureWorkerAliveOnce() cache (mirrors clearPortCache). */
-export function resetAliveCache(): void {
-  aliveCache = null;
-}
+export async function ensureWorkerAliveOnce(options: EnsureWorkerRunningOptions = {}): Promise<boolean> {
+  if (aliveCache === true) return true;
+  if (aliveCache === false && options.allowLazySpawn !== false) return false;
 
-export async function ensureWorkerAliveOnce(): Promise<boolean> {
-  if (aliveCache !== null) return aliveCache;
-  // Opt-out: when CLAUDE_MEM_WORKER_AUTOSTART=false, hooks must NOT lazy-spawn
-  // the worker daemon. Lets server-beta-only or externally-managed deployments
-  // stop hook activity from resurrecting the worker. Default 'true' preserves
-  // existing behavior.
-  if ((loadFromFileOnce().CLAUDE_MEM_WORKER_AUTOSTART ?? 'true').trim().toLowerCase() === 'false') {
-    aliveCache = false;
-    return aliveCache;
+  // Best-effort SessionStart calls still re-check liveness after a cached full-spawn miss.
+  const alive = await ensureWorkerRunning(options);
+  if (alive || options.allowLazySpawn !== false) {
+    aliveCache = alive;
   }
-  aliveCache = await ensureWorkerRunning();
-  return aliveCache;
+  return alive;
 }
 
 interface HookFailureState {
@@ -917,13 +910,11 @@ export async function executeWithWorkerFallback<T = unknown>(
   body?: unknown,
   options: WorkerFallbackOptions = {},
 ): Promise<WorkerCallResult<T>> {
-  const hooksDisabledForSession = areHooksDisabledForSession();
-  const alive = await ensureWorkerAliveOnce();
+  const alive = await ensureWorkerAliveOnce({ allowLazySpawn: options.allowLazySpawn });
   if (!alive) {
-    if (hooksDisabledForSession) {
-      return { continue: true, reason: 'hooks_disabled_session', [WORKER_FALLBACK_BRAND]: true };
+    if (options.allowLazySpawn !== false) {
+      await recordWorkerUnreachable();
     }
-    await recordWorkerUnreachable();
     return { continue: true, reason: 'worker_unreachable', [WORKER_FALLBACK_BRAND]: true };
   }
 
