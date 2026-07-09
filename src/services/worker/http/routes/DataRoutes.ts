@@ -4,8 +4,8 @@ import { z } from 'zod';
 import path from 'path';
 import { readFileSync, statSync, existsSync } from 'fs';
 import { logger } from '../../../../utils/logger.js';
-import { parseJsonArrayColumn } from '../../../../utils/json-utils.js';
-import { getPackageRoot, paths, OBSERVER_SESSIONS_PROJECT } from '../../../../shared/paths.js';
+import { getPackageRoot, paths, USER_SETTINGS_PATH } from '../../../../shared/paths.js';
+import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { getWorkerPort } from '../../../../shared/worker-utils.js';
 import { PaginationHelper } from '../../PaginationHelper.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
@@ -116,21 +116,21 @@ export class DataRoutes extends BaseRouteHandler {
     app.post('/api/import', validateBody(importSchema), this.handleImport.bind(this));
   }
 
-  private handleGetObservations = this.wrapHandler((req: Request, res: Response): void => {
+  private handleGetObservations = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { offset, limit, project, platformSource } = this.parsePaginationParams(req);
-    const result = this.paginationHelper.getObservations(offset, limit, project, platformSource);
+    const result = await this.paginationHelper.getObservations(offset, limit, project, platformSource);
     res.json(result);
   });
 
-  private handleGetSummaries = this.wrapHandler((req: Request, res: Response): void => {
+  private handleGetSummaries = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { offset, limit, project, platformSource } = this.parsePaginationParams(req);
-    const result = this.paginationHelper.getSummaries(offset, limit, project, platformSource);
+    const result = await this.paginationHelper.getSummaries(offset, limit, project, platformSource);
     res.json(result);
   });
 
-  private handleGetPrompts = this.wrapHandler((req: Request, res: Response): void => {
+  private handleGetPrompts = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { offset, limit, project, platformSource } = this.parsePaginationParams(req);
-    const result = this.paginationHelper.getPrompts(offset, limit, project, platformSource);
+    const result = await this.paginationHelper.getPrompts(offset, limit, project, platformSource);
     res.json(result);
   });
 
@@ -298,110 +298,51 @@ export class DataRoutes extends BaseRouteHandler {
     res.json(prompts[0]);
   });
 
-  /**
-   * Delete an observation by ID
-   * DELETE /api/observation/:id
-   */
-  private handleDeleteObservation = this.wrapHandler((req: Request, res: Response): void => {
-    const id = this.parseIntParam(req, res, 'id');
-    if (id === null) return;
-
-    const deleted = this.dbManager.getSessionStore().deleteObservation(id);
-    if (!deleted) {
-      this.notFound(res, `Observation #${id} not found`);
-      return;
-    }
-
-    logger.info('HTTP', 'Deleted observation', { id });
-    this.sseBroadcaster.broadcast({ type: 'item_deleted', itemType: 'observation', id });
-    res.json({ success: true, deleted: true, id });
-  });
-
-  /**
-   * Delete a session summary by ID
-   * DELETE /api/summary/:id
-   */
-  private handleDeleteSummary = this.wrapHandler((req: Request, res: Response): void => {
-    const id = this.parseIntParam(req, res, 'id');
-    if (id === null) return;
-
-    const deleted = this.dbManager.getSessionStore().deleteSessionSummary(id);
-    if (!deleted) {
-      this.notFound(res, `Summary #${id} not found`);
-      return;
-    }
-
-    logger.info('HTTP', 'Deleted summary', { id });
-    this.sseBroadcaster.broadcast({ type: 'item_deleted', itemType: 'summary', id });
-    res.json({ success: true, deleted: true, id });
-  });
-
-  /**
-   * Delete a user prompt by ID
-   * DELETE /api/prompt/:id
-   */
-  private handleDeletePrompt = this.wrapHandler((req: Request, res: Response): void => {
-    const id = this.parseIntParam(req, res, 'id');
-    if (id === null) return;
-
-    const deleted = this.dbManager.getSessionStore().deleteUserPrompt(id);
-    if (!deleted) {
-      this.notFound(res, `Prompt #${id} not found`);
-      return;
-    }
-
-    logger.info('HTTP', 'Deleted prompt', { id });
-    this.sseBroadcaster.broadcast({ type: 'item_deleted', itemType: 'prompt', id });
-    res.json({ success: true, deleted: true, id });
-  });
-
-  /**
-   * Get database statistics (with worker metadata)
-   */
-  private handleGetStats = this.wrapHandler((req: Request, res: Response): void => {
+  private handleGetStats = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const db = this.dbManager.getSessionStore().db;
-    const project = typeof req.query.project === 'string' ? req.query.project : undefined;
+    const databaseType = this.dbManager.getDatabaseType();
 
     const packageRoot = getPackageRoot();
     const packageJsonPath = path.join(packageRoot, 'package.json');
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
     const version = packageJson.version;
 
-    // Mirror PaginationHelper's reader scoping so the status line's numbers match
-    // the dashboard list views exactly. With a project, observations/summaries
-    // also adopt worktree rows via merged_into_project (sessions have no such
-    // column); without one, the internal observer-sessions project is excluded —
-    // just as the readers do. `table` is a constant identifier (never user
-    // input) and every project value is a bound parameter, so there is no
-    // dynamic SQL. Status-line consumers pass ?project=<folder> to switch between
-    // per-project and global counts.
-    const countScoped = (table: string, hasMergedColumn: boolean): number => {
-      let where: string;
-      let params: string[];
-      if (project) {
-        where = hasMergedColumn
-          ? 'WHERE (project = ? OR merged_into_project = ?)'
-          : 'WHERE project = ?';
-        params = hasMergedColumn ? [project, project] : [project];
-      } else {
-        where = 'WHERE project != ?';
-        params = [OBSERVER_SESSIONS_PROJECT];
+    let totalObservations: { count: number };
+    let totalSessions: { count: number };
+    let totalSummaries: { count: number };
+
+    if (databaseType === 'mysql') {
+      totalObservations = await db.prepare('SELECT COUNT(*) as count FROM observations').get() as { count: number };
+      totalSessions = await db.prepare('SELECT COUNT(*) as count FROM sdk_sessions').get() as { count: number };
+      totalSummaries = await db.prepare('SELECT COUNT(*) as count FROM session_summaries').get() as { count: number };
+    } else {
+      totalObservations = db.prepare('SELECT COUNT(*) as count FROM observations').get() as { count: number };
+      totalSessions = db.prepare('SELECT COUNT(*) as count FROM sdk_sessions').get() as { count: number };
+      totalSummaries = db.prepare('SELECT COUNT(*) as count FROM session_summaries').get() as { count: number };
+    }
+
+    let dbPath: string;
+    let dbSize: number;
+
+    if (databaseType === 'mysql') {
+      const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+      dbPath = `mysql://${settings.CLAUDE_MEM_MYSQL_HOST}:${settings.CLAUDE_MEM_MYSQL_PORT}/${settings.CLAUDE_MEM_MYSQL_DATABASE}`;
+      try {
+        const sizeResult = await db.prepare(`
+          SELECT SUM(data_length + index_length) as size
+          FROM information_schema.tables
+          WHERE table_schema = ?
+        `).get(settings.CLAUDE_MEM_MYSQL_DATABASE) as { size: number } | undefined;
+        dbSize = sizeResult?.size || 0;
+      } catch {
+        dbSize = 0;
       }
-      const row = db
-        .prepare(`SELECT COUNT(*) as count FROM ${table} ${where}`)
-        .get(...params) as { count: number };
-      return row.count;
-    };
-
-    const totalObservations = countScoped('observations', true);
-    const totalSessions = countScoped('sdk_sessions', false);
-    const totalSummaries = countScoped('session_summaries', true);
-    const firstObservationAt = getFirstObservationCreatedAt(db, project);
-
-    const dbPath = paths.database();
-    let dbSize = 0;
-    if (existsSync(dbPath)) {
-      dbSize = statSync(dbPath).size;
+    } else {
+      dbPath = paths.database();
+      dbSize = 0;
+      if (existsSync(dbPath)) {
+        dbSize = statSync(dbPath).size;
+      }
     }
 
     const uptime = getUptimeSeconds(this.startTime);
@@ -419,15 +360,14 @@ export class DataRoutes extends BaseRouteHandler {
       database: {
         path: dbPath,
         size: dbSize,
-        observations: totalObservations,
-        sessions: totalSessions,
-        summaries: totalSummaries,
-        firstObservationAt
+        observations: totalObservations.count,
+        sessions: totalSessions.count,
+        summaries: totalSummaries.count
       }
     });
   });
 
-  private handleGetProjects = this.wrapHandler((req: Request, res: Response): void => {
+  private handleGetProjects = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const store = this.dbManager.getSessionStore();
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
 
@@ -441,7 +381,7 @@ export class DataRoutes extends BaseRouteHandler {
       return;
     }
 
-    res.json(store.getProjectCatalog());
+    res.json(await store.getProjectCatalog());
   });
 
   private handleGetProcessingStatus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {

@@ -659,7 +659,7 @@ export class WorkerService implements WorkerRef {
       await this.startTranscriptWatcher(settings);
 
       if (this.chromaMcpManager) {
-        ChromaSync.backfillAllProjects(this.dbManager.getSessionStore()).then(() => {
+        ChromaSync.backfillAllProjects(this.dbManager.getSessionStore(), this.dbManager.isMySQL()).then(() => {
           logger.info('CHROMA_SYNC', 'Backfill check complete for all projects');
         }).catch(error => {
           logger.error('CHROMA_SYNC', 'Backfill failed (non-blocking)', {}, error as Error);

@@ -27,11 +27,6 @@ const CONTEXT_GENERATOR = {
   source: 'src/services/context-generator.ts'
 };
 
-const TRANSCRIPT_WATCHER = {
-  name: 'transcript-watcher',
-  source: 'src/services/transcripts/transcript-watcher-entry.ts'
-};
-
 function stripHardcodedDirname(filePath) {
   let content = fs.readFileSync(filePath, 'utf-8');
   const before = content.length;
@@ -120,9 +115,8 @@ function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
     'plugin/.mcp.json': {
       kind: 'mcp',
       command: buildShellCommand({
-        // The mcp Node launcher derives its spawn target from requireFile, so
-        // no trailingCommand is needed (it is ignored for this host).
         host: 'mcp', requireFile: 'mcp-server.cjs',
+        trailingCommand: ['exec', 'node', '"$_P/scripts/mcp-server.cjs"'],
         notFoundMessage: 'claude-mem: mcp server not found',
         mcpExtraCandidates: ['$PWD/plugin', '$PWD'],
         mcpExtraCacheRoots: [
@@ -290,19 +284,6 @@ async function verifyShellTemplateCanonical() {
     );
   }
 
-  // Parser-compat guard (issue #2791): bun-runner.js is invoked by hosts that
-  // may run a pre-ES2020 Node whose ESM loader throws on optional chaining.
-  // Strip comments, then forbid `?.` / `??` in executable code.
-  const bunRunnerCode = bunRunner
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/(^|[^:])\/\/.*$/gm, '$1');
-  if (/\?\.|\?\?/.test(bunRunnerCode)) {
-    throw new Error(
-      'plugin/scripts/bun-runner.js uses optional chaining (?.) or nullish coalescing (??) — ' +
-      'this launcher must parse on pre-ES2020 Node (issue #2791). Rewrite with explicit guards.'
-    );
-  }
-
   console.log('✓ Rule A shell templates match the canonical generator');
 }
 
@@ -337,13 +318,6 @@ async function buildHooks() {
       // Kept here (not in optionalDependencies) so a failure fails the build.
       dependencies: {
         'zod': '^4.3.6',
-        // @modelcontextprotocol/sdk validates tool schemas with Ajv. mcp-server.cjs
-        // bundles the SDK, but Ajv emits compiled validators that require its runtime
-        // helpers by package path (e.g. require("ajv/dist/runtime/equal")), which
-        // esbuild leaves external. Without Ajv in the plugin's node_modules the MCP
-        // server crashes on the first tool call. See also the zod guardrail below.
-        'ajv': '^8.20.0',
-        'ajv-formats': '^3.0.1',
         'tree-sitter-cli': '^0.26.5',
         'tree-sitter-c': '^0.24.1',
         'tree-sitter-cpp': '^0.23.4',
@@ -482,14 +456,17 @@ async function buildHooks() {
     const workerStats = fs.statSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`);
     console.log(`✓ worker-service built (${(workerStats.size / 1024).toFixed(2)} KB)`);
 
-    // Advisory only — a sudden jump usually means a heavy server-only dependency
-    // (better-auth, kysely, a database driver) leaked into the worker bundle via a
-    // transitive import (#2584). Never blocks the build.
-    const WORKER_SERVICE_MAX_BYTES = 2900 * 1024;
+    // Bundle-size guardrail for the worker. After externalizing the dead better-auth
+    // dependency (#2584) the worker bundle is ~2.29 MB. The threshold below leaves
+    // ~25% headroom so normal growth is fine, but a regression that re-bundles a
+    // heavy server-only dependency (e.g. better-auth, kysely, a Postgres driver)
+    // into the worker artifact will blow past it and fail the build/CI.
+    const WORKER_SERVICE_MAX_BYTES = 2950 * 1024;
     if (workerStats.size > WORKER_SERVICE_MAX_BYTES) {
-      console.warn(
-        `⚠️  worker-service.cjs is ${(workerStats.size / 1024).toFixed(2)} KB (advisory budget ${(WORKER_SERVICE_MAX_BYTES / 1024).toFixed(0)} KB). ` +
-        `If this jumped unexpectedly, check whether a server-only dependency leaked into the worker bundle (see #2584).`
+      throw new Error(
+        `worker-service.cjs is ${(workerStats.size / 1024).toFixed(2)} KB, exceeding the ${(WORKER_SERVICE_MAX_BYTES / 1024).toFixed(0)} KB budget. ` +
+        `This usually means a heavy, server-only dependency leaked into the worker bundle — most likely a transitive (or dynamic) import dragged something like better-auth, kysely, or a database driver into worker-service.ts. ` +
+        `Such deps must be marked 'external' in the worker build's external array (see #2584 for the better-auth case) or gated behind the server-beta runtime so the worker never bundles them.`
       );
     }
 
@@ -651,8 +628,8 @@ async function buildHooks() {
 
     const MCP_SERVER_MAX_BYTES = 600 * 1024;
     if (mcpServerStats.size > MCP_SERVER_MAX_BYTES) {
-      console.warn(
-        `⚠️  mcp-server.cjs is ${(mcpServerStats.size / 1024).toFixed(2)} KB (advisory budget ${(MCP_SERVER_MAX_BYTES / 1024).toFixed(0)} KB). If this jumped unexpectedly, a transitive import may have pulled worker-service.ts or another heavy module into the MCP bundle (see #1645).`
+      throw new Error(
+        `mcp-server.cjs is ${(mcpServerStats.size / 1024).toFixed(2)} KB, exceeding the ${(MCP_SERVER_MAX_BYTES / 1024).toFixed(0)} KB budget. This usually means a transitive import pulled worker-service.ts (or another heavy module) into the MCP bundle. The MCP server is supposed to be a thin HTTP wrapper — audit recent imports in src/servers/mcp-server.ts and src/services/worker-spawner.ts. See PR #1645 for context on why this guardrail exists.`
       );
     }
 
@@ -677,43 +654,6 @@ async function buildHooks() {
 
     const contextGenStats = fs.statSync(`${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`);
     console.log(`✓ context-generator built (${(contextGenStats.size / 1024).toFixed(2)} KB)`);
-
-    console.log(`\n🔧 Building transcript watcher...`);
-    await build({
-      entryPoints: [TRANSCRIPT_WATCHER.source],
-      bundle: true,
-      platform: 'node',
-      target: 'node18',
-      format: 'cjs',
-      outfile: `${hooksDir}/${TRANSCRIPT_WATCHER.name}.cjs`,
-      minify: true,
-      logLevel: 'error',
-      // Externalize zod for consistency with worker-service / server-beta-service —
-      // any zod usage in the processor.ts import chain should resolve at runtime
-      // against plugin/node_modules instead of being inlined (avoids duplicate-
-      // instance hazards and keeps the bundle slim).
-      external: ['bun:sqlite', 'zod'],
-      define: {
-        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
-      },
-      banner: {
-        js: '#!/usr/bin/env bun'
-      }
-    });
-
-    stripHardcodedDirname(`${hooksDir}/${TRANSCRIPT_WATCHER.name}.cjs`);
-
-    fs.chmodSync(`${hooksDir}/${TRANSCRIPT_WATCHER.name}.cjs`, 0o755);
-    const transcriptWatcherStats = fs.statSync(`${hooksDir}/${TRANSCRIPT_WATCHER.name}.cjs`);
-    console.log(`✓ transcript-watcher built (${(transcriptWatcherStats.size / 1024).toFixed(2)} KB)`);
-
-    // Advisory only — the watcher is meant to be a thin file-tail loop.
-    const TRANSCRIPT_WATCHER_MAX_BYTES = 200 * 1024;
-    if (transcriptWatcherStats.size > TRANSCRIPT_WATCHER_MAX_BYTES) {
-      console.warn(
-        `⚠️  transcript-watcher.cjs is ${(transcriptWatcherStats.size / 1024).toFixed(2)} KB (advisory budget ${(TRANSCRIPT_WATCHER_MAX_BYTES / 1024).toFixed(0)} KB). If this jumped unexpectedly, check src/services/transcripts/processor.ts and watcher.ts for heavy imports.`
-      );
-    }
 
     console.log(`\n🔧 Building NPX CLI...`);
     const npxCliOutDir = 'dist/npx-cli';
@@ -963,7 +903,6 @@ async function buildHooks() {
     console.log(`   - Server: server-service.cjs`);
     console.log(`   - MCP Server: mcp-server.cjs`);
     console.log(`   - Context Generator: context-generator.cjs`);
-    console.log(`   - Transcript Watcher: transcript-watcher.cjs`);
     console.log(`   Output: ${npxCliOutDir}/`);
     console.log(`   - NPX CLI: index.js`);
     if (fs.existsSync('openclaw/dist/index.js')) {

@@ -75,14 +75,33 @@ interface StoredUserPrompt {
   platform_source: string;
 }
 
+/**
+ * Helper: execute a prepared statement's .all() with sync/async dispatch.
+ * SQLite bun:sqlite returns rows synchronously; MySQL returns a Promise.
+ */
+async function stmtAll(db: any, isMySQL: boolean, sql: string, ...params: any[]): Promise<any[]> {
+  const stmt = db.prepare(sql);
+  return isMySQL ? await stmt.all(...params) : stmt.all(...params);
+}
+
+/**
+ * Helper: execute a prepared statement's .get() with sync/async dispatch.
+ */
+async function stmtGet(db: any, isMySQL: boolean, sql: string, ...params: any[]): Promise<any> {
+  const stmt = db.prepare(sql);
+  return isMySQL ? await stmt.get(...params) : stmt.get(...params);
+}
+
 export class ChromaSync {
   private project: string;
   private collectionName: string;
   private collectionCreated = false;
   private readonly BATCH_SIZE = 100;
+  private isMySQL: boolean;
 
-  constructor(project: string) {
+  constructor(project: string, isMySQL: boolean = false) {
     this.project = project;
+    this.isMySQL = isMySQL;
     const sanitized = project
       .replace(/[^a-zA-Z0-9._-]/g, '_')
       .replace(/[^a-zA-Z0-9]+$/, '');  
@@ -604,6 +623,10 @@ export class ChromaSync {
     } catch (error) {
       logger.error('CHROMA_SYNC', 'Backfill failed', { project }, error instanceof Error ? error : new Error(String(error)));
       throw new Error(`Backfill failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      if (!storeOverride) {
+        await db.close();
+      }
     }
   }
 
@@ -707,24 +730,20 @@ export class ChromaSync {
     db: SessionStore,
     backfillProject: string,
     watermark: number
-  ): Promise<number> {
-    const observations = db.db.prepare(`
-      SELECT
-        o.*,
-        COALESCE(NULLIF(s.platform_source, ''), 'claude') as platform_source
-      FROM observations o
-      LEFT JOIN sdk_sessions s ON s.memory_session_id = o.memory_session_id
-      WHERE o.project = ? AND o.id > ?
-      ORDER BY o.id ASC
-    `).all(backfillProject, watermark) as StoredObservation[];
+  ): Promise<ChromaDocument[]> {
+    const observations = await stmtAll(db.db, this.isMySQL, `
+      SELECT * FROM observations
+      WHERE project = ? AND id > ?
+      ORDER BY id ASC
+    `, backfillProject, watermark) as StoredObservation[];
 
     if (observations.length === 0) {
       return 0;
     }
 
-    const totalObsCount = db.db.prepare(`
+    const totalObsCount = await stmtGet(db.db, this.isMySQL, `
       SELECT COUNT(*) as count FROM observations WHERE project = ?
-    `).get(backfillProject) as { count: number };
+    `, backfillProject) as { count: number };
 
     logger.info('CHROMA_SYNC', 'Backfilling observations', {
       project: backfillProject,
@@ -740,24 +759,20 @@ export class ChromaSync {
     db: SessionStore,
     backfillProject: string,
     watermark: number
-  ): Promise<number> {
-    const summaries = db.db.prepare(`
-      SELECT
-        ss.*,
-        COALESCE(NULLIF(s.platform_source, ''), 'claude') as platform_source
-      FROM session_summaries ss
-      LEFT JOIN sdk_sessions s ON s.memory_session_id = ss.memory_session_id
-      WHERE ss.project = ? AND ss.id > ?
-      ORDER BY ss.id ASC
-    `).all(backfillProject, watermark) as StoredSummary[];
+  ): Promise<ChromaDocument[]> {
+    const summaries = await stmtAll(db.db, this.isMySQL, `
+      SELECT * FROM session_summaries
+      WHERE project = ? AND id > ?
+      ORDER BY id ASC
+    `, backfillProject, watermark) as StoredSummary[];
 
     if (summaries.length === 0) {
       return 0;
     }
 
-    const totalSummaryCount = db.db.prepare(`
+    const totalSummaryCount = await stmtGet(db.db, this.isMySQL, `
       SELECT COUNT(*) as count FROM session_summaries WHERE project = ?
-    `).get(backfillProject) as { count: number };
+    `, backfillProject) as { count: number };
 
     logger.info('CHROMA_SYNC', 'Backfilling summaries', {
       project: backfillProject,
@@ -773,8 +788,8 @@ export class ChromaSync {
     db: SessionStore,
     backfillProject: string,
     watermark: number
-  ): Promise<number> {
-    const prompts = db.db.prepare(`
+  ): Promise<ChromaDocument[]> {
+    const prompts = await stmtAll(db.db, this.isMySQL, `
       SELECT
         up.*,
         s.project,
@@ -784,18 +799,18 @@ export class ChromaSync {
       JOIN sdk_sessions s ON up.session_db_id = s.id
       WHERE s.project = ? AND up.id > ?
       ORDER BY up.id ASC
-    `).all(backfillProject, watermark) as StoredUserPrompt[];
+    `, backfillProject, watermark) as StoredUserPrompt[];
 
     if (prompts.length === 0) {
       return 0;
     }
 
-    const totalPromptCount = db.db.prepare(`
+    const totalPromptCount = await stmtGet(db.db, this.isMySQL, `
       SELECT COUNT(*) as count
       FROM user_prompts up
       JOIN sdk_sessions s ON up.session_db_id = s.id
       WHERE s.project = ?
-    `).get(backfillProject) as { count: number };
+    `, backfillProject) as { count: number };
 
     logger.info('CHROMA_SYNC', 'Backfilling user prompts', {
       project: backfillProject,
@@ -908,7 +923,7 @@ export class ChromaSync {
    * to bound CPU and memory pressure from concurrent Chroma embedding operations.
    * A re-entrant guard prevents overlapping backfill runs from accumulating.
    */
-  static async backfillAllProjects(store: SessionStore): Promise<void> {
+  static async backfillAllProjects(storeOverride?: SessionStore, isMySQL: boolean = false): Promise<void> {
     if (ChromaSync.backfillInProgress) {
       logger.info('CHROMA_SYNC', 'Backfill already in progress, skipping duplicate run');
       return;
@@ -921,23 +936,24 @@ export class ChromaSync {
     let db: SessionStore | undefined;
     let sync: ChromaSync | undefined;
     try {
-      db = storeOverride ?? new (loadSessionStoreCtor())();
-      sync = new ChromaSync('claude-mem');
+      db = storeOverride ?? new SessionStore();
+      sync = new ChromaSync('claude-mem', isMySQL);
     } catch (error) {
       logger.error('CHROMA_SYNC', 'Failed to initialize backfill resources',
         {}, error instanceof Error ? error : new Error(String(error)));
       // Best-effort cleanup if SessionStore allocated but ChromaSync threw.
       if (db && !storeOverride) {
-        try { db.close(); } catch { /* ignore */ }
+        try { await db.close(); } catch { /* ignore */ }
       }
       throw error;
     }
 
     ChromaSync.backfillInProgress = true;
     try {
-      const projects = store.db.prepare(
-        'SELECT DISTINCT project FROM observations WHERE project IS NOT NULL AND project != ?'
-      ).all('') as { project: string }[];
+      const projects = await stmtAll(db.db, isMySQL,
+        'SELECT DISTINCT project FROM observations WHERE project IS NOT NULL AND project != ?',
+        ''
+      ) as { project: string }[];
 
       logger.info('CHROMA_SYNC', `Backfill check for ${projects.length} projects`);
 
@@ -982,6 +998,18 @@ export class ChromaSync {
       }
     } finally {
       ChromaSync.backfillInProgress = false;
+      if (sync) {
+        try { await sync.close(); } catch (closeError) {
+          logger.debug('CHROMA_SYNC', 'sync.close() failed during backfill teardown',
+            {}, closeError instanceof Error ? closeError : new Error(String(closeError)));
+        }
+      }
+      if (!storeOverride && db) {
+        try { await db.close(); } catch (closeError) {
+          logger.debug('CHROMA_SYNC', 'db.close() failed during backfill teardown',
+            {}, closeError instanceof Error ? closeError : new Error(String(closeError)));
+        }
+      }
     }
   }
 

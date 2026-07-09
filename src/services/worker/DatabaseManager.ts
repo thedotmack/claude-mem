@@ -1,52 +1,75 @@
+/**
+ * DatabaseManager: Single long-lived database connection
+ *
+ * Responsibility:
+ * - Manage single database connection for worker lifetime
+ * - Support both SQLite and MySQL backends (dynamic selection)
+ * - Provide centralized access to SessionStore and SessionSearch
+ * - High-level database operations
+ * - ChromaSync integration
+ */
 
-import { Database } from 'bun:sqlite';
-import { SessionStore } from '../sqlite/SessionStore.js';
-import { SessionSearch } from '../sqlite/SessionSearch.js';
-import { MigrationRunner } from '../sqlite/migrations/runner.js';
+import { getDatabaseType, createDatabaseBackend, isMySQLConfigured } from '../db/index.js';
+import { getMySQLConfig } from '../mysql/Database.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
 import { CloudSync } from '../sync/CloudSync.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { resolveDbPath, resolveUserSettingsPath } from '../../shared/paths.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import type { DBSession } from '../worker-types.js';
 import type { HelixTransport } from '../../storage/helix/transport.js';
 
+// Use any for dynamic backend dispatch - actual methods depend on backend
+
 export class DatabaseManager {
-  private db: Database | null = null;
-  private sessionStore: SessionStore | null = null;
-  private sessionSearch: SessionSearch | null = null;
+  private sessionStore: any = null;
+  private sessionSearch: any = null;
   private chromaSync: ChromaSync | null = null;
-  private cloudSync: CloudSync | null = null;
+  private pendingMessageStore: any = null;
+  private databaseType: 'sqlite' | 'mysql' = 'sqlite';
+  private db: any = null;
 
   async initialize(): Promise<void> {
-    this.db = new Database(DB_PATH);
+    this.databaseType = getDatabaseType();
+    logger.info('DB', `Initializing database with backend: ${this.databaseType}`);
 
-    new MigrationRunner(this.db).runAllMigrations();
+    const backend = await createDatabaseBackend();
 
-    this.sessionStore = new SessionStore(this.db);
-    this.sessionSearch = new SessionSearch(this.db);
+    if (this.databaseType === 'mysql') {
+      const MySQLSessionStore = backend.SessionStore;
+      const MySQLSessionSearch = backend.SessionSearch;
+
+      const config = getMySQLConfig();
+      const { MySQLDatabase } = await import('../mysql/Database.js');
+      this.db = new MySQLDatabase(config);
+
+      this.sessionStore = new MySQLSessionStore(this.db);
+      if (typeof (this.sessionStore as any).initialize === 'function') {
+        await (this.sessionStore as any).initialize();
+      }
+
+      this.sessionSearch = new MySQLSessionSearch(this.db);
+
+      logger.info('DB', `MySQL database initialized: ${config.host}:${config.port}/${config.database}`);
+    } else {
+      const { ClaudeMemDatabase } = await import('../sqlite/Database.js');
+      this.db = new ClaudeMemDatabase();
+
+      this.sessionStore = new backend.SessionStore(this.db);
+      this.sessionSearch = new backend.SessionSearch(this.db);
+
+      logger.info('DB', 'SQLite database initialized');
+    }
 
     const settings = SettingsDefaultsManager.loadFromFile(resolveUserSettingsPath());
     const chromaEnabled = settings.CLAUDE_MEM_CHROMA_ENABLED !== 'false';
-    const helixEnabled = settings.CLAUDE_MEM_HELIX_ENABLED === 'true' || backend.includes('helix');
-    if (helixEnabled) {
-      this.helixManager = new HelixManager();
-      this.chromaSync = new HelixSync('claude-mem', { manager: this.helixManager });
-      logger.info('DB', 'Helix semantic search enabled', { backend })
-    } else if (chromaEnabled) {
-      this.chromaSync = new ChromaSync('claude-mem');
+    if (chromaEnabled) {
+      this.chromaSync = new ChromaSync('claude-mem', this.databaseType === 'mysql');
     } else {
       logger.info('DB', 'Chroma disabled via CLAUDE_MEM_CHROMA_ENABLED=false, using SQLite-only search');
     }
 
-    // Cloud sync is active ⇔ token AND user id are both non-empty (no
-    // separate enabled flag). Inactive installs get null so the write-site
-    // `getCloudSync()?.notify()` nudges are free no-ops.
-    if (settings.CLAUDE_MEM_CLOUD_SYNC_TOKEN !== '' && settings.CLAUDE_MEM_CLOUD_SYNC_USER_ID !== '') {
-      this.cloudSync = new CloudSync(this.db, settings);
-    }
-
-    logger.info('DB', 'Database initialized (shared connection)');
+    logger.info('DB', 'Database initialized');
   }
 
   async close(): Promise<void> {
@@ -57,43 +80,85 @@ export class DatabaseManager {
     this.cloudSync?.stop();
     this.cloudSync = null;
 
-    this.sessionStore = null;
-    this.sessionSearch = null;
-
-    if (this.db) {
-      this.db.close();
-      this.db = null;
+    if (this.sessionStore) {
+      await this.sessionStore.close();
+      this.sessionStore = null;
     }
+
+    if (this.sessionSearch && typeof this.sessionSearch.close === 'function') {
+      await this.sessionSearch.close();
+      this.sessionSearch = null;
+    }
+
+    // Note: sessionStore.close() already ends the shared pool,
+    // so we don't need to close db again. Just null it out.
+    this.db = null;
+
     logger.info('DB', 'Database closed');
   }
 
-  getSessionStore(): SessionStore {
+  getSessionStore(): any {
     if (!this.sessionStore) {
       throw new Error('Database not initialized');
     }
     return this.sessionStore;
   }
 
-  getSessionSearch(): SessionSearch {
+  getSessionSearch(): any {
     if (!this.sessionSearch) {
       throw new Error('Database not initialized');
     }
     return this.sessionSearch;
   }
 
-  getChromaSync(): VectorSync | null {
-    return this.chromaSync;
-  }
-
-  getCloudSync(): CloudSync | null {
-    return this.cloudSync;
-  }
-
-  getConnection(): Database {
+  getDb(): any {
     if (!this.db) {
       throw new Error('Database not initialized');
     }
     return this.db;
+  }
+
+  getConnection(): any {
+    return this.getDb();
+  }
+
+  getChromaSync(): ChromaSync | null {
+    return this.chromaSync;
+  }
+
+  getDatabaseType(): 'sqlite' | 'mysql' {
+    return this.databaseType;
+  }
+
+  isMySQL(): boolean {
+    return this.databaseType === 'mysql';
+  }
+
+  async getSessionByIdAsync(sessionDbId: number): Promise<{
+    id: number;
+    content_session_id: string;
+    memory_session_id: string | null;
+    project: string;
+    platform_source: string;
+    user_prompt: string;
+    custom_title: string | null;
+    status: string;
+  }> {
+    if (!this.sessionStore) {
+      throw new Error('Database not initialized');
+    }
+
+    let session: any;
+    if (this.databaseType === 'mysql') {
+      session = await this.sessionStore.getSessionById(sessionDbId);
+    } else {
+      session = this.sessionStore.getSessionById(sessionDbId);
+    }
+
+    if (!session) {
+      throw new Error(`Session ${sessionDbId} not found`);
+    }
+    return session;
   }
 
   getSessionById(sessionDbId: number): {
@@ -106,11 +171,14 @@ export class DatabaseManager {
     custom_title: string | null;
     status: string;
   } {
-    const session = this.getSessionStore().getSessionById(sessionDbId);
+    if (this.databaseType === 'mysql') {
+      throw new Error('getSessionById is not supported for MySQL - use getSessionByIdAsync');
+    }
+
+    const session = this.sessionStore!.getSessionById(sessionDbId);
     if (!session) {
       throw new Error(`Session ${sessionDbId} not found`);
     }
     return session;
   }
-
 }

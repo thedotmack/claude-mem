@@ -1,10 +1,21 @@
-
 import type { SQLQueryBindings } from 'bun:sqlite';
 import { DatabaseManager } from './DatabaseManager.js';
 import { logger } from '../../utils/logger.js';
 import { OBSERVER_SESSIONS_PROJECT } from '../../shared/paths.js';
 import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../shared/user-prompts.js';
 import type { PaginatedResult, Observation, Summary, UserPrompt, AdvisorCall } from '../worker-types.js';
+
+/**
+ * Resolve results from either sync (SQLite) or async (MySQL) .all() calls.
+ * MySQL's mysql2 prepared-statement .all() returns Promise<any[]>,
+ * while SQLite (bun:sqlite) .all() returns any[] synchronously.
+ */
+async function resolveResults<T>(resultsOrPromise: T[] | Promise<T[]>): Promise<T[]> {
+  if (resultsOrPromise && typeof (resultsOrPromise as any).then === 'function') {
+    return await resultsOrPromise;
+  }
+  return resultsOrPromise as T[];
+}
 
 export class PaginationHelper {
   private dbManager: DatabaseManager;
@@ -52,7 +63,7 @@ export class PaginationHelper {
     };
   }
 
-  getObservations(offset: number, limit: number, project?: string, platformSource?: string): PaginatedResult<Observation> {
+  async getObservations(offset: number, limit: number, project?: string, platformSource?: string): Promise<PaginatedResult<Observation>> {
     const db = this.dbManager.getSessionStore().db;
     let query = `
       SELECT
@@ -97,7 +108,8 @@ export class PaginationHelper {
     query += ' ORDER BY o.created_at_epoch DESC LIMIT ? OFFSET ?';
     params.push(limit + 1, offset);
 
-    const results = db.prepare(query).all(...params) as Observation[];
+    const rawResults = db.prepare(query).all(...params) as Observation[] | Promise<Observation[]>;
+    const results = await resolveResults(rawResults);
     const result: PaginatedResult<Observation> = {
       items: results.slice(0, limit),
       hasMore: results.length > limit,
@@ -111,7 +123,7 @@ export class PaginationHelper {
     };
   }
 
-  getSummaries(offset: number, limit: number, project?: string, platformSource?: string): PaginatedResult<Summary> {
+  async getSummaries(offset: number, limit: number, project?: string, platformSource?: string): Promise<PaginatedResult<Summary>> {
     const db = this.dbManager.getSessionStore().db;
 
     let query = `
@@ -155,7 +167,8 @@ export class PaginationHelper {
     params.push(limit + 1, offset);
 
     const stmt = db.prepare(query);
-    const results = stmt.all(...params) as Summary[];
+    const rawResults = stmt.all(...params) as Summary[] | Promise<Summary[]>;
+    const results = await resolveResults(rawResults);
 
     return {
       items: results.slice(0, limit),
@@ -165,7 +178,7 @@ export class PaginationHelper {
     };
   }
 
-  getPrompts(offset: number, limit: number, project?: string, platformSource?: string): PaginatedResult<UserPrompt> {
+  async getPrompts(offset: number, limit: number, project?: string, platformSource?: string): Promise<PaginatedResult<UserPrompt>> {
     const db = this.dbManager.getSessionStore().db;
 
     let query = `
@@ -224,7 +237,8 @@ export class PaginationHelper {
     params.push(limit + 1, offset);
 
     const stmt = db.prepare(query);
-    const results = stmt.all(...params) as UserPrompt[];
+    const rawResults = stmt.all(...params) as UserPrompt[] | Promise<UserPrompt[]>;
+    const results = await resolveResults(rawResults);
 
     return {
       items: results.slice(0, limit),
@@ -234,8 +248,35 @@ export class PaginationHelper {
     };
   }
 
-  getAdvisorCalls(offset: number, limit: number, project?: string, platformSource?: string): PaginatedResult<AdvisorCall> {
-    const store = this.dbManager.getSessionStore();
-    return store.getAdvisorCalls(offset, limit, project, platformSource);
+  private async paginate<T>(
+    table: string,
+    columns: string,
+    offset: number,
+    limit: number,
+    project?: string
+  ): Promise<PaginatedResult<T>> {
+    const db = this.dbManager.getSessionStore().db;
+
+    let query = `SELECT ${columns} FROM ${table}`;
+    const params: any[] = [];
+
+    if (project) {
+      query += ' WHERE project = ?';
+      params.push(project);
+    }
+
+    query += ' ORDER BY created_at_epoch DESC LIMIT ? OFFSET ?';
+    params.push(limit + 1, offset); 
+
+    const stmt = db.prepare(query);
+    const rawResults = stmt.all(...params) as T[] | Promise<T[]>;
+    const results = await resolveResults(rawResults);
+
+    return {
+      items: results.slice(0, limit),
+      hasMore: results.length > limit,
+      offset,
+      limit
+    };
   }
 }
