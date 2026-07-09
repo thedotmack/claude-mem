@@ -4,17 +4,21 @@ import { SessionStore } from '../sqlite/SessionStore.js';
 import { SessionSearch } from '../sqlite/SessionSearch.js';
 import { enableIncrementalAutoVacuumIfFresh } from '../sqlite/autoVacuum.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
+import { HelixManager } from '../sync/HelixManager.js';
+import { HelixSync } from '../sync/HelixSync.js';
+import type { VectorSync } from '../sync/VectorSync.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, DB_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import type { DBSession } from '../worker-types.js';
-import { openPrimarySqliteConnection } from '../sqlite/connection.js';
+import type { HelixTransport } from '../../storage/helix/transport.js';
 
 export class DatabaseManager {
   private db: Database | null = null;
   private sessionStore: SessionStore | null = null;
   private sessionSearch: SessionSearch | null = null;
-  private chromaSync: ChromaSync | null = null;
+  private chromaSync: VectorSync | null = null;
+  private helixManager: HelixManager | null = null;
 
   async initialize(): Promise<void> {
     this.db = new Database(DB_PATH);
@@ -29,8 +33,14 @@ export class DatabaseManager {
     this.sessionSearch = new SessionSearch(this.db);
 
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const backend = settings.CLAUDE_MEM_DB_BACKEND || 'sqlite+chroma';
     const chromaEnabled = settings.CLAUDE_MEM_CHROMA_ENABLED !== 'false';
-    if (chromaEnabled) {
+    const helixEnabled = settings.CLAUDE_MEM_HELIX_ENABLED === 'true' || backend.includes('helix');
+    if (helixEnabled) {
+      this.helixManager = new HelixManager();
+      this.chromaSync = new HelixSync('claude-mem', { manager: this.helixManager });
+      logger.info('DB', 'Helix semantic search enabled', { backend })
+    } else if (chromaEnabled) {
       this.chromaSync = new ChromaSync('claude-mem');
     } else {
       logger.info('DB', 'Chroma disabled via CLAUDE_MEM_CHROMA_ENABLED=false, using SQLite-only search');
@@ -41,6 +51,8 @@ export class DatabaseManager {
 
   async close(): Promise<void> {
     this.chromaSync = null;
+    await this.helixManager?.disconnect();
+    this.helixManager = null;
 
     this.sessionStore = null;
     this.sessionSearch = null;
@@ -66,8 +78,15 @@ export class DatabaseManager {
     return this.sessionSearch;
   }
 
-  getChromaSync(): ChromaSync | null {
+  getChromaSync(): VectorSync | null {
     return this.chromaSync;
+  }
+
+  async getHelixTransport(): Promise<HelixTransport> {
+    if (!this.helixManager) {
+      this.helixManager = new HelixManager()
+    }
+    return await this.helixManager.getTransport()
   }
 
   getConnection(): Database {

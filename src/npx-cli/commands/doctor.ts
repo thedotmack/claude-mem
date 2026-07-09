@@ -80,6 +80,20 @@ export async function runDoctorCommand(): Promise<void> {
     required: false,
   });
 
+  const helixEnabled = SettingsDefaultsManager.get('CLAUDE_MEM_HELIX_ENABLED') === 'true'
+    || SettingsDefaultsManager.get('CLAUDE_MEM_DB_BACKEND').includes('helix');
+  const helixVersion = probeVersion('helix');
+  checks.push({
+    name: 'Helix CLI',
+    status: helixEnabled ? (helixVersion ? 'ok' : 'warn') : (helixVersion ? 'ok' : 'warn'),
+    detail: helixVersion
+      ? helixVersion
+      : helixEnabled
+        ? 'not found — Helix backend cannot start until installed'
+        : 'not found — only needed when CLAUDE_MEM_DB_BACKEND uses helix',
+    required: false,
+  });
+
   // 3. Plugin installed in the marketplace.
   const installed = isPluginInstalled();
   checks.push({

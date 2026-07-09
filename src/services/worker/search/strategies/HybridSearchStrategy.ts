@@ -5,7 +5,7 @@ import {
   ObservationSearchResult,
   SessionSummarySearchResult
 } from '../types.js';
-import { ChromaSync } from '../../../sync/ChromaSync.js';
+import type { VectorSync } from '../../../sync/VectorSync.js';
 import { SessionStore } from '../../../sqlite/SessionStore.js';
 import { SessionSearch } from '../../../sqlite/SessionSearch.js';
 import { logger } from '../../../../utils/logger.js';
@@ -13,7 +13,7 @@ import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 
 export class HybridSearchStrategy {
   constructor(
-    private chromaSync: ChromaSync,
+    private chromaSync: VectorSync,
     private sessionStore: SessionStore,
     private sessionSearch: SessionSearch
   ) {}
