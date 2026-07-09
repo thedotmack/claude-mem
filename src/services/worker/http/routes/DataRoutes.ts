@@ -102,6 +102,12 @@ export class DataRoutes extends BaseRouteHandler {
     app.post('/api/sdk-sessions/batch', validateBody(sdkSessionsBatchSchema), this.handleGetSdkSessionsByIds.bind(this));
     app.get('/api/prompt/:id', this.handleGetPromptById.bind(this));
 
+    // Delete by ID endpoints
+    app.delete('/api/observation/:id', this.handleDeleteObservation.bind(this));
+    app.delete('/api/summary/:id', this.handleDeleteSummary.bind(this));
+    app.delete('/api/prompt/:id', this.handleDeletePrompt.bind(this));
+
+    // Metadata endpoints
     app.get('/api/stats', this.handleGetStats.bind(this));
     app.get('/api/projects', this.handleGetProjects.bind(this));
 
@@ -292,6 +298,66 @@ export class DataRoutes extends BaseRouteHandler {
     res.json(prompts[0]);
   });
 
+  /**
+   * Delete an observation by ID
+   * DELETE /api/observation/:id
+   */
+  private handleDeleteObservation = this.wrapHandler((req: Request, res: Response): void => {
+    const id = this.parseIntParam(req, res, 'id');
+    if (id === null) return;
+
+    const deleted = this.dbManager.getSessionStore().deleteObservation(id);
+    if (!deleted) {
+      this.notFound(res, `Observation #${id} not found`);
+      return;
+    }
+
+    logger.info('HTTP', 'Deleted observation', { id });
+    this.sseBroadcaster.broadcast({ type: 'item_deleted', itemType: 'observation', id });
+    res.json({ success: true, deleted: true, id });
+  });
+
+  /**
+   * Delete a session summary by ID
+   * DELETE /api/summary/:id
+   */
+  private handleDeleteSummary = this.wrapHandler((req: Request, res: Response): void => {
+    const id = this.parseIntParam(req, res, 'id');
+    if (id === null) return;
+
+    const deleted = this.dbManager.getSessionStore().deleteSessionSummary(id);
+    if (!deleted) {
+      this.notFound(res, `Summary #${id} not found`);
+      return;
+    }
+
+    logger.info('HTTP', 'Deleted summary', { id });
+    this.sseBroadcaster.broadcast({ type: 'item_deleted', itemType: 'summary', id });
+    res.json({ success: true, deleted: true, id });
+  });
+
+  /**
+   * Delete a user prompt by ID
+   * DELETE /api/prompt/:id
+   */
+  private handleDeletePrompt = this.wrapHandler((req: Request, res: Response): void => {
+    const id = this.parseIntParam(req, res, 'id');
+    if (id === null) return;
+
+    const deleted = this.dbManager.getSessionStore().deleteUserPrompt(id);
+    if (!deleted) {
+      this.notFound(res, `Prompt #${id} not found`);
+      return;
+    }
+
+    logger.info('HTTP', 'Deleted prompt', { id });
+    this.sseBroadcaster.broadcast({ type: 'item_deleted', itemType: 'prompt', id });
+    res.json({ success: true, deleted: true, id });
+  });
+
+  /**
+   * Get database statistics (with worker metadata)
+   */
   private handleGetStats = this.wrapHandler((req: Request, res: Response): void => {
     const db = this.dbManager.getSessionStore().db;
     const project = typeof req.query.project === 'string' ? req.query.project : undefined;

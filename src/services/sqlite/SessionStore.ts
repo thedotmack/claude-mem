@@ -1883,6 +1883,39 @@ export class SessionStore {
     return stmt.get(id, normalizePlatformSource(platformSource)) as ObservationRecord | undefined || null;
   }
 
+  /**
+   * Delete an observation by ID.
+   * FTS index cleanup is handled automatically by the AFTER DELETE trigger.
+   * @returns true if a row was deleted, false if no observation matched.
+   */
+  deleteObservation(id: number): boolean {
+    const result = this.db.prepare('DELETE FROM observations WHERE id = ?').run(id);
+    return result.changes > 0;
+  }
+
+  /**
+   * Delete a session summary by ID.
+   * FTS index cleanup is handled automatically by the AFTER DELETE trigger.
+   * @returns true if a row was deleted, false if no summary matched.
+   */
+  deleteSessionSummary(id: number): boolean {
+    const result = this.db.prepare('DELETE FROM session_summaries WHERE id = ?').run(id);
+    return result.changes > 0;
+  }
+
+  /**
+   * Delete a user prompt by ID.
+   * FTS index cleanup is handled automatically by the AFTER DELETE trigger.
+   * @returns true if a row was deleted, false if no prompt matched.
+   */
+  deleteUserPrompt(id: number): boolean {
+    const result = this.db.prepare('DELETE FROM user_prompts WHERE id = ?').run(id);
+    return result.changes > 0;
+  }
+
+  /**
+   * Get observations by array of IDs with ordering and limit
+   */
   getObservationsByIds(
     ids: number[],
     options: { orderBy?: 'date_desc' | 'date_asc' | 'relevance'; limit?: number; project?: string; platformSource?: string; type?: string | string[]; concepts?: string | string[]; files?: string | string[] } = {}

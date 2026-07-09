@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
-import { Observation } from '../types';
+import { Observation, FeedItemType } from '../types';
 import { formatDate } from '../utils/formatters';
-import { useI18n } from '../i18n/I18nContext';
+import { DeleteButton } from './DeleteButton';
 
 interface ObservationCardProps {
   observation: Observation;
+  onDelete: (itemType: FeedItemType, id: number) => void;
 }
 
 function stripProjectRoot(filePath: string): string {
@@ -26,7 +27,7 @@ function stripProjectRoot(filePath: string): string {
   return parts.length > 3 ? parts.slice(-3).join('/') : filePath;
 }
 
-export function ObservationCard({ observation }: ObservationCardProps) {
+export function ObservationCard({ observation, onDelete }: ObservationCardProps) {
   const [showFacts, setShowFacts] = useState(false);
   const [showNarrative, setShowNarrative] = useState(false);
   const date = formatDate(observation.created_at_epoch);
@@ -90,6 +91,7 @@ export function ObservationCard({ observation }: ObservationCardProps) {
               <span>{t('obs.narrative')}</span>
             </button>
           )}
+          <DeleteButton itemType="observation" id={observation.id} onDelete={onDelete} />
         </div>
       </div>
 

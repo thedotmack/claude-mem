@@ -1,6 +1,5 @@
 import React, { useMemo, useRef, useEffect } from 'react';
-import { useI18n } from '../i18n/I18nContext';
-import { Observation, Summary, UserPrompt, FeedItem } from '../types';
+import { Observation, Summary, UserPrompt, FeedItem, FeedItemType } from '../types';
 import { ObservationCard } from './ObservationCard';
 import { SummaryCard } from './SummaryCard';
 import { PromptCard } from './PromptCard';
@@ -14,12 +13,12 @@ interface FeedProps {
   prompts: UserPrompt[];
   advisorCalls: AdvisorCall[];
   onLoadMore: () => void;
+  onDelete: (itemType: FeedItemType, id: number) => void;
   isLoading: boolean;
   hasMore: boolean;
 }
 
-export function Feed({ observations, summaries, prompts, onLoadMore, isLoading, hasMore }: FeedProps) {
-  const { t } = useI18n();
+export function Feed({ observations, summaries, prompts, onLoadMore, onDelete, isLoading, hasMore }: FeedProps) {
   const loadMoreRef = useRef<HTMLDivElement>(null);
   const feedRef = useRef<HTMLDivElement>(null);
   const onLoadMoreRef = useRef(onLoadMore);
@@ -70,13 +69,11 @@ export function Feed({ observations, summaries, prompts, onLoadMore, isLoading, 
         {items.map(item => {
           const key = `${item.itemType}-${item.id}`;
           if (item.itemType === 'observation') {
-            return <ObservationCard key={key} observation={item} />;
+            return <ObservationCard key={key} observation={item} onDelete={onDelete} />;
           } else if (item.itemType === 'summary') {
-            return <SummaryCard key={key} summary={item} />;
-          } else if (item.itemType === 'advisor_call') {
-            return <AdvisorCallCard key={key} advisorCall={item} />;
+            return <SummaryCard key={key} summary={item} onDelete={onDelete} />;
           } else {
-            return <PromptCard key={key} prompt={item} />;
+            return <PromptCard key={key} prompt={item} onDelete={onDelete} />;
           }
         })}
         {items.length === 0 && !isLoading && (

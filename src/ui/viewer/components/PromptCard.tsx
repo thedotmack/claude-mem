@@ -1,13 +1,14 @@
 import React from 'react';
-import { UserPrompt } from '../types';
+import { UserPrompt, FeedItemType } from '../types';
 import { formatDate } from '../utils/formatters';
-import { useI18n } from '../i18n/I18nContext';
+import { DeleteButton } from './DeleteButton';
 
 interface PromptCardProps {
   prompt: UserPrompt;
+  onDelete: (itemType: FeedItemType, id: number) => void;
 }
 
-export function PromptCard({ prompt }: PromptCardProps) {
+export function PromptCard({ prompt, onDelete }: PromptCardProps) {
   const date = formatDate(prompt.created_at_epoch);
   const { t } = useI18n();
 
@@ -20,6 +21,9 @@ export function PromptCard({ prompt }: PromptCardProps) {
             {prompt.platform_source || 'claude'}
           </span>
           <span className="card-project">{prompt.project}</span>
+        </div>
+        <div className="view-mode-toggles">
+          <DeleteButton itemType="prompt" id={prompt.id} onDelete={onDelete} />
         </div>
       </div>
       <div className="card-content">
