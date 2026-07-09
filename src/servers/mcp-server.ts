@@ -747,6 +747,132 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     },
     handler: async (args: any) => handleObservationGenerationStatus(args ?? {}),
   },
+  // Compatibility aliases — keep `memory_*` tool names that pre-existed in
+  // src/server/mcp/tools.ts working for any client that bound to them.
+  // These intentionally delegate to the same observation_* handlers so
+  // there is one code path for MCP write/read against server-beta.
+  {
+    name: 'memory_add',
+    description: 'Compatibility alias for observation_add. Same behavior; same schema modulo the legacy field names.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string' },
+        kind: { type: 'string' },
+        content: { type: 'string' },
+        narrative: { type: 'string', description: 'Legacy alias for content; mapped to content if content is missing' },
+        title: { type: 'string', description: 'Legacy field; appended to metadata.title' },
+        metadata: { type: 'object', additionalProperties: true },
+      },
+      required: ['projectId'],
+      additionalProperties: true,
+    },
+    handler: async (args: any) => {
+      // Map legacy fields onto observation_add. `narrative` was the v1
+      // SQLite payload; it is normalized to `content` before forwarding.
+      const merged: ObservationAddArgs = {
+        projectId: args?.projectId,
+        content: args?.content ?? args?.narrative ?? '',
+        kind: args?.kind,
+        metadata: {
+          ...(args?.metadata ?? {}),
+          ...(args?.title ? { title: args.title } : {}),
+        },
+      };
+      return handleObservationAdd(merged);
+    },
+  },
+  // Worker-runtime manual write. Unlike observation_add/memory_add (which are
+  // gated to server-beta and call /v1/memories), this talks to the worker's
+  // ungated POST /api/memory/save — writing straight to SQLite + Chroma. It is
+  // the only manual-write path available on the default `worker` runtime, where
+  // no server-beta server, API key, or project id is configured. Uses the same
+  // workerHttpRequest plumbing as search/timeline, so it shares the worker the
+  // MCP server already auto-starts in worker mode. No Bun-only imports.
+  {
+    name: 'memory_save',
+    description:
+      'Save a manual memory to the local worker (SQLite + Chroma) via POST /api/memory/save. ' +
+      'Worker-runtime path — does NOT require server-beta. Use this on the default worker runtime. ' +
+      'Params: text (required), title, project, metadata.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'The memory content to store' },
+        title: { type: 'string', description: 'Optional short title; auto-derived from text if omitted' },
+        project: { type: 'string', description: 'Project bucket; defaults to the worker default project if omitted' },
+        metadata: { type: 'object', additionalProperties: true },
+      },
+      required: ['text'],
+      additionalProperties: false,
+    },
+    handler: async (args: any) => {
+      try {
+        // Worker-only: this tool writes to the local worker's SQLite + Chroma.
+        // In server-beta mode main() skips worker auto-start, so posting here
+        // would either fail with a connection error or land the memory in a
+        // stray local worker instead of the selected server-beta backend —
+        // splitting manual memories across stores. Fail clearly and point the
+        // caller at the server-beta-backed tools instead.
+        if (selectRuntime() === 'server-beta') {
+          throw new Error(
+            'memory_save targets the worker runtime (POST /api/memory/save) and is unavailable when ' +
+            'CLAUDE_MEM_RUNTIME=server-beta. Use observation_add / memory_add, which write to the server-beta backend.'
+          );
+        }
+        if (typeof args?.text !== 'string' || args.text.trim().length === 0) {
+          throw new Error('memory_save: "text" is required');
+        }
+        const body: Record<string, unknown> = { text: args.text };
+        if (typeof args.title === 'string' && args.title.trim()) body.title = args.title;
+        if (typeof args.project === 'string' && args.project.trim()) body.project = args.project;
+        if (args.metadata && typeof args.metadata === 'object') body.metadata = args.metadata;
+
+        const response = await workerHttpRequest('/api/memory/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!response.ok) {
+          const detail = await response.text().catch(() => '');
+          throw new Error(`worker /api/memory/save returned ${response.status}${detail ? `: ${detail}` : ''}`);
+        }
+        return formatJsonResult(await response.json());
+      } catch (error) {
+        return formatToolError(error);
+      }
+    },
+  },
+  {
+    name: 'memory_search',
+    description: 'Compatibility alias for observation_search. Same FTS path; same /v1/search REST endpoint.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string' },
+        query: { type: 'string' },
+        limit: { type: 'number' },
+      },
+      required: ['projectId', 'query'],
+      additionalProperties: true,
+    },
+    handler: async (args: any) => handleObservationSearch(args ?? {}),
+  },
+  {
+    name: 'memory_context',
+    description: 'Compatibility alias for observation_context. Same /v1/context REST endpoint.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string' },
+        query: { type: 'string' },
+        limit: { type: 'number' },
+      },
+      required: ['projectId', 'query'],
+      additionalProperties: true,
+    },
+    handler: async (args: any) => handleObservationContext(args ?? {}),
+  },
   {
     name: 'smart_search',
     description: 'Search codebase for symbols, functions, classes using tree-sitter AST parsing. Returns folded structural views with token counts. Use path parameter to scope the search.',
