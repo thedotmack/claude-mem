@@ -55,7 +55,7 @@ describe('getProjectName', () => {
     });
   });
 
-  describe('#2663 — name derived from git repo root', () => {
+  describe('#2663 / #2882 — repo-relative keys inside repositories', () => {
     let tmp: string;
     let repoRoot: string;
     let nestedDir: string;
@@ -80,7 +80,10 @@ describe('getProjectName', () => {
       rmSync(tmp, { recursive: true, force: true });
     });
 
-    it('deep subdirectory inside a repo yields the repo-root name', () => {
+    it('deep subdirectory without package.json stays on the repo-root key when the repo is not a declared workspace', () => {
+      const { rmSync } = require('fs');
+      const { join } = require('path');
+      rmSync(join(repoRoot, 'package.json'), { force: true });
       expect(getProjectName(nestedDir)).toBe('my-real-repo');
     });
 
@@ -88,81 +91,88 @@ describe('getProjectName', () => {
       expect(getProjectName(repoRoot)).toBe('my-real-repo');
     });
 
-    it('plain subdirectory inside a declared workspace repo yields a repo-relative project key', async () => {
-      const { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } = await import('fs');
-      const { execFileSync } = await import('child_process');
-      const { join } = await import('path');
-      const { tmpdir } = await import('os');
-      const tmpDir = realpathSync(mkdtempSync(join(tmpdir(), 'cm-workspace-')));
-      try {
-        const root = join(tmpDir, 'my-real-repo');
-        const automationDir = join(root, 'automation', 'scripts');
-        mkdirSync(automationDir, { recursive: true });
-        execFileSync('git', ['init', '-q'], { cwd: root });
-        writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'my-real-repo', workspaces: ['packages/*'] }));
-
-        expect(getProjectName(automationDir)).toBe('my-real-repo/automation');
-      } finally {
-        rmSync(tmpDir, { recursive: true, force: true });
-      }
+    it('plain subdirectory inside a declared workspace repo yields a repo-relative project key', () => {
+      const { mkdirSync, writeFileSync } = require('fs');
+      const { join } = require('path');
+      const automationDir = join(repoRoot, 'automation');
+      mkdirSync(automationDir, { recursive: true });
+      writeFileSync(
+        join(repoRoot, 'package.json'),
+        JSON.stringify({ name: 'my-real-repo', workspaces: ['packages/*'] })
+      );
+      expect(getProjectName(automationDir)).toBe('my-real-repo/automation');
     });
 
-    it('plain subdirectory inside a non-workspace package repo stays on the repo-root key', async () => {
-      const { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } = await import('fs');
-      const { execFileSync } = await import('child_process');
-      const { join } = await import('path');
-      const { tmpdir } = await import('os');
-      const tmpDir = realpathSync(mkdtempSync(join(tmpdir(), 'cm-singlepkg-')));
-      try {
-        const root = join(tmpDir, 'my-real-repo');
-        const srcDir = join(root, 'src', 'lib');
-        mkdirSync(srcDir, { recursive: true });
-        execFileSync('git', ['init', '-q'], { cwd: root });
-        writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'my-real-repo' }));
-
-        expect(getProjectName(srcDir)).toBe('my-real-repo');
-      } finally {
-        rmSync(tmpDir, { recursive: true, force: true });
-      }
+    it('plain subdirectories inside a single-package repo stay on the repo-root key', () => {
+      const { mkdirSync, writeFileSync } = require('fs');
+      const { join } = require('path');
+      const srcDir = join(repoRoot, 'src', 'routes');
+      mkdirSync(srcDir, { recursive: true });
+      writeFileSync(join(repoRoot, 'package.json'), JSON.stringify({ name: 'my-real-repo' }));
+      expect(getProjectName(srcDir)).toBe('my-real-repo');
     });
 
-    it('package directory inside a monorepo yields the repo-relative package key', async () => {
-      const { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } = await import('fs');
-      const { execFileSync } = await import('child_process');
-      const { join } = await import('path');
-      const { tmpdir } = await import('os');
-      const tmpDir = realpathSync(mkdtempSync(join(tmpdir(), 'cm-package-root-')));
-      try {
-        const root = join(tmpDir, 'my-real-repo');
-        const packageSrcDir = join(root, 'packages', 'api', 'src');
-        mkdirSync(packageSrcDir, { recursive: true });
-        execFileSync('git', ['init', '-q'], { cwd: root });
-        writeFileSync(join(root, 'packages', 'api', 'package.json'), JSON.stringify({ name: 'api' }));
-
-        expect(getProjectName(packageSrcDir)).toBe('my-real-repo/packages/api');
-      } finally {
-        rmSync(tmpDir, { recursive: true, force: true });
-      }
+    it('nested paths inside a plain subdirectory only split in declared workspace repos', () => {
+      const { mkdirSync, writeFileSync } = require('fs');
+      const { join } = require('path');
+      const scriptsDir = join(repoRoot, 'automation', 'scripts', 'build');
+      mkdirSync(scriptsDir, { recursive: true });
+      writeFileSync(
+        join(repoRoot, 'package.json'),
+        JSON.stringify({ name: 'my-real-repo', workspaces: ['packages/*'] })
+      );
+      expect(getProjectName(scriptsDir)).toBe('my-real-repo/automation');
     });
 
-    it('manifest-less monorepos split plain subdirectories when nested package roots exist', async () => {
-      const { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } = await import('fs');
-      const { execFileSync } = await import('child_process');
-      const { join } = await import('path');
-      const { tmpdir } = await import('os');
-      const tmpDir = realpathSync(mkdtempSync(join(tmpdir(), 'cm-manifestless-mono-')));
-      try {
-        const root = join(tmpDir, 'my-real-repo');
-        const automationDir = join(root, 'automation', 'scripts');
-        mkdirSync(automationDir, { recursive: true });
-        mkdirSync(join(root, 'packages', 'api'), { recursive: true });
-        execFileSync('git', ['init', '-q'], { cwd: root });
-        writeFileSync(join(root, 'packages', 'api', 'package.json'), JSON.stringify({ name: 'api' }));
+    it('workspace roots still split plain subdirectories to repo-relative keys', () => {
+      const { mkdirSync, writeFileSync } = require('fs');
+      const { join } = require('path');
+      const automationDir = join(repoRoot, 'workspace-automation');
+      mkdirSync(automationDir, { recursive: true });
+      writeFileSync(
+        join(repoRoot, 'package.json'),
+        JSON.stringify({ name: 'my-real-repo', workspaces: ['packages/*'] })
+      );
+      expect(getProjectName(automationDir)).toBe('my-real-repo/workspace-automation');
+    });
 
-        expect(getProjectName(automationDir)).toBe('my-real-repo/automation');
-      } finally {
-        rmSync(tmpDir, { recursive: true, force: true });
-      }
+    it('non-Node repos without a root manifest keep the repo-root key', () => {
+      const { mkdirSync, rmSync } = require('fs');
+      const { join } = require('path');
+      const serviceDir = join(repoRoot, 'cmd', 'server');
+      mkdirSync(serviceDir, { recursive: true });
+      rmSync(join(repoRoot, 'package.json'), { force: true });
+      expect(getProjectName(serviceDir)).toBe('my-real-repo');
+    });
+
+    it('manifest-less monorepos still split plain subdirectories when nested package roots exist', () => {
+      const { mkdirSync, rmSync, writeFileSync } = require('fs');
+      const { join } = require('path');
+      const automationDir = join(repoRoot, 'automation');
+      const packageDir = join(repoRoot, 'packages', 'api');
+      mkdirSync(automationDir, { recursive: true });
+      mkdirSync(packageDir, { recursive: true });
+      rmSync(join(repoRoot, 'package.json'), { force: true });
+      writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name: 'api' }));
+      expect(getProjectName(automationDir)).toBe('my-real-repo/automation');
+    });
+
+    it('package directory inside a monorepo yields the repo-relative package key', () => {
+      const { mkdirSync, writeFileSync } = require('fs');
+      const { join } = require('path');
+      const packageDir = join(repoRoot, 'packages', 'api');
+      mkdirSync(packageDir, { recursive: true });
+      writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name: 'api' }));
+      expect(getProjectName(packageDir)).toBe('my-real-repo/packages/api');
+    });
+
+    it('subdirectory inside a monorepo package shares the repo-relative package key', () => {
+      const { mkdirSync } = require('fs');
+      const { join } = require('path');
+      // api/package.json was created by the previous test; src/ has none
+      const packageSrcDir = join(repoRoot, 'packages', 'api', 'src');
+      mkdirSync(packageSrcDir, { recursive: true });
+      expect(getProjectName(packageSrcDir)).toBe('my-real-repo/packages/api');
     });
 
     it('non-repo path falls back to basename(cwd)', () => {
@@ -298,6 +308,33 @@ describe('getProjectContext', () => {
     }
   });
 
+  it('uses only the repo-relative subproject key for non-worktree monorepo paths', async () => {
+    const { mkdtempSync, mkdirSync, realpathSync, writeFileSync } = await import('fs');
+    const { execFileSync } = await import('child_process');
+    const { join } = await import('path');
+    const { tmpdir } = await import('os');
+
+    const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'cm-project-context-')));
+    const repoRoot = join(tmp, 'my-real-repo');
+    const packageDir = join(repoRoot, 'packages', 'api');
+    const packageSrcDir = join(packageDir, 'src');
+    mkdirSync(packageDir, { recursive: true });
+    mkdirSync(packageSrcDir, { recursive: true });
+    execFileSync('git', ['init', '-q'], { cwd: repoRoot });
+    writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name: 'api' }));
+
+    try {
+      const ctx = getProjectContext(packageSrcDir);
+      expect(ctx.primary).toBe('my-real-repo/packages/api');
+      expect(ctx.parent).toBeNull();
+      expect(ctx.isWorktree).toBe(false);
+      expect(ctx.allProjects).toEqual(['my-real-repo/packages/api']);
+    } finally {
+      const { rmSync } = await import('fs');
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   describe('worktree isolation', () => {
     let tmp: string;
     let mainRepo: string;
@@ -344,6 +381,19 @@ describe('getProjectContext', () => {
       expect(project).toBe('main-repo/my-worktree');
       expect(project).not.toBe('main-repo');
       expect(project).not.toBe('my-worktree');
+    });
+
+    it('subdirectories inside a worktree keep the same parent/worktree composite', async () => {
+      const { mkdirSync } = await import('fs');
+      const { join } = await import('path');
+      const nestedDir = join(worktreeCheckout, 'src', 'routes');
+      mkdirSync(nestedDir, { recursive: true });
+
+      const ctx = getProjectContext(nestedDir);
+      expect(ctx.isWorktree).toBe(true);
+      expect(ctx.primary).toBe('main-repo/my-worktree');
+      expect(ctx.parent).toBe('main-repo');
+      expect(ctx.allProjects).toEqual(['main-repo', 'main-repo/my-worktree']);
     });
   });
 

@@ -89,7 +89,7 @@ function findGitRepoRoot(dir: string): string | null {
 
 function resolvePath(p: string): string {
   try {
-    return realpathSync(p);
+    return realpathSync(path.resolve(p));
   } catch {
     return path.resolve(p);
   }
@@ -104,24 +104,13 @@ function samePath(a: string, b: string): boolean {
   return normalizePath(a) === normalizePath(b);
 }
 
-function isInsidePath(child: string, parent: string): boolean {
-  const relative = path.relative(resolvePath(parent), resolvePath(child));
-  return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
-}
-
+// .git FILE (not dir) means this is a linked worktree root, not the main repo.
 function isLinkedWorktreeRoot(dir: string): boolean {
-  const dotGit = path.join(dir, '.git');
-  try {
-    if (!statSync(dotGit).isFile()) return false;
-    const content = readFileSync(dotGit, 'utf-8').trim();
-    return /^gitdir:\s*.+[/\\]\.git[/\\]worktrees[/\\][^/\\]+$/i.test(content);
-  } catch {
-    return false;
-  }
+  try { return statSync(path.join(dir, '.git')).isFile(); } catch { return false; }
 }
 
-function findEnclosingLinkedWorktreeRoot(startDir: string): string | null {
-  let dir = resolvePath(startDir);
+function findEnclosingLinkedWorktreeRoot(start: string): string | null {
+  let dir = path.resolve(start);
   while (true) {
     if (isLinkedWorktreeRoot(dir)) return dir;
     const parent = path.dirname(dir);
@@ -130,75 +119,101 @@ function findEnclosingLinkedWorktreeRoot(startDir: string): string | null {
   }
 }
 
-function hasPackageJson(dir: string): boolean {
-  try {
-    return statSync(path.join(dir, 'package.json')).isFile();
-  } catch {
-    return false;
-  }
-}
-
-function findNearestPackageRoot(startDir: string, repoRoot: string): string | null {
-  let dir = resolvePath(startDir);
-  const root = resolvePath(repoRoot);
-
-  while (isInsidePath(dir, root) && !samePath(dir, root)) {
-    if (hasPackageJson(dir)) return dir;
+// Walk from start toward repoRoot, excluding the repo root itself.
+function findNearestPackageRoot(start: string, repoRoot: string): string | null {
+  let dir = resolvePath(start);
+  while (true) {
+    if (samePath(dir, repoRoot)) break;
+    try {
+      if (statSync(path.join(dir, 'package.json')).isFile()) return dir;
+    } catch {
+      // No package.json at this level.
+    }
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
-
   return null;
 }
 
-function rootDeclaresWorkspaces(repoRoot: string): boolean {
-  try {
-    const packageJson = JSON.parse(readFileSync(path.join(repoRoot, 'package.json'), 'utf-8'));
-    if (Array.isArray(packageJson.workspaces)) return packageJson.workspaces.length > 0;
-    return Array.isArray(packageJson.workspaces?.packages) && packageJson.workspaces.packages.length > 0;
-  } catch {
-    return false;
-  }
+function findTopLevelSubprojectRoot(start: string, repoRoot: string): string {
+  const root = resolvePath(repoRoot);
+  const relative = path.relative(root, resolvePath(start));
+  const [firstSegment] = relative.split(path.sep).filter(Boolean);
+  return firstSegment ? path.join(root, firstSegment) : resolvePath(start);
 }
 
-function hasNestedPackageRoot(repoRoot: string): boolean {
-  const skip = new Set(['.git', 'node_modules', '.claude-mem', 'dist', 'build']);
+function toProjectPath(relativePath: string): string {
+  return relativePath.split(path.sep).filter(Boolean).join('/');
+}
 
-  try {
-    for (const topEntry of readdirSync(repoRoot, { withFileTypes: true })) {
-      if (!topEntry.isDirectory() || skip.has(topEntry.name)) continue;
-      const topDir = path.join(repoRoot, topEntry.name);
-      if (hasPackageJson(topDir)) return true;
+function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
+  return typeof error === 'object' && error !== null && 'code' in error;
+}
 
-      try {
-        for (const childEntry of readdirSync(topDir, { withFileTypes: true })) {
-          if (!childEntry.isDirectory() || skip.has(childEntry.name)) continue;
-          if (hasPackageJson(path.join(topDir, childEntry.name))) return true;
-        }
-      } catch {
-        // Ignore unreadable child directories; project-name detection is best effort.
+function hasNestedPackageJson(repoRoot: string): boolean {
+  const root = resolvePath(repoRoot);
+  const pending = [root];
+
+  while (pending.length > 0) {
+    const dir = pending.pop()!;
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (entry.name === '.git' || entry.name === 'node_modules') {
+        continue;
+      }
+
+      const entryPath = path.join(dir, entry.name);
+
+      if (entry.isFile() && entry.name === 'package.json' && !samePath(dir, root)) {
+        return true;
+      }
+
+      if (entry.isDirectory()) {
+        pending.push(entryPath);
       }
     }
-  } catch {
-    return false;
   }
 
   return false;
 }
 
 function shouldUseTopLevelSubprojectFallback(repoRoot: string): boolean {
-  return rootDeclaresWorkspaces(repoRoot) || hasNestedPackageRoot(repoRoot);
-}
+  const rootPackageJson = path.join(repoRoot, 'package.json');
+  let rootManifestState: 'file' | 'missing' | 'unreadable' = 'file';
 
-function findTopLevelSubprojectRoot(startDir: string, repoRoot: string): string {
-  const relative = path.relative(resolvePath(repoRoot), resolvePath(startDir));
-  const [firstSegment] = relative.split(path.sep).filter(Boolean);
-  return firstSegment ? path.join(repoRoot, firstSegment) : repoRoot;
-}
+  try {
+    if (!statSync(rootPackageJson).isFile()) {
+      rootManifestState = 'unreadable';
+    }
+  } catch (error) {
+    rootManifestState = isErrnoException(error) && error.code === 'ENOENT'
+      ? 'missing'
+      : 'unreadable';
+  }
 
-function toProjectPath(relativePath: string): string {
-  return relativePath.split(path.sep).filter(Boolean).join('/');
+  if (rootManifestState === 'missing') {
+    return hasNestedPackageJson(repoRoot);
+  }
+
+  if (rootManifestState === 'unreadable') {
+    return false;
+  }
+
+  try {
+    const packageJson = JSON.parse(readFileSync(path.join(repoRoot, 'package.json'), 'utf-8'));
+    return Array.isArray(packageJson.workspaces)
+      ? packageJson.workspaces.length > 0
+      : Array.isArray(packageJson.workspaces?.packages) && packageJson.workspaces.packages.length > 0;
+  } catch {
+    return false;
+  }
 }
 
 export function getProjectName(cwd: string | null | undefined): string {
@@ -208,20 +223,13 @@ export function getProjectName(cwd: string | null | undefined): string {
   }
 
   const expanded = expandTilde(cwd)
-
-  // An explicit `.claude-mem.json` { projectName } override wins over the
-  // git-root / basename derivation, so independent copies of a project can be
-  // pinned to one shared memory regardless of their folder names.
-  const configured = getConfiguredProjectName(expanded);
-  if (configured) return configured;
-
-  const repoRoot = findGitRepoRoot(expanded);
   const linkedWorktreeRoot = findEnclosingLinkedWorktreeRoot(expanded);
-  const isCurrentRepoLinkedWorktree = linkedWorktreeRoot && (!repoRoot || samePath(repoRoot, linkedWorktreeRoot));
-  if (isCurrentRepoLinkedWorktree) {
+
+  if (linkedWorktreeRoot) {
     return path.basename(linkedWorktreeRoot);
   }
 
+  const repoRoot = findGitRepoRoot(expanded);
   if (repoRoot) {
     if (samePath(expanded, repoRoot)) {
       return path.basename(repoRoot);
@@ -233,7 +241,9 @@ export function getProjectName(cwd: string | null | undefined): string {
     }
 
     const subprojectRoot = packageRoot ?? findTopLevelSubprojectRoot(expanded, repoRoot);
-    const relativeBoundary = toProjectPath(path.relative(resolvePath(repoRoot), resolvePath(subprojectRoot)));
+    const relativeBoundary = toProjectPath(
+      path.relative(resolvePath(repoRoot), resolvePath(subprojectRoot))
+    );
     return `${path.basename(repoRoot)}/${relativeBoundary}`;
   }
 
@@ -283,25 +293,17 @@ export function getProjectContext(cwd: string | null | undefined): ProjectContex
   }
 
   const expandedCwd = expandTilde(cwd);
-
-  // An explicit `.claude-mem.json` name is authoritative: skip worktree
-  // compositing so every copy/worktree collapses to the one configured project.
-  if (getConfiguredProjectName(expandedCwd)) {
-    return { primary: cwdProjectName, parent: null, isWorktree: false, allProjects: withDreamProjects([cwdProjectName]) };
-  }
-
-  const repoRoot = findGitRepoRoot(expandedCwd);
   const linkedWorktreeRoot = findEnclosingLinkedWorktreeRoot(expandedCwd);
-  const currentLinkedWorktreeRoot = linkedWorktreeRoot && (!repoRoot || samePath(repoRoot, linkedWorktreeRoot))
-    ? linkedWorktreeRoot
-    : null;
+  const repoRoot = findGitRepoRoot(expandedCwd) ?? linkedWorktreeRoot;
   const directWorktreeInfo = detectWorktree(expandedCwd);
   const worktreeInfo = directWorktreeInfo.isWorktree
     ? directWorktreeInfo
-    : (currentLinkedWorktreeRoot ? detectWorktree(currentLinkedWorktreeRoot) : directWorktreeInfo);
+    : (linkedWorktreeRoot ? detectWorktree(linkedWorktreeRoot) : directWorktreeInfo);
 
   if (worktreeInfo.isWorktree && worktreeInfo.parentProjectName) {
-    const worktreeName = currentLinkedWorktreeRoot ? path.basename(currentLinkedWorktreeRoot) : cwdProjectName;
+    const worktreeName = linkedWorktreeRoot
+      ? path.basename(linkedWorktreeRoot)
+      : cwdProjectName;
     const composite = `${worktreeInfo.parentProjectName}/${worktreeName}`;
     return {
       primary: composite,
