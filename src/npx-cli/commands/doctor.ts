@@ -25,10 +25,15 @@ interface CheckResult {
 
 function probeVersion(bin: 'bun' | 'uv'): string | null {
   try {
-    return bin === 'bun' ? getBunVersion() : getUvVersion();
-  } catch (error) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    console.warn(`[doctor] Failed to probe \`${bin} --version\`:`, err);
+    const [probeExe, probeArgs] = IS_WINDOWS
+      ? (['cmd.exe', ['/d', '/c', bin, '--version']] as const)
+      : ([bin, ['--version']] as const);
+    const result = spawnSync(probeExe, probeArgs, {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    return result.status === 0 ? result.stdout.trim() : null;
+  } catch {
     return null;
   }
 }

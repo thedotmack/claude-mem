@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import * as childProcess from 'child_process';
 import { createRequire } from 'module';
-import { join } from 'path';
+import { isAbsolute, join } from 'path';
 import { homedir } from 'os';
 import { ErrorSeverity } from './error-taxonomy.js';
 import { installerError, type InstallSummary } from './error-reporter.js';
@@ -110,10 +110,12 @@ function spawnVersionProbe(command: string, args: string[]) {
 function getToolPath(command: string, commonPaths: string[]): string | null {
   const pathCommand = IS_WINDOWS ? lookupWindowsCommand(command) : command;
   try {
-    const result = childProcess.spawnSync('bun', ['--version'], {
+    const [bunExe, bunVersionArgs] = IS_WINDOWS
+      ? (['cmd.exe', ['/d', '/c', 'bun', '--version']] as const)
+      : (['bun', ['--version']] as const);
+    const result = spawnSync(bunExe, bunVersionArgs, {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS,
     });
     if (result.status === 0) return 'bun';
   } catch {
@@ -136,10 +138,15 @@ export function getBunVersion(): string | null {
   if (!bunPath) return null;
 
   try {
-    const result = childProcess.spawnSync(bunPath, ['--version'], {
+    // Absolute paths bypass cmd.exe to avoid metacharacter splitting
+    // (e.g. & in C:\Users\A&B\.bun\bin\bun.exe). Short name 'bun' still
+    // needs cmd.exe /d /c for PATH resolution without shell:true (DEP0190).
+    const [bvExe, bvArgs] = IS_WINDOWS && !isAbsolute(bunPath)
+      ? (['cmd.exe', ['/d', '/c', bunPath, '--version']] as const)
+      : ([bunPath, ['--version']] as const);
+    const result = spawnSync(bvExe, bvArgs, {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS,
     });
     return result.status === 0 ? result.stdout.trim() : null;
   } catch (error) {
@@ -151,10 +158,12 @@ export function getBunVersion(): string | null {
 
 function getUvPath(): string | null {
   try {
-    const result = childProcess.spawnSync('uv', ['--version'], {
+    const [uvExe, uvVersionArgs] = IS_WINDOWS
+      ? (['cmd.exe', ['/d', '/c', 'uv', '--version']] as const)
+      : (['uv', ['--version']] as const);
+    const result = spawnSync(uvExe, uvVersionArgs, {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS,
     });
     if (result.status === 0) return 'uv';
   } catch {
@@ -173,10 +182,12 @@ export function getUvVersion(): string | null {
   if (!uvPath) return null;
 
   try {
-    const result = childProcess.spawnSync(uvPath, ['--version'], {
+    const [uvExe, uvVersionArgs] = IS_WINDOWS && !isAbsolute(uvPath)
+      ? (['cmd.exe', ['/d', '/c', uvPath, '--version']] as const)
+      : ([uvPath, ['--version']] as const);
+    const result = spawnSync(uvExe, uvVersionArgs, {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS,
     });
     return result.status === 0 ? result.stdout.trim() : null;
   } catch (error) {
