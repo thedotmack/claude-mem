@@ -1,7 +1,5 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
-import * as fs from 'fs';
-import { tmpdir } from 'os';
-import { join } from 'path';
+import { readFileSync } from 'node:fs';
+import { describe, expect, it } from 'bun:test';
 import { sanitizeEnv } from '../../src/supervisor/env-sanitizer.js';
 
 const TEST_DATA_DIR = fs.mkdtempSync(join(tmpdir(), 'claude-mem-sanitizer-'));
@@ -53,6 +51,52 @@ describe('sanitizeEnv', () => {
     expect(result.CLAUDE_CODE_USE_BEDROCK).toBeUndefined();
     expect(result.CLAUDE_CODE_USE_VERTEX).toBeUndefined();
     expect(result.HOME).toBe('/home/user');
+  });
+
+  it('preserves CLAUDE_CODE_SKIP_BEDROCK_AUTH', () => {
+    const result = sanitizeEnv({
+      CLAUDE_CODE_USE_BEDROCK: '1',
+      CLAUDE_CODE_SKIP_BEDROCK_AUTH: '1',
+      PATH: '/usr/bin'
+    });
+
+    expect(result.CLAUDE_CODE_USE_BEDROCK).toBe('1');
+    expect(result.CLAUDE_CODE_SKIP_BEDROCK_AUTH).toBe('1');
+    expect(result.PATH).toBe('/usr/bin');
+  });
+
+  it('preserves CLAUDE_CODE_SKIP_VERTEX_AUTH', () => {
+    const result = sanitizeEnv({
+      CLAUDE_CODE_USE_VERTEX: '1',
+      CLAUDE_CODE_SKIP_VERTEX_AUTH: '1',
+      PATH: '/usr/bin'
+    });
+
+    expect(result.CLAUDE_CODE_USE_VERTEX).toBe('1');
+    expect(result.CLAUDE_CODE_SKIP_VERTEX_AUTH).toBe('1');
+    expect(result.PATH).toBe('/usr/bin');
+  });
+
+  it('keeps Bedrock and Vertex skip-auth flags in shipped runtime bundles', () => {
+    const workerBundle = readFileSync(
+      new URL('../../plugin/scripts/worker-service.cjs', import.meta.url),
+      'utf-8'
+    );
+    const serverBetaBundle = readFileSync(
+      new URL('../../plugin/scripts/server-beta-service.cjs', import.meta.url),
+      'utf-8'
+    );
+    const mcpServerBundle = readFileSync(
+      new URL('../../plugin/scripts/mcp-server.cjs', import.meta.url),
+      'utf-8'
+    );
+
+    expect(workerBundle).toContain('CLAUDE_CODE_SKIP_BEDROCK_AUTH');
+    expect(workerBundle).toContain('CLAUDE_CODE_SKIP_VERTEX_AUTH');
+    expect(serverBetaBundle).toContain('CLAUDE_CODE_SKIP_BEDROCK_AUTH');
+    expect(serverBetaBundle).toContain('CLAUDE_CODE_SKIP_VERTEX_AUTH');
+    expect(mcpServerBundle).toContain('CLAUDE_CODE_SKIP_BEDROCK_AUTH');
+    expect(mcpServerBundle).toContain('CLAUDE_CODE_SKIP_VERTEX_AUTH');
   });
 
   it('strips exact-match variables (CLAUDECODE, CLAUDE_CODE_SESSION, CLAUDE_CODE_ENTRYPOINT, MCP_SESSION_ID)', () => {
@@ -218,8 +262,9 @@ describe('sanitizeEnv', () => {
     const result = sanitizeEnv({
       CLAUDE_CODE_OAUTH_TOKEN: 'my-oauth-token',
       CLAUDE_CODE_GIT_BASH_PATH: '/usr/bin/bash',
+      CLAUDE_CODE_USE_BEDROCK: '1',
       CLAUDE_CODE_SKIP_BEDROCK_AUTH: '1',
-      CLAUDE_CODE_SKIP_VERTEX_AUTH: '1',
+      CLAUDE_CODE_SKIP_VERTEX_AUTH: '0',
       CLAUDE_CODE_RANDOM_OTHER: 'should-be-stripped',
       CLAUDE_CODE_INTERNAL_FLAG: 'should-be-stripped',
       PATH: '/usr/bin'
@@ -227,8 +272,9 @@ describe('sanitizeEnv', () => {
 
     expect(result.CLAUDE_CODE_OAUTH_TOKEN).toBe('my-oauth-token');
     expect(result.CLAUDE_CODE_GIT_BASH_PATH).toBe('/usr/bin/bash');
+    expect(result.CLAUDE_CODE_USE_BEDROCK).toBe('1');
     expect(result.CLAUDE_CODE_SKIP_BEDROCK_AUTH).toBe('1');
-    expect(result.CLAUDE_CODE_SKIP_VERTEX_AUTH).toBe('1');
+    expect(result.CLAUDE_CODE_SKIP_VERTEX_AUTH).toBe('0');
 
     expect(result.CLAUDE_CODE_RANDOM_OTHER).toBeUndefined();
     expect(result.CLAUDE_CODE_INTERNAL_FLAG).toBeUndefined();
