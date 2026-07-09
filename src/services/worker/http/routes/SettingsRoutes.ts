@@ -171,9 +171,8 @@ export class SettingsRoutes extends BaseRouteHandler {
     }
 
     if (settings.CLAUDE_MEM_CLAUDE_MAX_TOKENS) {
-      const rawTokens = String(settings.CLAUDE_MEM_CLAUDE_MAX_TOKENS);
-      const tokens = /^\d+$/.test(rawTokens) ? Number.parseInt(rawTokens, 10) : NaN;
-      if (!Number.isSafeInteger(tokens) || tokens < 1000 || tokens > 1000000) {
+      const tokens = parseInt(settings.CLAUDE_MEM_CLAUDE_MAX_TOKENS, 10);
+      if (isNaN(tokens) || tokens < 1000 || tokens > 1000000) {
         return { valid: false, error: 'CLAUDE_MEM_CLAUDE_MAX_TOKENS must be between 1000 and 1000000' };
       }
     }

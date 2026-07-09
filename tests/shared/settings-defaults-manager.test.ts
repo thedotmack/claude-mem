@@ -378,6 +378,17 @@ describe('SettingsDefaultsManager', () => {
       expect(defaults.CLAUDE_MEM_DATA_DIR).toBeDefined();
       expect(defaults.CLAUDE_MEM_LOG_LEVEL).toBeDefined();
     });
+
+    // #2956 — the Claude provider needs its own cumulative context cap, on par
+    // with CLAUDE_MEM_GEMINI_MAX_TOKENS / CLAUDE_MEM_OPENROUTER_MAX_TOKENS.
+    it('should default CLAUDE_MEM_CLAUDE_MAX_TOKENS to a safe positive cap', () => {
+      const defaults = SettingsDefaultsManager.getAllDefaults();
+
+      expect(defaults.CLAUDE_MEM_CLAUDE_MAX_TOKENS).toBe('150000');
+      const parsed = parseInt(defaults.CLAUDE_MEM_CLAUDE_MAX_TOKENS, 10);
+      expect(Number.isNaN(parsed)).toBe(false);
+      expect(parsed).toBeGreaterThan(0);
+    });
   });
 
   describe('get', () => {

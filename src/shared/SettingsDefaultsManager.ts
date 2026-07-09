@@ -143,7 +143,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_SKIP_AGENT_TYPES: '',
     CLAUDE_MEM_PROVIDER: 'claude',  // Default to Claude
     CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription',  // Default to logged-in Claude SDK auth (not API key)
-    CLAUDE_MEM_CLAUDE_MAX_TOKENS: '150000',  // Proactive Claude SDK observer context cap; reset before the model window overflows
+    CLAUDE_MEM_CLAUDE_MAX_TOKENS: '150000',  // #2956 — proactive SDK observer context cap (~150k); reset to a fresh SDK session before the model window overflows
     CLAUDE_MEM_GEMINI_API_KEY: '',  // Empty by default, can be set via UI or env
     CLAUDE_MEM_GEMINI_MODEL: 'gemini-2.5-flash-lite',  // Default Gemini model (highest free tier RPM)
     CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'true',  // Rate limiting ON by default for free tier users
