@@ -4,8 +4,9 @@ describe('ClaudeProvider Resume Parameter Logic', () => {
   function shouldPassResumeParameter(session: {
     memorySessionId: string | null;
     lastPromptNumber: number;
-    forceInit?: boolean;
+    disableSessionPersistence?: boolean;
   }): boolean {
+    if (session.disableSessionPersistence) return false;
     const hasRealMemorySessionId = !!session.memorySessionId;
     return hasRealMemorySessionId && session.lastPromptNumber > 1 && !session.forceInit;
   }
@@ -138,35 +139,16 @@ describe('ClaudeProvider Resume Parameter Logic', () => {
       expect(shouldResume).toBe(true);
     });
 
-    it('should keep session persistence enabled for a brand-new resumable session', () => {
-      const session = {
-        memorySessionId: null,
-        lastPromptNumber: 1,
-      };
-
-      expect(shouldPassResumeParameter(session)).toBe(false);
-      expect(shouldDisableSessionPersistence(session)).toBe(false);
-    });
-
-    it('should disable session persistence for stale fresh starts only', () => {
-      const session = {
-        memorySessionId: '5439891b-7d4b-4ee3-8662-c000f66bc199',
-        lastPromptNumber: 1,
-      };
-
-      expect(shouldPassResumeParameter(session)).toBe(false);
-      expect(shouldDisableSessionPersistence(session)).toBe(true);
-    });
-
-    it('should disable session persistence for forced fresh starts', () => {
+    it('should NOT resume when session persistence is disabled for observer spawns', () => {
       const session = {
         memorySessionId: '5439891b-7d4b-4ee3-8662-c000f66bc199',
         lastPromptNumber: 2,
-        forceInit: true,
+        disableSessionPersistence: true,
       };
 
-      expect(shouldPassResumeParameter(session)).toBe(false);
-      expect(shouldDisableSessionPersistence(session)).toBe(true);
+      const shouldResume = shouldPassResumeParameter(session);
+
+      expect(shouldResume).toBe(false);
     });
   });
 });

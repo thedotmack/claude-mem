@@ -643,17 +643,13 @@ export interface SpawnSdkOptions {
   signal?: AbortSignal;
 }
 
-export function spawnSdkProcess(
-  sessionDbId: number,
-  options: SpawnSdkOptions
-): { process: SpawnedSdkProcess; pid: number; pgid: number } | null {
-  const registry = getProcessRegistry();
-
-  const env = sanitizeEnv(options.env ?? process.env);
-
+export function normalizeSpawnSdkArgs(args: string[], extraArgs: string[] = []): string[] {
   const filteredArgs: string[] = [];
   for (const arg of args) {
     if (arg === '') {
+      // The SDK encodes optional flag/value pairs as `--flag ''` when the
+      // value is absent. Strip the whole pair, but only when the preceding
+      // token is a long option so positional args are left untouched.
       if (filteredArgs.length > 0 && filteredArgs[filteredArgs.length - 1].startsWith('--')) {
         filteredArgs.pop();
       }
@@ -661,6 +657,24 @@ export function spawnSdkProcess(
     }
     filteredArgs.push(arg);
   }
+
+  for (const extraArg of extraArgs) {
+    if (extraArg !== '') {
+      filteredArgs.push(extraArg);
+    }
+  }
+
+  return filteredArgs;
+}
+
+export function spawnSdkProcess(
+  sessionDbId: number,
+  options: SpawnSdkOptions
+): { process: SpawnedSdkProcess; pid: number; pgid: number } | null {
+  const registry = getProcessRegistry();
+
+  const env = sanitizeEnv(options.env ?? process.env);
+  const filteredArgs = normalizeSpawnSdkArgs(options.args, options.extraArgs);
 
   for (const extraArg of extraArgs) {
     if (extraArg !== '') {
@@ -792,22 +806,6 @@ export function spawnSdkProcess(
   };
 
   return { process: spawned, pid, pgid };
-}
-
-function sigtermDuplicateSdkProcess(record: ManagedProcessRecord, sessionDbId: number): void {
-  if (typeof record.pgid === 'number') {
-    if (process.platform !== 'win32') {
-      process.kill(-record.pgid, 'SIGTERM');
-    } else {
-      process.kill(record.pid, 'SIGTERM');
-    }
-  } else {
-    process.kill(record.pid, 'SIGTERM');
-  }
-  logger.warn('PROCESS', `Killing duplicate SDK process PID ${record.pid} before spawning new one for session ${sessionDbId}`, {
-    existingPid: record.pid,
-    sessionDbId,
-  });
 }
 
 export function createSdkSpawnFactory(sessionDbId: number, extraArgs: string[] = []) {

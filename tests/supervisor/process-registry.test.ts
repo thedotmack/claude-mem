@@ -2,14 +2,7 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
-import {
-  createProcessRegistry,
-  isPidAlive,
-  normalizeSpawnSdkArgs,
-  parseCmdFile,
-  resolveTotalProcessHardCap,
-  DEFAULT_TOTAL_PROCESS_HARD_CAP,
-} from '../../src/supervisor/process-registry.js';
+import { createProcessRegistry, isPidAlive, normalizeSpawnSdkArgs } from '../../src/supervisor/process-registry.js';
 
 function makeTempDir(): string {
   return path.join(tmpdir(), `claude-mem-supervisor-${Date.now()}-${Math.random().toString(36).slice(2)}`);

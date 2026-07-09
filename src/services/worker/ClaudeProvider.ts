@@ -210,6 +210,7 @@ export class ClaudeProvider {
 
   async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
     const cwdTracker = { lastCwd: undefined as string | undefined };
+    const observerExtraArgs = ['--no-session-persistence'];
 
     // Find and validate Claude executable (shared utility, closes #2222)
     let claudePath: string;
@@ -243,11 +244,16 @@ export class ClaudeProvider {
     const turnGate = new TurnGate();
     const messageGenerator = this.createMessageGenerator(session, cwdTracker, turnGate);
 
-    const hasRealMemorySessionId = !!session.memorySessionId;
-    const wasForceInit = session.forceInit;
-    const shouldResume = hasRealMemorySessionId && session.lastPromptNumber > 1 && !wasForceInit;
-    const isStaleFreshStart = hasRealMemorySessionId && !shouldResume;
-    const observerExtraArgs = wasForceInit || isStaleFreshStart ? ['--no-session-persistence'] : [];
+    if (session.memorySessionId) {
+      // Observer spawns intentionally opt out of Claude transcript persistence.
+      // A carried session_id from an earlier no-persist spawn is therefore not
+      // safe to feed back into `resume` on a later fresh process.
+      this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, null);
+      session.memorySessionId = null;
+    }
+
+    const hasRealMemorySessionId = false;
+    const shouldResume = false;
 
     if (session.forceInit) {
       logger.info('SDK', 'forceInit flag set, starting fresh SDK session', {
