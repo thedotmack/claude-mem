@@ -65,8 +65,12 @@ export function getProjectArchiveDir(projectName: string): string {
   return join(ARCHIVES_DIR, projectName);
 }
 
-export function getWorkerSocketPath(sessionId: number): string {
-  return join(DATA_DIR, `worker-${sessionId}.sock`);
+export function resolveUserSettingsPath(): string {
+  return join(resolveDataDir(), 'settings.json');
+}
+
+export function resolveDbPath(): string {
+  return join(resolveDataDir(), 'claude-mem.db');
 }
 
 export function ensureDir(dirPath: string): void {

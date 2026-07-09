@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { TableNameRow } from '../../types/database.js';
-import { DB_PATH } from '../../shared/paths.js';
+import { resolveDbPath } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { isDirectChild } from '../../shared/path-utils.js';
 import { AppError } from '../server/ErrorHandler.js';
@@ -13,22 +13,22 @@ import {
   DateRange,
   ObservationRow
 } from './types.js';
-import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
-import { applySqliteConnectionPragmas } from './connection.js';
+import { applySqliteBusyTimeout, ensureDatabaseParentDir } from './connection.js';
 
 export class SessionSearch {
   private db: Database;
 
   private static readonly MISSING_SEARCH_INPUT_MESSAGE = 'Either query or filters required for search';
 
-  constructor(dbPathOrDb: string | Database = DB_PATH) {
+  constructor(dbPathOrDb: string | Database = resolveDbPath()) {
     if (dbPathOrDb instanceof Database) {
       this.db = dbPathOrDb;
       applySqliteBusyTimeout(this.db);
     } else {
-      ensureDir(DATA_DIR);
+      ensureDatabaseParentDir(dbPathOrDb);
       this.db = new Database(dbPathOrDb);
     }
+    applySqliteBusyTimeout(this.db);
 
     applySqliteConnectionPragmas(this.db);
 

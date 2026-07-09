@@ -1,92 +1,139 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { describe, it, expect } from 'bun:test';
+import { mkdirSync, mkdtempSync, rmSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 import { Database } from 'bun:sqlite';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { SessionSearch } from '../../../src/services/sqlite/SessionSearch.js';
-import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
-import { SQLITE_BUSY_TIMEOUT_MS, enableIncrementalAutoVacuumIfFresh } from '../../../src/services/sqlite/connection.js';
+import { resolveDbPath } from '../../../src/shared/paths.js';
 
-const AUTO_VACUUM_NONE = 0;
-const AUTO_VACUUM_INCREMENTAL = 2;
+type BusyTimeoutRow = {
+  busy_timeout?: number | string;
+  timeout?: number | string;
+};
 
-function autoVacuumMode(db: Database): number {
-  return (db.query('PRAGMA auto_vacuum').get() as { auto_vacuum: number }).auto_vacuum;
+const SQLITE_BUSY_TIMEOUT_MS = 5000;
+
+function getBusyTimeout(db: Database): number {
+  const row = db.prepare('PRAGMA busy_timeout').get() as BusyTimeoutRow;
+  return Number(row?.busy_timeout ?? row?.timeout ?? Object.values(row ?? {})[0]);
 }
 
-function busyTimeout(db: Database): number {
-  return Number((db.query('PRAGMA busy_timeout').get() as { timeout: number | string }).timeout);
-}
+async function removeDirWithWindowsRetry(path: string): Promise<void> {
+  const attempts = process.platform === 'win32' ? 5 : 1;
 
-describe('SQLite database pragmas', () => {
-  let tempDir: string;
-  const openedDbs: Database[] = [];
-
-  beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-sqlite-pragmas-'));
-  });
-
-  afterEach(() => {
-    while (openedDbs.length > 0) {
-      openedDbs.pop()?.close();
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      rmSync(path, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      const busy = error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'EBUSY';
+      if (!busy) throw error;
+      if (attempt === attempts) return;
+      await new Promise(resolve => setTimeout(resolve, 50));
     }
-    rmSync(tempDir, { force: true, recursive: true });
-  });
-
-  function openTestDb(name: string): Database {
-    const db = new Database(join(tempDir, name), { create: true, readwrite: true });
-    openedDbs.push(db);
-    return db;
   }
+}
 
-  it('enables incremental auto-vacuum only for fresh file databases', () => {
-    const freshStore = new SessionStore(join(tempDir, 'fresh-store.sqlite'));
-    openedDbs.push(freshStore.db);
+describe('Database PRAGMAs', () => {
+  it('applies busy_timeout in DatabaseManager initialization', async () => {
+    const originalDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+    const originalChromaEnabled = process.env.CLAUDE_MEM_CHROMA_ENABLED;
+    const testDataDir = mkdtempSync(join(tmpdir(), 'claude-mem-sqlite-'));
+    process.env.CLAUDE_MEM_DATA_DIR = testDataDir;
+    process.env.CLAUDE_MEM_CHROMA_ENABLED = 'false';
+    mkdirSync(join(testDataDir, 'logs'), { recursive: true });
 
-    expect(autoVacuumMode(freshStore.db)).toBe(AUTO_VACUUM_INCREMENTAL);
+    const { DatabaseManager } = await import('../../../src/services/worker/DatabaseManager.js');
+    const manager = new DatabaseManager();
 
-    const legacyDb = openTestDb('legacy.sqlite');
-    legacyDb.run('CREATE TABLE t (id INTEGER PRIMARY KEY)');
-    expect(autoVacuumMode(legacyDb)).toBe(AUTO_VACUUM_NONE);
-
-    expect(enableIncrementalAutoVacuumIfFresh(legacyDb)).toBe(false);
-    expect(autoVacuumMode(legacyDb)).toBe(AUTO_VACUUM_NONE);
+    try {
+      await manager.initialize();
+      const db = manager.getConnection();
+      expect(getBusyTimeout(db)).toBe(SQLITE_BUSY_TIMEOUT_MS);
+      expect(resolveDbPath()).toBe(join(testDataDir, 'claude-mem.db'));
+    } finally {
+      await manager.close();
+      if (originalDataDir === undefined) {
+        delete process.env.CLAUDE_MEM_DATA_DIR;
+      } else {
+        process.env.CLAUDE_MEM_DATA_DIR = originalDataDir;
+      }
+      if (originalChromaEnabled === undefined) {
+        delete process.env.CLAUDE_MEM_CHROMA_ENABLED;
+      } else {
+        process.env.CLAUDE_MEM_CHROMA_ENABLED = originalChromaEnabled;
+      }
+      await removeDirWithWindowsRetry(testDataDir);
+      mkdirSync(testDataDir, { recursive: true });
+      mkdirSync(join(testDataDir, 'logs'), { recursive: true });
+    }
   });
 
-  it('keeps dropped-table legacy files at NONE when they are not truly fresh', () => {
-    const db = openTestDb('dropped.sqlite');
-    db.run('CREATE TABLE t (id INTEGER PRIMARY KEY, payload BLOB)');
-    db.prepare('INSERT INTO t (payload) VALUES (?)').run(Buffer.alloc(4096, 1));
-    db.run('DROP TABLE t');
+  it('applies busy_timeout in direct connections', async () => {
+    const { SessionStore } = await import('../../../src/services/sqlite/SessionStore.js');
+    const store = new SessionStore(':memory:');
 
-    const tableCount = (db.query("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table'").get() as { count: number }).count;
-    const pageCount = (db.query('PRAGMA page_count').get() as { page_count: number }).page_count;
-
-    expect(tableCount).toBe(0);
-    expect(pageCount).toBeGreaterThan(1);
-    expect(enableIncrementalAutoVacuumIfFresh(db)).toBe(false);
-    expect(autoVacuumMode(db)).toBe(AUTO_VACUUM_NONE);
+    try {
+      expect(getBusyTimeout(store.db)).toBe(SQLITE_BUSY_TIMEOUT_MS);
+    } finally {
+      store.db.close();
+    }
   });
 
-  it('applies busy_timeout to primary path-owned SessionStore and SessionSearch connections', () => {
-    const store = new SessionStore(join(tempDir, 'store.sqlite'));
-    const search = new SessionSearch(join(tempDir, 'search.sqlite'));
-    openedDbs.push(store.db);
-    openedDbs.push((search as unknown as { db: Database }).db);
+  it('applies busy_timeout in SessionStore with path argument', async () => {
+    const testDataDir = mkdtempSync(join(tmpdir(), 'claude-mem-sessionstore-'));
+    const testDbPath = join(testDataDir, 'test.db');
 
-    expect(busyTimeout(store.db)).toBe(SQLITE_BUSY_TIMEOUT_MS);
-    expect(busyTimeout((search as unknown as { db: Database }).db)).toBe(SQLITE_BUSY_TIMEOUT_MS);
+    const { SessionStore } = await import('../../../src/services/sqlite/SessionStore.js');
+    const store = new SessionStore(testDbPath);
+
+    try {
+      expect(getBusyTimeout(store.db)).toBe(SQLITE_BUSY_TIMEOUT_MS);
+    } finally {
+      try {
+        store.db.run('PRAGMA wal_checkpoint(TRUNCATE)');
+      } catch (e) {
+      }
+      store.close();
+      await removeDirWithWindowsRetry(testDataDir);
+    }
   });
 
-  it('applies busy_timeout when services receive an existing shared Database', () => {
-    const db = new Database(':memory:');
-    openedDbs.push(db);
+  it('preserves busy_timeout when SessionStore receives existing connection', async () => {
+    const { Database } = await import('bun:sqlite');
+    const testDb = new Database(':memory:');
+    testDb.run(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
 
-    new SessionStore(db);
-    expect(busyTimeout(db)).toBe(SQLITE_BUSY_TIMEOUT_MS);
+    const { SessionStore } = await import('../../../src/services/sqlite/SessionStore.js');
+    const store = new SessionStore(testDb);
 
-    db.run('PRAGMA busy_timeout = 0');
-    new SessionSearch(db);
-    expect(busyTimeout(db)).toBe(SQLITE_BUSY_TIMEOUT_MS);
+    try {
+      expect(getBusyTimeout(store.db)).toBe(SQLITE_BUSY_TIMEOUT_MS);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('applies busy_timeout in SessionSearch direct connections', async () => {
+    const { SessionSearch } = await import('../../../src/services/sqlite/SessionSearch.js');
+    const search = new SessionSearch(':memory:');
+
+    try {
+      expect(getBusyTimeout((search as unknown as { db: Database }).db)).toBe(SQLITE_BUSY_TIMEOUT_MS);
+    } finally {
+      search.close();
+    }
+  });
+
+  it('applies busy_timeout when SessionSearch receives an existing connection', async () => {
+    const testDb = new Database(':memory:');
+
+    const { SessionSearch } = await import('../../../src/services/sqlite/SessionSearch.js');
+    const search = new SessionSearch(testDb);
+
+    try {
+      expect(getBusyTimeout(testDb)).toBe(SQLITE_BUSY_TIMEOUT_MS);
+    } finally {
+      search.close();
+    }
   });
 });

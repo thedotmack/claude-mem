@@ -4,7 +4,8 @@ import { existsSync, writeFileSync, mkdirSync, rmSync, statSync, copyFileSync, s
 import { Database } from 'bun:sqlite';
 import { DATA_DIR, OBSERVER_SESSIONS_PROJECT } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
-import { openConfiguredSqliteDatabase } from '../sqlite/connection.js';
+import { toError } from '../../utils/to-error.js';
+import { applySqliteBusyTimeout } from '../sqlite/connection.js';
 
 const MARKER_FILENAME = '.cleanup-v12.4.3-applied';
 const STUCK_PENDING_THRESHOLD = 10;
@@ -91,7 +92,7 @@ function countObserverSessionRows(db: Database): { sessions: number; cascadeRows
 
 function scanCleanupCounts(dbPath: string): CleanupCounts {
   const counts = emptyCounts();
-  const db = new Database(dbPath, { readonly: true });
+  const db = applySqliteBusyTimeout(new Database(dbPath, { readonly: true }));
   try {
     const observer = countObserverSessionRows(db);
     counts.observerSessions = observer.sessions;
@@ -171,7 +172,7 @@ function executeCleanup(dbPath: string, effectiveDataDir: string, markerPath: st
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
   backupPath = path.join(effectiveBackupsDir, `claude-mem-pre-12.4.3-${ts}.db`);
 
-  const backupDb = new Database(dbPath, { readonly: true });
+  const backupDb = applySqliteBusyTimeout(new Database(dbPath, { readonly: true }));
   let vacuumFailed = false;
   try {
     backupDb.run(`VACUUM INTO '${backupPath.replace(/'/g, "''")}'`);
@@ -199,7 +200,7 @@ function executeCleanup(dbPath: string, effectiveDataDir: string, markerPath: st
   }
 
   const counts = emptyCounts();
-  const db = openConfiguredSqliteDatabase(dbPath);
+  const db = applySqliteBusyTimeout(new Database(dbPath));
   db.run('PRAGMA foreign_keys = ON');
 
   try {

@@ -1,5 +1,5 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite';
-import { DB_PATH, OBSERVER_SESSIONS_PROJECT } from '../../shared/paths.js';
+import { OBSERVER_SESSIONS_PROJECT, resolveDbPath } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import {
   TableColumnInfo,
@@ -18,7 +18,7 @@ import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources }
 import { findRecentDuplicateUserPrompt as findRecentDuplicateUserPromptRecord } from './prompts/get.js';
 import { applyLegacyPromptBloatMaintenance } from './maintenance.js';
 import { normalizeStoredPromptText } from './prompt-storage.js';
-import { applySqliteConnectionPragmas } from './connection.js';
+import { applySqliteBusyTimeout, ensureDatabaseParentDir } from './connection.js';
 
 interface IndexColumnInfo {
   seqno: number;
@@ -69,16 +69,15 @@ interface SdkSessionDetailRow {
 export class SessionStore {
   public db: Database;
 
-  constructor(dbPathOrDb: string | Database = DB_PATH) {
+  constructor(dbPathOrDb: string | Database = resolveDbPath()) {
     if (dbPathOrDb instanceof Database) {
       this.db = dbPathOrDb;
       applySqliteBusyTimeout(this.db);
     } else {
-      if (dbPathOrDb !== ':memory:') {
-        ensureDir(DATA_DIR);
-      }
+      ensureDatabaseParentDir(dbPathOrDb);
       this.db = new Database(dbPathOrDb);
     }
+    applySqliteBusyTimeout(this.db);
 
     applySqliteConnectionPragmas(this.db);
 

@@ -2,13 +2,13 @@
 import { Database } from 'bun:sqlite';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { SessionSearch } from '../sqlite/SessionSearch.js';
-import { openConfiguredSqliteDatabase } from '../sqlite/connection.js';
+import { applySqliteBusyTimeout } from '../sqlite/connection.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
 import { HelixManager } from '../sync/HelixManager.js';
 import { HelixSync } from '../sync/HelixSync.js';
 import type { VectorSync } from '../sync/VectorSync.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH, DB_PATH } from '../../shared/paths.js';
+import { resolveDbPath, resolveUserSettingsPath } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import type { DBSession } from '../worker-types.js';
 import type { HelixTransport } from '../../storage/helix/transport.js';
@@ -21,13 +21,12 @@ export class DatabaseManager {
   private helixManager: HelixManager | null = null;
 
   async initialize(): Promise<void> {
-    this.db = openConfiguredSqliteDatabase(DB_PATH);
+    this.db = applySqliteBusyTimeout(new Database(resolveDbPath()));
     
     this.sessionStore = new SessionStore(this.db);
     this.sessionSearch = new SessionSearch(this.db);
 
-    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-    const backend = settings.CLAUDE_MEM_DB_BACKEND || 'sqlite+chroma';
+    const settings = SettingsDefaultsManager.loadFromFile(resolveUserSettingsPath());
     const chromaEnabled = settings.CLAUDE_MEM_CHROMA_ENABLED !== 'false';
     const helixEnabled = settings.CLAUDE_MEM_HELIX_ENABLED === 'true' || backend.includes('helix');
     if (helixEnabled) {
