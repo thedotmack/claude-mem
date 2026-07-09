@@ -538,6 +538,8 @@ export class SessionRoutes extends BaseRouteHandler {
             prompt: promptText.length > 60 ? promptText.substring(0, 60) + '...' : promptText
           }, error);
         });
+
+        this.dbManager.getCloudSync()?.notify();
       }
 
       await this.ensureGeneratorRunning(sessionDbId, 'init');

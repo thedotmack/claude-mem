@@ -597,6 +597,12 @@ export class WorkerService implements WorkerRef {
         });
       }
 
+      // Cloud sync startup drain (non-blocking). The database is the queue:
+      // everything unsynced is simply `synced_at IS NULL`, so this one kick
+      // IS backfill, offline catch-up, and retry. Null when no token/user id
+      // is configured (DatabaseManager gates construction).
+      this.dbManager.getCloudSync()?.start();
+
       const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
       this.mcpReady = existsSync(mcpServerPath);
 

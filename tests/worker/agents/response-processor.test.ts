@@ -71,6 +71,7 @@ describe('ResponseProcessor', () => {
         syncObservation: mockChromaSyncObservation,
         syncSummary: mockChromaSyncSummary,
       }),
+      getCloudSync: () => null,
     } as unknown as DatabaseManager;
 
     mockSessionManager = {
