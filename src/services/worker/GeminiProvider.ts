@@ -5,7 +5,7 @@ import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { getCredential } from '../../shared/EnvManager.js';
 import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
-import { estimateTokens } from '../../shared/timeline-formatting.js';
+import { truncateConversationHistory } from './truncate-history.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { ClassifiedProviderError } from './provider-errors.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
@@ -241,12 +241,67 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
     return estimateTokens(text);
   }
 
-  protected buildLastUsage(result: ProviderQueryResult): ActiveSession['lastUsage'] {
-    // Both sides or nothing: a backend reporting only one of the two counts
-    // must not produce a half-real event (input=0 → compression_ratio 0.0).
-    return typeof result.inputTokens === 'number' && typeof result.outputTokens === 'number'
-      ? { input: result.inputTokens, output: result.outputTokens }
-      : null;
+  private async processSummaryMessage(
+    session: ActiveSession,
+    message: { type: string; last_assistant_message?: string },
+    worker: WorkerRef | undefined,
+    apiKey: string,
+    model: GeminiModel,
+    rateLimitingEnabled: boolean,
+    mode: ModeConfig,
+    originalTimestamp: number | null,
+    lastCwd: string | undefined
+  ): Promise<void> {
+    if (!session.memorySessionId) {
+      throw new Error('Cannot process summary: memorySessionId not yet captured. This session may need to be reinitialized.');
+    }
+
+    const summaryPrompt = buildSummaryPrompt({
+      id: session.sessionDbId,
+      memory_session_id: session.memorySessionId,
+      project: session.project,
+      user_prompt: session.userPrompt,
+      last_assistant_message: message.last_assistant_message || ''
+    }, mode);
+
+    session.conversationHistory.push({ role: 'user', content: summaryPrompt });
+    const summaryResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
+
+    let tokensUsed = 0;
+    if (summaryResponse.content) {
+      session.conversationHistory.push({ role: 'assistant', content: summaryResponse.content });
+      tokensUsed = summaryResponse.tokensUsed || 0;
+      session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
+      session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
+    }
+
+    if (summaryResponse.content) {
+      await processAgentResponse(summaryResponse.content, session, this.dbManager, this.sessionManager, worker, tokensUsed, originalTimestamp, 'Gemini', lastCwd, model);
+    } else {
+      logger.warn('SDK', 'Empty Gemini summary response, leaving queue intact', {
+        sessionId: session.sessionDbId
+      });
+    }
+  }
+
+  private handleGeminiError(error: unknown, session: ActiveSession, _worker?: WorkerRef): never {
+    if (isAbortError(error)) {
+      logger.warn('SDK', 'Gemini agent aborted', { sessionId: session.sessionDbId });
+      throw error;
+    }
+
+    logger.failure('SDK', 'Gemini agent error', { sessionDbId: session.sessionDbId }, error instanceof Error ? error : new Error(String(error)));
+    throw error;
+  }
+
+  private truncateHistory(history: ConversationMessage[]): ConversationMessage[] {
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const MAX_CONTEXT_MESSAGES = parseInt(settings.CLAUDE_MEM_GEMINI_MAX_CONTEXT_MESSAGES) || DEFAULT_MAX_CONTEXT_MESSAGES;
+    const MAX_ESTIMATED_TOKENS = parseInt(settings.CLAUDE_MEM_GEMINI_MAX_TOKENS) || DEFAULT_MAX_ESTIMATED_TOKENS;
+    return truncateConversationHistory(history, {
+      maxContextMessages: MAX_CONTEXT_MESSAGES,
+      maxEstimatedTokens: MAX_ESTIMATED_TOKENS,
+    });
   }
 
   private conversationToGeminiContents(history: ConversationMessage[]): GeminiContent[] {

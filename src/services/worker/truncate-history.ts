@@ -1,4 +1,4 @@
-import type { ConversationMessage } from '../worker-types.js';
+import { ConversationMessage } from '../worker-types.js';
 import { estimateTokens as defaultEstimateTokens } from '../../shared/timeline-formatting.js';
 import { logger } from '../../utils/logger.js';
 
@@ -35,7 +35,9 @@ export function truncateConversationHistory(
 
   if (history.length <= maxContextMessages) {
     const totalTokens = history.reduce((sum, m) => sum + estimateTokens(m.content), 0);
-    if (totalTokens <= maxEstimatedTokens) return history;
+    if (totalTokens <= maxEstimatedTokens) {
+      return history;
+    }
   }
 
   const initPrompt = history[0];
@@ -53,6 +55,7 @@ export function truncateConversationHistory(
   }
 
   const maxRecentMessages = Math.max(0, maxContextMessages - 1);
+
   if (maxRecentMessages === 0) {
     logInitOnlyTruncation({
       originalMessages: history.length,
@@ -72,17 +75,6 @@ export function truncateConversationHistory(
     const msgTokens = estimateTokens(msg.content);
 
     if (recent.length >= maxRecentMessages || tokenCount + msgTokens > maxEstimatedTokens) {
-      if (recent.length === 0) {
-        logInitOnlyTruncation({
-          originalMessages: history.length,
-          estimatedTokens: tokenCount,
-          tokenLimit: maxEstimatedTokens,
-          messageLimit: maxContextMessages,
-          reason: 'token_limit',
-        });
-        break;
-      }
-
       logger.warn('SDK', 'Context window truncated to prevent runaway costs', {
         originalMessages: history.length,
         keptMessages: recent.length + 1,

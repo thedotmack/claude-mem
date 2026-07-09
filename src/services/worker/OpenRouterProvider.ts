@@ -14,8 +14,8 @@ import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { ClassifiedProviderError } from './provider-errors.js';
-import { withRetry, parseRetryAfterMs } from './retry.js';
-import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
+import { withRetry } from './retry.js';
+import { estimateTokens } from '../../shared/timeline-formatting.js';
 import { truncateConversationHistory } from './truncate-history.js';
 
 /**
@@ -103,7 +103,6 @@ export function classifyOpenRouterError(input: {
 
 const DEFAULT_MAX_CONTEXT_MESSAGES = 20;  
 const DEFAULT_MAX_ESTIMATED_TOKENS = 100000;  
-const CHARS_PER_TOKEN_ESTIMATE = 4;
 
 
 // ✅ ADDED: OpenRouter reasoning control
@@ -197,24 +196,147 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     session.endpointClass = config.apiUrl.includes('openrouter.ai') ? 'openrouter' : 'custom';
   }
 
-  protected estimateTokens(text: string): number {
-    return Math.ceil(text.length / CHARS_PER_TOKEN_ESTIMATE);
+  private async processOneMessage(
+    session: ActiveSession,
+    message: { _persistentId: number; agentId?: string | null; agentType?: string | null; type: 'observation' | 'summarize'; cwd?: string; prompt_number?: number; tool_name?: string; tool_input?: unknown; tool_response?: unknown; last_assistant_message?: string },
+    lastCwd: string | undefined,
+    apiKey: string,
+    model: string,
+    apiUrl: string,
+    siteUrl: string | undefined,
+    appName: string | undefined,
+    worker: WorkerRef | undefined,
+    mode: ModeConfig
+  ): Promise<string | undefined> {
+    this.prepareMessageMetadata(session, message);
+
+    if (message.cwd) {
+      lastCwd = message.cwd;
+    }
+    const originalTimestamp = session.earliestPendingTimestamp;
+
+    if (message.type === 'observation') {
+      await this.processObservationMessage(
+        session, message, originalTimestamp, lastCwd,
+        apiKey, model, apiUrl, siteUrl, appName, worker, mode
+      );
+    } else if (message.type === 'summarize') {
+      await this.processSummaryMessage(
+        session, message, originalTimestamp, lastCwd,
+        apiKey, model, apiUrl, siteUrl, appName, worker, mode
+      );
+    }
+
+    return lastCwd;
   }
 
-  /**
-   * Real usage only, both sides or nothing: a gateway that reports just one of
-   * prompt/completion tokens must not produce a half-real event (a lone
-   * completion count used to surface as tokens_input=0 → compression_ratio 0.0).
-   */
-  protected buildLastUsage(result: ProviderQueryResult): ActiveSession['lastUsage'] {
-    if (typeof result.inputTokens !== 'number' || typeof result.outputTokens !== 'number') {
-      return null;
+  private async processObservationMessage(
+    session: ActiveSession,
+    message: { prompt_number?: number; tool_name?: string; tool_input?: unknown; tool_response?: unknown; cwd?: string },
+    originalTimestamp: number | null,
+    lastCwd: string | undefined,
+    apiKey: string,
+    model: string,
+    apiUrl: string,
+    siteUrl: string | undefined,
+    appName: string | undefined,
+    worker: WorkerRef | undefined,
+    _mode: ModeConfig
+  ): Promise<void> {
+    if (message.prompt_number !== undefined) {
+      session.lastPromptNumber = message.prompt_number;
     }
-    return {
-      input: result.inputTokens,
-      output: result.outputTokens,
-      ...(typeof result.costUsd === 'number' ? { costUsd: result.costUsd } : {}),
-    };
+
+    if (!session.memorySessionId) {
+      throw new Error('Cannot process observations: memorySessionId not yet captured. This session may need to be reinitialized.');
+    }
+
+    const obsPrompt = buildObservationPrompt({
+      id: 0,
+      tool_name: message.tool_name!,
+      tool_input: JSON.stringify(message.tool_input),
+      tool_output: JSON.stringify(message.tool_response),
+      created_at_epoch: originalTimestamp ?? Date.now(),
+      cwd: message.cwd
+    });
+
+    session.conversationHistory.push({ role: 'user', content: obsPrompt });
+    const obsResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, apiUrl, siteUrl, appName);
+
+    let tokensUsed = 0;
+    if (obsResponse.content) {
+      session.conversationHistory.push({ role: 'assistant', content: obsResponse.content });
+      tokensUsed = obsResponse.tokensUsed || 0;
+      session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
+      session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
+    }
+
+    await processAgentResponse(
+      obsResponse.content || '', session, this.dbManager, this.sessionManager,
+      worker, tokensUsed, originalTimestamp, 'OpenRouter', lastCwd, model
+    );
+  }
+
+  private async processSummaryMessage(
+    session: ActiveSession,
+    message: { last_assistant_message?: string },
+    originalTimestamp: number | null,
+    lastCwd: string | undefined,
+    apiKey: string,
+    model: string,
+    apiUrl: string,
+    siteUrl: string | undefined,
+    appName: string | undefined,
+    worker: WorkerRef | undefined,
+    mode: ModeConfig
+  ): Promise<void> {
+    if (!session.memorySessionId) {
+      throw new Error('Cannot process summary: memorySessionId not yet captured. This session may need to be reinitialized.');
+    }
+
+    const summaryPrompt = buildSummaryPrompt({
+      id: session.sessionDbId,
+      memory_session_id: session.memorySessionId,
+      project: session.project,
+      user_prompt: session.userPrompt,
+      last_assistant_message: message.last_assistant_message || ''
+    }, mode);
+
+    session.conversationHistory.push({ role: 'user', content: summaryPrompt });
+    const summaryResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, apiUrl, siteUrl, appName);
+
+    let tokensUsed = 0;
+    if (summaryResponse.content) {
+      session.conversationHistory.push({ role: 'assistant', content: summaryResponse.content });
+      tokensUsed = summaryResponse.tokensUsed || 0;
+      session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
+      session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
+    }
+
+    await processAgentResponse(
+      summaryResponse.content || '', session, this.dbManager, this.sessionManager,
+      worker, tokensUsed, originalTimestamp, 'OpenRouter', lastCwd, model
+    );
+  }
+
+  private async handleSessionError(error: unknown, session: ActiveSession, _worker?: WorkerRef): Promise<never> {
+    if (isAbortError(error)) {
+      logger.warn('SDK', 'OpenRouter agent aborted', { sessionId: session.sessionDbId });
+      throw error;
+    }
+
+    logger.failure('SDK', 'OpenRouter agent error', { sessionDbId: session.sessionDbId }, error instanceof Error ? error : new Error(String(error)));
+    throw error;
+  }
+
+  private truncateHistory(history: ConversationMessage[]): ConversationMessage[] {
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const MAX_CONTEXT_MESSAGES = parseInt(settings.CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES) || DEFAULT_MAX_CONTEXT_MESSAGES;
+    const MAX_ESTIMATED_TOKENS = parseInt(settings.CLAUDE_MEM_OPENROUTER_MAX_TOKENS) || DEFAULT_MAX_ESTIMATED_TOKENS;
+    return truncateConversationHistory(history, {
+      maxContextMessages: MAX_CONTEXT_MESSAGES,
+      maxEstimatedTokens: MAX_ESTIMATED_TOKENS,
+    });
   }
 
   private conversationToOpenAIMessages(history: ConversationMessage[]): OpenAIMessage[] {
@@ -247,8 +369,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     });
     const messages = this.conversationToOpenAIMessages(truncatedHistory);
     const totalChars = truncatedHistory.reduce((sum, m) => sum + m.content.length, 0);
-    const estimatedTokens = this.estimateTokens(truncatedHistory.map(m => m.content).join(''));
-    const reasoningEffort = getReasoningEffort();
+    const estimatedTokens = estimateTokens(truncatedHistory.map(m => m.content).join(''));
 
     logger.debug('SDK', `Querying OpenRouter multi-turn (${model})`, {
       turns: truncatedHistory.length,
