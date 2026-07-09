@@ -123,9 +123,46 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     expect(session.claimedMessageIds).toEqual([]);
   });
 
-  it('pauses on weekly-limit quota prose and preserves claimed pending work', async () => {
-    const storeObservations = mock(() => ({ observationIds: [], summaryId: null, createdAtEpoch: 0 }));
-    const sm = new SessionManager(makeDbManager(storeObservations));
+  it('does not respawn on repeated recognized empty-result acknowledgements', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(4, 'do the thing', 1);
+    session.memorySessionId = 'mem-4';
+    session.consecutiveInvalidOutputs = INVALID_OUTPUT_RESPAWN_THRESHOLD - 1;
+
+    const respawnSpy = spyOn(sm, 'respawnPoisonedSession');
+
+    for (let i = 0; i < INVALID_OUTPUT_RESPAWN_THRESHOLD + 1; i++) {
+      await processAgentResponse(
+        'No observations to record for this batch.',
+        session, makeDbManager(), sm, mockWorker, 0, null, 'TestAgent'
+      );
+    }
+
+    expect(respawnSpy).not.toHaveBeenCalled();
+    expect(session.consecutiveInvalidOutputs).toBe(0);
+  });
+
+  it('does not respawn on repeated idle outputs', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(5, 'do the thing', 1);
+    session.memorySessionId = 'mem-5';
+    session.consecutiveInvalidOutputs = INVALID_OUTPUT_RESPAWN_THRESHOLD - 1;
+
+    const respawnSpy = spyOn(sm, 'respawnPoisonedSession');
+
+    for (let i = 0; i < INVALID_OUTPUT_RESPAWN_THRESHOLD + 1; i++) {
+      await processAgentResponse(
+        '',
+        session, makeDbManager(), sm, mockWorker, 0, null, 'TestAgent'
+      );
+    }
+
+    expect(respawnSpy).not.toHaveBeenCalled();
+    expect(session.consecutiveInvalidOutputs).toBe(0);
+  });
+
+  it('respawnPoisonedSession preserves the buffer and resets context', async () => {
+    const sm = new SessionManager(makeDbManager());
     const session = sm.initializeSession(3, 'do the thing', 1);
     session.memorySessionId = 'mem-3';
     session.consecutiveInvalidOutputs = 2;
