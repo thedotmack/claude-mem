@@ -8,9 +8,19 @@ import type {
 } from '../types.js';
 import { ModeManager } from '../../domain/ModeManager.js';
 import { formatObservationTokenDisplay } from '../TokenCalculator.js';
-import { formatIsoDate } from '../../../shared/timeline-formatting.js';
 import { formatContextReferenceId } from './id-display.js';
-import { buildToolSearchSelectArg } from '../../../shared/mcp-constants.js';
+
+function formatHeaderDateTime(): string {
+  const now = new Date();
+  const date = now.toLocaleDateString('en-CA'); 
+  const time = now.toLocaleTimeString('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true
+  }).toLowerCase().replace(' ', '');
+  const tz = now.toLocaleTimeString('en-US', { timeZoneName: 'short' }).split(' ').pop();
+  return `${date} ${time} ${tz}`;
+}
 
 export function renderAgentHeader(project: string): string[] {
   const date = formatIsoDate();
@@ -30,14 +40,14 @@ export function renderAgentLegend(fetchByIdSupported: boolean = true): string[] 
     ? `mem-search: load tools with ToolSearch select:${buildToolSearchSelectArg()} first, then search -> timeline -> get_observations([ids]) in batches.`
     : `mem-search: search by title/context first; short refs are display-only, so avoid direct ID fetches from this context.`;
 
+  const fetchLine = fetchByIdSupported
+    ? `Fetch details: get_observations([IDs]) | Search: mem-search skill`
+    : `Fetch details: mem-search by title/context (short refs are display-only)`;
+
   return [
     `Legend: 🎯session ${typeLegendItems}`,
     `Format: ID TIME TYPE TITLE`,
     fetchLine,
-    '',
-    memSearchLine,
-    `Planning: for multi-step work, invoke /make-plan so it writes a phased plan file to plans/inbox/, then execute with /do after review.`,
-    `Subagents: fan out independent fact-gathering work in parallel; orchestrator synthesizes decisions from source and file:line evidence.`,
     ''
   ];
 }

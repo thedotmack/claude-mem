@@ -129,6 +129,17 @@ describe('AgentFormatter', () => {
       expect(result[0]).toContain('session');
     });
 
+    it('should keep get_observations hint when fetch-by-id is supported (default)', () => {
+      expect(renderAgentLegend(true).join('\n')).toContain('get_observations');
+    });
+
+    it('should switch to display-only refs hint when fetch-by-id is unsupported', () => {
+      const joined = renderAgentLegend(false).join('\n');
+      expect(joined).toContain('short refs are display-only');
+      expect(joined).not.toContain('get_observations');
+    });
+  });
+
     it('should keep get_observations hint when fetch-by-id is supported', () => {
       const joined = renderAgentLegend(true).join('\n');
       expect(joined).toContain('get_observations');
@@ -456,21 +467,21 @@ describe('AgentFormatter', () => {
 });
 
 describe('formatContextReferenceId', () => {
-  const uuid = '3c4b2513-5048-45fa-95e0-e3222ae99671';
+  const UUID = '3c4b2513-5048-45fa-95e0-e3222ae99671';
 
   it('abbreviates UUID ids to their 8-char prefix when fetch-by-id is unsupported', () => {
-    expect(formatContextReferenceId(uuid, { fetchByIdSupported: false })).toBe('3c4b2513');
+    expect(formatContextReferenceId(UUID, { fetchByIdSupported: false })).toBe('3c4b2513');
   });
 
   it('keeps the full UUID when fetch-by-id is supported', () => {
-    expect(formatContextReferenceId(uuid, { fetchByIdSupported: true })).toBe(uuid);
+    expect(formatContextReferenceId(UUID, { fetchByIdSupported: true })).toBe(UUID);
   });
 
-  it('defaults to the full id when fetchByIdSupported is omitted', () => {
-    expect(formatContextReferenceId(uuid, {})).toBe(uuid);
+  it('defaults to the full id when fetchByIdSupported is omitted (backward compatible)', () => {
+    expect(formatContextReferenceId(UUID, {})).toBe(UUID);
   });
 
-  it('leaves non-UUID ids unchanged even when fetch-by-id is unsupported', () => {
+  it('leaves non-UUID (numeric) ids unchanged even when fetch-by-id is unsupported', () => {
     expect(formatContextReferenceId(42, { fetchByIdSupported: false })).toBe('42');
   });
 });

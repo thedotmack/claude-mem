@@ -19,8 +19,7 @@ export function renderHeader(
   forHuman: boolean
 ): string[] {
   const output: string[] = [];
-  const envHint = getEnvironmentHint(project);
-  const projectDisplay = envHint ? `${project} (${envHint})` : project;
+  const fetchByIdSupported = config.fetchByIdSupported !== false;
 
   if (forHuman) {
     output.push(...Human.renderHumanHeader(projectDisplay));
@@ -31,14 +30,21 @@ export function renderHeader(
   if (forHuman) {
     output.push(...Human.renderHumanLegend());
   } else {
-    output.push(...Agent.renderAgentLegend(config.fetchByIdSupported));
+    output.push(...Agent.renderAgentLegend(fetchByIdSupported));
   }
 
   // Agent variants render nothing; only the Human column-key / context-index
   // arms produce output.
   if (forHuman) {
     output.push(...Human.renderHumanColumnKey());
-    output.push(...Human.renderHumanContextIndex(config.fetchByIdSupported));
+  } else {
+    output.push(...Agent.renderAgentColumnKey());
+  }
+
+  if (forHuman) {
+    output.push(...Human.renderHumanContextIndex(fetchByIdSupported));
+  } else {
+    output.push(...Agent.renderAgentContextIndex());
   }
 
   if (shouldShowContextEconomics(config)) {

@@ -27,12 +27,12 @@ export interface ContextConfig {
   fullObservationField: 'narrative' | 'facts';
   showLastSummary: boolean;
   showLastMessage: boolean;
-  mermaidContext: boolean;
 
   /**
    * Whether observation refs in the inject panel can be fetched by id.
-   * When false, UUID refs are shortened for display and users are pointed to
-   * semantic search instead of by-id fetch.
+   * When false (server-beta / Postgres UUID mode), refs are abbreviated to an
+   * 8-char prefix (display-only) and the legend points to title/semantic search.
+   * Defaults to true (full id shown) when omitted — backward compatible.
    */
   fetchByIdSupported?: boolean;
 }
