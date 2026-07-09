@@ -183,6 +183,87 @@ export function getPlatformTimeout(baseMs: number): number {
   return process.platform === 'win32' ? Math.round(baseMs * WINDOWS_MULTIPLIER) : baseMs;
 }
 
+export async function getChildProcesses(parentPid: number): Promise<number[]> {
+  if (process.platform !== 'win32') {
+    return [];
+  }
+
+  if (!Number.isInteger(parentPid) || parentPid <= 0) {
+    logger.warn('SYSTEM', 'Invalid parent PID for child process enumeration', { parentPid });
+    return [];
+  }
+
+  try {
+    const cmd = `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process -Filter 'ParentProcessId=${parentPid}' | Select-Object -ExpandProperty ProcessId"`;
+    const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND, windowsHide: true });
+    return stdout
+      .split('\n')
+      .map(line => line.trim())
+      .filter(line => line.length > 0 && /^\d+$/.test(line))
+      .map(line => parseInt(line, 10))
+      .filter(pid => pid > 0);
+  } catch (error: unknown) {
+    if (error instanceof Error) {
+      logger.error('SYSTEM', 'Failed to enumerate child processes', { parentPid }, error);
+    } else {
+      logger.error('SYSTEM', 'Failed to enumerate child processes', { parentPid }, new Error(String(error)));
+    }
+    return [];
+  }
+}
+
+export function parseElapsedTime(etime: string): number {
+  if (!etime || etime.trim() === '') return -1;
+
+  const cleaned = etime.trim();
+  let totalMinutes = 0;
+
+  const dayMatch = cleaned.match(/^(\d+)-(\d+):(\d+):(\d+)$/);
+  if (dayMatch) {
+    totalMinutes = parseInt(dayMatch[1], 10) * 24 * 60 +
+                   parseInt(dayMatch[2], 10) * 60 +
+                   parseInt(dayMatch[3], 10);
+    return totalMinutes;
+  }
+
+  const hourMatch = cleaned.match(/^(\d+):(\d+):(\d+)$/);
+  if (hourMatch) {
+    totalMinutes = parseInt(hourMatch[1], 10) * 60 + parseInt(hourMatch[2], 10);
+    return totalMinutes;
+  }
+
+  const minMatch = cleaned.match(/^(\d+):(\d+)$/);
+  if (minMatch) {
+    return parseInt(minMatch[1], 10);
+  }
+
+  return -1;
+}
+
+const CHROMA_MIGRATION_MARKER_FILENAME = '.chroma-cleaned-v10.3';
+
+export function runOneTimeChromaMigration(dataDirectory?: string): void {
+  const effectiveDataDir = dataDirectory ?? DATA_DIR;
+  const markerPath = path.join(effectiveDataDir, CHROMA_MIGRATION_MARKER_FILENAME);
+  const chromaDir = path.join(effectiveDataDir, 'chroma');
+
+  if (existsSync(markerPath)) {
+    logger.debug('SYSTEM', 'Chroma migration marker exists, skipping wipe');
+    return;
+  }
+
+  logger.warn('SYSTEM', 'Running one-time chroma data wipe (upgrade from pre-v10.3)', { chromaDir });
+
+  if (existsSync(chromaDir)) {
+    rmSync(chromaDir, { recursive: true, force: true });
+    logger.info('SYSTEM', 'Chroma data directory removed', { chromaDir });
+  }
+
+  mkdirSync(effectiveDataDir, { recursive: true });
+  writeFileSync(markerPath, new Date().toISOString());
+  logger.info('SYSTEM', 'Chroma migration marker written', { markerPath });
+}
+
 type CwdClassification =
   | { kind: 'main'; project: string }
   | { kind: 'worktree'; project: string }
@@ -242,7 +323,7 @@ export function runOneTimeCwdRemap(dataDirectory?: string): void {
   }
 }
 
-function executeCwdRemap(dbPath: string, _effectiveDataDir: string): void {
+function executeCwdRemap(dbPath: string, effectiveDataDir: string): void {
   const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
 
   const probe = applySqliteBusyTimeout(new Database(dbPath, { readonly: true }));
@@ -256,11 +337,7 @@ function executeCwdRemap(dbPath: string, _effectiveDataDir: string): void {
     return;
   }
 
-  const backup = `${dbPath}.bak-cwd-remap-${Date.now()}`;
-  copyFileSync(dbPath, backup);
-  logger.info('SYSTEM', 'DB backed up before cwd-remap', { backup });
-
-  const db = applySqliteBusyTimeout(new Database(dbPath));
+  const db = new Database(dbPath);
   try {
     const cwdRows = db.prepare(`
       SELECT cwd FROM pending_messages
