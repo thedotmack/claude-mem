@@ -540,24 +540,23 @@ export async function ensureWorkerRunning(options: EnsureWorkerRunningOptions = 
 
 let aliveCache: boolean | null = null;
 
+/** Test-only: reset the ensureWorkerAliveOnce() cache (mirrors clearPortCache). */
 export function resetAliveCache(): void {
   aliveCache = null;
 }
 
-export async function ensureWorkerAliveOnce(options: EnsureWorkerRunningOptions = {}): Promise<boolean> {
-  const allowLazySpawn = options.allowLazySpawn !== false;
-  if (aliveCache === true) return true;
-  if (aliveCache === false && allowLazySpawn) return false;
-  if (allowLazySpawn && (loadFromFileOnce().CLAUDE_MEM_WORKER_AUTOSTART ?? 'true').trim().toLowerCase() === 'false') {
+export async function ensureWorkerAliveOnce(): Promise<boolean> {
+  if (aliveCache !== null) return aliveCache;
+  // Opt-out: when CLAUDE_MEM_WORKER_AUTOSTART=false, hooks must NOT lazy-spawn
+  // the worker daemon. Lets server-beta-only or externally-managed deployments
+  // stop hook activity from resurrecting the worker. Default 'true' preserves
+  // existing behavior.
+  if ((loadFromFileOnce().CLAUDE_MEM_WORKER_AUTOSTART ?? 'true').trim().toLowerCase() === 'false') {
     aliveCache = false;
     return aliveCache;
   }
-
-  const alive = await ensureWorkerRunning(options);
-  if (alive || allowLazySpawn) {
-    aliveCache = alive;
-  }
-  return alive;
+  aliveCache = await ensureWorkerRunning();
+  return aliveCache;
 }
 
 interface HookFailureState {

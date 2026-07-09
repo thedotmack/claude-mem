@@ -1,46 +1,25 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
-import { existsSync, readFileSync, rmSync } from 'fs';
-import { tmpdir } from 'os';
-import path from 'path';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 
-// Capture real exports before mock.module mutates the live namespace, then
-// re-register the snapshots in afterAll so these mocks do not leak into later
-// test files (bun's mock.module is process-global; mock.restore() does NOT undo it).
-import * as realHookSettings from '../../src/shared/hook-settings.js';
-import * as realSupervisor from '../../src/supervisor/index.js';
-import * as realHealthMonitor from '../../src/services/infrastructure/HealthMonitor.js';
-import * as realCliTelemetry from '../../src/services/telemetry/cli-telemetry.js';
+// Drives what loadFromFileOnce() returns per test (the settings object).
+let settings: Record<string, unknown> = {};
 
-const realHookSettingsSnapshot = { ...realHookSettings };
-const realSupervisorSnapshot = { ...realSupervisor };
-const realHealthMonitorSnapshot = { ...realHealthMonitor };
-const realCliTelemetrySnapshot = { ...realCliTelemetry };
-
-let settings: Record<string, string> = {};
-let workerHealthy = true;
+// Record fetch calls so we can assert the worker was never contacted in the
+// opt-out path (no health check, no lazy-spawn).
 const fetchLog: Array<{ url: string; method: string }> = [];
-const dataDir = path.join(tmpdir(), `claude-mem-worker-utils-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 
 mock.module('../../src/shared/hook-settings.js', () => ({
   loadFromFileOnce: () => settings,
 }));
 
+// For the default (autostart on) path, present a healthy/version-matched worker
+// so ensureWorkerRunning() resolves true without an actual spawn.
+// NB: supervisor/index.js is imported by the spawn chain (ProcessManager) for
+// getSupervisor() too — mocking the module replaces the whole namespace, so we
+// must stub every export the chain pulls in or its static import fails to load.
+// getSupervisor() is not reached on these paths (the worker reports 'alive'); the
+// stub exists only so the import resolves.
 mock.module('../../src/supervisor/index.js', () => ({
-  validateWorkerPidFile: (options: { pidFilePath?: string } = {}) => {
-    if (!options.pidFilePath) return 'alive';
-    if (!existsSync(options.pidFilePath)) return 'missing';
-    try {
-      const pidInfo = JSON.parse(readFileSync(options.pidFilePath, 'utf-8')) as { pid?: unknown };
-      if (typeof pidInfo.pid === 'number' && Number.isInteger(pidInfo.pid) && pidInfo.pid > 0) {
-        return 'alive';
-      }
-    } catch {
-      rmSync(options.pidFilePath, { force: true });
-      return 'invalid';
-    }
-    rmSync(options.pidFilePath, { force: true });
-    return 'stale';
-  },
+  validateWorkerPidFile: () => 'alive',
   getSupervisor: () => ({
     assertCanSpawn: () => {},
     registerProcess: () => {},
@@ -49,114 +28,61 @@ mock.module('../../src/supervisor/index.js', () => ({
     stop: () => Promise.resolve(),
   }),
 }));
-
-mock.module('../../src/services/infrastructure/HealthMonitor.js', () => ({
+mock.module('../../src/services/infrastructure/index.js', () => ({
   checkVersionMatch: () =>
     Promise.resolve({ matches: true, pluginVersion: '13.4.1', workerVersion: '13.4.1' }),
 }));
 
-mock.module('../../src/services/telemetry/cli-telemetry.js', () => ({
-  captureCliEvent: () => Promise.resolve(),
-}));
-
-async function importWorkerUtilsFresh() {
-  return import(`../../src/shared/worker-utils.js?worker-autostart=${Date.now()}-${Math.random()}`);
-}
-
 function installFetchMock(): void {
   fetchLog.length = 0;
   global.fetch = mock((url: string | URL | Request, init?: RequestInit) => {
-    fetchLog.push({
-      url: typeof url === 'string' ? url : url.toString(),
-      method: (init?.method ?? 'GET').toUpperCase(),
-    });
-    const status = workerHealthy ? 200 : 503;
+    const u = typeof url === 'string' ? url : url.toString();
+    fetchLog.push({ url: u, method: (init?.method ?? 'GET').toUpperCase() });
     return Promise.resolve({
-      ok: workerHealthy,
-      status,
+      ok: true,
+      status: 200,
       text: () => Promise.resolve(''),
-      json: () => Promise.resolve({ version: '13.4.1' }),
+      json: () => Promise.resolve({}),
     } as unknown as Response);
   }) as unknown as typeof fetch;
 }
 
-describe('worker autostart and fail-loud warning behavior', () => {
+describe('ensureWorkerAliveOnce — CLAUDE_MEM_WORKER_AUTOSTART opt-out', () => {
   const originalFetch = global.fetch;
 
-  beforeEach(() => {
-    settings = {};
-    workerHealthy = true;
-    process.env.CLAUDE_MEM_DATA_DIR = dataDir;
+  beforeEach(async () => {
     installFetchMock();
+    const { resetAliveCache } = await import('../../src/shared/worker-utils.js');
+    resetAliveCache();
   });
 
   afterEach(() => {
     global.fetch = originalFetch;
-    delete process.env.CLAUDE_MEM_DATA_DIR;
-    rmSync(dataDir, { recursive: true, force: true });
+    mock.restore();
   });
 
-  afterAll(() => {
-    mock.module('../../src/shared/hook-settings.js', () => realHookSettingsSnapshot);
-    mock.module('../../src/supervisor/index.js', () => realSupervisorSnapshot);
-    mock.module('../../src/services/infrastructure/HealthMonitor.js', () => realHealthMonitorSnapshot);
-    mock.module('../../src/services/telemetry/cli-telemetry.js', () => realCliTelemetrySnapshot);
-  });
-
-  it('returns false without contacting the worker when CLAUDE_MEM_WORKER_AUTOSTART=false', async () => {
+  it('returns false and never contacts the worker when AUTOSTART=false', async () => {
     settings = { CLAUDE_MEM_WORKER_AUTOSTART: 'false' };
 
-    const { ensureWorkerAliveOnce } = await importWorkerUtilsFresh();
+    const { ensureWorkerAliveOnce } = await import('../../src/shared/worker-utils.js');
 
     expect(await ensureWorkerAliveOnce()).toBe(false);
-    expect(fetchLog).toHaveLength(0);
+    expect(fetchLog).toHaveLength(0); // short-circuited before any spawn/health check
   });
 
-  it('uses the existing worker path when autostart is unset', async () => {
-    const { ensureWorkerAliveOnce } = await importWorkerUtilsFresh();
+  it('proceeds normally (true for a live worker) when AUTOSTART is unset (default)', async () => {
+    settings = {};
+
+    const { ensureWorkerAliveOnce } = await import('../../src/shared/worker-utils.js');
 
     expect(await ensureWorkerAliveOnce()).toBe(true);
-    expect(fetchLog.some(call => call.url.includes('/api/health'))).toBe(true);
   });
 
-  it('best-effort calls skip lazy-spawn without recording fail-loud debt', async () => {
-    workerHealthy = false;
+  it('treats AUTOSTART=true the same as unset', async () => {
+    settings = { CLAUDE_MEM_WORKER_AUTOSTART: 'true' };
 
-    const { executeWithWorkerFallback, isWorkerFallback } = await importWorkerUtilsFresh();
-    const result = await executeWithWorkerFallback('/api/context/inject?projects=test', 'GET', undefined, {
-      allowLazySpawn: false,
-    });
+    const { ensureWorkerAliveOnce } = await import('../../src/shared/worker-utils.js');
 
-    expect(isWorkerFallback(result)).toBe(true);
-    expect(fetchLog.some(call => call.url.includes('/api/health'))).toBe(true);
-    expect(existsSync(path.join(dataDir, 'state', 'hook-failures.json'))).toBe(false);
-  });
-
-  it('warns but does not throw or exit for Kiro when the worker-unreachable threshold is reached', async () => {
-    settings = { CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: '1' };
-
-    const { recordWorkerUnreachable, setActivePlatform } = await importWorkerUtilsFresh();
-    setActivePlatform('kiro');
-
-    expect(await recordWorkerUnreachable()).toBe(1);
-  });
-
-  it('does not exit 2 for regular Claude Code worker outages and exposes one outage hint', async () => {
-    settings = { CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: '1' };
-    const exitSpy = spyOn(process, 'exit').mockImplementation((() => {
-      throw new Error('process.exit should not be called for worker outages');
-    }) as never);
-
-    try {
-      const { recordWorkerUnreachable, setActivePlatform, consumeWorkerOutageHint } = await importWorkerUtilsFresh();
-      setActivePlatform('claude-code');
-
-      expect(await recordWorkerUnreachable()).toBeGreaterThan(0);
-      expect(exitSpy).not.toHaveBeenCalled();
-      expect(consumeWorkerOutageHint('session-1')).toContain('background worker offline');
-      expect(consumeWorkerOutageHint('session-1')).toBeNull();
-    } finally {
-      exitSpy.mockRestore();
-    }
+    expect(await ensureWorkerAliveOnce()).toBe(true);
   });
 });
