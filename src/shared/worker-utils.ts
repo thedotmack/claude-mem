@@ -8,7 +8,7 @@ import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
 import { MARKETPLACE_ROOT, DATA_DIR } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
 import { validateWorkerPidFile } from "../supervisor/index.js";
-import { emitDiagnostic } from "./hook-io.js";
+import { emitBlockingError, type ExitOptions } from "./hook-io.js";
 import { captureCliEvent } from "../services/telemetry/cli-telemetry.js";
 import { checkVersionMatch } from "../services/infrastructure/HealthMonitor.js";
 // Imported from ProcessManager.js directly (not the infrastructure barrel):
@@ -679,23 +679,10 @@ export function getActiveHookType(): TelemetryHookType | null {
   return activeHookType;
 }
 
-let activePlatform: string | null = null;
-
-/**
- * Record the host platform for the current hook invocation. On Kiro CLI,
- * exit 2 has host-side semantics claude-mem must never trigger (preToolUse
- * exit 2 blocks the user's tool call), so the fail-loud paths degrade to
- * stderr diagnostics + exit 0 there. Called once at hookCommand entry.
- */
-export function setActivePlatform(platform: string): void {
-  activePlatform = platform;
-}
-
-export function activePlatformNeverBlocks(): boolean {
-  return activePlatform === 'kiro' || activePlatform === 'kiro-cli';
-}
-
-export async function recordWorkerUnreachable(): Promise<number> {
+export async function recordWorkerUnreachable(options: ExitOptions = {}): Promise<number> {
+  // Snapshot before the awaited telemetry POST so the exemption can't read a
+  // hook type mutated by a concurrent invocation.
+  const hookType = activeHookType;
   const state = readHookFailureState();
   const next: HookFailureState = {
     consecutiveFailures: state.consecutiveFailures + 1,
@@ -709,14 +696,22 @@ export async function recordWorkerUnreachable(): Promise<number> {
     // Callers surface user-facing banners via consumeWorkerOutageHint + withUserHint.
     if (next.consecutiveFailures === threshold) {
       await captureCliEvent('hook_failed', {
-        ...(activeHookType !== null ? { hook_type: activeHookType } : {}),
+        ...(hookType !== null ? { hook_type: hookType } : {}),
         error_mode: 'worker_unavailable',
         consecutive_failures: next.consecutiveFailures,
         threshold_tripped: true,
       });
     }
-    emitDiagnostic(
-      `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks.\n`
+    // #2292 fix: BLOCKING_FEEDBACK. emitBlockingError flushes the Phase 2
+    // stderr buffer (so preceding buffered third-party stderr noise also
+    // surfaces) and writes via the bypass channel + exits 2. Previously this
+    // raw process.stderr.write was swallowed by hookCommand's blanket no-op,
+    // so the user/model never saw it. #3161: neverBlock vetoes the exit-2 step
+    // for the summarize/Stop handler (see emitBlockingError) — the message and
+    // counter/telemetry above are unaffected, only the exit code changes.
+    emitBlockingError(
+      `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks.`,
+      { ...options, neverBlock: hookType === 'summarize' },
     );
   }
   return next.consecutiveFailures;
@@ -887,9 +882,18 @@ export function consumeWorkerOutageHint(
 
 const WORKER_FALLBACK_BRAND: unique symbol = Symbol.for('claude-mem/worker-fallback');
 
-export type WorkerFallback =
-  | { continue: true; [WORKER_FALLBACK_BRAND]: true }
-  | { continue: true; reason: string; [WORKER_FALLBACK_BRAND]: true };
+export type WorkerFallback = {
+  continue: true;
+  reason?: string;
+  /**
+   * Present when the fail-loud streak is at/past threshold. The summarize/Stop
+   * handler surfaces it as a USER_HINT (HookResult.systemMessage) — its exit
+   * code can never carry the fail-loud signal (#3161 neverBlock), and exit-0
+   * stderr is verbose-only, so this is the only user-visible channel left.
+   */
+  consecutiveFailures?: number;
+  [WORKER_FALLBACK_BRAND]: true;
+};
 
 export type WorkerCallResult<T> = T | WorkerFallback;
 
@@ -904,6 +908,22 @@ export interface WorkerFallbackOptions {
   allowLazySpawn?: boolean;
 }
 
+/**
+ * Record the unreachable failure and build the branded fallback for it,
+ * tagging `consecutiveFailures` once the fail-loud streak is at/past
+ * threshold (repeats every failure past it, matching the stderr warning).
+ * Exported for the isolated-state verification harness; production callers
+ * are the two unreachable branches in executeWithWorkerFallback.
+ */
+export async function buildWorkerUnreachableFallback(reason: string): Promise<WorkerFallback> {
+  const failures = await recordWorkerUnreachable();
+  const fallback: WorkerFallback = { continue: true, reason, [WORKER_FALLBACK_BRAND]: true };
+  if (failures >= getFailLoudThreshold()) {
+    fallback.consecutiveFailures = failures;
+  }
+  return fallback;
+}
+
 export async function executeWithWorkerFallback<T = unknown>(
   url: string,
   method: 'GET' | 'POST' | 'PUT' | 'DELETE',
@@ -912,10 +932,7 @@ export async function executeWithWorkerFallback<T = unknown>(
 ): Promise<WorkerCallResult<T>> {
   const alive = await ensureWorkerAliveOnce({ allowLazySpawn: options.allowLazySpawn });
   if (!alive) {
-    if (options.allowLazySpawn !== false) {
-      await recordWorkerUnreachable();
-    }
-    return { continue: true, reason: 'worker_unreachable', [WORKER_FALLBACK_BRAND]: true };
+    return buildWorkerUnreachableFallback('worker_unreachable');
   }
 
   if (hooksDisabledForSession) {
@@ -954,8 +971,21 @@ export async function executeWithWorkerFallback<T = unknown>(
     return parsed as T;
   }
 
+  // #3161: a worker dying mid-body rejects text() with an ECONNRESET whose
+  // message matches no transport pattern in isWorkerUnavailableError, so an
+  // unguarded throw would escape into hookCommand's catch-all (exit 2 on Stop).
+  // Treat it as the unreachable case it is — record the failure and return the
+  // branded fallback — rather than swallowing it into a false empty-body
+  // "success" (which would also wrongly reset the streak below).
+  let text: string;
+  try {
+    text = await response.text();
+  } catch {
+    return buildWorkerUnreachableFallback('worker_body_read_failed');
+  }
+
+  // Body read succeeded → the worker is genuinely reachable; now safe to reset.
   resetWorkerFailureCounter();
-  const text = await response.text();
   if (text.length === 0) return undefined as unknown as T;
   try {
     return JSON.parse(text) as T;

@@ -147,10 +147,11 @@ export async function hookCommand(platform: string, event: string, options: Hook
       // EXIT_SIGNAL per CLAUDE.md: transient worker errors exit 0 to avoid
       // Windows Terminal tab accumulation. The fail-loud counter (worker-utils
       // recordWorkerUnreachable) handles the surface-after-N-failures path and
-      // emits the threshold-gated hook_failed telemetry internally. Awaited:
+      // emits the threshold-gated hook_failed telemetry internally; the
+      // summarize handler is exempt from its exit-2 path (#3161). Awaited:
       // when the count JUST reaches the threshold it sends the event and then
       // exits 2; exitGraceful below would kill a pending POST mid-flight.
-      await recordWorkerUnreachable();
+      await recordWorkerUnreachable(options);
       exitGraceful(options);
       return HOOK_EXIT_CODES.SUCCESS;
     }
@@ -168,19 +169,25 @@ export async function hookCommand(platform: string, event: string, options: Hook
         threshold_tripped: false,
       });
     }
-    // Never-block platforms (Kiro): exit 2 there blocks the user's tool call
-    // (preToolUse) — surface the error on stderr only and exit 0.
-    if (activePlatformNeverBlocks()) {
-      stderrBuffer.flush();
+    // #3161: summarize (Stop) must never see exit 2 — a deterministic throw
+    // here (adapter/stdin/handler) would otherwise loop every session end.
+    // emitBlockingError's neverBlock downgrades the exit code only; the model
+    // still needs a valid stdout envelope, which buildNoOpResult supplies.
+    const neverBlock = event === 'summarize';
+    if (neverBlock) {
+      emitModelContext(adapter, buildNoOpResult(event));
+    }
+    // BLOCKING_FEEDBACK: flush the buffered logger.error line to stderr and
+    // exit 2 so the model receives it per Claude Code's hook contract (unless
+    // neverBlock vetoes the exit).
+    emitBlockingError(
+      `Hook error: ${error instanceof Error ? error.message : String(error)}`,
+      { ...options, neverBlock },
+    );
+    if (neverBlock) {
       exitGraceful(options);
       return HOOK_EXIT_CODES.SUCCESS;
     }
-    // BLOCKING_FEEDBACK: flush the buffered logger.error line to stderr and
-    // exit 2 so the model receives it per Claude Code's hook contract.
-    emitBlockingError(
-      `Hook error: ${error instanceof Error ? error.message : String(error)}`,
-      options,
-    );
     return HOOK_EXIT_CODES.BLOCKING_ERROR;
   } finally {
     stderrBuffer.restore();
