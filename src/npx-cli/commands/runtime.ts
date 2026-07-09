@@ -231,3 +231,7 @@ export function runTranscriptWatchCommand(): void {
 export function runMemoryIngestCommand(extraArgs: string[] = []): void {
   spawnBunWorkerCommand('memory', ['ingest', ...extraArgs]);
 }
+
+export function runTranscriptIngestCommand(extraArgs: string[] = []): void {
+  spawnBunWorkerCommand('transcript', ['ingest', ...extraArgs]);
+}

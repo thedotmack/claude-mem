@@ -164,48 +164,39 @@ export function classifyClaudeError(err: unknown): ClassifiedProviderError {
 }
 
 /**
- * Default proactive observer context cap (#2956), used when
- * CLAUDE_MEM_CLAUDE_MAX_TOKENS is unset or non-numeric.
+ * One-permit gate that applies backpressure between the message generator
+ * (producer) and the SDK response consumer during backfill (#2690). Without it,
+ * the generator yields the whole pre-queued batch back-to-back, the streaming
+ * SDK coalesces those user messages into a couple of turns, and a single empty
+ * response confirms-away the entire batch un-judged. `wait()` blocks the
+ * generator after each observation until the consumer `release()`s that turn;
+ * a release arriving before its matching wait is latched (counted) so the two
+ * coroutines cannot deadlock regardless of which runs first. Backfill-only —
+ * live capture never constructs a gate, so its behavior is unchanged.
  */
-export const DEFAULT_CLAUDE_MAX_OBSERVER_TOKENS = 150000;
+class TurnGate {
+  private pending = 0;
+  private resolver: (() => void) | null = null;
 
-/**
- * Resolve the configured observer context cap, falling back to the default for
- * unset / non-numeric / non-positive values. Exported so the proactive-bound
- * tests exercise the real resolution rule rather than a copy.
- */
-export function resolveObserverMaxTokens(
-  settings: { CLAUDE_MEM_CLAUDE_MAX_TOKENS?: string }
-): number {
-  return parseInt(settings.CLAUDE_MEM_CLAUDE_MAX_TOKENS ?? '', 10) || DEFAULT_CLAUDE_MAX_OBSERVER_TOKENS;
-}
+  wait(): Promise<void> {
+    if (this.pending > 0) {
+      this.pending--;
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+      this.resolver = resolve;
+    });
+  }
 
-/**
- * The full context the model read on a turn: fresh input + cache writes + cache
- * reads. This is the value that grows across an observer session and eventually
- * overflows the window. Exported so the tests assert the real accounting.
- */
-export function computeFullContextTokens(
-  usage: {
-    input_tokens?: number | null;
-    cache_creation_input_tokens?: number | null;
-    cache_read_input_tokens?: number | null;
-  } | undefined | null
-): number {
-  if (!usage) return 0;
-  return (
-    (usage.input_tokens || 0) +
-    (usage.cache_creation_input_tokens || 0) +
-    (usage.cache_read_input_tokens || 0)
-  );
-}
-
-/**
- * The proactive-bound predicate. Exported and used by both the guard and its
- * tests so a change here (e.g. > vs >=) cannot silently diverge from coverage.
- */
-export function observerContextExceeded(currentContextTokens: number, maxObserverTokens: number): boolean {
-  return currentContextTokens > maxObserverTokens;
+  release(): void {
+    if (this.resolver) {
+      const resolve = this.resolver;
+      this.resolver = null;
+      resolve();
+    } else {
+      this.pending++;
+    }
+  }
 }
 
 export class ClaudeProvider {
@@ -241,7 +232,16 @@ export class ClaudeProvider {
     // accumulator starts from zero — reset the per-turn cost baseline with it.
     session.lastResultTotalCostUsd = null;
 
-    const messageGenerator = this.createMessageGenerator(session, cwdTracker);
+    // Backfill pacing (#2690): gate the generator to one observation per
+    // assistant turn so the pre-queued batch isn't flooded into the SDK and
+    // confirmed-away un-judged. The gate is consulted only when session.backfill
+    // is set — read FRESH in both the generator and the consumer below, never
+    // snapshotted here. session.backfill can flip true just after startSession
+    // begins but before the async generator's body first runs, so capturing it
+    // now would race; we always build the gate and let the runtime checks decide.
+    // Live never sets session.backfill, so it never waits → behavior unchanged.
+    const turnGate = new TurnGate();
+    const messageGenerator = this.createMessageGenerator(session, cwdTracker, turnGate);
 
     const hasRealMemorySessionId = !!session.memorySessionId;
     const wasForceInit = session.forceInit;
@@ -456,29 +456,11 @@ export class ClaudeProvider {
             modelId
           );
 
-          // #2956 — proactive cumulative context bound. The current turn's
-          // memory has now been emitted, so resetting here loses nothing. If the
-          // SDK-reported context exceeded the cap, clear memorySessionId (forces
-          // a fresh, small SDK session on the next observation ingest) and abort
-          // this generator — mirroring the in-loop quota guard above. This stops
-          // the observer before it hits the hard "Prompt is too long" wall that
-          // would otherwise abort with zero memory saved.
-          if (observerContextExceeded(currentContextTokens, maxObserverTokens)) {
-            logger.warn('SDK', 'Observer context bound exceeded - resetting to a fresh SDK session', {
-              sessionId: session.sessionDbId,
-              contextTokens: currentContextTokens,
-              tokenLimit: maxObserverTokens
-            });
-            this.resetSessionForFreshStart(session);
-            // Internal abort reasons are hyphenated (cf. 'restart-guard');
-            // normalizeAbortReason maps this to the underscore telemetry enum.
-            session.abortReason = 'context-bound';
-            try {
-              session.abortController.abort();
-            } catch {
-              // best-effort
-            }
-            break;
+          // Release the backfill pacing gate now that this turn is fully
+          // processed, letting the generator yield the next observation. Only
+          // active for backfill; live never waits, so it never needs releasing.
+          if (session.backfill) {
+            turnGate.release();
           }
         }
 
@@ -556,7 +538,8 @@ export class ClaudeProvider {
 
   private async *createMessageGenerator(
     session: ActiveSession,
-    cwdTracker: { lastCwd: string | undefined }
+    cwdTracker: { lastCwd: string | undefined },
+    turnGate: TurnGate | null = null
   ): AsyncIterableIterator<SDKUserMessage> {
     const mode = ModeManager.getInstance().getActiveMode();
 
@@ -569,9 +552,10 @@ export class ClaudeProvider {
       promptType: isInitPrompt ? 'INIT' : 'CONTINUATION'
     });
 
+    const backfill = session.backfill ?? false;
     const initPrompt = isInitPrompt
-      ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode)
-      : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
+      ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode, backfill)
+      : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode, backfill);
 
     session.conversationHistory.push({ role: 'user', content: initPrompt });
 
@@ -611,7 +595,7 @@ export class ClaudeProvider {
           tool_output: message.tool_response,
           created_at_epoch: Date.now(),
           cwd: message.cwd
-        });
+        }, session.backfill ?? false);
 
         session.conversationHistory.push({ role: 'user', content: obsPrompt });
 
@@ -627,7 +611,15 @@ export class ClaudeProvider {
           parent_tool_use_id: null,
           isSynthetic: true
         };
-      } else if (message.type === 'summarize' || message.type === 'pre-compact') {
+
+        // Backfill pacing: block until the consumer has processed this
+        // observation's turn before yielding the next, so each observation gets
+        // its own record/skip decision instead of being batch-confirmed. Only
+        // active for backfill; live never waits.
+        if (session.backfill && turnGate) {
+          await turnGate.wait();
+        }
+      } else if (message.type === 'summarize') {
         const summaryPrompt = buildSummaryPrompt({
           id: session.sessionDbId,
           memory_session_id: session.memorySessionId,

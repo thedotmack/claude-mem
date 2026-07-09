@@ -244,9 +244,13 @@ async function main(): Promise<void> {
       if (subCommand === 'watch') {
         const { runTranscriptWatchCommand } = await import('./commands/runtime.js');
         runTranscriptWatchCommand();
+      } else if (subCommand === 'ingest') {
+        const { runTranscriptIngestCommand } = await import('./commands/runtime.js');
+        runTranscriptIngestCommand(args.slice(2));
       } else {
-        console.error(styleText('red', `Unknown transcript subcommand: ${subCommand ?? '(none)'}`));
-        console.error(`Usage: npx claude-mem transcript watch`);
+        console.error(pc.red(`Unknown transcript subcommand: ${subCommand ?? '(none)'}`));
+        console.error(`Usage: npx claude-mem transcript <watch|ingest>`);
+        console.error(`  ingest --source <dir|file> [--dry-run] [--include-subagents]`);
         process.exit(1);
       }
       break;

@@ -44,7 +44,7 @@
           "usage/private-tags",
           "usage/auto-redaction",
           "usage/export-import",
-          "usage/memory-ingest",
+          "usage/transcript-backfill",
           "usage/manual-recovery",
           "usage/folder-context",
           "beta-features",

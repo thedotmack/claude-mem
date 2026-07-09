@@ -154,6 +154,12 @@ export class SessionManager {
       session = this.initializeSession(sessionDbId);
     }
 
+    // Backfill (#2690) is a session-level attribute: once any observation marks
+    // the session as backfill, generation uses historical framing + paced turns.
+    if (data.backfill) {
+      session.backfill = true;
+    }
+
     const message: PendingMessage = {
       type: 'observation',
       tool_name: data.tool_name,
