@@ -115,3 +115,12 @@ describe('plugin/scripts/version-check.js Windows bun lookup', () => {
     expect(windowsCallMatch![1]).not.toContain('shell');
   });
 });
+
+describe('plugin/scripts/version-check.js Windows bun lookup', () => {
+  it('uses where as argv with windowsHide and no shell', () => {
+    const windowsCallMatch = versionCheckSource.match(/spawnSync\('where',\s*\['bun'\],\s*\{([^}]+)\}/);
+    expect(windowsCallMatch).not.toBeNull();
+    expect(windowsCallMatch![1]).toContain('windowsHide: true');
+    expect(windowsCallMatch![1]).not.toContain('shell');
+  });
+});

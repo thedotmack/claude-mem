@@ -4,7 +4,7 @@ import { DatabaseManager } from './DatabaseManager.js';
 import { logger } from '../../utils/logger.js';
 import { OBSERVER_SESSIONS_PROJECT } from '../../shared/paths.js';
 import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../shared/user-prompts.js';
-import type { PaginatedResult, Observation, Summary, UserPrompt } from '../worker-types.js';
+import type { PaginatedResult, Observation, Summary, UserPrompt, AdvisorCall } from '../worker-types.js';
 
 export class PaginationHelper {
   private dbManager: DatabaseManager;
@@ -232,5 +232,10 @@ export class PaginationHelper {
       offset,
       limit
     };
+  }
+
+  getAdvisorCalls(offset: number, limit: number, project?: string, platformSource?: string): PaginatedResult<AdvisorCall> {
+    const store = this.dbManager.getSessionStore();
+    return store.getAdvisorCalls(offset, limit, project, platformSource);
   }
 }

@@ -98,20 +98,6 @@ function markerPath(targetDir: string): string {
   return join(resolveInstallTargetDir(targetDir), '.install-version');
 }
 
-function resolveInstallTargetDir(targetDir: string): string {
-  const bundledPluginRoot = join(targetDir, 'plugin');
-  if (existsSync(join(bundledPluginRoot, 'package.json'))) {
-    return bundledPluginRoot;
-  }
-  return targetDir;
-}
-
-function resolveRuntimeRoot(targetDir: string): string {
-  const marketplacePluginDir = join(targetDir, 'plugin');
-  if (existsSync(join(marketplacePluginDir, 'package.json'))) return marketplacePluginDir;
-  return targetDir;
-}
-
 function spawnVersionProbe(command: string, args: string[]) {
   const options: SpawnSyncOptionsWithStringEncoding = {
     encoding: 'utf-8',

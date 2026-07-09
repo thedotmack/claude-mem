@@ -13,7 +13,7 @@ export const ENV_EXACT_MATCHES = new Set([
   'MCP_SESSION_ID',
 ]);
 
-export const ENV_PROXY_AND_CA_VARS = new Set([
+export const ENV_PROXY_VARS = new Set([
   'HTTP_PROXY',
   'HTTPS_PROXY',
   'ALL_PROXY',
@@ -24,10 +24,7 @@ export const ENV_PROXY_AND_CA_VARS = new Set([
   'no_proxy',
   'npm_config_proxy',
   'npm_config_https_proxy',
-  'SSL_CERT_FILE',
-  'REQUESTS_CA_BUNDLE',
-  'CURL_CA_BUNDLE',
-  'NODE_EXTRA_CA_CERTS',
+  'npm_config_noproxy',
 ]);
 
 export const ENV_PRESERVE = new Set([
@@ -36,6 +33,7 @@ export const ENV_PRESERVE = new Set([
   'CLAUDE_CODE_USE_BEDROCK',
   'CLAUDE_CODE_SKIP_BEDROCK_AUTH',
   'CLAUDE_CODE_USE_VERTEX',
+  'CLAUDE_CODE_SKIP_BEDROCK_AUTH',
   'CLAUDE_CODE_SKIP_VERTEX_AUTH',
   'ANTHROPIC_BEDROCK_BASE_URL',
   'AWS_REGION',
@@ -46,6 +44,7 @@ export const ENV_PRESERVE = new Set([
   'ANTHROPIC_VERTEX_PROJECT_ID',
   'CLOUD_ML_REGION',
   'GOOGLE_APPLICATION_CREDENTIALS',
+  ...ENV_PROXY_VARS,
 ]);
 
 const LOWERCASE_PROXY_MIRRORS: Record<string, string> = {

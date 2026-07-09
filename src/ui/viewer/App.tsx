@@ -8,7 +8,7 @@ import { useSSE } from './hooks/useSSE';
 import { useSettings } from './hooks/useSettings';
 import { usePagination } from './hooks/usePagination';
 import { useTheme } from './hooks/useTheme';
-import { Observation, Summary, UserPrompt } from './types';
+import { Observation, Summary, UserPrompt, AdvisorCall } from './types';
 import { mergeAndDeduplicateByProject } from './utils/data';
 
 export function App() {
@@ -19,8 +19,9 @@ export function App() {
   const [paginatedObservations, setPaginatedObservations] = useState<Observation[]>([]);
   const [paginatedSummaries, setPaginatedSummaries] = useState<Summary[]>([]);
   const [paginatedPrompts, setPaginatedPrompts] = useState<UserPrompt[]>([]);
+  const [paginatedAdvisorCalls, setPaginatedAdvisorCalls] = useState<AdvisorCall[]>([]);
 
-  const { observations, summaries, prompts, projects, isProcessing, queueDepth } = useSSE();
+  const { observations, summaries, prompts, advisorCalls, projects, isProcessing, queueDepth } = useSSE();
   const { settings, saveSettings, isSaving, saveStatus } = useSettings();
   const { preference, setThemePreference } = useTheme();
   const pagination = usePagination(currentFilter);
@@ -53,6 +54,12 @@ export function App() {
     return mergeAndDeduplicateByProject(live, paginated);
   }, [prompts, paginatedPrompts, matchesSelection]);
 
+  const allAdvisorCalls = useMemo(() => {
+    const live = advisorCalls.filter(matchesSelection);
+    const paginated = paginatedAdvisorCalls.filter(matchesSelection);
+    return mergeAndDeduplicateByProject(live, paginated);
+  }, [advisorCalls, paginatedAdvisorCalls, matchesSelection]);
+
   const toggleContextPreview = useCallback(() => {
     setContextPreviewOpen(prev => !prev);
   }, []);
@@ -63,10 +70,11 @@ export function App() {
 
   const handleLoadMore = useCallback(async () => {
     try {
-      const [newObservations, newSummaries, newPrompts] = await Promise.all([
+      const [newObservations, newSummaries, newPrompts, newAdvisorCalls] = await Promise.all([
         pagination.observations.loadMore(),
         pagination.summaries.loadMore(),
-        pagination.prompts.loadMore()
+        pagination.prompts.loadMore(),
+        pagination.advisorCalls.loadMore()
       ]);
 
       if (newObservations.length > 0) {
@@ -78,15 +86,19 @@ export function App() {
       if (newPrompts.length > 0) {
         setPaginatedPrompts(prev => [...prev, ...newPrompts]);
       }
+      if (newAdvisorCalls.length > 0) {
+        setPaginatedAdvisorCalls(prev => [...prev, ...newAdvisorCalls]);
+      }
     } catch (error) {
       console.error('Failed to load more data:', error);
     }
-  }, [pagination.observations, pagination.summaries, pagination.prompts]);
+  }, [pagination.observations, pagination.summaries, pagination.prompts, pagination.advisorCalls]);
 
   useEffect(() => {
     setPaginatedObservations([]);
     setPaginatedSummaries([]);
     setPaginatedPrompts([]);
+    setPaginatedAdvisorCalls([]);
     handleLoadMore();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentFilter]);
@@ -112,9 +124,10 @@ export function App() {
         observations={allObservations}
         summaries={allSummaries}
         prompts={allPrompts}
+        advisorCalls={allAdvisorCalls}
         onLoadMore={handleLoadMore}
-        isLoading={pagination.observations.isLoading || pagination.summaries.isLoading || pagination.prompts.isLoading}
-        hasMore={pagination.observations.hasMore || pagination.summaries.hasMore || pagination.prompts.hasMore}
+        isLoading={pagination.observations.isLoading || pagination.summaries.isLoading || pagination.prompts.isLoading || pagination.advisorCalls.isLoading}
+        hasMore={pagination.observations.hasMore || pagination.summaries.hasMore || pagination.prompts.hasMore || pagination.advisorCalls.hasMore}
       />
 
       {!welcomeDismissed && (

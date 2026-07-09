@@ -44,14 +44,6 @@ async function probeWorkerHealth(workerHost: string, workerPort: string): Promis
   return { status: 'warn', detail: `reachable but unhealthy (HTTP ${res.status}) at ${workerUrl}` };
 }
 
-export function marketplaceDependencyDirectory(marketplaceDir = marketplaceDirectory()): string {
-  const marketplacePluginDir = join(marketplaceDir, 'plugin');
-  if (existsSync(join(marketplacePluginDir, 'package.json'))) {
-    return join(marketplacePluginDir, 'node_modules');
-  }
-  return join(marketplaceDir, 'node_modules');
-}
-
 export async function runDoctorCommand(): Promise<void> {
   const checks: CheckResult[] = [];
   const dataDir = resolveDataDir();

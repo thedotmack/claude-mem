@@ -6,6 +6,7 @@ import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js'
 import { executeWithWorkerFallback, isWorkerFallback, consumeWorkerOutageHint } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
 import { extractLastMessage } from '../../shared/transcript-parser.js';
+import { extractAdvisorCalls } from '../../shared/advisor-transcript.js';
 import { stripMemoryTags } from '../../utils/tag-stripping.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
@@ -13,6 +14,88 @@ import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { resolveRuntimeContext, logServerFallback } from '../../services/hooks/runtime-selector.js';
 import type { ServerRuntimeContext } from '../../services/hooks/runtime-selector.js';
 import { isServerClientError } from '../../services/hooks/server-client.js';
+
+/**
+ * Capture the turn's `advisor` tool calls. The advisor is a server-side tool
+ * (server_tool_use in the transcript) — PostToolUse never fires for it, so
+ * the Stop hook's transcript scan is the only capture point. currentTurnOnly
+ * keeps each Stop from re-sending the whole session's history; the worker's
+ * UNIQUE(tool_use_id) and the server's idempotency key absorb any overlap.
+ * Failures here must never break summarization — the caller wraps this.
+ */
+async function dispatchAdvisorCalls(
+  sessionId: string,
+  transcriptPath: string | undefined,
+  cwd: string | undefined,
+  platformSource: string,
+): Promise<void> {
+  if (!transcriptPath) return;
+
+  const calls = extractAdvisorCalls(transcriptPath, { currentTurnOnly: true });
+  if (calls.length === 0) return;
+
+  logger.debug('HOOK', 'Stop: dispatching advisor calls', { count: calls.length });
+
+  const runtime = resolveRuntimeContext();
+  if (runtime.runtime === 'server') {
+    try {
+      for (const call of calls) {
+        await runtime.client.recordEvent({
+          projectId: runtime.projectId,
+          contentSessionId: sessionId,
+          platformSource,
+          sourceType: 'hook',
+          eventType: 'tool_use',
+          occurredAtEpoch: call.occurredAtEpoch,
+          // Advice is already model output — recording it is the point;
+          // never spend a generation job re-compressing it.
+          generate: false,
+          payload: {
+            tool_name: 'advisor',
+            tool_response: { type: 'advisor_result', text: call.advice },
+            toolUseId: call.toolUseId,
+            advisorModel: call.advisorModel,
+            cwd,
+            lastUserMessage: call.lastUserMessage,
+            transcriptPath,
+            transcriptLineNumber: call.transcriptLineNumber,
+            platformSource,
+          },
+        });
+      }
+      return;
+    } catch (error: unknown) {
+      if (isServerClientError(error) && error.isFallbackEligible()) {
+        logServerFallback(error.kind, { status: error.status, message: error.message, route: '/v1/events' });
+        // fall through to worker fallback
+      } else {
+        logger.warn('HOOK', 'Server advisor-call dispatch failed (non-recoverable)', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return;
+      }
+    }
+  }
+
+  await executeWithWorkerFallback<{ status?: string }>(
+    '/api/advisor-calls',
+    'POST',
+    {
+      contentSessionId: sessionId,
+      platformSource,
+      cwd,
+      transcriptPath,
+      calls: calls.map(call => ({
+        toolUseId: call.toolUseId,
+        advice: call.advice,
+        advisorModel: call.advisorModel,
+        occurredAtEpoch: call.occurredAtEpoch,
+        lastUserMessage: call.lastUserMessage,
+        transcriptLineNumber: call.transcriptLineNumber,
+      })),
+    },
+  );
+}
 
 async function summarizeViaServer(
   runtime: ServerRuntimeContext,
@@ -77,6 +160,18 @@ export const summarizeHandler: EventHandler = {
     if (!sessionId) {
       logger.warn('HOOK', 'summarize: No sessionId provided, skipping');
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
+
+    // Advisor capture runs before summarize's own early returns (an empty
+    // assistant message must not drop the turn's advisor calls) and is
+    // failure-isolated from it.
+    try {
+      await dispatchAdvisorCalls(sessionId, transcriptPath, input.cwd, normalizePlatformSource(input.platform));
+    } catch (err) {
+      logger.warn('HOOK', 'Advisor-call capture failed; continuing with summary', {
+        sessionId,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
 
     let lastAssistantMessage = '';
