@@ -105,3 +105,10 @@ describe('plugin/scripts/version-check.js install marker compatibility', () => {
     });
   });
 });
+
+// The missing-marker self-heal path (#3092) forces ensurePluginDependencies()
+// to bypass its node_modules-exists guard (see plugin/scripts/version-check.js),
+// so it needs a real or faked `bun` on PATH to exercise deterministically.
+// That coverage lives in tests/plugin-version-check-ensure-deps.test.ts,
+// which already has fake-bun infrastructure for this — this file stays
+// scoped to marker-format compatibility with dependencies pre-verified.
