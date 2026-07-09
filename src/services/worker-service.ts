@@ -12,7 +12,7 @@ import { DATA_DIR, DB_PATH, USER_SETTINGS_PATH, ensureDir } from '../shared/path
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { getUptimeSeconds } from '../shared/uptime.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
-import { applyProxyAndCaFromEnvFile, getAuthMethodDescription } from '../shared/EnvManager.js';
+import { getAuthMethodDescription, applyProxyAndCaFromEnvFile } from '../shared/EnvManager.js';
 import { logger } from '../utils/logger.js';
 import { ChromaMcpManager } from './sync/ChromaMcpManager.js';
 import { ChromaSync } from './sync/ChromaSync.js';
@@ -1615,35 +1615,19 @@ async function main() {
 
     case '--daemon':
     default: {
+      // Corporate proxy / custom CA: read ~/.claude-mem/.env and inject any
+      // declared proxy + CA env vars into process.env before any subprocess
+      // (chroma-mcp, SDK CLI, hook helpers) is spawned. Documented opt-in
+      // for users behind Zscaler-style TLS-intercepting corporate proxies.
       try {
         const applied = applyProxyAndCaFromEnvFile();
         if (applied.length > 0) {
-          logger.info('SYSTEM', 'Applied proxy/CA passthrough from claude-mem env file', { keys: applied });
+          logger.info('SYSTEM', 'Applied corporate proxy/CA passthrough from ~/.claude-mem/.env', { keys: applied });
         }
       } catch (error) {
-        logger.warn(
-          'SYSTEM',
-          'Failed to apply proxy/CA passthrough from claude-mem env file',
-          {},
-          error instanceof Error ? error : new Error(String(error)),
-        );
+        logger.warn('SYSTEM', 'Failed to apply proxy/CA passthrough from ~/.claude-mem/.env', {}, error instanceof Error ? error : new Error(String(error)));
       }
 
-      // Duplicate gate, ground truth FIRST (Phase 5): a live worker owns the
-      // port — the port cannot be faked by a stale or clobbered file. Exit 0:
-      // duplicate suppression is a success, not a failure.
-      if (await isPortInUse(port)) {
-        logger.info('SYSTEM', 'Port already in use, refusing to start duplicate', { port });
-        process.exit(0);
-      }
-
-      // PID file second, ADVISORY only: it covers a dying-but-still-alive
-      // predecessor whose port has already been released (so the port check
-      // above misses it) but whose owned PID file has not been deleted yet.
-      // It does NOT cover a just-spawned worker that hasn't bound the port:
-      // writePidFile runs after server.listen, so that worker has no file.
-      // The worker itself remains the sole writer of this file
-      // (writePidFile/touchPidFile stay as diagnostics).
       const existingPidInfo = readPidFile();
       if (verifyPidFileOwnership(existingPidInfo)) {
         logger.info('SYSTEM', 'Worker already running (PID alive), refusing to start duplicate', {

@@ -53,6 +53,9 @@ export interface ClaudeMemEnv {
   ANTHROPIC_AUTH_TOKEN?: string;
   GEMINI_API_KEY?: string;
   OPENROUTER_API_KEY?: string;
+  // Corporate-proxy / custom-CA passthrough (issue: behind Zscaler/EANDIS-style MITM
+  // proxies the daemon can't reach api.anthropic.com because session proxy + CA env
+  // are stripped by env-sanitizer. Declaring them here is the explicit opt-in.)
   HTTPS_PROXY?: string;
   HTTP_PROXY?: string;
   NO_PROXY?: string;
@@ -63,10 +66,17 @@ export interface ClaudeMemEnv {
 }
 
 /**
- * Corporate proxy / custom CA passthrough. These keys are honored only when
- * declared explicitly in ~/.claude-mem/.env; ambient parent-shell values stay
- * blocked so session-local proxy routing does not silently latch onto the
- * persistent daemon.
+ * Keys in ~/.claude-mem/.env that, when set, should be propagated to the
+ * worker daemon's process.env at boot. These are exactly the corporate
+ * connectivity vars stripped by env-sanitizer (proxy) plus the standard
+ * CA-bundle vars (so Node fetch / Python requests / curl all trust the
+ * corporate root CA when running through a TLS-intercepting proxy).
+ *
+ * They are intentionally NOT read from the parent shell environment —
+ * the daemon should only honor them when the operator declares them
+ * explicitly in the persistent .env file. This keeps the strict default
+ * (session proxy never silently latches onto the daemon) while giving
+ * corporate-network users a clean configuration path.
  */
 export const PROXY_AND_CA_PASSTHROUGH_KEYS = [
   'HTTPS_PROXY',
@@ -78,33 +88,6 @@ export const PROXY_AND_CA_PASSTHROUGH_KEYS = [
   'NODE_EXTRA_CA_CERTS',
 ] as const;
 
-const AMBIENT_PROXY_AND_CA_ENV_KEYS = [
-  ...PROXY_AND_CA_PASSTHROUGH_KEYS,
-  'https_proxy',
-  'http_proxy',
-  'no_proxy',
-  'all_proxy',
-  'ALL_PROXY',
-  'npm_config_proxy',
-  'npm_config_https_proxy',
-] as const;
-
-/**
- * The credential keys copied out of ~/.claude-mem/.env.
- */
-const CREDENTIAL_KEYS = [
-  'ANTHROPIC_API_KEY',
-  'ANTHROPIC_BASE_URL',
-  'ANTHROPIC_AUTH_TOKEN',
-  'GEMINI_API_KEY',
-  'OPENROUTER_API_KEY',
-] as const;
-
-// Node's stdlib .env parser (util.parseEnv, Node ≥20.12 / stable in 24):
-// handles `#` comments, blank lines, KEY=VALUE, and quote-stripping. The
-// downstream whitelists still filter the result — arbitrary
-// keys in the file never reach a ClaudeMemEnv. serializeEnvFile is kept custom
-// (header banner + selective quoting; no stdlib equivalent).
 function parseEnvFile(content: string): Record<string, string> {
   return parseEnv(content) as Record<string, string>;
 }
@@ -151,11 +134,14 @@ export function loadClaudeMemEnv(): ClaudeMemEnv {
     const parsed = parseEnvFile(content);
 
     const result: ClaudeMemEnv = {};
-    for (const key of CREDENTIAL_KEYS) {
-      if (parsed[key]) result[key] = parsed[key];
-    }
+    if (parsed.ANTHROPIC_API_KEY) result.ANTHROPIC_API_KEY = parsed.ANTHROPIC_API_KEY;
+    if (parsed.ANTHROPIC_BASE_URL) result.ANTHROPIC_BASE_URL = parsed.ANTHROPIC_BASE_URL;
+    if (parsed.ANTHROPIC_AUTH_TOKEN) result.ANTHROPIC_AUTH_TOKEN = parsed.ANTHROPIC_AUTH_TOKEN;
+    if (parsed.GEMINI_API_KEY) result.GEMINI_API_KEY = parsed.GEMINI_API_KEY;
+    if (parsed.OPENROUTER_API_KEY) result.OPENROUTER_API_KEY = parsed.OPENROUTER_API_KEY;
     for (const key of PROXY_AND_CA_PASSTHROUGH_KEYS) {
-      if (parsed[key]) result[key] = parsed[key];
+      const value = parsed[key];
+      if (value) (result as Record<string, string>)[key] = value;
     }
 
     return result;
@@ -229,6 +215,15 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
       if (value) isolatedEnv[key] = value;
     }
 
+    // Corporate proxy / custom CA: when declared explicitly in ~/.claude-mem/.env
+    // we re-inject these into the spawned subprocess env. env-sanitizer otherwise
+    // strips proxy vars from the parent shell to prevent silent session-bound
+    // latching; this path is the documented opt-in for corporate networks.
+    for (const key of PROXY_AND_CA_PASSTHROUGH_KEYS) {
+      const value = (credentials as Record<string, string | undefined>)[key];
+      if (value) isolatedEnv[key] = value;
+    }
+
     // Note: CLAUDE_CODE_OAUTH_TOKEN is intentionally NOT copied from
     // process.env here. OAuth tokens have refresh semantics that this
     // sync path cannot model — copying a parent-process token captured
@@ -259,6 +254,47 @@ export function applyProxyAndCaFromEnvFile(): string[] {
     if (key === 'NO_PROXY') process.env.no_proxy = value;
   }
 
+  return applied;
+}
+
+/**
+ * Apply proxy and CA passthrough values from ~/.claude-mem/.env onto the
+ * current process.env. This is intended to be called once at worker daemon
+ * startup so that:
+ *   - the worker itself (Node fetch in plugin code paths) honors the proxy
+ *   - subprocess spawns that inherit process.env (chroma-mcp, hook helpers)
+ *     get the proxy and CA chain without needing case-by-case wiring
+ *   - explicit isolated-env builds via buildIsolatedEnv() still pick them up
+ *     because they read from loadClaudeMemEnv() (file-of-record), not env.
+ *
+ * Existing env vars are NOT overwritten — a parent-shell value still wins.
+ * This preserves the test fixtures that set explicit values via env.
+ *
+ * Safe to call multiple times. Returns the list of keys actually applied
+ * (useful for boot-time logging).
+ */
+export function applyProxyAndCaFromEnvFile(): string[] {
+  const credentials = loadClaudeMemEnv();
+  const applied: string[] = [];
+  for (const key of PROXY_AND_CA_PASSTHROUGH_KEYS) {
+    const value = (credentials as Record<string, string | undefined>)[key];
+    if (value && !process.env[key]) {
+      process.env[key] = value;
+      applied.push(key);
+      // Mirror the upper/lowercase variants for proxy vars so libraries that
+      // only consult one casing (curl-style lowercase vs Node's uppercase)
+      // both see the value.
+      if (key === 'HTTPS_PROXY' && !process.env.https_proxy) {
+        process.env.https_proxy = value;
+      }
+      if (key === 'HTTP_PROXY' && !process.env.http_proxy) {
+        process.env.http_proxy = value;
+      }
+      if (key === 'NO_PROXY' && !process.env.no_proxy) {
+        process.env.no_proxy = value;
+      }
+    }
+  }
   return applied;
 }
 
