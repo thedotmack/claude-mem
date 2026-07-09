@@ -111,6 +111,12 @@ export async function processGeneratedResponse(
       };
     }
 
+    // Folder label travels on the server_session: the worker derives it from
+    // the cwd basename and sends it on session-init. The store stays a single
+    // global project; copying the folder onto each observation's metadata lets
+    // context injection and search facet by folder without isolating memory.
+    const sessionProject = await fetchSessionProject(client, fresh.serverSessionId, fresh.id);
+
     const persisted: PostgresObservation[] = [];
     for (let index = 0; index < observationsToWrite.length; index++) {
       const parsedObservation = observationsToWrite[index]!;
@@ -149,6 +155,7 @@ export async function processGeneratedResponse(
           concepts: parsedObservation.concepts,
           files_read: parsedObservation.files_read,
           files_modified: parsedObservation.files_modified,
+          project: sessionProject,
           provider: input.providerLabel,
           model: input.modelId ?? null,
         },
@@ -402,7 +409,9 @@ async function persistGeneratedObservations(
       };
     }
 
+    // Same folder propagation as processGeneratedResponse (see note there).
     const sessionProject = await fetchSessionProject(client, fresh.serverSessionId, fresh.id);
+
     const persisted: PostgresObservation[] = [];
     if (!privateContentDetected) {
       const scrubbed = stripTags(
@@ -429,6 +438,7 @@ async function persistGeneratedObservations(
             completed: summary?.completed ?? null,
             next_steps: summary?.next_steps ?? null,
             notes: summary?.notes ?? null,
+            project: sessionProject,
             provider: input.providerLabel,
             model: input.modelId ?? null,
           },
@@ -585,6 +595,12 @@ async function persistGeneratedObservations(
   });
 }
 
+/**
+ * Read the folder/project label for a server session. Returns null when no
+ * serverSessionId is provided (legacy jobs) or when the session row no longer
+ * exists (e.g. deleted between enqueue and processing). Missing rows are
+ * best-effort: the observation is still written with project: null.
+ */
 async function fetchSessionProject(
   client: PostgresPoolClient,
   serverSessionId: string | null | undefined,
@@ -603,33 +619,6 @@ async function fetchSessionProject(
     return null;
   }
   return result.rows[0]?.project ?? null;
-}
-
-// Post-commit usage metering writes (tokens + observation counts). Extracted
-// so the caller's try block stays narrow; any insert failure surfaces there.
-async function recordUsageMetering(
-  input: ProcessGeneratedResponseInput,
-  observationCount: number,
-): Promise<void> {
-  const usageRepo = new PostgresUsageRepository(input.pool);
-  if (input.tokensUsed && input.tokensUsed > 0) {
-    await usageRepo.record({
-      teamId: input.job.teamId,
-      projectId: input.job.projectId,
-      kind: 'tokens',
-      quantity: input.tokensUsed,
-      metadata: { jobId: input.job.id, provider: input.providerLabel, model: input.modelId ?? null },
-    });
-  }
-  if (observationCount > 0) {
-    await usageRepo.record({
-      teamId: input.job.teamId,
-      projectId: input.job.projectId,
-      kind: 'observation',
-      quantity: observationCount,
-      metadata: { jobId: input.job.id },
-    });
-  }
 }
 
 function renderSummaryContent(summary: ParsedSummary): string {
