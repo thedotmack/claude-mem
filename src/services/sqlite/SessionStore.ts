@@ -655,7 +655,8 @@ export class SessionStore {
     `);
 
     const sdkSessionColumns = this.db.query('PRAGMA table_info(sdk_sessions)').all() as TableColumnInfo[];
-    if (sdkSessionColumns.some(col => col.name === 'platform_source')) {
+    const hasPlatformSource = sdkSessionColumns.some(col => col.name === 'platform_source');
+    if (hasPlatformSource) {
       this.db.run('CREATE INDEX IF NOT EXISTS idx_sdk_sessions_platform_source ON sdk_sessions(platform_source)');
       this.db.run('CREATE UNIQUE INDEX IF NOT EXISTS ux_sdk_sessions_platform_content ON sdk_sessions(platform_source, content_session_id)');
     }

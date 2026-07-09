@@ -248,7 +248,7 @@ function seedLegacyGlobalContentIdentityScenario(db: Database): void {
   `).run(101, 'shared-raw-id', 'tool-1', epoch + 4);
 }
 
-function seedPrePlatformSourceSessionsTable(db: Database): void {
+function seedPrePlatformSourceSdkSessionsScenario(db: Database): void {
   const now = new Date().toISOString();
   const epoch = Date.now();
 
@@ -271,16 +271,107 @@ function seedPrePlatformSourceSessionsTable(db: Database): void {
       started_at_epoch INTEGER NOT NULL,
       completed_at TEXT,
       completed_at_epoch INTEGER,
-      status TEXT CHECK(status IN ('active', 'completed', 'failed')) NOT NULL DEFAULT 'active'
+      status TEXT CHECK(status IN ('active', 'completed', 'failed')) NOT NULL DEFAULT 'active',
+      worker_port INTEGER,
+      prompt_counter INTEGER DEFAULT 0,
+      custom_title TEXT
     )
   `);
+
+  db.run(`
+    CREATE TABLE observations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      memory_session_id TEXT NOT NULL,
+      project TEXT NOT NULL,
+      text TEXT,
+      type TEXT NOT NULL,
+      title TEXT,
+      subtitle TEXT,
+      facts TEXT,
+      narrative TEXT,
+      concepts TEXT,
+      files_read TEXT,
+      files_modified TEXT,
+      prompt_number INTEGER,
+      discovery_tokens INTEGER DEFAULT 0,
+      content_hash TEXT,
+      agent_type TEXT,
+      agent_id TEXT,
+      merged_into_project TEXT,
+      generated_by_model TEXT,
+      metadata TEXT,
+      created_at TEXT NOT NULL,
+      created_at_epoch INTEGER NOT NULL,
+      FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE session_summaries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      memory_session_id TEXT NOT NULL,
+      project TEXT NOT NULL,
+      request TEXT,
+      investigated TEXT,
+      learned TEXT,
+      completed TEXT,
+      next_steps TEXT,
+      files_read TEXT,
+      files_edited TEXT,
+      notes TEXT,
+      prompt_number INTEGER,
+      discovery_tokens INTEGER DEFAULT 0,
+      merged_into_project TEXT,
+      created_at TEXT NOT NULL,
+      created_at_epoch INTEGER NOT NULL,
+      FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE user_prompts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      content_session_id TEXT NOT NULL,
+      prompt_number INTEGER NOT NULL,
+      prompt_text TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      created_at_epoch INTEGER NOT NULL,
+      FOREIGN KEY(content_session_id) REFERENCES sdk_sessions(content_session_id) ON DELETE CASCADE
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE pending_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_db_id INTEGER NOT NULL,
+      content_session_id TEXT NOT NULL,
+      tool_use_id TEXT,
+      message_type TEXT NOT NULL CHECK(message_type IN ('observation', 'summarize')),
+      tool_name TEXT,
+      tool_input TEXT,
+      tool_response TEXT,
+      cwd TEXT,
+      last_user_message TEXT,
+      last_assistant_message TEXT,
+      prompt_number INTEGER,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'processing')),
+      created_at_epoch INTEGER NOT NULL,
+      agent_type TEXT,
+      agent_id TEXT,
+      FOREIGN KEY (session_db_id) REFERENCES sdk_sessions(id) ON DELETE CASCADE
+    )
+  `);
+
+  for (let version = 4; version <= 23; version++) {
+    db.prepare('INSERT INTO schema_versions (version, applied_at) VALUES (?, ?)').run(version, now);
+  }
 
   db.prepare(`
     INSERT INTO sdk_sessions (
       content_session_id, memory_session_id, project, user_prompt,
-      started_at, started_at_epoch, status
-    ) VALUES (?, ?, ?, ?, ?, ?, 'active')
-  `).run('legacy-content', 'legacy-memory', 'legacy-project', 'legacy prompt', now, epoch);
+      started_at, started_at_epoch, status, worker_port, prompt_counter, custom_title
+    ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
+  `).run('legacy-content-id', 'legacy-memory-id', 'legacy-project', 'legacy prompt', now, epoch, 37777, 1, 'Legacy Title');
 }
 
 describe('SessionStore migrations', () => {
@@ -525,6 +616,39 @@ describe('SessionStore migrations', () => {
       `).run(cursorId, 'shared-raw-id', 'tool-1', Date.now());
 
       expect((db.prepare("SELECT COUNT(*) AS n FROM pending_messages WHERE content_session_id = 'shared-raw-id'").get() as { n: number }).n).toBe(2);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('bootstraps a pre-platform_source sdk_sessions table without crashing initializeSchema', () => {
+    const db = new Database(':memory:');
+    try {
+      seedPrePlatformSourceSdkSessionsScenario(db);
+
+      expect(() => new SessionStore(db)).not.toThrow();
+
+      const cols = new Set((db.query('PRAGMA table_info(sdk_sessions)').all() as Array<{ name: string }>).map(c => c.name));
+      expect(cols.has('platform_source')).toBe(true);
+      expect(hasUniqueIndexOnColumns(db, 'sdk_sessions', ['platform_source', 'content_session_id'])).toBe(true);
+
+      const row = db.prepare(`
+        SELECT content_session_id, memory_session_id, project, platform_source, worker_port, prompt_counter, custom_title
+        FROM sdk_sessions
+        WHERE content_session_id = 'legacy-content-id'
+      `).get() as {
+        content_session_id: string;
+        memory_session_id: string;
+        project: string;
+        platform_source: string;
+        worker_port: number;
+        prompt_counter: number;
+        custom_title: string | null;
+      };
+      expect(row.platform_source).toBe('claude');
+      expect(row.worker_port).toBe(37777);
+      expect(row.prompt_counter).toBe(1);
+      expect(row.custom_title).toBe('Legacy Title');
     } finally {
       db.close();
     }

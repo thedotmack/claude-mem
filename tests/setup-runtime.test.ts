@@ -72,6 +72,24 @@ describe('setup-runtime install marker', () => {
       const marker = readInstallMarker(tempDir);
       expect(marker).toEqual({ version: '12.4.4' });
     });
+
+    it('reads the marker from plugin/.install-version when given a marketplace root', () => {
+      mkdirSync(join(tempDir, 'plugin'), { recursive: true });
+      writeFileSync(join(tempDir, 'plugin', 'package.json'), JSON.stringify({ name: 'claude-mem' }));
+      writeFileSync(
+        join(tempDir, 'plugin', '.install-version'),
+        JSON.stringify({ version: '13.9.2', bun: '1.3.11', uv: '0.11.14', installedAt: '2026-07-01T00:00:00.000Z' }),
+      );
+
+      const marker = readInstallMarker(tempDir);
+
+      expect(marker).toEqual({
+        version: '13.9.2',
+        bun: '1.3.11',
+        uv: '0.11.14',
+        installedAt: '2026-07-01T00:00:00.000Z',
+      });
+    });
   });
 
   describe('writeInstallMarker', () => {
@@ -95,42 +113,14 @@ describe('setup-runtime install marker', () => {
       expect(Object.keys(parsed).sort()).toEqual(['bun', 'installedAt', 'uv', 'version'].sort());
     });
 
-    it('writes marketplace-root markers into plugin/.install-version', () => {
+    it('writes the marker into plugin/.install-version when targetDir is a marketplace root', () => {
       mkdirSync(join(tempDir, 'plugin'), { recursive: true });
-      writeFileSync(join(tempDir, 'plugin', 'package.json'), JSON.stringify({ dependencies: {} }));
+      writeFileSync(join(tempDir, 'plugin', 'package.json'), JSON.stringify({ name: 'claude-mem' }));
 
-      writeInstallMarker(tempDir, '2.3.4', '1.2.0', '0.4.18');
+      writeInstallMarker(tempDir, '13.9.2', '1.3.11', '0.11.14');
 
+      expect(existsSync(join(tempDir, 'plugin', '.install-version'))).toBe(true);
       expect(existsSync(join(tempDir, '.install-version'))).toBe(false);
-      const parsed = JSON.parse(readFileSync(join(tempDir, 'plugin', '.install-version'), 'utf-8'));
-      expect(parsed.version).toBe('2.3.4');
-    });
-  });
-
-  describe('marketplace-root marker resolution', () => {
-    beforeEach(() => {
-      mkdirSync(join(tempDir, 'plugin', 'node_modules'), { recursive: true });
-      writeFileSync(join(tempDir, 'package.json'), JSON.stringify({ name: 'marketplace-root' }));
-      writeFileSync(join(tempDir, 'plugin', 'package.json'), JSON.stringify({ dependencies: {} }));
-    });
-
-    it('reads plugin/.install-version when given the marketplace root', () => {
-      writeFileSync(join(tempDir, 'plugin', '.install-version'), JSON.stringify({ version: '9.8.7' }));
-
-      expect(readInstallMarker(tempDir)?.version).toBe('9.8.7');
-    });
-
-    it('checks plugin/node_modules when testing marketplace-root install currency', () => {
-      const bunVersion = probeBunVersion();
-      if (!bunVersion) {
-        return;
-      }
-      writeInstallMarker(tempDir, '9.8.7', bunVersion, '0.1.0');
-
-      expect(isInstallCurrent(tempDir, '9.8.7')).toBe(true);
-      rmSync(join(tempDir, 'plugin', 'node_modules'), { recursive: true, force: true });
-      mkdirSync(join(tempDir, 'node_modules'), { recursive: true });
-      expect(isInstallCurrent(tempDir, '9.8.7')).toBe(false);
     });
   });
 

@@ -1753,7 +1753,6 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
             } finally {
               stopHeartbeat();
             }
-            writeInstallMarker(cacheDir, version, bunVersion, uvVersion);
           }
           writeInstallMarker(join(marketplaceDirectory(), 'plugin'), version, bunVersion, uvVersion);
           return `Runtime ready (Bun ${bunVersion}, uv ${uvVersion}) ${pc.green('OK')}`;
@@ -1814,6 +1813,13 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     }
 
     await runTasks(tasks);
+
+    if (installedBunVersion && installedUvVersion) {
+      writeInstallMarker(cacheDir, version, installedBunVersion, installedUvVersion);
+      if (needsMarketplace && existsSync(join(marketplaceDirectory(), 'plugin', 'package.json'))) {
+        writeInstallMarker(marketplaceDirectory(), version, installedBunVersion, installedUvVersion);
+      }
+    }
   }
 
   const failedIDEs = await setupIDEs(selectedIDEs, summary);
@@ -2065,7 +2071,7 @@ export async function runRepairCommand(): Promise<void> {
         if (existsSync(join(marketplaceDirectory(), 'plugin', 'package.json'))) {
           writeInstallMarker(marketplaceDirectory(), version, bunVersion, uvVersion);
         }
-        return `Runtime ready (Bun ${bunVersion}, uv ${uvVersion}) ${styleText('green', 'OK')}`;
+        return `Runtime ready (Bun ${bunVersion}, uv ${uvVersion}) ${pc.green('OK')}`;
       },
     },
   ]);
