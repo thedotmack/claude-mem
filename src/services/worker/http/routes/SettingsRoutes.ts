@@ -104,7 +104,8 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_OPENROUTER_EXTRA_BODY',
       'CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES',
       'CLAUDE_MEM_OPENROUTER_MAX_TOKENS',
-      'CLAUDE_MEM_OPENROUTER_EXTRA_BODY',
+      'CLAUDE_MEM_DEEPSEEK_API_KEY',
+      'CLAUDE_MEM_DEEPSEEK_MODEL',
       'CLAUDE_MEM_DATA_DIR',
       'CLAUDE_MEM_LOG_LEVEL',
       'CLAUDE_MEM_PYTHON_VERSION',
@@ -151,9 +152,9 @@ export class SettingsRoutes extends BaseRouteHandler {
 
   private validateSettings(settings: any): { valid: boolean; error?: string } {
     if (settings.CLAUDE_MEM_PROVIDER) {
-      const validProviders = ['claude', 'codex', 'gemini', 'openrouter', 'kiro'];
-      if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
-        return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "codex", "gemini", "openrouter", or "kiro"' };
+    const validProviders = ['claude', 'gemini', 'openrouter', 'deepseek'];
+    if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
+      return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", "openrouter", or "deepseek"' };
       }
     }
 

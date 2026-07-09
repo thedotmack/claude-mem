@@ -33,7 +33,8 @@ export interface SettingsDefaults {
   CLAUDE_MEM_OPENROUTER_EXTRA_BODY: string;
   CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: string;
   CLAUDE_MEM_OPENROUTER_MAX_TOKENS: string;
-  CLAUDE_MEM_OPENROUTER_EXTRA_BODY: string;
+  CLAUDE_MEM_DEEPSEEK_API_KEY: string;
+  CLAUDE_MEM_DEEPSEEK_MODEL: string;
   CLAUDE_MEM_DATA_DIR: string;
   CLAUDE_MEM_LOG_LEVEL: string;
   CLAUDE_MEM_PYTHON_VERSION: string;
@@ -137,7 +138,8 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_OPENROUTER_EXTRA_BODY: '',  // Optional JSON object merged into OpenAI-compatible chat/completions body after validation.
     CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: '20',  // Max messages in context window
     CLAUDE_MEM_OPENROUTER_MAX_TOKENS: '100000',  // Max estimated tokens (~100k safety limit)
-    CLAUDE_MEM_OPENROUTER_EXTRA_BODY: '',  // JSON object merged into request body (e.g. {"thinking":{"type":"disabled"}})
+    CLAUDE_MEM_DEEPSEEK_API_KEY: '',  // Empty by default, can be set via UI or env
+    CLAUDE_MEM_DEEPSEEK_MODEL: 'deepseek-v4-flash',  // Default DeepSeek model
     CLAUDE_MEM_DATA_DIR: join(homedir(), '.claude-mem'),
     CLAUDE_MEM_LOG_LEVEL: 'INFO',
     CLAUDE_MEM_PYTHON_VERSION: '3.13',

@@ -84,9 +84,13 @@ function parseInstallOptions(argv: string[]): InstallOptions {
     console.error(`Unknown --provider: ${provider}. Allowed: claude, codex, gemini, openrouter, kiro`);
     process.exit(1);
   }
-  const runtime = flag('runtime');
-  if (runtime !== undefined && runtime !== 'worker' && runtime !== 'server' && runtime !== 'server-beta') {
-    console.error(`Unknown --runtime: ${runtime}. Allowed: worker, server`);
+  return next;
+}
+
+function parseInstallOptions(argv: string[]): InstallOptions {
+  const provider = readFlag(argv, '--provider');
+  if (provider !== undefined && provider !== 'claude' && provider !== 'gemini' && provider !== 'openrouter' && provider !== 'deepseek') {
+    console.error(`Unknown --provider: ${provider}. Allowed: claude, gemini, openrouter, deepseek`);
     process.exit(1);
   }
   return {

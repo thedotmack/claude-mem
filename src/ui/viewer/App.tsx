@@ -8,7 +8,8 @@ import { useSSE } from './hooks/useSSE';
 import { useSettings } from './hooks/useSettings';
 import { usePagination } from './hooks/usePagination';
 import { useTheme } from './hooks/useTheme';
-import { Observation, Summary, UserPrompt, AdvisorCall } from './types';
+import { useI18n } from './i18n/I18nContext';
+import { Observation, Summary, UserPrompt } from './types';
 import { mergeAndDeduplicateByProject } from './utils/data';
 
 export function App() {
@@ -24,7 +25,12 @@ export function App() {
   const { observations, summaries, prompts, advisorCalls, projects, isProcessing, queueDepth } = useSSE();
   const { settings, saveSettings, isSaving, saveStatus } = useSettings();
   const { preference, setThemePreference } = useTheme();
+  const { t, locale } = useI18n();
   const pagination = usePagination(currentFilter);
+
+  useEffect(() => {
+    document.documentElement.lang = locale;
+  }, [locale]);
 
   const matchesSelection = useCallback((item: { project: string }) => {
     return !currentFilter || item.project === currentFilter;
@@ -146,7 +152,7 @@ export function App() {
       <button
         className="console-toggle-btn"
         onClick={toggleLogsModal}
-        title="Toggle Console"
+        title={t('header.toggleConsole')}
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <polyline points="4 17 10 11 4 5"></polyline>

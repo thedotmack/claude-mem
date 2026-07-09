@@ -2,7 +2,7 @@ import React, { useState, useCallback, useEffect } from 'react';
 import type { Settings } from '../types';
 import { TerminalPreview } from './TerminalPreview';
 import { useContextPreview } from '../hooks/useContextPreview';
-import { DEFAULT_SETTINGS } from '../constants/settings';
+import { useI18n } from '../i18n/I18nContext';
 
 interface ContextSettingsModalProps {
   isOpen: boolean;
@@ -127,6 +127,7 @@ export function ContextSettingsModal({
   saveStatus
 }: ContextSettingsModalProps) {
   const [formState, setFormState] = useState<Settings>(settings);
+  const { t } = useI18n();
 
   useEffect(() => {
     setFormState(settings);
@@ -176,10 +177,10 @@ export function ContextSettingsModal({
       <div className="context-settings-modal" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="modal-header">
-          <h2>Settings</h2>
+          <h2>{t('settings.title')}</h2>
           <div className="header-controls">
             <label className="preview-selector">
-              Source:
+              {t('settings.source')}
               <select
                 value={selectedSource || ''}
                 onChange={(e) => setSelectedSource(e.target.value)}
@@ -191,7 +192,7 @@ export function ContextSettingsModal({
               </select>
             </label>
             <label className="preview-selector">
-              Project:
+              {t('settings.project')}
               <select
                 value={selectedProject || ''}
                 onChange={(e) => setSelectedProject(e.target.value)}
@@ -205,7 +206,7 @@ export function ContextSettingsModal({
             <button
               onClick={onClose}
               className="modal-close-btn"
-              title="Close (Esc)"
+              title={t('settings.closeEsc')}
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <line x1="18" y1="6" x2="6" y2="18" />
@@ -222,7 +223,7 @@ export function ContextSettingsModal({
             <div className="preview-content">
               {error ? (
                 <div style={{ color: '#ff6b6b' }}>
-                  Error loading preview: {error}
+                  {t('settings.errorLoadingPreview')}{error}
                 </div>
               ) : (
                 <TerminalPreview content={preview} isLoading={isLoading} />
@@ -234,12 +235,12 @@ export function ContextSettingsModal({
           <div className="settings-column">
             {/* Section 1: Loading */}
             <CollapsibleSection
-              title="Loading"
-              description="How many observations to inject"
+              title={t('settings.loading')}
+              description={t('settings.loadingDesc')}
             >
               <FormField
-                label="Observations"
-                tooltip="Number of recent observations to include in context (1-200)"
+                label={t('settings.observations')}
+                tooltip={t('settings.observationsTip')}
               >
                 <input
                   type="number"
@@ -250,8 +251,8 @@ export function ContextSettingsModal({
                 />
               </FormField>
               <FormField
-                label="Sessions"
-                tooltip="Number of recent sessions to pull observations from (1-50)"
+                label={t('settings.sessions')}
+                tooltip={t('settings.sessionsTip')}
               >
                 <input
                   type="number"
@@ -265,14 +266,14 @@ export function ContextSettingsModal({
 
             {/* Section 2: Display */}
             <CollapsibleSection
-              title="Display"
-              description="What to show in context tables"
+              title={t('settings.display')}
+              description={t('settings.displayDesc')}
             >
               <div className="display-subsection">
-                <span className="subsection-label">Full Observations</span>
+                <span className="subsection-label">{t('settings.fullObservations')}</span>
                 <FormField
-                  label="Count"
-                  tooltip="How many observations show expanded details (0-20)"
+                  label={t('settings.count')}
+                  tooltip={t('settings.countTip')}
                 >
                   <input
                     type="number"
@@ -283,40 +284,40 @@ export function ContextSettingsModal({
                   />
                 </FormField>
                 <FormField
-                  label="Field"
-                  tooltip="Which field to expand for full observations"
+                  label={t('settings.field')}
+                  tooltip={t('settings.fieldTip')}
                 >
                   <select
                     value={formState.CLAUDE_MEM_CONTEXT_FULL_FIELD || 'narrative'}
                     onChange={(e) => updateSetting('CLAUDE_MEM_CONTEXT_FULL_FIELD', e.target.value)}
                   >
-                    <option value="narrative">Narrative</option>
-                    <option value="facts">Facts</option>
+                    <option value="narrative">{t('settings.narrative')}</option>
+                    <option value="facts">{t('settings.facts')}</option>
                   </select>
                 </FormField>
               </div>
 
               <div className="display-subsection">
-                <span className="subsection-label">Token Economics</span>
+                <span className="subsection-label">{t('settings.tokenEconomics')}</span>
                 <div className="toggle-group">
                   <ToggleSwitch
                     id="show-read-tokens"
-                    label="Read cost"
-                    description="Tokens to read this observation"
+                    label={t('settings.readCost')}
+                    description={t('settings.readCostDesc')}
                     checked={formState.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS === 'true'}
                     onChange={() => toggleBoolean('CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS')}
                   />
                   <ToggleSwitch
                     id="show-work-tokens"
-                    label="Work investment"
-                    description="Tokens spent creating this observation"
+                    label={t('settings.workInvestment')}
+                    description={t('settings.workInvestmentDesc')}
                     checked={formState.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS === 'true'}
                     onChange={() => toggleBoolean('CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS')}
                   />
                   <ToggleSwitch
                     id="show-savings-amount"
-                    label="Savings"
-                    description="Total tokens saved by reusing context"
+                    label={t('settings.savings')}
+                    description={t('settings.savingsDesc')}
                     checked={formState.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT === 'true'}
                     onChange={() => toggleBoolean('CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT')}
                   />
@@ -326,38 +327,37 @@ export function ContextSettingsModal({
 
             {/* Section 4: Advanced */}
             <CollapsibleSection
-              title="Advanced"
-              description="AI provider and model selection"
+              title={t('settings.advanced')}
+              description={t('settings.advancedDesc')}
               defaultOpen={false}
             >
               <FormField
-                label="AI Provider"
-                tooltip="Backend used to compress observations: Claude Agent SDK, Codex CLI, Gemini, OpenRouter, or Kiro CLI"
+                label={t('settings.aiProvider')}
+                tooltip={t('settings.aiProviderTip')}
               >
                 <select
                   value={formState.CLAUDE_MEM_PROVIDER || 'claude'}
                   onChange={(e) => updateSetting('CLAUDE_MEM_PROVIDER', e.target.value)}
                 >
-                  <option value="claude">Claude (uses your Claude account)</option>
-                  <option value="codex">Codex CLI (uses your Codex login)</option>
-                  <option value="gemini">Gemini (uses API key)</option>
-                  <option value="openrouter">OpenRouter (multi-model)</option>
-                  <option value="kiro">Kiro (uses your Kiro subscription)</option>
+                  <option value="claude">{t('settings.providerClaude')}</option>
+                  <option value="gemini">{t('settings.providerGemini')}</option>
+                  <option value="openrouter">{t('settings.providerOpenRouter')}</option>
+                  <option value="deepseek">{t('settings.providerDeepseek')}</option>
                 </select>
               </FormField>
 
               {formState.CLAUDE_MEM_PROVIDER === 'claude' && (
                 <FormField
-                  label="Claude Model"
-                  tooltip="Claude model used for generating observations"
+                  label={t('settings.claudeModel')}
+                  tooltip={t('settings.claudeModelTip')}
                 >
                   <select
                     value={formState.CLAUDE_MEM_MODEL || 'haiku'}
                     onChange={(e) => updateSetting('CLAUDE_MEM_MODEL', e.target.value)}
                   >
-                    <option value="haiku">haiku (fastest)</option>
-                    <option value="sonnet">sonnet (balanced)</option>
-                    <option value="opus">opus (highest quality)</option>
+                    <option value="haiku">{t('settings.modelHaiku')}</option>
+                    <option value="sonnet">{t('settings.modelSonnet')}</option>
+                    <option value="opus">{t('settings.modelOpus')}</option>
                   </select>
                 </FormField>
               )}
@@ -446,19 +446,19 @@ export function ContextSettingsModal({
               {formState.CLAUDE_MEM_PROVIDER === 'gemini' && (
                 <>
                   <FormField
-                    label="Gemini API Key"
-                    tooltip="Your Google AI Studio API key (or set GEMINI_API_KEY env var)"
+                    label={t('settings.geminiApiKey')}
+                    tooltip={t('settings.geminiApiKeyTip')}
                   >
                     <input
                       type="password"
                       value={formState.CLAUDE_MEM_GEMINI_API_KEY || ''}
                       onChange={(e) => updateSetting('CLAUDE_MEM_GEMINI_API_KEY', e.target.value)}
-                      placeholder="Enter Gemini API key..."
+                      placeholder={t('settings.geminiApiKeyPlaceholder')}
                     />
                   </FormField>
                   <FormField
-                    label="Gemini Model"
-                    tooltip="Gemini model used for generating observations"
+                    label={t('settings.geminiModel')}
+                    tooltip={t('settings.geminiModelTip')}
                   >
                     <select
                       value={formState.CLAUDE_MEM_GEMINI_MODEL || 'gemini-2.5-flash-lite'}
@@ -472,8 +472,8 @@ export function ContextSettingsModal({
                   <div className="toggle-group" style={{ marginTop: '8px' }}>
                     <ToggleSwitch
                       id="gemini-rate-limiting"
-                      label="Rate Limiting"
-                      description="Enable for free tier (10-30 RPM). Disable if you have billing set up (1000+ RPM)."
+                      label={t('settings.rateLimiting')}
+                      description={t('settings.rateLimitingDesc')}
                       checked={formState.CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED === 'true'}
                       onChange={(checked) => updateSetting('CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED', checked ? 'true' : 'false')}
                     />
@@ -484,19 +484,19 @@ export function ContextSettingsModal({
               {formState.CLAUDE_MEM_PROVIDER === 'openrouter' && (
                 <>
                   <FormField
-                    label="OpenRouter API Key"
-                    tooltip="Your OpenRouter API key from openrouter.ai (or set OPENROUTER_API_KEY env var)"
+                    label={t('settings.openRouterApiKey')}
+                    tooltip={t('settings.openRouterApiKeyTip')}
                   >
                     <input
                       type="password"
                       value={formState.CLAUDE_MEM_OPENROUTER_API_KEY || ''}
                       onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_API_KEY', e.target.value)}
-                      placeholder="Enter OpenRouter API key..."
+                      placeholder={t('settings.openRouterApiKeyPlaceholder')}
                     />
                   </FormField>
                   <FormField
-                    label="OpenRouter Model"
-                    tooltip="Model identifier from OpenRouter (e.g., anthropic/claude-3.5-sonnet, google/gemini-2.0-flash-thinking-exp)"
+                    label={t('settings.openRouterModel')}
+                    tooltip={t('settings.openRouterModelTip')}
                   >
                     <input
                       type="text"
@@ -506,19 +506,8 @@ export function ContextSettingsModal({
                     />
                   </FormField>
                   <FormField
-                    label="Base URL (Optional)"
-                    tooltip="OpenAI-compatible base URL. Leave empty for OpenRouter."
-                  >
-                    <input
-                      type="text"
-                      value={formState.CLAUDE_MEM_OPENROUTER_BASE_URL || ''}
-                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_BASE_URL', e.target.value)}
-                      placeholder="https://api.deepseek.com"
-                    />
-                  </FormField>
-                  <FormField
-                    label="Site URL (Optional)"
-                    tooltip="Your site URL for OpenRouter analytics (optional)"
+                    label={t('settings.siteUrlOptional')}
+                    tooltip={t('settings.siteUrlOptionalTip')}
                   >
                     <input
                       type="text"
@@ -528,8 +517,8 @@ export function ContextSettingsModal({
                     />
                   </FormField>
                   <FormField
-                    label="App Name (Optional)"
-                    tooltip="Your app name for OpenRouter analytics (optional)"
+                    label={t('settings.appNameOptional')}
+                    tooltip={t('settings.appNameOptionalTip')}
                   >
                     <input
                       type="text"
@@ -594,9 +583,40 @@ export function ContextSettingsModal({
                 </>
               )}
 
+              {formState.CLAUDE_MEM_PROVIDER === 'deepseek' && (
+                <>
+                  <FormField
+                    label={t('settings.deepseekApiKey')}
+                    tooltip={t('settings.deepseekApiKeyTip')}
+                  >
+                    <input
+                      type="password"
+                      value={formState.CLAUDE_MEM_DEEPSEEK_API_KEY || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_DEEPSEEK_API_KEY', e.target.value)}
+                      placeholder={t('settings.deepseekApiKeyPlaceholder')}
+                    />
+                  </FormField>
+                  <FormField
+                    label={t('settings.deepseekModel')}
+                    tooltip={t('settings.deepseekModelTip')}
+                  >
+                    <select
+                      value={formState.CLAUDE_MEM_DEEPSEEK_MODEL || 'deepseek-v4-flash'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_DEEPSEEK_MODEL', e.target.value)}
+                    >
+                      <option value="deepseek-v4-flash">{t('settings.deepseekFlash')}</option>
+                      <option value="deepseek-v4-pro">{t('settings.deepseekPro')}</option>
+                    </select>
+                  </FormField>
+                  <div style={{ padding: '8px 12px', marginTop: '8px', background: 'var(--color-bg-secondary)', borderRadius: '6px', fontSize: '12px', color: 'var(--color-text-secondary)' }}>
+                    {t('settings.deepseekNote')}
+                  </div>
+                </>
+              )}
+
               <FormField
-                label="Worker Port"
-                tooltip="Port for the background worker service"
+                label={t('settings.workerPort')}
+                tooltip={t('settings.workerPortTip')}
               >
                 <input
                   type="number"
@@ -632,15 +652,15 @@ export function ContextSettingsModal({
               <div className="toggle-group" style={{ marginTop: '12px' }}>
                 <ToggleSwitch
                   id="show-last-summary"
-                  label="Include last summary"
-                  description="Add previous session's summary to context"
+                  label={t('settings.includeLastSummary')}
+                  description={t('settings.includeLastSummaryDesc')}
                   checked={formState.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY === 'true'}
                   onChange={() => toggleBoolean('CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY')}
                 />
                 <ToggleSwitch
                   id="show-last-message"
-                  label="Include last message"
-                  description="Add previous session's final message"
+                  label={t('settings.includeLastMessage')}
+                  description={t('settings.includeLastMessageDesc')}
                   checked={formState.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE === 'true'}
                   onChange={() => toggleBoolean('CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE')}
                 />
@@ -659,7 +679,7 @@ export function ContextSettingsModal({
             onClick={handleSave}
             disabled={isSaving}
           >
-            {isSaving ? 'Saving...' : 'Save'}
+            {isSaving ? t('settings.saving') : t('settings.save')}
           </button>
         </div>
       </div>

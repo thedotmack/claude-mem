@@ -271,7 +271,16 @@ export class ClaudeProvider {
     await waitForSlot(maxConcurrent, session.abortController.signal);
 
     const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
-    const authMethod = getAuthMethodDescription();
+
+    // DeepSeek: inject API key and base URL from settings (not .env)
+    if (isDeepseekSelected() && settings.CLAUDE_MEM_DEEPSEEK_API_KEY) {
+      isolatedEnv.ANTHROPIC_API_KEY = settings.CLAUDE_MEM_DEEPSEEK_API_KEY;
+      isolatedEnv.ANTHROPIC_BASE_URL = 'https://api.deepseek.com/anthropic';
+    }
+
+    const authMethod = isDeepseekSelected()
+      ? 'DeepSeek API key (from CLAUDE_MEM_DEEPSEEK_API_KEY in settings.json)'
+      : getAuthMethodDescription();
 
     logger.info('SDK', 'Starting SDK query', {
       sessionDbId: session.sessionDbId,
@@ -648,7 +657,21 @@ export class ClaudeProvider {
   private getModelId(): string {
     const settingsPath = paths.settings();
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-    // Resolve $TIER:<fast|smart|simple|summary> aliases at request time (#2289).
-    return resolveTierAlias(settings.CLAUDE_MEM_MODEL, settings);
+    if (isDeepseekSelected() && isDeepseekAvailable() && settings.CLAUDE_MEM_DEEPSEEK_MODEL) {
+      return settings.CLAUDE_MEM_DEEPSEEK_MODEL;
+    }
+    return settings.CLAUDE_MEM_MODEL;
   }
+}
+
+export function isDeepseekAvailable(): boolean {
+  const settingsPath = paths.settings();
+  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+  return !!settings.CLAUDE_MEM_DEEPSEEK_API_KEY;
+}
+
+export function isDeepseekSelected(): boolean {
+  const settingsPath = paths.settings();
+  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+  return settings.CLAUDE_MEM_PROVIDER === 'deepseek';
 }

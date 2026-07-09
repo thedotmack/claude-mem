@@ -81,7 +81,7 @@ import {
 import { DatabaseManager } from './worker/DatabaseManager.js';
 import { SessionManager } from './worker/SessionManager.js';
 import { SSEBroadcaster } from './worker/SSEBroadcaster.js';
-import { ClaudeProvider, classifyClaudeError } from './worker/ClaudeProvider.js';
+import { ClaudeProvider, classifyClaudeError, isDeepseekSelected, isDeepseekAvailable } from './worker/ClaudeProvider.js';
 import type { WorkerRef } from './worker/agents/types.js';
 import { GeminiProvider, classifyGeminiError, isGeminiSelected, isGeminiAvailable } from './worker/GeminiProvider.js';
 import { OpenRouterProvider, classifyOpenRouterError, isOpenRouterSelected, isOpenRouterAvailable } from './worker/OpenRouterProvider.js';
@@ -288,9 +288,12 @@ export class WorkerService implements WorkerRef {
         else if (isKiroSelected() && isKiroAvailable()) provider = 'kiro';
         else if (isOpenRouterSelected() && isOpenRouterAvailable()) provider = 'openrouter';
         else if (isGeminiSelected() && isGeminiAvailable()) provider = 'gemini';
+        else if (isDeepseekSelected() && isDeepseekAvailable()) provider = 'deepseek';
         return {
           provider,
-          authMethod: describeProviderAuthMethod(provider, getAuthMethodDescription()),
+          authMethod: provider === 'deepseek'
+            ? 'DeepSeek API key (from CLAUDE_MEM_DEEPSEEK_API_KEY in settings.json)'
+            : getAuthMethodDescription(),
           lastInteraction: this.lastAiInteraction
             ? {
                 timestamp: this.lastAiInteraction.timestamp,
@@ -722,6 +725,239 @@ export class WorkerService implements WorkerRef {
       statePath,
       watches: transcriptConfig.watches.length
     });
+  }
+
+  private getActiveAgent(): ClaudeProvider | GeminiProvider | OpenRouterProvider {
+    if (isOpenRouterSelected() && isOpenRouterAvailable()) {
+      return this.openRouterAgent;
+    }
+    if (isGeminiSelected() && isGeminiAvailable()) {
+      return this.geminiAgent;
+    }
+    // DeepSeek reuses the Claude SDK agent; credentials are injected
+    // into the isolated env inside ClaudeProvider.query().
+    return this.sdkAgent;
+  }
+
+  /**
+   * Re-classify a raw error at the worker-service dispatch site using the
+   * active provider's classifier. Returns null when the provider classifier
+   * doesn't recognize the shape (caller falls back to default behavior).
+   *
+   * Most provider errors should already be classified at the provider
+   * boundary — this is a safety net for errors from inside the SDK that
+   * never round-tripped through fetch (e.g. Anthropic SDK exceptions).
+   */
+  private reclassifyAtDispatch(
+    error: unknown,
+    agent: ClaudeProvider | GeminiProvider | OpenRouterProvider
+  ): ClassifiedProviderError | null {
+    try {
+      if (agent instanceof ClaudeProvider) {
+        return classifyClaudeError(error);
+      }
+      if (agent instanceof GeminiProvider) {
+        // Without a status code we still want network/spawn detection.
+        return classifyGeminiError({ cause: error });
+      }
+      if (agent instanceof OpenRouterProvider) {
+        return classifyOpenRouterError({ cause: error });
+      }
+    } catch {
+      // If the classifier itself throws, fall back to unclassified.
+    }
+    return null;
+  }
+
+  private startSessionProcessor(
+    session: ReturnType<typeof this.sessionManager.getSession>,
+    source: string
+  ): void {
+    if (!session) return;
+
+    const sid = session.sessionDbId;
+    const agent = this.getActiveAgent();
+    const providerName = agent.constructor.name;
+
+    if (session.abortController.signal.aborted) {
+      logger.debug('SYSTEM', 'Replacing aborted AbortController before starting generator', {
+        sessionId: session.sessionDbId
+      });
+      session.abortController = new AbortController();
+    }
+
+    let hadUnrecoverableError = false;
+    let sessionFailed = false;
+
+    logger.info('SYSTEM', `Starting generator (${source}) using ${providerName}`, { sessionId: sid });
+
+    session.lastGeneratorActivity = Date.now();
+
+    session.generatorPromise = agent.startSession(session, this)
+      .catch(async (error: unknown) => {
+        const errorMessage = (error as Error)?.message || '';
+
+        // Dispatch on F4 ClassifiedProviderError.kind. Replaces the old
+        // string-matching allowlist (#2244). Already-classified errors
+        // propagate kind from the provider boundary; raw errors get
+        // re-classified here using provider-specific helpers based on the
+        // active agent.
+        const classified: ClassifiedProviderError | null = isClassified(error)
+          ? error
+          : this.reclassifyAtDispatch(error, agent);
+
+        // FOREIGN KEY constraint failures from SQLite are unrecoverable but
+        // not provider-specific; check before deferring to the classifier so
+        // FK failures don't get misclassified as transient and retry forever
+        // (per-provider classifiers don't recognize FK errors).
+        const isFkConstraintFailure = errorMessage.includes('FOREIGN KEY constraint failed');
+
+        const dispatchKind: ProviderErrorClass | null = isFkConstraintFailure
+          ? 'unrecoverable'
+          : (classified ? classified.kind : null);
+
+        if (dispatchKind === 'unrecoverable' || dispatchKind === 'auth_invalid' || dispatchKind === 'quota_exhausted') {
+          hadUnrecoverableError = true;
+          this.lastAiInteraction = {
+            timestamp: Date.now(),
+            success: false,
+            provider: providerName,
+            error: errorMessage,
+          };
+          const logLabel =
+            dispatchKind === 'auth_invalid' ? 'auth invalid' :
+            dispatchKind === 'quota_exhausted' ? 'quota exhausted' : 'unrecoverable';
+          logger.error('SDK', `Unrecoverable generator error (${logLabel}) - will NOT restart`, {
+            sessionId: session.sessionDbId,
+            project: session.project,
+            errorKind: dispatchKind,
+            errorMessage
+          });
+          return;
+        }
+
+        if (this.isSessionTerminatedError(error)) {
+          logger.warn('SDK', 'SDK resume failed, falling back to standalone processing', {
+            sessionId: session.sessionDbId,
+            project: session.project,
+            reason: error instanceof Error ? error.message : String(error)
+          });
+          return this.runFallbackForTerminatedSession(session, error);
+        }
+
+        const staleResumePatterns = ['aborted by user', 'No conversation found'];
+        if (staleResumePatterns.some(p => errorMessage.includes(p))
+            && session.memorySessionId) {
+          logger.warn('SDK', 'Detected stale resume failure, clearing memorySessionId for fresh start', {
+            sessionId: session.sessionDbId,
+            memorySessionId: session.memorySessionId,
+            errorMessage
+          });
+          this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, null);
+          session.memorySessionId = null;
+          session.forceInit = true;
+        }
+        logger.error('SDK', 'Session generator failed', {
+          sessionId: session.sessionDbId,
+          project: session.project,
+          provider: providerName
+        }, error as Error);
+        sessionFailed = true;
+        this.lastAiInteraction = {
+          timestamp: Date.now(),
+          success: false,
+          provider: providerName,
+          error: errorMessage,
+        };
+        throw error;
+      })
+      .finally(async () => {
+        if (!sessionFailed && !hadUnrecoverableError) {
+          this.lastAiInteraction = {
+            timestamp: Date.now(),
+            success: true,
+            provider: providerName,
+          };
+        }
+
+        // Translate worker-service-specific error flags into the canonical reason enum.
+        let reason = session.abortReason ?? null;
+        session.abortReason = null;
+        if (hadUnrecoverableError) reason = 'restart-guard';
+        if (session.idleTimedOut) {
+          session.idleTimedOut = false;
+          reason = reason ?? 'idle';
+        }
+
+        await handleGeneratorExit(session, reason, {
+          sessionManager: this.sessionManager,
+          completionHandler: this.completionHandler,
+          restartGenerator: (s, source) => this.startSessionProcessor(s, source),
+        });
+      });
+  }
+
+  private static readonly SESSION_TERMINATED_PATTERNS = [
+    'process aborted by user',
+    'processtransport',
+    'not ready for writing',
+    'session generator failed',
+    'claude code process',
+  ] as const;
+
+  private isSessionTerminatedError(error: unknown): boolean {
+    const msg = error instanceof Error ? error.message : String(error);
+    const normalized = msg.toLowerCase();
+    return WorkerService.SESSION_TERMINATED_PATTERNS.some(
+      pattern => normalized.includes(pattern)
+    );
+  }
+
+  private async runFallbackForTerminatedSession(
+    session: ReturnType<typeof this.sessionManager.getSession>,
+    _originalError: unknown
+  ): Promise<void> {
+    if (!session) return;
+
+    const sessionDbId = session.sessionDbId;
+
+    if (!session.memorySessionId) {
+      const syntheticId = `fallback-${sessionDbId}-${Date.now()}`;
+      session.memorySessionId = syntheticId;
+      this.dbManager.getSessionStore().updateMemorySessionId(sessionDbId, syntheticId);
+    }
+
+    if (isGeminiAvailable()) {
+      try {
+        await this.geminiAgent.startSession(session, this);
+        return;
+      } catch (e) {
+        if (e instanceof Error) {
+          logger.warn('WORKER', 'Fallback Gemini failed, trying OpenRouter', {
+            sessionId: sessionDbId,
+          });
+          logger.error('WORKER', 'Gemini fallback error detail', { sessionId: sessionDbId }, e);
+        } else {
+          logger.error('WORKER', 'Gemini fallback failed with non-Error', { sessionId: sessionDbId }, new Error(String(e)));
+        }
+      }
+    }
+
+    if (isOpenRouterAvailable()) {
+      try {
+        await this.openRouterAgent.startSession(session, this);
+        return;
+      } catch (e) {
+        if (e instanceof Error) {
+          logger.error('WORKER', 'Fallback OpenRouter failed, will abandon messages', { sessionId: sessionDbId }, e);
+        } else {
+          logger.error('WORKER', 'Fallback OpenRouter failed with non-Error, will abandon messages', { sessionId: sessionDbId }, new Error(String(e)));
+        }
+      }
+    }
+
+    await this.completionHandler.finalizeSession(sessionDbId);
+    this.sessionManager.removeSessionImmediate(sessionDbId);
   }
 
   private async terminateSession(sessionDbId: number, reason: string): Promise<void> {

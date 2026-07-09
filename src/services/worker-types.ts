@@ -22,15 +22,10 @@ export interface ActiveSession {
   earliestPendingTimestamp: number | null;  
   claimedMessageIds: number[];
   conversationHistory: ConversationMessage[];  
-  currentProvider: 'claude' | 'codex' | 'gemini' | 'openrouter' | 'kiro' | null;
-  consecutiveRestarts: number;
-  /**
-   * Legacy invalid-output counter. Ordinary non-XML observer output is now
-   * confirmed as a no-op and resets this to 0 so skip acknowledgements never
-   * accumulate respawn debt.
-   */
-  consecutiveInvalidOutputs: number;
-  forceInit?: boolean;
+  currentProvider: 'claude' | 'gemini' | 'openrouter' | 'deepseek' | null;  
+  consecutiveRestarts: number;  
+  restartGuard?: RestartGuard;
+  forceInit?: boolean;  
   idleTimedOut?: boolean;  
   lastGeneratorActivity: number;
   modelOverride?: string;

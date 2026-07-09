@@ -853,7 +853,7 @@ export function mergeSettings(updates: Record<string, string>, path = USER_SETTI
   }
 }
 
-type ProviderId = 'claude' | 'codex' | 'gemini' | 'openrouter' | 'kiro';
+type ProviderId = 'claude' | 'gemini' | 'openrouter' | 'deepseek';
 type ClaudeAccessMode = 'subscription' | 'api-key';
 type ClaudeApiMode = 'direct' | 'gateway';
 // Phase 1d: Persisted DB literals (`server_beta_schema_migrations`, job_type
@@ -1207,7 +1207,7 @@ async function promptProvider(options: InstallOptions, selectedIDEs: string[] = 
         { value: 'codex', label: 'Codex CLI' },
         { value: 'gemini', label: 'Gemini' },
         { value: 'openrouter', label: 'OpenRouter' },
-        { value: 'kiro', label: 'Kiro subscription (via kiro-cli, no API key)' },
+        { value: 'deepseek', label: 'DeepSeek' },
       ],
       initialValue: initialProvider,
     });
@@ -1223,25 +1223,12 @@ async function promptProvider(options: InstallOptions, selectedIDEs: string[] = 
     return 'claude';
   }
 
-  if (selectedProvider === 'codex') {
-    const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: 'codex' });
-    if (wrote) log.info('Saved provider=codex to ~/.claude-mem/settings.json');
-    log.info('Codex provider uses your local Codex CLI login. Run `codex login` if the CLI is not authenticated yet.');
-    return 'codex';
-  }
-
-  if (selectedProvider === 'kiro') {
-    // No API key flow: auth is kiro-cli's own login session.
-    const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: 'kiro' });
-    if (wrote) log.info('Saved provider=kiro to ~/.claude-mem/settings.json');
-    log.info('Compression will run on your Kiro subscription (`kiro-cli login` must be active).');
-    return 'kiro';
-  }
-
-  const providerLabel = selectedProvider === 'gemini' ? 'Gemini' : 'OpenRouter';
+  const providerLabel = selectedProvider === 'gemini' ? 'Gemini' : selectedProvider === 'openrouter' ? 'OpenRouter' : 'DeepSeek';
   const keyEnvName = selectedProvider === 'gemini'
     ? 'CLAUDE_MEM_GEMINI_API_KEY'
-    : 'CLAUDE_MEM_OPENROUTER_API_KEY';
+    : selectedProvider === 'openrouter'
+    ? 'CLAUDE_MEM_OPENROUTER_API_KEY'
+    : 'CLAUDE_MEM_DEEPSEEK_API_KEY';
 
   const existingKey = getSetting(keyEnvName as keyof SettingsDefaults) as string | undefined;
   if (existingKey && existingKey.trim().length > 0) {
@@ -1555,7 +1542,7 @@ async function promptCmemOnlineOptIn(version: string): Promise<void> {
 
 export interface InstallOptions {
   ide?: string;
-  provider?: 'claude' | 'codex' | 'gemini' | 'openrouter' | 'kiro';
+  provider?: 'claude' | 'gemini' | 'openrouter' | 'deepseek';
   model?: string;
   noAutoStart?: boolean;
   disableAutoMemory?: boolean;
