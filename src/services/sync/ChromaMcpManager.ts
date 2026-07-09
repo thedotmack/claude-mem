@@ -1,4 +1,3 @@
-
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { execFile, execSync, spawn, type ChildProcess } from 'child_process';
@@ -305,7 +304,14 @@ export class ChromaMcpManager {
       const chromaDatabase = settings.CLAUDE_MEM_CHROMA_DATABASE || 'default_database';
       const chromaApiKey = settings.CLAUDE_MEM_CHROMA_API_KEY || '';
 
-      args.push('--client-type', 'http', '--host', chromaHost, '--port', chromaPort);
+      const args = [
+        '--python', pythonVersion,
+        ...depOverrideFlags,
+        `chroma-mcp@${CHROMA_MCP_PINNED_VERSION}`,
+        '--client-type', 'http',
+        '--host', chromaHost,
+        '--port', chromaPort
+      ];
 
       args.push('--ssl', chromaSsl ? 'true' : 'false');
 
@@ -325,7 +331,9 @@ export class ChromaMcpManager {
     }
 
     return [
-      ...args,
+      '--python', pythonVersion,
+      ...depOverrideFlags,
+      `chroma-mcp@${CHROMA_MCP_PINNED_VERSION}`,
       '--client-type', 'persistent',
       '--data-dir', DEFAULT_CHROMA_DATA_DIR.replace(/\\/g, '/')
     ];
