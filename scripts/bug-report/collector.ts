@@ -3,6 +3,8 @@ import * as path from "path";
 import { exec } from "child_process";
 import { promisify } from "util";
 import * as os from "os";
+import { SettingsDefaultsManager } from "../../src/shared/SettingsDefaultsManager.js";
+import { USER_SETTINGS_PATH } from "../../src/shared/paths.js";
 
 const execAsync = promisify(exec);
 
@@ -106,9 +108,9 @@ async function getOsVersion(): Promise<string> {
   }
 }
 
-async function checkWorkerHealth(port: number): Promise<any> {
+async function checkWorkerHealth(host: string, port: number): Promise<any> {
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/health`, {
+    const response = await fetch(`http://${host}:${port}/api/health`, {
       signal: AbortSignal.timeout(2000),
     });
     return await response.json();
@@ -117,9 +119,9 @@ async function checkWorkerHealth(port: number): Promise<any> {
   }
 }
 
-async function getWorkerStats(port: number): Promise<any> {
+async function getWorkerStats(host: string, port: number): Promise<any> {
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/api/stats`, {
+    const response = await fetch(`http://${host}:${port}/api/stats`, {
       signal: AbortSignal.timeout(2000),
     });
     return await response.json();
@@ -244,11 +246,16 @@ export async function collectDiagnostics(
   };
 
   const pidInfo = await readPidFile(dataDir);
-  const workerPort = pidInfo?.port || 37777;
+  const workerSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+  const workerHost = process.env.CLAUDE_MEM_WORKER_HOST || workerSettings.CLAUDE_MEM_WORKER_HOST;
+  const configuredWorkerPort = process.env.CLAUDE_MEM_WORKER_PORT || workerSettings.CLAUDE_MEM_WORKER_PORT;
+  const workerPort = typeof pidInfo?.port === "number"
+    ? pidInfo.port
+    : parseInt(configuredWorkerPort, 10);
 
   const [health, stats] = await Promise.all([
-    checkWorkerHealth(workerPort),
-    getWorkerStats(workerPort),
+    checkWorkerHealth(workerHost, workerPort),
+    getWorkerStats(workerHost, workerPort),
   ]);
 
   const worker = {

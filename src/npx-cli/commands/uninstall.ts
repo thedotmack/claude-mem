@@ -16,6 +16,7 @@ import { readJsonSafe } from '../../utils/json-utils.js';
 import { readFlatSettings } from '../utils/settings.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { writeJsonFileAtomic as writeSettingsJsonAtomic } from '../../shared/atomic-json.js';
 import { shutdownWorkerAndWait } from '../../services/install/shutdown-helper.js';
 import {
   normalizeRuntimeFlag,
@@ -56,7 +57,7 @@ function clearServerRuntimeSettings(keys: readonly string[]): void {
   }
   if (changed) {
     try {
-      writeFileSync(USER_SETTINGS_PATH, JSON.stringify(flat, null, 2), 'utf-8');
+      writeSettingsJsonAtomic(USER_SETTINGS_PATH, flat);
     } catch (error: unknown) {
       console.warn('[uninstall] Could not write settings during server runtime cleanup:', error instanceof Error ? error.message : String(error));
     }

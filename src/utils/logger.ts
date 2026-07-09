@@ -3,7 +3,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { paths } from '../shared/paths.js';
 import { emitDiagnostic } from '../shared/hook-io.js';
-import { stripBom } from './json-utils.js';
+import { parseJsonWithBom } from '../shared/atomic-json.js';
 
 export enum LogLevel {
   DEBUG = 0,
@@ -109,7 +109,7 @@ class Logger {
         const settingsPath = paths.settings();
         if (existsSync(settingsPath)) {
           const settingsData = readFileSync(settingsPath, 'utf-8');
-          const settings = JSON.parse(stripBom(settingsData));
+          const settings = parseJsonWithBom<Record<string, any>>(settingsData);
           const envLevel = (settings.CLAUDE_MEM_LOG_LEVEL || 'INFO').toUpperCase();
           this.level = LogLevel[envLevel as keyof typeof LogLevel] ?? LogLevel.INFO;
         } else {

@@ -2,7 +2,7 @@
 import { Database } from 'bun:sqlite';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { SessionSearch } from '../sqlite/SessionSearch.js';
-import { enableIncrementalAutoVacuumIfFresh } from '../sqlite/autoVacuum.js';
+import { openConfiguredSqliteDatabase } from '../sqlite/connection.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
 import { HelixManager } from '../sync/HelixManager.js';
 import { HelixSync } from '../sync/HelixSync.js';
@@ -21,14 +21,8 @@ export class DatabaseManager {
   private helixManager: HelixManager | null = null;
 
   async initialize(): Promise<void> {
-    this.db = new Database(DB_PATH);
-
-    // The worker shares one connection: SessionStore/SessionSearch receive this
-    // instance and skip their own setup, so a fresh DB must be opted into
-    // incremental auto_vacuum here — before SessionStore creates the schema and
-    // the first WAL-mode write locks the mode in.
-    enableIncrementalAutoVacuumIfFresh(this.db);
-
+    this.db = openConfiguredSqliteDatabase(DB_PATH);
+    
     this.sessionStore = new SessionStore(this.db);
     this.sessionSearch = new SessionSearch(this.db);
 

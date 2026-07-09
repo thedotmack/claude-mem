@@ -17,7 +17,7 @@ import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources }
 import { findRecentDuplicateUserPrompt as findRecentDuplicateUserPromptRecord } from './prompts/get.js';
 import { applyLegacyPromptBloatMaintenance } from './maintenance.js';
 import { normalizeStoredPromptText } from './prompt-storage.js';
-import { enableIncrementalAutoVacuumIfFresh } from './autoVacuum.js';
+import { applySqliteConnectionPragmas } from './connection.js';
 
 interface IndexColumnInfo {
   seqno: number;
@@ -77,15 +77,9 @@ export class SessionStore {
         ensureDir(DATA_DIR);
       }
       this.db = new Database(dbPathOrDb);
-
-      // Must precede journal_mode = WAL: the first WAL-mode write locks in
-      // auto_vacuum, and SQLite only allows switching it on an empty database.
-      enableIncrementalAutoVacuumIfFresh(this.db);
-      this.db.run('PRAGMA journal_mode = WAL');
-      this.db.run('PRAGMA synchronous = NORMAL');
-      this.db.run('PRAGMA foreign_keys = ON');
-      this.db.run('PRAGMA journal_size_limit = 4194304');
     }
+
+    applySqliteConnectionPragmas(this.db);
 
     this.initializeSchema();
 
@@ -1298,17 +1292,19 @@ export class SessionStore {
 
   private addSessionCustomTitleColumn(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(23) as SchemaVersion | undefined;
-    if (applied) return;
-
     const tableInfo = this.db.query('PRAGMA table_info(sdk_sessions)').all() as TableColumnInfo[];
     const hasColumn = tableInfo.some(col => col.name === 'custom_title');
+
+    if (applied && hasColumn) return;
 
     if (!hasColumn) {
       this.db.run('ALTER TABLE sdk_sessions ADD COLUMN custom_title TEXT');
       logger.debug('DB', 'Added custom_title column to sdk_sessions table');
     }
 
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(23, new Date().toISOString());
+    if (!applied) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(23, new Date().toISOString());
+    }
   }
 
   private addSessionPlatformSourceColumn(): void {

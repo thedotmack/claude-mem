@@ -7,8 +7,9 @@ export const SUMMARY_MODE_MARKER = 'MODE SWITCH: PROGRESS SUMMARY';
 export interface Observation {
   id: number;
   tool_name: string;
-  tool_input: string;
-  tool_output: string;
+  /** JSON text as stored by ingest (string), or a raw value from other producers. */
+  tool_input: unknown;
+  tool_output: unknown;
   created_at_epoch: number;
   cwd?: string;
 }
@@ -129,7 +130,17 @@ function stripBase64ImageBlocks(value: unknown): unknown {
 }
 
 function truncateObservationField(value: unknown, maxChars: number = OBS_PROMPT_FIELD_MAX_CHARS): string {
-  const raw = JSON.stringify(value, null, 2) ?? '';
+  // Strings embed as-is: at this point a string is either plain tool output
+  // or JSON text that failed to parse in buildObservationPrompt. Running it
+  // through JSON.stringify again would escape every quote, newline, and
+  // backslash (`"` -> `\"`, LF -> `\n`), which inflates the prompt's token
+  // count, spends the maxChars budget on escape characters instead of
+  // content, and hands the observer model escaped soup instead of readable
+  // text. Non-strings serialize once, pretty-printed. JSON.stringify returns
+  // undefined for undefined / functions / symbols; fall back to empty string
+  // so the call sites (template literal output) and the length check below
+  // stay well-defined.
+  const raw = typeof value === 'string' ? value : JSON.stringify(value, null, 2) ?? '';
   if (raw.length <= maxChars) return raw;
   // Keep more head than tail because the tool name and error prefix usually carry the debugging signal.
   const headChars = Math.max(0, Math.floor(maxChars * OBS_PROMPT_FIELD_HEAD_RATIO));

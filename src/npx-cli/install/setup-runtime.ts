@@ -1,12 +1,14 @@
 import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { execFile, execSync, spawnSync, type SpawnSyncReturns } from 'child_process';
+import { exec, execSync, spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'child_process';
 import { createRequire } from 'module';
 import { join } from 'path';
 import { homedir } from 'os';
 import { ErrorSeverity } from './error-taxonomy.js';
 import { installerError, type InstallSummary } from './error-reporter.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { buildSpawnSyncInvocation, lookupWindowsCommand } from '../../shared/spawn.js';
 import { IS_WINDOWS } from '../utils/paths.js';
+import { parseJsonWithBom } from '../../shared/atomic-json.js';
 
 const INSTALL_TIMEOUT_MS = (() => {
   const override = process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS;
@@ -36,7 +38,7 @@ function userHasOptedOutOfVectorSearch(): boolean {
   let raw: unknown;
   try {
     if (!existsSync(USER_SETTINGS_PATH)) return false;
-    raw = JSON.parse(readFileSync(USER_SETTINGS_PATH, 'utf-8'));
+    raw = parseJsonWithBom(readFileSync(USER_SETTINGS_PATH, 'utf-8'));
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
     console.warn(`claude-mem: could not read ${USER_SETTINGS_PATH} while checking vector-search opt-out:`, err);
@@ -110,15 +112,31 @@ function resolveRuntimeRoot(targetDir: string): string {
   return targetDir;
 }
 
-export function getBunPath(): string | null {
+function spawnVersionProbe(command: string, args: string[]) {
+  const options: SpawnSyncOptionsWithStringEncoding = {
+    encoding: 'utf-8',
+    stdio: ['pipe', 'pipe', 'pipe'],
+  };
+  const invocation = buildSpawnSyncInvocation(command, args, options);
+  return spawnSync(invocation.command, invocation.args, invocation.options);
+}
+
+function getToolPath(command: string, commonPaths: string[]): string | null {
+  const pathCommand = IS_WINDOWS ? lookupWindowsCommand(command) : command;
   try {
-    const result = probeVersionCommand('bun');
-    if (result.status === 0) return 'bun';
+    if (pathCommand) {
+      const result = spawnVersionProbe(pathCommand, ['--version']);
+      if (result.status === 0) return pathCommand;
+    }
   } catch {
     // Not in PATH
   }
 
-  return BUN_COMMON_PATHS.find(existsSync) || null;
+  return commonPaths.find(existsSync) || null;
+}
+
+export function getBunPath(): string | null {
+  return getToolPath('bun', BUN_COMMON_PATHS);
 }
 
 function isBunInstalled(): boolean {
@@ -130,7 +148,7 @@ export function getBunVersion(): string | null {
   if (!bunPath) return null;
 
   try {
-    const result = probeVersionCommand(bunPath);
+    const result = spawnVersionProbe(bunPath, ['--version']);
     return result.status === 0 ? result.stdout.trim() : null;
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
@@ -140,14 +158,7 @@ export function getBunVersion(): string | null {
 }
 
 function getUvPath(): string | null {
-  try {
-    const result = probeVersionCommand('uv');
-    if (result.status === 0) return 'uv';
-  } catch {
-    // Not in PATH
-  }
-
-  return UV_COMMON_PATHS.find(existsSync) || null;
+  return getToolPath('uv', UV_COMMON_PATHS);
 }
 
 function isUvInstalled(): boolean {
@@ -159,7 +170,7 @@ export function getUvVersion(): string | null {
   if (!uvPath) return null;
 
   try {
-    const result = probeVersionCommand(uvPath);
+    const result = spawnVersionProbe(uvPath, ['--version']);
     return result.status === 0 ? result.stdout.trim() : null;
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));

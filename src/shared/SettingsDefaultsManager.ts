@@ -1,9 +1,9 @@
 
-import { chmodSync, readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
-import { join, dirname } from 'path';
+import { readFileSync, existsSync } from 'fs';
+import { join } from 'path';
 import { homedir } from 'os';
 import { HOOK_TIMEOUTS, getTimeout } from './hook-constants.js';
-import { stripBom } from '../utils/json-utils.js';
+import { parseJsonWithBom, writeJsonFileAtomic } from './atomic-json.js';
 
 export interface SettingsDefaults {
   CLAUDE_MEM_MODEL: string;
@@ -239,15 +239,7 @@ export class SettingsDefaultsManager {
       if (!existsSync(settingsPath)) {
         const defaults = this.getAllDefaults();
         try {
-          const dir = dirname(settingsPath);
-          if (!existsSync(dir)) {
-            mkdirSync(dir, { recursive: true });
-          }
-          // #2996: Write all defaults to disk (including CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD).
-          // getFailLoudThreshold() distinguishes user-explicit values from defaults by
-          // checking if the value equals the default ('3') and falling through to platform
-          // fallback if so. This preserves the file contract (file = getAllDefaults()).
-          writeFileSync(settingsPath, JSON.stringify(defaults, null, 2), 'utf-8');
+          writeJsonFileAtomic(settingsPath, defaults);
           // stderr, never stdout: this fires on the first boot in a fresh data
           // dir, and CLI commands like `start` promise machine-readable JSON
           // on stdout to the hook framework. emitDiagnostic routes through the
@@ -267,16 +259,15 @@ export class SettingsDefaultsManager {
       }
 
       const settingsData = readFileSync(settingsPath, 'utf-8');
-      // BOM-tolerant: Windows tooling may prepend U+FEFF (see stripBom).
-      const settings = JSON.parse(stripBom(settingsData));
+      const settings = parseJsonWithBom<Record<string, any>>(settingsData);
 
       let flatSettings = settings;
       if (settings.env && typeof settings.env === 'object') {
         flatSettings = settings.env;
 
         try {
-          writeFileSync(settingsPath, JSON.stringify(flatSettings, null, 2), 'utf-8');
-          // stderr, never stdout —same JSON-on-stdout contract as above.
+          writeJsonFileAtomic(settingsPath, flatSettings);
+          // stderr, never stdout — same JSON-on-stdout contract as above.
           console.warn('[SETTINGS] Migrated settings file from nested to flat schema:', settingsPath);
         } catch (error: unknown) {
           emitDiagnostic(`[SETTINGS] Failed to auto-migrate settings file: ${settingsPath} ${error instanceof Error ? error.message : String(error)}\n`);

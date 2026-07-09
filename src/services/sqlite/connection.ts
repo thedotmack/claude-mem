@@ -1,46 +1,66 @@
 import { Database } from 'bun:sqlite';
-import { dirname } from 'node:path';
-import { ensureDir } from '../../shared/paths.js';
+import { logger } from '../../utils/logger.js';
 
 export const SQLITE_BUSY_TIMEOUT_MS = 5000;
+export const SQLITE_JOURNAL_SIZE_LIMIT_BYTES = 4194304;
 
-export function ensureDatabaseParentDir(dbPath: string): void {
-  if (dbPath === ':memory:') return;
-  ensureDir(dirname(dbPath));
+type DatabaseOptions = NonNullable<ConstructorParameters<typeof Database>[1]>;
+
+export interface SqlitePragmaOptions {
+  enableWal?: boolean;
+  enableIncrementalAutoVacuum?: boolean;
 }
 
-export function applySqliteBusyTimeout(db: Database): void {
-  db.run(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
+function hasUserTables(db: Database): boolean {
+  const row = db.prepare(`
+    SELECT name
+    FROM sqlite_master
+    WHERE type = 'table'
+      AND name NOT LIKE 'sqlite_%'
+    LIMIT 1
+  `).get() as { name: string } | undefined;
+  return row != null;
 }
 
-export function enableIncrementalAutoVacuumIfFresh(db: Database): boolean {
-  const { tableCount } = db
-    .query("SELECT COUNT(*) AS tableCount FROM sqlite_master WHERE type = 'table'")
-    .get() as { tableCount: number };
-  const { page_count: pageCount } = db
-    .query('PRAGMA page_count')
-    .get() as { page_count: number };
+function runRequiredPragma(db: Database, sql: string, name: string): void {
+  try {
+    db.run(sql);
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('DB', `Failed to apply SQLite pragma ${name}`, { sql }, err);
+    throw error;
+  }
+}
 
-  if (tableCount > 0 || pageCount > 1) {
-    return false;
+export function applySqliteConnectionPragmas(
+  db: Database,
+  options: SqlitePragmaOptions = {},
+): void {
+  const {
+    enableWal = true,
+    enableIncrementalAutoVacuum = true,
+  } = options;
+
+  runRequiredPragma(db, `PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`, 'busy_timeout');
+  runRequiredPragma(db, 'PRAGMA foreign_keys = ON', 'foreign_keys');
+  runRequiredPragma(db, 'PRAGMA synchronous = NORMAL', 'synchronous');
+  runRequiredPragma(db, `PRAGMA journal_size_limit = ${SQLITE_JOURNAL_SIZE_LIMIT_BYTES}`, 'journal_size_limit');
+
+  if (enableIncrementalAutoVacuum && !hasUserTables(db)) {
+    runRequiredPragma(db, 'PRAGMA auto_vacuum = INCREMENTAL', 'auto_vacuum');
   }
 
-  db.run('PRAGMA auto_vacuum = INCREMENTAL');
-  return true;
+  if (enableWal) {
+    runRequiredPragma(db, 'PRAGMA journal_mode = WAL', 'journal_mode');
+  }
 }
 
-export function configurePrimarySqliteConnection(db: Database): void {
-  applySqliteBusyTimeout(db);
-  db.run('PRAGMA journal_mode = WAL');
-  db.run('PRAGMA synchronous = NORMAL');
-  db.run('PRAGMA foreign_keys = ON');
-  db.run('PRAGMA journal_size_limit = 4194304');
-}
-
-export function openPrimarySqliteConnection(dbPath: string): Database {
-  ensureDatabaseParentDir(dbPath);
-  const db = new Database(dbPath);
-  enableIncrementalAutoVacuumIfFresh(db);
-  configurePrimarySqliteConnection(db);
+export function openConfiguredSqliteDatabase(
+  dbPath: string,
+  options?: DatabaseOptions,
+  pragmas?: SqlitePragmaOptions,
+): Database {
+  const db = new Database(dbPath, options);
+  applySqliteConnectionPragmas(db, pragmas);
   return db;
 }

@@ -24,9 +24,10 @@
 // logged.
 
 import { createHash, randomBytes } from 'crypto';
-import { chmodSync, existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
-import { stripBom } from '../../utils/json-utils.js';
+import { logger } from '../../utils/logger.js';
+import { readJsonFileWithBom, writeJsonFileAtomic } from '../../shared/atomic-json.js';
 import { createPostgresPool, type PostgresPool } from '../../storage/postgres/pool.js';
 import { parsePostgresConfig } from '../../storage/postgres/config.js';
 import { PostgresAuthRepository } from '../../storage/postgres/auth.js';
@@ -138,8 +139,10 @@ export function persistServerSettings(
   let existing: Record<string, unknown> = {};
   if (existsSync(settingsPath)) {
     try {
-      existing = JSON.parse(stripBom(readFileSync(settingsPath, 'utf-8'))) as Record<string, unknown>;
-    } catch {
+      existing = readJsonFileWithBom<Record<string, unknown>>(settingsPath);
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      logger.warn('HOOK', 'Failed to read existing settings file; starting fresh', { settingsPath }, err);
       existing = {};
     }
   }
@@ -160,21 +163,7 @@ export function persistServerSettings(
     target.CLAUDE_MEM_SERVER_URL = values.serverBaseUrl;
   }
 
-  // When the file already exists, `writeFileSync(..., { mode })` does not
-  // tighten its permissions before replacing the contents. Restrict first so
-  // an existing 0644 settings file does not briefly expose the plaintext key.
-  if (existsSync(settingsPath)) {
-    try {
-      chmodSync(settingsPath, SETTINGS_FILE_MODE);
-    } catch {
-      // Non-POSIX filesystems may reject chmod; creation mode/final chmod remain.
-    }
-  }
-
-  writeFileSync(settingsPath, JSON.stringify(existing, null, 2), {
-    encoding: 'utf-8',
-    mode: SETTINGS_FILE_MODE,
-  });
+  writeJsonFileAtomic(settingsPath, flat);
   // Hooks read this file on every invocation; restrict permissions so other
   // local users cannot read the API key.
   try {

@@ -14,7 +14,7 @@ import {
   ObservationRow
 } from './types.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
-import { NOT_DISMISSED_SQL } from './observations/dismiss-filter.js';
+import { applySqliteConnectionPragmas } from './connection.js';
 
 export class SessionSearch {
   private db: Database;
@@ -28,11 +28,9 @@ export class SessionSearch {
     } else {
       ensureDir(DATA_DIR);
       this.db = new Database(dbPathOrDb);
-      // Must precede journal_mode = WAL: auto_vacuum can only be switched on an
-      // empty database, before the first WAL-mode write locks the mode in.
-      enableIncrementalAutoVacuumIfFresh(this.db);
-      this.db.run('PRAGMA journal_mode = WAL');
     }
+
+    applySqliteConnectionPragmas(this.db);
 
     this._fts5Available = this.isFts5Available();
 

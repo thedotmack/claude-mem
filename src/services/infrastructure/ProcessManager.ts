@@ -257,7 +257,13 @@ function executeCwdRemap(dbPath: string, _effectiveDataDir: string): void {
     return;
   }
 
+  const backup = `${dbPath}.bak-cwd-remap-${Date.now()}`;
+  copyFileSync(dbPath, backup);
+  logger.info('SYSTEM', 'DB backed up before cwd-remap', { backup });
+
+  const { applySqliteConnectionPragmas } = require('../sqlite/connection.js') as typeof import('../sqlite/connection.js');
   const db = new Database(dbPath);
+  applySqliteConnectionPragmas(db);
   try {
     const cwdRows = db.prepare(`
       SELECT cwd FROM pending_messages

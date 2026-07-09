@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdirSync, writeFileSync, rmSync } from 'fs';
+import { mkdirSync, writeFileSync, rmSync, readFileSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
 const VERSION_CHECK_SCRIPT = join(import.meta.dir, '..', 'plugin', 'scripts', 'version-check.js');
+const versionCheckSource = readFileSync(VERSION_CHECK_SCRIPT, 'utf-8');
 
 function runVersionCheck(root: string) {
   const env = { ...process.env, CLAUDE_PLUGIN_ROOT: root };
@@ -106,9 +107,11 @@ describe('plugin/scripts/version-check.js install marker compatibility', () => {
   });
 });
 
-// The missing-marker self-heal path (#3092) forces ensurePluginDependencies()
-// to bypass its node_modules-exists guard (see plugin/scripts/version-check.js),
-// so it needs a real or faked `bun` on PATH to exercise deterministically.
-// That coverage lives in tests/plugin-version-check-ensure-deps.test.ts,
-// which already has fake-bun infrastructure for this — this file stays
-// scoped to marker-format compatibility with dependencies pre-verified.
+describe('plugin/scripts/version-check.js Windows bun lookup', () => {
+  it('uses where as argv with windowsHide and no shell', () => {
+    const windowsCallMatch = versionCheckSource.match(/spawnSync\('where',\s*\['bun'\],\s*\{([^}]+)\}/);
+    expect(windowsCallMatch).not.toBeNull();
+    expect(windowsCallMatch![1]).toContain('windowsHide: true');
+    expect(windowsCallMatch![1]).not.toContain('shell');
+  });
+});

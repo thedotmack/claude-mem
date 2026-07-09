@@ -3,11 +3,11 @@ import path from 'path';
 import net from 'net';
 import { readFileSync } from 'fs';
 import { logger } from '../../utils/logger.js';
-import { MARKETPLACE_ROOT } from '../../shared/paths.js';
-import { getWorkerHost } from '../../shared/worker-utils.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { MARKETPLACE_ROOT, USER_SETTINGS_PATH } from '../../shared/paths.js';
 
-function formatHostForUrl(host: string): string {
-  return host.includes(':') ? `[${host}]` : host;
+function getWorkerHost(): string {
+  return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_HOST;
 }
 
 async function httpRequestToWorker(
@@ -15,7 +15,7 @@ async function httpRequestToWorker(
   endpointPath: string,
   method: string = 'GET'
 ): Promise<{ ok: boolean; statusCode: number; body: string }> {
-  const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}${endpointPath}`, { method });
+  const response = await fetch(`http://${getWorkerHost()}:${port}${endpointPath}`, { method });
   let body = '';
   try {
     body = await response.text();
@@ -29,19 +29,8 @@ export async function isPortInUse(port: number): Promise<boolean> {
   if (process.platform === 'win32') {
     // First check: try the health endpoint (happy path - worker is alive and well)
     try {
-      // #2996: bound the health probe with a 3s timeout so a wedged process
-      // that accepts but never responds does not block the recovery path.
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 3000);
-      try {
-        await fetch(`http://127.0.0.1:${port}/api/health`, { signal: controller.signal });
-        clearTimeout(timeoutId);
-      } finally {
-        clearTimeout(timeoutId);
-      }
-      // #2996: if fetch() succeeds (no exception), the port is in use regardless of HTTP status.
-      // A 404/500 from a wedged worker or unrelated local server still means the port is bound.
-      return true;
+      const response = await fetch(`http://${getWorkerHost()}:${port}/api/health`);
+      return response.ok;
     } catch (error) {
       if (error instanceof Error) {
         logger.debug('SYSTEM', 'Windows health endpoint check failed, falling back to TCP probe', {}, error);
@@ -50,18 +39,11 @@ export async function isPortInUse(port: number): Promise<boolean> {
       }
     }
 
-    // Second check (#2996): health endpoint didn't respond, but the port may
-    // still be bound by a zombie/stale worker process. On Windows with multiple
-    // concurrent Claude Code sessions, this is the common failure mode: the
-    // worker process holds the port but no longer serves health checks. Without
-    // this TCP probe, isPortInUse returns false, the spawner proceeds, bind
-    // fails, and the 2-minute cooldown kicks in - paralyzing all sessions.
-    return new Promise<boolean>((resolve) => {
-      const socket = new net.Socket();
-      socket.setTimeout(2000);
-      socket.once('connect', () => {
-        socket.destroy();
-        logger.warn('SYSTEM', 'Port is TCP-bound but health endpoint unresponsive - likely a zombie worker', { port });
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    const workerHost = getWorkerHost();
+    server.once('error', (err: NodeJS.ErrnoException) => {
+      if (err.code === 'EADDRINUSE') {
         resolve(true);
       });
       socket.once('timeout', () => {
@@ -81,7 +63,7 @@ export async function isPortInUse(port: number): Promise<boolean> {
     probe.once('listening', () => {
       probe.close(() => resolve(null));
     });
-    probe.listen(port, host);
+    server.listen(port, workerHost);
   });
 }
 
@@ -164,7 +146,7 @@ export function getInstalledPluginVersion(): string {
 
 export async function getRunningWorkerVersion(port: number): Promise<string | null> {
   try {
-    const result = await httpRequestToWorker(port, '/api/version');
+    const result = await httpRequestToWorker(port, '/api/health');
     if (!result.ok) return null;
     const data = JSON.parse(result.body) as { version: string };
     return data.version;
