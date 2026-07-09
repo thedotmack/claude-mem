@@ -6,7 +6,7 @@
 
 import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import { logger } from '../../src/utils/logger.js';
-import { Server, type ServerOptions } from '../../src/services/server/Server.js';
+import { Server, type ServerOptions } from '../../src/shared/http/Server.js';
 
 function baseOptions(overrides: Partial<ServerOptions> = {}): ServerOptions {
   return {

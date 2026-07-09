@@ -1,5 +1,5 @@
 
-import { AppError } from '../../server/ErrorHandler.js';
+import { AppError } from '../../../shared/http/ErrorHandler.js';
 
 export class ChromaUnavailableError extends AppError {
   constructor(message: string, cause?: Error) {

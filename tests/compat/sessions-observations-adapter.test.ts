@@ -9,7 +9,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import pg from 'pg';
-import { Server } from '../../src/services/server/Server.js';
+import { Server } from '../../src/shared/http/Server.js';
 import { ServerV1PostgresRoutes } from '../../src/server/routes/v1/ServerV1PostgresRoutes.js';
 import { SessionsObservationsAdapter } from '../../src/server/compat/SessionsObservationsAdapter.js';
 import { SessionsSummarizeAdapter } from '../../src/server/compat/SessionsSummarizeAdapter.js';

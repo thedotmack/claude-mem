@@ -2,7 +2,7 @@
 
 import type { Application } from 'express';
 import type { Database } from 'bun:sqlite';
-import type { RouteHandler } from '../../services/server/Server.js';
+import type { RouteHandler } from '../../shared/http/Server.js';
 import { logger } from '../../utils/logger.js';
 
 type NodeHandler = ReturnType<typeof import('better-auth/node').toNodeHandler>;

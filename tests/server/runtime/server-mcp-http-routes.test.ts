@@ -16,7 +16,7 @@ import pg from 'pg';
 import { randomUUID } from 'crypto';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { Server } from '../../../src/services/server/Server.js';
+import { Server } from '../../../src/shared/http/Server.js';
 import { ServerV1PostgresRoutes } from '../../../src/server/routes/v1/ServerV1PostgresRoutes.js';
 import {
   bootstrapServerPostgresSchema,

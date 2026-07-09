@@ -3,7 +3,7 @@ import { TableNameRow } from '../../types/database.js';
 import { resolveDbPath } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { isDirectChild } from '../../shared/path-utils.js';
-import { AppError } from '../server/ErrorHandler.js';
+import { AppError } from '../../shared/http/ErrorHandler.js';
 import {
   ObservationSearchResult,
   SessionSummarySearchResult,

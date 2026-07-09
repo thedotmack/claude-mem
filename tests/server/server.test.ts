@@ -2,8 +2,8 @@ import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:te
 import type { AddressInfo } from 'net';
 import { logger } from '../../src/utils/logger.js';
 
-import { Server } from '../../src/services/server/Server.js';
-import type { RouteHandler, ServerOptions } from '../../src/services/server/Server.js';
+import { Server } from '../../src/shared/http/Server.js';
+import type { RouteHandler, ServerOptions } from '../../src/shared/http/Server.js';
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
 

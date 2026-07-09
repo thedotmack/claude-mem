@@ -15,8 +15,8 @@ mock.module('../../src/services/worker/http/middleware.js', () => ({
   summarizeRequestBody: () => 'test body',
 }));
 
-import { Server } from '../../src/services/server/Server.js';
-import type { ServerOptions } from '../../src/services/server/Server.js';
+import { Server } from '../../src/shared/http/Server.js';
+import type { ServerOptions } from '../../src/shared/http/Server.js';
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
 

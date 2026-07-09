@@ -14,7 +14,7 @@
 
 import type { Application, Request, Response } from 'express';
 import { z } from 'zod';
-import type { RouteHandler } from '../../services/server/Server.js';
+import type { RouteHandler } from '../../shared/http/Server.js';
 import type { PostgresPool } from '../../storage/postgres/pool.js';
 import { PostgresServerSessionsRepository } from '../../storage/postgres/server-sessions.js';
 import { logger } from '../../utils/logger.js';

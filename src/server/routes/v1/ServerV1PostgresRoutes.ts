@@ -2,7 +2,7 @@
 
 import type { Application, Request, RequestHandler, Response } from 'express';
 import { z, type ZodTypeAny } from 'zod';
-import type { RouteHandler } from '../../../services/server/Server.js';
+import type { RouteHandler } from '../../../shared/http/Server.js';
 import { CreateAgentEventSchema } from '../../../core/schemas/agent-event.js';
 import type { PostgresPool } from '../../../storage/postgres/pool.js';
 import {
