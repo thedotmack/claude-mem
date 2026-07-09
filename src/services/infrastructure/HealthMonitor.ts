@@ -33,35 +33,18 @@ async function httpRequestToWorker(
 }
 
 export async function isPortInUse(port: number): Promise<boolean> {
-  if (process.platform === 'win32') {
-    // First check: try the health endpoint (happy path - worker is alive and well)
-    try {
-      const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}/api/health`);
-      return response.ok;
-    } catch (error) {
-      if (error instanceof Error) {
-        logger.debug('SYSTEM', 'Windows health endpoint check failed, falling back to TCP probe', {}, error);
-      } else {
-        logger.debug('SYSTEM', 'Windows health endpoint check failed, falling back to TCP probe', { error: String(error) });
-      }
-    }
-
+  // Detect real TCP occupation on every platform by attempting to bind. This is
+  // deliberately NOT conflated with "a healthy worker is answering": a stale or
+  // zombie worker can hold the socket without responding to /api/health (health
+  // is a separate question, answered by waitForHealth). The previous Windows
+  // branch probed /api/health here, so a zombie holding the port read as "free",
+  // every caller spawned a duplicate that died on bind with EADDRINUSE, and the
+  // worker re-spawn looped forever until the zombie was killed by hand.
   return new Promise((resolve) => {
     const server = net.createServer();
     const workerHost = getWorkerHost();
     server.once('error', (err: NodeJS.ErrnoException) => {
-      if (err.code === 'EADDRINUSE') {
-        resolve(true);
-      });
-      socket.once('timeout', () => {
-        socket.destroy();
-        resolve(false);
-      });
-      socket.once('error', () => {
-        socket.destroy();
-        resolve(false);
-      });
-      socket.connect(port, '127.0.0.1');
+      resolve(err.code === 'EADDRINUSE');
     });
   }
   return new Promise((resolve) => {

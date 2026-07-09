@@ -247,24 +247,16 @@ export async function ensureWorkerStarted(
       logger.info('SYSTEM', 'Worker is now healthy');
       return ready ? 'ready' : 'warming';
     }
-
-    // #2996: Port is bound but health checks failed - likely a zombie worker.
-    // On Windows, try to reap the stale process holding the port before giving up.
-    // This prevents the spawn attempt from failing with EADDRINUSE and triggering
-    // the cooldown that blocks all concurrent sessions.
-    await reapStalePortHolderOnWindows(port);
-
-    // After reaping, check if port is now free and worker can be spawned
-    const portFree = await waitForPortFree(port, 3000);
-    if (portFree) {
-      // #2996: clear cooldown marker so shouldSkipSpawnOnWindows() won't block the respawn
-      clearWorkerSpawnAttempted();
-      logger.info('SYSTEM', 'Port freed after reaping stale process, proceeding with spawn');
-      // Fall through to spawn logic below
-    } else {
-      logger.error('SYSTEM', 'Port in use but worker not responding to health checks (reap failed or port still held)');
+    // Port held but nothing healthy answering → almost certainly a stale/zombie
+    // worker still bound to the socket. Reclaim it (validated kill) and fall
+    // through to a fresh spawn below. If reclaim fails, give up cleanly instead
+    // of letting every subsequent hook re-spawn a daemon that dies on bind.
+    const reclaimed = await reclaimStaleWorkerPort(port);
+    if (!reclaimed) {
+      logger.error('SYSTEM', 'Port in use but worker not responding and reclaim failed');
       return 'dead';
     }
+    clearWorkerSpawnAttempted();
   }
 
   if (shouldSkipSpawnOnWindows()) {
