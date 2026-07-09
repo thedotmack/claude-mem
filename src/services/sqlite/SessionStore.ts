@@ -113,25 +113,7 @@ export class SessionStore {
     this.dropDeadPendingMessagesColumns();
     this.ensurePendingMessagesToolUseIdColumn();
     this.dropWorkerPidColumn();
-    this.addContentSessionIdColumns();
-  }
-
-  private addContentSessionIdColumns(): void {
-    const observationCols = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
-    if (!observationCols.some(c => c.name === 'content_session_id')) {
-      this.db.run('ALTER TABLE observations ADD COLUMN content_session_id TEXT');
-      logger.debug('DB', 'Added content_session_id column to observations table (#2769)');
-    }
-    this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_content_session ON observations(content_session_id)');
-
-    const summaryCols = this.db.query('PRAGMA table_info(session_summaries)').all() as TableColumnInfo[];
-    if (!summaryCols.some(c => c.name === 'content_session_id')) {
-      this.db.run('ALTER TABLE session_summaries ADD COLUMN content_session_id TEXT');
-      logger.debug('DB', 'Added content_session_id column to session_summaries table (#2769)');
-    }
-    this.db.run('CREATE INDEX IF NOT EXISTS idx_session_summaries_content_session ON session_summaries(content_session_id)');
-
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(35, new Date().toISOString());
+    applyLegacyPromptBloatMaintenance(this.db);
   }
 
   private dropWorkerPidColumn(): void {
@@ -1594,7 +1576,7 @@ export class SessionStore {
             WHEN EXISTS (
               SELECT 1
               FROM user_prompts up
-              WHERE up.session_db_id = sdk_sessions.id
+              WHERE up.content_session_id = sdk_sessions.content_session_id
                 AND up.prompt_number = 1
             ) THEN NULL
             ELSE user_prompt

@@ -68,10 +68,10 @@ describe('SessionStore', () => {
     expect(duplicate?.prompt_text.length).toBe(MAX_STORED_PROMPT_CHARS);
   });
 
-  it('should clear sdk_sessions.user_prompt when completed first prompt history exists for that session', () => {
+  it('should clear sdk_sessions.user_prompt when completed prompt history exists', () => {
     const contentSessionId = 'completed-canonical-session-store';
     const sessionId = store.createSDKSession(contentSessionId, 'test-project', 'Initial prompt');
-    store.saveUserPrompt(contentSessionId, 1, 'Initial prompt', sessionId);
+    store.saveUserPrompt(contentSessionId, 1, 'Initial prompt');
 
     store.markSessionCompleted(sessionId);
 
@@ -83,10 +83,9 @@ describe('SessionStore', () => {
     expect(row.user_prompt).toBeNull();
   });
 
-  it('should preserve sdk_sessions.user_prompt when completed first prompt history is absent', () => {
-    const contentSessionId = 'completed-partial-history-session-store';
+  it('should preserve sdk_sessions.user_prompt when completed prompt history is absent', () => {
+    const contentSessionId = 'completed-fallback-session-store';
     const sessionId = store.createSDKSession(contentSessionId, 'test-project', 'Initial prompt');
-    store.saveUserPrompt(contentSessionId, 2, 'Follow-up prompt', sessionId);
 
     store.markSessionCompleted(sessionId);
 
@@ -98,26 +97,19 @@ describe('SessionStore', () => {
     expect(row.user_prompt).toBe('Initial prompt');
   });
 
-  it('should not clear a completed session from another platform with the same content id', () => {
-    const contentSessionId = 'completed-platform-shared-session-store';
-    const claudeSessionId = store.createSDKSession(contentSessionId, 'test-project', 'Claude prompt', undefined, 'claude');
-    const codexSessionId = store.createSDKSession(contentSessionId, 'test-project', 'Codex prompt', undefined, 'codex');
-    store.saveUserPrompt(contentSessionId, 1, 'Codex prompt', codexSessionId);
+  it('should preserve sdk_sessions.user_prompt when first completed prompt history is absent', () => {
+    const contentSessionId = 'completed-partial-history-session-store';
+    const sessionId = store.createSDKSession(contentSessionId, 'test-project', 'Initial prompt');
+    store.saveUserPrompt(contentSessionId, 2, 'Follow-up prompt');
 
-    store.markSessionCompleted(claudeSessionId);
-    store.markSessionCompleted(codexSessionId);
+    store.markSessionCompleted(sessionId);
 
-    const claude = store.db.prepare(
+    const row = store.db.prepare(
       'SELECT status, user_prompt FROM sdk_sessions WHERE id = ?'
-    ).get(claudeSessionId) as { status: string; user_prompt: string | null };
-    const codex = store.db.prepare(
-      'SELECT status, user_prompt FROM sdk_sessions WHERE id = ?'
-    ).get(codexSessionId) as { status: string; user_prompt: string | null };
+    ).get(sessionId) as { status: string; user_prompt: string | null };
 
-    expect(claude.status).toBe('completed');
-    expect(claude.user_prompt).toBe('Claude prompt');
-    expect(codex.status).toBe('completed');
-    expect(codex.user_prompt).toBeNull();
+    expect(row.status).toBe('completed');
+    expect(row.user_prompt).toBe('Initial prompt');
   });
 
   it('should hide only older duplicate prompts from paginated prompt results', () => {

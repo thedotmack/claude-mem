@@ -6,12 +6,16 @@ import {
   STORED_PROMPT_NORMALIZATION_MARKERS,
 } from './prompt-storage.js';
 
-export const LEGACY_PROMPT_BLOAT_MAINTENANCE_VERSION = 38;
+export const LEGACY_PROMPT_BLOAT_MAINTENANCE_VERSION = 35;
 export const LEGACY_PROMPT_BLOAT_RECLAIM_MIN_BYTES = 512 * 1024;
 
 interface PromptRow {
   id: number;
   prompt_text: string;
+}
+
+interface ScalarResult {
+  changes?: number;
 }
 
 interface PragmaValueRow {
@@ -85,10 +89,10 @@ function clearDuplicateCompletedSessionPrompts(db: Database): number {
       AND EXISTS (
         SELECT 1
         FROM user_prompts up
-        WHERE up.session_db_id = sdk_sessions.id
+        WHERE up.content_session_id = sdk_sessions.content_session_id
           AND up.prompt_number = 1
       )
-  `).run();
+  `).run() as ScalarResult;
 
   return Number(result.changes ?? 0);
 }
@@ -105,7 +109,6 @@ function reclaimPromptCleanupPages(
       error: error instanceof Error ? error.message : String(error),
     });
   }
-
   const pageSize = getPragmaNumber(db, 'page_size');
   const freelistCountBefore = getPragmaNumber(db, 'freelist_count');
   const freeBytesBefore = pageSize * freelistCountBefore;
@@ -169,7 +172,7 @@ export function applyLegacyPromptBloatMaintenance(
 ): PromptBloatMaintenanceResult {
   const applied = db.prepare('SELECT 1 FROM schema_versions WHERE version = ?').get(
     LEGACY_PROMPT_BLOAT_MAINTENANCE_VERSION
-  );
+  ) as { 1: number } | undefined;
 
   if (applied) {
     return {
