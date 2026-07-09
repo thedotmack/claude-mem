@@ -444,8 +444,11 @@ export class SessionStore {
   }
 
   private ensureSyncedAtColumns(cloudSyncStatePath: string): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(36) as SchemaVersion | undefined;
-    if (applied) return;
+    // Not gated on a schema_versions row: the community-edge line already
+    // consumed versions 36-38 without adding synced_at, so affected DBs have
+    // those version rows but not the columns. The PRAGMA checks are the real
+    // guard; version 39 is recorded for bookkeeping only.
+    let columnsAdded = false;
 
     for (const table of ['observations', 'session_summaries', 'user_prompts']) {
       const tableInfo = this.db.query(`PRAGMA table_info(${table})`).all() as TableColumnInfo[];
@@ -454,14 +457,19 @@ export class SessionStore {
       if (!hasSyncedAt) {
         this.db.run(`ALTER TABLE ${table} ADD COLUMN synced_at INTEGER`);
         logger.debug('DB', `Added synced_at column to ${table} table`);
+        columnsAdded = true;
       }
 
       this.db.run(`CREATE INDEX IF NOT EXISTS idx_${table}_unsynced ON ${table}(id) WHERE synced_at IS NULL`);
     }
 
-    this.stampRowsSyncedByLegacyClient(cloudSyncStatePath);
+    // Legacy cursor adoption is once-only: it runs only in the call that
+    // created the columns.
+    if (columnsAdded) {
+      this.stampRowsSyncedByLegacyClient(cloudSyncStatePath);
+    }
 
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(36, new Date().toISOString());
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(39, new Date().toISOString());
   }
 
   // Rows the standalone cloud-sync client already uploaded (its cursors live in

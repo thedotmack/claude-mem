@@ -16,6 +16,10 @@ function syncedAtById(db: Database, table: string): Map<number, number | null> {
   return new Map(rows.map(row => [row.id, row.synced_at]));
 }
 
+function stampedCount(db: Database, table: string): number {
+  return (db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE synced_at IS NOT NULL`).get() as { n: number }).n;
+}
+
 function seedRows(db: Database): void {
   const now = new Date().toISOString();
   const epoch = Date.now();
@@ -26,10 +30,10 @@ function seedRows(db: Database): void {
   `).run('content-sync', 'memory-sync', 'sync-project', now, epoch);
 
   const insertObs = db.prepare(`
-    INSERT INTO observations (memory_session_id, project, type, created_at, created_at_epoch)
-    VALUES ('memory-sync', 'sync-project', 'discovery', ?, ?)
+    INSERT INTO observations (memory_session_id, project, type, content_hash, created_at, created_at_epoch)
+    VALUES ('memory-sync', 'sync-project', 'discovery', ?, ?, ?)
   `);
-  for (let i = 0; i < 5; i++) insertObs.run(now, epoch + i);
+  for (let i = 0; i < 5; i++) insertObs.run(`hash-${i}`, now, epoch + i);
 
   const insertSummary = db.prepare(`
     INSERT INTO session_summaries (memory_session_id, project, request, created_at, created_at_epoch)
@@ -44,13 +48,183 @@ function seedRows(db: Database): void {
   for (let i = 0; i < 4; i++) insertPrompt.run(i + 1, now, epoch + i);
 }
 
-/** Re-run the v36 migration over an already-migrated db with a specific state file path. */
-function rerunSyncedAtMigration(db: Database, cloudSyncStatePath: string): SessionStore {
-  db.run('DELETE FROM schema_versions WHERE version = 36');
-  return new SessionStore(db, { cloudSyncStatePath });
+/**
+ * A modern (v35-era) schema WITHOUT synced_at columns, seeded by hand so the
+ * migration's column adoption and legacy stamping can be exercised against
+ * pre-existing rows. `throughVersion: 38` reproduces the community-edge
+ * collision: schema_versions rows 36-38 exist while synced_at does not.
+ */
+function seedPreSyncedAtDb(db: Database, throughVersion: number): void {
+  const now = new Date().toISOString();
+  const epoch = Date.now();
+
+  db.run(`
+    CREATE TABLE schema_versions (
+      id INTEGER PRIMARY KEY,
+      version INTEGER UNIQUE NOT NULL,
+      applied_at TEXT NOT NULL
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE sdk_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      content_session_id TEXT NOT NULL,
+      memory_session_id TEXT UNIQUE,
+      project TEXT NOT NULL,
+      platform_source TEXT NOT NULL DEFAULT 'claude',
+      user_prompt TEXT,
+      started_at TEXT NOT NULL,
+      started_at_epoch INTEGER NOT NULL,
+      completed_at TEXT,
+      completed_at_epoch INTEGER,
+      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'completed', 'failed')),
+      worker_port INTEGER,
+      prompt_counter INTEGER DEFAULT 0,
+      custom_title TEXT
+    )
+  `);
+  db.run('CREATE UNIQUE INDEX ux_sdk_sessions_platform_content ON sdk_sessions(platform_source, content_session_id)');
+
+  db.run(`
+    CREATE TABLE observations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      memory_session_id TEXT NOT NULL,
+      project TEXT NOT NULL,
+      text TEXT,
+      type TEXT NOT NULL,
+      title TEXT,
+      subtitle TEXT,
+      facts TEXT,
+      narrative TEXT,
+      concepts TEXT,
+      files_read TEXT,
+      files_modified TEXT,
+      prompt_number INTEGER,
+      discovery_tokens INTEGER DEFAULT 0,
+      content_hash TEXT,
+      agent_type TEXT,
+      agent_id TEXT,
+      merged_into_project TEXT,
+      generated_by_model TEXT,
+      metadata TEXT,
+      created_at TEXT NOT NULL,
+      created_at_epoch INTEGER NOT NULL,
+      FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
+    )
+  `);
+  db.run('CREATE UNIQUE INDEX ux_observations_session_hash ON observations(memory_session_id, content_hash)');
+
+  db.run(`
+    CREATE TABLE session_summaries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      memory_session_id TEXT NOT NULL,
+      project TEXT NOT NULL,
+      request TEXT,
+      investigated TEXT,
+      learned TEXT,
+      completed TEXT,
+      next_steps TEXT,
+      files_read TEXT,
+      files_edited TEXT,
+      notes TEXT,
+      prompt_number INTEGER,
+      discovery_tokens INTEGER DEFAULT 0,
+      merged_into_project TEXT,
+      created_at TEXT NOT NULL,
+      created_at_epoch INTEGER NOT NULL,
+      FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE user_prompts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_db_id INTEGER,
+      content_session_id TEXT NOT NULL,
+      prompt_number INTEGER NOT NULL,
+      prompt_text TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      created_at_epoch INTEGER NOT NULL,
+      FOREIGN KEY(session_db_id) REFERENCES sdk_sessions(id) ON DELETE CASCADE
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE pending_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_db_id INTEGER NOT NULL,
+      content_session_id TEXT NOT NULL,
+      tool_use_id TEXT,
+      message_type TEXT NOT NULL CHECK(message_type IN ('observation', 'summarize')),
+      tool_name TEXT,
+      tool_input TEXT,
+      tool_response TEXT,
+      cwd TEXT,
+      last_user_message TEXT,
+      last_assistant_message TEXT,
+      prompt_number INTEGER,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'processing')),
+      created_at_epoch INTEGER NOT NULL,
+      agent_type TEXT,
+      agent_id TEXT,
+      FOREIGN KEY (session_db_id) REFERENCES sdk_sessions(id) ON DELETE CASCADE
+    )
+  `);
+  db.run(`
+    CREATE UNIQUE INDEX ux_pending_session_tool
+    ON pending_messages(session_db_id, tool_use_id)
+    WHERE tool_use_id IS NOT NULL
+  `);
+
+  const insertVersion = db.prepare('INSERT INTO schema_versions (version, applied_at) VALUES (?, ?)');
+  for (let version = 4; version <= throughVersion; version++) insertVersion.run(version, now);
+
+  db.prepare(`
+    INSERT INTO sdk_sessions (id, content_session_id, memory_session_id, project, started_at, started_at_epoch)
+    VALUES (1, 'content-sync', 'memory-sync', 'sync-project', ?, ?)
+  `).run(now, epoch);
+
+  const insertObs = db.prepare(`
+    INSERT INTO observations (memory_session_id, project, type, content_hash, created_at, created_at_epoch)
+    VALUES ('memory-sync', 'sync-project', 'discovery', ?, ?, ?)
+  `);
+  for (let i = 0; i < 5; i++) insertObs.run(`hash-${i}`, now, epoch + i);
+
+  const insertSummary = db.prepare(`
+    INSERT INTO session_summaries (memory_session_id, project, request, created_at, created_at_epoch)
+    VALUES ('memory-sync', 'sync-project', 'request', ?, ?)
+  `);
+  for (let i = 0; i < 3; i++) insertSummary.run(now, epoch + i);
+
+  const insertPrompt = db.prepare(`
+    INSERT INTO user_prompts (session_db_id, content_session_id, prompt_number, prompt_text, created_at, created_at_epoch)
+    VALUES (1, 'content-sync', ?, 'prompt', ?, ?)
+  `);
+  for (let i = 0; i < 4; i++) insertPrompt.run(i + 1, now, epoch + i);
 }
 
-describe('SessionStore synced_at migration (v36)', () => {
+function expectStampedThroughCursors(db: Database, before: number): void {
+  const observations = syncedAtById(db, 'observations');
+  expect(observations.get(1)).toBeGreaterThanOrEqual(before);
+  expect(observations.get(2)).toBeGreaterThanOrEqual(before);
+  expect(observations.get(3)).toBeGreaterThanOrEqual(before);
+  expect(observations.get(4)).toBeNull();
+  expect(observations.get(5)).toBeNull();
+
+  const summaries = syncedAtById(db, 'session_summaries');
+  expect(summaries.get(1)).toBeGreaterThanOrEqual(before);
+  expect(summaries.get(2)).toBeGreaterThanOrEqual(before);
+  expect(summaries.get(3)).toBeNull();
+
+  const prompts = syncedAtById(db, 'user_prompts');
+  expect(prompts.get(1)).toBeGreaterThanOrEqual(before);
+  expect(prompts.get(2)).toBeGreaterThanOrEqual(before);
+  expect(prompts.get(3)).toBeNull();
+  expect(prompts.get(4)).toBeNull();
+}
+
+describe('SessionStore synced_at migration (v39)', () => {
   let tempDir: string;
   let missingStatePath: string;
 
@@ -77,8 +251,8 @@ describe('SessionStore synced_at migration (v36)', () => {
         expect(index?.sql).toContain('synced_at IS NULL');
       }
 
-      const version = db.prepare('SELECT version FROM schema_versions WHERE version = 36').get() as { version: number } | undefined;
-      expect(version?.version).toBe(36);
+      const version = db.prepare('SELECT version FROM schema_versions WHERE version = 39').get() as { version: number } | undefined;
+      expect(version?.version).toBe(39);
 
       const plan = db.prepare('EXPLAIN QUERY PLAN SELECT id FROM observations WHERE synced_at IS NULL').all() as Array<{ detail: string }>;
       expect(plan.some(row => row.detail.includes('idx_observations_unsynced'))).toBe(true);
@@ -87,14 +261,15 @@ describe('SessionStore synced_at migration (v36)', () => {
     }
   });
 
-  it('is idempotent: constructing twice and re-running the migration over migrated tables does not throw', () => {
+  it('is idempotent: repeat construction, even without the version-39 row, does not throw or duplicate columns', () => {
     const db = new Database(':memory:');
     try {
       new SessionStore(db, { cloudSyncStatePath: missingStatePath });
       expect(() => new SessionStore(db, { cloudSyncStatePath: missingStatePath })).not.toThrow();
 
-      // Version row lost but columns already present: PRAGMA guard must skip the ALTER.
-      expect(() => rerunSyncedAtMigration(db, missingStatePath)).not.toThrow();
+      // The version row is bookkeeping only — losing it must not break re-runs.
+      db.run('DELETE FROM schema_versions WHERE version = 39');
+      expect(() => new SessionStore(db, { cloudSyncStatePath: missingStatePath })).not.toThrow();
 
       for (const table of SYNCED_TABLES) {
         const syncedAtColumns = (db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
@@ -106,14 +281,17 @@ describe('SessionStore synced_at migration (v36)', () => {
     }
   });
 
-  it('stamps rows at or below the legacy cursors when cloud-sync-state.json exists', () => {
+  it('adds columns, indexes, and stamps legacy rows even when community-edge version rows 36-38 already exist', () => {
     const db = new Database(':memory:');
     try {
-      new SessionStore(db, { cloudSyncStatePath: missingStatePath });
-      seedRows(db);
+      seedPreSyncedAtDb(db, 38);
 
-      // Pre-stamped rows must keep their original timestamp.
-      db.run('UPDATE observations SET synced_at = 12345 WHERE id = 1');
+      // Collision preconditions: version rows 36-38 present, synced_at absent.
+      const collidingVersions = db.prepare('SELECT COUNT(*) AS n FROM schema_versions WHERE version IN (36, 37, 38)').get() as { n: number };
+      expect(collidingVersions.n).toBe(3);
+      for (const table of SYNCED_TABLES) {
+        expect(columnNames(db, table).has('synced_at')).toBe(false);
+      }
 
       const statePath = join(tempDir, 'cloud-sync-state.json');
       writeFileSync(statePath, JSON.stringify({
@@ -124,25 +302,20 @@ describe('SessionStore synced_at migration (v36)', () => {
       }));
 
       const before = Date.now();
-      rerunSyncedAtMigration(db, statePath);
+      new SessionStore(db, { cloudSyncStatePath: statePath });
 
-      const observations = syncedAtById(db, 'observations');
-      expect(observations.get(1)).toBe(12345);
-      expect(observations.get(2)).toBeGreaterThanOrEqual(before);
-      expect(observations.get(3)).toBeGreaterThanOrEqual(before);
-      expect(observations.get(4)).toBeNull();
-      expect(observations.get(5)).toBeNull();
+      for (const table of SYNCED_TABLES) {
+        expect(columnNames(db, table).has('synced_at')).toBe(true);
+        const index = db.prepare(`
+          SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?
+        `).get(`idx_${table}_unsynced`) as { sql: string } | undefined;
+        expect(index?.sql).toContain('synced_at IS NULL');
+      }
 
-      const summaries = syncedAtById(db, 'session_summaries');
-      expect(summaries.get(1)).toBeGreaterThanOrEqual(before);
-      expect(summaries.get(2)).toBeGreaterThanOrEqual(before);
-      expect(summaries.get(3)).toBeNull();
+      expectStampedThroughCursors(db, before);
 
-      const prompts = syncedAtById(db, 'user_prompts');
-      expect(prompts.get(1)).toBeGreaterThanOrEqual(before);
-      expect(prompts.get(2)).toBeGreaterThanOrEqual(before);
-      expect(prompts.get(3)).toBeNull();
-      expect(prompts.get(4)).toBeNull();
+      const version = db.prepare('SELECT version FROM schema_versions WHERE version = 39').get() as { version: number } | undefined;
+      expect(version?.version).toBe(39);
 
       // The state file is left in place — later phases still read it.
       expect(existsSync(statePath)).toBe(true);
@@ -151,17 +324,57 @@ describe('SessionStore synced_at migration (v36)', () => {
     }
   });
 
+  it('stamps rows at or below the legacy cursors on a v35-era DB when cloud-sync-state.json exists', () => {
+    const db = new Database(':memory:');
+    try {
+      seedPreSyncedAtDb(db, 35);
+
+      const statePath = join(tempDir, 'cloud-sync-state.json');
+      writeFileSync(statePath, JSON.stringify({
+        deviceId: 'ee1b7637-test',
+        lastId: 3,
+        lastSummaryId: 2,
+        lastPromptId: 2,
+      }));
+
+      const before = Date.now();
+      new SessionStore(db, { cloudSyncStatePath: statePath });
+
+      expectStampedThroughCursors(db, before);
+    } finally {
+      db.close();
+    }
+  });
+
   it('stamps nothing when no state file exists', () => {
+    const db = new Database(':memory:');
+    try {
+      seedPreSyncedAtDb(db, 35);
+
+      new SessionStore(db, { cloudSyncStatePath: missingStatePath });
+
+      for (const table of SYNCED_TABLES) {
+        expect(columnNames(db, table).has('synced_at')).toBe(true);
+        expect(stampedCount(db, table)).toBe(0);
+      }
+    } finally {
+      db.close();
+    }
+  });
+
+  it('does not re-run stamping once the columns exist, even if a state file appears later', () => {
     const db = new Database(':memory:');
     try {
       new SessionStore(db, { cloudSyncStatePath: missingStatePath });
       seedRows(db);
 
-      rerunSyncedAtMigration(db, missingStatePath);
+      const statePath = join(tempDir, 'cloud-sync-state.json');
+      writeFileSync(statePath, JSON.stringify({ deviceId: 'late', lastId: 5, lastSummaryId: 3, lastPromptId: 4 }));
+
+      new SessionStore(db, { cloudSyncStatePath: statePath });
 
       for (const table of SYNCED_TABLES) {
-        const stamped = db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE synced_at IS NOT NULL`).get() as { n: number };
-        expect(stamped.n).toBe(0);
+        expect(stampedCount(db, table)).toBe(0);
       }
     } finally {
       db.close();
@@ -171,21 +384,20 @@ describe('SessionStore synced_at migration (v36)', () => {
   it('stamps nothing when the state file contains the JSON literal null', () => {
     const db = new Database(':memory:');
     try {
-      new SessionStore(db, { cloudSyncStatePath: missingStatePath });
-      seedRows(db);
+      seedPreSyncedAtDb(db, 38);
 
       const statePath = join(tempDir, 'cloud-sync-state.json');
       writeFileSync(statePath, 'null');
 
-      expect(() => rerunSyncedAtMigration(db, statePath)).not.toThrow();
+      expect(() => new SessionStore(db, { cloudSyncStatePath: statePath })).not.toThrow();
 
-      // The migration must complete: version recorded, so the constructor does not re-run it.
-      const version = db.prepare('SELECT version FROM schema_versions WHERE version = 36').get() as { version: number } | undefined;
-      expect(version?.version).toBe(36);
+      // The migration must complete: version recorded, columns added, no rows stamped.
+      const version = db.prepare('SELECT version FROM schema_versions WHERE version = 39').get() as { version: number } | undefined;
+      expect(version?.version).toBe(39);
 
       for (const table of SYNCED_TABLES) {
-        const stamped = db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE synced_at IS NOT NULL`).get() as { n: number };
-        expect(stamped.n).toBe(0);
+        expect(columnNames(db, table).has('synced_at')).toBe(true);
+        expect(stampedCount(db, table)).toBe(0);
       }
     } finally {
       db.close();
@@ -195,16 +407,14 @@ describe('SessionStore synced_at migration (v36)', () => {
   it('stamps nothing when the state file is unreadable JSON', () => {
     const db = new Database(':memory:');
     try {
-      new SessionStore(db, { cloudSyncStatePath: missingStatePath });
-      seedRows(db);
+      seedPreSyncedAtDb(db, 35);
 
       const statePath = join(tempDir, 'cloud-sync-state.json');
       writeFileSync(statePath, 'not json{');
 
-      expect(() => rerunSyncedAtMigration(db, statePath)).not.toThrow();
+      expect(() => new SessionStore(db, { cloudSyncStatePath: statePath })).not.toThrow();
 
-      const stamped = db.prepare('SELECT COUNT(*) AS n FROM observations WHERE synced_at IS NOT NULL').get() as { n: number };
-      expect(stamped.n).toBe(0);
+      expect(stampedCount(db, 'observations')).toBe(0);
     } finally {
       db.close();
     }
