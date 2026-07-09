@@ -13,9 +13,7 @@ import {
   DateRange,
   ObservationRow
 } from './types.js';
-import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
-import { applySqliteBusyTimeout, openPrimarySqliteConnection } from './connection.js';
-import { NOT_DISMISSED_SQL } from './observations/dismiss-filter.js';
+import { enableIncrementalAutoVacuumIfFresh } from './autoVacuum.js';
 
 export class SessionSearch {
   private db: Database;
@@ -27,7 +25,12 @@ export class SessionSearch {
       this.db = dbPathOrDb;
       applySqliteBusyTimeout(this.db);
     } else {
-      this.db = openPrimarySqliteConnection(dbPathOrDb);
+      ensureDir(DATA_DIR);
+      this.db = new Database(dbPathOrDb);
+      // Must precede journal_mode = WAL: auto_vacuum can only be switched on an
+      // empty database, before the first WAL-mode write locks the mode in.
+      enableIncrementalAutoVacuumIfFresh(this.db);
+      this.db.run('PRAGMA journal_mode = WAL');
     }
 
     this._fts5Available = this.isFts5Available();

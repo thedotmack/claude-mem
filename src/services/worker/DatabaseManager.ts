@@ -2,6 +2,7 @@
 import { Database } from 'bun:sqlite';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { SessionSearch } from '../sqlite/SessionSearch.js';
+import { enableIncrementalAutoVacuumIfFresh } from '../sqlite/autoVacuum.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, DB_PATH } from '../../shared/paths.js';
@@ -16,8 +17,14 @@ export class DatabaseManager {
   private chromaSync: ChromaSync | null = null;
 
   async initialize(): Promise<void> {
-    this.db = openPrimarySqliteConnection(DB_PATH);
-    
+    this.db = new Database(DB_PATH);
+
+    // The worker shares one connection: SessionStore/SessionSearch receive this
+    // instance and skip their own setup, so a fresh DB must be opted into
+    // incremental auto_vacuum here — before SessionStore creates the schema and
+    // the first WAL-mode write locks the mode in.
+    enableIncrementalAutoVacuumIfFresh(this.db);
+
     this.sessionStore = new SessionStore(this.db);
     this.sessionSearch = new SessionSearch(this.db);
 

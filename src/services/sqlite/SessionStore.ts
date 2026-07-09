@@ -17,7 +17,7 @@ import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources }
 import { findRecentDuplicateUserPrompt as findRecentDuplicateUserPromptRecord } from './prompts/get.js';
 import { applyLegacyPromptBloatMaintenance } from './maintenance.js';
 import { normalizeStoredPromptText } from './prompt-storage.js';
-import { applySqliteBusyTimeout, openPrimarySqliteConnection } from './connection.js';
+import { enableIncrementalAutoVacuumIfFresh } from './autoVacuum.js';
 
 interface IndexColumnInfo {
   seqno: number;
@@ -73,7 +73,18 @@ export class SessionStore {
       this.db = dbPathOrDb;
       applySqliteBusyTimeout(this.db);
     } else {
-      this.db = openPrimarySqliteConnection(dbPathOrDb);
+      if (dbPathOrDb !== ':memory:') {
+        ensureDir(DATA_DIR);
+      }
+      this.db = new Database(dbPathOrDb);
+
+      // Must precede journal_mode = WAL: the first WAL-mode write locks in
+      // auto_vacuum, and SQLite only allows switching it on an empty database.
+      enableIncrementalAutoVacuumIfFresh(this.db);
+      this.db.run('PRAGMA journal_mode = WAL');
+      this.db.run('PRAGMA synchronous = NORMAL');
+      this.db.run('PRAGMA foreign_keys = ON');
+      this.db.run('PRAGMA journal_size_limit = 4194304');
     }
 
     this.initializeSchema();
