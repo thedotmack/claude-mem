@@ -1,11 +1,28 @@
 import { z } from "zod";
-import { existsSync, readFileSync } from "fs";
-import { homedir } from "os";
+import { readFileSync, existsSync } from "fs";
 import { join } from "path";
+import { homedir } from "os";
 import { SettingsDefaultsManager } from "../../shared/SettingsDefaultsManager.js";
 import { stripBom } from "../../utils/json-utils.js";
 
 const PLATFORM_SOURCE = "opencode";
+
+const PLATFORM_SOURCE = "opencode";
+
+interface OpenCodePluginInput {
+  client: unknown;
+  project: { name?: string; path?: string };
+  directory: string;
+  worktree: string;
+  serverUrl: URL;
+  $: unknown;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyHook = (...args: any[]) => Promise<void> | void;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type OpenCodeHooks = Record<string, AnyHook | Record<string, any>>;
 
 /**
  * OpenCode plugin event contract.
@@ -44,19 +61,7 @@ export const REGISTERED_OPENCODE_HOOKS = [
   "experimental.session.compacting",
 ] as const;
 
-interface OpenCodeProject {
-  name?: string;
-  path?: string;
-}
 
-interface OpenCodePluginContext {
-  client: unknown;
-  project: OpenCodeProject;
-  directory: string;
-  worktree: string;
-  serverUrl: URL;
-  $: unknown;
-}
 
 interface ToolExecuteAfterInput {
   tool: string;
@@ -72,7 +77,7 @@ interface ToolExecuteAfterOutput {
 }
 
 interface ChatMessageInput {
-  sessionID?: string;
+  sessionID: string;
   agent?: string;
   messageID?: string;
 }
@@ -114,22 +119,24 @@ function normalizeChatMessageOutput(value: {
 }
 
 function resolveWorkerPort(): string {
+  // 1. Env override wins (set by the worker at startup via its own process).
   if (process.env.CLAUDE_MEM_WORKER_PORT) {
     return process.env.CLAUDE_MEM_WORKER_PORT;
   }
-
+  // 2. Read from settings.json so the OpenCode plugin process (which doesn't
+  //    inherit the worker's env) uses the same port the worker chose.
   try {
     const settingsPath = join(homedir(), ".claude-mem", "settings.json");
     if (existsSync(settingsPath)) {
-      const settings = JSON.parse(stripBom(readFileSync(settingsPath, "utf-8"))) as Record<string, string>;
+      const settings = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, string>;
       if (settings.CLAUDE_MEM_WORKER_PORT) {
         return settings.CLAUDE_MEM_WORKER_PORT;
       }
     }
   } catch {
-    // fall through to UID-derived default
+    // fall through to default
   }
-
+  // 3. UID-derived default — matches the worker's own default calculation.
   return SettingsDefaultsManager.get("CLAUDE_MEM_WORKER_PORT");
 }
 
@@ -215,7 +222,7 @@ function getOrCreateContentSessionId(openCodeSessionId: string): string {
  * the session the first time we see any activity for it (tool run or chat
  * message). This guarantees a session row exists before observations arrive.
  */
-async function ensureSessionInitialized(openCodeSessionId: string, projectName: string): Promise<string | null> {
+function ensureSessionInitialized(openCodeSessionId: string, projectName: string, prompt = ""): string {
   const contentSessionId = getOrCreateContentSessionId(openCodeSessionId);
   if (initializedSessionIds.has(openCodeSessionId)) {
     return contentSessionId;
@@ -257,43 +264,12 @@ function truncate(text: string): string {
     : text;
 }
 
-function extractAssistantMessageText(output: ChatMessageOutput): string {
-  return (output.parts || [])
-    .filter((part) => part.type === "text" && typeof part.text === "string")
-    .map((part) => part.text as string)
-    .join("\n");
-}
-
-async function captureAssistantMessage(
-  sessionID: string,
-  output: ChatMessageOutput,
-  projectName: string,
-  cwd: string,
-): Promise<void> {
-  if (output.message?.role !== "assistant") return;
-
-  const messageText = extractAssistantMessageText(output);
-  if (!messageText) return;
-
-  const contentSessionId = await ensureSessionInitialized(sessionID, projectName);
-  if (!contentSessionId) return;
-  await workerPost("/api/sessions/observations", {
-    contentSessionId,
-    tool_name: "assistant_message",
-    tool_input: {},
-    tool_response: truncate(messageText),
-    cwd,
-  });
-}
-
-export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
+const ClaudeMemPlugin = async (ctx: OpenCodePluginInput) => {
   const projectName = ctx.project?.name || "opencode";
 
   console.log(`[claude-mem] OpenCode plugin loading (project: ${projectName})`);
 
   return {
-    // Capture every tool execution as an observation. This is the primary
-    // capture path (#2419).
     "tool.execute.after": async (
       input: ToolExecuteAfterInput,
       output: ToolExecuteAfterOutput,
@@ -307,11 +283,37 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
         tool_input: input.args || {},
         tool_response: truncate(output.output || ""),
         cwd: ctx.directory,
+        platformSource: PLATFORM_SOURCE,
       });
     },
 
-    // Summarize when a session compacts. This is OpenCode's real compaction
-    // hook (the old `session.compacted` bus event never existed).
+    "chat.message": async (
+      input: ChatMessageInput,
+      output: ChatMessageOutput,
+    ): Promise<void> => {
+      const sessionID = input.sessionID;
+      if (!sessionID) return;
+
+      const messageText = (output.parts || [])
+        .filter((part) => part.type === "text" && typeof part.text === "string")
+        .map((part) => part.text as string)
+        .join("\n");
+      if (!messageText) return;
+
+      const role = output.message?.role || "assistant";
+      // Pass the user message as the session prompt so the viewer shows it instead of "[media prompt]"
+      const prompt = role === "user" ? truncate(messageText) : "";
+      const contentSessionId = ensureSessionInitialized(sessionID, projectName, prompt);
+      workerPostFireAndForget("/api/sessions/observations", {
+        contentSessionId,
+        tool_name: role === "user" ? "user_message" : "assistant_message",
+        tool_input: {},
+        tool_response: truncate(messageText),
+        cwd: ctx.directory,
+        platformSource: PLATFORM_SOURCE,
+      });
+    },
+
     "experimental.session.compacting": async (
       input: SessionCompactingInput,
     ): Promise<void> => {
@@ -321,12 +323,10 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
         contentSessionId,
         platformSource: PLATFORM_SOURCE,
         last_assistant_message: "",
+        platformSource: PLATFORM_SOURCE,
       });
     },
 
-    // Generic bus events. Only `session.idle` and `session.deleted` are real
-    // and acted upon, plus the assistant-message bus events that OpenCode
-    // delivers only through this hook (see REAL_OPENCODE_EVENT_TYPES).
     event: async ({ event }: { event: BusEvent }): Promise<void> => {
       const eventType = event?.type as RealOpenCodeEventType | undefined;
       const sessionID =
@@ -358,14 +358,12 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
           break;
         }
         case "session.idle": {
-          if (!sessionID) return;
-          // Best-effort summarize once a session goes idle.
-          const contentSessionId = await ensureSessionInitialized(sessionID, projectName);
-          if (!contentSessionId) return;
-          await workerPost("/api/sessions/summarize", {
+          const contentSessionId = ensureSessionInitialized(sessionID, projectName);
+          workerPostFireAndForget("/api/sessions/summarize", {
             contentSessionId,
             platformSource: PLATFORM_SOURCE,
             last_assistant_message: "",
+            platformSource: PLATFORM_SOURCE,
           });
           break;
         }
@@ -377,7 +375,6 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
           break;
         }
         default:
-          // Ignore all other bus events.
           break;
       }
     },
@@ -410,12 +407,6 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
   };
 };
 
-/**
- * The worker returns Claude-style `{ content: [{ type: 'text', text: '...' }] }`
- * blocks, NOT `{ items: [...] }` (#2406). Concatenate the text blocks and return
- * them verbatim; an empty block list or a "No observations found" body becomes a
- * clear no-results message.
- */
 export function parseSearchResponse(text: string, query: string): string {
   let data: unknown;
   try {

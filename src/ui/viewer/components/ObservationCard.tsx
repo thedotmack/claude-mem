@@ -3,6 +3,14 @@ import { Observation, FeedItemType } from '../types';
 import { formatDate } from '../utils/formatters';
 import { DeleteButton } from './DeleteButton';
 
+const PLATFORM_LABELS: Record<string, string> = {
+  'claude': 'Claude Code',
+  'opencode': 'OpenCode',
+  'gemini-cli': 'Gemini CLI',
+  'codex': 'Codex',
+  'cursor': 'Cursor',
+};
+
 interface ObservationCardProps {
   observation: Observation;
   onDelete: (itemType: FeedItemType, id: number) => void;
@@ -49,7 +57,7 @@ export function ObservationCard({ observation, onDelete }: ObservationCardProps)
             {observation.type}
           </span>
           <span className={`card-source source-${observation.platform_source || 'claude'}`}>
-            {observation.platform_source || 'claude'}
+            {PLATFORM_LABELS[observation.platform_source] || observation.platform_source || 'claude'}
           </span>
           <span className="card-project">{observation.project}</span>
           {observation.merged_into_project && (

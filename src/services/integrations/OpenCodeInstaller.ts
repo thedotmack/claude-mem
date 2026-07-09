@@ -5,7 +5,8 @@ import { fileURLToPath } from 'url';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, unlinkSync } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { CONTEXT_TAG_OPEN, CONTEXT_TAG_CLOSE, injectContextIntoMarkdownFile } from '../../utils/context-injection.js';
-import { getWorkerHost, getWorkerPort } from '../../shared/worker-utils.js';
+import { getWorkerPort } from '../../shared/worker-utils.js';
+import { getMcpServerAbsolutePath, getNodeAbsolutePath } from './install-paths.js';
 
 const OPENCODE_PLUGIN_CONFIG_PATH = './plugins/claude-mem.js';
 
@@ -71,33 +72,26 @@ export function registerOpenCodeMCPServer(): number {
   const mcpServerPath = getMcpServerAbsolutePath();
   if (!mcpServerPath) {
     console.error('Could not find MCP server script');
-    console.error('  Expected at: plugin/scripts/mcp-server.cjs');
+    console.error('   Expected at: ~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs');
     return 1;
   }
 
   try {
     const config = existsSync(configPath)
-      ? JSON.parse(readFileSync(configPath, 'utf-8')) as OpenCodeConfig
+      ? JSON.parse(readFileSync(configPath, 'utf-8'))
       : {};
-    const existingMcp = (
-      config.mcp && typeof config.mcp === 'object' && !Array.isArray(config.mcp)
-        ? config.mcp
-        : {}
-    ) as Record<string, unknown>;
 
-    const updatedConfig: OpenCodeConfig = {
-      ...config,
-      mcp: {
-        ...existingMcp,
-        'claude-mem': {
-          type: 'local',
-          command: [getNodeAbsolutePath(), mcpServerPath],
-          enabled: true,
-        },
-      },
+    if (!config.mcp) {
+      config.mcp = {};
+    }
+
+    config.mcp['claude-mem'] = {
+      type: 'local',
+      command: [getNodeAbsolutePath(), mcpServerPath],
+      enabled: true,
     };
 
-    writeFileSync(configPath, `${JSON.stringify(updatedConfig, null, 2)}\n`, 'utf-8');
+    writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf-8');
     console.log(`  MCP server registered in: ${configPath}`);
     logger.info('OPENCODE', 'MCP server registered', { path: configPath });
 

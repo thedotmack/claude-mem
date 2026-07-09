@@ -14,6 +14,8 @@ export function normalizePlatformSource(value?: string | null): string {
   if (source.includes('codex')) return 'codex';
   if (source.includes('cursor')) return 'cursor';
   if (source.includes('claude')) return 'claude';
+  if (source.includes('opencode')) return 'opencode';
+  if (source.includes('gemini') && source.includes('cli')) return 'gemini-cli';
 
   return source;
 }
@@ -24,7 +26,7 @@ export function normalizePlatformSourceOrNull(value?: string | null): string | n
 }
 
 export function sortPlatformSources(sources: string[]): string[] {
-  const priority = ['claude', 'codex', 'cursor'];
+  const priority = ['claude', 'opencode', 'gemini-cli', 'codex', 'cursor'];
 
   return [...sources].sort((a, b) => {
     const aPriority = priority.indexOf(a);
