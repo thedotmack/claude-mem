@@ -37,7 +37,6 @@ import {
   type SelectedRuntime,
   type ServerRuntimeContext,
 } from '../services/hooks/runtime-selector.js';
-import { normalizePlatformSource } from '../shared/platform-source.js';
 import { getAdvertisedMcpToolsForRuntime } from './mcp-tool-visibility.js';
 
 let mcpServerDirResolutionFailed = false;
