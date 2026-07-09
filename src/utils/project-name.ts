@@ -1,9 +1,12 @@
 import { homedir } from 'os'
 import path from 'path';
-import { readdirSync, readFileSync, realpathSync, statSync } from 'fs';
+import { statSync, realpathSync } from 'fs';
 import { execFileSync } from 'child_process';
+import picomatch from 'picomatch';
 import { logger } from './logger.js';
 import { detectWorktree } from './worktree.js';
+import type { Environment } from '../shared/SettingsDefaultsManager.js';
+import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 
 /** Per-project config file that may carry an explicit `projectName` override. */
 const CONFIG_FILENAME = '.claude-mem.json';
@@ -15,50 +18,84 @@ function expandTilde(p: string): string {
   return p
 }
 
-/** Read a non-empty `projectName` (or `project_name`) string from a config file. */
-function readProjectNameField(configPath: string): string | null {
-  let raw: Record<string, unknown>;
-  try {
-    raw = JSON.parse(readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
-  } catch {
-    // Missing file or invalid JSON — nothing to override with.
-    return null;
-  }
-  const value = raw.projectName ?? raw.project_name;
-  if (typeof value === 'string' && value.trim() !== '') {
-    return value.trim();
-  }
-  return null;
+let cachedEnvironments: Environment[] | null = null;
+let cachedSettingsMtime = 0;
+let lastCacheTime = 0;
+let settingsPathOverride: string | null = null;
+const CACHE_DEBOUNCE_MS = 100;
+
+export function resetEnvironmentsCache(): void {
+  cachedEnvironments = null;
+  cachedSettingsMtime = 0;
+  lastCacheTime = 0;
 }
 
 /**
- * Read an explicit project-name override from a `.claude-mem.json` config file.
- * Walks up from `startDir` (through the repo and up to the home directory) and
- * returns the first `projectName` string it finds, or null when none is set.
- *
- * This lets independent copies of a project (e.g. my-app, my-app-2, …) share
- * one memory: commit a `.claude-mem.json` with `{ "projectName": "my-app" }` and
- * every copy/worktree resolves to that name regardless of its folder name —
- * rather than the default git-repo-root / cwd basename.
+ * Override the settings file path used by loadEnvironments.
+ * Production code must not call this — it exists so tests can point at a
+ * temporary settings file instead of mutating the user's real
+ * ~/.claude-mem/settings.json.
  */
-export function getConfiguredProjectName(startDir: string): string | null {
-  const home = homedir();
-  let dir = path.resolve(startDir);
+export function setEnvironmentsSettingsPathForTesting(p: string | null): void {
+  settingsPathOverride = p;
+  resetEnvironmentsCache();
+}
 
-  while (true) {
-    const name = readProjectNameField(path.join(dir, CONFIG_FILENAME));
-    if (name) {
-      logger.info('PROJECT_NAME', 'Using project name from .claude-mem.json', {
-        configDir: dir,
-        projectName: name,
-      });
-      return name;
+function getSettingsPath(): string {
+  return settingsPathOverride ?? path.join(homedir(), '.claude-mem', 'settings.json');
+}
+
+export function loadEnvironments(): Environment[] {
+  const now = Date.now();
+  if (cachedEnvironments !== null && now - lastCacheTime < CACHE_DEBOUNCE_MS) {
+    return cachedEnvironments;
+  }
+
+  try {
+    const settingsPath = getSettingsPath();
+    const mtime = statSync(settingsPath).mtimeMs;
+
+    if (cachedEnvironments !== null && mtime === cachedSettingsMtime) {
+      lastCacheTime = now;
+      return cachedEnvironments;
     }
 
-    const parent = path.dirname(dir);
-    // Stop after checking the home directory, or once we reach the FS root.
-    if (dir === home || parent === dir) break;
-    dir = parent;
+    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+    const raw = settings.environments;
+    // settings.environments is typed as string, but loadFromFile hands back
+    // whatever JSON.parse produced from the on-disk file — so it can be either
+    // a JSON string ("[{...}]") or a native array ([{...}]) depending on how
+    // the user wrote it. Accept both shapes.
+    cachedEnvironments = Array.isArray(raw)
+      ? (raw as Environment[])
+      : (typeof raw === 'string' && raw ? JSON.parse(raw) : []);
+    cachedSettingsMtime = mtime;
+    lastCacheTime = now;
+    return cachedEnvironments!;
+  } catch {
+    cachedEnvironments = [];
+    lastCacheTime = now;
+    return cachedEnvironments;
+  }
+}
+
+function matchEnvironment(cwd: string): string | null {
+  const environments = loadEnvironments();
+  if (environments.length === 0) return null;
+
+  let normalizedCwd = cwd;
+  try { normalizedCwd = realpathSync(cwd); } catch { /* path doesn't exist, use original */ }
+
+  const expandedCwd = expandTilde(normalizedCwd);
+
+  for (const env of environments) {
+    for (const pattern of env.patterns) {
+      const expandedPattern = expandTilde(pattern);
+      if (picomatch(expandedPattern)(expandedCwd)) {
+        logger.info('PROJECT_NAME', 'Environment matched', { cwd, envName: env.name, pattern });
+        return env.name;
+      }
+    }
   }
 
   return null;
@@ -229,6 +266,16 @@ export function getProjectName(cwd: string | null | undefined): string {
     return path.basename(linkedWorktreeRoot);
   }
 
+  // Environment matching wins over both git-repo-root and basename fallback —
+  // a user-configured environment is an explicit declaration of identity.
+  const envName = matchEnvironment(expanded);
+  if (envName) {
+    return envName;
+  }
+
+  // #2663 — derive the project name from the git repo root when inside a repo so
+  // the name is stable across subdirectories/worktrees. Fall back to the cwd
+  // basename when not in a repo.
   const repoRoot = findGitRepoRoot(expanded);
   if (repoRoot) {
     if (samePath(expanded, repoRoot)) {

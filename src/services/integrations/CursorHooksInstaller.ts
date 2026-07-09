@@ -3,8 +3,9 @@ import path from 'path';
 import { homedir } from 'os';
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'fs';
 import { logger } from '../../utils/logger.js';
-import { workerHttpRequest } from '../../shared/worker-utils.js';
-import { DATA_DIR } from '../../shared/paths.js';
+import { getProjectContext } from '../../utils/project-name.js';
+import { getWorkerPort, workerHttpRequest } from '../../shared/worker-utils.js';
+import { DATA_DIR, CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
 import {
   readCursorRegistry as readCursorRegistryFromFile,
   registerCursorProject as registerCursorProjectInFile,
@@ -217,7 +218,7 @@ async function setupProjectContext(targetDir: string, workspaceRoot: string): Pr
   const rulesDir = path.join(targetDir, 'rules');
   mkdirSync(rulesDir, { recursive: true });
 
-  const projectName = path.basename(workspaceRoot);
+  const projectName = getProjectContext(workspaceRoot).primary;
   let contextGenerated = false;
 
   console.log(`  Generating initial context...`);
@@ -330,7 +331,7 @@ function removeCursorHooksFiles(
       console.log(`  Removed context file`);
     }
 
-    const projectName = path.basename(process.cwd());
+    const projectName = getProjectContext(process.cwd()).primary;
     unregisterCursorProject(projectName);
     console.log(`  Unregistered from auto-context updates`);
   }

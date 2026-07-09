@@ -1,5 +1,5 @@
 
-import { basename } from 'path';
+import { getProjectContext } from '../../utils/project-name.js';
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import {
   executeWithWorkerFallback,
@@ -12,14 +12,16 @@ import { normalizePlatformSource } from '../../shared/platform-source.js';
 export const userMessageHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
     const port = getWorkerPort();
-    const project = basename(input.cwd ?? process.cwd());
+    const cwd = input.cwd ?? process.cwd();
+    const context = getProjectContext(cwd);
+    const projectsParam = context.allProjects.join(',');
     const colorsParam = input.platform === 'claude-code' ? '&colors=true' : '';
     const platformSourceParam = input.platform
       ? `&platformSource=${encodeURIComponent(normalizePlatformSource(input.platform))}`
       : '';
 
     const result = await executeWithWorkerFallback<string>(
-      `/api/context/inject?project=${encodeURIComponent(project)}${colorsParam}${platformSourceParam}`,
+      `/api/context/inject?projects=${encodeURIComponent(projectsParam)}${colorsParam}`,
       'GET',
     );
 

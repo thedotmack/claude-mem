@@ -866,11 +866,8 @@ export class SearchManager {
   }
 
   async getRecentContext(args: any): Promise<any> {
-    const normalized = this.normalizeParams(args);
-    const project = normalized.project || getProjectContext(process.cwd()).primary;
-    const parsedLimit = parseInt(String(normalized.limit ?? '3'), 10);
-    const limit = parsedLimit > 0 ? parsedLimit : 3;
-    const { platformSource } = normalized;
+    const project = args.project || path.basename(process.cwd());
+    const limit = args.limit || 3;
 
     const sessions = this.sessionStore.getRecentSessionsWithStatus(project, limit, platformSource);
 

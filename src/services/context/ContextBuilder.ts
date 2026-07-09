@@ -20,7 +20,7 @@ import {
   buildTimeline,
   getFullObservationIds,
 } from './ObservationCompiler.js';
-import { renderHeader } from './sections/HeaderRenderer.js';
+import { renderHeader, getEnvironmentHint } from './sections/HeaderRenderer.js';
 import { renderTimeline } from './sections/TimelineRenderer.js';
 import { shouldShowSummary, renderSummaryFields } from './sections/SummaryRenderer.js';
 import { renderPreviouslySection, renderFooter } from './sections/FooterRenderer.js';
@@ -60,7 +60,9 @@ function initializeDatabase(): SessionStore | null {
 }
 
 function renderEmptyState(project: string, forHuman: boolean): string {
-  return forHuman ? renderHumanEmptyState(project) : renderAgentEmptyState(project);
+  const envHint = getEnvironmentHint(project);
+  const projectDisplay = envHint ? `${project} (${envHint})` : project;
+  return forHuman ? renderHumanEmptyState(projectDisplay) : renderAgentEmptyState(projectDisplay);
 }
 
 function isDreamProject(project: string): boolean {

@@ -34,26 +34,28 @@ ${styleText('bold', 'Install Commands')} (no Bun required):
   ${styleText('cyan', 'npx claude-mem uninstall')}            Remove plugin and configs
   ${styleText('cyan', 'npx claude-mem version')}              Print version
 
-${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed plugin):
-  ${styleText('cyan', 'npx claude-mem start')}                Start worker service
-  ${styleText('cyan', 'npx claude-mem stop')}                 Stop worker service
-  ${styleText('cyan', 'npx claude-mem restart')}              Restart worker service
-  ${styleText('cyan', 'npx claude-mem status')}               Show worker status
-  ${styleText('cyan', 'npx claude-mem doctor')}               Diagnose install/runtime health (bun, uv, worker)
-  ${styleText('cyan', 'npx claude-mem telemetry status|enable|disable')}   Manage anonymous telemetry (on by default, opt-out)
-  ${styleText('cyan', 'npx claude-mem server start')}         Start server service
-  ${styleText('cyan', 'npx claude-mem server stop')}          Stop server service
-  ${styleText('cyan', 'npx claude-mem server restart')}       Restart server service
-  ${styleText('cyan', 'npx claude-mem server status')}        Show server status
-  ${styleText('cyan', 'npx claude-mem server api-key create|list|revoke')}   Manage API keys
-  ${styleText('cyan', 'npx claude-mem worker start|stop|restart|status')}    Worker compatibility aliases
-  ${styleText('cyan', 'npx claude-mem search <query>')}       Search observations
-  ${styleText('cyan', 'npx claude-mem migrate-to-helix')}     Copy local SQLite data into the Helix backend
-  ${styleText('cyan', 'npx claude-mem adopt [--dry-run] [--branch <name>]')}    Stamp merged worktrees into parent project
-  ${styleText('cyan', 'npx claude-mem cleanup [--dry-run]')}    Run one-time v12.4.3 pollution cleanup (or preview counts)
-  ${styleText('cyan', 'npx claude-mem transcript watch')}     Start transcript watcher
-  ${styleText('cyan', 'npx claude-mem kiro-cli install|uninstall|status')}   Manage the Kiro CLI integration
-  ${styleText('cyan', 'npx claude-mem antigravity-cli install|status|uninstall')}   Manage Antigravity CLI hooks + MCP config
+${pc.bold('Runtime Commands')} (requires Bun, delegates to installed plugin):
+  ${pc.cyan('npx claude-mem start')}                Start worker service
+  ${pc.cyan('npx claude-mem stop')}                 Stop worker service
+  ${pc.cyan('npx claude-mem restart')}              Restart worker service
+  ${pc.cyan('npx claude-mem status')}               Show worker status
+  ${pc.cyan('npx claude-mem doctor')}               Diagnose install/runtime health (bun, uv, worker)
+  ${pc.cyan('npx claude-mem server start')}         Start server service
+  ${pc.cyan('npx claude-mem server stop')}          Stop server service
+  ${pc.cyan('npx claude-mem server restart')}       Restart server service
+  ${pc.cyan('npx claude-mem server status')}        Show server status
+  ${pc.cyan('npx claude-mem server logs')}          Show recent server logs
+  ${pc.cyan('npx claude-mem server doctor')}        Check server configuration (not yet implemented)
+  ${pc.cyan('npx claude-mem server migrate')}       Run server migrations (not yet implemented)
+  ${pc.cyan('npx claude-mem server export')}        Export server data (not yet implemented)
+  ${pc.cyan('npx claude-mem server import')}        Import server data (not yet implemented)
+  ${pc.cyan('npx claude-mem server api-key create|list|revoke')}   Manage API keys (not yet implemented)
+  ${pc.cyan('npx claude-mem worker start|stop|restart|status')}    Worker compatibility aliases
+  ${pc.cyan('npx claude-mem search <query>')}       Search observations
+  ${pc.cyan('npx claude-mem adopt [--dry-run] [--branch <name>]')}    Stamp merged worktrees into parent project
+  ${pc.cyan('npx claude-mem cleanup [--dry-run]')}    Run one-time v12.4.3 pollution cleanup (or preview counts)
+  ${pc.cyan('npx claude-mem merge-environment --name=<env> --from=<proj1,proj2,...>')}    Migrate project data to an environment name
+  ${pc.cyan('npx claude-mem transcript watch')}     Start transcript watcher
 
 ${pc.bold('IDE Identifiers')}:
   claude-code, cursor, gemini-cli, opencode, openclaw,
@@ -243,6 +245,12 @@ async function main(): Promise<void> {
         console.error(`Usage: npx claude-mem transcript watch`);
         process.exit(1);
       }
+      break;
+    }
+
+    case 'merge-environment': {
+      const { runMergeEnvironmentCommand } = await import('./commands/merge-environment.js');
+      await runMergeEnvironmentCommand(args.slice(1));
       break;
     }
 
