@@ -1,20 +1,39 @@
+/**
+ * ProcessManager - PID files, signal handlers, and child process lifecycle management
+ *
+ * Extracted from worker-service.ts monolith to provide centralized process management.
+ * Handles:
+ * - PID file management for daemon coordination
+ * - Signal handler registration for graceful shutdown
+ * - Child process enumeration and cleanup (especially for Windows zombie port fix)
+ */
 
 import path from 'path';
 import { homedir } from 'os';
-import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, statSync, utimesSync, copyFileSync } from 'fs';
-import { execSync, spawnSync } from 'child_process';
-import { spawnHidden } from '../../shared/spawn.js';
+import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, rmSync, statSync, utimesSync, copyFileSync } from 'fs';
+import { exec, execSync, spawn, spawnSync } from 'child_process';
+import { promisify } from 'util';
 import { logger } from '../../utils/logger.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { removeOwnedPidFile } from '../../supervisor/shutdown.js';
 import { getSupervisor, validateWorkerPidFile, type ValidateWorkerPidStatus } from '../../supervisor/index.js';
-import { paths } from '../../shared/paths.js';
-import { waitForPortFree } from './HealthMonitor.js';
 
 const execAsync = promisify(exec);
 
-const DATA_DIR = paths.dataDir();
-const PID_FILE = paths.workerPid();
+// Standard paths for PID file management
+const DATA_DIR = path.join(homedir(), '.claude-mem');
+const PID_FILE = path.join(DATA_DIR, 'worker.pid');
+
+// Orphaned process cleanup patterns and thresholds
+// These are claude-mem processes that can accumulate if not properly terminated
+const ORPHAN_PROCESS_PATTERNS = [
+  'mcp-server.cjs',    // Main MCP server process
+  'worker-service.cjs', // Background worker daemon
+  'chroma-mcp'          // ChromaDB MCP subprocess
+];
+
+// Only kill processes older than this to avoid killing the current session
+const ORPHAN_MAX_AGE_MINUTES = 30;
 
 interface RuntimeResolverOptions {
   platform?: NodeJS.Platform;
@@ -58,9 +77,43 @@ function lookupBinaryInPath(binaryName: string, platform: NodeJS.Platform): stri
   return firstMatch || null;
 }
 
+// Memoize the resolved runtime path for the no-options call site (which is
+// what spawnDaemon uses). Caches successful resolutions so repeated spawn
+// attempts (crash loops, health thrashing) don't repeatedly hit `statSync`
+// on the candidate paths.
+//
+// IMPORTANT: only success is cached. A `null` result (Bun not found) is
+// never cached so that a long-running MCP server can recover if the user
+// installs Bun in another terminal between the first failed lookup and a
+// subsequent retry. Caching `null` would permanently break the process
+// until restart. Per PR #1645 round-10 review.
+//
+// `undefined` means "not yet resolved"; tests that pass options bypass the
+// cache entirely.
 let cachedWorkerRuntimePath: string | undefined = undefined;
 
+/**
+ * Reset the memoized runtime path. Exported for test isolation only —
+ * production code never needs to call this.
+ */
+export function resetWorkerRuntimePathCache(): void {
+  cachedWorkerRuntimePath = undefined;
+}
+
+/**
+ * Resolve the runtime executable for spawning the worker daemon.
+ *
+ * worker-service.cjs imports `bun:sqlite`, so it MUST run under Bun on every
+ * platform — not just Windows. When the caller is already running under Bun
+ * (e.g. the worker self-spawning from a hook), we reuse process.execPath to
+ * avoid an extra PATH lookup. Otherwise (notably when the MCP server running
+ * under Node spawns the worker for the first time) we locate the Bun binary
+ * via env vars, well-known install locations, and finally the system PATH.
+ */
 export function resolveWorkerRuntimePath(options: RuntimeResolverOptions = {}): string | null {
+  // Memoization fast path — only when called with no injected options. Tests
+  // that pass options always run the full resolution (and never populate or
+  // read the cache) to keep the existing test cases deterministic.
   const isMemoizable = Object.keys(options).length === 0;
   if (isMemoizable && cachedWorkerRuntimePath !== undefined) {
     return cachedWorkerRuntimePath;
@@ -68,6 +121,8 @@ export function resolveWorkerRuntimePath(options: RuntimeResolverOptions = {}): 
 
   const result = resolveWorkerRuntimePathUncached(options);
 
+  // Only cache successful resolutions. See the comment on
+  // `cachedWorkerRuntimePath` above for the rationale.
   if (isMemoizable && result !== null) {
     cachedWorkerRuntimePath = result;
   }
@@ -78,6 +133,7 @@ function resolveWorkerRuntimePathUncached(options: RuntimeResolverOptions): stri
   const platform = options.platform ?? process.platform;
   const execPath = options.execPath ?? process.execPath;
 
+  // If already running under Bun, reuse it directly.
   if (isBunExecutablePath(execPath)) {
     return execPath;
   }
@@ -116,6 +172,11 @@ function resolveWorkerRuntimePathUncached(options: RuntimeResolverOptions): stri
       return normalized;
     }
 
+    // Allow command-style values from env (e.g. BUN=bun). The previous branch
+    // would also match this candidate via isBunExecutablePath('bun') === true,
+    // but pathExists('bun') is false because it's a relative name — so this
+    // branch is what actually fires for the bare-command case. We return the
+    // bare name unchanged so child_process.spawn() resolves it via PATH.
     if (normalized.toLowerCase() === 'bun') {
       return normalized;
     }
@@ -131,6 +192,14 @@ import {
 } from '../../supervisor/process-registry.js';
 export { captureProcessStartToken, verifyPidFileOwnership, type PidInfo };
 
+/**
+ * Write PID info to the standard PID file location.
+ *
+ * Automatically captures a process-start token for `info.pid` if the caller
+ * didn't supply one. The token lets future readers detect PID reuse across
+ * reboots/container restarts — see captureProcessStartToken in
+ * supervisor/process-registry.ts.
+ */
 export function writePidFile(info: PidInfo): void {
   mkdirSync(DATA_DIR, { recursive: true });
   const resolvedToken = info.startToken ?? captureProcessStartToken(info.pid);
@@ -138,6 +207,10 @@ export function writePidFile(info: PidInfo): void {
   writeFileSync(PID_FILE, JSON.stringify(payload, null, 2));
 }
 
+/**
+ * Read PID info from the standard PID file location
+ * Returns null if file doesn't exist or is corrupted
+ */
 export function readPidFile(): PidInfo | null {
   if (!existsSync(PID_FILE)) return null;
 
@@ -153,12 +226,16 @@ export function readPidFile(): PidInfo | null {
   }
 }
 
+/**
+ * Remove the PID file (called during shutdown)
+ */
 export function removePidFile(): void {
   if (!existsSync(PID_FILE)) return;
 
   try {
     unlinkSync(PID_FILE);
   } catch (error: unknown) {
+    // [ANTI-PATTERN IGNORED]: Cleanup function - PID file removal failure is non-critical
     if (error instanceof Error) {
       logger.warn('SYSTEM', 'Failed to remove PID file', { path: PID_FILE }, error);
     } else {
@@ -168,34 +245,35 @@ export function removePidFile(): void {
 }
 
 /**
- * Owner-or-dead guarded PID-file removal (Phase 5, worker-restart plan).
+ * Get platform-adjusted timeout for worker-side socket operations (2.0x on Windows).
  *
- * Deletes the PID file only when the recorded pid is `expectedOwnerPid` (the
- * worker the caller just shut down, or the caller itself) OR is no longer
- * alive — the shared guard in supervisor/shutdown.ts with `deleteIfDead` on,
- * so this helper may clean dead leftovers while the shutdown cascade only
- * ever deletes its own file.
+ * Note: Two platform multiplier functions exist intentionally:
+ * - getTimeout() in hook-constants.ts uses 1.5x for hook-side operations (fast path)
+ * - getPlatformTimeout() here uses 2.0x for worker-side socket operations (slower path)
  */
-export function removePidFileIfOwner(expectedOwnerPid: number | null): void {
-  removeOwnedPidFile(PID_FILE, expectedOwnerPid, true);
-}
-
 export function getPlatformTimeout(baseMs: number): number {
   const WINDOWS_MULTIPLIER = 2.0;
   return process.platform === 'win32' ? Math.round(baseMs * WINDOWS_MULTIPLIER) : baseMs;
 }
 
+/**
+ * Get all child process PIDs (Windows-specific)
+ * Used for cleanup to prevent zombie ports when parent exits
+ */
 export async function getChildProcesses(parentPid: number): Promise<number[]> {
   if (process.platform !== 'win32') {
     return [];
   }
 
+  // SECURITY: Validate PID is a positive integer to prevent command injection
   if (!Number.isInteger(parentPid) || parentPid <= 0) {
     logger.warn('SYSTEM', 'Invalid parent PID for child process enumeration', { parentPid });
     return [];
   }
 
   try {
+    // Use WQL -Filter to avoid $_ pipeline syntax that breaks in Git Bash (#1062, #1024).
+    // Get-CimInstance with server-side filtering is also more efficient than piping through Where-Object.
     const cmd = `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process -Filter 'ParentProcessId=${parentPid}' | Select-Object -ExpandProperty ProcessId"`;
     const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND, windowsHide: true });
     return stdout
@@ -205,6 +283,7 @@ export async function getChildProcesses(parentPid: number): Promise<number[]> {
       .map(line => parseInt(line, 10))
       .filter(pid => pid > 0);
   } catch (error: unknown) {
+    // Shutdown cleanup - failure is non-critical, continue without child process cleanup
     if (error instanceof Error) {
       logger.error('SYSTEM', 'Failed to enumerate child processes', { parentPid }, error);
     } else {
@@ -214,12 +293,77 @@ export async function getChildProcesses(parentPid: number): Promise<number[]> {
   }
 }
 
+/**
+ * Force kill a process by PID
+ * Windows: uses taskkill /F /T to kill process tree
+ * Unix: uses SIGKILL
+ */
+export async function forceKillProcess(pid: number): Promise<void> {
+  // SECURITY: Validate PID is a positive integer to prevent command injection
+  if (!Number.isInteger(pid) || pid <= 0) {
+    logger.warn('SYSTEM', 'Invalid PID for force kill', { pid });
+    return;
+  }
+
+  try {
+    if (process.platform === 'win32') {
+      // /T kills entire process tree, /F forces termination
+      await execAsync(`taskkill /PID ${pid} /T /F`, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND, windowsHide: true });
+    } else {
+      process.kill(pid, 'SIGKILL');
+    }
+    logger.info('SYSTEM', 'Killed process', { pid });
+  } catch (error: unknown) {
+    // [ANTI-PATTERN IGNORED]: Shutdown cleanup - process already exited, continue
+    if (error instanceof Error) {
+      logger.debug('SYSTEM', 'Process already exited during force kill', { pid }, error);
+    } else {
+      logger.debug('SYSTEM', 'Process already exited during force kill', { pid }, new Error(String(error)));
+    }
+  }
+}
+
+/**
+ * Wait for processes to fully exit
+ */
+export async function waitForProcessesExit(pids: number[], timeoutMs: number): Promise<void> {
+  const start = Date.now();
+
+  while (Date.now() - start < timeoutMs) {
+    const stillAlive = pids.filter(pid => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        // process.kill(pid, 0) throws when PID doesn't exist — expected during cleanup
+        // [ANTI-PATTERN IGNORED]: Tight loop checking 100s of PIDs every 100ms during cleanup
+        return false;
+      }
+    });
+
+    if (stillAlive.length === 0) {
+      logger.info('SYSTEM', 'All child processes exited');
+      return;
+    }
+
+    logger.debug('SYSTEM', 'Waiting for processes to exit', { stillAlive });
+    await new Promise(r => setTimeout(r, 100));
+  }
+
+  logger.warn('SYSTEM', 'Timeout waiting for child processes to exit');
+}
+
+/**
+ * Parse process elapsed time from ps etime format: [[DD-]HH:]MM:SS
+ * Returns age in minutes, or -1 if parsing fails
+ */
 export function parseElapsedTime(etime: string): number {
   if (!etime || etime.trim() === '') return -1;
 
   const cleaned = etime.trim();
   let totalMinutes = 0;
 
+  // DD-HH:MM:SS format
   const dayMatch = cleaned.match(/^(\d+)-(\d+):(\d+):(\d+)$/);
   if (dayMatch) {
     totalMinutes = parseInt(dayMatch[1], 10) * 24 * 60 +
@@ -228,12 +372,14 @@ export function parseElapsedTime(etime: string): number {
     return totalMinutes;
   }
 
+  // HH:MM:SS format
   const hourMatch = cleaned.match(/^(\d+):(\d+):(\d+)$/);
   if (hourMatch) {
     totalMinutes = parseInt(hourMatch[1], 10) * 60 + parseInt(hourMatch[2], 10);
     return totalMinutes;
   }
 
+  // MM:SS format
   const minMatch = cleaned.match(/^(\d+):(\d+)$/);
   if (minMatch) {
     return parseInt(minMatch[1], 10);
@@ -242,8 +388,171 @@ export function parseElapsedTime(etime: string): number {
   return -1;
 }
 
+/**
+ * Enumerate orphaned claude-mem processes matching ORPHAN_PROCESS_PATTERNS.
+ * Returns PIDs of processes older than ORPHAN_MAX_AGE_MINUTES.
+ */
+async function enumerateOrphanedProcesses(isWindows: boolean, currentPid: number): Promise<number[]> {
+  const pidsToKill: number[] = [];
+
+  if (isWindows) {
+    // Windows: Use WQL -Filter for server-side filtering (no $_ pipeline syntax).
+    // Avoids Git Bash $_ interpretation (#1062) and PowerShell syntax errors (#1024).
+    const wqlPatternConditions = ORPHAN_PROCESS_PATTERNS
+      .map(p => `CommandLine LIKE '%${p}%'`)
+      .join(' OR ');
+
+    const cmd = `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process -Filter '(${wqlPatternConditions}) AND ProcessId != ${currentPid}' | Select-Object ProcessId, CreationDate | ConvertTo-Json"`;
+    const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND, windowsHide: true });
+
+    if (!stdout.trim() || stdout.trim() === 'null') {
+      logger.debug('SYSTEM', 'No orphaned claude-mem processes found (Windows)');
+      return [];
+    }
+
+    const processes = JSON.parse(stdout);
+    const processList = Array.isArray(processes) ? processes : [processes];
+    const now = Date.now();
+
+    for (const proc of processList) {
+      const pid = proc.ProcessId;
+      // SECURITY: Validate PID is positive integer and not current process
+      if (!Number.isInteger(pid) || pid <= 0 || pid === currentPid) continue;
+
+      // Parse Windows WMI date format: /Date(1234567890123)/
+      const creationMatch = proc.CreationDate?.match(/\/Date\((\d+)\)\//);
+      if (creationMatch) {
+        const creationTime = parseInt(creationMatch[1], 10);
+        const ageMinutes = (now - creationTime) / (1000 * 60);
+
+        if (ageMinutes >= ORPHAN_MAX_AGE_MINUTES) {
+          pidsToKill.push(pid);
+          logger.debug('SYSTEM', 'Found orphaned process', { pid, ageMinutes: Math.round(ageMinutes) });
+        }
+      }
+    }
+  } else {
+    // Unix: Use ps with elapsed time for age-based filtering
+    const patternRegex = ORPHAN_PROCESS_PATTERNS.join('|');
+    const { stdout } = await execAsync(
+      `ps -eo pid,etime,command | grep -E "${patternRegex}" | grep -v grep || true`
+    );
+
+    if (!stdout.trim()) {
+      logger.debug('SYSTEM', 'No orphaned claude-mem processes found (Unix)');
+      return [];
+    }
+
+    const lines = stdout.trim().split('\n');
+    for (const line of lines) {
+      // Parse: "  1234  01:23:45 /path/to/process"
+      const match = line.trim().match(/^(\d+)\s+(\S+)\s+(.*)$/);
+      if (!match) continue;
+
+      const pid = parseInt(match[1], 10);
+      const etime = match[2];
+
+      // SECURITY: Validate PID is positive integer and not current process
+      if (!Number.isInteger(pid) || pid <= 0 || pid === currentPid) continue;
+
+      const ageMinutes = parseElapsedTime(etime);
+      if (ageMinutes >= ORPHAN_MAX_AGE_MINUTES) {
+        pidsToKill.push(pid);
+        logger.debug('SYSTEM', 'Found orphaned process', { pid, ageMinutes, command: match[3].substring(0, 80) });
+      }
+    }
+  }
+
+  return pidsToKill;
+}
+
+/**
+ * Clean up orphaned claude-mem processes from previous worker sessions
+ *
+ * Targets mcp-server.cjs, worker-service.cjs, and chroma-mcp processes
+ * that survived a previous daemon crash. Only kills processes older than
+ * ORPHAN_MAX_AGE_MINUTES to avoid killing the current session.
+ *
+ * The periodic ProcessRegistry reaper handles in-session orphans;
+ * this function handles cross-session orphans at startup.
+ */
+export async function cleanupOrphanedProcesses(): Promise<void> {
+  const isWindows = process.platform === 'win32';
+  const currentPid = process.pid;
+  let pidsToKill: number[];
+
+  try {
+    pidsToKill = await enumerateOrphanedProcesses(isWindows, currentPid);
+  } catch (error: unknown) {
+    // Orphan cleanup is non-critical - log and continue
+    if (error instanceof Error) {
+      logger.error('SYSTEM', 'Failed to enumerate orphaned processes', {}, error);
+    } else {
+      logger.error('SYSTEM', 'Failed to enumerate orphaned processes', {}, new Error(String(error)));
+    }
+    return;
+  }
+
+  if (pidsToKill.length === 0) {
+    return;
+  }
+
+  logger.info('SYSTEM', 'Cleaning up orphaned claude-mem processes', {
+    platform: isWindows ? 'Windows' : 'Unix',
+    count: pidsToKill.length,
+    pids: pidsToKill,
+    maxAgeMinutes: ORPHAN_MAX_AGE_MINUTES
+  });
+
+  // Kill all found processes
+  if (isWindows) {
+    for (const pid of pidsToKill) {
+      // SECURITY: Double-check PID validation before using in taskkill command
+      if (!Number.isInteger(pid) || pid <= 0) {
+        logger.warn('SYSTEM', 'Skipping invalid PID', { pid });
+        continue;
+      }
+      try {
+        execSync(`taskkill /PID ${pid} /T /F`, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND, stdio: 'ignore', windowsHide: true });
+      } catch (error: unknown) {
+        // [ANTI-PATTERN IGNORED]: Cleanup loop - process may have exited, continue to next PID
+        if (error instanceof Error) {
+          logger.debug('SYSTEM', 'Failed to kill process, may have already exited', { pid }, error);
+        } else {
+          logger.debug('SYSTEM', 'Failed to kill process, may have already exited', { pid }, new Error(String(error)));
+        }
+      }
+    }
+  } else {
+    for (const pid of pidsToKill) {
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch (error: unknown) {
+        // [ANTI-PATTERN IGNORED]: Cleanup loop - process may have exited, continue to next PID
+        if (error instanceof Error) {
+          logger.debug('SYSTEM', 'Process already exited', { pid }, error);
+        } else {
+          logger.debug('SYSTEM', 'Process already exited', { pid }, new Error(String(error)));
+        }
+      }
+    }
+  }
+
+  logger.info('SYSTEM', 'Orphaned processes cleaned up', { count: pidsToKill.length });
+}
+
 const CHROMA_MIGRATION_MARKER_FILENAME = '.chroma-cleaned-v10.3';
 
+/**
+ * One-time chroma data wipe for users upgrading from versions with duplicate
+ * worker bugs that could corrupt chroma data. Since chroma is always rebuildable
+ * from SQLite (via backfillAllProjects), this is safe.
+ *
+ * Checks for a marker file. If absent, wipes ~/.claude-mem/chroma/ and writes
+ * the marker. If present, skips. Idempotent.
+ *
+ * @param dataDirectory - Override for DATA_DIR (used in tests)
+ */
 export function runOneTimeChromaMigration(dataDirectory?: string): void {
   const effectiveDataDir = dataDirectory ?? DATA_DIR;
   const markerPath = path.join(effectiveDataDir, CHROMA_MIGRATION_MARKER_FILENAME);
@@ -261,6 +570,7 @@ export function runOneTimeChromaMigration(dataDirectory?: string): void {
     logger.info('SYSTEM', 'Chroma data directory removed', { chromaDir });
   }
 
+  // Write marker file to prevent future wipes
   mkdirSync(effectiveDataDir, { recursive: true });
   writeFileSync(markerPath, new Date().toISOString());
   logger.info('SYSTEM', 'Chroma migration marker written', { markerPath });
@@ -305,6 +615,17 @@ function classifyCwdForRemap(cwd: string): CwdClassification {
   return { kind: 'worktree', project: `${parent}/${leaf}` };
 }
 
+/**
+ * One-time remap of sdk_sessions.project (+ observations.project,
+ * session_summaries.project) using the cwd captured in pending_messages.cwd
+ * as the source of truth. Required because pre-worktree builds stored bare
+ * project names that collide across parent/worktree checkouts.
+ *
+ * Backs up the DB before writes. Idempotent via marker file. Skips silently
+ * if the DB or pending_messages table doesn't exist yet (fresh install).
+ *
+ * @param dataDirectory - Override for DATA_DIR (used in tests)
+ */
 export function runOneTimeCwdRemap(dataDirectory?: string): void {
   const effectiveDataDir = dataDirectory ?? DATA_DIR;
   const dbPath = path.join(effectiveDataDir, 'claude-mem.db');
@@ -325,7 +646,11 @@ export function runOneTimeCwdRemap(dataDirectory?: string): void {
   }
 }
 
-function executeCwdRemap(dbPath: string, effectiveDataDir: string): void {
+/**
+ * Execute the cwd-remap DB migration. Extracted to keep the try block small.
+ * Opens, queries, and updates the DB, then writes the marker file on success.
+ */
+function executeCwdRemap(dbPath: string, effectiveDataDir: string, markerPath: string): void {
   const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
 
   const probe = applySqliteBusyTimeout(new Database(dbPath, { readonly: true }));
@@ -401,6 +726,25 @@ function executeCwdRemap(dbPath: string, effectiveDataDir: string): void {
   }
 }
 
+/**
+ * Spawn a detached daemon process.
+ *
+ * Uses Node's child_process.spawn with the arg-array form on every platform.
+ * The arg-array form bypasses the shell entirely on Windows, so no quoting
+ * heuristics or PowerShell wrappers are needed (handles paths with spaces
+ * like `C:\Users\Alex Newman\...` natively).
+ *
+ * On Unix, prefer setsid to detach from the controlling terminal so SIGHUP
+ * can't reach the daemon even if the in-process handler fails. The
+ * `detached: true` option already creates a new process group on POSIX;
+ * setsid is the belt-and-suspenders extra.
+ *
+ * Bun.spawn is intentionally NOT used here: it does not support detached
+ * spawning (see comment in process-registry.ts:633-639).
+ *
+ * PID file is written by the worker itself after listen() succeeds,
+ * not by the spawner (race-free, works on all platforms).
+ */
 export function spawnDaemon(
   scriptPath: string,
   port: number,
@@ -414,6 +758,9 @@ export function spawnDaemon(
     ...extraEnv
   });
 
+  // worker-service.cjs imports `bun:sqlite`, so the spawned runtime MUST be
+  // Bun on every platform — never the current process.execPath, which may be
+  // Node when the caller is the MCP server.
   const runtimePath = resolveWorkerRuntimePath();
   if (!runtimePath) {
     logger.error(
@@ -423,7 +770,16 @@ export function spawnDaemon(
     return undefined;
   }
 
+  // On Windows, child_process.spawn with `detached: true` ignores
+  // `windowsHide: true` (Node docs: behavior is undefined). Spawning the
+  // worker via PowerShell `Start-Process -WindowStyle Hidden` is the only
+  // approach that reliably hides the console window AND inherits parent
+  // env vars (WMIC was tried in PR #751 but is deprecated/absent on
+  // modern Windows 11). Re-applies the fix that PR #751 (e6ae0176)
+  // introduced and commit d13662d5 reverted. See issues #2150, #2186,
+  // #2187, #2190, #2198.
   if (process.platform === 'win32') {
+    // Use -EncodedCommand so paths with spaces don't need shell quoting.
     const psScript = `Start-Process -FilePath '${runtimePath.replace(/'/g, "''")}' -ArgumentList @('${scriptPath.replace(/'/g, "''")}','--daemon') -WindowStyle Hidden`;
     const encodedCommand = Buffer.from(psScript, 'utf16le').toString('base64');
 
@@ -433,6 +789,13 @@ export function spawnDaemon(
         windowsHide: true,
         env
       });
+      // Windows success sentinel: PowerShell `Start-Process` does not return
+      // the spawned PID, and we don't want to pay for an extra `Get-Process`
+      // round-trip just to discover it. Return 0 (a conventionally invalid
+      // Unix PID) so callers can distinguish "spawn dispatched" from "spawn
+      // failed". Callers MUST use `pid === undefined` to detect failure —
+      // never falsy checks like `if (!pid)`, which would silently treat
+      // success as failure here.
       return 0;
     } catch (error: unknown) {
       const err = error instanceof Error ? error : new Error(String(error));
@@ -446,6 +809,7 @@ export function spawnDaemon(
     }
   }
 
+  // On Unix, prefer setsid to fully detach from the controlling terminal.
   const setsidPath = '/usr/bin/setsid';
   const useSetsid = existsSync(setsidPath);
 
@@ -454,7 +818,7 @@ export function spawnDaemon(
     ? [runtimePath, scriptPath, '--daemon']
     : [scriptPath, '--daemon'];
 
-  const child = spawnHidden(execPath, args, {
+  const child = spawn(execPath, args, {
     detached: true,
     stdio: 'ignore',
     env
@@ -468,6 +832,50 @@ export function spawnDaemon(
   return child.pid;
 }
 
+/**
+ * Check if a process with the given PID is alive.
+ *
+ * Uses the process.kill(pid, 0) idiom: signal 0 doesn't send a signal,
+ * it just checks if the process exists and is reachable.
+ *
+ * EPERM is treated as "alive" because it means the process exists but
+ * belongs to a different user/session (common in multi-user setups).
+ * PID 0 (Windows sentinel for unknown PID) is treated as alive.
+ */
+export function isProcessAlive(pid: number): boolean {
+  // PID 0 is the Windows sentinel value — process was spawned but PID unknown
+  if (pid === 0) return true;
+
+  // Invalid PIDs are not alive
+  if (!Number.isInteger(pid) || pid < 0) return false;
+
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error: unknown) {
+    if (error instanceof Error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      // EPERM = process exists but different user/session — treat as alive
+      if (code === 'EPERM') return true;
+      logger.debug('SYSTEM', 'Process not alive', { pid, code });
+    } else {
+      logger.debug('SYSTEM', 'Process not alive (non-Error thrown)', { pid }, new Error(String(error)));
+    }
+    // ESRCH = no such process — it's dead
+    return false;
+  }
+}
+
+/**
+ * Check if the PID file was written recently (within thresholdMs).
+ *
+ * Used to coordinate restarts across concurrent sessions: if the PID file
+ * was recently written, another session likely just restarted the worker.
+ * Callers should poll /api/health instead of attempting their own restart.
+ *
+ * @param thresholdMs - Maximum age in ms to consider "recent" (default: 15000)
+ * @returns true if the PID file exists and was modified within thresholdMs
+ */
 export function isPidFileRecent(thresholdMs: number = 15000): boolean {
   try {
     const stats = statSync(PID_FILE);
@@ -482,6 +890,10 @@ export function isPidFileRecent(thresholdMs: number = 15000): boolean {
   }
 }
 
+/**
+ * Touch the PID file to update its mtime without changing contents.
+ * Used after a restart to signal other sessions that a restart just completed.
+ */
 export function touchPidFile(): void {
   try {
     if (!existsSync(PID_FILE)) return;
@@ -492,6 +904,13 @@ export function touchPidFile(): void {
   }
 }
 
+/**
+ * Read the PID file and remove it if the recorded process is dead (stale).
+ *
+ * This is a cheap operation: one filesystem read + one signal-0 check.
+ * Called at the top of ensureWorkerStarted() to clean up after WSL2
+ * hibernate, OOM kills, or other ungraceful worker deaths.
+ */
 export function cleanStalePidFile(): ValidateWorkerPidStatus {
   return validateWorkerPidFile({ logAlive: false, pidFilePath: PID_FILE });
 }
@@ -585,3 +1004,35 @@ export async function reclaimStaleWorkerPort(port: number): Promise<boolean> {
   return true;
 }
 
+/**
+ * Create signal handler factory for graceful shutdown
+ * Returns a handler function that can be passed to process.on('SIGTERM') etc.
+ */
+export function createSignalHandler(
+  shutdownFn: () => Promise<void>,
+  isShuttingDownRef: { value: boolean }
+): (signal: string) => Promise<void> {
+  return async (signal: string) => {
+    if (isShuttingDownRef.value) {
+      logger.warn('SYSTEM', `Received ${signal} but shutdown already in progress`);
+      return;
+    }
+    isShuttingDownRef.value = true;
+
+    logger.info('SYSTEM', `Received ${signal}, shutting down...`);
+    try {
+      await shutdownFn();
+      process.exit(0);
+    } catch (error: unknown) {
+      // Top-level signal handler - log any shutdown error and exit
+      if (error instanceof Error) {
+        logger.error('SYSTEM', 'Error during shutdown', {}, error);
+      } else {
+        logger.error('SYSTEM', 'Error during shutdown', {}, new Error(String(error)));
+      }
+      // Exit gracefully: Windows Terminal won't keep tab open on exit 0
+      // Even on shutdown errors, exit cleanly to prevent tab accumulation
+      process.exit(0);
+    }
+  };
+}

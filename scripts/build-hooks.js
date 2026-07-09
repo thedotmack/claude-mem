@@ -337,16 +337,13 @@ async function buildHooks() {
       // Kept here (not in optionalDependencies) so a failure fails the build.
       dependencies: {
         'zod': '^4.3.6',
-        'shell-quote': '^1.8.3',
-      },
-      // Tree-sitter grammars need native node-gyp / prebuild-install builds. As
-      // hard dependencies, a single grammar build failure (e.g. a Node version
-      // with no prebuilt binding) aborts the ENTIRE `npm install`, taking zod
-      // down with it and crashing every hook (#2407 / #2379). As optional deps
-      // the failure is tolerated: zod still installs, hooks still boot, and only
-      // code-graph parsing degrades. The resolve gate at the end of this build
-      // is the hard guard that zod actually landed.
-      optionalDependencies: {
+        // @modelcontextprotocol/sdk validates tool schemas with Ajv. mcp-server.cjs
+        // bundles the SDK, but Ajv emits compiled validators that require its runtime
+        // helpers by package path (e.g. require("ajv/dist/runtime/equal")), which
+        // esbuild leaves external. Without Ajv in the plugin's node_modules the MCP
+        // server crashes on the first tool call. See also the zod guardrail below.
+        'ajv': '^8.20.0',
+        'ajv-formats': '^3.0.1',
         'tree-sitter-cli': '^0.26.5',
         'tree-sitter-c': '^0.24.1',
         'tree-sitter-cpp': '^0.23.4',
@@ -637,6 +634,19 @@ async function buildHooks() {
       throw new Error(
         `mcp-server.cjs contains external ${zodRequireMatch[0]}. Claude Desktop can launch this bundle without plugin node_modules available, so Zod must be bundled into the MCP server.`
       );
+    }
+    // Ajv (via @modelcontextprotocol/sdk) emits compiled validators that require
+    // their runtime helpers by package path, which esbuild cannot inline. Those
+    // externals are acceptable ONLY if the package is declared in the plugin's
+    // dependencies so `bun install` provides them at runtime. Guard against the
+    // silent regression where the require survives the bundle but the dep is missing.
+    for (const ajvPkg of ['ajv', 'ajv-formats']) {
+      const ajvRequireRegex = new RegExp(`require\\(\\s*["']${ajvPkg}(?:/[^"']*)?["']\\s*\\)`);
+      if (ajvRequireRegex.test(mcpBundleContent) && !pluginPackageJson.dependencies[ajvPkg]) {
+        throw new Error(
+          `mcp-server.cjs requires external "${ajvPkg}" but it is missing from the generated plugin/package.json dependencies. Add it to the dependencies list in scripts/build-hooks.js so the plugin cache install can resolve it at runtime.`
+        );
+      }
     }
 
     const MCP_SERVER_MAX_BYTES = 600 * 1024;

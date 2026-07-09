@@ -186,24 +186,23 @@ describe('Plugin Distribution - hooks.json Integrity', () => {
 });
 
 describe('Plugin Distribution - Startup Root Resolution', () => {
-  it('MCP startup command resolves the plugin root cross-platform (#2792)', () => {
-    // The launcher is now a cross-platform `node -e` payload (no `sh`), so it
-    // spawns on Windows without Git Bash. It must still resolve the plugin root
-    // with config-dir + env fallbacks and try cache roots before marketplaces.
-    const command = mcpStartupCommandFrom('plugin/.mcp.json');
+  // The MCP server is spawned by Claude Code WITHOUT a shell, so `command` must
+  // resolve against PATH directly. `sh` is not on PATH on Windows (Git Bash is
+  // not guaranteed to be there), so the bundled launcher uses `node` — which is
+  // always present as the runtime — and performs root resolution in JS.
+  it('MCP startup command resolves the plugin root in node (cross-platform)', () => {
+    for (const relativePath of ['plugin/.mcp.json']) {
+      const command = mcpStartupCommandFrom(relativePath);
 
-    expect(command).toContain('CLAUDE_CONFIG_DIR');
-    expect(command).toContain('.claude');
-    expect(command).toContain('CLAUDE_PLUGIN_ROOT');
-    expect(command).toContain('PLUGIN_ROOT');
-    expect(command).toContain('plugins/marketplaces/thedotmack/plugin');
-    expect(command).toContain('plugins/cache/thedotmack/claude-mem');
-    expect(command).toContain('mcp-server.cjs');
-    // No bare absolute "/scripts/..." path leaks through.
-    expect(command).not.toContain('"/scripts/mcp-server.cjs"');
-    expect(command.indexOf('plugins/cache/thedotmack/claude-mem')).toBeLessThan(
-      command.indexOf('plugins/marketplaces/thedotmack/plugin')
-    );
+      expect(command).toContain('process.env.CLAUDE_CONFIG_DIR');
+      expect(command).toContain('process.env.CLAUDE_PLUGIN_ROOT||process.env.PLUGIN_ROOT');
+      expect(command).toContain('plugins/marketplaces/thedotmack/plugin');
+      expect(command).toContain('plugins/cache/thedotmack/claude-mem');
+      expect(command).toContain('mcp-server.cjs');
+      expect(command.indexOf('plugins/cache/thedotmack/claude-mem')).toBeLessThan(
+        command.indexOf('plugins/marketplaces/thedotmack/plugin')
+      );
+    }
   });
 
   it('Codex hook commands should have config-dir based non-empty fallbacks', () => {
