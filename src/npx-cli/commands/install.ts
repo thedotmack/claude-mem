@@ -10,7 +10,7 @@ import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { SettingsDefaultsManager, writeSettingsFileSecure, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
-import { hasAgyExecutable } from '../../shared/find-agy-executable.js';
+import { parseJsonWithBom, writeJsonFileAtomic as writeSettingsJsonAtomic } from '../../shared/atomic-json.js';
 import { loadClaudeMemEnv, saveClaudeMemEnv } from '../../shared/EnvManager.js';
 import { ensureWorkerStarted, type WorkerStartResult } from '../../services/worker-spawner.js';
 import { formatHostForUrl } from '../../shared/worker-utils.js';
@@ -850,16 +850,29 @@ function settingsWriteTarget(settings: Record<string, unknown>): Record<string, 
 
 export function mergeSettings(updates: Record<string, string>, path = USER_SETTINGS_PATH): boolean {
   try {
-    let current: Record<string, unknown> = {};
+    // Read the FULL document so we can write it back intact. The
+    // Claude-Code-style settings.json wraps env vars in a top-level `env`
+    // block and exposes peer keys at the root (hooks, permissions,
+    // apiKeyHelper, model, statusLine, etc.). readFlatSettings unwraps the
+    // env subtree for reads, but writing that flattened view back as the
+    // entire file silently drops every non-env top-level key — destroying
+    // user configuration that disableClaudeAutoMemory + writeJsonFileAtomic
+    // had carefully written.
+    //
+    // Track whether the file uses the env-nested shape so we mutate only the
+    // relevant subtree and preserve every other top-level key on write.
+    let document: Record<string, unknown> = {};
+    let envNested = false;
     if (existsSync(path)) {
       try {
-        const parsed = JSON.parse(stripBom(readFileSync(path, 'utf-8')));
-        current = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-          ? parsed as Record<string, unknown>
-          : {};
+        const parsed = parseJsonWithBom(readFileSync(path, 'utf-8'));
+        if (parsed && typeof parsed === 'object') {
+          document = parsed as Record<string, unknown>;
+          envNested = typeof document.env === 'object' && document.env !== null;
+        }
       } catch (parseError: unknown) {
         console.warn('[install] Failed to parse existing settings.json, starting from empty:', parseError instanceof Error ? parseError.message : String(parseError));
-        current = {};
+        document = {};
       }
     } else {
       const dir = dirname(path);
@@ -868,12 +881,14 @@ export function mergeSettings(updates: Record<string, string>, path = USER_SETTI
       }
     }
 
-    const target = settingsWriteTarget(current);
+    const target = envNested
+      ? (document.env as Record<string, unknown>)
+      : document;
     for (const [key, value] of Object.entries(updates)) {
       target[key] = value;
     }
 
-    writeSettingsJsonAtomic(path, current);
+    writeSettingsJsonAtomic(path, document);
     return true;
   } catch (error: unknown) {
     log.error(`Failed to write settings to ${path}: ${error instanceof Error ? error.message : String(error)}`);
