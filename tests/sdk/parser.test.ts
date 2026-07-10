@@ -59,6 +59,7 @@ describe('parseAgentXml — observations', () => {
 
     expect(result).toHaveLength(1);
     expect(result[0].title).toBeNull();
+    expect(result[0].type).toBe('bugfix');
     expect(result[0].narrative).toBe('Patched the null pointer dereference in session handler.');
   });
 
@@ -143,6 +144,18 @@ describe('parseAgentXml — observations', () => {
 
     expect(result).toHaveLength(1);
     expect(result[0].type).toBe('bugfix');
+  });
+
+  it('preserves a reporter-shaped unsupported observation type', () => {
+    const xml = `<observation>
+      <type>code</type>
+      <title>Reporter-shaped unsupported type</title>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].type).toBe('code');
   });
 
   it('returns a fail-fast result when no observation/summary blocks are present', () => {
