@@ -64,6 +64,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CHROMA_TENANT: string;
   CLAUDE_MEM_CHROMA_DATABASE: string;
   CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS: string;
+  CLAUDE_MEM_CHROMA_MEMORY_LIMIT_MB: string;
   CLAUDE_MEM_TELEGRAM_ENABLED: string;
   CLAUDE_MEM_TELEGRAM_BOT_TOKEN: string;
   CLAUDE_MEM_TELEGRAM_CHAT_ID: string;
@@ -148,6 +149,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CHROMA_TENANT: 'default_tenant',
     CLAUDE_MEM_CHROMA_DATABASE: 'default_database',
     CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS: '120000',
+    CLAUDE_MEM_CHROMA_MEMORY_LIMIT_MB: '2048',   // Recycle the chroma-mcp subprocess tree when its resident memory exceeds this many MB. '0' disables the watchdog.
     CLAUDE_MEM_TELEGRAM_ENABLED: 'true',
     CLAUDE_MEM_TELEGRAM_BOT_TOKEN: '',
     CLAUDE_MEM_TELEGRAM_CHAT_ID: '',

@@ -24,6 +24,10 @@ const CHROMA_PREWARM_TIMEOUT_SETTING = 'CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS';
 const CHROMA_PREWARM_TIMEOUT_BOUNDS = { min: 1, max: 600_000 } as const;
 const CHROMA_PREWARM_REAP_TIMEOUT_MS = 1_000;
 const RECONNECT_BACKOFF_MS = 10_000;
+const CHROMA_MEMORY_LIMIT_SETTING = 'CLAUDE_MEM_CHROMA_MEMORY_LIMIT_MB';
+const DEFAULT_CHROMA_MEMORY_LIMIT_MB = 2048;
+const CHROMA_MEMORY_LIMIT_BOUNDS = { min: 256, max: 1_048_576 } as const;
+const CHROMA_MEMORY_CHECK_INTERVAL_MS = 5 * 60_000;
 const DEFAULT_CHROMA_DATA_DIR = paths.chroma();
 const CHROMA_SUPERVISOR_ID = 'chroma-mcp';
 const CHROMA_OUTPUT_TAIL_MAX_CHARS = 2048;
@@ -75,6 +79,7 @@ export class ChromaMcpManager {
   private activePrewarmChild: ChildProcess | null = null;
   private connectionGeneration: number = 0;
   private intentionallyClosingTransports = new WeakSet<object>();
+  private memoryWatchdogTimer: ReturnType<typeof setInterval> | null = null;
   private static uvxAvailabilityProbe: ((command: string, env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null = null;
 
   private constructor() {}
@@ -216,6 +221,7 @@ export class ChromaMcpManager {
 
     this.connected = true;
     this.registerManagedProcess();
+    this.startMemoryWatchdog();
 
     logger.info('CHROMA_MCP', 'Connected to chroma-mcp successfully');
 
@@ -234,6 +240,7 @@ export class ChromaMcpManager {
         return;
       }
       logger.warn('CHROMA_MCP', 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff');
+      this.stopMemoryWatchdog();
       this.connected = false;
       getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
       this.client = null;
@@ -358,6 +365,185 @@ export class ChromaMcpManager {
       });
     }
     return DEFAULT_CHROMA_PREWARM_TIMEOUT_MS;
+  }
+
+  private static getChromaMemoryLimitMb(): number {
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const rawValue = process.env[CHROMA_MEMORY_LIMIT_SETTING] ?? settings[CHROMA_MEMORY_LIMIT_SETTING];
+    if (!rawValue) {
+      return DEFAULT_CHROMA_MEMORY_LIMIT_MB;
+    }
+
+    const parsed = Number.parseInt(rawValue, 10);
+    if (parsed === 0) {
+      // Explicit opt-out: '0' disables the memory watchdog entirely.
+      return 0;
+    }
+    if (
+      Number.isFinite(parsed) &&
+      parsed >= CHROMA_MEMORY_LIMIT_BOUNDS.min &&
+      parsed <= CHROMA_MEMORY_LIMIT_BOUNDS.max
+    ) {
+      return parsed;
+    }
+
+    logger.warn('CHROMA_MCP', `Invalid ${CHROMA_MEMORY_LIMIT_SETTING}, using default`, {
+      value: rawValue,
+      min: CHROMA_MEMORY_LIMIT_BOUNDS.min,
+      max: CHROMA_MEMORY_LIMIT_BOUNDS.max
+    });
+    return DEFAULT_CHROMA_MEMORY_LIMIT_MB;
+  }
+
+  /**
+   * Memory watchdog: chroma-mcp 0.2.6 / chromadb leak native allocations in
+   * the long-lived python subprocess — observed growing to a 23 GB physical
+   * footprint (28k+ MALLOC_LARGE regions) over 2 days on macOS while `ps` RSS
+   * showed 13 MB because the leaked pages had been compressed/swapped out.
+   * There is no upstream fix (0.2.6 is the latest chroma-mcp release), so the
+   * only durable mitigation is to recycle the subprocess tree before the leak
+   * exhausts RAM and swap.
+   *
+   * Every CHROMA_MEMORY_CHECK_INTERVAL_MS the watchdog sums resident memory
+   * across the spawn chain (uvx -> uv -> python -> chroma-mcp) and, when the
+   * total exceeds CLAUDE_MEM_CHROMA_MEMORY_LIMIT_MB, tears the tree down via
+   * disposeCurrentSubprocess(). This is a recycle, not a failure: it does not
+   * touch lastConnectionFailureTimestamp, so the next callTool() reconnects
+   * immediately instead of hitting the reconnect backoff.
+   */
+  private startMemoryWatchdog(): void {
+    this.stopMemoryWatchdog();
+
+    if (ChromaMcpManager.getChromaMemoryLimitMb() <= 0) {
+      return;
+    }
+
+    this.memoryWatchdogTimer = setInterval(() => {
+      this.checkSubprocessMemory().catch((error) => {
+        logger.debug('CHROMA_MCP', 'Memory watchdog check failed (best-effort)', {
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
+    }, CHROMA_MEMORY_CHECK_INTERVAL_MS);
+    // Never keep the worker process alive just for the watchdog.
+    this.memoryWatchdogTimer.unref?.();
+  }
+
+  private stopMemoryWatchdog(): void {
+    if (this.memoryWatchdogTimer) {
+      clearInterval(this.memoryWatchdogTimer);
+      this.memoryWatchdogTimer = null;
+    }
+  }
+
+  private async checkSubprocessMemory(): Promise<void> {
+    if (!this.connected || !this.transport) {
+      return;
+    }
+    const measuredTransport = this.transport;
+    const rootPid = (measuredTransport as unknown as { _process?: ChildProcess })._process?.pid;
+    if (!rootPid) {
+      return;
+    }
+
+    // Re-read the limit each tick so settings changes apply without a restart.
+    const limitMb = ChromaMcpManager.getChromaMemoryLimitMb();
+    if (limitMb <= 0) {
+      return;
+    }
+
+    const descendantPids = await ChromaMcpManager.collectDescendantPids(rootPid);
+    const usageMb = await ChromaMcpManager.measureProcessTreeMemoryMb([rootPid, ...descendantPids]);
+    if (usageMb === null || usageMb <= limitMb) {
+      return;
+    }
+
+    // The measurement awaits above take time; if the connection was recycled
+    // meanwhile (transport error -> dispose -> reconnect), this verdict
+    // belongs to the previous subprocess — do not kill its healthy successor.
+    if (this.transport !== measuredTransport) {
+      logger.debug('CHROMA_MCP', 'Transport changed during memory check, skipping recycle');
+      return;
+    }
+
+    logger.warn('CHROMA_MCP', 'chroma-mcp subprocess tree exceeded memory limit, recycling', {
+      rootPid,
+      usageMb: Math.round(usageMb),
+      limitMb
+    });
+    await this.disposeCurrentSubprocess();
+  }
+
+  /**
+   * Sum resident memory in MB across the given pids.
+   *
+   * POSIX: one `ps -o rss= -p <pid,...>` call (RSS in KB). RSS underreports
+   * once the OS compresses or swaps the leaked pages out, but a leaking
+   * process grows through resident memory first, so a periodic check catches
+   * it during the growth phase.
+   *
+   * Windows: `tasklist /FI "PID eq <pid>" /NH /FO CSV` per pid ("Mem Usage"
+   * column, KB with locale-dependent digit grouping). Note that descendant
+   * discovery (collectDescendantPids) is pgrep-based, so on Windows only the
+   * pids the caller already knows are measured — in practice the direct
+   * child. Full-tree coverage is POSIX; the leak this guards against was
+   * observed on macOS/Linux-style deployments.
+   *
+   * Returns null when measurement fails — callers must never treat a failed
+   * measurement as over-limit.
+   */
+  private static async measureProcessTreeMemoryMb(pids: number[]): Promise<number | null> {
+    if (pids.length === 0) {
+      return null;
+    }
+
+    try {
+      if (process.platform === 'win32') {
+        let totalKb = 0;
+        for (const pid of pids) {
+          const { stdout } = await execFileAsync(
+            'tasklist',
+            ['/FI', `PID eq ${pid}`, '/NH', '/FO', 'CSV'],
+            { timeout: 5_000, windowsHide: true }
+          );
+          totalKb += ChromaMcpManager.parseTasklistMemoryKb(stdout);
+        }
+        return totalKb / 1024;
+      }
+
+      const { stdout } = await execFileAsync('ps', ['-o', 'rss=', '-p', pids.join(',')], { timeout: 5_000 });
+      return ChromaMcpManager.parsePsRssKb(stdout) / 1024;
+    } catch (error) {
+      // `ps -p` exits non-zero when any pid in the list is already gone but
+      // still prints rows for the live ones — use that partial output.
+      const stdout = (error as { stdout?: unknown })?.stdout;
+      if (typeof stdout === 'string' && stdout.trim().length > 0) {
+        return ChromaMcpManager.parsePsRssKb(stdout) / 1024;
+      }
+      logger.debug('CHROMA_MCP', 'Memory measurement failed (best-effort)', {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return null;
+    }
+  }
+
+  private static parsePsRssKb(stdout: string): number {
+    return stdout
+      .split('\n')
+      .map(line => Number.parseInt(line.trim(), 10))
+      .filter(value => Number.isFinite(value) && value > 0)
+      .reduce((total, value) => total + value, 0);
+  }
+
+  private static parseTasklistMemoryKb(stdout: string): number {
+    // CSV row: "python.exe","1234","Console","1","1,234,567 K" — the digit
+    // grouping separator varies by locale (comma, dot, space, NBSP).
+    const match = stdout.match(/"([\d\s.,]+) K"/);
+    if (!match) {
+      return 0;
+    }
+    const parsed = Number.parseInt(match[1].replace(/\D/g, ''), 10);
+    return Number.isFinite(parsed) ? parsed : 0;
   }
 
   private static captureOutputTail(
@@ -629,6 +815,7 @@ export class ChromaMcpManager {
    * subprocess (no-op in that case).
    */
   private async disposeCurrentSubprocess(): Promise<void> {
+    this.stopMemoryWatchdog();
     await this.disposeActivePrewarm();
 
     const closingTransport = this.transport;
