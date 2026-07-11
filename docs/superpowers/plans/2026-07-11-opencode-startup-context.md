@@ -178,7 +178,7 @@ Use the same esbuild options as `scripts/build-hooks.js` for `src/integrations/o
 Run:
 
 ```bash
-rtk node -e 'import("esbuild").then(({build}) => build({entryPoints:["src/integrations/opencode-plugin/index.ts"],bundle:true,platform:"node",target:"node18",format:"esm",outfile:"dist/opencode-plugin/index.js",minify:true,logLevel:"error",external:["fs","fs/promises","path","os","child_process","url","crypto","http","https","net","stream","util","events"]}))'
+rtk node -e 'import("esbuild").then(({build}) => build({entryPoints:["src/integrations/opencode-plugin/entry.ts"],bundle:true,platform:"node",target:"node18",format:"esm",outfile:"dist/opencode-plugin/index.js",minify:true,logLevel:"error",external:["fs","fs/promises","path","os","child_process","url","crypto","http","https","net","stream","util","events"]}))'
 ```
 
 Expected: `dist/opencode-plugin/index.js` is regenerated without changing unrelated worker/UI bundles.

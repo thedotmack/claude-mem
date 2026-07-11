@@ -270,6 +270,15 @@ describe("OpenCode plugin event contract", () => {
   });
 });
 
+describe("OpenCode 1.17 plugin export contract", () => {
+  it("exports exactly 'default' and the default export is a function", async () => {
+    const entry = await import("../../src/integrations/opencode-plugin/entry");
+    const keys = Object.keys(entry);
+    expect(keys).toEqual(["default"]);
+    expect(typeof entry.default).toBe("function");
+  });
+});
+
 describe("OpenCode search client response-shape contract", () => {
   it("parses the worker's real data.content blocks and returns the rows", () => {
     // This is exactly what SearchManager.searchObservations returns on a hit.

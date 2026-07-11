@@ -627,14 +627,14 @@ async function buildHooks() {
       console.log(`✓ openclaw plugin built (${(openclawStats.size / 1024).toFixed(2)} KB)`);
     }
 
-    if (fs.existsSync('src/integrations/opencode-plugin/index.ts')) {
+    if (fs.existsSync('src/integrations/opencode-plugin/entry.ts')) {
       console.log(`\n🔧 Building OpenCode plugin...`);
       const opencodeOutDir = 'dist/opencode-plugin';
       if (!fs.existsSync(opencodeOutDir)) {
         fs.mkdirSync(opencodeOutDir, { recursive: true });
       }
       await build({
-        entryPoints: ['src/integrations/opencode-plugin/index.ts'],
+        entryPoints: ['src/integrations/opencode-plugin/entry.ts'],
         bundle: true,
         platform: 'node',
         target: 'node18',
