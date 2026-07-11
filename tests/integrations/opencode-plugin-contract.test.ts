@@ -148,6 +148,41 @@ describe("OpenCode plugin event contract", () => {
     }
   });
 
+  it("does not block when worker fetch hangs (bounded transform)", async () => {
+    const originalFetch = globalThis.fetch;
+    // Stub fetch to hang forever BUT respect AbortSignal so the timeout path
+    // can actually reject the in-flight request.
+    globalThis.fetch = ((_url: string | URL | Request, init?: RequestInit) =>
+      new Promise((resolve, reject) => {
+        const signal = init?.signal;
+        if (signal?.aborted) {
+          reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+          return;
+        }
+        signal?.addEventListener("abort", () => {
+          reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+        });
+      })) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const transform = plugin["experimental.chat.system.transform"];
+      const output = { system: ["base"] };
+
+      const start = Date.now();
+      await transform({ sessionID: "hang-session", model: {} as never }, output);
+      const elapsed = Date.now() - start;
+
+      // Hook must complete in bounded time (WORKER_GET_TIMEOUT_MS + margin),
+      // not block for the OS TCP timeout (~75s).
+      expect(elapsed).toBeLessThan(7000);
+      // Context was null (fetch never resolved), so nothing pushed.
+      expect(output.system).toEqual(["base"]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  }, 10_000);
+
   it("marks initialized sessions as OpenCode", async () => {
     const posts: Array<{ url: string; body: unknown }> = [];
     const originalFetch = globalThis.fetch;

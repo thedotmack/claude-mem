@@ -104,6 +104,7 @@ function resolveWorkerHost(): string {
 
 const WORKER_BASE_URL = `http://${resolveWorkerHost()}:${resolveWorkerPort()}`;
 const MAX_TOOL_RESPONSE_LENGTH = 1000;
+const WORKER_GET_TIMEOUT_MS = 5_000;
 
 const JSON_HEADERS: Record<string, string> = { "Content-Type": "application/json" };
 
@@ -124,8 +125,13 @@ function workerPostFireAndForget(
 }
 
 async function workerGetText(path: string): Promise<string | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), WORKER_GET_TIMEOUT_MS);
   try {
-    const response = await fetch(`${WORKER_BASE_URL}${path}`, { headers: JSON_HEADERS });
+    const response = await fetch(`${WORKER_BASE_URL}${path}`, {
+      headers: JSON_HEADERS,
+      signal: controller.signal,
+    });
     if (!response.ok) {
       console.warn(`[claude-mem] Worker GET ${path} returned ${response.status}`);
       return null;
@@ -137,6 +143,8 @@ async function workerGetText(path: string): Promise<string | null> {
       console.warn(`[claude-mem] Worker GET ${path} failed: ${message}`);
     }
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
