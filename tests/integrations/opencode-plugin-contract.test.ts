@@ -210,6 +210,64 @@ describe("OpenCode plugin event contract", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it("every lifecycle POST body carries platformSource=opencode", async () => {
+    const posts: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      posts.push({
+        url: String(url),
+        body: init?.body ? JSON.parse(String(init.body)) : {},
+      });
+      return new Response(JSON.stringify({ status: "queued" }), { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+
+      // 1. tool.execute.after → sessions/init + sessions/observations
+      await plugin["tool.execute.after"](
+        { tool: "read", sessionID: "ses_obs", callID: "c1" },
+        { title: "Read", output: "file contents", metadata: {}, args: { path: "/a" } },
+      );
+
+      // 2. chat.message → sessions/observations (assistant only)
+      await plugin["chat.message"](
+        {},
+        {
+          message: { id: "m1", role: "assistant", sessionID: "ses_obs" },
+          parts: [{ type: "text", text: "hello" }],
+        },
+      );
+
+      // 3. experimental.session.compacting → sessions/summarize
+      await plugin["experimental.session.compacting"]({ sessionID: "ses_compact" });
+
+      // 4. session.idle event → sessions/summarize
+      await plugin["event"]({
+        event: { type: "session.idle", properties: { sessionID: "ses_idle" } },
+      });
+
+      const sessionPosts = posts.filter(
+        (p) =>
+          p.url.includes("/api/sessions/init") ||
+          p.url.includes("/api/sessions/observations") ||
+          p.url.includes("/api/sessions/summarize"),
+      );
+
+      // Should have: init, obs(tool), obs(chat), summarize(compact), summarize(idle)
+      expect(sessionPosts.length).toBeGreaterThanOrEqual(5);
+
+      for (const post of sessionPosts) {
+        expect(
+          post.body.platformSource,
+          `POST ${post.url} must carry platformSource=opencode`,
+        ).toBe("opencode");
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });
 
 describe("OpenCode search client response-shape contract", () => {
