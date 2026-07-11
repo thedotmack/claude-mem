@@ -2,6 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import {
   classifyObserverOutput,
   isQuotaLimitedObserverOutput,
+  isAuthFailureObserverOutput,
   previewOutput,
 } from '../../src/sdk/output-classifier.js';
 
@@ -71,6 +72,43 @@ describe('isQuotaLimitedObserverOutput', () => {
 
   it('does not treat ordinary observer prose as quota prose', () => {
     expect(isQuotaLimitedObserverOutput('No observations to record.')).toBe(false);
+  });
+});
+
+describe('isAuthFailureObserverOutput', () => {
+  it('detects "Not logged in · Please run /login" prose', () => {
+    expect(isAuthFailureObserverOutput('Not logged in · Please run /login')).toBe(true);
+  });
+
+  it('detects a 401 invalid-credentials API error', () => {
+    expect(
+      isAuthFailureObserverOutput('API Error: 401 Invalid authentication credentials'),
+    ).toBe(true);
+  });
+
+  it('detects "Unauthenticated request" prose', () => {
+    expect(isAuthFailureObserverOutput('Unauthenticated request')).toBe(true);
+  });
+
+  it('returns false for empty / non-string input (fail-safe)', () => {
+    expect(isAuthFailureObserverOutput('')).toBe(false);
+    expect(isAuthFailureObserverOutput('   ')).toBe(false);
+    expect(isAuthFailureObserverOutput(undefined)).toBe(false);
+    expect(isAuthFailureObserverOutput(null)).toBe(false);
+  });
+
+  it('does not treat ordinary observer prose as auth failure', () => {
+    expect(isAuthFailureObserverOutput('I observe no tool executions to record.')).toBe(false);
+  });
+
+  it('does not treat valid observation XML as auth failure', () => {
+    expect(
+      isAuthFailureObserverOutput('<observation><type>discovery</type><title>x</title></observation>'),
+    ).toBe(false);
+  });
+
+  it('does not trip on the number 401 in a non-auth sentence', () => {
+    expect(isAuthFailureObserverOutput('We processed 401 records without error.')).toBe(false);
   });
 });
 
