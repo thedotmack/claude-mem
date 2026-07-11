@@ -17,6 +17,7 @@ const manager = ChromaMcpManager as unknown as {
   parsePsRssKb(stdout: string): number;
   parseTasklistMemoryKb(stdout: string): number;
   getChromaMemoryLimitMb(): number;
+  descendantsFromPidTable(rootPid: number, stdout: string): number[];
 };
 
 const originalLimit = process.env.CLAUDE_MEM_CHROMA_MEMORY_LIMIT_MB;
@@ -86,19 +87,35 @@ describe('getChromaMemoryLimitMb', () => {
   });
 });
 
+describe('descendantsFromPidTable', () => {
+  it('walks the uvx -> uv -> python chain and ignores unrelated pids', () => {
+    const table = '  100 1\n  111 100\n  222 111\n  333 222\n  444 9999\n';
+    expect(manager.descendantsFromPidTable(111, table)).toEqual([222, 333]);
+  });
+
+  it('returns empty for a leaf pid and for empty output', () => {
+    expect(manager.descendantsFromPidTable(333, ' 111 100\n 222 111\n 333 222\n')).toEqual([]);
+    expect(manager.descendantsFromPidTable(111, '')).toEqual([]);
+  });
+
+  it('does not loop on cyclic pid tables', () => {
+    expect(manager.descendantsFromPidTable(111, '222 111\n111 222\n')).toEqual([222]);
+  });
+});
+
 describe('checkSubprocessMemory', () => {
   // Statics are patched on the class (process-global), so snapshot and
   // restore them for later test files.
-  const realCollectDescendantPids = (ChromaMcpManager as any).collectDescendantPids;
+  const realCollectDescendantPidsFromSnapshot = (ChromaMcpManager as any).collectDescendantPidsFromSnapshot;
   const realMeasureProcessTreeMemoryMb = (ChromaMcpManager as any).measureProcessTreeMemoryMb;
 
   afterAll(() => {
-    (ChromaMcpManager as any).collectDescendantPids = realCollectDescendantPids;
+    (ChromaMcpManager as any).collectDescendantPidsFromSnapshot = realCollectDescendantPidsFromSnapshot;
     (ChromaMcpManager as any).measureProcessTreeMemoryMb = realMeasureProcessTreeMemoryMb;
   });
 
   function makeInstance(usageMb: number | null) {
-    (ChromaMcpManager as any).collectDescendantPids = mock(async () => [222, 333]);
+    (ChromaMcpManager as any).collectDescendantPidsFromSnapshot = mock(async () => [222, 333]);
     (ChromaMcpManager as any).measureProcessTreeMemoryMb = mock(async (pids: number[]) => {
       expect(pids).toEqual([111, 222, 333]);
       return usageMb;

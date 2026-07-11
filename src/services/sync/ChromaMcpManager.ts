@@ -452,7 +452,7 @@ export class ChromaMcpManager {
       return;
     }
 
-    const descendantPids = await ChromaMcpManager.collectDescendantPids(rootPid);
+    const descendantPids = await ChromaMcpManager.collectDescendantPidsFromSnapshot(rootPid);
     const usageMb = await ChromaMcpManager.measureProcessTreeMemoryMb([rootPid, ...descendantPids]);
     if (usageMb === null || usageMb <= limitMb) {
       return;
@@ -475,6 +475,78 @@ export class ChromaMcpManager {
   }
 
   /**
+   * Collect all descendants of rootPid from a single full process snapshot.
+   *
+   * Unlike the pgrep-based collectDescendantPids(), this works on Windows
+   * (PowerShell CIM) and on minimal POSIX images without pgrep — the leaking
+   * python process is two levels below the transport child (uvx -> uv ->
+   * python), so the watchdog must not silently degrade to root-only
+   * measurement when pgrep is missing.
+   */
+  private static async collectDescendantPidsFromSnapshot(rootPid: number): Promise<number[]> {
+    let stdout = '';
+    try {
+      if (process.platform === 'win32') {
+        const result = await execFileAsync(
+          'powershell',
+          [
+            '-NoProfile', '-NonInteractive', '-Command',
+            'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId)" }'
+          ],
+          { timeout: 15_000, windowsHide: true }
+        );
+        stdout = result.stdout;
+      } else {
+        const result = await execFileAsync('ps', ['-Ao', 'pid=,ppid='], { timeout: 5_000 });
+        stdout = result.stdout;
+      }
+    } catch (error) {
+      logger.debug('CHROMA_MCP', 'Process snapshot for descendant discovery failed (best-effort)', {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return [];
+    }
+    return ChromaMcpManager.descendantsFromPidTable(rootPid, stdout);
+  }
+
+  private static descendantsFromPidTable(rootPid: number, stdout: string): number[] {
+    const childrenByParent = new Map<number, number[]>();
+    for (const line of stdout.split('\n')) {
+      const parts = line.trim().split(/\s+/);
+      if (parts.length < 2) {
+        continue;
+      }
+      const pid = Number.parseInt(parts[0], 10);
+      const ppid = Number.parseInt(parts[1], 10);
+      if (!Number.isFinite(pid) || !Number.isFinite(ppid) || pid <= 0) {
+        continue;
+      }
+      const siblings = childrenByParent.get(ppid);
+      if (siblings) {
+        siblings.push(pid);
+      } else {
+        childrenByParent.set(ppid, [pid]);
+      }
+    }
+
+    const collected: number[] = [];
+    const seen = new Set<number>([rootPid]);
+    const queue = [rootPid];
+    while (queue.length > 0) {
+      const parent = queue.shift()!;
+      for (const child of childrenByParent.get(parent) ?? []) {
+        if (seen.has(child)) {
+          continue;
+        }
+        seen.add(child);
+        collected.push(child);
+        queue.push(child);
+      }
+    }
+    return collected;
+  }
+
+  /**
    * Sum resident memory in MB across the given pids.
    *
    * POSIX: one `ps -o rss= -p <pid,...>` call (RSS in KB). RSS underreports
@@ -483,11 +555,7 @@ export class ChromaMcpManager {
    * it during the growth phase.
    *
    * Windows: `tasklist /FI "PID eq <pid>" /NH /FO CSV` per pid ("Mem Usage"
-   * column, KB with locale-dependent digit grouping). Note that descendant
-   * discovery (collectDescendantPids) is pgrep-based, so on Windows only the
-   * pids the caller already knows are measured — in practice the direct
-   * child. Full-tree coverage is POSIX; the leak this guards against was
-   * observed on macOS/Linux-style deployments.
+   * column, KB with locale-dependent digit grouping).
    *
    * Returns null when measurement fails — callers must never treat a failed
    * measurement as over-limit.
