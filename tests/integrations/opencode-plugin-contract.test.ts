@@ -280,6 +280,30 @@ describe("OpenCode 1.17 plugin export contract", () => {
 });
 
 describe("OpenCode search client response-shape contract", () => {
+  it("does not apply the startup-context timeout to explicit searches", async () => {
+    let searchSignal: AbortSignal | null | undefined;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).includes("/api/search/observations")) {
+        searchSignal = init?.signal;
+      }
+      return new Response(
+        JSON.stringify({ content: [{ type: "text", text: "Found remembered auth context" }] }),
+        { status: 200 },
+      );
+    }) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const result = await plugin.tool.claude_mem_search.execute({ query: "auth" });
+
+      expect(searchSignal).toBeUndefined();
+      expect(result).toContain("remembered auth context");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("parses the worker's real data.content blocks and returns the rows", () => {
     // This is exactly what SearchManager.searchObservations returns on a hit.
     const workerResponse = JSON.stringify({

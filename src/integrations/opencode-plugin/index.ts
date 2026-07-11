@@ -125,13 +125,13 @@ function workerPostFireAndForget(
   });
 }
 
-async function workerGetText(path: string): Promise<string | null> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), WORKER_GET_TIMEOUT_MS);
+async function workerGetText(path: string, timeoutMs?: number): Promise<string | null> {
+  const controller = timeoutMs ? new AbortController() : undefined;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
   try {
     const response = await fetch(`${WORKER_BASE_URL}${path}`, {
       headers: JSON_HEADERS,
-      signal: controller.signal,
+      signal: controller?.signal,
     });
     if (!response.ok) {
       console.warn(`[claude-mem] Worker GET ${path} returned ${response.status}`);
@@ -145,7 +145,7 @@ async function workerGetText(path: string): Promise<string | null> {
     }
     return null;
   } finally {
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -283,6 +283,7 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
         context =
           (await workerGetText(
             `/api/context/inject?projects=${encodeURIComponent(projectsParam)}`,
+            WORKER_GET_TIMEOUT_MS,
           )) || undefined;
         if (context) {
           while (contextBySessionId.size >= MAX_SESSION_MAP_ENTRIES) {
