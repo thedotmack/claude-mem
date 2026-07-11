@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { SettingsDefaultsManager } from "../../shared/SettingsDefaultsManager.js";
+import { getProjectContext } from "../../utils/project-name.js";
 
 /**
  * OpenCode plugin event contract.
@@ -40,6 +41,7 @@ export const REGISTERED_OPENCODE_HOOKS = [
   "chat.message",
   "event",
   "experimental.session.compacting",
+  "experimental.chat.system.transform",
 ] as const;
 
 interface OpenCodeProject {
@@ -143,6 +145,16 @@ const initializedSessionIds = new Set<string>();
 
 const MAX_SESSION_MAP_ENTRIES = 1000;
 
+const contextBySessionId = new Map<string, string>();
+
+function buildContextProjects(directory: string): { projectName: string; projects: string[] } {
+  const projectContext = getProjectContext(directory);
+  return {
+    projectName: projectContext.primary,
+    projects: [...new Set([...projectContext.allProjects, "opencode"])],
+  };
+}
+
 function getOrCreateContentSessionId(openCodeSessionId: string): string {
   if (!contentSessionIdsByOpenCodeSessionId.has(openCodeSessionId)) {
     while (contentSessionIdsByOpenCodeSessionId.size >= MAX_SESSION_MAP_ENTRIES) {
@@ -150,6 +162,7 @@ function getOrCreateContentSessionId(openCodeSessionId: string): string {
       if (oldestKey !== undefined) {
         contentSessionIdsByOpenCodeSessionId.delete(oldestKey);
         initializedSessionIds.delete(oldestKey);
+        contextBySessionId.delete(oldestKey);
       } else {
         break;
       }
@@ -174,6 +187,7 @@ function ensureSessionInitialized(openCodeSessionId: string, projectName: string
     workerPostFireAndForget("/api/sessions/init", {
       contentSessionId,
       project: projectName,
+      platformSource: "opencode",
       prompt: "",
     });
   }
@@ -187,7 +201,7 @@ function truncate(text: string): string {
 }
 
 export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
-  const projectName = ctx.project?.name || "opencode";
+  const { projectName, projects } = buildContextProjects(ctx.directory);
 
   console.log(`[claude-mem] OpenCode plugin loading (project: ${projectName})`);
 
@@ -245,6 +259,31 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       });
     },
 
+    // Inject directory-scoped project context into every system prompt build.
+    "experimental.chat.system.transform": async (
+      input: { sessionID?: string },
+      output: { system: string[] },
+    ): Promise<void> => {
+      const cacheKey = input.sessionID || `project:${projectName}`;
+      let context = contextBySessionId.get(cacheKey);
+      if (!context) {
+        const projectsParam = projects.join(",");
+        context =
+          (await workerGetText(
+            `/api/context/inject?projects=${encodeURIComponent(projectsParam)}`,
+          )) || undefined;
+        if (context) {
+          while (contextBySessionId.size >= MAX_SESSION_MAP_ENTRIES) {
+            const oldestKey = contextBySessionId.keys().next().value;
+            if (oldestKey === undefined) break;
+            contextBySessionId.delete(oldestKey);
+          }
+          contextBySessionId.set(cacheKey, context);
+        }
+      }
+      if (context) output.system.push(context);
+    },
+
     // Generic bus events. Only `session.idle` and `session.deleted` are real
     // and acted upon (see REAL_OPENCODE_EVENT_TYPES).
     event: async ({ event }: { event: BusEvent }): Promise<void> => {
@@ -265,6 +304,7 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
         case "session.deleted": {
           contentSessionIdsByOpenCodeSessionId.delete(sessionID);
           initializedSessionIds.delete(sessionID);
+          contextBySessionId.delete(sessionID);
           break;
         }
         default:

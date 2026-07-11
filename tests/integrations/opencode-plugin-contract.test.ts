@@ -24,6 +24,7 @@ const REAL_OPENCODE_HOOK_NAMES = new Set<string>([
   "chat.message",
   "event",
   "experimental.session.compacting",
+  "experimental.chat.system.transform",
   "tool.execute.before",
   "permission.ask",
   "auth",
@@ -117,6 +118,59 @@ describe("OpenCode plugin event contract", () => {
       const obsBody = obsPost!.body as Record<string, unknown>;
       expect(obsBody.tool_name).toBe("read");
       expect(obsBody.tool_response).toBe("file contents");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("injects directory-scoped context into every system prompt build", async () => {
+    const requests: string[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      requests.push(String(url));
+      return new Response("# remembered context", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const transform = plugin["experimental.chat.system.transform"];
+      const first = { system: ["base"] };
+      const second = { system: ["base"] };
+      await transform({ sessionID: "context-session", model: {} as never }, first);
+      await transform({ sessionID: "context-session", model: {} as never }, second);
+
+      expect(first.system).toEqual(["base", "# remembered context"]);
+      expect(second.system).toEqual(["base", "# remembered context"]);
+      expect(requests.filter((url) => url.includes("/api/context/inject"))).toHaveLength(1);
+      expect(requests[0]).toContain("projects=x%2Copencode");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("marks initialized sessions as OpenCode", async () => {
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      posts.push({
+        url: String(url),
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+      return new Response(JSON.stringify({ status: "queued" }), { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const toolAfter = plugin["tool.execute.after"];
+      await toolAfter(
+        { tool: "read", sessionID: "ses_init", callID: "c1" },
+        { title: "Read", output: "file contents", metadata: {}, args: { path: "/a" } },
+      );
+
+      const initPost = posts.find((p) => p.url.includes("/api/sessions/init"));
+      expect(initPost, "tool.execute.after should lazily init the session").toBeTruthy();
+      expect((initPost!.body as Record<string, unknown>).project).toBe("x");
+      expect((initPost!.body as Record<string, unknown>).platformSource).toBe("opencode");
     } finally {
       globalThis.fetch = originalFetch;
     }
