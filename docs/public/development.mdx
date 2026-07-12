@@ -166,7 +166,7 @@ npm run build
 2. Build: `npm run build`
 3. Sync to installed plugin: `npm run sync-marketplace`
 4. Restart worker: `npm run worker:restart`
-5. Refresh browser at http://localhost:37777
+5. Refresh the worker URL printed by `npm run worker:status`
 
 **Hot Reload**: Not currently supported. Full rebuild + restart required for changes.
 
@@ -320,7 +320,7 @@ npm test
 export function buildObservationPrompt(observation: Observation): string {
   return `
     <observation>
-      
+
     </observation>
   `;
 }
@@ -426,7 +426,8 @@ When developing new features:
 npm run worker:status
 
 # Queue inspection
-curl http://localhost:37777/api/pending-queue
+WORKER_PORT=$(jq -r .CLAUDE_MEM_WORKER_PORT ~/.claude-mem/settings.json)
+curl http://127.0.0.1:$WORKER_PORT/api/pending-queue
 
 # Database integrity
 sqlite3 ~/.claude-mem/claude-mem.db "PRAGMA integrity_check;"
@@ -482,7 +483,8 @@ For manual recovery features specifically:
 
 3. **Verify results**:
    ```bash
-   curl http://localhost:37777/api/pending-queue | jq '.queue'
+   WORKER_PORT=$(jq -r .CLAUDE_MEM_WORKER_PORT ~/.claude-mem/settings.json)
+   curl http://127.0.0.1:$WORKER_PORT/api/pending-queue | jq '.queue'
    ```
 
 ### Regression Testing
@@ -500,7 +502,7 @@ Before releasing:
    - Context injection (recent sessions appear)
    - Observation processing (summaries generated)
    - MCP search tools (search returns results)
-   - Viewer UI (loads at http://localhost:37777)
+   - Viewer UI (loads at the worker URL)
    - Manual recovery (stuck messages recovered)
 
 3. **Test edge cases**:
@@ -602,60 +604,59 @@ echo '{"session_id":"test-123","cwd":"'$(pwd)'","prompt":"test"}' | node plugin/
 
 ## Publishing
 
-### NPM Publishing
+Production releases happen from `main` only. `core-dev` and `community-edge`
+are source-run branches; see [Release Branches](branches).
+
+### Version Bump
+
+Update every manifest that carries the package version:
+
+- `package.json`
+- `plugin/package.json`
+- `.claude-plugin/marketplace.json`
+- `.claude-plugin/plugin.json`
+- `plugin/.claude-plugin/plugin.json`
+- `.codex-plugin/plugin.json`
+- `plugin/.codex-plugin/plugin.json`
+- `openclaw/openclaw.plugin.json`
+
+Verify the old version is gone and the new version appears everywhere expected:
 
 ```bash
-# Update version in package.json
-npm version patch  # or minor, or major
-
-# Build
-npm run build
-
-# Publish to NPM
-npm run release
+git grep -n '"version": "NEW_VERSION"'
+git grep -n '"version": "OLD_VERSION"'
 ```
 
-The `release` script:
-1. Runs tests
-2. Builds all components
-3. Publishes to NPM registry
-
-### Creating a Release
-
-1. Update version in `package.json`
-2. Update `CHANGELOG.md`
-3. Commit changes
-4. Create git tag
-5. Push to GitHub
-6. Publish to NPM
+### Build, Tag, and Publish
 
 ```bash
-# Manual version bump:
-# 1. Update version in package.json
-# 2. Update version in plugin/.claude-plugin/plugin.json
-# 3. Update version at top of CLAUDE.md
-# 4. Update version badge in README.md
-# 5. Run: npm run build && npm run sync-marketplace
-
-# Or use npm version command:
-npm version 4.3.2
-
-# Update changelog
-# Edit CHANGELOG.md manually
-
-# Commit
-git add .
-git commit -m "chore: Release v4.3.2"
-
-# Tag
-git tag v4.3.2
-
-# Push
-git push origin main --tags
-
-# Publish to NPM
-npm run release
+npm run build-and-sync
+git add -A
+git commit -m "chore: bump version to NEW_VERSION"
+git tag -a vNEW_VERSION -m "Version NEW_VERSION"
+git push origin main
+git push origin vNEW_VERSION
 ```
+
+Publishing to npm requires the maintainer's npm credentials and 2FA:
+
+```bash
+npm publish
+npm view claude-mem@NEW_VERSION version
+```
+
+Only after npm resolves the version, create the GitHub release and regenerate the
+changelog:
+
+```bash
+gh release create vNEW_VERSION --title "vNEW_VERSION" --notes "..."
+npm run changelog:generate
+git add CHANGELOG.md
+git commit -m "docs: regenerate changelog for vNEW_VERSION"
+git push origin main
+```
+
+Do not hand-edit `CHANGELOG.md`; it is generated from GitHub releases.
 
 ## Contributing
 
@@ -676,7 +677,7 @@ npm run release
 - **Description**: Explain why the change is needed
 - **Tests**: Include tests for new features
 - **Documentation**: Update docs as needed
-- **Changelog**: Add entry to CHANGELOG.md
+- **Changelog**: Do not hand-edit `CHANGELOG.md`; it is generated during release
 - **Commits**: Use clear, descriptive commit messages
 
 ### Code Review Process
@@ -759,7 +760,8 @@ rm -rf plugin/scripts/*.js plugin/scripts/*.cjs
 
 2. Check port:
    ```bash
-   lsof -i :37777
+   WORKER_PORT=$(jq -r .CLAUDE_MEM_WORKER_PORT ~/.claude-mem/settings.json)
+   lsof -i :$WORKER_PORT
    ```
 
 3. Try custom port:

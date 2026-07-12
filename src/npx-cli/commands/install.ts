@@ -13,6 +13,7 @@ import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { writeJsonFileAtomic as writeSettingsJsonAtomic } from '../../shared/atomic-json.js';
 import { loadClaudeMemEnv, saveClaudeMemEnv } from '../../shared/EnvManager.js';
 import { ensureWorkerStarted, type WorkerStartResult } from '../../services/worker-spawner.js';
+import { formatHostForUrl } from '../../shared/worker-utils.js';
 import {
   ensureBun,
   ensureUv,
@@ -1765,6 +1766,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   flushSummary(summary, (line) => (isInteractive ? p.log.message(line) : console.log(`  ${line}`)));
 
   const workerHost = getSetting('CLAUDE_MEM_WORKER_HOST');
+  const workerUrlHost = formatHostForUrl(workerHost);
   const workerPort = getSetting('CLAUDE_MEM_WORKER_PORT');
 
   let actualPort: number | string = workerPort;
@@ -1777,7 +1779,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     const healthSpinner = isInteractive ? p.spinner() : null;
     healthSpinner?.start(`Verifying worker on port ${workerPort}…`);
     try {
-      const healthResponse = await fetch(`http://${workerHost}:${workerPort}/api/health`, {
+      const healthResponse = await fetch(`http://${workerUrlHost}:${workerPort}/api/health`, {
         signal: AbortSignal.timeout(3000),
       });
       if (healthResponse.ok) {
@@ -1805,8 +1807,8 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   const workerAlive = finalWorkerState !== 'dead' || workerReady;
   const runtimeLabel = selectedRuntime === 'server' ? 'Server' : 'Worker';
   const runtimeStartCommand = selectedRuntime === 'server' ? 'npx claude-mem server start' : 'npx claude-mem start';
-  const workerBaseUrl = `http://${workerHost}:${actualPort}`;
-  const configuredWorkerBaseUrl = `http://${workerHost}:${workerPort}`;
+  const workerBaseUrl = `http://${workerUrlHost}:${actualPort}`;
+  const configuredWorkerBaseUrl = `http://${workerUrlHost}:${workerPort}`;
   const workerHeadline = autoStartSkipped
     ? `${styleText('yellow', '!')} ${runtimeLabel} autostart skipped — start it manually with ${styleText('bold', runtimeStartCommand)}`
     : workerReady || finalWorkerState === 'ready'

@@ -62,7 +62,7 @@ function stripHardcodedDirname(filePath) {
  * #1215, #1533). See src/build/hook-shell-template.ts and CLAUDE.md →
  * "Spawn-Contract Resolution".
  */
-function shellTemplateManifest(buildShellCommand) {
+function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
   const ccTrailing = (...tail) => [
     'node', '"$_P/scripts/bun-runner.js"', '"$_P/scripts/worker-service.cjs"', ...tail,
   ];
@@ -85,6 +85,10 @@ function shellTemplateManifest(buildShellCommand) {
     ],
     notFoundMessage: 'claude-mem: plugin scripts not found',
   });
+  const codexHookPair = (tail, options = {}) => ({
+    command: options.startupVersionCheck ? codexStartupHook() : codexHook(tail),
+    commandWindows: buildCodexWindowsCommand(tail, options),
+  });
 
   return {
     'plugin/hooks/hooks.json': {
@@ -106,11 +110,11 @@ function shellTemplateManifest(buildShellCommand) {
     'plugin/hooks/codex-hooks.json': {
       kind: 'hooks',
       commands: {
-        'SessionStart.0.0': codexStartupHook(),
-        'UserPromptSubmit.0.0': codexHook(['hook', 'codex', 'session-init']),
-        'PreToolUse.0.0': codexHook(['hook', 'codex', 'file-context']),
-        'PostToolUse.0.0': codexHook(['hook', 'codex', 'observation']),
-        'Stop.0.0': codexHook(['hook', 'codex', 'summarize']),
+        'SessionStart.0.0': codexHookPair(['hook', 'codex', 'context'], { startupVersionCheck: true }),
+        'UserPromptSubmit.0.0': codexHookPair(['hook', 'codex', 'session-init']),
+        'PreToolUse.0.0': codexHookPair(['hook', 'codex', 'file-context']),
+        'PostToolUse.0.0': codexHookPair(['hook', 'codex', 'observation']),
+        'Stop.0.0': codexHookPair(['hook', 'codex', 'summarize']),
       },
     },
     'plugin/.mcp.json': {
@@ -130,9 +134,9 @@ function shellTemplateManifest(buildShellCommand) {
   };
 }
 
-function hookCommandByPath(parsed, dottedPath) {
+function hookEntryByPath(parsed, dottedPath) {
   const [event, groupIdx, hookIdx] = dottedPath.split('.');
-  return parsed.hooks?.[event]?.[Number(groupIdx)]?.hooks?.[Number(hookIdx)]?.command ?? null;
+  return parsed.hooks?.[event]?.[Number(groupIdx)]?.hooks?.[Number(hookIdx)] ?? null;
 }
 
 async function verifyShellTemplateCanonical() {
@@ -151,9 +155,9 @@ async function verifyShellTemplateCanonical() {
   });
   const moduleSource = bundled.outputFiles[0].text;
   const dataUrl = 'data:text/javascript;base64,' + Buffer.from(moduleSource).toString('base64');
-  const { buildShellCommand } = await import(dataUrl);
+  const { buildShellCommand, buildCodexWindowsCommand } = await import(dataUrl);
 
-  const manifest = shellTemplateManifest(buildShellCommand);
+  const manifest = shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand);
 
   for (const [filePath, spec] of Object.entries(manifest)) {
     const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
@@ -167,12 +171,23 @@ async function verifyShellTemplateCanonical() {
       }
     } else {
       for (const [dottedPath, expected] of Object.entries(spec.commands)) {
-        const actual = hookCommandByPath(parsed, dottedPath);
-        if (actual !== expected) {
+        const entry = hookEntryByPath(parsed, dottedPath);
+        const expectedCommand = typeof expected === 'string' ? expected : expected.command;
+        const actual = entry?.command ?? null;
+        if (actual !== expectedCommand) {
           throw new Error(
             `Hand-edited shell string detected in ${filePath} (${dottedPath}). It no longer matches src/build/hook-shell-template.ts. ` +
             `Regenerate via the canonical generator instead of hand-editing the command.`
           );
+        }
+        if (typeof expected !== 'string') {
+          const actualWindows = entry?.commandWindows ?? null;
+          if (actualWindows !== expected.commandWindows) {
+            throw new Error(
+              `Hand-edited Windows shell string detected in ${filePath} (${dottedPath}). It no longer matches src/build/hook-shell-template.ts. ` +
+              `Regenerate via the canonical generator instead of hand-editing commandWindows.`
+            );
+          }
         }
       }
     }
@@ -346,6 +361,50 @@ async function buildHooks() {
         `⚠️  worker-service.cjs is ${(workerStats.size / 1024).toFixed(2)} KB (advisory budget ${(WORKER_SERVICE_MAX_BYTES / 1024).toFixed(0)} KB). ` +
         `If this jumped unexpectedly, check whether a server-only dependency leaked into the worker bundle (see #2584).`
       );
+    }
+
+    // worker-service.cjs lazy-requires these via createRequire("../sqlite/…"),
+    // intentionally kept external from the worker bundle (#2584). They must ship
+    // as sibling files under plugin/sqlite/, or clean installs can throw
+    // "Cannot find module '../sqlite/SessionStore.js'" when Chroma vector sync
+    // reaches the SQLite helpers (#3107/#3126).
+    console.log(`\n🔧 Building sqlite runtime modules...`);
+    const SQLITE_MODULES = [
+      { source: 'src/services/sqlite/SessionStore.ts', out: 'plugin/sqlite/SessionStore.js' },
+      { source: 'src/services/sqlite/observations/files.ts', out: 'plugin/sqlite/observations/files.js' },
+    ];
+    for (const mod of SQLITE_MODULES) {
+      fs.mkdirSync(path.dirname(mod.out), { recursive: true });
+      await build({
+        entryPoints: [mod.source],
+        bundle: true,
+        platform: 'node',
+        target: 'node18',
+        format: 'cjs',
+        outfile: mod.out,
+        minify: true,
+        logLevel: 'error',
+        external: [
+          'bun:sqlite',
+          'zod',
+          'cohere-ai',
+          'ollama',
+          '@chroma-core/default-embed',
+          'onnxruntime-node',
+          'better-auth',
+          'better-auth/node',
+          'better-auth/plugins',
+          '@better-auth/api-key',
+        ],
+        define: {
+          '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
+          'import.meta.url': '__IMPORT_META_URL__'
+        },
+        banner: {
+          js: 'var __IMPORT_META_URL__ = require("node:url").pathToFileURL(__filename).href;'
+        }
+      });
+      console.log(`✓ ${mod.out} built (${(fs.statSync(mod.out).size / 1024).toFixed(2)} KB)`);
     }
 
     console.log(`\n🔧 Building server beta service...`);
@@ -620,6 +679,8 @@ async function buildHooks() {
       'plugin/hooks/hooks.json',
       'plugin/hooks/codex-hooks.json',
       'plugin/scripts/bun-runner.js',
+      'plugin/sqlite/SessionStore.js',
+      'plugin/sqlite/observations/files.js',
       'plugin/.claude-plugin/plugin.json',
       'plugin/.codex-plugin/plugin.json',
       'plugin/.mcp.json',

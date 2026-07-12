@@ -23,6 +23,12 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
 
 ## Common Issues
 
+For worker API commands below, set `PORT` first:
+
+```bash
+PORT=${CLAUDE_MEM_WORKER_PORT:-$(jq -r .CLAUDE_MEM_WORKER_PORT ~/.claude-mem/settings.json)}
+```
+
 ### Viewer UI Not Loading
 
 **Symptoms**: Cannot reach the viewer URL, page doesn't load, or browser shows a connection error.
@@ -71,7 +77,7 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
 
 2. Verify settings endpoint is working:
    ```bash
-   curl http://localhost:37777/api/settings
+   curl http://127.0.0.1:$PORT/api/settings
    ```
 
 3. Clear localStorage and try again:
@@ -90,7 +96,7 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
 
 1. Check SSE endpoint is accessible:
    ```bash
-   curl -N http://localhost:37777/stream
+   curl -N http://127.0.0.1:$PORT/stream
    ```
 
 2. Check browser console for errors:
@@ -210,14 +216,14 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
 
 **Solutions**:
 
-1. Check if port 37777 is in use:
+1. Check if the configured port is in use:
    ```bash
-   lsof -i :37777
+   lsof -i :$PORT
    ```
 
 2. Kill process using the port:
    ```bash
-   kill -9 $(lsof -t -i:37777)
+   kill -9 $(lsof -t -i:$PORT)
    ```
 
 3. Or use a different port:
@@ -337,7 +343,7 @@ For automation or scripting scenarios:
 
 1. **Check queue status**:
    ```bash
-   curl http://localhost:37777/api/pending-queue
+   curl http://127.0.0.1:$PORT/api/pending-queue
    ```
 
    Response shows:
@@ -348,7 +354,7 @@ For automation or scripting scenarios:
 
 2. **Trigger manual recovery**:
    ```bash
-   curl -X POST http://localhost:37777/api/pending-queue/process \
+   curl -X POST http://127.0.0.1:$PORT/api/pending-queue/process \
      -H "Content-Type: application/json" \
      -d '{"sessionLimit": 10}'
    ```
@@ -392,8 +398,8 @@ If recovery fails or messages remain stuck:
 
 1. **Verify worker is healthy**:
    ```bash
-   curl http://localhost:37777/health
-   # Should return: {"status":"ok","uptime":12345,"port":37777}
+   curl http://127.0.0.1:$PORT/health
+   # Should return: {"status":"ok","uptime":12345,"port":...}
    ```
 
 2. **Check database for corruption**:
