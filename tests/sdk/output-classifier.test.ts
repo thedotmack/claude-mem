@@ -47,6 +47,12 @@ describe('classifyObserverOutput (plan-11 #2485)', () => {
     ).toBe('idle');
   });
 
+  it('keeps mixed ready-plus-failure prose in the prose bucket', () => {
+    expect(
+      classifyObserverOutput('Ready to observe and record, but the prior batch failed to parse.'),
+    ).toBe('prose');
+  });
+
   it('classifies former poison marker strings as ordinary prose', () => {
     expect(classifyObserverOutput('This session has been exhausted, I cannot continue.')).toBe('prose');
     expect(classifyObserverOutput('Error: prompt is too long for this model.')).toBe('prose');

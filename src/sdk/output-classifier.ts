@@ -49,10 +49,10 @@ export function classifyObserverOutput(raw: unknown): ObserverOutputClass {
 
   const text = raw.toLowerCase().replace(/\s+/g, ' ').trim();
   if (
-    /\bno observations to record\b/.test(text)
-    || /\bnothing (?:to|new to) (?:record|observe|report|do)\b/.test(text)
-    || /\b(?:ready|waiting) to observe and record\b/.test(text)
-    || /\bi do(?:n't| not) see any tool executions, file changes,? or technical work\b/.test(text)
+    /^no observations to record[.!]?$/i.test(text)
+    || /^nothing (?:to|new to) (?:record|observe|report|do)[.!]?$/i.test(text)
+    || /^(?:i['’]m |i am )?(?:ready|waiting) to observe and record,? but i do(?:n't| not) see any tool executions, file changes,? or technical work[.!]?$/i.test(text)
+    || /^i do(?:n't| not) see any tool executions, file changes,? or technical work[.!]?$/i.test(text)
   ) {
     return 'idle';
   }
