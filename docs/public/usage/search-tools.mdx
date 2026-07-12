@@ -372,7 +372,8 @@ All observations include rich metadata:
 
 2. **Check database has data:**
    ```bash
-   curl "http://localhost:37777/api/search?query=test"
+   WORKER_PORT=$(jq -r .CLAUDE_MEM_WORKER_PORT ~/.claude-mem/settings.json)
+   curl "http://127.0.0.1:$WORKER_PORT/api/search?query=test"
    ```
 
 3. **Try without filters:**
@@ -436,11 +437,11 @@ If searches seem slow:
 
 ## Technical Details
 
-**Architecture:** MCP tools are a thin wrapper over the Worker HTTP API (localhost:37777). The MCP server translates tool calls into HTTP requests to the worker service, which handles all business logic, database queries, and Chroma vector search.
+**Architecture:** MCP tools are a thin wrapper over the local Worker HTTP API. The MCP server translates tool calls into HTTP requests to the worker service, which handles all business logic, database queries, and Chroma vector search.
 
 **MCP Server:** Located at `~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs`
 
-**Worker Service:** Express API on port 37777, managed by Bun
+**Worker Service:** Express API on the configured worker port, managed by Bun
 
 **Database:** SQLite FTS5 full-text search on `~/.claude-mem/claude-mem.db`
 

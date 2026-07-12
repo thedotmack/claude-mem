@@ -145,19 +145,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      
+
       - run: npm install -g readme-translator
-      
+
       - name: Translate README
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           translate-readme -v -o ./i18n README.md es fr de ja zh
-      
+
       - name: Commit translations
         run: |
           git config user.name "github-actions[bot]"
@@ -211,6 +211,7 @@ main();
 | `id` | Indonesian | `th` | Thai |
 | `it` | Italian | `tr` | Turkish |
 | `ja` | Japanese | `uk` | Ukrainian |
+| `tl` | Tagalog | `ur` | Urdu |
 | | | `vi` | Vietnamese |
 | | | `zh` | Chinese (Simplified) |
 | | | `zh-tw` | Chinese (Traditional) |
