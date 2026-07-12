@@ -234,7 +234,43 @@ describe('ResponseProcessor', () => {
       );
       expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
       expect(session.earliestPendingTimestamp).toBeNull();
+      expect(session.conversationHistory).toEqual([]);
       expect(mockStoreObservations).not.toHaveBeenCalled();
+    });
+
+    it('treats an empty response as a debug-level no-op without retaining it', async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+      } as unknown as SessionManager;
+
+      const session = createMockSession();
+
+      await processAgentResponse(
+        '',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        0,
+        null,
+        'TestAgent'
+      );
+
+      expect(logger.debug).toHaveBeenCalledWith(
+        'PARSER',
+        expect.stringMatching(/^TestAgent returned non-XML idle response/),
+        expect.objectContaining({ sessionId: 1, outputClass: 'idle' })
+      );
+      expect(logger.warn).not.toHaveBeenCalledWith(
+        'PARSER',
+        expect.stringContaining('idle response'),
+        expect.anything()
+      );
+      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
+      expect(session.conversationHistory).toEqual([]);
     });
   });
 

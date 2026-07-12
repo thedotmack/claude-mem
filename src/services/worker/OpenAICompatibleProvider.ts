@@ -27,6 +27,9 @@ export interface ProviderQueryResult {
   servedModel?: string;
 }
 
+const MAX_CONVERSATION_HISTORY_MESSAGES = 21;
+const MAX_CONVERSATION_HISTORY_TOKENS = 24_000;
+
 /**
  * Shared scaffolding for OpenAI-compatible, multi-turn HTTP providers
  * (Gemini, OpenRouter). The session lifecycle — synthetic memory-session-id
@@ -98,6 +101,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
 
     session.conversationHistory.push({ role: 'user', content: initPrompt });
+    this.trimConversationHistory(session);
 
     try {
       session.lastPromptSentAt = Date.now();
@@ -164,7 +168,6 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     model: string
   ): Promise<void> {
     if (initResponse.content) {
-      session.conversationHistory.push({ role: 'assistant', content: initResponse.content });
       const tokensUsed = initResponse.tokensUsed || 0;
       session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
       session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
@@ -206,13 +209,13 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     });
 
     session.conversationHistory.push({ role: 'user', content: obsPrompt });
+    this.trimConversationHistory(session);
     session.lastPromptSentAt = Date.now();
     session.lastGeneratorSource = 'ingest';
     const obsResponse = await this.query(session.conversationHistory, config);
 
     let tokensUsed = 0;
     if (obsResponse.content) {
-      session.conversationHistory.push({ role: 'assistant', content: obsResponse.content });
       tokensUsed = obsResponse.tokensUsed || 0;
       session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
       session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
@@ -255,13 +258,13 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     }, mode);
 
     session.conversationHistory.push({ role: 'user', content: summaryPrompt });
+    this.trimConversationHistory(session);
     session.lastPromptSentAt = Date.now();
     session.lastGeneratorSource = 'summarize';
     const summaryResponse = await this.query(session.conversationHistory, config);
 
     let tokensUsed = 0;
     if (summaryResponse.content) {
-      session.conversationHistory.push({ role: 'assistant', content: summaryResponse.content });
       tokensUsed = summaryResponse.tokensUsed || 0;
       session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
       session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
@@ -288,6 +291,43 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
     logger.failure('SDK', `${this.providerName} agent error`, { sessionDbId: session.sessionDbId }, error instanceof Error ? error : new Error(String(error)));
     throw error;
+  }
+
+  private trimConversationHistory(session: ActiveSession): void {
+    const history = session.conversationHistory;
+    if (history.length <= 1) return;
+
+    const first = history[0];
+    const recent: ConversationMessage[] = [];
+    let estimatedTokens = this.estimateTokens(first.content);
+
+    for (let index = history.length - 1; index >= 1; index -= 1) {
+      const message = history[index];
+      const messageTokens = this.estimateTokens(message.content);
+      const isNewest = index === history.length - 1;
+
+      if (
+        !isNewest &&
+        (recent.length >= MAX_CONVERSATION_HISTORY_MESSAGES - 1 ||
+          estimatedTokens + messageTokens > MAX_CONVERSATION_HISTORY_TOKENS)
+      ) {
+        break;
+      }
+
+      recent.push(message);
+      estimatedTokens += messageTokens;
+    }
+
+    if (recent.length === history.length - 1) return;
+
+    recent.reverse();
+    session.conversationHistory = [first, ...recent];
+    logger.debug('SDK', `${this.providerName} conversation history trimmed`, {
+      sessionId: session.sessionDbId,
+      previousMessages: history.length,
+      retainedMessages: session.conversationHistory.length,
+      estimatedTokens
+    });
   }
 
 }
