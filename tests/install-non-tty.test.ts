@@ -226,12 +226,18 @@ describe('Install Non-TTY Support', () => {
       expect(versionProbeRegion).not.toContain('shell: IS_WINDOWS');
     });
 
-    it('writes a marketplace install marker after marketplace dependencies are installed', () => {
+    it('writes install markers for both the marketplace and executable plugin roots', () => {
+      const markerHelperStart = installSource.indexOf('function writeMarketplaceInstallMarkers(');
+      const markerHelperEnd = installSource.indexOf('/**\n * Install marketplace dependencies', markerHelperStart);
+      const markerHelperRegion = installSource.slice(markerHelperStart, markerHelperEnd);
+      expect(markerHelperRegion).toContain('writeInstallMarker(marketplaceDir, version, bunVersion, uvVersion)');
+      expect(markerHelperRegion).toContain("writeInstallMarker(join(marketplaceDir, 'plugin'), version, bunVersion, uvVersion)");
+
       const start = installSource.indexOf("title: 'Installing marketplace dependencies'");
       const end = installSource.indexOf('await runTasks(tasks);', start);
       const marketplaceDepsRegion = installSource.slice(start, end);
       expect(marketplaceDepsRegion).toContain('await runNpmInstallInMarketplace(summary)');
-      expect(marketplaceDepsRegion).toContain('writeInstallMarker(');
+      expect(marketplaceDepsRegion).toContain('writeMarketplaceInstallMarkers(');
       expect(marketplaceDepsRegion).toContain('marketplaceDirectory()');
       expect(marketplaceDepsRegion).toContain("installedBunVersion ?? 'unknown'");
     });
@@ -248,7 +254,7 @@ describe('Install Non-TTY Support', () => {
       expect(repairRegion).toContain('Repopulating marketplace root from npm package');
       expect(repairRegion).toContain('copyPluginToMarketplace()');
       expect(repairRegion).toContain('await runNpmInstallInMarketplace(summary)');
-      expect(repairRegion).toContain('writeInstallMarker(marketplaceDir, version, bunVersion, uvVersion)');
+      expect(repairRegion).toContain('writeMarketplaceInstallMarkers(marketplaceDir, version, bunVersion, uvVersion)');
     });
 
     it('removes legacy Codex AGENTS context only after marketplace registration succeeds', () => {

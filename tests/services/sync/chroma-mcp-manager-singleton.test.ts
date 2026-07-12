@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 // Capture real exports before mock.module mutates the live namespace, then
 // re-register the snapshots in afterAll so these mocks do not leak into later
@@ -18,6 +21,19 @@ const realEnvSanitizerSnapshot = { ...realEnvSanitizer };
 const realChildProcess = require('node:child_process');
 const realProcessPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
 const originalPrewarmTimeout = process.env.CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS;
+const tempRoots: string[] = [];
+let mockedChromaDir = '';
+let mockedCombinedCertPath = '';
+let mockedSettings: Record<string, string> = {};
+
+function resetMockedChromaPaths(): void {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'claude-mem-chroma-manager-'));
+  tempRoots.push(root);
+  mockedChromaDir = path.join(root, 'chroma');
+  mockedCombinedCertPath = path.join(root, 'combined-certs.pem');
+}
+
+resetMockedChromaPaths();
 
 // Singleton enforcement regression coverage for issue #2313.
 //
@@ -129,15 +145,15 @@ mock.module('../../../src/shared/SettingsDefaultsManager.js', () => ({
   SettingsDefaultsManager: {
     get: () => '',
     getInt: () => 0,
-    loadFromFile: () => ({}),
+    loadFromFile: () => ({ ...mockedSettings }),
   },
 }));
 
 mock.module('../../../src/shared/paths.js', () => ({
   USER_SETTINGS_PATH: '/tmp/fake-settings.json',
   paths: {
-    chroma: () => '/tmp/fake-chroma',
-    combinedCerts: () => '/tmp/fake-combined-certs.pem',
+    chroma: () => mockedChromaDir,
+    combinedCerts: () => mockedCombinedCertPath,
   },
 }));
 
@@ -171,6 +187,7 @@ mock.module('../../../src/utils/logger.js', () => ({
 
 // Track tree-kill invocations and the transport whose subprocess was killed.
 const killTreeCalls: number[] = [];
+const deadPids = new Set<number>();
 let execSyncCalls = 0;
 const prewarmSpawnCalls: Array<{ command: string; args: string[]; child: FakeChildProcess }> = [];
 let prewarmSpawnBehavior: 'success' | 'timeout' | 'failure' = 'success';
@@ -234,6 +251,14 @@ mock.module('child_process', () => {
 // the test runner if the synthetic PID happens to collide with a real one.
 const realProcessKill = process.kill.bind(process);
 const stubbedProcessKill = ((pid: number, signal?: string | number) => {
+  if (signal === 0 && deadPids.has(pid)) {
+    const error = new Error('ESRCH') as NodeJS.ErrnoException;
+    error.code = 'ESRCH';
+    throw error;
+  }
+  if (signal === 0) {
+    return true;
+  }
   killTreeCalls.push(pid);
   if (transportKillEmitsOnclose) {
     const transport = transportInstances.find(instance => instance._process.pid === pid);
@@ -269,6 +294,9 @@ afterAll(() => {
   mock.module('../../../src/supervisor/index.ts', () => realSupervisorSnapshot);
   mock.module('../../../src/supervisor/env-sanitizer.js', () => realEnvSanitizerSnapshot);
   mock.module('child_process', () => realChildProcess);
+  for (const root of tempRoots.splice(0)) {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 function resetState(): void {
@@ -276,6 +304,7 @@ function resetState(): void {
   transportInstances.length = 0;
   prewarmSpawnCalls.length = 0;
   killTreeCalls.length = 0;
+  deadPids.clear();
   logEntries.length = 0;
   execSyncCalls = 0;
   nextFakePid = 100_000;
@@ -289,6 +318,8 @@ function resetState(): void {
   pendingConnectReject = null;
   connectImpl = async () => {};
   callToolImpl = async () => ({ content: [{ type: 'text', text: '{}' }] });
+  mockedSettings = {};
+  resetMockedChromaPaths();
   ChromaMcpManager.setUvxAvailabilityProbeForTesting(() => true);
   resetDependencyStatusesForTesting();
   if (originalPrewarmTimeout === undefined) {
@@ -309,6 +340,21 @@ async function waitForCondition(predicate: () => boolean): Promise<void> {
     await Promise.resolve();
   }
   throw new Error('Timed out waiting for test condition');
+}
+
+function chromaWriterLockPath(): string {
+  return path.join(mockedChromaDir, '.claude-mem-chroma-writer.lock');
+}
+
+function writeChromaWriterLock(pid: number, ownerId: string): void {
+  mkdirSync(mockedChromaDir, { recursive: true });
+  writeFileSync(chromaWriterLockPath(), JSON.stringify({
+    pid,
+    ownerId,
+    dataDir: mockedChromaDir,
+    acquiredAt: new Date().toISOString(),
+    startToken: null,
+  }, null, 2));
 }
 
 describe('ChromaMcpManager singleton enforcement (#2313)', () => {
@@ -564,6 +610,100 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect((stderrTail as string).length).toBeLessThanOrEqual(2048);
     expect(stderrTail).toContain('stderr-tail-marker');
     expect(stderrTail).not.toContain('head-');
+  });
+
+  it('holds a writer lock for local persistent Chroma and releases it on stop()', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(existsSync(chromaWriterLockPath())).toBe(true);
+    const lock = JSON.parse(readFileSync(chromaWriterLockPath(), 'utf-8'));
+    expect(lock).toMatchObject({
+      pid: process.pid,
+      dataDir: path.resolve(mockedChromaDir),
+    });
+    expect(typeof lock.ownerId).toBe('string');
+    expect(getDependencyStatus('chroma')).toBeNull();
+
+    await mgr.stop();
+
+    expect(existsSync(chromaWriterLockPath())).toBe(false);
+  });
+
+  it('keeps the writer lock until unexpected-close tree cleanup finishes', async () => {
+    const managerForTesting = ChromaMcpManager as unknown as typeof ChromaMcpManager & {
+      killProcessTree: (pid: number) => Promise<void>;
+    };
+    const originalKillProcessTree = managerForTesting.killProcessTree;
+    const cleanupStartedForPids: number[] = [];
+    let finishCleanup: (() => void) | null = null;
+
+    managerForTesting.killProcessTree = async (pid: number) => {
+      cleanupStartedForPids.push(pid);
+      await new Promise<void>((resolve) => {
+        finishCleanup = resolve;
+      });
+    };
+
+    try {
+      const mgr = ChromaMcpManager.getInstance();
+
+      await mgr.callTool('chroma_list_collections', { limit: 1 });
+      expect(existsSync(chromaWriterLockPath())).toBe(true);
+
+      const firstPid = transportInstances[0]._process.pid;
+      transportInstances[0].onclose?.();
+
+      await waitForCondition(() => cleanupStartedForPids.includes(firstPid));
+      expect(existsSync(chromaWriterLockPath())).toBe(true);
+
+      finishCleanup?.();
+      await waitForCondition(() => !existsSync(chromaWriterLockPath()));
+    } finally {
+      finishCleanup?.();
+      managerForTesting.killProcessTree = originalKillProcessTree;
+    }
+  });
+
+  it('refuses to open a second local writer for a live Chroma data dir owner', async () => {
+    writeChromaWriterLock(process.pid, 'other-worker-owner');
+    const mgr = ChromaMcpManager.getInstance();
+
+    await expect(mgr.callTool('chroma_list_collections', { limit: 1 })).rejects.toThrow('already owned by PID');
+
+    expect(transportInstances.length).toBe(0);
+    expect(getDependencyStatus('chroma')).toMatchObject({
+      dependency: 'chroma',
+      kind: 'vector_search_unavailable',
+      message: expect.stringContaining('already owned by PID'),
+    });
+  });
+
+  it('replaces a stale Chroma writer lock whose PID is dead', async () => {
+    const stalePid = 999_998_311;
+    deadPids.add(stalePid);
+    writeChromaWriterLock(stalePid, 'dead-worker-owner');
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    const lock = JSON.parse(readFileSync(chromaWriterLockPath(), 'utf-8'));
+    expect(lock.pid).toBe(process.pid);
+    expect(lock.ownerId).not.toBe('dead-worker-owner');
+    expect(transportInstances.length).toBe(1);
+  });
+
+  it('does not acquire a local writer lock in remote Chroma mode', async () => {
+    mockedSettings = { CLAUDE_MEM_CHROMA_MODE: 'remote' };
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(existsSync(chromaWriterLockPath())).toBe(false);
+    const connectLog = logEntries.find(entry => entry.message === 'Connecting to chroma-mcp via MCP stdio');
+    expect(connectLog?.meta?.args).toContain('--client-type http');
+    expect(connectLog?.meta?.args).not.toContain('--data-dir');
   });
 });
 
