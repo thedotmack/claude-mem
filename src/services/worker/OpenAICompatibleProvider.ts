@@ -174,7 +174,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
         worker, tokensUsed, null, this.providerName, undefined, initResponse.servedModel ?? model
       );
     } else {
-      logger.error('SDK', `Empty ${this.providerName} init response - session may lack context`, {
+      logger.debug('SDK', `Empty ${this.providerName} init response - session may lack context`, {
         sessionId: session.sessionDbId, model
       });
     }
