@@ -287,7 +287,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     }, { label: `OpenRouter ${model}` });
 
     if (!data.choices?.[0]?.message?.content) {
-      logger.error('SDK', 'Empty response from OpenRouter');
+      logger.debug('SDK', 'Empty response from OpenRouter');
       return { content: '' };
     }
 

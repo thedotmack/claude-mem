@@ -34,10 +34,6 @@ export async function processAgentResponse(
   const processingStartedAt = Date.now();
   session.lastGeneratorActivity = Date.now();
 
-  if (text) {
-    session.conversationHistory.push({ role: 'assistant', content: text });
-  }
-
   const parsed = parseAgentXml(text, session.contentSessionId);
 
   // Provider enum for telemetry, derived once so the invalid-output and
@@ -75,12 +71,17 @@ export async function processAgentResponse(
     const preview = previewOutput(text);
     session.consecutiveInvalidOutputs = 0;
 
-    logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response — ignoring queued batch`, {
+    const logData = {
       sessionId: session.sessionDbId,
       outputClass,
       preview,
       consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
-    });
+    };
+    if (outputClass === 'idle') {
+      logger.debug('PARSER', `${agentName} returned non-XML idle response — ignoring queued batch`, logData);
+    } else {
+      logger.warn('PARSER', `${agentName} returned non-XML prose response — ignoring queued batch`, logData);
+    }
 
     // Plain-text skip responses are intentionally ignored. Re-queueing them
     // creates an observer loop where the same low-signal batch is retried.
@@ -92,6 +93,7 @@ export async function processAgentResponse(
   // Valid parse — clear the invalid-output counter so transient misses don't
   // accumulate toward a respawn across a healthy session.
   session.consecutiveInvalidOutputs = 0;
+  session.conversationHistory.push({ role: 'assistant', content: text });
 
   if (!session.memorySessionId) {
     logger.warn('SDK', 'memorySessionId not yet captured; deferring storage until next round', {

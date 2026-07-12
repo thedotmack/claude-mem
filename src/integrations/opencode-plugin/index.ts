@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { SettingsDefaultsManager } from "../../shared/SettingsDefaultsManager.js";
+import { getProjectContext } from "../../utils/project-name.js";
 
 /**
  * OpenCode plugin event contract.
@@ -40,6 +41,7 @@ export const REGISTERED_OPENCODE_HOOKS = [
   "chat.message",
   "event",
   "experimental.session.compacting",
+  "experimental.chat.system.transform",
 ] as const;
 
 interface OpenCodeProject {
@@ -47,8 +49,40 @@ interface OpenCodeProject {
   path?: string;
 }
 
+interface OpenCodePart {
+  type: string;
+  text?: string;
+  ignored?: boolean;
+}
+
+interface OpenCodeMessageSnapshot {
+  info: {
+    id: string;
+    role: string;
+    time?: { completed?: number };
+    summary?: boolean;
+  };
+  parts: OpenCodePart[];
+}
+
+interface AssistantDeliveryState {
+  messageId: string;
+  messageText: string;
+  observationComplete: boolean;
+  summaryComplete: boolean;
+}
+
+interface OpenCodeClient {
+  session: {
+    messages(options: {
+      path: { id: string };
+      query?: { directory?: string };
+    }): Promise<{ data?: OpenCodeMessageSnapshot[] }>;
+  };
+}
+
 interface OpenCodePluginContext {
-  client: unknown;
+  client: OpenCodeClient;
   project: OpenCodeProject;
   directory: string;
   worktree: string;
@@ -60,13 +94,17 @@ interface ToolExecuteAfterInput {
   tool: string;
   sessionID: string;
   callID: string;
+  args: Record<string, unknown>;
 }
 
 interface ToolExecuteAfterOutput {
   title: string;
   output: string;
   metadata: Record<string, unknown>;
-  args?: Record<string, unknown>;
+}
+
+interface ChatMessageInput {
+  sessionID: string;
 }
 
 interface ChatMessageOutput {
@@ -75,7 +113,7 @@ interface ChatMessageOutput {
     role?: string;
     sessionID?: string;
   };
-  parts: Array<{ type: string; text?: string }>;
+  parts: OpenCodePart[];
 }
 
 interface SessionCompactingInput {
@@ -102,28 +140,41 @@ function resolveWorkerHost(): string {
 
 const WORKER_BASE_URL = `http://${resolveWorkerHost()}:${resolveWorkerPort()}`;
 const MAX_TOOL_RESPONSE_LENGTH = 1000;
+const WORKER_GET_TIMEOUT_MS = 5_000;
+const OPENCODE_PLATFORM_SOURCE = "opencode";
 
 const JSON_HEADERS: Record<string, string> = { "Content-Type": "application/json" };
 
-function workerPostFireAndForget(
+async function workerPost(
   path: string,
   body: Record<string, unknown>,
-): void {
-  fetch(`${WORKER_BASE_URL}${path}`, {
-    method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify(body),
-  }).catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!message.includes("ECONNREFUSED")) {
-      console.warn(`[claude-mem] Worker POST ${path} failed: ${message}`);
+): Promise<boolean> {
+  try {
+    const response = await fetch(`${WORKER_BASE_URL}${path}`, {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      console.warn(`[claude-mem] Worker POST ${path} returned ${response.status}`);
+      return false;
     }
-  });
+    return true;
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[claude-mem] Worker POST ${path} failed: ${message}`);
+    return false;
+  }
 }
 
-async function workerGetText(path: string): Promise<string | null> {
+async function workerGetText(path: string, timeoutMs?: number): Promise<string | null> {
+  const controller = timeoutMs ? new AbortController() : undefined;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
   try {
-    const response = await fetch(`${WORKER_BASE_URL}${path}`, { headers: JSON_HEADERS });
+    const response = await fetch(`${WORKER_BASE_URL}${path}`, {
+      headers: JSON_HEADERS,
+      signal: controller?.signal,
+    });
     if (!response.ok) {
       console.warn(`[claude-mem] Worker GET ${path} returned ${response.status}`);
       return null;
@@ -135,13 +186,26 @@ async function workerGetText(path: string): Promise<string | null> {
       console.warn(`[claude-mem] Worker GET ${path} failed: ${message}`);
     }
     return null;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
 const contentSessionIdsByOpenCodeSessionId = new Map<string, string>();
-const initializedSessionIds = new Set<string>();
+const assistantDeliveryStateBySessionId = new Map<string, AssistantDeliveryState>();
 
 const MAX_SESSION_MAP_ENTRIES = 1000;
+const assistantLifecycleTailByLane = new Map<number, Promise<void>>();
+
+const contextBySessionId = new Map<string, string | Promise<string | null>>();
+
+function buildContextProjects(directory: string): { projectName: string; projects: string[] } {
+  const projectContext = getProjectContext(directory);
+  return {
+    projectName: projectContext.primary,
+    projects: [...new Set(["opencode", ...projectContext.allProjects])],
+  };
+}
 
 function getOrCreateContentSessionId(openCodeSessionId: string): string {
   if (!contentSessionIdsByOpenCodeSessionId.has(openCodeSessionId)) {
@@ -149,7 +213,8 @@ function getOrCreateContentSessionId(openCodeSessionId: string): string {
       const oldestKey = contentSessionIdsByOpenCodeSessionId.keys().next().value;
       if (oldestKey !== undefined) {
         contentSessionIdsByOpenCodeSessionId.delete(oldestKey);
-        initializedSessionIds.delete(oldestKey);
+        assistantDeliveryStateBySessionId.delete(oldestKey);
+        contextBySessionId.delete(oldestKey);
       } else {
         break;
       }
@@ -162,22 +227,25 @@ function getOrCreateContentSessionId(openCodeSessionId: string): string {
   return contentSessionIdsByOpenCodeSessionId.get(openCodeSessionId)!;
 }
 
-/**
- * The worker has no "session.created" event in OpenCode, so we lazily initialize
- * the session the first time we see any activity for it (tool run or chat
- * message). This guarantees a session row exists before observations arrive.
- */
-function ensureSessionInitialized(openCodeSessionId: string, projectName: string): string {
-  const contentSessionId = getOrCreateContentSessionId(openCodeSessionId);
-  if (!initializedSessionIds.has(openCodeSessionId)) {
-    initializedSessionIds.add(openCodeSessionId);
-    workerPostFireAndForget("/api/sessions/init", {
-      contentSessionId,
-      project: projectName,
-      prompt: "",
-    });
+function getAssistantLifecycleLane(sessionID: string): number {
+  let hash = 0;
+  for (let index = 0; index < sessionID.length; index += 1) {
+    hash = (hash * 31 + sessionID.charCodeAt(index)) >>> 0;
   }
-  return contentSessionId;
+  return hash % MAX_SESSION_MAP_ENTRIES;
+}
+
+function getTextContent(parts: OpenCodePart[]): string {
+  return parts
+    .filter(
+      (part) =>
+        part.type === "text" &&
+        part.ignored !== true &&
+        typeof part.text === "string" &&
+        part.text.trim().length > 0,
+    )
+    .map((part) => part.text as string)
+    .join("\n");
 }
 
 function truncate(text: string): string {
@@ -187,9 +255,110 @@ function truncate(text: string): string {
 }
 
 export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
-  const projectName = ctx.project?.name || "opencode";
+  const { projectName, projects } = buildContextProjects(ctx.directory);
 
   console.log(`[claude-mem] OpenCode plugin loading (project: ${projectName})`);
+
+  const deliverAssistantLifecycle = async (
+    sessionID: string,
+    deliveryState: AssistantDeliveryState,
+  ): Promise<void> => {
+    const contentSessionId = getOrCreateContentSessionId(sessionID);
+    if (!deliveryState.observationComplete) {
+      deliveryState.observationComplete = await workerPost("/api/sessions/observations", {
+        contentSessionId,
+        tool_name: "assistant_message",
+        tool_input: {},
+        tool_response: deliveryState.messageText,
+        cwd: ctx.directory,
+        platformSource: OPENCODE_PLATFORM_SOURCE,
+      });
+    }
+    if (!deliveryState.summaryComplete) {
+      deliveryState.summaryComplete = await workerPost("/api/sessions/summarize", {
+        contentSessionId,
+        last_assistant_message: deliveryState.messageText,
+        platformSource: OPENCODE_PLATFORM_SOURCE,
+      });
+    }
+  };
+
+  const captureAssistantLifecycle = async (sessionID: string): Promise<void> => {
+    let deliveryState = assistantDeliveryStateBySessionId.get(sessionID);
+    if (
+      deliveryState &&
+      (!deliveryState.observationComplete || !deliveryState.summaryComplete)
+    ) {
+      await deliverAssistantLifecycle(sessionID, deliveryState);
+      return;
+    }
+
+    let snapshots: OpenCodeMessageSnapshot[];
+    try {
+      const response = await ctx.client.session.messages({
+        path: { id: sessionID },
+        query: { directory: ctx.directory },
+      });
+      snapshots = response.data || [];
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[claude-mem] OpenCode message list failed for ${sessionID}: ${message}`);
+      return;
+    }
+
+    const latestAssistant = snapshots
+      .filter(
+        (snapshot) =>
+          snapshot.info.role === "assistant" &&
+          snapshot.info.summary !== true &&
+          typeof snapshot.info.time?.completed === "number",
+      )
+      .sort(
+        (left, right) =>
+          (right.info.time?.completed || 0) - (left.info.time?.completed || 0),
+      )[0];
+    if (!latestAssistant) return;
+
+    if (
+      deliveryState?.messageId === latestAssistant.info.id &&
+      deliveryState.observationComplete &&
+      deliveryState.summaryComplete
+    ) {
+      return;
+    }
+
+    const messageText = getTextContent(latestAssistant.parts);
+    if (!messageText) return;
+
+    if (!deliveryState || deliveryState.messageId !== latestAssistant.info.id) {
+      deliveryState = {
+        messageId: latestAssistant.info.id,
+        messageText,
+        observationComplete: false,
+        summaryComplete: false,
+      };
+      assistantDeliveryStateBySessionId.set(sessionID, deliveryState);
+    }
+
+    await deliverAssistantLifecycle(sessionID, deliveryState);
+  };
+
+  const serializeAssistantLifecycle = async (
+    sessionID: string,
+    operation: () => Promise<void>,
+  ): Promise<void> => {
+    const lane = getAssistantLifecycleLane(sessionID);
+    const previous = assistantLifecycleTailByLane.get(lane) || Promise.resolve();
+    const current = previous.then(operation, operation);
+    assistantLifecycleTailByLane.set(lane, current);
+    try {
+      await current;
+    } finally {
+      if (assistantLifecycleTailByLane.get(lane) === current) {
+        assistantLifecycleTailByLane.delete(lane);
+      }
+    }
+  };
 
   return {
     // Capture every tool execution as an observation. This is the primary
@@ -198,51 +367,73 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       input: ToolExecuteAfterInput,
       output: ToolExecuteAfterOutput,
     ): Promise<void> => {
-      const contentSessionId = ensureSessionInitialized(input.sessionID, projectName);
-      workerPostFireAndForget("/api/sessions/observations", {
+      const contentSessionId = getOrCreateContentSessionId(input.sessionID);
+      await workerPost("/api/sessions/observations", {
         contentSessionId,
         tool_name: input.tool,
-        tool_input: output.args || {},
+        tool_input: input.args || {},
         tool_response: truncate(output.output || ""),
         cwd: ctx.directory,
+        platformSource: OPENCODE_PLATFORM_SOURCE,
       });
     },
 
-    // Capture assistant chat messages as observations.
+    // Capture every user turn as the authoritative session prompt.
     "chat.message": async (
-      _input: Record<string, unknown>,
+      input: ChatMessageInput,
       output: ChatMessageOutput,
     ): Promise<void> => {
-      const sessionID = output.message?.sessionID;
-      if (!sessionID) return;
-      if (output.message?.role !== "assistant") return;
+      const contentSessionId = getOrCreateContentSessionId(input.sessionID);
+      const prompt = getTextContent(output.parts) || "[media prompt]";
 
-      const contentSessionId = ensureSessionInitialized(sessionID, projectName);
-      const messageText = (output.parts || [])
-        .filter((part) => part.type === "text" && typeof part.text === "string")
-        .map((part) => part.text as string)
-        .join("\n");
-      if (!messageText) return;
-
-      workerPostFireAndForget("/api/sessions/observations", {
+      await workerPost("/api/sessions/init", {
         contentSessionId,
-        tool_name: "assistant_message",
-        tool_input: {},
-        tool_response: truncate(messageText),
-        cwd: ctx.directory,
+        project: projectName,
+        platformSource: OPENCODE_PLATFORM_SOURCE,
+        prompt,
       });
     },
 
-    // Summarize when a session compacts. This is OpenCode's real compaction
-    // hook (the old `session.compacted` bus event never existed).
     "experimental.session.compacting": async (
       input: SessionCompactingInput,
     ): Promise<void> => {
-      const contentSessionId = ensureSessionInitialized(input.sessionID, projectName);
-      workerPostFireAndForget("/api/sessions/summarize", {
-        contentSessionId,
-        last_assistant_message: "",
-      });
+      await serializeAssistantLifecycle(input.sessionID, () =>
+        captureAssistantLifecycle(input.sessionID),
+      );
+    },
+
+    // Inject directory-scoped project context into every system prompt build.
+    "experimental.chat.system.transform": async (
+      input: { sessionID?: string },
+      output: { system: string[] },
+    ): Promise<void> => {
+      const cacheKey = input.sessionID || `project:${projectName}`;
+      let cached = contextBySessionId.get(cacheKey);
+      if (!cached) {
+        const projectsParam = projects.join(",");
+        while (contextBySessionId.size >= MAX_SESSION_MAP_ENTRIES) {
+          const oldestKey = contextBySessionId.keys().next().value;
+          if (oldestKey === undefined) break;
+          contextBySessionId.delete(oldestKey);
+        }
+        const request = workerGetText(
+          `/api/context/inject?projects=${encodeURIComponent(projectsParam)}`,
+          WORKER_GET_TIMEOUT_MS,
+        ).then((context) => {
+          if (contextBySessionId.get(cacheKey) === request) {
+            if (context) {
+              contextBySessionId.set(cacheKey, context);
+            } else {
+              contextBySessionId.delete(cacheKey);
+            }
+          }
+          return context;
+        });
+        contextBySessionId.set(cacheKey, request);
+        cached = request;
+      }
+      const context = typeof cached === "string" ? cached : await cached;
+      if (context) output.system.push(context);
     },
 
     // Generic bus events. Only `session.idle` and `session.deleted` are real
@@ -254,17 +445,17 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
 
       switch (eventType) {
         case "session.idle": {
-          // Best-effort summarize once a session goes idle.
-          const contentSessionId = ensureSessionInitialized(sessionID, projectName);
-          workerPostFireAndForget("/api/sessions/summarize", {
-            contentSessionId,
-            last_assistant_message: "",
-          });
+          await serializeAssistantLifecycle(sessionID, () =>
+            captureAssistantLifecycle(sessionID),
+          );
           break;
         }
         case "session.deleted": {
-          contentSessionIdsByOpenCodeSessionId.delete(sessionID);
-          initializedSessionIds.delete(sessionID);
+          await serializeAssistantLifecycle(sessionID, async () => {
+            contentSessionIdsByOpenCodeSessionId.delete(sessionID);
+            assistantDeliveryStateBySessionId.delete(sessionID);
+            contextBySessionId.delete(sessionID);
+          });
           break;
         }
         default:
