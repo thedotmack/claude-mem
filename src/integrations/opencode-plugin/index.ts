@@ -65,6 +65,12 @@ interface OpenCodeMessageSnapshot {
   parts: OpenCodePart[];
 }
 
+interface AssistantDeliveryState {
+  messageId: string;
+  observationComplete: boolean;
+  summaryComplete: boolean;
+}
+
 interface OpenCodeClient {
   session: {
     messages(options: {
@@ -141,7 +147,7 @@ const JSON_HEADERS: Record<string, string> = { "Content-Type": "application/json
 async function workerPost(
   path: string,
   body: Record<string, unknown>,
-): Promise<void> {
+): Promise<boolean> {
   try {
     const response = await fetch(`${WORKER_BASE_URL}${path}`, {
       method: "POST",
@@ -150,10 +156,13 @@ async function workerPost(
     });
     if (!response.ok) {
       console.warn(`[claude-mem] Worker POST ${path} returned ${response.status}`);
+      return false;
     }
+    return true;
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     console.warn(`[claude-mem] Worker POST ${path} failed: ${message}`);
+    return false;
   }
 }
 
@@ -182,6 +191,7 @@ async function workerGetText(path: string, timeoutMs?: number): Promise<string |
 }
 
 const contentSessionIdsByOpenCodeSessionId = new Map<string, string>();
+const assistantDeliveryStateBySessionId = new Map<string, AssistantDeliveryState>();
 
 const MAX_SESSION_MAP_ENTRIES = 1000;
 
@@ -201,6 +211,7 @@ function getOrCreateContentSessionId(openCodeSessionId: string): string {
       const oldestKey = contentSessionIdsByOpenCodeSessionId.keys().next().value;
       if (oldestKey !== undefined) {
         contentSessionIdsByOpenCodeSessionId.delete(oldestKey);
+        assistantDeliveryStateBySessionId.delete(oldestKey);
         contextBySessionId.delete(oldestKey);
       } else {
         break;
@@ -238,6 +249,74 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
 
   console.log(`[claude-mem] OpenCode plugin loading (project: ${projectName})`);
 
+  const captureAssistantLifecycle = async (sessionID: string): Promise<void> => {
+    let snapshots: OpenCodeMessageSnapshot[];
+    try {
+      const response = await ctx.client.session.messages({
+        path: { id: sessionID },
+        query: { directory: ctx.directory },
+      });
+      snapshots = response.data || [];
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[claude-mem] OpenCode message list failed for ${sessionID}: ${message}`);
+      return;
+    }
+
+    const latestAssistant = snapshots
+      .filter(
+        (snapshot) =>
+          snapshot.info.role === "assistant" &&
+          snapshot.info.summary !== true &&
+          typeof snapshot.info.time?.completed === "number",
+      )
+      .sort(
+        (left, right) =>
+          (right.info.time?.completed || 0) - (left.info.time?.completed || 0),
+      )[0];
+    if (!latestAssistant) return;
+
+    let deliveryState = assistantDeliveryStateBySessionId.get(sessionID);
+    if (
+      deliveryState?.messageId === latestAssistant.info.id &&
+      deliveryState.observationComplete &&
+      deliveryState.summaryComplete
+    ) {
+      return;
+    }
+
+    const messageText = getTextContent(latestAssistant.parts);
+    if (!messageText) return;
+
+    const contentSessionId = getOrCreateContentSessionId(sessionID);
+    if (!deliveryState || deliveryState.messageId !== latestAssistant.info.id) {
+      deliveryState = {
+        messageId: latestAssistant.info.id,
+        observationComplete: false,
+        summaryComplete: false,
+      };
+      assistantDeliveryStateBySessionId.set(sessionID, deliveryState);
+    }
+
+    if (!deliveryState.observationComplete) {
+      deliveryState.observationComplete = await workerPost("/api/sessions/observations", {
+        contentSessionId,
+        tool_name: "assistant_message",
+        tool_input: {},
+        tool_response: messageText,
+        cwd: ctx.directory,
+        platformSource: OPENCODE_PLATFORM_SOURCE,
+      });
+    }
+    if (!deliveryState.summaryComplete) {
+      deliveryState.summaryComplete = await workerPost("/api/sessions/summarize", {
+        contentSessionId,
+        last_assistant_message: messageText,
+        platformSource: OPENCODE_PLATFORM_SOURCE,
+      });
+    }
+  };
+
   return {
     // Capture every tool execution as an observation. This is the primary
     // capture path (#2419).
@@ -272,10 +351,11 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       });
     },
 
-    // Task 2 will summarize after retrieving canonical completed assistant text.
     "experimental.session.compacting": async (
-      _input: SessionCompactingInput,
-    ): Promise<void> => {},
+      input: SessionCompactingInput,
+    ): Promise<void> => {
+      await captureAssistantLifecycle(input.sessionID);
+    },
 
     // Inject directory-scoped project context into every system prompt build.
     "experimental.chat.system.transform": async (
@@ -312,11 +392,12 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
 
       switch (eventType) {
         case "session.idle": {
-          // Task 2 will summarize after retrieving canonical completed assistant text.
+          await captureAssistantLifecycle(sessionID);
           break;
         }
         case "session.deleted": {
           contentSessionIdsByOpenCodeSessionId.delete(sessionID);
+          assistantDeliveryStateBySessionId.delete(sessionID);
           contextBySessionId.delete(sessionID);
           break;
         }

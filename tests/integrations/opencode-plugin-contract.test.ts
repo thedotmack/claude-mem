@@ -55,15 +55,21 @@ const pluginCtx = {
 };
 
 type RecordedPost = { url: string; body: Record<string, unknown> };
+type FetchResponder = (post: RecordedPost) => Response | Promise<Response>;
 
-function installFetchRecorder(posts: RecordedPost[]): () => void {
+function installFetchRecorder(
+  posts: RecordedPost[],
+  respond: FetchResponder = () =>
+    new Response(JSON.stringify({ status: "queued" }), { status: 200 }),
+): () => void {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
-    posts.push({
+    const post = {
       url: String(url),
       body: init?.body ? JSON.parse(String(init.body)) : {},
-    });
-    return new Response(JSON.stringify({ status: "queued" }), { status: 200 });
+    };
+    posts.push(post);
+    return respond(post);
   }) as typeof fetch;
   return () => {
     globalThis.fetch = originalFetch;
@@ -336,6 +342,359 @@ describe("OpenCode plugin event contract", () => {
 
       expect(posts.filter((post) => post.url.includes("/api/sessions/summarize"))).toEqual([]);
     } finally {
+      restoreFetch();
+    }
+  });
+
+  it("captures and summarizes the latest completed assistant reply once", async () => {
+    const posts: RecordedPost[] = [];
+    const messageRequests: unknown[] = [];
+    const restoreFetch = installFetchRecorder(posts);
+    const ctx = {
+      ...pluginCtx,
+      client: {
+        session: {
+          messages: async (options: unknown) => {
+            messageRequests.push(options);
+            return {
+              data: [
+                {
+                  info: {
+                    id: "assistant-old",
+                    role: "assistant",
+                    time: { completed: 10 },
+                  },
+                  parts: [{ type: "text", text: "old reply" }],
+                },
+                {
+                  info: {
+                    id: "assistant-latest",
+                    role: "assistant",
+                    time: { completed: 20 },
+                  },
+                  parts: [
+                    { type: "text", text: "first answer line" },
+                    { type: "text", text: "ignored", ignored: true },
+                    { type: "text", text: "second answer line" },
+                  ],
+                },
+              ],
+            };
+          },
+        },
+      },
+    };
+
+    try {
+      const plugin = await ClaudeMemPlugin(ctx);
+      await plugin["event"]({
+        event: { type: "session.idle", properties: { sessionID: "ses_assistant" } },
+      });
+      await plugin["experimental.session.compacting"]({ sessionID: "ses_assistant" });
+
+      expect(messageRequests).toEqual([
+        { path: { id: "ses_assistant" }, query: { directory: "/tmp/x" } },
+        { path: { id: "ses_assistant" }, query: { directory: "/tmp/x" } },
+      ]);
+      const observations = posts.filter((post) =>
+        post.url.includes("/api/sessions/observations"),
+      );
+      const summaries = posts.filter((post) =>
+        post.url.includes("/api/sessions/summarize"),
+      );
+      expect(observations).toHaveLength(1);
+      expect(summaries).toHaveLength(1);
+      expect(observations[0].body.tool_name).toBe("assistant_message");
+      expect(observations[0].body.tool_response).toBe(
+        "first answer line\nsecond answer line",
+      );
+      expect(summaries[0].body.last_assistant_message).toBe(
+        "first answer line\nsecond answer line",
+      );
+      expect(observations[0].body.contentSessionId).toBe(
+        summaries[0].body.contentSessionId,
+      );
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it("retries a completed textless assistant message when usable text appears", async () => {
+    const posts: RecordedPost[] = [];
+    const latest = {
+      info: {
+        id: "assistant-retry",
+        role: "assistant",
+        time: { completed: 30 },
+      },
+      parts: [{ type: "text", text: "hidden", ignored: true }],
+    };
+    const restoreFetch = installFetchRecorder(posts);
+
+    try {
+      const plugin = await ClaudeMemPlugin({
+        ...pluginCtx,
+        client: {
+          session: {
+            messages: async () => ({ data: [latest] }),
+          },
+        },
+      });
+
+      await plugin["event"]({
+        event: { type: "session.idle", properties: { sessionID: "ses_retry" } },
+      });
+      expect(posts).toHaveLength(0);
+
+      latest.parts = [{ type: "text", text: "now complete", ignored: false }];
+      await plugin["experimental.session.compacting"]({ sessionID: "ses_retry" });
+
+      expect(
+        posts.filter((post) => post.url.includes("/api/sessions/observations")),
+      ).toHaveLength(1);
+      expect(
+        posts.filter((post) => post.url.includes("/api/sessions/summarize")),
+      ).toHaveLength(1);
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it("sends no lifecycle POST when no completed assistant reply exists", async () => {
+    const posts: RecordedPost[] = [];
+    const restoreFetch = installFetchRecorder(posts);
+
+    try {
+      const plugin = await ClaudeMemPlugin({
+        ...pluginCtx,
+        client: {
+          session: {
+            messages: async () => ({
+              data: [
+                {
+                  info: { id: "user-1", role: "user", time: { completed: 1 } },
+                  parts: [{ type: "text", text: "question" }],
+                },
+                {
+                  info: { id: "assistant-running", role: "assistant", time: {} },
+                  parts: [{ type: "text", text: "partial" }],
+                },
+              ],
+            }),
+          },
+        },
+      });
+
+      await plugin["event"]({
+        event: { type: "session.idle", properties: { sessionID: "ses_incomplete" } },
+      });
+      expect(posts).toHaveLength(0);
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it("skips lifecycle POSTs when OpenCode message listing fails", async () => {
+    const posts: RecordedPost[] = [];
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    const restoreFetch = installFetchRecorder(posts);
+
+    try {
+      const plugin = await ClaudeMemPlugin({
+        ...pluginCtx,
+        client: {
+          session: {
+            messages: async () => {
+              throw new Error("OpenCode unavailable");
+            },
+          },
+        },
+      });
+
+      await plugin["event"]({
+        event: { type: "session.idle", properties: { sessionID: "ses_api_error" } },
+      });
+      expect(posts).toHaveLength(0);
+      expect(warn).toHaveBeenCalledWith(
+        "[claude-mem] OpenCode message list failed for ses_api_error: OpenCode unavailable",
+      );
+    } finally {
+      warn.mockRestore();
+      restoreFetch();
+    }
+  });
+
+  it("clears assistant deduplication state when a session is deleted", async () => {
+    const posts: RecordedPost[] = [];
+    const restoreFetch = installFetchRecorder(posts);
+
+    try {
+      const plugin = await ClaudeMemPlugin({
+        ...pluginCtx,
+        client: {
+          session: {
+            messages: async () => ({
+              data: [
+                {
+                  info: {
+                    id: "assistant-delete",
+                    role: "assistant",
+                    time: { completed: 40 },
+                  },
+                  parts: [{ type: "text", text: "reply" }],
+                },
+              ],
+            }),
+          },
+        },
+      });
+
+      const idleEvent = {
+        event: { type: "session.idle", properties: { sessionID: "ses_delete" } },
+      };
+      await plugin["event"](idleEvent);
+      await plugin["event"]({
+        event: { type: "session.deleted", properties: { sessionID: "ses_delete" } },
+      });
+      await plugin["event"](idleEvent);
+
+      expect(
+        posts.filter((post) => post.url.includes("/api/sessions/observations")),
+      ).toHaveLength(2);
+      expect(
+        posts.filter((post) => post.url.includes("/api/sessions/summarize")),
+      ).toHaveLength(2);
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it("retries only observation when observation delivery fails", async () => {
+    const posts: RecordedPost[] = [];
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    let observationAttempts = 0;
+    const restoreFetch = installFetchRecorder(posts, (post) => {
+      if (post.url.includes("/api/sessions/observations")) {
+        observationAttempts += 1;
+        return new Response("unavailable", {
+          status: observationAttempts === 1 ? 503 : 200,
+        });
+      }
+      return new Response(JSON.stringify({ status: "queued" }), { status: 200 });
+    });
+
+    try {
+      const plugin = await ClaudeMemPlugin({
+        ...pluginCtx,
+        client: {
+          session: {
+            messages: async () => ({
+              data: [
+                {
+                  info: {
+                    id: "assistant-observation-retry",
+                    role: "assistant",
+                    time: { completed: 50 },
+                  },
+                  parts: [{ type: "text", text: "retry observation" }],
+                },
+              ],
+            }),
+          },
+        },
+      });
+
+      await plugin["event"]({
+        event: {
+          type: "session.idle",
+          properties: { sessionID: "ses_observation_retry" },
+        },
+      });
+      await plugin["experimental.session.compacting"]({
+        sessionID: "ses_observation_retry",
+      });
+      await plugin["event"]({
+        event: {
+          type: "session.idle",
+          properties: { sessionID: "ses_observation_retry" },
+        },
+      });
+
+      expect(
+        posts.filter((post) => post.url.includes("/api/sessions/observations")),
+      ).toHaveLength(2);
+      expect(
+        posts.filter((post) => post.url.includes("/api/sessions/summarize")),
+      ).toHaveLength(1);
+      expect(warn).toHaveBeenCalledWith(
+        "[claude-mem] Worker POST /api/sessions/observations returned 503",
+      );
+    } finally {
+      warn.mockRestore();
+      restoreFetch();
+    }
+  });
+
+  it("retries only summary when summary delivery fails", async () => {
+    const posts: RecordedPost[] = [];
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    let summaryAttempts = 0;
+    const restoreFetch = installFetchRecorder(posts, (post) => {
+      if (post.url.includes("/api/sessions/summarize")) {
+        summaryAttempts += 1;
+        if (summaryAttempts === 1) throw new Error("summary unavailable");
+      }
+      return new Response(JSON.stringify({ status: "queued" }), { status: 200 });
+    });
+
+    try {
+      const plugin = await ClaudeMemPlugin({
+        ...pluginCtx,
+        client: {
+          session: {
+            messages: async () => ({
+              data: [
+                {
+                  info: {
+                    id: "assistant-summary-retry",
+                    role: "assistant",
+                    time: { completed: 60 },
+                  },
+                  parts: [{ type: "text", text: "retry summary" }],
+                },
+              ],
+            }),
+          },
+        },
+      });
+
+      await plugin["event"]({
+        event: {
+          type: "session.idle",
+          properties: { sessionID: "ses_summary_retry" },
+        },
+      });
+      await plugin["experimental.session.compacting"]({
+        sessionID: "ses_summary_retry",
+      });
+      await plugin["event"]({
+        event: {
+          type: "session.idle",
+          properties: { sessionID: "ses_summary_retry" },
+        },
+      });
+
+      expect(
+        posts.filter((post) => post.url.includes("/api/sessions/observations")),
+      ).toHaveLength(1);
+      expect(
+        posts.filter((post) => post.url.includes("/api/sessions/summarize")),
+      ).toHaveLength(2);
+      expect(warn).toHaveBeenCalledWith(
+        "[claude-mem] Worker POST /api/sessions/summarize failed: summary unavailable",
+      );
+    } finally {
+      warn.mockRestore();
       restoreFetch();
     }
   });
