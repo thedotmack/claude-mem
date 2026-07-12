@@ -34,7 +34,8 @@ export function previewOutput(raw: unknown, maxLength: number = PREVIEW_LENGTH):
  * - `xml`      — contains a parseable `<observation>`/`<summary>`/`<skip_summary/>`
  *                root tag. (Whether it ultimately yields rows is parseAgentXml's
  *                job; this is the structural gate.)
- * - `idle`     — empty / whitespace-only. Benign: the SDK had nothing to say.
+ * - `idle`     — empty / whitespace-only, or polite ready/no-work prose.
+ *                Benign: the SDK had nothing substantive to say.
  * - `prose`    — any other non-XML text. Conversational output; not persisted.
  */
 export function classifyObserverOutput(raw: unknown): ObserverOutputClass {
@@ -44,6 +45,16 @@ export function classifyObserverOutput(raw: unknown): ObserverOutputClass {
 
   if (/<(observation|summary)\b/i.test(raw) || /<skip_summary\b/i.test(raw)) {
     return 'xml';
+  }
+
+  const text = raw.toLowerCase().replace(/\s+/g, ' ').trim();
+  if (
+    /\bno observations to record\b/.test(text)
+    || /\bnothing (?:to|new to) (?:record|observe|report|do)\b/.test(text)
+    || /\b(?:ready|waiting) to observe and record\b/.test(text)
+    || /\bi do(?:n't| not) see any tool executions, file changes,? or technical work\b/.test(text)
+  ) {
+    return 'idle';
   }
 
   return 'prose';

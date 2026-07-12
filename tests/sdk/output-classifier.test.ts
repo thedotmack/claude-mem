@@ -39,6 +39,14 @@ describe('classifyObserverOutput (plan-11 #2485)', () => {
     expect(classifyObserverOutput('Skipping — repeated log scan with no new findings.')).toBe('prose');
   });
 
+  it('classifies polite ready/no-work prose as idle', () => {
+    expect(
+      classifyObserverOutput(
+        `I'm ready to observe and record, but I don't see any tool executions, file changes, or technical work.`,
+      ),
+    ).toBe('idle');
+  });
+
   it('classifies former poison marker strings as ordinary prose', () => {
     expect(classifyObserverOutput('This session has been exhausted, I cannot continue.')).toBe('prose');
     expect(classifyObserverOutput('Error: prompt is too long for this model.')).toBe('prose');

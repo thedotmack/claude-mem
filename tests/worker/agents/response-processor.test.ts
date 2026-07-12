@@ -236,6 +236,42 @@ describe('ResponseProcessor', () => {
       expect(session.earliestPendingTimestamp).toBeNull();
       expect(mockStoreObservations).not.toHaveBeenCalled();
     });
+
+    it('treats polite ready/no-work prose as idle and keeps the invalid-output counter at zero', async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+      } as unknown as SessionManager;
+
+      const session = createMockSession({
+        consecutiveInvalidOutputs: 2,
+      });
+      const responseText =
+        `I'm ready to observe and record, but I don't see any tool executions, file changes, or technical work.`;
+
+      await processAgentResponse(
+        responseText,
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        'PARSER',
+        expect.stringMatching(/^TestAgent returned non-XML idle response/),
+        expect.objectContaining({ sessionId: 1, outputClass: 'idle', consecutiveInvalidOutputs: 0 })
+      );
+      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
+      expect(session.consecutiveInvalidOutputs).toBe(0);
+      expect(session.earliestPendingTimestamp).toBeNull();
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+    });
   });
 
   describe('parsing summary from XML response', () => {

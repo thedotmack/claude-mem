@@ -93,7 +93,7 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     expect(session.abortReason ?? null).toBeNull();
   });
 
-  it('repeated "No observations to record" acknowledgements confirm and never build respawn debt', async () => {
+  it('repeated polite ready/no-work acknowledgements confirm and never build respawn debt', async () => {
     const sm = new SessionManager(makeDbManager());
     const session = sm.initializeSession(2, 'do the thing', 1);
     session.memorySessionId = 'mem-2';
@@ -104,7 +104,7 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
 
     for (let i = 0; i < 5; i++) {
       await processAgentResponse(
-        'No observations to record.',
+        `I'm ready to observe and record, but I don't see any tool executions, file changes, or technical work.`,
         session,
         makeDbManager(),
         sm,
