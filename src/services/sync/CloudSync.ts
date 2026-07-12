@@ -50,6 +50,10 @@ interface KindSpec {
   endpoint: string;
   bodyKey: string;
   selectCols: string;
+  /** FROM clause override when the select needs a JOIN (default: localTable). */
+  fromSql?: string;
+  /** Alias qualifying synced_at/id in WHERE/ORDER BY when fromSql joins. */
+  rowAlias?: string;
   toCloud: (r: LocalRow) => CloudRow;
 }
 
@@ -115,18 +119,30 @@ const KINDS: KindSpec[] = [
     // pasted logs): truncating after .all() still materializes the giant
     // strings and OOMs the process, so never let them cross the FFI boundary
     // at all (cloud-sync.mjs:230-237).
-    selectCols: `id, content_session_id, prompt_number,
-      substr(prompt_text, 1, ${200_000}) AS prompt_text,
-      length(prompt_text) AS prompt_text_len,
-      created_at, created_at_epoch`,
+    // Resolve the memory session id + project through sdk_sessions — the same
+    // join the local viewer uses (prompts/get.ts). Without it the cloud viewer
+    // can never attach a prompt to its session: observations are keyed by
+    // memory_session_id while content_session_id is a different UUID, so the
+    // old "reuse the session id" fallback produced rows that join nothing
+    // (verified in prod 2026-07-12: 0 of the 50 newest sessions had a prompt).
+    // LEFT JOIN, not INNER: the prompt is captured before the SDK session
+    // registers its memory id, so first push may still fall back — the
+    // updateMemorySessionId/ensureMemorySessionIdRegistered re-push hook
+    // re-nulls synced_at once the mapping lands and the upsert repairs it.
+    selectCols: `up.id AS id, up.content_session_id AS content_session_id,
+      up.prompt_number AS prompt_number,
+      substr(up.prompt_text, 1, ${200_000}) AS prompt_text,
+      length(up.prompt_text) AS prompt_text_len,
+      up.created_at AS created_at, up.created_at_epoch AS created_at_epoch,
+      s.memory_session_id AS memory_session_id, s.project AS project`,
+    fromSql: 'user_prompts up LEFT JOIN sdk_sessions s ON up.session_db_id = s.id',
+    rowAlias: 'up',
     // cloud-sync.mjs:238-250
     toCloud: (r) => ({
       localId: String(r.id),
       contentSessionId: r.content_session_id ?? null,
-      // local user_prompts has no memory_session_id/project, but the cloud
-      // table requires both NOT NULL — reuse the session id and a fixed bucket.
-      memorySessionId: r.content_session_id ?? 'unknown',
-      project: 'unknown',
+      memorySessionId: r.memory_session_id ?? r.content_session_id ?? 'unknown',
+      project: r.project ?? 'unknown',
       promptText: r.prompt_text != null && (r.prompt_text_len as number) > 200_000
         ? String(r.prompt_text) + TRUNC_MARK
         : r.prompt_text ?? null,
@@ -356,8 +372,9 @@ export class CloudSync {
     // in-flight POST bails before the next DB touch (SELECT or stamp).
     for (;;) {
       if (this.stopped) return;
+      const q = kind.rowAlias ? `${kind.rowAlias}.` : '';
       const rows = this.db.prepare(
-        `SELECT ${kind.selectCols} FROM ${kind.localTable} WHERE synced_at IS NULL ORDER BY id LIMIT ${BATCH}`
+        `SELECT ${kind.selectCols} FROM ${kind.fromSql ?? kind.localTable} WHERE ${q}synced_at IS NULL ORDER BY ${q}id LIMIT ${BATCH}`
       ).all() as LocalRow[];
       if (rows.length === 0) break;
 

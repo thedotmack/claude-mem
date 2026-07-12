@@ -1451,6 +1451,22 @@ export class SessionStore {
       SET memory_session_id = ?
       WHERE id = ?
     `).run(memorySessionId, sessionDbId);
+    if (memorySessionId) this.requeuePromptSync(sessionDbId);
+  }
+
+  /**
+   * Cloud-sync repair: prompts are captured (and pushed) before the SDK
+   * session registers its memory_session_id, so their first cloud upsert
+   * carries the content-session fallback. Re-nulling synced_at once the
+   * mapping lands makes the next flush re-push them with the resolved id —
+   * the server upserts on (user_id, device_id, local_id), so the corrected
+   * row overwrites in place rather than duplicating.
+   */
+  private requeuePromptSync(sessionDbId: number): void {
+    this.db.prepare(`
+      UPDATE user_prompts SET synced_at = NULL
+      WHERE session_db_id = ? AND synced_at IS NOT NULL
+    `).run(sessionDbId);
   }
 
   markSessionCompleted(sessionDbId: number): void {
@@ -1480,6 +1496,7 @@ export class SessionStore {
       this.db.prepare(`
         UPDATE sdk_sessions SET memory_session_id = ? WHERE id = ?
       `).run(memorySessionId, sessionDbId);
+      this.requeuePromptSync(sessionDbId);
 
       logger.info('DB', 'Registered memory_session_id before storage (FK fix)', {
         sessionDbId,
