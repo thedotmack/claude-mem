@@ -1064,6 +1064,86 @@ export class ChromaMcpManager {
   }
 
   /**
+   * Kill chroma-mcp processes left behind by a previous worker process.
+   *
+   * disposeCurrentSubprocess() only covers the tree THIS manager spawned. A
+   * worker that dies without a clean shutdown (crash, SIGKILL, hard restart)
+   * re-parents its chroma-mcp tree to init, where the leaked memory lives
+   * forever and no watchdog can see it (observed: a 15 GB orphaned python).
+   * Two chroma instances sharing one persistent data dir is also a
+   * corruption risk, so on the first connect of each worker we kill every
+   * process whose command line references both chroma-mcp and our data dir.
+   *
+   * Call this from worker startup BEFORE the manager spawns anything — at
+   * that point every match is stale by definition. It must NOT run inside
+   * the connect path, where it would race against our own fresh spawn.
+   * Best-effort: a failed sweep never blocks startup.
+   */
+  static async killStaleChromaProcesses(): Promise<void> {
+    let stdout = '';
+    try {
+      if (process.platform === 'win32') {
+        const result = await execFileAsync(
+          'powershell',
+          [
+            '-NoProfile', '-NonInteractive', '-Command',
+            'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" }'
+          ],
+          { timeout: 15_000, windowsHide: true }
+        );
+        stdout = result.stdout;
+      } else {
+        const result = await execFileAsync('ps', ['-Axww', '-o', 'pid=,command='], { timeout: 5_000 });
+        stdout = result.stdout;
+      }
+    } catch (error) {
+      logger.debug('CHROMA_MCP', 'Process snapshot for stale chroma sweep failed (best-effort)', {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return;
+    }
+
+    for (const pid of ChromaMcpManager.staleChromaPidsFromCommandTable(stdout, process.pid)) {
+      logger.warn('CHROMA_MCP', 'Killing stale chroma-mcp process left by a previous worker', { pid });
+      try {
+        await ChromaMcpManager.killProcessTree(pid);
+      } catch (error) {
+        logger.warn('CHROMA_MCP', 'Failed to kill stale chroma-mcp process (best-effort)', {
+          pid,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+  }
+
+  /**
+   * Select stale chroma-mcp pids from a `pid command` table: every line whose
+   * command mentions chroma-mcp AND our persistent data dir (either slash
+   * style), excluding selfPid. Matching both strings keeps the sweep scoped
+   * to processes that can only be a chroma-mcp instance on our database.
+   */
+  private static staleChromaPidsFromCommandTable(stdout: string, selfPid: number): number[] {
+    const dataDirVariants = [DEFAULT_CHROMA_DATA_DIR, DEFAULT_CHROMA_DATA_DIR.replace(/\\/g, '/')];
+    const pids: number[] = [];
+    for (const line of stdout.split('\n')) {
+      const match = line.match(/^\s*(\d+)\s+(.+)$/);
+      if (!match) {
+        continue;
+      }
+      const pid = Number.parseInt(match[1], 10);
+      const command = match[2];
+      if (!Number.isFinite(pid) || pid <= 0 || pid === selfPid) {
+        continue;
+      }
+      if (!command.includes('chroma-mcp') || !dataDirVariants.some(dir => command.includes(dir))) {
+        continue;
+      }
+      pids.push(pid);
+    }
+    return pids;
+  }
+
+  /**
    * Kill a process and all its descendants (tree-kill).
    *
    * POSIX: Sends SIGTERM to the process, then uses `pkill -P` to signal

@@ -492,6 +492,10 @@ export class WorkerService implements WorkerRef {
 
       const chromaEnabled = settings.CLAUDE_MEM_CHROMA_ENABLED !== 'false';
       if (chromaEnabled) {
+        // Reap chroma-mcp trees orphaned by a previous worker (crash/SIGKILL
+        // restarts re-parent them to init, where their leaked memory lives
+        // forever) before this worker's manager can spawn its own.
+        await ChromaMcpManager.killStaleChromaProcesses();
         this.chromaMcpManager = ChromaMcpManager.getInstance();
         logger.info('SYSTEM', 'ChromaMcpManager initialized (lazy - connects on first use)');
       } else {

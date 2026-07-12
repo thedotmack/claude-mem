@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, afterAll, mock } from 'bun:test';
 
 import { ChromaMcpManager } from '../../../src/services/sync/ChromaMcpManager.js';
+import { paths } from '../../../src/shared/paths.js';
 
 // Memory-watchdog regression coverage.
 //
@@ -19,6 +20,7 @@ const manager = ChromaMcpManager as unknown as {
   getChromaMemoryLimitMb(): number;
   descendantsFromPidTable(rootPid: number, stdout: string): number[];
   parseTopFootprintMb(stdout: string, pids: number[]): number | null;
+  staleChromaPidsFromCommandTable(stdout: string, selfPid: number): number[];
 };
 
 const originalLimit = process.env.CLAUDE_MEM_CHROMA_MEMORY_LIMIT_MB;
@@ -131,6 +133,30 @@ describe('parseTopFootprintMb', () => {
   it('returns null when none of the pids appear so the caller falls back to RSS', () => {
     expect(manager.parseTopFootprintMb(topOutput, [123, 456])).toBeNull();
     expect(manager.parseTopFootprintMb('', [31700])).toBeNull();
+  });
+});
+
+describe('staleChromaPidsFromCommandTable', () => {
+  const dataDir = paths.chroma();
+  const table = [
+    `30313 /opt/homebrew/bin/uv tool uvx --from chroma-mcp==0.2.6 chroma-mcp --client-type persistent --data-dir ${dataDir}`,
+    `30314 /Users/x/.cache/uv/archive-v0/abc/bin/python /Users/x/.cache/uv/archive-v0/abc/bin/chroma-mcp --client-type persistent --data-dir ${dataDir}`,
+    '31605 /Users/x/.bun/bin/bun worker-service.cjs --daemon',
+    `31700 python chroma-mcp --client-type persistent --data-dir /some/other/dir`,
+    'garbage line without pid',
+    ''
+  ].join('\n');
+
+  it('selects only processes matching chroma-mcp AND our data dir', () => {
+    expect(manager.staleChromaPidsFromCommandTable(table, 1)).toEqual([30313, 30314]);
+  });
+
+  it('excludes the worker itself', () => {
+    expect(manager.staleChromaPidsFromCommandTable(table, 30313)).toEqual([30314]);
+  });
+
+  it('returns empty for empty output', () => {
+    expect(manager.staleChromaPidsFromCommandTable('', 1)).toEqual([]);
   });
 });
 
