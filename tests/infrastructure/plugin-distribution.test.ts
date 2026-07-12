@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { buildShellCommand } from '../../src/build/hook-shell-template.js';
+import { buildCodexWindowsCommand, buildShellCommand } from '../../src/build/hook-shell-template.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '../..');
@@ -20,6 +20,15 @@ function commandHooksFrom(relativePath: string): string[] {
       (matcher.hooks ?? [])
         .filter((hook: any) => hook.type === 'command')
         .map((hook: any) => String(hook.command ?? ''))
+    )
+  );
+}
+
+function commandHookEntriesFrom(relativePath: string): any[] {
+  const parsed = readJson(relativePath);
+  return Object.values(parsed.hooks ?? {}).flatMap((matchers: any) =>
+    matchers.flatMap((matcher: any) =>
+      (matcher.hooks ?? []).filter((hook: any) => hook.type === 'command')
     )
   );
 }
@@ -64,6 +73,8 @@ describe('Plugin Distribution - Required Files', () => {
     'plugin/.claude-plugin/plugin.json',
     'plugin/.codex-plugin/plugin.json',
     'plugin/.mcp.json',
+    'plugin/sqlite/SessionStore.js',
+    'plugin/sqlite/observations/files.js',
     'plugin/skills/mem-search/SKILL.md',
     '.agents/plugins/marketplace.json',
   ];
@@ -95,9 +106,30 @@ describe('Plugin Distribution - Codex Marketplace', () => {
     }
   });
 
+  it('sets Windows Codex hook overrides without POSIX-only shell syntax', () => {
+    const entries = commandHookEntriesFrom('plugin/hooks/codex-hooks.json');
+    const posixOnlyTokens = ['$(', '${', '[ -', 'printenv', 'export PATH', 'command -v', '2>/dev/null', 'while IFS'];
+
+    expect(entries.length).toBeGreaterThan(0);
+    for (const entry of entries) {
+      expect(typeof entry.commandWindows).toBe('string');
+      expect(entry.commandWindows).toContain('node -e');
+      expect(entry.commandWindows).toContain('CLAUDE_MEM_CODEX_HOOK');
+      expect(entry.commandWindows).toContain('bun-runner.js');
+      expect(entry.commandWindows).toContain('worker-service.cjs');
+      expect(entry.commandWindows).toContain('plugins');
+      expect(entry.commandWindows).toContain('cache');
+      expect(entry.commandWindows).toContain('marketplaces');
+      for (const token of posixOnlyTokens) {
+        expect(entry.commandWindows).not.toContain(token);
+      }
+    }
+  });
+
   it('ships a single Codex SessionStart command', () => {
     const codexHooks = readJson('plugin/hooks/codex-hooks.json');
     expect(codexHooks.hooks.SessionStart[0].hooks).toHaveLength(1);
+    expect(codexHooks.hooks.SessionStart[0].hooks[0].commandWindows).toContain('version-check.js');
   });
 
   it('MCP launcher can recover without plugin root environment variables', () => {
@@ -202,6 +234,21 @@ describe('Plugin Distribution - package.json Files Field', () => {
     expect(packageJson.files).toContain('plugin/hooks');
     expect(packageJson.files).toContain('plugin/skills');
     expect(packageJson.files).toContain('plugin/scripts/*.cjs');
+    expect(packageJson.files).toContain('plugin/sqlite');
+  });
+
+  it('npm tarball includes sqlite runtime modules required by the worker', () => {
+    const result = spawnSync('npm', ['pack', '--dry-run', '--json'], {
+      cwd: projectRoot,
+      encoding: 'utf-8',
+    });
+
+    expect(result.status).toBe(0);
+    const packed = JSON.parse(result.stdout);
+    const filePaths = new Set(packed[0].files.map((file: { path: string }) => file.path));
+
+    expect(filePaths.has('plugin/sqlite/SessionStore.js')).toBe(true);
+    expect(filePaths.has('plugin/sqlite/observations/files.js')).toBe(true);
   });
 });
 
@@ -212,6 +259,8 @@ describe('Plugin Distribution - Build Script Verification', () => {
 
     expect(content).toContain('plugin/skills/mem-search/SKILL.md');
     expect(content).toContain('plugin/hooks/hooks.json');
+    expect(content).toContain('plugin/sqlite/SessionStore.js');
+    expect(content).toContain('plugin/sqlite/observations/files.js');
     expect(content).toContain('plugin/.claude-plugin/plugin.json');
   });
 });
@@ -272,8 +321,14 @@ const codexStartupHook = () => buildShellCommand({
   ],
   notFoundMessage: 'claude-mem: plugin scripts not found',
 });
+const codexHookPair = (tail: string[], options: { startupVersionCheck?: boolean } = {}) => ({
+  command: options.startupVersionCheck ? codexStartupHook() : codexHook(tail),
+  commandWindows: buildCodexWindowsCommand(tail, options),
+});
 
-const RULE_A_EXPECTATIONS: Record<string, Record<string, string>> = {
+type RuleAExpectation = string | { command: string; commandWindows: string };
+
+const RULE_A_EXPECTATIONS: Record<string, Record<string, RuleAExpectation>> = {
   'plugin/hooks/hooks.json': {
     'Setup.0.0': buildShellCommand({
       host: 'claude-code-setup', requireFile: 'version-check.js',
@@ -288,11 +343,11 @@ const RULE_A_EXPECTATIONS: Record<string, Record<string, string>> = {
     'Stop.0.0': claudeHook(['hook', 'claude-code', 'summarize']),
   },
   'plugin/hooks/codex-hooks.json': {
-    'SessionStart.0.0': codexStartupHook(),
-    'UserPromptSubmit.0.0': codexHook(['hook', 'codex', 'session-init']),
-    'PreToolUse.0.0': codexHook(['hook', 'codex', 'file-context']),
-    'PostToolUse.0.0': codexHook(['hook', 'codex', 'observation']),
-    'Stop.0.0': codexHook(['hook', 'codex', 'summarize']),
+    'SessionStart.0.0': codexHookPair(['hook', 'codex', 'context'], { startupVersionCheck: true }),
+    'UserPromptSubmit.0.0': codexHookPair(['hook', 'codex', 'session-init']),
+    'PreToolUse.0.0': codexHookPair(['hook', 'codex', 'file-context']),
+    'PostToolUse.0.0': codexHookPair(['hook', 'codex', 'observation']),
+    'Stop.0.0': codexHookPair(['hook', 'codex', 'summarize']),
   },
 };
 
@@ -308,9 +363,13 @@ const MCP_EXPECTED = buildShellCommand({
   ],
 });
 
-function hookCommandByPath(parsed: any, dottedPath: string): string | null {
+function hookEntryByPath(parsed: any, dottedPath: string): any | null {
   const [event, groupIdx, hookIdx] = dottedPath.split('.');
-  return parsed.hooks?.[event]?.[Number(groupIdx)]?.hooks?.[Number(hookIdx)]?.command ?? null;
+  return parsed.hooks?.[event]?.[Number(groupIdx)]?.hooks?.[Number(hookIdx)] ?? null;
+}
+
+function hookCommandByPath(parsed: any, dottedPath: string): string | null {
+  return hookEntryByPath(parsed, dottedPath)?.command ?? null;
 }
 
 describe('Spawn-Contract Templating - Rule A generator parity', () => {
@@ -318,8 +377,12 @@ describe('Spawn-Contract Templating - Rule A generator parity', () => {
     for (const [dottedPath, expected] of Object.entries(commands)) {
       it(`${filePath} [${dottedPath}] equals buildShellCommand output`, () => {
         const parsed = readJson(filePath);
-        const actual = hookCommandByPath(parsed, dottedPath);
-        expect(actual).toBe(expected);
+        const entry = hookEntryByPath(parsed, dottedPath);
+        const expectedCommand = typeof expected === 'string' ? expected : expected.command;
+        expect(entry?.command ?? null).toBe(expectedCommand);
+        if (typeof expected !== 'string') {
+          expect(entry?.commandWindows ?? null).toBe(expected.commandWindows);
+        }
       });
     }
   }
@@ -333,7 +396,11 @@ describe('Spawn-Contract Templating - Rule A generator parity', () => {
     // The placeholder may appear only inside the _E="${CLAUDE_PLUGIN_ROOT:-...}"
     // expansion, never as a bare `${CLAUDE_PLUGIN_ROOT}` token that would reach
     // the binary unsubstituted.
-    const shCommands = Object.values(RULE_A_EXPECTATIONS).flatMap((c) => Object.values(c));
+    const shCommands = Object.values(RULE_A_EXPECTATIONS).flatMap((c) =>
+      Object.values(c).map((expectation) =>
+        typeof expectation === 'string' ? expectation : expectation.command
+      )
+    );
     for (const command of shCommands) {
       expect(command).not.toMatch(/\$\{CLAUDE_PLUGIN_ROOT\}(?!:-)/);
       expect(command).toContain('_E="${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}"');

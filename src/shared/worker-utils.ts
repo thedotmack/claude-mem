@@ -1,5 +1,5 @@
 import path from "path";
-import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync } from "fs";
+import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync, readdirSync, statSync } from "fs";
 import { spawnHidden } from "./spawn.js";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
@@ -163,8 +163,13 @@ export function clearPortCache(): void {
   cachedApiRequestTimeoutMs = null;
 }
 
+export function formatHostForUrl(host: string): string {
+  if (host.startsWith('[') && host.endsWith(']')) return host;
+  return host.includes(':') ? `[${host}]` : host;
+}
+
 export function buildWorkerUrl(apiPath: string): string {
-  return `http://${getWorkerHost()}:${getWorkerPort()}${apiPath}`;
+  return `http://${formatHostForUrl(getWorkerHost())}:${getWorkerPort()}${apiPath}`;
 }
 
 export function workerHttpRequest(
@@ -204,15 +209,50 @@ async function isWorkerReady(): Promise<boolean> {
   return response.ok;
 }
 
+function candidateWorkerScriptPath(root: string): string {
+  const pluginRoot = existsSync(path.join(root, 'plugin', 'scripts'))
+    ? path.join(root, 'plugin')
+    : root;
+  return path.join(pluginRoot, 'scripts', 'worker-service.cjs');
+}
+
+function cacheWorkerScriptCandidates(): string[] {
+  const pluginsRoot = path.dirname(path.dirname(MARKETPLACE_ROOT));
+  const cacheRoot = path.join(pluginsRoot, 'cache', 'thedotmack', 'claude-mem');
+  try {
+    return readdirSync(cacheRoot)
+      .filter(name => /^\d/.test(name))
+      .map(name => path.join(cacheRoot, name))
+      .filter(candidate => {
+        try {
+          return statSync(candidate).isDirectory();
+        } catch {
+          return false;
+        }
+      })
+      .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)
+      .map(candidateWorkerScriptPath);
+  } catch {
+    return [];
+  }
+}
+
 /**
- * Canonical worker-script resolver: the marketplace install first, then the
- * dev-tree copy under cwd. Exported so other launchers (e.g. the MCP server)
- * prefer the same marketplace copy instead of spawning a stale cache-dir
- * bundle.
+ * Canonical worker-script resolver. The opt-in override exists for local
+ * testing; otherwise mirror the host hook resolver's cache-before-marketplace
+ * order so cache, marketplace, MCP, and worker restart launches converge on a
+ * single worker identity.
  */
 export function resolveWorkerScriptPath(): string | null {
+  const override = process.env.CLAUDE_MEM_WORKER_SCRIPT_PATH?.trim();
+  if (override) {
+    if (existsSync(override)) return override;
+    logger.debug('SYSTEM', 'Ignoring missing CLAUDE_MEM_WORKER_SCRIPT_PATH override', { override });
+  }
+
   const candidates = [
-    path.join(MARKETPLACE_ROOT, 'plugin', 'scripts', 'worker-service.cjs'),
+    ...cacheWorkerScriptCandidates(),
+    candidateWorkerScriptPath(path.join(MARKETPLACE_ROOT, 'plugin')),
     path.join(process.cwd(), 'plugin', 'scripts', 'worker-service.cjs'),
   ];
   for (const candidate of candidates) {

@@ -14,7 +14,7 @@ Claude-mem uses an **MCP-based search architecture** that provides intelligent m
 **Key Components**:
 1. **MCP Tools** (4 tools) - `search`, `timeline`, `get_observations`, `__IMPORTANT`
 2. **MCP Server** (`plugin/scripts/mcp-server.cjs`) - Thin wrapper over HTTP API
-3. **HTTP API Endpoints** - Fast search operations on Worker Service (port 37777)
+3. **HTTP API Endpoints** - Fast search operations on the configured Worker Service port
 4. **Worker Service** - Express.js server with FTS5 full-text search
 5. **SQLite Database** - Persistent storage with FTS5 virtual tables
 6. **Chroma Vector DB** - Semantic search with hybrid retrieval
@@ -56,7 +56,9 @@ MCP server receives tool call via JSON-RPC over stdio:
 MCP server translates to HTTP request:
 
 ```typescript
-const url = `http://localhost:37777/api/search?query=authentication%20bug&type=bugfix&limit=10`;
+const workerPort = process.env.CLAUDE_MEM_WORKER_PORT ?? "<worker-port>";
+const workerBaseUrl = `http://127.0.0.1:${workerPort}`;
+const url = `${workerBaseUrl}/api/search?query=authentication%20bug&type=bugfix&limit=10`;
 const response = await fetch(url);
 ```
 
@@ -221,7 +223,9 @@ NEVER fetch full details without filtering first. 10x token savings.
       searchParams.append(key, String(value));
     }
 
-    const url = `http://localhost:37777${endpoint}?${searchParams}`;
+    const workerPort = process.env.CLAUDE_MEM_WORKER_PORT ?? "<worker-port>";
+    const workerBaseUrl = `http://127.0.0.1:${workerPort}`;
+    const url = `${workerBaseUrl}${endpoint}?${searchParams}`;
     const response = await fetch(url);
     return await response.json();
   }
@@ -232,7 +236,7 @@ NEVER fetch full details without filtering first. 10x token savings.
 
 **Location:** `src/services/worker-service.ts`
 
-**Port:** 37777
+**Port:** Configured worker port. The default is per-user (`37700 + (uid % 100)`) and can be overridden with `CLAUDE_MEM_WORKER_PORT`.
 
 **Search Endpoints:**
 ```typescript
@@ -400,7 +404,7 @@ function escapeFTS5Query(query: string): string {
 ### MCP Protocol Security
 
 - Stdio transport (no network exposure)
-- Local-only HTTP API (localhost:37777)
+- Local-only HTTP API on the configured worker port
 - No authentication needed (local development only)
 
 ## Performance
@@ -460,13 +464,19 @@ function escapeFTS5Query(query: string): string {
 
 ## Troubleshooting
 
+For direct API checks, set the worker port first:
+
+```bash
+WORKER_PORT=$(jq -r .CLAUDE_MEM_WORKER_PORT ~/.claude-mem/settings.json)
+```
+
 ### MCP Server Not Connected
 
 **Symptoms:** Tools not appearing in Claude
 
 **Solution:**
 1. Check MCP server path in configuration
-2. Verify worker service is running: `curl http://localhost:37777/api/health`
+2. Verify worker service is running: `curl http://127.0.0.1:$WORKER_PORT/api/health`
 3. Restart Claude Desktop/Code
 
 ### Worker Service Not Running
@@ -485,9 +495,9 @@ npm run worker:logs         # View logs
 **Symptoms:** search() returns no results
 
 **Troubleshooting:**
-1. Test API directly: `curl "http://localhost:37777/api/search?query=test"`
+1. Test API directly: `curl "http://127.0.0.1:$WORKER_PORT/api/search?query=test"`
 2. Check database: `ls ~/.claude-mem/claude-mem.db`
-3. Verify observations exist: `curl "http://localhost:37777/api/health"`
+3. Verify observations exist: `curl "http://127.0.0.1:$WORKER_PORT/api/health"`
 
 ## Next Steps
 
