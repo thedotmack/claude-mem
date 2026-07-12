@@ -549,10 +549,14 @@ export class ChromaMcpManager {
   /**
    * Sum resident memory in MB across the given pids.
    *
-   * POSIX: one `ps -o rss= -p <pid,...>` call (RSS in KB). RSS underreports
-   * once the OS compresses or swaps the leaked pages out, but a leaking
-   * process grows through resident memory first, so a periodic check catches
-   * it during the growth phase.
+   * macOS: one `top -l 1 -stats pid,mem` snapshot (physical footprint — the
+   * number Activity Monitor shows). `ps` RSS is the wrong metric here: the
+   * kernel compresses the leaked pages out of the resident set, so RSS
+   * collapses while the footprint keeps growing (observed on the same
+   * chroma-mcp python: 1.5 GB RSS vs 20 GB footprint) and an RSS-based limit
+   * never fires. Falls back to the RSS path when top fails.
+   *
+   * Other POSIX: one `ps -o rss= -p <pid,...>` call (RSS in KB).
    *
    * Windows: `tasklist /FI "PID eq <pid>" /NH /FO CSV` per pid ("Mem Usage"
    * column, KB with locale-dependent digit grouping).
@@ -563,6 +567,13 @@ export class ChromaMcpManager {
   private static async measureProcessTreeMemoryMb(pids: number[]): Promise<number | null> {
     if (pids.length === 0) {
       return null;
+    }
+
+    if (process.platform === 'darwin') {
+      const footprintMb = await ChromaMcpManager.measureDarwinFootprintMb(pids);
+      if (footprintMb !== null) {
+        return footprintMb;
+      }
     }
 
     try {
@@ -593,6 +604,55 @@ export class ChromaMcpManager {
       });
       return null;
     }
+  }
+
+  private static async measureDarwinFootprintMb(pids: number[]): Promise<number | null> {
+    try {
+      const { stdout } = await execFileAsync('top', ['-l', '1', '-stats', 'pid,mem'], { timeout: 10_000 });
+      return ChromaMcpManager.parseTopFootprintMb(stdout, pids);
+    } catch (error) {
+      logger.debug('CHROMA_MCP', 'top footprint measurement failed, falling back to RSS (best-effort)', {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return null;
+    }
+  }
+
+  /**
+   * Parse `top -l 1 -stats pid,mem` output and sum the MEM column (physical
+   * footprint) for the given pids. MEM cells are humanized ("849K", "1500M",
+   * "20G", optionally with a +/- delta marker). Returns null when none of the
+   * pids appear in the snapshot so the caller can fall back to RSS.
+   */
+  private static parseTopFootprintMb(stdout: string, pids: number[]): number | null {
+    const wanted = new Set(pids);
+    const unitToMb: Record<string, number> = {
+      B: 1 / (1024 * 1024),
+      K: 1 / 1024,
+      M: 1,
+      G: 1024,
+      T: 1024 * 1024
+    };
+
+    let totalMb = 0;
+    let matched = false;
+    for (const line of stdout.split('\n')) {
+      const match = line.match(/^\s*(\d+)\s+(\d+(?:\.\d+)?)([BKMGT])[+-]?\s*$/);
+      if (!match) {
+        continue;
+      }
+      const pid = Number.parseInt(match[1], 10);
+      if (!wanted.has(pid)) {
+        continue;
+      }
+      const value = Number.parseFloat(match[2]);
+      if (!Number.isFinite(value)) {
+        continue;
+      }
+      matched = true;
+      totalMb += value * unitToMb[match[3]];
+    }
+    return matched ? totalMb : null;
   }
 
   private static parsePsRssKb(stdout: string): number {

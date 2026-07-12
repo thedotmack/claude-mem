@@ -18,6 +18,7 @@ const manager = ChromaMcpManager as unknown as {
   parseTasklistMemoryKb(stdout: string): number;
   getChromaMemoryLimitMb(): number;
   descendantsFromPidTable(rootPid: number, stdout: string): number[];
+  parseTopFootprintMb(stdout: string, pids: number[]): number | null;
 };
 
 const originalLimit = process.env.CLAUDE_MEM_CHROMA_MEMORY_LIMIT_MB;
@@ -100,6 +101,36 @@ describe('descendantsFromPidTable', () => {
 
   it('does not loop on cyclic pid tables', () => {
     expect(manager.descendantsFromPidTable(111, '222 111\n111 222\n')).toEqual([222]);
+  });
+});
+
+describe('parseTopFootprintMb', () => {
+  // Regression: `ps` RSS collapses once macOS compresses the leaked pages out
+  // (observed: 1.5 GB RSS vs 20 GB Activity Monitor footprint on the same
+  // python), so the watchdog reads top's MEM column (phys_footprint) instead.
+  const topOutput = [
+    'Processes: 436 total, 3 running, 433 sleeping, 2015 threads',
+    'PhysMem: 7569M used (1248M wired, 817M compressor), 63M unused.',
+    '',
+    'PID    MEM',
+    '31699  26M',
+    '31700  20G',
+    '99999  512K',
+    ''
+  ].join('\n');
+
+  it('sums humanized MEM cells for the requested pids only', () => {
+    expect(manager.parseTopFootprintMb(topOutput, [31699, 31700])).toBe(26 + 20 * 1024);
+  });
+
+  it('handles K/M/G units and +/- delta markers', () => {
+    const out = 'PID MEM\n1 1024K+\n2 512M-\n3 2G\n';
+    expect(manager.parseTopFootprintMb(out, [1, 2, 3])).toBe(1 + 512 + 2048);
+  });
+
+  it('returns null when none of the pids appear so the caller falls back to RSS', () => {
+    expect(manager.parseTopFootprintMb(topOutput, [123, 456])).toBeNull();
+    expect(manager.parseTopFootprintMb('', [31700])).toBeNull();
   });
 });
 
