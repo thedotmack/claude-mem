@@ -295,6 +295,24 @@ describe('Plugin Distribution - Setup Hook (#1547)', () => {
   });
 });
 
+describe('Plugin Distribution - Non-blocking bookkeeping hooks (#3206)', () => {
+  it('runs observation, file context, and summarization asynchronously', () => {
+    const hooksPath = path.join(projectRoot, 'plugin/hooks/hooks.json');
+    const parsed = JSON.parse(readFileSync(hooksPath, 'utf-8'));
+
+    const postToolUse = parsed.hooks.PostToolUse[0].hooks[0];
+    const preToolUse = parsed.hooks.PreToolUse[0].hooks[0];
+    const stop = parsed.hooks.Stop[0].hooks[0];
+
+    expect(postToolUse.command).toContain('observation');
+    expect(postToolUse.async).toBe(true);
+    expect(preToolUse.command).toContain('file-context');
+    expect(preToolUse.async).toBe(true);
+    expect(stop.command).toContain('summarize');
+    expect(stop.async).toBe(true);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Spawn-contract templating (plans/02-spawn-contract-templating.md)
 // ---------------------------------------------------------------------------
