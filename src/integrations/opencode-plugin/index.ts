@@ -49,8 +49,33 @@ interface OpenCodeProject {
   path?: string;
 }
 
+interface OpenCodePart {
+  type: string;
+  text?: string;
+  ignored?: boolean;
+}
+
+interface OpenCodeMessageSnapshot {
+  info: {
+    id: string;
+    role: string;
+    time?: { completed?: number };
+    summary?: boolean;
+  };
+  parts: OpenCodePart[];
+}
+
+interface OpenCodeClient {
+  session: {
+    messages(options: {
+      path: { id: string };
+      query?: { directory?: string };
+    }): Promise<{ data?: OpenCodeMessageSnapshot[] }>;
+  };
+}
+
 interface OpenCodePluginContext {
-  client: unknown;
+  client: OpenCodeClient;
   project: OpenCodeProject;
   directory: string;
   worktree: string;
@@ -62,13 +87,17 @@ interface ToolExecuteAfterInput {
   tool: string;
   sessionID: string;
   callID: string;
+  args: Record<string, unknown>;
 }
 
 interface ToolExecuteAfterOutput {
   title: string;
   output: string;
   metadata: Record<string, unknown>;
-  args?: Record<string, unknown>;
+}
+
+interface ChatMessageInput {
+  sessionID: string;
 }
 
 interface ChatMessageOutput {
@@ -77,7 +106,7 @@ interface ChatMessageOutput {
     role?: string;
     sessionID?: string;
   };
-  parts: Array<{ type: string; text?: string }>;
+  parts: OpenCodePart[];
 }
 
 interface SessionCompactingInput {
@@ -109,20 +138,23 @@ const OPENCODE_PLATFORM_SOURCE = "opencode";
 
 const JSON_HEADERS: Record<string, string> = { "Content-Type": "application/json" };
 
-function workerPostFireAndForget(
+async function workerPost(
   path: string,
   body: Record<string, unknown>,
-): void {
-  fetch(`${WORKER_BASE_URL}${path}`, {
-    method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify(body),
-  }).catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!message.includes("ECONNREFUSED")) {
-      console.warn(`[claude-mem] Worker POST ${path} failed: ${message}`);
+): Promise<void> {
+  try {
+    const response = await fetch(`${WORKER_BASE_URL}${path}`, {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      console.warn(`[claude-mem] Worker POST ${path} returned ${response.status}`);
     }
-  });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[claude-mem] Worker POST ${path} failed: ${message}`);
+  }
 }
 
 async function workerGetText(path: string, timeoutMs?: number): Promise<string | null> {
@@ -150,7 +182,6 @@ async function workerGetText(path: string, timeoutMs?: number): Promise<string |
 }
 
 const contentSessionIdsByOpenCodeSessionId = new Map<string, string>();
-const initializedSessionIds = new Set<string>();
 
 const MAX_SESSION_MAP_ENTRIES = 1000;
 
@@ -170,7 +201,6 @@ function getOrCreateContentSessionId(openCodeSessionId: string): string {
       const oldestKey = contentSessionIdsByOpenCodeSessionId.keys().next().value;
       if (oldestKey !== undefined) {
         contentSessionIdsByOpenCodeSessionId.delete(oldestKey);
-        initializedSessionIds.delete(oldestKey);
         contextBySessionId.delete(oldestKey);
       } else {
         break;
@@ -184,23 +214,17 @@ function getOrCreateContentSessionId(openCodeSessionId: string): string {
   return contentSessionIdsByOpenCodeSessionId.get(openCodeSessionId)!;
 }
 
-/**
- * The worker has no "session.created" event in OpenCode, so we lazily initialize
- * the session the first time we see any activity for it (tool run or chat
- * message). This guarantees a session row exists before observations arrive.
- */
-function ensureSessionInitialized(openCodeSessionId: string, projectName: string): string {
-  const contentSessionId = getOrCreateContentSessionId(openCodeSessionId);
-  if (!initializedSessionIds.has(openCodeSessionId)) {
-    initializedSessionIds.add(openCodeSessionId);
-    workerPostFireAndForget("/api/sessions/init", {
-      contentSessionId,
-      project: projectName,
-      platformSource: OPENCODE_PLATFORM_SOURCE,
-      prompt: "",
-    });
-  }
-  return contentSessionId;
+function getTextContent(parts: OpenCodePart[]): string {
+  return parts
+    .filter(
+      (part) =>
+        part.type === "text" &&
+        part.ignored !== true &&
+        typeof part.text === "string" &&
+        part.text.trim().length > 0,
+    )
+    .map((part) => part.text as string)
+    .join("\n");
 }
 
 function truncate(text: string): string {
@@ -221,40 +245,30 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       input: ToolExecuteAfterInput,
       output: ToolExecuteAfterOutput,
     ): Promise<void> => {
-      const contentSessionId = ensureSessionInitialized(input.sessionID, projectName);
-      workerPostFireAndForget("/api/sessions/observations", {
+      const contentSessionId = getOrCreateContentSessionId(input.sessionID);
+      await workerPost("/api/sessions/observations", {
         contentSessionId,
         tool_name: input.tool,
-        tool_input: output.args || {},
+        tool_input: input.args || {},
         tool_response: truncate(output.output || ""),
         cwd: ctx.directory,
         platformSource: OPENCODE_PLATFORM_SOURCE,
       });
     },
 
-    // Capture assistant chat messages as observations.
+    // Capture every user turn as the authoritative session prompt.
     "chat.message": async (
-      _input: Record<string, unknown>,
+      input: ChatMessageInput,
       output: ChatMessageOutput,
     ): Promise<void> => {
-      const sessionID = output.message?.sessionID;
-      if (!sessionID) return;
-      if (output.message?.role !== "assistant") return;
+      const contentSessionId = getOrCreateContentSessionId(input.sessionID);
+      const prompt = getTextContent(output.parts) || "[media prompt]";
 
-      const contentSessionId = ensureSessionInitialized(sessionID, projectName);
-      const messageText = (output.parts || [])
-        .filter((part) => part.type === "text" && typeof part.text === "string")
-        .map((part) => part.text as string)
-        .join("\n");
-      if (!messageText) return;
-
-      workerPostFireAndForget("/api/sessions/observations", {
+      await workerPost("/api/sessions/init", {
         contentSessionId,
-        tool_name: "assistant_message",
-        tool_input: {},
-        tool_response: truncate(messageText),
-        cwd: ctx.directory,
+        project: projectName,
         platformSource: OPENCODE_PLATFORM_SOURCE,
+        prompt,
       });
     },
 
@@ -263,8 +277,8 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
     "experimental.session.compacting": async (
       input: SessionCompactingInput,
     ): Promise<void> => {
-      const contentSessionId = ensureSessionInitialized(input.sessionID, projectName);
-      workerPostFireAndForget("/api/sessions/summarize", {
+      const contentSessionId = getOrCreateContentSessionId(input.sessionID);
+      await workerPost("/api/sessions/summarize", {
         contentSessionId,
         last_assistant_message: "",
         platformSource: OPENCODE_PLATFORM_SOURCE,
@@ -307,8 +321,8 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       switch (eventType) {
         case "session.idle": {
           // Best-effort summarize once a session goes idle.
-          const contentSessionId = ensureSessionInitialized(sessionID, projectName);
-          workerPostFireAndForget("/api/sessions/summarize", {
+          const contentSessionId = getOrCreateContentSessionId(sessionID);
+          await workerPost("/api/sessions/summarize", {
             contentSessionId,
             last_assistant_message: "",
             platformSource: OPENCODE_PLATFORM_SOURCE,
@@ -317,7 +331,6 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
         }
         case "session.deleted": {
           contentSessionIdsByOpenCodeSessionId.delete(sessionID);
-          initializedSessionIds.delete(sessionID);
           contextBySessionId.delete(sessionID);
           break;
         }

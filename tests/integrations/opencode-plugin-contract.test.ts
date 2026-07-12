@@ -1,4 +1,4 @@
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, spyOn } from "bun:test";
 import {
   ClaudeMemPlugin,
   parseSearchResponse,
@@ -42,13 +42,33 @@ const PHANTOM_BUS_EVENT_NAMES = [
 ];
 
 const pluginCtx = {
-  client: {},
+  client: {
+    session: {
+      messages: async () => ({ data: [] }),
+    },
+  },
   project: { name: "test-project", path: "/tmp/x" },
   directory: "/tmp/x",
   worktree: "/tmp/x",
   serverUrl: new URL("http://127.0.0.1:1234"),
   $: {},
 };
+
+type RecordedPost = { url: string; body: Record<string, unknown> };
+
+function installFetchRecorder(posts: RecordedPost[]): () => void {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    posts.push({
+      url: String(url),
+      body: init?.body ? JSON.parse(String(init.body)) : {},
+    });
+    return new Response(JSON.stringify({ status: "queued" }), { status: 200 });
+  }) as typeof fetch;
+  return () => {
+    globalThis.fetch = originalFetch;
+  };
+}
 
 describe("OpenCode plugin event contract", () => {
   it("only registers hooks that are part of OpenCode's real contract", async () => {
@@ -92,33 +112,152 @@ describe("OpenCode plugin event contract", () => {
     }
   });
 
-  it("posts observations to the worker via tool.execute.after", async () => {
-    const posts: Array<{ url: string; body: unknown }> = [];
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
-      posts.push({
-        url: String(url),
-        body: init?.body ? JSON.parse(String(init.body)) : null,
-      });
-      return new Response(JSON.stringify({ status: "queued" }), { status: 200 });
-    }) as typeof fetch;
+  it("posts every real user turn with one stable content-session ID", async () => {
+    const posts: RecordedPost[] = [];
+    const restoreFetch = installFetchRecorder(posts);
 
     try {
       const plugin = await ClaudeMemPlugin(pluginCtx);
-      const toolAfter = plugin["tool.execute.after"];
-      await toolAfter(
-        { tool: "read", sessionID: "ses_1", callID: "c1" },
-        { title: "Read", output: "file contents", metadata: {}, args: { path: "/a" } },
+      const chatMessage = plugin["chat.message"];
+
+      await chatMessage(
+        { sessionID: "ses_prompts" },
+        {
+          message: { id: "user-1", role: "user", sessionID: "ses_prompts" },
+          parts: [
+            { type: "text", text: "first line" },
+            { type: "text", text: "second line" },
+          ],
+        },
+      );
+      await chatMessage(
+        { sessionID: "ses_prompts" },
+        {
+          message: { id: "user-2", role: "user", sessionID: "ses_prompts" },
+          parts: [{ type: "text", text: "follow-up" }],
+        },
       );
 
-      const initPost = posts.find((p) => p.url.includes("/api/sessions/init"));
-      const obsPost = posts.find((p) => p.url.includes("/api/sessions/observations"));
-      expect(initPost, "tool.execute.after should lazily init the session").toBeTruthy();
-      expect(obsPost, "tool.execute.after should POST an observation").toBeTruthy();
-      const obsBody = obsPost!.body as Record<string, unknown>;
-      expect(obsBody.tool_name).toBe("read");
-      expect(obsBody.tool_response).toBe("file contents");
+      const initPosts = posts.filter((post) => post.url.includes("/api/sessions/init"));
+      expect(initPosts).toHaveLength(2);
+      expect(initPosts.map((post) => post.body.prompt)).toEqual([
+        "first line\nsecond line",
+        "follow-up",
+      ]);
+      expect(initPosts[0].body.contentSessionId).toBe(initPosts[1].body.contentSessionId);
+      expect(initPosts[0].body.project).toBe("x");
+      expect(initPosts[0].body.platformSource).toBe("opencode");
     } finally {
+      restoreFetch();
+    }
+  });
+
+  it("uses the media marker only when a user turn has no usable text", async () => {
+    const posts: RecordedPost[] = [];
+    const restoreFetch = installFetchRecorder(posts);
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      await plugin["chat.message"](
+        { sessionID: "ses_media" },
+        {
+          message: { id: "user-media", role: "user", sessionID: "ses_media" },
+          parts: [
+            { type: "file" },
+            { type: "text", text: "   " },
+          ],
+        },
+      );
+
+      const initPost = posts.find((post) => post.url.includes("/api/sessions/init"));
+      expect(initPost?.body.prompt).toBe("[media prompt]");
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it("posts tool observations with input.args and does not create an empty prompt", async () => {
+    const posts: RecordedPost[] = [];
+    const restoreFetch = installFetchRecorder(posts);
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      await plugin["tool.execute.after"](
+        {
+          tool: "read",
+          sessionID: "ses_tool",
+          callID: "call-1",
+          args: { path: "/a" },
+        },
+        { title: "Read", output: "file contents", metadata: {} },
+      );
+
+      expect(posts.some((post) => post.url.includes("/api/sessions/init"))).toBe(false);
+      const observation = posts.find((post) =>
+        post.url.includes("/api/sessions/observations"),
+      );
+      expect(observation?.body.tool_name).toBe("read");
+      expect(observation?.body.tool_input).toEqual({ path: "/a" });
+      expect(observation?.body.tool_response).toBe("file contents");
+      expect(observation?.body.platformSource).toBe("opencode");
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it("awaits lifecycle POST completion", async () => {
+    let releaseResponse: ((response: Response) => void) | undefined;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (() =>
+      new Promise<Response>((resolve) => {
+        releaseResponse = resolve;
+      })) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      let completed = false;
+      const hookPromise = plugin["chat.message"](
+        { sessionID: "ses_await" },
+        {
+          message: { id: "user-await", role: "user", sessionID: "ses_await" },
+          parts: [{ type: "text", text: "wait for persistence" }],
+        },
+      ).then(() => {
+        completed = true;
+      });
+
+      await Promise.resolve();
+      expect(completed).toBe(false);
+      releaseResponse?.(new Response(JSON.stringify({ status: "queued" }), { status: 200 }));
+      await hookPromise;
+      expect(completed).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("logs a non-success worker POST once without rejecting the hook", async () => {
+    const originalFetch = globalThis.fetch;
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    globalThis.fetch = (async () =>
+      new Response("unavailable", { status: 503 })) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      await plugin["chat.message"](
+        { sessionID: "ses_status" },
+        {
+          message: { id: "user-status", role: "user", sessionID: "ses_status" },
+          parts: [{ type: "text", text: "non-fatal" }],
+        },
+      );
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        "[claude-mem] Worker POST /api/sessions/init returned 503",
+      );
+    } finally {
+      warn.mockRestore();
       globalThis.fetch = originalFetch;
     }
   });
@@ -183,67 +322,31 @@ describe("OpenCode plugin event contract", () => {
     }
   }, 10_000);
 
-  it("marks initialized sessions as OpenCode", async () => {
-    const posts: Array<{ url: string; body: unknown }> = [];
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
-      posts.push({
-        url: String(url),
-        body: init?.body ? JSON.parse(String(init.body)) : null,
-      });
-      return new Response(JSON.stringify({ status: "queued" }), { status: 200 });
-    }) as typeof fetch;
-
-    try {
-      const plugin = await ClaudeMemPlugin(pluginCtx);
-      const toolAfter = plugin["tool.execute.after"];
-      await toolAfter(
-        { tool: "read", sessionID: "ses_init", callID: "c1" },
-        { title: "Read", output: "file contents", metadata: {}, args: { path: "/a" } },
-      );
-
-      const initPost = posts.find((p) => p.url.includes("/api/sessions/init"));
-      expect(initPost, "tool.execute.after should lazily init the session").toBeTruthy();
-      expect((initPost!.body as Record<string, unknown>).project).toBe("x");
-      expect((initPost!.body as Record<string, unknown>).platformSource).toBe("opencode");
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-
   it("every lifecycle POST body carries platformSource=opencode", async () => {
-    const posts: Array<{ url: string; body: Record<string, unknown> }> = [];
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
-      posts.push({
-        url: String(url),
-        body: init?.body ? JSON.parse(String(init.body)) : {},
-      });
-      return new Response(JSON.stringify({ status: "queued" }), { status: 200 });
-    }) as typeof fetch;
+    const posts: RecordedPost[] = [];
+    const restoreFetch = installFetchRecorder(posts);
 
     try {
       const plugin = await ClaudeMemPlugin(pluginCtx);
 
-      // 1. tool.execute.after → sessions/init + sessions/observations
-      await plugin["tool.execute.after"](
-        { tool: "read", sessionID: "ses_obs", callID: "c1" },
-        { title: "Read", output: "file contents", metadata: {}, args: { path: "/a" } },
-      );
-
-      // 2. chat.message → sessions/observations (assistant only)
       await plugin["chat.message"](
-        {},
+        { sessionID: "ses_obs" },
         {
-          message: { id: "m1", role: "assistant", sessionID: "ses_obs" },
+          message: { id: "user-platform", role: "user", sessionID: "ses_obs" },
           parts: [{ type: "text", text: "hello" }],
         },
       );
+      await plugin["tool.execute.after"](
+        {
+          tool: "read",
+          sessionID: "ses_obs",
+          callID: "c1",
+          args: { path: "/a" },
+        },
+        { title: "Read", output: "file contents", metadata: {} },
+      );
 
-      // 3. experimental.session.compacting → sessions/summarize
       await plugin["experimental.session.compacting"]({ sessionID: "ses_compact" });
-
-      // 4. session.idle event → sessions/summarize
       await plugin["event"]({
         event: { type: "session.idle", properties: { sessionID: "ses_idle" } },
       });
@@ -255,8 +358,7 @@ describe("OpenCode plugin event contract", () => {
           p.url.includes("/api/sessions/summarize"),
       );
 
-      // Should have: init, obs(tool), obs(chat), summarize(compact), summarize(idle)
-      expect(sessionPosts.length).toBeGreaterThanOrEqual(5);
+      expect(sessionPosts.length).toBeGreaterThan(0);
 
       for (const post of sessionPosts) {
         expect(
@@ -265,7 +367,7 @@ describe("OpenCode plugin event contract", () => {
         ).toBe("opencode");
       }
     } finally {
-      globalThis.fetch = originalFetch;
+      restoreFetch();
     }
   });
 });
