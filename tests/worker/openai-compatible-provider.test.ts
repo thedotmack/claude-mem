@@ -12,8 +12,6 @@ import type {
 } from "../../src/services/worker-types.js";
 import { logger } from "../../src/utils/logger.js";
 
-ModeManager.getInstance().loadMode("code");
-
 interface TestConfig {
   apiKey: string;
   model: string;
@@ -82,6 +80,13 @@ describe("OpenAI-compatible provider initialization", () => {
     const debug = spyOn(logger, "debug").mockImplementation(() => {});
     const error = spyOn(logger, "error").mockImplementation(() => {});
     const success = spyOn(logger, "success").mockImplementation(() => {});
+    const getActiveMode = spyOn(
+      ModeManager.getInstance(),
+      "getActiveMode",
+    ).mockImplementation(() => ({
+      observation_types: [],
+      prompts: {},
+    }) as ReturnType<ModeManager["getActiveMode"]>);
     const sessionManager = {
       getMessageIterator: async function* () {},
     } as unknown as SessionManager;
@@ -103,6 +108,7 @@ describe("OpenAI-compatible provider initialization", () => {
       debug.mockRestore();
       error.mockRestore();
       success.mockRestore();
+      getActiveMode.mockRestore();
     }
   });
 });
