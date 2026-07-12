@@ -425,3 +425,102 @@ describe('SessionStore synced_at migration (v39)', () => {
     }
   });
 });
+
+describe('SessionStore v40 prompt requeue (one-time cloud repair)', () => {
+  let tempDir: string;
+  let missingStatePath: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-v40-requeue-'));
+    missingStatePath = join(tempDir, 'does-not-exist.json');
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('records version 40 and never re-nulls prompts stamped after the repair ran', () => {
+    const db = new Database(':memory:');
+    try {
+      new SessionStore(db, { cloudSyncStatePath: missingStatePath });
+
+      const version = db.prepare('SELECT version FROM schema_versions WHERE version = 40').get() as { version: number } | undefined;
+      expect(version?.version).toBe(40);
+
+      // Prompts synced through the FIXED mapper after the repair must keep
+      // their stamps across restarts — a repeat requeue would re-push the
+      // whole history on every worker boot.
+      seedRows(db);
+      db.run('UPDATE user_prompts SET synced_at = 1751234567890');
+      new SessionStore(db, { cloudSyncStatePath: missingStatePath });
+
+      expect(stampedCount(db, 'user_prompts')).toBe(4);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe('SessionStore prompt re-push hooks (memory id lands after first sync)', () => {
+  let tempDir: string;
+  let missingStatePath: string;
+  let db: Database;
+  let store: SessionStore;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-prompt-requeue-'));
+    missingStatePath = join(tempDir, 'does-not-exist.json');
+    db = new Database(':memory:');
+    store = new SessionStore(db, { cloudSyncStatePath: missingStatePath });
+
+    const now = new Date().toISOString();
+    const epoch = Date.now();
+    const insertSession = db.prepare(`
+      INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
+      VALUES (?, ?, 'proj', ?, ?, 'active')
+    `);
+    insertSession.run('sess-1', 'mem-a', now, epoch);
+    insertSession.run('sess-2', 'mem-b', now, epoch);
+
+    // All prompts start out synced (as if the pre-registration push happened).
+    const insertPrompt = db.prepare(`
+      INSERT INTO user_prompts (session_db_id, content_session_id, prompt_number, prompt_text, created_at, created_at_epoch, synced_at)
+      VALUES (?, ?, ?, 'prompt', ?, ?, 1751234567890)
+    `);
+    insertPrompt.run(1, 'sess-1', 1, now, epoch);
+    insertPrompt.run(1, 'sess-1', 2, now, epoch);
+    insertPrompt.run(2, 'sess-2', 1, now, epoch);
+  });
+
+  afterEach(() => {
+    db.close();
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('updateMemorySessionId requeues only that session\'s prompts', () => {
+    store.updateMemorySessionId(1, 'mem-a2');
+
+    const prompts = syncedAtById(db, 'user_prompts');
+    expect(prompts.get(1)).toBeNull();
+    expect(prompts.get(2)).toBeNull();
+    expect(prompts.get(3)).toBe(1751234567890); // other session untouched
+  });
+
+  it('updateMemorySessionId(null) clears the mapping without requeueing', () => {
+    store.updateMemorySessionId(1, null);
+
+    // Re-pushing now would only re-send the fallback shape — nothing to repair.
+    expect(stampedCount(db, 'user_prompts')).toBe(3);
+  });
+
+  it('ensureMemorySessionIdRegistered requeues on change and no-ops when already registered', () => {
+    store.ensureMemorySessionIdRegistered(1, 'mem-a');
+    expect(stampedCount(db, 'user_prompts')).toBe(3);
+
+    store.ensureMemorySessionIdRegistered(1, 'mem-a3');
+    const prompts = syncedAtById(db, 'user_prompts');
+    expect(prompts.get(1)).toBeNull();
+    expect(prompts.get(2)).toBeNull();
+    expect(prompts.get(3)).toBe(1751234567890);
+  });
+});

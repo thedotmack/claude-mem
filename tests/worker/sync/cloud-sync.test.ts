@@ -111,11 +111,11 @@ describe('CloudSync', () => {
     `).run(ISO);
   }
 
-  function seedPrompt(promptText: string, promptNumber = 5): void {
+  function seedPrompt(promptText: string, promptNumber = 5, sessionDbId: number | null = null): void {
     db.prepare(`
-      INSERT INTO user_prompts (content_session_id, prompt_number, prompt_text, created_at, created_at_epoch)
-      VALUES ('sess-abc', ?, ?, ?, 1751234567892)
-    `).run(promptNumber, promptText, ISO);
+      INSERT INTO user_prompts (session_db_id, content_session_id, prompt_number, prompt_text, created_at, created_at_epoch)
+      VALUES (?, 'sess-abc', ?, ?, ?, 1751234567892)
+    `).run(sessionDbId, promptNumber, promptText, ISO);
   }
 
   function pendingCount(table: string): number {
@@ -319,6 +319,89 @@ describe('CloudSync', () => {
       'project', 'promptNumber', 'promptText',
     ]);
     expect(pendingCount('user_prompts')).toBe(0);
+  });
+
+  describe('prompt session mapping (joined drain)', () => {
+    it('pushes the real memory_session_id and project when the sdk_sessions mapping exists', async () => {
+      seedPrompt('mapped prompt', 7, 1); // session_db_id 1 = sess-abc → mem-1/proj-x (beforeEach)
+
+      const { impl, calls } = makeFetchMock();
+      await makeCloudSync(impl).flush();
+
+      expect(calls.length).toBe(1);
+      expect(calls[0].parsed.prompts[0]).toEqual({
+        localId: '1',
+        contentSessionId: 'sess-abc',
+        memorySessionId: 'mem-1',
+        project: 'proj-x',
+        promptText: 'mapped prompt',
+        promptNumber: 7,
+        createdAtEpoch: 1751234567892,
+      });
+      // rowAlias qualifies synced_at/id in the joined SELECT while stampSynced
+      // targets bare user_prompts — the drained row must still come back stamped.
+      expect(pendingCount('user_prompts')).toBe(0);
+    });
+
+    it('falls back per row within one batch when the mapping is missing or unregistered', async () => {
+      // A session that exists but never registered a memory id.
+      db.prepare(`
+        INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
+        VALUES ('sess-no-mem', NULL, 'proj-y', ?, 1751234568000, 'active')
+      `).run(ISO);
+
+      seedPrompt('mapped', 1, 1);           // joins mem-1/proj-x
+      seedPrompt('never-registered', 2, 2); // joins a NULL memory_session_id session
+      seedPrompt('orphan', 3, null);        // no session_db_id at all
+
+      const { impl, calls } = makeFetchMock();
+      await makeCloudSync(impl).flush();
+
+      expect(calls.length).toBe(1);
+      const sent = calls[0].parsed.prompts.map((p: any) => [p.memorySessionId, p.project]);
+      expect(sent).toEqual([
+        ['mem-1', 'proj-x'],   // resolved through the join
+        ['sess-abc', 'proj-y'], // memory id falls back to the content session; project still real
+        ['sess-abc', 'unknown'], // LEFT JOIN miss → full legacy fallback
+      ]);
+      expect(pendingCount('user_prompts')).toBe(0);
+    });
+  });
+
+  describe('sync lane selection', () => {
+    it('sends X-Sync-Lane: backfill on every page when a kind has more than 200 pending', async () => {
+      seedObservation(); // 1 pending observation stays on the live lane
+      for (let i = 0; i < 201; i++) seedPrompt(`p${i}`, i + 1);
+
+      const { impl, calls } = makeFetchMock();
+      await makeCloudSync(impl).flush();
+
+      const obsCalls = calls.filter(c => c.url.endsWith('/observations/batch'));
+      const promptCalls = calls.filter(c => c.url.endsWith('/prompts/batch'));
+      expect(obsCalls.length).toBe(1);
+      expect(promptCalls.length).toBe(2); // 200 + 1
+
+      // Lane is picked per kind-drain: the small observation increment must
+      // broadcast live while the prompt backlog rides the suppressed lane —
+      // including its final sub-200 page.
+      expect(obsCalls[0].headers['X-Sync-Lane']).toBeUndefined();
+      for (const call of promptCalls) {
+        expect(call.headers['X-Sync-Lane']).toBe('backfill');
+      }
+      expect(pendingCount('user_prompts')).toBe(0);
+    });
+
+    it('keeps exactly 200 pending rows on the live lane (threshold is strictly greater-than)', async () => {
+      for (let i = 0; i < 200; i++) seedPrompt(`p${i}`, i + 1);
+
+      const { impl, calls } = makeFetchMock();
+      await makeCloudSync(impl).flush();
+
+      expect(calls.length).toBe(1);
+      expect(calls[0].parsed.prompts.length).toBe(200);
+      expect(calls[0].headers['X-Sync-Lane']).toBeUndefined();
+      expect(pendingCount('user_prompts')).toBe(0);
+    });
   });
 
   it('leaves rows unsynced and records lastError on HTTP failure, then retries via backoff', async () => {
