@@ -67,6 +67,7 @@ interface OpenCodeMessageSnapshot {
 
 interface AssistantDeliveryState {
   messageId: string;
+  messageText: string;
   observationComplete: boolean;
   summaryComplete: boolean;
 }
@@ -194,6 +195,7 @@ const contentSessionIdsByOpenCodeSessionId = new Map<string, string>();
 const assistantDeliveryStateBySessionId = new Map<string, AssistantDeliveryState>();
 
 const MAX_SESSION_MAP_ENTRIES = 1000;
+const assistantLifecycleTailByLane = new Map<number, Promise<void>>();
 
 const contextBySessionId = new Map<string, string>();
 
@@ -225,6 +227,14 @@ function getOrCreateContentSessionId(openCodeSessionId: string): string {
   return contentSessionIdsByOpenCodeSessionId.get(openCodeSessionId)!;
 }
 
+function getAssistantLifecycleLane(sessionID: string): number {
+  let hash = 0;
+  for (let index = 0; index < sessionID.length; index += 1) {
+    hash = (hash * 31 + sessionID.charCodeAt(index)) >>> 0;
+  }
+  return hash % MAX_SESSION_MAP_ENTRIES;
+}
+
 function getTextContent(parts: OpenCodePart[]): string {
   return parts
     .filter(
@@ -249,7 +259,40 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
 
   console.log(`[claude-mem] OpenCode plugin loading (project: ${projectName})`);
 
+  const deliverAssistantLifecycle = async (
+    sessionID: string,
+    deliveryState: AssistantDeliveryState,
+  ): Promise<void> => {
+    const contentSessionId = getOrCreateContentSessionId(sessionID);
+    if (!deliveryState.observationComplete) {
+      deliveryState.observationComplete = await workerPost("/api/sessions/observations", {
+        contentSessionId,
+        tool_name: "assistant_message",
+        tool_input: {},
+        tool_response: deliveryState.messageText,
+        cwd: ctx.directory,
+        platformSource: OPENCODE_PLATFORM_SOURCE,
+      });
+    }
+    if (!deliveryState.summaryComplete) {
+      deliveryState.summaryComplete = await workerPost("/api/sessions/summarize", {
+        contentSessionId,
+        last_assistant_message: deliveryState.messageText,
+        platformSource: OPENCODE_PLATFORM_SOURCE,
+      });
+    }
+  };
+
   const captureAssistantLifecycle = async (sessionID: string): Promise<void> => {
+    let deliveryState = assistantDeliveryStateBySessionId.get(sessionID);
+    if (
+      deliveryState &&
+      (!deliveryState.observationComplete || !deliveryState.summaryComplete)
+    ) {
+      await deliverAssistantLifecycle(sessionID, deliveryState);
+      return;
+    }
+
     let snapshots: OpenCodeMessageSnapshot[];
     try {
       const response = await ctx.client.session.messages({
@@ -276,7 +319,6 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       )[0];
     if (!latestAssistant) return;
 
-    let deliveryState = assistantDeliveryStateBySessionId.get(sessionID);
     if (
       deliveryState?.messageId === latestAssistant.info.id &&
       deliveryState.observationComplete &&
@@ -288,32 +330,33 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
     const messageText = getTextContent(latestAssistant.parts);
     if (!messageText) return;
 
-    const contentSessionId = getOrCreateContentSessionId(sessionID);
     if (!deliveryState || deliveryState.messageId !== latestAssistant.info.id) {
       deliveryState = {
         messageId: latestAssistant.info.id,
+        messageText,
         observationComplete: false,
         summaryComplete: false,
       };
       assistantDeliveryStateBySessionId.set(sessionID, deliveryState);
     }
 
-    if (!deliveryState.observationComplete) {
-      deliveryState.observationComplete = await workerPost("/api/sessions/observations", {
-        contentSessionId,
-        tool_name: "assistant_message",
-        tool_input: {},
-        tool_response: messageText,
-        cwd: ctx.directory,
-        platformSource: OPENCODE_PLATFORM_SOURCE,
-      });
-    }
-    if (!deliveryState.summaryComplete) {
-      deliveryState.summaryComplete = await workerPost("/api/sessions/summarize", {
-        contentSessionId,
-        last_assistant_message: messageText,
-        platformSource: OPENCODE_PLATFORM_SOURCE,
-      });
+    await deliverAssistantLifecycle(sessionID, deliveryState);
+  };
+
+  const serializeAssistantLifecycle = async (
+    sessionID: string,
+    operation: () => Promise<void>,
+  ): Promise<void> => {
+    const lane = getAssistantLifecycleLane(sessionID);
+    const previous = assistantLifecycleTailByLane.get(lane) || Promise.resolve();
+    const current = previous.then(operation, operation);
+    assistantLifecycleTailByLane.set(lane, current);
+    try {
+      await current;
+    } finally {
+      if (assistantLifecycleTailByLane.get(lane) === current) {
+        assistantLifecycleTailByLane.delete(lane);
+      }
     }
   };
 
@@ -354,7 +397,9 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
     "experimental.session.compacting": async (
       input: SessionCompactingInput,
     ): Promise<void> => {
-      await captureAssistantLifecycle(input.sessionID);
+      await serializeAssistantLifecycle(input.sessionID, () =>
+        captureAssistantLifecycle(input.sessionID),
+      );
     },
 
     // Inject directory-scoped project context into every system prompt build.
@@ -392,13 +437,17 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
 
       switch (eventType) {
         case "session.idle": {
-          await captureAssistantLifecycle(sessionID);
+          await serializeAssistantLifecycle(sessionID, () =>
+            captureAssistantLifecycle(sessionID),
+          );
           break;
         }
         case "session.deleted": {
-          contentSessionIdsByOpenCodeSessionId.delete(sessionID);
-          assistantDeliveryStateBySessionId.delete(sessionID);
-          contextBySessionId.delete(sessionID);
+          await serializeAssistantLifecycle(sessionID, async () => {
+            contentSessionIdsByOpenCodeSessionId.delete(sessionID);
+            assistantDeliveryStateBySessionId.delete(sessionID);
+            contextBySessionId.delete(sessionID);
+          });
           break;
         }
         default:

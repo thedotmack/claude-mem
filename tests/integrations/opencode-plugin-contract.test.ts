@@ -419,6 +419,71 @@ describe("OpenCode plugin event contract", () => {
     }
   });
 
+  it("serializes overlapping assistant lifecycle triggers", async () => {
+    const posts: RecordedPost[] = [];
+    let releaseObservation!: (response: Response) => void;
+    let markObservationStarted!: () => void;
+    const observationStarted = new Promise<void>((resolve) => {
+      markObservationStarted = resolve;
+    });
+    let observationAttempts = 0;
+    const restoreFetch = installFetchRecorder(posts, (post) => {
+      if (post.url.includes("/api/sessions/observations")) {
+        observationAttempts += 1;
+        if (observationAttempts === 1) {
+          markObservationStarted();
+          return new Promise<Response>((resolve) => {
+            releaseObservation = resolve;
+          });
+        }
+      }
+      return new Response(JSON.stringify({ status: "queued" }), { status: 200 });
+    });
+
+    try {
+      const plugin = await ClaudeMemPlugin({
+        ...pluginCtx,
+        client: {
+          session: {
+            messages: async () => ({
+              data: [
+                {
+                  info: {
+                    id: "assistant-overlap",
+                    role: "assistant",
+                    time: { completed: 25 },
+                  },
+                  parts: [{ type: "text", text: "one serialized reply" }],
+                },
+              ],
+            }),
+          },
+        },
+      });
+
+      const idlePromise = plugin["event"]({
+        event: { type: "session.idle", properties: { sessionID: "ses_overlap" } },
+      });
+      await observationStarted;
+      const compactionPromise = plugin["experimental.session.compacting"]({
+        sessionID: "ses_overlap",
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      releaseObservation(new Response(JSON.stringify({ status: "queued" }), { status: 200 }));
+      await Promise.all([idlePromise, compactionPromise]);
+
+      expect(
+        posts.filter((post) => post.url.includes("/api/sessions/observations")),
+      ).toHaveLength(1);
+      expect(
+        posts.filter((post) => post.url.includes("/api/sessions/summarize")),
+      ).toHaveLength(1);
+    } finally {
+      restoreFetch();
+    }
+  });
+
   it("retries a completed textless assistant message when usable text appears", async () => {
     const posts: RecordedPost[] = [];
     const latest = {
@@ -692,6 +757,87 @@ describe("OpenCode plugin event contract", () => {
       ).toHaveLength(2);
       expect(warn).toHaveBeenCalledWith(
         "[claude-mem] Worker POST /api/sessions/summarize failed: summary unavailable",
+      );
+    } finally {
+      warn.mockRestore();
+      restoreFetch();
+    }
+  });
+
+  it("finishes a selected pending message before advancing to a newer latest reply", async () => {
+    const posts: RecordedPost[] = [];
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    let snapshots = [
+      {
+        info: {
+          id: "assistant-pending-a",
+          role: "assistant",
+          time: { completed: 70 },
+        },
+        parts: [{ type: "text", text: "reply A" }],
+      },
+    ];
+    let observationAttempts = 0;
+    const restoreFetch = installFetchRecorder(posts, (post) => {
+      if (post.url.includes("/api/sessions/observations")) {
+        observationAttempts += 1;
+        if (observationAttempts === 1) {
+          return new Response("unavailable", { status: 503 });
+        }
+      }
+      return new Response(JSON.stringify({ status: "queued" }), { status: 200 });
+    });
+
+    try {
+      const plugin = await ClaudeMemPlugin({
+        ...pluginCtx,
+        client: {
+          session: {
+            messages: async () => ({ data: snapshots }),
+          },
+        },
+      });
+
+      await plugin["event"]({
+        event: { type: "session.idle", properties: { sessionID: "ses_pending" } },
+      });
+
+      snapshots = [
+        ...snapshots,
+        {
+          info: {
+            id: "assistant-never-selected",
+            role: "assistant",
+            time: { completed: 80 },
+          },
+          parts: [{ type: "text", text: "do not backfill" }],
+        },
+        {
+          info: {
+            id: "assistant-latest-b",
+            role: "assistant",
+            time: { completed: 90 },
+          },
+          parts: [{ type: "text", text: "reply B" }],
+        },
+      ];
+      await plugin["experimental.session.compacting"]({ sessionID: "ses_pending" });
+      await plugin["event"]({
+        event: { type: "session.idle", properties: { sessionID: "ses_pending" } },
+      });
+
+      const observationTexts = posts
+        .filter((post) => post.url.includes("/api/sessions/observations"))
+        .map((post) => post.body.tool_response);
+      const summaryTexts = posts
+        .filter((post) => post.url.includes("/api/sessions/summarize"))
+        .map((post) => post.body.last_assistant_message);
+      expect(observationTexts).toEqual(["reply A", "reply A", "reply B"]);
+      expect(summaryTexts).toEqual(["reply A", "reply B"]);
+      expect(observationTexts).not.toContain("do not backfill");
+      expect(summaryTexts).not.toContain("do not backfill");
+      expect(warn).toHaveBeenCalledWith(
+        "[claude-mem] Worker POST /api/sessions/observations returned 503",
       );
     } finally {
       warn.mockRestore();
