@@ -322,6 +322,24 @@ describe("OpenCode plugin event contract", () => {
     }
   }, 10_000);
 
+  it("does not submit summaries without completed assistant text", async () => {
+    const posts: RecordedPost[] = [];
+    const restoreFetch = installFetchRecorder(posts);
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+
+      await plugin["experimental.session.compacting"]({ sessionID: "ses_compact_empty" });
+      await plugin["event"]({
+        event: { type: "session.idle", properties: { sessionID: "ses_idle_empty" } },
+      });
+
+      expect(posts.filter((post) => post.url.includes("/api/sessions/summarize"))).toEqual([]);
+    } finally {
+      restoreFetch();
+    }
+  });
+
   it("every lifecycle POST body carries platformSource=opencode", async () => {
     const posts: RecordedPost[] = [];
     const restoreFetch = installFetchRecorder(posts);

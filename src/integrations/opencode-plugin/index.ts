@@ -272,18 +272,10 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       });
     },
 
-    // Summarize when a session compacts. This is OpenCode's real compaction
-    // hook (the old `session.compacted` bus event never existed).
+    // Task 2 will summarize after retrieving canonical completed assistant text.
     "experimental.session.compacting": async (
-      input: SessionCompactingInput,
-    ): Promise<void> => {
-      const contentSessionId = getOrCreateContentSessionId(input.sessionID);
-      await workerPost("/api/sessions/summarize", {
-        contentSessionId,
-        last_assistant_message: "",
-        platformSource: OPENCODE_PLATFORM_SOURCE,
-      });
-    },
+      _input: SessionCompactingInput,
+    ): Promise<void> => {},
 
     // Inject directory-scoped project context into every system prompt build.
     "experimental.chat.system.transform": async (
@@ -320,13 +312,7 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
 
       switch (eventType) {
         case "session.idle": {
-          // Best-effort summarize once a session goes idle.
-          const contentSessionId = getOrCreateContentSessionId(sessionID);
-          await workerPost("/api/sessions/summarize", {
-            contentSessionId,
-            last_assistant_message: "",
-            platformSource: OPENCODE_PLATFORM_SOURCE,
-          });
+          // Task 2 will summarize after retrieving canonical completed assistant text.
           break;
         }
         case "session.deleted": {
