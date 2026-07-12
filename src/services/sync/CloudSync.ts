@@ -366,6 +366,13 @@ export class CloudSync {
   // -------------------------------------------------------------------------
 
   private async drainKind(kind: KindSpec): Promise<void> {
+    // Lane pick: a backlog deeper than one page is a bulk drain (fresh
+    // install, offline catch-up, or a repair requeue like schema v40) — ride
+    // the backfill lane so the server suppresses its per-row realtime
+    // broadcasts and can admission-gate the burst. Small increments stay on
+    // the live lane so open dashboards see them instantly.
+    const lane: 'live' | 'backfill' =
+      this.countPending(kind.localTable) > BATCH ? 'backfill' : 'live';
     // Loop until drained: every successful sub-batch stamps its rows, so the
     // next page naturally excludes them; a failed POST throws out of the loop.
     // `stopped` is re-checked after every await so a stop() during an
@@ -385,7 +392,7 @@ export class CloudSync {
       let bufBytes = 0;
       const send = async (): Promise<void> => {
         if (this.stopped || buf.length === 0) return;
-        await this.pushBatch(kind, buf);
+        await this.pushBatch(kind, buf, lane);
         // stop() while the POST was in flight: the DB may already be closing,
         // so skip the stamp. The server upserts on (user_id, device_id,
         // local_id), so re-uploading these rows on next start is harmless.
@@ -417,7 +424,7 @@ export class CloudSync {
 
   // cloud-sync.mjs:287-303, plus AbortSignal.timeout — deliberately fixing the
   // standalone client's no-timeout hang.
-  private async pushBatch(kind: KindSpec, rows: CloudRow[]): Promise<void> {
+  private async pushBatch(kind: KindSpec, rows: CloudRow[], lane: 'live' | 'backfill' = 'live'): Promise<void> {
     const res = await this.fetchImpl(`${this.url}/${kind.endpoint}`, {
       method: 'POST',
       headers: {
@@ -426,6 +433,7 @@ export class CloudSync {
         'X-User-Id': this.userId,
         'X-Device-Id': this.deviceId,
         ...(this.deviceName ? { 'X-Device-Name': this.deviceName } : {}),
+        ...(lane === 'backfill' ? { 'X-Sync-Lane': 'backfill' } : {}),
       },
       body: JSON.stringify({ [kind.bodyKey]: rows }),
       signal: AbortSignal.timeout(this.requestTimeoutMs),

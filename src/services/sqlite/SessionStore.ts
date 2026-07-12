@@ -108,6 +108,7 @@ export class SessionStore {
     this.ensureUserPromptsSessionDbId();
     this.ensurePendingMessagesSessionToolUniqueIndex();
     this.ensureSyncedAtColumns(options.cloudSyncStatePath ?? paths.cloudSyncState());
+    this.requeuePromptCloudSyncAfterMapperFix();
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -470,6 +471,32 @@ export class SessionStore {
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(39, new Date().toISOString());
+  }
+
+  /**
+   * One-time cloud repair (version 40): every prompt synced before the
+   * CloudSync mapper fix went to the cloud with memory_session_id =
+   * content_session_id and project = 'unknown', so the cloud viewer could
+   * never attach a prompt to its session. Re-nulling synced_at makes the
+   * next flush re-push the full prompt history through the fixed mapper
+   * (sdk_sessions join); the server upserts on (user_id, device_id,
+   * local_id) with a change guard, so corrected rows overwrite in place and
+   * still-identical rows (no local mapping) cost nothing. Runs after
+   * ensureSyncedAtColumns — the column must exist. Harmless when cloud sync
+   * is unconfigured: rows simply sit unsynced, which is their natural state.
+   */
+  private requeuePromptCloudSyncAfterMapperFix(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(40) as SchemaVersion | undefined;
+    if (applied) return;
+
+    const res = this.db.prepare(`
+      UPDATE user_prompts SET synced_at = NULL WHERE synced_at IS NOT NULL
+    `).run();
+    logger.info('DB', 'Requeued prompt cloud sync after mapper fix (v40)', {
+      requeued: res.changes
+    });
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(40, new Date().toISOString());
   }
 
   // Rows the standalone cloud-sync client already uploaded (its cursors live in

@@ -217,9 +217,14 @@ function expectStampedThroughCursors(db: Database, before: number): void {
   expect(summaries.get(2)).toBeGreaterThanOrEqual(before);
   expect(summaries.get(3)).toBeNull();
 
+  // Prompts end up NULL regardless of the legacy cursor: the v40 repair
+  // migration re-nulls every prompt's synced_at right after v39 stamps them,
+  // because the legacy client uploaded prompts with the broken
+  // memory_session_id/project mapping and they must re-push through the
+  // fixed mapper.
   const prompts = syncedAtById(db, 'user_prompts');
-  expect(prompts.get(1)).toBeGreaterThanOrEqual(before);
-  expect(prompts.get(2)).toBeGreaterThanOrEqual(before);
+  expect(prompts.get(1)).toBeNull();
+  expect(prompts.get(2)).toBeNull();
   expect(prompts.get(3)).toBeNull();
   expect(prompts.get(4)).toBeNull();
 }
