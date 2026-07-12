@@ -197,13 +197,13 @@ const assistantDeliveryStateBySessionId = new Map<string, AssistantDeliveryState
 const MAX_SESSION_MAP_ENTRIES = 1000;
 const assistantLifecycleTailByLane = new Map<number, Promise<void>>();
 
-const contextBySessionId = new Map<string, string>();
+const contextBySessionId = new Map<string, string | Promise<string | null>>();
 
 function buildContextProjects(directory: string): { projectName: string; projects: string[] } {
   const projectContext = getProjectContext(directory);
   return {
     projectName: projectContext.primary,
-    projects: [...new Set([...projectContext.allProjects, "opencode"])],
+    projects: [...new Set(["opencode", ...projectContext.allProjects])],
   };
 }
 
@@ -408,23 +408,31 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       output: { system: string[] },
     ): Promise<void> => {
       const cacheKey = input.sessionID || `project:${projectName}`;
-      let context = contextBySessionId.get(cacheKey);
-      if (!context) {
+      let cached = contextBySessionId.get(cacheKey);
+      if (!cached) {
         const projectsParam = projects.join(",");
-        context =
-          (await workerGetText(
-            `/api/context/inject?projects=${encodeURIComponent(projectsParam)}`,
-            WORKER_GET_TIMEOUT_MS,
-          )) || undefined;
-        if (context) {
-          while (contextBySessionId.size >= MAX_SESSION_MAP_ENTRIES) {
-            const oldestKey = contextBySessionId.keys().next().value;
-            if (oldestKey === undefined) break;
-            contextBySessionId.delete(oldestKey);
-          }
-          contextBySessionId.set(cacheKey, context);
+        while (contextBySessionId.size >= MAX_SESSION_MAP_ENTRIES) {
+          const oldestKey = contextBySessionId.keys().next().value;
+          if (oldestKey === undefined) break;
+          contextBySessionId.delete(oldestKey);
         }
+        const request = workerGetText(
+          `/api/context/inject?projects=${encodeURIComponent(projectsParam)}`,
+          WORKER_GET_TIMEOUT_MS,
+        ).then((context) => {
+          if (contextBySessionId.get(cacheKey) === request) {
+            if (context) {
+              contextBySessionId.set(cacheKey, context);
+            } else {
+              contextBySessionId.delete(cacheKey);
+            }
+          }
+          return context;
+        });
+        contextBySessionId.set(cacheKey, request);
+        cached = request;
       }
+      const context = typeof cached === "string" ? cached : await cached;
       if (context) output.system.push(context);
     },
 

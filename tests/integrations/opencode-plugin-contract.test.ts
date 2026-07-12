@@ -268,7 +268,7 @@ describe("OpenCode plugin event contract", () => {
     }
   });
 
-  it("injects directory-scoped context into every system prompt build", async () => {
+  it("keeps the directory project last so the worker treats it as primary", async () => {
     const requests: string[] = [];
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async (url: string | URL | Request) => {
@@ -287,7 +287,116 @@ describe("OpenCode plugin event contract", () => {
       expect(first.system).toEqual(["base", "# remembered context"]);
       expect(second.system).toEqual(["base", "# remembered context"]);
       expect(requests.filter((url) => url.includes("/api/context/inject"))).toHaveLength(1);
-      expect(requests[0]).toContain("projects=x%2Copencode");
+      const contextUrl = new URL(requests[0]);
+      const projects = contextUrl.searchParams.get("projects")?.split(",");
+      expect(projects).toEqual(["opencode", "x"]);
+      expect(projects && projects[projects.length - 1]).toBe("x");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("deduplicates an in-flight startup-context request per session", async () => {
+    const originalFetch = globalThis.fetch;
+    let requestCount = 0;
+    let releaseRequest!: (response: Response) => void;
+    let markRequestStarted!: () => void;
+    const requestStarted = new Promise<void>((resolve) => {
+      markRequestStarted = resolve;
+    });
+    globalThis.fetch = (() => {
+      requestCount += 1;
+      markRequestStarted();
+      return new Promise<Response>((resolve) => {
+        releaseRequest = resolve;
+      });
+    }) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const transform = plugin["experimental.chat.system.transform"];
+      const first = { system: ["base"] };
+      const second = { system: ["base"] };
+
+      const firstTransform = transform(
+        { sessionID: "concurrent-context", model: {} as never },
+        first,
+      );
+      await requestStarted;
+      const secondTransform = transform(
+        { sessionID: "concurrent-context", model: {} as never },
+        second,
+      );
+
+      await Promise.resolve();
+      expect(requestCount).toBe(1);
+
+      releaseRequest(new Response("# shared context", { status: 200 }));
+      await Promise.all([firstTransform, secondTransform]);
+      expect(first.system).toEqual(["base", "# shared context"]);
+      expect(second.system).toEqual(["base", "# shared context"]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("invalidates an in-flight context request when a session is deleted and reused", async () => {
+    const originalFetch = globalThis.fetch;
+    const releases: Array<(response: Response) => void> = [];
+    globalThis.fetch = (() =>
+      new Promise<Response>((resolve) => {
+        releases.push(resolve);
+      })) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const transform = plugin["experimental.chat.system.transform"];
+      const oldOutput = { system: ["base"] };
+      const reusedOutput = { system: ["base"] };
+      const followerOutput = { system: ["base"] };
+
+      const oldTransform = transform(
+        { sessionID: "reused-context", model: {} as never },
+        oldOutput,
+      );
+      expect(releases).toHaveLength(1);
+
+      await plugin.event({
+        event: { type: "session.deleted", properties: { sessionID: "reused-context" } },
+      });
+      const reusedTransform = transform(
+        { sessionID: "reused-context", model: {} as never },
+        reusedOutput,
+      );
+      expect(releases).toHaveLength(2);
+
+      releases[0](new Response("# stale context", { status: 200 }));
+      await oldTransform;
+
+      let followerSettled = false;
+      const followerTransform = transform(
+        { sessionID: "reused-context", model: {} as never },
+        followerOutput,
+      ).then(() => {
+        followerSettled = true;
+      });
+      await Promise.resolve();
+
+      expect(releases).toHaveLength(2);
+      expect(followerSettled).toBe(false);
+
+      releases[1](new Response("# current context", { status: 200 }));
+      await Promise.all([reusedTransform, followerTransform]);
+      expect(reusedOutput.system).toEqual(["base", "# current context"]);
+      expect(followerOutput.system).toEqual(["base", "# current context"]);
+
+      const cachedOutput = { system: ["base"] };
+      await transform(
+        { sessionID: "reused-context", model: {} as never },
+        cachedOutput,
+      );
+      expect(releases).toHaveLength(2);
+      expect(cachedOutput.system).toEqual(["base", "# current context"]);
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -850,7 +959,25 @@ describe("OpenCode plugin event contract", () => {
     const restoreFetch = installFetchRecorder(posts);
 
     try {
-      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const plugin = await ClaudeMemPlugin({
+        ...pluginCtx,
+        client: {
+          session: {
+            messages: async () => ({
+              data: [
+                {
+                  info: {
+                    id: "assistant-platform",
+                    role: "assistant",
+                    time: { completed: 50 },
+                  },
+                  parts: [{ type: "text", text: "completed platform reply" }],
+                },
+              ],
+            }),
+          },
+        },
+      });
 
       await plugin["chat.message"](
         { sessionID: "ses_obs" },
@@ -881,7 +1008,24 @@ describe("OpenCode plugin event contract", () => {
           p.url.includes("/api/sessions/summarize"),
       );
 
+      const assistantObservations = sessionPosts.filter(
+        (post) => post.body.tool_name === "assistant_message",
+      );
+      const summaries = sessionPosts.filter((post) =>
+        post.url.includes("/api/sessions/summarize"),
+      );
+
       expect(sessionPosts.length).toBeGreaterThan(0);
+      expect(assistantObservations).toHaveLength(2);
+      expect(summaries).toHaveLength(2);
+      for (const post of assistantObservations) {
+        expect(post.body.tool_response).toBe("completed platform reply");
+        expect(post.body.platformSource).toBe("opencode");
+      }
+      for (const post of summaries) {
+        expect(post.body.last_assistant_message).toBe("completed platform reply");
+        expect(post.body.platformSource).toBe("opencode");
+      }
 
       for (const post of sessionPosts) {
         expect(
