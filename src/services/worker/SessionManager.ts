@@ -20,7 +20,14 @@ export class SessionManager {
     this.onPendingMutate = cb;
   }
 
-  initializeSession(sessionDbId: number, currentUserPrompt?: string, promptNumber?: number): ActiveSession {
+  initializeSession(
+    sessionDbId: number,
+    currentUserPrompt?: string,
+    promptNumber?: number,
+    currentProject?: string,
+  ): ActiveSession {
+    const suppliedProject = currentProject && currentProject !== 'unknown' ? currentProject : undefined;
+
     logger.debug('SESSION', 'initializeSession called', {
       sessionDbId,
       promptNumber,
@@ -36,13 +43,16 @@ export class SessionManager {
       });
 
       const dbSession = this.dbManager.getSessionById(sessionDbId);
-      if (dbSession.project && dbSession.project !== session.project) {
+      if (dbSession.project && dbSession.project !== session.project && !suppliedProject) {
         logger.debug('SESSION', 'Updating project from database', {
           sessionDbId,
           oldProject: session.project,
           newProject: dbSession.project
         });
         session.project = dbSession.project;
+      }
+      if (suppliedProject) {
+        session.project = suppliedProject;
       }
       if (dbSession.platform_source && dbSession.platform_source !== session.platformSource) {
         session.platformSource = dbSession.platform_source;
@@ -103,7 +113,7 @@ export class SessionManager {
       sessionDbId,
       contentSessionId: dbSession.content_session_id,
       memorySessionId: null,  // Always start fresh - SDK will capture new ID
-      project: dbSession.project,
+      project: suppliedProject || dbSession.project,
       platformSource: dbSession.platform_source,
       userPrompt,
       abortController: new AbortController(),

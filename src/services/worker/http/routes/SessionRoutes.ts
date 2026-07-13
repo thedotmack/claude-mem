@@ -502,7 +502,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
     if (platformSource !== 'cursor') {
       const sdkPrompt = cleanedPrompt.startsWith('/') ? cleanedPrompt.substring(1) : cleanedPrompt;
-      const session = this.sessionManager.initializeSession(sessionDbId, sdkPrompt, promptNumber);
+      const session = this.sessionManager.initializeSession(sessionDbId, sdkPrompt, promptNumber, project);
 
       const latestPrompt = store.getLatestUserPrompt(session.contentSessionId, sessionDbId);
 

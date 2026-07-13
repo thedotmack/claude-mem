@@ -129,7 +129,7 @@ describe('ResponseProcessor', () => {
 
   describe('parsing observations from XML response', () => {
     it('should parse single observation from response', async () => {
-      const session = createMockSession();
+      const session = createMockSession({ project: 'repo-b/worktree' });
       const responseText = `
         <observation>
           <type>discovery</type>
@@ -158,7 +158,8 @@ describe('ResponseProcessor', () => {
       const [memorySessionId, project, observations, summary] =
         mockStoreObservations.mock.calls[0];
       expect(memorySessionId).toBe('memory-session-456');
-      expect(project).toBe('test-project');
+      expect(project).toBe('repo-b/worktree');
+      expect(mockChromaSyncObservation.mock.calls[0][2]).toBe('repo-b/worktree');
       expect(observations).toHaveLength(1);
       expect(observations[0].type).toBe('discovery');
       expect(observations[0].title).toBe('Found important pattern');
@@ -367,7 +368,7 @@ describe('ResponseProcessor', () => {
 
   describe('SSE broadcasting', () => {
     it('should broadcast observations via SSE', async () => {
-      const session = createMockSession();
+      const session = createMockSession({ project: 'repo-b/worktree' });
       const responseText = `
         <observation>
           <type>discovery</type>
@@ -410,6 +411,7 @@ describe('ResponseProcessor', () => {
       );
       expect(observationCall).toBeDefined();
       expect(observationCall[0].observation.id).toBe(42);
+      expect(observationCall[0].observation.project).toBe('repo-b/worktree');
       expect(observationCall[0].observation.title).toBe('Broadcast Test');
       expect(observationCall[0].observation.type).toBe('discovery');
     });
