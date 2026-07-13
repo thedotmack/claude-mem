@@ -10,8 +10,10 @@ import { getRedisQueueConfig } from '../queue/redis-config.js';
 import { ActiveServerQueueManager } from './ActiveServerQueueManager.js';
 import { ActiveServerGenerationWorkerManager } from './ActiveServerGenerationWorkerManager.js';
 import { ClaudeObservationProvider } from '../generation/providers/ClaudeObservationProvider.js';
+import { ServerClassifiedProviderError } from '../generation/providers/shared/error-classification.js';
 import { GeminiObservationProvider } from '../generation/providers/GeminiObservationProvider.js';
 import { OpenRouterObservationProvider } from '../generation/providers/OpenRouterObservationProvider.js';
+import { buildServerGenerationPrompt } from '../generation/providers/shared/prompt-builder.js';
 import type { ServerGenerationProvider } from '../generation/providers/shared/types.js';
 import { ServerService } from './ServerService.js';
 import {
@@ -194,7 +196,7 @@ export async function createServerService(
       ? new DisabledServerGenerationWorkerManager(
           'CLAUDE_MEM_GENERATION_DISABLED is set; this server runs HTTP only. A separate `claude-mem server worker start` process consumes the BullMQ queues.',
         )
-      : buildGenerationWorkerManager(pool, queueManager, options.generationProvider));
+      : await buildGenerationWorkerManager(pool, queueManager, options.generationProvider));
   const graph: ServerServiceGraph = {
     // Persisted runtime literal — Phase 1d will migrate this value. The TS
     // identifiers above are now `Server*`; the wire/storage value remains
@@ -216,17 +218,17 @@ export async function createServerService(
   return new ServerService({ graph });
 }
 
-function buildGenerationWorkerManager(
+async function buildGenerationWorkerManager(
   pool: PostgresPool,
   queueManager: ServerQueueManager,
   injectedProvider?: ServerGenerationProvider,
-): ServerGenerationWorkerManager {
+): Promise<ServerGenerationWorkerManager> {
   if (!(queueManager instanceof ActiveServerQueueManager)) {
     return new DisabledServerGenerationWorkerManager(
       'queue manager is disabled; set CLAUDE_MEM_QUEUE_ENGINE=bullmq to enable provider generation.',
     );
   }
-  const provider = injectedProvider ?? buildServerGenerationProviderFromEnv();
+  const provider = injectedProvider ?? await buildServerGenerationProviderFromEnv();
   if (!provider) {
     return new DisabledServerGenerationWorkerManager(
       'no server generation provider configured; set CLAUDE_MEM_SERVER_PROVIDER and the matching API key to enable.',
@@ -239,11 +241,11 @@ function buildGenerationWorkerManager(
   });
 }
 
-function buildServerGenerationProviderFromEnv(): ServerGenerationProvider | null {
+async function buildServerGenerationProviderFromEnv(): Promise<ServerGenerationProvider | null> {
   const provider = (process.env.CLAUDE_MEM_SERVER_PROVIDER ?? '').trim().toLowerCase();
   if (!provider) return null;
   try {
-    return instantiateServerGenerationProvider(provider);
+    return await instantiateServerGenerationProvider(provider);
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
     // Surface the construction failure so operators can see why generation is
@@ -253,7 +255,64 @@ function buildServerGenerationProviderFromEnv(): ServerGenerationProvider | null
   }
 }
 
-function instantiateServerGenerationProvider(provider: string): ServerGenerationProvider | null {
+// Helpers handed to a CLAUDE_MEM_CUSTOM_PROVIDER_MODULE factory (see
+// loadCustomServerGenerationProvider below) so a custom provider can reuse
+// this server's own Anthropic HTTP client, prompt construction, and error
+// classification instead of reimplementing them — all three are internal,
+// unexported implementation details of this codebase, not a published
+// library surface, so a custom provider module has no other way to reach
+// them. ServerClassifiedProviderError matters beyond convenience: the retry
+// pipeline (ProviderObservationGenerator) only treats an error as retryable
+// when it's `instanceof ServerClassifiedProviderError` with `kind`
+// `'transient'`/`'rate_limit'` — a plain Error, even with a `.kind`
+// property bolted on, is always treated as non-retryable.
+export interface CustomServerGenerationProviderHelpers {
+  buildServerGenerationPrompt: typeof buildServerGenerationPrompt;
+  ClaudeObservationProvider: typeof ClaudeObservationProvider;
+  ServerClassifiedProviderError: typeof ServerClassifiedProviderError;
+}
+
+type CustomServerGenerationProviderFactory = (
+  helpers: CustomServerGenerationProviderHelpers,
+) => ServerGenerationProvider;
+
+// CLAUDE_MEM_SERVER_PROVIDER=custom + CLAUDE_MEM_CUSTOM_PROVIDER_MODULE=<path>
+// dynamically loads an operator-supplied ServerGenerationProvider instead of
+// one of the built-in providers above — for deployments whose credential
+// model this codebase can't anticipate (e.g. a host application that stores
+// its own per-project API keys and wants generation jobs to use them,
+// instead of one static key for the whole process). The module is resolved
+// from the filesystem at startup, not bundled at build time, and must
+// export a `createProvider(helpers)` factory (as a named export, a default
+// export, or `default.createProvider` — CJS/ESM interop can produce any of
+// the three depending on how the module was authored).
+// Exported for tests: the wiring is otherwise only reachable through the
+// full createServerService() (Postgres + queue setup), which is expensive
+// to stand up just to exercise the module-loading logic itself.
+export async function loadCustomServerGenerationProvider(): Promise<ServerGenerationProvider | null> {
+  const modulePath = (process.env.CLAUDE_MEM_CUSTOM_PROVIDER_MODULE ?? '').trim();
+  if (!modulePath) {
+    logger.warn('SYSTEM', 'server: CLAUDE_MEM_SERVER_PROVIDER=custom requires CLAUDE_MEM_CUSTOM_PROVIDER_MODULE');
+    return null;
+  }
+  const { pathToFileURL } = await import('url');
+  const mod = (await import(pathToFileURL(modulePath).href)) as Record<string, unknown>;
+  const defaultExport = mod.default as Record<string, unknown> | (() => unknown) | undefined;
+  const factory = (
+    typeof mod.createProvider === 'function' ? mod.createProvider
+    : typeof defaultExport === 'function' ? defaultExport
+    : typeof defaultExport === 'object' && defaultExport !== null && typeof defaultExport.createProvider === 'function'
+      ? defaultExport.createProvider
+      : null
+  ) as CustomServerGenerationProviderFactory | null;
+  if (!factory) {
+    logger.warn('SYSTEM', 'server: CLAUDE_MEM_CUSTOM_PROVIDER_MODULE does not export a createProvider(helpers) factory', { modulePath });
+    return null;
+  }
+  return factory({ buildServerGenerationPrompt, ClaudeObservationProvider, ServerClassifiedProviderError });
+}
+
+async function instantiateServerGenerationProvider(provider: string): Promise<ServerGenerationProvider | null> {
   if (provider === 'claude' || provider === 'anthropic') {
     const apiKey = process.env.ANTHROPIC_API_KEY ?? process.env.CLAUDE_MEM_ANTHROPIC_API_KEY ?? '';
     if (!apiKey) return null;
@@ -277,6 +336,9 @@ function instantiateServerGenerationProvider(provider: string): ServerGeneration
     const baseUrl = process.env.CLAUDE_MEM_OPENROUTER_BASE_URL ?? process.env.OPENROUTER_BASE_URL;
     if (baseUrl) opts.baseUrl = baseUrl;
     return new OpenRouterObservationProvider(opts);
+  }
+  if (provider === 'custom') {
+    return loadCustomServerGenerationProvider();
   }
   return null;
 }
