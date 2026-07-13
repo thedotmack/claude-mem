@@ -52,7 +52,7 @@ export class SessionManager {
         logger.debug('SESSION', 'Updating userPrompt for continuation', {
           sessionDbId,
           promptNumber,
-          oldPrompt: session.userPrompt.substring(0, 80),
+          oldPrompt: session.userPrompt?.substring(0, 80) ?? '',
           newPrompt: currentUserPrompt.substring(0, 80)
         });
         session.userPrompt = currentUserPrompt;
@@ -61,7 +61,7 @@ export class SessionManager {
         logger.debug('SESSION', 'No currentUserPrompt provided for existing session', {
           sessionDbId,
           promptNumber,
-          usingCachedPrompt: session.userPrompt.substring(0, 80)
+          usingCachedPrompt: session.userPrompt?.substring(0, 80) ?? ''
         });
       }
       return session;
@@ -89,7 +89,7 @@ export class SessionManager {
       logger.debug('SESSION', 'No currentUserPrompt provided for new session, using database', {
         sessionDbId,
         promptNumber,
-        dbPrompt: dbSession.user_prompt.substring(0, 80)
+        dbPrompt: dbSession.user_prompt?.substring(0, 80) ?? ''
       });
     } else {
       logger.debug('SESSION', 'Initializing session with fresh userPrompt', {

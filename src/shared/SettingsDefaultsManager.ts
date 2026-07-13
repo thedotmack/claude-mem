@@ -1,7 +1,7 @@
 
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
+import { homedir, hostname } from 'os';
 import { HOOK_TIMEOUTS, getTimeout } from './hook-constants.js';
 import { parseJsonWithBom, writeJsonFileAtomic } from './atomic-json.js';
 
@@ -64,6 +64,13 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CHROMA_TENANT: string;
   CLAUDE_MEM_CHROMA_DATABASE: string;
   CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS: string;
+  // Worker-native cloud sync (cmem.ai Pro). Active ⇔ TOKEN and USER_ID are
+  // both non-empty — there is no separate enabled flag.
+  CLAUDE_MEM_CLOUD_SYNC_TOKEN: string;
+  CLAUDE_MEM_CLOUD_SYNC_USER_ID: string;
+  CLAUDE_MEM_CLOUD_SYNC_URL: string;
+  CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: string;
+  CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: string;
   CLAUDE_MEM_TELEGRAM_ENABLED: string;
   CLAUDE_MEM_TELEGRAM_BOT_TOKEN: string;
   CLAUDE_MEM_TELEGRAM_CHAT_ID: string;
@@ -148,6 +155,12 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CHROMA_TENANT: 'default_tenant',
     CLAUDE_MEM_CHROMA_DATABASE: 'default_database',
     CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS: '120000',
+    // Worker-native cloud sync (cmem.ai Pro): credentials come from cmem.ai → Connect.
+    CLAUDE_MEM_CLOUD_SYNC_TOKEN: '',
+    CLAUDE_MEM_CLOUD_SYNC_USER_ID: '',
+    CLAUDE_MEM_CLOUD_SYNC_URL: 'https://cmem.ai/api/pro/sync',
+    CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: '',      // Resolved at first CloudSync start (legacy state file → adopt; else randomUUID), then persisted back here
+    CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: hostname(),  // Human-readable label for the cmem.ai Devices panel
     CLAUDE_MEM_TELEGRAM_ENABLED: 'true',
     CLAUDE_MEM_TELEGRAM_BOT_TOKEN: '',
     CLAUDE_MEM_TELEGRAM_CHAT_ID: '',

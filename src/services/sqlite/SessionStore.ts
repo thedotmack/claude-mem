@@ -1,5 +1,6 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite';
-import { DATA_DIR, DB_PATH, ensureDir, OBSERVER_SESSIONS_PROJECT } from '../../shared/paths.js';
+import { existsSync, readFileSync } from 'fs';
+import { DATA_DIR, DB_PATH, ensureDir, OBSERVER_SESSIONS_PROJECT, paths } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import {
   TableColumnInfo,
@@ -67,7 +68,7 @@ interface SdkSessionDetailRow {
 export class SessionStore {
   public db: Database;
 
-  constructor(dbPathOrDb: string | Database = DB_PATH) {
+  constructor(dbPathOrDb: string | Database = DB_PATH, options: { cloudSyncStatePath?: string } = {}) {
     if (dbPathOrDb instanceof Database) {
       this.db = dbPathOrDb;
     } else {
@@ -106,6 +107,8 @@ export class SessionStore {
     this.ensureSDKSessionsPlatformContentIdentity();
     this.ensureUserPromptsSessionDbId();
     this.ensurePendingMessagesSessionToolUniqueIndex();
+    this.ensureSyncedAtColumns(options.cloudSyncStatePath ?? paths.cloudSyncState());
+    this.requeuePromptCloudSyncAfterMapperFix();
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -438,6 +441,93 @@ export class SessionStore {
     `);
     if (!applied) {
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(35, new Date().toISOString());
+    }
+  }
+
+  private ensureSyncedAtColumns(cloudSyncStatePath: string): void {
+    // Not gated on a schema_versions row: the community-edge line already
+    // consumed versions 36-38 without adding synced_at, so affected DBs have
+    // those version rows but not the columns. The PRAGMA checks are the real
+    // guard; version 39 is recorded for bookkeeping only.
+    let columnsAdded = false;
+
+    for (const table of ['observations', 'session_summaries', 'user_prompts']) {
+      const tableInfo = this.db.query(`PRAGMA table_info(${table})`).all() as TableColumnInfo[];
+      const hasSyncedAt = tableInfo.some(col => col.name === 'synced_at');
+
+      if (!hasSyncedAt) {
+        this.db.run(`ALTER TABLE ${table} ADD COLUMN synced_at INTEGER`);
+        logger.debug('DB', `Added synced_at column to ${table} table`);
+        columnsAdded = true;
+      }
+
+      this.db.run(`CREATE INDEX IF NOT EXISTS idx_${table}_unsynced ON ${table}(id) WHERE synced_at IS NULL`);
+    }
+
+    // Legacy cursor adoption is once-only: it runs only in the call that
+    // created the columns.
+    if (columnsAdded) {
+      this.stampRowsSyncedByLegacyClient(cloudSyncStatePath);
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(39, new Date().toISOString());
+  }
+
+  /**
+   * One-time cloud repair (version 40): every prompt synced before the
+   * CloudSync mapper fix went to the cloud with memory_session_id =
+   * content_session_id and project = 'unknown', so the cloud viewer could
+   * never attach a prompt to its session. Re-nulling synced_at makes the
+   * next flush re-push the full prompt history through the fixed mapper
+   * (sdk_sessions join); the server upserts on (user_id, device_id,
+   * local_id) with a change guard, so corrected rows overwrite in place and
+   * still-identical rows (no local mapping) cost nothing. Runs after
+   * ensureSyncedAtColumns — the column must exist. Harmless when cloud sync
+   * is unconfigured: rows simply sit unsynced, which is their natural state.
+   */
+  private requeuePromptCloudSyncAfterMapperFix(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(40) as SchemaVersion | undefined;
+    if (applied) return;
+
+    const res = this.db.prepare(`
+      UPDATE user_prompts SET synced_at = NULL WHERE synced_at IS NOT NULL
+    `).run();
+    logger.info('DB', 'Requeued prompt cloud sync after mapper fix (v40)', {
+      requeued: res.changes
+    });
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(40, new Date().toISOString());
+  }
+
+  // Rows the standalone cloud-sync client already uploaded (its cursors live in
+  // cloud-sync-state.json) are stamped so they are not re-uploaded. The state
+  // file is left in place — device-id adoption still reads it.
+  private stampRowsSyncedByLegacyClient(statePath: string): void {
+    if (!existsSync(statePath)) return;
+
+    let state: { lastId?: number; lastSummaryId?: number; lastPromptId?: number };
+    try {
+      state = JSON.parse(readFileSync(statePath, 'utf-8'));
+    } catch (error) {
+      logger.warn('DB', 'Failed to read legacy cloud-sync state, skipping synced_at adoption', { statePath }, error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
+    if (state === null || typeof state !== 'object') {
+      logger.warn('DB', 'Legacy cloud-sync state is not an object, skipping synced_at adoption', { statePath });
+      return;
+    }
+
+    const now = Date.now();
+    const cursors: Array<[table: string, lastSyncedId: unknown]> = [
+      ['observations', state.lastId],
+      ['session_summaries', state.lastSummaryId],
+      ['user_prompts', state.lastPromptId],
+    ];
+
+    for (const [table, lastSyncedId] of cursors) {
+      if (!(typeof lastSyncedId === 'number' && lastSyncedId > 0)) continue;
+      this.db.prepare(`UPDATE ${table} SET synced_at = ? WHERE id <= ? AND synced_at IS NULL`).run(now, lastSyncedId);
+      logger.debug('DB', `Stamped synced_at on ${table} rows already uploaded by the legacy cloud-sync client`, { lastSyncedId });
     }
   }
 
@@ -1388,6 +1478,22 @@ export class SessionStore {
       SET memory_session_id = ?
       WHERE id = ?
     `).run(memorySessionId, sessionDbId);
+    if (memorySessionId) this.requeuePromptSync(sessionDbId);
+  }
+
+  /**
+   * Cloud-sync repair: prompts are captured (and pushed) before the SDK
+   * session registers its memory_session_id, so their first cloud upsert
+   * carries the content-session fallback. Re-nulling synced_at once the
+   * mapping lands makes the next flush re-push them with the resolved id —
+   * the server upserts on (user_id, device_id, local_id), so the corrected
+   * row overwrites in place rather than duplicating.
+   */
+  private requeuePromptSync(sessionDbId: number): void {
+    this.db.prepare(`
+      UPDATE user_prompts SET synced_at = NULL
+      WHERE session_db_id = ? AND synced_at IS NOT NULL
+    `).run(sessionDbId);
   }
 
   markSessionCompleted(sessionDbId: number): void {
@@ -1417,6 +1523,7 @@ export class SessionStore {
       this.db.prepare(`
         UPDATE sdk_sessions SET memory_session_id = ? WHERE id = ?
       `).run(memorySessionId, sessionDbId);
+      this.requeuePromptSync(sessionDbId);
 
       logger.info('DB', 'Registered memory_session_id before storage (FK fix)', {
         sessionDbId,

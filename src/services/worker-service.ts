@@ -103,6 +103,7 @@ import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
 import { MemoryRoutes } from './worker/http/routes/MemoryRoutes.js';
 import { CorpusRoutes } from './worker/http/routes/CorpusRoutes.js';
 import { ChromaRoutes } from './worker/http/routes/ChromaRoutes.js';
+import { CloudSyncRoutes } from './worker/http/routes/CloudSyncRoutes.js';
 
 import { CorpusStore } from './worker/knowledge/CorpusStore.js';
 import { CorpusBuilder } from './worker/knowledge/CorpusBuilder.js';
@@ -526,6 +527,13 @@ export class WorkerService implements WorkerRef {
       this.server.registerRoutes(new CorpusRoutes(this.corpusStore, corpusBuilder, knowledgeAgent));
       logger.info('WORKER', 'CorpusRoutes registered');
 
+      // Cloud sync status endpoint. Registered late (SearchRoutes pattern)
+      // because it reads dbManager.getCloudSync(), which exists only after
+      // dbManager.initialize() above — and unconditionally, so an
+      // unconfigured install answers {configured: false} instead of 404.
+      this.server.registerRoutes(new CloudSyncRoutes(this.dbManager));
+      logger.info('WORKER', 'CloudSyncRoutes registered');
+
       this.initializationCompleteFlag = true;
       this.resolveInitialization();
       logger.info('SYSTEM', 'Core initialization complete (DB + search ready)');
@@ -596,6 +604,12 @@ export class WorkerService implements WorkerRef {
           logger.error('CHROMA_SYNC', 'Backfill failed (non-blocking)', {}, error as Error);
         });
       }
+
+      // Cloud sync startup drain (non-blocking). The database is the queue:
+      // everything unsynced is simply `synced_at IS NULL`, so this one kick
+      // IS backfill, offline catch-up, and retry. Null when no token/user id
+      // is configured (DatabaseManager gates construction).
+      this.dbManager.getCloudSync()?.start();
 
       const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
       this.mcpReady = existsSync(mcpServerPath);
