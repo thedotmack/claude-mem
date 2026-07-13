@@ -90,6 +90,8 @@ export function isAuthFailureObserverOutput(raw: unknown): boolean {
     /\bfailed to authenticate\b/.test(text) ||
     /\bauthentication (?:failed|failure|error)\b/.test(text) ||
     /\b(?:api|http)\s*(?:error\s*)?:?\s*(?:401|403)\b/.test(text) ||
-    /\bplease run \/login\b/.test(text)
+    /\b(?:(?:401|403)\s+(?:unauthorized|forbidden)|status\s*[:=]?\s*(?:401|403)|request failed with\s+(?:401|403))\b/.test(text) ||
+    /\b(?:authentication|authenticate|auth)\b.{0,40}\/login\b/.test(text) ||
+    /\/login\b.{0,40}\b(?:authentication|authenticate|auth)\b/.test(text)
   );
 }

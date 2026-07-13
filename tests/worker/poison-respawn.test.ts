@@ -193,6 +193,61 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     expect(logger.error).toHaveBeenCalled();
   });
 
+  it('pauses on a bare unauthorized status and preserves the claimed batch', async () => {
+    const storeObservations = mock(() => ({ observationIds: [], summaryId: null, createdAtEpoch: 0 }));
+    const sm = new SessionManager(makeDbManager(storeObservations));
+    const session = sm.initializeSession(9, 'do the thing', 1);
+    session.memorySessionId = 'mem-9';
+    await queueAndClaimOne(sm, 9);
+
+    const confirmSpy = spyOn(sm, 'confirmClaimedMessages');
+    const resetSpy = spyOn(sm, 'resetProcessingToPending');
+
+    await processAgentResponse(
+      '401 Unauthorized',
+      session,
+      makeDbManager(storeObservations),
+      sm,
+      makeWorker(),
+      0,
+      null,
+      'TestAgent',
+    );
+
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(resetSpy).toHaveBeenCalledWith(9);
+    expect(storeObservations).not.toHaveBeenCalled();
+    expect(sm.getMessageBuffer().getPendingCount(9)).toBe(1);
+    expect(session.abortReason).toBe('auth:observer_text');
+    expect(session.abortController.signal.aborted).toBe(true);
+  });
+
+  it('confirms unrelated login instructions as ordinary prose', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(10, 'do the thing', 1);
+    session.memorySessionId = 'mem-10';
+    await queueAndClaimOne(sm, 10);
+
+    const confirmSpy = spyOn(sm, 'confirmClaimedMessages');
+    const resetSpy = spyOn(sm, 'resetProcessingToPending');
+
+    await processAgentResponse(
+      'Please run /login in the observed project instructions.',
+      session,
+      makeDbManager(),
+      sm,
+      makeWorker(),
+      0,
+      null,
+      'TestAgent',
+    );
+
+    expect(confirmSpy).toHaveBeenCalledWith(10);
+    expect(resetSpy).not.toHaveBeenCalled();
+    expect(sm.getMessageBuffer().getPendingCount(10)).toBe(0);
+    expect(session.abortController.signal.aborted).toBe(false);
+  });
+
   it('auth generator exit keeps the active session and in-memory buffer', async () => {
     const sm = new SessionManager(makeDbManager());
     const session = sm.initializeSession(8, 'do the thing', 1);
