@@ -953,11 +953,23 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     // a concatenated context string for direct prompt injection. The MCP
     // `observation_context` tool calls this so MCP and any future REST
     // consumer share the exact same context-packing rule.
+    //
+    // `query` is optional (added alongside SessionStart server-runtime
+    // support, see plans/2026-07-13-session-start-context-injection-server-
+    // mode.md / #2991): the SessionStart hook has no search term, just
+    // "what's recent for this project" — `PostgresObservationRepository
+    // .search()` falls back to recency order when `query` is omitted. No
+    // `.min(1)`: an explicit empty string is treated the same as an omitted
+    // key (recency mode), not rejected — the repository layer already
+    // normalizes both the same way.
     app.post('/v1/context', readAuth, this.handleCreate(
       z.object({
         projectId: z.string().min(1),
-        query: z.string().min(1),
-        limit: z.number().int().positive().max(50).optional(),
+        query: z.string().optional(),
+        // 200 matches CLAUDE_MEM_CONTEXT_OBSERVATIONS' own validated range
+        // (SettingsRoutes.ts) — recency-mode callers should be able to
+        // request as much as worker-mode's own settings allow.
+        limit: z.number().int().positive().max(200).optional(),
         platformSource: z.string().min(1).nullable().optional(),
       }),
       async (req, res, body) => {
@@ -968,11 +980,18 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         let results;
         try {
           const repo = new PostgresObservationRepository(this.options.pool);
+          // Query-based search (top relevance matches) and query-less
+          // recency mode (SessionStart's "what's recent") have different
+          // natural defaults — worker-mode's own SessionStart context uses
+          // CLAUDE_MEM_CONTEXT_OBSERVATIONS, which defaults to 50; a bare 10
+          // default here would silently inject far less context than
+          // worker-mode did for the same use case.
+          const defaultLimit = body.query ? 10 : 50;
           results = await repo.search({
             projectId: body.projectId,
             teamId,
             query: body.query,
-            limit: body.limit ?? 10,
+            limit: body.limit ?? defaultLimit,
             platformSource,
           });
         } catch (error) {

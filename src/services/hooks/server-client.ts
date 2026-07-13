@@ -169,9 +169,14 @@ export interface ServerSearchObservationsResponse {
 
 // Phase 8 — context pack for prompt injection. Server returns both the
 // matched observations AND a pre-joined `context` string.
+//
+// `query` is optional (see plans/2026-07-13-session-start-context-injection-
+// server-mode.md / #2991): SessionStart injection has no search term, just
+// "what's recent for this project" — the server falls back to recency order
+// when `query` is omitted.
 export interface ServerContextObservationsRequest {
   projectId: string;
-  query: string;
+  query?: string;
   limit?: number;
   platformSource?: string | null;
 }
@@ -303,12 +308,16 @@ export class ServerClient {
     };
   }
 
+  // `query` is optional here so `contextObservations` (SessionStart's
+  // query-less "recent" case) can share this builder with
+  // `searchObservations` (whose own request type still requires `query`,
+  // so that caller is unaffected). See ServerContextObservationsRequest.
   buildSearchPayload(
-    input: { projectId: string; query: string; limit?: number; platformSource?: string | null },
+    input: { projectId: string; query?: string; limit?: number; platformSource?: string | null },
   ): Record<string, unknown> {
     return {
       projectId: input.projectId,
-      query: input.query,
+      ...(input.query !== undefined && input.query.length > 0 ? { query: input.query } : {}),
       ...(input.limit !== undefined ? { limit: input.limit } : {}),
       ...(input.platformSource !== undefined ? { platformSource: normalizePlatformSourceField(input.platformSource) } : {}),
     };
