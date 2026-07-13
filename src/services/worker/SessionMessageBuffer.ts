@@ -2,7 +2,7 @@ import { EventEmitter } from 'events';
 import type { PendingMessage, PendingMessageWithId } from '../worker-types.js';
 import { logger } from '../../utils/logger.js';
 
-const IDLE_TIMEOUT_MS = 3 * 60 * 1000;
+export const SESSION_IDLE_TIMEOUT_MS = 3 * 60 * 1000;
 
 interface BufferedMessage {
   id: number;
@@ -150,7 +150,7 @@ export class SessionMessageBuffer {
    * SDK subprocess is killed).
    */
   async *drain(options: DrainOptions): AsyncIterableIterator<PendingMessageWithId> {
-    const { sessionDbId, signal, onIdleTimeout, idleTimeoutMs = IDLE_TIMEOUT_MS } = options;
+    const { sessionDbId, signal, onIdleTimeout, idleTimeoutMs = SESSION_IDLE_TIMEOUT_MS } = options;
     let lastActivityTime = Date.now();
 
     while (!signal.aborted) {

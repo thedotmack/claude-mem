@@ -65,9 +65,10 @@ describe('Claude setup-required generator gate', () => {
     const sessionManager = {
       getSession: () => activeSession,
       getMessageBuffer: () => ({
-        getPendingCount: () => 1,
+        getPendingCount: () => 0,
         peekTypes: () => [],
       }),
+      resetProcessingToPending: async () => 0,
       removeSessionImmediate: () => {
         removeSessionImmediateCalls += 1;
         activeSession = undefined;

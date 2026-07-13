@@ -3,10 +3,12 @@ import type { SessionManager } from '../SessionManager.js';
 import type { SessionCompletionHandler } from './SessionCompletionHandler.js';
 import { logger } from '../../../utils/logger.js';
 import { getSdkProcessForSession, ensureSdkProcessExit } from '../../../supervisor/process-registry.js';
+import { SESSION_IDLE_TIMEOUT_MS } from '../SessionMessageBuffer.js';
 
 export interface GeneratorExitDependencies {
   sessionManager: SessionManager;
   completionHandler: SessionCompletionHandler;
+  bufferedWorkRetentionMs?: number;
 }
 
 /**
@@ -24,7 +26,9 @@ export interface GeneratorExitDependencies {
  * loop was the retry storm. Continuation happens naturally: the next
  * observation ingest (or /api/sessions/init) calls ensureGeneratorRunning,
  * which starts a fresh generator that drains whatever is buffered. Only a
- * clean exit with an empty buffer finalizes and removes the session.
+ * clean exit with an empty buffer finalizes and removes the session. Retained
+ * non-quota work gets one normal idle window to resume, then finalizes so an
+ * abandoned failure cannot keep the session and buffer alive indefinitely.
  */
 export async function handleGeneratorExit(
   session: ActiveSession,
@@ -59,6 +63,32 @@ export async function handleGeneratorExit(
       reason,
       pendingCount,
     });
+
+    if (session.retainedWorkCleanupTimer) {
+      clearTimeout(session.retainedWorkCleanupTimer);
+    }
+    session.retainedWorkCleanupTimer = setTimeout(async () => {
+      session.retainedWorkCleanupTimer = undefined;
+      if (sessionManager.getSession(sessionDbId) !== session || session.generatorPromise) {
+        return;
+      }
+
+      logger.warn('SESSION', 'Buffered-work retention window expired; finalizing abandoned session', {
+        sessionId: sessionDbId,
+        pendingCount: sessionManager.getMessageBuffer().getPendingCount(sessionDbId),
+      });
+      try {
+        await completionHandler.finalizeSession(sessionDbId);
+      } catch (e) {
+        const normalized = e instanceof Error ? e : new Error(String(e));
+        logger.error('SESSION', 'Deferred finalization failed; forcing in-memory session removal', {
+          sessionId: sessionDbId,
+        }, normalized);
+      } finally {
+        sessionManager.removeSessionImmediate(sessionDbId);
+      }
+    }, deps.bufferedWorkRetentionMs ?? SESSION_IDLE_TIMEOUT_MS);
+    session.retainedWorkCleanupTimer.unref?.();
     return;
   }
 
