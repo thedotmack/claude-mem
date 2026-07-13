@@ -328,6 +328,37 @@ describe('GeminiProvider', () => {
     expect(session.cumulativeInputTokens).toBeGreaterThan(0);
   });
 
+  it('rolls back a failed observation prompt before buffered work is retried', async () => {
+    const session = makeSession();
+    (mockSessionManager as any).getMessageIterator = async function* () {
+      yield {
+        type: 'observation',
+        tool_name: 'Read',
+        tool_input: { marker: 'FAILED_RETRY_MARKER' },
+        tool_response: { ok: false },
+        prompt_number: 1,
+        _persistentId: 1,
+        _originalTimestamp: Date.now(),
+      };
+    };
+
+    let callCount = 0;
+    global.fetch = mock(() => {
+      callCount += 1;
+      if (callCount === 1) {
+        return Promise.resolve(new Response(JSON.stringify({
+          candidates: [{ content: { parts: [{ text: 'No observations to record.' }] } }],
+        })));
+      }
+      return Promise.resolve(new Response('bad observation request', { status: 400 }));
+    });
+
+    await expect(agent.startSession(session)).rejects.toThrow('Gemini bad request');
+
+    expect(session.conversationHistory.some((message: { content: string }) =>
+      message.content.includes('FAILED_RETRY_MARKER'))).toBe(false);
+  });
+
   it('should throw on rate limit (429) error — no Claude fallback (#2087)', async () => {
     const session = {
       sessionDbId: 1,
@@ -348,6 +379,7 @@ describe('GeminiProvider', () => {
     global.fetch = mock(() => Promise.resolve(new Response('Resource has been exhausted (e.g. check quota).', { status: 429 })));
 
     await expect(agent.startSession(session)).rejects.toThrow(/429/);
+    expect(session.conversationHistory).toEqual([]);
   });
 
   it('should throw on other errors', async () => {
