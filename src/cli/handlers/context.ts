@@ -63,14 +63,18 @@ async function fetchSessionStartContextViaMcp(args: {
 // failure (missing config, transport error, etc.) so the caller degrades to
 // `emptyResult` — deliberately NOT falling through to the worker path below,
 // since a server-runtime deployment has no worker to fall back to.
-async function fetchSessionStartContextViaServer(): Promise<string | null> {
-  const ctx = buildServerContext();
-  if (!ctx) {
-    // buildServerContext() already logs the specific missing-config reason.
-    return null;
-  }
+//
+// `limit` mirrors worker-mode's own CLAUDE_MEM_CONTEXT_OBSERVATIONS (default
+// 50, see SettingsDefaultsManager) — the /v1/context route's own bare
+// default (10) is tuned for its other caller (query-based search results),
+// not "how much recent context should a fresh session start with", so an
+// explicit limit here is required for parity, not optional.
+async function fetchSessionStartContextViaServer(
+  ctx: NonNullable<ReturnType<typeof buildServerContext>>,
+  limit: number,
+): Promise<string | null> {
   try {
-    const { context } = await ctx.client.contextObservations({ projectId: ctx.projectId });
+    const { context } = await ctx.client.contextObservations({ projectId: ctx.projectId, limit });
     return (context ?? '').trim();
   } catch (error: unknown) {
     if (isServerClientError(error)) {
@@ -118,6 +122,14 @@ export const contextHandler: EventHandler = {
     // guard, every SessionStart hook in a server-runtime deployment would
     // still attempt to spawn a local worker it has no business running.
     let usedServerRuntime = false;
+    // Resolved once regardless of platform: Codex's own MCP-based context
+    // fetch (below) is worker-backed and has no server-runtime awareness of
+    // its own, so a server-runtime deployment needs this same fallback for
+    // Codex too, not just Claude Code — see the `mcpContextResult === null`
+    // branch below.
+    const isServerRuntime = selectRuntime() === 'server';
+    const serverRuntimeCtx = isServerRuntime ? buildServerContext() : null;
+    const contextObservationLimit = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10) || 50;
     const mcpContextResult = input.platform === 'codex'
       ? await fetchSessionStartContextViaMcp({
           projects: context.allProjects,
@@ -127,8 +139,14 @@ export const contextHandler: EventHandler = {
 
     if (mcpContextResult !== null) {
       additionalContext = mcpContextResult;
-    } else if (input.platform !== 'codex' && selectRuntime() === 'server') {
-      const serverContext = await fetchSessionStartContextViaServer();
+    } else if (isServerRuntime) {
+      // A server-runtime deployment has no worker to fall back to — even
+      // when misconfigured (serverRuntimeCtx null), degrade straight to
+      // emptyResult rather than falling through to the worker branch below.
+      if (!serverRuntimeCtx) {
+        return emptyResult;
+      }
+      const serverContext = await fetchSessionStartContextViaServer(serverRuntimeCtx, contextObservationLimit);
       if (serverContext === null) {
         return emptyResult;
       }
@@ -197,8 +215,15 @@ export const contextHandler: EventHandler = {
     // back to the plain additionalContext for terminal display.
     const displayContent = coloredTimeline || (platform === 'antigravity-cli' ? additionalContext : '');
 
+    // In server runtime the viewer isn't a local worker on this machine —
+    // localhost:${port} would be unreachable (or point at an unrelated
+    // local service) once CLAUDE_MEM_SERVER_URL is remote or on another
+    // port. Point at the actual server instead.
+    const viewerUrl = usedServerRuntime && serverRuntimeCtx
+      ? serverRuntimeCtx.serverBaseUrl
+      : `http://localhost:${port}`;
     const systemMessage = showTerminalOutput && displayContent
-      ? `${displayContent}\n\nView Observations Live @ http://localhost:${port}`
+      ? `${displayContent}\n\nView Observations Live @ ${viewerUrl}`
       : undefined;
 
     return {

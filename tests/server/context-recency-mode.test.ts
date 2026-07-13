@@ -135,4 +135,25 @@ describe('POST /v1/context recency mode (no query)', () => {
     const r = await post('/v1/search', { projectId });
     expect(r.status).toBe(400);
   });
+
+  it('orders by creation time, not last-modified time — updating an old observation must not move it to the top', async () => {
+    // "first observation" is the oldest by creation time. Bump its
+    // updated_at far into the future without touching created_at (a raw
+    // UPDATE, since the repository has no update() method) — recency mode
+    // must still surface it last, matching "what happened recently" rather
+    // than "what was last touched".
+    const rows = await client.query<{ id: string }>(
+      `SELECT id FROM observations WHERE project_id = $1 AND content LIKE '%first observation%'`,
+      [projectId],
+    );
+    const staleId = rows.rows[0]?.id;
+    expect(staleId).toBeTruthy();
+    await client.query(`UPDATE observations SET updated_at = now() + interval '1 day' WHERE id = $1`, [staleId]);
+
+    const r = await post('/v1/context', { projectId });
+    expect(r.status).toBe(200);
+    const body = await r.json() as { observations: Array<{ content: string }> };
+    expect(body.observations[0].content).toContain('third observation');
+    expect(body.observations[2].content).toContain('first observation');
+  });
 });

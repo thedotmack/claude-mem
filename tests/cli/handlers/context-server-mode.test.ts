@@ -31,6 +31,11 @@ let serverContextBuildable = true;
 let contextObservationsBehavior: 'success' | 'throw-client-error' | 'throw-plain-error' = 'success';
 let contextObservationsError: unknown = null;
 let showTerminalOutput = 'false';
+// Codex's own context fetch is MCP-based (worker-backed), not this file's
+// server-client path — 'unreachable' is the default because most tests here
+// exercise the claude-code platform, which must never touch it at all.
+let mcpBehavior: 'unreachable' | 'errors' = 'unreachable';
+const mcpCalls: unknown[] = [];
 
 mock.module('../../../src/shared/hook-settings.js', () => ({
   loadFromFileOnce: () => ({
@@ -39,8 +44,12 @@ mock.module('../../../src/shared/hook-settings.js', () => ({
 }));
 
 mock.module('../../../src/shared/mcp-client.js', () => ({
-  callMcpToolOnce: async () => {
-    throw new Error('callMcpToolOnce should not be called for non-codex platforms');
+  callMcpToolOnce: async (tool: string, input: unknown) => {
+    if (mcpBehavior === 'unreachable') {
+      throw new Error('callMcpToolOnce should not be called for non-codex platforms');
+    }
+    mcpCalls.push({ tool, input });
+    return { isError: true, text: 'no local worker to answer this MCP tool in server runtime' };
   },
 }));
 
@@ -98,6 +107,8 @@ let loggerSpies: ReturnType<typeof spyOn>[] = [];
 beforeEach(() => {
   workerCalls.length = 0;
   contextObservationsCalls.length = 0;
+  mcpCalls.length = 0;
+  mcpBehavior = 'unreachable';
   runtimeMode = 'server';
   serverContextBuildable = true;
   contextObservationsBehavior = 'success';
@@ -132,7 +143,7 @@ describe('contextHandler server-runtime path', () => {
     });
 
     expect(result.hookSpecificOutput?.additionalContext).toBe('server recency context');
-    expect(contextObservationsCalls).toEqual([{ projectId: 'server-project-1' }]);
+    expect(contextObservationsCalls).toEqual([{ projectId: 'server-project-1', limit: 50 }]);
     expect(workerCalls).toHaveLength(0);
   });
 
@@ -219,9 +230,46 @@ describe('contextHandler server-runtime path', () => {
 
     expect(result.hookSpecificOutput?.additionalContext).toBe('server recency context');
     expect(workerCalls).toHaveLength(0);
-    expect(contextObservationsCalls).toEqual([{ projectId: 'server-project-1' }]);
+    expect(contextObservationsCalls).toEqual([{ projectId: 'server-project-1', limit: 50 }]);
     // No server-side "colors" variant exists — falls back to the plain
     // (uncolored) context for terminal display rather than a worker call.
     expect(result.systemMessage).toContain('server recency context');
+  });
+
+  it('points the terminal-output viewer link at the actual server URL, not a local worker port, when server runtime succeeded', async () => {
+    showTerminalOutput = 'true';
+    const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+
+    const result = await contextHandler.execute({
+      sessionId: 'session-server-viewer-url',
+      cwd: '/tmp/repo',
+      platform: 'claude-code',
+    });
+
+    expect(result.systemMessage).toContain('View Observations Live @ http://server.test');
+    expect(result.systemMessage).not.toContain('localhost:37777');
+  });
+
+  // Codex's own SessionStart context fetch (fetchSessionStartContextViaMcp)
+  // is worker-backed and has no server-runtime awareness of its own — in a
+  // server-runtime deployment it always fails (no local worker to answer
+  // it). Before the fix, that failure fell through to the worker-HTTP
+  // fallback below (also unreachable in server runtime) instead of the
+  // server-context path, silently injecting empty context for every Codex
+  // session on a server-runtime deployment.
+  it('falls back to the server-context path for Codex when its own MCP context fetch fails in server runtime', async () => {
+    mcpBehavior = 'errors';
+    const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+
+    const result = await contextHandler.execute({
+      sessionId: 'session-server-codex-fallback',
+      cwd: '/tmp/repo',
+      platform: 'codex',
+    });
+
+    expect(result.hookSpecificOutput?.additionalContext).toBe('server recency context');
+    expect(mcpCalls).toHaveLength(1);
+    expect(contextObservationsCalls).toEqual([{ projectId: 'server-project-1', limit: 50 }]);
+    expect(workerCalls).toHaveLength(0);
   });
 });

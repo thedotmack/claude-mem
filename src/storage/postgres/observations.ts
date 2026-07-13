@@ -196,7 +196,7 @@ export class PostgresObservationRepository {
           )
         ORDER BY
           CASE WHEN $3::text IS NOT NULL THEN ts_rank(observations.content_search, websearch_to_tsquery('english', $3)) END DESC NULLS LAST,
-          observations.updated_at DESC
+          observations.created_at DESC
         LIMIT $4
       `,
       [input.projectId, input.teamId, query, input.limit ?? 20, platformSource]
