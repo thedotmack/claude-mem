@@ -69,11 +69,11 @@ class FileTailer {
     }
 
     this.tailState.offset = size;
-    this.onOffset(this.tailState.offset);
 
     const combined = this.tailState.partial + data;
     const lines = combined.split('\n');
     this.tailState.partial = lines.pop() ?? '';
+    this.onOffset(this.tailState.offset - Buffer.byteLength(this.tailState.partial, 'utf8'));
 
     for (const line of lines) {
       const trimmed = line.trim();

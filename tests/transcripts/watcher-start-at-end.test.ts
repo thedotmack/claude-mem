@@ -176,4 +176,70 @@ describe('TranscriptWatcher startAtEnd', () => {
     const prompts = sessionInitCalls.map(call => call.prompt);
     expect(prompts).toEqual(['new prompt after archive']);
   });
+
+  it('preserves a partial JSONL record when Codex archives the session mid-write', async () => {
+    const sessionId = '019e050e-7ae0-71b2-b19f-6cc428e5763a';
+    const fileName = `rollout-${sessionId}.jsonl`;
+    const originalPath = join(tmpRoot, '.codex', 'sessions', '2026', '07', '12', fileName);
+    const archivedPath = join(tmpRoot, '.codex', 'archived_sessions', fileName);
+    const statePath = join(tmpRoot, 'state.json');
+    const entry = JSON.stringify({
+      type: 'event',
+      payload: {
+        type: 'user_message',
+        session_id: sessionId,
+        message: 'prompt split across archive move',
+      },
+    });
+    const splitAt = Math.floor(entry.length / 2);
+    const prefix = entry.slice(0, splitAt);
+    const suffix = entry.slice(splitAt);
+
+    mkdirSync(join(originalPath, '..'), { recursive: true });
+    mkdirSync(join(archivedPath, '..'), { recursive: true });
+    writeFileSync(originalPath, prefix, 'utf8');
+
+    const schema: TranscriptSchema = {
+      name: 'codex',
+      events: [
+        {
+          name: 'user-message',
+          match: { path: 'payload.type', equals: 'user_message' },
+          action: 'session_init',
+          fields: {
+            sessionId: 'payload.session_id',
+            prompt: 'payload.message',
+          },
+        },
+      ],
+    };
+    const originalWatch: WatchTarget = {
+      name: 'codex-sessions',
+      path: join(tmpRoot, '.codex', 'sessions', '**', '*.jsonl'),
+      schema,
+      startAtEnd: false,
+    };
+    const archivedWatch: WatchTarget = {
+      name: 'codex-archived',
+      path: join(tmpRoot, '.codex', 'archived_sessions', '*.jsonl'),
+      schema,
+      startAtEnd: false,
+    };
+    const watcher = new TranscriptWatcher({ version: 1, watches: [originalWatch, archivedWatch] }, statePath);
+
+    await (watcher as any).addTailer(originalPath, originalWatch, schema);
+    await waitForAsyncTail();
+    expect(sessionInitCalls).toHaveLength(0);
+
+    writeFileSync(archivedPath, prefix, 'utf8');
+    await (watcher as any).addTailer(archivedPath, archivedWatch, schema);
+    await waitForAsyncTail();
+
+    appendFileSync(archivedPath, `${suffix}\n`, 'utf8');
+    (watcher as any).tailers.get(archivedPath)?.poke();
+    await waitForAsyncTail();
+    watcher.stop();
+
+    expect(sessionInitCalls.map(call => call.prompt)).toEqual(['prompt split across archive move']);
+  });
 });
