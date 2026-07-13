@@ -176,7 +176,7 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
       'TestAgent',
     );
 
-    const finalizeSession = mock(() => Promise.resolve());
+    const finalizeSession = mock(() => {});
     const removeSpy = spyOn(sm, 'removeSessionImmediate');
 
     await handleGeneratorExit(session, session.abortReason, {
@@ -199,7 +199,7 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     session.generatorPromise = Promise.resolve();
     await queueAndClaimOne(sm, 7);
 
-    const finalizeSession = mock(() => Promise.resolve());
+    const finalizeSession = mock(() => {});
     const removeSpy = spyOn(sm, 'removeSessionImmediate');
 
     // reason=null is the generator-failure exit path (e.g. codex exec timeout).
@@ -221,7 +221,7 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     session.generatorPromise = Promise.resolve();
     await queueAndClaimOne(sm, 9);
 
-    const finalizeSession = mock(() => Promise.resolve());
+    const finalizeSession = mock(() => {});
     const removeSpy = spyOn(sm, 'removeSessionImmediate');
 
     await handleGeneratorExit(session, null, {
@@ -246,7 +246,7 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     session.generatorPromise = Promise.resolve();
     await queueAndClaimOne(sm, 10);
 
-    const finalizeSession = mock(() => Promise.resolve());
+    const finalizeSession = mock(() => {});
     await handleGeneratorExit(session, null, {
       sessionManager: sm,
       completionHandler: { finalizeSession } as any,
@@ -262,13 +262,81 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     sm.removeSessionImmediate(10);
   });
 
+  it('keeps new work that arrives at the deferred cleanup boundary', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(11, 'do the thing', 1);
+    session.memorySessionId = 'mem-11';
+    session.generatorPromise = Promise.resolve();
+    await queueAndClaimOne(sm, 11);
+
+    let signalLateWorkQueued!: () => void;
+    const lateWorkQueued = new Promise<void>(resolve => { signalLateWorkQueued = resolve; });
+    const finalizeSession = mock(() => {
+      queueMicrotask(async () => {
+        await sm.queueObservation(11, {
+          tool_name: 'Write',
+          tool_input: {},
+          tool_response: {},
+          prompt_number: 1,
+          toolUseId: 'tu-11-late',
+        });
+        signalLateWorkQueued();
+      });
+    });
+    const removeSpy = spyOn(sm, 'removeSessionImmediate');
+
+    await handleGeneratorExit(session, null, {
+      sessionManager: sm,
+      completionHandler: { finalizeSession } as any,
+      bufferedWorkRetentionMs: 10,
+    });
+    await lateWorkQueued;
+
+    expect(removeSpy).toHaveBeenCalledTimes(1);
+    expect(sm.getSession(11)).toBeDefined();
+    expect(sm.getSession(11)).not.toBe(session);
+    expect(sm.getMessageBuffer().getPendingCount(11)).toBe(1);
+    sm.removeSessionImmediate(11);
+  });
+
+  it('keeps a session reactivated at the deferred cleanup boundary', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(12, 'do the thing', 1);
+    session.memorySessionId = 'mem-12';
+    session.generatorPromise = Promise.resolve();
+    await queueAndClaimOne(sm, 12);
+
+    let signalSessionReactivated!: () => void;
+    const sessionReactivated = new Promise<void>(resolve => { signalSessionReactivated = resolve; });
+    const finalizeSession = mock(() => {
+      queueMicrotask(() => {
+        sm.initializeSession(12, 'continue the thing', 2);
+        signalSessionReactivated();
+      });
+    });
+    const removeSpy = spyOn(sm, 'removeSessionImmediate');
+
+    await handleGeneratorExit(session, null, {
+      sessionManager: sm,
+      completionHandler: { finalizeSession } as any,
+      bufferedWorkRetentionMs: 10,
+    });
+    await sessionReactivated;
+
+    expect(removeSpy).toHaveBeenCalledTimes(1);
+    expect(sm.getSession(12)).toBeDefined();
+    expect(sm.getSession(12)).not.toBe(session);
+    expect(sm.getSession(12)?.userPrompt).toBe('continue the thing');
+    sm.removeSessionImmediate(12);
+  });
+
   it('clean exit with an empty buffer still finalizes and removes the session', async () => {
     const sm = new SessionManager(makeDbManager());
     const session = sm.initializeSession(8, 'do the thing', 1);
     session.memorySessionId = 'mem-8';
     session.generatorPromise = Promise.resolve();
 
-    const finalizeSession = mock(() => Promise.resolve());
+    const finalizeSession = mock(() => {});
     const removeSpy = spyOn(sm, 'removeSessionImmediate');
 
     await handleGeneratorExit(session, null, {
@@ -278,6 +346,41 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
 
     expect(finalizeSession).toHaveBeenCalledTimes(1);
     expect(removeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps new work that arrives at the clean finalization boundary', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(13, 'do the thing', 1);
+    session.memorySessionId = 'mem-13';
+    session.generatorPromise = Promise.resolve();
+
+    let signalLateWorkQueued!: () => void;
+    const lateWorkQueued = new Promise<void>(resolve => { signalLateWorkQueued = resolve; });
+    const finalizeSession = mock(() => {
+      queueMicrotask(async () => {
+        await sm.queueObservation(13, {
+          tool_name: 'Write',
+          tool_input: {},
+          tool_response: {},
+          prompt_number: 1,
+          toolUseId: 'tu-13-late',
+        });
+        signalLateWorkQueued();
+      });
+    });
+    const removeSpy = spyOn(sm, 'removeSessionImmediate');
+
+    await handleGeneratorExit(session, null, {
+      sessionManager: sm,
+      completionHandler: { finalizeSession } as any,
+    });
+    await lateWorkQueued;
+
+    expect(removeSpy).toHaveBeenCalledTimes(1);
+    expect(sm.getSession(13)).toBeDefined();
+    expect(sm.getSession(13)).not.toBe(session);
+    expect(sm.getMessageBuffer().getPendingCount(13)).toBe(1);
+    sm.removeSessionImmediate(13);
   });
 
   it('confirms skip/no-op prose but preserves the same queue shape for quota pause', async () => {

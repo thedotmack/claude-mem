@@ -11,7 +11,7 @@ export class SessionCompletionHandler {
     private dbManager: DatabaseManager
   ) {}
 
-  async finalizeSession(sessionDbId: number): Promise<void> {
+  finalizeSession(sessionDbId: number): void {
     const sessionStore = this.dbManager.getSessionStore();
 
     const row = sessionStore.getSessionById(sessionDbId);

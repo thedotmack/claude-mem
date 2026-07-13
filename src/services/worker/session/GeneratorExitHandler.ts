@@ -67,7 +67,7 @@ export async function handleGeneratorExit(
     if (session.retainedWorkCleanupTimer) {
       clearTimeout(session.retainedWorkCleanupTimer);
     }
-    session.retainedWorkCleanupTimer = setTimeout(async () => {
+    session.retainedWorkCleanupTimer = setTimeout(() => {
       session.retainedWorkCleanupTimer = undefined;
       if (sessionManager.getSession(sessionDbId) !== session || session.generatorPromise) {
         return;
@@ -78,7 +78,7 @@ export async function handleGeneratorExit(
         pendingCount: sessionManager.getMessageBuffer().getPendingCount(sessionDbId),
       });
       try {
-        await completionHandler.finalizeSession(sessionDbId);
+        completionHandler.finalizeSession(sessionDbId);
       } catch (e) {
         const normalized = e instanceof Error ? e : new Error(String(e));
         logger.error('SESSION', 'Deferred finalization failed; forcing in-memory session removal', {
@@ -95,7 +95,7 @@ export async function handleGeneratorExit(
   logger.info('SESSION', 'Generator exited — finalizing session', { sessionId: sessionDbId, reason });
 
   try {
-    await completionHandler.finalizeSession(sessionDbId);
+    completionHandler.finalizeSession(sessionDbId);
   } catch (e) {
     const normalized = e instanceof Error ? e : new Error(String(e));
     logger.error('SESSION', 'Finalization failed; forcing in-memory session removal', {

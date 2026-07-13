@@ -710,7 +710,7 @@ export class WorkerService implements WorkerRef {
   private async terminateSession(sessionDbId: number, reason: string): Promise<void> {
     logger.info('SYSTEM', 'Session terminated', { sessionId: sessionDbId, reason });
 
-    await this.completionHandler.finalizeSession(sessionDbId);
+    this.completionHandler.finalizeSession(sessionDbId);
 
     this.sessionManager.removeSessionImmediate(sessionDbId);
   }
