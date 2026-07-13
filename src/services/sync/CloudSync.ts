@@ -54,6 +54,20 @@ interface KindSpec {
   fromSql?: string;
   /** Alias qualifying synced_at/id in WHERE/ORDER BY when fromSql joins. */
   rowAlias?: string;
+  /**
+   * Stamp-time guard for kinds whose pushed shape depends on a JOIN: a
+   * predicate on localTable (one `?` bound per row via stampGuard) that must
+   * still hold when the POST returns. A row whose mapping changed while the
+   * POST was in flight is NOT stamped — it stays unsynced and the next flush
+   * re-pushes it with the current mapping (the server upserts on
+   * (user_id, device_id, local_id), so the corrected row overwrites in place).
+   * Without this, a memory id registered mid-POST is lost: the requeue hook
+   * no-ops (synced_at is still NULL) and the stamp then marks the stale
+   * fallback upload as synced.
+   */
+  stampGuardSql?: string;
+  /** Captures the per-row guard value as it was SELECTed (bound to the `?`). */
+  stampGuard?: (r: LocalRow) => string | null;
   toCloud: (r: LocalRow) => CloudRow;
 }
 
@@ -137,6 +151,10 @@ const KINDS: KindSpec[] = [
       s.memory_session_id AS memory_session_id, s.project AS project`,
     fromSql: 'user_prompts up LEFT JOIN sdk_sessions s ON up.session_db_id = s.id',
     rowAlias: 'up',
+    // `IS` (not `=`) so two NULLs match: an orphan row (no session_db_id) and
+    // a linked-but-unregistered session both SELECT and re-check as NULL.
+    stampGuardSql: '(SELECT s.memory_session_id FROM sdk_sessions s WHERE s.id = user_prompts.session_db_id) IS ?',
+    stampGuard: (r) => (r.memory_session_id as string | null) ?? null,
     // cloud-sync.mjs:238-250
     toCloud: (r) => ({
       localId: String(r.id),
@@ -389,6 +407,7 @@ export class CloudSync {
       // exceed the request-body cap (cloud-sync.mjs:337-358).
       let buf: CloudRow[] = [];
       let bufIds: number[] = [];
+      let bufGuards: Array<string | null> = [];
       let bufBytes = 0;
       const send = async (): Promise<void> => {
         if (this.stopped || buf.length === 0) return;
@@ -397,9 +416,10 @@ export class CloudSync {
         // so skip the stamp. The server upserts on (user_id, device_id,
         // local_id), so re-uploading these rows on next start is harmless.
         if (this.stopped) return;
-        this.stampSynced(kind.localTable, bufIds);
+        this.stampSynced(kind, bufIds, bufGuards);
         buf = [];
         bufIds = [];
+        bufGuards = [];
         bufBytes = 0;
       };
       for (const r of rows) {
@@ -415,6 +435,7 @@ export class CloudSync {
         }
         buf.push(mapped);
         bufIds.push(Number(r.id));
+        bufGuards.push(kind.stampGuard ? kind.stampGuard(r) : null);
         bufBytes += size;
       }
       await send();
@@ -444,11 +465,23 @@ export class CloudSync {
     }
   }
 
-  private stampSynced(table: string, ids: number[]): void {
+  private stampSynced(kind: KindSpec, ids: number[], guards: Array<string | null>): void {
     if (ids.length === 0) return;
+    const now = Date.now();
+    if (kind.stampGuardSql) {
+      // Per-row guarded stamp: a row whose mapping changed while the POST was
+      // in flight keeps synced_at NULL and re-pushes corrected next flush.
+      const stmt = this.db.prepare(
+        `UPDATE ${kind.localTable} SET synced_at = ? WHERE id = ? AND ${kind.stampGuardSql}`
+      );
+      for (let i = 0; i < ids.length; i++) {
+        stmt.run(now, ids[i], guards[i]);
+      }
+      return;
+    }
     const placeholders = ids.map(() => '?').join(', ');
-    this.db.prepare(`UPDATE ${table} SET synced_at = ? WHERE id IN (${placeholders})`)
-      .run(Date.now(), ...ids);
+    this.db.prepare(`UPDATE ${kind.localTable} SET synced_at = ? WHERE id IN (${placeholders})`)
+      .run(now, ...ids);
   }
 
   private countPending(table: string): number {

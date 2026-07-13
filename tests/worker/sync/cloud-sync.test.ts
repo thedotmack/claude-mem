@@ -366,6 +366,47 @@ describe('CloudSync', () => {
       ]);
       expect(pendingCount('user_prompts')).toBe(0);
     });
+
+    it('re-pushes instead of stamping a prompt whose memory id registered while its POST was in flight', async () => {
+      // A session that has not yet registered a memory id at SELECT time.
+      db.prepare(`
+        INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
+        VALUES ('sess-late', NULL, 'proj-late', ?, 1751234568000, 'active')
+      `).run(ISO);
+      seedPrompt('racy prompt', 1, 2);
+
+      // Hold the first POST in flight so the registration can land mid-push.
+      let release!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      const bodies: any[] = [];
+      const impl = (async (_input: any, init?: any) => {
+        bodies.push(JSON.parse(String(init?.body)));
+        if (bodies.length === 1) await gate;
+        return new Response('{}', { status: 200 });
+      }) as typeof fetch;
+
+      const sync = makeCloudSync(impl);
+      const flushPromise = sync.flush();
+      for (let i = 0; i < 100 && bodies.length === 0; i++) await sleep(2);
+      expect(bodies.length).toBe(1);
+      expect(bodies[0].prompts[0].memorySessionId).toBe('sess-abc'); // fallback shape in flight
+
+      // The memory id lands now — exactly what ensureMemorySessionIdRegistered
+      // does: sdk_sessions gains the id, and its requeue is a NO-OP because
+      // synced_at is still NULL on the in-flight row.
+      db.prepare(`UPDATE sdk_sessions SET memory_session_id = 'mem-late' WHERE id = 2`).run();
+      db.prepare(`UPDATE user_prompts SET synced_at = NULL WHERE session_db_id = 2 AND synced_at IS NOT NULL`).run();
+
+      release();
+      await flushPromise;
+
+      // The stamp guard must reject the stale upload and the SAME flush loop
+      // re-pushes it with the registered mapping before stamping.
+      expect(bodies.length).toBe(2);
+      expect(bodies[1].prompts[0].memorySessionId).toBe('mem-late');
+      expect(bodies[1].prompts[0].project).toBe('proj-late');
+      expect(pendingCount('user_prompts')).toBe(0);
+    });
   });
 
   describe('sync lane selection', () => {
