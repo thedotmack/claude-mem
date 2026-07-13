@@ -248,6 +248,32 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     expect(session.abortController.signal.aborted).toBe(false);
   });
 
+  it('confirms project auth-guide prose as ordinary prose', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(11, 'do the thing', 1);
+    session.memorySessionId = 'mem-11';
+    await queueAndClaimOne(sm, 11);
+
+    const confirmSpy = spyOn(sm, 'confirmClaimedMessages');
+    const resetSpy = spyOn(sm, 'resetProcessingToPending');
+
+    await processAgentResponse(
+      'The project authentication guide says to run /login before testing.',
+      session,
+      makeDbManager(),
+      sm,
+      makeWorker(),
+      0,
+      null,
+      'TestAgent',
+    );
+
+    expect(confirmSpy).toHaveBeenCalledWith(11);
+    expect(resetSpy).not.toHaveBeenCalled();
+    expect(sm.getMessageBuffer().getPendingCount(11)).toBe(0);
+    expect(session.abortController.signal.aborted).toBe(false);
+  });
+
   it('auth generator exit keeps the active session and in-memory buffer', async () => {
     const sm = new SessionManager(makeDbManager());
     const session = sm.initializeSession(8, 'do the thing', 1);

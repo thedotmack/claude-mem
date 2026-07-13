@@ -81,6 +81,7 @@ describe('isAuthFailureObserverOutput', () => {
     expect(isAuthFailureObserverOutput('Authentication failed with HTTP 403.')).toBe(true);
     expect(isAuthFailureObserverOutput('Authentication failure; please run /login.')).toBe(true);
     expect(isAuthFailureObserverOutput('Please run /login to authenticate again.')).toBe(true);
+    expect(isAuthFailureObserverOutput('Authentication required, run /login to continue.')).toBe(true);
     expect(isAuthFailureObserverOutput('401 Unauthorized')).toBe(true);
     expect(isAuthFailureObserverOutput('403 Forbidden')).toBe(true);
     expect(isAuthFailureObserverOutput('Status: 401')).toBe(true);
@@ -92,6 +93,7 @@ describe('isAuthFailureObserverOutput', () => {
     expect(isAuthFailureObserverOutput('The request returned 500 and produced no XML.')).toBe(false);
     expect(isAuthFailureObserverOutput('No observations to record.')).toBe(false);
     expect(isAuthFailureObserverOutput('Please run /login in the observed project instructions.')).toBe(false);
+    expect(isAuthFailureObserverOutput('The project authentication guide says to run /login before testing.')).toBe(false);
   });
 });
 
