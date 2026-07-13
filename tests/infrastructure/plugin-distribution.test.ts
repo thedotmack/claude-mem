@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync } from 'fs';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 import path from 'path';
@@ -324,6 +324,111 @@ const claudeHook = (tail: string[], extra: Record<string, unknown> = {}) => buil
   host: 'claude-code', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
   trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found', ...extra,
 });
+
+function resolveBashPath(): string {
+  const result = spawnSync('where.exe', ['bash'], { encoding: 'utf8' });
+  const match = (result.stdout ?? '')
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .find(line => line.length > 0);
+  return match || 'bash';
+}
+
+const bashPath = resolveBashPath();
+const bashPathForShell = (value: string) => value.replace(/^([A-Za-z]):[\\/]/, (_, drive) => `/${drive.toLowerCase()}/`).replaceAll('\\', '/');
+
+function createPathProbeFixture(loginPath: string | null = null) {
+  const root = mkdtempSync(path.join(tmpdir(), 'claude-mem-3186-'));
+  const inheritedBin = path.join(root, 'inherited-bin');
+  const loginBin = path.join(root, 'login-bin');
+  const pluginScripts = path.join(root, 'plugin', 'scripts');
+  const sentinelLog = path.join(root, 'sentinel.log');
+  const nodeLog = path.join(root, 'node.log');
+  mkdirSync(inheritedBin);
+  mkdirSync(loginBin);
+  mkdirSync(pluginScripts, { recursive: true });
+  writeFileSync(path.join(pluginScripts, 'bun-runner.js'), '');
+  writeFileSync(path.join(pluginScripts, 'worker-service.cjs'), '');
+  const nodeScript = `#!/bin/sh\nprintf '%s\\n' fake-node >> '${bashPathForShell(nodeLog)}'\nprintf 'fake-node\\n'\n`;
+  writeFileSync(path.join(inheritedBin, 'node'), nodeScript);
+  chmodSync(path.join(inheritedBin, 'node'), 0o755);
+  const sentinelScript = `#!/bin/sh\nprintf '%s\\n' sentinel >> '${bashPathForShell(sentinelLog)}'\n${loginPath ? `printf '%s\\n' '${bashPathForShell(loginBin)}:/usr/bin'` : "printf '%s\\n' \"$PATH\""}\n`;
+  const sentinelPath = path.join(root, 'sentinel-shell');
+  writeFileSync(sentinelPath, sentinelScript);
+  chmodSync(sentinelPath, 0o755);
+  const env = {
+    ...process.env,
+    PATH: `${bashPathForShell(inheritedBin)}:/usr/bin`,
+    CLAUDE_PLUGIN_ROOT: bashPathForShell(path.join(root, 'plugin')),
+    SHELL: bashPathForShell(sentinelPath),
+  };
+  delete (env as NodeJS.ProcessEnv).Path;
+  return {
+    root,
+    env,
+    sentinelLog,
+    nodeLog,
+    loginBin,
+    shellPath: bashPathForShell(sentinelPath),
+  };
+}
+
+function runPathProbe(command: string, env: NodeJS.ProcessEnv, shellPath: string) {
+  return spawnSync(bashPath, ['-c', `SHELL='${shellPath}'; export SHELL; ${command}`], {
+    env,
+    encoding: 'utf8',
+  });
+}
+
+describe('Claude Code PATH probing', () => {
+  it('skips the login shell when node already resolves', () => {
+    const fixture = createPathProbeFixture();
+    try {
+      const head = runPathProbe(claudeHook(['probe']), fixture.env, fixture.shellPath);
+      expect(head.status).toBe(0);
+      expect(existsSync(fixture.sentinelLog)).toBe(false);
+      expect(readFileSync(fixture.nodeLog, 'utf8')).toBe('fake-node\n');
+      writeFileSync(fixture.nodeLog, '');
+      const base = runPathProbe(claudeHook(['probe']).replace(
+        'command -v node >/dev/null 2>&1 || ',
+        '',
+      ), fixture.env, fixture.shellPath);
+      expect(base.status).toBe(0);
+      expect(readFileSync(fixture.sentinelLog, 'utf8')).toBe('sentinel\n');
+      expect(readFileSync(fixture.nodeLog, 'utf8')).toBe('fake-node\n');
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it('uses the login shell when node is missing', () => {
+    const fixture = createPathProbeFixture('login');
+    try {
+      const loginBin = fixture.loginBin;
+      writeFileSync(path.join(loginBin, 'node'), `#!/bin/sh\nprintf '%s\\n' fake-node >> '${bashPathForShell(fixture.nodeLog)}'\nprintf 'fake-node\\n'\n`);
+      chmodSync(path.join(loginBin, 'node'), 0o755);
+      const noNodePath = path.join(fixture.root, 'no-node-bin');
+      mkdirSync(noNodePath);
+      const env = { ...fixture.env, PATH: `${bashPathForShell(noNodePath)}:/usr/bin` };
+      const head = runPathProbe(claudeHook(['probe']), env, fixture.shellPath);
+      expect(head.status).toBe(0);
+      expect(readFileSync(fixture.sentinelLog, 'utf8')).toBe('sentinel\n');
+      expect(readFileSync(fixture.nodeLog, 'utf8')).toBe('fake-node\n');
+      writeFileSync(fixture.sentinelLog, '');
+      writeFileSync(fixture.nodeLog, '');
+      const base = runPathProbe(claudeHook(['probe']).replace(
+        'command -v node >/dev/null 2>&1 || ',
+        '',
+      ), env, fixture.shellPath);
+      expect(base.status).toBe(0);
+      expect(readFileSync(fixture.sentinelLog, 'utf8')).toBe('sentinel\n');
+      expect(readFileSync(fixture.nodeLog, 'utf8')).toBe('fake-node\n');
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+});
+
 const codexHook = (tail: string[]) => buildShellCommand({
   host: 'codex-cli', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
   trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found',

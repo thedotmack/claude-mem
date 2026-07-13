@@ -58,7 +58,7 @@ export interface ShellTemplateOptions {
   mcpExtraCacheRoots?: string[];
 }
 
-const CLAUDE_CODE_PATH_PRELUDE = `export PATH="$($SHELL -lc 'echo $PATH' 2>/dev/null):$PATH";`;
+const CLAUDE_CODE_PATH_PRELUDE = `command -v node >/dev/null 2>&1 || export PATH="$($SHELL -lc 'echo $PATH' 2>/dev/null):$PATH";`;
 
 const CLAUDE_CODE_SETUP_PATH_PRELUDE =
   'export PATH="$HOME/.nvm/versions/node/v$(ls \\"$HOME/.nvm/versions/node\\" 2>/dev/null | ' +
