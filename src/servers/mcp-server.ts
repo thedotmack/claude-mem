@@ -317,20 +317,21 @@ const handleObservationSearch = wrapHandler('observation_search', async (args: O
 
 interface ObservationContextArgs {
   projectId?: string;
-  query: string;
+  // Optional: omit for "recent" (recency-ordered) context instead of a
+  // relevance-ranked search. See plans/2026-07-13-session-start-context-
+  // injection-server-mode.md / #2991.
+  query?: string;
   limit?: number;
   platformSource?: string | null;
 }
 
 const handleObservationContext = wrapHandler('observation_context', async (args: ObservationContextArgs) => {
   const ctx = requireServerForObservationTool('observation_context');
-  if (typeof args?.query !== 'string' || args.query.trim().length === 0) {
-    throw new Error('observation_context: "query" is required');
-  }
+  const hasQuery = typeof args?.query === 'string' && args.query.trim().length > 0;
   const projectId = args.projectId && args.projectId.trim().length > 0 ? args.projectId : ctx.projectId;
   const request: ServerContextObservationsRequest = {
     projectId,
-    query: args.query,
+    ...(hasQuery ? { query: args.query } : {}),
     ...(args.limit !== undefined ? { limit: args.limit } : {}),
     ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
   };
@@ -609,16 +610,15 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'observation_context',
-    description: 'Get top-N relevant observations for context injection. Returns matched observations AND a pre-joined context string suitable for prompt injection. Calls /v1/context. Server runtime only.',
+    description: 'Get top-N relevant observations for context injection. Returns matched observations AND a pre-joined context string suitable for prompt injection. Calls /v1/context. Server runtime only. Omit "query" for recency-ordered "recent" context instead of a relevance-ranked search.',
     inputSchema: {
       type: 'object',
       properties: {
         projectId: { type: 'string' },
-        query: { type: 'string', description: 'Search query (required)' },
+        query: { type: 'string', description: 'Optional search query. Omit for recency-ordered recent context.' },
         platformSource: { type: 'string', description: 'Optional platform source filter, e.g. claude, codex, cursor' },
         limit: { type: 'number', description: 'Max observations (default 10, max 50)' },
       },
-      required: ['query'],
       additionalProperties: false,
     },
     handler: async (args: any) => handleObservationContext(args ?? {}),

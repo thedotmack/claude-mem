@@ -17,6 +17,8 @@ import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { readStaleMarker } from '../../shared/oauth-token.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { callMcpToolOnce } from '../../shared/mcp-client.js';
+import { selectRuntime, buildServerContext } from '../../services/hooks/runtime-selector.js';
+import { isServerClientError } from '../../services/hooks/server-client.js';
 
 async function requestSessionStartContext(args: {
   projects: string[];
@@ -52,6 +54,36 @@ async function fetchSessionStartContextViaMcp(args: {
   }
 }
 
+// CLAUDE_MEM_RUNTIME=server support (plans/2026-07-13-session-start-context-
+// injection-server-mode.md / #2991). A server-runtime deployment typically
+// has no worker running at all, so `executeWithWorkerFallback` below would
+// always hit the worker-unreachable fallback and silently inject empty
+// context on every session. This talks to the server runtime directly via
+// `/v1/context` (query-less recency mode) instead. Returns null on any
+// failure (missing config, transport error, etc.) so the caller degrades to
+// `emptyResult` — deliberately NOT falling through to the worker path below,
+// since a server-runtime deployment has no worker to fall back to.
+async function fetchSessionStartContextViaServer(): Promise<string | null> {
+  const ctx = buildServerContext();
+  if (!ctx) {
+    // buildServerContext() already logs the specific missing-config reason.
+    return null;
+  }
+  try {
+    const { context } = await ctx.client.contextObservations({ projectId: ctx.projectId });
+    return (context ?? '').trim();
+  } catch (error: unknown) {
+    if (isServerClientError(error)) {
+      logger.warn('HOOK', `[server-context] ${error.kind}: ${error.message}`);
+    } else {
+      logger.warn('HOOK', 'Server context fetch failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return null;
+  }
+}
+
 export const contextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
     const cwd = input.cwd ?? process.cwd();
@@ -77,6 +109,15 @@ export const contextHandler: EventHandler = {
     };
 
     let additionalContext: string;
+    // Tracks whether additionalContext came from the server-runtime branch,
+    // so the coloredTimeline block below (showTerminalOutput) also skips its
+    // own independent worker round-trip instead of lazy-spawning a local
+    // worker as a side effect — see plans/2026-07-13-session-start-context-
+    // injection-server-mode.md. showTerminalOutput defaults to 'true'
+    // (SettingsDefaultsManager), so this isn't a rare edge case: without this
+    // guard, every SessionStart hook in a server-runtime deployment would
+    // still attempt to spawn a local worker it has no business running.
+    let usedServerRuntime = false;
     const mcpContextResult = input.platform === 'codex'
       ? await fetchSessionStartContextViaMcp({
           projects: context.allProjects,
@@ -86,6 +127,13 @@ export const contextHandler: EventHandler = {
 
     if (mcpContextResult !== null) {
       additionalContext = mcpContextResult;
+    } else if (input.platform !== 'codex' && selectRuntime() === 'server') {
+      const serverContext = await fetchSessionStartContextViaServer();
+      if (serverContext === null) {
+        return emptyResult;
+      }
+      additionalContext = serverContext;
+      usedServerRuntime = true;
     } else {
       const contextResult = await executeWithWorkerFallback<string>(apiPath, 'GET');
       if (isWorkerFallback(contextResult)) {
@@ -115,19 +163,28 @@ export const contextHandler: EventHandler = {
 
     let coloredTimeline = '';
     if (showTerminalOutput) {
-      const mcpColorResult = input.platform === 'codex'
-        ? await fetchSessionStartContextViaMcp({
-            projects: context.allProjects,
-            ...(normalizedPlatformSource ? { platformSource: normalizedPlatformSource } : {}),
-            colors: true,
-          })
-        : null;
-      if (mcpColorResult !== null) {
-        coloredTimeline = mcpColorResult;
+      if (usedServerRuntime) {
+        // No server-side "colors" variant of /v1/context (colors are a
+        // worker-HTTP-only query param, cosmetic ANSI codes for interactive
+        // terminal display) — reuse the already-fetched plain
+        // additionalContext rather than attempting a worker round-trip that
+        // has no worker to reach in a server-runtime deployment.
+        coloredTimeline = additionalContext;
       } else {
-        const colorResult = await executeWithWorkerFallback<string>(colorApiPath, 'GET');
-        if (!isWorkerFallback(colorResult) && typeof colorResult === 'string') {
-          coloredTimeline = colorResult.trim();
+        const mcpColorResult = input.platform === 'codex'
+          ? await fetchSessionStartContextViaMcp({
+              projects: context.allProjects,
+              ...(normalizedPlatformSource ? { platformSource: normalizedPlatformSource } : {}),
+              colors: true,
+            })
+          : null;
+        if (mcpColorResult !== null) {
+          coloredTimeline = mcpColorResult;
+        } else {
+          const colorResult = await executeWithWorkerFallback<string>(colorApiPath, 'GET');
+          if (!isWorkerFallback(colorResult) && typeof colorResult === 'string') {
+            coloredTimeline = colorResult.trim();
+          }
         }
       }
     }

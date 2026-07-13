@@ -151,14 +151,21 @@ export class PostgresObservationRepository {
     return result.rows.map(mapObservationRow);
   }
 
+  // `query` is optional: when omitted (or empty), the FTS filter/ranking is
+  // skipped entirely and results fall back to recency order. This backs both
+  // `/v1/search` (query always required by that route's own validation) and
+  // `/v1/context` (query optional — SessionStart injection has no search
+  // term, just "what's recent"). See plans/2026-07-13-session-start-context-
+  // injection-server-mode.md.
   async search(input: {
     projectId: string;
     teamId: string;
-    query: string;
+    query?: string | null;
     limit?: number;
     platformSource?: string | null;
   }): Promise<PostgresObservation[]> {
     const platformSource = normalizePlatformSourceOrNull(input.platformSource);
+    const query = input.query && input.query.trim().length > 0 ? input.query : null;
     const result = await this.client.query<ObservationRow>(
       `
         SELECT observations.* FROM observations
@@ -168,7 +175,7 @@ export class PostgresObservationRepository {
           AND server_sessions.team_id = observations.team_id
         WHERE observations.project_id = $1
           AND observations.team_id = $2
-          AND observations.content_search @@ websearch_to_tsquery('english', $3)
+          AND ($3::text IS NULL OR observations.content_search @@ websearch_to_tsquery('english', $3))
           AND (
             $5::text IS NULL
             OR server_sessions.platform_source = $5
@@ -187,10 +194,12 @@ export class PostgresObservationRepository {
               )
             )
           )
-        ORDER BY ts_rank(observations.content_search, websearch_to_tsquery('english', $3)) DESC, observations.updated_at DESC
+        ORDER BY
+          CASE WHEN $3::text IS NOT NULL THEN ts_rank(observations.content_search, websearch_to_tsquery('english', $3)) END DESC NULLS LAST,
+          observations.updated_at DESC
         LIMIT $4
       `,
-      [input.projectId, input.teamId, input.query, input.limit ?? 20, platformSource]
+      [input.projectId, input.teamId, query, input.limit ?? 20, platformSource]
     );
     return result.rows.map(mapObservationRow);
   }
