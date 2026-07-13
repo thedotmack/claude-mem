@@ -337,21 +337,32 @@ function resolveBashPath(): string {
 const bashPath = resolveBashPath();
 const bashPathForShell = (value: string) => value.replace(/^([A-Za-z]):[\\/]/, (_, drive) => `/${drive.toLowerCase()}/`).replaceAll('\\', '/');
 
-function createPathProbeFixture(loginPath: string | null = null) {
+function createPathProbeFixture(options: { loginPath?: boolean; inheritedNodeUsable?: boolean; inheritedBun?: boolean } = {}) {
+  const { loginPath = false, inheritedNodeUsable = true, inheritedBun = true } = options;
   const root = mkdtempSync(path.join(tmpdir(), 'claude-mem-3186-'));
   const inheritedBin = path.join(root, 'inherited-bin');
   const loginBin = path.join(root, 'login-bin');
   const pluginScripts = path.join(root, 'plugin', 'scripts');
   const sentinelLog = path.join(root, 'sentinel.log');
   const nodeLog = path.join(root, 'node.log');
+  const bunLog = path.join(root, 'bun.log');
   mkdirSync(inheritedBin);
   mkdirSync(loginBin);
   mkdirSync(pluginScripts, { recursive: true });
   writeFileSync(path.join(pluginScripts, 'bun-runner.js'), '');
   writeFileSync(path.join(pluginScripts, 'worker-service.cjs'), '');
-  const nodeScript = `#!/bin/sh\nprintf '%s\\n' fake-node >> '${bashPathForShell(nodeLog)}'\nprintf 'fake-node\\n'\n`;
+  const nodeScript = `#!/bin/sh\nif [ "$1" = "-e" ]; then [ "${inheritedNodeUsable}" = "true" ] && exit 0 || exit 97; fi\nprintf '%s\\n' fake-node >> '${bashPathForShell(nodeLog)}'\nprintf 'fake-node\\n'\n`;
   writeFileSync(path.join(inheritedBin, 'node'), nodeScript);
   chmodSync(path.join(inheritedBin, 'node'), 0o755);
+  if (inheritedBun) {
+    writeFileSync(path.join(inheritedBin, 'bun'), `#!/bin/sh\nprintf '%s\\n' inherited-bun >> '${bashPathForShell(bunLog)}'\nprintf '1.0.0\\n'\n`);
+    chmodSync(path.join(inheritedBin, 'bun'), 0o755);
+  } else {
+    writeFileSync(path.join(inheritedBin, 'bun'), '#!/bin/sh\nexit 97\n');
+    chmodSync(path.join(inheritedBin, 'bun'), 0o755);
+  }
+  writeFileSync(path.join(inheritedBin, 'ls'), '#!/bin/sh\nexec /usr/bin/ls "$@"\n');
+  chmodSync(path.join(inheritedBin, 'ls'), 0o755);
   const sentinelScript = `#!/bin/sh\nprintf '%s\\n' sentinel >> '${bashPathForShell(sentinelLog)}'\n${loginPath ? `printf '%s\\n' '${bashPathForShell(loginBin)}:/usr/bin'` : "printf '%s\\n' \"$PATH\""}\n`;
   const sentinelPath = path.join(root, 'sentinel-shell');
   writeFileSync(sentinelPath, sentinelScript);
@@ -368,6 +379,7 @@ function createPathProbeFixture(loginPath: string | null = null) {
     env,
     sentinelLog,
     nodeLog,
+    bunLog,
     loginBin,
     shellPath: bashPathForShell(sentinelPath),
   };
@@ -390,7 +402,7 @@ describe('Claude Code PATH probing', () => {
       expect(readFileSync(fixture.nodeLog, 'utf8')).toBe('fake-node\n');
       writeFileSync(fixture.nodeLog, '');
       const base = runPathProbe(claudeHook(['probe']).replace(
-        'command -v node >/dev/null 2>&1 || ',
+        "node -e 'process.exit(0)' >/dev/null 2>&1 && bun --version >/dev/null 2>&1 || ",
         '',
       ), fixture.env, fixture.shellPath);
       expect(base.status).toBe(0);
@@ -401,28 +413,37 @@ describe('Claude Code PATH probing', () => {
     }
   });
 
-  it('uses the login shell when node is missing', () => {
-    const fixture = createPathProbeFixture('login');
+  it('uses the login shell when inherited node is unusable', () => {
+    const fixture = createPathProbeFixture({ loginPath: true, inheritedNodeUsable: false });
     try {
       const loginBin = fixture.loginBin;
-      writeFileSync(path.join(loginBin, 'node'), `#!/bin/sh\nprintf '%s\\n' fake-node >> '${bashPathForShell(fixture.nodeLog)}'\nprintf 'fake-node\\n'\n`);
+      writeFileSync(path.join(loginBin, 'node'), `#!/bin/sh\nbun --version >/dev/null 2>&1 || exit 98\nprintf '%s\\n' fake-node >> '${bashPathForShell(fixture.nodeLog)}'\nprintf 'fake-node\\n'\n`);
       chmodSync(path.join(loginBin, 'node'), 0o755);
-      const noNodePath = path.join(fixture.root, 'no-node-bin');
-      mkdirSync(noNodePath);
-      const env = { ...fixture.env, PATH: `${bashPathForShell(noNodePath)}:/usr/bin` };
+      writeFileSync(path.join(loginBin, 'bun'), `#!/bin/sh\nprintf '%s\\n' login-bun >> '${bashPathForShell(fixture.bunLog)}'\nprintf '1.0.0\\n'\n`);
+      chmodSync(path.join(loginBin, 'bun'), 0o755);
+      const head = runPathProbe(claudeHook(['probe']), fixture.env, fixture.shellPath);
+      expect(head.status).toBe(0);
+      expect(readFileSync(fixture.sentinelLog, 'utf8')).toBe('sentinel\n');
+      expect(readFileSync(fixture.nodeLog, 'utf8')).toBe('fake-node\n');
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it('uses the login shell when bun is unusable in inherited PATH', () => {
+    const fixture = createPathProbeFixture({ loginPath: true, inheritedBun: false });
+    try {
+      const loginBin = fixture.loginBin;
+      writeFileSync(path.join(loginBin, 'node'), `#!/bin/sh\nbun --version >/dev/null 2>&1 || exit 98\nprintf '%s\\n' fake-node >> '${bashPathForShell(fixture.nodeLog)}'\nprintf 'fake-node\\n'\n`);
+      chmodSync(path.join(loginBin, 'node'), 0o755);
+      writeFileSync(path.join(loginBin, 'bun'), `#!/bin/sh\nprintf '%s\\n' login-bun >> '${bashPathForShell(fixture.bunLog)}'\nprintf '1.0.0\\n'\n`);
+      chmodSync(path.join(loginBin, 'bun'), 0o755);
+      const env = { ...fixture.env, PATH: `${bashPathForShell(fixture.root)}/inherited-bin` };
       const head = runPathProbe(claudeHook(['probe']), env, fixture.shellPath);
       expect(head.status).toBe(0);
       expect(readFileSync(fixture.sentinelLog, 'utf8')).toBe('sentinel\n');
       expect(readFileSync(fixture.nodeLog, 'utf8')).toBe('fake-node\n');
-      writeFileSync(fixture.sentinelLog, '');
-      writeFileSync(fixture.nodeLog, '');
-      const base = runPathProbe(claudeHook(['probe']).replace(
-        'command -v node >/dev/null 2>&1 || ',
-        '',
-      ), env, fixture.shellPath);
-      expect(base.status).toBe(0);
-      expect(readFileSync(fixture.sentinelLog, 'utf8')).toBe('sentinel\n');
-      expect(readFileSync(fixture.nodeLog, 'utf8')).toBe('fake-node\n');
+      expect(readFileSync(fixture.bunLog, 'utf8')).toBe('login-bun\n');
     } finally {
       rmSync(fixture.root, { recursive: true, force: true });
     }
