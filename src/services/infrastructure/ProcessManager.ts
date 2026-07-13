@@ -1,7 +1,7 @@
 
 import path from 'path';
 import { homedir } from 'os';
-import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, statSync, utimesSync, copyFileSync } from 'fs';
+import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, statSync, utimesSync, copyFileSync, rmSync } from 'fs';
 import { execSync, spawnSync } from 'child_process';
 import { spawnHidden } from '../../shared/spawn.js';
 import { logger } from '../../utils/logger.js';
@@ -194,13 +194,18 @@ export async function getChildProcesses(parentPid: number): Promise<number[]> {
 
   try {
     const cmd = `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process -Filter 'ParentProcessId=${parentPid}' | Select-Object -ExpandProperty ProcessId"`;
-    const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND, windowsHide: true });
+    const stdout = execSync(cmd, {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      encoding: 'utf-8',
+      timeout: 30000,
+      windowsHide: true,
+    });
     return stdout
       .split('\n')
-      .map(line => line.trim())
-      .filter(line => line.length > 0 && /^\d+$/.test(line))
-      .map(line => parseInt(line, 10))
-      .filter(pid => pid > 0);
+      .map((line: string) => line.trim())
+      .filter((line: string) => line.length > 0 && /^\d+$/.test(line))
+      .map((pid: string) => parseInt(pid, 10))
+      .filter((pid: number) => pid > 0);
   } catch (error: unknown) {
     if (error instanceof Error) {
       logger.error('SYSTEM', 'Failed to enumerate child processes', { parentPid }, error);
