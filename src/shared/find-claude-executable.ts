@@ -29,6 +29,7 @@ import { join } from 'path';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from './paths.js';
 import { logger, type Component } from '../utils/logger.js';
+import { parseVersionKey, compareVersionKeysDesc } from './version-key.js';
 
 /**
  * How long to wait for a probe (`--version` / capability) before giving up (ms).
@@ -171,17 +172,6 @@ function probeCandidate(candidate: string): ProbeResult {
 
   const detail = 'error' in capability ? capability.error : 'failed --version check';
   return { kind: 'broken', detail };
-}
-
-/** Parse "2.1.176 (Claude Code)" → [2, 1, 176]; unparseable sorts lowest. */
-function parseVersionKey(version: string): [number, number, number] {
-  const match = version.match(/(\d+)\.(\d+)\.(\d+)/);
-  if (!match) return [0, 0, 0];
-  return [Number(match[1]), Number(match[2]), Number(match[3])];
-}
-
-function compareVersionKeysDesc(a: [number, number, number], b: [number, number, number]): number {
-  return b[0] - a[0] || b[1] - a[1] || b[2] - a[2];
 }
 
 /**

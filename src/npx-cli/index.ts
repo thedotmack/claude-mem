@@ -163,8 +163,14 @@ async function main(): Promise<void> {
     }
 
     case 'doctor': {
+      const { values } = parseArgs({
+        args: args.slice(1),
+        options: { fix: { type: 'boolean' } },
+        strict: false,
+        allowPositionals: true,
+      });
       const { runDoctorCommand } = await import('./commands/doctor.js');
-      await runDoctorCommand();
+      await runDoctorCommand({ fix: values.fix === true });
       break;
     }
 

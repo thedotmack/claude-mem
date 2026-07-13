@@ -58,6 +58,17 @@ export interface ShutdownSequenceOptions {
   beforeGracefulShutdown: () => Promise<void>;
   performGracefulShutdown: () => Promise<void>;
   gracefulDeadlineMs: number;
+  /**
+   * Last-resort child tree-kill, run once on EVERY shutdown path (every reason;
+   * graceful success, failure, or deadline) after the graceful attempt settles.
+   * performGracefulShutdown's cleanup chain fails CLOSED — if an earlier step
+   * throws ("Server is not running", a hung drain hitting the deadline, etc.)
+   * the later chromaMcpManager.stop() / supervisor stop never run, and the
+   * non-detached chroma-mcp child reparents to PID 1 / systemd --user (#3216).
+   * The production injection is the idempotent supervisor stop cascade (a
+   * redundant call after a clean shutdown is a no-op).
+   */
+  lastResortChildTreeKill: () => Promise<void>;
   restartHandoff: RestartHandoffDeps;
 }
 
@@ -119,6 +130,26 @@ export async function runShutdownSequence(options: ShutdownSequenceOptions): Pro
     }
   } finally {
     if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
+  }
+
+  // Last-resort child tree-kill on EVERY shutdown path. performGracefulShutdown
+  // fails CLOSED: if any earlier step throws (e.g. closeHttpServer's "Server is
+  // not running") or the hard deadline fires, its own chromaMcpManager.stop() /
+  // supervisor stop never run, and the non-detached chroma-mcp child reparents
+  // to PID 1 / systemd --user, leaking one tree per recycle (#3216). This runs
+  // for every reason and every graceful outcome, in its own try/catch, before
+  // the restart-only gate so it can't block or delay the successor handoff. The
+  // production injection (supervisor stop) is idempotent — a redundant call
+  // after a clean graceful shutdown is a harmless no-op.
+  try {
+    await options.lastResortChildTreeKill();
+  } catch (error: unknown) {
+    logger.error(
+      'SYSTEM',
+      'Last-resort child tree-kill failed — proceeding',
+      { reason: options.reason },
+      error instanceof Error ? error : new Error(String(error))
+    );
   }
 
   // Successor handoff — ONLY for restart; 'stop' and signal shutdowns stay

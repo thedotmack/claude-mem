@@ -13,11 +13,18 @@ import * as realPaths from '../../../src/shared/paths.js';
 import * as realLogger from '../../../src/utils/logger.js';
 import * as realSupervisor from '../../../src/supervisor/index.ts';
 import * as realEnvSanitizer from '../../../src/supervisor/env-sanitizer.js';
+// The SDK client modules are shared with other suites (e.g. recall-mcp-server),
+// so their mocks MUST be restored too or those suites get our FakeClient and
+// see undefined tool results (#3232 review follow-up).
+import * as realSdkClientStdio from '@modelcontextprotocol/sdk/client/stdio.js';
+import * as realSdkClientIndex from '@modelcontextprotocol/sdk/client/index.js';
 const realSettingsSnapshot = { ...realSettingsDefaultsManager };
 const realPathsSnapshot = { ...realPaths };
 const realLoggerSnapshot = { ...realLogger };
 const realSupervisorSnapshot = { ...realSupervisor };
 const realEnvSanitizerSnapshot = { ...realEnvSanitizer };
+const realSdkClientStdioSnapshot = { ...realSdkClientStdio };
+const realSdkClientIndexSnapshot = { ...realSdkClientIndex };
 const realChildProcess = require('node:child_process');
 const realProcessPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
 const originalPrewarmTimeout = process.env.CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS;
@@ -293,6 +300,8 @@ afterAll(() => {
   mock.module('../../../src/utils/logger.js', () => realLoggerSnapshot);
   mock.module('../../../src/supervisor/index.ts', () => realSupervisorSnapshot);
   mock.module('../../../src/supervisor/env-sanitizer.js', () => realEnvSanitizerSnapshot);
+  mock.module('@modelcontextprotocol/sdk/client/stdio.js', () => realSdkClientStdioSnapshot);
+  mock.module('@modelcontextprotocol/sdk/client/index.js', () => realSdkClientIndexSnapshot);
   mock.module('child_process', () => realChildProcess);
   for (const root of tempRoots.splice(0)) {
     rmSync(root, { recursive: true, force: true });

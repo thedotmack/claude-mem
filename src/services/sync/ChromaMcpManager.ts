@@ -1,8 +1,8 @@
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { execFile, execSync, spawn, type ChildProcess } from 'child_process';
-import { promisify } from 'util';
+import { execSync, spawn, type ChildProcess } from 'child_process';
+import { killProcessTree as killChromaProcessTree } from '../../supervisor/tree-kill.js';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
@@ -15,8 +15,6 @@ import { captureProcessStartToken, isPidAlive } from '../../supervisor/process-r
 import { clearDependencyStatus, recordChromaVectorSearchUnavailable, recordUvxVectorSearchUnavailable } from '../../shared/dependency-health.js';
 import { ChromaUnavailableError } from '../worker/search/errors.js';
 
-const execFileAsync = promisify(execFile);
-
 const CHROMA_MCP_CLIENT_NAME = 'claude-mem-chroma';
 const CHROMA_MCP_CLIENT_VERSION = '1.0.0';
 const MCP_CONNECTION_TIMEOUT_MS = 30_000;
@@ -26,7 +24,13 @@ const CHROMA_PREWARM_TIMEOUT_BOUNDS = { min: 1, max: 600_000 } as const;
 const CHROMA_PREWARM_REAP_TIMEOUT_MS = 1_000;
 const RECONNECT_BACKOFF_MS = 10_000;
 const CHROMA_WRITER_LOCK_FILENAME = '.claude-mem-chroma-writer.lock';
-const CHROMA_SUPERVISOR_ID = 'chroma-mcp';
+const CHROMA_SUPERVISOR_ID_PREFIX = 'chroma-mcp';
+// Per-pid supervisor registry id. The old fixed 'chroma-mcp' key meant each
+// spawn's register() overwrote the previous entry (ProcessRegistry.register is a
+// plain Map.set), so a prior live/leaked chroma child became invisible to the
+// boot reaper — half the orphan leak (#3216). Keying by pid lets the registry
+// hold every concurrent chroma-mcp so reapLeakedProcesses accounts for them all.
+const chromaSupervisorId = (pid: number | undefined): string => `${CHROMA_SUPERVISOR_ID_PREFIX}:${pid}`;
 const CHROMA_OUTPUT_TAIL_MAX_CHARS = 2048;
 
 const CHROMA_MCP_PINNED_VERSION = '0.2.6';
@@ -265,7 +269,7 @@ export class ChromaMcpManager {
       }
       logger.warn('CHROMA_MCP', 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff');
       this.connected = false;
-      getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
+      getSupervisor().unregisterProcess(chromaSupervisorId(currentTrackedPid));
       this.client = null;
       this.transport = null;
       this.lastConnectionFailureTimestamp = Date.now();
@@ -862,7 +866,7 @@ export class ChromaMcpManager {
     }
 
     if (trackedPid) {
-      getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
+      getSupervisor().unregisterProcess(chromaSupervisorId(trackedPid));
     }
     this.releaseChromaWriterLock();
 
@@ -955,132 +959,12 @@ export class ChromaMcpManager {
     logger.info('CHROMA_MCP', 'chroma-mcp MCP connection stopped');
   }
 
-  /**
-   * Kill a process and all its descendants (tree-kill).
-   *
-   * POSIX: Sends SIGTERM to the process, then uses `pkill -P` to signal
-   * children recursively. Falls back to single-PID kill if pkill is unavailable.
-   *
-   * Windows: Uses `taskkill /T /F /PID` for full subtree teardown (same
-   * pattern as shutdown.ts).
-   *
-   * Best-effort — swallows ESRCH (already dead) and logs other errors.
-   */
-  private static async killProcessTree(pid: number): Promise<void> {
-    logger.debug('CHROMA_MCP', `Killing process tree rooted at PID ${pid}`);
-
-    if (process.platform === 'win32') {
-      try {
-        await execFileAsync('taskkill', ['/PID', String(pid), '/T', '/F'], {
-          timeout: 5_000,
-          windowsHide: true
-        });
-      } catch (error) {
-        // taskkill exits non-zero when the process is already dead — that's fine.
-        logger.debug('CHROMA_MCP', `taskkill tree-kill finished (may already be dead)`, {
-          pid,
-          error: error instanceof Error ? error.message : String(error)
-        });
-      }
-      return;
-    }
-
-    // POSIX: walk descendants recursively (bottom-up) and signal each.
-    // `pkill -P <pid>` only reaches direct children, so `python` /
-    // `chroma-mcp` under `uv` (grandchildren) get re-parented to init and
-    // survive. We collect the full descendant set via `pgrep -P` walks before
-    // signaling, so the SIGTERM phase reaches every layer
-    // (CodeRabbit review on PR #2282).
-    try {
-      const descendantsBeforeTerm = await ChromaMcpManager.collectDescendantPids(pid);
-      // Signal leaves first, then the root.
-      for (const child of descendantsBeforeTerm) {
-        try {
-          process.kill(child, 'SIGTERM');
-        } catch {
-          // Already gone — fine.
-        }
-      }
-      try {
-        process.kill(pid, 'SIGTERM');
-      } catch (error) {
-        const err = error instanceof Error ? error : new Error(String(error));
-        const code = (err as NodeJS.ErrnoException).code;
-        if (code !== 'ESRCH') {
-          logger.debug('CHROMA_MCP', `Failed to SIGTERM PID ${pid}`, { code }, err);
-        }
-      }
-
-      // Brief wait for SIGTERM to propagate, then SIGKILL stragglers.
-      await new Promise(resolve => setTimeout(resolve, 500));
-
-      // Re-collect descendants — some layers may have re-parented during the
-      // SIGTERM grace window.
-      //
-      // SIGKILL targets the UNION of pre-TERM and post-wait descendant sets:
-      // when the root exits between snapshots, children get re-parented to
-      // init and drop out of `pgrep -P <root>`. Without the union, those
-      // re-parented descendants would never receive SIGKILL even though they
-      // were definitely children before SIGTERM (CodeRabbit review on PR
-      // #2282). Dedupe via Set since `descendantsBeforeKill` typically
-      // overlaps with `descendantsBeforeTerm`.
-      const descendantsBeforeKill = await ChromaMcpManager.collectDescendantPids(pid);
-      const killTargets = Array.from(new Set([...descendantsBeforeTerm, ...descendantsBeforeKill]));
-      for (const child of killTargets) {
-        try {
-          process.kill(child, 'SIGKILL');
-        } catch {
-          // Already dead — fine.
-        }
-      }
-      try {
-        process.kill(pid, 'SIGKILL');
-      } catch {
-        // Already dead — fine.
-      }
-    } catch (error) {
-      logger.debug('CHROMA_MCP', `Process tree kill completed (best-effort)`, {
-        pid,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-  }
-
-  /**
-   * Recursively collect all descendant PIDs of `rootPid` using `pgrep -P`.
-   * Returned bottom-up (leaves first) so callers can signal leaves before
-   * their ancestors. Best-effort: missing pgrep / non-zero exits return [].
-   */
-  private static async collectDescendantPids(rootPid: number): Promise<number[]> {
-    const seen = new Set<number>();
-    const collected: number[] = [];
-
-    async function walk(pid: number): Promise<void> {
-      let stdout = '';
-      try {
-        const result = await execFileAsync('pgrep', ['-P', String(pid)], { timeout: 2_000 });
-        stdout = result.stdout;
-      } catch {
-        // [ANTI-PATTERN IGNORED]: pgrep exits 1 whenever a PID has no children, which is the expected leaf case on every recursive walk; recovery is treating the node as childless and returning early.
-        return;
-      }
-      const children = stdout
-        .split('\n')
-        .map(line => line.trim())
-        .filter(line => line.length > 0)
-        .map(line => Number.parseInt(line, 10))
-        .filter(n => Number.isFinite(n) && n > 0 && !seen.has(n));
-
-      for (const child of children) {
-        seen.add(child);
-        await walk(child);
-        // Bottom-up: push after recursion so leaves come first.
-        collected.push(child);
-      }
-    }
-
-    await walk(rootPid);
-    return collected;
+  // Thin static delegate to the shared tree-kill primitive
+  // (src/supervisor/tree-kill.ts). Kept as a static method — rather than calling
+  // the module function directly — so ChromaMcpManager's own reconnect/dispose/
+  // stop paths route through one seam the singleton tests can stub.
+  private static killProcessTree(pid: number): Promise<void> {
+    return killChromaProcessTree(pid);
   }
 
   /**
@@ -1358,7 +1242,9 @@ export class ChromaMcpManager {
     // taskkill /T on Windows when pgid is present but group signal fails.
     // On POSIX the pgid recorded here is used by killProcessTree() in
     // stop() for explicit tree teardown rather than negative-PID signaling.
-    getSupervisor().registerProcess(CHROMA_SUPERVISOR_ID, {
+    // One per-pid id, reused by the exit handler so register/unregister agree.
+    const recordId = chromaSupervisorId(chromaProcess.pid);
+    getSupervisor().registerProcess(recordId, {
       pid: chromaProcess.pid,
       type: 'chroma',
       startedAt: new Date().toISOString(),
@@ -1369,7 +1255,7 @@ export class ChromaMcpManager {
     }, chromaProcess);
 
     chromaProcess.once('exit', () => {
-      getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
+      getSupervisor().unregisterProcess(recordId);
     });
   }
 }

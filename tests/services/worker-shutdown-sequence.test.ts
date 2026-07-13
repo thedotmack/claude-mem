@@ -18,6 +18,7 @@ interface Harness {
   counters: {
     beforeGraceful: number;
     graceful: number;
+    lastResortKill: number;
     waitForPortFree: number;
     removePidFile: number;
     spawnDaemon: number;
@@ -30,6 +31,7 @@ function makeHarness(overrides: {
   gracefulDeadlineMs?: number;
   beforeGracefulThrows?: boolean;
   graceful?: () => Promise<void>;
+  lastResortThrows?: boolean;
   portFree?: boolean;
   spawnResult?: number | undefined;
   spawnThrows?: boolean;
@@ -39,6 +41,7 @@ function makeHarness(overrides: {
   const counters = {
     beforeGraceful: 0,
     graceful: 0,
+    lastResortKill: 0,
     waitForPortFree: 0,
     removePidFile: 0,
     spawnDaemon: 0,
@@ -62,6 +65,11 @@ function makeHarness(overrides: {
       return overrides.graceful ? overrides.graceful() : Promise.resolve();
     },
     gracefulDeadlineMs: overrides.gracefulDeadlineMs ?? 1000,
+    lastResortChildTreeKill: async () => {
+      counters.lastResortKill++;
+      calls.push('lastResortKill');
+      if (overrides.lastResortThrows) throw new Error('supervisor stop failed');
+    },
     restartHandoff: {
       port: PORT,
       portFreeTimeoutMs: 1000,
@@ -221,5 +229,55 @@ describe('runShutdownSequence — restart successor handoff', () => {
     await runShutdownSequence(h.options); // must not throw
 
     expect(h.counters.spawnDaemon).toBe(1);
+  });
+});
+
+describe('runShutdownSequence — last-resort child tree-kill (#3216)', () => {
+  it.each(['stop', 'restart', 'signal'] as const)(
+    'runs the last-resort child tree-kill exactly once on a clean shutdown (reason=%s)',
+    async (reason) => {
+      const h = makeHarness({ reason });
+
+      await runShutdownSequence(h.options);
+
+      expect(h.counters.lastResortKill).toBe(1);
+    },
+  );
+
+  it('runs the last-resort child tree-kill when graceful shutdown rejects (the leak path)', async () => {
+    const h = makeHarness({
+      reason: 'restart',
+      graceful: () => Promise.reject(new Error('Server is not running.')),
+    });
+
+    await runShutdownSequence(h.options);
+
+    // performGracefulShutdown failed before its own supervisor stop, so this is
+    // the only thing that reaps the chroma child instead of orphaning it.
+    expect(h.counters.lastResortKill).toBe(1);
+    // Runs after the graceful attempt and before the successor spawn.
+    expect(h.calls.indexOf('lastResortKill')).toBeGreaterThan(h.calls.indexOf('graceful'));
+    expect(h.calls.indexOf('lastResortKill')).toBeLessThan(h.calls.indexOf('spawnDaemon'));
+  });
+
+  it('runs the last-resort child tree-kill when the graceful deadline expires', async () => {
+    const h = makeHarness({
+      reason: 'stop',
+      gracefulDeadlineMs: 50,
+      graceful: () => new Promise<void>(() => { /* hangs past the deadline */ }),
+    });
+
+    await runShutdownSequence(h.options);
+
+    expect(h.counters.lastResortKill).toBe(1);
+  });
+
+  it('does not throw (and still hands off) when the last-resort kill itself throws', async () => {
+    const h = makeHarness({ reason: 'restart', lastResortThrows: true });
+
+    await runShutdownSequence(h.options); // must not throw
+
+    expect(h.counters.lastResortKill).toBe(1);
+    expect(h.counters.spawnDaemon).toBe(1); // failure swallowed; handoff still runs
   });
 });
