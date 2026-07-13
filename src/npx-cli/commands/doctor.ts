@@ -6,12 +6,13 @@
  */
 
 import { existsSync, readFileSync } from 'fs';
-import { join } from 'path';
+import { basename, join } from 'path';
 import { styleText } from 'node:util';
 import { isPluginInstalled, marketplaceDirectory, readPluginVersion } from '../utils/paths.js';
 import { getBunVersion, getUvVersion, isInstallCurrent } from '../install/setup-runtime.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { resolveDataDir } from '../../shared/paths.js';
+import { staleCacheVersionDirs, pruneStaleCacheVersionDirs } from '../../shared/worker-utils.js';
 
 type CheckStatus = 'ok' | 'warn' | 'fail';
 
@@ -44,7 +45,7 @@ async function probeWorkerHealth(workerHost: string, workerPort: string): Promis
   return { status: 'warn', detail: `reachable but unhealthy (HTTP ${res.status}) at ${workerUrl}` };
 }
 
-export async function runDoctorCommand(): Promise<void> {
+export async function runDoctorCommand(options: { fix?: boolean } = {}): Promise<void> {
   const checks: CheckResult[] = [];
   const dataDir = resolveDataDir();
 
@@ -131,6 +132,30 @@ export async function runDoctorCommand(): Promise<void> {
       name: 'Last install error',
       status: 'warn',
       detail,
+      required: false,
+    });
+  }
+
+  // 7. Plugin cache hygiene — stale sibling versions accumulate forever and are
+  //    what let the mtime resolver pick a stale build, manufacturing the leak
+  //    (#3216). Read-only unless --fix, which prunes every version dir below the
+  //    highest semver (never the resolved current one).
+  const stale = staleCacheVersionDirs();
+  if (options.fix && stale.length > 0) {
+    const removed = pruneStaleCacheVersionDirs();
+    checks.push({
+      name: 'Plugin cache',
+      status: 'ok',
+      detail: `pruned ${removed.length} stale version dir(s): ${removed.map(d => basename(d)).join(', ')}`,
+      required: false,
+    });
+  } else {
+    checks.push({
+      name: 'Plugin cache',
+      status: stale.length > 0 ? 'warn' : 'ok',
+      detail: stale.length > 0
+        ? `${stale.length} stale version dir(s) below the resolved build (${stale.map(d => basename(d)).join(', ')}) — run \`npx claude-mem doctor --fix\` to prune`
+        : 'no stale version dirs',
       required: false,
     });
   }

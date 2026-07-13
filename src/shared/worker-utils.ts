@@ -1,5 +1,5 @@
 import path from "path";
-import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync, readdirSync, statSync } from "fs";
+import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync, readdirSync, statSync, rmSync } from "fs";
 import { spawnHidden } from "./spawn.js";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
@@ -217,7 +217,14 @@ function candidateWorkerScriptPath(root: string): string {
   return path.join(pluginRoot, 'scripts', 'worker-service.cjs');
 }
 
-export function cacheWorkerScriptCandidates(cacheRootOverride?: string): string[] {
+/**
+ * Plugin cache version directories (bare paths), highest-semver first. Highest
+ * semver wins — NOT newest mtime: an mtime sort picks a stale cache build,
+ * manufacturing the plugin<->worker version skew that drives the chroma-mcp
+ * orphan leak (issue #3216). See version-key.ts. Shared by the worker-script
+ * resolver and the cache-staleness reconciliation (warn + doctor --fix).
+ */
+export function cacheVersionDirsDesc(cacheRootOverride?: string): string[] {
   const pluginsRoot = path.dirname(path.dirname(MARKETPLACE_ROOT));
   const cacheRoot = cacheRootOverride ?? path.join(pluginsRoot, 'cache', 'thedotmack', 'claude-mem');
   try {
@@ -231,14 +238,42 @@ export function cacheWorkerScriptCandidates(cacheRootOverride?: string): string[
           return false;
         }
       })
-      // Highest semver wins — NOT newest mtime. An mtime sort here picks a
-      // stale cache build, manufacturing the plugin<->worker version skew that
-      // drives the chroma-mcp orphan leak (issue #3216). See version-key.ts.
-      .sort((a, b) => compareVersionKeysDesc(parseVersionKey(path.basename(a)), parseVersionKey(path.basename(b))))
-      .map(candidateWorkerScriptPath);
+      .sort((a, b) => compareVersionKeysDesc(parseVersionKey(path.basename(a)), parseVersionKey(path.basename(b))));
   } catch {
     return [];
   }
+}
+
+export function cacheWorkerScriptCandidates(cacheRootOverride?: string): string[] {
+  return cacheVersionDirsDesc(cacheRootOverride).map(candidateWorkerScriptPath);
+}
+
+/**
+ * Cache version dirs strictly older than the highest-semver build — candidates
+ * for pruning. The highest-semver dir (the one every resolver now selects) is
+ * always excluded, so removing these never affects the running worker.
+ */
+export function staleCacheVersionDirs(cacheRootOverride?: string): string[] {
+  return cacheVersionDirsDesc(cacheRootOverride).slice(1);
+}
+
+/**
+ * Delete the stale cache version dirs (everything below the highest semver).
+ * Best-effort; returns the dirs actually removed. Reversible by reinstall.
+ * Only ever invoked by an explicit `claude-mem doctor --fix` — the boot path
+ * warns but never deletes (we do not own Claude Code's cache namespace).
+ */
+export function pruneStaleCacheVersionDirs(cacheRootOverride?: string): string[] {
+  const deleted: string[] = [];
+  for (const dir of staleCacheVersionDirs(cacheRootOverride)) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      deleted.push(dir);
+    } catch {
+      // Best-effort: skip dirs we can't remove (perms, in-use on Windows).
+    }
+  }
+  return deleted;
 }
 
 /**

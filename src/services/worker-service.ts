@@ -5,7 +5,7 @@ import { spawn } from 'child_process';
 import type { Database } from 'bun:sqlite';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { getWorkerPort, getWorkerHost, fetchWithTimeout, resolveWorkerScriptPath } from '../shared/worker-utils.js';
+import { getWorkerPort, getWorkerHost, fetchWithTimeout, resolveWorkerScriptPath, staleCacheVersionDirs } from '../shared/worker-utils.js';
 import { getCurrentWorkerPid, verifyRestartedWorker } from './restart-verify.js';
 import { runShutdownSequence, type WorkerShutdownReason } from './worker-shutdown.js';
 import { DATA_DIR, DB_PATH, ensureDir } from '../shared/paths.js';
@@ -451,6 +451,21 @@ export class WorkerService implements WorkerRef {
       } else {
         logger.warn('SYSTEM', 'Orphaned chroma-mcp sweep failed (non-blocking, non-Error)', { error: String(error) });
       }
+    }
+
+    // Warn — never delete — when the plugin cache holds stale sibling versions.
+    // The additive cache (old dirs never pruned) is what let the mtime resolver
+    // pick a stale build and manufacture the skew (#3216). We don't own Claude
+    // Code's cache namespace, so pruning is opt-in via `claude-mem doctor --fix`.
+    try {
+      const stale = staleCacheVersionDirs();
+      if (stale.length > 0) {
+        logger.warn('SYSTEM', `Plugin cache has ${stale.length} stale version dir(s) below the resolved build — run 'claude-mem doctor --fix' to prune`, {
+          stale: stale.map(dir => path.basename(dir)),
+        });
+      }
+    } catch {
+      // non-blocking
     }
 
     await this.server.listen(port, host);
