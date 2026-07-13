@@ -102,6 +102,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
     const initContext = snapshotResponseContext(session);
 
+    const initHistoryLength = session.conversationHistory.length;
     session.conversationHistory.push({ role: 'user', content: initPrompt });
 
     try {
@@ -115,6 +116,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       } else {
         logger.error('SDK', `${this.providerName} init query failed with non-Error`, { sessionId: session.sessionDbId, model }, new Error(String(error)));
       }
+      session.conversationHistory.length = initHistoryLength;
       return this.handleSessionError(error, session, worker);
     }
 
@@ -153,11 +155,17 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
         lastCwd = message.cwd;
       }
       const originalTimestamp = session.earliestPendingTimestamp;
+      const messageHistoryLength = session.conversationHistory.length;
 
-      if (message.type === 'observation') {
-        await this.processObservationMessage(session, message, worker, config, originalTimestamp, lastCwd);
-      } else if (message.type === 'summarize') {
-        await this.processSummaryMessage(session, message, worker, config, mode, originalTimestamp, lastCwd);
+      try {
+        if (message.type === 'observation') {
+          await this.processObservationMessage(session, message, worker, config, originalTimestamp, lastCwd);
+        } else if (message.type === 'summarize') {
+          await this.processSummaryMessage(session, message, worker, config, mode, originalTimestamp, lastCwd);
+        }
+      } catch (error) {
+        session.conversationHistory.length = messageHistoryLength;
+        throw error;
       }
     }
   }
