@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "stop",
+  "cwd": "/tmp/kiro-e2e-project",
+  "assistant_response": "I fixed the login timeout bug by raising TIMEOUT_MS to 30 seconds in src/auth.ts and adding a regression test."
+}

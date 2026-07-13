@@ -12,9 +12,9 @@ const WORKER_SERVICE = {
   source: 'src/services/worker-service.ts'
 };
 
-const SERVER_BETA_SERVICE = {
-  name: 'server-beta-service',
-  source: 'src/server/runtime/ServerBetaService.ts'
+const SERVER_SERVICE = {
+  name: 'server-service',
+  source: 'src/server/runtime/ServerService.ts'
 };
 
 const MCP_SERVER = {
@@ -73,6 +73,17 @@ function shellTemplateManifest(buildShellCommand) {
   const codexHook = (tail) => buildShellCommand({
     host: 'codex-cli', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
     trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found',
+    extraEnv: { CLAUDE_MEM_CODEX_HOOK: '1' },
+  });
+  const codexStartupHook = () => buildShellCommand({
+    host: 'codex-cli', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
+    trailingCommand: [
+      '_V=$(CLAUDE_MEM_CODEX_HOOK=1 node "$_P/scripts/version-check.js" || true);',
+      'if [ -n "$_V" ]; then printf \'%s\\n\' "$_V"; else',
+      'CLAUDE_MEM_CODEX_HOOK=1', ...ccTrailing('hook', 'codex', 'context'),
+      '; fi',
+    ],
+    notFoundMessage: 'claude-mem: plugin scripts not found',
   });
 
   return {
@@ -84,24 +95,18 @@ function shellTemplateManifest(buildShellCommand) {
           trailingCommand: ['node', '"$_P/scripts/version-check.js"'],
           notFoundMessage: 'claude-mem: version-check.js not found',
         }),
-        'SessionStart.0.0': claudeHook(['start'], { trailingJson: { continue: true, suppressOutput: true } }),
-        'SessionStart.0.1': claudeHook(['hook', 'claude-code', 'context']),
+        'SessionStart.0.0': claudeHook(['hook', 'claude-code', 'context']),
         'UserPromptSubmit.0.0': claudeHook(['hook', 'claude-code', 'session-init']),
         'PostToolUse.0.0': claudeHook(['hook', 'claude-code', 'observation']),
         'PreToolUse.0.0': claudeHook(['hook', 'claude-code', 'file-context']),
         'Stop.0.0': claudeHook(['hook', 'claude-code', 'summarize']),
+        'PreCompact.0.0': claudeHook(['hook', 'claude-code', 'pre-compact']),
       },
     },
     'plugin/hooks/codex-hooks.json': {
       kind: 'hooks',
       commands: {
-        'SessionStart.0.0': buildShellCommand({
-          host: 'codex-cli', requireFile: 'version-check.js', extraEnv: { CLAUDE_MEM_CODEX_HOOK: '1' },
-          trailingCommand: ['node', '"$_P/scripts/version-check.js"'],
-          notFoundMessage: 'claude-mem: version-check.js not found',
-        }),
-        'SessionStart.0.1': codexHook(['start']),
-        'SessionStart.0.2': codexHook(['hook', 'codex', 'context']),
+        'SessionStart.0.0': codexStartupHook(),
         'UserPromptSubmit.0.0': codexHook(['hook', 'codex', 'session-init']),
         'PreToolUse.0.0': codexHook(['hook', 'codex', 'file-context']),
         'PostToolUse.0.0': codexHook(['hook', 'codex', 'observation']),
@@ -239,7 +244,6 @@ async function buildHooks() {
         'tree-sitter-kotlin': '^0.3.8',
         'tree-sitter-swift': '^0.7.1',
         'tree-sitter-php': '^0.24.2',
-        'tree-sitter-elixir': '^0.3.5',
         '@tree-sitter-grammars/tree-sitter-lua': '^0.4.1',
         'tree-sitter-scala': '^0.24.0',
         'tree-sitter-bash': '^0.25.1',
@@ -292,7 +296,6 @@ async function buildHooks() {
       logLevel: 'error', // Suppress warnings (import.meta warning is benign)
       external: [
         'bun:sqlite',
-        'zod',
         'cohere-ai',
         'ollama',
         '@chroma-core/default-embed',
@@ -344,14 +347,68 @@ async function buildHooks() {
       );
     }
 
+    // worker-service.cjs lazy-requires these via createRequire("../sqlite/…"),
+    // intentionally kept external from the worker bundle (#2584). They MUST ship
+    // as sibling files under plugin/sqlite/, or the worker throws
+    // "Cannot find module '../sqlite/SessionStore.js'" on first embed and Chroma
+    // vector sync silently degrades on every observation. Same esbuild options and
+    // external list as the worker; the closure only pulls Node built-ins + bun:sqlite.
+    console.log(`\n🔧 Building sqlite runtime modules...`);
+    const SQLITE_MODULES = [
+      { source: 'src/services/sqlite/SessionStore.ts', out: 'plugin/sqlite/SessionStore.js' },
+      { source: 'src/services/sqlite/observations/files.ts', out: 'plugin/sqlite/observations/files.js' },
+    ];
+    for (const mod of SQLITE_MODULES) {
+      fs.mkdirSync(path.dirname(mod.out), { recursive: true });
+      await build({
+        entryPoints: [mod.source],
+        bundle: true,
+        platform: 'node',
+        target: 'node18',
+        format: 'cjs',
+        outfile: mod.out,
+        minify: true,
+        logLevel: 'error',
+        external: [
+          'bun:sqlite',
+          'zod',
+          'cohere-ai',
+          'ollama',
+          '@chroma-core/default-embed',
+          'onnxruntime-node',
+          'better-auth',
+          'better-auth/node',
+          'better-auth/plugins',
+          '@better-auth/api-key',
+        ],
+        define: {
+          '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
+          'import.meta.url': '__IMPORT_META_URL__'
+        },
+        banner: {
+          js: 'var __IMPORT_META_URL__ = require("node:url").pathToFileURL(__filename).href;'
+        }
+      });
+      console.log(`✓ ${mod.out} built (${(fs.statSync(mod.out).size / 1024).toFixed(2)} KB)`);
+    }
+
+    const workerBundleContent = fs.readFileSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`, 'utf-8');
+    const workerZodRequireRegex = /require\(\s*["']zod(?:\/[^"']*)?["']\s*\)/;
+    const workerZodRequireMatch = workerBundleContent.match(workerZodRequireRegex);
+    if (workerZodRequireMatch) {
+      throw new Error(
+        `worker-service.cjs contains external ${workerZodRequireMatch[0]}. Zod must be bundled into the worker service so the hook client process does not fail when plugin node_modules is unavailable after a version upgrade. See issue #2831.`
+      );
+    }
+
     console.log(`\n🔧 Building server beta service...`);
     await build({
-      entryPoints: [SERVER_BETA_SERVICE.source],
+      entryPoints: [SERVER_SERVICE.source],
       bundle: true,
       platform: 'node',
       target: 'node18',
       format: 'cjs',
-      outfile: `${hooksDir}/${SERVER_BETA_SERVICE.name}.cjs`,
+      outfile: `${hooksDir}/${SERVER_SERVICE.name}.cjs`,
       minify: true,
       logLevel: 'error',
       external: [
@@ -370,11 +427,11 @@ async function buildHooks() {
       }
     });
 
-    stripHardcodedDirname(`${hooksDir}/${SERVER_BETA_SERVICE.name}.cjs`);
+    stripHardcodedDirname(`${hooksDir}/${SERVER_SERVICE.name}.cjs`);
 
-    fs.chmodSync(`${hooksDir}/${SERVER_BETA_SERVICE.name}.cjs`, 0o755);
-    const serverBetaStats = fs.statSync(`${hooksDir}/${SERVER_BETA_SERVICE.name}.cjs`);
-    console.log(`✓ server-beta-service built (${(serverBetaStats.size / 1024).toFixed(2)} KB)`);
+    fs.chmodSync(`${hooksDir}/${SERVER_SERVICE.name}.cjs`, 0o755);
+    const serverStats = fs.statSync(`${hooksDir}/${SERVER_SERVICE.name}.cjs`);
+    console.log(`✓ server-service built (${(serverStats.size / 1024).toFixed(2)} KB)`);
 
     console.log(`\n🔧 Building MCP server...`);
     await build({
@@ -401,7 +458,6 @@ async function buildHooks() {
         'tree-sitter-kotlin',
         'tree-sitter-swift',
         'tree-sitter-php',
-        'tree-sitter-elixir',
         '@tree-sitter-grammars/tree-sitter-lua',
         'tree-sitter-scala',
         'tree-sitter-bash',
@@ -629,6 +685,12 @@ async function buildHooks() {
       }
     }
     const codexHooks = JSON.parse(fs.readFileSync('plugin/hooks/codex-hooks.json', 'utf-8'));
+    const validCodexHookRootKeys = new Set(['hooks']);
+    for (const rootKey of Object.keys(codexHooks)) {
+      if (!validCodexHookRootKeys.has(rootKey)) {
+        throw new Error(`plugin/hooks/codex-hooks.json contains unsupported Codex root key: ${rootKey}`);
+      }
+    }
     for (const eventName of Object.keys(codexHooks.hooks ?? {})) {
       if (!validCodexHookEvents.has(eventName)) {
         throw new Error(`plugin/hooks/codex-hooks.json contains unknown Codex hook event: ${eventName}`);
@@ -654,7 +716,7 @@ async function buildHooks() {
     console.log('\n✅ All build targets compiled successfully!');
     console.log(`   Output: ${hooksDir}/`);
     console.log(`   - Worker: worker-service.cjs`);
-    console.log(`   - Server beta: server-beta-service.cjs`);
+    console.log(`   - Server: server-service.cjs`);
     console.log(`   - MCP Server: mcp-server.cjs`);
     console.log(`   - Context Generator: context-generator.cjs`);
     console.log(`   - Transcript Watcher: transcript-watcher.cjs`);

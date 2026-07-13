@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from 'child_process';
-import { existsSync, readFileSync, rmSync } from 'fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -13,7 +13,7 @@ const NODE_MODULES_DIRNAME = 'node_modules';
 
 function findBun() {
   const pathCheck = IS_WINDOWS
-    ? spawnSync('where bun', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], shell: true })
+    ? spawnSync('where bun', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], shell: true, windowsHide: true })
     : spawnSync('which', ['bun'], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
 
   if (pathCheck.status === 0 && pathCheck.stdout.trim()) {
@@ -55,17 +55,28 @@ function findBun() {
 // has a 300s timeout (vs 60s for SessionStart), runs once per Claude
 // Code launch, and is the only standalone hook script — the natural
 // place to materialise plugin runtime state.
-function ensurePluginDependencies(pluginRoot) {
-  if (!existsSync(join(pluginRoot, 'package.json'))) return;
+function ensurePluginDependencies(pluginRoot, options = {}) {
+  if (!existsSync(join(pluginRoot, 'package.json'))) return true;
+
+  const nodeModulesPath = join(pluginRoot, NODE_MODULES_DIRNAME);
+  if (options.forceReinstall) {
+    try {
+      rmSync(nodeModulesPath, { recursive: true, force: true });
+    } catch (rmErr) {
+      const rmReason = rmErr && rmErr.message ? rmErr.message : String(rmErr);
+      console.error(`${VERSION_CHECK_LOG_PREFIX} failed to clear stale node_modules before reinstall (${rmReason}); worker may crash with missing module errors`);
+      return false;
+    }
+  }
 
   // Guard on node_modules (package-manager marker) rather than a specific
   // package, so the check stays correct if dependencies are later renamed.
-  if (existsSync(join(pluginRoot, NODE_MODULES_DIRNAME))) return;
+  if (existsSync(nodeModulesPath)) return true;
 
   const bunPath = findBun();
   if (!bunPath) {
     console.error(`${VERSION_CHECK_LOG_PREFIX} bun not found on PATH; cannot auto-install plugin dependencies`);
-    return;
+    return false;
   }
 
   // Progress diagnostic so users understand the (one-time) Setup hang.
@@ -83,7 +94,7 @@ function ensurePluginDependencies(pluginRoot) {
   } catch (err) {
     const reason = err && err.message ? err.message : String(err);
     console.error(`${VERSION_CHECK_LOG_PREFIX} bun install threw (${reason}); worker may crash with missing module errors`);
-    return;
+    return false;
   }
 
   // spawnSync does NOT throw on a failed child. Three distinct failure
@@ -112,16 +123,18 @@ function ensurePluginDependencies(pluginRoot) {
     // partial dir so the next Setup invocation can retry automatically
     // (gh #2650 review).
     try {
-      rmSync(join(pluginRoot, NODE_MODULES_DIRNAME), { recursive: true, force: true });
+      rmSync(nodeModulesPath, { recursive: true, force: true });
     } catch (rmErr) {
       const rmReason = rmErr && rmErr.message ? rmErr.message : String(rmErr);
       console.error(`${VERSION_CHECK_LOG_PREFIX} failed to clean up partial node_modules (${rmReason}); next Setup run may skip retry`);
     }
+    return false;
   } else {
     // Close the diagnostic loop: a Setup hook that can block for up to
     // 120s needs an explicit completion line so users can distinguish a
     // hung install from one that finished silently (gh #2650 review).
     console.error(`${VERSION_CHECK_LOG_PREFIX} plugin dependencies installed successfully`);
+    return true;
   }
 }
 
@@ -139,18 +152,32 @@ function resolveRoot() {
 }
 
 const ROOT = resolveRoot();
-if (!ROOT) process.exit(0);
 
-ensurePluginDependencies(ROOT);
+let emittedCodexHookOutput = false;
+
+function emitCodexSessionStart(additionalContext) {
+  const output = {
+    hookSpecificOutput: {
+      hookEventName: 'SessionStart',
+    },
+  };
+  if (additionalContext) {
+    output.hookSpecificOutput.additionalContext = additionalContext;
+  }
+  console.log(JSON.stringify(output));
+  emittedCodexHookOutput = true;
+}
+
+if (!ROOT) {
+  if (process.env.CLAUDE_MEM_CODEX_HOOK === '1') {
+    emitCodexSessionStart();
+  }
+  process.exit(0);
+}
 
 function emitUpgradeHint(message) {
   if (process.env.CLAUDE_MEM_CODEX_HOOK === '1') {
-    console.log(JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: 'SessionStart',
-        additionalContext: message,
-      },
-    }));
+    emitCodexSessionStart(message);
   } else {
     console.error(message);
   }
@@ -174,13 +201,26 @@ function readInstallMarkerVersion(markerPath) {
   }
 }
 
+function writeInstallMarkerVersion(markerPath, version) {
+  writeFileSync(markerPath, JSON.stringify({
+    version,
+    installedAt: new Date().toISOString(),
+  }));
+}
+
 try {
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
   const markerPath = join(ROOT, '.install-version');
   if (!existsSync(markerPath)) {
-    emitUpgradeHint('claude-mem: runtime not yet set up - run: npx claude-mem@latest install');
-    process.exit(0);
+    const installOk = ensurePluginDependencies(ROOT, { forceReinstall: true });
+    if (installOk) {
+      writeInstallMarkerVersion(markerPath, pkg.version);
+    } else {
+      emitUpgradeHint('claude-mem: runtime not yet set up - run: npx claude-mem@latest install');
+      process.exit(0);
+    }
   }
+  ensurePluginDependencies(ROOT);
   const markerVersion = readInstallMarkerVersion(markerPath);
   if (!markerVersion) {
     emitUpgradeHint('claude-mem: install marker unreadable - run: npx claude-mem@latest install');
@@ -189,5 +229,8 @@ try {
   }
 } catch {
   emitUpgradeHint('claude-mem: install marker unreadable - run: npx claude-mem@latest install');
+}
+if (process.env.CLAUDE_MEM_CODEX_HOOK === '1' && !emittedCodexHookOutput) {
+  emitCodexSessionStart();
 }
 process.exit(0);

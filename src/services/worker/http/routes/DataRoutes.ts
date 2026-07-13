@@ -4,7 +4,8 @@ import { z } from 'zod';
 import path from 'path';
 import { readFileSync, statSync, existsSync } from 'fs';
 import { logger } from '../../../../utils/logger.js';
-import { getPackageRoot, paths } from '../../../../shared/paths.js';
+import { parseJsonArrayColumn } from '../../../../utils/json-utils.js';
+import { getPackageRoot, paths, OBSERVER_SESSIONS_PROJECT } from '../../../../shared/paths.js';
 import { getWorkerPort } from '../../../../shared/worker-utils.js';
 import { PaginationHelper } from '../../PaginationHelper.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
@@ -17,6 +18,7 @@ import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 import { getObservationsByFilePath } from '../../../sqlite/observations/get.js';
 import { getFirstObservationCreatedAt } from '../../../sqlite/observations/recent.js';
 import { getUptimeSeconds } from '../../../../shared/uptime.js';
+import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 
 const integerArrayLike = z.preprocess((value) => {
   if (Array.isArray(value)) return value;
@@ -51,20 +53,17 @@ const observationsBatchSchema = z.object({
   orderBy: z.enum(['date_desc', 'date_asc']).optional(),
   limit: z.number().int().positive().optional(),
   project: z.string().optional(),
+  platformSource: z.string().optional(),
+  platform_source: z.string().optional(),
 }).passthrough();
 
-const sdkSessionsBatchSchema = z.preprocess((value) => {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
-
-  const body = value as Record<string, unknown>;
-  if (body.memorySessionIds === undefined && body.sdkSessionIds !== undefined) {
-    return { ...body, memorySessionIds: body.sdkSessionIds };
-  }
-
-  return value;
-}, z.object({
+const sdkSessionsBatchSchema = z.object({
   memorySessionIds: stringArrayLike,
-}).passthrough());
+}).passthrough();
+
+const dismissObservationSchema = z.object({
+  reason: z.string().optional(),
+}).passthrough();
 
 const importSchema = z.object({
   sessions: z.array(z.unknown()).optional(),
@@ -93,6 +92,8 @@ export class DataRoutes extends BaseRouteHandler {
     app.get('/api/observation/:id', this.handleGetObservationById.bind(this));
     app.get('/api/observations/by-file', this.handleGetObservationsByFile.bind(this));
     app.post('/api/observations/batch', validateBody(observationsBatchSchema), this.handleGetObservationsByIds.bind(this));
+    app.post('/api/observations/:id/dismiss', validateBody(dismissObservationSchema), this.handleDismissObservation.bind(this));
+    app.delete('/api/observations/:id/dismiss', this.handleUndismissObservation.bind(this));
     app.get('/api/session/:id', this.handleGetSessionById.bind(this));
     app.post('/api/sdk-sessions/batch', validateBody(sdkSessionsBatchSchema), this.handleGetSdkSessionsByIds.bind(this));
     app.get('/api/prompt/:id', this.handleGetPromptById.bind(this));
@@ -128,7 +129,8 @@ export class DataRoutes extends BaseRouteHandler {
     if (id === null) return;
 
     const store = this.dbManager.getSessionStore();
-    const observation = store.getObservationById(id);
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+    const observation = store.getObservationById(id, platformSource);
 
     if (!observation) {
       this.notFound(res, `Observation #${id} not found`);
@@ -155,9 +157,10 @@ export class DataRoutes extends BaseRouteHandler {
     const projects = projectsParam ? projectsParam.split(',').filter(Boolean) : undefined;
     const parsedLimit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
     const limit = Number.isFinite(parsedLimit) && parsedLimit! > 0 ? parsedLimit : undefined;
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
 
     const db = this.dbManager.getSessionStore().db;
-    const observations = getObservationsByFilePath(db, candidatePaths, { projects, limit });
+    const observations = getObservationsByFilePath(db, candidatePaths, { projects, limit, platformSource });
 
     res.json({ observations, count: observations.length });
   });
@@ -171,9 +174,51 @@ export class DataRoutes extends BaseRouteHandler {
     }
 
     const store = this.dbManager.getSessionStore();
-    const observations = store.getObservationsByIds(ids, { orderBy, limit, project });
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+    const observations = store.getObservationsByIds(ids, { orderBy, limit, project, platformSource });
 
     res.json(observations);
+  });
+
+  private handleDismissObservation = this.wrapHandler((req: Request, res: Response): void => {
+    if (!this.isDismissEnabled()) {
+      res.status(403).json({ success: false, error: 'Observation dismiss is disabled' });
+      return;
+    }
+
+    const id = this.parseIntParam(req, res, 'id');
+    if (id === null) return;
+
+    const store = this.dbManager.getSessionStore();
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+    if (!store.getObservationById(id, platformSource)) {
+      this.notFound(res, `Observation #${id} not found`);
+      return;
+    }
+
+    const { reason } = req.body as z.infer<typeof dismissObservationSchema>;
+    store.dismissObservation(id, reason);
+    res.json({ success: true, id, dismissed: true });
+  });
+
+  private handleUndismissObservation = this.wrapHandler((req: Request, res: Response): void => {
+    if (!this.isDismissEnabled()) {
+      res.status(403).json({ success: false, error: 'Observation dismiss is disabled' });
+      return;
+    }
+
+    const id = this.parseIntParam(req, res, 'id');
+    if (id === null) return;
+
+    const store = this.dbManager.getSessionStore();
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+    if (!store.getObservationById(id, platformSource)) {
+      this.notFound(res, `Observation #${id} not found`);
+      return;
+    }
+
+    store.undismissObservation(id);
+    res.json({ success: true, id, dismissed: false });
   });
 
   private handleGetSessionById = this.wrapHandler((req: Request, res: Response): void => {
@@ -181,7 +226,9 @@ export class DataRoutes extends BaseRouteHandler {
     if (id === null) return;
 
     const store = this.dbManager.getSessionStore();
-    const sessions = store.getSessionSummariesByIds([id]);
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+    const project = DataRoutes.firstString(req.query.project);
+    const sessions = store.getSessionSummariesByIds([id], { project, platformSource });
 
     if (sessions.length === 0) {
       this.notFound(res, `Session #${id} not found`);
@@ -204,7 +251,9 @@ export class DataRoutes extends BaseRouteHandler {
     if (id === null) return;
 
     const store = this.dbManager.getSessionStore();
-    const prompts = store.getUserPromptsByIds([id]);
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+    const project = DataRoutes.firstString(req.query.project);
+    const prompts = store.getUserPromptsByIds([id], { project, platformSource });
 
     if (prompts.length === 0) {
       this.notFound(res, `Prompt #${id} not found`);
@@ -216,16 +265,43 @@ export class DataRoutes extends BaseRouteHandler {
 
   private handleGetStats = this.wrapHandler((req: Request, res: Response): void => {
     const db = this.dbManager.getSessionStore().db;
+    const project = typeof req.query.project === 'string' ? req.query.project : undefined;
 
     const packageRoot = getPackageRoot();
     const packageJsonPath = path.join(packageRoot, 'package.json');
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
     const version = packageJson.version;
 
-    const totalObservations = db.prepare('SELECT COUNT(*) as count FROM observations').get() as { count: number };
-    const totalSessions = db.prepare('SELECT COUNT(*) as count FROM sdk_sessions').get() as { count: number };
-    const totalSummaries = db.prepare('SELECT COUNT(*) as count FROM session_summaries').get() as { count: number };
-    const firstObservationAt = getFirstObservationCreatedAt(db);
+    // Mirror PaginationHelper's reader scoping so the status line's numbers match
+    // the dashboard list views exactly. With a project, observations/summaries
+    // also adopt worktree rows via merged_into_project (sessions have no such
+    // column); without one, the internal observer-sessions project is excluded —
+    // just as the readers do. `table` is a constant identifier (never user
+    // input) and every project value is a bound parameter, so there is no
+    // dynamic SQL. Status-line consumers pass ?project=<folder> to switch between
+    // per-project and global counts.
+    const countScoped = (table: string, hasMergedColumn: boolean): number => {
+      let where: string;
+      let params: string[];
+      if (project) {
+        where = hasMergedColumn
+          ? 'WHERE (project = ? OR merged_into_project = ?)'
+          : 'WHERE project = ?';
+        params = hasMergedColumn ? [project, project] : [project];
+      } else {
+        where = 'WHERE project != ?';
+        params = [OBSERVER_SESSIONS_PROJECT];
+      }
+      const row = db
+        .prepare(`SELECT COUNT(*) as count FROM ${table} ${where}`)
+        .get(...params) as { count: number };
+      return row.count;
+    };
+
+    const totalObservations = countScoped('observations', true);
+    const totalSessions = countScoped('sdk_sessions', false);
+    const totalSummaries = countScoped('session_summaries', true);
+    const firstObservationAt = getFirstObservationCreatedAt(db, project);
 
     const dbPath = paths.database();
     let dbSize = 0;
@@ -248,9 +324,9 @@ export class DataRoutes extends BaseRouteHandler {
       database: {
         path: dbPath,
         size: dbSize,
-        observations: totalObservations.count,
-        sessions: totalSessions.count,
-        summaries: totalSummaries.count,
+        observations: totalObservations,
+        sessions: totalSessions,
+        summaries: totalSummaries,
         firstObservationAt
       }
     });
@@ -258,8 +334,7 @@ export class DataRoutes extends BaseRouteHandler {
 
   private handleGetProjects = this.wrapHandler((req: Request, res: Response): void => {
     const store = this.dbManager.getSessionStore();
-    const rawPlatformSource = req.query.platformSource as string | undefined;
-    const platformSource = rawPlatformSource ? normalizePlatformSource(rawPlatformSource) : undefined;
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
 
     if (platformSource) {
       const projects = store.getAllProjects(platformSource);
@@ -284,10 +359,13 @@ export class DataRoutes extends BaseRouteHandler {
     const offset = parseInt(req.query.offset as string, 10) || 0;
     const limit = Math.min(parseInt(req.query.limit as string, 10) || 20, 100); 
     const project = req.query.project as string | undefined;
-    const rawPlatformSource = req.query.platformSource as string | undefined;
-    const platformSource = rawPlatformSource ? normalizePlatformSource(rawPlatformSource) : undefined;
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
 
     return { offset, limit, project, platformSource };
+  }
+
+  private isDismissEnabled(): boolean {
+    return SettingsDefaultsManager.get('CLAUDE_MEM_ALLOW_DISMISS').trim().toLowerCase() === 'true';
   }
 
   private handleImport = this.wrapHandler((req: Request, res: Response): void => {
@@ -305,10 +383,26 @@ export class DataRoutes extends BaseRouteHandler {
     };
 
     const store = this.dbManager.getSessionStore();
+    const sessionContextByKey = new Map<string, { id: number; platformSource: string }>();
+    const sessionContextsByContentId = new Map<string, Array<{ id: number; platformSource: string }>>();
+    const sessionContextKey = (platformSource: string, contentSessionId: string): string =>
+      `${platformSource}\0${contentSessionId}`;
+    const rememberSessionContext = (session: any, id: number): void => {
+      if (!session || typeof session !== 'object' || typeof session.content_session_id !== 'string') {
+        return;
+      }
+      const platformSource = normalizePlatformSource(session.platform_source);
+      const context = { id, platformSource };
+      sessionContextByKey.set(sessionContextKey(platformSource, session.content_session_id), context);
+      const existing = sessionContextsByContentId.get(session.content_session_id) ?? [];
+      existing.push(context);
+      sessionContextsByContentId.set(session.content_session_id, existing);
+    };
 
     if (Array.isArray(sessions)) {
       for (const session of sessions) {
         const result = store.importSdkSession(session);
+        rememberSessionContext(session, result.id);
         if (result.imported) {
           stats.sessionsImported++;
         } else {
@@ -347,21 +441,26 @@ export class DataRoutes extends BaseRouteHandler {
       const chromaSync = this.dbManager.getChromaSync();
       if (chromaSync && importedObservations.length > 0) {
         const CHROMA_SYNC_CONCURRENCY = 8;
-        const safeParseJson = (val: string | null): string[] => {
-          if (!val) return [];
-          try { return JSON.parse(val); } catch { return []; }
-        };
 
         const syncOne = async ({ id, obs }: { id: number; obs: any }) => {
+          const sourceRow = store.db.prepare(`
+            SELECT COALESCE(NULLIF(platform_source, ''), 'claude') as platform_source
+            FROM sdk_sessions
+            WHERE memory_session_id = ?
+            LIMIT 1
+          `).get(obs.memory_session_id) as { platform_source?: string } | undefined;
+          const platformSource = typeof obs.platform_source === 'string'
+            ? normalizePlatformSource(obs.platform_source)
+            : normalizePlatformSource(sourceRow?.platform_source);
           const parsedObs = {
             type: obs.type || 'discovery',
             title: obs.title || null,
             subtitle: obs.subtitle || null,
-            facts: safeParseJson(obs.facts),
+            facts: parseJsonArrayColumn(obs.facts),
             narrative: obs.narrative || null,
-            concepts: safeParseJson(obs.concepts),
-            files_read: safeParseJson(obs.files_read),
-            files_modified: safeParseJson(obs.files_modified),
+            concepts: parseJsonArrayColumn(obs.concepts),
+            files_read: parseJsonArrayColumn(obs.files_read),
+            files_modified: parseJsonArrayColumn(obs.files_modified),
           };
 
           await chromaSync.syncObservation(
@@ -370,7 +469,8 @@ export class DataRoutes extends BaseRouteHandler {
             obs.project,
             parsedObs,
             obs.prompt_number || 0,
-            obs.created_at_epoch
+            obs.created_at_epoch,
+            platformSource
           ).catch(err => {
             logger.error('CHROMA', 'Import ChromaDB sync failed', { id }, err as Error);
           });
@@ -389,7 +489,41 @@ export class DataRoutes extends BaseRouteHandler {
 
     if (Array.isArray(prompts)) {
       for (const prompt of prompts) {
-        const result = store.importUserPrompt(prompt);
+        let promptToImport = prompt;
+        if (prompt && typeof prompt === 'object' && !Array.isArray(prompt)) {
+          const promptRecord = prompt as Record<string, unknown>;
+          const contentSessionId = typeof promptRecord.content_session_id === 'string'
+            ? promptRecord.content_session_id
+            : undefined;
+          const explicitPlatformSource = typeof promptRecord.platform_source === 'string'
+            ? normalizePlatformSource(promptRecord.platform_source)
+            : undefined;
+
+          if (contentSessionId) {
+            let sessionContext: { id: number; platformSource: string } | undefined;
+            if (explicitPlatformSource) {
+              sessionContext = sessionContextByKey.get(sessionContextKey(explicitPlatformSource, contentSessionId));
+            } else {
+              const candidates = sessionContextsByContentId.get(contentSessionId) ?? [];
+              sessionContext = candidates.length === 1 ? candidates[0] : undefined;
+            }
+
+            if (sessionContext) {
+              promptToImport = {
+                ...promptRecord,
+                session_db_id: sessionContext.id,
+                platform_source: explicitPlatformSource ?? sessionContext.platformSource,
+              };
+            } else if (explicitPlatformSource) {
+              promptToImport = {
+                ...promptRecord,
+                platform_source: explicitPlatformSource,
+              };
+            }
+          }
+        }
+
+        const result = store.importUserPrompt(promptToImport as any);
         if (result.imported) {
           stats.promptsImported++;
         } else {

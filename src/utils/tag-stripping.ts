@@ -45,11 +45,7 @@ export function stripTags(input: string): { stripped: string; counts: Record<Tag
   return { stripped: stripped.trim(), counts };
 }
 
-export function stripMemoryTagsFromJson(content: string): string {
-  return stripTags(content).stripped;
-}
-
-export function stripMemoryTagsFromPrompt(content: string): string {
+export function stripMemoryTags(content: string): string {
   return stripTags(content).stripped;
 }
 
@@ -65,4 +61,22 @@ export function isInternalProtocolPayload(text: string): boolean {
   if (!text) return false;
   if (text.length > MAX_PROTOCOL_PAYLOAD_BYTES) return false;
   return PROTOCOL_ONLY_REGEX.test(text);
+}
+
+export function isInternalSystemPrompt(text: string): boolean {
+  if (!text) return false;
+
+  const trimmed = text.trim();
+
+  if (trimmed.startsWith('You are a helpful assistant. You will be presented with a user prompt, and your job is to provide a short title')) {
+    return true;
+  }
+
+  if (trimmed.startsWith('## Memory Writing Agent: Phase 2 (Consolidation)') || trimmed.startsWith('## Memory Writing Agent')) {
+    return true;
+  }
+
+  return trimmed.startsWith('# Overview\n\nGenerate 0 to 3 hyperpersonalized suggestions') ||
+    trimmed.startsWith('# Overview\r\n\r\nGenerate 0 to 3 hyperpersonalized suggestions') ||
+    trimmed.startsWith('# Overview\nGenerate 0 to 3 hyperpersonalized suggestions');
 }

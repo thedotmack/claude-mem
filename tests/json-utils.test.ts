@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { mkdirSync, writeFileSync, existsSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { readJsonSafe } from '../src/utils/json-utils';
+import { readJsonSafe, parseJsonArrayColumn, stripBom } from '../src/utils/json-utils';
 
 describe('JSON Utils', () => {
   let tempDir: string;
@@ -33,6 +33,16 @@ describe('JSON Utils', () => {
       const filePath = join(tempDir, 'valid.json');
       const data = { name: 'test', count: 42, nested: { key: 'value' } };
       writeFileSync(filePath, JSON.stringify(data));
+
+      const result = readJsonSafe(filePath, {});
+
+      expect(result).toEqual(data);
+    });
+
+    it('returns parsed content for BOM-prefixed JSON file', () => {
+      const filePath = join(tempDir, 'bom.json');
+      const data = { name: 'windows', count: 1 };
+      writeFileSync(filePath, `\uFEFF${JSON.stringify(data)}`);
 
       const result = readJsonSafe(filePath, {});
 
@@ -115,6 +125,76 @@ describe('JSON Utils', () => {
       const result = readJsonSafe(filePath, {});
 
       expect(result).toEqual({ ok: true });
+    });
+  });
+
+  describe('stripBom', () => {
+    it('strips a leading BOM only', () => {
+      expect(stripBom('\uFEFF{"ok":true}')).toBe('{"ok":true}');
+      expect(stripBom('{"ok":"\uFEFF"}')).toBe('{"ok":"\uFEFF"}');
+    });
+  });
+
+  describe('parseJsonArrayColumn', () => {
+    it('passes through string arrays unchanged', () => {
+      expect(parseJsonArrayColumn(['a', 'b'])).toEqual(['a', 'b']);
+    });
+
+    it('returns empty array for empty string', () => {
+      expect(parseJsonArrayColumn('')).toEqual([]);
+    });
+
+    it('returns empty array for null', () => {
+      expect(parseJsonArrayColumn(null)).toEqual([]);
+    });
+
+    it('parses a JSON-encoded array of strings', () => {
+      expect(parseJsonArrayColumn('["a","b"]')).toEqual(['a', 'b']);
+    });
+
+    it('returns empty array for invalid JSON', () => {
+      expect(parseJsonArrayColumn('not json')).toEqual([]);
+    });
+
+    it('returns empty array when JSON is not an array', () => {
+      expect(parseJsonArrayColumn('{"a":1}')).toEqual([]);
+    });
+
+    it('filters non-string elements out of arrays', () => {
+      expect(parseJsonArrayColumn(['a', 1, null, 'b'])).toEqual(['a', 'b']);
+      expect(parseJsonArrayColumn('["a",1,null,"b"]')).toEqual(['a', 'b']);
+    });
+
+    it('invokes onParseError with the raw value when JSON.parse throws', () => {
+      const errors: Array<{ error: unknown; rawValue: string }> = [];
+      const result = parseJsonArrayColumn('not json', (error, rawValue) => {
+        errors.push({ error, rawValue });
+      });
+      expect(result).toEqual([]);
+      expect(errors).toHaveLength(1);
+      expect(errors[0].rawValue).toBe('not json');
+      expect(errors[0].error).toBeInstanceOf(SyntaxError);
+    });
+
+    it('does not invoke onParseError on success', () => {
+      const onParseError = mock(() => {});
+      parseJsonArrayColumn('["a","b"]', onParseError);
+      expect(onParseError).not.toHaveBeenCalled();
+    });
+
+    it('does not invoke onParseError when JSON parses to a non-array', () => {
+      const onParseError = mock(() => {});
+      expect(parseJsonArrayColumn('{"a":1}', onParseError)).toEqual([]);
+      expect(parseJsonArrayColumn('42', onParseError)).toEqual([]);
+      expect(parseJsonArrayColumn('"a string"', onParseError)).toEqual([]);
+      expect(onParseError).not.toHaveBeenCalled();
+    });
+
+    it('treats whitespace-only strings as empty without invoking onParseError', () => {
+      const onParseError = mock(() => {});
+      expect(parseJsonArrayColumn('   ', onParseError)).toEqual([]);
+      expect(parseJsonArrayColumn('\n\t', onParseError)).toEqual([]);
+      expect(onParseError).not.toHaveBeenCalled();
     });
   });
 });

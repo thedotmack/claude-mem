@@ -6,6 +6,39 @@ import { logger } from '../utils/logger.js';
 import { sanitizeEnv } from './env-sanitizer.js';
 import { paths } from '../shared/paths.js';
 
+export function parseCmdFile(cmdPath: string): { node: string; script: string } | null {
+  try {
+    const content = readFileSync(cmdPath, 'utf-8');
+    const match = content.match(/"%_prog%"\s+"([^"]+)"/);
+    if (!match || !match[1]) {
+      return null;
+    }
+
+    let scriptPath = match[1];
+    const cmdDir = path.dirname(cmdPath);
+    if (scriptPath.startsWith('%dp0%\\')) {
+      scriptPath = scriptPath.replace(/^%dp0%\\/, cmdDir + '\\');
+    } else if (scriptPath.startsWith('%~dp0\\') || scriptPath.startsWith('%dp0\\')) {
+      scriptPath = scriptPath.replace(/^%~?dp0\\/, cmdDir + '\\');
+    } else if (scriptPath.startsWith('%dp0%')) {
+      scriptPath = scriptPath.replace(/^%dp0%/, cmdDir);
+    } else if (scriptPath.startsWith('%~dp0') || scriptPath.startsWith('%dp0')) {
+      scriptPath = scriptPath.replace(/^%~?dp0/, cmdDir);
+    }
+
+    scriptPath = scriptPath.replace(/\\/g, path.sep);
+    if (!existsSync(scriptPath)) {
+      return null;
+    }
+
+    const localNodePath = path.join(cmdDir, 'node.exe');
+    const node = existsSync(localNodePath) ? localNodePath : 'node';
+    return { node, script: scriptPath };
+  } catch {
+    return null;
+  }
+}
+
 const REAP_SESSION_SIGTERM_TIMEOUT_MS = 5_000;
 const REAP_SESSION_SIGKILL_TIMEOUT_MS = 1_000;
 
@@ -72,6 +105,32 @@ export interface PidInfo {
 const WINDOWS_START_TOKEN_CACHE_TTL_MS = 5_000;
 const windowsStartTokenCache = new Map<number, { token: string | null; capturedAtMs: number }>();
 
+function queryWindowsCreationDate(pid: number): string | null {
+  // CreationDate is a CIM DATETIME (yyyyMMddHHmmss.ffffff±UTCoffset) that is
+  // unique-enough per (pid, boot) to detect PID reuse. `-NoProfile` keeps it
+  // fast; sanitizeEnv keeps the spawn-env discipline uniform (#2357/#2375).
+  const result = spawnSync(
+    'powershell.exe',
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `(Get-CimInstance Win32_Process -Filter \"ProcessId=${pid}\").CreationDate.ToString('yyyyMMddHHmmss.ffffff')`
+    ],
+    {
+      encoding: 'utf-8',
+      timeout: 5000,
+      windowsHide: true,
+      env: { ...sanitizeEnv(process.env), LC_ALL: 'C', LANG: 'C' }
+    }
+  );
+  if (result.status === 0) {
+    const trimmed = result.stdout.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  return null;
+}
+
 function captureWindowsStartToken(pid: number): string | null {
   const cached = windowsStartTokenCache.get(pid);
   if (cached && Date.now() - cached.capturedAtMs < WINDOWS_START_TOKEN_CACHE_TTL_MS) {
@@ -80,28 +139,7 @@ function captureWindowsStartToken(pid: number): string | null {
 
   let token: string | null = null;
   try {
-    // CreationDate is a CIM DATETIME (yyyyMMddHHmmss.ffffff±UTCoffset) that is
-    // unique-enough per (pid, boot) to detect PID reuse. `-NoProfile` keeps it
-    // fast; sanitizeEnv keeps the spawn-env discipline uniform (#2357/#2375).
-    const result = spawnSync(
-      'powershell.exe',
-      [
-        '-NoProfile',
-        '-NonInteractive',
-        '-Command',
-        `(Get-CimInstance Win32_Process -Filter \"ProcessId=${pid}\").CreationDate.ToString('yyyyMMddHHmmss.ffffff')`
-      ],
-      {
-        encoding: 'utf-8',
-        timeout: 5000,
-        windowsHide: true,
-        env: { ...sanitizeEnv(process.env), LC_ALL: 'C', LANG: 'C' }
-      }
-    );
-    if (result.status === 0) {
-      const trimmed = result.stdout.trim();
-      token = trimmed.length > 0 ? trimmed : null;
-    }
+    token = queryWindowsCreationDate(pid);
   } catch (error: unknown) {
     logger.debug('SYSTEM', 'captureProcessStartToken: powershell CIM lookup failed', {
       pid,
@@ -268,10 +306,6 @@ export class ProcessRegistry {
 
   getRuntimeProcess(id: string): ChildProcess | undefined {
     return this.runtimeProcesses.get(id);
-  }
-
-  getByPid(pid: number): ManagedProcessRecord[] {
-    return this.getAll().filter(record => record.pid === pid);
   }
 
   pruneDeadEntries(): number {
@@ -493,7 +527,18 @@ export async function ensureSdkProcessExit(
   await Promise.race([sigkillExit, sigkillTimeout]);
 }
 
-const TOTAL_PROCESS_HARD_CAP = 10;
+export const DEFAULT_TOTAL_PROCESS_HARD_CAP = 10;
+
+// Absolute ceiling on concurrent SDK subprocesses, sitting above the per-session
+// CLAUDE_MEM_MAX_CONCURRENT_AGENTS pool. Env-configurable so a high-throughput
+// batch backfill against a local model, where cloud rate limits don't apply, can
+// lift it. Non-positive / unparseable values fall back to the default.
+export function resolveTotalProcessHardCap(raw: string | undefined): number {
+  const parsed = parseInt(raw ?? '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_TOTAL_PROCESS_HARD_CAP;
+}
+
+const TOTAL_PROCESS_HARD_CAP = resolveTotalProcessHardCap(process.env.CLAUDE_MEM_TOTAL_PROCESS_HARD_CAP);
 const SLOT_RECHECK_INTERVAL_MS = 5_000;
 const slotWaiters: Array<() => void> = [];
 
@@ -582,22 +627,15 @@ export interface SpawnedSdkProcess {
 export interface SpawnSdkOptions {
   command: string;
   args: string[];
+  extraArgs?: string[];
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
 }
 
-export function spawnSdkProcess(
-  sessionDbId: number,
-  options: SpawnSdkOptions
-): { process: SpawnedSdkProcess; pid: number; pgid: number } | null {
-  const registry = getProcessRegistry();
-
-  const useCmdWrapper = process.platform === 'win32' && options.command.endsWith('.cmd');
-  const env = sanitizeEnv(options.env ?? process.env);
-
+export function normalizeSpawnSdkArgs(args: string[], extraArgs: string[] = []): string[] {
   const filteredArgs: string[] = [];
-  for (const arg of options.args) {
+  for (const arg of args) {
     if (arg === '') {
       if (filteredArgs.length > 0 && filteredArgs[filteredArgs.length - 1].startsWith('--')) {
         filteredArgs.pop();
@@ -607,17 +645,31 @@ export function spawnSdkProcess(
     filteredArgs.push(arg);
   }
 
+  for (const extraArg of extraArgs) {
+    if (extraArg !== '') {
+      filteredArgs.push(extraArg);
+    }
+  }
+
+  return filteredArgs;
+}
+
+export function spawnSdkProcess(
+  sessionDbId: number,
+  options: SpawnSdkOptions
+): { process: SpawnedSdkProcess; pid: number; pgid: number } | null {
+  const registry = getProcessRegistry();
+
+  const env = sanitizeEnv(options.env ?? process.env);
+  const filteredArgs = normalizeSpawnSdkArgs(options.args, options.extraArgs);
+
   const isWin = process.platform === 'win32';
-  const child = useCmdWrapper
-    ? spawnHidden('cmd.exe', ['/d', '/c', options.command, ...filteredArgs], {
-        cwd: options.cwd,
-        env,
-        detached: !isWin,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        signal: options.signal,
-        windowsHide: true,
-      })
-    : spawnHidden(options.command, filteredArgs, {
+  let child: ChildProcess;
+
+  if (isWin && options.command.endsWith('.cmd')) {
+    const parsed = parseCmdFile(options.command);
+    if (parsed) {
+      child = spawnHidden(parsed.node, [parsed.script, ...filteredArgs], {
         cwd: options.cwd,
         env,
         detached: !isWin,
@@ -625,6 +677,26 @@ export function spawnSdkProcess(
         signal: options.signal,
         windowsHide: true,
       });
+    } else {
+      child = spawnHidden('cmd.exe', ['/d', '/c', options.command, ...filteredArgs], {
+        cwd: options.cwd,
+        env,
+        detached: !isWin,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        signal: options.signal,
+        windowsHide: true,
+      });
+    }
+  } else {
+    child = spawnHidden(options.command, filteredArgs, {
+      cwd: options.cwd,
+      env,
+      detached: !isWin,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      signal: options.signal,
+      windowsHide: true,
+    });
+  }
 
   child.on('error', (err: Error) => {
     logger.warn('SDK_SPAWN', `[session-${sessionDbId}] child emitted error event`, {
@@ -711,7 +783,23 @@ export function spawnSdkProcess(
   return { process: spawned, pid, pgid };
 }
 
-export function createSdkSpawnFactory(sessionDbId: number) {
+function sigtermDuplicateSdkProcess(record: ManagedProcessRecord, sessionDbId: number): void {
+  if (typeof record.pgid === 'number') {
+    if (process.platform !== 'win32') {
+      process.kill(-record.pgid, 'SIGTERM');
+    } else {
+      process.kill(record.pid, 'SIGTERM');
+    }
+  } else {
+    process.kill(record.pid, 'SIGTERM');
+  }
+  logger.warn('PROCESS', `Killing duplicate SDK process PID ${record.pid} before spawning new one for session ${sessionDbId}`, {
+    existingPid: record.pid,
+    sessionDbId,
+  });
+}
+
+export function createSdkSpawnFactory(sessionDbId: number, extraArgs: string[] = []) {
   return (spawnOptions: SpawnSdkOptions): SpawnedSdkProcess => {
     const registry = getProcessRegistry();
 
@@ -719,19 +807,7 @@ export function createSdkSpawnFactory(sessionDbId: number) {
     for (const record of existing) {
       if (!isPidAlive(record.pid)) continue;
       try {
-        if (typeof record.pgid === 'number') {
-          if (process.platform !== 'win32') {
-            process.kill(-record.pgid, 'SIGTERM');
-          } else {
-            process.kill(record.pid, 'SIGTERM');
-          }
-        } else {
-          process.kill(record.pid, 'SIGTERM');
-        }
-        logger.warn('PROCESS', `Killing duplicate SDK process PID ${record.pid} before spawning new one for session ${sessionDbId}`, {
-          existingPid: record.pid,
-          sessionDbId,
-        });
+        sigtermDuplicateSdkProcess(record, sessionDbId);
       } catch (error: unknown) {
         const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
         if (code !== 'ESRCH') {
@@ -746,7 +822,10 @@ export function createSdkSpawnFactory(sessionDbId: number) {
       }
     }
 
-    const result = spawnSdkProcess(sessionDbId, spawnOptions);
+    const result = spawnSdkProcess(sessionDbId, {
+      ...spawnOptions,
+      extraArgs: [...(spawnOptions.extraArgs ?? []), ...extraArgs],
+    });
     if (!result) {
       throw new Error(`Failed to spawn SDK subprocess for session ${sessionDbId}`);
     }

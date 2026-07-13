@@ -7,15 +7,19 @@ import {
   getWorkerPort,
 } from '../../shared/worker-utils.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
+import { normalizePlatformSource } from '../../shared/platform-source.js';
 
 export const userMessageHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
     const port = getWorkerPort();
     const project = basename(input.cwd ?? process.cwd());
     const colorsParam = input.platform === 'claude-code' ? '&colors=true' : '';
+    const platformSourceParam = input.platform
+      ? `&platformSource=${encodeURIComponent(normalizePlatformSource(input.platform))}`
+      : '';
 
     const result = await executeWithWorkerFallback<string>(
-      `/api/context/inject?project=${encodeURIComponent(project)}${colorsParam}`,
+      `/api/context/inject?project=${encodeURIComponent(project)}${colorsParam}${platformSourceParam}`,
       'GET',
     );
 

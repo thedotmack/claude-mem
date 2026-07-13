@@ -1,8 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdirSync, writeFileSync, rmSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { verifyCriticalModules } from '../../src/npx-cli/install/setup-runtime';
+import {
+  ensureTreeSitterCliBinary,
+  treeSitterCliBinaryPath,
+  verifyCriticalModules,
+} from '../../src/npx-cli/install/setup-runtime';
 
 /**
  * Write a fake installed package into <targetDir>/node_modules/<name>.
@@ -110,5 +114,67 @@ describe('verifyCriticalModules', () => {
     writeFakeBinOnlyPackage(tempDir, 'faux-cli', 'faux');
 
     expect(() => verifyCriticalModules(tempDir)).not.toThrow();
+  });
+
+  it('rejects tree-sitter-cli when its downloaded executable is missing', () => {
+    writeRootPackage(tempDir, { 'tree-sitter-cli': '^0.26.0' });
+    writeFakeBinOnlyPackage(tempDir, 'tree-sitter-cli', 'tree-sitter');
+
+    expect(() => verifyCriticalModules(tempDir)).toThrow(/tree-sitter-cli executable/);
+  });
+
+  it('rejects tree-sitter-cli when its downloaded file is not executable', () => {
+    if (process.platform === 'win32') return;
+
+    writeRootPackage(tempDir, { 'tree-sitter-cli': '^0.26.0' });
+    writeFakeBinOnlyPackage(tempDir, 'tree-sitter-cli', 'tree-sitter');
+    const binaryPath = treeSitterCliBinaryPath(tempDir);
+    writeFileSync(binaryPath, 'not executable');
+    chmodSync(binaryPath, 0o644);
+
+    expect(() => verifyCriticalModules(tempDir)).toThrow(/tree-sitter-cli executable/);
+  });
+
+  it('rejects tree-sitter-cli when an executable returns invalid version output', () => {
+    if (process.platform === 'win32') return;
+
+    writeRootPackage(tempDir, { 'tree-sitter-cli': '^0.26.0' });
+    writeFakeBinOnlyPackage(tempDir, 'tree-sitter-cli', 'tree-sitter');
+    const binaryPath = treeSitterCliBinaryPath(tempDir);
+    writeFileSync(binaryPath, '#!/bin/sh\necho corrupt-binary\n');
+    chmodSync(binaryPath, 0o755);
+
+    expect(() => verifyCriticalModules(tempDir)).toThrow(/tree-sitter-cli executable/);
+  });
+
+  it('runs the top-level tree-sitter-cli installer when its executable is missing', async () => {
+    writeRootPackage(tempDir, { 'tree-sitter-cli': '^0.26.0' });
+    writeFakeBinOnlyPackage(tempDir, 'tree-sitter-cli', 'tree-sitter');
+    const cliDir = join(tempDir, 'node_modules', 'tree-sitter-cli');
+    writeFileSync(
+      join(cliDir, 'install.js'),
+      [
+        `const fs = require('fs');`,
+        `const binary = ${JSON.stringify(treeSitterCliBinaryPath(tempDir))};`,
+        `const contents = process.platform === 'win32' ? 'fixture' : '#!/bin/sh\\necho tree-sitter 0.0.0\\n';`,
+        `fs.writeFileSync(binary, contents);`,
+        `if (process.platform !== 'win32') fs.chmodSync(binary, 0o755);`,
+        '',
+      ].join('\n'),
+    );
+
+    if (process.platform === 'win32') {
+      await ensureTreeSitterCliBinary(
+        tempDir,
+        (targetDir) => existsSync(treeSitterCliBinaryPath(targetDir)),
+      );
+    } else {
+      await ensureTreeSitterCliBinary(tempDir);
+    }
+
+    expect(existsSync(treeSitterCliBinaryPath(tempDir))).toBe(true);
+    if (process.platform !== 'win32') {
+      expect(() => verifyCriticalModules(tempDir)).not.toThrow();
+    }
   });
 });

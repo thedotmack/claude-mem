@@ -1,6 +1,13 @@
 import { describe, it, expect } from 'bun:test';
-import { buildTimeline } from '../../src/services/context/ObservationCompiler.js';
-import type { Observation, SummaryTimelineItem } from '../../src/services/context/types.js';
+import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
+import {
+  buildTimeline,
+  countObservationsByProjects,
+  countSummariesByProjects,
+  queryObservationsMulti,
+  querySummariesMulti,
+} from '../../src/services/context/ObservationCompiler.js';
+import type { ContextConfig, Observation, SummaryTimelineItem } from '../../src/services/context/types.js';
 
 function createTestObservation(overrides: Partial<Observation> = {}): Observation {
   return {
@@ -132,4 +139,250 @@ describe('buildTimeline', () => {
       expect(timeline[0].type).toBe('summary');
       expect(timeline[1].type).toBe('observation');
     });
+});
+
+describe('context compiler platform scoping', () => {
+  const config: ContextConfig = {
+    totalObservationCount: 20,
+    fullObservationCount: 3,
+    sessionCount: 20,
+    showReadTokens: true,
+    showWorkTokens: true,
+    showSavingsAmount: true,
+    showSavingsPercent: true,
+    observationTypes: new Set(['discovery']),
+    observationConcepts: new Set(['platform-scope']),
+    fullObservationField: 'narrative',
+    showLastSummary: true,
+    showLastMessage: false,
+  };
+
+  function seed(
+    store: SessionStore,
+    input: {
+      project: string;
+      contentSessionId: string;
+      memorySessionId: string;
+      platformSource: string;
+      title: string;
+      summaryRequest: string;
+      createdAtEpoch: number;
+    },
+  ): void {
+    const sessionDbId = store.createSDKSession(
+      input.contentSessionId,
+      input.project,
+      `${input.platformSource} prompt`,
+      undefined,
+      input.platformSource,
+    );
+    store.ensureMemorySessionIdRegistered(sessionDbId, input.memorySessionId);
+    store.storeObservation(
+      input.memorySessionId,
+      input.project,
+      {
+        type: 'discovery',
+        title: input.title,
+        subtitle: null,
+        facts: [],
+        narrative: `${input.platformSource} context narrative`,
+        concepts: ['platform-scope'],
+        files_read: [],
+        files_modified: [],
+      },
+      1,
+      0,
+      input.createdAtEpoch,
+    );
+    store.storeSummary(
+      input.memorySessionId,
+      input.project,
+      {
+        request: input.summaryRequest,
+        investigated: 'investigated',
+        learned: 'learned',
+        completed: 'completed',
+        next_steps: 'next',
+        notes: null,
+      },
+      1,
+      0,
+      input.createdAtEpoch,
+    );
+  }
+
+  it('filters observations, summaries, and project counts by platformSource when supplied', () => {
+    const store = new SessionStore(':memory:');
+    try {
+      seed(store, {
+        project: 'context-platform-project',
+        contentSessionId: 'shared-context-id',
+        memorySessionId: 'codex-context-memory',
+        platformSource: 'codex',
+        title: 'CODEX_CONTEXT_OBS',
+        summaryRequest: 'CODEX_CONTEXT_SUMMARY',
+        createdAtEpoch: 1_700_000_000_000,
+      });
+      seed(store, {
+        project: 'context-platform-project',
+        contentSessionId: 'shared-context-id',
+        memorySessionId: 'claude-context-memory',
+        platformSource: 'claude',
+        title: 'CLAUDE_CONTEXT_OBS',
+        summaryRequest: 'CLAUDE_CONTEXT_SUMMARY',
+        createdAtEpoch: 1_700_000_001_000,
+      });
+
+      const codexObservations = queryObservationsMulti(store, ['context-platform-project'], config, 'codex');
+      expect(codexObservations.map(obs => obs.title)).toEqual(['CODEX_CONTEXT_OBS']);
+      expect(codexObservations[0].platform_source).toBe('codex');
+
+      const codexSummaries = querySummariesMulti(store, ['context-platform-project'], config, 'codex');
+      expect(codexSummaries.map(summary => summary.request)).toEqual(['CODEX_CONTEXT_SUMMARY']);
+      expect(codexSummaries[0].platform_source).toBe('codex');
+
+      expect(countObservationsByProjects(store, ['context-platform-project'], 'codex')).toBe(1);
+      expect(countObservationsByProjects(store, ['context-platform-project'], 'claude')).toBe(1);
+      expect(countObservationsByProjects(store, ['context-platform-project'])).toBe(2);
+      expect(countSummariesByProjects(store, ['context-platform-project'], 'codex')).toBe(1);
+      expect(countSummariesByProjects(store, ['context-platform-project'], 'claude')).toBe(1);
+      expect(countSummariesByProjects(store, ['context-platform-project'])).toBe(2);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('applies platformSource across multi-project context queries', () => {
+    const store = new SessionStore(':memory:');
+    try {
+      seed(store, {
+        project: 'context-parent',
+        contentSessionId: 'parent-codex',
+        memorySessionId: 'parent-codex-memory',
+        platformSource: 'codex',
+        title: 'PARENT_CODEX_OBS',
+        summaryRequest: 'PARENT_CODEX_SUMMARY',
+        createdAtEpoch: 1_700_000_000_000,
+      });
+      seed(store, {
+        project: 'context-worktree',
+        contentSessionId: 'worktree-codex',
+        memorySessionId: 'worktree-codex-memory',
+        platformSource: 'codex',
+        title: 'WORKTREE_CODEX_OBS',
+        summaryRequest: 'WORKTREE_CODEX_SUMMARY',
+        createdAtEpoch: 1_700_000_001_000,
+      });
+      seed(store, {
+        project: 'context-worktree',
+        contentSessionId: 'worktree-claude',
+        memorySessionId: 'worktree-claude-memory',
+        platformSource: 'claude',
+        title: 'WORKTREE_CLAUDE_OBS',
+        summaryRequest: 'WORKTREE_CLAUDE_SUMMARY',
+        createdAtEpoch: 1_700_000_002_000,
+      });
+
+      const projects = ['context-parent', 'context-worktree'];
+      expect(queryObservationsMulti(store, projects, config, 'codex').map(obs => obs.title)).toEqual([
+        'WORKTREE_CODEX_OBS',
+        'PARENT_CODEX_OBS',
+      ]);
+      expect(querySummariesMulti(store, projects, config, 'codex').map(summary => summary.request)).toEqual([
+        'WORKTREE_CODEX_SUMMARY',
+        'PARENT_CODEX_SUMMARY',
+      ]);
+    } finally {
+      store.close();
+    }
+  });
+});
+
+describe('context compiler dream namespace selection', () => {
+  const config: ContextConfig = {
+    totalObservationCount: 2,
+    fullObservationCount: 1,
+    sessionCount: 2,
+    showReadTokens: true,
+    showWorkTokens: true,
+    showSavingsAmount: true,
+    showSavingsPercent: true,
+    observationTypes: new Set(['discovery']),
+    observationConcepts: new Set(['platform-scope']),
+    fullObservationField: 'narrative',
+    showLastSummary: true,
+    showLastMessage: false,
+  };
+
+  function seedObservation(
+    store: SessionStore,
+    input: { project: string; title: string; epoch: number; platformSource?: string },
+  ): void {
+    const sessionDbId = store.createSDKSession(
+      `${input.title}-content`,
+      input.project,
+      `${input.title} prompt`,
+      undefined,
+      input.platformSource ?? 'claude',
+    );
+    const memorySessionId = `${input.title}-memory`;
+    store.ensureMemorySessionIdRegistered(sessionDbId, memorySessionId);
+    store.storeObservation(
+      memorySessionId,
+      input.project,
+      {
+        type: 'discovery',
+        title: input.title,
+        subtitle: null,
+        facts: [],
+        narrative: `${input.title} narrative`,
+        concepts: ['platform-scope'],
+        files_read: [],
+        files_modified: [],
+      },
+      1,
+      0,
+      input.epoch,
+    );
+  }
+
+  it('prioritizes dream observations while preserving a raw fallback', () => {
+    const store = new SessionStore(':memory:');
+    try {
+      seedObservation(store, { project: 'dream-project', title: 'RAW_OLD', epoch: 1_700_000_000_000 });
+      seedObservation(store, { project: 'dream-project:dream', title: 'DREAM_ONE', epoch: 1_700_000_001_000 });
+      seedObservation(store, { project: 'dream-project:dream', title: 'DREAM_TWO', epoch: 1_700_000_002_000 });
+      seedObservation(store, { project: 'dream-project:dream', title: 'DREAM_THREE', epoch: 1_700_000_003_000 });
+
+      const rows = queryObservationsMulti(store, ['dream-project:dream', 'dream-project'], config);
+
+      expect(rows.map(row => row.title)).toEqual(['DREAM_THREE', 'RAW_OLD']);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('does not use cross-platform raw observations as the fallback', () => {
+    const store = new SessionStore(':memory:');
+    try {
+      seedObservation(store, {
+        project: 'platform-dream',
+        title: 'CLAUDE_RAW',
+        epoch: 1_700_000_000_000,
+        platformSource: 'claude',
+      });
+      seedObservation(store, {
+        project: 'platform-dream:dream',
+        title: 'CODEX_DREAM',
+        epoch: 1_700_000_001_000,
+        platformSource: 'codex',
+      });
+
+      const rows = queryObservationsMulti(store, ['platform-dream:dream', 'platform-dream'], config, 'codex');
+
+      expect(rows.map(row => row.title)).toEqual(['CODEX_DREAM']);
+    } finally {
+      store.close();
+    }
+  });
 });

@@ -4,6 +4,15 @@ import { ModeManager } from '../../src/services/domain/ModeManager.js';
 
 import { parseAgentXml } from '../../src/sdk/parser.js';
 
+// Load the real bundled `code` mode rather than mocking ModeManager. The
+// previous `mock.module(...)` replaced ModeManager process-globally and was
+// never restored, so its partial stub (no `loadMode`) leaked into other test
+// files in the same `bun test` run — notably the SDK integration tests, whose
+// createCmemClient() calls `ModeManager.getInstance().loadMode('code')`. The
+// real `code` mode is a superset of the types these tests exercise
+// (bugfix / discovery / refactor), so the assertions below are unchanged.
+ModeManager.getInstance().loadMode('code');
+
 function expectObservation(raw: string) {
   const result = parseAgentXml(raw);
   if (!result.valid) throw new Error('expected valid observation, got invalid result');
@@ -139,6 +148,41 @@ describe('parseAgentXml — observations', () => {
   it('returns a fail-fast result when no observation/summary blocks are present', () => {
     const result = parseAgentXml('Some text without any observations.');
     expect(result.valid).toBe(false);
+  });
+
+  it('reports observation root kind for valid observations', () => {
+    const result = parseAgentXml(`<observation>
+      <type>discovery</type>
+      <title>Root kind</title>
+    </observation>`);
+
+    expect(result.valid).toBe(true);
+    if (!result.valid) return;
+    expect(result.rootKind).toBe('observation');
+  });
+
+  it('rejects explicit no-op observation XML unless opted in', () => {
+    const xml = `<observation>
+      <type>skip</type>
+      <narrative>No new observations from this routine status check.</narrative>
+    </observation>`;
+
+    expect(parseAgentXml(xml).valid).toBe(false);
+  });
+
+  it('accepts explicit no-op observation XML when opted in', () => {
+    const xml = `<observation>
+      <type>skip</type>
+      <narrative>No new observations from this routine status check.</narrative>
+    </observation>`;
+
+    const result = parseAgentXml(xml, 'test-correlation', { allowNoOpObservations: true });
+
+    expect(result.valid).toBe(true);
+    if (!result.valid) return;
+    expect(result.rootKind).toBe('observation');
+    expect(result.observations).toEqual([]);
+    expect(result.summary).toBeNull();
   });
 
   it('parses files_read and files_modified arrays correctly', () => {

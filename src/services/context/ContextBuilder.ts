@@ -5,15 +5,16 @@ import { unlinkSync } from 'fs';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
+import { normalizePlatformSource } from '../../shared/platform-source.js';
 
 import type { ContextInput, ContextConfig, Observation, SessionSummary } from './types.js';
 import { loadContextConfig } from './ContextConfigLoader.js';
 import { calculateTokenEconomics } from './TokenCalculator.js';
 import {
-  queryObservations,
   queryObservationsMulti,
-  querySummaries,
   querySummariesMulti,
+  countObservationsByProjects,
+  countSummariesByProjects,
   getPriorSessionMessages,
   prepareSummariesForTimeline,
   buildTimeline,
@@ -23,6 +24,7 @@ import { renderHeader } from './sections/HeaderRenderer.js';
 import { renderTimeline } from './sections/TimelineRenderer.js';
 import { shouldShowSummary, renderSummaryFields } from './sections/SummaryRenderer.js';
 import { renderPreviouslySection, renderFooter } from './sections/FooterRenderer.js';
+import { renderMermaidFlow } from './sections/MermaidRenderer.js';
 import { renderAgentEmptyState } from './formatters/AgentFormatter.js';
 import { renderHumanEmptyState } from './formatters/HumanFormatter.js';
 
@@ -61,6 +63,19 @@ function renderEmptyState(project: string, forHuman: boolean): string {
   return forHuman ? renderHumanEmptyState(project) : renderAgentEmptyState(project);
 }
 
+function isDreamProject(project: string): boolean {
+  return project.endsWith(':dream');
+}
+
+function rawProjectName(project: string): string {
+  return isDreamProject(project) ? project.slice(0, -':dream'.length) : project;
+}
+
+function getPrimaryContextProject(projects: string[], fallback: string): string {
+  const primary = [...projects].reverse().find(project => !isDreamProject(project)) ?? fallback;
+  return rawProjectName(primary);
+}
+
 function buildContextOutput(
   project: string,
   observations: Observation[],
@@ -73,8 +88,13 @@ function buildContextOutput(
   const output: string[] = [];
 
   const economics = calculateTokenEconomics(observations);
+  const mostRecentSummary = summaries[0];
 
   output.push(...renderHeader(project, economics, config, forHuman));
+
+  if (config.mermaidContext && !forHuman) {
+    output.push(...renderMermaidFlow(observations, mostRecentSummary));
+  }
 
   const displaySummaries = summaries.slice(0, config.sessionCount);
   const summariesForTimeline = prepareSummariesForTimeline(displaySummaries, summaries);
@@ -83,7 +103,6 @@ function buildContextOutput(
 
   output.push(...renderTimeline(timeline, fullObservationIds, config, cwd, forHuman));
 
-  const mostRecentSummary = summaries[0];
   const mostRecentObservation = observations[0];
 
   if (shouldShowSummary(config, mostRecentSummary, mostRecentObservation)) {
@@ -168,7 +187,7 @@ export async function generateContextWithStats(
   const context = getProjectContext(cwd);
 
   const projects = input?.projects?.length ? input.projects : context.allProjects;
-  const project = projects[projects.length - 1] ?? context.primary;
+  const project = getPrimaryContextProject(projects, context.primary);
 
   if (input?.full) {
     config.totalObservationCount = 999999;
@@ -181,12 +200,21 @@ export async function generateContextWithStats(
   }
 
   try {
-    const observations = projects.length > 1
-      ? queryObservationsMulti(db, projects, config)
-      : queryObservations(db, project, config);
-    const summaries = projects.length > 1
-      ? querySummariesMulti(db, projects, config)
-      : querySummaries(db, project, config);
+    const platformSource = input?.platformSource
+      ? normalizePlatformSource(input.platformSource)
+      : undefined;
+    const dreamProjects = projects.filter(isDreamProject);
+    const rawProjects = projects.filter(candidate => !isDreamProject(candidate)).map(rawProjectName);
+    const dreamProjectsHaveContext = dreamProjects.length > 0
+      && (
+        countObservationsByProjects(db, dreamProjects, platformSource) > 0
+        || countSummariesByProjects(db, dreamProjects, platformSource) > 0
+      );
+    const queryProjects = dreamProjectsHaveContext || rawProjects.length === 0
+      ? projects
+      : rawProjects;
+    const observations = queryObservationsMulti(db, queryProjects, config, platformSource);
+    const summaries = querySummariesMulti(db, queryProjects, config, platformSource);
 
     if (observations.length === 0 && summaries.length === 0) {
       return { text: renderEmptyState(project, forHuman), stats: null };

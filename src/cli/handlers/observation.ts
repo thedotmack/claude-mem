@@ -7,9 +7,11 @@ import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker
 import { logger } from '../../utils/logger.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
+import { shouldSkipAgentObservation } from '../../shared/should-skip-agent-observation.js';
+import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
-import { resolveRuntimeContext, logServerBetaFallback } from '../../services/hooks/runtime-selector.js';
-import { isServerBetaClientError } from '../../services/hooks/server-beta-client.js';
+import { resolveRuntimeContext, logServerFallback } from '../../services/hooks/runtime-selector.js';
+import { isServerClientError, type ServerRecordEventRequest } from '../../services/hooks/server-client.js';
 
 async function dispatchToWorker(
   input: NormalizedHookInput,
@@ -47,6 +49,13 @@ export const observationHandler: EventHandler = {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
+    if (!sessionId) {
+      // Mirrors session-init/summarize: without a session id the worker would
+      // create an orphaned session row keyed on undefined.
+      logger.warn('HOOK', 'observation: No sessionId provided, skipping');
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
+
     const toolStr = logger.formatTool(toolName, toolInput);
 
     logger.dataIn('HOOK', `PostToolUse: ${toolStr}`, {});
@@ -60,33 +69,48 @@ export const observationHandler: EventHandler = {
       return { continue: true, suppressOutput: true };
     }
 
+    const agentSkip = shouldSkipAgentObservation(input.agentId, input.agentType, loadFromFileOnce());
+    if (agentSkip.skip) {
+      logger.debug('HOOK', `Skipping observation: ${agentSkip.reason}`, {
+        toolName,
+        agentId: input.agentId,
+        agentType: input.agentType,
+      });
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
+
     const runtime = resolveRuntimeContext();
-    if (runtime.runtime === 'server-beta') {
+    // Phase 1a (cmem-sdk rename): `runtime.runtime` is the canonical `'server'`
+    // value. `runtime-selector.selectRuntime()` continues to accept the legacy
+    // `'server-beta'` literal in settings.json and normalizes it to `'server'`.
+    if (runtime.runtime === 'server') {
+      const event: ServerRecordEventRequest = {
+        projectId: runtime.projectId,
+        contentSessionId: sessionId,
+        platformSource,
+        sourceType: 'hook',
+        eventType: 'tool_use',
+        occurredAtEpoch: Date.now(),
+        payload: {
+          tool_name: toolName,
+          tool_input: toolInput,
+          tool_response: toolResponse,
+          cwd,
+          agentId: input.agentId,
+          agentType: input.agentType,
+          platformSource,
+        },
+      };
       try {
-        await runtime.client.recordEvent({
-          projectId: runtime.projectId,
-          contentSessionId: sessionId,
-          sourceType: 'hook',
-          eventType: 'tool_use',
-          occurredAtEpoch: Date.now(),
-          payload: {
-            tool_name: toolName,
-            tool_input: toolInput,
-            tool_response: toolResponse,
-            cwd,
-            agentId: input.agentId,
-            agentType: input.agentType,
-            platformSource,
-          },
-        });
-        logger.debug('HOOK', 'Observation sent successfully via server-beta', { toolName });
+        await runtime.client.recordEvent(event);
+        logger.debug('HOOK', 'Observation sent successfully via server', { toolName });
         return { continue: true, suppressOutput: true };
       } catch (error: unknown) {
-        if (isServerBetaClientError(error) && error.isFallbackEligible()) {
-          logServerBetaFallback(error.kind, { status: error.status, message: error.message, route: '/v1/events' });
+        if (isServerClientError(error) && error.isFallbackEligible()) {
+          logServerFallback(error.kind, { status: error.status, message: error.message, route: '/v1/events' });
           // fall through to worker fallback
         } else {
-          logger.error('HOOK', 'Server beta event failed (non-recoverable)', {
+          logger.error('HOOK', 'Server event failed (non-recoverable)', {
             error: error instanceof Error ? error.message : String(error),
           });
           return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };

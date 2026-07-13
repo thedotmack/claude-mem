@@ -49,6 +49,16 @@ describe('Hook Lifecycle - Event Handlers', () => {
   });
 });
 
+describe('Kiro CLI Compatibility', () => {
+  describe('getPlatformAdapter', () => {
+    it('should return kiroAdapter for kiro and kiro-cli', async () => {
+      const { getPlatformAdapter, kiroAdapter } = await import('../src/cli/adapters/index.js');
+      expect(getPlatformAdapter('kiro')).toBe(kiroAdapter);
+      expect(getPlatformAdapter('kiro-cli')).toBe(kiroAdapter);
+    });
+  });
+});
+
 describe('Codex CLI Compatibility (#744)', () => {
   describe('getPlatformAdapter', () => {
     it('should return codexAdapter for codex', async () => {
@@ -219,6 +229,20 @@ describe('Codex CLI Compatibility (#744)', () => {
       }) as any;
 
       expect(output).toEqual({ continue: true });
+    });
+
+    it('preserves an explicit empty-string additionalContext instead of dropping the key (#3127)', async () => {
+      const { codexAdapter } = await import('../src/cli/adapters/codex.js');
+      const output = codexAdapter.formatOutput({
+        continue: true,
+        suppressOutput: true,
+        hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
+      }) as any;
+
+      expect(output).toEqual({
+        continue: true,
+        hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
+      });
     });
   });
 

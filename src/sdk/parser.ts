@@ -34,11 +34,21 @@ export interface ParsedSummary {
   skip_reason?: string | null;
 }
 
+export type ParsedRootKind = 'observation' | 'summary';
+
 export type ParseResult =
-  | { valid: true; observations: ParsedObservation[]; summary: ParsedSummary | null }
+  | { valid: true; rootKind: ParsedRootKind; observations: ParsedObservation[]; summary: ParsedSummary | null }
   | { valid: false };
 
-export function parseAgentXml(raw: string, correlationId?: string | number): ParseResult {
+export interface ParseAgentXmlOptions {
+  allowNoOpObservations?: boolean;
+}
+
+export function parseAgentXml(
+  raw: string,
+  correlationId?: string | number,
+  options: ParseAgentXmlOptions = {}
+): ParseResult {
   if (typeof raw !== 'string' || !raw.trim()) {
     return { valid: false };
   }
@@ -49,6 +59,7 @@ export function parseAgentXml(raw: string, correlationId?: string | number): Par
   if (skipMatch) {
     return {
       valid: true,
+      rootKind: 'summary',
       observations: [],
       summary: {
         request: null,
@@ -70,22 +81,26 @@ export function parseAgentXml(raw: string, correlationId?: string | number): Par
 
   const rootName = firstRoot[1].toLowerCase();
   if (rootName === 'observation') {
-    const observations = parseObservationBlocks(raw, correlationId);
-    if (observations.length === 0) {
+    const { observations, explicitNoOpCount } = parseObservationBlocks(raw, correlationId);
+    if (observations.length === 0 && (!options.allowNoOpObservations || explicitNoOpCount === 0)) {
       return { valid: false };
     }
-    return { valid: true, observations, summary: null };
+    return { valid: true, rootKind: 'observation', observations, summary: null };
   }
 
   const summary = parseSummaryBlock(raw, correlationId);
   if (!summary) {
     return { valid: false };
   }
-  return { valid: true, observations: [], summary };
+  return { valid: true, rootKind: 'summary', observations: [], summary };
 }
 
-function parseObservationBlocks(text: string, correlationId?: string | number): ParsedObservation[] {
+function parseObservationBlocks(
+  text: string,
+  correlationId?: string | number
+): { observations: ParsedObservation[]; explicitNoOpCount: number } {
   const observations: ParsedObservation[] = [];
+  let explicitNoOpCount = 0;
 
   const observationRegex = /<observation>([\s\S]*?)<\/observation>/g;
 
@@ -101,6 +116,12 @@ function parseObservationBlocks(text: string, correlationId?: string | number): 
     const concepts = extractArrayElements(obsContent, 'concepts', 'concept');
     const files_read = extractArrayElements(obsContent, 'files_read', 'file');
     const files_modified = extractArrayElements(obsContent, 'files_modified', 'file');
+
+    if (isExplicitNoOpObservation(type, title, subtitle, narrative, facts, concepts)) {
+      logger.debug('PARSER', 'Skipping explicit no-op observation XML', { correlationId, type });
+      explicitNoOpCount++;
+      continue;
+    }
 
     const mode = ModeManager.getInstance().getActiveMode();
     const validTypes = mode.observation_types.map(t => t.id);
@@ -147,7 +168,44 @@ function parseObservationBlocks(text: string, correlationId?: string | number): 
     });
   }
 
-  return observations;
+  return { observations, explicitNoOpCount };
+}
+
+const NO_OP_OBSERVATION_TYPES = new Set([
+  'skip',
+  'skipped',
+  'noop',
+  'no-op',
+  'none',
+  'no_observation',
+  'no-observation',
+  'no_observations',
+  'no-observations',
+]);
+
+function isExplicitNoOpObservation(
+  type: string | null,
+  title: string | null,
+  subtitle: string | null,
+  narrative: string | null,
+  facts: string[],
+  concepts: string[]
+): boolean {
+  const normalizedType = type?.trim().toLowerCase();
+  if (!normalizedType || !NO_OP_OBSERVATION_TYPES.has(normalizedType)) {
+    return false;
+  }
+
+  if (title || facts.length > 0 || concepts.length > 0) {
+    return false;
+  }
+
+  const explanation = [subtitle, narrative].filter(Boolean).join(' ').trim().toLowerCase();
+  if (!explanation) {
+    return true;
+  }
+
+  return /\b(no observations?|no new|nothing|skip(?:ped|ping)?|not enough|irrelevant|duplicate|repeated)\b/.test(explanation);
 }
 
 function parseSummaryBlock(text: string, correlationId?: string | number): ParsedSummary | null {

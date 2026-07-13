@@ -59,10 +59,19 @@
         ]
       },
       {
-        "group": "Gemini CLI Integration",
+        "group": "Antigravity CLI Integration",
         "icon": "terminal",
         "pages": [
-          "gemini-cli/setup"
+          "antigravity-cli/setup"
+        ]
+      },
+      {
+        "group": "Kiro CLI Integration",
+        "icon": "terminal",
+        "pages": [
+          "kiro-cli/setup",
+          "kiro-cli/parity",
+          "kiro-cli/troubleshooting"
         ]
       },
       {
@@ -88,6 +97,13 @@
           "troubleshooting",
           "platform-integration",
           "openclaw-integration"
+        ]
+      },
+      {
+        "group": "Hosted Server",
+        "icon": "cloud",
+        "pages": [
+          "hosted-server"
         ]
       },
       {

@@ -4,13 +4,18 @@ import net from 'net';
 import { readFileSync } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { MARKETPLACE_ROOT } from '../../shared/paths.js';
+import { getWorkerHost } from '../../shared/worker-utils.js';
+
+function formatHostForUrl(host: string): string {
+  return host.includes(':') ? `[${host}]` : host;
+}
 
 async function httpRequestToWorker(
   port: number,
   endpointPath: string,
   method: string = 'GET'
 ): Promise<{ ok: boolean; statusCode: number; body: string }> {
-  const response = await fetch(`http://127.0.0.1:${port}${endpointPath}`, { method });
+  const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}${endpointPath}`, { method });
   let body = '';
   try {
     body = await response.text();
@@ -21,33 +26,32 @@ async function httpRequestToWorker(
 }
 
 export async function isPortInUse(port: number): Promise<boolean> {
-  if (process.platform === 'win32') {
-    try {
-      const response = await fetch(`http://127.0.0.1:${port}/api/health`);
-      return response.ok;
-    } catch (error) {
-      if (error instanceof Error) {
-        logger.debug('SYSTEM', 'Windows health check failed (port not in use)', {}, error);
-      } else {
-        logger.debug('SYSTEM', 'Windows health check failed (port not in use)', { error: String(error) });
-      }
-      return false;
-    }
-  }
+  return (await probePortBind(port, getWorkerHost())) === 'EADDRINUSE';
+}
 
+/**
+ * Probe whether `port` can actually be bound on `host`. Resolves `null` on a
+ * successful bind, otherwise the failing error code (e.g. `'EADDRINUSE'`,
+ * `'EADDRNOTAVAIL'`, `'EACCES'`).
+ *
+ * isPortInUse() answers the common boolean version of the same bindability
+ * question. This lower-level helper preserves the exact bind failure so callers
+ * can distinguish a stale/orphaned listener from configuration errors.
+ *
+ * Returning the error code (rather than a bare boolean) lets callers keep the
+ * three outcomes distinct: bindable (`null`), held by something (`'EADDRINUSE'`
+ * — the stale-socket case), and a genuine configuration error such as
+ * `'EADDRNOTAVAIL'` from a bad CLAUDE_MEM_WORKER_HOST or `'EACCES'` — which must
+ * surface as itself, not be misreported as a stale socket.
+ */
+export async function probePortBind(port: number, host: string = '127.0.0.1'): Promise<string | null> {
   return new Promise((resolve) => {
-    const server = net.createServer();
-    server.once('error', (err: NodeJS.ErrnoException) => {
-      if (err.code === 'EADDRINUSE') {
-        resolve(true);
-      } else {
-        resolve(false);
-      }
+    const probe = net.createServer();
+    probe.once('error', (err: NodeJS.ErrnoException) => resolve(err.code ?? 'EUNKNOWN'));
+    probe.once('listening', () => {
+      probe.close(() => resolve(null));
     });
-    server.once('listening', () => {
-      server.close(() => resolve(false));
-    });
-    server.listen(port, '127.0.0.1');
+    probe.listen(port, host);
   });
 }
 
@@ -93,9 +97,6 @@ export async function waitForPortFree(port: number, timeoutMs: number = 10000): 
 
 export async function httpShutdown(port: number, reason: 'stop' | 'restart' = 'stop'): Promise<boolean> {
   try {
-    // The CLI restart path stops the worker through this same endpoint; the
-    // reason tag lets the worker report shutdown_reason: 'restart' on its
-    // worker_stopped telemetry instead of a generic 'stop'.
     const endpointPath = reason === 'restart' ? '/api/admin/shutdown?reason=restart' : '/api/admin/shutdown';
     const result = await httpRequestToWorker(port, endpointPath, 'POST');
     if (!result.ok) {

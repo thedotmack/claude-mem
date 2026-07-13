@@ -17,7 +17,7 @@
   <a href="docs/i18n/README.zh.md">🇨🇳 中文</a> •
   <a href="docs/i18n/README.zh-tw.md">🇹🇼 繁體中文</a> •
   <a href="docs/i18n/README.ja.md">🇯🇵 日本語</a> •
-  <a href="docs/i18n/README.pt.md">🇵🇹 Português</a> •
+  <a href="docs/i18n/pt.md">🇵🇹 Português</a> •
   <a href="docs/i18n/README.pt-br.md">🇧🇷 Português</a> •
   <a href="docs/i18n/README.ko.md">🇰🇷 한국어</a> •
   <a href="docs/i18n/README.es.md">🇪🇸 Español</a> •
@@ -45,7 +45,9 @@
   <a href="docs/i18n/README.hu.md">🇭🇺 Magyar</a> •
   <a href="docs/i18n/README.fi.md">🇫🇮 Suomi</a> •
   <a href="docs/i18n/README.da.md">🇩🇰 Dansk</a> •
-  <a href="docs/i18n/README.no.md">🇳🇴 Norsk</a>
+  <a href="docs/i18n/README.no.md">🇳🇴 Norsk</a> •
+  <a href="docs/i18n/README.ta.md">🇮🇳 தமிழ்</a> •
+  <a href="docs/i18n/README.ne.md">🇳🇵 नेपाली</a>
 </p>
 
 <h4 align="center">Persistent memory compression system built for <a href="https://claude.com/claude-code" target="_blank">Claude Code</a>.</h4>
@@ -136,15 +138,22 @@ Install with a single command:
 npx claude-mem install
 ```
 
-Or install for Gemini CLI (auto-detects `~/.gemini`):
-
-```bash
-npx claude-mem install --ide gemini-cli
-```
 Or install for OpenCode:
 
 ```bash
 npx claude-mem install --ide opencode
+```
+
+Or install for Antigravity CLI ([setup guide](https://docs.claude-mem.ai/antigravity-cli/setup)):
+
+```bash
+npx claude-mem install --ide antigravity
+```
+
+Or install for Codex CLI:
+
+```bash
+npx claude-mem install --ide codex-cli
 ```
 
 Or install from the plugin marketplace inside Claude Code:
@@ -155,7 +164,7 @@ Or install from the plugin marketplace inside Claude Code:
 /plugin install claude-mem
 ```
 
-Restart Claude Code or Gemini CLI. Context from previous sessions will automatically appear in new sessions.
+Restart the selected IDE. Context from previous sessions will automatically appear in new sessions.
 
 > **Note:** Claude-Mem is also published on npm, but `npm install -g claude-mem` installs the **SDK/library only** — it does not register the plugin hooks or set up the worker service. Always install via `npx claude-mem install` or the `/plugin` commands above.
 
@@ -191,7 +200,6 @@ The installer handles dependencies, plugin setup, AI provider configuration, wor
 ### Getting Started
 
 - **[Installation Guide](https://docs.claude-mem.ai/installation)** - Quick start & advanced installation
-- **[Gemini CLI Setup](https://docs.claude-mem.ai/gemini-cli/setup)** - Dedicated guide for Google's Gemini CLI integration
 - **[Usage Guide](https://docs.claude-mem.ai/usage/getting-started)** - How Claude-Mem works automatically
 - **[Search Tools](https://docs.claude-mem.ai/usage/search-tools)** - Query your project history with natural language
 - **[Beta Features](https://docs.claude-mem.ai/beta-features)** - Try experimental features like Endless Mode

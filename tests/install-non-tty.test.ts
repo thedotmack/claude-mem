@@ -96,7 +96,7 @@ describe('Install Non-TTY Support', () => {
 
     it('parses the explicit --disable-auto-memory flag for non-interactive installs', () => {
       expect(readFileSync(join(__dirname, '..', 'src', 'npx-cli', 'index.ts'), 'utf-8'))
-        .toContain("disableAutoMemory: argv.includes('--disable-auto-memory')");
+        .toContain("disableAutoMemory: values['disable-auto-memory'] === true");
     });
 
     it('documents the explicit --disable-auto-memory install flag in help output', () => {
@@ -143,8 +143,54 @@ describe('Install Non-TTY Support', () => {
       expect(gitignoreExcludeRegion).toContain('syncManagedFiles.has(line)');
     });
 
+    it('keeps marketplace sync deletes opt-in and preserves local user config', () => {
+      expect(syncMarketplaceSource).toContain('function deleteFlag()');
+      expect(syncMarketplaceSource).toContain("argv.includes('--force-delete')");
+      expect(syncMarketplaceSource).toContain("CLAUDE_MEM_SYNC_FORCE_DELETE === '1'");
+      expect(syncMarketplaceSource).toContain("return '--delete'");
+      expect(syncMarketplaceSource).toContain('PRESERVE_PATTERNS');
+      expect(syncMarketplaceSource).toContain("'secrets/***'");
+      expect(syncMarketplaceSource).toContain("'data/***'");
+      expect(syncMarketplaceSource).not.toContain('rsync -av --delete --exclude=.git');
+    });
+
+    it('makes marketplace sync dry-run preview every rsync phase and skip installs', () => {
+      expect(syncMarketplaceSource).toContain('function dryRunFlag()');
+      expect(syncMarketplaceSource).toContain('Marketplace sync preview:');
+      expect(syncMarketplaceSource).toContain('Cache (version ${version}) sync preview:');
+      expect(syncMarketplaceSource).toContain('--dry-run: skipping worker restart and bun installs');
+      expect(syncMarketplaceSource).toContain('const DRY_RUN = dryRunFlag();');
+      expect(syncMarketplaceSource).toContain('branch && branch !== \'main\' && !isForce && !DRY_RUN');
+      expect(syncMarketplaceSource.indexOf('const DRY_RUN = dryRunFlag();'))
+        .toBeLessThan(syncMarketplaceSource.indexOf('if (branch && branch !== \'main\''));
+      expect(syncMarketplaceSource.indexOf('if (DRY_RUN) {'))
+        .toBeLessThan(syncMarketplaceSource.indexOf("console.log('Running bun install in marketplace...')"));
+    });
+
     it('registers Codex against the durable marketplace directory', () => {
       expect(installSource).toContain('installCodexCli(marketplaceDirectory())');
+    });
+
+    it('writes an install marker into the marketplace plugin before Codex cache registration', () => {
+      const installFlowRegion = installSource.slice(
+        installSource.indexOf('const tasks: TaskDescriptor[] = ['),
+        installSource.indexOf('const failedIDEs = await setupIDEs'),
+      );
+      expect(installSource).toContain('function writeMarketplaceInstallMarker');
+      expect(installSource).toContain("writeInstallMarker(join(marketplaceDirectory(), 'plugin'), version, bunVersion, uvVersion)");
+      expect(installFlowRegion).toContain('writeMarketplaceInstallMarker(version, bunVersion, uvVersion)');
+      expect(installSource.indexOf('writeMarketplaceInstallMarker(version, bunVersion, uvVersion)'))
+        .toBeLessThan(installSource.indexOf('const failedIDEs = await setupIDEs'));
+    });
+
+    it('mirrors repair markers into the durable marketplace plugin when present', () => {
+      const repairRegion = installSource.slice(
+        installSource.indexOf('export async function runRepairCommand'),
+        installSource.indexOf("console.log('claude-mem repair complete.')"),
+      );
+      expect(repairRegion).toContain("writeInstallMarker(cacheDir, version, bunVersion, uvVersion)");
+      expect(repairRegion).toContain("existsSync(join(marketplaceDirectory(), 'plugin', 'package.json'))");
+      expect(repairRegion).toContain('writeInstallMarker(marketplaceDirectory(), version, bunVersion, uvVersion)');
     });
 
     it('refreshes Codex marketplace cache after registration', () => {
@@ -152,8 +198,13 @@ describe('Install Non-TTY Support', () => {
         codexInstallerSource.indexOf('export async function installCodexCli'),
         codexInstallerSource.indexOf('export function uninstallCodexCli'),
       );
-      expect(installRegion).toContain("['plugin', 'marketplace', 'upgrade', MARKETPLACE_NAME]");
-      expect(installRegion).toContain('installed plugin cache');
+      const cacheInstallRegion = codexInstallerSource.slice(
+        codexInstallerSource.indexOf('export async function installCodexPluginCache'),
+        codexInstallerSource.indexOf('function lookupCodexOnWindows'),
+      );
+      expect(installRegion).toContain('await installCodexPluginCache(marketplaceRoot)');
+      expect(cacheInstallRegion).toContain("['plugin', 'add', CODEX_PLUGIN_ID]");
+      expect(cacheInstallRegion).not.toContain("['plugin', 'marketplace', 'upgrade', MARKETPLACE_NAME]");
     });
 
     it('replaces stale Codex marketplace registrations from a different source', () => {
@@ -201,13 +252,20 @@ describe('Install Non-TTY Support', () => {
         .toBeLessThan(installRegion.indexOf('registerCodexMarketplace(marketplaceRoot)'));
     });
 
-    it('resolves codex.cmd on Windows via a shell-aware spawn (#2695)', () => {
+    it('resolves codex.cmd on Windows without shell argument re-tokenization (#2695)', () => {
       const codexSpawnRegion = codexInstallerSource.slice(
-        codexInstallerSource.indexOf('export function codexSpawn'),
+        codexInstallerSource.indexOf('export function resolveCodexSpawnInvocation'),
         codexInstallerSource.indexOf('function runCodex'),
       );
-      expect(codexSpawnRegion).toContain("process.platform === 'win32'");
-      expect(codexSpawnRegion).toContain('shell: true');
+      const resolverRegion = codexInstallerSource.slice(
+        codexInstallerSource.indexOf('export function resolveCodexCommand'),
+        codexInstallerSource.indexOf('/**\n * Spawn the `codex` CLI.'),
+      );
+      expect(codexSpawnRegion).toContain("platform === 'win32'");
+      expect(codexSpawnRegion).toContain("command: 'cmd.exe'");
+      expect(codexSpawnRegion).toContain("args: ['/d', '/s', '/c', [resolvedCommand, ...args].map(quoteCmdArgument).join(' ')]");
+      expect(codexSpawnRegion).not.toContain('shell: true');
+      expect(resolverRegion).toContain("'codex.cmd'");
     });
 
     it('removes legacy Codex AGENTS context only after marketplace registration succeeds', () => {
@@ -240,7 +298,6 @@ describe('Install Non-TTY Support', () => {
     });
 
     it('does not seed new Codex transcript watcher configs with AGENTS context injection', () => {
-      expect(transcriptConfigSource).toContain("name: 'codex'");
       const sampleConfigRegion = transcriptConfigSource.slice(
         transcriptConfigSource.indexOf('export const SAMPLE_CONFIG'),
         transcriptConfigSource.indexOf('stateFile: DEFAULT_STATE_PATH'),
@@ -276,7 +333,10 @@ describe('Install Non-TTY Support', () => {
 
   describe('runtime selection', () => {
     it('offers Server (beta) while keeping worker as the default runtime', () => {
-      expect(installSource).toContain("'server-beta'");
+      // Phase 1d: installer writes the new canonical `'server'` runtime value.
+      // The legacy `'server-beta'` value is still accepted by
+      // runtime-selector.ts for existing installs, but new writes use 'server'.
+      expect(installSource).toContain("value: 'server'");
       expect(installSource).toContain('Server (beta)');
       expect(installSource).toContain("initialValue: 'worker'");
       expect(installSource).toContain('CLAUDE_MEM_RUNTIME');
@@ -294,7 +354,7 @@ describe('Install Non-TTY Support', () => {
 
     it('addresses privacy: everything stays local', () => {
       expect(installSource).toContain('Everything stays in ');
-      expect(installSource).toContain("pc.cyan('~/.claude-mem')");
+      expect(installSource).toContain("styleText('cyan', '~/.claude-mem')");
     });
 
     it('keeps /learn-codebase as the optional front-load path', () => {

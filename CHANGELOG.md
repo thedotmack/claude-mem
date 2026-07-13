@@ -4,6 +4,123 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.10.3-community-edge.0] - 2026-07-09
+
+Community edge release for integrated batches 4-9. See PR #3172
+    and plans/2026-07-07-community-edge-batches-4-9-integration.md.
+
+## [13.10.2] - 2026-07-05
+
+Patch release focused on cross-platform stability and worker/runtime correctness.
+
+## Fixes
+- **Worker host**: clients now honor `CLAUDE_MEM_WORKER_HOST` (the address the server actually binds), with IPv6 literals bracketed correctly in health checks and display URLs.
+- **Worker identity**: cache/marketplace/MCP/CLI/restart launches converge on one worker bundle (stops version-skew from two builds on one port).
+- **Windows**: centralized spawn shims remove the `shell:true` footgun; codex hooks emit a Windows-executable command instead of a POSIX-only one.
+- **Install**: `repair` now restores the marketplace runtime root (not just the cache); ships the `plugin/sqlite` runtime modules that were causing `MODULE_NOT_FOUND` on clean installs.
+- **SQLite/settings**: atomic settings writes, `busy_timeout` to avoid `SQLITE_BUSY` under concurrent worker/hook access, a migration column re-check, and removal of an index create that could crash boot on legacy duplicate rows.
+- **Supervisor**: preserves `HTTPS_PROXY` and Bedrock/Vertex skip-auth env for the SDK subprocess.
+- **Worktree**: relative `gitdir:` pointers resolved correctly.
+
+## Docs
+- New Release Branches guide (main / core-dev / community-edge) with instructions for running the non-stable lines locally.
+
+Deliberately excluded: client-side observer truncation (kept out per #3096) and project-identity re-keying (kept the #2663 repo-root key).
+
+## [13.10.1] - 2026-07-04
+
+## Fixes
+
+- **Codex SessionStart hook no longer fails at startup.** When a hook errored before its handler ran (missing `session_id`, invalid `cwd`, or a missing transcript path), claude-mem fell back to a bare `{"continue":true}` regardless of which hook fired. Codex's strict `SessionStart` validator rejects that shape as "invalid session start JSON output," breaking context injection at Codex startup. The fallback now emits a valid `hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: "" }` for the `context` hook, matching what Codex expects.
+- Fixed a related gap where the Codex adapter silently dropped an explicit empty-string `additionalContext` from its output instead of preserving it, which could leave the SessionStart payload incomplete.
+
+Closes #2947, #2972. Supersedes #2953 and #2948.
+
+## [13.10.0] - 2026-07-04
+
+## Antigravity CLI support, Gemini CLI removed
+
+Google deprecated Gemini CLI's free/individual tier (cutoff June 18, 2026) in favor of **Antigravity CLI**, the official successor announced May 19, 2026. This release migrates claude-mem accordingly.
+
+### Removed
+- Gemini CLI host integration (adapter, installer, IDE-detection entry, hooks, dedicated docs/tests). The separate, still-supported Gemini LLM/observation provider (`CLAUDE_MEM_GEMINI_API_KEY`, `GeminiProvider`) is unaffected.
+
+### Added
+- Full Antigravity CLI (`agy`) support at feature parity: hooks (7-event map sharing Gemini CLI's proven `~/.gemini/settings.json`), dual MCP server registration, and `GEMINI.md`/rules-file context injection.
+- `npx claude-mem antigravity-cli install|status|uninstall` subcommand support.
+
+Verified end-to-end against a real live Antigravity CLI install, including hook firing, MCP tool registration, and context injection.
+
+## [13.9.3] - 2026-07-03
+
+## Changes
+
+- fix: eliminate all 331 error-handling anti-patterns detected by scanner (#3119)
+- chore: repo-wide over-engineering cleanup — ponytail audit wave 1 & 2 (#3120)
+  - Removed dead code, unused dependencies, and unused cmem-sdk client surface
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v13.9.2...v13.9.3
+
+## [13.9.2] - 2026-07-01
+
+## Bug Fix
+
+**Removed client-side context truncation from the provider layer.**
+
+The `OpenAICompatibleProvider` applied a sliding-window truncation to conversation history — a hardcoded 20-message cap and a 100k-token "safety" limit layered on top of the model's own context window. In practice it fired on message count alone, dropping conversation messages at ~12k tokens (nowhere near the token limit) and silently corrupting history, mislabeled as "runaway cost" prevention. This broke setups whose real model context window bore no relation to those hardcoded assumptions.
+
+The full conversation history is now sent to the provider, which owns its own context window.
+
+### Removed
+- `OpenAICompatibleProvider.truncateHistory()` and the `requireNonEmptyToTruncate` flag
+- `truncateHistoryForOpenRouter` / `truncateHistoryForGemini` wrappers and their message/token constants
+- `CLAUDE_MEM_{GEMINI,OPENROUTER}_MAX_CONTEXT_MESSAGES` / `_MAX_TOKENS` settings, defaults, and validation
+- Related tests, docs, and installer references
+
+Merged in #3096. Verified: `tsc` clean, 2248 tests passing, build-and-sync clean.
+
+## [13.9.1] - 2026-06-29
+
+## What's Changed
+
+Patch release shipping the platform-source recovery work merged in #3088, plus dependency and Codex hardening.
+
+### Fixes
+- **codex:** load startup context through MCP, with HTTP fallback to the worker
+- **codex:** avoid shell spawning the Codex installer
+- **recovery:** scope memories by platform source
+- **observer:** drop invalid prose and pause on quota
+- **chroma:** prewarm uvx and harden shutdown
+- **deps:** surface dependency-health preflight and degrade gracefully when CLI deps are missing
+- **telemetry:** replace Bun UUIDv5 dependency
+
+### Tests
+- Stabilize session init after the server rename
+- Restore Chroma MCP mock to prevent cross-suite leakage
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v13.9.0...v13.9.1
+
+## [13.9.0] - 2026-06-29
+
+## Highlights
+
+### 🚀 New: \`claude-mem/sdk\` (cmem-sdk)
+A fully in-process capture → compress → semantic-search pipeline with **no HTTP worker and no Redis**. Import \`createCmemClient\` from \`claude-mem/sdk\`, point it at Postgres + a running \`uvx chroma-mcp\` + an LLM provider, and call \`capture\`/\`generate\`/\`search\`/\`context\`/session methods directly.
+
+- New reference docs: **CMEM-SDK Reference** under *SDK & Embedding*.
+- Bundle keeps \`pg\`, \`zod\`, \`@modelcontextprotocol/sdk\`, and \`@anthropic-ai/sdk\` external so consumers resolve them against the installed package.
+
+### ♻️ Server runtime rename
+\`server-beta\` → \`server\` across the runtime, with intentional back-compat aliases for existing settings files. Removed inert \`ProviderRegistry\`/\`EventBroadcaster\` boundaries and consolidated the queue resolver.
+
+### 🐛 Fixes
+- \`generate()\`: a provider crash or parse error no longer leaves a job stuck in \`processing\`; it is transitioned to terminal \`failed\` with \`last_error\` recorded before re-throwing.
+- \`search()\`: empty-query path now reports \`chroma: false\` (filter-only, not degraded) instead of falsely claiming a Chroma result.
+- CI: the docker e2e job now calls the renamed \`e2e:server:docker\` script.
+- Docs: corrected \`sdk.mdx\`'s stale parse-error behavior note.
+
+**Full PR:** #3077
+
 ## [13.8.0] - 2026-06-21
 
 ## Telemetry: observation volume on per-session rollups

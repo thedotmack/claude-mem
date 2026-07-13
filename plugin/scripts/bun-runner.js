@@ -25,6 +25,7 @@ function findBun() {
     ? spawnSync('where bun', {
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
         shell: true
       })
     : spawnSync('which', ['bun'], {
@@ -86,12 +87,40 @@ if (isPluginDisabledInClaudeSettings()) {
 
 const args = process.argv.slice(2);
 
+let shouldEmitHookContinueJson = false;
+if (args[0] === '--hook-continue-json') {
+  shouldEmitHookContinueJson = true;
+  args.shift();
+}
+
 if (args.length === 0) {
   console.error('Usage: node bun-runner.js <script> [args...]');
   process.exit(1);
 }
 
 args[0] = fixBrokenScriptPath(args[0]);
+
+// Lifecycle commands manage the long-lived worker daemon; every other invocation
+// is a hook payload whose runtime blocks the Claude Code event that spawned it
+// (UserPromptSubmit, PostToolUse, ...). A wedged worker on one of those must never
+// hang the user's prompt — see the watchdog below.
+const LIFECYCLE_COMMANDS = ['start', 'stop', 'restart', 'status'];
+const isLifecycle = LIFECYCLE_COMMANDS.some(cmd => args.includes(cmd));
+
+// Kill the child and everything it spawned. On Windows the child is a cmd.exe
+// wrapper (shell:true), so child.kill() leaves the real `bun` grandchild running
+// — the orphan pileup that stacks up one hung worker per prompt. taskkill /T /F
+// tears down the whole tree.
+function killChildTree(child) {
+  if (!child || child.killed) return;
+  if (IS_WINDOWS && child.pid) {
+    try {
+      spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+      return;
+    } catch {}
+  }
+  try { child.kill(); } catch {}
+}
 
 const bunPath = findBun();
 
@@ -125,10 +154,16 @@ function collectStdin() {
   });
 }
 
+// Wrapped in an async IIFE: top-level `await` is unsupported in the ESM loader
+// of Node < 14.8, which some Claude Code installs invoke hooks with (e.g. the
+// Node 12 shipped by Ubuntu 22.04 / many WSL setups). There it throws
+// "SyntaxError: Unexpected reserved word" at module load, breaking the hook.
+// Same oldest-Node compatibility reason as the optional-chaining note above.
+(async () => {
 const stdinData = await collectStdin();
 
 const spawnOptions = {
-  stdio: ['pipe', 'inherit', 'inherit'],
+  stdio: ['pipe', shouldEmitHookContinueJson ? 'ignore' : 'inherit', 'inherit'],
   windowsHide: true,
   env: process.env
 };
@@ -145,6 +180,32 @@ if (IS_WINDOWS) {
 
 const child = spawn(spawnCmd, spawnArgs, spawnOptions);
 
+// Watchdog: a hook payload invocation must never block its Claude Code event for
+// longer than this. If the worker wedges (e.g. a stuck daemon connection on
+// Windows), kill the process tree and exit 0 — honoring the exit-0 strategy, with
+// the runner-errors log as the durable signal. Lifecycle commands are exempt: the
+// daemon they start is meant to outlive this launcher.
+let watchdog = null;
+if (!isLifecycle) {
+  const timeoutMs = Number(process.env.CLAUDE_MEM_HOOK_TIMEOUT_MS) || 8000;
+  watchdog = setTimeout(() => {
+    try {
+      const dataDir = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
+      const logsDir = join(dataDir, 'logs');
+      mkdirSync(logsDir, { recursive: true });
+      appendFileSync(
+        join(logsDir, 'runner-errors.log'),
+        `[bun-runner] worker hook exceeded ${timeoutMs}ms — killed to unblock prompt\n` +
+        `  script: ${args[0]}\n` +
+        `  timestamp: ${new Date().toISOString()}\n\n`
+      );
+    } catch {}
+    killChildTree(child);
+    process.exit(0);
+  }, timeoutMs);
+  if (watchdog.unref) watchdog.unref();
+}
+
 if (child.stdin) {
   if (stdinData && stdinData.length > 0) {
     child.stdin.write(stdinData);
@@ -154,16 +215,9 @@ if (child.stdin) {
     // they manage the worker daemon, not hook payloads.  Killing the child here
     // prevents the daemon from starting/stopping on platforms where Claude Code
     // doesn't pipe a payload for SessionStart (e.g. Windows CC ≤ 2.1.145).
-    const lifecycleCommands = ['start', 'stop', 'restart', 'status'];
-    const isLifecycle = lifecycleCommands.some(cmd => args.includes(cmd));
-
     if (isLifecycle) {
-      // Lifecycle commands don't need stdin — close pipe and let child run.
       try { child.stdin.end(); } catch {}
     } else {
-      // Issue #2188: empty/missing stdin previously masked by `|| '{}'` fallback,
-      // which silently hid WSL bash failures (e.g. hooks invoked under a broken
-      // shell that never piped a payload). Surface the failure mode instead.
       const dataDir = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
       const payloadType = stdinData === null
         ? 'null (no data event or stream error)'
@@ -187,23 +241,8 @@ if (child.stdin) {
         `  CLAUDE_PLUGIN_ROOT: ${RESOLVED_PLUGIN_ROOT}`,
       ].join('\n');
 
-      // IO discipline (see src/shared/hook-io.ts intent vocabulary):
-      // - this stderr write is a USER_HINT (Claude Code surfaces it inline).
-      // - the CAPTURE_BROKEN marker file below is a DIAGNOSTIC durable signal for
-      //   the next session-start hint.
-      // - exit 0 below is the EXIT_SIGNAL per CLAUDE.md (Windows Terminal tab
-      //   management); the marker file, not the exit code, is the durable failure
-      //   signal. bun-runner runs in its own node process BEFORE hookCommand's
-      //   stderr buffer is installed, so this write is never swallowed.
-
-      // Write to stderr so Claude Code surfaces the diagnostic.
       console.error(diagnostic);
 
-      // Persist diagnostic to the runner-errors log and drop a CAPTURE_BROKEN marker
-      // file so the next session-start hint can surface the failure. We exit 0 to
-      // honor the project's exit-code strategy (worker/hook errors exit 0 to
-      // prevent Windows Terminal tab pileup) — the marker file is the durable
-      // signal that something is wrong, not the exit code.
       try {
         const logsDir = join(dataDir, 'logs');
         mkdirSync(logsDir, { recursive: true });
@@ -222,17 +261,20 @@ if (child.stdin) {
 }
 
 child.on('error', (err) => {
-  // EXCEPTION to CLAUDE.md exit-0-on-error: Bun-not-found is a user environment
-  // problem, not a hook execution failure. Surfacing exit 1 here forces Claude
-  // Code to display the stderr message rather than silently retrying. This runs
-  // before any hook handler, so the exit-0 tab-management rationale doesn't apply.
   console.error(`Failed to start Bun: ${err.message}`);
   process.exit(1);
 });
 
 child.on('close', (code, signal) => {
-  if ((signal || code > 128) && args.includes('start')) {
+  if (watchdog) clearTimeout(watchdog);
+  const exitCode = typeof code === 'number' ? code : 0;
+  if (shouldEmitHookContinueJson && !signal && exitCode === 0) {
+    process.stdout.write('{"continue":true,"suppressOutput":true}\n');
+  }
+  const isHookEventCommand = args[1] === 'hook';
+  if ((signal || exitCode > 128) && (args.includes('start') || isHookEventCommand)) {
     process.exit(0);
   }
-  process.exit(code || 0);
+  process.exit(exitCode);
 });
+})();

@@ -111,6 +111,22 @@ describe('SessionStore.storeObservation', () => {
     expect(row?.agent_id).toBeNull();
   });
 
+  it('stores content_session_id when supplied', () => {
+    const result = store.storeObservation(
+      session('mem-content'),
+      'project',
+      obs(),
+      1,
+      0,
+      1700000000000,
+      undefined,
+      'content-window-1'
+    );
+
+    const row = store.getObservationById(result.id);
+    expect(row?.content_session_id).toBe('content-window-1');
+  });
+
   it('getFirstObservationCreatedAt returns null when empty and the earliest ISO otherwise', () => {
     expect(getFirstObservationCreatedAt(store.db)).toBeNull();
 

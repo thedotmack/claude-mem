@@ -9,7 +9,6 @@ describe('Stale AbortController Guard (#1099)', () => {
         memorySessionId: null,
         project: 'test',
         userPrompt: 'test',
-        pendingMessages: [],
         abortController: new AbortController(),
         generatorPromise: null,
         lastPromptNumber: 1,

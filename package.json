@@ -1,6 +1,6 @@
 {
   "name": "claude-mem",
-  "version": "13.8.0",
+  "version": "13.10.3-community-edge.0",
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "keywords": [
     "claude",
@@ -30,19 +30,12 @@
     "claude-mem": "./dist/npx-cli/index.js"
   },
   "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    },
-    "./sdk": {
-      "types": "./dist/sdk/index.d.ts",
-      "import": "./dist/sdk/index.js"
-    },
     "./modes/*": "./plugin/modes/*"
   },
   "files": [
     "dist",
     ".agents/plugins/marketplace.json",
+    ".claude-plugin/marketplace.json",
     ".codex-plugin",
     "plugin/.claude-plugin",
     "plugin/.codex-plugin",
@@ -53,6 +46,7 @@
     "plugin/modes",
     "plugin/scripts/*.js",
     "plugin/scripts/*.cjs",
+    "plugin/sqlite",
     "plugin/skills",
     "plugin/ui",
     "openclaw"
@@ -89,10 +83,10 @@
     "translate-readme": "bun scripts/translate-readme/cli.ts -v -o docs/i18n README.md",
     "translate:tier1": "npm run translate-readme -- zh zh-tw ja pt-br ko es de fr",
     "translate:tier2": "npm run translate-readme -- he ar ru pl cs nl tr uk",
-    "translate:tier3": "npm run translate-readme -- vi id th hi bn ro sv",
+    "translate:tier3": "npm run translate-readme -- vi id th hi bn ne ro sv",
     "translate:tier4": "npm run translate-readme -- it el hu fi da no",
     "translate:all": "npm run translate:tier1 & npm run translate:tier2 & npm run translate:tier3 & npm run translate:tier4 & wait",
-    "bug-report": "npx tsx scripts/bug-report/cli.ts",
+    "bug-report": "bun scripts/bug-report/cli.ts",
     "cursor:install": "bun plugin/scripts/worker-service.cjs cursor install",
     "cursor:uninstall": "bun plugin/scripts/worker-service.cjs cursor uninstall",
     "cursor:status": "bun plugin/scripts/worker-service.cjs cursor status",
@@ -109,7 +103,7 @@
     "test:context": "bun test tests/context/",
     "test:infra": "bun test tests/infrastructure/",
     "test:server": "bun test tests/server/",
-    "e2e:server-beta:docker": "bash scripts/e2e-server-beta-docker.sh",
+    "e2e:server:docker": "bash scripts/e2e-server-docker.sh",
     "check:postinstall-allowlist": "node scripts/check-postinstall-allowlist.js",
     "smoke:clean-room": "node scripts/smoke-clean-room.cjs",
     "prepublishOnly": "npm run build && node scripts/check-postinstall-allowlist.js",
@@ -125,33 +119,28 @@
     "2fa": false
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.172",
     "@better-auth/api-key": "^1.6.16",
-    "@clack/prompts": "^1.3.0",
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "ansi-to-html": "^0.7.2",
-    "better-auth": "^1.6.16",
-    "bullmq": "^5.76.6",
-    "cors": "^2.8.6",
-    "dompurify": "^3.4.9",
-    "express": "^5.2.1",
-    "glob": "^13.0.6",
-    "handlebars": "^4.7.9",
-    "ioredis": "^5.10.1",
-    "pg": "^8.20.0",
-    "picocolors": "^1.1.1",
-    "posthog-node": "^5.36.15",
-    "react": "^19.2.6",
-    "react-dom": "^19.2.6",
-    "shell-quote": "^1.8.3",
-    "yaml": "^2.8.4",
-    "zod": "^4.4.3",
-    "zod-to-json-schema": "^3.25.2"
+    "better-auth": "^1.6.16"
   },
+  "//dependencies-note": "Only deps that survive the bundler as a live `import`/`require` in a shipped artifact live here — better-auth (+ api-key) is the server-runtime auth surface, externalized from the worker bundle deliberately (see scripts/build-hooks.js). Everything else (express, bullmq, ioredis, react, react-dom, dompurify, @clack/prompts, ansi-to-html, posthog-node, shell-quote, pg, zod, @modelcontextprotocol/sdk, @anthropic-ai/claude-agent-sdk) is esbuild-inlined into the worker/server/npx bundles (or, for zod's plugin runtime copy, resolved from plugin/package.json's own dependency), so it is a build-time devDependency and is not downloaded by consumers of the `claude-mem` package.",
   "overrides": {
     "tmp": "^0.2.7"
   },
   "devDependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.172",
+    "@clack/prompts": "^1.3.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "ansi-to-html": "^0.7.2",
+    "bullmq": "^5.76.6",
+    "dompurify": "^3.4.9",
+    "express": "^5.2.1",
+    "ioredis": "^5.10.1",
+    "pg": "^8.20.0",
+    "posthog-node": "^5.36.15",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "shell-quote": "^1.8.3",
+    "zod": "^4.4.3",
     "@derekstride/tree-sitter-sql": "^0.3.11",
     "@tree-sitter-grammars/tree-sitter-lua": "^0.4.1",
     "@tree-sitter-grammars/tree-sitter-markdown": "^0.3.2",
@@ -159,14 +148,12 @@
     "@tree-sitter-grammars/tree-sitter-yaml": "^0.7.1",
     "@tree-sitter-grammars/tree-sitter-zig": "^1.1.2",
     "@types/bun": "^1.3.13",
-    "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/node": "^25.9.2",
     "@types/pg": "^8.20.0",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "esbuild": "^0.28.0",
-    "jimp": "^1.6.1",
     "np": "^11.2.0",
     "parse5": "^8.0.1",
     "postcss": "^8.5.14",
@@ -174,10 +161,10 @@
     "remark-parse": "^11.0.0",
     "tree-sitter-bash": "^0.25.1",
     "tree-sitter-c": "^0.24.1",
+    "tree-sitter-c-sharp": "^0.23.5",
     "tree-sitter-cli": "^0.26.8",
     "tree-sitter-cpp": "^0.23.4",
     "tree-sitter-css": "^0.25.0",
-    "tree-sitter-elixir": "^0.3.5",
     "tree-sitter-go": "^0.25.0",
     "tree-sitter-haskell": "^0.23.1",
     "tree-sitter-java": "^0.23.5",
@@ -191,18 +178,15 @@
     "tree-sitter-scss": "^1.0.0",
     "tree-sitter-swift": "^0.7.1",
     "tree-sitter-typescript": "^0.23.2",
-    "ts-prune": "^0.10.3",
-    "tsx": "^4.21.0",
+    "tsup": "^8.5.1",
     "typescript": "^6.0.3",
     "unified": "^11.0.5",
     "unist-util-visit": "^5.1.0"
   },
-  "optionalDependencies": {
-    "tree-kill": "^1.2.2"
-  },
   "trustedDependencies": [
     "esbuild",
     "tree-sitter-c",
+    "tree-sitter-c-sharp",
     "tree-sitter-cli",
     "tree-sitter-cpp",
     "tree-sitter-go",
@@ -212,5 +196,9 @@
     "tree-sitter-ruby",
     "tree-sitter-rust",
     "tree-sitter-typescript"
-  ]
+  ],
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "esbuild@0.27.7": true
+  }
 }

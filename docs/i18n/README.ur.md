@@ -43,24 +43,48 @@
   <a href="README.hu.md">🇭🇺 Magyar</a> •
   <a href="README.fi.md">🇫🇮 Suomi</a> •
   <a href="README.da.md">🇩🇰 Dansk</a> •
-  <a href="README.no.md">🇳🇴 Norsk</a>
+  <a href="README.no.md">🇳🇴 Norsk</a> •
+  <a href="README.ta.md">🇮🇳 தமிழ்</a>
 </p>
 
 <h4 align="center"><a href="https://claude.com/claude-code" target="_blank">Claude Code</a> کے لیے بنایا گیا مستقل میموری کمپریشن سسٹم۔</h4>
 
 <p align="center">
-  <a href="LICENSE">
-    <img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="License">
-  </a>
-  <a href="package.json">
-    <img src="https://img.shields.io/badge/version-13.4.0-green.svg" alt="Version">
-  </a>
-  <a href="package.json">
-    <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg" alt="Node">
-  </a>
-  <a href="https://github.com/thedotmack/awesome-claude-code">
-    <img src="https://awesome.re/mentioned-badge.svg" alt="Mentioned in Awesome Claude Code">
-  </a>
+  <a href="../../README.md">English</a> •
+  <a href="README.zh.md">🇨🇳 中文</a> •
+  <a href="README.zh-tw.md">🇹🇼 繁體中文</a> •
+  <a href="README.ja.md">🇯🇵 日本語</a> •
+  <a href="pt.md">🇵🇹 Português</a> •
+  <a href="README.pt-br.md">🇧🇷 Português</a> •
+  <a href="README.ko.md">🇰🇷 한국어</a> •
+  <a href="README.es.md">🇪🇸 Español</a> •
+  <a href="README.de.md">🇩🇪 Deutsch</a> •
+  <a href="README.fr.md">🇫🇷 Français</a> •
+  <a href="README.he.md">🇮🇱 עברית</a> •
+  <a href="README.ar.md">🇸🇦 العربية</a> •
+  <a href="README.ru.md">🇷🇺 Русский</a> •
+  <a href="README.pl.md">🇵🇱 Polski</a> •
+  <a href="README.cs.md">🇨🇿 Čeština</a> •
+  <a href="README.nl.md">🇳🇱 Nederlands</a> •
+  <a href="README.tr.md">🇹🇷 Türkçe</a> •
+  <a href="README.uk.md">🇺🇦 Українська</a> •
+  <a href="README.vi.md">🇻🇳 Tiếng Việt</a> •
+  <a href="README.tl.md">🇵🇭 Tagalog</a> •
+  <a href="README.id.md">🇮🇩 Indonesia</a> •
+  <a href="README.th.md">🇹🇭 ไทย</a> •
+  <a href="README.hi.md">🇮🇳 हिन्दी</a> •
+  <a href="README.bn.md">🇧🇩 বাংলা</a> •
+  <a href="README.ur.md">🇵🇰 اردو</a> •
+  <a href="README.ro.md">🇷🇴 Română</a> •
+  <a href="README.sv.md">🇸🇪 Svenska</a> •
+  <a href="README.it.md">🇮🇹 Italiano</a> •
+  <a href="README.el.md">🇬🇷 Ελληνικά</a> •
+  <a href="README.hu.md">🇭🇺 Magyar</a> •
+  <a href="README.fi.md">🇫🇮 Suomi</a> •
+  <a href="README.da.md">🇩🇰 Dansk</a> •
+  <a href="README.no.md">🇳🇴 Norsk</a> •
+  <a href="README.ta.md">🇮🇳 தமிழ்</a> •
+  <a href="README.ne.md">🇳🇵 नेपाली</a>
 </p>
 
 <p align="center">

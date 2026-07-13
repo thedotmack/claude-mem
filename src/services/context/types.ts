@@ -6,6 +6,7 @@ export interface ContextInput {
   hook_event_name?: string;
   source?: "startup" | "resume" | "clear" | "compact";
   projects?: string[];
+  platformSource?: string;
   full?: boolean;
   [key: string]: any;
 }
@@ -26,10 +27,18 @@ export interface ContextConfig {
   fullObservationField: 'narrative' | 'facts';
   showLastSummary: boolean;
   showLastMessage: boolean;
+  mermaidContext: boolean;
+
+  /**
+   * Whether observation refs in the inject panel can be fetched by id.
+   * When false, UUID refs are shortened for display and users are pointed to
+   * semantic search instead of by-id fetch.
+   */
+  fetchByIdSupported?: boolean;
 }
 
 export interface Observation {
-  id: number;
+  id: number | string;
   memory_session_id: string;
   platform_source?: string;
   type: string;
@@ -44,6 +53,7 @@ export interface Observation {
   created_at: string;
   created_at_epoch: number;
   project?: string;
+  merged_into_project?: string | null;
 }
 
 export interface SessionSummary {
@@ -58,6 +68,7 @@ export interface SessionSummary {
   created_at: string;
   created_at_epoch: number;
   project?: string;
+  merged_into_project?: string | null;
 }
 
 export interface SummaryTimelineItem extends SessionSummary {

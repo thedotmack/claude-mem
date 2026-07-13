@@ -7,15 +7,18 @@ import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import {
   cleanStalePidFile,
   getPlatformTimeout,
+  reclaimStaleWorkerPort,
   spawnDaemon,
   touchPidFile,
 } from './infrastructure/ProcessManager.js';
 import {
   isPortInUse,
+  probePortBind,
   waitForHealth,
   waitForReadiness,
 } from './infrastructure/HealthMonitor.js';
 import { acquireSpawnLock, releaseSpawnLock } from '../shared/worker-spawn-gate.js';
+import { getWorkerHost } from '../shared/worker-utils.js';
 
 const WINDOWS_SPAWN_COOLDOWN_MS = 2 * 60 * 1000;
 
@@ -119,7 +122,62 @@ export async function ensureWorkerStarted(
       logger.info('SYSTEM', 'Worker is now healthy');
       return ready ? 'ready' : 'warming';
     }
-    logger.error('SYSTEM', 'Port in use but worker not responding to health checks');
+    const reclaimed = await reclaimStaleWorkerPort(port);
+    if (!reclaimed) {
+      logger.error('SYSTEM', 'Port in use but worker not responding and reclaim failed');
+      return 'dead';
+    }
+    clearWorkerSpawnAttempted();
+  }
+
+  // Before spawning a detached daemon, verify the port can actually be bound —
+  // here, in the user-facing parent, where a failure is visible. A stale or
+  // unrelated LISTEN socket would otherwise make the daemon hit EADDRINUSE and
+  // exit in the background while this parent reports 'warming'. Detect it here
+  // and either reclaim a proven stale claude-mem worker or surface a real
+  // 'dead' result.
+  const workerHost = getWorkerHost();
+  let bindProbe = await probePortBind(port, workerHost);
+  if (bindProbe === 'EADDRINUSE') {
+    // Retry briefly — transient holders (TIME_WAIT) often clear — and defer to
+    // any worker that becomes healthy on the port while we wait.
+    const STALE_SOCKET_RETRIES = 3;
+    const STALE_SOCKET_RETRY_DELAY_MS = 1000;
+    for (let attempt = 1; attempt <= STALE_SOCKET_RETRIES && bindProbe === 'EADDRINUSE'; attempt++) {
+      await new Promise(r => setTimeout(r, STALE_SOCKET_RETRY_DELAY_MS));
+      if (await waitForHealth(port, 1000)) {
+        clearWorkerSpawnAttempted();
+        const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
+        logger.info('SYSTEM', 'Worker became healthy while waiting on a busy port');
+        return ready ? 'ready' : 'warming';
+      }
+      bindProbe = await probePortBind(port, workerHost);
+    }
+    if (bindProbe === 'EADDRINUSE') {
+      const reclaimed = await reclaimStaleWorkerPort(port);
+      if (reclaimed) {
+        clearWorkerSpawnAttempted();
+        bindProbe = await probePortBind(port, workerHost);
+      }
+    }
+    if (bindProbe === 'EADDRINUSE') {
+      logger.error('SYSTEM',
+        `Worker cannot bind port ${port}: it is held by a stale socket with no healthy worker behind it — ` +
+        `an orphaned listener left by a previous worker that exited uncleanly (common on Windows, where the ` +
+        `socket can outlive its dead PID). Reboot to release the socket, or set CLAUDE_MEM_WORKER_PORT to a ` +
+        `free port in ~/.claude-mem/settings.json.`,
+        { port });
+      return 'dead';
+    }
+  }
+  if (bindProbe && bindProbe !== 'EADDRINUSE') {
+    // A genuine bind error (e.g. EADDRNOTAVAIL from an invalid
+    // CLAUDE_MEM_WORKER_HOST, EACCES from a privileged port) — surface it as
+    // itself instead of misreporting it as a stale socket.
+    logger.error('SYSTEM',
+      `Worker cannot bind ${workerHost}:${port} (${bindProbe}) — check CLAUDE_MEM_WORKER_HOST / ` +
+      `CLAUDE_MEM_WORKER_PORT in ~/.claude-mem/settings.json.`,
+      { host: workerHost, port, code: bindProbe });
     return 'dead';
   }
 

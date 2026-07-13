@@ -3,11 +3,14 @@
   "name": "Claude-Mem (Persistent Memory)",
   "description": "OpenClaw plugin for Claude-Mem. Records observations from embedded runner sessions and streams them to messaging channels.",
   "kind": "memory",
-  "version": "13.8.0",
+  "version": "13.10.3-community-edge.0",
   "license": "Apache-2.0",
   "author": "thedotmack",
   "homepage": "https://claude-mem.ai",
-  "skills": ["skills/make-plan", "skills/do"],
+  "skills": [
+    "skills/make-plan",
+    "skills/do"
+  ],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -19,7 +22,9 @@
       },
       "syncMemoryFileExclude": {
         "type": "array",
-        "items": { "type": "string" },
+        "items": {
+          "type": "string"
+        },
         "default": [],
         "description": "Agent IDs excluded from automatic context injection (observations are still recorded, only prompt injection is skipped)"
       },
@@ -87,7 +92,9 @@
                 "type": "object",
                 "default": {},
                 "description": "Pin specific emojis to agent IDs (e.g. {\"devops\": \"🔧\"}). Agents not listed here get auto-assigned emojis.",
-                "additionalProperties": { "type": "string" }
+                "additionalProperties": {
+                  "type": "string"
+                }
               }
             }
           }

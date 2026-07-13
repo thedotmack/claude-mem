@@ -62,8 +62,28 @@ function truncateInput(input: unknown, maxBytes = MAX_INPUT_BYTES): string {
     if (s.length <= maxBytes) return s;
     return s.slice(0, maxBytes) + '…[TRUNCATED]';
   } catch {
+    // [ANTI-PATTERN IGNORED]: JSON.stringify of arbitrary tool input is expected
+    // to fail on circular/unserializable values; the '[UNSERIALIZABLE]' placeholder
+    // below is the designed recovery, and this util is dependency-free by design
+    // (see header) so it must not route through the application logger.
     return '[UNSERIALIZABLE]';
   }
+}
+
+function writeAuditEntry(attempt: ObserverToolAttempt): void {
+  rotateIfNeeded();
+  const entry = {
+    ts: new Date().toISOString(),
+    source: attempt.source,
+    sessionDbId: attempt.sessionDbId ?? null,
+    contentSessionId: attempt.contentSessionId ?? null,
+    project: attempt.project ?? null,
+    tool_name: attempt.tool_name,
+    tool_input: truncateInput(attempt.tool_input),
+    result: attempt.result,
+    error_message: attempt.error_message ?? null,
+  };
+  appendFileSync(AUDIT_LOG_PATH, JSON.stringify(entry) + '\n', 'utf8');
 }
 
 /**
@@ -73,19 +93,7 @@ function truncateInput(input: unknown, maxBytes = MAX_INPUT_BYTES): string {
  */
 export function recordObserverToolAttempt(attempt: ObserverToolAttempt): void {
   try {
-    rotateIfNeeded();
-    const entry = {
-      ts: new Date().toISOString(),
-      source: attempt.source,
-      sessionDbId: attempt.sessionDbId ?? null,
-      contentSessionId: attempt.contentSessionId ?? null,
-      project: attempt.project ?? null,
-      tool_name: attempt.tool_name,
-      tool_input: truncateInput(attempt.tool_input),
-      result: attempt.result,
-      error_message: attempt.error_message ?? null,
-    };
-    appendFileSync(AUDIT_LOG_PATH, JSON.stringify(entry) + '\n', 'utf8');
+    writeAuditEntry(attempt);
   } catch (err) {
     process.stderr.write(
       `[OBSERVER-AUDIT] failed to write: ${err instanceof Error ? err.message : String(err)}\n`

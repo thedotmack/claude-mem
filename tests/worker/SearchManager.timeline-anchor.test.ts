@@ -233,4 +233,109 @@ describe('SearchManager.timeline() anchor dispatch', () => {
     const text: string = response.content[0].text;
     expect(text).toContain('Observation #99999999 not found');
   });
+
+  it('(g) query mode scopes timeline hydration to the requested platform', async () => {
+    const project = 'timeline-platform-scope';
+    const contentSessionId = 'shared-platform-timeline-raw-id';
+    const baseEpoch = Date.UTC(2024, 1, 1, 0, 0, 0);
+
+    const claudeSessionDbId = store.createSDKSession(contentSessionId, project, 'claude prompt', undefined, 'claude');
+    store.ensureMemorySessionIdRegistered(claudeSessionDbId, 'claude-platform-memory');
+    const cursorSessionDbId = store.createSDKSession(contentSessionId, project, 'cursor prompt', undefined, 'cursor');
+    store.ensureMemorySessionIdRegistered(cursorSessionDbId, 'cursor-platform-memory');
+
+    store.db.prepare(`
+      INSERT INTO user_prompts
+      (session_db_id, content_session_id, prompt_number, prompt_text, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(claudeSessionDbId, contentSessionId, 1, 'CLAUDE_LEAK_PROMPT', new Date(baseEpoch).toISOString(), baseEpoch);
+    store.db.prepare(`
+      INSERT INTO user_prompts
+      (session_db_id, content_session_id, prompt_number, prompt_text, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(cursorSessionDbId, contentSessionId, 1, 'CURSOR_SCOPE_PROMPT', new Date(baseEpoch).toISOString(), baseEpoch);
+
+    store.storeObservation(
+      'claude-platform-memory',
+      project,
+      {
+        type: 'discovery',
+        title: 'CLAUDE_LEAK_OBS',
+        subtitle: null,
+        facts: [],
+        narrative: 'claude-only context that must not appear in cursor timelines',
+        concepts: [],
+        files_read: ['src/platform.ts'],
+        files_modified: [],
+      },
+      1,
+      0,
+      baseEpoch - 1_000
+    );
+    store.storeSummary(
+      'claude-platform-memory',
+      project,
+      {
+        request: 'CLAUDE_LEAK_SUMMARY',
+        investigated: '',
+        learned: '',
+        completed: '',
+        next_steps: '',
+        notes: null,
+      },
+      1,
+      0,
+      baseEpoch
+    );
+    store.storeSummary(
+      'cursor-platform-memory',
+      project,
+      {
+        request: 'CURSOR_SCOPE_SUMMARY',
+        investigated: '',
+        learned: '',
+        completed: '',
+        next_steps: '',
+        notes: null,
+      },
+      1,
+      0,
+      baseEpoch
+    );
+    const cursorAnchor = store.storeObservation(
+      'cursor-platform-memory',
+      project,
+      {
+        type: 'discovery',
+        title: 'CURSOR_SCOPE_ANCHOR',
+        subtitle: null,
+        facts: [],
+        narrative: 'cursoranchorneedle scoped timeline anchor',
+        concepts: [],
+        files_read: ['src/platform.ts'],
+        files_modified: [],
+      },
+      1,
+      0,
+      baseEpoch
+    );
+
+    const response = await manager.timeline({
+      query: 'cursoranchorneedle',
+      project,
+      platform_source: 'cursor',
+      depth_before: 5,
+      depth_after: 5,
+    });
+
+    expect(response.isError).not.toBe(true);
+    const text: string = response.content[0].text;
+    expect(text).toContain(`Observation #${cursorAnchor.id}`);
+    expect(text).toContain('CURSOR_SCOPE_ANCHOR');
+    expect(text).toContain('CURSOR_SCOPE_SUMMARY');
+    expect(text).toContain('CURSOR_SCOPE_PROMPT');
+    expect(text).not.toContain('CLAUDE_LEAK_OBS');
+    expect(text).not.toContain('CLAUDE_LEAK_SUMMARY');
+    expect(text).not.toContain('CLAUDE_LEAK_PROMPT');
+  });
 });

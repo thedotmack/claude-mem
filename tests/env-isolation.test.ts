@@ -32,10 +32,21 @@ const TEST_DATA_DIR = fs.mkdtempSync(join(tmpdir(), 'claude-mem-env-isolation-')
 const TEST_ENV_FILE = join(TEST_DATA_DIR, '.env');
 const ORIGINAL_ENV_FILE = process.env.CLAUDE_MEM_ENV_FILE;
 
-const ORIGINAL_BASE_URL = process.env.ANTHROPIC_BASE_URL;
-const ORIGINAL_API_KEY = process.env.ANTHROPIC_API_KEY;
-const ORIGINAL_AUTH_TOKEN = process.env.ANTHROPIC_AUTH_TOKEN;
-const ORIGINAL_OAUTH_TOKEN = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+const SNAPSHOTTED_VARS = [
+  'ANTHROPIC_BASE_URL',
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'CLAUDE_CODE_USE_BEDROCK',
+  'CLAUDE_CODE_USE_VERTEX',
+  'CLAUDE_CODE_USE_MANTLE',
+  'ANTHROPIC_DEFAULT_OPUS_MODEL',
+  'ANTHROPIC_DEFAULT_SONNET_MODEL',
+  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+] as const;
+const ORIGINAL_ENV = Object.fromEntries(
+  SNAPSHOTTED_VARS.map((name) => [name, process.env[name]]),
+) as Record<typeof SNAPSHOTTED_VARS[number], string | undefined>;
 
 function clearEnvFile(): void {
   if (fs.existsSync(TEST_ENV_FILE)) {
@@ -43,33 +54,20 @@ function clearEnvFile(): void {
   }
 }
 
-function clearAnthropicEnv(): void {
-  delete process.env.ANTHROPIC_BASE_URL;
-  delete process.env.ANTHROPIC_API_KEY;
-  delete process.env.ANTHROPIC_AUTH_TOKEN;
-  delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+function clearSnapshottedEnv(): void {
+  for (const name of SNAPSHOTTED_VARS) {
+    delete process.env[name];
+  }
 }
 
 function restoreOriginalEnv(): void {
-  if (ORIGINAL_BASE_URL === undefined) {
-    delete process.env.ANTHROPIC_BASE_URL;
-  } else {
-    process.env.ANTHROPIC_BASE_URL = ORIGINAL_BASE_URL;
-  }
-  if (ORIGINAL_API_KEY === undefined) {
-    delete process.env.ANTHROPIC_API_KEY;
-  } else {
-    process.env.ANTHROPIC_API_KEY = ORIGINAL_API_KEY;
-  }
-  if (ORIGINAL_AUTH_TOKEN === undefined) {
-    delete process.env.ANTHROPIC_AUTH_TOKEN;
-  } else {
-    process.env.ANTHROPIC_AUTH_TOKEN = ORIGINAL_AUTH_TOKEN;
-  }
-  if (ORIGINAL_OAUTH_TOKEN === undefined) {
-    delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
-  } else {
-    process.env.CLAUDE_CODE_OAUTH_TOKEN = ORIGINAL_OAUTH_TOKEN;
+  for (const name of SNAPSHOTTED_VARS) {
+    const original = ORIGINAL_ENV[name];
+    if (original === undefined) {
+      delete process.env[name];
+    } else {
+      process.env[name] = original;
+    }
   }
 }
 
@@ -91,7 +89,7 @@ describe('Issue #2375: ANTHROPIC_BASE_URL env-var isolation', () => {
 
   beforeEach(() => {
     clearEnvFile();
-    clearAnthropicEnv();
+    clearSnapshottedEnv();
   });
 
   afterEach(() => {
@@ -109,6 +107,24 @@ describe('Issue #2375: ANTHROPIC_BASE_URL env-var isolation', () => {
     const result = buildIsolatedEnv();
 
     expect(result.ANTHROPIC_BASE_URL).toBeUndefined();
+  });
+
+  it('Bedrock/Vertex routing env is stripped from isolatedEnv', () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = '1';
+    process.env.CLAUDE_CODE_USE_VERTEX = '1';
+    process.env.CLAUDE_CODE_USE_MANTLE = '1';
+    process.env.ANTHROPIC_DEFAULT_OPUS_MODEL = 'us.anthropic.claude-opus-4-7';
+    process.env.ANTHROPIC_DEFAULT_SONNET_MODEL = 'us.anthropic.claude-sonnet-4-6';
+    process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL = 'us.anthropic.claude-haiku-4-5';
+
+    const result = buildIsolatedEnv();
+
+    expect(result.CLAUDE_CODE_USE_BEDROCK).toBeUndefined();
+    expect(result.CLAUDE_CODE_USE_VERTEX).toBeUndefined();
+    expect(result.CLAUDE_CODE_USE_MANTLE).toBeUndefined();
+    expect(result.ANTHROPIC_DEFAULT_OPUS_MODEL).toBeUndefined();
+    expect(result.ANTHROPIC_DEFAULT_SONNET_MODEL).toBeUndefined();
+    expect(result.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBeUndefined();
   });
 
   it('~/.claude-mem/.env BASE_URL + AUTH_TOKEN reaches isolatedEnv', () => {

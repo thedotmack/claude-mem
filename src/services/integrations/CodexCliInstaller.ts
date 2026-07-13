@@ -1,10 +1,21 @@
 import path from 'path';
 import { homedir } from 'os';
-import { execFileSync, spawnSync, type SpawnSyncReturns } from 'child_process';
+import {
+  execFileSync,
+  spawnSync,
+  type SpawnSyncOptionsWithStringEncoding,
+  type SpawnSyncReturns,
+} from 'child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { logger } from '../../utils/logger.js';
 import { paths } from '../../shared/paths.js';
+import {
+  ensureTreeSitterCliBinary,
+  getBunVersion,
+  getUvVersion,
+  writeInstallMarker,
+} from '../../npx-cli/install/setup-runtime.js';
 
 const CODEX_DIR = path.join(homedir(), '.codex');
 const CODEX_AGENTS_MD_PATH = path.join(CODEX_DIR, 'AGENTS.md');
@@ -21,6 +32,14 @@ const REQUIRED_MARKETPLACE_FILES = [
   path.join('plugin', 'hooks', 'codex-hooks.json'),
   path.join('plugin', 'skills', 'mem-search', 'SKILL.md'),
 ];
+const WINDOWS_CODEX_EXTENSIONS = new Set(['.cmd', '.exe', '.bat', '.com']);
+const WINDOWS_CODEX_CMD_EXTENSIONS = new Set(['.cmd', '.bat']);
+
+type CodexSpawnInvocation = {
+  command: string;
+  args: string[];
+  options: SpawnSyncOptionsWithStringEncoding;
+};
 
 function commandExists(command: string): boolean {
   try {
@@ -31,6 +50,7 @@ function commandExists(command: string): boolean {
     }
     return true;
   } catch {
+    // [ANTI-PATTERN IGNORED]: where/which exits non-zero whenever the probed command is absent from PATH; that is the expected negative probe result and commandExists reports it as false.
     return false;
   }
 }
@@ -80,32 +100,145 @@ function resolvePluginMarketplaceRoot(preferredRoot?: string): string {
   throw new Error('Could not locate a Codex marketplace root with .agents/plugins/marketplace.json and plugin/.codex-plugin/plugin.json. Run npx claude-mem@latest install from the package or repo root.');
 }
 
+function readCodexPluginVersion(marketplaceRoot: string): string {
+  const manifestPath = path.join(marketplaceRoot, 'plugin', '.codex-plugin', 'plugin.json');
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as { version?: unknown };
+  if (typeof manifest.version !== 'string' || manifest.version.length === 0) {
+    throw new Error(`Codex plugin manifest has no version: ${manifestPath}`);
+  }
+  return manifest.version;
+}
+
+export function resolveCodexPluginCacheDirectory(
+  marketplaceRoot: string,
+  codexDir: string = CODEX_DIR,
+): string {
+  return path.join(
+    codexDir,
+    'plugins',
+    'cache',
+    MARKETPLACE_NAME,
+    'claude-mem',
+    readCodexPluginVersion(marketplaceRoot),
+  );
+}
+
+type CodexPluginCacheInstallOptions = {
+  codexDir?: string;
+  runBestEffort?: typeof runCodexBestEffort;
+  ensureRuntime?: typeof ensureTreeSitterCliBinary;
+};
+
+export async function installCodexPluginCache(
+  marketplaceRoot: string,
+  options: CodexPluginCacheInstallOptions = {},
+): Promise<void> {
+  const runBestEffort = options.runBestEffort ?? runCodexBestEffort;
+  const ensureRuntime = options.ensureRuntime ?? ensureTreeSitterCliBinary;
+  const installed = runBestEffort(
+    ['plugin', 'add', CODEX_PLUGIN_ID],
+    'Installed plugin from the local Codex marketplace.',
+    'Could not install claude-mem from the local Codex marketplace',
+  );
+  if (!installed) {
+    throw new Error('Codex plugin cache could not be installed');
+  }
+
+  const codexCacheDir = resolveCodexPluginCacheDirectory(
+    marketplaceRoot,
+    options.codexDir,
+  );
+  await ensureRuntime(codexCacheDir);
+
+  // Write the install marker only after the runtime is provisioned, so
+  // `.install-version` is a truthful "runtime ready" signal rather than an
+  // optimistic one copied before `plugin add`. Without it, version-check.js
+  // emits a misleading "runtime not yet set up" hint for a working Codex cache.
+  writeInstallMarker(
+    codexCacheDir,
+    readCodexPluginVersion(marketplaceRoot),
+    getBunVersion() ?? '',
+    getUvVersion() ?? '',
+  );
+  console.log('  Smart-explore Tree-sitter runtime ready.');
+}
+
+function lookupCodexOnWindows(): string | null {
+  let stdout: string;
+  try {
+    stdout = execFileSync('where', ['codex'], {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+    });
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('WORKER', 'Failed to locate codex via where; falling back to codex.cmd', { command: 'where codex' }, err);
+    return null;
+  }
+
+  const candidates = stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return candidates.find((candidate) => WINDOWS_CODEX_EXTENSIONS.has(path.extname(candidate).toLowerCase()))
+    ?? candidates[0]
+    ?? null;
+}
+
+function quoteCmdArgument(value: string): string {
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
+export function resolveCodexCommand(
+  platform: NodeJS.Platform = process.platform,
+  windowsLookup: () => string | null = lookupCodexOnWindows,
+): string {
+  if (platform !== 'win32') return 'codex';
+  return windowsLookup() ?? 'codex.cmd';
+}
+
+export function resolveCodexSpawnInvocation(
+  args: string[],
+  platform: NodeJS.Platform = process.platform,
+  windowsLookup: () => string | null = lookupCodexOnWindows,
+): CodexSpawnInvocation {
+  const resolvedCommand = resolveCodexCommand(platform, windowsLookup);
+  const options: SpawnSyncOptionsWithStringEncoding = {
+    encoding: 'utf-8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    ...(platform === 'win32' ? { windowsHide: true } : {}),
+  };
+
+  if (
+    platform === 'win32'
+    && WINDOWS_CODEX_CMD_EXTENSIONS.has(path.extname(resolvedCommand).toLowerCase())
+  ) {
+    return {
+      command: 'cmd.exe',
+      args: ['/d', '/s', '/c', [resolvedCommand, ...args].map(quoteCmdArgument).join(' ')],
+      options,
+    };
+  }
+
+  return {
+    command: resolvedCommand,
+    args,
+    options,
+  };
+}
+
 /**
  * Spawn the `codex` CLI.
  *
  * Issue #2695: on Windows `codex` is installed as `codex.cmd` (a PATH shim).
- * `child_process.spawnSync('codex', args)` without a shell does NOT consult
- * PATHEXT, so it can only find an extension-less `codex` and throws ENOENT.
- * Setting `shell: true` makes Windows resolve the `.cmd`/`.exe`/`.bat` shim
- * via cmd.exe (the same workaround bun-runner.js uses for `where bun`). Under
- * a shell the args are re-tokenized, so we quote each one to preserve paths
- * containing spaces. On POSIX we keep the direct (no-shell) exec.
+ * `child_process.spawnSync('codex', args)` without a shell does not consult
+ * PATHEXT, so resolve the shim first. Native executables run directly; .cmd
+ * and .bat shims use an explicit cmd.exe wrapper without shell:true.
  */
 export function codexSpawn(args: string[]): SpawnSyncReturns<string> {
-  const isWindows = process.platform === 'win32';
-  if (isWindows) {
-    const quotedArgs = args.map((arg) => `"${arg.replace(/"/g, '\\"')}"`);
-    return spawnSync('codex', quotedArgs, {
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      shell: true,
-      windowsHide: true,
-    });
-  }
-  return spawnSync('codex', args, {
-    encoding: 'utf-8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  const invocation = resolveCodexSpawnInvocation(args);
+  return spawnSync(invocation.command, invocation.args, invocation.options);
 }
 
 function runCodex(args: string[]): void {
@@ -150,7 +283,7 @@ function registerCodexMarketplace(marketplaceRoot: string): void {
     return;
   } catch (error) {
     if (!isMarketplaceDifferentSourceError(error)) {
-      throw error;
+      throw error instanceof Error ? error : new Error(String(error));
     }
   }
 
@@ -198,6 +331,55 @@ export function setTomlFeatureEnabled(content: string, featureName: string, enab
   return setTomlBooleanInTable(content, '[features]', featureName, enabled);
 }
 
+function normalizeTomlHeader(line: string): string | null {
+  const match = line.trim().match(/^\[([^\]]+)\]\s*$/);
+  if (!match) return null;
+  return match[1].replace(/\s+/g, '').replace(/"/g, '');
+}
+
+function isLegacyMcpSearchHeader(normalizedHeader: string | null): boolean {
+  return normalizedHeader === 'mcp_servers.mcp-search';
+}
+
+function isLegacyMcpSearchChildHeader(normalizedHeader: string | null): boolean {
+  return typeof normalizedHeader === 'string' && normalizedHeader.startsWith('mcp_servers.mcp-search.');
+}
+
+function isClaudeMemMcpSearchBlock(block: string): boolean {
+  return /claude-mem/.test(block);
+}
+
+export function removeLegacyCodexMcpSearchConfig(content: string): string {
+  const lines = content.split('\n');
+  const blocks: Array<{ header: string | null; text: string }> = [];
+  let currentHeader: string | null = null;
+  let currentLines: string[] = [];
+
+  for (const line of lines) {
+    const header = normalizeTomlHeader(line);
+    if (header !== null) {
+      blocks.push({ header: currentHeader, text: currentLines.join('\n') });
+      currentHeader = header;
+      currentLines = [line];
+    } else {
+      currentLines.push(line);
+    }
+  }
+  blocks.push({ header: currentHeader, text: currentLines.join('\n') });
+
+  const removeLegacyMcpSearch = blocks.some(
+    (block) => isLegacyMcpSearchHeader(block.header) && isClaudeMemMcpSearchBlock(block.text),
+  );
+  if (!removeLegacyMcpSearch) return content;
+
+  const kept = blocks.filter((block) =>
+    !isLegacyMcpSearchHeader(block.header) && !isLegacyMcpSearchChildHeader(block.header)
+  );
+  // The stale claude-mem-owned server can have tool child tables; remove the
+  // whole subtree so Codex falls back to the plugin-managed MCP declaration.
+  return kept.map((block) => block.text).join('\n').replace(/^\n+/, '').replace(/\n{3,}/g, '\n\n');
+}
+
 function writeCodexPluginConfig(enabled: boolean): boolean {
   if (!enabled && !existsSync(CODEX_CONFIG_PATH)) return false;
   mkdirSync(CODEX_DIR, { recursive: true });
@@ -206,6 +388,7 @@ function writeCodexPluginConfig(enabled: boolean): boolean {
 
   if (enabled) {
     next = setTomlFeatureEnabled(next, 'hooks', true);
+    next = removeLegacyCodexMcpSearchConfig(next);
   }
   for (const legacyPluginId of LEGACY_CODEX_PLUGIN_IDS) {
     next = setTomlPluginEnabled(next, legacyPluginId, false);
@@ -328,26 +511,30 @@ function disableCodexTranscriptAgentsContext(): boolean {
   if (!existsSync(CODEX_TRANSCRIPT_WATCH_CONFIG_PATH)) return true;
 
   try {
-    const parsed = JSON.parse(readFileSync(CODEX_TRANSCRIPT_WATCH_CONFIG_PATH, 'utf-8')) as unknown;
-    if (!isRecord(parsed) || !Array.isArray(parsed.watches)) return true;
-
-    let changed = false;
-    for (const watch of parsed.watches) {
-      if (!isRecord(watch) || !isCodexTranscriptWatch(watch)) continue;
-      if (!isRecord(watch.context) || !isLegacyCodexAgentsContext(watch.context)) continue;
-      delete watch.context;
-      changed = true;
-    }
-
-    if (changed) {
-      writeFileSync(CODEX_TRANSCRIPT_WATCH_CONFIG_PATH, `${JSON.stringify(parsed, null, 2)}\n`);
-      console.log(`  Disabled legacy Codex transcript AGENTS.md context in ${CODEX_TRANSCRIPT_WATCH_CONFIG_PATH}`);
-    }
+    stripLegacyTranscriptWatchContexts();
     return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.warn('WORKER', 'Failed to disable Codex transcript AGENTS.md context', { error: message });
     return false;
+  }
+}
+
+function stripLegacyTranscriptWatchContexts(): void {
+  const parsed = JSON.parse(readFileSync(CODEX_TRANSCRIPT_WATCH_CONFIG_PATH, 'utf-8')) as unknown;
+  if (!isRecord(parsed) || !Array.isArray(parsed.watches)) return;
+
+  let changed = false;
+  for (const watch of parsed.watches) {
+    if (!isRecord(watch) || !isCodexTranscriptWatch(watch)) continue;
+    if (!isRecord(watch.context) || !isLegacyCodexAgentsContext(watch.context)) continue;
+    delete watch.context;
+    changed = true;
+  }
+
+  if (changed) {
+    writeFileSync(CODEX_TRANSCRIPT_WATCH_CONFIG_PATH, `${JSON.stringify(parsed, null, 2)}\n`);
+    console.log(`  Disabled legacy Codex transcript AGENTS.md context in ${CODEX_TRANSCRIPT_WATCH_CONFIG_PATH}`);
   }
 }
 
@@ -363,25 +550,30 @@ export async function installCodexCli(marketplaceRootOverride?: string): Promise
   }
 
   try {
-    assertCodexMarketplaceSupported();
-    const marketplaceRoot = resolvePluginMarketplaceRoot(marketplaceRootOverride);
+    return await performCodexInstall(marketplaceRootOverride);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`\nInstallation failed: ${message}`);
+    return 1;
+  }
+}
 
-    console.log(`  Registering Codex plugin marketplace: ${marketplaceRoot}`);
-    registerCodexMarketplace(marketplaceRoot);
-    enableCodexPluginConfig();
-    runCodexBestEffort(
-      ['plugin', 'marketplace', 'upgrade', MARKETPLACE_NAME],
-      'Refreshed Codex marketplace and installed plugin cache.',
-      'Could not refresh Codex marketplace cache; reinstall or upgrade claude-mem from /plugins if Codex still uses old MCP config',
-    );
-    if (!cleanupLegacyCodexAgentsMdContext()) {
-      console.warn(`  Native Codex hooks registered, but failed to remove legacy AGENTS.md context from ${CODEX_AGENTS_MD_PATH}.`);
-    }
-    if (!cleanupLegacyCodexTranscriptAgentsContext()) {
-      console.warn(`  Native Codex hooks registered, but failed to disable legacy transcript AGENTS.md context in ${CODEX_TRANSCRIPT_WATCH_CONFIG_PATH}.`);
-    }
+async function performCodexInstall(marketplaceRootOverride?: string): Promise<number> {
+  assertCodexMarketplaceSupported();
+  const marketplaceRoot = resolvePluginMarketplaceRoot(marketplaceRootOverride);
 
-    console.log(`
+  console.log(`  Registering Codex plugin marketplace: ${marketplaceRoot}`);
+  registerCodexMarketplace(marketplaceRoot);
+  enableCodexPluginConfig();
+  await installCodexPluginCache(marketplaceRoot);
+  if (!cleanupLegacyCodexAgentsMdContext()) {
+    console.warn(`  Native Codex hooks registered, but failed to remove legacy AGENTS.md context from ${CODEX_AGENTS_MD_PATH}.`);
+  }
+  if (!cleanupLegacyCodexTranscriptAgentsContext()) {
+    console.warn(`  Native Codex hooks registered, but failed to disable legacy transcript AGENTS.md context in ${CODEX_TRANSCRIPT_WATCH_CONFIG_PATH}.`);
+  }
+
+  console.log(`
 Installation complete!
 
 Codex marketplace: ${MARKETPLACE_NAME}
@@ -394,12 +586,7 @@ Next steps:
 For a fresh setup, the supported entry point is:
   npx claude-mem@latest install
 `);
-    return 0;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(`\nInstallation failed: ${message}`);
-    return 1;
-  }
+  return 0;
 }
 
 export function uninstallCodexCli(): number {

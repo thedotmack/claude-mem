@@ -85,9 +85,9 @@ describe('Install: disable Claude Code auto-memory', () => {
       expect(choiceCallIdx).toBeGreaterThan(setupCallIdx);
     });
 
-    it('skips the consent helper entirely when claude-code is not selected', () => {
+    it('skips the consent helper entirely when neither claude-code nor its claude alias is selected', () => {
       expect(installSource).toMatch(
-        /if \(!selectedIDEs\.includes\(['"]claude-code['"]\)\) \{\s*return ['"]not-applicable['"]/,
+        /if \(!selectedIDEs\.includes\(['"]claude-code['"]\) && !selectedIDEs\.includes\(['"]claude['"]\)\) \{\s*return ['"]not-applicable['"]/,
       );
     });
 

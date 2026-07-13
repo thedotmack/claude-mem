@@ -8,7 +8,7 @@
  */
 
 import * as p from '@clack/prompts';
-import pc from 'picocolors';
+import { styleText } from 'node:util';
 import {
   explainTelemetryConsent,
   loadTelemetryConfig,
@@ -36,7 +36,7 @@ const COLLECTED_FIELDS = [
   'is_ci            whether running in CI',
   'endpoint         which claude-mem search route (our route names)',
   'ide              installer IDE choice (claude-code / cursor / ...)',
-  'provider         LLM provider choice (claude / gemini / agy-cli / openrouter)',
+  'provider         LLM provider choice (claude / codex / gemini / agy-cli / openrouter / kiro)',
   'runtime_mode     worker or server',
   'trigger          start or heartbeat',
   'count            integer volume (e.g. observations stored)',
@@ -66,10 +66,10 @@ const COLLECTED_FIELDS = [
   'result_count     how many results a search returned (never the query)',
   'chroma_available whether vector search was reachable for a search',
   'fallback_reason  none / chroma_connection / chroma_error / chroma_not_initialized',
-  'invalid_output_class   xml / idle / prose / poisoned (never the output)',
-  'consecutive_invalid_outputs   unusable outputs in a row before recovery',
-  'respawn_triggered      whether the compression agent was restarted',
-  'abort_reason     idle / shutdown / overflow / restart_guard / quota / poisoned / none',
+  'invalid_output_class   xml / idle / prose (never the output)',
+  'consecutive_invalid_outputs   legacy unusable-output counter',
+  'respawn_triggered      legacy recovery flag for old invalid-output restarts',
+  'abort_reason     idle / shutdown / overflow / context_bound / restart_guard / quota / none',
   'previous_shutdown      crash / clean / unknown (detected at worker start)',
   'previous_uptime_seconds / uptime_seconds',
   '                 worker uptime in whole seconds (previous run / at stop)',
@@ -102,7 +102,7 @@ const SOURCE_LABELS: Record<TelemetryConsentSource, string> = {
 };
 
 function printTelemetryUsage(): void {
-  console.error(`Usage: ${pc.bold('npx claude-mem telemetry [status|enable|disable]')}`);
+  console.error(`Usage: ${styleText('bold', 'npx claude-mem telemetry [status|enable|disable]')}`);
   console.error('  status   Show whether telemetry is on and which setting decided it (default)');
   console.error('  enable   Turn anonymous usage analytics back on (interactive)');
   console.error('  disable  Opt out of telemetry');
@@ -114,28 +114,28 @@ function runTelemetryStatus(): void {
   const config = loadTelemetryConfig();
   const { enabled, source } = explainTelemetryConsent(process.env, config);
 
-  const state = enabled ? pc.green('ENABLED') : pc.yellow('DISABLED');
-  console.log(`${pc.bold('Telemetry:')} ${state}`);
-  console.log(`${pc.bold('Decided by:')} ${SOURCE_LABELS[source]}`);
+  const state = enabled ? styleText('green', 'ENABLED') : styleText('yellow', 'DISABLED');
+  console.log(`${styleText('bold', 'Telemetry:')} ${state}`);
+  console.log(`${styleText('bold', 'Decided by:')} ${SOURCE_LABELS[source]}`);
   if (config?.installId) {
-    console.log(`${pc.bold('Install ID:')} ${config.installId} ${pc.dim('(random UUID, not tied to you)')}`);
+    console.log(`${styleText('bold', 'Install ID:')} ${config.installId} ${styleText('dim', '(random UUID, not tied to you)')}`);
   } else if (config) {
-    console.log(`${pc.bold('Install ID:')} ${pc.dim('none recorded')}`);
+    console.log(`${styleText('bold', 'Install ID:')} ${styleText('dim', 'none recorded')}`);
   } else {
-    console.log(`${pc.bold('Install ID:')} ${pc.dim('none (no telemetry config has been written)')}`);
+    console.log(`${styleText('bold', 'Install ID:')} ${styleText('dim', 'none (no telemetry config has been written)')}`);
   }
-  console.log(`${pc.bold('Config file:')} ${getTelemetryConfigPath()}`);
-  console.log(`${pc.bold('Docs:')} ${DOCS_URL}`);
+  console.log(`${styleText('bold', 'Config file:')} ${getTelemetryConfigPath()}`);
+  console.log(`${styleText('bold', 'Docs:')} ${DOCS_URL}`);
 }
 
 async function runTelemetryEnable(): Promise<void> {
   if (!process.stdin.isTTY) {
-    console.error(pc.red('telemetry enable requires an interactive terminal (consent prompt).'));
+    console.error(styleText('red', 'telemetry enable requires an interactive terminal (consent prompt).'));
     console.error(`Read what is collected first: ${DOCS_URL}`);
     process.exit(1);
   }
 
-  p.intro(pc.bgBlue(pc.white(' claude-mem telemetry ')));
+  p.intro(styleText(['bgBlue', 'white'], ' claude-mem telemetry '));
 
   p.note(
     [
@@ -183,7 +183,7 @@ async function runTelemetryEnable(): Promise<void> {
   });
 
   p.log.success(`Telemetry enabled. Config: ${getTelemetryConfigPath()}`);
-  p.outro(`Change your mind anytime: ${pc.cyan('npx claude-mem telemetry disable')}`);
+  p.outro(`Change your mind anytime: ${styleText('cyan', 'npx claude-mem telemetry disable')}`);
 }
 
 function runTelemetryDisable(): void {
@@ -194,8 +194,8 @@ function runTelemetryDisable(): void {
     decidedAt: new Date().toISOString(),
   });
 
-  console.log(pc.green('Telemetry disabled.'));
-  console.log(`${pc.bold('Config file:')} ${getTelemetryConfigPath()}`);
+  console.log(styleText('green', 'Telemetry disabled.'));
+  console.log(`${styleText('bold', 'Config file:')} ${getTelemetryConfigPath()}`);
 }
 
 export async function runTelemetryCommand(argv: string[] = []): Promise<void> {
@@ -212,7 +212,7 @@ export async function runTelemetryCommand(argv: string[] = []): Promise<void> {
       runTelemetryDisable();
       break;
     default:
-      console.error(pc.red(`Unknown telemetry subcommand: ${subCommand}`));
+      console.error(styleText('red', `Unknown telemetry subcommand: ${subCommand}`));
       printTelemetryUsage();
       process.exit(1);
   }

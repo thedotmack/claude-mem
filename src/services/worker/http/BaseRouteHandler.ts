@@ -2,7 +2,7 @@
 import { Request, Response } from 'express';
 import { logger } from '../../../utils/logger.js';
 import { AppError } from '../../server/ErrorHandler.js';
-import { instrument } from '../../telemetry/instrument.js';
+import { normalizePlatformSource } from '../../../shared/platform-source.js';
 
 export abstract class BaseRouteHandler {
   protected wrapHandler(
@@ -46,6 +46,33 @@ export abstract class BaseRouteHandler {
     return value;
   }
 
+  protected static firstString(value: unknown): string | undefined {
+    if (Array.isArray(value)) {
+      return BaseRouteHandler.firstString(value[0]);
+    }
+    return typeof value === 'string' && value.trim() ? value : undefined;
+  }
+
+  private static rawPlatformSourceFromRequest(req: Request): string | undefined {
+    const body = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
+    const header = req.get?.('x-platform-source')
+      ?? req.get?.('x-claude-mem-platform-source');
+    return BaseRouteHandler.firstString(req.query.platformSource)
+      ?? BaseRouteHandler.firstString(req.query.platform_source)
+      ?? BaseRouteHandler.firstString(body.platformSource)
+      ?? BaseRouteHandler.firstString(body.platform_source)
+      ?? BaseRouteHandler.firstString(header);
+  }
+
+  protected getPlatformSourceFromRequest(req: Request): string {
+    return normalizePlatformSource(BaseRouteHandler.rawPlatformSourceFromRequest(req));
+  }
+
+  protected getOptionalPlatformSourceFromRequest(req: Request): string | undefined {
+    const rawPlatformSource = BaseRouteHandler.rawPlatformSourceFromRequest(req);
+    return rawPlatformSource ? normalizePlatformSource(rawPlatformSource) : undefined;
+  }
+
   protected badRequest(res: Response, message: string): void {
     res.status(400).json({ error: message });
   }
@@ -57,17 +84,12 @@ export abstract class BaseRouteHandler {
   protected handleError(res: Response, error: Error, context?: string): void {
     const statusCode = error instanceof AppError ? error.statusCode : 500;
     // The local failure line (full fidelity) always fires. The Error payload
-    // (ctx.data) routes through logger.error → the error sink → captureException
+    // routes through logger.error → the error sink → captureException
     // (Phase 3), which sends a REDACTED $exception to PostHog Error Tracking —
     // consent-gated, kill-switch-gated, and rate-limited. This replaces the old
     // enum-only `error_occurred` event with the real (scrubbed) exception, so we
     // no longer attach a telemetry descriptor here.
-    instrument(
-      'WORKER',
-      'failure',
-      context || 'Request failed',
-      { data: error }
-    );
+    logger.failure('WORKER', context || 'Request failed', undefined, error);
     if (!res.headersSent) {
       const response: Record<string, unknown> = { error: error.message };
 

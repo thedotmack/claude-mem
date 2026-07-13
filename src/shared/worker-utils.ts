@@ -7,9 +7,9 @@ import { SettingsDefaultsManager, type SettingsDefaults } from "./SettingsDefaul
 import { MARKETPLACE_ROOT, DATA_DIR } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
 import { validateWorkerPidFile } from "../supervisor/index.js";
-import { emitBlockingError } from "./hook-io.js";
+import { emitDiagnostic } from "./hook-io.js";
 import { captureCliEvent } from "../services/telemetry/cli-telemetry.js";
-import { checkVersionMatch } from "../services/infrastructure/index.js";
+import { checkVersionMatch } from "../services/infrastructure/HealthMonitor.js";
 // Imported from ProcessManager.js directly (not the infrastructure barrel):
 // tests mock the barrel module wholesale, and the resolver must stay real.
 // ProcessManager imports nothing from worker-utils, so no cycle.
@@ -37,12 +37,6 @@ function readTimeoutEnv(
 const HEALTH_CHECK_TIMEOUT_MS = readTimeoutEnv(
   'CLAUDE_MEM_HEALTH_TIMEOUT_MS',
   getTimeout(HOOK_TIMEOUTS.HEALTH_CHECK),
-  { min: 500, max: 300000 }
-);
-
-const API_REQUEST_TIMEOUT_MS = readTimeoutEnv(
-  'CLAUDE_MEM_API_TIMEOUT_MS',
-  getTimeout(HOOK_TIMEOUTS.API_REQUEST),
   { min: 500, max: 300000 }
 );
 
@@ -211,18 +205,20 @@ async function isWorkerReady(): Promise<boolean> {
 }
 
 /**
- * Canonical worker-script resolver: the marketplace install first, then the
- * dev-tree copy under cwd. Exported so other launchers (e.g. the MCP server)
- * prefer the same marketplace copy instead of spawning a stale cache-dir
- * bundle.
+ * Canonical worker-script resolver: an explicit `CLAUDE_MEM_WORKER_SCRIPT_PATH`
+ * override first (opt-in; for pinning a local-build bundle), then the marketplace
+ * install, then the dev-tree copy under cwd. Exported so other launchers (e.g.
+ * the MCP server) prefer the same bundle instead of spawning a stale cache-dir
+ * one. Unset override → identical to the prior marketplace-then-cwd behavior.
  */
 export function resolveWorkerScriptPath(): string | null {
   const candidates = [
+    process.env.CLAUDE_MEM_WORKER_SCRIPT_PATH,                            // explicit override, checked first (opt-in)
     path.join(MARKETPLACE_ROOT, 'plugin', 'scripts', 'worker-service.cjs'),
     path.join(process.cwd(), 'plugin', 'scripts', 'worker-service.cjs'),
   ];
   for (const candidate of candidates) {
-    if (existsSync(candidate)) return candidate;
+    if (candidate && existsSync(candidate)) return candidate;
   }
   return null;
 }
@@ -243,7 +239,9 @@ async function waitForWorkerReadiness(timeoutMs: number = HOOK_READINESS_TIMEOUT
   if (timeoutMs <= 0) {
     try {
       return await isWorkerReady();
-    } catch {
+    } catch (error: unknown) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      logger.debug('SYSTEM', 'Worker readiness check threw', {}, err);
       return false;
     }
   }
@@ -276,7 +274,9 @@ async function fetchWorkerHealthVersion(): Promise<string | null> {
     const response = await workerHttpRequest('/api/health', { timeoutMs: HEALTH_CHECK_TIMEOUT_MS });
     const body = await response.json() as { version?: unknown };
     return typeof body.version === 'string' ? body.version : null;
-  } catch {
+  } catch (error: unknown) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.debug('SYSTEM', 'Worker health-version fetch failed', {}, err);
     return null;
   }
 }
@@ -339,7 +339,12 @@ async function isWorkerPortAlive(): Promise<boolean> {
   return false;
 }
 
-export async function ensureWorkerRunning(): Promise<boolean> {
+export interface EnsureWorkerRunningOptions {
+  allowLazySpawn?: boolean;
+}
+
+export async function ensureWorkerRunning(options: EnsureWorkerRunningOptions = {}): Promise<boolean> {
+  const allowLazySpawn = options.allowLazySpawn !== false;
   // Installed-plugin version captured when the alive branch runs, so every
   // post-readiness path below can run the one-shot amplifier check
   // (warnIfVersionStillMismatched). Stays null when no worker was alive
@@ -372,11 +377,21 @@ export async function ensureWorkerRunning(): Promise<boolean> {
       pluginVersion,
       workerVersion,
     });
+    // Only the restart POST itself can throw here (the waits below swallow
+    // their own probe errors); on failure skip the successor wait and fall
+    // through to lazy-spawn.
+    let restartRequested = false;
     try {
       await workerHttpRequest('/api/admin/restart', {
         method: 'POST',
         timeoutMs: HEALTH_CHECK_TIMEOUT_MS,
       });
+      restartRequested = true;
+    } catch (error: unknown) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      logger.debug('SYSTEM', 'Worker restart request failed; falling through to lazy-spawn', {}, err);
+    }
+    if (restartRequested) {
       // Do NOT lazy-spawn immediately after the POST — the old worker is
       // still dying and owns the port, so a spawn here races the corpse (the
       // observed restart ping-pong). The dying worker spawns its own
@@ -399,12 +414,13 @@ export async function ensureWorkerRunning(): Promise<boolean> {
         pluginVersion,
         workerVersion,
       });
-    } catch (error: unknown) {
-      logger.debug('SYSTEM', 'Worker restart request failed; falling through to lazy-spawn', {
-        error: error instanceof Error ? error.message : String(error),
-      });
     }
     // Fall through to (re)spawn + readiness wait below.
+  }
+
+  if (!allowLazySpawn) {
+    logger.info('SYSTEM', 'Worker not already healthy; skipping lazy-spawn for best-effort hook call');
+    return false;
   }
 
   const runtimePath = resolveWorkerRuntimePath();
@@ -485,10 +501,24 @@ export async function ensureWorkerRunning(): Promise<boolean> {
 
 let aliveCache: boolean | null = null;
 
-export async function ensureWorkerAliveOnce(): Promise<boolean> {
-  if (aliveCache !== null) return aliveCache;
-  aliveCache = await ensureWorkerRunning();
-  return aliveCache;
+export function resetAliveCache(): void {
+  aliveCache = null;
+}
+
+export async function ensureWorkerAliveOnce(options: EnsureWorkerRunningOptions = {}): Promise<boolean> {
+  const allowLazySpawn = options.allowLazySpawn !== false;
+  if (aliveCache === true) return true;
+  if (aliveCache === false && allowLazySpawn) return false;
+  if (allowLazySpawn && (loadFromFileOnce().CLAUDE_MEM_WORKER_AUTOSTART ?? 'true').trim().toLowerCase() === 'false') {
+    aliveCache = false;
+    return aliveCache;
+  }
+
+  const alive = await ensureWorkerRunning(options);
+  if (alive || allowLazySpawn) {
+    aliveCache = alive;
+  }
+  return alive;
 }
 
 interface HookFailureState {
@@ -496,7 +526,7 @@ interface HookFailureState {
   lastFailureAt: number;
 }
 
-const FAIL_LOUD_DEFAULT_THRESHOLD = 3;
+const FAIL_LOUD_DEFAULT_THRESHOLD = 10;
 
 function getStateDir(): string {
   return path.join(DATA_DIR, 'state');
@@ -506,19 +536,26 @@ function getHookFailuresPath(): string {
   return path.join(getStateDir(), 'hook-failures.json');
 }
 
+function parseHookFailureState(raw: string): HookFailureState {
+  const parsed = JSON.parse(raw) as Partial<HookFailureState>;
+  return {
+    consecutiveFailures: typeof parsed.consecutiveFailures === 'number' && Number.isFinite(parsed.consecutiveFailures)
+      ? Math.max(0, Math.floor(parsed.consecutiveFailures))
+      : 0,
+    lastFailureAt: typeof parsed.lastFailureAt === 'number' && Number.isFinite(parsed.lastFailureAt)
+      ? parsed.lastFailureAt
+      : 0,
+  };
+}
+
 function readHookFailureState(): HookFailureState {
   try {
-    const raw = readFileSync(getHookFailuresPath(), 'utf-8');
-    const parsed = JSON.parse(raw) as Partial<HookFailureState>;
-    return {
-      consecutiveFailures: typeof parsed.consecutiveFailures === 'number' && Number.isFinite(parsed.consecutiveFailures)
-        ? Math.max(0, Math.floor(parsed.consecutiveFailures))
-        : 0,
-      lastFailureAt: typeof parsed.lastFailureAt === 'number' && Number.isFinite(parsed.lastFailureAt)
-        ? parsed.lastFailureAt
-        : 0,
-    };
+    return parseHookFailureState(readFileSync(getHookFailuresPath(), 'utf-8'));
   } catch {
+    // [ANTI-PATTERN IGNORED]: the failure-counter state file is optional and
+    // absent (ENOENT) on every hook run until the first worker failure, so
+    // logging here would fire on effectively every healthy invocation; the
+    // recovery is the zeroed default state below.
     return { consecutiveFailures: 0, lastFailureAt: 0 };
   }
 }
@@ -580,6 +617,22 @@ export function getActiveHookType(): TelemetryHookType | null {
   return activeHookType;
 }
 
+let activePlatform: string | null = null;
+
+/**
+ * Record the host platform for the current hook invocation. On Kiro CLI,
+ * exit 2 has host-side semantics claude-mem must never trigger (preToolUse
+ * exit 2 blocks the user's tool call), so the fail-loud paths degrade to
+ * stderr diagnostics + exit 0 there. Called once at hookCommand entry.
+ */
+export function setActivePlatform(platform: string): void {
+  activePlatform = platform;
+}
+
+export function activePlatformNeverBlocks(): boolean {
+  return activePlatform === 'kiro' || activePlatform === 'kiro-cli';
+}
+
 export async function recordWorkerUnreachable(): Promise<number> {
   const state = readHookFailureState();
   const next: HookFailureState = {
@@ -590,15 +643,8 @@ export async function recordWorkerUnreachable(): Promise<number> {
 
   const threshold = getFailLoudThreshold();
   if (next.consecutiveFailures >= threshold) {
-    // hook_failed distress signal. Gated to the failure that JUST reached the
-    // threshold (`===`, not `>=`): the stderr warning below repeats on every
-    // failure past the threshold, but telemetry emits once per failure streak
-    // to bound volume. MUST be awaited BEFORE emitBlockingError — it calls
-    // process.exit(2) immediately, which would kill a fire-and-forget POST
-    // mid-flight. captureCliEvent never throws and is hard-capped at 2s, so
-    // this cannot hang the fail-loud path. Closed-enum/count props only —
-    // never error text. Transport is the direct CLI POST, never the worker
-    // API (the defining failure here IS "worker unreachable").
+    // DIAGNOSTIC only — never block the harness for an optional background
+    // service. Callers surface user-facing banners via consumeWorkerOutageHint.
     if (next.consecutiveFailures === threshold) {
       await captureCliEvent('hook_failed', {
         ...(activeHookType !== null ? { hook_type: activeHookType } : {}),
@@ -607,13 +653,8 @@ export async function recordWorkerUnreachable(): Promise<number> {
         threshold_tripped: true,
       });
     }
-    // #2292 fix: BLOCKING_FEEDBACK. emitBlockingError flushes the Phase 2
-    // stderr buffer (so preceding logger.warn lines also surface) and writes
-    // via the bypass channel + exits 2. Previously this raw process.stderr.write
-    // was swallowed by hookCommand's blanket no-op, so the user/model never saw it.
-    emitBlockingError(
-      `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks.`
-    );
+    const failLoudMessage = `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks.`;
+    emitDiagnostic(`${failLoudMessage}\n`);
   }
   return next.consecutiveFailures;
 }
@@ -622,6 +663,60 @@ function resetWorkerFailureCounter(): void {
   const state = readHookFailureState();
   if (state.consecutiveFailures === 0) return;
   writeHookFailureStateAtomic({ consecutiveFailures: 0, lastFailureAt: 0 });
+}
+
+interface OutageWarningState {
+  lastWarnedAt: number;
+  lastSessionId?: string;
+}
+
+function getOutageWarningPath(): string {
+  return path.join(getStateDir(), 'last-outage-warning.json');
+}
+
+function readOutageWarningState(): OutageWarningState {
+  try {
+    const parsed = JSON.parse(readFileSync(getOutageWarningPath(), 'utf-8')) as Partial<OutageWarningState>;
+    return {
+      lastWarnedAt: typeof parsed.lastWarnedAt === 'number' ? parsed.lastWarnedAt : 0,
+      lastSessionId: typeof parsed.lastSessionId === 'string' ? parsed.lastSessionId : undefined,
+    };
+  } catch {
+    return { lastWarnedAt: 0 };
+  }
+}
+
+function writeOutageWarningStateAtomic(state: OutageWarningState): void {
+  const stateDir = getStateDir();
+  const dest = getOutageWarningPath();
+  const tmp = `${dest}.tmp`;
+  try {
+    if (!existsSync(stateDir)) {
+      mkdirSync(stateDir, { recursive: true });
+    }
+    writeFileSync(tmp, JSON.stringify(state), 'utf-8');
+    renameSync(tmp, dest);
+  } catch {
+    // Best effort only; a failed write can at worst show the banner again.
+  }
+}
+
+const OUTAGE_BANNER_THROTTLE_MS = 30 * 60 * 1000;
+const WORKER_OFFLINE_BANNER =
+  'claude-mem: background worker offline — memory features (search, observations, context) unavailable this session.';
+
+export function consumeWorkerOutageHint(sessionId?: string, bypassThrottle = false): string | null {
+  const failures = readHookFailureState();
+  if (failures.consecutiveFailures === 0) return null;
+
+  const warned = readOutageWarningState();
+  const now = Date.now();
+  const sameSession = sessionId !== undefined && warned.lastSessionId === sessionId;
+  const withinThrottle = (now - warned.lastWarnedAt) < OUTAGE_BANNER_THROTTLE_MS;
+  if (!bypassThrottle && sameSession && withinThrottle) return null;
+
+  writeOutageWarningStateAtomic({ lastWarnedAt: now, lastSessionId: sessionId });
+  return WORKER_OFFLINE_BANNER;
 }
 
 const WORKER_FALLBACK_BRAND: unique symbol = Symbol.for('claude-mem/worker-fallback');
@@ -640,6 +735,7 @@ export function isWorkerFallback<T>(result: WorkerCallResult<T>): result is Work
 
 export interface WorkerFallbackOptions {
   timeoutMs?: number;
+  allowLazySpawn?: boolean;
 }
 
 export async function executeWithWorkerFallback<T = unknown>(
@@ -648,9 +744,11 @@ export async function executeWithWorkerFallback<T = unknown>(
   body?: unknown,
   options: WorkerFallbackOptions = {},
 ): Promise<WorkerCallResult<T>> {
-  const alive = await ensureWorkerAliveOnce();
+  const alive = await ensureWorkerAliveOnce({ allowLazySpawn: options.allowLazySpawn });
   if (!alive) {
-    await recordWorkerUnreachable();
+    if (options.allowLazySpawn !== false) {
+      await recordWorkerUnreachable();
+    }
     return { continue: true, reason: 'worker_unreachable', [WORKER_FALLBACK_BRAND]: true };
   }
 
@@ -666,8 +764,8 @@ export async function executeWithWorkerFallback<T = unknown>(
   const response = await workerHttpRequest(url, init);
   if (!response.ok) {
     const text = await response.text().catch(() => '');
-    resetWorkerFailureCounter();
     if (response.status === 429 || response.status >= 500) {
+      await recordWorkerUnreachable();
       logger.warn('SYSTEM', `Worker API ${method} ${url} returned ${response.status}; skipping hook API call`, {
         body: text.substring(0, 200),
       });
@@ -677,6 +775,7 @@ export async function executeWithWorkerFallback<T = unknown>(
         [WORKER_FALLBACK_BRAND]: true,
       };
     }
+    resetWorkerFailureCounter();
 
     let parsed: unknown = text;
     try { parsed = JSON.parse(text); } catch { /* keep raw text */ }
@@ -689,6 +788,9 @@ export async function executeWithWorkerFallback<T = unknown>(
   try {
     return JSON.parse(text) as T;
   } catch {
+    // [ANTI-PATTERN IGNORED]: worker responses are not guaranteed to be JSON;
+    // a non-JSON body is an expected shape and the raw text is the correct
+    // result for the caller.
     return text as unknown as T;
   }
 }

@@ -1,23 +1,48 @@
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { chmodSync, readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { HOOK_TIMEOUTS, getTimeout } from './hook-constants.js';
+import { emitDiagnostic } from './hook-io.js';
+import { stripBom } from '../utils/json-utils.js';
+
+export const SETTINGS_FILE_MODE = 0o600;
+
+export function ensureSettingsFileSecureMode(settingsPath: string): void {
+  if (process.platform === 'win32') return;
+  chmodSync(settingsPath, SETTINGS_FILE_MODE);
+}
+
+export function writeSettingsFileSecure(settingsPath: string, settings: object): void {
+  if (existsSync(settingsPath)) {
+    ensureSettingsFileSecureMode(settingsPath);
+  }
+  writeFileSync(settingsPath, JSON.stringify(settings, null, 2), {
+    encoding: 'utf-8',
+    mode: SETTINGS_FILE_MODE,
+  });
+  ensureSettingsFileSecureMode(settingsPath);
+}
 
 export interface SettingsDefaults {
   CLAUDE_MEM_MODEL: string;
   CLAUDE_MEM_CONTEXT_OBSERVATIONS: string;
   CLAUDE_MEM_WORKER_PORT: string;
   CLAUDE_MEM_WORKER_HOST: string;
+  CLAUDE_MEM_WORKER_AUTOSTART: string;
   CLAUDE_MEM_API_TIMEOUT_MS: string;
   CLAUDE_MEM_SKIP_TOOLS: string;
+  CLAUDE_MEM_ALLOW_DISMISS: string;
+  CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS: string;
+  CLAUDE_MEM_SKIP_AGENT_TYPES: string;
   CLAUDE_MEM_PROVIDER: string;  
-  CLAUDE_MEM_CLAUDE_AUTH_METHOD: string;  
+  CLAUDE_MEM_CLAUDE_AUTH_METHOD: string;
+  CLAUDE_MEM_CLAUDE_MAX_TOKENS: string;
   CLAUDE_MEM_GEMINI_API_KEY: string;
   CLAUDE_MEM_GEMINI_MODEL: string;  
-  CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: string;  
-  CLAUDE_MEM_GEMINI_MAX_CONTEXT_MESSAGES: string;  
-  CLAUDE_MEM_GEMINI_MAX_TOKENS: string;  
+  CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: string;
+  CLAUDE_MEM_GEMINI_MAX_CONTEXT_MESSAGES: string;
+  CLAUDE_MEM_GEMINI_MAX_TOKENS: string;
   CLAUDE_MEM_AGY_CLI_MODEL: string;          // Optional model passed to Antigravity CLI
   CLAUDE_MEM_AGY_CLI_PATH: string;           // Explicit path to the agy binary (empty = auto-detect)
   CLAUDE_MEM_AGY_CLI_TIMEOUT_MS: string;     // Per-turn timeout for agy CLI subprocesses
@@ -26,8 +51,19 @@ export interface SettingsDefaults {
   CLAUDE_MEM_OPENROUTER_BASE_URL: string;
   CLAUDE_MEM_OPENROUTER_SITE_URL: string;
   CLAUDE_MEM_OPENROUTER_APP_NAME: string;
+  CLAUDE_MEM_OPENROUTER_REASONING_EFFORT: string;
+  CLAUDE_MEM_OPENROUTER_EXTRA_BODY: string;
   CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: string;
   CLAUDE_MEM_OPENROUTER_MAX_TOKENS: string;
+  CLAUDE_MEM_CODEX_MODEL: string;
+  CLAUDE_MEM_CODEX_PATH: string;
+  CLAUDE_MEM_CODEX_REASONING_EFFORT: string;
+  CLAUDE_MEM_CODEX_MAX_CONTEXT_MESSAGES: string;
+  CLAUDE_MEM_CODEX_MAX_TOKENS: string;
+  CLAUDE_MEM_CODEX_TIMEOUT_MS: string;
+  CLAUDE_MEM_KIRO_AGENT: string;
+  CLAUDE_MEM_KIRO_MODEL: string;
+  CLAUDE_MEM_KIRO_CLI_PATH: string;
   CLAUDE_MEM_DATA_DIR: string;
   CLAUDE_MEM_LOG_LEVEL: string;
   CLAUDE_MEM_PYTHON_VERSION: string;
@@ -43,6 +79,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: string;
   CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: string;
   CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: string;
+  CLAUDE_MEM_CONTEXT_FETCH_BY_ID_SUPPORTED: string;
   CLAUDE_MEM_WELCOME_HINT_ENABLED: string;
   CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: string;
   CLAUDE_MEM_FOLDER_USE_LOCAL_MD: string;  
@@ -62,13 +99,15 @@ export interface SettingsDefaults {
   CLAUDE_MEM_TIER_FAST_MODEL: string;        // #2289 — resolved by $TIER:fast in CLAUDE_MEM_MODEL
   CLAUDE_MEM_TIER_SMART_MODEL: string;       // #2289 — resolved by $TIER:smart in CLAUDE_MEM_MODEL
   CLAUDE_MEM_CHROMA_ENABLED: string;   
-  CLAUDE_MEM_CHROMA_MODE: string;      
+  CLAUDE_MEM_CHROMA_MODE: string;
+  CLAUDE_MEM_MERMAID_CONTEXT: string;      
   CLAUDE_MEM_CHROMA_HOST: string;
   CLAUDE_MEM_CHROMA_PORT: string;
   CLAUDE_MEM_CHROMA_SSL: string;
   CLAUDE_MEM_CHROMA_API_KEY: string;
   CLAUDE_MEM_CHROMA_TENANT: string;
   CLAUDE_MEM_CHROMA_DATABASE: string;
+  CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS: string;
   CLAUDE_MEM_TELEGRAM_ENABLED: string;
   CLAUDE_MEM_TELEGRAM_BOT_TOKEN: string;
   CLAUDE_MEM_TELEGRAM_CHAT_ID: string;
@@ -82,6 +121,12 @@ export interface SettingsDefaults {
   CLAUDE_MEM_QUEUE_REDIS_PREFIX: string;
   CLAUDE_MEM_AUTH_MODE: string;
   CLAUDE_MEM_RUNTIME: string;
+  // Phase 1a (cmem-sdk rename): canonical server settings keys. Hooks read
+  // these first and fall back to the legacy `*_BETA_*` keys below.
+  CLAUDE_MEM_SERVER_URL: string;
+  CLAUDE_MEM_SERVER_API_KEY: string;
+  CLAUDE_MEM_SERVER_PROJECT_ID: string;
+  // Legacy keys retained for back-compat with existing settings.json files.
   CLAUDE_MEM_SERVER_BETA_URL: string;
   CLAUDE_MEM_SERVER_BETA_API_KEY: string;
   CLAUDE_MEM_SERVER_BETA_PROJECT_ID: string;
@@ -93,10 +138,15 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
     CLAUDE_MEM_WORKER_PORT: String(37700 + ((process.getuid?.() ?? 77) % 100)),
     CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
+    CLAUDE_MEM_WORKER_AUTOSTART: 'true',
     CLAUDE_MEM_API_TIMEOUT_MS: String(getTimeout(HOOK_TIMEOUTS.API_REQUEST)),
     CLAUDE_MEM_SKIP_TOOLS: 'ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion',
+    CLAUDE_MEM_ALLOW_DISMISS: 'false',
+    CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS: 'false',
+    CLAUDE_MEM_SKIP_AGENT_TYPES: '',
     CLAUDE_MEM_PROVIDER: 'claude',  // Default to Claude
     CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription',  // Default to logged-in Claude SDK auth (not API key)
+    CLAUDE_MEM_CLAUDE_MAX_TOKENS: '150000',  // Proactive Claude SDK observer context cap; reset before the model window overflows
     CLAUDE_MEM_GEMINI_API_KEY: '',  // Empty by default, can be set via UI or env
     CLAUDE_MEM_GEMINI_MODEL: 'gemini-2.5-flash-lite',  // Default Gemini model (highest free tier RPM)
     CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'true',  // Rate limiting ON by default for free tier users
@@ -110,8 +160,19 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_OPENROUTER_BASE_URL: '',  // #2382/#2590/#2622/#2393 — optional OpenAI-compatible base URL (e.g. https://api.deepseek.com, http://localhost:1234/v1). Empty = default OpenRouter endpoint.
     CLAUDE_MEM_OPENROUTER_SITE_URL: '',  // Optional: for OpenRouter analytics
     CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',  // App name for OpenRouter analytics
+    CLAUDE_MEM_OPENROUTER_REASONING_EFFORT: '',  // Optional OpenRouter reasoning effort. Valid: none, low, medium, high. Empty = provider/model default.
+    CLAUDE_MEM_OPENROUTER_EXTRA_BODY: '',  // Optional JSON object merged into OpenAI-compatible chat/completions body after validation.
     CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: '20',  // Max messages in context window
     CLAUDE_MEM_OPENROUTER_MAX_TOKENS: '100000',  // Max estimated tokens (~100k safety limit)
+    CLAUDE_MEM_CODEX_MODEL: 'gpt-5.3-codex-spark',  // Local Codex CLI model for subscription-backed compression
+    CLAUDE_MEM_CODEX_PATH: 'codex',  // CLI executable; override if codex is not on PATH
+    CLAUDE_MEM_CODEX_REASONING_EFFORT: '',  // Empty = Codex/model default; valid: minimal, low, medium, high, xhigh
+    CLAUDE_MEM_CODEX_MAX_CONTEXT_MESSAGES: '20',  // Max messages in Codex context window
+    CLAUDE_MEM_CODEX_MAX_TOKENS: '100000',  // Max estimated tokens (~100k safety limit)
+    CLAUDE_MEM_CODEX_TIMEOUT_MS: '120000',  // Per Codex exec attempt timeout
+    CLAUDE_MEM_KIRO_AGENT: 'claude-mem-observer',  // Hook-less/tool-less Kiro agent the KiroProvider spawns (recursion guard)
+    CLAUDE_MEM_KIRO_MODEL: 'claude-haiku-4.5',  // Model pinned into the observer agent at install — cheapest Kiro tier (0.00 credits/call observed); id verified on kiro-cli 2.11.0 (dot notation; 'claude-haiku-4-5' is rejected)
+    CLAUDE_MEM_KIRO_CLI_PATH: '',  // Optional absolute path to kiro-cli (empty = PATH + known install locations)
     CLAUDE_MEM_DATA_DIR: join(homedir(), '.claude-mem'),
     CLAUDE_MEM_LOG_LEVEL: 'INFO',
     CLAUDE_MEM_PYTHON_VERSION: '3.13',
@@ -127,6 +188,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: 'true',
     CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: 'false',
     CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: 'true',
+    CLAUDE_MEM_CONTEXT_FETCH_BY_ID_SUPPORTED: 'true',
     CLAUDE_MEM_WELCOME_HINT_ENABLED: 'true',
     CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: 'false',
     CLAUDE_MEM_FOLDER_USE_LOCAL_MD: 'false',  // When true, writes to CLAUDE.local.md instead of CLAUDE.md
@@ -134,7 +196,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH: join(homedir(), '.claude-mem', 'transcript-watch.json'),
     CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION: 'false',
     CLAUDE_MEM_MAX_CONCURRENT_AGENTS: '2',  // Max concurrent Claude SDK agent subprocesses
-    CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: '3',  // Plan 05 Phase 8 — escalate to exit code 2 after N consecutive worker-unreachable hook invocations
+    CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: '10',  // Escalate after N consecutive worker-unreachable hook invocations
     CLAUDE_MEM_EXCLUDED_PROJECTS: '',  // Comma-separated glob patterns for excluded project paths
     CLAUDE_MEM_FOLDER_MD_EXCLUDE: '[]',  // JSON array of folder paths to exclude from CLAUDE.md generation
     CLAUDE_MEM_FOLDER_MD_SKELETON_DENYLIST: '[]',  // #2400 — JSON array of glob patterns; when a folder matches AND its generated CLAUDE.md would be empty/skeleton, skip injection (avoids polluting non-content dirs with empty skeletons). Default [] preserves existing behavior.
@@ -147,12 +209,14 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_TIER_SMART_MODEL: 'sonnet',            // #2289 — $TIER:smart resolves here (portable alias)
     CLAUDE_MEM_CHROMA_ENABLED: 'true',         // Set to 'false' to disable Chroma and use SQLite-only search
     CLAUDE_MEM_CHROMA_MODE: 'local',           // 'local' uses persistent chroma-mcp via uvx, 'remote' connects to existing server
+    CLAUDE_MEM_MERMAID_CONTEXT: 'false',        // set to 'true' to inject a Mermaid task-flow diagram at session start
     CLAUDE_MEM_CHROMA_HOST: '127.0.0.1',
     CLAUDE_MEM_CHROMA_PORT: '8000',
     CLAUDE_MEM_CHROMA_SSL: 'false',
     CLAUDE_MEM_CHROMA_API_KEY: '',
     CLAUDE_MEM_CHROMA_TENANT: 'default_tenant',
     CLAUDE_MEM_CHROMA_DATABASE: 'default_database',
+    CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS: '120000',
     CLAUDE_MEM_TELEGRAM_ENABLED: 'true',
     CLAUDE_MEM_TELEGRAM_BOT_TOKEN: '',
     CLAUDE_MEM_TELEGRAM_CHAT_ID: '',
@@ -166,9 +230,15 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_QUEUE_REDIS_PREFIX: `claude_mem_${process.env.CLAUDE_MEM_WORKER_PORT ?? String(37700 + ((process.getuid?.() ?? 77) % 100))}`,
     CLAUDE_MEM_AUTH_MODE: 'api-key',
     CLAUDE_MEM_RUNTIME: 'worker',
-    CLAUDE_MEM_SERVER_BETA_URL: `http://127.0.0.1:${process.env.CLAUDE_MEM_SERVER_PORT ?? String(37877 + ((process.getuid?.() ?? 77) % 100))}`,  // Default server-beta runtime URL — UID-derived for multi-account isolation
-    CLAUDE_MEM_SERVER_BETA_API_KEY: '',                     // Local hook API key, populated by installer when runtime=server-beta
-    CLAUDE_MEM_SERVER_BETA_PROJECT_ID: '',                  // Default Postgres project_id used by hooks when runtime=server-beta
+    // Phase 1a (cmem-sdk rename): canonical server settings keys. Hooks read
+    // these first; the legacy `*_BETA_*` defaults below remain so existing
+    // settings.json files still resolve correctly.
+    CLAUDE_MEM_SERVER_URL: `http://127.0.0.1:${process.env.CLAUDE_MEM_SERVER_PORT ?? String(37877 + ((process.getuid?.() ?? 77) % 100))}`,  // Default server runtime URL — UID-derived for multi-account isolation
+    CLAUDE_MEM_SERVER_API_KEY: '',                          // Local hook API key, populated by installer when runtime=server
+    CLAUDE_MEM_SERVER_PROJECT_ID: '',                       // Default Postgres project_id used by hooks when runtime=server
+    CLAUDE_MEM_SERVER_BETA_URL: `http://127.0.0.1:${process.env.CLAUDE_MEM_SERVER_PORT ?? String(37877 + ((process.getuid?.() ?? 77) % 100))}`,  // Legacy server-beta runtime URL — UID-derived for multi-account isolation
+    CLAUDE_MEM_SERVER_BETA_API_KEY: '',                     // Legacy local hook API key (read as fallback when CLAUDE_MEM_SERVER_API_KEY unset)
+    CLAUDE_MEM_SERVER_BETA_PROJECT_ID: '',                  // Legacy Postgres project_id (read as fallback when CLAUDE_MEM_SERVER_PROJECT_ID unset)
   };
 
   static getAllDefaults(): SettingsDefaults {
@@ -182,11 +252,6 @@ export class SettingsDefaultsManager {
   static getInt(key: keyof SettingsDefaults): number {
     const value = this.get(key);
     return parseInt(value, 10);
-  }
-
-  static getBool(key: keyof SettingsDefaults): boolean {
-    const value: unknown = this.get(key);
-    return value === 'true' || value === true;
   }
 
   private static applyEnvOverrides(settings: SettingsDefaults): SettingsDefaults {
@@ -208,33 +273,38 @@ export class SettingsDefaultsManager {
           if (!existsSync(dir)) {
             mkdirSync(dir, { recursive: true });
           }
-          writeFileSync(settingsPath, JSON.stringify(defaults, null, 2), 'utf-8');
+          writeSettingsFileSecure(settingsPath, defaults);
           // stderr, never stdout: this fires on the first boot in a fresh data
           // dir, and CLI commands like `start` promise machine-readable JSON
-          // on stdout to the hook framework.
-          console.warn('[SETTINGS] Created settings file with defaults:', settingsPath);
+          // on stdout to the hook framework. emitDiagnostic routes through the
+          // same channel logger uses so the line survives the Phase 2 hook
+          // stderr buffer (#2292) instead of being swallowed by raw console.
+          emitDiagnostic(`[SETTINGS] Created settings file with defaults: ${settingsPath}\n`);
         } catch (error: unknown) {
-          console.warn('[SETTINGS] Failed to create settings file, using in-memory defaults:', settingsPath, error instanceof Error ? error.message : String(error));
+          emitDiagnostic(`[SETTINGS] Failed to create settings file, using in-memory defaults: ${settingsPath} ${error instanceof Error ? error.message : String(error)}\n`);
         }
         return applyEnvOverrides ? this.applyEnvOverrides(defaults) : defaults;
       }
 
+      try {
+        ensureSettingsFileSecureMode(settingsPath);
+      } catch (error: unknown) {
+        console.warn('[SETTINGS] Failed to tighten settings file permissions:', settingsPath, error instanceof Error ? error.message : String(error));
+      }
+
       const settingsData = readFileSync(settingsPath, 'utf-8');
-      // Strip UTF-8 BOM if present — Windows tools (editors, formatters, CLI
-      // hooks) may prepend U+FEFF which Bun's JSON.parse rejects silently,
-      // causing a full fallback to defaults and breaking server-beta routing.
-      const settings = JSON.parse(settingsData.replace(/^\uFEFF/, ''));
+      const settings = JSON.parse(stripBom(settingsData));
 
       let flatSettings = settings;
       if (settings.env && typeof settings.env === 'object') {
         flatSettings = settings.env;
 
         try {
-          writeFileSync(settingsPath, JSON.stringify(flatSettings, null, 2), 'utf-8');
+          writeSettingsFileSecure(settingsPath, flatSettings);
           // stderr, never stdout — same JSON-on-stdout contract as above.
-          console.warn('[SETTINGS] Migrated settings file from nested to flat schema:', settingsPath);
+          emitDiagnostic(`[SETTINGS] Migrated settings file from nested to flat schema: ${settingsPath}\n`);
         } catch (error: unknown) {
-          console.warn('[SETTINGS] Failed to auto-migrate settings file:', settingsPath, error instanceof Error ? error.message : String(error));
+          emitDiagnostic(`[SETTINGS] Failed to auto-migrate settings file: ${settingsPath} ${error instanceof Error ? error.message : String(error)}\n`);
           // Continue with in-memory migration even if write fails
         }
       }
@@ -248,7 +318,7 @@ export class SettingsDefaultsManager {
 
       return applyEnvOverrides ? this.applyEnvOverrides(result) : result;
     } catch (error: unknown) {
-      console.warn('[SETTINGS] Failed to load settings, using defaults:', settingsPath, error instanceof Error ? error.message : String(error));
+      emitDiagnostic(`[SETTINGS] Failed to load settings, using defaults: ${settingsPath} ${error instanceof Error ? error.message : String(error)}\n`);
       const defaults = this.getAllDefaults();
       return applyEnvOverrides ? this.applyEnvOverrides(defaults) : defaults;
     }

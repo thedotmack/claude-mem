@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import express from 'express';
 import http from 'http';
-import { createMiddleware } from '../../../src/services/worker/http/middleware.js';
+import { createCorsMiddleware, createMiddleware } from '../../../src/services/worker/http/middleware.js';
 
 function isAllowedOrigin(origin: string | undefined): boolean {
   if (!origin) return true; 
@@ -61,7 +61,8 @@ describe('CORS Restriction', () => {
 
     beforeEach(async () => {
       app = express();
-      createMiddleware(() => '').forEach(middleware => app.use(middleware));
+      createMiddleware().forEach(middleware => app.use(middleware));
+      app.use(createCorsMiddleware());
 
       app.all('/api/settings', (_req, res) => {
         res.json({ ok: true });

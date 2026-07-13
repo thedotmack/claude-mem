@@ -22,11 +22,11 @@ export class PrivacyCheckValidator {
     store: SessionStore,
     contentSessionId: string,
     promptNumber: number,
-    operationType: 'observation' | 'summarize',
+    operationType: 'observation' | 'summarize' | 'pre-compact',
     sessionDbId: number,
     additionalContext?: Record<string, any>
   ): PromptPrivacyDecision {
-    const userPrompt = store.getUserPrompt(contentSessionId, promptNumber);
+    const userPrompt = store.getUserPrompt(contentSessionId, promptNumber, sessionDbId);
 
     if (userPrompt === null) {
       logger.warn(

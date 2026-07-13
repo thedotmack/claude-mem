@@ -80,25 +80,11 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
 
     let response: Response;
     try {
-      response = await this.fetchImpl(this.apiUrl, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`,
-          'HTTP-Referer': this.siteUrl,
-          'X-Title': this.appName,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: this.model,
-          messages: [{ role: 'user', content: prompt }],
-          temperature: 0.3,
-          max_tokens: this.maxOutputTokens,
-        }),
-        signal,
-      });
+      response = await this.postChatCompletion(prompt, signal);
     } catch (networkError) {
+      const err = networkError instanceof Error ? networkError : new Error(String(networkError));
       throw classifyHttpProviderError({
-        cause: networkError,
+        cause: err,
         providerLabel: 'OpenRouter',
       });
     }
@@ -118,9 +104,10 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
     try {
       data = (await response.json()) as OpenRouterResponse;
     } catch (parseError) {
+      const err = parseError instanceof Error ? parseError : new Error(String(parseError));
       throw new ServerClassifiedProviderError('OpenRouter returned invalid JSON', {
         kind: 'parse_error',
-        cause: parseError,
+        cause: err,
       });
     }
 
@@ -151,12 +138,33 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
       modelId: this.model,
     };
   }
+
+  private postChatCompletion(prompt: string, signal?: AbortSignal): Promise<Response> {
+    return this.fetchImpl(this.apiUrl, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        'HTTP-Referer': this.siteUrl,
+        'X-Title': this.appName,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: this.model,
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.3,
+        max_tokens: this.maxOutputTokens,
+      }),
+      signal,
+    });
+  }
 }
 
 async function safeReadBody(response: Response): Promise<string> {
   try {
     return await response.text();
-  } catch {
+  } catch (readError) {
+    const err = readError instanceof Error ? readError : new Error(String(readError));
+    logger.warn('SDK', 'Failed to read OpenRouter error response body', { provider: 'openrouter' }, err);
     return '';
   }
 }

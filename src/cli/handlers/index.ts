@@ -9,6 +9,7 @@ import { summarizeHandler } from './summarize.js';
 import { userMessageHandler } from './user-message.js';
 import { fileEditHandler } from './file-edit.js';
 import { fileContextHandler } from './file-context.js';
+import { preCompactHandler } from './pre-compact.js';
 
 export type EventType =
   | 'context'           
@@ -17,7 +18,8 @@ export type EventType =
   | 'summarize'         
   | 'user-message'      
   | 'file-edit'         
-  | 'file-context';     
+  | 'file-context'
+  | 'pre-compact';
 
 const handlers: Record<EventType, EventHandler> = {
   'context': contextHandler,
@@ -26,7 +28,8 @@ const handlers: Record<EventType, EventHandler> = {
   'summarize': summarizeHandler,
   'user-message': userMessageHandler,
   'file-edit': fileEditHandler,
-  'file-context': fileContextHandler
+  'file-context': fileContextHandler,
+  'pre-compact': preCompactHandler
 };
 
 export function getEventHandler(eventType: string): EventHandler {
@@ -49,3 +52,4 @@ export { summarizeHandler } from './summarize.js';
 export { userMessageHandler } from './user-message.js';
 export { fileEditHandler } from './file-edit.js';
 export { fileContextHandler } from './file-context.js';
+export { preCompactHandler } from './pre-compact.js';

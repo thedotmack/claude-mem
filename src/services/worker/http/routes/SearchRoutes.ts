@@ -5,12 +5,14 @@ import path from 'path';
 import { z } from 'zod';
 import { SearchManager } from '../../SearchManager.js';
 import type { SearchTelemetryEnvelope } from '../../SearchManager.js';
+import { SEARCH_CONSTANTS } from '../../search/index.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
 import { groupByDate } from '../../../../shared/timeline-formatting.js';
-import { countObservationsByProjects } from '../../../context/ObservationCompiler.js';
+import { countObservationsByProjects, countSummariesByProjects } from '../../../context/ObservationCompiler.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
+import { loadClaudeMemEnv } from '../../../../shared/EnvManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from '../../../sqlite/types.js';
 import { captureEvent } from '../../../telemetry/telemetry.js';
@@ -56,10 +58,20 @@ How it works: \`/how-it-works\`
 This message disappears once the first observation lands.
 `;
 
+function isCliAuthProvider(provider: string | undefined): boolean {
+  const normalized = String(provider ?? '').trim().toLowerCase();
+  return normalized === 'codex'
+    || normalized === 'codex-cli'
+    || normalized === 'kiro'
+    || normalized === 'kiro-cli';
+}
+
 const semanticContextSchema = z.object({
   q: z.string().optional(),
   project: z.string().optional(),
   limit: z.union([z.string(), z.number()]).optional(),
+  platformSource: z.string().optional(),
+  platform_source: z.string().optional(),
 }).passthrough();
 
 export class SearchRoutes extends BaseRouteHandler {
@@ -67,7 +79,7 @@ export class SearchRoutes extends BaseRouteHandler {
   private cachedSettingsAt = 0;
   // Scope this cache to the route instance so separate server/test instances do
   // not inherit each other's positive observation state through shared modules.
-  private readonly projectsKnownNonEmpty = new Set<string>();
+  private readonly projectSetsKnownNonEmpty = new Set<string>();
 
   constructor(
     private searchManager: SearchManager
@@ -87,16 +99,19 @@ export class SearchRoutes extends BaseRouteHandler {
     return this.cachedSettings;
   }
 
-  private projectsHaveObservations(
+  private projectsHaveContext(
     sessionStore: ReturnType<SearchManager['getSessionStore']>,
     projects: string[],
+    platformSource?: string,
   ): boolean {
-    if (projects.every(p => this.projectsKnownNonEmpty.has(p))) {
+    const cacheKey = platformSource ? `${platformSource}\0${projects.join('\0')}` : projects.join('\0');
+    if (this.projectSetsKnownNonEmpty.has(cacheKey)) {
       return true;
     }
-    const observationCount = countObservationsByProjects(sessionStore, projects);
-    if (observationCount > 0) {
-      for (const p of projects) this.projectsKnownNonEmpty.add(p);
+    const observationCount = countObservationsByProjects(sessionStore, projects, platformSource);
+    const summaryCount = observationCount > 0 ? 0 : countSummariesByProjects(sessionStore, projects, platformSource);
+    if (observationCount > 0 || summaryCount > 0) {
+      this.projectSetsKnownNonEmpty.add(cacheKey);
       return true;
     }
     return false;
@@ -104,31 +119,28 @@ export class SearchRoutes extends BaseRouteHandler {
 
   setupRoutes(app: express.Application): void {
     // One telemetry site for every /api/search* endpoint (unified + dedicated
-    // variants), so search adoption is not undercounted. /api/search/help is
-    // documentation, not a search. Properties are the endpoint name (OUR route
-    // segment, bounded to a known enum), outcome, and latency — never query
-    // text (see docs/public/telemetry.mdx).
+    // variants), so search adoption is not undercounted. Properties are the
+    // endpoint name (OUR route segment, bounded to a known enum), outcome, and
+    // latency — never query text (see docs/public/telemetry.mdx).
     const KNOWN_SEARCH_ENDPOINTS = new Set([
-      'unified', 'observations', 'sessions', 'prompts', 'by-concept', 'by-file', 'by-type',
+      'unified', 'observations', 'by-file',
     ]);
     app.use('/api/search', (req: Request, res: Response, next: express.NextFunction) => {
-      if (req.path !== '/help') {
-        const searchStartedAt = Date.now();
-        const segment = req.path === '/' ? 'unified' : req.path.slice(1).split('/')[0];
-        const endpoint = KNOWN_SEARCH_ENDPOINTS.has(segment) ? segment : 'other';
-        res.once('finish', () => {
-          // res.locals.searchTelemetry is the retrieval-quality envelope
-          // (result_count, search_strategy, chroma_available, fallback_reason)
-          // populated by SearchManager.search() and stashed by the handler —
-          // counts/booleans/enums only, never response-body introspection.
-          captureEvent('search_performed', {
-            endpoint,
-            outcome: res.statusCode < 400 ? 'ok' : 'error',
-            duration_ms: Date.now() - searchStartedAt,
-            ...(res.locals.searchTelemetry ?? {}),
-          });
+      const searchStartedAt = Date.now();
+      const segment = req.path === '/' ? 'unified' : req.path.slice(1).split('/')[0];
+      const endpoint = KNOWN_SEARCH_ENDPOINTS.has(segment) ? segment : 'other';
+      res.once('finish', () => {
+        // res.locals.searchTelemetry is the retrieval-quality envelope
+        // (result_count, search_strategy, chroma_available, fallback_reason)
+        // populated by SearchManager.search() and stashed by the handler —
+        // counts/booleans/enums only, never response-body introspection.
+        captureEvent('search_performed', {
+          endpoint,
+          outcome: res.statusCode < 400 ? 'ok' : 'error',
+          duration_ms: Date.now() - searchStartedAt,
+          ...(res.locals.searchTelemetry ?? {}),
         });
-      }
+      });
       next();
     });
 
@@ -137,26 +149,17 @@ export class SearchRoutes extends BaseRouteHandler {
 
     app.get('/api/search', this.handleUnifiedSearch.bind(this));
     app.get('/api/timeline', this.handleUnifiedTimeline.bind(this));
-    app.get('/api/decisions', this.handleDecisions.bind(this));
-    app.get('/api/changes', this.handleChanges.bind(this));
-    app.get('/api/how-it-works', this.handleHowItWorks.bind(this));
 
     app.get('/api/search/observations', this.handleSearchObservations.bind(this));
-    app.get('/api/search/sessions', this.handleSearchSessions.bind(this));
-    app.get('/api/search/prompts', this.handleSearchPrompts.bind(this));
-    app.get('/api/search/by-concept', this.handleSearchByConcept.bind(this));
     app.get('/api/search/by-file', this.handleSearchByFile.bind(this));
-    app.get('/api/search/by-type', this.handleSearchByType.bind(this));
 
     app.get('/api/context/recent', this.handleGetRecentContext.bind(this));
-    app.get('/api/context/timeline', this.handleGetContextTimeline.bind(this));
     app.get('/api/context/preview', this.handleContextPreview.bind(this));
     app.get('/api/context/inject', this.handleContextInject.bind(this));
     app.post('/api/context/semantic', validateBody(semanticContextSchema), this.handleSemanticContext.bind(this));
     app.get('/api/onboarding/explainer', this.handleOnboardingExplainer.bind(this));
 
     app.get('/api/timeline/by-query', this.handleGetTimelineByQuery.bind(this));
-    app.get('/api/search/help', this.handleSearchHelp.bind(this));
   }
 
   private handleUnifiedSearch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
@@ -166,78 +169,24 @@ export class SearchRoutes extends BaseRouteHandler {
     // envelope survives even if response serialization fails afterwards.
     const searchTelemetry: SearchTelemetryEnvelope = {};
     res.locals.searchTelemetry = searchTelemetry;
-    const result = await this.searchManager.search(req.query, searchTelemetry);
+    const result = await this.searchManager.search(this.queryWithPlatformSource(req), searchTelemetry);
     res.json(result);
   });
 
   private handleUnifiedTimeline = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const result = await this.searchManager.timeline(req.query);
-    res.json(result);
-  });
-
-  private handleDecisions = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const result = await this.searchManager.decisions(req.query);
-    res.json(result);
-  });
-
-  private handleChanges = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const result = await this.searchManager.changes(req.query);
-    res.json(result);
-  });
-
-  private handleHowItWorks = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const result = await this.searchManager.howItWorks(req.query);
+    const result = await this.searchManager.timeline(this.queryWithPlatformSource(req));
     res.json(result);
   });
 
   private handleSearchObservations = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const result = await this.searchManager.searchObservations(req.query);
+    const result = await this.searchManager.searchObservations(this.queryWithPlatformSource(req));
     res.json(result);
-  });
-
-  private handleSearchSessions = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const result = await this.searchManager.searchSessions(req.query);
-    res.json(result);
-  });
-
-  private handleSearchPrompts = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const result = await this.searchManager.searchUserPrompts(req.query);
-    res.json(result);
-  });
-
-  private handleSearchByConcept = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const orchestrator = this.searchManager.getOrchestrator();
-    const formatter = this.searchManager.getFormatter();
-    const query = req.query as Record<string, any>;
-    const rawConcept = query.concepts ?? query.concept;
-    const concept = Array.isArray(rawConcept) ? rawConcept[0] : rawConcept;
-    const strategyResult = await orchestrator.findByConcept(concept, query);
-    const observations = strategyResult.results.observations;
-
-    if (observations.length === 0) {
-      res.json({
-        content: [{
-          type: 'text' as const,
-          text: `No observations found with concept "${concept}"`
-        }]
-      });
-      return;
-    }
-
-    const header = `Found ${observations.length} observation(s) with concept "${concept}"\n\n${formatter.formatTableHeader()}`;
-    const rows = observations.map((obs: ObservationSearchResult, i: number) => formatter.formatObservationIndex(obs, i));
-    res.json({
-      content: [{
-        type: 'text' as const,
-        text: header + '\n' + rows.join('\n')
-      }]
-    });
   });
 
   private handleSearchByFile = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const orchestrator = this.searchManager.getOrchestrator();
     const formatter = this.searchManager.getFormatter();
-    const query = req.query as Record<string, any>;
+    const query = this.queryWithPlatformSource(req);
     const rawFilePath = query.filePath ?? query.files;
     const filePath = Array.isArray(rawFilePath)
       ? rawFilePath[0]
@@ -307,46 +256,8 @@ export class SearchRoutes extends BaseRouteHandler {
     });
   });
 
-  private handleSearchByType = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const orchestrator = this.searchManager.getOrchestrator();
-    const formatter = this.searchManager.getFormatter();
-    const query = req.query as Record<string, any>;
-    const rawType = query.type;
-    const type = (typeof rawType === 'string' && rawType.includes(','))
-      ? rawType.split(',').map((s: string) => s.trim()).filter(Boolean)
-      : rawType;
-    const typeStr = Array.isArray(type) ? type.join(', ') : type;
-
-    const strategyResult = await orchestrator.findByType(type, query);
-    const observations = strategyResult.results.observations;
-
-    if (observations.length === 0) {
-      res.json({
-        content: [{
-          type: 'text' as const,
-          text: `No observations found with type "${typeStr}"`
-        }]
-      });
-      return;
-    }
-
-    const header = `Found ${observations.length} observation(s) with type "${typeStr}"\n\n${formatter.formatTableHeader()}`;
-    const rows = observations.map((obs: ObservationSearchResult, i: number) => formatter.formatObservationIndex(obs, i));
-    res.json({
-      content: [{
-        type: 'text' as const,
-        text: header + '\n' + rows.join('\n')
-      }]
-    });
-  });
-
   private handleGetRecentContext = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const result = await this.searchManager.getRecentContext(req.query);
-    res.json(result);
-  });
-
-  private handleGetContextTimeline = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const result = await this.searchManager.getContextTimeline(req.query);
+    const result = await this.searchManager.getRecentContext(this.queryWithPlatformSource(req));
     res.json(result);
   });
 
@@ -379,6 +290,7 @@ export class SearchRoutes extends BaseRouteHandler {
     const projectsParam = (req.query.projects as string) || (req.query.project as string);
     const forHuman = req.query.colors === 'true';
     const full = req.query.full === 'true';
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
 
     if (!projectsParam) {
       this.badRequest(res, 'Project(s) parameter is required');
@@ -401,12 +313,51 @@ export class SearchRoutes extends BaseRouteHandler {
     const hintEnabled = String(hintEnabledRaw ?? '').toLowerCase() === 'true';
     if (hintEnabled && !full) {
       const sessionStore = this.searchManager.getSessionStore();
-      // Memoized: skips the COUNT(*) query once any project in the set has
-      // observations. Hot-path: PostToolUse fires after every Read/Edit.
-      if (!this.projectsHaveObservations(sessionStore, projects)) {
+      // Memoized: skips the COUNT(*) query once the exact project set has
+      // context. Hot-path: PostToolUse fires after every Read/Edit.
+      if (!this.projectsHaveContext(sessionStore, projects, platformSource)) {
         const port = process.env.CLAUDE_MEM_WORKER_PORT ?? settings.CLAUDE_MEM_WORKER_PORT;
         const viewerUrl = `http://localhost:${port}`;
-        const hintBody = WELCOME_HINT_TEMPLATE.replace('{viewer_url}', viewerUrl);
+        let hintBody = WELCOME_HINT_TEMPLATE.replace('{viewer_url}', viewerUrl);
+
+        // Surface missing credentials at session start (#3027).
+        //
+        // Marketplace installs never create ~/.claude-mem/.env, so non-OAuth
+        // users (DeepSeek, OpenRouter, custom gateways) get silent failures
+        // — the SDK subprocess has no credentials, every observation attempt
+        // returns "Not logged in", and 0 observations are ever stored.
+        //
+        // We intentionally do NOT try to detect Anthropic OAuth here: the
+        // OAuth token lives in the platform keychain and is only read at SDK
+        // spawn time (buildIsolatedEnvWithFreshOAuth, async). There is no
+        // reliable sync signal in the worker process. OAuth users who see
+        // this warning briefly can ignore it — it self-clears as soon as the
+        // first observation lands.
+        const credEnv = loadClaudeMemEnv();
+        const hasCreds = credEnv.ANTHROPIC_API_KEY
+          || credEnv.ANTHROPIC_AUTH_TOKEN
+          || credEnv.GEMINI_API_KEY
+          || credEnv.OPENROUTER_API_KEY;
+        const selectedProvider = process.env.CLAUDE_MEM_PROVIDER ?? settings.CLAUDE_MEM_PROVIDER;
+        if (!hasCreds && !isCliAuthProvider(selectedProvider)) {
+          const credWarning = [
+            '⚠️  claude-mem credentials not configured — observations cannot be generated.',
+            'Anthropic OAuth users can ignore this message.',
+            '',
+            'Create ~/.claude-mem/.env with your API credentials:',
+            '```',
+            '# For custom gateways (DeepSeek, BigModel, etc.):',
+            'ANTHROPIC_AUTH_TOKEN=your-token',
+            'ANTHROPIC_BASE_URL=https://your-api-endpoint',
+            '',
+            '# Or for direct Anthropic API:',
+            'ANTHROPIC_API_KEY=your-key',
+            '```',
+            'Then restart Claude Code. See https://docs.claude-mem.ai/configuration',
+          ].join('\n');
+          hintBody = credWarning + '\n\n' + hintBody;
+        }
+
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
         res.send(hintBody);
         return;
@@ -419,24 +370,25 @@ export class SearchRoutes extends BaseRouteHandler {
     const cwd = `/context/${primaryProject}`;
 
     const injectStartedAt = Date.now();
+    const injectRequest = {
+      session_id: 'context-inject-' + Date.now(),
+      cwd: cwd,
+      projects: projects,
+      ...(platformSource ? { platformSource } : {}),
+      full
+    };
     let contextResult: Awaited<ReturnType<typeof generateContextWithStats>>;
     try {
-      contextResult = await generateContextWithStats(
-        {
-          session_id: 'context-inject-' + Date.now(),
-          cwd: cwd,
-          projects: projects,
-          full
-        },
-        forHuman
-      );
+      contextResult = await generateContextWithStats(injectRequest, forHuman);
     } catch (error) {
+      const normalizedError = error instanceof Error ? error : new Error(String(error));
       // context_injected is HOOK-level (no sessionDbId in scope) → null key,
       // routed to the 5-minute time-window rollup, NOT the per-session path.
       telemetryBuffer.record('context_injected', null, {
         outcome: 'error',
         duration_ms: Date.now() - injectStartedAt,
       });
+      logger.error('HTTP', 'Context injection failed', { projects, platformSource, full }, normalizedError);
       throw error;
     }
 
@@ -460,9 +412,26 @@ export class SearchRoutes extends BaseRouteHandler {
   });
 
   private handleSemanticContext = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const query = (req.body?.q || req.query.q) as string;
-    const project = (req.body?.project || req.query.project) as string;
+    const query = SearchRoutes.firstString(req.body?.q) ?? SearchRoutes.firstString(req.query.q) ?? '';
+    const project = SearchRoutes.firstString(req.body?.project) ?? SearchRoutes.firstString(req.query.project);
     const limit = Math.min(Math.max(parseInt(String(req.body?.limit || req.query.limit || '5'), 10) || 5, 1), 20);
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+    const semanticWindowLimit = SEARCH_CONSTANTS.CHROMA_BATCH_SIZE;
+    const baseSearchArgs = {
+      query,
+      type: 'observations',
+      limit: String(limit),
+      format: 'json',
+      orderBy: 'relevance',
+      ...(platformSource ? { platformSource } : {}),
+    };
+    const scopedSearchArgs = project
+      ? { ...baseSearchArgs, project }
+      : baseSearchArgs;
+    const observationKey = (obs: any): string => String(
+      obs?.id
+      ?? `${obs?.title || ''}:${obs?.created_at || ''}:${obs?.project || ''}:${obs?.merged_into_project || ''}`
+    );
 
     if (!query || query.length < 20) {
       res.json({ context: '', count: 0 });
@@ -471,32 +440,102 @@ export class SearchRoutes extends BaseRouteHandler {
 
     let result: any;
     try {
-      result = await this.searchManager.search({
-        query, type: 'observations', project, limit: String(limit), format: 'json'
-      });
+      const scopedTelemetry: SearchTelemetryEnvelope = {};
+      result = await this.searchManager.search(
+        scopedSearchArgs,
+        scopedTelemetry,
+        { semanticHydrationLimit: semanticWindowLimit }
+      );
+      const scopedObservations = result?.observations || [];
+
+      if (project) {
+        try {
+          const fallbackTelemetry: SearchTelemetryEnvelope = {};
+          const fallbackResult = await this.searchManager.search(
+            baseSearchArgs,
+            fallbackTelemetry,
+            { semanticHydrationLimit: semanticWindowLimit }
+          );
+          const fallbackUsedKeywordSearch =
+            fallbackTelemetry.search_strategy === 'fts'
+            || fallbackTelemetry.search_strategy === 'filter_only';
+
+          if (fallbackUsedKeywordSearch) {
+            result = { ...(result || {}), observations: scopedObservations };
+          } else {
+            const scopedObservationsByKey = new Map(
+              scopedObservations.map((obs: any) => [observationKey(obs), obs])
+            );
+            const seenObservationKeys = new Set<string>();
+            result = {
+              ...(result || {}),
+              observations: [
+                ...(fallbackResult?.observations || [])
+                  .filter((obs: any) => obs.project === project || obs.merged_into_project === project)
+                  .filter((obs: any) => {
+                    const key = observationKey(obs);
+                    if (seenObservationKeys.has(key)) return false;
+                    seenObservationKeys.add(key);
+                    return true;
+                  })
+                  .map((obs: any) => scopedObservationsByKey.get(observationKey(obs)) || obs),
+                ...scopedObservations.filter((obs: any) => {
+                  const key = observationKey(obs);
+                  if (seenObservationKeys.has(key)) return false;
+                  seenObservationKeys.add(key);
+                  return true;
+                }),
+              ],
+            };
+          }
+        } catch (fallbackError) {
+          if (!scopedObservations.length) throw fallbackError;
+          const normalizedFallbackError = fallbackError instanceof Error
+            ? fallbackError
+            : new Error(String(fallbackError));
+          logger.warn(
+            'HTTP',
+            'Semantic context fallback failed, keeping scoped results',
+            { queryLength: query.length, project, platformSource },
+            normalizedFallbackError
+          );
+        }
+      }
     } catch (error) {
       const normalizedError = error instanceof Error ? error : new Error(String(error));
-      logger.error('HTTP', 'Semantic context query failed', { query, project }, normalizedError);
+      logger.error('HTTP', 'Semantic context query failed', { queryLength: query.length, project, platformSource }, normalizedError);
       res.json({ context: '', count: 0 });
       return;
     }
 
     const observations = result?.observations || [];
-    if (!observations.length) {
+    const renderedObservations = observations.slice(0, limit);
+    if (!renderedObservations.length) {
       res.json({ context: '', count: 0 });
       return;
     }
 
     const lines: string[] = ['## Relevant Past Work (semantic match)\n'];
-    for (const obs of observations.slice(0, limit)) {
+    for (const obs of renderedObservations) {
       const date = obs.created_at?.slice(0, 10) || '';
       lines.push(`### ${obs.title || 'Observation'} (${date})`);
       if (obs.narrative) lines.push(obs.narrative);
       lines.push('');
     }
 
-    res.json({ context: lines.join('\n'), count: observations.length });
+    res.json({ context: lines.join('\n'), count: renderedObservations.length });
   });
+
+  private queryWithPlatformSource(req: Request): Record<string, any> {
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+    if (!platformSource) {
+      return req.query as Record<string, any>;
+    }
+    return {
+      ...(req.query as Record<string, any>),
+      platformSource,
+    };
+  }
 
   private handleOnboardingExplainer = this.wrapHandler((_req: Request, res: Response): void => {
     if (cachedOnboardingExplainer === null) {
@@ -508,119 +547,7 @@ export class SearchRoutes extends BaseRouteHandler {
   });
 
   private handleGetTimelineByQuery = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const result = await this.searchManager.getTimelineByQuery(req.query);
+    const result = await this.searchManager.getTimelineByQuery(this.queryWithPlatformSource(req));
     res.json(result);
-  });
-
-  private handleSearchHelp = this.wrapHandler((req: Request, res: Response): void => {
-    const baseUrl = `http://${req.headers.host ?? 'localhost'}`;
-    res.json({
-      title: 'Claude-Mem Search API',
-      description: 'HTTP API for searching persistent memory',
-      endpoints: [
-        {
-          path: '/api/search/observations',
-          method: 'GET',
-          description: 'Search observations using full-text search',
-          parameters: {
-            query: 'Search query (required)',
-            limit: 'Number of results (default: 20)',
-            project: 'Filter by project name (optional)'
-          }
-        },
-        {
-          path: '/api/search/sessions',
-          method: 'GET',
-          description: 'Search session summaries using full-text search',
-          parameters: {
-            query: 'Search query (required)',
-            limit: 'Number of results (default: 20)'
-          }
-        },
-        {
-          path: '/api/search/prompts',
-          method: 'GET',
-          description: 'Search user prompts using full-text search',
-          parameters: {
-            query: 'Search query (required)',
-            limit: 'Number of results (default: 20)',
-            project: 'Filter by project name (optional)'
-          }
-        },
-        {
-          path: '/api/search/by-concept',
-          method: 'GET',
-          description: 'Find observations by concept tag',
-          parameters: {
-            concept: 'Concept tag (required): discovery, decision, bugfix, feature, refactor',
-            limit: 'Number of results (default: 10)',
-            project: 'Filter by project name (optional)'
-          }
-        },
-        {
-          path: '/api/search/by-file',
-          method: 'GET',
-          description: 'Find observations and sessions by file path',
-          parameters: {
-            filePath: 'File path or partial path (required)',
-            limit: 'Number of results per type (default: 10)',
-            project: 'Filter by project name (optional)'
-          }
-        },
-        {
-          path: '/api/search/by-type',
-          method: 'GET',
-          description: 'Find observations by type',
-          parameters: {
-            type: 'Observation type (required): discovery, decision, bugfix, feature, refactor',
-            limit: 'Number of results (default: 10)',
-            project: 'Filter by project name (optional)'
-          }
-        },
-        {
-          path: '/api/context/recent',
-          method: 'GET',
-          description: 'Get recent session context including summaries and observations',
-          parameters: {
-            project: 'Project name (default: current directory)',
-            limit: 'Number of recent sessions (default: 3)'
-          }
-        },
-        {
-          path: '/api/context/timeline',
-          method: 'GET',
-          description: 'Get unified timeline around a specific point in time',
-          parameters: {
-            anchor: 'Anchor point: observation ID, session ID (e.g., "S123"), or ISO timestamp (required)',
-            depth_before: 'Number of records before anchor (default: 10)',
-            depth_after: 'Number of records after anchor (default: 10)',
-            project: 'Filter by project name (optional)'
-          }
-        },
-        {
-          path: '/api/timeline/by-query',
-          method: 'GET',
-          description: 'Search for best match, then get timeline around it',
-          parameters: {
-            query: 'Search query (required)',
-            mode: 'Search mode: "auto", "observations", or "sessions" (default: "auto")',
-            depth_before: 'Number of records before match (default: 10)',
-            depth_after: 'Number of records after match (default: 10)',
-            project: 'Filter by project name (optional)'
-          }
-        },
-        {
-          path: '/api/search/help',
-          method: 'GET',
-          description: 'Get this help documentation'
-        }
-      ],
-      examples: [
-        `curl "${baseUrl}/api/search/observations?query=authentication&limit=5"`,
-        `curl "${baseUrl}/api/search/by-type?type=bugfix&limit=10"`,
-        `curl "${baseUrl}/api/context/recent?project=claude-mem&limit=3"`,
-        `curl "${baseUrl}/api/context/timeline?anchor=123&depth_before=5&depth_after=5"`
-      ]
-    });
   });
 }

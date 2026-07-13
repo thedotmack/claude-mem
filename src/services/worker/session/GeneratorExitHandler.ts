@@ -13,14 +13,17 @@ export interface GeneratorExitDependencies {
  * Post-generator-exit handler.
  *
  * The generator's message iterator only ends on abort (idle / shutdown) or when
- * the SDK stream throws, so an exit means this session is done. We do NOT
- * respawn on remaining buffered work: the old respawn-on-pending loop, driven by
- * the durable pending_messages queue, was the retry storm. Buffered work lives
- * only in RAM now; anything still buffered is dropped here and recovered, if
- * needed, by replaying the Claude Code transcript. Continuation of a session
- * that is still live happens naturally — the next observation ingest calls
- * ensureGeneratorRunning, which starts a fresh generator that drains whatever is
- * buffered.
+ * the SDK stream throws, so most exits mean this session is done. Quota exits
+ * are different: claimed work has already been reset to pending, so leave the
+ * session and in-RAM buffer alive for a later generator start.
+ *
+ * For non-quota exits we do NOT respawn on remaining buffered work: the old
+ * respawn-on-pending loop, driven by the durable pending_messages queue, was the
+ * retry storm. Buffered work lives only in RAM now; anything still buffered is
+ * dropped here and recovered, if needed, by replaying the Claude Code
+ * transcript. Continuation of a session that is still live happens naturally —
+ * the next observation ingest calls ensureGeneratorRunning, which starts a
+ * fresh generator that drains whatever is buffered.
  */
 export async function handleGeneratorExit(
   session: ActiveSession,
@@ -37,6 +40,14 @@ export async function handleGeneratorExit(
 
   session.generatorPromise = null;
   session.currentProvider = null;
+
+  if ((reason ?? '').split(':')[0] === 'quota') {
+    logger.warn('SESSION', 'Generator paused for quota; preserving buffered work', {
+      sessionId: sessionDbId,
+      pendingCount: sessionManager.getMessageBuffer().getPendingCount(sessionDbId),
+    });
+    return;
+  }
 
   logger.info('SESSION', 'Generator exited — finalizing session', { sessionId: sessionDbId, reason });
 

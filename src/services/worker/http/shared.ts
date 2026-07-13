@@ -3,9 +3,9 @@ import { logger } from '../../../utils/logger.js';
 import type { SessionManager } from '../SessionManager.js';
 import type { DatabaseManager } from '../DatabaseManager.js';
 import type { SessionEventBroadcaster } from '../events/SessionEventBroadcaster.js';
-import type { ParsedSummary } from '../../../sdk/parser.js';
-import { stripMemoryTagsFromJson } from '../../../utils/tag-stripping.js';
+import { stripMemoryTags } from '../../../utils/tag-stripping.js';
 import { isProjectExcluded } from '../../../utils/project-filter.js';
+import { shouldSkipAgentObservation } from '../../../shared/should-skip-agent-observation.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
 import { getProjectContext } from '../../../utils/project-name.js';
@@ -75,6 +75,11 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
     return { ok: true, status: 'skipped', reason: 'tool_excluded' };
   }
 
+  const agentSkip = shouldSkipAgentObservation(payload.agentId, payload.agentType, settings);
+  if (agentSkip.skip) {
+    return { ok: true, status: 'skipped', reason: agentSkip.reason! };
+  }
+
   const fileOperationTools = new Set(['Edit', 'Write', 'Read', 'NotebookEdit']);
   if (fileOperationTools.has(payload.toolName) && payload.toolInput && typeof payload.toolInput === 'object') {
     const input = payload.toolInput as { file_path?: string; notebook_path?: string };
@@ -90,7 +95,7 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
   let promptNumber: number;
   try {
     sessionDbId = store.createSDKSession(payload.contentSessionId, project, '', undefined, platformSource);
-    promptNumber = store.getPromptNumberFromUserPrompts(payload.contentSessionId);
+    promptNumber = store.getPromptNumberFromUserPrompts(payload.contentSessionId, sessionDbId);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.error('INGEST', 'Observation session resolution failed', {
@@ -113,10 +118,10 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
   }
 
   const cleanedToolInput = payload.toolInput !== undefined
-    ? stripMemoryTagsFromJson(JSON.stringify(payload.toolInput))
+    ? stripMemoryTags(JSON.stringify(payload.toolInput))
     : '{}';
   const cleanedToolResponse = payload.toolResponse !== undefined
-    ? stripMemoryTagsFromJson(JSON.stringify(payload.toolResponse))
+    ? stripMemoryTags(JSON.stringify(payload.toolResponse))
     : '{}';
 
   await sessionManager.queueObservation(sessionDbId, {
@@ -140,49 +145,4 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
   eventBroadcaster.broadcastObservationQueued(sessionDbId);
 
   return { ok: true, sessionDbId };
-}
-
-export type SummaryPayload =
-  | {
-      kind: 'queue';
-      contentSessionId: string;
-      lastAssistantMessage?: string;
-      platformSource?: string;
-      cwd?: string;
-    }
-  | {
-      kind: 'parsed';
-      sessionDbId: number;
-      messageId: number;
-      contentSessionId: string;
-      parsed: ParsedSummary;
-    };
-
-export async function ingestSummary(payload: SummaryPayload): Promise<IngestResult> {
-  if (payload.kind === 'queue') {
-    const { sessionManager, dbManager, ensureGeneratorRunning } = requireContext();
-
-    if (!payload.contentSessionId) {
-      return { ok: false, reason: 'missing contentSessionId', status: 400 };
-    }
-
-    const platformSource = normalizePlatformSource(payload.platformSource);
-    const cwd = typeof payload.cwd === 'string' ? payload.cwd : '';
-    const project = cwd.trim() ? getProjectContext(cwd).primary : '';
-
-    let sessionDbId: number;
-    try {
-      sessionDbId = dbManager.getSessionStore().createSDKSession(payload.contentSessionId, project, '', undefined, platformSource);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return { ok: false, reason: message, status: 500 };
-    }
-
-    await sessionManager.queueSummarize(sessionDbId, payload.lastAssistantMessage);
-    await ensureGeneratorRunning?.(sessionDbId, 'summarize');
-
-    return { ok: true, sessionDbId };
-  }
-
-  return { ok: true, sessionDbId: payload.sessionDbId, messageId: payload.messageId };
 }

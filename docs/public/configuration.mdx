@@ -20,8 +20,35 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50`                        | Number of observations to inject      |
 | `CLAUDE_MEM_WORKER_PORT`      | `37700 + (uid % 100)`           | Worker service port (per-user default; override for fixed port) |
 | `CLAUDE_MEM_WORKER_HOST`      | `127.0.0.1`                     | Worker service host address           |
+| `CLAUDE_MEM_WORKER_AUTOSTART` | `true`                          | When `false`, hooks do not lazy-spawn the worker daemon. Use for server-only or externally managed deployments; worker-only features are unavailable while off. |
+| `CLAUDE_MEM_WORKER_SCRIPT_PATH` | —                               | Absolute path to a specific `worker-service.cjs` for the daemon to spawn/respawn. Overrides the installed-plugin and cwd resolution. Opt-in; for local-build testing and bundle pinning. |
 | `CLAUDE_MEM_DATA_DIR`         | `~/.claude-mem`                 | Data root — every other path (database, chroma, logs, settings.json, worker.pid) derives from this |
 | `CLAUDE_MEM_SKIP_TOOLS`       | `ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion` | Comma-separated tools to exclude from observations |
+| `CLAUDE_MEM_ALLOW_DISMISS`    | `false`                         | When `true`, enables observation dismiss/undismiss writes. Dismissed observations are hidden from proactive surfacing but remain fetchable by id. |
+| `CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS` | `false`               | When `true`, skip every observation carrying an `agentId`. Main-session observations are unaffected. |
+| `CLAUDE_MEM_SKIP_AGENT_TYPES` | _(empty)_                       | Comma-separated `agent_type` values to skip, e.g. `workflow-subagent,Explore`. |
+
+### Subagent & Dynamic Workflow Filtering
+
+Claude Code Dynamic Workflows can fan one prompt out through many subagents, commonly with `agent_type: workflow-subagent`. Each subagent tool call can emit a `PostToolUse` observation, which may create high-volume, low-signal provider work.
+
+These settings filter before the hook sends a worker or server request, and the worker also applies the same filter for direct compatibility callers. Both defaults are off to preserve existing observation behavior.
+
+```json
+{
+  "CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS": "true"
+}
+```
+
+Use this to skip every subagent observation identified by `agentId`.
+
+```json
+{
+  "CLAUDE_MEM_SKIP_AGENT_TYPES": "workflow-subagent"
+}
+```
+
+Use this to skip only specific `agent_type` values. If both settings are set, an observation is skipped when either setting matches.
 
 ### Gemini Provider Settings
 
@@ -38,8 +65,6 @@ See [Gemini Provider](usage/gemini-provider) for detailed configuration and free
 |----------------------------------------------|-----------------------------|---------------------------------------|
 | `CLAUDE_MEM_OPENROUTER_API_KEY`              | —                           | OpenRouter API key ([get key](https://openrouter.ai/keys)) |
 | `CLAUDE_MEM_OPENROUTER_MODEL`                | `xiaomi/mimo-v2-flash:free` | Model identifier (supports 100+ models) |
-| `CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES` | `20`                        | Max messages in conversation history  |
-| `CLAUDE_MEM_OPENROUTER_MAX_TOKENS`           | `100000`                    | Token budget safety limit             |
 | `CLAUDE_MEM_OPENROUTER_SITE_URL`             | —                           | Optional: URL for analytics           |
 | `CLAUDE_MEM_OPENROUTER_APP_NAME`             | `claude-mem`                | Optional: App name for analytics      |
 
@@ -218,6 +243,26 @@ Claude-mem can automatically generate `CLAUDE.md` files in your project folders 
 | `CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED` | `false` | Enable auto-generation of folder CLAUDE.md files |
 
 See [Folder Context Files](usage/folder-context) for full documentation on how this feature works, configuration options, and git integration recommendations.
+
+## Per-Project Configuration (`.claude-mem.json`)
+
+You can drop a `.claude-mem.json` file in a project to override per-project behavior. It is read from the project (walking up from the working directory to your home directory), so committing it travels with the repo.
+
+### Pinning the project name
+
+By default the project name is the git repo root's folder name (or the working-directory basename when not in a repo). Set `projectName` to pin it explicitly:
+
+```json
+{
+  "projectName": "my-app"
+}
+```
+
+This is useful when you keep several independent copies or clones of the same project in differently-named folders (e.g. `my-app`, `my-app-2`, `my-app-3`). Give each a `.claude-mem.json` with the same `projectName` and they all share one memory/project instead of being split by folder name.
+
+- The configured name takes precedence over both the git-repo-root and basename derivation.
+- It also applies inside git worktrees, collapsing the usual `parent/worktree` composite to the single configured name.
+- `project_name` (snake_case) is accepted as an alias. An empty or non-string value is ignored and the default derivation is used.
 
 ## Context Injection Configuration
 

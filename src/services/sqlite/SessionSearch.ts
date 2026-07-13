@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { TableNameRow } from '../../types/database.js';
-import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
+import { DB_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { isDirectChild } from '../../shared/path-utils.js';
 import { AppError } from '../server/ErrorHandler.js';
@@ -11,9 +11,11 @@ import {
   SearchOptions,
   SearchFilters,
   DateRange,
-  ObservationRow,
-  UserPromptRow
+  ObservationRow
 } from './types.js';
+import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
+import { applySqliteBusyTimeout, openPrimarySqliteConnection } from './connection.js';
+import { NOT_DISMISSED_SQL } from './observations/dismiss-filter.js';
 
 export class SessionSearch {
   private db: Database;
@@ -23,10 +25,9 @@ export class SessionSearch {
   constructor(dbPathOrDb: string | Database = DB_PATH) {
     if (dbPathOrDb instanceof Database) {
       this.db = dbPathOrDb;
+      applySqliteBusyTimeout(this.db);
     } else {
-      ensureDir(DATA_DIR);
-      this.db = new Database(dbPathOrDb);
-      this.db.run('PRAGMA journal_mode = WAL');
+      this.db = openPrimarySqliteConnection(dbPathOrDb);
     }
 
     this._fts5Available = this.isFts5Available();
@@ -65,7 +66,8 @@ export class SessionSearch {
       this.db.run('CREATE VIRTUAL TABLE _fts5_probe USING fts5(test_column)');
       this.db.run('DROP TABLE _fts5_probe');
       return true;
-    } catch {
+    } catch (error) {
+      logger.debug('DB', 'FTS5 probe failed — FTS5 unavailable on this platform', undefined, error instanceof Error ? error : new Error(String(error)));
       return false;
     }
   }
@@ -168,9 +170,9 @@ export class SessionSearch {
     // codex/other-agent search.
     if (filters.platformSource) {
       conditions.push(
-        `COALESCE((SELECT s2.platform_source FROM sdk_sessions s2 WHERE s2.memory_session_id = ${tableAlias}.memory_session_id), 'claude') = ?`
+        `COALESCE(NULLIF((SELECT s2.platform_source FROM sdk_sessions s2 WHERE s2.memory_session_id = ${tableAlias}.memory_session_id), ''), '${DEFAULT_PLATFORM_SOURCE}') = ?`
       );
-      params.push(filters.platformSource);
+      params.push(normalizePlatformSource(filters.platformSource));
     }
 
     if (filters.type) {
@@ -257,6 +259,7 @@ export class SessionSearch {
         SELECT o.*, o.discovery_tokens
         FROM observations o
         WHERE ${filterClause}
+          AND ${NOT_DISMISSED_SQL}
         ${orderClause}
         LIMIT ? OFFSET ?
       `;
@@ -275,6 +278,7 @@ export class SessionSearch {
         JOIN observations_fts ON observations_fts.rowid = o.id
         WHERE observations_fts MATCH ?
         ${filterClause ? 'AND ' + filterClause : ''}
+        AND ${NOT_DISMISSED_SQL}
         ${orderClause}
         LIMIT ? OFFSET ?
       `;
@@ -372,6 +376,7 @@ export class SessionSearch {
       SELECT o.*, o.discovery_tokens
       FROM observations o
       WHERE ${filterClause}
+        AND ${NOT_DISMISSED_SQL}
       ${orderClause}
       LIMIT ? OFFSET ?
     `;
@@ -432,6 +437,7 @@ export class SessionSearch {
       SELECT o.*, o.discovery_tokens
       FROM observations o
       WHERE ${filterClause}
+        AND ${NOT_DISMISSED_SQL}
       ${orderClause}
       LIMIT ? OFFSET ?
     `;
@@ -452,6 +458,13 @@ export class SessionSearch {
     if (sessionFilters.project) {
       baseConditions.push('s.project = ?');
       sessionParams.push(sessionFilters.project);
+    }
+
+    if (sessionFilters.platformSource) {
+      baseConditions.push(
+        `COALESCE(NULLIF((SELECT s2.platform_source FROM sdk_sessions s2 WHERE s2.memory_session_id = s.memory_session_id), ''), '${DEFAULT_PLATFORM_SOURCE}') = ?`
+      );
+      sessionParams.push(normalizePlatformSource(sessionFilters.platformSource));
     }
 
     if (sessionFilters.dateRange) {
@@ -508,6 +521,7 @@ export class SessionSearch {
       SELECT o.*, o.discovery_tokens
       FROM observations o
       WHERE ${filterClause}
+        AND ${NOT_DISMISSED_SQL}
       ${orderClause}
       LIMIT ? OFFSET ?
     `;
@@ -525,6 +539,11 @@ export class SessionSearch {
     if (filters.project) {
       baseConditions.push('s.project = ?');
       params.push(filters.project);
+    }
+
+    if (filters.platformSource) {
+      baseConditions.push(`COALESCE(NULLIF(s.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}') = ?`);
+      params.push(normalizePlatformSource(filters.platformSource));
     }
 
     if (filters.dateRange) {
@@ -552,9 +571,13 @@ export class SessionSearch {
         : 'ORDER BY up.created_at_epoch DESC';
 
       const sql = `
-        SELECT up.*
+        SELECT
+          up.*,
+          s.project,
+          s.memory_session_id,
+          COALESCE(NULLIF(s.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}') as platform_source
         FROM user_prompts up
-        JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
+        JOIN sdk_sessions s ON up.session_db_id = s.id
         ${whereClause}
         ${orderClause}
         LIMIT ? OFFSET ?
@@ -574,9 +597,13 @@ export class SessionSearch {
       : 'ORDER BY up.created_at_epoch DESC';
 
     const sql = `
-      SELECT up.*
+      SELECT
+        up.*,
+        s.project,
+        s.memory_session_id,
+        COALESCE(NULLIF(s.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}') as platform_source
       FROM user_prompts up
-      JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
+      JOIN sdk_sessions s ON up.session_db_id = s.id
       ${whereClause}
       ${orderClause}
       LIMIT ? OFFSET ?
@@ -584,23 +611,6 @@ export class SessionSearch {
 
     params.push(limit, offset);
     return this.db.prepare(sql).all(...params) as UserPromptSearchResult[];
-  }
-
-  getUserPromptsBySession(contentSessionId: string): UserPromptRow[] {
-    const stmt = this.db.prepare(`
-      SELECT
-        id,
-        content_session_id,
-        prompt_number,
-        prompt_text,
-        created_at,
-        created_at_epoch
-      FROM user_prompts
-      WHERE content_session_id = ?
-      ORDER BY prompt_number ASC
-    `);
-
-    return stmt.all(contentSessionId) as UserPromptRow[];
   }
 
   close(): void {

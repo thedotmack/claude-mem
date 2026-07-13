@@ -1,6 +1,12 @@
 
 import { getCredential } from '../../shared/EnvManager.js';
 import { resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-base-url.js';
+import {
+  buildOpenRouterRequestBody,
+  parseOpenRouterExtraBody,
+  parseOpenRouterReasoningEffort,
+  type OpenRouterReasoningEffort,
+} from '../../shared/openrouter-request-settings.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
@@ -10,6 +16,7 @@ import { SessionManager } from './SessionManager.js';
 import { ClassifiedProviderError } from './provider-errors.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
+import { truncateConversationHistory } from './truncate-history.js';
 
 /**
  * OpenAI-compatible client configuration.
@@ -94,9 +101,9 @@ export function classifyOpenRouterError(input: {
   );
 }
 
+const CHARS_PER_TOKEN_ESTIMATE = 4;
 const DEFAULT_MAX_CONTEXT_MESSAGES = 20;
 const DEFAULT_MAX_ESTIMATED_TOKENS = 100000;
-const CHARS_PER_TOKEN_ESTIMATE = 4;
 
 interface OpenAIMessage {
   role: 'user' | 'assistant' | 'system';
@@ -136,12 +143,13 @@ interface OpenRouterConfig {
   apiUrl: string;
   siteUrl?: string;
   appName?: string;
+  reasoningEffort: OpenRouterReasoningEffort | null;
+  extraBody: Record<string, unknown> | null;
 }
 
 export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfig> {
   protected readonly providerName = 'OpenRouter';
   protected readonly syntheticIdPrefix = 'openrouter';
-  protected readonly requireNonEmptyToTruncate = false;
   protected readonly forwardEmptyMessageResponse = true;
 
   constructor(dbManager: DatabaseManager, sessionManager: SessionManager) {
@@ -182,13 +190,6 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     };
   }
 
-  protected truncateHistoryForOpenRouter(history: ConversationMessage[]): ConversationMessage[] {
-    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-    const MAX_CONTEXT_MESSAGES = parseInt(settings.CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES) || DEFAULT_MAX_CONTEXT_MESSAGES;
-    const MAX_ESTIMATED_TOKENS = parseInt(settings.CLAUDE_MEM_OPENROUTER_MAX_TOKENS) || DEFAULT_MAX_ESTIMATED_TOKENS;
-    return this.truncateHistory(history, MAX_CONTEXT_MESSAGES, MAX_ESTIMATED_TOKENS);
-  }
-
   private conversationToOpenAIMessages(history: ConversationMessage[]): OpenAIMessage[] {
     return history.map(msg => ({
       role: msg.role === 'assistant' ? 'assistant' : 'user',
@@ -197,7 +198,49 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
   }
 
   protected async query(history: ConversationMessage[], config: OpenRouterConfig): Promise<ProviderQueryResult> {
-    return this.queryOpenRouterMultiTurn(history, config.apiKey, config.model, config.apiUrl, config.siteUrl, config.appName);
+    return this.queryOpenRouterMultiTurn(
+      history,
+      config.apiKey,
+      config.model,
+      config.apiUrl,
+      config.siteUrl,
+      config.appName,
+      config.reasoningEffort,
+      config.extraBody
+    );
+  }
+
+  /** POST the chat-completions request. Extracted so the retry try block stays narrow. */
+  private fetchChatCompletion(
+    apiUrl: string,
+    apiKey: string,
+    model: string,
+    messages: OpenAIMessage[],
+    siteUrl: string | undefined,
+    appName: string | undefined,
+    reasoningEffort: OpenRouterReasoningEffort | null,
+    extraBody: Record<string, unknown> | null,
+    priorRequestId: string | null,
+    attemptSignal: AbortSignal
+  ): Promise<Response> {
+    return fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'HTTP-Referer': siteUrl || 'https://github.com/thedotmack/claude-mem',
+        'X-Title': appName || 'claude-mem',
+        'Content-Type': 'application/json',
+        ...(priorRequestId ? { 'x-claude-mem-prior-request-id': priorRequestId } : {}),
+      },
+      body: JSON.stringify(buildOpenRouterRequestBody({
+        apiUrl,
+        model,
+        messages,
+        reasoningEffort,
+        extraBody,
+      })),
+      signal: attemptSignal,
+    });
   }
 
   private async queryOpenRouterMultiTurn(
@@ -206,9 +249,18 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     model: string,
     apiUrl: string,
     siteUrl?: string,
-    appName?: string
+    appName?: string,
+    reasoningEffort: OpenRouterReasoningEffort | null = null,
+    extraBody: Record<string, unknown> | null = null
   ): Promise<ProviderQueryResult> {
-    const truncatedHistory = this.truncateHistoryForOpenRouter(history);
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const maxContextMessages = parseInt(settings.CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES, 10) || DEFAULT_MAX_CONTEXT_MESSAGES;
+    const maxEstimatedTokens = parseInt(settings.CLAUDE_MEM_OPENROUTER_MAX_TOKENS, 10) || DEFAULT_MAX_ESTIMATED_TOKENS;
+    const truncatedHistory = truncateConversationHistory(history, {
+      maxContextMessages,
+      maxEstimatedTokens,
+      estimateTokens: (text) => this.estimateTokens(text ?? ''),
+    });
     const messages = this.conversationToOpenAIMessages(truncatedHistory);
     const totalChars = truncatedHistory.reduce((sum, m) => sum + m.content.length, 0);
     const estimatedTokens = this.estimateTokens(truncatedHistory.map(m => m.content).join(''));
@@ -224,29 +276,21 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     const data = await withRetry<OpenRouterResponse>(async (attemptSignal) => {
       let response: Response;
       try {
-        response = await fetch(apiUrl, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${apiKey}`,
-            'HTTP-Referer': siteUrl || 'https://github.com/thedotmack/claude-mem',
-            'X-Title': appName || 'claude-mem',
-            'Content-Type': 'application/json',
-            ...(priorRequestId ? { 'x-claude-mem-prior-request-id': priorRequestId } : {}),
-          },
-          body: JSON.stringify({
-            model,
-            messages,
-            temperature: 0.3,  // Lower temperature for structured extraction
-            max_tokens: 4096,
-            // Ask openrouter.ai for usage accounting (token counts + cost).
-            // Only sent to openrouter.ai — strict custom gateways may reject
-            // unknown body fields.
-            ...(apiUrl.includes('openrouter.ai') ? { usage: { include: true } } : {}),
-          }),
-          signal: attemptSignal,
-        });
+        response = await this.fetchChatCompletion(
+          apiUrl,
+          apiKey,
+          model,
+          messages,
+          siteUrl,
+          appName,
+          reasoningEffort,
+          extraBody,
+          priorRequestId,
+          attemptSignal
+        );
       } catch (networkError: unknown) {
-        throw classifyOpenRouterError({ cause: networkError });
+        const err = networkError instanceof Error ? networkError : new Error(String(networkError));
+        throw classifyOpenRouterError({ cause: err });
       }
 
       const requestId = response.headers.get('x-request-id') ?? response.headers.get('x-openrouter-request-id');
@@ -310,7 +354,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
         outputTokens: realOutputTokens || 0,
         totalTokens: tokensUsed,
         ...(costUsd !== undefined ? { costUSD: costUsd.toFixed(6) } : {}),
-        messagesInContext: truncatedHistory.length
+        messagesInContext: history.length
       });
 
       if (tokensUsed > 50000) {
@@ -349,8 +393,17 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
 
     const siteUrl = settings.CLAUDE_MEM_OPENROUTER_SITE_URL || '';
     const appName = settings.CLAUDE_MEM_OPENROUTER_APP_NAME || 'claude-mem';
+    const reasoningEffort = parseOpenRouterReasoningEffort(settings.CLAUDE_MEM_OPENROUTER_REASONING_EFFORT);
+    let extraBody: Record<string, unknown> | null = null;
+    try {
+      extraBody = parseOpenRouterExtraBody(settings.CLAUDE_MEM_OPENROUTER_EXTRA_BODY);
+    } catch (error) {
+      logger.warn('SETTINGS', 'Ignoring invalid OpenRouter extra body setting', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
 
-    return { apiKey, model, apiUrl, siteUrl, appName };
+    return { apiKey, model, apiUrl, siteUrl, appName, reasoningEffort, extraBody };
   }
 }
 

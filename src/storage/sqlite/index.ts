@@ -6,4 +6,3 @@ export * from './memory-items.js';
 export * from './projects.js';
 export * from './schema.js';
 export * from './server-sessions.js';
-export * from './teams.js';

@@ -96,19 +96,23 @@ describe('SessionStore session lifecycle', () => {
       expect(store.getSessionById(id)?.platform_source).toBe('claude');
     });
 
-    it('preserves a non-default platform_source when a legacy caller omits it', () => {
+    it('uses claude when a legacy caller omits platform_source', () => {
       const id = store.createSDKSession('content-platform-2', 'project', 'prompt', undefined, 'codex');
       expect(store.getSessionById(id)?.platform_source).toBe('codex');
 
-      store.createSDKSession('content-platform-2', 'project', 'prompt');
-      expect(store.getSessionById(id)?.platform_source).toBe('codex');
+      const defaultId = store.createSDKSession('content-platform-2', 'project', 'prompt');
+      expect(defaultId).not.toBe(id);
+      expect(store.getSessionById(defaultId)?.platform_source).toBe('claude');
     });
 
-    it('throws on an explicit platform_source conflict', () => {
-      store.createSDKSession('content-platform-3', 'project', 'prompt', undefined, 'codex');
-      expect(() =>
-        store.createSDKSession('content-platform-3', 'project', 'prompt', undefined, 'claude')
-      ).toThrow(/Platform source conflict/);
+    it('allows the same raw content_session_id for different platform_source values', () => {
+      const claudeId = store.createSDKSession('content-platform-3', 'claude-project', 'prompt', undefined, 'claude');
+      const cursorId = store.createSDKSession('content-platform-3', 'cursor-project', 'prompt', undefined, 'cursor');
+
+      expect(cursorId).not.toBe(claudeId);
+      expect(store.getSessionById(claudeId)?.platform_source).toBe('claude');
+      expect(store.getSessionById(cursorId)?.platform_source).toBe('cursor');
+      expect(store.createSDKSession('content-platform-3', 'later', 'prompt', undefined, 'claude')).toBe(claudeId);
     });
   });
 

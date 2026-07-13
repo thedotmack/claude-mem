@@ -29,6 +29,7 @@ import { buildHardenedSdkOptions } from '../../sdk/hardened-options.js';
 import { ClassifiedProviderError } from './provider-errors.js';
 import { resolveTierAlias } from './model-aliases.js';
 import { telemetryBuffer } from '../telemetry/buffer.js';
+import { clearDependencyStatus, recordClaudeCliSetupRequired } from '../../shared/dependency-health.js';
 
 /**
  * Module-scoped guard so the "effort parameter" hint only fires once per
@@ -57,11 +58,13 @@ export function classifyClaudeError(err: unknown): ClassifiedProviderError {
   // Executable / spawn issues — unrecoverable, no point retrying.
   if (
     message.includes('Claude executable not found') ||
+    message.includes('Every Claude CLI found is too old') ||
     message.includes('CLAUDE_CODE_PATH') ||
+    (message.includes('desktop app') && message.includes('headless mode')) ||
     message.includes('ENOENT') ||
     message.startsWith('spawn ')
   ) {
-    return new ClassifiedProviderError(message, { kind: 'unrecoverable', cause: err });
+    return new ClassifiedProviderError(message, { kind: 'setup_required', cause: err });
   }
 
   // Anthropic auth failures.
@@ -160,6 +163,49 @@ export function classifyClaudeError(err: unknown): ClassifiedProviderError {
   return new ClassifiedProviderError(message, { kind: 'transient', cause: err });
 }
 
+export const DEFAULT_CLAUDE_MAX_OBSERVER_TOKENS = 150000;
+const MIN_CLAUDE_MAX_OBSERVER_TOKENS = 1000;
+const MAX_CLAUDE_MAX_OBSERVER_TOKENS = 1000000;
+
+export function resolveObserverMaxTokens(
+  settings: { CLAUDE_MEM_CLAUDE_MAX_TOKENS?: string }
+): number {
+  const rawValue = settings.CLAUDE_MEM_CLAUDE_MAX_TOKENS ?? '';
+  if (!/^\d+$/.test(rawValue)) {
+    return DEFAULT_CLAUDE_MAX_OBSERVER_TOKENS;
+  }
+
+  const parsed = Number.parseInt(rawValue, 10);
+  if (
+    !Number.isSafeInteger(parsed) ||
+    parsed < MIN_CLAUDE_MAX_OBSERVER_TOKENS ||
+    parsed > MAX_CLAUDE_MAX_OBSERVER_TOKENS
+  ) {
+    return DEFAULT_CLAUDE_MAX_OBSERVER_TOKENS;
+  }
+
+  return parsed;
+}
+
+export function computeFullContextTokens(
+  usage: {
+    input_tokens?: number | null;
+    cache_creation_input_tokens?: number | null;
+    cache_read_input_tokens?: number | null;
+  } | undefined | null
+): number {
+  if (!usage) return 0;
+  return (
+    (usage.input_tokens || 0) +
+    (usage.cache_creation_input_tokens || 0) +
+    (usage.cache_read_input_tokens || 0)
+  );
+}
+
+export function observerContextExceeded(currentContextTokens: number, maxObserverTokens: number): boolean {
+  return currentContextTokens > maxObserverTokens;
+}
+
 export class ClaudeProvider {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
@@ -169,17 +215,23 @@ export class ClaudeProvider {
     this.sessionManager = sessionManager;
   }
 
-  private resetSessionForFreshStart(session: ActiveSession): void {
-    this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, null);
-    session.memorySessionId = null;
-    session.forceInit = true;
-  }
-
   async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
     const cwdTracker = { lastCwd: undefined as string | undefined };
 
     // Find and validate Claude executable (shared utility, closes #2222)
-    const claudePath = findClaudeExecutable('SDK');
+    let claudePath: string;
+    try {
+      claudePath = findClaudeExecutable('SDK');
+      clearDependencyStatus('claude_cli');
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      const classified = classifyClaudeError(err);
+      if (classified.kind === 'setup_required') {
+        recordClaudeCliSetupRequired(classified.message);
+        throw classified;
+      }
+      throw err;
+    }
 
     const modelId = session.modelOverride || this.getModelId();
     session.lastModelId = typeof modelId === 'string' ? modelId : undefined;
@@ -190,7 +242,10 @@ export class ClaudeProvider {
     const messageGenerator = this.createMessageGenerator(session, cwdTracker);
 
     const hasRealMemorySessionId = !!session.memorySessionId;
-    const shouldResume = hasRealMemorySessionId && session.lastPromptNumber > 1 && !session.forceInit;
+    const wasForceInit = session.forceInit;
+    const shouldResume = hasRealMemorySessionId && session.lastPromptNumber > 1 && !wasForceInit;
+    const isStaleFreshStart = hasRealMemorySessionId && !shouldResume;
+    const observerExtraArgs = wasForceInit || isStaleFreshStart ? ['--no-session-persistence'] : [];
 
     if (session.forceInit) {
       logger.info('SDK', 'forceInit flag set, starting fresh SDK session', {
@@ -202,6 +257,7 @@ export class ClaudeProvider {
 
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const maxConcurrent = parseInt(settings.CLAUDE_MEM_MAX_CONCURRENT_AGENTS, 10) || 2;
+    const maxObserverTokens = resolveObserverMaxTokens(settings);
     await waitForSlot(maxConcurrent, session.abortController.signal);
 
     const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
@@ -241,7 +297,7 @@ export class ClaudeProvider {
         pathToClaudeCodeExecutable: claudePath,
         abortController: session.abortController,
         ...(shouldResume && session.memorySessionId ? { resume: session.memorySessionId } : {}),
-        spawnClaudeCodeProcess: createSdkSpawnFactory(session.sessionDbId),
+        spawnClaudeCodeProcess: createSdkSpawnFactory(session.sessionDbId, observerExtraArgs),
       }),
     });
 
@@ -303,19 +359,11 @@ export class ClaudeProvider {
         }
 
         if (message.type === 'assistant') {
+          let currentContextTokens = 0;
           const content = message.message.content;
           const textContent = Array.isArray(content)
             ? content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
             : typeof content === 'string' ? content : '';
-
-          if (textContent.includes('prompt is too long') ||
-              textContent.includes('context window')) {
-            logger.error('SDK', 'Context overflow detected - terminating session and forcing fresh start');
-            this.resetSessionForFreshStart(session);
-            session.abortReason = 'overflow';
-            session.abortController.abort();
-            return;
-          }
 
           const responseSize = textContent.length;
 
@@ -332,12 +380,12 @@ export class ClaudeProvider {
 
             // Real per-response usage for telemetry (tokens_input includes the
             // full context the model read: fresh + cache writes + cache reads).
+            const fullContextTokens = computeFullContextTokens(usage);
             session.lastUsage = {
-              input: (usage.input_tokens || 0) +
-                (usage.cache_creation_input_tokens || 0) +
-                (usage.cache_read_input_tokens || 0),
+              input: fullContextTokens,
               output: usage.output_tokens || 0,
             };
+            currentContextTokens = fullContextTokens;
 
             logger.debug('SDK', 'Token usage captured', {
               sessionId: session.sessionDbId,
@@ -364,14 +412,6 @@ export class ClaudeProvider {
             }, truncatedResponse);
           }
 
-          if (typeof textContent === 'string' && textContent.includes('Prompt is too long')) {
-            this.resetSessionForFreshStart(session);
-            logger.error('SDK', 'Context overflow — cleared memorySessionId so next spawn starts fresh', {
-              sessionDbId: session.sessionDbId
-            });
-            throw new Error('Claude session context overflow: prompt is too long');
-          }
-
           if (typeof textContent === 'string' && textContent.includes('Invalid API key')) {
             throw new Error('Invalid API key: check your API key configuration in ~/.claude-mem/settings.json or ~/.claude-mem/.env');
           }
@@ -388,6 +428,22 @@ export class ClaudeProvider {
             cwdTracker.lastCwd,
             modelId
           );
+
+          if (observerContextExceeded(currentContextTokens, maxObserverTokens)) {
+            logger.warn('SDK', 'Observer context bound exceeded - resetting to a fresh SDK session', {
+              sessionId: session.sessionDbId,
+              contextTokens: currentContextTokens,
+              tokenLimit: maxObserverTokens
+            });
+            this.resetSessionForFreshStart(session);
+            session.abortReason = 'context-bound';
+            try {
+              session.abortController.abort();
+            } catch {
+              // best-effort
+            }
+            break;
+          }
         }
 
         if (message.type === 'result') {
@@ -454,6 +510,12 @@ export class ClaudeProvider {
       sessionId: session.sessionDbId,
       duration: `${(sessionDuration / 1000).toFixed(1)}s`
     });
+  }
+
+  resetSessionForFreshStart(session: Pick<ActiveSession, 'sessionDbId' | 'memorySessionId' | 'forceInit'>): void {
+    session.memorySessionId = null;
+    session.forceInit = true;
+    this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, null);
   }
 
   private async *createMessageGenerator(
@@ -526,7 +588,7 @@ export class ClaudeProvider {
           parent_tool_use_id: null,
           isSynthetic: true
         };
-      } else if (message.type === 'summarize') {
+      } else if (message.type === 'summarize' || message.type === 'pre-compact') {
         const summaryPrompt = buildSummaryPrompt({
           id: session.sessionDbId,
           memory_session_id: session.memorySessionId,
@@ -538,7 +600,7 @@ export class ClaudeProvider {
         session.conversationHistory.push({ role: 'user', content: summaryPrompt });
 
         session.lastPromptSentAt = Date.now();
-        session.lastGeneratorSource = 'summarize';
+        session.lastGeneratorSource = message.type;
         yield {
           type: 'user',
           message: {

@@ -13,7 +13,6 @@ export interface ActiveSession {
   project: string;
   platformSource: string;
   userPrompt: string;
-  pendingMessages: PendingMessage[];  
   abortController: AbortController;
   generatorPromise: Promise<void> | null;
   lastPromptNumber: number;
@@ -23,13 +22,12 @@ export interface ActiveSession {
   earliestPendingTimestamp: number | null;  
   claimedMessageIds: number[];
   conversationHistory: ConversationMessage[];  
-  currentProvider: 'claude' | 'gemini' | 'openrouter' | 'agy-cli' | null;
+  currentProvider: 'claude' | 'codex' | 'gemini' | 'agy-cli' | 'openrouter' | 'kiro' | null;
   consecutiveRestarts: number;
   /**
-   * Consecutive non-XML (idle/prose/poisoned) observer outputs. Reset to 0 on a
-   * valid parse. When it reaches the recovery threshold the SDK session is
-   * killed and respawned so a poisoned session can't wedge the pipeline at zero
-   * (plan-11, #2485).
+   * Legacy invalid-output counter. Ordinary non-XML observer output is now
+   * confirmed as a no-op and resets this to 0 so skip acknowledgements never
+   * accumulate respawn debt.
    */
   consecutiveInvalidOutputs: number;
   forceInit?: boolean;
@@ -39,7 +37,7 @@ export interface ActiveSession {
   lastSummaryStored?: boolean;
   pendingAgentId?: string | null;
   pendingAgentType?: string | null;
-  abortReason?: 'idle' | 'shutdown' | 'overflow' | 'restart-guard' | 'quota' | string | null;
+  abortReason?: 'idle' | 'shutdown' | 'overflow' | 'context-bound' | 'restart-guard' | 'quota' | string | null;
   respawnTimer?: ReturnType<typeof setTimeout>;
   /** When the latest compression prompt was dispatched to the model — telemetry compression_ms. */
   lastPromptSentAt?: number | null;
@@ -63,7 +61,7 @@ export interface ActiveSession {
 }
 
 export interface PendingMessage {
-  type: 'observation' | 'summarize';
+  type: 'observation' | 'summarize' | 'pre-compact';
   tool_name?: string;
   tool_input?: any;
   tool_response?: any;
@@ -104,13 +102,6 @@ export interface PaginatedResult<T> {
   hasMore: boolean;
   offset: number;
   limit: number;
-}
-
-export interface PaginationParams {
-  offset: number;
-  limit: number;
-  project?: string;
-  platformSource?: string;
 }
 
 export interface ViewerSettings {
@@ -180,34 +171,3 @@ export interface DBSession {
 }
 
 export type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
-
-export interface ParsedObservation {
-  type: string;
-  title: string;
-  subtitle: string | null;
-  text: string;
-  concepts: string[];
-  files: string[];
-}
-
-export interface ParsedSummary {
-  request: string | null;
-  investigated: string | null;
-  learned: string | null;
-  completed: string | null;
-  next_steps: string | null;
-  notes: string | null;
-}
-
-export interface DatabaseStats {
-  totalObservations: number;
-  totalSessions: number;
-  totalPrompts: number;
-  totalSummaries: number;
-  projectCounts: Record<string, {
-    observations: number;
-    sessions: number;
-    prompts: number;
-    summaries: number;
-  }>;
-}

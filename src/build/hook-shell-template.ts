@@ -58,7 +58,11 @@ export interface ShellTemplateOptions {
   mcpExtraCacheRoots?: string[];
 }
 
-const CLAUDE_CODE_PATH_PRELUDE = `export PATH="$($SHELL -lc 'echo $PATH' 2>/dev/null):$PATH";`;
+const CLAUDE_CODE_PATH_PRELUDE =
+  `_HP=$(printenv PATH 2>/dev/null || true); ` +
+  `_LP=; if [ -n "\${SHELL:-}" ]; then _LP=$("$SHELL" -lc 'printf %s "$PATH"' 2>/dev/null || true); fi; ` +
+  `_HP=$(printf '%s' "$_HP"); _LP=$(printf '%s' "$_LP"); ` +
+  `export PATH="\${_LP:+$_LP:}\${_HP:+$_HP:}$PATH";`;
 
 const CLAUDE_CODE_SETUP_PATH_PRELUDE =
   'export PATH="$HOME/.nvm/versions/node/v$(ls \\"$HOME/.nvm/versions/node\\" 2>/dev/null | ' +
@@ -203,7 +207,7 @@ function buildMcpNodeLauncher(options: ShellTemplateOptions): string {
     `let R=null;` +
     `for(const k of K){const r=f.existsSync(p.join(k,'plugin','scripts'))?p.join(k,'plugin'):k;if(f.existsSync(p.join(r,'scripts',${require}))){R=r;break}}` +
     `if(!R){process.stderr.write(${notFound});process.exit(1)}` +
-    `const ch=c.spawn(process.execPath,[p.join(R,'scripts',${require})],{stdio:'inherit'});` +
+    `const ch=c.spawn(process.execPath,[p.join(R,'scripts',${require})],{stdio:'inherit',windowsHide:true});` +
     `for(const s of ['SIGTERM','SIGINT','SIGHUP'])process.on(s,()=>{try{ch.kill(s)}catch{}});` +
     `ch.on('exit',(code,sig)=>{if(sig){process.removeAllListeners(sig);try{process.kill(process.pid,sig)}catch{process.exit(1)}}else process.exit(code==null?0:code)})`
   );

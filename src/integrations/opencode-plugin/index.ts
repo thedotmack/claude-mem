@@ -1,5 +1,11 @@
 import { z } from "zod";
+import { existsSync, readFileSync } from "fs";
+import { homedir } from "os";
+import { join } from "path";
 import { SettingsDefaultsManager } from "../../shared/SettingsDefaultsManager.js";
+import { stripBom } from "../../utils/json-utils.js";
+
+const PLATFORM_SOURCE = "opencode";
 
 /**
  * OpenCode plugin event contract.
@@ -60,20 +66,25 @@ interface ToolExecuteAfterInput {
   tool: string;
   sessionID: string;
   callID: string;
+  args?: Record<string, unknown>;
 }
 
 interface ToolExecuteAfterOutput {
   title: string;
   output: string;
   metadata: Record<string, unknown>;
-  args?: Record<string, unknown>;
+}
+
+interface ChatMessageInput {
+  sessionID?: string;
+  agent?: string;
+  messageID?: string;
 }
 
 interface ChatMessageOutput {
   message: {
     id?: string;
     role?: string;
-    sessionID?: string;
   };
   parts: Array<{ type: string; text?: string }>;
 }
@@ -91,8 +102,22 @@ interface BusEvent {
 }
 
 function resolveWorkerPort(): string {
-  // Canonical resolution: CLAUDE_MEM_WORKER_PORT env override, else the
-  // UID-derived default — identical to the rest of the codebase (#2406).
+  if (process.env.CLAUDE_MEM_WORKER_PORT) {
+    return process.env.CLAUDE_MEM_WORKER_PORT;
+  }
+
+  try {
+    const settingsPath = join(homedir(), ".claude-mem", "settings.json");
+    if (existsSync(settingsPath)) {
+      const settings = JSON.parse(stripBom(readFileSync(settingsPath, "utf-8"))) as Record<string, string>;
+      if (settings.CLAUDE_MEM_WORKER_PORT) {
+        return settings.CLAUDE_MEM_WORKER_PORT;
+      }
+    }
+  } catch {
+    // fall through to UID-derived default
+  }
+
   return SettingsDefaultsManager.get("CLAUDE_MEM_WORKER_PORT");
 }
 
@@ -101,20 +126,28 @@ const MAX_TOOL_RESPONSE_LENGTH = 1000;
 
 const JSON_HEADERS: Record<string, string> = { "Content-Type": "application/json" };
 
-function workerPostFireAndForget(
+async function workerPost(
   path: string,
   body: Record<string, unknown>,
-): void {
-  fetch(`${WORKER_BASE_URL}${path}`, {
-    method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify(body),
-  }).catch((error: unknown) => {
+): Promise<boolean> {
+  try {
+    const response = await fetch(`${WORKER_BASE_URL}${path}`, {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      console.warn(`[claude-mem] Worker POST ${path} returned ${response.status}`);
+      return false;
+    }
+    return true;
+  } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     if (!message.includes("ECONNREFUSED")) {
       console.warn(`[claude-mem] Worker POST ${path} failed: ${message}`);
     }
-  });
+    return false;
+  }
 }
 
 async function workerGetText(path: string): Promise<string | null> {
@@ -136,6 +169,8 @@ async function workerGetText(path: string): Promise<string | null> {
 
 const contentSessionIdsByOpenCodeSessionId = new Map<string, string>();
 const initializedSessionIds = new Set<string>();
+const pendingSessionInitializations = new Map<string, Promise<string | null>>();
+let nextContentSessionNonce = 0;
 
 const MAX_SESSION_MAP_ENTRIES = 1000;
 
@@ -146,13 +181,14 @@ function getOrCreateContentSessionId(openCodeSessionId: string): string {
       if (oldestKey !== undefined) {
         contentSessionIdsByOpenCodeSessionId.delete(oldestKey);
         initializedSessionIds.delete(oldestKey);
+        pendingSessionInitializations.delete(oldestKey);
       } else {
         break;
       }
     }
     contentSessionIdsByOpenCodeSessionId.set(
       openCodeSessionId,
-      `opencode-${openCodeSessionId}-${Date.now()}`,
+      `opencode-${openCodeSessionId}-${Date.now()}-${nextContentSessionNonce++}`,
     );
   }
   return contentSessionIdsByOpenCodeSessionId.get(openCodeSessionId)!;
@@ -163,17 +199,46 @@ function getOrCreateContentSessionId(openCodeSessionId: string): string {
  * the session the first time we see any activity for it (tool run or chat
  * message). This guarantees a session row exists before observations arrive.
  */
-function ensureSessionInitialized(openCodeSessionId: string, projectName: string): string {
+async function ensureSessionInitialized(
+  openCodeSessionId: string,
+  projectName: string,
+  prompt = "",
+): Promise<string | null> {
   const contentSessionId = getOrCreateContentSessionId(openCodeSessionId);
-  if (!initializedSessionIds.has(openCodeSessionId)) {
-    initializedSessionIds.add(openCodeSessionId);
-    workerPostFireAndForget("/api/sessions/init", {
+  if (initializedSessionIds.has(openCodeSessionId)) {
+    return contentSessionId;
+  }
+
+  const pendingInitialization = pendingSessionInitializations.get(openCodeSessionId);
+  if (pendingInitialization) {
+    return pendingInitialization;
+  }
+
+  let initialization: Promise<string | null> | undefined;
+  initialization = (async (): Promise<string | null> => {
+    const initialized = await workerPost("/api/sessions/init", {
       contentSessionId,
       project: projectName,
-      prompt: "",
+      prompt,
+      platformSource: PLATFORM_SOURCE,
     });
-  }
-  return contentSessionId;
+
+    if (pendingSessionInitializations.get(openCodeSessionId) === initialization) {
+      pendingSessionInitializations.delete(openCodeSessionId);
+    }
+    if (!initialized) {
+      return null;
+    }
+    if (contentSessionIdsByOpenCodeSessionId.get(openCodeSessionId) !== contentSessionId) {
+      return null;
+    }
+
+    initializedSessionIds.add(openCodeSessionId);
+    return contentSessionId;
+  })();
+
+  pendingSessionInitializations.set(openCodeSessionId, initialization);
+  return await initialization;
 }
 
 function truncate(text: string): string {
@@ -194,11 +259,13 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       input: ToolExecuteAfterInput,
       output: ToolExecuteAfterOutput,
     ): Promise<void> => {
-      const contentSessionId = ensureSessionInitialized(input.sessionID, projectName);
-      workerPostFireAndForget("/api/sessions/observations", {
+      const contentSessionId = await ensureSessionInitialized(input.sessionID, projectName);
+      if (!contentSessionId) return;
+      await workerPost("/api/sessions/observations", {
         contentSessionId,
+        platformSource: PLATFORM_SOURCE,
         tool_name: input.tool,
-        tool_input: output.args || {},
+        tool_input: input.args || {},
         tool_response: truncate(output.output || ""),
         cwd: ctx.directory,
       });
@@ -206,23 +273,26 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
 
     // Capture assistant chat messages as observations.
     "chat.message": async (
-      _input: Record<string, unknown>,
+      input: ChatMessageInput,
       output: ChatMessageOutput,
     ): Promise<void> => {
-      const sessionID = output.message?.sessionID;
+      const sessionID = input.sessionID;
       if (!sessionID) return;
-      if (output.message?.role !== "assistant") return;
 
-      const contentSessionId = ensureSessionInitialized(sessionID, projectName);
       const messageText = (output.parts || [])
         .filter((part) => part.type === "text" && typeof part.text === "string")
         .map((part) => part.text as string)
         .join("\n");
       if (!messageText) return;
 
-      workerPostFireAndForget("/api/sessions/observations", {
+      const role = output.message?.role || "assistant";
+      const prompt = role === "user" ? truncate(messageText) : "";
+      const contentSessionId = await ensureSessionInitialized(sessionID, projectName, prompt);
+      if (!contentSessionId) return;
+      await workerPost("/api/sessions/observations", {
         contentSessionId,
-        tool_name: "assistant_message",
+        platformSource: PLATFORM_SOURCE,
+        tool_name: role === "user" ? "user_message" : "assistant_message",
         tool_input: {},
         tool_response: truncate(messageText),
         cwd: ctx.directory,
@@ -234,9 +304,11 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
     "experimental.session.compacting": async (
       input: SessionCompactingInput,
     ): Promise<void> => {
-      const contentSessionId = ensureSessionInitialized(input.sessionID, projectName);
-      workerPostFireAndForget("/api/sessions/summarize", {
+      const contentSessionId = await ensureSessionInitialized(input.sessionID, projectName);
+      if (!contentSessionId) return;
+      await workerPost("/api/sessions/summarize", {
         contentSessionId,
+        platformSource: PLATFORM_SOURCE,
         last_assistant_message: "",
       });
     },
@@ -251,9 +323,11 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       switch (eventType) {
         case "session.idle": {
           // Best-effort summarize once a session goes idle.
-          const contentSessionId = ensureSessionInitialized(sessionID, projectName);
-          workerPostFireAndForget("/api/sessions/summarize", {
+          const contentSessionId = await ensureSessionInitialized(sessionID, projectName);
+          if (!contentSessionId) return;
+          await workerPost("/api/sessions/summarize", {
             contentSessionId,
+            platformSource: PLATFORM_SOURCE,
             last_assistant_message: "",
           });
           break;
@@ -261,6 +335,7 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
         case "session.deleted": {
           contentSessionIdsByOpenCodeSessionId.delete(sessionID);
           initializedSessionIds.delete(sessionID);
+          pendingSessionInitializations.delete(sessionID);
           break;
         }
         default:
@@ -333,4 +408,4 @@ export function parseSearchResponse(text: string, query: string): string {
   return rendered;
 }
 
-export default ClaudeMemPlugin;
+export default { id: "claude-mem", server: ClaudeMemPlugin };

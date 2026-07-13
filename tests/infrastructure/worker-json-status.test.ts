@@ -2,7 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import { spawnSync } from 'child_process';
 import { existsSync } from 'fs';
 import path from 'path';
-import { buildStatusOutput, StatusOutput } from '../../src/services/worker-service.js';
+import { buildStatusOutput, formatDependencyHealthHint, StatusOutput } from '../../src/services/worker-service.js';
 
 const WORKER_SCRIPT = path.join(__dirname, '../../plugin/scripts/worker-service.cjs');
 
@@ -78,11 +78,19 @@ describe('worker-json-status', () => {
         expect(buildStatusOutput('error', 'msg').continue).toBe(true);
       });
 
-      it('should always include suppressOutput: true', () => {
+      it('includes suppressOutput: true by default', () => {
         expect(buildStatusOutput('ready').suppressOutput).toBe(true);
         expect(buildStatusOutput('error').suppressOutput).toBe(true);
         expect(buildStatusOutput('ready', 'msg').suppressOutput).toBe(true);
         expect(buildStatusOutput('error', 'msg').suppressOutput).toBe(true);
+      });
+
+      it('can omit suppressOutput for Codex hook compatibility', () => {
+        const result = buildStatusOutput('ready', undefined, { includeSuppressOutput: false });
+
+        expect(result.continue).toBe(true);
+        expect(result.status).toBe('ready');
+        expect(result).not.toHaveProperty('suppressOutput');
       });
     });
 
@@ -164,6 +172,42 @@ describe('worker-json-status', () => {
     });
   });
 
+  describe('formatDependencyHealthHint', () => {
+    it('returns a short dependency degradation hint when health reports degraded dependencies', () => {
+      const hint = formatDependencyHealthHint({
+        dependencies: {
+          degraded: true,
+          statuses: [
+            {
+              dependency: 'claude_cli',
+              kind: 'setup_required',
+              message: 'Claude executable not found',
+              recordedAtMs: 123,
+            },
+            {
+              dependency: 'uvx',
+              kind: 'vector_search_unavailable',
+              message: 'uvx executable not found',
+              recordedAtMs: 124,
+            },
+          ],
+        },
+      });
+
+      expect(hint).toBe('  Dependencies: degraded (Claude CLI setup required, uvx unavailable for vector search). Run npx claude-mem doctor or open Settings for remediation.');
+    });
+
+    it('returns null when dependencies are healthy or absent', () => {
+      expect(formatDependencyHealthHint({})).toBeNull();
+      expect(formatDependencyHealthHint({
+        dependencies: {
+          degraded: false,
+          statuses: [],
+        },
+      })).toBeNull();
+    });
+  });
+
   describe('start command JSON output', () => {
     describe('when worker already healthy', () => {
       it('should output valid JSON with status: ready', () => {
@@ -200,20 +244,6 @@ describe('worker-json-status', () => {
         } else if (parsed.status === 'error') {
           expect(typeof parsed.message).toBe('string');
         }
-      });
-    });
-
-    describe('error scenarios', () => {
-      it.skip('should output JSON with status: error when port in use but not responding', () => {
-        // Would require: start a non-worker server on the port, then call start
-      });
-
-      it.skip('should output JSON with status: error on spawn failure', () => {
-        // Would require: mock spawnDaemon to fail
-      });
-
-      it.skip('should output JSON with status: error on health check timeout', () => {
-        // Would require: start worker that never becomes healthy
       });
     });
   });

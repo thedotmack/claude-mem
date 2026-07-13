@@ -89,6 +89,7 @@ const LANGUAGE_NAMES: Record<string, string> = {
   fi: "Finnish",
   da: "Danish",
   no: "Norwegian",
+  ne: "Nepali",
   bg: "Bulgarian",
   et: "Estonian",
   lt: "Lithuanian",

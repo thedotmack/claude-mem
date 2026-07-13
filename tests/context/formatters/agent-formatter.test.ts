@@ -41,6 +41,7 @@ import {
 } from '../../../src/services/context/formatters/AgentFormatter.js';
 
 import type { Observation, TokenEconomics, ContextConfig, PriorMessages } from '../../../src/services/context/types.js';
+import { formatContextReferenceId } from '../../../src/services/context/formatters/id-display.js';
 
 function createTestObservation(overrides: Partial<Observation> = {}): Observation {
   return {
@@ -96,7 +97,7 @@ describe('AgentFormatter', () => {
       const result = renderAgentHeader('my-project');
 
       expect(result).toHaveLength(2);
-      expect(result[0]).toMatch(/^# \[my-project\] recent context, \d{4}-\d{2}-\d{2} \d{1,2}:\d{2}[ap]m [A-Z]{3,4}$/);
+      expect(result[0]).toMatch(/^# \[my-project\] recent context, \d{4}-\d{2}-\d{2}$/);
       expect(result[1]).toBe('');
     });
 
@@ -109,7 +110,7 @@ describe('AgentFormatter', () => {
     it('should handle empty project name', () => {
       const result = renderAgentHeader('');
 
-      expect(result[0]).toMatch(/^# \[\] recent context, \d{4}-\d{2}-\d{2} \d{1,2}:\d{2}[ap]m [A-Z]{3,4}$/);
+      expect(result[0]).toMatch(/^# \[\] recent context, \d{4}-\d{2}-\d{2}$/);
     });
   });
 
@@ -117,15 +118,30 @@ describe('AgentFormatter', () => {
     it('should produce legend with type items', () => {
       const result = renderAgentLegend();
 
-      expect(result).toHaveLength(4);
+      expect(result).toHaveLength(8);
       expect(result[0]).toContain('Legend:');
-      expect(result[3]).toBe('');
+      expect(result[7]).toBe('');
     });
 
     it('should include session in legend', () => {
       const result = renderAgentLegend();
 
       expect(result[0]).toContain('session');
+    });
+
+    it('should keep get_observations hint when fetch-by-id is supported', () => {
+      const joined = renderAgentLegend(true).join('\n');
+      expect(joined).toContain('get_observations');
+      expect(joined).toContain('ToolSearch select:mcp__mcp-search__search,mcp__mcp-search__timeline,mcp__mcp-search__get_observations');
+      expect(joined).toContain('/make-plan');
+      expect(joined).toContain('/do');
+    });
+
+    it('should switch to display-only refs hint when fetch-by-id is unsupported', () => {
+      const joined = renderAgentLegend(false).join('\n');
+      expect(joined).toContain('short refs are display-only');
+      expect(joined).not.toContain('get_observations');
+      expect(joined).toContain('avoid direct ID fetches');
     });
   });
 
@@ -401,6 +417,14 @@ describe('AgentFormatter', () => {
       expect(joined).toContain('mem-search skill');
     });
 
+    it('should not mention by-id fetch when refs are display-only', () => {
+      const result = renderAgentFooter(5000, 100, false);
+      const joined = result.join('\n');
+
+      expect(joined).toContain('mem-search skill');
+      expect(joined).not.toContain('get_observations([IDs])');
+    });
+
     it('should round work tokens to nearest thousand', () => {
       const result = renderAgentFooter(15500, 100);
       const joined = result.join('\n');
@@ -428,5 +452,25 @@ describe('AgentFormatter', () => {
 
       expect(result).toContain('# [] recent context,');
     });
+  });
+});
+
+describe('formatContextReferenceId', () => {
+  const uuid = '3c4b2513-5048-45fa-95e0-e3222ae99671';
+
+  it('abbreviates UUID ids to their 8-char prefix when fetch-by-id is unsupported', () => {
+    expect(formatContextReferenceId(uuid, { fetchByIdSupported: false })).toBe('3c4b2513');
+  });
+
+  it('keeps the full UUID when fetch-by-id is supported', () => {
+    expect(formatContextReferenceId(uuid, { fetchByIdSupported: true })).toBe(uuid);
+  });
+
+  it('defaults to the full id when fetchByIdSupported is omitted', () => {
+    expect(formatContextReferenceId(uuid, {})).toBe(uuid);
+  });
+
+  it('leaves non-UUID ids unchanged even when fetch-by-id is unsupported', () => {
+    expect(formatContextReferenceId(42, { fetchByIdSupported: false })).toBe('42');
   });
 });

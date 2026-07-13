@@ -80,6 +80,14 @@ describe('SessionStore summaries', () => {
       store.storeSummary(mem, 'project', summary({ notes: null }));
       expect(store.getSummaryForSession(mem)?.notes).toBeNull();
     });
+
+    it('stores content_session_id when supplied', () => {
+      const mem = session('mem-sum-content');
+      const result = store.storeSummary(mem, 'project', summary(), 1, 0, 1700000000000, 'content-window-1');
+
+      const row = store.db.prepare('SELECT content_session_id FROM session_summaries WHERE id = ?').get(result.id) as { content_session_id: string | null };
+      expect(row.content_session_id).toBe('content-window-1');
+    });
   });
 
   describe('getSummaryForSession', () => {

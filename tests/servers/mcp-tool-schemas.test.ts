@@ -17,6 +17,25 @@ describe('MCP tool inputSchema declarations', () => {
     expect(searchSection).not.toContain("properties: {}");
   });
 
+  it('search routes compatible server-runtime observation queries to ServerClient only when filters are supported', async () => {
+    const src = await Bun.file(mcpServerPath).text();
+    const helperSection = src.slice(
+      src.indexOf('function shouldRouteSearchToServer'),
+      src.indexOf('function wrapHandler'),
+    );
+    const searchSection = src.slice(src.indexOf("name: 'search'"), src.indexOf("name: 'timeline'"));
+
+    expect(helperSection).toContain("args?.type === undefined || args?.type === 'observations'");
+    expect(helperSection).toContain('args?.project !== undefined');
+    expect(helperSection).toContain('args?.obs_type !== undefined');
+    expect(helperSection).toContain('args?.dateStart !== undefined');
+    expect(helperSection).toContain('args?.offset !== undefined');
+    expect(searchSection).toContain('resolveServerToolContext()');
+    expect(searchSection).toContain('shouldRouteSearchToServer(args, serverResolution)');
+    expect(searchSection).toContain('serverResolution.client.searchObservations(request)');
+    expect(searchSection).toContain("callWorker('/api/search'");
+  });
+
   it('timeline tool declares anchor and query parameters', async () => {
     const src = await Bun.file(mcpServerPath).text();
 
@@ -40,6 +59,34 @@ describe('MCP tool inputSchema declarations', () => {
     expect(getObsSection).toContain("required:");
   });
 
+  it('memory_save exposes the worker manual save path and is guarded away from server runtime', async () => {
+    const src = await Bun.file(mcpServerPath).text();
+    const section = src.slice(
+      src.indexOf("name: 'memory_save'"),
+      src.indexOf("name: 'session_start_context'"),
+    );
+    expect(section).toContain('/api/memory/save');
+    expect(section).toContain("required: ['text']");
+    expect(section).toContain("selectRuntime() === 'server'");
+    expect(section).toContain('observation_add');
+    expect(section).toContain("callWorker('/api/memory/save'");
+  });
+
+  it('session_start_context exposes worker SessionStart renderer parameters', async () => {
+    const src = await Bun.file(mcpServerPath).text();
+    const section = src.slice(
+      src.indexOf("name: 'session_start_context'"),
+      src.indexOf("name: 'observation_add'"),
+    );
+    expect(section).toContain('/api/context/inject');
+    expect(section).toContain('handleSessionStartContext');
+    expect(section).toContain('project:');
+    expect(section).toContain('projects:');
+    expect(section).toContain('platformSource:');
+    expect(section).toContain('full:');
+    expect(section).toContain('colors:');
+  });
+
   // Phase 8 — observation_* tools backed by server-beta REST core.
   it('observation_add tool declares content as required', async () => {
     const src = await Bun.file(mcpServerPath).text();
@@ -59,6 +106,7 @@ describe('MCP tool inputSchema declarations', () => {
       src.indexOf("name: 'observation_search'"),
     );
     expect(section).toContain('eventType:');
+    expect(section).toContain('platformSource:');
     expect(section).toContain("required: ['eventType']");
     expect(section).toContain('handleObservationRecordEvent');
   });
@@ -70,6 +118,7 @@ describe('MCP tool inputSchema declarations', () => {
       src.indexOf("name: 'observation_context'"),
     );
     expect(section).toContain('query:');
+    expect(section).toContain('platformSource:');
     expect(section).toContain('limit:');
     expect(section).toContain("required: ['query']");
     expect(section).toContain('handleObservationSearch');
@@ -82,6 +131,7 @@ describe('MCP tool inputSchema declarations', () => {
       src.indexOf("name: 'observation_generation_status'"),
     );
     expect(section).toContain("required: ['query']");
+    expect(section).toContain('platformSource:');
     expect(section).toContain('handleObservationContext');
   });
 
@@ -93,21 +143,22 @@ describe('MCP tool inputSchema declarations', () => {
     expect(section).toContain('handleObservationGenerationStatus');
   });
 
-  it('memory_* compatibility aliases delegate to observation handlers', async () => {
+  it('server-beta observation MCP handlers normalize platformSource args', async () => {
     const src = await Bun.file(mcpServerPath).text();
-    // The aliases must keep the same handler functions as the canonical
-    // observation_* tools, otherwise we have two write paths in MCP.
-    const memoryAdd = src.slice(src.indexOf("name: 'memory_add'"), src.indexOf("name: 'memory_search'"));
-    expect(memoryAdd).toContain('handleObservationAdd');
-    const memorySearch = src.slice(src.indexOf("name: 'memory_search'"), src.indexOf("name: 'memory_context'"));
-    expect(memorySearch).toContain('handleObservationSearch');
-    const memoryContext = src.slice(src.indexOf("name: 'memory_context'"), src.indexOf("name: 'smart_search'"));
-    expect(memoryContext).toContain('handleObservationContext');
+    const handlers = src.slice(
+      src.indexOf('function normalizeMcpPlatformSource'),
+      src.indexOf('interface ObservationGenerationStatusArgs'),
+    );
+    expect(src).toContain("import { normalizePlatformSource } from '../shared/platform-source.js'");
+    expect(handlers).toContain('normalizePlatformSource(value)');
+    expect(handlers).toContain('platformSource: normalizeMcpPlatformSource(args.platformSource)');
   });
 
-  it('mcp-server skips worker auto-start when runtime=server-beta (anti-pattern guard)', async () => {
+  it('mcp-server skips worker auto-start when runtime=server (anti-pattern guard)', async () => {
     const src = await Bun.file(mcpServerPath).text();
-    expect(src).toContain("selectRuntime() === 'server-beta'");
+    // Phase 1a (cmem-sdk rename): canonical runtime literal is `'server'`.
+    // `selectRuntime()` normalizes the legacy `'server-beta'` to `'server'`.
+    expect(src).toContain("selectRuntime() === 'server'");
     expect(src).toContain('skipping worker auto-start');
   });
 

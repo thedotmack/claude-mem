@@ -14,6 +14,7 @@ import type {
 } from './types.js';
 import { ChromaUnavailableError } from './errors.js';
 import { logger } from '../../../utils/logger.js';
+import { normalizePlatformSource } from '../../../shared/platform-source.js';
 
 interface NormalizedParams extends StrategySearchOptions {
   concepts?: string[];
@@ -56,7 +57,12 @@ export class SearchOrchestrator {
     if (this.chromaStrategy) {
       logger.debug('SEARCH', 'Orchestrator: Using Chroma semantic search', {});
       try {
-        return await this.chromaStrategy.search(options);
+        const chromaResult = await this.chromaStrategy.search(options);
+        if (options.platformSource && this.isEmptyResult(chromaResult)) {
+          logger.debug('SEARCH', 'Orchestrator: platform-scoped Chroma search returned zero matches; falling back to SQLite', {});
+          return await this.sqliteStrategy.search(options);
+        }
+        return chromaResult;
       } catch (error) {
         const errorObj = error instanceof Error ? error : new Error(String(error));
         throw new ChromaUnavailableError(
@@ -74,34 +80,10 @@ export class SearchOrchestrator {
     };
   }
 
-  async findByConcept(concept: string, args: any): Promise<StrategySearchResult> {
-    const options = this.normalizeParams(args);
-
-    if (this.hybridStrategy) {
-      return await this.hybridStrategy.findByConcept(concept, options);
-    }
-
-    const results = this.sqliteStrategy.findByConcept(concept, options);
-    return {
-      results: { observations: results, sessions: [], prompts: [] },
-      usedChroma: false,
-      strategy: 'sqlite'
-    };
-  }
-
-  async findByType(type: string | string[], args: any): Promise<StrategySearchResult> {
-    const options = this.normalizeParams(args);
-
-    if (this.hybridStrategy) {
-      return await this.hybridStrategy.findByType(type, options);
-    }
-
-    const results = this.sqliteStrategy.findByType(type, options);
-    return {
-      results: { observations: results, sessions: [], prompts: [] },
-      usedChroma: false,
-      strategy: 'sqlite'
-    };
+  private isEmptyResult(result: StrategySearchResult): boolean {
+    return result.results.observations.length === 0
+      && result.results.sessions.length === 0
+      && result.results.prompts.length === 0;
   }
 
   async findByFile(filePath: string, args: any): Promise<{
@@ -154,6 +136,14 @@ export class SearchOrchestrator {
       delete normalized.dateStart;
       delete normalized.dateEnd;
     }
+
+    const rawPlatformSource = normalized.platformSource ?? normalized.platform_source;
+    if (typeof rawPlatformSource === 'string' && rawPlatformSource.trim()) {
+      normalized.platformSource = normalizePlatformSource(rawPlatformSource);
+    } else {
+      delete normalized.platformSource;
+    }
+    delete normalized.platform_source;
 
     return normalized;
   }

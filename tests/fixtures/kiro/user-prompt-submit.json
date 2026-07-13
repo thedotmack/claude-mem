@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "userPromptSubmit",
+  "cwd": "/tmp/kiro-e2e-project",
+  "prompt": "Fix the login timeout bug in the auth service"
+}

@@ -3,7 +3,6 @@ import {
   installHookStderrBuffer,
   emitDiagnostic,
   emitModelContext,
-  withUserHint,
   emitBlockingError,
   exitGraceful,
   resetHookIoState,
@@ -134,19 +133,6 @@ describe('emitModelContext', () => {
     } finally {
       out.restore();
     }
-  });
-});
-
-describe('withUserHint', () => {
-  it('returns a new object with systemMessage set', () => {
-    const result = withUserHint({ exitCode: 0 }, 'hi');
-    expect(result.systemMessage).toBe('hi');
-    expect(result.exitCode).toBe(0);
-  });
-
-  it('appends to an existing systemMessage with a blank line', () => {
-    const result = withUserHint({ systemMessage: 'world' }, 'hi');
-    expect(result.systemMessage).toBe('world\n\nhi');
   });
 });
 

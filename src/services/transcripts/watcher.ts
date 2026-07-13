@@ -1,6 +1,5 @@
 import { existsSync, statSync, watch as fsWatch, createReadStream } from 'fs';
 import { basename, join, resolve as resolvePath, sep as pathSep } from 'path';
-import { globSync } from 'glob';
 import { logger } from '../../utils/logger.js';
 import { expandHomePath } from './config.js';
 import { loadWatchState, saveWatchState, type TranscriptWatchState } from './state.js';
@@ -133,19 +132,7 @@ export class TranscriptWatcher {
 
     try {
       const watcher = fsWatch(watchRoot, { recursive: true, persistent: true }, (event, name) => {
-        if (!name) return;
-        const changed = resolvePath(watchRoot, name).replace(/\\/g, '/');
-        const existingTailer = this.tailers.get(changed);
-        if (existingTailer) {
-          existingTailer.poke();
-          return;
-        }
-        const matches = this.resolveWatchFiles(resolvedPath);
-        for (const filePath of matches) {
-          if (!this.tailers.has(filePath)) {
-            void this.addTailer(filePath, watch, schema);
-          }
-        }
+        this.handleRootWatchEvent(watchRoot, resolvedPath, watch, schema, name);
       });
       this.rootWatchers.push(watcher);
       logger.info('TRANSCRIPT', 'Watching transcript root recursively', { watch: watch.name, watchRoot });
@@ -157,13 +144,36 @@ export class TranscriptWatcher {
     }
   }
 
+  private handleRootWatchEvent(
+    watchRoot: string,
+    resolvedPath: string,
+    watch: WatchTarget,
+    schema: TranscriptSchema,
+    name: string | null
+  ): void {
+    if (!name) return;
+    const changed = resolvePath(watchRoot, name).replace(/\\/g, '/');
+    const existingTailer = this.tailers.get(changed);
+    if (existingTailer) {
+      existingTailer.poke();
+      return;
+    }
+    const matches = this.resolveWatchFiles(resolvedPath);
+    for (const filePath of matches) {
+      if (!this.tailers.has(filePath)) {
+        void this.addTailer(filePath, watch, schema);
+      }
+    }
+  }
+
   private deepestNonGlobAncestor(inputPath: string): string {
     if (!this.hasGlob(inputPath)) {
       if (existsSync(inputPath)) {
         try {
           const stat = statSync(inputPath);
           return stat.isDirectory() ? inputPath : resolvePath(inputPath, '..');
-        } catch {
+        } catch (error: unknown) {
+          logger.debug('TRANSCRIPT', 'Failed to stat watch path ancestor, falling back to parent directory', { path: inputPath }, error instanceof Error ? error : new Error(String(error)));
           return resolvePath(inputPath, '..');
         }
       }
@@ -192,7 +202,7 @@ export class TranscriptWatcher {
 
   private resolveWatchFiles(inputPath: string): string[] {
     if (this.hasGlob(inputPath)) {
-      return globSync(this.normalizeGlobPattern(inputPath), { nodir: true, absolute: true });
+      return this.scanGlob(this.normalizeGlobPattern(inputPath));
     }
 
     if (existsSync(inputPath)) {
@@ -200,7 +210,7 @@ export class TranscriptWatcher {
         const stat = statSync(inputPath);
         if (stat.isDirectory()) {
           const pattern = join(inputPath, '**', '*.jsonl');
-          return globSync(this.normalizeGlobPattern(pattern), { nodir: true, absolute: true });
+          return this.scanGlob(this.normalizeGlobPattern(pattern));
         }
         return [inputPath];
       } catch (error: unknown) {
@@ -210,6 +220,10 @@ export class TranscriptWatcher {
     }
 
     return [];
+  }
+
+  private scanGlob(pattern: string): string[] {
+    return Array.from(new Bun.Glob(pattern).scanSync({ absolute: true, onlyFiles: true }));
   }
 
   private normalizeGlobPattern(inputPath: string): string {

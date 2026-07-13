@@ -2,24 +2,24 @@
 import express, { Request, Response } from 'express';
 import { z } from 'zod';
 import path from 'path';
-import { readFileSync, writeFileSync, existsSync, renameSync, mkdirSync } from 'fs';
+import { readFileSync, existsSync, renameSync, mkdirSync } from 'fs';
 import { getPackageRoot, paths } from '../../../../shared/paths.js';
 import { logger } from '../../../../utils/logger.js';
 import { SettingsManager } from '../../SettingsManager.js';
-import { getBranchInfo, switchBranch, pullUpdates } from '../../BranchManager.js';
 import { ModeManager } from '../../../domain/ModeManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
-import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
+import { SettingsDefaultsManager, writeSettingsFileSecure } from '../../../../shared/SettingsDefaultsManager.js';
+import {
+  validateOpenRouterExtraBody,
+  validateOpenRouterReasoningEffort,
+} from '../../../../shared/openrouter-request-settings.js';
 import { clearPortCache } from '../../../../shared/worker-utils.js';
-import { flushResponseThen } from '../../../server/flushResponseThen.js';
+import { snapshotDependencyHealth } from '../../../../shared/dependency-health.js';
+import { stripBom } from '../../../../utils/json-utils.js';
 
 const toggleMcpSchema = z.object({
   enabled: z.boolean(),
-}).passthrough();
-
-const switchBranchSchema = z.object({
-  branch: z.string().min(1),
 }).passthrough();
 
 export class SettingsRoutes extends BaseRouteHandler {
@@ -32,13 +32,10 @@ export class SettingsRoutes extends BaseRouteHandler {
   setupRoutes(app: express.Application): void {
     app.get('/api/settings', this.handleGetSettings.bind(this));
     app.post('/api/settings', this.handleUpdateSettings.bind(this));
+    app.get('/api/settings/dependency-health', this.handleGetDependencyHealth.bind(this));
 
     app.get('/api/mcp/status', this.handleGetMcpStatus.bind(this));
     app.post('/api/mcp/toggle', validateBody(toggleMcpSchema), this.handleToggleMcp.bind(this));
-
-    app.get('/api/branch/status', this.handleGetBranchStatus.bind(this));
-    app.post('/api/branch/switch', validateBody(switchBranchSchema), this.handleSwitchBranch.bind(this));
-    app.post('/api/branch/update', this.handleUpdateBranch.bind(this));
   }
 
   private handleGetSettings = this.wrapHandler((req: Request, res: Response): void => {
@@ -46,6 +43,10 @@ export class SettingsRoutes extends BaseRouteHandler {
     this.ensureSettingsFile(settingsPath);
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
     res.json(settings);
+  });
+
+  private handleGetDependencyHealth = this.wrapHandler((_req: Request, res: Response): void => {
+    res.json(snapshotDependencyHealth());
   });
 
   private handleUpdateSettings = this.wrapHandler((req: Request, res: Response): void => {
@@ -65,7 +66,7 @@ export class SettingsRoutes extends BaseRouteHandler {
     if (existsSync(settingsPath)) {
       const settingsData = readFileSync(settingsPath, 'utf-8');
       try {
-        settings = JSON.parse(settingsData);
+        settings = JSON.parse(stripBom(settingsData));
       } catch (parseError) {
         const normalizedParseError = parseError instanceof Error ? parseError : new Error(String(parseError));
         logger.error('HTTP', 'Failed to parse settings file', { settingsPath }, normalizedParseError);
@@ -83,7 +84,11 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_WORKER_PORT',
       'CLAUDE_MEM_WORKER_HOST',
       'CLAUDE_MEM_PROVIDER',
+      'CLAUDE_MEM_ALLOW_DISMISS',
+      'CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS',
+      'CLAUDE_MEM_SKIP_AGENT_TYPES',
       'CLAUDE_MEM_CLAUDE_AUTH_METHOD',
+      'CLAUDE_MEM_CLAUDE_MAX_TOKENS',
       'CLAUDE_MEM_GEMINI_API_KEY',
       'CLAUDE_MEM_GEMINI_MODEL',
       'CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED',
@@ -94,10 +99,21 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_AGY_CLI_TIMEOUT_MS',
       'CLAUDE_MEM_OPENROUTER_API_KEY',
       'CLAUDE_MEM_OPENROUTER_MODEL',
+      'CLAUDE_MEM_OPENROUTER_BASE_URL',
       'CLAUDE_MEM_OPENROUTER_SITE_URL',
       'CLAUDE_MEM_OPENROUTER_APP_NAME',
+      'CLAUDE_MEM_OPENROUTER_REASONING_EFFORT',
+      'CLAUDE_MEM_OPENROUTER_EXTRA_BODY',
       'CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES',
       'CLAUDE_MEM_OPENROUTER_MAX_TOKENS',
+      'CLAUDE_MEM_CODEX_MODEL',
+      'CLAUDE_MEM_CODEX_PATH',
+      'CLAUDE_MEM_CODEX_REASONING_EFFORT',
+      'CLAUDE_MEM_CODEX_MAX_CONTEXT_MESSAGES',
+      'CLAUDE_MEM_CODEX_MAX_TOKENS',
+      'CLAUDE_MEM_CODEX_TIMEOUT_MS',
+      'CLAUDE_MEM_KIRO_MODEL',
+      'CLAUDE_MEM_KIRO_CLI_PATH',
       'CLAUDE_MEM_DATA_DIR',
       'CLAUDE_MEM_LOG_LEVEL',
       'CLAUDE_MEM_PYTHON_VERSION',
@@ -122,7 +138,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
-    writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
+    writeSettingsFileSecure(settingsPath, settings);
 
     clearPortCache();
 
@@ -142,55 +158,11 @@ export class SettingsRoutes extends BaseRouteHandler {
     res.json({ success: true, enabled: this.isMcpEnabled() });
   });
 
-  private handleGetBranchStatus = this.wrapHandler((req: Request, res: Response): void => {
-    const info = getBranchInfo();
-    res.json(info);
-  });
-
-  private handleSwitchBranch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { branch } = req.body as z.infer<typeof switchBranchSchema>;
-
-    const allowedBranches = ['main', 'beta/7.0', 'feature/bun-executable'];
-    if (!allowedBranches.includes(branch)) {
-      res.status(400).json({
-        success: false,
-        error: `Invalid branch. Allowed: ${allowedBranches.join(', ')}`
-      });
-      return;
-    }
-
-    logger.info('WORKER', 'Branch switch requested', { branch });
-
-    const result = await switchBranch(branch);
-
-    if (result.success) {
-      flushResponseThen(res, result, () => {
-        logger.info('WORKER', 'Restarting worker after branch switch');
-      });
-    } else {
-      res.json(result);
-    }
-  });
-
-  private handleUpdateBranch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    logger.info('WORKER', 'Branch update requested');
-
-    const result = await pullUpdates();
-
-    if (result.success) {
-      flushResponseThen(res, result, () => {
-        logger.info('WORKER', 'Restarting worker after branch update');
-      });
-    } else {
-      res.json(result);
-    }
-  });
-
   private validateSettings(settings: any): { valid: boolean; error?: string } {
     if (settings.CLAUDE_MEM_PROVIDER) {
-    const validProviders = ['claude', 'gemini', 'agy-cli', 'openrouter'];
-    if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
-      return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", "agy-cli", or "openrouter"' };
+      const validProviders = ['claude', 'codex', 'gemini', 'agy-cli', 'openrouter', 'kiro'];
+      if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
+        return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "codex", "gemini", "agy-cli", "openrouter", or "kiro"' };
       }
     }
 
@@ -208,24 +180,18 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
+    if (settings.CLAUDE_MEM_CLAUDE_MAX_TOKENS) {
+      const rawTokens = String(settings.CLAUDE_MEM_CLAUDE_MAX_TOKENS);
+      const tokens = /^\d+$/.test(rawTokens) ? Number.parseInt(rawTokens, 10) : NaN;
+      if (!Number.isSafeInteger(tokens) || tokens < 1000 || tokens > 1000000) {
+        return { valid: false, error: 'CLAUDE_MEM_CLAUDE_MAX_TOKENS must be between 1000 and 1000000' };
+      }
+    }
+
     if (settings.CLAUDE_MEM_GEMINI_MODEL) {
       const validGeminiModels = ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-3-flash-preview'];
       if (!validGeminiModels.includes(settings.CLAUDE_MEM_GEMINI_MODEL)) {
         return { valid: false, error: 'CLAUDE_MEM_GEMINI_MODEL must be one of: gemini-2.5-flash-lite, gemini-2.5-flash, gemini-3-flash-preview' };
-      }
-    }
-
-    if (settings.CLAUDE_MEM_GEMINI_MAX_CONTEXT_MESSAGES) {
-      const count = parseInt(settings.CLAUDE_MEM_GEMINI_MAX_CONTEXT_MESSAGES, 10);
-      if (isNaN(count) || count < 1 || count > 100) {
-        return { valid: false, error: 'CLAUDE_MEM_GEMINI_MAX_CONTEXT_MESSAGES must be between 1 and 100' };
-      }
-    }
-
-    if (settings.CLAUDE_MEM_GEMINI_MAX_TOKENS) {
-      const tokens = parseInt(settings.CLAUDE_MEM_GEMINI_MAX_TOKENS, 10);
-      if (isNaN(tokens) || tokens < 1000 || tokens > 1000000) {
-        return { valid: false, error: 'CLAUDE_MEM_GEMINI_MAX_TOKENS must be between 1000 and 1000000' };
       }
     }
 
@@ -270,14 +236,25 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT',
       'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT',
+      'CLAUDE_MEM_ALLOW_DISMISS',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
     ];
 
     for (const key of booleanSettings) {
-      if (settings[key] && !['true', 'false'].includes(settings[key])) {
+      if (settings[key] !== undefined && !['true', 'false'].includes(settings[key])) {
         return { valid: false, error: `${key} must be "true" or "false"` };
       }
+    }
+
+    if (settings.CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS !== undefined) {
+      if (!['true', 'false'].includes(settings.CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS)) {
+        return { valid: false, error: 'CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS must be "true" or "false"' };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_SKIP_AGENT_TYPES !== undefined && typeof settings.CLAUDE_MEM_SKIP_AGENT_TYPES !== 'string') {
+      return { valid: false, error: 'CLAUDE_MEM_SKIP_AGENT_TYPES must be a comma-separated string' };
     }
 
     if (settings.CLAUDE_MEM_CONTEXT_FULL_COUNT) {
@@ -312,6 +289,58 @@ export class SettingsRoutes extends BaseRouteHandler {
       if (isNaN(tokens) || tokens < 1000 || tokens > 1000000) {
         return { valid: false, error: 'CLAUDE_MEM_OPENROUTER_MAX_TOKENS must be between 1000 and 1000000' };
       }
+    }
+
+    if (settings.CLAUDE_MEM_CODEX_MAX_CONTEXT_MESSAGES) {
+      const count = parseInt(settings.CLAUDE_MEM_CODEX_MAX_CONTEXT_MESSAGES, 10);
+      if (isNaN(count) || count < 1 || count > 100) {
+        return { valid: false, error: 'CLAUDE_MEM_CODEX_MAX_CONTEXT_MESSAGES must be between 1 and 100' };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_CODEX_MAX_TOKENS) {
+      const tokens = parseInt(settings.CLAUDE_MEM_CODEX_MAX_TOKENS, 10);
+      if (isNaN(tokens) || tokens < 1000 || tokens > 1000000) {
+        return { valid: false, error: 'CLAUDE_MEM_CODEX_MAX_TOKENS must be between 1000 and 1000000' };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_CODEX_REASONING_EFFORT) {
+      const validEfforts = ['minimal', 'low', 'medium', 'high', 'xhigh'];
+      if (!validEfforts.includes(String(settings.CLAUDE_MEM_CODEX_REASONING_EFFORT).toLowerCase())) {
+        return { valid: false, error: 'CLAUDE_MEM_CODEX_REASONING_EFFORT must be one of: minimal, low, medium, high, xhigh' };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_CODEX_TIMEOUT_MS) {
+      const timeout = parseInt(settings.CLAUDE_MEM_CODEX_TIMEOUT_MS, 10);
+      if (isNaN(timeout) || timeout < 10000 || timeout > 600000) {
+        return { valid: false, error: 'CLAUDE_MEM_CODEX_TIMEOUT_MS must be between 10000 and 600000' };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_OPENROUTER_BASE_URL) {
+      let parsedBaseUrl: URL;
+      try {
+        parsedBaseUrl = new URL(settings.CLAUDE_MEM_OPENROUTER_BASE_URL);
+      } catch (error) {
+        logger.debug('SETTINGS', 'Invalid URL format', { url: settings.CLAUDE_MEM_OPENROUTER_BASE_URL, error: error instanceof Error ? error.message : String(error) });
+        return { valid: false, error: 'CLAUDE_MEM_OPENROUTER_BASE_URL must be a valid URL' };
+      }
+      const isLocalhost = parsedBaseUrl.hostname === 'localhost' || parsedBaseUrl.hostname === '127.0.0.1' || parsedBaseUrl.hostname === '::1';
+      if (!isLocalhost && parsedBaseUrl.protocol !== 'https:') {
+        return { valid: false, error: 'CLAUDE_MEM_OPENROUTER_BASE_URL must use HTTPS for non-localhost hosts to protect your API key' };
+      }
+    }
+
+    const reasoningEffortError = validateOpenRouterReasoningEffort(settings.CLAUDE_MEM_OPENROUTER_REASONING_EFFORT);
+    if (reasoningEffortError) {
+      return { valid: false, error: reasoningEffortError };
+    }
+
+    const extraBodyError = validateOpenRouterExtraBody(settings.CLAUDE_MEM_OPENROUTER_EXTRA_BODY);
+    if (extraBodyError) {
+      return { valid: false, error: extraBodyError };
     }
 
     if (settings.CLAUDE_MEM_OPENROUTER_SITE_URL) {
@@ -357,7 +386,7 @@ export class SettingsRoutes extends BaseRouteHandler {
         mkdirSync(dir, { recursive: true });
       }
 
-      writeFileSync(settingsPath, JSON.stringify(defaults, null, 2), 'utf-8');
+      writeSettingsFileSecure(settingsPath, defaults);
       logger.info('SETTINGS', 'Created settings file with defaults', { settingsPath });
     }
   }

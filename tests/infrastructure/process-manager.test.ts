@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll } from 'bun:test';
-import { existsSync, readFileSync, mkdirSync, mkdtempSync, writeFileSync, rmSync, statSync } from 'fs';
+import { existsSync, readFileSync, mkdirSync, mkdtempSync, writeFileSync, rmSync, statSync, readdirSync } from 'fs';
 import { homedir, tmpdir } from 'os';
+import { spawnSync } from 'child_process';
 import path from 'path';
 import type { PidInfo } from '../../src/services/infrastructure/index.js';
 
@@ -22,15 +23,14 @@ const {
   removePidFile,
   removePidFileIfOwner,
   getPlatformTimeout,
-  isProcessAlive,
   cleanStalePidFile,
   isPidFileRecent,
   touchPidFile,
   spawnDaemon,
   resolveWorkerRuntimePath,
-  runOneTimeChromaMigration,
   captureProcessStartToken,
   verifyPidFileOwnership,
+  runOneTimeCwdRemap,
 } = await import('../../src/services/infrastructure/index.js');
 const { paths } = await import('../../src/shared/paths.js');
 
@@ -410,30 +410,6 @@ describe('ProcessManager', () => {
     });
   });
 
-  describe('isProcessAlive', () => {
-    it('should return true for the current process', () => {
-      expect(isProcessAlive(process.pid)).toBe(true);
-    });
-
-    it('should return false for a non-existent PID', () => {
-      expect(isProcessAlive(2147483647)).toBe(false);
-    });
-
-    it('should return true for PID 0 (Windows WMIC sentinel)', () => {
-      expect(isProcessAlive(0)).toBe(true);
-    });
-
-    it('should return false for negative PIDs', () => {
-      expect(isProcessAlive(-1)).toBe(false);
-      expect(isProcessAlive(-999)).toBe(false);
-    });
-
-    it('should return false for non-integer PIDs', () => {
-      expect(isProcessAlive(1.5)).toBe(false);
-      expect(isProcessAlive(NaN)).toBe(false);
-    });
-  });
-
   describe('captureProcessStartToken', () => {
     const supported = process.platform === 'linux' || process.platform === 'darwin';
 
@@ -576,7 +552,7 @@ describe('ProcessManager', () => {
   describe('cleanStalePidFile', () => {
     it('should remove PID file when process is dead', () => {
       const staleInfo: PidInfo = {
-        pid: 2147483647,
+        pid: -1,
         port: 37777,
         startedAt: '2024-01-01T00:00:00.000Z'
       };
@@ -606,6 +582,53 @@ describe('ProcessManager', () => {
       expect(existsSync(PID_FILE)).toBe(false);
 
       expect(() => cleanStalePidFile()).not.toThrow();
+    });
+  });
+
+  describe('runOneTimeCwdRemap', () => {
+    it('reruns idempotently and backs up only when project rows change', () => {
+      const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
+      const dataDir = mkdtempSync(path.join(tmpdir(), 'claude-mem-cwd-remap-'));
+      const repoDir = path.join(dataDir, 'repo-main');
+      mkdirSync(repoDir, { recursive: true });
+      const gitInit = spawnSync('git', ['init'], { cwd: repoDir, encoding: 'utf-8' });
+      expect(gitInit.status).toBe(0);
+
+      const dbPath = path.join(dataDir, 'claude-mem.db');
+      const db = new Database(dbPath);
+      try {
+        db.run('CREATE TABLE pending_messages (id INTEGER PRIMARY KEY, session_db_id INTEGER, cwd TEXT)');
+        db.run('CREATE TABLE sdk_sessions (id INTEGER PRIMARY KEY, memory_session_id TEXT, project TEXT)');
+        db.run('CREATE TABLE observations (id INTEGER PRIMARY KEY, memory_session_id TEXT, project TEXT)');
+        db.run('CREATE TABLE session_summaries (id INTEGER PRIMARY KEY, memory_session_id TEXT, project TEXT)');
+        db.run('INSERT INTO sdk_sessions (id, memory_session_id, project) VALUES (1, ?, ?)', 'mem-1', 'old-project');
+        db.run('INSERT INTO observations (id, memory_session_id, project) VALUES (1, ?, ?)', 'mem-1', 'old-project');
+        db.run('INSERT INTO session_summaries (id, memory_session_id, project) VALUES (1, ?, ?)', 'mem-1', 'old-project');
+        db.run('INSERT INTO pending_messages (id, session_db_id, cwd) VALUES (1, 1, ?)', repoDir);
+      } finally {
+        db.close();
+      }
+
+      try {
+        runOneTimeCwdRemap(dataDir);
+        const afterFirst = new Database(dbPath, { readonly: true });
+        try {
+          expect(afterFirst.query('SELECT project FROM sdk_sessions WHERE id = 1').get()).toEqual({ project: 'repo-main' });
+          expect(afterFirst.query('SELECT project FROM observations WHERE id = 1').get()).toEqual({ project: 'repo-main' });
+          expect(afterFirst.query('SELECT project FROM session_summaries WHERE id = 1').get()).toEqual({ project: 'repo-main' });
+        } finally {
+          afterFirst.close();
+        }
+
+        const backupsAfterFirst = readdirSync(dataDir).filter(name => name.includes('.bak-cwd-remap-'));
+        expect(backupsAfterFirst).toHaveLength(1);
+
+        runOneTimeCwdRemap(dataDir);
+        const backupsAfterSecond = readdirSync(dataDir).filter(name => name.includes('.bak-cwd-remap-'));
+        expect(backupsAfterSecond).toHaveLength(1);
+      } finally {
+        rmSync(dataDir, { recursive: true, force: true });
+      }
     });
   });
 
@@ -720,48 +743,6 @@ describe('ProcessManager', () => {
 
       // Verify the non-daemon path: SIGHUP should trigger shutdown (covered by registerSignalHandlers)
       // This is a logic verification test — actual signal delivery is tested manually
-    });
-  });
-
-  describe('runOneTimeChromaMigration', () => {
-    let testDataDir: string;
-
-    beforeEach(() => {
-      testDataDir = path.join(tmpdir(), `claude-mem-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-      mkdirSync(testDataDir, { recursive: true });
-    });
-
-    afterEach(() => {
-      rmSync(testDataDir, { recursive: true, force: true });
-    });
-
-    it('should wipe chroma directory and write marker file', () => {
-      const chromaDir = path.join(testDataDir, 'chroma');
-      mkdirSync(chromaDir, { recursive: true });
-      writeFileSync(path.join(chromaDir, 'test-data.bin'), 'fake chroma data');
-
-      runOneTimeChromaMigration(testDataDir);
-
-      expect(existsSync(chromaDir)).toBe(false);
-      expect(existsSync(path.join(testDataDir, '.chroma-cleaned-v10.3'))).toBe(true);
-    });
-
-    it('should skip when marker file already exists (idempotent)', () => {
-      writeFileSync(path.join(testDataDir, '.chroma-cleaned-v10.3'), 'already done');
-
-      const chromaDir = path.join(testDataDir, 'chroma');
-      mkdirSync(chromaDir, { recursive: true });
-      writeFileSync(path.join(chromaDir, 'important.bin'), 'should survive');
-
-      runOneTimeChromaMigration(testDataDir);
-
-      expect(existsSync(chromaDir)).toBe(true);
-      expect(existsSync(path.join(chromaDir, 'important.bin'))).toBe(true);
-    });
-
-    it('should handle missing chroma directory gracefully', () => {
-      expect(() => runOneTimeChromaMigration(testDataDir)).not.toThrow();
-      expect(existsSync(path.join(testDataDir, '.chroma-cleaned-v10.3'))).toBe(true);
     });
   });
 });

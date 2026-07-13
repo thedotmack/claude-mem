@@ -112,6 +112,34 @@ npm run worker:logs
 echo '{"session_id":"test-123","cwd":"'$(pwd)'","source":"startup"}' | node plugin/scripts/context-hook.js
 ```
 
+#### Run the worker from a local build (without syncing to the marketplace)
+
+`CLAUDE_MEM_WORKER_SCRIPT_PATH` pins the worker bundle the daemon spawns/respawns,
+so you can test a local build in isolation without overwriting your installed
+plugin:
+
+```bash
+npm run build   # bundles src → plugin/scripts/worker-service.cjs
+CLAUDE_MEM_WORKER_SCRIPT_PATH="$PWD/plugin/scripts/worker-service.cjs" \
+  CLAUDE_MEM_DATA_DIR=/tmp/cm-dev \
+  CLAUDE_MEM_WORKER_PORT=37999 \
+  bun plugin/scripts/worker-service.cjs start
+```
+
+This supersedes the implicit `cwd` fallback (which only applies when the worker
+happens to be launched from the repo root and the marketplace path is absent).
+Unset the variable to return to the installed-plugin resolution.
+
+<Note>
+If the pinned bundle's version differs from your **installed** plugin's version,
+the installed hooks may try to recycle the worker to match the plugin version and
+fight the pin (a restart loop) once Claude Code sessions start firing hooks
+against it. For a clean isolated run, either pin a bundle matching your installed
+plugin version, or drive the worker directly (as above) without an active session
+hammering it. Use a dedicated `CLAUDE_MEM_DATA_DIR` + `CLAUDE_MEM_WORKER_PORT` to
+keep it off your real install.
+</Note>
+
 ### 5. Iterate
 
 Repeat steps 1-4 until your changes work as expected.

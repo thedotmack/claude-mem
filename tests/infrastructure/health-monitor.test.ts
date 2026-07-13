@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:te
 import net from 'net';
 import {
   isPortInUse,
+  probePortBind,
   waitForHealth,
   waitForPortFree,
   getInstalledPluginVersion,
@@ -75,8 +76,63 @@ describe('HealthMonitor', () => {
       const result = await isPortInUse(37777);
 
       expect(result).toBe(false);
-      
+
       spy.mockRestore();
+    });
+  });
+
+  describe('probePortBind', () => {
+    // probePortBind is the low-level bind probe behind isPortInUse. It returns
+    // the failing error code so callers can tell the stale-socket case
+    // (EADDRINUSE) apart from genuine config errors (EADDRNOTAVAIL / EACCES).
+    it('should return null when a real bind succeeds (port free)', async () => {
+      const closeMock = mock((cb: Function) => cb());
+      const createServerMock = mock(() => ({
+        once: mock((event: string, cb: Function) => {
+          if (event === 'listening') setTimeout(() => cb(), 0);
+        }),
+        listen: mock(() => {}),
+        close: closeMock
+      }));
+      const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
+
+      const result = await probePortBind(39999);
+
+      expect(result).toBeNull();
+      expect(closeMock).toHaveBeenCalled();
+      spy.mockRestore();
+    });
+
+    it('should return "EADDRINUSE" when the port is bound (stale socket)', async () => {
+      const createServerMock = mock(() => ({
+        once: mock((event: string, cb: Function) => {
+          if (event === 'error') setTimeout(() => cb({ code: 'EADDRINUSE' }), 0);
+        }),
+        listen: mock(() => {})
+      }));
+      const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
+
+      const result = await probePortBind(37777);
+
+      expect(result).toBe('EADDRINUSE');
+      spy.mockRestore();
+    });
+
+    it('should preserve non-conflict bind errors (e.g. EADDRNOTAVAIL, EACCES)', async () => {
+      for (const code of ['EADDRNOTAVAIL', 'EACCES']) {
+        const createServerMock = mock(() => ({
+          once: mock((event: string, cb: Function) => {
+            if (event === 'error') setTimeout(() => cb({ code }), 0);
+          }),
+          listen: mock(() => {})
+        }));
+        const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
+
+        const result = await probePortBind(80, '203.0.113.1');
+
+        expect(result).toBe(code);
+        spy.mockRestore();
+      }
     });
   });
 

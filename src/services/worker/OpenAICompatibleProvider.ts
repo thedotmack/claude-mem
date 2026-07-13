@@ -1,8 +1,8 @@
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
-import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
-import type { ActiveSession, ConversationMessage } from '../worker-types.js';
+import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt, type Observation } from '../../sdk/prompts.js';
+import type { ActiveSession, ConversationMessage, PendingMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import type { ModeConfig } from '../domain/types.js';
 import {
@@ -44,8 +44,6 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
   protected abstract readonly providerName: string;
   /** Prefix for the synthetic memorySessionId (e.g. 'gemini', 'openrouter'). */
   protected abstract readonly syntheticIdPrefix: string;
-  /** Gemini guards its truncation loop with `truncated.length > 0`; OpenRouter does not. */
-  protected abstract readonly requireNonEmptyToTruncate: boolean;
   /**
    * When a query returns empty content for an observation/summary message:
    * OpenRouter still calls processAgentResponse('') (forwards the empty batch
@@ -76,6 +74,11 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
   /** Hook for per-session setup that runs once config is resolved (e.g. endpointClass). */
   protected prepareSessionExtras(_session: ActiveSession, _config: TConfig): void {}
+
+  /** Hook for providers that need stricter observation-output contracts. */
+  protected buildObservationPrompt(obs: Observation, _config: TConfig): string {
+    return buildObservationPrompt(obs);
+  }
 
   async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
     const config = this.getConfig();
@@ -115,24 +118,8 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       return this.handleSessionError(error, session, worker);
     }
 
-    let lastCwd: string | undefined;
-
     try {
-      for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
-        session.pendingAgentId = message.agentId ?? null;
-        session.pendingAgentType = message.agentType ?? null;
-
-        if (message.cwd) {
-          lastCwd = message.cwd;
-        }
-        const originalTimestamp = session.earliestPendingTimestamp;
-
-        if (message.type === 'observation') {
-          await this.processObservationMessage(session, message, worker, config, originalTimestamp, lastCwd);
-        } else if (message.type === 'summarize') {
-          await this.processSummaryMessage(session, message, worker, config, mode, originalTimestamp, lastCwd);
-        }
-      }
+      await this.runMessageLoop(session, worker, config, mode);
     } catch (error: unknown) {
       if (error instanceof Error) {
         logger.error('SDK', `${this.providerName} message loop failed`, { sessionId: session.sessionDbId, model }, error);
@@ -148,6 +135,31 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       duration: `${(sessionDuration / 1000).toFixed(1)}s`,
       historyLength: session.conversationHistory.length
     });
+  }
+
+  private async runMessageLoop(
+    session: ActiveSession,
+    worker: WorkerRef | undefined,
+    config: TConfig,
+    mode: ModeConfig
+  ): Promise<void> {
+    let lastCwd: string | undefined;
+
+    for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
+      session.pendingAgentId = message.agentId ?? null;
+      session.pendingAgentType = message.agentType ?? null;
+
+      if (message.cwd) {
+        lastCwd = message.cwd;
+      }
+      const originalTimestamp = session.earliestPendingTimestamp;
+
+      if (message.type === 'observation') {
+        await this.processObservationMessage(session, message, worker, config, originalTimestamp, lastCwd);
+      } else if (message.type === 'summarize' || message.type === 'pre-compact') {
+        await this.processSummaryMessage(session, message, worker, config, mode, originalTimestamp, lastCwd);
+      }
+    }
   }
 
   private async handleInitResponse(
@@ -189,14 +201,14 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       throw new Error('Cannot process observations: memorySessionId not yet captured. This session may need to be reinitialized.');
     }
 
-    const obsPrompt = buildObservationPrompt({
+    const obsPrompt = this.buildObservationPrompt({
       id: 0,
       tool_name: message.tool_name!,
       tool_input: JSON.stringify(message.tool_input),
       tool_output: JSON.stringify(message.tool_response),
       created_at_epoch: originalTimestamp ?? Date.now(),
       cwd: message.cwd
-    });
+    }, config);
 
     session.conversationHistory.push({ role: 'user', content: obsPrompt });
     session.lastPromptSentAt = Date.now();
@@ -228,7 +240,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
   private async processSummaryMessage(
     session: ActiveSession,
-    message: { last_assistant_message?: string },
+    message: { type?: PendingMessage['type']; last_assistant_message?: string },
     worker: WorkerRef | undefined,
     config: TConfig,
     mode: ModeConfig,
@@ -249,7 +261,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
     session.conversationHistory.push({ role: 'user', content: summaryPrompt });
     session.lastPromptSentAt = Date.now();
-    session.lastGeneratorSource = 'summarize';
+    session.lastGeneratorSource = message.type === 'pre-compact' ? 'pre-compact' : 'summarize';
     const summaryResponse = await this.query(session.conversationHistory, config);
 
     let tokensUsed = 0;
@@ -283,37 +295,4 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     throw error;
   }
 
-  protected truncateHistory(history: ConversationMessage[], maxContextMessages: number, maxEstimatedTokens: number): ConversationMessage[] {
-    if (history.length <= maxContextMessages) {
-      const totalTokens = history.reduce((sum, m) => sum + this.estimateTokens(m.content), 0);
-      if (totalTokens <= maxEstimatedTokens) {
-        return history;
-      }
-    }
-
-    const truncated: ConversationMessage[] = [];
-    let tokenCount = 0;
-
-    for (let i = history.length - 1; i >= 0; i--) {
-      const msg = history[i];
-      const msgTokens = this.estimateTokens(msg.content);
-
-      const overLimit = truncated.length >= maxContextMessages || tokenCount + msgTokens > maxEstimatedTokens;
-      if ((!this.requireNonEmptyToTruncate || truncated.length > 0) && overLimit) {
-        logger.warn('SDK', 'Context window truncated to prevent runaway costs', {
-          originalMessages: history.length,
-          keptMessages: truncated.length,
-          droppedMessages: i + 1,
-          estimatedTokens: tokenCount,
-          tokenLimit: maxEstimatedTokens
-        });
-        break;
-      }
-
-      truncated.unshift(msg);
-      tokenCount += msgTokens;
-    }
-
-    return truncated;
-  }
 }

@@ -1,6 +1,6 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
+import { chmodSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, statSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
@@ -8,27 +8,35 @@ import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManage
 describe('SettingsDefaultsManager', () => {
   let tempDir: string;
   let settingsPath: string;
-  let prevDataDirEnv: string | undefined;
+  let savedDefaultKeyEnv: Record<string, string | undefined>;
 
   beforeEach(() => {
     tempDir = join(tmpdir(), `settings-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     mkdirSync(tempDir, { recursive: true });
     settingsPath = join(tempDir, 'settings.json');
 
-    // The preload tripwire (tests/preload.ts) pins CLAUDE_MEM_DATA_DIR for
-    // the whole run, and loadFromFile applies env overrides on top of file
-    // values — which would make every loadFromFile result diverge from
-    // getAllDefaults()'s hardcoded ~/.claude-mem default. These tests are
-    // about file > defaults behavior on an EXPLICIT settingsPath (no real
-    // data-dir I/O happens here), so drop the env override for their
-    // duration and restore it after.
-    prevDataDirEnv = process.env.CLAUDE_MEM_DATA_DIR;
-    delete process.env.CLAUDE_MEM_DATA_DIR;
+    // loadFromFile applies env overrides on top of file/defaults, so ANY
+    // settings-default key present in process.env makes its result diverge
+    // from getAllDefaults(). On a dev machine this is not just the
+    // CLAUDE_MEM_DATA_DIR pinned by the preload tripwire (tests/preload.ts) —
+    // a running claude-mem install also exports e.g. CLAUDE_MEM_API_TIMEOUT_MS,
+    // which silently broke these tests on contributor boxes while passing in a
+    // clean CI env. These tests cover file > defaults behavior on an EXPLICIT
+    // settingsPath (no real data-dir I/O), so strip EVERY default key from the
+    // env for their duration and restore after — robust to whichever
+    // CLAUDE_MEM_* vars the host happens to export.
+    savedDefaultKeyEnv = {};
+    for (const key of Object.keys(SettingsDefaultsManager.getAllDefaults())) {
+      savedDefaultKeyEnv[key] = process.env[key];
+      delete process.env[key];
+    }
   });
 
   afterEach(() => {
-    if (prevDataDirEnv === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
-    else process.env.CLAUDE_MEM_DATA_DIR = prevDataDirEnv;
+    for (const [key, value] of Object.entries(savedDefaultKeyEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     try {
       rmSync(tempDir, { recursive: true, force: true });
     } catch {
@@ -72,6 +80,14 @@ describe('SettingsDefaultsManager', () => {
         for (const key of Object.keys(defaults)) {
           expect(parsed).toHaveProperty(key);
         }
+      });
+
+      it('should create the settings file with owner-only permissions', () => {
+        if (process.platform === 'win32') return;
+
+        SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
       });
     });
 
@@ -138,6 +154,20 @@ describe('SettingsDefaultsManager', () => {
 
         const afterContent = readFileSync(settingsPath, 'utf-8');
         expect(afterContent).toBe(originalContent);
+      });
+
+      it('should tighten existing settings file permissions when loading', () => {
+        if (process.platform === 'win32') return;
+
+        const customSettings = {
+          CLAUDE_MEM_MODEL: 'owner-only-after-load',
+        };
+        writeFileSync(settingsPath, JSON.stringify(customSettings, null, 2), { mode: 0o644 });
+        chmodSync(settingsPath, 0o644);
+
+        SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
       });
 
       it('should handle all settings keys correctly', () => {
@@ -234,6 +264,17 @@ describe('SettingsDefaultsManager', () => {
         expect(parsed.env).toBeUndefined();
         expect(parsed.CLAUDE_MEM_MODEL).toBe('migrated-model');
       });
+
+      it('should tighten settings file permissions when migration rewrites it', () => {
+        if (process.platform === 'win32') return;
+
+        writeFileSync(settingsPath, JSON.stringify({ env: { CLAUDE_MEM_MODEL: 'nested-model' } }));
+        chmodSync(settingsPath, 0o644);
+
+        SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
+      });
     });
 
     describe('edge cases', () => {
@@ -322,8 +363,17 @@ describe('SettingsDefaultsManager', () => {
       expect(defaults.CLAUDE_MEM_WORKER_HOST).toBeDefined();
 
       expect(defaults.CLAUDE_MEM_PROVIDER).toBeDefined();
+      expect(defaults.CLAUDE_MEM_CLAUDE_MAX_TOKENS).toBe('150000');
       expect(defaults.CLAUDE_MEM_GEMINI_API_KEY).toBeDefined();
       expect(defaults.CLAUDE_MEM_OPENROUTER_API_KEY).toBeDefined();
+      expect(defaults.CLAUDE_MEM_OPENROUTER_BASE_URL).toBe('');
+      expect(defaults.CLAUDE_MEM_OPENROUTER_REASONING_EFFORT).toBe('');
+      expect(defaults.CLAUDE_MEM_OPENROUTER_EXTRA_BODY).toBe('');
+      expect(defaults.CLAUDE_MEM_CODEX_MODEL).toBe('gpt-5.3-codex-spark');
+      expect(defaults.CLAUDE_MEM_CODEX_PATH).toBe('codex');
+      expect(defaults.CLAUDE_MEM_CODEX_REASONING_EFFORT).toBe('');
+      expect(defaults.CLAUDE_MEM_CODEX_MAX_CONTEXT_MESSAGES).toBe('20');
+      expect(defaults.CLAUDE_MEM_CODEX_MAX_TOKENS).toBe('100000');
 
       expect(defaults.CLAUDE_MEM_DATA_DIR).toBeDefined();
       expect(defaults.CLAUDE_MEM_LOG_LEVEL).toBeDefined();
@@ -343,16 +393,6 @@ describe('SettingsDefaultsManager', () => {
       const expectedPort = 37700 + ((process.getuid?.() ?? 77) % 100);
       expect(SettingsDefaultsManager.getInt('CLAUDE_MEM_WORKER_PORT')).toBe(expectedPort);
       expect(SettingsDefaultsManager.getInt('CLAUDE_MEM_CONTEXT_OBSERVATIONS')).toBe(50);
-    });
-  });
-
-  describe('getBool', () => {
-    it('should return true for "true" string', () => {
-      expect(SettingsDefaultsManager.getBool('CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT')).toBe(true);
-    });
-
-    it('should return false for non-"true" string', () => {
-      expect(SettingsDefaultsManager.getBool('CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE')).toBe(false);
     });
   });
 
