@@ -11,6 +11,7 @@ import * as realWorkerUtils from '../../src/shared/worker-utils.js';
 import * as realProjectName from '../../src/utils/project-name.js';
 import * as realHookSettings from '../../src/shared/hook-settings.js';
 import * as realOauthToken from '../../src/shared/oauth-token.js';
+import * as realPlatformSource from '../../src/shared/platform-source.js';
 
 const realInfrastructureSnapshot = { ...realInfrastructure };
 const realSupervisorSnapshot = { ...realSupervisor };
@@ -21,6 +22,7 @@ const realWorkerUtilsSnapshot = { ...realWorkerUtils };
 const realProjectNameSnapshot = { ...realProjectName };
 const realHookSettingsSnapshot = { ...realHookSettings };
 const realOauthTokenSnapshot = { ...realOauthToken };
+const realPlatformSourceSnapshot = { ...realPlatformSource };
 
 const fetchLog: Array<{ url: string; method: string }> = [];
 let spawnCalls = 0;
@@ -208,6 +210,12 @@ describe('contextHandler SessionStart integration', () => {
     mock.module('../../src/shared/oauth-token.js', () => ({
       readStaleMarker: () => null,
     }));
+    mock.module('../../src/shared/platform-source.js', () => ({
+      normalizePlatformSource: (platform: string) => platform,
+    }));
+    mock.module('../../src/shared/mcp-client.js', () => ({
+      callMcpToolOnce: () => Promise.resolve({ isError: false, text: '' }),
+    }));
   });
 
   afterEach(() => {
@@ -219,6 +227,7 @@ describe('contextHandler SessionStart integration', () => {
     mock.module('../../src/utils/project-name.js', () => realProjectNameSnapshot);
     mock.module('../../src/shared/hook-settings.js', () => realHookSettingsSnapshot);
     mock.module('../../src/shared/oauth-token.js', () => realOauthTokenSnapshot);
+    mock.module('../../src/shared/platform-source.js', () => realPlatformSourceSnapshot);
   });
 
   it('requests SessionStart context with non-blocking worker fallback and returns the empty hook payload', async () => {
@@ -230,7 +239,7 @@ describe('contextHandler SessionStart integration', () => {
 
     expect(executeCalls).toHaveLength(1);
     expect(executeCalls[0]).toMatchObject({
-      url: '/api/context/inject?projects=test-project',
+      url: '/api/context/inject?projects=test-project&platformSource=claude-code',
       method: 'GET',
       body: undefined,
       options: { allowLazySpawn: false },
@@ -267,11 +276,13 @@ describe('contextHandler SessionStart integration', () => {
 
     expect(executeCalls).toHaveLength(2);
     expect(executeCalls[0]).toMatchObject({
-      url: '/api/context/inject?projects=test-project',
+      url: '/api/context/inject?projects=test-project&platformSource=claude-code',
+      method: 'GET',
+      body: undefined,
       options: { allowLazySpawn: false },
     });
     expect(executeCalls[1]).toMatchObject({
-      url: '/api/context/inject?projects=test-project&colors=true',
+      url: '/api/context/inject?projects=test-project&platformSource=claude-code&colors=true',
       options: { allowLazySpawn: false },
     });
     expect(result.systemMessage).toContain('colored body');

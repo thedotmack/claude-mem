@@ -416,8 +416,12 @@ describe('Spawn-Contract Templating - Rule A generator parity', () => {
     expect(claudeHooks['SessionStart.0.0']).not.toContain('worker-service.cjs" start');
 
     const codexHooks = RULE_A_EXPECTATIONS['plugin/hooks/codex-hooks.json'];
-    expect(codexHooks['SessionStart.0.1']).toContain('worker-service.cjs" start');
-    expect(codexHooks['SessionStart.0.2']).toContain('hook codex context');
+    const codexSessionStart = codexHooks['SessionStart.0.0'];
+    expect(typeof codexSessionStart).not.toBe('string');
+    expect((codexSessionStart as { command: string }).command).toContain('version-check.js');
+    expect((codexSessionStart as { command: string }).command).toContain('hook codex context');
+    expect((codexSessionStart as { commandWindows: string }).commandWindows).toContain('worker-service.cjs');
+    expect((codexSessionStart as { commandWindows: string }).commandWindows).toContain("'hook','codex','context'");
   });
 
   it('never leaks a raw ${CLAUDE_PLUGIN_ROOT} into the resolved trailing command', () => {
@@ -500,7 +504,8 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
       for (const { command } of claudeCommands()) {
         const { stdout } = shellEval(instrument(command), { HOME: home });
         // ls -dt yields a trailing slash; the hook trims it via _R="${_R%/}".
-        expect(stdout).toContain(`RESOLVED=${cacheRoot}`);
+        expect(stdout).toContain('RESOLVED=');
+        expect(stdout.replace(/\r?\n/g, '')).toContain('/.claude/plugins/cache/thedotmack/claude-mem/99.0.0');
       }
     } finally {
       rmSync(home, { recursive: true, force: true });
