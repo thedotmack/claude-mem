@@ -88,14 +88,13 @@ export async function ensureWorkerStarted(
   const pidFileStatus = cleanStalePidFile();
   if (pidFileStatus === 'alive') {
     logger.info('SYSTEM', 'Worker PID file points to a live process, skipping duplicate spawn');
-    const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
-    if (healthy) {
+    const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
+    if (ready) {
       clearWorkerSpawnAttempted();
-      const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
-      logger.info('SYSTEM', 'Worker became healthy while waiting on live PID');
-      return ready ? 'ready' : 'warming';
+      logger.info('SYSTEM', 'Worker became ready while waiting on live PID');
+      return 'ready';
     }
-    logger.warn('SYSTEM', 'Live PID detected but worker did not become healthy before timeout — likely still starting');
+    logger.warn('SYSTEM', 'Live PID detected but worker did not become ready before timeout — likely still starting');
     return 'warming';
   }
 
@@ -133,10 +132,8 @@ export async function ensureWorkerStarted(
   // dying worker's restart handoff in worker-shutdown.ts is deliberately NOT
   // gated: it is the primary spawner on restart, and hooks wait for its
   // successor.) Losing the lock never fails this path; the loser skips its
-  // spawn and falls through to the SAME wait-for-health/readiness logic
-  // (someone else is spawning — wait for their worker). The winner holds the
-  // lock through the post-spawn health wait (the spawn isn't "done" until the
-  // worker owns the port) and releases in finally on every exit path.
+  // spawn and waits for the holder's worker. The winner holds the lock through
+  // the readiness wait and releases it in finally on every exit path.
   const spawnLockHeld = acquireSpawnLock();
   try {
     if (spawnLockHeld) {
@@ -151,28 +148,22 @@ export async function ensureWorkerStarted(
       logger.info('SYSTEM', 'Another launcher holds the spawn lock — skipping duplicate spawn and waiting for its worker');
     }
 
-    const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.POST_SPAWN_WAIT));
-    if (!healthy) {
+    const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
+    if (!ready) {
       logger.warn('SYSTEM', spawnLockHeld
-        ? 'Worker spawned but health endpoint not responding within window — likely still starting in background'
-        : 'Spawn-lock holder\'s worker not healthy within window — likely still starting in background');
+        ? 'Worker spawned but readiness endpoint not responding within window — likely still starting in background'
+        : 'Spawn-lock holder\'s worker not ready within window — likely still starting in background');
       return 'warming';
     }
+    clearWorkerSpawnAttempted();
+    // touchPidFile is existsSync-guarded and merely refreshes the live worker's
+    // pid-file mtime — correct for lock losers too, since the worker IS up.
+    touchPidFile();
+    logger.info('SYSTEM', spawnLockHeld
+      ? 'Worker started successfully'
+      : 'Worker is up (started by another launcher)');
+    return 'ready';
   } finally {
     if (spawnLockHeld) releaseSpawnLock();
   }
-
-  const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
-  if (!ready) {
-    logger.warn('SYSTEM', 'Worker is alive but readiness timed out — proceeding anyway');
-  }
-
-  clearWorkerSpawnAttempted();
-  // touchPidFile is existsSync-guarded and merely refreshes the live worker's
-  // pid-file mtime — correct for lock losers too, since the worker IS up.
-  touchPidFile();
-  logger.info('SYSTEM', spawnLockHeld
-    ? 'Worker started successfully'
-    : 'Worker is up (started by another launcher)');
-  return ready ? 'ready' : 'warming';
 }
