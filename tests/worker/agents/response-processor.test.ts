@@ -26,7 +26,10 @@ mock.module('../../../src/services/domain/ModeManager.js', () => ({
   },
 }));
 
-import { processAgentResponse } from '../../../src/services/worker/agents/ResponseProcessor.js';
+import {
+  processAgentResponse,
+  type ResponseContext,
+} from '../../../src/services/worker/agents/ResponseProcessor.js';
 import type { WorkerRef, StorageResult } from '../../../src/services/worker/agents/types.js';
 import type { ActiveSession } from '../../../src/services/worker-types.js';
 import type { DatabaseManager } from '../../../src/services/worker/DatabaseManager.js';
@@ -203,6 +206,55 @@ describe('ResponseProcessor', () => {
       expect(observations).toHaveLength(2);
       expect(observations[0].type).toBe('discovery');
       expect(observations[1].type).toBe('bugfix');
+    });
+
+    it('stores observations against the dispatched prompt context when the live session has already advanced', async () => {
+      const session = createMockSession({
+        project: 'repo-b/worktree',
+        lastPromptNumber: 2,
+        pendingAgentId: 'agent-new',
+        pendingAgentType: 'coder',
+      });
+      const responseContext: ResponseContext = {
+        project: 'repo-a',
+        promptNumber: 1,
+        pendingAgentId: 'agent-old',
+        pendingAgentType: 'planner',
+      };
+      const responseText = `
+        <observation>
+          <type>discovery</type>
+          <title>Late response</title>
+          <narrative>Stored on the original prompt context.</narrative>
+          <facts></facts>
+          <concepts></concepts>
+          <files_read></files_read>
+          <files_modified></files_modified>
+        </observation>
+      `;
+
+      await processAgentResponse(
+        responseText,
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent',
+        undefined,
+        undefined,
+        responseContext
+      );
+
+      const [, project, observations, , promptNumber] = mockStoreObservations.mock.calls[0];
+      expect(project).toBe('repo-a');
+      expect(promptNumber).toBe(1);
+      expect(observations[0].agent_id).toBe('agent-old');
+      expect(observations[0].agent_type).toBe('planner');
+      expect(mockChromaSyncObservation.mock.calls[0][2]).toBe('repo-a');
+      expect(mockBroadcast.mock.calls[0][0].observation.project).toBe('repo-a');
+      expect(mockBroadcast.mock.calls[0][0].observation.prompt_number).toBe(1);
     });
   });
 

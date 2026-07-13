@@ -9,7 +9,7 @@ import { buildIsolatedEnvWithFreshOAuth, getAuthMethodDescription } from '../../
 import { findClaudeExecutable } from '../../shared/find-claude-executable.js';
 import type { ActiveSession, SDKUserMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
-import { processAgentResponse, type WorkerRef } from './agents/index.js';
+import { processAgentResponse, snapshotResponseContext, type WorkerRef } from './agents/index.js';
 import {
   createSdkSpawnFactory,
   getSdkProcessForSession,
@@ -196,7 +196,8 @@ export class ClaudeProvider {
     // accumulator starts from zero — reset the per-turn cost baseline with it.
     session.lastResultTotalCostUsd = null;
 
-    const messageGenerator = this.createMessageGenerator(session, cwdTracker);
+    const activeResponseContext = { current: snapshotResponseContext(session) };
+    const messageGenerator = this.createMessageGenerator(session, cwdTracker, activeResponseContext);
 
     const hasRealMemorySessionId = !!session.memorySessionId;
     const shouldResume = hasRealMemorySessionId && session.lastPromptNumber > 1 && !session.forceInit;
@@ -378,7 +379,8 @@ export class ClaudeProvider {
             originalTimestamp,
             'SDK',
             cwdTracker.lastCwd,
-            modelId
+            modelId,
+            activeResponseContext.current
           );
         }
 
@@ -450,7 +452,8 @@ export class ClaudeProvider {
 
   private async *createMessageGenerator(
     session: ActiveSession,
-    cwdTracker: { lastCwd: string | undefined }
+    cwdTracker: { lastCwd: string | undefined },
+    activeResponseContext: { current: ReturnType<typeof snapshotResponseContext> }
   ): AsyncIterableIterator<SDKUserMessage> {
     const mode = ModeManager.getInstance().getActiveMode();
 
@@ -466,6 +469,7 @@ export class ClaudeProvider {
     const initPrompt = isInitPrompt
       ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode)
       : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
+    activeResponseContext.current = snapshotResponseContext(session);
 
     session.conversationHistory.push({ role: 'user', content: initPrompt });
 
@@ -503,6 +507,7 @@ export class ClaudeProvider {
           created_at_epoch: Date.now(),
           cwd: message.cwd
         });
+        activeResponseContext.current = snapshotResponseContext(session);
 
         session.conversationHistory.push({ role: 'user', content: obsPrompt });
 
@@ -526,6 +531,7 @@ export class ClaudeProvider {
           user_prompt: session.userPrompt,
           last_assistant_message: message.last_assistant_message || ''
         }, mode);
+        activeResponseContext.current = snapshotResponseContext(session);
 
         session.conversationHistory.push({ role: 'user', content: summaryPrompt });
 
