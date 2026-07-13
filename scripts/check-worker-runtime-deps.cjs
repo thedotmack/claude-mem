@@ -109,7 +109,9 @@ function main() {
     // Off by default because it spawns bun on the real bundle; the maintainers
     // keep daemon-spawning out of the default test/build path (flaky in CI, see
     // tests/cli/hook-stream-discipline.test.ts). `status` loads the bundle then
-    // reports "not running" without leaving a daemon behind.
+    // reports "not running" and exits 0 without leaving a daemon behind — so a
+    // top-level require("zod/v3") failure surfaces as a NON-ZERO exit / spawn
+    // error / timeout signal, which is exactly what we gate on below.
     if (process.env.CLAUDE_MEM_VERIFY_WORKER_BOOT === '1') {
       const workerCopy = path.join(tmp, 'worker-service.cjs');
       copyFileSync(worker, workerCopy);
@@ -119,9 +121,18 @@ function main() {
         env: { ...process.env, CLAUDE_MEM_DATA_DIR: path.join(tmp, 'data') },
         timeout: 30000,
       });
-      const out = `${load.stdout || ''}${load.stderr || ''}`;
-      if (/cannot find module|error: .*resolve|failed to load/i.test(out)) {
-        fail(`the built worker bundle failed to LOAD against the clean closure:\n\n${out}`);
+      // Gate on the PROCESS outcome, not a stderr regex: a non-zero exit, a spawn
+      // error, or a timeout kill (load.signal) all mean the bundle did not load
+      // cleanly. Regex-only matching let a failed/timed-out boot report success
+      // and pass a broken artifact (PR #3225 review).
+      if (load.error || load.signal || load.status !== 0) {
+        const out = `${load.stdout || ''}${load.stderr || ''}`;
+        fail(
+          'the built worker bundle failed to LOAD against the clean closure' +
+          (load.error ? ` (${load.error.message})` : '') +
+          (load.signal ? ` (killed by ${load.signal})` : '') +
+          `:\n\n${out}`
+        );
       }
       console.log('✓ worker bundle loads against the clean closure (CLAUDE_MEM_VERIFY_WORKER_BOOT)');
     }
