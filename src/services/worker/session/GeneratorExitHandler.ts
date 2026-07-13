@@ -41,8 +41,9 @@ export async function handleGeneratorExit(
   session.generatorPromise = null;
   session.currentProvider = null;
 
-  if ((reason ?? '').split(':')[0] === 'quota') {
-    logger.warn('SESSION', 'Generator paused for quota; preserving buffered work', {
+  const abortCategory = (reason ?? '').split(':')[0];
+  if (abortCategory === 'quota' || abortCategory === 'auth') {
+    logger.warn('SESSION', `Generator paused for ${abortCategory}; preserving buffered work`, {
       sessionId: sessionDbId,
       pendingCount: sessionManager.getMessageBuffer().getPendingCount(sessionDbId),
     });
