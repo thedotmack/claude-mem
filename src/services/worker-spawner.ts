@@ -94,7 +94,7 @@ export async function ensureWorkerStarted(
       logger.info('SYSTEM', 'Worker became ready while waiting on live PID');
       return 'ready';
     }
-    logger.warn('SYSTEM', 'Live PID detected but worker did not become ready before timeout — likely still starting');
+    logger.warn('SYSTEM', 'Live PID detected but worker did not become ready before timeout');
     return 'warming';
   }
 
@@ -151,8 +151,8 @@ export async function ensureWorkerStarted(
     const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
     if (!ready) {
       logger.warn('SYSTEM', spawnLockHeld
-        ? 'Worker spawned but readiness endpoint not responding within window — likely still starting in background'
-        : 'Spawn-lock holder\'s worker not ready within window — likely still starting in background');
+        ? 'Worker spawned but readiness endpoint not responding within window'
+        : 'Spawn-lock holder\'s worker not ready within window');
       return 'warming';
     }
     clearWorkerSpawnAttempted();
