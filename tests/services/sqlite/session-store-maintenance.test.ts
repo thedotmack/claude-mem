@@ -44,6 +44,9 @@ describe('applyLegacyPromptBloatMaintenance', () => {
 
     const legacyStore = new SessionStore(db);
     cleanup = () => legacyStore.close();
+    for (const version of [35, 40]) {
+      expect(db.prepare('SELECT 1 FROM schema_versions WHERE version = ?').get(version)).toBeTruthy();
+    }
     const completedSessionId = legacyStore.createSDKSession('completed-session', 'project', createLegacyPrompt(40_000));
     legacyStore.saveUserPrompt('completed-session', 1, 'placeholder');
     const activeSessionId = legacyStore.createSDKSession('active-session', 'project', createLegacyPrompt(40_000));
@@ -53,6 +56,8 @@ describe('applyLegacyPromptBloatMaintenance', () => {
     legacyStore.saveUserPrompt('partial-history-session', 2, 'follow-up prompt');
 
     db.prepare('DELETE FROM schema_versions WHERE version = ?').run(LEGACY_PROMPT_BLOAT_MAINTENANCE_VERSION);
+    expect(db.prepare('SELECT version FROM schema_versions WHERE version IN (35, 40) ORDER BY version').all())
+      .toEqual([{ version: 35 }, { version: 40 }]);
     db.prepare('UPDATE sdk_sessions SET status = ?, user_prompt = ?, completed_at = ?, completed_at_epoch = ? WHERE id = ?')
       .run('completed', createLegacyPrompt(40_000), new Date().toISOString(), Date.now(), completedSessionId);
     db.prepare('UPDATE sdk_sessions SET status = ?, user_prompt = ?, completed_at = ?, completed_at_epoch = ? WHERE id = ?')

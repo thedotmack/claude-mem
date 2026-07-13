@@ -6,7 +6,7 @@ import {
   STORED_PROMPT_NORMALIZATION_MARKERS,
 } from './prompt-storage.js';
 
-export const LEGACY_PROMPT_BLOAT_MAINTENANCE_VERSION = 35;
+export const LEGACY_PROMPT_BLOAT_MAINTENANCE_VERSION = 41;
 export const LEGACY_PROMPT_BLOAT_RECLAIM_MIN_BYTES = 512 * 1024;
 
 interface PromptRow {
