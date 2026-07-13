@@ -44,6 +44,34 @@ describe('HealthMonitor', () => {
       spy.mockRestore();
     });
 
+    it('should use a bind probe on Windows even when the health endpoint is unhealthy', async () => {
+      const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+      expect(platformDescriptor).toBeDefined();
+
+      const fetchMock = mock(() => Promise.resolve({ ok: false } as Response));
+      global.fetch = fetchMock;
+      const createServerMock = mock(() => ({
+        once: mock((event: string, cb: Function) => {
+          if (event === 'error') {
+            setTimeout(() => cb({ code: 'EADDRINUSE' }), 0);
+          }
+        }),
+        listen: mock(() => {})
+      }));
+      const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
+
+      try {
+        Object.defineProperty(process, 'platform', { ...platformDescriptor, value: 'win32' });
+
+        expect(await isPortInUse(37777)).toBe(true);
+        expect(net.createServer).toHaveBeenCalled();
+        expect(fetchMock).not.toHaveBeenCalled();
+      } finally {
+        spy.mockRestore();
+        Object.defineProperty(process, 'platform', platformDescriptor!);
+      }
+    });
+
     it('should return false for free port (listening succeeds)', async () => {
       const closeMock = mock((cb: Function) => cb());
       const createServerMock = mock(() => ({
