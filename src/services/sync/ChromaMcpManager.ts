@@ -2,7 +2,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { execSync, spawn, type ChildProcess } from 'child_process';
-import { killProcessTree } from '../../supervisor/tree-kill.js';
+import { killProcessTree as killChromaProcessTree } from '../../supervisor/tree-kill.js';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
@@ -296,7 +296,7 @@ export class ChromaMcpManager {
   private async cleanupUnexpectedCloseSubprocess(pid: number | undefined): Promise<void> {
     try {
       if (pid) {
-        await killProcessTree(pid);
+        await ChromaMcpManager.killProcessTree(pid);
       }
     } catch (error) {
       logger.debug('CHROMA_MCP', 'Background tree-kill after onclose finished (best-effort)', {
@@ -666,7 +666,7 @@ export class ChromaMcpManager {
 
       if (pid) {
         try {
-          await killProcessTree(pid);
+          await ChromaMcpManager.killProcessTree(pid);
         } catch (killError) {
           logger.debug('CHROMA_MCP', 'prewarm process tree kill finished (best-effort)', {
             pid,
@@ -849,7 +849,7 @@ export class ChromaMcpManager {
 
     if (trackedPid) {
       try {
-        await killProcessTree(trackedPid);
+        await ChromaMcpManager.killProcessTree(trackedPid);
       } catch (error) {
         logger.warn('CHROMA_MCP', 'failed to kill prior chroma-mcp tree (best-effort)', {
           pid: trackedPid,
@@ -887,7 +887,7 @@ export class ChromaMcpManager {
     const pid = prewarmChild.pid;
     if (pid) {
       try {
-        await killProcessTree(pid);
+        await ChromaMcpManager.killProcessTree(pid);
       } catch (error) {
         logger.warn('CHROMA_MCP', 'failed to kill in-flight chroma-mcp prewarm tree (best-effort)', {
           pid,
@@ -957,6 +957,14 @@ export class ChromaMcpManager {
     this.connecting = null;
 
     logger.info('CHROMA_MCP', 'chroma-mcp MCP connection stopped');
+  }
+
+  // Thin static delegate to the shared tree-kill primitive
+  // (src/supervisor/tree-kill.ts). Kept as a static method — rather than calling
+  // the module function directly — so ChromaMcpManager's own reconnect/dispose/
+  // stop paths route through one seam the singleton tests can stub.
+  private static killProcessTree(pid: number): Promise<void> {
+    return killChromaProcessTree(pid);
   }
 
   /**
