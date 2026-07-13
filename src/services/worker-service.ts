@@ -782,6 +782,11 @@ export class WorkerService implements WorkerRef {
         chromaMcpManager: this.chromaMcpManager || undefined
       }),
       gracefulDeadlineMs: getPlatformTimeout(10000),
+      // Runs on EVERY shutdown path — the supervisor stop cascade tree-kills the
+      // registered chroma-mcp child by pgid even when performGracefulShutdown
+      // threw before reaching its own supervisor stop (#3216). Idempotent, so a
+      // redundant call after a clean graceful shutdown is a harmless no-op.
+      lastResortChildTreeKill: () => getSupervisor().stop(),
       restartHandoff: {
         port: getWorkerPort(),
         portFreeTimeoutMs: getPlatformTimeout(5000),
