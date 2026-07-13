@@ -58,7 +58,7 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
     this.model = options.model ?? DEFAULT_MODEL;
     this.maxOutputTokens = options.maxOutputTokens ?? 4096;
     this.fetchImpl = options.fetchImpl ?? fetch;
-    const baseUrl = (options.baseUrl || ANTHROPIC_DEFAULT_BASE_URL).replace(/\/+$/, '');
+    const baseUrl = (options.baseUrl?.trim() || ANTHROPIC_DEFAULT_BASE_URL).replace(/\/+$/, '');
     this.messagesUrl = `${baseUrl}/v1/messages`;
   }
 

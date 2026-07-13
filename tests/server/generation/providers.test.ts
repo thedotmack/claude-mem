@@ -212,6 +212,35 @@ describe('ClaudeObservationProvider', () => {
     const provider = new ClaudeObservationProvider({ apiKey: 'sk-fake', fetchImpl: fakeFetch.fetch });
     await expect(provider.generate(makeContext())).rejects.toBeInstanceOf(ServerClassifiedProviderError);
   });
+
+  it('POSTs to api.anthropic.com when baseUrl is unset', async () => {
+    const capturing = new CapturingFetch(jsonResponse(200, { content: [{ type: 'text', text: 'ok' }] }));
+    const provider = new ClaudeObservationProvider({ apiKey: 'sk-fake', fetchImpl: capturing.fetch });
+    await provider.generate(makeContext());
+    expect(capturing.lastUrl).toBe('https://api.anthropic.com/v1/messages');
+  });
+
+  it('POSTs to a custom gateway baseUrl, appending /v1/messages', async () => {
+    const capturing = new CapturingFetch(jsonResponse(200, { content: [{ type: 'text', text: 'ok' }] }));
+    const provider = new ClaudeObservationProvider({
+      apiKey: 'sk-fake',
+      baseUrl: 'https://gateway.example.com/api/anthropic',
+      fetchImpl: capturing.fetch,
+    });
+    await provider.generate(makeContext());
+    expect(capturing.lastUrl).toBe('https://gateway.example.com/api/anthropic/v1/messages');
+  });
+
+  it('trims whitespace and strips a trailing slash from baseUrl', async () => {
+    const capturing = new CapturingFetch(jsonResponse(200, { content: [{ type: 'text', text: 'ok' }] }));
+    const provider = new ClaudeObservationProvider({
+      apiKey: 'sk-fake',
+      baseUrl: '  https://gateway.example.com/api/anthropic/  ',
+      fetchImpl: capturing.fetch,
+    });
+    await provider.generate(makeContext());
+    expect(capturing.lastUrl).toBe('https://gateway.example.com/api/anthropic/v1/messages');
+  });
 });
 
 describe('GeminiObservationProvider', () => {
