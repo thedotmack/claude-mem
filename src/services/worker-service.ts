@@ -31,6 +31,7 @@ import { runWorkerDependencyPreflight } from './worker/dependency-preflight.js';
 
 export { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
 import { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
+import { selectRuntime } from './hooks/runtime-selector.js';
 
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 const packageVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
@@ -1021,6 +1022,22 @@ async function main() {
 
   switch (command) {
     case 'start': {
+      // hooks.json registers this as a SessionStart hook unconditionally,
+      // for every runtime. In `server` runtime there is no local worker to
+      // manage — memory reads/writes go straight to the shared server over
+      // HTTP (see fetchSessionStartContextViaServer in cli/handlers/context.ts)
+      // — so ensureWorkerStarted() has nothing useful to do here. Worse,
+      // the local MCP search server (mcp-server.cjs) already owns this same
+      // port in server mode (it correctly skips its own worker auto-start),
+      // so ensureWorkerStarted() sees the port "in use" by a non-worker
+      // process, waits for it to answer worker health checks it will never
+      // answer, and the whole SessionStart hook group stalls until Claude
+      // Code's own hook timeout (up to 180s) on every single session start.
+      // Exit immediately instead of touching ensureWorkerStarted() at all.
+      if (selectRuntime() === 'server') {
+        exitWithStatus('ready');
+        break;
+      }
       const result = await ensureWorkerStarted(port);
       if (result === 'dead') {
         exitWithStatus('error', 'Failed to start worker');
@@ -1267,9 +1284,22 @@ async function main() {
         process.exit(1);
       }
 
-      const workerStartResult = await ensureWorkerStarted(port);
-      if (workerStartResult === 'dead') {
-        logger.warn('SYSTEM', 'Worker failed to start before hook, handler will proceed gracefully');
+      // Every `hook <platform> <event>` invocation (context, session-init,
+      // observation, file-context, summarize) used to route through the
+      // local worker, so this unconditionally ensured one was up first. In
+      // `server` runtime there's no local worker — handlers talk to the
+      // shared server over HTTP directly (see e.g.
+      // fetchSessionStartContextViaServer in cli/handlers/context.ts) — and
+      // this same port-contention issue as the `start` case above (the
+      // local MCP search server already owns the port in server mode) means
+      // skipping this, not just the `start` hook, is required: leaving it in
+      // stalled the SessionStart `context` hook itself for up to 180s on
+      // every session before the runtime-aware handler below ever ran.
+      if (selectRuntime() !== 'server') {
+        const workerStartResult = await ensureWorkerStarted(port);
+        if (workerStartResult === 'dead') {
+          logger.warn('SYSTEM', 'Worker failed to start before hook, handler will proceed gracefully');
+        }
       }
 
       const { hookCommand } = await import('../cli/hook-command.js');
