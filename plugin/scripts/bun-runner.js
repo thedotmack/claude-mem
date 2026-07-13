@@ -34,9 +34,14 @@ function findBun() {
 
   if (pathCheck.status === 0 && pathCheck.stdout.trim()) {
     if (IS_WINDOWS) {
-      const bunCmdPath = pathCheck.stdout.split('\n').find(line => line.trim().endsWith('bun.cmd'));
+      const bunPaths = pathCheck.stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+      const bunExePath = bunPaths.find(line => line.toLowerCase().endsWith('bun.exe'));
+      if (bunExePath) {
+        return bunExePath;
+      }
+      const bunCmdPath = bunPaths.find(line => line.toLowerCase().endsWith('bun.cmd'));
       if (bunCmdPath) {
-        return bunCmdPath.trim();
+        return bunCmdPath;
       }
     }
     return 'bun'; 
