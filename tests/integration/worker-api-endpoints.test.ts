@@ -132,7 +132,7 @@ describe('Worker API Endpoints Integration', () => {
         );
 
         server = new Server(mockOptions);
-        await server.listen(testPort, '127.0.0.1');
+        const testPort = await listenOnEphemeralPort(server);
 
         const response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
         expect(response.status).toBe(200);
@@ -214,7 +214,7 @@ describe('Worker API Endpoints Integration', () => {
         const worker = new WorkerService();
         expect((worker as any).initializationCompleteFlag).toBe(false);
         server = (worker as unknown as { server: Server }).server;
-        await server.listen(testPort, '127.0.0.1');
+        const testPort = await listenOnEphemeralPort(server);
 
         const guardedResponse = await fetch(`http://127.0.0.1:${testPort}/api/settings`);
         expect(guardedResponse.status).toBe(503);
@@ -248,7 +248,7 @@ describe('Worker API Endpoints Integration', () => {
       );
 
       server = new Server(mockOptions);
-      await server.listen(testPort, '127.0.0.1');
+      const testPort = await listenOnEphemeralPort(server);
 
       const response = await fetch(`http://127.0.0.1:${testPort}/api/admin/doctor`);
       expect(response.status).toBe(200);
