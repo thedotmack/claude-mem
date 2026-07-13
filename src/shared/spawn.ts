@@ -70,10 +70,16 @@ export function buildSpawnSyncInvocation(
   };
 
   if (platform === 'win32' && WINDOWS_CMD_EXTENSIONS.has(extname(command).toLowerCase())) {
+    const commandLine = [command, ...args].map(quoteWindowsCmdArgument).join(' ');
     return {
       command: process.env.ComSpec ?? 'cmd.exe',
-      args: ['/d', '/s', '/c', [command, ...args].map(quoteWindowsCmdArgument).join(' ')],
-      options: invocationOptions,
+      // Wrap the per-arg-quoted command line in ONE outer quote pair: `cmd /s /c`
+      // strips the outermost quotes and leaves the inner per-arg quoting intact,
+      // so a shim path (or any arg) containing spaces survives. Pairs with
+      // windowsVerbatimArguments below, which stops Node re-escaping this payload
+      // (without it the leading `"` becomes `\"` and cmd.exe rejects the command).
+      args: ['/d', '/s', '/c', `"${commandLine}"`],
+      options: { ...invocationOptions, windowsVerbatimArguments: true },
     };
   }
 
