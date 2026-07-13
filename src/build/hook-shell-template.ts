@@ -17,7 +17,7 @@
  * The fallback chain ORDER is contractual and must not change:
  *   1. ${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}   (host-injected env)
  *   2. (mcp only) $PWD/plugin, $PWD               (repo/dev checkout)
- *   3. cache directories (newest first via `ls -dt`)
+ *   3. cache directories (highest semver first — NOT mtime; see candidateBlock)
  *   4. $_C/plugins/marketplaces/thedotmack/plugin (marketplace install)
  */
 
@@ -122,7 +122,18 @@ function candidateBlock(options: ShellTemplateOptions): string {
   const allGlobs = [...extraCacheRoots, '$_C/plugins/cache/thedotmack/claude-mem']
     .map((root) => `"${root}"/[0-9]*/`)
     .join(' ');
-  lines.push(`ls -dt ${allGlobs} 2>/dev/null;`);
+  // Highest semver first — NOT `ls -dt` (mtime). Sorting cache dirs by mtime
+  // picks a stale build, manufacturing the plugin<->worker version skew that
+  // drives the chroma-mcp orphan leak (issue #3216). Emit "<version> <path>"
+  // per dir, numeric-sort by the version's MAJOR.MINOR.PATCH descending (BSD/
+  // macOS-portable — mirrors the NVM prelude at CLAUDE_CODE_SETUP; no `sort -V`),
+  // then strip the key back to the path. Mirrors worker-utils cacheWorkerScriptCandidates.
+  lines.push(
+    `for _d in ${allGlobs}; do [ -d "$_d" ] || continue; ` +
+      `_v=\${_d%/}; _v=\${_v##*/}; printf '%s %s\\n' "$_v" "$_d"; done ` +
+      `| sort -t. -k1,1nr -k2,2nr -k3,3nr ` +
+      `| while IFS=' ' read -r _v _d; do printf '%s\\n' "$_d"; done;`
+  );
   lines.push(`printf '%s\\n' "$_C/plugins/marketplaces/thedotmack/plugin";`);
 
   // The MCP loop trims a trailing slash inline; the hook loop trims via _R="${_R%/}".
@@ -198,7 +209,7 @@ function buildMcpNodeLauncher(options: ShellTemplateOptions): string {
     `const C=process.env.CLAUDE_CONFIG_DIR||p.join(h,'.claude');` +
     `const E=process.env.CLAUDE_PLUGIN_ROOT||process.env.PLUGIN_ROOT||'';` +
     `const d=process.cwd();` +
-    `const L=x=>{try{return f.readdirSync(x).filter(n=>/^\\d/.test(n)).map(n=>p.join(x,n)).filter(z=>{try{return f.statSync(z).isDirectory()}catch{return false}}).sort((a,b)=>f.statSync(b).mtimeMs-f.statSync(a).mtimeMs)}catch{return[]}};` +
+    `const L=x=>{try{return f.readdirSync(x).filter(n=>/^\\d/.test(n)).map(n=>p.join(x,n)).filter(z=>{try{return f.statSync(z).isDirectory()}catch{return false}}).sort((a,b)=>{const V=s=>{const m=p.basename(s).match(/(\\d+)\\.(\\d+)\\.(\\d+)/);return m?[+m[1],+m[2],+m[3]]:[0,0,0]},A=V(a),B=V(b);return B[0]-A[0]||B[1]-A[1]||B[2]-A[2]})}catch{return[]}};` +
     `const K=[${kParts}].filter(Boolean);` +
     `let R=null;` +
     `for(const k of K){const r=f.existsSync(p.join(k,'plugin','scripts'))?p.join(k,'plugin'):k;if(f.existsSync(p.join(r,'scripts',${require}))){R=r;break}}` +
@@ -237,7 +248,7 @@ export function buildCodexWindowsCommand(
     "const roots=[];",
     "for(const v of [process.env.CLAUDE_PLUGIN_ROOT,process.env.PLUGIN_ROOT])if(v)roots.push(v);",
     "const cache=p.join(C,'plugins','cache','thedotmack','claude-mem');",
-    "try{roots.push(...fs.readdirSync(cache).filter(n=>{const ch=n.charAt(0);return ch>='0'&&ch<='9'}).map(n=>p.join(cache,n)).filter(r=>{try{return fs.statSync(r).isDirectory()}catch{return false}}).sort((a,b)=>fs.statSync(b).mtimeMs-fs.statSync(a).mtimeMs))}catch{}",
+    "try{roots.push(...fs.readdirSync(cache).filter(n=>{const ch=n.charAt(0);return ch>='0'&&ch<='9'}).map(n=>p.join(cache,n)).filter(r=>{try{return fs.statSync(r).isDirectory()}catch{return false}}).sort((a,b)=>{const V=s=>{const m=p.basename(s).match(/(\\d+)\\.(\\d+)\\.(\\d+)/);return m?[+m[1],+m[2],+m[3]]:[0,0,0]},A=V(a),B=V(b);return B[0]-A[0]||B[1]-A[1]||B[2]-A[2]}))}catch{}",
     "roots.push(p.join(C,'plugins','marketplaces','thedotmack','plugin'));",
     "let R=null;",
     "for(const k of roots){const r=fs.existsSync(p.join(k,'plugin','scripts'))?p.join(k,'plugin'):k;if(fs.existsSync(p.join(r,'scripts','bun-runner.js'))&&fs.existsSync(p.join(r,'scripts','worker-service.cjs'))){R=r;break}}",

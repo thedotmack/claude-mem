@@ -5,6 +5,7 @@ import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
 import { SettingsDefaultsManager, type SettingsDefaults } from "./SettingsDefaultsManager.js";
 import { MARKETPLACE_ROOT, DATA_DIR } from "./paths.js";
+import { parseVersionKey, compareVersionKeysDesc } from "./version-key.js";
 import { loadFromFileOnce } from "./hook-settings.js";
 import { validateWorkerPidFile } from "../supervisor/index.js";
 import { emitBlockingError } from "./hook-io.js";
@@ -216,9 +217,9 @@ function candidateWorkerScriptPath(root: string): string {
   return path.join(pluginRoot, 'scripts', 'worker-service.cjs');
 }
 
-function cacheWorkerScriptCandidates(): string[] {
+export function cacheWorkerScriptCandidates(cacheRootOverride?: string): string[] {
   const pluginsRoot = path.dirname(path.dirname(MARKETPLACE_ROOT));
-  const cacheRoot = path.join(pluginsRoot, 'cache', 'thedotmack', 'claude-mem');
+  const cacheRoot = cacheRootOverride ?? path.join(pluginsRoot, 'cache', 'thedotmack', 'claude-mem');
   try {
     return readdirSync(cacheRoot)
       .filter(name => /^\d/.test(name))
@@ -230,7 +231,10 @@ function cacheWorkerScriptCandidates(): string[] {
           return false;
         }
       })
-      .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)
+      // Highest semver wins — NOT newest mtime. An mtime sort here picks a
+      // stale cache build, manufacturing the plugin<->worker version skew that
+      // drives the chroma-mcp orphan leak (issue #3216). See version-key.ts.
+      .sort((a, b) => compareVersionKeysDesc(parseVersionKey(path.basename(a)), parseVersionKey(path.basename(b))))
       .map(candidateWorkerScriptPath);
   } catch {
     return [];
