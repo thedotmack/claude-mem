@@ -18,6 +18,7 @@ import { ChromaMcpManager } from './sync/ChromaMcpManager.js';
 import { ChromaSync } from './sync/ChromaSync.js';
 import { openConfiguredSqliteDatabase } from './sqlite/connection.js';
 import { configureSupervisorSignalHandlers, getSupervisor, reapLeakedProcesses, startSupervisor } from '../supervisor/index.js';
+import { reapOrphanedChromaProcesses } from '../supervisor/orphan-sweep.js';
 import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
 
 import { ensureWorkerStarted as ensureWorkerStartedShared, type WorkerStartResult } from './worker-spawner.js';
@@ -429,6 +430,26 @@ export class WorkerService implements WorkerRef {
         logger.warn('SYSTEM', 'Leaked-process reap failed (non-blocking)', {}, error);
       } else {
         logger.warn('SYSTEM', 'Leaked-process reap failed (non-blocking, non-Error)', { error: String(error) });
+      }
+    }
+
+    // System-wide sweep for chroma-mcp trees that leaked OUTSIDE the registry —
+    // orphans whose supervisor.json entry was lost (overwritten under the old
+    // fixed key, dropped on a registry-parse failure, or predating registry
+    // tracking). reapLeakedProcesses above can't see those; this scans the
+    // process table for `chroma-mcp --data-dir <ours>` re-parented to init /
+    // systemd --user and tree-kills them (#3216/#3218). Same boot window (before
+    // listen, before we spawn our own chroma), same non-blocking posture.
+    try {
+      const swept = await reapOrphanedChromaProcesses(getSupervisor().getRegistry());
+      if (swept > 0) {
+        logger.info('SYSTEM', 'Reaped orphaned chroma-mcp trees left by previous runs', { swept });
+      }
+    } catch (error: unknown) {
+      if (error instanceof Error) {
+        logger.warn('SYSTEM', 'Orphaned chroma-mcp sweep failed (non-blocking)', {}, error);
+      } else {
+        logger.warn('SYSTEM', 'Orphaned chroma-mcp sweep failed (non-blocking, non-Error)', { error: String(error) });
       }
     }
 
