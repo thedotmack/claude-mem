@@ -145,7 +145,7 @@ describe('getProjectName', () => {
       expect(getProjectName(serviceDir)).toBe('my-real-repo');
     });
 
-    it('manifest-less monorepos still split plain subdirectories when nested package roots exist', () => {
+    it('manifest-less repos keep plain top-level subdirectories on the repo-root key even when nested package roots exist elsewhere', () => {
       const { mkdirSync, rmSync, writeFileSync } = require('fs');
       const { join } = require('path');
       const automationDir = join(repoRoot, 'automation');
@@ -154,7 +154,19 @@ describe('getProjectName', () => {
       mkdirSync(packageDir, { recursive: true });
       rmSync(join(repoRoot, 'package.json'), { force: true });
       writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name: 'api' }));
-      expect(getProjectName(automationDir)).toBe('my-real-repo/automation');
+      expect(getProjectName(automationDir)).toBe('my-real-repo');
+    });
+
+    it('mixed non-Node repos do not let nested UI packages fragment unrelated top-level directories', () => {
+      const { mkdirSync, rmSync, writeFileSync } = require('fs');
+      const { join } = require('path');
+      const serviceDir = join(repoRoot, 'cmd', 'server');
+      const nestedUiDir = join(repoRoot, 'tools', 'ui');
+      mkdirSync(serviceDir, { recursive: true });
+      mkdirSync(nestedUiDir, { recursive: true });
+      rmSync(join(repoRoot, 'package.json'), { force: true });
+      writeFileSync(join(nestedUiDir, 'package.json'), JSON.stringify({ name: 'ui' }));
+      expect(getProjectName(serviceDir)).toBe('my-real-repo');
     });
 
     it('package directory inside a monorepo yields the repo-relative package key', () => {
