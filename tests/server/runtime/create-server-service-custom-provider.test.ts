@@ -27,10 +27,11 @@ describe('loadCustomServerGenerationProvider', () => {
     expect(provider).not.toBeNull();
     const result = await provider!.generate(EMPTY_CONTEXT);
     // Confirms the factory actually received live references to this
-    // server's own prompt builder and Anthropic provider class, not stubs —
-    // a custom provider has no other way to reach either.
+    // server's own prompt builder, Anthropic provider class, and error
+    // classification, not stubs — a custom provider has no other way to
+    // reach any of them.
     expect(result.rawText).toBe(
-      'buildServerGenerationPrompt:function ClaudeObservationProvider:function',
+      'buildServerGenerationPrompt:function ClaudeObservationProvider:function ServerClassifiedProviderError:function',
     );
   });
 

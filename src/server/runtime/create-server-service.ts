@@ -10,6 +10,7 @@ import { getRedisQueueConfig } from '../queue/redis-config.js';
 import { ActiveServerQueueManager } from './ActiveServerQueueManager.js';
 import { ActiveServerGenerationWorkerManager } from './ActiveServerGenerationWorkerManager.js';
 import { ClaudeObservationProvider } from '../generation/providers/ClaudeObservationProvider.js';
+import { ServerClassifiedProviderError } from '../generation/providers/shared/error-classification.js';
 import { GeminiObservationProvider } from '../generation/providers/GeminiObservationProvider.js';
 import { OpenRouterObservationProvider } from '../generation/providers/OpenRouterObservationProvider.js';
 import { buildServerGenerationPrompt } from '../generation/providers/shared/prompt-builder.js';
@@ -256,13 +257,19 @@ async function buildServerGenerationProviderFromEnv(): Promise<ServerGenerationP
 
 // Helpers handed to a CLAUDE_MEM_CUSTOM_PROVIDER_MODULE factory (see
 // loadCustomServerGenerationProvider below) so a custom provider can reuse
-// this server's own Anthropic HTTP client and prompt construction instead of
-// reimplementing them — both are internal, unexported implementation
-// details of this codebase, not a published library surface, so a custom
-// provider module has no other way to reach them.
+// this server's own Anthropic HTTP client, prompt construction, and error
+// classification instead of reimplementing them — all three are internal,
+// unexported implementation details of this codebase, not a published
+// library surface, so a custom provider module has no other way to reach
+// them. ServerClassifiedProviderError matters beyond convenience: the retry
+// pipeline (ProviderObservationGenerator) only treats an error as retryable
+// when it's `instanceof ServerClassifiedProviderError` with `kind`
+// `'transient'`/`'rate_limit'` — a plain Error, even with a `.kind`
+// property bolted on, is always treated as non-retryable.
 export interface CustomServerGenerationProviderHelpers {
   buildServerGenerationPrompt: typeof buildServerGenerationPrompt;
   ClaudeObservationProvider: typeof ClaudeObservationProvider;
+  ServerClassifiedProviderError: typeof ServerClassifiedProviderError;
 }
 
 type CustomServerGenerationProviderFactory = (
@@ -302,7 +309,7 @@ export async function loadCustomServerGenerationProvider(): Promise<ServerGenera
     logger.warn('SYSTEM', 'server: CLAUDE_MEM_CUSTOM_PROVIDER_MODULE does not export a createProvider(helpers) factory', { modulePath });
     return null;
   }
-  return factory({ buildServerGenerationPrompt, ClaudeObservationProvider });
+  return factory({ buildServerGenerationPrompt, ClaudeObservationProvider, ServerClassifiedProviderError });
 }
 
 async function instantiateServerGenerationProvider(provider: string): Promise<ServerGenerationProvider | null> {

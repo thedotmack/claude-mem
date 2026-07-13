@@ -6,7 +6,7 @@ export function createProvider(helpers) {
     providerLabel: 'claude',
     async generate() {
       return {
-        rawText: `buildServerGenerationPrompt:${typeof helpers.buildServerGenerationPrompt} ClaudeObservationProvider:${typeof helpers.ClaudeObservationProvider}`,
+        rawText: `buildServerGenerationPrompt:${typeof helpers.buildServerGenerationPrompt} ClaudeObservationProvider:${typeof helpers.ClaudeObservationProvider} ServerClassifiedProviderError:${typeof helpers.ServerClassifiedProviderError}`,
         providerLabel: 'claude',
       };
     },
