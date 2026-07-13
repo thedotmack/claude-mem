@@ -246,7 +246,7 @@ export class AgyCliProvider {
     session.conversationHistory.push({ role: 'user', content: firstPrompt });
 
     try {
-      const first = await this.runTurn(session, firstPrompt, executable, cwd, model);
+      const first = await this.runTurn(session, firstPrompt, executable, cwd, model, true);
       await this.emitResult(first, session, worker, null, undefined, model, 'init');
       await this.processMessageLoop(session, worker, executable, cwd, model);
       const duration = Date.now() - session.startTime;
@@ -266,6 +266,7 @@ export class AgyCliProvider {
     executable: string,
     cwd: string,
     model: string,
+    isSessionBootstrap = false,
   ): Promise<RunResult> {
     const signal = session.abortController.signal;
     const timeoutMs = this.getTimeoutMs();
@@ -286,6 +287,15 @@ export class AgyCliProvider {
         });
         session.memorySessionId = null;
         this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, null);
+
+        // The bootstrap prompt already contains the continuation context needed
+        // to initialize a replacement conversation. Reusing it as a separate
+        // priming turn would send the same user turn twice and discard the first
+        // response. Later observation/summary turns still need a continuation
+        // prompt before their original payload is replayed.
+        if (isSessionBootstrap) {
+          return this.runFreshTurn(session, prompt, executable, cwd, model, signal, timeoutMs);
+        }
 
         const mode = ModeManager.getInstance().getActiveMode();
         const primingPrompt = buildContinuationPrompt(
@@ -353,7 +363,7 @@ export class AgyCliProvider {
         session.conversationHistory.push({ role: 'user', content: observationPrompt });
         const result = await this.runTurn(session, observationPrompt, executable, cwd, model);
         await this.emitResult(result, session, worker, originalTimestamp, lastCwd, model, 'observation');
-      } else if (message.type === 'summarize') {
+      } else if (message.type === 'summarize' || message.type === 'pre-compact') {
         const summaryPrompt = buildSummaryPrompt({
           id: session.sessionDbId,
           memory_session_id: session.memorySessionId,
@@ -386,7 +396,6 @@ export class AgyCliProvider {
       // confirm the claimed item and clear pending-work state.
       if (kind === 'init') return;
     } else {
-      session.conversationHistory.push({ role: 'assistant', content: result.response });
       this.accountTokens(session, result.tokensUsed);
     }
 

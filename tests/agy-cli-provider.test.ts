@@ -7,7 +7,8 @@ import { classifyAgyCliError, extractAgyConversationId } from '../src/services/w
 import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager.js';
 import { SettingsRoutes } from '../src/services/worker/http/routes/SettingsRoutes.js';
 
-function writeFakeAgy(path: string, conversationId: string): void {
+function writeFakeAgy(path: string, conversationId: string, response = ''): void {
+  const responseCommand = response ? `printf '%s\\n' ${JSON.stringify(response)}` : '';
   writeFileSync(path, `#!/bin/sh
 if [ "\${1:-}" = "--version" ]; then
   echo "agy fake ${conversationId}"
@@ -26,6 +27,7 @@ done
 if [ -z "$conversation" ]; then
   printf 'Created conversation ${conversationId}\n' > "$log_path"
 fi
+${responseCommand}
 `);
   chmodSync(path, 0o755);
 }
@@ -274,7 +276,7 @@ setInterval(() => {}, 1000);
     }
   });
 
-  it('confirms claimed observation and summary messages when Agy returns empty stdout', () => {
+  it('confirms claimed observation, summary, and pre-compact messages when Agy returns empty stdout', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-agy-cli-empty-'));
     try {
       const dataDir = join(tempDir, 'data');
@@ -334,6 +336,7 @@ setInterval(() => {}, 1000);
               agentType: null,
             };
             yield { type: 'summarize', last_assistant_message: 'done' };
+            yield { type: 'pre-compact', last_assistant_message: 'before compact' };
           },
           async confirmClaimedMessages() {
             confirmed += 1;
@@ -361,8 +364,84 @@ setInterval(() => {}, 1000);
       const resultLine = output.trim().split('\n').find((line) => line.startsWith('RESULT '));
       expect(resultLine).toBeDefined();
       const result = JSON.parse(resultLine!.slice('RESULT '.length));
-      expect(result.confirmed).toBe(2);
+      expect(result.confirmed).toBe(3);
       expect(result.earliestPendingTimestamp).toBeNull();
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('records each non-empty Agy response once in shared conversation history', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-agy-cli-history-'));
+    try {
+      const dataDir = join(tempDir, 'data');
+      const binDir = join(tempDir, 'bin');
+      mkdirSync(dataDir, { recursive: true });
+      mkdirSync(binDir, { recursive: true });
+
+      const agyPath = join(binDir, 'agy');
+      writeFakeAgy(agyPath, '66666666-6666-4666-8666-666666666666', 'plain response');
+      writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({
+        CLAUDE_MEM_PROVIDER: 'agy-cli',
+        CLAUDE_MEM_MODE: 'code',
+        CLAUDE_MEM_AGY_CLI_PATH: agyPath,
+        CLAUDE_MEM_AGY_CLI_TIMEOUT_MS: '5000',
+      }));
+
+      const output = execFileSync(process.execPath, ['--eval', `
+        const { ModeManager } = await import('./src/services/domain/ModeManager.ts');
+        const { AgyCliProvider } = await import('./src/services/worker/AgyCliProvider.ts');
+
+        ModeManager.getInstance().loadMode('code');
+        const session = {
+          sessionDbId: 94,
+          memorySessionId: null,
+          forceInit: false,
+          lastPromptNumber: 1,
+          project: 'demo',
+          contentSessionId: 'content-history',
+          userPrompt: 'record one response',
+          startTime: Date.now(),
+          earliestPendingTimestamp: null,
+          abortController: new AbortController(),
+          conversationHistory: [],
+          cumulativeInputTokens: 0,
+          cumulativeOutputTokens: 0,
+          consecutiveInvalidOutputs: 0,
+        };
+        const dbManager = {
+          getSessionStore() {
+            return {
+              ensureMemorySessionIdRegistered() {},
+              updateMemorySessionId() {},
+            };
+          },
+        };
+        const sessionManager = {
+          async *getMessageIterator() {},
+          async confirmClaimedMessages() { return 0; },
+        };
+
+        const provider = new AgyCliProvider(dbManager, sessionManager);
+        await provider.startSession(session);
+        const assistantResponses = session.conversationHistory
+          .filter((entry) => entry.role === 'assistant')
+          .map((entry) => entry.content);
+        console.log('RESULT ' + JSON.stringify({ assistantResponses }));
+      `], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          CLAUDE_MEM_DATA_DIR: dataDir,
+          CLAUDE_MEM_AGY_ARGS_FILE: join(tempDir, 'args'),
+        },
+        encoding: 'utf8',
+      });
+
+      const resultLine = output.trim().split('\n').find((line) => line.startsWith('RESULT '));
+      expect(resultLine).toBeDefined();
+      const result = JSON.parse(resultLine!.slice('RESULT '.length));
+      expect(result.assistantResponses).toEqual(['plain response']);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
@@ -485,6 +564,110 @@ setInterval(() => {}, 1000);
       expect(result.available).toBe(true);
       expect(result.resolvedAfterSettingsChange).toBe(secondAgy);
       expect(result.availableAfterInvalidPath).toBe(false);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('recovers a missing bootstrap conversation without replaying the continuation prompt', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-agy-cli-bootstrap-recover-'));
+    try {
+      const dataDir = join(tempDir, 'data');
+      const binDir = join(tempDir, 'bin');
+      mkdirSync(dataDir, { recursive: true });
+      mkdirSync(binDir, { recursive: true });
+
+      const agyPath = join(binDir, 'agy');
+      writeFileSync(agyPath, `#!/bin/sh
+if [ "\${1:-}" = "--version" ]; then
+  echo "agy fake bootstrap recover"
+  exit 0
+fi
+printf 'CALL\\n' >> "$CLAUDE_MEM_AGY_ARGS_FILE"
+printf '%s\\n' "$@" >> "$CLAUDE_MEM_AGY_ARGS_FILE"
+log_path=""
+conversation=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --log-file) log_path="$2"; shift 2 ;;
+    --conversation) conversation="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [ -n "$conversation" ]; then
+  echo "conversation not found" >&2
+  exit 1
+fi
+printf 'Created conversation 44444444-4444-4444-8444-444444444444\\n' > "$log_path"
+`);
+      chmodSync(agyPath, 0o755);
+
+      writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({
+        CLAUDE_MEM_PROVIDER: 'agy-cli',
+        CLAUDE_MEM_MODE: 'code',
+        CLAUDE_MEM_AGY_CLI_PATH: agyPath,
+        CLAUDE_MEM_AGY_CLI_TIMEOUT_MS: '5000',
+      }));
+
+      const output = execFileSync(process.execPath, ['--eval', `
+        const { readFileSync } = await import('fs');
+        const { ModeManager } = await import('./src/services/domain/ModeManager.ts');
+        const { AgyCliProvider } = await import('./src/services/worker/AgyCliProvider.ts');
+
+        ModeManager.getInstance().loadMode('code');
+        const session = {
+          sessionDbId: 95,
+          memorySessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          forceInit: false,
+          lastPromptNumber: 2,
+          project: 'demo',
+          contentSessionId: 'content-bootstrap-recover',
+          userPrompt: 'continue once',
+          startTime: Date.now(),
+          earliestPendingTimestamp: null,
+          abortController: new AbortController(),
+          conversationHistory: [],
+          cumulativeInputTokens: 0,
+          cumulativeOutputTokens: 0,
+        };
+        const registered = [];
+        const dbManager = {
+          getSessionStore() {
+            return {
+              ensureMemorySessionIdRegistered(id, mid) { registered.push({ id, mid }); },
+              updateMemorySessionId() {},
+            };
+          },
+        };
+        const sessionManager = { async *getMessageIterator() {} };
+
+        const provider = new AgyCliProvider(dbManager, sessionManager);
+        await provider.startSession(session);
+        const raw = readFileSync(process.env.CLAUDE_MEM_AGY_ARGS_FILE, 'utf8');
+        const calls = raw.split('CALL\\n').map((x) => x.trim()).filter(Boolean).map((call) => {
+          const match = call.match(/--conversation\\n([^\\n]+)/);
+          return { resume: !!match, conversationId: match ? match[1] : null };
+        });
+        console.log('RESULT ' + JSON.stringify({ memorySessionId: session.memorySessionId, registered, calls }));
+      `], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          CLAUDE_MEM_DATA_DIR: dataDir,
+          CLAUDE_MEM_AGY_ARGS_FILE: join(tempDir, 'args'),
+        },
+        encoding: 'utf8',
+      });
+
+      const resultLine = output.trim().split('\n').find((line) => line.startsWith('RESULT '));
+      expect(resultLine).toBeDefined();
+      const result = JSON.parse(resultLine!.slice('RESULT '.length));
+      expect(result.calls).toEqual([
+        { resume: true, conversationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' },
+        { resume: false, conversationId: null },
+      ]);
+      expect(result.memorySessionId).toBe('44444444-4444-4444-8444-444444444444');
+      expect(result.registered).toContainEqual({ id: 95, mid: '44444444-4444-4444-8444-444444444444' });
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
