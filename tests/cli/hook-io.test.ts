@@ -4,6 +4,7 @@ import {
   emitDiagnostic,
   emitModelContext,
   emitBlockingError,
+  emitDegradedNotice,
   exitGraceful,
   resetHookIoState,
 } from '../../src/shared/hook-io.js';
@@ -155,6 +156,33 @@ describe('emitBlockingError', () => {
       emitBlockingError('boom', { skipExit: true });
       // buffered content surfaces first, then the blocking message.
       expect(real.chunks.join('')).toBe('preceding\nboom\n');
+    } finally {
+      buffer.restore();
+      real.restore();
+    }
+  });
+});
+
+describe('emitDegradedNotice', () => {
+  it('writes msg to real stderr and RETURNS (never exits) — the loud-but-non-blocking channel', () => {
+    const real = captureRealStderr();
+    try {
+      // If this called process.exit, the test process would die here and the
+      // assertion below would never run. Reaching it proves non-blocking.
+      emitDegradedNotice('degraded');
+      expect(real.chunks.join('')).toBe('degraded\n');
+    } finally {
+      real.restore();
+    }
+  });
+
+  it('flushes buffered stderr BEFORE its own message (preceding diagnostics still surface)', () => {
+    const real = captureRealStderr();
+    const buffer = installHookStderrBuffer();
+    try {
+      process.stderr.write('preceding\n'); // buffered
+      emitDegradedNotice('degraded');
+      expect(real.chunks.join('')).toBe('preceding\ndegraded\n');
     } finally {
       buffer.restore();
       real.restore();

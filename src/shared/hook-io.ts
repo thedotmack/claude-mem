@@ -12,6 +12,7 @@
  *  - MODEL_CONTEXT     content the assistant consumes. stdout JSON only.
  *  - USER_HINT         short advisory shown to the human, via HookResult.systemMessage.
  *  - BLOCKING_FEEDBACK error message the model must see (stderr + exit 2).
+ *  - DEGRADED_NOTICE   loud auxiliary-outage warning (stderr, NO exit — never blocks).
  *  - EXIT_SIGNAL       pure status, no payload (exit 0).
  *
  * Lives in src/shared/ (not src/cli/) so that src/shared/worker-utils.ts and
@@ -144,6 +145,26 @@ export function emitBlockingError(msg: string, options: ExitOptions = {}): void 
   if (!options.skipExit) {
     process.exit(2);
   }
+}
+
+/**
+ * DEGRADED_NOTICE: flush buffered stderr (so preceding diagnostics reach the
+ * operator/model), then write `msg` loudly to real stderr — but DO NOT exit.
+ *
+ * This is the loud-but-non-blocking channel. It exists so an AUXILIARY service
+ * outage (the memory worker being unreachable) can stay highly visible without
+ * ever blocking the user's critical path. Unlike emitBlockingError it never
+ * calls process.exit(2): the fail-loud counter uses it to surface a degradation
+ * warning while the hook still exits 0 via exitGraceful. A memory outage must
+ * never be able to lock the editor: an auxiliary service must not block the
+ * user's critical path (SRE: cascading failures / graceful degradation).
+ */
+export function emitDegradedNotice(msg: string): void {
+  if (bufferedChunks && bufferedChunks.length > 0) {
+    bypassWrite(bufferedChunks.join(''));
+    bufferedChunks = [];
+  }
+  bypassWrite(msg.endsWith('\n') ? msg : `${msg}\n`);
 }
 
 /**
