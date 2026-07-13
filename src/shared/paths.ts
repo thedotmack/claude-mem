@@ -49,6 +49,8 @@ export const OBSERVER_SESSIONS_DIR = join(DATA_DIR, 'observer-sessions');
 
 export const OBSERVER_SESSIONS_PROJECT = basename(OBSERVER_SESSIONS_DIR);
 
+/** Stable fallback workspace and per-turn log directory for Agy CLI sessions. */
+export const AGY_CLI_SESSIONS_DIR = join(DATA_DIR, 'agy-cli-sessions');
 export function ensureDir(dirPath: string): void {
   mkdirSync(dirPath, { recursive: true });
 }

@@ -23,7 +23,7 @@ ${styleText('bold', 'Install Commands')} (no Bun required):
   ${styleText('cyan', 'npx claude-mem')}                     Interactive install
   ${styleText('cyan', 'npx claude-mem install')}              Interactive install
   ${styleText('cyan', 'npx claude-mem install --ide <id>')}   Install for specific IDE
-  ${styleText('cyan', 'npx claude-mem install --provider claude|codex|gemini|openrouter|kiro')}   Set LLM provider non-interactively
+  ${styleText('cyan', 'npx claude-mem install --provider claude|codex|gemini|agy-cli|openrouter|kiro')}   Set LLM provider non-interactively
   ${styleText('cyan', 'npx claude-mem install --model <id>')}   Set provider model (Claude/Codex)
   ${styleText('cyan', 'npx claude-mem install --no-auto-start')}   Skip worker auto-start at the end
   ${styleText('cyan', 'npx claude-mem install --disable-auto-memory')}   Explicitly disable Claude Code native auto-memory
@@ -79,8 +79,8 @@ function parseInstallOptions(argv: string[]): InstallOptions {
   const flag = (name: string): string | undefined =>
     typeof values[name] === 'string' ? (values[name] as string) : undefined;
   const provider = flag('provider');
-  if (provider !== undefined && provider !== 'claude' && provider !== 'codex' && provider !== 'gemini' && provider !== 'openrouter' && provider !== 'kiro') {
-    console.error(`Unknown --provider: ${provider}. Allowed: claude, codex, gemini, openrouter, kiro`);
+  if (provider !== undefined && provider !== 'claude' && provider !== 'codex' && provider !== 'gemini' && provider !== 'agy-cli' && provider !== 'openrouter' && provider !== 'kiro') {
+    console.error(`Unknown --provider: ${provider}. Allowed: claude, codex, gemini, agy-cli, openrouter, kiro`);
     process.exit(1);
   }
   const runtime = flag('runtime');

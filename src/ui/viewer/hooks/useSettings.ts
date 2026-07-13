@@ -4,6 +4,14 @@ import { DEFAULT_SETTINGS } from '../constants/settings';
 import { API_ENDPOINTS } from '../constants/api';
 import { TIMING } from '../constants/timing';
 
+export function hydrateAgySettings(data: Partial<Settings>) {
+  return {
+    CLAUDE_MEM_AGY_CLI_MODEL: data.CLAUDE_MEM_AGY_CLI_MODEL ?? DEFAULT_SETTINGS.CLAUDE_MEM_AGY_CLI_MODEL,
+    CLAUDE_MEM_AGY_CLI_PATH: data.CLAUDE_MEM_AGY_CLI_PATH ?? DEFAULT_SETTINGS.CLAUDE_MEM_AGY_CLI_PATH,
+    CLAUDE_MEM_AGY_CLI_TIMEOUT_MS: data.CLAUDE_MEM_AGY_CLI_TIMEOUT_MS ?? DEFAULT_SETTINGS.CLAUDE_MEM_AGY_CLI_TIMEOUT_MS,
+  };
+}
+
 export function useSettings() {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [isSaving, setIsSaving] = useState(false);

@@ -83,6 +83,12 @@ import { SSEBroadcaster } from './worker/SSEBroadcaster.js';
 import { ClaudeProvider, classifyClaudeError } from './worker/ClaudeProvider.js';
 import type { WorkerRef } from './worker/agents/types.js';
 import { GeminiProvider, classifyGeminiError, isGeminiSelected, isGeminiAvailable } from './worker/GeminiProvider.js';
+import {
+  AGY_CLI_UNAVAILABLE_MESSAGE,
+  AgyCliProvider,
+  isAgyCliSelected,
+  isAgyCliAvailable,
+} from './worker/AgyCliProvider.js';
 import { OpenRouterProvider, classifyOpenRouterError, isOpenRouterSelected, isOpenRouterAvailable } from './worker/OpenRouterProvider.js';
 import { KiroProvider, isKiroSelected, isKiroAvailable } from './worker/KiroProvider.js';
 import { CodexProvider, isCodexSelected } from './worker/CodexProvider.js';
@@ -138,6 +144,36 @@ export function buildStatusOutput(
     output.suppressOutput = true;
   }
   return output;
+}
+
+export interface AiProviderStatus {
+  provider: 'claude' | 'codex' | 'gemini' | 'agy-cli' | 'openrouter' | 'kiro';
+  available: boolean;
+  error?: string;
+}
+
+export function getAiProviderStatus(): AiProviderStatus {
+  if (isCodexSelected()) {
+    return { provider: 'codex', available: true };
+  }
+  if (isKiroSelected() && isKiroAvailable()) {
+    return { provider: 'kiro', available: true };
+  }
+  if (isOpenRouterSelected() && isOpenRouterAvailable()) {
+    return { provider: 'openrouter', available: true };
+  }
+  if (isAgyCliSelected()) {
+    const available = isAgyCliAvailable();
+    return {
+      provider: 'agy-cli',
+      available,
+      ...(!available && { error: AGY_CLI_UNAVAILABLE_MESSAGE }),
+    };
+  }
+  if (isGeminiSelected() && isGeminiAvailable()) {
+    return { provider: 'gemini', available: true };
+  }
+  return { provider: 'claude', available: true };
 }
 
 // Closed enum for worker_stopped telemetry — definition (and its
@@ -214,6 +250,7 @@ export class WorkerService implements WorkerRef {
   private sdkAgent: ClaudeProvider;
   private geminiAgent: GeminiProvider;
   private openRouterAgent: OpenRouterProvider;
+  private agyCliAgent: AgyCliProvider;
   private kiroAgent: KiroProvider;
   private codexAgent: CodexProvider;
   private paginationHelper: PaginationHelper;
@@ -247,6 +284,7 @@ export class WorkerService implements WorkerRef {
     this.sdkAgent = new ClaudeProvider(this.dbManager, this.sessionManager);
     this.geminiAgent = new GeminiProvider(this.dbManager, this.sessionManager);
     this.openRouterAgent = new OpenRouterProvider(this.dbManager, this.sessionManager);
+    this.agyCliAgent = new AgyCliProvider(this.dbManager, this.sessionManager);
     this.kiroAgent = new KiroProvider(this.dbManager, this.sessionManager);
     this.codexAgent = new CodexProvider(this.dbManager, this.sessionManager);
 
@@ -281,14 +319,10 @@ export class WorkerService implements WorkerRef {
       onRestart: () => this.shutdown('restart'),
       workerPath: __filename,
       getAiStatus: () => {
-        let provider = 'claude';
-        if (isCodexSelected()) provider = 'codex';
-        else if (isKiroSelected() && isKiroAvailable()) provider = 'kiro';
-        else if (isOpenRouterSelected() && isOpenRouterAvailable()) provider = 'openrouter';
-        else if (isGeminiSelected() && isGeminiAvailable()) provider = 'gemini';
+        const providerStatus = getAiProviderStatus();
         return {
-          provider,
-          authMethod: describeProviderAuthMethod(provider, getAuthMethodDescription()),
+          ...providerStatus,
+          authMethod: describeProviderAuthMethod(providerStatus.provider, getAuthMethodDescription()),
           lastInteraction: this.lastAiInteraction
             ? {
                 timestamp: this.lastAiInteraction.timestamp,
@@ -358,7 +392,7 @@ export class WorkerService implements WorkerRef {
     });
 
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
-    const sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.codexAgent, this.kiroAgent, this.sessionEventBroadcaster, this, this.completionHandler);
+    const sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.agyCliAgent, this.codexAgent, this.kiroAgent, this.sessionEventBroadcaster, this, this.completionHandler);
     this.server.registerRoutes(sessionRoutes);
     attachIngestGeneratorStarter((sessionDbId, source) =>
       sessionRoutes.ensureGeneratorRunning(sessionDbId, source),

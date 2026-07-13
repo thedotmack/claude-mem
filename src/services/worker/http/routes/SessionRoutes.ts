@@ -9,6 +9,12 @@ import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { ClaudeProvider } from '../../ClaudeProvider.js';
 import { GeminiProvider, isGeminiSelected, isGeminiAvailable } from '../../GeminiProvider.js';
+import {
+  AGY_CLI_UNAVAILABLE_MESSAGE,
+  AgyCliProvider,
+  isAgyCliSelected,
+  isAgyCliAvailable,
+} from '../../AgyCliProvider.js';
 import { OpenRouterProvider, isOpenRouterSelected, isOpenRouterAvailable } from '../../OpenRouterProvider.js';
 import { KiroProvider, isKiroSelected, isKiroAvailable } from '../../KiroProvider.js';
 import { CodexProvider, isCodexSelected } from '../../CodexProvider.js';
@@ -62,6 +68,7 @@ export class SessionRoutes extends BaseRouteHandler {
     private sdkAgent: ClaudeProvider,
     private geminiAgent: GeminiProvider,
     private openRouterAgent: OpenRouterProvider,
+    private agyCliAgent: AgyCliProvider,
     private codexAgent: CodexProvider,
     private kiroAgent: KiroProvider,
     private eventBroadcaster: SessionEventBroadcaster,
@@ -71,7 +78,7 @@ export class SessionRoutes extends BaseRouteHandler {
     super();
   }
 
-  private getSelectedProvider(): 'claude' | 'codex' | 'gemini' | 'openrouter' | 'kiro' {
+  private getSelectedProvider(): 'claude' | 'codex' | 'gemini' | 'agy-cli' | 'openrouter' | 'kiro' {
     if (isCodexSelected()) {
       return 'codex';
     }
@@ -80,6 +87,12 @@ export class SessionRoutes extends BaseRouteHandler {
     }
     if (isOpenRouterSelected() && isOpenRouterAvailable()) {
       return 'openrouter';
+    }
+    if (isAgyCliSelected()) {
+      if (!isAgyCliAvailable()) {
+        throw new Error(AGY_CLI_UNAVAILABLE_MESSAGE);
+      }
+      return 'agy-cli';
     }
     return (isGeminiSelected() && isGeminiAvailable()) ? 'gemini' : 'claude';
   }
@@ -146,7 +159,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
   private async startGeneratorWithProvider(
     session: ReturnType<typeof this.sessionManager.getSession>,
-    provider: 'claude' | 'codex' | 'gemini' | 'openrouter' | 'kiro',
+    provider: 'claude' | 'codex' | 'gemini' | 'agy-cli' | 'openrouter' | 'kiro',
     source: string
   ): Promise<void> {
     if (!session) return;
@@ -163,17 +176,25 @@ export class SessionRoutes extends BaseRouteHandler {
         ? this.codexAgent
         : provider === 'kiro'
           ? this.kiroAgent
-        : provider === 'openrouter'
-          ? this.openRouterAgent
-          : (provider === 'gemini' ? this.geminiAgent : this.sdkAgent);
+          : provider === 'openrouter'
+            ? this.openRouterAgent
+            : provider === 'agy-cli'
+              ? this.agyCliAgent
+              : provider === 'gemini'
+                ? this.geminiAgent
+                : this.sdkAgent;
     const agentName =
       provider === 'codex'
         ? 'Codex'
         : provider === 'kiro'
           ? 'Kiro'
-        : provider === 'openrouter'
-          ? 'OpenRouter'
-          : (provider === 'gemini' ? 'Gemini' : 'Claude SDK');
+          : provider === 'openrouter'
+            ? 'OpenRouter'
+            : provider === 'agy-cli'
+              ? 'Agy CLI'
+              : provider === 'gemini'
+                ? 'Gemini'
+                : 'Claude SDK';
 
     const actualQueueDepth = this.sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId);
 

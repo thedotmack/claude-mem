@@ -11,6 +11,7 @@ import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { SettingsDefaultsManager, writeSettingsFileSecure, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { hasAgyExecutable } from '../../shared/find-agy-executable.js';
 import { loadClaudeMemEnv, saveClaudeMemEnv } from '../../shared/EnvManager.js';
 import { ensureWorkerStarted, type WorkerStartResult } from '../../services/worker-spawner.js';
 import {
@@ -833,7 +834,7 @@ export function mergeSettings(updates: Record<string, string>, path = USER_SETTI
   }
 }
 
-type ProviderId = 'claude' | 'codex' | 'gemini' | 'openrouter' | 'kiro';
+type ProviderId = 'claude' | 'codex' | 'gemini' | 'agy-cli' | 'openrouter' | 'kiro';
 type ClaudeAccessMode = 'subscription' | 'api-key';
 type ClaudeApiMode = 'direct' | 'gateway';
 // Phase 1d: Persisted DB literals (`server_beta_schema_migrations`, job_type
@@ -1107,6 +1108,12 @@ async function promptProvider(options: InstallOptions, selectedIDEs: string[] = 
         persistClaudeProvider();
         return 'claude';
       }
+      if (options.provider === 'agy-cli') {
+        const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: 'agy-cli' });
+        if (wrote) log.info('Saved provider=agy-cli to ~/.claude-mem/settings.json');
+        log.info('Agy CLI provider uses your Antigravity login. Ensure `agy` is installed and Antigravity can authenticate.');
+        return 'agy-cli';
+      }
       if (options.provider === 'codex') {
         const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: 'codex' });
         if (wrote) log.info('Saved provider=codex to ~/.claude-mem/settings.json');
@@ -1186,6 +1193,7 @@ async function promptProvider(options: InstallOptions, selectedIDEs: string[] = 
         { value: 'claude', label: 'Claude Agent SDK (recommended)' },
         { value: 'codex', label: 'Codex CLI' },
         { value: 'gemini', label: 'Gemini' },
+        { value: 'agy-cli', label: 'Agy CLI (uses your Antigravity login)' },
         { value: 'openrouter', label: 'OpenRouter' },
         { value: 'kiro', label: 'Kiro subscription (via kiro-cli, no API key)' },
       ],
@@ -1201,6 +1209,17 @@ async function promptProvider(options: InstallOptions, selectedIDEs: string[] = 
   if (selectedProvider === 'claude') {
     await runClaudeAuthFlow();
     return 'claude';
+  }
+
+  if (selectedProvider === 'agy-cli') {
+    const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: 'agy-cli' });
+    if (wrote) log.info('Saved provider=agy-cli to ~/.claude-mem/settings.json');
+    if (hasAgyExecutable()) {
+      log.info('Found the `agy` CLI — observations will be generated through your Antigravity login.');
+    } else {
+      log.warn('The `agy` CLI was not found. Install Antigravity CLI or set CLAUDE_MEM_AGY_CLI_PATH.');
+    }
+    return 'agy-cli';
   }
 
   if (selectedProvider === 'codex') {
@@ -1535,7 +1554,7 @@ async function promptCmemOnlineOptIn(version: string): Promise<void> {
 
 export interface InstallOptions {
   ide?: string;
-  provider?: 'claude' | 'codex' | 'gemini' | 'openrouter' | 'kiro';
+  provider?: 'claude' | 'codex' | 'gemini' | 'agy-cli' | 'openrouter' | 'kiro';
   model?: string;
   noAutoStart?: boolean;
   disableAutoMemory?: boolean;
