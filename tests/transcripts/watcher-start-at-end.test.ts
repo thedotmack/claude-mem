@@ -108,4 +108,72 @@ describe('TranscriptWatcher startAtEnd', () => {
     expect(prompts).toContain('live prompt');
     expect(prompts).not.toContain('historical prompt that must not be replayed');
   });
+
+  it('continues from the original offset when Codex moves a session into the archive', async () => {
+    const sessionId = '019e050e-7ae0-71b2-b19f-6cc428e5763a';
+    const fileName = `rollout-${sessionId}.jsonl`;
+    const originalPath = join(tmpRoot, '.codex', 'sessions', '2026', '07', '12', fileName);
+    const archivedPath = join(tmpRoot, '.codex', 'archived_sessions', fileName);
+    const statePath = join(tmpRoot, 'state.json');
+    const historicalEntry = `${JSON.stringify({
+      type: 'event',
+      payload: {
+        type: 'user_message',
+        session_id: sessionId,
+        message: 'historical prompt that was already observed',
+      },
+    })}\n`;
+
+    mkdirSync(join(originalPath, '..'), { recursive: true });
+    mkdirSync(join(archivedPath, '..'), { recursive: true });
+    writeFileSync(originalPath, historicalEntry, 'utf8');
+    writeFileSync(archivedPath, historicalEntry, 'utf8');
+    writeFileSync(statePath, JSON.stringify({ offsets: { [originalPath]: Buffer.byteLength(historicalEntry) + 100 } }), 'utf8');
+
+    const schema: TranscriptSchema = {
+      name: 'codex',
+      events: [
+        {
+          name: 'user-message',
+          match: { path: 'payload.type', equals: 'user_message' },
+          action: 'session_init',
+          fields: {
+            sessionId: 'payload.session_id',
+            prompt: 'payload.message',
+          },
+        },
+      ],
+    };
+    const watch: WatchTarget = {
+      name: 'codex-archived',
+      path: join(tmpRoot, '.codex', 'archived_sessions', '*.jsonl'),
+      schema,
+      startAtEnd: false,
+    };
+    const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
+
+    await (watcher as any).addTailer(archivedPath, watch, schema);
+    await waitForAsyncTail();
+
+    expect(sessionInitCalls).toHaveLength(0);
+
+    appendFileSync(
+      archivedPath,
+      `${JSON.stringify({
+        type: 'event',
+        payload: {
+          type: 'user_message',
+          session_id: sessionId,
+          message: 'new prompt after archive',
+        },
+      })}\n`,
+      'utf8',
+    );
+
+    await waitForAsyncTail();
+    watcher.stop();
+
+    const prompts = sessionInitCalls.map(call => call.prompt);
+    expect(prompts).toEqual(['new prompt after archive']);
+  });
 });

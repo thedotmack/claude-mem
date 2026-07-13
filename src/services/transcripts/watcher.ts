@@ -243,7 +243,9 @@ export class TranscriptWatcher {
 
     const sessionIdOverride = this.extractSessionIdFromPath(filePath);
 
-    let offset = this.state.offsets[filePath] ?? 0;
+    let offset = this.state.offsets[filePath]
+      ?? this.findOriginalCodexOffset(filePath, schema)
+      ?? 0;
     if (offset === 0 && watch.startAtEnd) {
       try {
         offset = statSync(filePath).size;
@@ -272,6 +274,28 @@ export class TranscriptWatcher {
       watch: watch.name,
       schema: schema.name
     });
+  }
+
+  private findOriginalCodexOffset(filePath: string, schema: TranscriptSchema): number | undefined {
+    const normalized = filePath.replace(/\\/g, '/');
+    if (schema.name !== 'codex' || !/\/\.codex\/archived_sessions\//i.test(normalized)) {
+      return undefined;
+    }
+
+    const fileName = basename(filePath);
+    const original = Object.entries(this.state.offsets).find(([candidate]) => {
+      const normalizedCandidate = candidate.replace(/\\/g, '/');
+      return /\/\.codex\/sessions\//i.test(normalizedCandidate)
+        && basename(candidate) === fileName;
+    });
+
+    if (!original) return undefined;
+
+    try {
+      return Math.min(original[1], statSync(filePath).size);
+    } catch {
+      return original[1];
+    }
   }
 
   private async handleLine(
