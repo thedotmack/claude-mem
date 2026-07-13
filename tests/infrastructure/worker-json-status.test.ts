@@ -190,11 +190,17 @@ describe('worker-json-status', () => {
               message: 'uvx executable not found',
               recordedAtMs: 124,
             },
+            {
+              dependency: 'chroma',
+              kind: 'vector_search_unavailable',
+              message: 'Chroma data dir already has a writer',
+              recordedAtMs: 125,
+            },
           ],
         },
       });
 
-      expect(hint).toBe('  Dependencies: degraded (Claude CLI setup required, uvx unavailable for vector search). Run npx claude-mem doctor or open Settings for remediation.');
+      expect(hint).toBe('  Dependencies: degraded (Claude CLI setup required, uvx unavailable for vector search, Chroma unavailable for vector search). Run npx claude-mem doctor or open Settings for remediation.');
     });
 
     it('returns null when dependencies are healthy or absent', () => {

@@ -1453,6 +1453,9 @@ export function formatDependencyHealthHint(health: WorkerHealthSnapshot): string
     if (status.dependency === 'uvx' && status.kind === 'vector_search_unavailable') {
       return 'uvx unavailable for vector search';
     }
+    if (status.dependency === 'chroma' && status.kind === 'vector_search_unavailable') {
+      return 'Chroma unavailable for vector search';
+    }
     return `${status.dependency}: ${status.kind}`;
   });
 

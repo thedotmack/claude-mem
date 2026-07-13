@@ -685,6 +685,19 @@ function copyPluginToCache(version: string): void {
   cpSync(sourcePluginDirectory, cachePath, { recursive: true, force: true });
 }
 
+function writeMarketplaceInstallMarkers(
+  marketplaceDir: string,
+  version: string,
+  bunVersion: string,
+  uvVersion: string,
+): void {
+  writeInstallMarker(marketplaceDir, version, bunVersion, uvVersion);
+  // Hooks execute from marketplace/plugin, and Codex caches only that nested
+  // directory. Keep the runtime marker beside the package.json the hook reads
+  // so SessionStart does not report a completed install as missing.
+  writeInstallMarker(join(marketplaceDir, 'plugin'), version, bunVersion, uvVersion);
+}
+
 /**
  * Install marketplace dependencies, strict-first.
  *
@@ -1627,7 +1640,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
           const stopHeartbeat = startHeartbeat(message, 'Running npm install…');
           try {
             await runNpmInstallInMarketplace(summary);
-            writeInstallMarker(
+            writeMarketplaceInstallMarkers(
               marketplaceDirectory(),
               version,
               installedBunVersion ?? 'unknown',
@@ -1911,7 +1924,7 @@ async function runRepairCommandInner(summary: InstallSummary): Promise<void> {
         const stopHeartbeat = startHeartbeat(message, 'Running npm install…');
         try {
           await runNpmInstallInMarketplace(summary);
-          writeInstallMarker(marketplaceDir, version, bunVersion, uvVersion);
+          writeMarketplaceInstallMarkers(marketplaceDir, version, bunVersion, uvVersion);
         } finally {
           stopHeartbeat();
         }

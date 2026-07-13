@@ -11,7 +11,8 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
-import { clearDependencyStatus, recordUvxVectorSearchUnavailable } from '../../shared/dependency-health.js';
+import { captureProcessStartToken, isPidAlive } from '../../supervisor/process-registry.js';
+import { clearDependencyStatus, recordChromaVectorSearchUnavailable, recordUvxVectorSearchUnavailable } from '../../shared/dependency-health.js';
 import { ChromaUnavailableError } from '../worker/search/errors.js';
 
 const execFileAsync = promisify(execFile);
@@ -24,7 +25,7 @@ const CHROMA_PREWARM_TIMEOUT_SETTING = 'CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS';
 const CHROMA_PREWARM_TIMEOUT_BOUNDS = { min: 1, max: 600_000 } as const;
 const CHROMA_PREWARM_REAP_TIMEOUT_MS = 1_000;
 const RECONNECT_BACKOFF_MS = 10_000;
-const DEFAULT_CHROMA_DATA_DIR = paths.chroma();
+const CHROMA_WRITER_LOCK_FILENAME = '.claude-mem-chroma-writer.lock';
 const CHROMA_SUPERVISOR_ID = 'chroma-mcp';
 const CHROMA_OUTPUT_TAIL_MAX_CHARS = 2048;
 
@@ -65,6 +66,14 @@ class ChromaMcpConnectionCancelledError extends Error {
   }
 }
 
+interface ChromaWriterLockPayload {
+  pid: number;
+  ownerId: string;
+  dataDir: string;
+  acquiredAt: string;
+  startToken?: string | null;
+}
+
 export class ChromaMcpManager {
   private static instance: ChromaMcpManager | null = null;
   private client: Client | null = null;
@@ -75,6 +84,9 @@ export class ChromaMcpManager {
   private activePrewarmChild: ChildProcess | null = null;
   private connectionGeneration: number = 0;
   private intentionallyClosingTransports = new WeakSet<object>();
+  private readonly chromaWriterOwnerId = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+  private chromaWriterLock: { path: string; dataDir: string; ownerId: string } | null = null;
+  private unexpectedCloseCleanup: Promise<void> | null = null;
   private static uvxAvailabilityProbe: ((command: string, env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null = null;
 
   private constructor() {}
@@ -87,6 +99,8 @@ export class ChromaMcpManager {
   }
 
   private async ensureConnected(): Promise<void> {
+    await this.waitForUnexpectedCloseCleanup();
+
     if (this.connected && this.client) {
       return;
     }
@@ -134,7 +148,8 @@ export class ChromaMcpManager {
     await this.disposeCurrentSubprocess();
     this.assertConnectionNotCancelled(connectionGeneration);
 
-    const commandArgs = this.buildCommandArgs();
+    const localChromaDataDir = this.getLocalPersistentChromaDataDir();
+    const commandArgs = this.buildCommandArgs(localChromaDataDir);
     const uvxPreflightEnv = ChromaMcpManager.getUvxPreflightEnv();
     getSupervisor().assertCanSpawn('chroma mcp');
 
@@ -164,21 +179,35 @@ export class ChromaMcpManager {
       args: uvxSpawnArgs.join(' ')
     });
 
-    this.transport = new StdioClientTransport({
-      command: uvxSpawnCommand,
-      args: uvxSpawnArgs,
-      env: spawnEnvironment,
-      cwd: os.homedir(),
-      stderr: 'pipe'
-    });
+    try {
+      if (localChromaDataDir) {
+        this.acquireChromaWriterLock(localChromaDataDir);
+      }
+
+      this.transport = new StdioClientTransport({
+        command: uvxSpawnCommand,
+        args: uvxSpawnArgs,
+        env: spawnEnvironment,
+        cwd: os.homedir(),
+        stderr: 'pipe'
+      });
+    } catch (error) {
+      this.releaseChromaWriterLock();
+      throw error;
+    }
     const transportStderrTail = ChromaMcpManager.captureOutputTail(this.transport.stderr);
 
-    this.client = new Client(
-      { name: CHROMA_MCP_CLIENT_NAME, version: CHROMA_MCP_CLIENT_VERSION },
-      { capabilities: {} }
-    );
-
-    const mcpConnectionPromise = this.client.connect(this.transport);
+    let mcpConnectionPromise: Promise<void>;
+    try {
+      this.client = new Client(
+        { name: CHROMA_MCP_CLIENT_NAME, version: CHROMA_MCP_CLIENT_VERSION },
+        { capabilities: {} }
+      );
+      mcpConnectionPromise = this.client.connect(this.transport);
+    } catch (error) {
+      await this.disposeCurrentSubprocess();
+      throw error;
+    }
     let timeoutId: ReturnType<typeof setTimeout>;
     const timeoutPromise = new Promise<never>((_, reject) => {
       timeoutId = setTimeout(
@@ -216,6 +245,7 @@ export class ChromaMcpManager {
 
     this.connected = true;
     this.registerManagedProcess();
+    clearDependencyStatus('chroma');
 
     logger.info('CHROMA_MCP', 'Connected to chroma-mcp successfully');
 
@@ -245,15 +275,40 @@ export class ChromaMcpManager {
       // does not use process groups. Sweep the descendant tree using the
       // captured PID — best-effort; pgrep returns nothing if everything
       // already exited (#2313).
-      if (currentTrackedPid) {
-        ChromaMcpManager.killProcessTree(currentTrackedPid).catch((error) => {
-          logger.debug('CHROMA_MCP', 'Background tree-kill after onclose finished (best-effort)', {
-            pid: currentTrackedPid,
-            error: error instanceof Error ? error.message : String(error)
-          });
-        });
-      }
+      this.scheduleUnexpectedCloseCleanup(currentTrackedPid);
     };
+  }
+
+  private scheduleUnexpectedCloseCleanup(pid: number | undefined): void {
+    let cleanup: Promise<void>;
+    cleanup = this.cleanupUnexpectedCloseSubprocess(pid).finally(() => {
+      if (this.unexpectedCloseCleanup === cleanup) {
+        this.unexpectedCloseCleanup = null;
+      }
+    });
+    this.unexpectedCloseCleanup = cleanup;
+  }
+
+  private async cleanupUnexpectedCloseSubprocess(pid: number | undefined): Promise<void> {
+    try {
+      if (pid) {
+        await ChromaMcpManager.killProcessTree(pid);
+      }
+    } catch (error) {
+      logger.debug('CHROMA_MCP', 'Background tree-kill after onclose finished (best-effort)', {
+        pid,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    } finally {
+      this.releaseChromaWriterLock();
+    }
+  }
+
+  private async waitForUnexpectedCloseCleanup(): Promise<void> {
+    const cleanup = this.unexpectedCloseCleanup;
+    if (cleanup) {
+      await cleanup;
+    }
   }
 
   private assertConnectionNotCancelled(connectionGeneration: number): void {
@@ -262,13 +317,18 @@ export class ChromaMcpManager {
     }
   }
 
-  private buildCommandArgs(): string[] {
+  private getLocalPersistentChromaDataDir(): string | null {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const chromaMode = settings.CLAUDE_MEM_CHROMA_MODE || 'local';
+    return chromaMode === 'remote' ? null : paths.chroma();
+  }
+
+  private buildCommandArgs(localChromaDataDir: string | null = this.getLocalPersistentChromaDataDir()): string[] {
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const pythonVersion = process.env.CLAUDE_MEM_PYTHON_VERSION || settings.CLAUDE_MEM_PYTHON_VERSION || '3.13';
     const launcherPrefix = ChromaMcpManager.buildLauncherPrefix(pythonVersion);
 
-    if (chromaMode === 'remote') {
+    if (!localChromaDataDir) {
       const chromaHost = settings.CLAUDE_MEM_CHROMA_HOST || '127.0.0.1';
       const chromaPort = settings.CLAUDE_MEM_CHROMA_PORT || '8000';
       const chromaSsl = settings.CLAUDE_MEM_CHROMA_SSL === 'true';
@@ -303,8 +363,152 @@ export class ChromaMcpManager {
     return [
       ...launcherPrefix,
       '--client-type', 'persistent',
-      '--data-dir', DEFAULT_CHROMA_DATA_DIR.replace(/\\/g, '/')
+      '--data-dir', localChromaDataDir.replace(/\\/g, '/')
     ];
+  }
+
+  private acquireChromaWriterLock(dataDir: string): void {
+    const normalizedDataDir = path.resolve(dataDir);
+    if (this.chromaWriterLock?.dataDir === normalizedDataDir) {
+      return;
+    }
+    if (this.chromaWriterLock) {
+      this.releaseChromaWriterLock();
+    }
+
+    fs.mkdirSync(normalizedDataDir, { recursive: true });
+    const lockPath = path.join(normalizedDataDir, CHROMA_WRITER_LOCK_FILENAME);
+    const payload: ChromaWriterLockPayload = {
+      pid: process.pid,
+      ownerId: this.chromaWriterOwnerId,
+      dataDir: normalizedDataDir,
+      acquiredAt: new Date().toISOString(),
+      startToken: captureProcessStartToken(process.pid),
+    };
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        fs.writeFileSync(lockPath, JSON.stringify(payload, null, 2), {
+          encoding: 'utf-8',
+          flag: 'wx',
+        });
+        this.chromaWriterLock = { path: lockPath, dataDir: normalizedDataDir, ownerId: this.chromaWriterOwnerId };
+        logger.debug('CHROMA_MCP', 'Acquired Chroma writer lock', { lockPath, dataDir: normalizedDataDir });
+        return;
+      } catch (error) {
+        const errno = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+        if (errno !== 'EEXIST') {
+          const message = `Unable to acquire Chroma writer lock at ${lockPath}: ${error instanceof Error ? error.message : String(error)}`;
+          recordChromaVectorSearchUnavailable(message);
+          throw new ChromaUnavailableError(message, error instanceof Error ? error : undefined);
+        }
+
+        const existing = ChromaMcpManager.readChromaWriterLock(lockPath);
+        if (!existing) {
+          const message = `Chroma writer lock at ${lockPath} is unreadable; refusing to start a second writer`;
+          recordChromaVectorSearchUnavailable(message);
+          throw new ChromaUnavailableError(message);
+        }
+
+        if (existing.pid === process.pid && existing.ownerId === this.chromaWriterOwnerId) {
+          this.chromaWriterLock = { path: lockPath, dataDir: normalizedDataDir, ownerId: this.chromaWriterOwnerId };
+          return;
+        }
+
+        if (!ChromaMcpManager.isChromaWriterLockLive(existing)) {
+          try {
+            fs.rmSync(lockPath, { force: true });
+            logger.info('CHROMA_MCP', 'Removed stale Chroma writer lock', {
+              lockPath,
+              priorPid: existing.pid,
+              priorStartedAt: existing.acquiredAt,
+            });
+            continue;
+          } catch (removeError) {
+            const message = `Unable to remove stale Chroma writer lock at ${lockPath}: ${removeError instanceof Error ? removeError.message : String(removeError)}`;
+            recordChromaVectorSearchUnavailable(message);
+            throw new ChromaUnavailableError(message, removeError instanceof Error ? removeError : undefined);
+          }
+        }
+
+        const message = `Chroma data dir ${normalizedDataDir} is already owned by PID ${existing.pid}; refusing to start a second writer`;
+        recordChromaVectorSearchUnavailable(message);
+        throw new ChromaUnavailableError(message);
+      }
+    }
+
+    const message = `Unable to acquire Chroma writer lock at ${lockPath} after removing stale lock`;
+    recordChromaVectorSearchUnavailable(message);
+    throw new ChromaUnavailableError(message);
+  }
+
+  private releaseChromaWriterLock(): void {
+    const lock = this.chromaWriterLock;
+    if (!lock) {
+      return;
+    }
+    this.chromaWriterLock = null;
+
+    const existing = ChromaMcpManager.readChromaWriterLock(lock.path);
+    if (!existing) {
+      logger.debug('CHROMA_MCP', 'Chroma writer lock already missing or unreadable during release', {
+        lockPath: lock.path,
+      });
+      return;
+    }
+
+    if (existing.pid !== process.pid || existing.ownerId !== lock.ownerId) {
+      logger.debug('CHROMA_MCP', 'Chroma writer lock not owned by this manager, leaving it in place', {
+        lockPath: lock.path,
+        recordedPid: existing.pid,
+        currentPid: process.pid,
+      });
+      return;
+    }
+
+    try {
+      fs.rmSync(lock.path, { force: true });
+      logger.debug('CHROMA_MCP', 'Released Chroma writer lock', { lockPath: lock.path });
+    } catch (error) {
+      logger.debug('CHROMA_MCP', 'Failed to release Chroma writer lock', {
+        lockPath: lock.path,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private static readChromaWriterLock(lockPath: string): ChromaWriterLockPayload | null {
+    try {
+      const raw = JSON.parse(fs.readFileSync(lockPath, 'utf-8')) as Partial<ChromaWriterLockPayload>;
+      if (
+        typeof raw.pid !== 'number' ||
+        typeof raw.ownerId !== 'string' ||
+        typeof raw.dataDir !== 'string' ||
+        typeof raw.acquiredAt !== 'string'
+      ) {
+        return null;
+      }
+      return {
+        pid: raw.pid,
+        ownerId: raw.ownerId,
+        dataDir: raw.dataDir,
+        acquiredAt: raw.acquiredAt,
+        startToken: typeof raw.startToken === 'string' || raw.startToken === null ? raw.startToken : undefined,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private static isChromaWriterLockLive(lock: ChromaWriterLockPayload): boolean {
+    if (!isPidAlive(lock.pid)) {
+      return false;
+    }
+    if (!lock.startToken) {
+      return true;
+    }
+    const currentStartToken = captureProcessStartToken(lock.pid);
+    return currentStartToken === null || currentStartToken === lock.startToken;
   }
 
   private static buildLauncherPrefix(pythonVersion: string): string[] {
@@ -660,6 +864,7 @@ export class ChromaMcpManager {
     if (trackedPid) {
       getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
     }
+    this.releaseChromaWriterLock();
 
     this.client = null;
     this.transport = null;
@@ -733,9 +938,11 @@ export class ChromaMcpManager {
    */
   async stop(): Promise<void> {
     this.connectionGeneration += 1;
+    await this.waitForUnexpectedCloseCleanup();
 
     if (!this.client && !this.transport && !this.activePrewarmChild) {
       logger.debug('CHROMA_MCP', 'No active MCP connection to stop');
+      this.releaseChromaWriterLock();
       this.connecting = null;
       return;
     }
