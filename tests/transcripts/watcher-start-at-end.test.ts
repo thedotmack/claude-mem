@@ -109,7 +109,7 @@ describe('TranscriptWatcher startAtEnd', () => {
     expect(prompts).not.toContain('historical prompt that must not be replayed');
   });
 
-  it('continues from the original offset when Codex moves a session into the archive', async () => {
+  it('continues from the original offset when a Codex watch uses a custom schema name', async () => {
     const sessionId = '019e050e-7ae0-71b2-b19f-6cc428e5763a';
     const fileName = `rollout-${sessionId}.jsonl`;
     const originalPath = join(tmpRoot, '.codex', 'sessions', '2026', '07', '12', fileName);
@@ -131,7 +131,7 @@ describe('TranscriptWatcher startAtEnd', () => {
     writeFileSync(statePath, JSON.stringify({ offsets: { [originalPath]: Buffer.byteLength(historicalEntry) + 100 } }), 'utf8');
 
     const schema: TranscriptSchema = {
-      name: 'codex',
+      name: 'custom-codex',
       events: [
         {
           name: 'user-message',
@@ -145,7 +145,7 @@ describe('TranscriptWatcher startAtEnd', () => {
       ],
     };
     const watch: WatchTarget = {
-      name: 'codex-archived',
+      name: 'codex',
       path: join(tmpRoot, '.codex', 'archived_sessions', '*.jsonl'),
       schema,
       startAtEnd: false,
