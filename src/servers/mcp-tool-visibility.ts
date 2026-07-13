@@ -18,7 +18,7 @@ export function getAdvertisedMcpToolsForRuntime<T extends { name: string }>(
   allTools: readonly T[],
   runtime: SelectedRuntime
 ): T[] {
-  if (runtime === 'server-beta') {
+  if (runtime === 'server') {
     return [...allTools];
   }
   logger.debug('SYSTEM', 'Filtering server-beta-only MCP tools from worker runtime advertisement', {

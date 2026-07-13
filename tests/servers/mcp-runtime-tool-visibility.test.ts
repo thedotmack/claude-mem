@@ -31,9 +31,9 @@ describe('MCP runtime-aware tool visibility', () => {
     }
   });
 
-  it('base-fails/head-passes: server-beta keeps server-beta-only tool names', () => {
-    const serverBetaTools = getAdvertisedMcpToolsForRuntime(allTools, 'server-beta');
-    const names = new Set(serverBetaTools.map(tool => tool.name));
+  it('base-fails/head-passes: server runtime keeps server-beta-only tool names', () => {
+    const serverTools = getAdvertisedMcpToolsForRuntime(allTools, 'server');
+    const names = new Set(serverTools.map(tool => tool.name));
 
     for (const toolName of SERVER_BETA_ONLY_TOOL_NAMES) {
       expect(names.has(toolName)).toBe(true);
