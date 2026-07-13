@@ -17,13 +17,14 @@ export interface GeneratorExitDependencies {
  * are different: claimed work has already been reset to pending, so leave the
  * session and in-RAM buffer alive for a later generator start.
  *
- * For non-quota exits we do NOT respawn on remaining buffered work: the old
- * respawn-on-pending loop, driven by the durable pending_messages queue, was the
- * retry storm. Buffered work lives only in RAM now; anything still buffered is
- * dropped here and recovered, if needed, by replaying the Claude Code
- * transcript. Continuation of a session that is still live happens naturally —
- * the next observation ingest calls ensureGeneratorRunning, which starts a
- * fresh generator that drains whatever is buffered.
+ * Any exit that leaves buffered work behind (quota, exec timeout, spawn
+ * failure, idle race) preserves the session and its in-RAM buffer instead of
+ * finalizing: buffered work lives only in RAM, so finalize → dispose would
+ * silently delete it. We still do NOT respawn here — the old respawn-on-pending
+ * loop was the retry storm. Continuation happens naturally: the next
+ * observation ingest (or /api/sessions/init) calls ensureGeneratorRunning,
+ * which starts a fresh generator that drains whatever is buffered. Only a
+ * clean exit with an empty buffer finalizes and removes the session.
  */
 export async function handleGeneratorExit(
   session: ActiveSession,
@@ -45,6 +46,18 @@ export async function handleGeneratorExit(
     logger.warn('SESSION', 'Generator paused for quota; preserving buffered work', {
       sessionId: sessionDbId,
       pendingCount: sessionManager.getMessageBuffer().getPendingCount(sessionDbId),
+    });
+    return;
+  }
+
+  // Claimed-but-unconfirmed messages count as buffered work too.
+  await sessionManager.resetProcessingToPending(sessionDbId);
+  const pendingCount = sessionManager.getMessageBuffer().getPendingCount(sessionDbId);
+  if (pendingCount > 0) {
+    logger.warn('SESSION', 'Generator exited with buffered work; preserving session (finalize would dispose it)', {
+      sessionId: sessionDbId,
+      reason,
+      pendingCount,
     });
     return;
   }

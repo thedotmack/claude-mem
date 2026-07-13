@@ -192,6 +192,46 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     expect(session.currentProvider).toBeNull();
   });
 
+  it('failed (non-quota) generator exit with buffered work preserves the session instead of disposing it', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(7, 'do the thing', 1);
+    session.memorySessionId = 'mem-7';
+    session.generatorPromise = Promise.resolve();
+    await queueAndClaimOne(sm, 7);
+
+    const finalizeSession = mock(() => Promise.resolve());
+    const removeSpy = spyOn(sm, 'removeSessionImmediate');
+
+    // reason=null is the generator-failure exit path (e.g. codex exec timeout).
+    await handleGeneratorExit(session, null, {
+      sessionManager: sm,
+      completionHandler: { finalizeSession } as any,
+    });
+
+    expect(finalizeSession).not.toHaveBeenCalled();
+    expect(removeSpy).not.toHaveBeenCalled();
+    expect(sm.getSession(7)).toBe(session);
+    expect(sm.getMessageBuffer().getPendingCount(7)).toBe(1);
+  });
+
+  it('clean exit with an empty buffer still finalizes and removes the session', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(8, 'do the thing', 1);
+    session.memorySessionId = 'mem-8';
+    session.generatorPromise = Promise.resolve();
+
+    const finalizeSession = mock(() => Promise.resolve());
+    const removeSpy = spyOn(sm, 'removeSessionImmediate');
+
+    await handleGeneratorExit(session, null, {
+      sessionManager: sm,
+      completionHandler: { finalizeSession } as any,
+    });
+
+    expect(finalizeSession).toHaveBeenCalledTimes(1);
+    expect(removeSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('confirms skip/no-op prose but preserves the same queue shape for quota pause', async () => {
     const skipSm = new SessionManager(makeDbManager());
     const skipSession = skipSm.initializeSession(4, 'do the thing', 1);
