@@ -5,6 +5,7 @@ import { logger } from '../utils/logger.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { isPidAlive, waitForExit, type ManagedProcessRecord, type ProcessRegistry } from './process-registry.js';
 import { paths } from '../shared/paths.js';
+import { sanitizeEnv } from './env-sanitizer.js';
 
 const execFileAsync = promisify(execFile);
 const PID_FILE = paths.workerPid();
@@ -159,13 +160,39 @@ const REAP_CMDLINE_MARKERS: Record<string, string> = {
 };
 
 async function processCommandLine(pid: number): Promise<string | null> {
-  if (process.platform === 'win32') return null;
+  if (process.platform === 'win32') return windowsCommandLine(pid);
   try {
     const { stdout } = await execFileAsync('ps', ['-p', String(pid), '-o', 'args=']);
     return stdout.trim() || null;
   } catch {
     // Process exited between checks, or ps is unavailable — caller treats
     // null as "cannot verify" and falls back to signaling.
+    return null;
+  }
+}
+
+// Windows has no `ps`; read the command line from CIM the same way
+// process-registry.ts reads CreationDate (wmic is removed on Windows 11). This
+// lets reapLeakedProcesses verify a marker-typed entry (chroma) before signaling
+// so a pid recycled across a reboot is dropped instead of blindly killed
+// (Copilot review, PR #3232). `pid` is a registry-sourced integer, so there is
+// nothing to inject into the -Filter. Fails safe: any error / missing PowerShell
+// / null CommandLine yields null, i.e. "cannot verify" — identical to the prior
+// win32 behavior, so this can only make the reaper more conservative, never less.
+async function windowsCommandLine(pid: number): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`
+      ],
+      { timeout: 5_000, windowsHide: true, env: { ...sanitizeEnv(process.env), LC_ALL: 'C', LANG: 'C' } }
+    );
+    return stdout.trim() || null;
+  } catch {
     return null;
   }
 }
