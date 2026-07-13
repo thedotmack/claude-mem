@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it } from 'bun:test';
-import { execFileSync } from 'child_process';
+import { execFileSync, spawn } from 'child_process';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { paths } from '../../src/shared/paths.js';
 import { createProcessRegistry, isPidAlive } from '../../src/supervisor/process-registry.js';
 import { reapOrphanedChromaProcesses } from '../../src/supervisor/orphan-sweep.js';
+import { collectDescendantPidsViaProcTable } from '../../src/supervisor/tree-kill.js';
 
 // The DURABLE regression contract for the chroma-mcp orphan leak (#3216/#3218):
 // a REAL process that re-parents to init / systemd --user (which the synthetic
@@ -31,7 +32,10 @@ function orphanParentSet(): Set<number> {
     const out = execFileSync('ps', ['-eo', 'pid,args'], { encoding: 'utf8' });
     for (const line of out.split('\n')) {
       const m = line.trim().match(/^(\d+)\s+(.*)$/);
-      if (m && m[2].startsWith('systemd --user')) set.add(Number(m[1]));
+      // Match the user manager whether ps shows it bare or with its absolute
+      // argv[0] (`/usr/lib/systemd/systemd --user`) — mirrors SYSTEMD_USER_MANAGER
+      // in orphan-sweep.ts so this precondition holds on every systemd distro.
+      if (m && /(?:^|\/)systemd --user(?:\s|$)/.test(m[2])) set.add(Number(m[1]));
     }
   } catch { /* best effort */ }
   return set;
@@ -86,5 +90,25 @@ describe.skipIf(!isPosix)('orphan-sweep — real orphaned chroma-mcp tree (#3216
       await new Promise(r => setTimeout(r, 50));
     }
     expect(isPidAlive(orphanPid)).toBe(false);
+  });
+
+  // The pgrep-less fallback (greptile review, PR #3232): prove the real
+  // `ps -eo pid,ppid` → parse → tree-walk chain finds a genuine child, so a host
+  // that lacks `pgrep` still reaps the full tree rather than orphaning it.
+  it('collectDescendantPidsViaProcTable finds a real live child from the ps table', async () => {
+    const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' });
+    expect(typeof child.pid === 'number' && child.pid > 0).toBe(true);
+    spawned.push(child.pid!);
+
+    // Give ps a moment to observe the freshly-forked child.
+    let descendants: number[] = [];
+    for (let i = 0; i < 20; i++) {
+      descendants = await collectDescendantPidsViaProcTable(process.pid);
+      if (descendants.includes(child.pid!)) break;
+      await new Promise(r => setTimeout(r, 50));
+    }
+    expect(descendants).toContain(child.pid!);
+
+    child.kill('SIGKILL');
   });
 });

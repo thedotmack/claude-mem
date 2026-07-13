@@ -32,6 +32,37 @@ describe('orphan-sweep — findOrphanedChromaPids (#3216/#3218)', () => {
     expect(findOrphanedChromaPids(rows, DATA, new Set())).toEqual([100]);
   });
 
+  // ps renders the user manager with its absolute argv[0] on most systemd
+  // distros (Debian/Ubuntu/Fedora) — `startsWith('systemd --user')` would miss
+  // these and leave the orphan running, the exact case this sweep exists for.
+  it('flags a chroma-mcp re-parented to /usr/lib/systemd/systemd --user (abs path)', () => {
+    const rows = ps(
+      '  900    1 /usr/lib/systemd/systemd --user',
+      `  100  900 uvx chroma-mcp --data-dir ${DATA}`,
+    );
+    expect(findOrphanedChromaPids(rows, DATA, new Set())).toEqual([100]);
+  });
+
+  it('flags a chroma-mcp re-parented to /lib/systemd/systemd --user (abs path)', () => {
+    const rows = ps(
+      '  900    1 /lib/systemd/systemd --user',
+      `  100  900 uvx chroma-mcp --data-dir ${DATA}`,
+    );
+    expect(findOrphanedChromaPids(rows, DATA, new Set())).toEqual([100]);
+  });
+
+  // Guard against over-matching: a process whose name merely ends in "systemd"
+  // (or uses --userland-ish flags) must NOT be treated as the user manager.
+  it('does NOT treat a lookalike ".../notsystemd --user" as the user manager', () => {
+    const rows = ps(
+      '  900    1 /opt/notsystemd --user',
+      `  100  900 uvx chroma-mcp --data-dir ${DATA}`,
+    );
+    // pid 100's parent (900) is not init and not a real systemd --user manager,
+    // so it is not classified as an orphan.
+    expect(findOrphanedChromaPids(rows, DATA, new Set())).toEqual([]);
+  });
+
   it('does NOT flag a chroma-mcp still parented to the live worker', () => {
     const rows = ps(` 100 5000 uvx chroma-mcp --data-dir ${DATA}`);
     expect(findOrphanedChromaPids(rows, DATA, new Set())).toEqual([]);

@@ -26,6 +26,14 @@ const execFileAsync = promisify(execFile);
 // package name emitted by buildCommandArgs() in ChromaMcpManager.
 const CHROMA_MCP_CMDLINE_MARKER = 'chroma-mcp';
 
+// The per-user `systemd --user` manager — the subreaper an orphaned grandchild
+// re-parents to on systemd hosts. `ps -o args` renders it with its absolute
+// argv[0] on most distros (`/usr/lib/systemd/systemd --user`, `/lib/systemd/
+// systemd --user`) and bare (`systemd --user`) on a few, so anchor on the
+// `systemd` basename (start-of-string OR after a `/`) and require the exact
+// `--user` word (so `--userland`-style flags and `.../notsystemd` don't match).
+const SYSTEMD_USER_MANAGER = /(?:^|\/)systemd --user(?:\s|$)/;
+
 export interface PsRow {
   pid: number;
   ppid: number;
@@ -57,7 +65,7 @@ export function findOrphanedChromaPids(
   excludePids: ReadonlySet<number>,
 ): number[] {
   const systemdUserPids = rows
-    .filter(row => row.args.trim().startsWith('systemd --user'))
+    .filter(row => SYSTEMD_USER_MANAGER.test(row.args.trim()))
     .map(row => row.pid);
   const orphanParents = new Set<number>([1, ...systemdUserPids]);
   const dataDirMarker = `--data-dir ${chromaDataDir}`;
