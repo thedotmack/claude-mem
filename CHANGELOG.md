@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## Unreleased
+
+## Fixes
+
+- **Windows worker lifecycle:** an occupied worker port is now detected by binding the configured address instead of treating a non-200 health response as a free port, preventing duplicate worker spawns and `EADDRINUSE` failures.
+
 ## [13.11.0] - 2026-07-13
 
 ## Worker-native cloud sync (PR #3182)
