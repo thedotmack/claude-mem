@@ -353,7 +353,8 @@ const RULE_A_EXPECTATIONS: Record<string, Record<string, RuleAExpectation>> = {
       trailingCommand: ['node', '"$_P/scripts/version-check.js"'],
       notFoundMessage: 'claude-mem: version-check.js not found',
     }),
-    'SessionStart.0.0': claudeHook(['hook', 'claude-code', 'context']),
+    'SessionStart.0.0': claudeHook(['start'], { trailingJson: { continue: true, suppressOutput: true } }),
+    'SessionStart.0.1': claudeHook(['hook', 'claude-code', 'context']),
     'UserPromptSubmit.0.0': claudeHook(['hook', 'claude-code', 'session-init']),
     'PostToolUse.0.0': claudeHook(['hook', 'claude-code', 'observation']),
     'PreToolUse.0.0': claudeHook(['hook', 'claude-code', 'file-context']),
@@ -411,9 +412,9 @@ describe('Spawn-Contract Templating - Rule A generator parity', () => {
 
   it('keeps Claude SessionStart non-blocking while preserving Codex warmup ordering', () => {
     const claudeHooks = RULE_A_EXPECTATIONS['plugin/hooks/hooks.json'];
-    expect(claudeHooks['SessionStart.0.0']).toContain('hook claude-code context');
-    expect(Object.keys(claudeHooks)).not.toContain('SessionStart.0.1');
-    expect(claudeHooks['SessionStart.0.0']).not.toContain('worker-service.cjs" start');
+    expect(claudeHooks['SessionStart.0.0']).toContain('worker-service.cjs" start');
+    expect((claudeHooks['SessionStart.0.0'] as string)).toContain('{"continue":true,"suppressOutput":true}');
+    expect(claudeHooks['SessionStart.0.1']).toContain('hook claude-code context');
 
     const codexHooks = RULE_A_EXPECTATIONS['plugin/hooks/codex-hooks.json'];
     const codexSessionStart = codexHooks['SessionStart.0.0'];
