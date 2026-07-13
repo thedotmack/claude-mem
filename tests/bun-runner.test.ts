@@ -2,7 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
-import { join } from 'path';
+import { join, win32 } from 'path';
 
 const BUN_RUNNER_PATH = join(import.meta.dir, '..', 'plugin', 'scripts', 'bun-runner.js');
 const source = readFileSync(BUN_RUNNER_PATH, 'utf-8');
@@ -13,9 +13,10 @@ const findBunSource = source.slice(
 type FindBun = () => string | null;
 const createFindBun = new Function(
   'deps',
-  `const { IS_WINDOWS, existsSync, homedir, join, spawnSync } = deps;\n${findBunSource}\nreturn findBun;`
+  `const { IS_WINDOWS, dirname, existsSync, homedir, join, spawnSync } = deps;\n${findBunSource}\nreturn findBun;`
 ) as (deps: {
   IS_WINDOWS: boolean;
+  dirname: typeof win32.dirname;
   existsSync: (path: string) => boolean;
   homedir: () => string;
   join: typeof join;
@@ -46,6 +47,38 @@ describe('bun-runner.js findBun: DEP0190 regression guard (#1503)', () => {
 
 const windowsDescribe = process.platform === 'win32' ? describe : describe.skip;
 
+function findBunForWhereOutput(stdout: string) {
+  return createFindBun({
+    IS_WINDOWS: true,
+    dirname: win32.dirname,
+    existsSync: () => false,
+    homedir: () => 'C:\\Users\\fixture',
+    join,
+    spawnSync: (() => ({
+      status: 0,
+      stdout,
+      stderr: ''
+    })) as typeof spawnSync
+  })();
+}
+
+describe('bun-runner.js Windows PATH ordering', () => {
+  it('keeps an earlier bun.cmd ahead of a later bun.exe', () => {
+    expect(findBunForWhereOutput([
+      'C:\\First\\bun.cmd',
+      'C:\\Second\\bun.exe'
+    ].join('\r\n'))).toBe('C:\\First\\bun.cmd');
+  });
+
+  it('prefers bun.exe when bun.cmd and bun.exe share the first directory', () => {
+    expect(findBunForWhereOutput([
+      'C:\\First\\bun.cmd',
+      'C:\\First\\bun.exe',
+      'C:\\Second\\bun.exe'
+    ].join('\r\n'))).toBe('C:\\First\\bun.exe');
+  });
+});
+
 windowsDescribe('bun-runner.js Windows executable resolution', () => {
   function withFixture<T>(files: Record<string, string | null>, run: (fixtureDir: string) => T) {
     const fixtureDir = mkdtempSync(join(tmpdir(), 'bun-runner-'));
@@ -67,20 +100,6 @@ windowsDescribe('bun-runner.js Windows executable resolution', () => {
     } finally {
       rmSync(fixtureDir, { recursive: true, force: true });
     }
-  }
-
-  function findBunForWhereOutput(stdout: string) {
-    return createFindBun({
-      IS_WINDOWS: true,
-      existsSync: () => false,
-      homedir: () => 'C:\\Users\\fixture',
-      join,
-      spawnSync: (() => ({
-        status: 0,
-        stdout,
-        stderr: ''
-      })) as typeof spawnSync
-    })();
   }
 
   function findBunBaseForWhereOutput(stdout: string) {
