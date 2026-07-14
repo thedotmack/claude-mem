@@ -7,7 +7,7 @@ import { SettingsDefaultsManager, type SettingsDefaults } from "./SettingsDefaul
 import { MARKETPLACE_ROOT, DATA_DIR } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
 import { validateWorkerPidFile } from "../supervisor/index.js";
-import { emitBlockingError } from "./hook-io.js";
+import { emitBlockingError, emitDiagnostic } from "./hook-io.js";
 import { captureCliEvent } from "../services/telemetry/cli-telemetry.js";
 import { checkVersionMatch } from "../services/infrastructure/index.js";
 // Imported from ProcessManager.js directly (not the infrastructure barrel):
@@ -603,6 +603,18 @@ function getFailLoudThreshold(): number {
   return FAIL_LOUD_DEFAULT_THRESHOLD;
 }
 
+type HookFailMode = 'block' | 'warn';
+
+function getHookFailMode(): HookFailMode {
+  try {
+    const settings = loadFromFileOnce();
+    if (settings.CLAUDE_MEM_HOOK_FAIL_MODE === 'warn') return 'warn';
+  } catch {
+    // settings unreadable — fall through to default
+  }
+  return 'block';
+}
+
 /**
  * Closed enum of hook handler names allowed as the `hook_type` telemetry
  * property. Mirrors the scrub whitelist comment (scrub.ts), the CLI
@@ -658,13 +670,25 @@ export async function recordWorkerUnreachable(): Promise<number> {
         threshold_tripped: true,
       });
     }
-    // #2292 fix: BLOCKING_FEEDBACK. emitBlockingError flushes the Phase 2
-    // stderr buffer (so preceding logger.warn lines also surface) and writes
-    // via the bypass channel + exits 2. Previously this raw process.stderr.write
-    // was swallowed by hookCommand's blanket no-op, so the user/model never saw it.
-    emitBlockingError(
-      `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks.`
-    );
+    const message = `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks.`;
+    if (getHookFailMode() === 'warn') {
+      // CLAUDE_MEM_HOOK_FAIL_MODE=warn: fail open. Surface the same message on
+      // real stderr (bypassing the buffer) but DO NOT exit 2 — on a
+      // UserPromptSubmit hook exit 2 blocks the user's prompt from ever
+      // reaching the model, and the failure state is machine-global, so a dead
+      // worker locks out every session until manually repaired. In warn mode
+      // the handler falls through to its worker-fallback result
+      // ({ continue: true }) and memory is skipped for this hook instead.
+      emitDiagnostic(
+        `${message} Memory is not being recorded (CLAUDE_MEM_HOOK_FAIL_MODE=warn). Run: npx claude-mem doctor\n`
+      );
+    } else {
+      // #2292 fix: BLOCKING_FEEDBACK. emitBlockingError flushes the Phase 2
+      // stderr buffer (so preceding logger.warn lines also surface) and writes
+      // via the bypass channel + exits 2. Previously this raw process.stderr.write
+      // was swallowed by hookCommand's blanket no-op, so the user/model never saw it.
+      emitBlockingError(message);
+    }
   }
   return next.consecutiveFailures;
 }
