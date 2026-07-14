@@ -5,7 +5,7 @@ import { HOOK_TIMEOUTS } from '../../src/shared/hook-constants.js';
 const processManager = {
   cleanStalePidFile: mock(() => 'dead' as 'alive' | 'dead'),
   getPlatformTimeout: mock((timeout: number) => timeout),
-  spawnDaemon: mock(() => 123),
+  spawnDaemon: mock(() => 2147483647),
   touchPidFile: mock(() => {}),
 };
 
@@ -15,12 +15,14 @@ const healthMonitor = {
   waitForReadiness: mock(async () => false),
 };
 
-mock.module('../../src/services/infrastructure/ProcessManager.js', () => processManager);
-mock.module('../../src/services/infrastructure/HealthMonitor.js', () => healthMonitor);
-mock.module('../../src/shared/worker-spawn-gate.js', () => ({
+const spawnGate = {
   acquireSpawnLock: mock(() => true),
   releaseSpawnLock: mock(() => {}),
-}));
+};
+
+mock.module('../../src/services/infrastructure/ProcessManager.js', () => processManager);
+mock.module('../../src/services/infrastructure/HealthMonitor.js', () => healthMonitor);
+mock.module('../../src/shared/worker-spawn-gate.js', () => spawnGate);
 
 const { ensureWorkerStarted } = await import('../../src/services/worker-spawner.js');
 
@@ -53,7 +55,7 @@ function resetMocks(): void {
   processManager.cleanStalePidFile.mockReturnValue('dead');
   processManager.getPlatformTimeout.mockClear();
   processManager.spawnDaemon.mockReset();
-  processManager.spawnDaemon.mockReturnValue(123);
+  processManager.spawnDaemon.mockReturnValue(2147483647);
   processManager.touchPidFile.mockClear();
   healthMonitor.isPortInUse.mockReset();
   healthMonitor.isPortInUse.mockResolvedValue(false);
@@ -61,6 +63,9 @@ function resetMocks(): void {
   healthMonitor.waitForHealth.mockResolvedValue(false);
   healthMonitor.waitForReadiness.mockReset();
   healthMonitor.waitForReadiness.mockResolvedValue(false);
+  spawnGate.acquireSpawnLock.mockReset();
+  spawnGate.acquireSpawnLock.mockReturnValue(true);
+  spawnGate.releaseSpawnLock.mockReset();
 }
 
 describe('ensureWorkerStarted startup readiness', () => {
@@ -114,13 +119,17 @@ describe('ensureWorkerStarted startup readiness', () => {
     expect(processManager.touchPidFile).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps a live PID warming after the readiness deadline without spawning', async () => {
+  it('returns dead when a live PID disappears before readiness comes up', async () => {
     resetMocks();
-    processManager.cleanStalePidFile.mockReturnValue('alive');
+    let cleanChecks = 0;
+    processManager.cleanStalePidFile.mockImplementation(() => {
+      cleanChecks += 1;
+      return cleanChecks === 1 ? 'alive' : 'dead';
+    });
 
     const result = await ensureWorkerStarted(39003, import.meta.filename);
 
-    expect(result).toBe('warming');
+    expect(result).toBe('dead');
     expect(healthMonitor.waitForReadiness).toHaveBeenCalledWith(39003, HOOK_TIMEOUTS.READINESS_WAIT);
     expect(processManager.spawnDaemon).not.toHaveBeenCalled();
     expect(processManager.touchPidFile).not.toHaveBeenCalled();
@@ -137,15 +146,26 @@ describe('ensureWorkerStarted startup readiness', () => {
     expect(processManager.touchPidFile).not.toHaveBeenCalled();
   });
 
-  it('keeps unknown occupied ports on the short health path', async () => {
+  it('returns dead when the spawn-lock loser never sees a live worker', async () => {
     resetMocks();
-    healthMonitor.isPortInUse.mockResolvedValue(true);
+    spawnGate.acquireSpawnLock.mockReturnValue(false);
 
     const result = await ensureWorkerStarted(39005, import.meta.filename);
 
     expect(result).toBe('dead');
-    expect(healthMonitor.waitForHealth).toHaveBeenNthCalledWith(1, 39005, 1000);
-    expect(healthMonitor.waitForHealth).toHaveBeenNthCalledWith(2, 39005, HOOK_TIMEOUTS.PORT_IN_USE_WAIT);
+    expect(processManager.spawnDaemon).not.toHaveBeenCalled();
+    expect(processManager.touchPidFile).not.toHaveBeenCalled();
+  });
+
+  it('keeps unknown occupied ports on the short health path', async () => {
+    resetMocks();
+    healthMonitor.isPortInUse.mockResolvedValue(true);
+
+    const result = await ensureWorkerStarted(39006, import.meta.filename);
+
+    expect(result).toBe('dead');
+    expect(healthMonitor.waitForHealth).toHaveBeenNthCalledWith(1, 39006, 1000);
+    expect(healthMonitor.waitForHealth).toHaveBeenNthCalledWith(2, 39006, HOOK_TIMEOUTS.PORT_IN_USE_WAIT);
     expect(healthMonitor.waitForReadiness).not.toHaveBeenCalled();
     expect(processManager.spawnDaemon).not.toHaveBeenCalled();
   });
@@ -154,7 +174,7 @@ describe('ensureWorkerStarted startup readiness', () => {
     resetMocks();
     processManager.spawnDaemon.mockReturnValue(undefined);
 
-    const result = await ensureWorkerStarted(39006, import.meta.filename);
+    const result = await ensureWorkerStarted(39007, import.meta.filename);
 
     expect(result).toBe('dead');
     expect(healthMonitor.waitForReadiness).not.toHaveBeenCalled();

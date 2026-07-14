@@ -16,6 +16,7 @@ import {
   waitForReadiness,
 } from './infrastructure/HealthMonitor.js';
 import { acquireSpawnLock, releaseSpawnLock } from '../shared/worker-spawn-gate.js';
+import { isPidAlive } from '../supervisor/process-registry.js';
 
 const WINDOWS_SPAWN_COOLDOWN_MS = 2 * 60 * 1000;
 
@@ -94,6 +95,12 @@ export async function ensureWorkerStarted(
       logger.info('SYSTEM', 'Worker became ready while waiting on live PID');
       return 'ready';
     }
+    const workerStillHealthy = await waitForHealth(port, 1000);
+    const workerPidStillAlive = cleanStalePidFile() === 'alive';
+    if (!workerStillHealthy && !workerPidStillAlive) {
+      logger.error('SYSTEM', 'Live PID disappeared before readiness endpoint became available');
+      return 'dead';
+    }
     logger.warn('SYSTEM', 'Live PID detected but worker did not become ready before timeout');
     return 'warming';
   }
@@ -135,12 +142,13 @@ export async function ensureWorkerStarted(
   // spawn and waits for the holder's worker. The winner holds the lock through
   // the readiness wait and releases it in finally on every exit path.
   const spawnLockHeld = acquireSpawnLock();
+  let spawnedPid: number | undefined;
   try {
     if (spawnLockHeld) {
       logger.info('SYSTEM', 'Starting worker daemon', { workerScriptPath });
       markWorkerSpawnAttempted();
-      const pid = spawnDaemon(workerScriptPath, port);
-      if (pid === undefined) {
+      spawnedPid = spawnDaemon(workerScriptPath, port);
+      if (spawnedPid === undefined) {
         logger.error('SYSTEM', 'Failed to spawn worker daemon');
         return 'dead';
       }
@@ -152,8 +160,11 @@ export async function ensureWorkerStarted(
     if (!ready) {
       const workerStillHealthy = await waitForHealth(port, 1000);
       const workerPidStillAlive = cleanStalePidFile() === 'alive';
-      if (spawnLockHeld && !workerStillHealthy && !workerPidStillAlive) {
-        logger.error('SYSTEM', 'Worker exited before readiness endpoint became available');
+      const spawnedProcessStillAlive = spawnedPid !== undefined && spawnedPid > 0 && isPidAlive(spawnedPid);
+      if (!workerStillHealthy && !workerPidStillAlive && !spawnedProcessStillAlive) {
+        logger.error('SYSTEM', spawnLockHeld
+          ? 'Worker exited before readiness endpoint became available'
+          : 'Spawn-lock holder never produced a live worker before readiness timed out');
         return 'dead';
       }
       logger.warn('SYSTEM', spawnLockHeld
