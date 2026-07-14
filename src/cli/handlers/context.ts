@@ -59,7 +59,12 @@ export const contextHandler: EventHandler = {
     const port = getWorkerPort();
 
     const settings = loadFromFileOnce();
-    const showTerminalOutput = settings.CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT === 'true';
+    // Codex already receives the timeline through additionalContext. Repeating
+    // it as systemMessage can push SessionStart stdout past Codex's hook-output
+    // limit, causing Codex to discard the entire payload (including context).
+    const showTerminalOutput =
+      settings.CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT === 'true'
+      && input.platform !== 'codex';
 
     const projectsParam = context.allProjects.join(',');
     const normalizedPlatformSource = input.platform
