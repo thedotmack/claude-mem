@@ -18,6 +18,7 @@ import type { SessionManager } from '../SessionManager.js';
 import type { WorkerRef, StorageResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
 import { telemetryBuffer } from '../../telemetry/buffer.js';
+import { globalRateLimitStore } from '../RateLimitStore.js';
 
 export async function processAgentResponse(
   text: string,
@@ -47,9 +48,23 @@ export async function processAgentResponse(
     ({ SDK: 'claude', Gemini: 'gemini', OpenRouter: 'openrouter' } as Record<string, string>)[agentName] ??
     'claude';
 
+  const completeClaudeQuotaProbe = (): void => {
+    const probeToken = session.quotaProbeToken;
+    if (providerName !== 'claude' || probeToken === undefined) {
+      return;
+    }
+    globalRateLimitStore.completeClaudeSpawnProbe(probeToken);
+    session.quotaProbeToken = undefined;
+  };
+
   if (!parsed.valid) {
     if (isQuotaLimitedObserverOutput(text)) {
       session.consecutiveInvalidOutputs = 0;
+
+      if (providerName === 'claude') {
+        globalRateLimitStore.blockClaudeSpawns('observer_text');
+        session.quotaProbeToken = undefined;
+      }
 
       logger.warn('PARSER', `${agentName} returned quota-limit prose — pausing generator and preserving queued batch`, {
         sessionId: session.sessionDbId,
@@ -67,6 +82,8 @@ export async function processAgentResponse(
       worker?.broadcastProcessingStatus?.();
       return;
     }
+
+    completeClaudeQuotaProbe();
 
     // Classify the non-XML output so a dropped batch is visible, not silent.
     // Ordinary idle/prose is a claimed no-op batch: confirm it and do not build
@@ -92,6 +109,7 @@ export async function processAgentResponse(
   // Valid parse — clear the invalid-output counter so transient misses don't
   // accumulate toward a respawn across a healthy session.
   session.consecutiveInvalidOutputs = 0;
+  completeClaudeQuotaProbe();
 
   if (!session.memorySessionId) {
     logger.warn('SDK', 'memorySessionId not yet captured; deferring storage until next round', {

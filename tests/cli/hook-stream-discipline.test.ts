@@ -13,9 +13,9 @@ import type { HookResult } from '../../src/cli/types.js';
 
 // Windows Terminal tab-accumulation rationale (per CLAUDE.md):
 // The exit-0-on-error policy is intentional — non-zero exits keep Windows
-// Terminal tabs open. exitGraceful() exits 0 and drops buffered stderr for the
-// transient worker-unavailable path. emitBlockingError() exits 2 only for the
-// fail-loud counter (recordWorkerUnreachable) and unrecoverable handler errors.
+// Terminal tabs open and can block the user's prompt/tool flow.
+// exitGraceful() exits 0 and drops buffered stderr for worker-unavailable
+// failures. emitBlockingError() is reserved for unrecoverable handler errors.
 //
 // These tests assert the IO-discipline CONTRACT at the seam level rather than
 // spawning the built worker daemon, because worker-service auto-spawns a Bun
@@ -36,8 +36,8 @@ function captureRealStderr(): { chunks: string[]; restore: () => void } {
 
 afterEach(() => resetHookIoState());
 
-describe('#2292 — fail-loud diagnostic is no longer swallowed', () => {
-  it('emitBlockingError surfaces the worker-unreachable message through the buffered window', () => {
+describe('#2292 — blocking diagnostics are no longer swallowed', () => {
+  it('emitBlockingError surfaces an unrecoverable message through the buffered window', () => {
     // Simulate hookCommand: install the stderr buffer that previously swallowed
     // EVERYTHING (the #2292 no-op). recordWorkerUnreachable now calls
     // emitBlockingError, which must bypass the buffer and reach real stderr.
@@ -46,10 +46,9 @@ describe('#2292 — fail-loud diagnostic is no longer swallowed', () => {
     try {
       // A swallowed write (what the old no-op did to library noise) stays buffered.
       process.stderr.write('library noise that should NOT surface on success\n');
-      // The fail-loud path:
-      emitBlockingError('claude-mem worker unreachable for 3 consecutive hooks.', { skipExit: true });
+      emitBlockingError('unrecoverable hook error', { skipExit: true });
       const surfaced = real.chunks.join('');
-      expect(surfaced).toContain('claude-mem worker unreachable for 3 consecutive hooks.');
+      expect(surfaced).toContain('unrecoverable hook error');
       // and the preceding buffered noise is flushed too (operator gets full context).
       expect(surfaced).toContain('library noise');
     } finally {
@@ -58,11 +57,10 @@ describe('#2292 — fail-loud diagnostic is no longer swallowed', () => {
     }
   });
 
-  it('worker-utils recordWorkerUnreachable routes through emitBlockingError (source contract)', () => {
+  it('worker-unreachable accounting is strictly fail-open (source contract)', () => {
     const src = readFileSync(join(REPO_ROOT, 'src', 'shared', 'worker-utils.ts'), 'utf-8');
-    // The fail-loud branch must NOT call process.stderr.write / process.exit directly.
-    expect(src).toContain('emitBlockingError(');
-    expect(src).not.toMatch(/process\.stderr\.write\(\s*\n\s*`claude-mem worker unreachable/);
+    expect(src).not.toContain('emitBlockingError(');
+    expect(src).toContain('Worker remains fail-open');
   });
 });
 

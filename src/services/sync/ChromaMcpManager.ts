@@ -88,6 +88,7 @@ export class ChromaMcpManager {
   private chromaWriterLock: { path: string; dataDir: string; ownerId: string } | null = null;
   private unexpectedCloseCleanup: Promise<void> | null = null;
   private static uvxAvailabilityProbe: ((command: string, env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null = null;
+  private static orphanProcessSnapshotProbe: (() => Promise<string>) | null = null;
 
   private constructor() {}
 
@@ -149,6 +150,15 @@ export class ChromaMcpManager {
     this.assertConnectionNotCancelled(connectionGeneration);
 
     const localChromaDataDir = this.getLocalPersistentChromaDataDir();
+    if (localChromaDataDir) {
+      // A hard worker exit cannot run stop(). On POSIX, uv/python then get
+      // re-parented to launchd/init and keep the persistent Chroma directory
+      // open while the successor starts a second writer. Sweep only roots
+      // with PPID 1 whose command names this exact data directory. Live
+      // workers' children and unrelated Chroma instances are never touched.
+      await ChromaMcpManager.cleanupOrphanedLocalChromaRoots(localChromaDataDir);
+      this.assertConnectionNotCancelled(connectionGeneration);
+    }
     const commandArgs = this.buildCommandArgs(localChromaDataDir);
     const uvxPreflightEnv = ChromaMcpManager.getUvxPreflightEnv();
     getSupervisor().assertCanSpawn('chroma mcp');
@@ -1083,6 +1093,49 @@ export class ChromaMcpManager {
     return collected;
   }
 
+  private static async cleanupOrphanedLocalChromaRoots(dataDir: string): Promise<void> {
+    if (process.platform === 'win32') {
+      return;
+    }
+
+    let stdout = '';
+    try {
+      if (ChromaMcpManager.orphanProcessSnapshotProbe) {
+        stdout = await ChromaMcpManager.orphanProcessSnapshotProbe();
+      } else {
+        const result = await execFileAsync('/bin/ps', ['-axo', 'pid=,ppid=,command='], {
+          timeout: 2_000,
+        });
+        stdout = result.stdout;
+      }
+    } catch (error) {
+      logger.debug('CHROMA_MCP', 'Could not inspect processes for orphaned Chroma roots', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+
+    const resolvedDataDir = path.resolve(dataDir);
+    const escapedDataDir = resolvedDataDir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const dataDirPattern = new RegExp(`(?:^|\\s)--data-dir\\s+${escapedDataDir}(?:\\s|$)`);
+    const orphanPids = stdout
+      .split('\n')
+      .map(line => line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/))
+      .filter((match): match is RegExpMatchArray => match !== null)
+      .filter(match => Number.parseInt(match[2], 10) === 1)
+      .filter(match => match[3].includes('chroma-mcp') && dataDirPattern.test(match[3]))
+      .map(match => Number.parseInt(match[1], 10))
+      .filter(pid => Number.isFinite(pid) && pid > 1 && pid !== process.pid);
+
+    for (const pid of Array.from(new Set(orphanPids))) {
+      logger.warn('CHROMA_MCP', 'Reaping orphaned Chroma process tree before local startup', {
+        pid,
+        dataDir: resolvedDataDir,
+      });
+      await ChromaMcpManager.killProcessTree(pid);
+    }
+  }
+
   /**
    * Reset the singleton instance (for testing).
    * Awaits stop() to prevent dual subprocesses.
@@ -1092,6 +1145,12 @@ export class ChromaMcpManager {
       await ChromaMcpManager.instance.stop();
     }
     ChromaMcpManager.instance = null;
+  }
+
+  static setOrphanProcessSnapshotProbeForTesting(
+    probe: (() => Promise<string>) | null
+  ): void {
+    ChromaMcpManager.orphanProcessSnapshotProbe = probe;
   }
 
   private getCombinedCertPath(): string | undefined {

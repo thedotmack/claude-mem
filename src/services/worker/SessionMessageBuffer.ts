@@ -3,12 +3,23 @@ import type { PendingMessage, PendingMessageWithId } from '../worker-types.js';
 import { logger } from '../../utils/logger.js';
 
 const IDLE_TIMEOUT_MS = 3 * 60 * 1000;
+const CAPACITY_LOG_INTERVAL_MS = 60 * 1000;
+
+export const SESSION_BUFFER_REJECTED = -1;
+export const SESSION_BUFFER_MAX_MESSAGES = 200;
+export const SESSION_BUFFER_MAX_BYTES = 8 * 1024 * 1024;
+
+export interface SessionMessageBufferLimits {
+  maxMessagesPerSession: number;
+  maxBytesPerSession: number;
+}
 
 interface BufferedMessage {
   id: number;
   message: PendingMessage;
   claimed: boolean;
   enqueuedAt: number;
+  estimatedBytes: number;
 }
 
 export interface DrainOptions {
@@ -43,9 +54,24 @@ export class SessionMessageBuffer {
   private readonly buffers = new Map<number, BufferedMessage[]>();
   private readonly events = new Map<number, EventEmitter>();
   private readonly seenToolUseIds = new Map<number, Set<string>>();
+  private readonly lastCapacityLogAt = new Map<number, number>();
   private nextId = 1;
+  private readonly maxMessagesPerSession: number;
+  private readonly maxBytesPerSession: number;
 
-  constructor(private readonly onMutate?: () => void) {}
+  constructor(
+    private readonly onMutate?: () => void,
+    limits: Partial<SessionMessageBufferLimits> = {},
+  ) {
+    this.maxMessagesPerSession = Math.max(
+      1,
+      Math.floor(limits.maxMessagesPerSession ?? SESSION_BUFFER_MAX_MESSAGES),
+    );
+    this.maxBytesPerSession = Math.max(
+      1,
+      Math.floor(limits.maxBytesPerSession ?? SESSION_BUFFER_MAX_BYTES),
+    );
+  }
 
   /**
    * Append a message. Returns the assigned id, or 0 if suppressed as a
@@ -55,16 +81,78 @@ export class SessionMessageBuffer {
    */
   enqueue(sessionDbId: number, message: PendingMessage): number {
     const toolUseId = message.toolUseId;
-    if (toolUseId) {
-      const seen = this.getSeen(sessionDbId);
-      if (seen.has(toolUseId)) {
-        return 0;
+    if (toolUseId && this.seenToolUseIds.get(sessionDbId)?.has(toolUseId)) {
+      return 0;
+    }
+
+    const estimatedBytes = this.estimateMessageBytes(message);
+    if (estimatedBytes > this.maxBytesPerSession) {
+      this.logCapacityEvent(sessionDbId, 'message_too_large', {
+        estimatedBytes,
+        queueDepth: this.getPendingCount(sessionDbId),
+      });
+      return SESSION_BUFFER_REJECTED;
+    }
+
+    const list = this.getList(sessionDbId);
+    let projectedCount = list.length + 1;
+    let projectedBytes =
+      list.reduce((sum, entry) => sum + entry.estimatedBytes, 0) + estimatedBytes;
+    const victimIndexes: number[] = [];
+
+    for (
+      let index = 0;
+      index < list.length &&
+        (projectedCount > this.maxMessagesPerSession ||
+          projectedBytes > this.maxBytesPerSession);
+      index++
+    ) {
+      const candidate = list[index];
+      if (candidate.claimed) {
+        continue;
       }
-      seen.add(toolUseId);
+      victimIndexes.push(index);
+      projectedCount -= 1;
+      projectedBytes -= candidate.estimatedBytes;
+    }
+
+    if (
+      projectedCount > this.maxMessagesPerSession ||
+      projectedBytes > this.maxBytesPerSession
+    ) {
+      this.logCapacityEvent(sessionDbId, 'claimed_work_protected', {
+        estimatedBytes,
+        queueDepth: list.length,
+      });
+      return SESSION_BUFFER_REJECTED;
+    }
+
+    for (let index = victimIndexes.length - 1; index >= 0; index--) {
+      const [removed] = list.splice(victimIndexes[index], 1);
+      if (removed?.message.toolUseId) {
+        this.seenToolUseIds.get(sessionDbId)?.delete(removed.message.toolUseId);
+      }
+    }
+
+    if (victimIndexes.length > 0) {
+      this.logCapacityEvent(sessionDbId, 'oldest_unclaimed_evicted', {
+        evictedCount: victimIndexes.length,
+        queueDepth: list.length,
+        estimatedBytes: projectedBytes,
+      });
     }
 
     const id = this.nextId++;
-    this.getList(sessionDbId).push({ id, message, claimed: false, enqueuedAt: Date.now() });
+    list.push({
+      id,
+      message,
+      claimed: false,
+      enqueuedAt: Date.now(),
+      estimatedBytes,
+    });
+    if (toolUseId) {
+      this.getSeen(sessionDbId).add(toolUseId);
+    }
     this.onMutate?.();
     this.signal(sessionDbId);
     return id;
@@ -109,6 +197,7 @@ export class SessionMessageBuffer {
     // by dispose() leaves seenToolUseIds intact, so a later enqueue carrying a
     // previously-seen toolUseId is silently suppressed (returns 0) and lost.
     this.seenToolUseIds.delete(sessionDbId);
+    this.lastCapacityLogAt.delete(sessionDbId);
     if (cleared > 0) {
       this.onMutate?.();
     }
@@ -119,6 +208,7 @@ export class SessionMessageBuffer {
   dispose(sessionDbId: number): void {
     this.buffers.delete(sessionDbId);
     this.seenToolUseIds.delete(sessionDbId);
+    this.lastCapacityLogAt.delete(sessionDbId);
     this.events.get(sessionDbId)?.removeAllListeners();
     this.events.delete(sessionDbId);
   }
@@ -133,6 +223,11 @@ export class SessionMessageBuffer {
       total += list.length;
     }
     return total;
+  }
+
+  getPendingBytes(sessionDbId: number): number {
+    return (this.buffers.get(sessionDbId) ?? [])
+      .reduce((sum, entry) => sum + entry.estimatedBytes, 0);
   }
 
   peekTypes(sessionDbId: number): Array<{ message_type: string; tool_name: string | null }> {
@@ -254,5 +349,33 @@ export class SessionMessageBuffer {
 
   private signal(sessionDbId: number): void {
     this.events.get(sessionDbId)?.emit('message');
+  }
+
+  private estimateMessageBytes(message: PendingMessage): number {
+    try {
+      return Buffer.byteLength(JSON.stringify(message), 'utf8');
+    } catch {
+      return this.maxBytesPerSession + 1;
+    }
+  }
+
+  private logCapacityEvent(
+    sessionDbId: number,
+    reason: string,
+    details: Record<string, number>,
+  ): void {
+    const now = Date.now();
+    const lastLoggedAt = this.lastCapacityLogAt.get(sessionDbId) ?? 0;
+    if (now >= lastLoggedAt && now - lastLoggedAt < CAPACITY_LOG_INTERVAL_MS) {
+      return;
+    }
+    this.lastCapacityLogAt.set(sessionDbId, now);
+    logger.warn('QUEUE', 'Session buffer capacity guard applied', {
+      sessionId: sessionDbId,
+      reason,
+      maxMessages: this.maxMessagesPerSession,
+      maxBytes: this.maxBytesPerSession,
+      ...details,
+    });
   }
 }

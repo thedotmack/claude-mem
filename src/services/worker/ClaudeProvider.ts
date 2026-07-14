@@ -213,7 +213,27 @@ export class ClaudeProvider {
     const maxConcurrent = parseInt(settings.CLAUDE_MEM_MAX_CONCURRENT_AGENTS, 10) || 2;
     await waitForSlot(maxConcurrent, session.abortController.signal);
 
+    const pauseForQuotaGate = (stage: 'slot' | 'credentials'): boolean => {
+      if (globalRateLimitStore.canStartClaudeSession(session.quotaProbeToken)) {
+        return false;
+      }
+      logger.warn('SDK', 'Claude observer start canceled by quota spawn gate', {
+        sessionDbId: session.sessionDbId,
+        stage,
+      });
+      session.abortReason = 'quota:spawn_gate';
+      session.quotaProbeToken = undefined;
+      return true;
+    };
+
+    if (pauseForQuotaGate('slot')) {
+      return;
+    }
+
     const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
+    if (pauseForQuotaGate('credentials')) {
+      return;
+    }
     const authMethod = getAuthMethodDescription();
 
     logger.info('SDK', 'Starting SDK query', {
@@ -271,6 +291,10 @@ export class ClaudeProvider {
           }
           const decision = shouldAbortForQuota(authMethod, globalRateLimitStore);
           if (decision.abort) {
+            globalRateLimitStore.blockClaudeSpawns(
+              `rate_limit:${decision.window ?? 'unknown'}`,
+            );
+            session.quotaProbeToken = undefined;
             logger.warn('SDK', `Aborting session for quota guard: ${decision.reason}`, {
               sessionDbId: session.sessionDbId,
               window: decision.window,
@@ -283,6 +307,10 @@ export class ClaudeProvider {
               // best-effort
             }
             break;
+          }
+          if (session.quotaProbeToken !== undefined) {
+            globalRateLimitStore.completeClaudeSpawnProbe(session.quotaProbeToken);
+            session.quotaProbeToken = undefined;
           }
         }
 

@@ -31,8 +31,14 @@ import {
 import { findClaudeExecutable } from '../../../../shared/find-claude-executable.js';
 import { isClassified } from '../../provider-errors.js';
 import { classifyClaudeError } from '../../ClaudeProvider.js';
+import {
+  CLAUDE_QUOTA_RETRY_MS,
+  globalRateLimitStore,
+} from '../../RateLimitStore.js';
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
+const QUOTA_SKIP_LOG_INTERVAL_MS = 60 * 1000;
+let lastQuotaSkipLogAt = 0;
 
 /**
  * Collapse session.abortReason onto a closed telemetry enum. The raw value can
@@ -115,6 +121,30 @@ export class SessionRoutes extends BaseRouteHandler {
             return;
           }
         }
+
+        const spawnPermit = globalRateLimitStore.acquireClaudeSpawnPermit();
+        if (!spawnPermit.allowed) {
+          const now = Date.now();
+          if (
+            now < lastQuotaSkipLogAt ||
+            now - lastQuotaSkipLogAt >= QUOTA_SKIP_LOG_INTERVAL_MS
+          ) {
+            lastQuotaSkipLogAt = now;
+            logger.warn('SESSION', 'Skipping Claude generator starts during quota cooldown', {
+              sessionId: sessionDbId,
+              source,
+              retryAt: spawnPermit.retryAt,
+            });
+          }
+          return;
+        }
+        if (spawnPermit.probeToken !== undefined) {
+          session.quotaProbeToken = spawnPermit.probeToken;
+          logger.info('SESSION', 'Starting single Claude quota recovery probe', {
+            sessionId: sessionDbId,
+            source,
+          });
+        }
       }
       await this.applyTierRouting(session);
       await this.startGeneratorWithProvider(session, selectedProvider, source);
@@ -177,13 +207,57 @@ export class SessionRoutes extends BaseRouteHandler {
         }
 
         const errorMsg = error instanceof Error ? error.message : String(error);
-        if (provider === 'claude' && isClassified(error) && error.kind === 'setup_required') {
+        const claudeError = provider === 'claude'
+          ? (isClassified(error) ? error : classifyClaudeError(error))
+          : null;
+
+        if (claudeError?.kind === 'setup_required') {
           skipGeneratorExitFinalization = true;
-          recordClaudeCliSetupRequired(error.message);
+          recordClaudeCliSetupRequired(claudeError.message);
           logger.warn('SESSION', 'Claude generator start requires setup; future Claude starts will be skipped until repaired', {
             sessionId: session.sessionDbId,
             provider,
-            error: error.message,
+            error: claudeError.message,
+          });
+          return;
+        }
+
+        if (
+          claudeError?.kind === 'rate_limit' ||
+          claudeError?.kind === 'quota_exhausted'
+        ) {
+          const retryDelay = Math.max(
+            CLAUDE_QUOTA_RETRY_MS,
+            claudeError.retryAfterMs ?? 0,
+          );
+          globalRateLimitStore.blockClaudeSpawns(
+            `provider_error:${claudeError.kind}`,
+            Date.now() + retryDelay,
+          );
+          session.abortReason = `quota:${claudeError.kind}`;
+          session.quotaProbeToken = undefined;
+          try {
+            await this.sessionManager.resetProcessingToPending(session.sessionDbId);
+          } catch (resetError) {
+            const normalized = resetError instanceof Error
+              ? resetError
+              : new Error(String(resetError));
+            logger.error('SESSION', 'Failed to reset claimed work after Claude quota error', {
+              sessionId: session.sessionDbId,
+              provider,
+              errorKind: claudeError.kind,
+            }, normalized);
+          }
+          try {
+            myController.abort();
+          } catch {
+            // best-effort
+          }
+          logger.warn('SESSION', 'Claude provider quota error paused future starts', {
+            sessionId: session.sessionDbId,
+            provider,
+            errorKind: claudeError.kind,
+            retryDelayMs: retryDelay,
           });
           return;
         }

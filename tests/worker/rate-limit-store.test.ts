@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach } from 'bun:test';
 import {
+  CLAUDE_QUOTA_PROBE_LEASE_MS,
+  CLAUDE_QUOTA_RETRY_MS,
   RateLimitStore,
   shouldAbortForQuota,
   isApiKeyAuth,
@@ -67,6 +69,78 @@ describe('RateLimitStore', () => {
     expect(snap.seven_day_sonnet?.utilization).toBe(0.2);
     expect(snap.seven_day_opus?.utilization).toBe(0.3);
     expect(snap.seven_day).toBeUndefined();
+  });
+});
+
+describe('Claude quota spawn gate', () => {
+  it('blocks starts until cooldown and admits only one probe', () => {
+    const store = freshStore();
+    const retryAt = FIXED_NOW + CLAUDE_QUOTA_RETRY_MS;
+
+    store.blockClaudeSpawns('observer_text', retryAt);
+
+    expect(store.getClaudeSpawnBlock(FIXED_NOW)).toMatchObject({
+      blocked: true,
+      retryAt,
+      reason: 'observer_text',
+    });
+    expect(store.acquireClaudeSpawnPermit(FIXED_NOW)).toMatchObject({
+      allowed: false,
+      retryAt,
+    });
+
+    const probe = store.acquireClaudeSpawnPermit(retryAt);
+    expect(probe.allowed).toBe(true);
+    expect(typeof probe.probeToken).toBe('number');
+
+    expect(store.acquireClaudeSpawnPermit(retryAt)).toMatchObject({
+      allowed: false,
+      retryAt: retryAt + CLAUDE_QUOTA_PROBE_LEASE_MS,
+    });
+  });
+
+  it('clears only the current probe token', () => {
+    const store = freshStore();
+    store.blockClaudeSpawns('observer_text', FIXED_NOW);
+
+    const probe = store.acquireClaudeSpawnPermit(FIXED_NOW);
+    expect(probe.probeToken).toBeDefined();
+    expect(store.completeClaudeSpawnProbe((probe.probeToken ?? 0) + 1)).toBe(false);
+    expect(store.getClaudeSpawnBlock(FIXED_NOW)).toMatchObject({ blocked: true });
+
+    expect(store.completeClaudeSpawnProbe(probe.probeToken!)).toBe(true);
+    expect(store.getClaudeSpawnBlock(FIXED_NOW)).toEqual({ blocked: false });
+    expect(store.acquireClaudeSpawnPermit(FIXED_NOW)).toEqual({ allowed: true });
+  });
+
+  it('never shortens an existing cooldown', () => {
+    const store = freshStore();
+    const laterRetryAt = FIXED_NOW + (2 * CLAUDE_QUOTA_RETRY_MS);
+
+    store.blockClaudeSpawns('structured', laterRetryAt);
+    store.blockClaudeSpawns('observer_text', FIXED_NOW + CLAUDE_QUOTA_RETRY_MS);
+
+    expect(store.getClaudeSpawnBlock(FIXED_NOW)).toMatchObject({
+      blocked: true,
+      retryAt: laterRetryAt,
+    });
+  });
+
+  it('rejects already-admitted ordinary starts after a later quota signal', () => {
+    const store = freshStore();
+    const ordinaryPermit = store.acquireClaudeSpawnPermit(FIXED_NOW);
+    expect(ordinaryPermit).toEqual({ allowed: true });
+
+    const retryAt = FIXED_NOW + CLAUDE_QUOTA_RETRY_MS;
+    store.blockClaudeSpawns('observer_text', retryAt);
+
+    expect(store.canStartClaudeSession(undefined, FIXED_NOW)).toBe(false);
+
+    const probe = store.acquireClaudeSpawnPermit(retryAt);
+    expect(probe.probeToken).toBeDefined();
+    expect(store.canStartClaudeSession(probe.probeToken, retryAt)).toBe(true);
+    expect(store.canStartClaudeSession(undefined, retryAt)).toBe(false);
+    expect(store.canStartClaudeSession((probe.probeToken ?? 0) + 1, retryAt)).toBe(false);
   });
 });
 

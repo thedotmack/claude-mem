@@ -1,10 +1,14 @@
 import { DatabaseManager } from './DatabaseManager.js';
 import { logger } from '../../utils/logger.js';
 import type { ActiveSession, PendingMessage, PendingMessageWithId, ObservationData } from '../worker-types.js';
-import { SessionMessageBuffer } from './SessionMessageBuffer.js';
+import {
+  SESSION_BUFFER_REJECTED,
+  SessionMessageBuffer,
+} from './SessionMessageBuffer.js';
 import { getSdkProcessForSession, ensureSdkProcessExit } from '../../supervisor/process-registry.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { telemetryBuffer } from '../telemetry/buffer.js';
+import { globalRateLimitStore } from './RateLimitStore.js';
 
 export class SessionManager {
   private dbManager: DatabaseManager;
@@ -168,6 +172,12 @@ export class SessionManager {
 
     const messageId = this.buffer.enqueue(sessionDbId, message);
     const queueDepth = this.buffer.getPendingCount(sessionDbId);
+    if (messageId === SESSION_BUFFER_REJECTED) {
+      return;
+    }
+    if (globalRateLimitStore.getClaudeSpawnBlock().blocked) {
+      return;
+    }
     const toolSummary = logger.formatTool(data.tool_name, data.tool_input);
     if (messageId === 0) {
       logger.debug('QUEUE', `DUP_SUPPRESSED | sessionDbId=${sessionDbId} | type=observation | tool=${toolSummary} | toolUseId=${data.toolUseId ?? 'null'} | depth=${queueDepth}`, {
@@ -193,6 +203,12 @@ export class SessionManager {
 
     const messageId = this.buffer.enqueue(sessionDbId, message);
     const queueDepth = this.buffer.getPendingCount(sessionDbId);
+    if (messageId === SESSION_BUFFER_REJECTED) {
+      return;
+    }
+    if (globalRateLimitStore.getClaudeSpawnBlock().blocked) {
+      return;
+    }
     if (messageId === 0) {
       logger.debug('QUEUE', `DUP_SUPPRESSED | sessionDbId=${sessionDbId} | type=summarize | depth=${queueDepth}`, {
         sessionId: sessionDbId

@@ -3,6 +3,7 @@ import { logger } from '../../src/utils/logger.js';
 import { SessionManager } from '../../src/services/worker/SessionManager.js';
 import { processAgentResponse } from '../../src/services/worker/agents/ResponseProcessor.js';
 import { handleGeneratorExit } from '../../src/services/worker/session/GeneratorExitHandler.js';
+import { globalRateLimitStore } from '../../src/services/worker/RateLimitStore.js';
 import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
 import type { WorkerRef } from '../../src/services/worker/agents/types.js';
 
@@ -48,6 +49,7 @@ let spies: ReturnType<typeof spyOn>[] = [];
 
 describe('observer invalid-output handling (Phase 3 recovery)', () => {
   beforeEach(() => {
+    globalRateLimitStore.clearClaudeSpawnBlock();
     spies = [
       spyOn(logger, 'info').mockImplementation(() => {}),
       spyOn(logger, 'debug').mockImplementation(() => {}),
@@ -57,6 +59,7 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
   });
 
   afterEach(() => {
+    globalRateLimitStore.clearClaudeSpawnBlock();
     spies.forEach(s => s.mockRestore());
     mock.restore();
   });
@@ -155,6 +158,37 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     expect(session.abortController.signal.aborted).toBe(true);
     expect(worker.broadcastProcessingStatus).toHaveBeenCalled();
     expect(storeObservations).not.toHaveBeenCalled();
+    expect(globalRateLimitStore.getClaudeSpawnBlock()).toMatchObject({
+      blocked: true,
+      reason: 'observer_text',
+    });
+  });
+
+  it('clears the cooldown after the admitted Claude probe returns non-quota output', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(9, 'do the thing', 1);
+    session.memorySessionId = 'mem-9';
+    await queueAndClaimOne(sm, 9);
+
+    const now = Date.now();
+    globalRateLimitStore.blockClaudeSpawns('observer_text', now);
+    const permit = globalRateLimitStore.acquireClaudeSpawnPermit(now);
+    expect(permit.probeToken).toBeDefined();
+    session.quotaProbeToken = permit.probeToken;
+
+    await processAgentResponse(
+      'No observations to record.',
+      session,
+      makeDbManager(),
+      sm,
+      makeWorker(),
+      0,
+      null,
+      'SDK',
+    );
+
+    expect(session.quotaProbeToken).toBeUndefined();
+    expect(globalRateLimitStore.getClaudeSpawnBlock()).toEqual({ blocked: false });
   });
 
   it('quota generator exit keeps the active session and in-memory buffer', async () => {
@@ -177,14 +211,17 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     );
 
     const finalizeSession = mock(() => Promise.resolve());
+    const removeObserverTranscript = mock(() => Promise.resolve('deleted' as const));
     const removeSpy = spyOn(sm, 'removeSessionImmediate');
 
     await handleGeneratorExit(session, session.abortReason, {
       sessionManager: sm,
       completionHandler: { finalizeSession } as any,
+      removeObserverTranscript,
     });
 
     expect(finalizeSession).not.toHaveBeenCalled();
+    expect(removeObserverTranscript).not.toHaveBeenCalled();
     expect(removeSpy).not.toHaveBeenCalled();
     expect(sm.getSession(6)).toBe(session);
     expect(sm.getMessageBuffer().getPendingCount(6)).toBe(1);
@@ -227,5 +264,56 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
 
     expect(skipSm.getMessageBuffer().getPendingCount(4)).toBe(0);
     expect(quotaSm.getMessageBuffer().getPendingCount(5)).toBe(1);
+  });
+
+  it('removes the observer transcript after successful non-quota finalization', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(7, 'finish the thing', 1);
+    session.memorySessionId = '77777777-7777-4777-8777-777777777777';
+    session.currentProvider = 'claude';
+    session.generatorPromise = Promise.resolve();
+
+    const events: string[] = [];
+    const finalizeSession = mock(async () => {
+      events.push('finalize');
+    });
+    const removeObserverTranscript = mock(async () => {
+      events.push('cleanup');
+      return 'deleted' as const;
+    });
+    const removeSpy = spyOn(sm, 'removeSessionImmediate');
+
+    await handleGeneratorExit(session, null, {
+      sessionManager: sm,
+      completionHandler: { finalizeSession } as any,
+      removeObserverTranscript,
+    });
+
+    expect(events).toEqual(['finalize', 'cleanup']);
+    expect(removeObserverTranscript).toHaveBeenCalledWith(session.memorySessionId);
+    expect(removeSpy).toHaveBeenCalledWith(session.sessionDbId);
+  });
+
+  it('preserves the transcript when finalization fails', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(8, 'finish the thing', 1);
+    session.memorySessionId = '88888888-8888-4888-8888-888888888888';
+    session.currentProvider = 'claude';
+    session.generatorPromise = Promise.resolve();
+
+    const finalizeSession = mock(async () => {
+      throw new Error('database unavailable');
+    });
+    const removeObserverTranscript = mock(() => Promise.resolve('deleted' as const));
+    const removeSpy = spyOn(sm, 'removeSessionImmediate');
+
+    await handleGeneratorExit(session, null, {
+      sessionManager: sm,
+      completionHandler: { finalizeSession } as any,
+      removeObserverTranscript,
+    });
+
+    expect(removeObserverTranscript).not.toHaveBeenCalled();
+    expect(removeSpy).toHaveBeenCalledWith(session.sessionDbId);
   });
 });

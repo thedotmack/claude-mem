@@ -7,7 +7,6 @@ import { SettingsDefaultsManager, type SettingsDefaults } from "./SettingsDefaul
 import { MARKETPLACE_ROOT, DATA_DIR } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
 import { validateWorkerPidFile } from "../supervisor/index.js";
-import { emitBlockingError } from "./hook-io.js";
 import { captureCliEvent } from "../services/telemetry/cli-telemetry.js";
 import { checkVersionMatch } from "../services/infrastructure/index.js";
 // Imported from ProcessManager.js directly (not the infrastructure barrel):
@@ -617,7 +616,7 @@ let activeHookType: TelemetryHookType | null = null;
 
 /**
  * Record which hook event this short-lived hook process is executing, so the
- * fail-loud counter can tag its threshold-gated hook_failed telemetry.
+ * failure counter can tag its threshold-gated hook_failed telemetry.
  * Called once at hookCommand entry; values outside the closed enum are
  * dropped (never free text).
  */
@@ -640,31 +639,20 @@ export async function recordWorkerUnreachable(): Promise<number> {
   writeHookFailureStateAtomic(next);
 
   const threshold = getFailLoudThreshold();
-  if (next.consecutiveFailures >= threshold) {
-    // hook_failed distress signal. Gated to the failure that JUST reached the
-    // threshold (`===`, not `>=`): the stderr warning below repeats on every
-    // failure past the threshold, but telemetry emits once per failure streak
-    // to bound volume. MUST be awaited BEFORE emitBlockingError — it calls
-    // process.exit(2) immediately, which would kill a fire-and-forget POST
-    // mid-flight. captureCliEvent never throws and is hard-capped at 2s, so
-    // this cannot hang the fail-loud path. Closed-enum/count props only —
-    // never error text. Transport is the direct CLI POST, never the worker
-    // API (the defining failure here IS "worker unreachable").
-    if (next.consecutiveFailures === threshold) {
-      await captureCliEvent('hook_failed', {
-        ...(activeHookType !== null ? { hook_type: activeHookType } : {}),
-        error_mode: 'worker_unavailable',
-        consecutive_failures: next.consecutiveFailures,
-        threshold_tripped: true,
-      });
-    }
-    // #2292 fix: BLOCKING_FEEDBACK. emitBlockingError flushes the Phase 2
-    // stderr buffer (so preceding logger.warn lines also surface) and writes
-    // via the bypass channel + exits 2. Previously this raw process.stderr.write
-    // was swallowed by hookCommand's blanket no-op, so the user/model never saw it.
-    emitBlockingError(
-      `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks.`
-    );
+  if (next.consecutiveFailures === threshold) {
+    // Keep the durable diagnostic and one bounded telemetry event, but never
+    // return exit 2 for an optional memory service. A worker outage must not
+    // block UserPromptSubmit, PostToolUse, or any other host workflow.
+    await captureCliEvent('hook_failed', {
+      ...(activeHookType !== null ? { hook_type: activeHookType } : {}),
+      error_mode: 'worker_unavailable',
+      consecutive_failures: next.consecutiveFailures,
+      threshold_tripped: true,
+    });
+    logger.warn('SYSTEM', 'Worker remains fail-open after repeated unavailability', {
+      consecutiveFailures: next.consecutiveFailures,
+      threshold,
+    });
   }
   return next.consecutiveFailures;
 }

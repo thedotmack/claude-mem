@@ -6,6 +6,10 @@ import {
   resetDependencyStatusesForTesting,
 } from '../../src/shared/dependency-health.js';
 import type { ActiveSession } from '../../src/services/worker-types.js';
+import {
+  CLAUDE_QUOTA_RETRY_MS,
+  globalRateLimitStore,
+} from '../../src/services/worker/RateLimitStore.js';
 
 let findClaudeExecutableImpl: () => string = () => '/mock/claude';
 
@@ -45,12 +49,14 @@ describe('Claude setup-required generator gate', () => {
 
   beforeEach(() => {
     resetDependencyStatusesForTesting();
+    globalRateLimitStore.clearClaudeSpawnBlock();
     findClaudeExecutableImpl = () => '/mock/claude';
     Date.now = realDateNow;
   });
 
   afterEach(() => {
     Date.now = realDateNow;
+    globalRateLimitStore.clearClaudeSpawnBlock();
   });
 
   it('skips immediate repeat starts, then rechecks and clears status after cooldown repair', async () => {
@@ -156,5 +162,104 @@ describe('Claude setup-required generator gate', () => {
       kind: 'setup_required',
       remediation: expect.stringContaining('Claude Code CLI'),
     });
+  });
+
+  it('converts a direct Claude rate-limit error into a quota pause', async () => {
+    const session = makeSession();
+    const resetProcessingToPending = mock(() => Promise.resolve(1));
+    const removeSessionImmediate = mock(() => {});
+    const finalizeSession = mock(() => Promise.resolve());
+    const sessionManager = {
+      getSession: () => session,
+      getMessageBuffer: () => ({
+        getPendingCount: () => 1,
+        peekTypes: () => [],
+      }),
+      resetProcessingToPending,
+      removeSessionImmediate,
+    };
+    const claudeProvider = {
+      startSession: async () => {
+        throw new ClassifiedProviderError('rate limited', {
+          kind: 'rate_limit',
+          cause: new Error('rate limited'),
+          retryAfterMs: 30 * 60 * 1000,
+        });
+      },
+    };
+    const routes = new SessionRoutes(
+      sessionManager as any,
+      {} as any,
+      claudeProvider as any,
+      { startSession: async () => {} } as any,
+      { startSession: async () => {} } as any,
+      {} as any,
+      {} as any,
+      { finalizeSession } as any,
+    );
+
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+    const run = session.generatorPromise;
+    expect(run).not.toBeNull();
+    await run;
+
+    expect(resetProcessingToPending).toHaveBeenCalledWith(session.sessionDbId);
+    expect(globalRateLimitStore.getClaudeSpawnBlock()).toMatchObject({
+      blocked: true,
+      reason: 'provider_error:rate_limit',
+    });
+    expect(session.abortController.signal.aborted).toBe(true);
+    expect(session.generatorPromise).toBeNull();
+    expect(removeSessionImmediate).not.toHaveBeenCalled();
+    expect(finalizeSession).not.toHaveBeenCalled();
+  });
+
+  it('keeps queued sessions stopped during quota cooldown and admits one probe afterward', async () => {
+    const first = makeSession();
+    const second = { ...makeSession(), sessionDbId: 43, contentSessionId: 'content-43' };
+    const sessions = new Map<number, ActiveSession>([
+      [first.sessionDbId, first],
+      [second.sessionDbId, second],
+    ]);
+    let starts = 0;
+
+    const sessionManager = {
+      getSession: (sessionDbId: number) => sessions.get(sessionDbId),
+      getMessageBuffer: () => ({ getPendingCount: () => 1, peekTypes: () => [] }),
+    };
+    const claudeProvider = {
+      startSession: () => {
+        starts += 1;
+        return new Promise<void>(() => {});
+      },
+    };
+    const routes = new SessionRoutes(
+      sessionManager as any,
+      {} as any,
+      claudeProvider as any,
+      { startSession: async () => {} } as any,
+      { startSession: async () => {} } as any,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+
+    const blockedAt = 1_700_000_000_000;
+    const retryAt = blockedAt + CLAUDE_QUOTA_RETRY_MS;
+    Date.now = () => blockedAt;
+    globalRateLimitStore.blockClaudeSpawns('observer_text', retryAt);
+
+    await routes.ensureGeneratorRunning(first.sessionDbId, 'observation');
+    expect(starts).toBe(0);
+    expect(first.generatorPromise).toBeNull();
+
+    Date.now = () => retryAt;
+    await routes.ensureGeneratorRunning(first.sessionDbId, 'observation');
+    await routes.ensureGeneratorRunning(second.sessionDbId, 'observation');
+
+    expect(starts).toBe(1);
+    expect(first.generatorPromise).not.toBeNull();
+    expect(typeof first.quotaProbeToken).toBe('number');
+    expect(second.generatorPromise).toBeNull();
   });
 });

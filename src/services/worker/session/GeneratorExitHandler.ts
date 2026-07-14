@@ -3,10 +3,12 @@ import type { SessionManager } from '../SessionManager.js';
 import type { SessionCompletionHandler } from './SessionCompletionHandler.js';
 import { logger } from '../../../utils/logger.js';
 import { getSdkProcessForSession, ensureSdkProcessExit } from '../../../supervisor/process-registry.js';
+import { removeObserverTranscriptForSession } from './ObserverTranscriptCleanup.js';
 
 export interface GeneratorExitDependencies {
   sessionManager: SessionManager;
   completionHandler: SessionCompletionHandler;
+  removeObserverTranscript?: typeof removeObserverTranscriptForSession;
 }
 
 /**
@@ -30,7 +32,11 @@ export async function handleGeneratorExit(
   reason: ActiveSession['abortReason'],
   deps: GeneratorExitDependencies
 ): Promise<void> {
-  const { sessionManager, completionHandler } = deps;
+  const {
+    sessionManager,
+    completionHandler,
+    removeObserverTranscript = removeObserverTranscriptForSession,
+  } = deps;
   const sessionDbId = session.sessionDbId;
 
   const tracked = getSdkProcessForSession(sessionDbId);
@@ -51,8 +57,10 @@ export async function handleGeneratorExit(
 
   logger.info('SESSION', 'Generator exited — finalizing session', { sessionId: sessionDbId, reason });
 
+  let finalized = false;
   try {
     await completionHandler.finalizeSession(sessionDbId);
+    finalized = true;
   } catch (e) {
     const normalized = e instanceof Error ? e : new Error(String(e));
     logger.error('SESSION', 'Finalization failed; forcing in-memory session removal', {
@@ -60,6 +68,17 @@ export async function handleGeneratorExit(
       reason
     }, normalized);
   } finally {
+    if (finalized && session.memorySessionId) {
+      try {
+        await removeObserverTranscript(session.memorySessionId);
+      } catch (e) {
+        const normalized = e instanceof Error ? e : new Error(String(e));
+        logger.error('SESSION', 'Observer transcript cleanup threw unexpectedly', {
+          sessionId: sessionDbId,
+          memorySessionId: session.memorySessionId,
+        }, normalized);
+      }
+    }
     sessionManager.removeSessionImmediate(sessionDbId);
   }
 }

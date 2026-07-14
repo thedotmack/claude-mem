@@ -193,6 +193,7 @@ const prewarmSpawnCalls: Array<{ command: string; args: string[]; child: FakeChi
 let prewarmSpawnBehavior: 'success' | 'timeout' | 'failure' = 'success';
 let prewarmStdout = '';
 let prewarmStderr = '';
+let processSnapshotStdout = '';
 
 mock.module('../../../src/supervisor/index.ts', () => ({
   getSupervisor: () => ({
@@ -236,6 +237,8 @@ mock.module('child_process', () => {
       // Bun's promisify path will call this as if it were a Node-style callback.
       if (cmd === 'pgrep') {
         cb(null, { stdout: '', stderr: '' } as any);
+      } else if (cmd === '/bin/ps') {
+        cb(null, { stdout: processSnapshotStdout, stderr: '' } as any);
       } else {
         cb(null, { stdout: '', stderr: '' } as any);
       }
@@ -279,6 +282,7 @@ import {
 
 afterAll(() => {
   ChromaMcpManager.setUvxAvailabilityProbeForTesting(null);
+  ChromaMcpManager.setOrphanProcessSnapshotProbeForTesting(null);
   process.kill = realProcessKill;
   if (originalPrewarmTimeout === undefined) {
     delete process.env.CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS;
@@ -311,6 +315,7 @@ function resetState(): void {
   prewarmSpawnBehavior = 'success';
   prewarmStdout = '';
   prewarmStderr = '';
+  processSnapshotStdout = '';
   prewarmKillEmitsClose = true;
   transportCloseEmitsOnclose = false;
   transportKillEmitsOnclose = false;
@@ -321,6 +326,9 @@ function resetState(): void {
   mockedSettings = {};
   resetMockedChromaPaths();
   ChromaMcpManager.setUvxAvailabilityProbeForTesting(() => true);
+  ChromaMcpManager.setOrphanProcessSnapshotProbeForTesting(
+    async () => processSnapshotStdout
+  );
   resetDependencyStatusesForTesting();
   if (originalPrewarmTimeout === undefined) {
     delete process.env.CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS;
@@ -376,6 +384,25 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
 
     expect(transportCount).toBe(1);
     expect(prewarmSpawnCalls.length).toBe(1);
+  });
+
+  it('reaps only orphaned local Chroma roots before spawning a replacement', async () => {
+    const orphanPid = 880_001;
+    const liveChildPid = 880_002;
+    const otherDataDirPid = 880_003;
+    processSnapshotStdout = [
+      `${orphanPid} 1 /Users/test/.local/bin/uv tool uvx chroma-mcp --client-type persistent --data-dir ${mockedChromaDir}`,
+      `${liveChildPid} ${process.pid} /Users/test/.local/bin/uv tool uvx chroma-mcp --client-type persistent --data-dir ${mockedChromaDir}`,
+      `${otherDataDirPid} 1 /Users/test/.local/bin/uv tool uvx chroma-mcp --client-type persistent --data-dir /tmp/another-chroma`,
+    ].join('\n');
+
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(killTreeCalls).toContain(orphanPid);
+    expect(killTreeCalls).not.toContain(liveChildPid);
+    expect(killTreeCalls).not.toContain(otherDataDirPid);
+    expect(transportCount).toBe(1);
   });
 
   it('kills the prior subprocess tree before a reconnect spawn', async () => {

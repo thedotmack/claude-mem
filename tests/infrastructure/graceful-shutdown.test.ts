@@ -231,6 +231,31 @@ describe('GracefulShutdown', () => {
       await expect(performGracefulShutdown(config)).resolves.toBeUndefined();
     });
 
+    it('continues cleanup when the HTTP server is already closed', async () => {
+      const alreadyClosed = Object.assign(new Error('Server is not running.'), {
+        code: 'ERR_SERVER_NOT_RUNNING'
+      });
+      const mockServer = {
+        closeAllConnections: mock(() => {}),
+        close: mock((cb: (err?: Error) => void) => cb(alreadyClosed))
+      } as unknown as http.Server;
+      const mockSessionManager: ShutdownableService = {
+        shutdownAll: mock(async () => {})
+      };
+      const mockChromaMcpManager = {
+        stop: mock(async () => {})
+      };
+
+      await expect(performGracefulShutdown({
+        server: mockServer,
+        sessionManager: mockSessionManager,
+        chromaMcpManager: mockChromaMcpManager
+      })).resolves.toBeUndefined();
+
+      expect(mockChromaMcpManager.stop).toHaveBeenCalledTimes(1);
+      expect(mockSessionManager.shutdownAll).toHaveBeenCalledTimes(1);
+    });
+
     it('should call sessionManager.shutdownAll even without server', async () => {
       const mockSessionManager: ShutdownableService = {
         shutdownAll: mock(async () => {})
@@ -283,7 +308,34 @@ describe('GracefulShutdown', () => {
 
       await performGracefulShutdown(config);
 
-      expect(callOrder).toEqual(['sessionManager', 'mcpClient', 'chromaMcpManager', 'dbManager']);
+      expect(callOrder).toEqual(['chromaMcpManager', 'sessionManager', 'mcpClient', 'dbManager']);
+    });
+
+    it('stops chroma before a slow session drain can consume the shutdown deadline', async () => {
+      let releaseSessionDrain!: () => void;
+      const sessionDrain = new Promise<void>((resolve) => {
+        releaseSessionDrain = resolve;
+      });
+
+      const mockSessionManager: ShutdownableService = {
+        shutdownAll: mock(() => sessionDrain)
+      };
+      const mockChromaMcpManager = {
+        stop: mock(async () => {})
+      };
+
+      const shutdown = performGracefulShutdown({
+        server: null,
+        sessionManager: mockSessionManager,
+        chromaMcpManager: mockChromaMcpManager
+      });
+
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(mockSessionManager.shutdownAll).toHaveBeenCalledTimes(1);
+      expect(mockChromaMcpManager.stop).toHaveBeenCalledTimes(1);
+
+      releaseSessionDrain();
+      await shutdown;
     });
 
     it('should handle shutdown when PID file does not exist', async () => {

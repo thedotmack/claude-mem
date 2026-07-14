@@ -38,6 +38,8 @@ export interface ActiveSession {
   pendingAgentId?: string | null;
   pendingAgentType?: string | null;
   abortReason?: 'idle' | 'shutdown' | 'overflow' | 'restart-guard' | 'quota' | string | null;
+  /** Token owned by the single Claude recovery probe admitted after quota cooldown. */
+  quotaProbeToken?: number;
   respawnTimer?: ReturnType<typeof setTimeout>;
   /** When the latest compression prompt was dispatched to the model — telemetry compression_ms. */
   lastPromptSentAt?: number | null;

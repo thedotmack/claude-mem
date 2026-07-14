@@ -1,5 +1,8 @@
 import { describe, test, expect } from 'bun:test';
-import { SessionMessageBuffer } from '../../../src/services/worker/SessionMessageBuffer.js';
+import {
+  SESSION_BUFFER_REJECTED,
+  SessionMessageBuffer,
+} from '../../../src/services/worker/SessionMessageBuffer.js';
 import type { PendingMessage, PendingMessageWithId } from '../../../src/services/worker-types.js';
 
 function obs(toolName: string, toolUseId?: string): PendingMessage {
@@ -122,5 +125,64 @@ describe('SessionMessageBuffer (in-RAM observation buffer)', () => {
       { message_type: 'observation', tool_name: 'Read' },
       { message_type: 'summarize', tool_name: null },
     ]);
+  });
+
+  test('evicts the oldest unclaimed work when the per-session count cap is reached', async () => {
+    const buffer = new SessionMessageBuffer(undefined, {
+      maxMessagesPerSession: 2,
+      maxBytesPerSession: 1024 * 1024,
+    });
+
+    buffer.enqueue(1, obs('Read', 'a'));
+    buffer.enqueue(1, obs('Write', 'b'));
+    buffer.enqueue(1, obs('Bash', 'c'));
+
+    expect(buffer.getPendingCount(1)).toBe(2);
+    expect((await drainAll(buffer, 1)).map(message => message.tool_name)).toEqual([
+      'Write',
+      'Bash',
+    ]);
+  });
+
+  test('rejects one oversized message without retaining its dedup id', () => {
+    const buffer = new SessionMessageBuffer(undefined, {
+      maxMessagesPerSession: 10,
+      maxBytesPerSession: 256,
+    });
+    const oversized: PendingMessage = {
+      type: 'observation',
+      tool_name: 'Read',
+      tool_response: 'x'.repeat(2048),
+      toolUseId: 'oversized-a',
+    };
+
+    expect(buffer.enqueue(1, oversized)).toBe(SESSION_BUFFER_REJECTED);
+    expect(buffer.getPendingCount(1)).toBe(0);
+    expect(buffer.enqueue(1, obs('Read', 'oversized-a'))).toBeGreaterThan(0);
+  });
+
+  test('never evicts claimed work to make room', async () => {
+    const buffer = new SessionMessageBuffer(undefined, {
+      maxMessagesPerSession: 2,
+      maxBytesPerSession: 1024 * 1024,
+    });
+    buffer.enqueue(1, obs('Read', 'a'));
+    buffer.enqueue(1, obs('Write', 'b'));
+    expect((await drainAll(buffer, 1)).length).toBe(2);
+
+    expect(buffer.enqueue(1, obs('Bash', 'c'))).toBe(SESSION_BUFFER_REJECTED);
+    expect(buffer.getPendingCount(1)).toBe(2);
+  });
+
+  test('forgets the dedup id of an evicted message', () => {
+    const buffer = new SessionMessageBuffer(undefined, {
+      maxMessagesPerSession: 1,
+      maxBytesPerSession: 1024 * 1024,
+    });
+
+    expect(buffer.enqueue(1, obs('Read', 'a'))).toBeGreaterThan(0);
+    expect(buffer.enqueue(1, obs('Write', 'b'))).toBeGreaterThan(0);
+    expect(buffer.enqueue(1, obs('Read', 'a'))).toBeGreaterThan(0);
+    expect(buffer.getPendingCount(1)).toBe(1);
   });
 });

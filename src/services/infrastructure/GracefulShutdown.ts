@@ -35,17 +35,22 @@ export async function performGracefulShutdown(config: GracefulShutdownConfig): P
     logger.info('SYSTEM', 'HTTP server closed');
   }
 
+  // Stop the shared Chroma subprocess before draining observer sessions.
+  // Session shutdown can spend 5s per Claude SDK process and exceed the
+  // worker's global graceful-shutdown deadline. If Chroma is stopped after
+  // that drain, the dying worker can exit first and re-parent uv/python to
+  // launchd, leaking one Chroma tree on every restart.
+  if (config.chromaMcpManager) {
+    logger.info('SHUTDOWN', 'Stopping Chroma MCP connection...');
+    await config.chromaMcpManager.stop();
+    logger.info('SHUTDOWN', 'Chroma MCP connection stopped');
+  }
+
   await config.sessionManager.shutdownAll();
 
   if (config.mcpClient) {
     await config.mcpClient.close();
     logger.info('SYSTEM', 'MCP client closed');
-  }
-
-  if (config.chromaMcpManager) {
-    logger.info('SHUTDOWN', 'Stopping Chroma MCP connection...');
-    await config.chromaMcpManager.stop();
-    logger.info('SHUTDOWN', 'Chroma MCP connection stopped');
   }
 
   if (config.dbManager) {
@@ -65,7 +70,17 @@ async function closeHttpServer(server: http.Server): Promise<void> {
   }
 
   await new Promise<void>((resolve, reject) => {
-    server.close(err => err ? reject(err) : resolve());
+    server.close(err => {
+      const code = (err as NodeJS.ErrnoException | undefined)?.code;
+      if (!err || code === 'ERR_SERVER_NOT_RUNNING') {
+        if (code === 'ERR_SERVER_NOT_RUNNING') {
+          logger.debug('SYSTEM', 'HTTP server was already closed during shutdown');
+        }
+        resolve();
+        return;
+      }
+      reject(err);
+    });
   });
 
   if (process.platform === 'win32') {
