@@ -438,8 +438,8 @@ describe('Claude Code PATH probing', () => {
       chmodSync(path.join(loginBin, 'node'), 0o755);
       writeFileSync(path.join(loginBin, 'bun'), `#!/bin/sh\nprintf '%s\\n' login-bun >> '${bashPathForShell(fixture.bunLog)}'\nprintf '1.0.0\\n'\n`);
       chmodSync(path.join(loginBin, 'bun'), 0o755);
-      const env = { ...fixture.env, PATH: `${bashPathForShell(fixture.root)}/inherited-bin` };
-      const head = runPathProbe(claudeHook(['probe']), env, fixture.shellPath);
+      // Keep /usr/bin on PATH so the bare `bash` still resolves on CI; inherited-bin stays first, so its unusable bun is what the probe hits.
+      const head = runPathProbe(claudeHook(['probe']), fixture.env, fixture.shellPath);
       expect(head.status).toBe(0);
       expect(readFileSync(fixture.sentinelLog, 'utf8')).toBe('sentinel\n');
       expect(readFileSync(fixture.nodeLog, 'utf8')).toBe('fake-node\n');
