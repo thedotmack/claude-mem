@@ -64,6 +64,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CHROMA_TENANT: string;
   CLAUDE_MEM_CHROMA_DATABASE: string;
   CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS: string;
+  CLAUDE_MEM_CHROMA_MEMORY_LIMIT_MB: string;
   // Worker-native cloud sync (cmem.ai Pro). Active ⇔ TOKEN and USER_ID are
   // both non-empty — there is no separate enabled flag.
   CLAUDE_MEM_CLOUD_SYNC_TOKEN: string;
@@ -155,6 +156,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CHROMA_TENANT: 'default_tenant',
     CLAUDE_MEM_CHROMA_DATABASE: 'default_database',
     CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS: '120000',
+    CLAUDE_MEM_CHROMA_MEMORY_LIMIT_MB: '2048',   // Recycle the chroma-mcp subprocess tree when its resident memory exceeds this many MB. '0' disables the watchdog.
     // Worker-native cloud sync (cmem.ai Pro): credentials come from cmem.ai → Connect.
     CLAUDE_MEM_CLOUD_SYNC_TOKEN: '',
     CLAUDE_MEM_CLOUD_SYNC_USER_ID: '',
