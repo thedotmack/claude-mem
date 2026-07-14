@@ -126,12 +126,13 @@ describe('ensureWorkerStarted startup readiness', () => {
     expect(processManager.touchPidFile).not.toHaveBeenCalled();
   });
 
-  it('keeps spawn timeout side effects unchanged', async () => {
+  it('returns dead when the spawned worker never becomes ready and no live worker remains', async () => {
     resetMocks();
 
     const result = await ensureWorkerStarted(39004, import.meta.filename);
 
-    expect(result).toBe('warming');
+    expect(result).toBe('dead');
+    expect(healthMonitor.waitForHealth).toHaveBeenCalledWith(39004, 1000);
     expect(healthMonitor.waitForReadiness).toHaveBeenCalledWith(39004, HOOK_TIMEOUTS.READINESS_WAIT);
     expect(processManager.touchPidFile).not.toHaveBeenCalled();
   });

@@ -150,6 +150,12 @@ export async function ensureWorkerStarted(
 
     const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
     if (!ready) {
+      const workerStillHealthy = await waitForHealth(port, 1000);
+      const workerPidStillAlive = cleanStalePidFile() === 'alive';
+      if (spawnLockHeld && !workerStillHealthy && !workerPidStillAlive) {
+        logger.error('SYSTEM', 'Worker exited before readiness endpoint became available');
+        return 'dead';
+      }
       logger.warn('SYSTEM', spawnLockHeld
         ? 'Worker spawned but readiness endpoint not responding within window'
         : 'Spawn-lock holder\'s worker not ready within window');
