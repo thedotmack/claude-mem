@@ -12,7 +12,7 @@ import { ChromaMcpManager } from '../../../src/services/sync/ChromaMcpManager.js
 const managerInternals = ChromaMcpManager as unknown as {
   killProcessTree: (pid: number) => Promise<void>;
   collectDescendantPids: (rootPid: number) => Promise<number[]>;
-  collectDescendantPidsViaPgrep: (rootPid: number) => Promise<number[]>;
+  collectDescendantPidsViaPgrep: (rootPid: number) => Promise<number[] | null>;
   collectDescendantPidsViaPs: (rootPid: number) => Promise<number[]>;
   waitForExit: (pids: number[], timeoutMs: number, intervalMs?: number) => Promise<number[]>;
 };
@@ -126,12 +126,17 @@ describe('ChromaMcpManager tree-kill primitives (#3230)', () => {
 
     const viaPgrep = await managerInternals.collectDescendantPidsViaPgrep(rootPid);
     const viaPs = await managerInternals.collectDescendantPidsViaPs(rootPid);
-    for (const pid of [...viaPgrep, ...viaPs]) {
+    for (const pid of [...(viaPgrep ?? []), ...viaPs]) {
       spawnedPids.add(pid);
     }
 
-    expect(viaPgrep.length).toBeGreaterThan(0);
     expect(viaPs.length).toBeGreaterThan(0);
+    if (viaPgrep === null) {
+      // pgrep unavailable/failed on this host — the ps fallback above is the
+      // behavior under test in that case, and it was exercised.
+      return;
+    }
+    expect(viaPgrep.length).toBeGreaterThan(0);
     expect(new Set(viaPgrep)).toEqual(new Set(viaPs));
   }, 10_000);
 });
