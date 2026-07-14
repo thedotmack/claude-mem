@@ -958,13 +958,19 @@ export class ChromaMcpManager {
   /**
    * Kill a process and all its descendants (tree-kill).
    *
-   * POSIX: Sends SIGTERM to the process, then uses `pkill -P` to signal
-   * children recursively. Falls back to single-PID kill if pkill is unavailable.
+   * POSIX: Sends SIGTERM to the process and every descendant collected via
+   * collectDescendantPids(), polls for death (waitForExit) instead of a
+   * fixed sleep, re-collects descendants (layers can re-parent during the
+   * grace window) and SIGKILLs the union, then verifies death and runs one
+   * best-effort straggler round against anything still alive before giving
+   * up — closes the TOCTOU races that previously let orphaned chroma-mcp
+   * trees survive silently (#3230).
    *
    * Windows: Uses `taskkill /T /F /PID` for full subtree teardown (same
    * pattern as shutdown.ts).
    *
-   * Best-effort — swallows ESRCH (already dead) and logs other errors.
+   * Best-effort — swallows ESRCH (already dead), logs other errors, and
+   * never throws.
    */
   private static async killProcessTree(pid: number): Promise<void> {
     logger.debug('CHROMA_MCP', `Killing process tree rooted at PID ${pid}`);
@@ -1011,8 +1017,10 @@ export class ChromaMcpManager {
         }
       }
 
-      // Brief wait for SIGTERM to propagate, then SIGKILL stragglers.
-      await new Promise(resolve => setTimeout(resolve, 500));
+      // Poll for death instead of a fixed 500ms sleep — resolves as soon as
+      // everything is gone (the common case, often well under 500ms) and
+      // still bounds the wait when something is slow to exit.
+      await ChromaMcpManager.waitForExit([...descendantsBeforeTerm, pid], 500);
 
       // Re-collect descendants — some layers may have re-parented during the
       // SIGTERM grace window.
@@ -1038,6 +1046,38 @@ export class ChromaMcpManager {
       } catch {
         // Already dead — fine.
       }
+
+      // Verify death after SIGKILL — previously nothing checked this, so a
+      // survivor here (e.g. a grandchild SIGKILL never reached) silently
+      // orphaned, which is exactly the #3230 leak. One best-effort straggler
+      // round: re-collect descendants of anything still alive and SIGKILL
+      // those too, then a final death check. Anything still alive after
+      // that is logged (not thrown — this method stays best-effort).
+      let survivors = await ChromaMcpManager.waitForExit([...killTargets, pid], 250);
+      if (survivors.length > 0) {
+        const stragglerTargets = new Set<number>(survivors);
+        for (const survivor of survivors) {
+          try {
+            const stragglerDescendants = await ChromaMcpManager.collectDescendantPids(survivor);
+            for (const descendant of stragglerDescendants) {
+              stragglerTargets.add(descendant);
+            }
+          } catch {
+            // Best-effort — fall through and retry just the survivor pid.
+          }
+        }
+        for (const target of stragglerTargets) {
+          try {
+            process.kill(target, 'SIGKILL');
+          } catch {
+            // Already dead — fine.
+          }
+        }
+        survivors = await ChromaMcpManager.waitForExit([...stragglerTargets], 250);
+        if (survivors.length > 0) {
+          logger.warn('CHROMA_MCP', 'Process tree kill left survivors', { pids: survivors });
+        }
+      }
     } catch (error) {
       logger.debug('CHROMA_MCP', `Process tree kill completed (best-effort)`, {
         pid,
@@ -1047,11 +1087,30 @@ export class ChromaMcpManager {
   }
 
   /**
-   * Recursively collect all descendant PIDs of `rootPid` using `pgrep -P`.
-   * Returned bottom-up (leaves first) so callers can signal leaves before
-   * their ancestors. Best-effort: missing pgrep / non-zero exits return [].
+   * Recursively collect all descendant PIDs of `rootPid`. Returned bottom-up
+   * (leaves first) so callers can signal leaves before their ancestors.
+   *
+   * Primary mechanism is a `pgrep -P` walk (collectDescendantPidsViaPgrep):
+   * pgrep exiting 1 is the expected "no children" leaf case on every
+   * recursive step, but ENOENT (pgrep missing) or a timeout means the walk
+   * ITSELF failed rather than found no descendants — returning [] in that
+   * case would make killProcessTree silently miss every descendant (#3230).
+   * Those infra failures (signalled as a null return) fall back to a single
+   * `ps -axo pid=,ppid=` snapshot (collectDescendantPidsViaPs) instead.
    */
   private static async collectDescendantPids(rootPid: number): Promise<number[]> {
+    return (await ChromaMcpManager.collectDescendantPidsViaPgrep(rootPid))
+      ?? ChromaMcpManager.collectDescendantPidsViaPs(rootPid);
+  }
+
+  /**
+   * `pgrep -P` recursive descendant walk. Returned bottom-up (leaves first).
+   * Returns null when the walk itself fails (ENOENT, timeout, or any exit
+   * code other than the genuine-leaf `1`) so collectDescendantPids can fall
+   * back to collectDescendantPidsViaPs instead of treating an unwalked
+   * subtree as childless.
+   */
+  private static async collectDescendantPidsViaPgrep(rootPid: number): Promise<number[] | null> {
     const seen = new Set<number>();
     const collected: number[] = [];
 
@@ -1060,9 +1119,23 @@ export class ChromaMcpManager {
       try {
         const result = await execFileAsync('pgrep', ['-P', String(pid)], { timeout: 2_000 });
         stdout = result.stdout;
-      } catch {
-        // [ANTI-PATTERN IGNORED]: pgrep exits 1 whenever a PID has no children, which is the expected leaf case on every recursive walk; recovery is treating the node as childless and returning early.
-        return;
+      } catch (error) {
+        const err = error as Error & { code?: string | number; killed?: boolean; signal?: string | null };
+        if (err.code === 1) {
+          // [ANTI-PATTERN IGNORED]: pgrep exits 1 whenever a PID has no children, which is the expected leaf case on every recursive walk; recovery is treating the node as childless and returning early.
+          return;
+        }
+        // ENOENT (pgrep missing), a timeout (execFileAsync sets killed:true /
+        // signal:'SIGTERM'), or any other non-1 exit means the walk itself
+        // failed rather than found no children — surface it so the caller
+        // falls back to a ps snapshot instead of silently treating an
+        // unwalked subtree as childless.
+        const reason = err.code === 'ENOENT'
+          ? 'pgrep not found'
+          : err.killed
+            ? `pgrep timed out (signal ${err.signal ?? 'unknown'})`
+            : `pgrep failed with code ${String(err.code)}`;
+        throw new Error(reason);
       }
       const children = stdout
         .split('\n')
@@ -1079,8 +1152,93 @@ export class ChromaMcpManager {
       }
     }
 
-    await walk(rootPid);
+    try {
+      await walk(rootPid);
+    } catch (error) {
+      logger.debug('CHROMA_MCP', 'pgrep descendant walk failed, falling back to ps snapshot', {
+        pid: rootPid,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return null;
+    }
     return collected;
+  }
+
+  /**
+   * Fallback descendant collection used when the pgrep walk itself fails
+   * (see collectDescendantPids). Takes ONE `ps -axo pid=,ppid=` snapshot,
+   * builds a ppid -> children map, and DFS's from rootPid with the same
+   * bottom-up (leaves first) ordering and cycle guard as the pgrep path.
+   * Best-effort: if `ps` itself fails, returns [] — today's degraded
+   * behavior, but now only after BOTH mechanisms have failed.
+   */
+  private static async collectDescendantPidsViaPs(rootPid: number): Promise<number[]> {
+    let stdout = '';
+    try {
+      const result = await execFileAsync('ps', ['-axo', 'pid=,ppid='], { timeout: 2_000 });
+      stdout = result.stdout;
+    } catch (error) {
+      logger.debug('CHROMA_MCP', 'ps descendant snapshot fallback failed', {
+        pid: rootPid,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return [];
+    }
+
+    const childrenByParent = new Map<number, number[]>();
+    for (const line of stdout.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        continue;
+      }
+      const [pidText, ppidText] = trimmed.split(/\s+/);
+      const childPid = Number.parseInt(pidText, 10);
+      const parentPid = Number.parseInt(ppidText, 10);
+      if (!Number.isFinite(childPid) || !Number.isFinite(parentPid)) {
+        continue;
+      }
+      const siblings = childrenByParent.get(parentPid);
+      if (siblings) {
+        siblings.push(childPid);
+      } else {
+        childrenByParent.set(parentPid, [childPid]);
+      }
+    }
+
+    const seen = new Set<number>();
+    const collected: number[] = [];
+
+    function walk(pid: number): void {
+      for (const child of childrenByParent.get(pid) ?? []) {
+        if (seen.has(child)) {
+          continue;
+        }
+        seen.add(child);
+        walk(child);
+        // Bottom-up: push after recursion so leaves come first.
+        collected.push(child);
+      }
+    }
+
+    walk(rootPid);
+    return collected;
+  }
+
+  /**
+   * Poll `pids` via isPidAlive until every one is dead or `timeoutMs`
+   * elapses, whichever is first. Replaces a fixed grace-period sleep
+   * between SIGTERM/SIGKILL phases with an early-exit poll — fast when the
+   * tree dies promptly, still bounded when it doesn't. Returns whichever
+   * PIDs are still alive at the end (empty = everyone died).
+   */
+  private static async waitForExit(pids: number[], timeoutMs: number, intervalMs = 50): Promise<number[]> {
+    const deadline = Date.now() + timeoutMs;
+    let alive = pids.filter(isPidAlive);
+    while (alive.length > 0 && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, intervalMs));
+      alive = alive.filter(isPidAlive);
+    }
+    return alive;
   }
 
   /**
