@@ -487,6 +487,11 @@ export class SessionRoutes extends BaseRouteHandler {
 
     store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt, sessionDbId);
 
+    // Fire-and-forget cloud sync nudge, beside the write itself so every
+    // saved prompt nudges — including cursor sessions, which skip the
+    // non-cursor branch below entirely.
+    this.dbManager.getCloudSync()?.notify();
+
     const contextInjected = this.sessionManager.getSession(sessionDbId) !== undefined;
 
     logger.debug('SESSION', 'User prompt saved', {

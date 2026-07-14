@@ -1,0 +1,139 @@
+---
+title: "Cloud Sync (cmem.ai Pro)"
+description: "Worker-native sync of your memory database to your cmem.ai account — no daemon, the worker syncs on write."
+---
+
+# Cloud Sync (cmem.ai Pro)
+
+Cloud sync backs up your local memory database to your [cmem.ai](https://cmem.ai)
+account. It is built into the worker: **there is no daemon — the worker syncs on
+write**. The same process that records every observation also uploads it, so
+there is no second process to install, monitor, or restart.
+
+<Note>
+**The database is the queue.** Every synced table carries a `synced_at` column
+(`NULL` = not in the cloud yet). After each write, the worker nudges a debounced
+flusher that drains `WHERE synced_at IS NULL` in batches to cmem.ai and stamps
+rows on success. That one mechanism **is** live sync, backfill, offline
+catch-up, and retry — a never-synced install simply has everything `NULL`, and
+anything that fails to upload stays `NULL` until a later flush picks it up.
+</Note>
+
+## What syncs
+
+Three kinds of rows are uploaded to your cmem.ai account:
+
+- **Observations** — the compressed memories claude-mem generates from your sessions.
+- **Session summaries** — the per-session overview records.
+- **User prompts** — the prompts you typed (clamped to 200&nbsp;KB each).
+
+<Warning>
+**Privacy:** cloud sync uploads your observation narratives and your full prompt
+text to your cmem.ai account. Don't enable it if that content must stay on your
+machine.
+</Warning>
+
+## Quick start
+
+Run the `/cloud-sync` skill in Claude Code. It checks sync status and, on first
+run, walks you through setup:
+
+1. Grab your **sync token** and **user id** from **cmem.ai → Connect** and paste
+   them when asked. The skill writes them into `~/.claude-mem/settings.json`
+   (mode `0600`) without ever echoing the token.
+2. The skill restarts the worker, which immediately starts draining unsynced
+   rows, and polls status until the pending counts fall.
+
+If you previously used the **legacy standalone sync client**, the skill migrates
+it automatically: your token is read from the old `.cloud-sync.env`, your device
+identity carries over, and **nothing re-uploads** — rows the old client already
+pushed are stamped as synced during migration. See
+[Migrating from the standalone client](#migrating-from-the-standalone-client).
+
+## How the flusher behaves
+
+- **Debounced:** write bursts coalesce; the flusher runs ~1.5&nbsp;s after the
+  last write, and only one flush runs at a time.
+- **Batched:** rows drain in batches of up to 200 per kind, packed into request
+  bodies of at most 2&nbsp;MB.
+- **Timeboxed:** every request has a 30&nbsp;s timeout — a dead network can
+  never hang the worker.
+- **Retrying:** a failed upload leaves rows `NULL` and retries on the next write
+  plus a capped exponential backoff (30&nbsp;s → 10&nbsp;min). The write path is
+  never blocked — sync failures cost nothing but delay.
+- **Startup drain:** the worker kicks one flush at startup, which doubles as the
+  initial backfill of your existing database.
+
+## Settings
+
+Cloud sync is configured in `~/.claude-mem/settings.json`. It is **active when
+both the token and the user id are non-empty** — there is no separate enable
+flag; blank the token to turn sync off.
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `CLAUDE_MEM_CLOUD_SYNC_TOKEN` | `''` | Your cmem.ai sync token (from **cmem.ai → Connect**). Sent as `Authorization: Bearer`. |
+| `CLAUDE_MEM_CLOUD_SYNC_USER_ID` | `''` | Your cmem.ai user id (from **cmem.ai → Connect**). |
+| `CLAUDE_MEM_CLOUD_SYNC_URL` | `https://cmem.ai/api/pro/sync` | Sync endpoint base URL. Only change this if you're pointing at a non-production server. |
+| `CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID` | `''` | Stable identity of this machine in the cloud. Resolved at first start — adopted from the legacy client's state file if present, otherwise a fresh UUID — then persisted back here. Don't edit it: the server keys rows on it, and a changed id forks every cloud row into a duplicate. |
+| `CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME` | machine hostname | Human-readable label for this device in the cmem.ai Devices panel. |
+
+## Status endpoint
+
+The worker exposes `GET /api/sync/status` (on the same port as the rest of the
+worker HTTP API). It is registered unconditionally, so an unconfigured install
+answers `200` rather than a `404` — callers can tell "not set up" apart from
+"worker down".
+
+```bash
+curl -s "http://127.0.0.1:${CLAUDE_MEM_WORKER_PORT}/api/sync/status"
+```
+
+Configured:
+
+```json
+{
+  "configured": true,
+  "deviceId": "2f6b1c9e-7d41-4c1a-9b0e-3d5f8a2c6e10",
+  "pending": { "observations": 0, "summaries": 0, "prompts": 2 },
+  "lastFlushAt": 1783981042731,
+  "lastError": null
+}
+```
+
+- `pending` — rows per kind still waiting to upload (`synced_at IS NULL`).
+  Counts near 0 mean the cloud copy is current.
+- `lastFlushAt` — epoch ms of the last successful flush, `null` before the first.
+- `lastError` — message from the most recent failed flush, `null` when healthy.
+  It never contains the token.
+
+Not configured:
+
+```json
+{ "configured": false }
+```
+
+## Migrating from the standalone client
+
+Before sync moved into the worker, cloud sync ran as a separate standalone
+client (`cloud-sync.mjs` plus a `.cloud-sync.env` credentials file and a
+`cloud-sync.pid` file). The worker supersedes it entirely — if the old client
+kept running it would double-upload — so the `/cloud-sync` skill retires it
+during setup:
+
+- **Stopped:** if `cloud-sync.pid` points at a live daemon, it is killed.
+- **Retired:** `cloud-sync.mjs`, `.cloud-sync.env`, and `cloud-sync.pid` are
+  renamed with a `.retired` suffix (archived, not deleted). Your token is copied
+  from `.cloud-sync.env` into `settings.json` first, so setup needs no re-pasting.
+- **Preserved:** `~/.claude-mem/cloud-sync-state.json` is deliberately **left in
+  place**. The worker reads two things from it: its upload cursors (used once,
+  by a database migration, to stamp everything the old client already pushed —
+  this is why migration re-uploads nothing) and its `deviceId` (adopted into
+  `CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID` so the cloud sees the same device before and
+  after). Renaming or deleting that file would mint a new device identity and
+  fork every previously synced row into a duplicate.
+
+<Note>
+The standalone client remains available from cmem.ai as an out-of-repo utility
+for non-plugin users. The plugin no longer depends on it.
+</Note>
