@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
 import * as realInfrastructure from '../../src/services/infrastructure/index.js';
+import * as realProcessManager from '../../src/services/infrastructure/ProcessManager.js';
 import * as realSupervisor from '../../src/supervisor/index.js';
 
 const realInfrastructureSnapshot = { ...realInfrastructure };
+const realProcessManagerSnapshot = { ...realProcessManager };
 const realSupervisorSnapshot = { ...realSupervisor };
 
 // Record every HTTP call the worker layer makes, so we can assert whether a
@@ -16,6 +18,8 @@ let versionMatchResult: { matches: boolean; pluginVersion: string; workerVersion
   pluginVersion: '13.4.0',
   workerVersion: '13.4.0',
 };
+let runtimePathResult: string | null = 'bun';
+let readinessOk = true;
 
 // A worker is "alive" (healthy + pid ok) for these tests; we exercise the
 // version-mismatch branch, not the lazy-spawn-from-dead path.
@@ -25,6 +29,10 @@ mock.module('../../src/services/infrastructure/index.js', () => ({
 
 mock.module('../../src/supervisor/index.js', () => ({
   validateWorkerPidFile: () => 'alive',
+}));
+
+mock.module('../../src/services/infrastructure/ProcessManager.js', () => ({
+  resolveWorkerRuntimePath: () => runtimePathResult,
 }));
 
 async function importWorkerUtilsFresh() {
@@ -46,7 +54,7 @@ function installFetchMock(): void {
     // src/services/worker-shutdown.ts), so this scripts "the successor came
     // up immediately".
     return Promise.resolve({
-      ok: true,
+      ok: u.includes('/api/readiness') ? readinessOk : true,
       status: 200,
       text: () => Promise.resolve(''),
       json: () => Promise.resolve({ version: versionMatchResult.pluginVersion }),
@@ -56,18 +64,27 @@ function installFetchMock(): void {
 
 describe('ensureWorkerRunning — stale-worker recycle on version mismatch', () => {
   const originalFetch = global.fetch;
+  const originalReadinessBudget = process.env.CLAUDE_MEM_HOOK_READINESS_TIMEOUT_MS;
 
   beforeEach(() => {
+    runtimePathResult = 'bun';
+    readinessOk = true;
     installFetchMock();
   });
 
   afterEach(() => {
     global.fetch = originalFetch;
+    if (originalReadinessBudget === undefined) {
+      delete process.env.CLAUDE_MEM_HOOK_READINESS_TIMEOUT_MS;
+    } else {
+      process.env.CLAUDE_MEM_HOOK_READINESS_TIMEOUT_MS = originalReadinessBudget;
+    }
     mock.restore();
   });
 
   afterAll(() => {
     mock.module('../../src/services/infrastructure/index.js', () => realInfrastructureSnapshot);
+    mock.module('../../src/services/infrastructure/ProcessManager.js', () => realProcessManagerSnapshot);
     mock.module('../../src/supervisor/index.js', () => realSupervisorSnapshot);
   });
 
@@ -89,6 +106,32 @@ describe('ensureWorkerRunning — stale-worker recycle on version mismatch', () 
     const { ensureWorkerRunning } = await importWorkerUtilsFresh();
     await ensureWorkerRunning();
 
+    const restartCalls = fetchLog.filter(c => c.url.includes('/api/admin/restart'));
+    expect(restartCalls.length).toBe(0);
+  });
+
+  it('does NOT restart when the worker version differs but local recovery is unavailable', async () => {
+    versionMatchResult = { matches: false, pluginVersion: '13.4.0', workerVersion: '13.3.0' };
+    runtimePathResult = null;
+
+    const { ensureWorkerRunning } = await importWorkerUtilsFresh();
+    const result = await ensureWorkerRunning();
+
+    expect(result).toBe(true);
+    const restartCalls = fetchLog.filter(c => c.url.includes('/api/admin/restart'));
+    expect(restartCalls.length).toBe(0);
+  });
+
+  it('returns false without restart when the stale worker is healthy but not ready and local recovery is unavailable', async () => {
+    versionMatchResult = { matches: false, pluginVersion: '13.4.0', workerVersion: '13.3.0' };
+    runtimePathResult = null;
+    readinessOk = false;
+    process.env.CLAUDE_MEM_HOOK_READINESS_TIMEOUT_MS = '50';
+
+    const { ensureWorkerRunning } = await importWorkerUtilsFresh();
+    const result = await ensureWorkerRunning();
+
+    expect(result).toBe(false);
     const restartCalls = fetchLog.filter(c => c.url.includes('/api/admin/restart'));
     expect(restartCalls.length).toBe(0);
   });

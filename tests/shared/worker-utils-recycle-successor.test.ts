@@ -3,10 +3,12 @@ import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import * as realInfrastructure from '../../src/services/infrastructure/index.js';
+import * as realProcessManager from '../../src/services/infrastructure/ProcessManager.js';
 import * as realSupervisor from '../../src/supervisor/index.js';
 import * as realSpawn from '../../src/shared/spawn.js';
 
 const realInfrastructureSnapshot = { ...realInfrastructure };
+const realProcessManagerSnapshot = { ...realProcessManager };
 const realSupervisorSnapshot = { ...realSupervisor };
 const realSpawnSnapshot = { ...realSpawn };
 
@@ -31,6 +33,7 @@ let healthVersionScript: string[] = [PLUGIN_VERSION];
 // Records every spawn attempt — the seam the lazy-spawn fallback goes
 // through (spawnHidden in src/shared/spawn.ts).
 const spawnCalls: Array<{ command: string; args: string[] }> = [];
+let runtimePathResult: string | null = 'bun';
 
 // The stale worker on the port: alive (health ok) and version-mismatched.
 mock.module('../../src/services/infrastructure/index.js', () => ({
@@ -43,6 +46,10 @@ mock.module('../../src/services/infrastructure/index.js', () => ({
 
 mock.module('../../src/supervisor/index.js', () => ({
   validateWorkerPidFile: () => 'alive',
+}));
+
+mock.module('../../src/services/infrastructure/ProcessManager.js', () => ({
+  resolveWorkerRuntimePath: () => runtimePathResult,
 }));
 
 mock.module('../../src/shared/spawn.js', () => ({
@@ -88,6 +95,7 @@ describe('ensureWorkerRunning — recycle waits for the dying worker\'s successo
   let tempDataDir: string;
 
   beforeEach(() => {
+    runtimePathResult = 'bun';
     // The lazy-spawn fallback now goes through the spawn gate
     // (src/shared/worker-spawn-gate.ts), which writes <DATA_DIR>/spawn.lock.
     // Point DATA_DIR at a temp dir so the test never touches the real
@@ -117,6 +125,7 @@ describe('ensureWorkerRunning — recycle waits for the dying worker\'s successo
 
   afterAll(() => {
     mock.module('../../src/services/infrastructure/index.js', () => realInfrastructureSnapshot);
+    mock.module('../../src/services/infrastructure/ProcessManager.js', () => realProcessManagerSnapshot);
     mock.module('../../src/supervisor/index.js', () => realSupervisorSnapshot);
     mock.module('../../src/shared/spawn.js', () => realSpawnSnapshot);
   });

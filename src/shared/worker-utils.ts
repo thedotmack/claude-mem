@@ -343,6 +343,20 @@ async function waitForRecycledWorker(
   return false;
 }
 
+function canRecoverWorkerLocally(): { ok: true } | { ok: false; reason: 'missing-runtime' | 'missing-script' } {
+  const runtimePath = resolveWorkerRuntimePath();
+  if (!runtimePath) {
+    return { ok: false, reason: 'missing-runtime' };
+  }
+
+  const scriptPath = resolveWorkerScriptPath();
+  if (!scriptPath) {
+    return { ok: false, reason: 'missing-script' };
+  }
+
+  return { ok: true };
+}
+
 /**
  * Amplifier guard: a hook recycles a stale worker AT MOST once per
  * invocation. If the worker that became ready still reports a mismatched
@@ -402,6 +416,21 @@ export async function ensureWorkerRunning(): Promise<boolean> {
       }
       if (expectedPluginVersion !== null) {
         await warnIfVersionStillMismatched(expectedPluginVersion);
+      }
+      return true;
+    }
+
+    const localRecovery = canRecoverWorkerLocally();
+    if (!localRecovery.ok) {
+      logger.warn('SYSTEM', 'Worker version mismatch but local recovery is unavailable; keeping the healthy worker instead of recycling into a dead port', {
+        pluginVersion,
+        workerVersion,
+        reason: localRecovery.reason,
+      });
+      const ready = await waitForWorkerReadiness();
+      if (!ready) {
+        logger.warn('SYSTEM', 'Worker is healthy but not ready; skipping hook API call');
+        return false;
       }
       return true;
     }
