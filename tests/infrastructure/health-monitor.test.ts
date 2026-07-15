@@ -12,6 +12,7 @@ import {
 describe('HealthMonitor', () => {
   const originalFetch = global.fetch;
   const originalWorkerHost = process.env.CLAUDE_MEM_WORKER_HOST;
+  const originalPlatform = process.platform;
 
   afterEach(() => {
     global.fetch = originalFetch;
@@ -20,6 +21,72 @@ describe('HealthMonitor', () => {
     } else {
       process.env.CLAUDE_MEM_WORKER_HOST = originalWorkerHost;
     }
+    Object.defineProperty(process, 'platform', {
+      value: originalPlatform,
+      writable: true,
+      configurable: true
+    });
+  });
+
+  describe('isPortInUse on Windows (zombie-socket regression)', () => {
+    beforeEach(() => {
+      Object.defineProperty(process, 'platform', {
+        value: 'win32',
+        writable: true,
+        configurable: true
+      });
+    });
+
+    it('returns true immediately when the health endpoint answers (no bind test needed)', async () => {
+      global.fetch = mock(() => Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('') } as unknown as Response));
+      const spy = spyOn(net, 'createServer');
+
+      const result = await isPortInUse(37777);
+
+      expect(result).toBe(true);
+      expect(net.createServer).not.toHaveBeenCalled();
+      spy.mockRestore();
+    });
+
+    it('falls back to a real bind test when the health probe is unresponsive, and reports a stale listener as in-use', async () => {
+      // This is the zombie-socket case: an orphaned process (e.g. a crashed
+      // worker's leftover child chain) still holds the port at the OS level
+      // but no longer answers HTTP. Before this fix, isPortInUse concluded
+      // "free" here and let a doomed spawn race into EADDRINUSE.
+      global.fetch = mock(() => Promise.reject(new Error('ECONNREFUSED')));
+      const createServerMock = mock(() => ({
+        once: mock((event: string, cb: Function) => {
+          if (event === 'error') setTimeout(() => cb({ code: 'EADDRINUSE' }), 0);
+        }),
+        listen: mock(() => {})
+      }));
+      const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
+
+      const result = await isPortInUse(37777);
+
+      expect(result).toBe(true);
+      expect(net.createServer).toHaveBeenCalled();
+      spy.mockRestore();
+    });
+
+    it('falls back to a real bind test when the health probe is unresponsive, and reports a genuinely free port as free', async () => {
+      global.fetch = mock(() => Promise.reject(new Error('ECONNREFUSED')));
+      const closeMock = mock((cb: Function) => cb());
+      const createServerMock = mock(() => ({
+        once: mock((event: string, cb: Function) => {
+          if (event === 'listening') setTimeout(() => cb(), 0);
+        }),
+        listen: mock(() => {}),
+        close: closeMock
+      }));
+      const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
+
+      const result = await isPortInUse(37777);
+
+      expect(result).toBe(false);
+      expect(closeMock).toHaveBeenCalled();
+      spy.mockRestore();
+    });
   });
 
   describe('isPortInUse', () => {
