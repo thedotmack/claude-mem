@@ -83,13 +83,20 @@ export abstract class BaseRouteHandler {
 
   protected handleError(res: Response, error: Error, context?: string): void {
     const statusCode = error instanceof AppError ? error.statusCode : 500;
-    // The local failure line (full fidelity) always fires. The Error payload
-    // routes through logger.error → the error sink → captureException
-    // (Phase 3), which sends a REDACTED $exception to PostHog Error Tracking —
-    // consent-gated, kill-switch-gated, and rate-limited. This replaces the old
-    // enum-only `error_occurred` event with the real (scrubbed) exception, so we
-    // no longer attach a telemetry descriptor here.
-    logger.failure('WORKER', context || 'Request failed', undefined, error);
+    // Client errors (4xx AppErrors) are routine bad input, not server faults, so
+    // they log at WARN and are NOT routed to the error sink — surfacing a
+    // validation rejection like a bad corpus name as a captured $exception just
+    // pollutes error tracking with noise. Only true server faults (5xx, or any
+    // non-AppError, which maps to 500) go through logger.failure, whose Error
+    // payload routes through logger.error → the error sink → captureException
+    // (Phase 3): a REDACTED $exception to PostHog Error Tracking, consent-gated,
+    // kill-switch-gated, and rate-limited.
+    const isClientError = statusCode >= 400 && statusCode < 500;
+    if (isClientError) {
+      logger.warn('WORKER', context || 'Request rejected', { statusCode }, error);
+    } else {
+      logger.failure('WORKER', context || 'Request failed', undefined, error);
+    }
     if (!res.headersSent) {
       const response: Record<string, unknown> = { error: error.message };
 
