@@ -1,5 +1,16 @@
-import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
 import { logger } from '../../../src/utils/logger.js';
+
+// Snapshot the real modules BEFORE mock.module mutates the live namespaces,
+// then re-register them in afterAll. bun's mock.module is process-global and
+// mock.restore() does NOT undo it, so these partial stubs would otherwise leak
+// into other test files in the same `bun test` run.
+import * as realWorkerService from '../../../src/services/worker-service.js';
+import * as realWorkerUtils from '../../../src/shared/worker-utils.js';
+import * as realModeManager from '../../../src/services/domain/ModeManager.js';
+const realWorkerServiceSnapshot = { ...realWorkerService };
+const realWorkerUtilsSnapshot = { ...realWorkerUtils };
+const realModeManagerSnapshot = { ...realModeManager };
 
 mock.module('../../../src/services/worker-service.js', () => ({
   updateCursorContextForProject: () => Promise.resolve(),
@@ -25,6 +36,12 @@ mock.module('../../../src/services/domain/ModeManager.js', () => ({
     }),
   },
 }));
+
+afterAll(() => {
+  mock.module('../../../src/services/worker-service.js', () => realWorkerServiceSnapshot);
+  mock.module('../../../src/shared/worker-utils.js', () => realWorkerUtilsSnapshot);
+  mock.module('../../../src/services/domain/ModeManager.js', () => realModeManagerSnapshot);
+});
 
 import { processAgentResponse } from '../../../src/services/worker/agents/ResponseProcessor.js';
 import type { WorkerRef, StorageResult } from '../../../src/services/worker/agents/types.js';

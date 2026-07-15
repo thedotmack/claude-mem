@@ -1,4 +1,12 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
+
+// Snapshot the real module BEFORE mock.module mutates the live namespace, then
+// re-register it in afterAll. bun's mock.module is process-global and
+// mock.restore() does NOT undo it, so this partial ModeManager stub (no
+// loadMode) would otherwise leak into other test files in the same `bun test`
+// run — breaking any file that calls ModeManager.getInstance().loadMode(...).
+import * as realModeManager from '../../src/services/domain/ModeManager.js';
+const realModeManagerSnapshot = { ...realModeManager };
 
 mock.module('../../src/services/domain/ModeManager.js', () => ({
   ModeManager: {
@@ -17,6 +25,10 @@ mock.module('../../src/services/domain/ModeManager.js', () => ({
     }),
   },
 }));
+
+afterAll(() => {
+  mock.module('../../src/services/domain/ModeManager.js', () => realModeManagerSnapshot);
+});
 
 import { Database } from 'bun:sqlite';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
