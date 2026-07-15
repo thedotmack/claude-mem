@@ -32,36 +32,47 @@ async function httpRequestToWorker(
   return { ok: response.ok, statusCode: response.status, body };
 }
 
-export async function isPortInUse(port: number): Promise<boolean> {
-  if (process.platform === 'win32') {
-    try {
-      const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}/api/health`);
-      return response.ok;
-    } catch (error) {
-      if (error instanceof Error) {
-        logger.debug('SYSTEM', 'Windows health check failed (port not in use)', {}, error);
-      } else {
-        logger.debug('SYSTEM', 'Windows health check failed (port not in use)', { error: String(error) });
-      }
-      return false;
-    }
-  }
-
+function bindTestPort(port: number, host: string): Promise<boolean> {
   return new Promise((resolve) => {
     const server = net.createServer();
-    const workerHost = getWorkerHost();
     server.once('error', (err: NodeJS.ErrnoException) => {
-      if (err.code === 'EADDRINUSE') {
-        resolve(true);
-      } else {
-        resolve(false);
-      }
+      resolve(err.code === 'EADDRINUSE');
     });
     server.once('listening', () => {
       server.close(() => resolve(false));
     });
-    server.listen(port, workerHost);
+    server.listen(port, host);
   });
+}
+
+export async function isPortInUse(port: number): Promise<boolean> {
+  const workerHost = getWorkerHost();
+
+  if (process.platform === 'win32') {
+    try {
+      const response = await fetch(`http://${formatHostForUrl(workerHost)}:${port}/api/health`, {
+        signal: AbortSignal.timeout(2000),
+      });
+      if (response.ok) return true;
+    } catch (error) {
+      if (error instanceof Error) {
+        logger.debug('SYSTEM', 'Windows health check failed, falling back to a real bind test', {}, error);
+      } else {
+        logger.debug('SYSTEM', 'Windows health check failed, falling back to a real bind test', { error: String(error) });
+      }
+    }
+
+    // The HTTP probe alone can't tell "port free" apart from "port still
+    // bound by a dead/orphaned listener that no longer answers HTTP" — a
+    // zombie left behind by a crashed worker or an inherited socket handle
+    // in a spawned child. Treating that as "free" lets a doomed worker spawn
+    // race straight into EADDRINUSE with no diagnosis. A real bind attempt
+    // (same technique POSIX always used) reports the OS's actual view of the
+    // port regardless of whether anything is answering on it.
+    return bindTestPort(port, workerHost);
+  }
+
+  return bindTestPort(port, workerHost);
 }
 
 async function pollEndpointUntilOk(
