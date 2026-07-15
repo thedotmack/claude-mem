@@ -59,10 +59,34 @@ const sdkSessionsBatchSchema = z.object({
   memorySessionIds: stringArrayLike,
 }).passthrough();
 
+// The cloud/export shape (CloudSync `toCloud`) carries columns that are stored
+// locally as JSON strings — facts, concepts, files_read/modified — as real
+// arrays. Re-stringify them at the boundary so every downstream consumer
+// (the SQLite binding layer and the ChromaDB `JSON.parse` path alike) sees the
+// canonical JSON-string shape rather than a raw array. Without this, the array
+// crashes bun:sqlite ("Binding expected string…") and silently drops from Chroma.
+const OBSERVATION_JSON_FIELDS = ['facts', 'concepts', 'files_read', 'files_modified'] as const;
+const SUMMARY_JSON_FIELDS = ['files_read', 'files_edited'] as const;
+
+const jsonStringifyFields = (fields: readonly string[]) =>
+  (value: unknown): unknown => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+    const record = value as Record<string, unknown>;
+    let normalized: Record<string, unknown> | undefined;
+    for (const field of fields) {
+      const fieldValue = record[field];
+      if (fieldValue !== null && typeof fieldValue === 'object') {
+        normalized ??= { ...record };
+        normalized[field] = JSON.stringify(fieldValue);
+      }
+    }
+    return normalized ?? record;
+  };
+
 const importSchema = z.object({
   sessions: z.array(z.unknown()).optional(),
-  summaries: z.array(z.unknown()).optional(),
-  observations: z.array(z.unknown()).optional(),
+  summaries: z.array(z.preprocess(jsonStringifyFields(SUMMARY_JSON_FIELDS), z.unknown())).optional(),
+  observations: z.array(z.preprocess(jsonStringifyFields(OBSERVATION_JSON_FIELDS), z.unknown())).optional(),
   prompts: z.array(z.unknown()).optional(),
 }).passthrough();
 
