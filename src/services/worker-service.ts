@@ -1,5 +1,6 @@
 
 import path from 'path';
+import os from 'os';
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
 import { spawn } from 'child_process';
 import type { Database } from 'bun:sqlite';
@@ -189,6 +190,65 @@ function readAndClearCleanShutdownSentinel(): string | null {
     }
   }
   return contents;
+}
+
+/**
+ * Guard the worker process's working directory before anything spawns a child.
+ *
+ * A shell can launch the worker with an inherited cwd the worker process itself
+ * cannot chdir back into — most notably on Windows, where a Microsoft Store
+ * install (e.g. OpenAI Codex under `Program Files\WindowsApps\...`) leaves the
+ * daemon sitting in an ACL-locked directory, or a directory that has since been
+ * deleted. That matters because cross-spawn (used by the MCP stdio transport
+ * when we launch chroma-mcp) captures `process.cwd()`, temporarily chdir's into
+ * the child's `cwd` option to resolve the command, then chdir's BACK to the
+ * captured original in a `finally` — and that restore is NOT wrapped in a
+ * try/catch. An un-chdir-able original cwd therefore throws
+ * `EPERM: operation not permitted, chdir ...` on every spawn, which our logger
+ * bridges into error-tracking as noise.
+ *
+ * We probe the exact operation that breaks (chdir back into the current dir);
+ * only when that fails do we relocate to a known-good directory (the real home
+ * dir, falling back to the OS temp dir). The worker addresses its own state by
+ * absolute paths (DATA_DIR/DB_PATH), and child spawns already pin their own cwd,
+ * so relocating the daemon is safe. Never throws — a worker that cannot relocate
+ * is no worse off than before this ran.
+ */
+function ensureSafeWorkingDirectory(): void {
+  let current: string | null = null;
+  try {
+    current = process.cwd();
+  } catch {
+    // process.cwd() itself throws when the inherited directory is gone or
+    // unreadable — treat as "must relocate".
+    current = null;
+  }
+
+  if (current !== null) {
+    try {
+      // No-op when the cwd is accessible; reproduces cross-spawn's EPERM when
+      // it is not. Leaving an accessible cwd untouched keeps relative paths
+      // resolving the way whoever launched the worker intended.
+      process.chdir(current);
+      return;
+    } catch {
+      // Inherited a directory this process cannot chdir back into. Relocate.
+    }
+  }
+
+  for (const dir of [os.homedir(), os.tmpdir()]) {
+    if (!dir) continue;
+    try {
+      process.chdir(dir);
+      logger.warn('SYSTEM', 'Worker relocated off an inaccessible working directory', {
+        from: current ?? '(unavailable)',
+        to: dir,
+      });
+      return;
+    } catch {
+      // Try the next candidate; if none work, leave cwd as-is without throwing.
+    }
+  }
 }
 
 export class WorkerService implements WorkerRef {
@@ -396,6 +456,12 @@ export class WorkerService implements WorkerRef {
   }
 
   async start(): Promise<void> {
+    // Before ANY child process is spawned (supervisor, chroma-mcp), make sure
+    // the worker isn't sitting in a directory it can't chdir back into — else
+    // cross-spawn's post-spawn cwd restore throws EPERM on every spawn. See
+    // ensureSafeWorkingDirectory().
+    ensureSafeWorkingDirectory();
+
     const port = getWorkerPort();
     const host = getWorkerHost();
 
